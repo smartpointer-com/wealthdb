@@ -1,4 +1,4 @@
--- Silver schema of the synthetic kind, version 5.
+-- Silver schema of the synthetic kind, version 6.
 --
 -- The one generic silver: one table per canonical record type, so a row
 -- here is the canonical change record it becomes, column for column. No
@@ -89,6 +89,7 @@ CREATE TABLE positions (
     accrued_interest TEXT,
     acquisition_date TEXT,              -- YYYY-MM-DD
     payload          TEXT    NOT NULL DEFAULT '{}',
+    valued_at        INTEGER,           -- the mark's instant, NULL when it is the snapshot's
     PRIMARY KEY (snapshot_at, account_id, position_key)
 );
 

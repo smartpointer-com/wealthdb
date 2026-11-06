@@ -29,6 +29,7 @@ import csv
 import datetime as dt
 import hashlib
 import io
+import itertools
 import json
 import os
 import pathlib
@@ -569,6 +570,43 @@ class TestToToday(unittest.TestCase):
         for reason in ("stated", "learned"):
             self.assertIn(reason, rows)
             self.assertGreater(int(rows[reason]["payments"] or 0), 0, reason)
+
+    def test_the_bridge_holds_and_explains_every_year(self):
+        """Every year's net worth walks to the next, to the cent, and the
+        mortgage and the card explain the whole gap to returns."""
+        cols = "+net_flow,+debt_repaid,+bridge_gap"
+        for ccy in ("USD", "CHF", "EUR", "GBP"):
+            rows = report(self.root, "returns", "bridge", "--period", "annual", "-x", ccy, "-C", cols)
+            self.assertTrue(rows)
+            for r in rows:
+                start, saved, onboarded, gain, end, flow, repaid, gap = (amount(r, f"{c}_{ccy}") for c in (
+                    "start_net_worth", "net_saved", "onboarded", "gain", "end_net_worth", "net_flow",
+                    "debt_repaid", "bridge_gap"))
+                self.assertEqual(end, start + saved + onboarded + gain, r)
+                self.assertEqual(saved, flow + repaid, r)
+                self.assertEqual(gap, 0, r)
+                self.assertNotIn("debt_first_seen", r["quality"], r)
+            for a, b in itertools.pairwise(rows):
+                self.assertEqual(a[f"end_net_worth_{ccy}"], b[f"start_net_worth_{ccy}"])
+
+    def test_the_vehicles_fee_is_on_the_fee_view_and_not_the_statement(self):
+        """The plan's fee is a spending line outside the pool: the fee view
+        has it, and the statement does not."""
+        last = TODAY.year - 1
+        rows = {r["entity"]: r for r in report(self.root, "spending", "fees", str(last), "--period", "total")}
+        self.assertTrue([r for name, r in rows.items() if "401(k) - Sam" in name
+                         and amount(r, "fees_USD") == Decimal("180.00")], rows)
+        (cat,) = [r for r in report(self.root, "spending", "categories", str(last), "--period", "total")
+                  if r["category"] == "Bank fees"]
+        self.assertEqual(sum(amount(r, "fees_USD") for r in rows.values()), amount(cat, "net_spend_USD"))
+        (statement,) = report(self.root, "cashflow", "summary", str(last), "--period", "total", "-C", "+fees")
+        self.assertGreaterEqual(amount(cat, "net_spend_USD") - amount(statement, "fees_USD"), Decimal("180.00"))
+
+    def test_the_fund_and_the_home_lower_the_marked_share(self):
+        rows = report(self.root, "status", "--marks")
+        shares = [Decimal(r["marked_pct"]) for r in rows]
+        self.assertGreater(len(set(shares)), 2)
+        self.assertLess(max(shares), 100)
 
 
 

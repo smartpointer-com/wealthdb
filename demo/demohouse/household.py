@@ -122,6 +122,7 @@ class Simulation:
         self._multicurrency(day)
         self._home(day)
         self._declared_transfer(day)
+        self._plan_fee(day)
         self._findings(day)
         self._savings_interest(day)
         self._balance_interest(day)
@@ -1017,7 +1018,7 @@ class Simulation:
         for mark in f["marks"]:
             if day == dates.parse(mark["date"]):
                 fund["nav"] = fund["called"] * D(mark["multiple"]) - fund["distributed"]
-                self._mark_fund(day, f)
+                self._mark_fund(day, f, marked=day)
         s = self.spec["private"]["spv"]
         if day == dates.parse(s["date"]):
             amount = D(s["amount"])
@@ -1034,12 +1035,15 @@ class Simulation:
     def _instrument_name(self, iid, day):
         return name_on(self.inputs.instruments[iid], day).upper()
 
-    def _mark_fund(self, day, f):
+    def _mark_fund(self, day, f, marked=None):
         """Value the fund at its NAV. Its book is the capital called, gross
         of the cash it paid back: the private-market basis of
-        wealthdb/docs/DESIGN.md §7.4."""
+        wealthdb/docs/DESIGN.md §7.4. The manager marks it quarterly, so a
+        call or a distribution in between keeps the last mark's day, and
+        the first call dates the holding until the first mark."""
         fund = self._fund
-        self.book.set_mark(f["account"], f["instrument"], fund["nav"], day, book=fund["called"])
+        h = self.book.set_mark(f["account"], f["instrument"], fund["nav"], day, book=fund["called"], marked=marked)
+        h.marked = h.marked or day
 
     def _spv_exit(self, day, s, ex):
         """The SPV pays out in listed shares that land in the brokerage:
@@ -1144,18 +1148,29 @@ class Simulation:
 
     def _open_home(self, day):
         h = self.spec["homestead"]
-        value = ZERO
+        value, marked = ZERO, None
         for a in h["appraisals"]:
             if dates.parse(a["date"]) <= day:
-                value = D(a["value"])
+                value, marked = D(a["value"]), dates.parse(a["date"])
         self.book.set_mark(h["account"], h["instrument"], value, day, book=D(h["price"]),
-                           acquired=dates.parse(h["purchased"]))
+                           acquired=dates.parse(h["purchased"]), marked=marked)
 
     def _home(self, day):
         h = self.spec["homestead"]
         for a in h["appraisals"]:
             if day == dates.parse(a["date"]):
-                self.book.set_mark(h["account"], h["instrument"], D(a["value"]), day)
+                self.book.set_mark(h["account"], h["instrument"], D(a["value"]), day, marked=day)
+
+    # ---- a fee inside a vehicle -----------------------------------------
+
+    def _plan_fee(self, day):
+        """The plan's yearly recordkeeping fee, a line the spending report
+        counts and the cash flow statement does not. The plan takes it out
+        of the units its value already nets, so the row moves no cash."""
+        f = self.spec["plan_fee"]
+        if day == dates.next_business(dt.date(day.year, f["month"], f["day"])):
+            self._txn(f["account"], day, "fee", -D(f["amount"]), desc=f["descriptor"], cash=False,
+                      payload={"paid_from_units": True})
 
     # ---- the declared account, savings sweeps --------------------------
 

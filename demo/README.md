@@ -53,10 +53,13 @@ demo() {
 }
 
 demo -r status
+demo -r status --marks 2025
 demo -r holdings accounts
 demo -r holdings positions -x CHF
 demo -r returns sources --method both --period total
+demo -r returns bridge 2025 --period quarterly
 demo -r spending categories 2025 --period annual
+demo -r spending fees 2025
 demo -r income summary 2025 --period annual -C +withheld
 demo -r cashflow sankey 2025
 demo -r cashflow coverage 2025 --period quarterly
@@ -81,12 +84,12 @@ History starts on 2023-07-01 and runs to the as-of date.
 | --- | --- | --- |
 | `brindlecove` | checking, savings, a term deposit, a rewards card, the home loan | payroll, bills, the card cycle, ATM cash, savings sweeps, a tiered savings rate, a term deposit that rolls every year, the mortgage split into interest and amortisation |
 | `quayvane` | joint brokerage, two Roth IRAs, a rollover IRA, a 529 plan | monthly buying, dividends with foreign withholding, a 2-for-1 split, a fund rename, tax-loss selling, bonds held directly, a ladder of discount notes, a money-market fund, retirement and education vehicles |
-| `tamberlow` | two 401(k) plans, a health savings account | payroll contributions that never touch household cash, HSA reimbursements |
+| `tamberlow` | two 401(k) plans, a health savings account | payroll contributions that never touch household cash, HSA reimbursements, a yearly fee inside a plan, which the spending report counts and the cash flow statement does not |
 | `aubervane` | a discretionary mandate in one portfolio | four currencies, currency conversions, coupons, withholding, management fees |
-| `emberwright` | a venture fund interest and an SPV, in one account | capital calls, a distribution, NAV marks, an SPV that exits in listed shares |
+| `emberwright` | a venture fund interest and an SPV, in one account | capital calls, a distribution, quarterly NAV marks dated through `valued_at`, an SPV that exits in listed shares |
 | `tessarite` | a crypto exchange account | the `crypto_partial` regime, staking income, a deposit from and a withdrawal to a wallet nothing tracks, and no stated cost basis: the lot engine rebuilds it from the trades |
 | `driftwren` | a multi-currency account in EUR and GBP | spending abroad, a yearly USD wire paired across currencies, interest on the euro balance |
-| `homestead` | the family home | a NAV-only holding valued by yearly appraisals |
+| `homestead` | the family home | a NAV-only holding valued by yearly appraisals, each dated through `valued_at`, so the Mark age tile moves |
 | `fx` | none | daily USD rates for EUR, GBP and CHF, and a US dollar yield curve |
 | `refdata` | none | what the funds hold, every month-end, what the directly held stocks and bonds are, the bond funds' yields and rate risk, the money-market fund's filings, the companies' reported figures and two companies' dividend calendars |
 

@@ -255,7 +255,7 @@ func (c *Connection) readPositions(ctx context.Context, w canonical.Window,
 	rows, err := c.db.QueryContext(ctx, `
 SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicle,
        currency, quantity, market_value, book_value, accrued_interest,
-       acquisition_date, payload
+       acquisition_date, payload, valued_at
   FROM positions
  WHERE snapshot_at BETWEEN ? AND ?
  ORDER BY snapshot_at, account_id, position_key`, w.Start, w.End)
@@ -270,9 +270,10 @@ SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicl
 			payload                                string
 			instrument, quantity, marketValue      sql.NullString
 			bookValue, accrued, acquired           sql.NullString
+			valuedAt                               sql.NullInt64
 		)
 		if err := rows.Scan(&snap, &account, &key, &instrument, &assetClass, &vehicle,
-			&ccy, &quantity, &marketValue, &bookValue, &accrued, &acquired, &payload); err != nil {
+			&ccy, &quantity, &marketValue, &bookValue, &accrued, &acquired, &payload, &valuedAt); err != nil {
 			return err
 		}
 		var extra annotations
@@ -280,6 +281,7 @@ SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicl
 		b := at(snap)
 		pos := canonical.PositionChange{
 			SnapshotAt:           snap,
+			ValuedAt:             valuedAt.Int64,
 			AccountExternalID:    account,
 			PositionKey:          key,
 			InstrumentExternalID: silver.StrPtrIfNonEmpty(instrument.String),

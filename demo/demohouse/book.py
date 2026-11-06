@@ -52,6 +52,7 @@ class Holding:
     book: object = ZERO     # cost basis, instrument currency; a unit holding's is the sum of its lots
     acquired: dt.date = None  # a unit holding's is its oldest open lot's
     lots: list = dataclasses.field(default_factory=list)  # a unit holding's open lots, oldest first
+    marked: dt.date = None  # the day a dated mark is from; None reads as each snapshot's own day
 
 
 @dataclasses.dataclass
@@ -259,8 +260,10 @@ class Book:
                                       sort_keys=True, separators=(",", ":")),
             })
 
-    def set_mark(self, aid, instrument, value, day, book=None, acquired=None):
-        """Hold (or re-mark) a holding valued by marks rather than units."""
+    def set_mark(self, aid, instrument, value, day, book=None, acquired=None, marked=None):
+        """Hold (or re-mark) a holding valued by marks rather than units.
+        `marked` dates the mark: later snapshots state it as their mark's
+        day until another mark replaces it."""
         acct = self.accounts[aid]
         h = acct.holdings.get(instrument)
         if h is None:
@@ -269,6 +272,8 @@ class Book:
         h.value = q4(value)
         if book is not None:
             h.book = q4(book)
+        if marked is not None:
+            h.marked = marked
         self.note_instrument(acct.source, instrument)
         return h
 
@@ -319,6 +324,7 @@ class Book:
                 "book_value": text(h.book) if states else None,
                 "accrued_interest": text(accrued) if accrued is not None else None,
                 "acquisition_date": h.acquired.isoformat() if h.acquired and states else None,
+                "valued_at": dates.epoch(h.marked) if h.marked else None,
             })
             for lot in h.lots if states else ():
                 rows["lots"].append({

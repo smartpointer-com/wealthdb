@@ -107,7 +107,7 @@ class TestLedger(Built):
         moves = collections.defaultdict(lambda: collections.defaultdict(Decimal))
         for _, t in self.all("transactions"):
             in_kind = t["kind"] in ("transfer_in", "transfer_out") and t["instrument_id"]
-            if t["kind"] == "corporate_action" or in_kind:
+            if t["kind"] == "corporate_action" or in_kind or "paid_from_units" in t["payload"]:
                 continue
             moves[(t["account_id"], t["currency"])][dates.day_of(t["occurred_at"])] += Decimal(t["net_amount"])
         snaps = collections.defaultdict(list)
@@ -287,6 +287,49 @@ class TestPrivateMarkets(Built):
             self.assertEqual(Decimal(rows[day]["book_value"]), called, day)
             checked += 1
         self.assertGreaterEqual(checked, len(f["calls"]) + len(f["marks"]) - 2)
+
+
+class TestDatedMarks(Built):
+    """The fund and the home state how old their marks are; every other
+    position is marked on its snapshot's day."""
+
+    def of(self, instrument):
+        return [p for _, p in self.all("positions") if p["instrument_id"] == instrument]
+
+    def test_only_the_fund_and_the_home_carry_a_mark_day(self):
+        dated = {p["instrument_id"] for _, p in self.all("positions") if p["valued_at"] is not None}
+        fund = self.inputs.spec["private"]["fund"]["instrument"]
+        self.assertEqual(dated, {fund, self.inputs.spec["homestead"]["instrument"]})
+
+    def test_the_home_is_marked_on_its_appraisals(self):
+        days = {dates.day_of(p["valued_at"]) for p in self.of(self.inputs.spec["homestead"]["instrument"])}
+        appraisals = {dates.parse(a["date"]) for a in self.inputs.spec["homestead"]["appraisals"]}
+        self.assertTrue(days)
+        self.assertLessEqual(days, appraisals)
+
+    def test_a_mark_is_never_newer_than_its_snapshot(self):
+        for _, p in self.all("positions"):
+            if p["valued_at"] is not None:
+                self.assertLessEqual(p["valued_at"], p["snapshot_at"], p)
+
+    def test_the_fund_keeps_its_quarterly_mark_between_quarters(self):
+        f = self.inputs.spec["private"]["fund"]
+        marks = {dates.parse(m["date"]) for m in f["marks"]}
+        first_call = dates.parse(f["calls"][0]["date"])
+        days = {dates.day_of(p["valued_at"]) for p in self.of(f["instrument"])}
+        self.assertEqual(days - marks, {first_call})
+
+
+class TestPlanFee(Built):
+    def test_a_year_holds_one_fee_and_it_moves_no_cash(self):
+        f = self.inputs.spec["plan_fee"]
+        lines = [t for _, t in self.all("transactions") if t["description"] == f["descriptor"]]
+        self.assertEqual({t["account_id"] for t in lines}, {f["account"]})
+        by_year = collections.Counter(dates.day_of(t["occurred_at"]).year for t in lines)
+        self.assertEqual(set(by_year.values()), {1})
+        for t in lines:
+            self.assertEqual(t["kind"], "fee")
+            self.assertEqual(Decimal(t["net_amount"]), -Decimal(f["amount"]))
 
 
 class TestLots(Built):

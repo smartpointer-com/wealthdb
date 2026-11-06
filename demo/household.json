@@ -70,6 +70,7 @@
   ],
   "hsa_reimbursements": {"account": "tb-hsa-01", "to": "bc-chk-01", "instrument": "tdf2050", "months": [5, 11], "day": 20,
                          "amounts": ["612.40", "845.10", "433.75", "710.30", "566.20", "904.85", "498.60"]},
+  "plan_fee": {"account": "tb-401k-01", "month": 9, "day": 15, "amount": "180.00", "descriptor": "ANNUAL RECORDKEEPING FEE"},
   "savings_interest": {"account": "bc-sav-01", "limit": "50000.00", "day_count": "act/365",
                        "rates_by_year": {"2023": ["4.30", "3.30"], "2024": ["4.10", "3.10"], "2025": ["3.80", "2.90"], "2026": ["3.50", "2.60"]}},
   "term_deposit": {"account": "bc-td-01", "start": "2023-04-17", "months": 12, "rate": "4.85", "tenor": "1Y", "margin": "0.40",

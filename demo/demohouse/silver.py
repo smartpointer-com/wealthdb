@@ -24,7 +24,7 @@ import sqlite3
 from . import dates, rates, reference
 from .spec import SCHEMA_PATH
 
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 
 # The source that carries the reference records.
 REFERENCE_SOURCE = "refdata"
@@ -37,7 +37,7 @@ _TABLES = {
                     "symbol", "name", "currency", "payload"),
     "positions": ("snapshot_at", "account_id", "position_key", "instrument_id", "asset_class",
                   "vehicle", "currency", "quantity", "market_value", "book_value",
-                  "accrued_interest", "acquisition_date", "payload"),
+                  "accrued_interest", "acquisition_date", "payload", "valued_at"),
     "position_lots": ("snapshot_at", "account_id", "position_key", "lot_key", "quantity", "book_value",
                       "acquisition_date", "term", "payload"),
     "cash_balances": ("snapshot_at", "account_id", "currency", "balance_kind", "amount", "payload"),
