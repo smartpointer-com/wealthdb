@@ -146,7 +146,7 @@ func TestRunReturnsCashZeroingIsAClosure(t *testing.T) {
 		[]snap{{t0, 1000}, {t1, 1000}}, nil)
 	seedCashAcct(t, db, ctx, "src-closed", "CASH", []snap{{t0, 500}, {t1, 0}})
 
-	accts, err := loadAccountData(ctx, db, "USD", nil)
+	accts, _, err := loadAccountData(ctx, db, "USD", nil)
 	if err != nil {
 		t.Fatalf("loadAccountData: %v", err)
 	}

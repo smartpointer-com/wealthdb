@@ -85,7 +85,7 @@ func TestMCPMatchesCLI(t *testing.T) {
 		setup func(*testing.T) string
 		cases []goldenCase
 	}{
-		{"spending", setupSpendingGold, append(familyCases("spending", spendingFamily.views, "2026-05-01", "2026-06-30"),
+		{"spending", func(t *testing.T) string { return withFeeLine(t, setupSpendingGold(t)) }, append(familyCases("spending", spendingFamily.views, "2026-05-01", "2026-06-30"),
 			goldenCase{"spending transactions filtered", []string{"spending", "transactions", "2026-05-01", "2026-06-30",
 				"-F", "date >= 2026-05-06", "-F", "category != Restaurant"}, "spending",
 				map[string]any{"view": "transactions", "from": "2026-05-01", "to": "2026-06-30",
@@ -176,6 +176,34 @@ func checkMCPMatchesCLI(t *testing.T, s *mcpServer, cfg string, c goldenCase, pr
 	}
 }
 
+// withFeeLine adds a fee and its partial refund to a fixture's gold, on its
+// first account, so the fee view has rows.
+func withFeeLine(t *testing.T, cfg string) string {
+	t.Helper()
+	db, err := gold.Open(goldPathFromCfg(cfg), gold.ModeReadWrite)
+	if err != nil {
+		t.Fatalf("open gold: %v", err)
+	}
+	defer db.Close()
+	at := time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC).Unix()
+	if _, err := db.Exec(`
+		INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+		                          account_external_id, kind, currency, net_amount, description)
+		SELECT silver_source_id, id, ?, account_external_id, kind, 'USD', CAST(net AS DECIMAL(28,4)), 'ANNUAL FEE'
+		  FROM (SELECT silver_source_id, account_external_id FROM accounts ORDER BY 1, 2 LIMIT 1)
+		 CROSS JOIN (VALUES ('fee-1', 'fee', '-95'), ('fee-2', 'refund', '20')) v(id, kind, net)`, at); err != nil {
+		t.Fatalf("seed fee: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id, merchant_signature,
+		                                  signature_version, spend_detailed, provenance, assigned_at)
+		SELECT silver_source_id, transaction_external_id, 'sig-fee', 1, 'BANK_FEES_OTHER_BANK_FEES', 'manual', 100
+		  FROM transactions WHERE transaction_external_id IN ('fee-1', 'fee-2')`); err != nil {
+		t.Fatalf("seed fee enrichment: %v", err)
+	}
+	return cfg
+}
+
 // withResolutions adds two ticker resolutions to a fixture's gold, one
 // by identifier and one by name, so the resolutions dump has rows.
 func withResolutions(t *testing.T, cfg string) string {
@@ -257,11 +285,22 @@ func returnsCases() []goldenCase {
 				map[string]any{"view": v}})
 			continue
 		}
+		if v == "bridge" {
+			// The bridge computes no return: no --method.
+			out = append(out, goldenCase{"returns bridge", []string{"returns", "bridge", "--period", "total"}, "returns",
+				map[string]any{"view": v}},
+				goldenCase{"returns bridge quarterly in CHF", []string{"returns", "bridge", "--period", "quarterly", "-x", "CHF"},
+					"returns", map[string]any{"view": v, "period": "quarterly", "currency": "CHF"}})
+			continue
+		}
 		out = append(out, goldenCase{"returns " + v,
 			[]string{"returns", v, "--method", "both", "--period", "total"}, "returns",
 			map[string]any{"view": v}})
 	}
 	return append(out,
+		goldenCase{"status marks", []string{"status", "--marks"}, "status", map[string]any{"marks": true}},
+		goldenCase{"status marks in CHF", []string{"status", "--marks", "2024", "2024", "-x", "CHF"}, "status",
+			map[string]any{"marks": true, "from": "2024", "to": "2024", "currency": "CHF"}},
 		goldenCase{"returns accounts quarterly twr in CHF",
 			[]string{"returns", "accounts", "--method", "twr", "--period", "quarterly", "-x", "CHF"}, "returns",
 			map[string]any{"view": "accounts", "method": "twr", "period": "quarterly", "currency": "CHF"}},

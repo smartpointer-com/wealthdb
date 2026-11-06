@@ -171,10 +171,11 @@ func (s *mcpServer) tools() []toolSpec {
 			description: "How investments performed over a window (default: since the first snapshot), as twr and mwr %, after fees and taxes. " +
 				"view=global: the whole portfolio. sources, portfolios: per entity, best-effort. accounts: per account, exact. " +
 				"stated: a document's stated periods beside the engine's figures; it takes no method, period, annualize, netting, inception or currency. " +
+				"bridge: why net worth moved, for the whole household: end_net_worth = start_net_worth + net_saved + onboarded + gain; whole months; it takes no method, annualize, netting, inception, benchmark, source or account. " +
 				"One row per entity for the whole window unless period adds buckets. quality names the reason for every n/a. " +
 				`Example: {view: "accounts", from: "2025", to: "2025"}.`,
 			params: s.rowParams(true,
-				stringParam("view", "Grain (default global); stated is a side view of the documents' periods.", returnsFamily.views...),
+				stringParam("view", "Grain (default global); stated and bridge are side views.", returnsFamily.views...),
 				stringParam("method", "twr, mwr or both (default both).", returnsMethods...),
 				stringParam("period", "Bucket size (default total: one row per entity for the whole window).", returnsPeriods...),
 				stringParam("annualize", "auto (default; only spans of a year or more), always, never.", returnsAnnualize...),
@@ -262,6 +263,7 @@ func (s *mcpServer) tools() []toolSpec {
 			name: "spending", title: "Spending",
 			description: "What was spent over a window (default: the last twelve months). " +
 				"view=summary: per period. categories: per period and category, with its share. transactions: the lines with merchant and category. " +
+				"fees: what each portfolio, or account outside one, paid in fees, net of refunds, beside its mean value, annualized fee rate and return; a trust's or a plan's fees count. " +
 				"spend and refunds are positive; net_spend = spend - refunds. Card payments, transfers and mortgage payments are never spending: they are in cashflow. " +
 				`Example: {view: "categories", from: "2025", to: "2025"}.`,
 			params: s.rowParams(true,
@@ -326,10 +328,15 @@ func (s *mcpServer) tools() []toolSpec {
 		{
 			name: "status", title: "Status",
 			description: "Is the data current, and what does each source hold: per source its kind, row counts, latest snapshot, latest transaction and whether newer data is waiting to be loaded. " +
-				"source narrows to one source and adds detail. Example: {}.",
+				"source narrows to one source and adds detail. " +
+				"marks: how far a monthly return can be trusted instead: per month end, marked_pct, the share of value marked within five days, weighted by USD value in every currency. Example: {}.",
 			params: append([]param{
 				stringParam("source", "One source id, for its detail and recent loads."),
 				{name: "verbose", kind: paramBoolean, doc: "Add the counts of rows no category, type or asset class could be found for."},
+				{name: "marks", kind: paramBoolean, doc: "Month ends instead of sources. Takes from, to and currency; no source or verbose."},
+				stringParam("from", "marks only: window start. Default: the first month end."),
+				stringParam("to", "marks only: window end. Default today."),
+				stringParam("currency", "marks only: the output currency of value_marked and value_total."),
 			}, s.shapeParams()...),
 			family: statusFamily,
 		},
@@ -500,17 +507,20 @@ func missingBasisArg(a *toolArgs) (lots.MissingBasis, error) {
 
 var returnsFamily = &family{
 	views: returnsViews,
-	side:  map[string]bool{"stated": true},
+	side:  map[string]bool{"stated": true, "bridge": true},
 	// global's silver_source is the whole portfolio's, not one source;
 	// on accounts the entity is the account.
 	excludes: map[string][]string{"global": {"source"}},
 	keyAlias: map[string]map[string]string{"accounts": {"account": "entity"}},
 	// On returns, "value" means the return itself; on the stated view,
-	// which carries no return, the engine's ending value.
+	// which carries no return, the engine's ending value; on the bridge,
+	// the net worth it ends on.
 	principal: func(req request) string {
 		switch {
 		case req.view == "stated":
 			return "end_value"
+		case req.view == "bridge":
+			return "end_net_worth"
 		case req.method == "mwr":
 			return "mwr"
 		}
@@ -529,6 +539,15 @@ var returnsFamily = &family{
 			}
 			return nil
 		}
+		if req.view == "bridge" {
+			for _, name := range bridgeRefusedFlags {
+				if a.has(name) {
+					return fmt.Errorf("returns: bridge takes no %s", name)
+				}
+			}
+			req.period = orDefault(a.str("period"), "total")
+			return checkBridgeWindow(req.from, req.to, req.asOf)
+		}
 		req.method = orDefault(a.str("method"), "both")
 		req.period = orDefault(a.str("period"), "total")
 		req.annualize = orDefault(a.str("annualize"), "auto")
@@ -538,14 +557,20 @@ var returnsFamily = &family{
 		return checkReturnsBenchmark(req.view, req.benchmark)
 	},
 	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
-		if req.view == "stated" {
+		switch req.view {
+		case "stated":
 			return returnsStatedReport(req, cfg)
+		case "bridge":
+			return returnsBridgeReport(req, cfg)
 		}
 		return returnsReport(req, cfg)
 	},
 	header: func(req request) []string {
-		if req.view == "stated" {
+		switch req.view {
+		case "stated":
 			return nil
+		case "bridge":
+			return []string{"period=" + req.period}
 		}
 		h := []string{"method=" + req.method, "period=" + req.period}
 		if req.annualize != "auto" {
@@ -669,14 +694,26 @@ var transactionsFamily = &family{
 }
 
 var spendingFamily = &family{
-	views:     spendingViews,
-	adds:      func(string) totalRule { return flowTotal },
-	principal: byView(map[string]string{"summary": "net_spend", "categories": "net_spend", "transactions": "value"}),
+	views: spendingViews,
+	side:  map[string]bool{"fees": true},
+	// On fees the entity is the portfolio or the account.
+	keyAlias: map[string]map[string]string{"fees": {"account": "entity"}},
+	// A mean value and a rate do not add up over entities.
+	adds:      byRule(map[string]totalRule{"fees": noTotal}, flowTotal),
+	principal: byView(map[string]string{"summary": "net_spend", "categories": "net_spend", "transactions": "value", "fees": "fees"}),
 	window:    trailingYear,
 	currency:  true,
 	narrow:    "from/to or a filter",
 	prepare: func(a *toolArgs, req *request, notes *[]string) error {
 		req.period = orDefault(a.str("period"), "total")
+		if req.view == "fees" {
+			for _, name := range []string{"level", "category"} {
+				if a.has(name) {
+					return fmt.Errorf("spending: fees takes no %s", name)
+				}
+			}
+			return checkChoice("spending", "period", req.period, feePeriods...)
+		}
 		req.level = a.str("level")
 		if req.level == "" {
 			req.level = "primary"
@@ -690,8 +727,18 @@ var spendingFamily = &family{
 		}
 		return nil
 	},
-	build:  func(_ *config.Config, req request, _ *toolArgs) *report { return spendingReport(req) },
-	header: bucketHeader,
+	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+		if req.view == "fees" {
+			return spendingFeesReport(req, cfg)
+		}
+		return spendingReport(req)
+	},
+	header: func(req request) []string {
+		if req.view == "fees" {
+			return []string{"period=" + req.period}
+		}
+		return bucketHeader(req)
+	},
 }
 
 var incomeFamily = &family{
@@ -852,10 +899,34 @@ var statusFamily = &family{
 	// source asks for one source's detail block; kind is the source's.
 	excludes: map[string][]string{"": {"source", "kind"}},
 	narrow:   "search",
-	prepare:  noOptions,
+	prepare: func(a *toolArgs, _ *request, _ *[]string) error {
+		for _, name := range []string{"from", "to", "currency"} {
+			if a.has(name) {
+				return fmt.Errorf("status: %s belongs to marks", name)
+			}
+		}
+		return nil
+	},
 	build: func(cfg *config.Config, _ request, a *toolArgs) *report {
 		return statusReport(cfg, a.flag("verbose", false))
 	},
+}
+
+// marksFamily is the status tool's `marks` shape: month ends, not sources.
+var marksFamily = &family{
+	principal: func(request) string { return "marked_pct" },
+	window:    sinceInception,
+	currency:  true,
+	narrow:    "from/to",
+	prepare: func(a *toolArgs, _ *request, _ *[]string) error {
+		for _, name := range []string{"source", "verbose"} {
+			if a.has(name) {
+				return fmt.Errorf("status: marks takes no %s", name)
+			}
+		}
+		return nil
+	},
+	build: func(_ *config.Config, req request, _ *toolArgs) *report { return marksReport(req) },
 }
 
 var snapshotsFamily = &family{
@@ -928,8 +999,11 @@ func (s *mcpServer) runFamily(ctx context.Context, spec toolSpec, a *toolArgs) (
 	if err != nil {
 		return toolOutput{}, err
 	}
+	if tool == "status" && a.flag("marks", false) {
+		fam = marksFamily
+	}
 	// status for one source is a different shape: its detail block.
-	if tool == "status" && a.has("source") {
+	if tool == "status" && fam == statusFamily && a.has("source") {
 		var text string
 		err := s.withGold(ctx, cfg, func(db *sql.DB) (err error) {
 			text, err = statusDetail(ctx, db, cfg, a.str("source"), a.flag("verbose", false))
@@ -1290,6 +1364,7 @@ func resolveDates(fam *family, a *toolArgs, now time.Time, horizon int, req *req
 			req.from, req.to, err = parseTrailingYearWindow(args, now)
 		}
 	case sinceInception:
+		req.asOf = anchorToDay(now.UTC(), true).Unix()
 		req.from, req.to, err = parseReturnsWindow(args, now)
 	case pastMonth:
 		req.from, req.to, err = parseDateRange(args, now)

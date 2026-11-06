@@ -12,6 +12,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
@@ -23,8 +24,11 @@ func cmdStatus(ctx context.Context, g globalFlags, subargs []string, _ io.Reader
 	fs := flag.NewFlagSet("wealthdb status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	verbose := fs.Bool("v", false, "verbose: include taxonomy-drift, enrichment-backlog and per-account-kind counts")
+	marks := fs.Bool("marks", false, "the share of value marked within five days of each month end")
+	rf := registerReportFlags(fs, true)
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, `usage: wealthdb status [<silver_source_id>] [-v]
+       wealthdb status --marks [FROM [TO]] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 
 Without <id>: one line per silver source in the config — kind,
 path, gold-side counts, the date its holdings were last observed,
@@ -49,10 +53,31 @@ backlog and the transactions its reports cannot see because their
 kind is 'other', the two row-level ways the cash flow statement can
 be quietly wrong, and — for a source holding more than one account
 kind — how fresh each kind's data is, so a card population that
-stops updating behind a current deposit population is visible.`)
+stops updating behind a current deposit population is visible.
+
+--marks answers how far a monthly return can be trusted. One row per
+month end in gold's history, whatever FROM and TO keep, the whole
+history by default:
+
+  marked_pct    the share of value marked within five days, by USD value
+                in every currency, so the figure has one definition
+  value_marked  that value, in the output currency
+  value_total   the value of the positions on the daily history that day
+  quality       no_positions: a month end with no line, so no marked_pct;
+                unpriced_lines=N: N lines have no rate and leave the sums
+
+A line's age is the month end less the day its mark is from (valued_at,
+else its snapshot). Liabilities, cash and lines of no value are out. -x
+and -p reach the two money columns; marked_pct does not move.`)
 	}
 	if err := parseFlags(fs, subargs, "status"); err != nil {
 		return err
+	}
+	if *marks {
+		return runStatusMarks(ctx, g, fs, rf, *verbose, stdout)
+	}
+	if isSet(fs, "f", "format", "C", "columns", "F", "filter", "x", "currency", "p", "privacy") {
+		return errs.Newf(errs.ExitUsage, "status: -f, -C, -F, -x and -p belong to --marks")
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
@@ -75,6 +100,46 @@ stops updating behind a current deposit population is visible.`)
 	}
 	runStatusOverview(ctx, db, cfg, *verbose, stdout)
 	return nil
+}
+
+// runStatusMarks is `status --marks`. Its positionals are a window, not a
+// source.
+func runStatusMarks(ctx context.Context, g globalFlags, fs *flag.FlagSet, rf *reportFlags, verbose bool, stdout io.Writer) error {
+	if verbose {
+		return errs.Newf(errs.ExitUsage, "status: --marks takes no -v")
+	}
+	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), g.clock())
+	if err != nil {
+		fs.Usage()
+		return errs.Newf(errs.ExitUsage, "status: %s", err.Error())
+	}
+	fmtChoice, cfg, outCcy, err := rf.resolve(g, "status")
+	if err != nil {
+		return err
+	}
+	req := request{view: "marks", currency: outCcy, from: fromEpoch, to: toEpoch}
+	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
+	return writeReport(ctx, marksReport(req), rf.output(fmtChoice, "status", req, cfg, g.clock()), open, stdout)
+}
+
+// marksReport is `status --marks`, the runner the CLI and the MCP server
+// share.
+func marksReport(req request) *report {
+	registry := buildMarkColumnRegistry(req.currency)
+	return newReport(registry, columnNames(registry), func(ctx context.Context, db *sql.DB) ([]gold.MarkRow, error) {
+		return gold.MarkAges(ctx, db, req.from, req.to, req.currency)
+	})
+}
+
+func buildMarkColumnRegistry(outCcy string) []columnSpec[gold.MarkRow] {
+	return []columnSpec[gold.MarkRow]{
+		asDate(strCol("month_end", func(r gold.MarkRow) string { return formatDate(r.MonthEnd) })),
+		{Name: "marked_pct", Align: output.AlignRight,
+			Extract: func(r gold.MarkRow) string { return formatPercent(r.MarkedPct) }},
+		outCcyCol("value_marked", outCcy, func(r gold.MarkRow) *string { return r.ValueMarked }),
+		outCcyCol("value_total", outCcy, func(r gold.MarkRow) *string { return r.ValueTotal }),
+		qualityCol(func(r gold.MarkRow) string { return r.Quality }),
+	}
 }
 
 func runStatusOverview(ctx context.Context, db *sql.DB, cfg *config.Config, verbose bool, stdout io.Writer) {

@@ -20,10 +20,11 @@ func init() {
 }
 
 // returnsViews are the views `wealthdb returns <view>` supports: the
-// four reconciling grains, coarsest first, then `stated`, a side view
-// of the documents' stated periods beside the accounts' figures, which
-// is no grain of them. Per-position gains are the gains report's.
-var returnsViews = []string{"global", "sources", "portfolios", "accounts", "stated"}
+// four reconciling grains, coarsest first, then two side views, which
+// are no grain of them: `stated`, the documents' stated periods beside
+// the accounts' figures, and `bridge`, why net worth moved. Per-position
+// gains are the gains report's.
+var returnsViews = []string{"global", "sources", "portfolios", "accounts", "stated", "bridge"}
 
 // The choices of the returns options the CLI and the MCP tool share.
 var (
@@ -39,8 +40,11 @@ func cmdReturns(ctx context.Context, g globalFlags, subargs []string, _ io.Reade
 	if err != nil {
 		return err
 	}
-	if view == "stated" {
+	switch view {
+	case "stated":
 		return runReturnsStated(ctx, g, rest, stdout, stderr)
+	case "bridge":
+		return runReturnsBridge(ctx, g, rest, stdout, stderr)
 	}
 	return runReturnsView(ctx, g, view, rest, stdout, stderr)
 }
@@ -389,6 +393,8 @@ Views (coarsest → finest):
 Also:
   stated       a document's stated periods beside the engine's figures
                ('wealthdb returns stated -h')
+  bridge       why net worth moved: saved, onboarded and gained
+               ('wealthdb returns bridge -h')
 
 Plumbing (cash accounts, deposit-bank sources, config returns_hide ids)
 emits no rows of its own at any view, and neither does a portfolio or

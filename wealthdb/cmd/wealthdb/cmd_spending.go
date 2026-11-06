@@ -17,10 +17,10 @@ func init() {
 	register("spending", cmdSpending)
 }
 
-// spendingViews are the grains `wealthdb spending <view>` supports —
-// the three reports migration 0042 defines over the spending
-// population, coarsest first.
-var spendingViews = []string{"summary", "categories", "transactions"}
+// spendingViews are the views of `wealthdb spending <view>`: the three
+// grains migration 0042 defines over the spending population, coarsest
+// first, then `fees`, what each portfolio paid against what it held.
+var spendingViews = []string{"summary", "categories", "transactions", "fees"}
 
 // reportPeriods maps the CLI's bucket vocabulary onto the date_trunc
 // parts the report macros bucket by. The names are the returns
@@ -45,6 +45,9 @@ func cmdSpending(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 	view, rest, err := routeView("spending", subargs, spendingViews, spendingUsage, stderr)
 	if err != nil {
 		return err
+	}
+	if view == "fees" {
+		return runSpendingFees(ctx, g, rest, stdout, stderr)
 	}
 	return runSpendingView(ctx, g, view, rest, stdout, stderr)
 }
@@ -289,6 +292,10 @@ Views (coarsest → finest):
   categories    one row per bucket and category, with its share of the bucket
   transactions  one row per spending line: merchant, category, and the tier
                 that decided it
+
+Also:
+  fees          what each portfolio cost, against what it held and returned
+                ('wealthdb spending fees -h')
 
 Window (positional, optional; default: the trailing twelve months):
   YYYY / YYYY-MM / YYYY-MM-DD   that calendar period

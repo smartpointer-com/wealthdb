@@ -28,16 +28,16 @@ import (
 var instructionsBody = `wealthdb holds a household's complete financial picture in one local, read-only database: every bank, card, brokerage, pension and crypto account, plus the property, loans and private holdings recorded by hand. A house, a mortgage or a venture fund is an account like any other; a loan or a card balance is a negative value.
 
 Pick the tool by the question:
-- what is held, where, and what it is worth (today or on a date); net worth; one account or one institution -> holdings
-- how investments performed, as a return % -> returns
-- what was gained or lost (P&L), realized or unrealized; a year's realized gains; a holding's cost basis -> gains
+- what is held, where, and what it is worth (today or on a date); net worth; total cash (view=global); one account or one institution -> holdings
+- how investments performed, as a return % -> returns; why net worth moved, what was saved against what was gained -> returns (view=bridge)
+- what was gained or lost (P&L), realized or unrealized; a year's realized gains; the unrealized gain now (to=today); a holding's cost basis -> gains
 - what is really owned once every fund is looked through: allocation by asset class, sector, country, region or currency; debt by credit, maturity or coupon; the largest issuers; how much of one company is held through funds -> exposure
 - what the holdings yield or earn; interest rates, duration, DV01; a bond's credit rating; cash against its benchmark -> yield
 - the individual booked lines (a trade, a deposit, a transfer, the largest transactions) -> transactions; totals of dividends, interest, salary or spending are income and spending
-- what was spent, on what -> spending
+- what was spent, on what -> spending; what each portfolio cost in fees -> spending (view=fees)
 - what was received, from whom; what the holdings will pay and when -> income (view=projection or calendar)
 - where the household's cash came from and went; mortgage and loan payments; money into retirement, education or health plans -> cashflow (view=flows for one class)
-- is the data current -> status; which dates have data -> snapshots
+- is the data current -> status; how far a month's return can be trusted -> status (marks); which dates have data -> snapshots
 - help on a tool, its columns, or a term -> describe
 
 Conventions:
@@ -225,7 +225,7 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 var toolNotes = map[string]string{
 	"holdings": `Totals reconcile: global = sum of sources = sum of portfolios = sum of accounts = positions with with_cash. A loan or a card balance is negative. positions_value, cash_balance and total_value are in each account's own currency; the columns with a currency suffix are converted.
 Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
-	"returns": `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences.
+	"returns": `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences. bridge explains net worth: end_net_worth = start_net_worth + net_saved + onboarded + gain. net_saved = net_flow + debt_repaid, onboarded is value that entered or left tracking, gain is the residual, returns' gain plus the FX move on debt. It reads whole months for the whole household.
 Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
 	"gains": `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state, else what the lot engine rebuilt from the trades; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind, and the check view compares the lot engine with the stated lots.
 Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,
@@ -233,7 +233,7 @@ Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_join
 Example: {view: "sectors", as_of: "2025-12-31", currency: "CHF"}.`,
 	"transactions": `Money leaving an account is negative. kind is the booked kind: buy, sell, dividend, interest, fee, tax, deposit, withdrawal, purchase, refund, card_payment and others.
 Example: {from: "last month", to: "last month", kind: "dividend"}.`,
-	"spending": `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there.
+	"spending": `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there. fees is per portfolio, else per account outside one: fees are the primary BANK_FEES lines net of refunds, trading costs and fund costs are not in them, fee_rate_pct is fees over mean_value annualized and blank where the mean value is not above zero, and twr_pct is the entity's monthly returns chained over the months that end in the window, blank where returns has none. Returns stay net of fees.
 Example: {view: "transactions", from: "2025-03", to: "2025-03", sort: "-value", limit: 10}.`,
 	"income": `income and reversals are positive; net_income = income - reversals. The type rows of a period sum to its summary row. projection, calendar and the entity views put what was received beside what the holdings are expected to pay; their window may lie in the future, and basis says what the expected part rests on.
 Example: {view: "transactions", from: "2025", to: "2025", type: "dividend", sort: "-value"}.`,
@@ -241,7 +241,7 @@ Example: {view: "transactions", from: "2025", to: "2025", type: "dividend", sort
 Example: {view: "curve", currency: "CHF"}.`,
 	"cashflow": `The four sections sum to net_cash_flow. vehicles is every plan together; for one plan read view=flows at level=class. The mortgage is under financing. A node is a net: inflow and outflow beside it are the gross lines under it. view=projection is the plan: investment_income is income projection's expected income on the pool's accounts and vehicles_income its income and principal on every other account, which net leaves out; other_income, operating_out and vehicles are monthly averages of the trailing months, and quality says what each part rests on; net = investment_income + other_income - operating_out - debt_service + vehicles, plus principal_returned unless maturing=roll.
 Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.`,
-	"status":          `new_data=yes means a load would bring newer data in. state "not loaded" means gold holds nothing from the source yet.`,
+	"status":          `new_data=yes means a load would bring newer data in. state "not loaded" means gold holds nothing from the source yet. marks reads month ends: a low marked_pct says a month's return rests on old marks. A month end with no position has no marked_pct; currency moves value_marked and value_total, never marked_pct.`,
 	"snapshots":       `One row per day with data; snapshots counts the snapshots taken that day.`,
 	"resolutions":     `model_name manual-override marks a ticker set in the config; any other name is the model that answered.`,
 	"categorizations": `A verdict applies to every transaction whose signature matches, at any account. The signature and name columns are text taken off statements.`,
@@ -282,7 +282,18 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - benchmark_no_overlap: the window and the benchmark's months share no day.
 - shadow_nonpositive: the flows took out more than the same money in the benchmark held.
 - no_engine_row: (view=stated) the engine has no monthly row for a month of the stated period; the account's own tags follow.
+- debt_first_seen: (view=bridge) a debt appeared with no matching cash, so net_saved falls once by what was already owed.
+- debt_ended: (view=bridge) a debt left the history while still owed, so debt_repaid rises with no payment.
+- debt_unpriced: (view=bridge) a debt has no rate to the currency; its fall is left to gain.
+- bridge_gap: (view=bridge) net worth less returns' value is not the mortgages and cards; gain holds the difference.
+- tracking_netted: (view=bridge) net_flow and onboarded had opposite signs, so the smaller size reads as a move into or out of tracking, in neither column.
 Other tags name their reason the same way.
+
+On spending view=fees, quality says what a row misses, beside the return's tags:
+- no_mean_value: the mean value is not above zero, so there is no fee rate.
+- part_window_value: the entity held a value on only part of the window.
+- no_return: returns has no row for the entity, as for a plumbing cash account.
+- unpriced_fees=N: N fee lines have no rate to the currency.
 
 The gains quality column names each way a figure can be incomplete:
 - sells_without_documents=N: N sales have no tax document or statement lot, and the lot engine rebuilt none, so realized misses them.

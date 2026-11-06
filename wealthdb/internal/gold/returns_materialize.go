@@ -67,7 +67,8 @@ type MaterializeParams struct {
 // report macros, and each currency's dataset drives every (grain, period) and
 // windowed computation without re-querying — the loaded data depends only on
 // the currency, never the grain, period or window. The benchmark tables
-// (computeBenchmarks) read the same datasets. Rows are written in one
+// (computeBenchmarks) and the bridge (computeMaterialBridge) read the same
+// datasets. Rows are written in one
 // transaction (DELETE all + batched INSERT), so a failed run leaves the
 // previous materialization intact. Returns the inserted row count.
 func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
@@ -138,6 +139,10 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 	if err != nil {
 		return 0, err
 	}
+	bridge, err := computeMaterialBridge(ctx, db, datasets, p)
+	if err != nil {
+		return 0, err
+	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -186,6 +191,10 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 	}
 	k, err := bench.write(ctx, tx, p.ComputedAt)
 	if err != nil {
+		_ = tx.Rollback()
+		return 0, fmt.Errorf("MaterializeReturns: %w", err)
+	}
+	if err := bridge.write(ctx, tx, p.ComputedAt); err != nil {
 		_ = tx.Rollback()
 		return 0, fmt.Errorf("MaterializeReturns: %w", err)
 	}
@@ -278,8 +287,10 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 	}
 
 	byCcy := make(map[string]map[string]*accountData, len(materializeCurrencies))
+	holdings := make(map[string]*holdingsSpine, len(materializeCurrencies))
 	for _, ccy := range materializeCurrencies {
 		byCcy[ccy] = map[string]*accountData{}
+		holdings[ccy] = newHoldingsSpine()
 	}
 
 	// The daily value spine in every currency at once. The row set is
@@ -311,7 +322,7 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 		}
 		day := EpochDay(asOf)
 		for i, ccy := range materializeCurrencies {
-			appendSeries(byCcy[ccy], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, tots[i])
+			appendSeries(byCcy[ccy], holdings[ccy], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, tots[i])
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -358,7 +369,7 @@ func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov m
 
 	out := make(map[string]*returnsDataset, len(materializeCurrencies))
 	for _, ccy := range materializeCurrencies {
-		ds := &returnsDataset{accts: byCcy[ccy], fx: fx}
+		ds := &returnsDataset{accts: byCcy[ccy], holdings: holdings[ccy], fx: fx}
 		ds.finalize()
 		out[ccy] = ds
 	}

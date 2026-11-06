@@ -258,8 +258,21 @@ const (
 // MaterializeReturns, which loads every reporting currency in a single pass.
 type returnsDataset struct {
 	accts     map[string]*accountData
+	holdings  *holdingsSpine
 	fx        fxBounds
 	globalMax int64 // spine's latest emitted day across all accounts (≈ today)
+}
+
+// holdingsSpine is what the value spine holds beyond the returns engine's
+// accounts: the holdings side of the same rows, which the net worth bridge
+// and the fee view read. The returns computation never reads it.
+type holdingsSpine struct {
+	cards    map[string]*accountData // each card's value series, keyed as accts
+	netWorth map[int64]float64       // the sum of every account's value by day
+}
+
+func newHoldingsSpine() *holdingsSpine {
+	return &holdingsSpine{cards: map[string]*accountData{}, netWorth: map[int64]float64{}}
 }
 
 // loadReturnsDataset loads one currency's dataset: the per-account value spine
@@ -268,14 +281,14 @@ type returnsDataset struct {
 // currency-independent, so a caller materializing several currencies loads it
 // once and shares it.
 func loadReturnsDataset(ctx context.Context, db *sql.DB, outCcy string, fx fxBounds, ov map[string]ReturnsPolicyOverride, tm *TransferMatching) (*returnsDataset, error) {
-	accts, err := loadAccountData(ctx, db, outCcy, ov)
+	accts, holdings, err := loadAccountData(ctx, db, outCcy, ov)
 	if err != nil {
 		return nil, err
 	}
 	if err := attachFlows(ctx, db, outCcy, accts, fx, tm); err != nil {
 		return nil, err
 	}
-	ds := &returnsDataset{accts: accts, fx: fx}
+	ds := &returnsDataset{accts: accts, holdings: holdings, fx: fx}
 	ds.finalize()
 	return ds, nil
 }
@@ -620,16 +633,16 @@ func (a *accountData) lastNonzeroDay() int64 {
 	return a.firstDay()
 }
 
-func loadAccountData(ctx context.Context, db *sql.DB, outCcy string, ov map[string]ReturnsPolicyOverride) (map[string]*accountData, error) {
-	byKey := map[string]*accountData{}
+func loadAccountData(ctx context.Context, db *sql.DB, outCcy string, ov map[string]ReturnsPolicyOverride) (map[string]*accountData, *holdingsSpine, error) {
+	byKey, holdings := map[string]*accountData{}, newHoldingsSpine()
 
 	kinds, err := SourceKinds(ctx, db)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	pfNames, err := loadPortfolioNames(ctx, db)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	rows, err := db.QueryContext(ctx,
@@ -638,7 +651,7 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string, ov map[stri
 		   FROM report_accounts_history(?)
 		  ORDER BY silver_source_id, account_external_id, as_of_day`, outCcy)
 	if err != nil {
-		return nil, fmt.Errorf("RunReturns history: %w", err)
+		return nil, nil, fmt.Errorf("RunReturns history: %w", err)
 	}
 	defer rows.Close()
 
@@ -650,18 +663,18 @@ func loadAccountData(ctx context.Context, db *sql.DB, outCcy string, ov map[stri
 			tot             sql.NullString
 		)
 		if err := rows.Scan(&asOf, &src, &acct, &kind, &label, &base, &pf, &tot); err != nil {
-			return nil, fmt.Errorf("RunReturns scan: %w", err)
+			return nil, nil, fmt.Errorf("RunReturns scan: %w", err)
 		}
-		appendSeries(byKey, kinds, pfNames, ov, src, acct, kind, label, base, pf, EpochDay(asOf), tot)
+		appendSeries(byKey, holdings, kinds, pfNames, ov, src, acct, kind, label, base, pf, EpochDay(asOf), tot)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if err := loadSnapshotDays(ctx, db, byKey); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return byKey, nil
+	return byKey, holdings, nil
 }
 
 // newAccountData builds the currency-independent metadata record for an
@@ -701,21 +714,24 @@ func returnsInvisibleKind(kind string) bool {
 // each series is ascending for valueAt's binary search.
 //
 // This is also the single seam where credit cards leave the returns engine (see
-// returnsInvisibleKind): the account is never created, so nothing downstream can
-// see it.
-func appendSeries(byKey map[string]*accountData, kinds, pfNames map[string]string, ov map[string]ReturnsPolicyOverride, src, acct, kind string, label, base, pf sql.NullString, day int64, tot sql.NullString) {
-	if returnsInvisibleKind(kind) {
-		return
-	}
+// returnsInvisibleKind): the account goes to holdings instead of byKey, so nothing
+// downstream of byKey can see it. holdings takes every priced row, for the
+// figures that count what returns leaves out.
+func appendSeries(byKey map[string]*accountData, holdings *holdingsSpine, kinds, pfNames map[string]string, ov map[string]ReturnsPolicyOverride, src, acct, kind string, label, base, pf sql.NullString, day int64, tot sql.NullString) {
 	v, ok := parseFloat(tot)
 	if !ok {
 		return
 	}
+	holdings.netWorth[day] += v
+	into := byKey
+	if returnsInvisibleKind(kind) {
+		into = holdings.cards
+	}
 	k := acctKey(src, acct)
-	a := byKey[k]
+	a := into[k]
 	if a == nil {
 		a = newAccountData(kinds, pfNames, ov, src, acct, kind, label, base, pf)
-		byKey[k] = a
+		into[k] = a
 	}
 	a.series = append(a.series, dayVal{day: day, val: v})
 }

@@ -19,7 +19,7 @@ func OnboardingFlow(debutDay int64, firstValue float64) (Flow, bool) {
 	if firstValue <= syntheticTol {
 		return Flow{}, false
 	}
-	return Flow{Day: debutDay, Amount: firstValue}, true
+	return Flow{Day: debutDay, Amount: firstValue, Synthetic: true}, true
 }
 
 // FundedOnboardingFlow is OnboardingFlow for a debut whose pre-debut legs netting
@@ -36,7 +36,7 @@ func FundedOnboardingFlow(debutDay int64, firstValue, funded float64) (Flow, boo
 	if math.Abs(amount) <= syntheticTol {
 		return Flow{}, false
 	}
-	return Flow{Day: debutDay, Amount: amount}, true
+	return Flow{Day: debutDay, Amount: amount, Synthetic: true}, true
 }
 
 // ClosureFlow returns the synthetic closure outflow for an explicitly-closed
@@ -58,7 +58,7 @@ func ClosureFlow(closureDay int64, lastValue float64) (Flow, bool) {
 	if lastValue <= syntheticTol {
 		return Flow{}, false // nothing left to book at the boundary
 	}
-	return Flow{Day: closureDay, Amount: -lastValue}, true
+	return Flow{Day: closureDay, Amount: -lastValue, Synthetic: true}, true
 }
 
 // ZeroedValue is the atomic counterpart to ClosureFlow: a constituent's

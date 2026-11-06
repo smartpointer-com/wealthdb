@@ -236,7 +236,7 @@ func TestGroupAccountsMemberOrderDeterministic(t *testing.T) {
 			[]snap{{t0, 1000}, {t1, 1100}}, nil)
 	}
 
-	accts, err := loadAccountData(ctx, db, "USD", nil)
+	accts, _, err := loadAccountData(ctx, db, "USD", nil)
 	if err != nil {
 		t.Fatalf("loadAccountData: %v", err)
 	}

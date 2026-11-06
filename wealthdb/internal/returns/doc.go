@@ -41,4 +41,7 @@ type Flow struct {
 	// valued, where the value first shows the flow. Zero where that is not
 	// known: a synthetic flow, or a flow past the account's last valuation.
 	ValuedOn int64
+	// Synthetic marks an onboarding or closure flow: value that entered or
+	// left tracking, which no transaction moved.
+	Synthetic bool
 }

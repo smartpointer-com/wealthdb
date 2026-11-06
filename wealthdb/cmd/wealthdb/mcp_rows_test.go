@@ -413,7 +413,8 @@ func TestDerivedCarries(t *testing.T) {
 		"income": {"types": {"type"}, "transactions": {"source", "account", "type", "payer"},
 			"calendar": {"source", "account", "symbol", "type", "kind"}, "sources": {"source"}, "portfolios": {"source"},
 			"accounts": {"source", "account", "tax_wrapper"}, "positions": {"source", "account", "symbol", "tax_wrapper"}},
-		"spending": {"categories": {"category"}, "transactions": {"source", "account", "category", "kind", "merchant"}},
+		"spending": {"categories": {"category"}, "transactions": {"source", "account", "category", "kind", "merchant"},
+			"fees": {"source", "account"}},
 	}
 	for _, rf := range reportFamilies {
 		w, ok := want[rf.name]
