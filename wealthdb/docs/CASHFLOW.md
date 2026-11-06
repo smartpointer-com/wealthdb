@@ -1054,7 +1054,8 @@ and that bridge is the cheapest place to see it.
 ## 9. The dashboard
 
 **Cash Flow**, in the Spending and Income dashboards' shape, with a
-privacy twin linked from the top row. It has nine pickers:
+privacy twin linked from the top row. It also shows why net worth
+moved, beside the statement. It has nine pickers:
 
 - time range;
 - source;
@@ -1068,6 +1069,16 @@ privacy twin linked from the top row. It has nine pickers:
 The projection section takes the currency and the projection's four.
 It declines the other four: it reads the months ahead and the
 household's whole statement.
+
+The four bridge tiles take the currency and the time range. They decline
+Source, Section and Investing: returns do not add across grains, so a
+bridge exists for the whole household only. They read
+`wealthdb returns bridge` month by month, so a picked window holds the
+whole months that end inside it
+([RETURNS-NOTES.md](RETURNS-NOTES.md), "The net worth bridge"). The
+bridge starts from `returns`, not from this statement: the statement's
+boundary leaves out money that reaches a plan without passing through
+household cash.
 
 **The Section picker is narrower than the statement's other four.**
 It reaches the by-month charts and `Largest flows`. The headline
@@ -1097,6 +1108,8 @@ household's own accounts is invisible only while both are in the pool.
 | headlines | Operating in · Operating out · Net cash flow · Savings rate · Yield share |
 | the diagram | Cash flow: the Sankey, full width, the window's four stages |
 | the shape of the window | Cash flow statement by month: signed stacked bars per section |
+| why net worth moved | Net worth at start · Net worth at end · Why net worth moved: a waterfall of the window's changes |
+| saved and gained | Saved and gained by month: signed stacked bars, with the change in net worth as a line |
 | the two sides | Inflows by class by month · Outflows by class by month |
 | the swing sections | Investing by month · Financing and vehicles by month |
 | the lines | Largest flows: the fifty largest lines of the window |
@@ -1113,7 +1126,9 @@ is nothing left to hide, because no node is ever a merchant, a payer,
 an account or an instrument. One card is the exception and drops
 columns, as every other twin card does. `Largest flows` names the
 account a line moved through and the payer or merchant behind it, so
-the twin ranks the lines and projects neither.
+the twin ranks the lines and projects neither. The bridge tiles' twins
+show shares of the starting net worth: the window's, or by month that
+month's.
 
 ---
 

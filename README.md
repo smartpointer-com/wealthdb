@@ -95,7 +95,9 @@ it inside retirement plans" rather than a list of tickers.
 **Investment performance.** Time-weighted and money-weighted returns
 for each account, each portfolio, each provider and the whole, over any
 period. Money moved between the household's own accounts is not counted
-as gain or loss, and every figure carries its own caveats. A benchmark,
+as gain or loss, and every figure carries its own caveats. A bridge
+says why net worth moved: what was saved, what was gained, and what
+entered or left tracking. A benchmark,
 a plain mix of public funds, can stand beside the returns, the
 allocation, the exposure and the yield. Realized and
 unrealized gains come from the cost basis and tax lots the providers
@@ -133,10 +135,12 @@ A few of the questions it answers, and the commands behind them:
 wealthdb holdings global -d 2024-12-31 -x CHF        # net worth at the end of 2024, in CHF
 wealthdb returns portfolios 2025                     # how each portfolio did in 2025
 wealthdb returns global --benchmark "Global 60/40"   # the whole against a plain 60/40 mix
+wealthdb returns bridge 2025 --period annual         # why net worth moved: saved, onboarded, gained
 wealthdb gains realized 2025                         # every lot sold in 2025, with its gain
 wealthdb exposure countries                          # where the money is, every fund looked through
 wealthdb yield global -x CHF                         # what the holdings yield, by currency
 wealthdb spending categories 2025 --period annual    # last year's spending by category
+wealthdb spending fees 2025                          # what each portfolio cost in fees
 wealthdb income summary 2025-01 2025-03 -C +withheld # Q1 income, with the tax withheld beside it
 wealthdb cashflow sankey 2025                        # the year's cash flow as a diagram
 wealthdb cashflow projection --period quarterly      # the next twelve months' cash flow projected, by quarter

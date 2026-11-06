@@ -140,8 +140,16 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
   their maturity; `quality` says which part rests on what)
 - **Largest transactions** —
   `wealthdb -r transactions 2025 -x USD -f json | jq 'map(select(.value_USD)) | sort_by(.value_USD|tonumber|fabs) | reverse | .[0:10]'`
+- **Why net worth moved** — `wealthdb -r returns bridge 2025 --period total`
+  (`end_net_worth = start_net_worth + net_saved + onboarded + gain`; whole
+  months; `-C +net_flow,+debt_repaid` splits `net_saved`)
+- **What each portfolio cost** — `wealthdb -r spending fees 2025` (fees net
+  of refunds, `fee_rate_pct` annualized on the mean value, `twr_pct`
+  beside it; a vehicle's fees count, trading and fund costs do not)
 - **Is the data current / which dates exist** — `wealthdb -r status` /
   `wealthdb -r snapshots <source>`
+- **How far a monthly return can be trusted** — `wealthdb -r status --marks 2025`
+  (`marked_pct`: the share of value marked within five days of each month end)
 
 ## Pick the command
 
@@ -151,9 +159,9 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 | What is **really owned** once funds are looked through; where holdings legally sit | `exposure` | `classes`, `sectors`, `sizes`, `countries`, `currencies`, `credit`, `maturities`, `coupons`, `cycles`, `situs`, `securities`, `issuers`, `funds`, `coverage` |
 | What the holdings **yield**; rates, duration, rate risk; cash against its benchmark | `yield` | `global`, `sources`, `portfolios`, `accounts`, `positions`, `securities`, `funds`, `cash`, `curve`, `coverage` |
 | Trades, dividends, fees, cash in and out | `transactions` | — |
-| How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts`; `stated` (a statement's periods beside the engine's; no `-x`, no return flags) |
+| How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts`; `stated` (a statement's periods beside the engine's; no `-x`, no return flags); `bridge` (why net worth moved; no return flags) |
 | **Gained or lost**; cost basis; tax lots | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
-| **Spent**, on what | `spending` | `summary`, `categories`, `transactions` |
+| **Spent**, on what; **fees** per portfolio | `spending` | `summary`, `categories`, `transactions`, `fees` |
 | **Received**, from whom; what the holdings are **expected to pay** | `income` | `summary`, `types`, `transactions`; forward: `projection`, `calendar`, `sources`, `portfolios`, `accounts`, `positions` |
 | Where the cash came from and went; mortgage and plan payments; the months ahead | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage`, `projection` |
 

@@ -45,7 +45,8 @@ them through TWR/MWR would report shopping as performance.
 
 **The seam is `appendSeries`** (`internal/gold/returns.go`), the one place
 both the single- and multi-currency loaders create an account record. A
-card returns early there, so it never enters the accounts map, and every
+card goes to the holdings side of the dataset there, which the returns
+computation never reads, so it never enters the accounts map, and every
 downstream stage follows from that absence:
 
 - `attachOneFlow`'s nil-account gate drops every card flow — purchases,
@@ -89,6 +90,109 @@ it unchanged. It is computed from the row's three figures and inherits
 their quality flags. It is not the `wealthdb gains` figure, which is the
 price gain on positions measured against a cost basis;
 [GAINS.md](GAINS.md) §7 relates the two.
+
+## The net worth bridge
+
+`wealthdb returns bridge` says why net worth moved. `returns` leaves
+mortgages and cards out of its values, so its start and end are not net
+worth, and a mortgage repayment reads as money leaving. Its flows are
+still the right base: a bridge built from the cash flow statement's
+classes would miss money that reaches a plan without passing through
+household cash.
+
+Each bucket holds, to the cent:
+
+    end_net_worth = start_net_worth + net_saved + onboarded + gain
+
+| column | reads |
+|---|---|
+| `start_net_worth`, `end_net_worth` | what `holdings global` reads at the bucket's edges |
+| `onboarded` | the synthetic onboarding and closure flows of the global run, less any tracking move: value that entered or left tracking, neither saved nor gained |
+| `net_flow` | the global run's real flows, less any tracking move: its net flow less `onboarded` |
+| `debt_repaid` | the fall in what is owed on mortgages and cards. It is negative when debt rose |
+| `net_saved` | `net_flow + debt_repaid` |
+| `gain` | what the identity leaves: `returns`' gain plus the FX move on debt |
+| `bridge_gap` | net worth less `returns`' value less the mortgages and cards, at the worst edge of the bucket |
+
+**One run, then months.** The bridge makes one since-inception run of the
+global grain, with the default netting and inception, and cuts its flows
+into months. A window selects months and a coarser bucket sums them, so a
+month reads the same in every window. A flow pair that straddles a window
+stays netted, where a run over that window alone would keep one leg.
+
+**Cents first.** Every figure is rounded once, on a month, and a bucket
+sums whole cents. `gain` is the residual of those cents, so the identity
+holds exactly, a month's start is the month before's end, and months add
+up to quarters and years. Beside `returns`' own gain it can differ by a
+few cents of rounding.
+
+**Debt in its own currency.** Each mortgage or card line is measured in
+the currency it is held in (`report_debt_history`, migration 0177). Its
+fall over a month is converted at that month's end rate
+(`report_debt_fx`). An FX move on a debt held in another currency must
+not read as saving, so it stays in `gain`.
+
+How the common cases read:
+
+- A card purchase raises what is owed, so `debt_repaid` falls: it reads as
+  money spent. The bill's payment is a flow out and `debt_repaid` rises:
+  the two cancel.
+- A mortgage instalment leaves as a flow. Its principal comes back through
+  `debt_repaid`. Its interest stays spent.
+- A new loan: its cash arrives as a flow and `debt_repaid` is negative. The
+  two cancel.
+- An account that joins, or that zeroes on the spine's last day, moves
+  `onboarded`. An account that drops out with value books no flow in
+  `returns`, so the fall stays in `gain` under `dropped_while_nonzero`.
+
+**A move into or out of tracking is one movement.** Money that leaves a
+tracked account for an account tracking first sees that month finds no
+partner: the netter pairs only legs it can see, and a bank can book such a
+move as a plain withdrawal. Read apart, it would be a fall in `net_saved`
+beside a rise in `onboarded`. The mirror holds for an account that closes
+into a tracked one.
+
+So the month's synthetic flows net first, a closure against a debut, since
+that is value going from one account to another. Then, where the month's
+net real flow and net synthetic flow have opposite signs, the smaller size
+leaves both columns. Their sum stays the run's net flow, so `gain` does not
+move. The month is tagged `tracking_netted`.
+
+The measure is the month's net real flow, not its unmatched transfer legs,
+because a withdrawal is no transfer leg. Its cost: any net outflow beside a
+debut reads this way, so a month's spending can absorb a small debut. A
+debut with no net outflow beside it stays in `onboarded`, as when tracking
+first starts. A flow in another month than the debut stays in `net_flow`.
+
+The bridge's own quality tags join `returns`' tags for the bucket:
+
+- `debt_first_seen`: a debt appeared with no inflow of its size in the
+  month. `net_saved` falls once by what was already owed.
+- `debt_ended`: a debt left the history while still owed. `debt_repaid`
+  rises with no payment beside it.
+- `debt_unpriced`: a debt has no rate to the output currency. Its fall is
+  left to `gain`.
+- `bridge_gap`: `bridge_gap` is not zero, so `gain` holds that difference.
+  Returns leaving an asset out, as `returns_exclude` does, opens one. So
+  does a day with no rate for a holding.
+- `tracking_netted`: a month's net flow and onboarding had opposite signs,
+  as above.
+
+Limits:
+
+- The whole household only. Returns do not add across grains.
+- Whole months only, because the rows are monthly. FROM is a month's first
+  day and TO a month's last, or today or later.
+- A sale whose cash lands after month-end reads as a loss, then a gain.
+- `gain` is a residual, so it is only as good as the flows `returns`
+  identifies.
+
+`web refresh` writes the monthly rows to `report_bridge` in every
+reporting currency, from the datasets the returns tables use.
+Guards: `TestBridgeReadsTheCommonCases`,
+`TestBridgeIdentityAndSumsInEveryCurrency`,
+`TestBridgeGainIsReturnsGainPlusFXOnDebt`,
+`TestMaterializeBridgeIsTheCLIsRows`.
 
 ## The math (`internal/returns`)
 

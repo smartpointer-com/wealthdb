@@ -118,7 +118,7 @@ wealthdb reload  <id>... | -a         (RW)    Reset then load; -a builds a fresh
 wealthdb compact [--dry-run]          (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
 wealthdb lots rebuild [--force]       (RW)    Replay the trades into lots: the cost basis no source states (docs/LOTS.md).
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
-wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global; and stated, a side view of a document's stated periods.
+wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global; and two side views: stated, a document's stated periods, and bridge, why net worth moved.
 wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check.
 wealthdb exposure <view> [flags]      (RO)    What is really owned, every fund looked through: classes, sectors, sizes, countries, currencies, credit, maturities, coupons, cycles, situs, securities, issuers, funds, coverage.
 wealthdb yield   <view> [flags]       (RO)    What the holdings earn and how they move with rates: global, sources, portfolios, accounts, positions, securities, funds, cash, curve, coverage.
@@ -318,6 +318,25 @@ silver source, full `plugin.Status()` (oldest/latest snapshot and
 transaction timestamps in silver, latest change number, when the
 holdings and the ledger were last observed), the stored watermark,
 and the last few rows from `load_audit`.
+
+`--marks [FROM [TO]]` answers how far a monthly return can be trusted.
+It prints one row per month-end in gold's history, the whole history by
+default, and takes `-f -C -F -x -p`:
+
+| column | reads |
+| --- | --- |
+| `month_end` | the month's last day |
+| `marked_pct` | the share of `value_total` marked within five days, weighted by USD value in every currency, so the figure has one definition |
+| `value_marked` | that part of the value, in the output currency |
+| `value_total` | the rows of the daily position history that day with a value above zero. Liabilities and cash are out |
+| `quality` | `no_positions` at a month-end with no such row; `unpriced_lines=N` where N rows have no rate and leave the sums |
+
+A row's age is the month-end day less `coalesce(valued_at, snapshot_at)`,
+in days. `-x` and `-p` reach the two money columns. `marked_pct` does
+not move. The macro is
+`report_marks` (migration 0177). A web refresh stores it in
+`serving_marks`, and the Data Freshness dashboard's Mark age tile reads
+it.
 
 ### 4.8 `wealthdb snapshots <id> | -a`
 
@@ -610,7 +629,9 @@ The read surface over the spending population (docs/SPENDING.md, and
 §10.10 for the macros underneath). The grain is the positional
 `<view>` — `summary`, `categories`, or `transactions` — exactly as the
 returns family puts its grain in a positional and everything else in a
-flag.
+flag. A fourth view, `fees`, states what each portfolio cost. It takes
+`--period monthly|quarterly|annual|total`, by default `total`, and no
+`--level` (docs/SPENDING.md §7).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -1558,6 +1579,8 @@ is documented where it is used:
 - `symbol_resolutions` (migration `0006`) — §4.1, `resolutions`.
 - `binary_versions` (migration `0012`).
 - `report_returns` (migration `0026`) — §10.9.
+- `report_bridge` (migration `0177`) — the net worth bridge by month
+  ([RETURNS-NOTES.md](RETURNS-NOTES.md), "The net worth bridge").
 - `report_gains` (migration `0117`) — §10.13.
 - The exposure tables: the reference and config tables (migrations
   `0125` and `0128`) — §7.6; the derived tables (migrations `0126` and

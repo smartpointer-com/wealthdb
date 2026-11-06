@@ -118,11 +118,13 @@ wealthdb holdings positions -x CHF     # the same, in CHF
 wealthdb holdings positions -f csv     # CSV for scripting
 wealthdb returns accounts 2025         # per-account TWR for 2025, by quarter
 wealthdb returns global --method both  # whole-portfolio TWR and MWR since the first snapshot
+wealthdb returns bridge 2025 --period annual  # why net worth moved in 2025
 wealthdb gains summary 2025            # realized and unrealized gains in 2025, by month
 wealthdb gains check 2025              # the rebuilt cost basis against what the statements say
 wealthdb exposure sectors              # sector weights, every fund looked through
 wealthdb exposure coverage             # what the exposure figures rest on
 wealthdb status -v                     # how current each source is
+wealthdb status --marks 2025           # how fresh the marks were at each month end
 ```
 
 The `config` wizard asks for:
