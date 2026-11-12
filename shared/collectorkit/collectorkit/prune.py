@@ -85,7 +85,6 @@ fallback, which most predicates delegate to.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import shutil
 import time
@@ -97,14 +96,15 @@ from collectorkit import bronze, cli
 
 log = logging.getLogger("collectorkit.prune")
 
-# Classification states returned by an is_complete predicate and by
-# classify().
-COMPLETE = "complete"          # keep load inputs; prune only debug artefacts
-NON_COMPLETE = "non-complete"  # whole-dir deletion candidate (once quiescent)
-UNKNOWN = "unknown"            # manifest unreadable/corrupt — never a candidate
-
-# A predicate returns (state, reason); reason is surfaced in the output.
-Classification = tuple  # (state: str, reason: str)
+# The classification states and the status rules live in bronze, so a
+# loader and prune give one answer; they are re-exported here for the
+# collectors' prune predicates.
+COMPLETE = bronze.COMPLETE
+NON_COMPLETE = bronze.NON_COMPLETE
+UNKNOWN = bronze.UNKNOWN
+Classification = bronze.Classification
+status_classification = bronze.status_classification
+lenient_classification = bronze.lenient_classification
 
 
 @dataclass(frozen=True)
@@ -149,88 +149,6 @@ class PruneConfig:
     def validate_target(self, path: Path, bronze_dir: Path) -> None:
         """:func:`validate_target` bound to this config."""
         validate_target(path, bronze_dir, self)
-
-
-# ---------------------------------------------------------------------------
-# Completeness helpers
-# ---------------------------------------------------------------------------
-
-def status_classification(
-    meta: dict | None,
-    *,
-    run_dir: Path | None = None,
-    legacy_complete: Callable[[Path | None, dict | None], bool] | None = None,
-) -> Classification:
-    """Classify a dump from the normalized ``status`` field, with a
-    per-collector legacy fallback.
-
-    The convention every ``download`` writes: ``status`` is
-    ``"in-progress"`` while the walk runs, then atomically overwritten
-    with ``"complete"`` / ``"dry-run"`` at the end.
-    So ``status == "complete"`` ⇒ COMPLETE, any other present status
-    (``"in-progress"``, ``"dry-run"``, …) ⇒ NON_COMPLETE.
-
-    A dump can carry no ``status`` field at all. For such a statusless
-    dump, ``legacy_complete(run_dir, meta)`` decides: it inspects the
-    collector's original terminal signal (a specific artefact present, an
-    empty ``errors`` list, ``dry_run: false``, …) and returns True when
-    the dump looks finished. Absent a legacy predicate, a statusless dump
-    is treated as NON_COMPLETE.
-
-    A missing manifest (``meta is None``) is NON_COMPLETE unless
-    ``legacy_complete`` says otherwise — a collector whose terminal signal
-    is an artefact rather than the manifest (e.g. one that never wrote a
-    ``run.json``) supplies a ``legacy_complete`` that checks that artefact.
-
-    ``legacy_complete(run_dir, meta)`` is consulted in BOTH the
-    missing-manifest branch (``meta is None``) and the statusless-manifest
-    branch (``meta`` is a dict with no ``status`` key). Return True only
-    when the collector's terminal completeness signal is present, so it
-    stays False for a crashed download:
-
-    * terminal signal *is* the manifest (the walk writes ``run.json`` only
-      at the end): ``legacy_complete=lambda rd, m: m is not None``.
-    * terminal signal is an artefact (collector may have written no
-      manifest historically): ``legacy_complete=lambda rd, m:
-      (rd / "<terminal-artefact>").exists()``.
-    """
-    if meta is None:
-        if legacy_complete is not None and legacy_complete(run_dir, meta):
-            return COMPLETE, "complete (no manifest; legacy artefact signal)"
-        return NON_COMPLETE, "no manifest (crashed/interrupted download)"
-    status = meta.get("status")
-    if status is not None:
-        # The loaders' rule, so a run they skip is one prune may reclaim.
-        if bronze.is_loadable_status(status):
-            return COMPLETE, "complete"
-        return NON_COMPLETE, f"status={status!r}"
-    # Statusless legacy dump: defer to the collector's original signal.
-    if legacy_complete is not None and legacy_complete(run_dir, meta):
-        return COMPLETE, "complete (legacy dump, no status field)"
-    return NON_COMPLETE, "no status field; legacy completeness signal absent"
-
-
-def _lenient_legacy_complete(run_dir: Path | None, meta: dict | None) -> bool:
-    """Generic, conservative completeness: a readable manifest (with or
-    without a ``status`` field) means the dump finished. Missing / unreadable
-    / non-``complete``-status dumps fail this, which for the reclaim engines
-    (dedup / docdedup / recompress) is always safe — skipping a run just means
-    a document is re-fetched or a byte-dup is left unshared, never data loss."""
-    return meta is not None
-
-
-def lenient_classification(run_dir: Path | None,
-                           meta: dict | None) -> Classification:
-    """Completeness classification for the reclaim engines: the normalized
-    ``status`` field with the lenient legacy fallback (a readable statusless
-    manifest counts as complete). Shared so dedup / docdedup / recompress can
-    never disagree about what "complete" means.
-
-    It is also the ``is_complete`` predicate of a collector whose manifest
-    is written once at the end or carries a status, and the predicate form
-    of ``bronze.manifest_is_complete``."""
-    return status_classification(
-        meta, run_dir=run_dir, legacy_complete=_lenient_legacy_complete)
 
 
 # A generic PruneConfig so the reclaim engines can reuse `classify`'s central
@@ -288,35 +206,15 @@ def human_size(n: int) -> str:
 # ---------------------------------------------------------------------------
 
 def classify(run_dir: Path, config: PruneConfig) -> Classification:
-    """``(state, reason)`` for a run dir.
+    """``(state, reason)`` for a run dir: :func:`bronze.classify_run` with
+    the config's predicate and manifest name.
 
-    Reads the manifest (when the collector declares one) and enforces the
-    UNKNOWN-never-deleted invariant *before* the collector predicate runs:
-    a manifest that is present but unreadable (I/O / permission error) or
-    unparseable (corrupt bytes) short-circuits to UNKNOWN. Only a cleanly
-    read manifest (or a cleanly absent one) reaches ``config.is_complete``.
+    A manifest that is present but unreadable or unparseable is UNKNOWN
+    before the collector predicate runs, so only a cleanly read manifest
+    (or a cleanly absent one) reaches ``config.is_complete``.
     """
-    meta: dict | None = None
-    if config.manifest_name:
-        path = run_dir / config.manifest_name
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            meta = None
-        except OSError as e:
-            return UNKNOWN, f"{config.manifest_name} unreadable ({e.__class__.__name__})"
-        else:
-            try:
-                meta = json.loads(raw)
-            except ValueError:
-                return UNKNOWN, f"{config.manifest_name} is not valid JSON (corrupt?)"
-            if not isinstance(meta, dict):
-                return UNKNOWN, f"{config.manifest_name} is not a JSON object"
-    state, reason = config.is_complete(run_dir, meta)
-    if state not in (COMPLETE, NON_COMPLETE, UNKNOWN):
-        # A misbehaving predicate must fail safe, never delete.
-        return UNKNOWN, f"predicate returned unknown state {state!r}"
-    return state, reason
+    return bronze.classify_run(run_dir, config.is_complete,
+                               manifest_name=config.manifest_name)
 
 
 def _quiescent_age_s(run_dir: Path, newest_mtime: float,

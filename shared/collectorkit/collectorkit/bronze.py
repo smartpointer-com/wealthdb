@@ -84,15 +84,11 @@ def run_status(run_json_path: Path) -> str | None:
     key. A loader tells an absent manifest from a statusless one with
     :func:`run_is_loadable`.
 
-    Silver loaders use this to decide loadability: ``download`` stamps
-    ``status="in-progress"`` at run-dir creation and atomically overwrites it
-    with ``"complete"`` / ``"dry-run"`` at the end, so a present status other
-    than ``"complete"`` marks a crashed / still-running / dry-run dump whose
-    partial artefacts must not be ingested. A statusless manifest stays
-    loadable (a download that writes no status writes its manifest only
-    once the walk finished); an unreadable/corrupt manifest also returns
-    ``None`` so the caller keeps it pending and surfaces any real error at
-    load time rather than skipping it silently here.
+    ``download`` stamps ``status="in-progress"`` at run-dir creation and
+    atomically overwrites it with ``"complete"`` / ``"dry-run"`` at the
+    end, so a present status other than ``"complete"`` marks a crashed /
+    still-running / dry-run dump whose partial artefacts must not be
+    ingested (:func:`is_loadable_status`).
     """
     return (read_manifest(run_json_path) or {}).get("status")
 
@@ -104,41 +100,163 @@ COMPLETE_STATUS = "complete"
 def is_loadable_status(status: str | None) -> bool:
     """Whether a run with this run.json ``status`` is a load input.
 
-    ``"complete"`` is, and so is no status at all (see :func:`run_status`).
-    Any other status is not: ``"in-progress"`` from a walk that is running
-    or crashed, ``"dry-run"``, or a status this code does not know. For a
-    present status it is the rule ``prune`` applies (see
-    ``prune.status_classification``), so a run a loader skips is a run
-    ``prune`` reclaims. A statusless run predates the field; a collector
-    whose loader reads it keeps it in ``prune`` too.
+    ``"complete"`` is, and so is no status at all. Any other status is
+    not: ``"in-progress"`` from a walk that is running or crashed,
+    ``"dry-run"``, or a status this code does not know. It is the rule
+    :func:`status_classification` applies to a present status, so a run
+    a loader skips is a run ``prune`` reclaims.
     """
     return status is None or status == COMPLETE_STATUS
 
 
+# The three answers to "is this run a finished dump?", from
+# :func:`classify_run` and from every completeness predicate.
+COMPLETE = "complete"          # keep load inputs; prune only debug artefacts
+NON_COMPLETE = "non-complete"  # whole-dir deletion candidate (once quiescent)
+UNKNOWN = "unknown"            # manifest unreadable/corrupt — never a candidate
+
+# A predicate returns (state, reason); reason is surfaced in the output.
+Classification = tuple  # (state: str, reason: str)
+
+
+def status_classification(
+    meta: dict | None,
+    *,
+    run_dir: Path | None = None,
+    legacy_complete: Callable[[Path | None, dict | None], bool] | None = None,
+) -> Classification:
+    """Classify a dump from the normalized ``status`` field, with a
+    per-collector legacy fallback.
+
+    The convention every ``download`` writes: ``status`` is
+    ``"in-progress"`` while the walk runs, then atomically overwritten
+    with ``"complete"`` / ``"dry-run"`` at the end.
+    So ``status == "complete"`` ⇒ COMPLETE, any other present status
+    (``"in-progress"``, ``"dry-run"``, …) ⇒ NON_COMPLETE.
+
+    A dump can carry no ``status`` field at all. For such a statusless
+    dump, ``legacy_complete(run_dir, meta)`` decides: it inspects the
+    collector's original terminal signal (a specific artefact present, an
+    empty ``errors`` list, ``dry_run: false``, …) and returns True when
+    the dump looks finished. Absent a legacy predicate, a statusless dump
+    is treated as NON_COMPLETE.
+
+    A missing manifest (``meta is None``) is NON_COMPLETE unless
+    ``legacy_complete`` says otherwise — a collector whose terminal signal
+    is an artefact rather than the manifest (e.g. one that never wrote a
+    ``run.json``) supplies a ``legacy_complete`` that checks that artefact.
+
+    ``legacy_complete(run_dir, meta)`` is consulted in BOTH the
+    missing-manifest branch (``meta is None``) and the statusless-manifest
+    branch (``meta`` is a dict with no ``status`` key). Return True only
+    when the collector's terminal completeness signal is present, so it
+    stays False for a crashed download:
+
+    * terminal signal *is* the manifest (the walk writes ``run.json`` only
+      at the end): ``legacy_complete=lambda rd, m: m is not None``.
+    * terminal signal is an artefact (collector may have written no
+      manifest historically): ``legacy_complete=lambda rd, m:
+      (rd / "<terminal-artefact>").exists()``.
+    """
+    if meta is None:
+        if legacy_complete is not None and legacy_complete(run_dir, meta):
+            return COMPLETE, "complete (no manifest; legacy artefact signal)"
+        return NON_COMPLETE, "no manifest (crashed/interrupted download)"
+    status = meta.get("status")
+    if status is not None:
+        # The loaders' rule, so a run they skip is one prune may reclaim.
+        if is_loadable_status(status):
+            return COMPLETE, "complete"
+        return NON_COMPLETE, f"status={status!r}"
+    # Statusless legacy dump: defer to the collector's original signal.
+    if legacy_complete is not None and legacy_complete(run_dir, meta):
+        return COMPLETE, "complete (legacy dump, no status field)"
+    return NON_COMPLETE, "no status field; legacy completeness signal absent"
+
+
+def _lenient_legacy_complete(run_dir: Path | None, meta: dict | None) -> bool:
+    """Generic, conservative completeness: a readable manifest (with or
+    without a ``status`` field) means the dump finished. Missing / unreadable
+    / non-``complete``-status dumps fail this, which for the reclaim engines
+    (dedup / docdedup / recompress) is always safe — skipping a run just means
+    a document is re-fetched or a byte-dup is left unshared, never data loss."""
+    return meta is not None
+
+
+def lenient_classification(run_dir: Path | None,
+                           meta: dict | None) -> Classification:
+    """Completeness classification for the reclaim engines: the normalized
+    ``status`` field with the lenient legacy fallback (a readable statusless
+    manifest counts as complete). Shared so dedup / docdedup / recompress can
+    never disagree about what "complete" means.
+
+    It is also the ``is_complete`` predicate of a collector whose manifest
+    is written once at the end or carries a status, and the default of
+    :func:`classify_run`."""
+    return status_classification(
+        meta, run_dir=run_dir, legacy_complete=_lenient_legacy_complete)
+
+
+def classify_run(
+    run_dir: Path,
+    is_complete: Callable[[Path, dict | None], Classification] = lenient_classification,
+    *,
+    manifest_name: str | None = "run.json",
+) -> Classification:
+    """``(state, reason)`` for a run dir: the one answer to "is this run a
+    finished dump?".
+
+    Reads the manifest (when `manifest_name` names one) and enforces the
+    UNKNOWN-never-deleted invariant *before* the predicate runs: a
+    manifest that is present but unreadable (I/O / permission error) or
+    unparseable (bytes that are not UTF-8 JSON) short-circuits to UNKNOWN.
+    Only a cleanly read manifest (or a cleanly absent one) reaches
+    `is_complete`. A predicate that returns any other state yields UNKNOWN,
+    so a misbehaving one fails safe.
+    """
+    meta: dict | None = None
+    if manifest_name:
+        path = Path(run_dir) / manifest_name
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            meta = None
+        except OSError as e:
+            return UNKNOWN, f"{manifest_name} unreadable ({e.__class__.__name__})"
+        else:
+            try:
+                meta = json.loads(raw.decode("utf-8"))
+            except ValueError:  # undecodable bytes or invalid JSON
+                return UNKNOWN, f"{manifest_name} is not valid JSON (corrupt?)"
+            if not isinstance(meta, dict):
+                return UNKNOWN, f"{manifest_name} is not a JSON object"
+    state, reason = is_complete(run_dir, meta)
+    if state not in (COMPLETE, NON_COMPLETE, UNKNOWN):
+        return UNKNOWN, f"predicate returned unknown state {state!r}"
+    return state, reason
+
+
 def run_is_loadable(run_dir: Path) -> bool:
-    """Whether a loader reads `run_dir`: its ``run.json`` is a file, and its
-    status is loadable (:func:`is_loadable_status`).
+    """Whether a loader reads `run_dir`: its ``run.json`` is a file, and
+    :func:`classify_run` does not call it NON_COMPLETE.
 
     A run dir without a manifest is still being written, or its download
     crashed before the first manifest write; ``prune`` reclaims it, so no
-    loader reads it either. An unreadable manifest stays loadable, so the
-    load surfaces the error (see :func:`run_status`).
+    loader reads it either. An UNKNOWN run (an unreadable or corrupt
+    manifest) stays loadable, so the load surfaces the error.
     """
-    run_json = Path(run_dir) / "run.json"
-    return run_json.is_file() and is_loadable_status(run_status(run_json))
+    return (Path(run_dir) / "run.json").is_file() and classify_run(run_dir)[0] != NON_COMPLETE
 
 
 def manifest_is_complete(run_dir: Path, manifest_name: str = "run.json") -> bool:
-    """Whether `run_dir` holds a finished dump: its manifest reads, and its
-    status is loadable (:func:`is_loadable_status`).
+    """Whether `run_dir` holds a finished dump: :func:`classify_run` calls
+    it COMPLETE.
 
     A missing or unreadable manifest is not complete: the download that
     writes it crashed or is still running. A statusless one is, since a
     download that writes no status writes its manifest only at the end.
-    ``prune.lenient_classification`` is the same rule as a prune predicate.
     """
-    meta = read_manifest(Path(run_dir) / manifest_name)
-    return meta is not None and is_loadable_status(meta.get("status"))
+    return classify_run(run_dir, manifest_name=manifest_name)[0] == COMPLETE
 
 
 def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:

@@ -314,6 +314,16 @@ def test_corrupt_json_run_json_kept(tmp_path):
     assert (d / "positions").exists()
 
 
+def test_undecodable_run_json_kept(tmp_path):
+    # Bytes that are not UTF-8 are a corrupt manifest → UNKNOWN, not a crash.
+    d = make_dump(tmp_path, OLD_TS, screenshots=False, terminal=False,
+                  age_s=STALE_S)
+    (d / "run.json").write_bytes(b"\xff\xfe{")
+    assert run_main(CFG, tmp_path) == 0
+    assert d.exists()
+    assert prune.classify(d, CFG)[0] == prune.UNKNOWN
+
+
 def test_non_object_json_run_json_kept(tmp_path):
     # A JSON array/scalar is not a manifest object → UNKNOWN, never deleted.
     d = make_dump(tmp_path, OLD_TS, screenshots=False, terminal=False,
