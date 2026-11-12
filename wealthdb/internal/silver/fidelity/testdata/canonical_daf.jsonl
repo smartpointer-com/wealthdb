@@ -1,0 +1,16 @@
+== status 1
+{"LatestChangeNumber":1000,"LatestSnapshotAt":1000,"LatestTransactionAt":-1,"ObservedSnapshotsThrough":1000,"ObservedTransactionsThrough":1000,"OldestSnapshotAt":1000,"OldestTransactionAt":-1}
+== window 1
+{"End":1000,"HasChanges":true,"NewChangeNumber":1000,"Spans":null,"Start":1000}
+== portfolios 2
+{"BaseCurrency":"USD","DisplayName":"Fidelity Charitable Giving (daf)","FirstSeenAt":1000,"LastSeenAt":1000,"Nickname":null,"Payload":{},"PortfolioExternalID":"Fidelity Charitable Giving","RelationshipID":null,"SilverSourceID":""}
+{"BaseCurrency":"USD","DisplayName":"PORT1 (529)","FirstSeenAt":1000,"LastSeenAt":1000,"Nickname":null,"Payload":{},"PortfolioExternalID":"PORT1","RelationshipID":null,"SilverSourceID":""}
+== accounts 2
+{"AccountCategory":null,"AccountExternalID":"9990001","AccountKind":"donor_advised_fund","BaseCurrency":"USD","DisplayName":null,"FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":"automated","Nickname":"Example Giving Account","Payload":{},"PortfolioExternalID":"Fidelity Charitable Giving","RelationshipID":null,"SilverSourceID":"","TaxWrapper":"charitable"}
+{"AccountCategory":null,"AccountExternalID":"ACC1","AccountKind":"brokerage","BaseCurrency":"USD","DisplayName":null,"FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":null,"Nickname":"College","Payload":{},"PortfolioExternalID":"PORT1","RelationshipID":null,"SilverSourceID":"","TaxWrapper":"529"}
+== instruments 2
+{"AssetClass":"multi_asset","CUSIP":null,"Currency":"USD","FirstSeenAt":1000,"ISIN":null,"InstrumentExternalID":"POOLX1","LastSeenAt":1000,"Name":"Example Growth Pool","Payload":{},"SilverSourceID":"","Symbol":"POOLX1","Vehicle":"fund"}
+{"AssetClass":"public_equity","CUSIP":null,"Currency":"USD","FirstSeenAt":1000,"ISIN":null,"InstrumentExternalID":"VTI","LastSeenAt":1000,"Name":"Vanguard Total Market","Payload":{},"SilverSourceID":"","Symbol":"VTI","Vehicle":"etf"}
+== positions 2
+{"AccountExternalID":"9990001","AccruedInterest":null,"AcquisitionDate":null,"AssetClass":"multi_asset","Basis":{"Fees":"","Method":"","Origin":""},"BookValue":null,"Currency":"USD","InstrumentExternalID":"POOLX1","MarketValue":"100000","Payload":{},"PositionKey":"POOLX1","Quantity":"1000","SilverSourceID":"","SnapshotAt":1000,"ValuedAt":0,"Vehicle":"fund"}
+{"AccountExternalID":"ACC1","AccruedInterest":null,"AcquisitionDate":null,"AssetClass":"public_equity","Basis":{"Fees":"","Method":"","Origin":""},"BookValue":null,"Currency":"USD","InstrumentExternalID":"VTI","MarketValue":"2500","Payload":{},"PositionKey":"VTI","Quantity":"10","SilverSourceID":"","SnapshotAt":1000,"ValuedAt":0,"Vehicle":"etf"}

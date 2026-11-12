@@ -1,0 +1,18 @@
+== status 1
+{"LatestChangeNumber":2000,"LatestSnapshotAt":1703980800,"LatestTransactionAt":2000,"ObservedSnapshotsThrough":1000,"ObservedTransactionsThrough":1000,"OldestSnapshotAt":1000,"OldestTransactionAt":500}
+== window 1
+{"End":1703980800,"HasChanges":true,"NewChangeNumber":2000,"Spans":null,"Start":500}
+== accounts 1
+{"AccountCategory":null,"AccountExternalID":"11115678","AccountKind":"brokerage","BaseCurrency":"USD","DisplayName":"11115678","FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":null,"Nickname":"Saving","Payload":{"account_number_full":"1111-5678"},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":null}
+== instruments 1
+{"AssetClass":"public_equity","CUSIP":null,"Currency":null,"FirstSeenAt":1703980800,"ISIN":null,"InstrumentExternalID":"VTI","LastSeenAt":1703980800,"Name":"EXAMPLE TOTAL MARKET ETF","Payload":null,"SilverSourceID":"","Symbol":"VTI","Vehicle":"etf"}
+== positions 1
+{"AccountExternalID":"11115678","AccruedInterest":null,"AcquisitionDate":"2021-03-02T00:00:00Z","AssetClass":"public_equity","Basis":{"Fees":"included","Method":"lots","Origin":"stated"},"BookValue":"1000","Currency":"USD","InstrumentExternalID":"VTI","MarketValue":"1500","Payload":{"description":"EXAMPLE TOTAL MARKET ETF","section":"Exchange Traded Funds"},"PositionKey":"VTI","Quantity":"10","SilverSourceID":"","SnapshotAt":1703980800,"ValuedAt":0,"Vehicle":"etf"}
+== position_lots 1
+{"AccountExternalID":"11115678","AcquisitionDate":"2021-03-02T00:00:00Z","BasisOrigin":"stated","BookValue":"1000","Covered":null,"Currency":"USD","InstrumentExternalID":"VTI","LotKey":"0","MarketValue":null,"Payload":{"footnotes":null,"unit_cost":100,"unrealized_gain_loss":500},"PositionKey":"VTI","Quantity":"10","SilverSourceID":"","SnapshotAt":1703980800,"SourceDocument":"sha-stmt","Term":"long"}
+== cash_balances 2
+{"AccountExternalID":"11115678","Amount":"50","BalanceKind":"opening","Currency":"USD","Payload":{},"SilverSourceID":"","SnapshotAt":1701388800}
+{"AccountExternalID":"11115678","Amount":"75","BalanceKind":"closing","Currency":"USD","Payload":{},"SilverSourceID":"","SnapshotAt":1703980800}
+== transactions 2
+{"AccountExternalID":"11115678","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"FUNDS","GrossAmount":null,"InstrumentExternalID":null,"InstrumentHint":"","Kind":"deposit","Memo":null,"NetAmount":"250","OccurredAt":500,"Payload":{"amount":250,"description":"FUNDS"},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"T1","Vehicle":""}
+{"AccountExternalID":"11115678","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"VTI","GrossAmount":null,"InstrumentExternalID":"VTI","InstrumentHint":"","Kind":"buy","Memo":null,"NetAmount":"-100","OccurredAt":2000,"Payload":{"amount":-100,"description":"VTI","quantity":1},"Price":null,"ProviderCategory":null,"Quantity":"1","SilverSourceID":"","TransactionExternalID":"T2","Vehicle":""}

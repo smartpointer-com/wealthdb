@@ -1,0 +1,18 @@
+== status 1
+{"LatestChangeNumber":2000,"LatestSnapshotAt":2000,"LatestTransactionAt":1500,"ObservedSnapshotsThrough":2000,"ObservedTransactionsThrough":2000,"OldestSnapshotAt":1000,"OldestTransactionAt":1500}
+== window 1
+{"End":2000,"HasChanges":true,"NewChangeNumber":2000,"Spans":null,"Start":1000}
+== accounts 1
+{"AccountCategory":"PensFree","AccountExternalID":"ACC1","AccountKind":"brokerage","BaseCurrency":"CHF","DisplayName":"Strategy 50","FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":"automated","Nickname":null,"Payload":{},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"vested_benefits"}
+== instruments 4
+{"AssetClass":"multi_asset","CUSIP":null,"Currency":"CHF","FirstSeenAt":1000,"ISIN":null,"InstrumentExternalID":"I2","LastSeenAt":1000,"Name":"Strategy Fund","Payload":{},"SilverSourceID":"","Symbol":null,"Vehicle":"fund"}
+{"AssetClass":"multi_asset","CUSIP":null,"Currency":"CHF","FirstSeenAt":1000,"ISIN":null,"InstrumentExternalID":"I2","LastSeenAt":1000,"Name":"Strategy Fund","Payload":{},"SilverSourceID":"","Symbol":null,"Vehicle":"fund"}
+{"AssetClass":"public_equity","CUSIP":null,"Currency":"CHF","FirstSeenAt":1000,"ISIN":"CH0000000001","InstrumentExternalID":"CH0000000001","LastSeenAt":1000,"Name":"Equity Fund","Payload":{},"SilverSourceID":"","Symbol":"CH0000000001","Vehicle":"fund"}
+{"AssetClass":"public_equity","CUSIP":null,"Currency":"CHF","FirstSeenAt":1000,"ISIN":"CH0000000001","InstrumentExternalID":"CH0000000001","LastSeenAt":1000,"Name":"Equity Fund","Payload":{},"SilverSourceID":"","Symbol":"CH0000000001","Vehicle":"fund"}
+== positions 2
+{"AccountExternalID":"ACC1","AccruedInterest":null,"AcquisitionDate":null,"AssetClass":"multi_asset","Basis":{"Fees":"","Method":"","Origin":""},"BookValue":null,"Currency":"CHF","InstrumentExternalID":"I2","MarketValue":"400","Payload":null,"PositionKey":"I2","Quantity":null,"SilverSourceID":"","SnapshotAt":1000,"ValuedAt":0,"Vehicle":"fund"}
+{"AccountExternalID":"ACC1","AccruedInterest":null,"AcquisitionDate":null,"AssetClass":"public_equity","Basis":{"Fees":"","Method":"","Origin":""},"BookValue":null,"Currency":"CHF","InstrumentExternalID":"CH0000000001","MarketValue":"600","Payload":null,"PositionKey":"CH0000000001","Quantity":null,"SilverSourceID":"","SnapshotAt":1000,"ValuedAt":0,"Vehicle":"fund"}
+== cash_balances 1
+{"AccountExternalID":"ACC1","Amount":"200","BalanceKind":"current","Currency":"CHF","Payload":null,"SilverSourceID":"","SnapshotAt":1000}
+== transactions 1
+{"AccountExternalID":"ACC1","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"CHF","Description":null,"GrossAmount":null,"InstrumentExternalID":null,"InstrumentHint":"","Kind":"deposit","Memo":null,"NetAmount":"1234.56","OccurredAt":1500,"Payload":{},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"credit_note:42","Vehicle":""}

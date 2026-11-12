@@ -1,0 +1,15 @@
+== status 1
+{"LatestChangeNumber":1000,"LatestSnapshotAt":1000,"LatestTransactionAt":2000,"ObservedSnapshotsThrough":1000,"ObservedTransactionsThrough":1000,"OldestSnapshotAt":1000,"OldestTransactionAt":1500}
+== window 1
+{"End":2000,"HasChanges":true,"NewChangeNumber":1000,"Spans":null,"Start":1000}
+== accounts 1
+{"AccountCategory":null,"AccountExternalID":"ACC1","AccountKind":"brokerage","BaseCurrency":"USD","DisplayName":"redacted","FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":null,"Nickname":null,"Payload":{"accountNumber":"redacted","hashValue":"ACC1"},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":null}
+== instruments 1
+{"AssetClass":"public_equity","CUSIP":"037833100","Currency":"USD","FirstSeenAt":1000,"ISIN":null,"InstrumentExternalID":"037833100","LastSeenAt":1000,"Name":"Apple Inc","Payload":null,"SilverSourceID":"","Symbol":"AAPL","Vehicle":"stock"}
+== positions 1
+{"AccountExternalID":"ACC1","AccruedInterest":null,"AcquisitionDate":null,"AssetClass":"public_equity","Basis":{"Fees":"","Method":"","Origin":""},"BookValue":null,"Currency":"USD","InstrumentExternalID":"037833100","MarketValue":"1500","Payload":{"instrument":{"assetType":"EQUITY","cusip":"037833100","description":"Apple Inc","symbol":"AAPL"},"longQuantity":10,"marketValue":1500.00,"shortQuantity":0},"PositionKey":"037833100","Quantity":"10","SilverSourceID":"","SnapshotAt":1000,"ValuedAt":0,"Vehicle":"stock"}
+== cash_balances 1
+{"AccountExternalID":"ACC1","Amount":"1234.56","BalanceKind":"current","Currency":"USD","Payload":{"cashBalance":1234.56},"SilverSourceID":"","SnapshotAt":1000}
+== transactions 2
+{"AccountExternalID":"ACC1","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":null,"GrossAmount":"-1500","InstrumentExternalID":"037833100","InstrumentHint":"","Kind":"buy","Memo":null,"NetAmount":"-1505","OccurredAt":1500,"Payload":{"netAmount":-1505.00,"transferItems":[{"amount":10,"cost":-1500.00,"instrument":{"assetType":"EQUITY","cusip":"037833100","symbol":"AAPL"},"positionEffect":"OPENING","price":150.00},{"amount":-1505.00,"cost":-1505.00,"instrument":{"assetType":"CURRENCY","cusip":"9ZZZFD494"}}]},"Price":"150","ProviderCategory":null,"Quantity":"10","SilverSourceID":"","TransactionExternalID":"A1","Vehicle":""}
+{"AccountExternalID":"ACC1","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":null,"GrossAmount":null,"InstrumentExternalID":null,"InstrumentHint":"","Kind":"dividend","Memo":null,"NetAmount":"50","OccurredAt":2000,"Payload":{"netAmount":50.00,"transferItems":[]},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"A2","Vehicle":""}

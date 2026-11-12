@@ -1,0 +1,17 @@
+== status 1
+{"LatestChangeNumber":1772366400,"LatestSnapshotAt":1772366400,"LatestTransactionAt":1771113600,"ObservedSnapshotsThrough":1772366400,"ObservedTransactionsThrough":1772366400,"OldestSnapshotAt":1768003200,"OldestTransactionAt":1768003200}
+== window 1
+{"End":1772366400,"HasChanges":true,"NewChangeNumber":1772366400,"Spans":null,"Start":1768003200}
+== accounts 1
+{"AccountCategory":null,"AccountExternalID":"acct-1","AccountKind":"cash","BaseCurrency":"USD","DisplayName":"Example Checking","FirstSeenAt":1772366400,"LastSeenAt":1772366400,"ManagementStyle":"self_directed","Nickname":"Example Checking","Payload":{},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
+== cash_balances 5
+{"AccountExternalID":"acct-1","Amount":"1000","BalanceKind":"closing","Currency":"USD","Payload":{"basis":"running_balance"},"SilverSourceID":"","SnapshotAt":1768089599}
+{"AccountExternalID":"acct-1","Amount":"1500","BalanceKind":"current","Currency":"USD","Payload":{"basis":"roster"},"SilverSourceID":"","SnapshotAt":1772366400}
+{"AccountExternalID":"acct-1","Amount":"650","BalanceKind":"closing","Currency":"USD","Payload":{"basis":"running_balance"},"SilverSourceID":"","SnapshotAt":1770335999}
+{"AccountExternalID":"acct-1","Amount":"652.5","BalanceKind":"closing","Currency":"USD","Payload":{"basis":"running_balance"},"SilverSourceID":"","SnapshotAt":1771199999}
+{"AccountExternalID":"acct-1","Amount":"700","BalanceKind":"closing","Currency":"USD","Payload":{"basis":"running_balance"},"SilverSourceID":"","SnapshotAt":1768953599}
+== transactions 4
+{"AccountExternalID":"acct-1","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"COFFEE BAR","GrossAmount":"-300","InstrumentExternalID":null,"InstrumentHint":"","Kind":"withdrawal","Memo":null,"NetAmount":"-300","OccurredAt":1768867200,"Payload":{},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"t2","Vehicle":""}
+{"AccountExternalID":"acct-1","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"INTEREST PAYMENT","GrossAmount":"2.5","InstrumentExternalID":null,"InstrumentHint":"","Kind":"interest","Memo":null,"NetAmount":"2.5","OccurredAt":1771113600,"Payload":{},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"t4","Vehicle":""}
+{"AccountExternalID":"acct-1","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"MONTHLY SERVICE CHARGE","GrossAmount":"-50","InstrumentExternalID":null,"InstrumentHint":"","Kind":"fee","Memo":null,"NetAmount":"-50","OccurredAt":1770249600,"Payload":{},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"t3","Vehicle":""}
+{"AccountExternalID":"acct-1","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"PAYROLL DEPOSIT","GrossAmount":"1000","InstrumentExternalID":null,"InstrumentHint":"","Kind":"deposit","Memo":null,"NetAmount":"1000","OccurredAt":1768003200,"Payload":{},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"t1","Vehicle":""}

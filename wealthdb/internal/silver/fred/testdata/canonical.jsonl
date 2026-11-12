@@ -1,0 +1,12 @@
+== status 1
+{"LatestChangeNumber":1700000000,"LatestSnapshotAt":1578009600,"LatestTransactionAt":-1,"ObservedSnapshotsThrough":1700000000,"ObservedTransactionsThrough":1700000000,"OldestSnapshotAt":-252374400,"OldestTransactionAt":-1}
+== window 1
+{"End":1578009600,"HasChanges":true,"NewChangeNumber":1700000000,"Spans":null,"Start":-252374400}
+== fx_rates 3
+{"AskRate":null,"BaseCurrency":"CHF","BidRate":null,"MidRate":"0.9","Payload":{"series_id":"DEXSZUS","value":"0.9000"},"QuoteCurrency":"USD","SilverSourceID":"","SnapshotAt":1577923200}
+{"AskRate":null,"BaseCurrency":"CHF","BidRate":null,"MidRate":"0.91","Payload":{"series_id":"DEXSZUS","value":"0.9100"},"QuoteCurrency":"USD","SilverSourceID":"","SnapshotAt":1578009600}
+{"AskRate":null,"BaseCurrency":"USD","BidRate":null,"MidRate":"1.12","Payload":{"series_id":"DEXUSEU","value":"1.1200"},"QuoteCurrency":"EUR","SilverSourceID":"","SnapshotAt":1577923200}
+== rate_observations 3
+{"AsOf":-252374400,"Payload":{"basis":"constant_maturity","currency":"USD","tenor":"10Y"},"SeriesID":"DGS10","SilverSourceID":"","Value":"4.06"}
+{"AsOf":1577923200,"Payload":{},"SeriesID":"DTB3","SilverSourceID":"","Value":"1.54"}
+{"AsOf":1578009600,"Payload":{},"SeriesID":"DTB3","SilverSourceID":"","Value":"1.52"}
