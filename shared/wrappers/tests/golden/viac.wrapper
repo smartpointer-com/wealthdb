@@ -1,0 +1,738 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+viac — host wrapper
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Mint or refresh the session cookie jar +
+                      CSRF metadata. Use --check for a cheap
+                      liveness probe (no MFA push).
+  download [args...]  Bronze dump. Use --dry-run to walk JSON
+                      endpoints without fetching PDFs. The per-event
+                      TRANSACTION PDFs (the bulk of the archive)
+                      are pulled by default;
+                      --no-transaction-documents skips them.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Delete non-complete dumps (crashed/in-progress
+                      walks and legacy --dry-run shells) and `download
+                      --debug` HTTP traces from the bronze tree.
+                      --dry-run previews; --min-age-hours N protects
+                      an in-flight download (default 1).
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-viac/home/.secrets  ->  /secrets
+  <TMP>/w-viac/xdgdata/wealthdb/viac     ->  /data
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+
+Override mounts via env:
+  VIAC_SECRETS_DIR=/path/to/secrets
+  VIAC_DATA_DIR=/path/to/data
+
+Credentials:
+  VIAC_LOGIN (E.164 mobile number, e.g. +CC<digits>) and
+  VIAC_PASSWORD are read from /secrets/viac.env automatically
+  (= $HOME/.secrets/viac.env on the host). Use SINGLE quotes
+  around values containing $, \!, backtick.
+
+Container concurrency:
+  Only one viac container runs at a time (fixed name
+  'viac'). The wrapper refuses to clobber a RUNNING
+  container — set VIAC_FORCE_REPLACE=1 to override.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+viac — host wrapper
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Mint or refresh the session cookie jar +
+                      CSRF metadata. Use --check for a cheap
+                      liveness probe (no MFA push).
+  download [args...]  Bronze dump. Use --dry-run to walk JSON
+                      endpoints without fetching PDFs. The per-event
+                      TRANSACTION PDFs (the bulk of the archive)
+                      are pulled by default;
+                      --no-transaction-documents skips them.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Delete non-complete dumps (crashed/in-progress
+                      walks and legacy --dry-run shells) and `download
+                      --debug` HTTP traces from the bronze tree.
+                      --dry-run previews; --min-age-hours N protects
+                      an in-flight download (default 1).
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-viac/home/.secrets  ->  /secrets
+  <TMP>/w-viac/xdgdata/wealthdb/viac     ->  /data
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+
+Override mounts via env:
+  VIAC_SECRETS_DIR=/path/to/secrets
+  VIAC_DATA_DIR=/path/to/data
+
+Credentials:
+  VIAC_LOGIN (E.164 mobile number, e.g. +CC<digits>) and
+  VIAC_PASSWORD are read from /secrets/viac.env automatically
+  (= $HOME/.secrets/viac.env on the host). Use SINGLE quotes
+  around values containing $, \!, backtick.
+
+Container concurrency:
+  Only one viac container runs at a time (fixed name
+  'viac'). The wrapper refuses to clobber a RUNNING
+  container — set VIAC_FORCE_REPLACE=1 to override.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-viac/tree/collectors/viac/Dockerfile
+  <TMP>/w-viac/tree/collectors/viac/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/viac:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/viac:latest
+  <TMP>/w-viac/tree/collectors/viac
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  login
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  download
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  load
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-viac/tree/collectors/viac/prune.py
+  --bronze-dir
+  <TMP>/w-viac/xdgdata/wealthdb/viac
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  sh
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  bash
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  login
+  --check
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-viac/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/silver:/silver
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-viac/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/silver:/silver
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-viac/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/alt-data:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  load
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-viac/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/alt-data:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  load
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-viac/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/alt-secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  download
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-viac/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/alt-secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  download
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^viac$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  viac
+docker
+  run
+  --rm
+  --name
+  viac
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  VIAC_LOGIN
+  -e
+  VIAC_PASSWORD
+  -v
+  <TMP>/w-viac/home/.secrets:/secrets
+  -v
+  <TMP>/w-viac/xdgdata/wealthdb/viac:/data
+  -v
+  <TMP>/w-viac/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-viac/tree/collectors/viac:/app
+  wealthdb/viac:latest
+  bogus-verb
+  [env] VIAC_LOGIN=<unset>
+  [env] VIAC_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr

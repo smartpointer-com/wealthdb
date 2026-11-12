@@ -1,0 +1,912 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+equityzen — host wrapper
+
+`login` (Camoufox SPA login + CLI TOTP) -> `download` (GraphQL
+capture + document archive) -> `load` (silver offerings, event-sourced
+positions, cash flows). See DESIGN.md and README.md.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  explore [args...]   Discovery harness: launch Camoufox in the
+                      container's Xvfb display and expose a VNC port for
+                      driving the live investor portal interactively;
+                      record HAR + Playwright trace + click log + saved
+                      blobs under /debug for analysis. --fresh wipes the
+                      profile so the next login forces TOTP.
+  login [args...]     Mint an EquityZen session via the SPA login form
+                      (headed Camoufox under Xvfb, no VNC). Prompts for the
+                      6-digit TOTP code on stdin; the profile in
+                      /secrets/equityzen-profile keeps future runs from
+                      re-prompting (EquityZen keeps the session alive until
+                      an explicit logout) and renews silently if still
+                      valid. --check probes the existing session without
+                      asking for a code. --totp CODE supplies the 6-digit
+                      code as an argument instead of the prompt.
+  download [args...]  Capture bronze for every holding: offerings +
+                      positions + cash flows (getBuyerInvestments per
+                      stage + getMyInvestmentDetails per offering). Writes
+                      a UTC-timestamped subdir + run.json manifest under the
+                      data dir (<TMP>/w-equityzen/xdgdata/wealthdb/equityzen). --dry-run is a read-only smoke
+                      test (writes nothing); document blobs + tax-centre
+                      metadata are recorded by default, --no-documents skips them.
+  load [args...]      Ingest bronze snapshots into the SQLite silver:
+                      offerings, positions, cash_flows, tax_documents,
+                      capital_account_statements, k1_documents.
+                      --force deletes the silver DB and rebuilds from all bronze.
+  prune [args...]     Reclaim bronze disk: delete non-complete dumps
+                      (crashed downloads with no terminal run.json), and
+                      strip screenshots/ (the download --debug captures)
+                      from complete dumps, whose load inputs are never
+                      touched. Also deletes aged entries of the /debug
+                      cache. --dry-run prints the plan; --min-age-hours
+                      (default 1) protects an in-flight download. Runs
+                      host-side (pure file walk; no container), so it can
+                      reclaim disk while a download is mid-flight.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-equityzen/home/.secrets  ->  /secrets
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen     ->  /data
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen    ->  /debug
+
+Override mounts via env:
+  EQUITYZEN_SECRETS_DIR=/path/to/secrets
+  EQUITYZEN_DATA_DIR=/path/to/data
+  EQUITYZEN_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  EQUITYZEN_USERNAME / EQUITYZEN_PASSWORD are read from
+  /secrets/equityzen.env inside the container (= $HOME/.secrets/equityzen.env
+  on the host). chmod 0600. The TOTP code is prompted on stdin during
+  `login`; the session that lands in /secrets/equityzen-profile/ keeps
+  future logins from asking for a code.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+equityzen — host wrapper
+
+`login` (Camoufox SPA login + CLI TOTP) -> `download` (GraphQL
+capture + document archive) -> `load` (silver offerings, event-sourced
+positions, cash flows). See DESIGN.md and README.md.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  explore [args...]   Discovery harness: launch Camoufox in the
+                      container's Xvfb display and expose a VNC port for
+                      driving the live investor portal interactively;
+                      record HAR + Playwright trace + click log + saved
+                      blobs under /debug for analysis. --fresh wipes the
+                      profile so the next login forces TOTP.
+  login [args...]     Mint an EquityZen session via the SPA login form
+                      (headed Camoufox under Xvfb, no VNC). Prompts for the
+                      6-digit TOTP code on stdin; the profile in
+                      /secrets/equityzen-profile keeps future runs from
+                      re-prompting (EquityZen keeps the session alive until
+                      an explicit logout) and renews silently if still
+                      valid. --check probes the existing session without
+                      asking for a code. --totp CODE supplies the 6-digit
+                      code as an argument instead of the prompt.
+  download [args...]  Capture bronze for every holding: offerings +
+                      positions + cash flows (getBuyerInvestments per
+                      stage + getMyInvestmentDetails per offering). Writes
+                      a UTC-timestamped subdir + run.json manifest under the
+                      data dir (<TMP>/w-equityzen/xdgdata/wealthdb/equityzen). --dry-run is a read-only smoke
+                      test (writes nothing); document blobs + tax-centre
+                      metadata are recorded by default, --no-documents skips them.
+  load [args...]      Ingest bronze snapshots into the SQLite silver:
+                      offerings, positions, cash_flows, tax_documents,
+                      capital_account_statements, k1_documents.
+                      --force deletes the silver DB and rebuilds from all bronze.
+  prune [args...]     Reclaim bronze disk: delete non-complete dumps
+                      (crashed downloads with no terminal run.json), and
+                      strip screenshots/ (the download --debug captures)
+                      from complete dumps, whose load inputs are never
+                      touched. Also deletes aged entries of the /debug
+                      cache. --dry-run prints the plan; --min-age-hours
+                      (default 1) protects an in-flight download. Runs
+                      host-side (pure file walk; no container), so it can
+                      reclaim disk while a download is mid-flight.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-equityzen/home/.secrets  ->  /secrets
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen     ->  /data
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen    ->  /debug
+
+Override mounts via env:
+  EQUITYZEN_SECRETS_DIR=/path/to/secrets
+  EQUITYZEN_DATA_DIR=/path/to/data
+  EQUITYZEN_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  EQUITYZEN_USERNAME / EQUITYZEN_PASSWORD are read from
+  /secrets/equityzen.env inside the container (= $HOME/.secrets/equityzen.env
+  on the host). chmod 0600. The TOTP code is prompted on stdin during
+  `login`; the session that lands in /secrets/equityzen-profile/ keeps
+  future logins from asking for a code.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-equityzen/tree/collectors/equityzen/Dockerfile
+  <TMP>/w-equityzen/tree/collectors/equityzen/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/equityzen:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/equityzen:latest
+  <TMP>/w-equityzen/tree/collectors/equityzen
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  explore
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  login
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  download
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  load
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-equityzen/tree/collectors/equityzen/prune.py
+  --bronze-dir
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen
+  --debug-dir
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  sh
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  bash
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  login
+  --check
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-equityzen/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/silver:/silver
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-equityzen/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/silver:/silver
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-equityzen/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/alt-data:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  load
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-equityzen/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/alt-data:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  load
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-equityzen/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/alt-secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  download
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-equityzen/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/alt-secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  download
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^equityzen$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  equityzen
+docker
+  run
+  --rm
+  --name
+  equityzen
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  EQUITYZEN_USERNAME
+  -e
+  EQUITYZEN_EMAIL
+  -e
+  EQUITYZEN_PASSWORD
+  -v
+  <TMP>/w-equityzen/home/.secrets:/secrets
+  -v
+  <TMP>/w-equityzen/xdgdata/wealthdb/equityzen:/data
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
+  -v
+  <TMP>/w-equityzen/tree/collectors/equityzen:/app
+  wealthdb/equityzen:latest
+  bogus-verb
+  [env] EQUITYZEN_USERNAME=<unset>
+  [env] EQUITYZEN_EMAIL=<unset>
+  [env] EQUITYZEN_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr

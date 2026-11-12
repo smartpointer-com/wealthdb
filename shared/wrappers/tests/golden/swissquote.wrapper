@@ -1,0 +1,561 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+swissquote — host wrapper
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Mint or refresh the session state file.
+  download [args...]  Export bronze artefacts from e-banking.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Reclaim bronze disk: delete non-complete dumps and
+                      aged entries of the /debug cache
+                      (--dry-run previews the plan; --min-age-hours N
+                      guards a download still in flight).
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-swissquote/home/.secrets  ->  /secrets
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote     ->  /data
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote    ->  /debug
+
+Override mounts via env:
+  SWISSQUOTE_SECRETS_DIR=/path/to/secrets
+  SWISSQUOTE_DATA_DIR=/path/to/data
+  SWISSQUOTE_DEBUG_DIR=/path/to/debug
+
+Pass-through env (set on host, available inside container):
+  SWISSQUOTE_USERNAME
+  SWISSQUOTE_PASSWORD
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+swissquote — host wrapper
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Mint or refresh the session state file.
+  download [args...]  Export bronze artefacts from e-banking.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Reclaim bronze disk: delete non-complete dumps and
+                      aged entries of the /debug cache
+                      (--dry-run previews the plan; --min-age-hours N
+                      guards a download still in flight).
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-swissquote/home/.secrets  ->  /secrets
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote     ->  /data
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote    ->  /debug
+
+Override mounts via env:
+  SWISSQUOTE_SECRETS_DIR=/path/to/secrets
+  SWISSQUOTE_DATA_DIR=/path/to/data
+  SWISSQUOTE_DEBUG_DIR=/path/to/debug
+
+Pass-through env (set on host, available inside container):
+  SWISSQUOTE_USERNAME
+  SWISSQUOTE_PASSWORD
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-swissquote/tree/collectors/swissquote
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/swissquote:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/swissquote:latest
+  <TMP>/w-swissquote/tree/collectors/swissquote
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  login
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  download
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  load
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-swissquote/tree/collectors/swissquote/prune.py
+  --bronze-dir
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote
+  --debug-dir
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  sh
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  bash
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  login
+  --check
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-swissquote/silver/x.db
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/silver:/silver
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-swissquote/silver/x.db
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/silver:/silver
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-swissquote/alt-data
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/alt-data:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  load
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-swissquote/alt-data
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/alt-data:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  load
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-swissquote/alt-secrets
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/alt-secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  download
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-swissquote/alt-secrets
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/alt-secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  download
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  run
+  --rm
+  --name
+  swissquote
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SWISSQUOTE_USERNAME
+  -e
+  SWISSQUOTE_PASSWORD
+  -v
+  <TMP>/w-swissquote/home/.secrets:/secrets
+  -v
+  <TMP>/w-swissquote/xdgdata/wealthdb/swissquote:/data
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  wealthdb/swissquote:latest
+  bogus-verb
+  [env] SWISSQUOTE_USERNAME=<unset>
+  [env] SWISSQUOTE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr

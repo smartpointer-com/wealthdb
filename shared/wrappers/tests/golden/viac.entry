@@ -1,0 +1,158 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+viac container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  login     Mint or refresh the session cookie jar +
+            CSRF metadata in /secrets/viac-state.json.
+            Prompts on stdin for the mTAN code sent to
+            your phone. Pass --check to probe the existing
+            session without triggering a new mTAN.
+  download  Bronze dump against /rest/web/. Requires a
+            session minted by `login`. Use --dry-run to
+            walk JSON endpoints without fetching PDFs. The
+            per-event TRANSACTION PDFs download by default;
+            --no-transaction-documents skips them.
+  load      Parse bronze into silver SQLite. Idempotent:
+            skips dumps already loaded.
+  prune     Delete non-complete dumps (crashed/in-progress
+            walks and legacy --dry-run shells) and `download
+            --debug` HTTP traces from the bronze tree.
+            --dry-run prints the plan first.
+  sh|bash   Open an interactive shell inside the container.
+  help      Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== --help
+--- calls
+exit: 0
+--- stdout
+viac container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  login     Mint or refresh the session cookie jar +
+            CSRF metadata in /secrets/viac-state.json.
+            Prompts on stdin for the mTAN code sent to
+            your phone. Pass --check to probe the existing
+            session without triggering a new mTAN.
+  download  Bronze dump against /rest/web/. Requires a
+            session minted by `login`. Use --dry-run to
+            walk JSON endpoints without fetching PDFs. The
+            per-event TRANSACTION PDFs download by default;
+            --no-transaction-documents skips them.
+  load      Parse bronze into silver SQLite. Idempotent:
+            skips dumps already loaded.
+  prune     Delete non-complete dumps (crashed/in-progress
+            walks and legacy --dry-run shells) and `download
+            --debug` HTTP traces from the bronze tree.
+            --dry-run prints the plan first.
+  sh|bash   Open an interactive shell inside the container.
+  help      Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== login
+--- calls
+python3
+  /app/login.py
+exit: 0
+--- stdout
+--- stderr
+=== login --help
+--- calls
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+python3
+  /app/download.py
+exit: 0
+--- stdout
+--- stderr
+=== download --help
+--- calls
+python3
+  /app/download.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+python3
+  /app/load.py
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+python3
+  /app/load.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login --check
+--- calls
+python3
+  /app/login.py
+  --check
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+python3
+  /app/download.py
+  --dry-run
+  --lookback
+  1w
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/viac/entrypoint.sh: line N: exec: bogus-verb: not found

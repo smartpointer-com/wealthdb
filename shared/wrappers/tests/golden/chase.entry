@@ -1,0 +1,246 @@
+=== 
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+chase container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Discovery harness: Camoufox over VNC + HAR/trace/click log
+              under /debug. See DESIGN.md "Source behaviour".
+  download    One-shot login + scrape (deposit accounts + credit cards), 2FA
+              driven from the TERMINAL — no VNC. Pre-fills + submits the form,
+              prompts for the code on stdin (push / SMS / voice), then
+              exports each account's activity (CSV + QFX) and statement
+              PDFs into a UTC-stamped bronze run dir under /data.
+              --lookback bounds the statement pass (the activity export
+              always fetches Chase's full ~24 months); --no-documents
+              skips statements; --dry-run walks without exporting.
+  vnc-login   Fallback for download when the CLI 2FA can't drive a challenge
+              control: exposes VNC and lets Sign In + 2FA be done by hand.
+  login       Folds into download (nothing to persist). 'login --check'
+              probes a session read-only (exit 0 alive / 1 dead; dead
+              between runs is expected).
+  load        Ingest bronze into the SQLite silver (accounts, transactions,
+              statements). --force rebuilds from all bronze.
+  prune       Delete non-complete dumps from the bronze tree. --dry-run
+              prints the plan. Usually run host-side via the wrapper.
+  sh|bash     Open an interactive shell.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand flags.
+--- stderr
+=== --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+chase container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Discovery harness: Camoufox over VNC + HAR/trace/click log
+              under /debug. See DESIGN.md "Source behaviour".
+  download    One-shot login + scrape (deposit accounts + credit cards), 2FA
+              driven from the TERMINAL — no VNC. Pre-fills + submits the form,
+              prompts for the code on stdin (push / SMS / voice), then
+              exports each account's activity (CSV + QFX) and statement
+              PDFs into a UTC-stamped bronze run dir under /data.
+              --lookback bounds the statement pass (the activity export
+              always fetches Chase's full ~24 months); --no-documents
+              skips statements; --dry-run walks without exporting.
+  vnc-login   Fallback for download when the CLI 2FA can't drive a challenge
+              control: exposes VNC and lets Sign In + 2FA be done by hand.
+  login       Folds into download (nothing to persist). 'login --check'
+              probes a session read-only (exit 0 alive / 1 dead; dead
+              between runs is expected).
+  load        Ingest bronze into the SQLite silver (accounts, transactions,
+              statements). --force rebuilds from all bronze.
+  prune       Delete non-complete dumps from the bronze tree. --dry-run
+              prints the plan. Usually run host-side via the wrapper.
+  sh|bash     Open an interactive shell.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand flags.
+--- stderr
+=== explore
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== explore --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/explore.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== download --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== vnc-login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+--- stderr
+chase: 'login' folds into 'download' — nothing to persist (the session dies with Firefox; §F).
+  Run 'download' (one-shot login + scrape), or 'login --check' to probe a session.
+=== login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --bronze-dir
+  /data
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --bronze-dir
+  /data
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login --check
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/chase/entrypoint.sh: line N: exec: bogus-verb: not found

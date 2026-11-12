@@ -1,0 +1,872 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+amex — host wrapper
+
+Read-only collector for the American Express card relationship (credit and
+charge cards). `download` is a one-shot sign-in + REST fetch of each
+card's activity, exports and statement PDFs; `load` ingests that bronze
+into the SQLite silver. See DESIGN.md for the mapped flows.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  download [args...]  One-shot sign-in + REST fetch of the card accounts
+                      (roster, activity ledger, exports, statement PDFs)
+                      into a UTC-stamped bronze run dir. A trusted device
+                      needs no passcode; a challenge is answered from the
+                      TERMINAL when there is one — registering the device,
+                      so the next run is unattended — and is a loud failure
+                      otherwise (--cli-mfa / --no-cli-mfa force either).
+                      --lookback bounds the window; --format picks export
+                      formats; --no-documents skips statements; --dry-run
+                      walks without exporting.
+  vnc-login [args...] Fallback for download: exposes VNC for a by-hand
+                      sign-in — the only way to answer a captcha, and the
+                      way to register a device with no terminal. Add
+                      --fresh to force the untrusted-device flow (moves the
+                      stored device trust aside first).
+  login [args...]     Folds into download (the sign-in budget is too small
+                      to spend one on a separate verb, §L); a bare one is a
+                      host-side no-op. `login --check` reports whether
+                      this device is registered, read from the profile's
+                      device-trust cookie — no sign-in, no network.
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, statement balances, documents).
+                      --force rebuilds from all bronze.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / DOM snapshots under /debug.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-amex/home/.secrets  ->  /secrets
+  <TMP>/w-amex/xdgdata/wealthdb/amex     ->  /data
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex    ->  /debug
+
+Override mounts via env:
+  AMEX_SECRETS_DIR=/path/to/secrets
+  AMEX_DATA_DIR=/path/to/data
+  AMEX_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  AMEX_USERNAME / AMEX_PASSWORD are read from /secrets/amex.env inside the
+  container (= $HOME/.secrets/amex.env on the host). chmod 0600.
+  A one-time passcode is driven from the terminal (`download`, when it
+  has one) or by hand over VNC (`vnc-login`). During `explore` the
+  harness only pre-fills the form — Sign In and the challenge are always
+  driven by hand.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+amex — host wrapper
+
+Read-only collector for the American Express card relationship (credit and
+charge cards). `download` is a one-shot sign-in + REST fetch of each
+card's activity, exports and statement PDFs; `load` ingests that bronze
+into the SQLite silver. See DESIGN.md for the mapped flows.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  download [args...]  One-shot sign-in + REST fetch of the card accounts
+                      (roster, activity ledger, exports, statement PDFs)
+                      into a UTC-stamped bronze run dir. A trusted device
+                      needs no passcode; a challenge is answered from the
+                      TERMINAL when there is one — registering the device,
+                      so the next run is unattended — and is a loud failure
+                      otherwise (--cli-mfa / --no-cli-mfa force either).
+                      --lookback bounds the window; --format picks export
+                      formats; --no-documents skips statements; --dry-run
+                      walks without exporting.
+  vnc-login [args...] Fallback for download: exposes VNC for a by-hand
+                      sign-in — the only way to answer a captcha, and the
+                      way to register a device with no terminal. Add
+                      --fresh to force the untrusted-device flow (moves the
+                      stored device trust aside first).
+  login [args...]     Folds into download (the sign-in budget is too small
+                      to spend one on a separate verb, §L); a bare one is a
+                      host-side no-op. `login --check` reports whether
+                      this device is registered, read from the profile's
+                      device-trust cookie — no sign-in, no network.
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, statement balances, documents).
+                      --force rebuilds from all bronze.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / DOM snapshots under /debug.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-amex/home/.secrets  ->  /secrets
+  <TMP>/w-amex/xdgdata/wealthdb/amex     ->  /data
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex    ->  /debug
+
+Override mounts via env:
+  AMEX_SECRETS_DIR=/path/to/secrets
+  AMEX_DATA_DIR=/path/to/data
+  AMEX_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  AMEX_USERNAME / AMEX_PASSWORD are read from /secrets/amex.env inside the
+  container (= $HOME/.secrets/amex.env on the host). chmod 0600.
+  A one-time passcode is driven from the terminal (`download`, when it
+  has one) or by hand over VNC (`vnc-login`). During `explore` the
+  harness only pre-fills the form — Sign In and the challenge are always
+  driven by hand.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-amex/tree/collectors/amex/Dockerfile
+  <TMP>/w-amex/tree/collectors/amex/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/amex:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/amex:latest
+  <TMP>/w-amex/tree/collectors/amex
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  download
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  vnc-login
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+exit: 0
+--- stdout
+--- stderr
+amex: 'login' folds into 'download' — the sign-in budget is too small to spend one on a separate verb (DESIGN.md §L).
+  Run 'download', or 'login --check' to report whether this device is registered.
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  load
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  explore
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-amex/tree/collectors/amex/prune.py
+  --bronze-dir
+  <TMP>/w-amex/xdgdata/wealthdb/amex
+  --debug-dir
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  sh
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  bash
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  login
+  --check
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-amex/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/silver:/silver
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-amex/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/silver:/silver
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-amex/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/alt-data:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  load
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-amex/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/alt-data:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  load
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-amex/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/alt-secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  download
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-amex/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/alt-secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  download
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^amex$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  amex
+docker
+  run
+  --rm
+  --name
+  amex
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  AMEX_USERNAME
+  -e
+  AMEX_PASSWORD
+  -v
+  <TMP>/w-amex/home/.secrets:/secrets
+  -v
+  <TMP>/w-amex/xdgdata/wealthdb/amex:/data
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
+  -v
+  <TMP>/w-amex/tree/collectors/amex:/app
+  wealthdb/amex:latest
+  bogus-verb
+  [env] AMEX_USERNAME=<unset>
+  [env] AMEX_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr

@@ -1,0 +1,283 @@
+=== 
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+angellist container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  login       The auth path. Fast path: if the saved
+              profile holds a valid session — cookie unexpired AND a headless
+              probe confirms the server still accepts it — it's lifted to
+              /secrets/angellist-cookies.json and login exits — no VNC.
+              Otherwise launch a genuine, stock Mozilla Firefox under VNC so
+              you clear AngelList's invisible anti-bot login by hand (+2FA);
+              on a clean Firefox close, the session cookie is lifted. There is
+              no unattended login (the SPA is bot-walled). Optionally grab
+              K-1 / financial docs while logged in (they save to the mounted
+              documents dir). Flags: --check (probe only, never opens Firefox,
+              exit 1 if stale), --fresh (always re-login).
+  download    Headless Camoufox + injected cookie: navigate the LP-portfolio
+              routes and capture the venture GraphQL (positions / summary /
+              commitments / funding-account cash ledger) the SPA signs
+              itself, and download tax documents (K-1 CSV/PDF, financial
+              statements), replacing the copies of incomplete tax years.
+              Pass --dry-run to walk without writing bronze.
+  load        Ingest bronze + tax docs into the SQLite silver: offerings +
+              event-sourced position_snapshots, vehicles, k1_capital_accounts,
+              tax_documents, portfolio_summary / timeseries, commitments,
+              funding_accounts + funding_transactions. Pass --force to
+              delete the silver DB and rebuild it from all bronze.
+  prune       Delete non-complete dumps (crashed / interrupted downloads
+              that never wrote a terminal run.json) from the bronze tree.
+              --dry-run prints the plan first.
+  explore     Discovery harness: Camoufox under VNC with a redacted HAR +
+              network/click logs under /debug, and --trace for a Playwright
+              trace, which nothing redacts (route mapping; --cookies loads
+              the BYO session). Starts x11vnc on a free 127.0.0.1:5900-6000
+              port (printed at handoff).
+  sh|bash     Open an interactive shell inside the container.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+angellist container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  login       The auth path. Fast path: if the saved
+              profile holds a valid session — cookie unexpired AND a headless
+              probe confirms the server still accepts it — it's lifted to
+              /secrets/angellist-cookies.json and login exits — no VNC.
+              Otherwise launch a genuine, stock Mozilla Firefox under VNC so
+              you clear AngelList's invisible anti-bot login by hand (+2FA);
+              on a clean Firefox close, the session cookie is lifted. There is
+              no unattended login (the SPA is bot-walled). Optionally grab
+              K-1 / financial docs while logged in (they save to the mounted
+              documents dir). Flags: --check (probe only, never opens Firefox,
+              exit 1 if stale), --fresh (always re-login).
+  download    Headless Camoufox + injected cookie: navigate the LP-portfolio
+              routes and capture the venture GraphQL (positions / summary /
+              commitments / funding-account cash ledger) the SPA signs
+              itself, and download tax documents (K-1 CSV/PDF, financial
+              statements), replacing the copies of incomplete tax years.
+              Pass --dry-run to walk without writing bronze.
+  load        Ingest bronze + tax docs into the SQLite silver: offerings +
+              event-sourced position_snapshots, vehicles, k1_capital_accounts,
+              tax_documents, portfolio_summary / timeseries, commitments,
+              funding_accounts + funding_transactions. Pass --force to
+              delete the silver DB and rebuild it from all bronze.
+  prune       Delete non-complete dumps (crashed / interrupted downloads
+              that never wrote a terminal run.json) from the bronze tree.
+              --dry-run prints the plan first.
+  explore     Discovery harness: Camoufox under VNC with a redacted HAR +
+              network/click logs under /debug, and --trace for a Playwright
+              trace, which nothing redacts (route mapping; --cookies loads
+              the BYO session). Starts x11vnc on a free 127.0.0.1:5900-6000
+              port (printed at handoff).
+  sh|bash     Open an interactive shell inside the container.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/fxprofile.py
+  --profile-dir
+  /secrets/angellist-fxprofile
+python3
+  /app/extract_cookies.py
+  --db
+  /secrets/angellist-fxprofile/cookies.sqlite
+  --out
+  /secrets/angellist-cookies.json
+  --require-valid
+python3
+  /app/download.py
+  --cookies
+  /secrets/angellist-cookies.json
+  --check
+exit: 0
+--- stdout
+--- stderr
+login: existing AngelList session still valid — cookie lifted to
+login:   /secrets/angellist-cookies.json. No VNC login needed (pass --fresh to re-login).
+=== login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+--- stderr
+angellist login — BYO-cookie auth path.
+  --check  probe the saved session (exit 0 valid / 1 stale); never opens Firefox.
+  --fresh  skip the check and always re-login by hand over VNC.
+  (no flag) probe; if stale, open Firefox under VNC for a by-hand login.
+=== download
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/download.py
+exit: 0
+--- stdout
+--- stderr
+=== download --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/download.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== explore --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/explore.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login --check
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/fxprofile.py
+  --profile-dir
+  /secrets/angellist-fxprofile
+python3
+  /app/extract_cookies.py
+  --db
+  /secrets/angellist-fxprofile/cookies.sqlite
+  --out
+  /secrets/angellist-cookies.json
+  --require-valid
+python3
+  /app/download.py
+  --cookies
+  /secrets/angellist-cookies.json
+  --check
+exit: 0
+--- stdout
+--- stderr
+login: existing AngelList session still valid — cookie lifted to
+login:   /secrets/angellist-cookies.json. No VNC login needed (pass --fresh to re-login).
+=== download --dry-run --lookback 1w
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/download.py
+  --dry-run
+  --lookback
+  1w
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/angellist/entrypoint.sh: line N: exec: bogus-verb: not found

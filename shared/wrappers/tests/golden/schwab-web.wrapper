@@ -1,0 +1,843 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+schwab-web — host wrapper
+
+Subcommands:
+  build                 Build the Docker image (`docker build`).
+  download [args...]    One-shot CLI-MFA login + scrape. Pre-fills
+                        from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD,
+                        auto-submits, prompts on stdin for the 2FA
+                        code, runs the statements + tx-history
+                        download, exits. Default range: 3 months
+                        (widen with --lookback; --lookback all for a
+                        full backfill, capped at Schwab's ~10 years).
+                        Stdin must be a TTY.
+  load [args...]        Parse bronze into the silver SQLite DB.
+  collapse-statements [args...]
+                        One-off reclaim of the statement-PDF bloat
+                        Schwab creates by re-rendering each statement
+                        on every download: collapse copies that parse
+                        identically onto the oldest. Distinct from the
+                        fleet `wealthdb-collect dedup` sweep (which only
+                        hardlinks byte-identical files). Runs in-container
+                        (needs the PDF parser). --dry-run prints the
+                        evidence report (per-group plan + any divergent
+                        groups) and collapses nothing.
+  prune [args...]       Delete <run>/screenshots/ and stray
+                        transactions/*/page-*.html from complete
+                        dumps, whole non-complete dumps, and idle
+                        entries of the /debug cache. Runs host-side
+                        (pure stdlib Python; no Docker spawn), so it
+                        reclaims disk even while a download container
+                        is mid-flight. --dry-run prints the plan
+                        without deleting.
+  vnc-login [args...]   Fallback to a VNC-driven login + scrape
+                        when the CLI-MFA selectors drift or a
+                        non-code challenge is required. Starts
+                        x11vnc on the first free 127.0.0.1 port in
+                        5900-6000 (printed at start); tunnel and
+                        connect a VNC client to it.
+  sh|bash               Open an interactive shell in the container.
+  help                  Show this message.
+
+Mounted into the container:
+  <TMP>/w-schwab-web/home/.secrets  ->  /secrets
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web     ->  /data
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web    ->  /debug
+
+Override mounts via env:
+  SCHWAB_WEB_SECRETS_DIR=/path/to/secrets
+  SCHWAB_WEB_DATA_DIR=/path/to/data
+  SCHWAB_WEB_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  The Login ID is read from $SCHWAB_LOGIN_ID inside the container;
+  the password from $SCHWAB_PASSWORD. When either is unset, the
+  form is not pre-filled and Log In is driven by hand over
+  vnc-login. The login script sources /secrets/schwab-web.env
+  automatically (= $HOME/.secrets/schwab-web.env on the host).
+
+  Use SINGLE QUOTES around values containing $, \!, backtick, or
+  other shell metacharacters. Double quotes would let the host
+  shell do $-expansion when sourcing the file, which silently
+  mangles the password before it reaches the container:
+    SCHWAB_LOGIN_ID='your-login-id'
+    SCHWAB_PASSWORD='your-password-with-$pecial-chars'
+  chmod 600 the file.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+schwab-web — host wrapper
+
+Subcommands:
+  build                 Build the Docker image (`docker build`).
+  download [args...]    One-shot CLI-MFA login + scrape. Pre-fills
+                        from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD,
+                        auto-submits, prompts on stdin for the 2FA
+                        code, runs the statements + tx-history
+                        download, exits. Default range: 3 months
+                        (widen with --lookback; --lookback all for a
+                        full backfill, capped at Schwab's ~10 years).
+                        Stdin must be a TTY.
+  load [args...]        Parse bronze into the silver SQLite DB.
+  collapse-statements [args...]
+                        One-off reclaim of the statement-PDF bloat
+                        Schwab creates by re-rendering each statement
+                        on every download: collapse copies that parse
+                        identically onto the oldest. Distinct from the
+                        fleet `wealthdb-collect dedup` sweep (which only
+                        hardlinks byte-identical files). Runs in-container
+                        (needs the PDF parser). --dry-run prints the
+                        evidence report (per-group plan + any divergent
+                        groups) and collapses nothing.
+  prune [args...]       Delete <run>/screenshots/ and stray
+                        transactions/*/page-*.html from complete
+                        dumps, whole non-complete dumps, and idle
+                        entries of the /debug cache. Runs host-side
+                        (pure stdlib Python; no Docker spawn), so it
+                        reclaims disk even while a download container
+                        is mid-flight. --dry-run prints the plan
+                        without deleting.
+  vnc-login [args...]   Fallback to a VNC-driven login + scrape
+                        when the CLI-MFA selectors drift or a
+                        non-code challenge is required. Starts
+                        x11vnc on the first free 127.0.0.1 port in
+                        5900-6000 (printed at start); tunnel and
+                        connect a VNC client to it.
+  sh|bash               Open an interactive shell in the container.
+  help                  Show this message.
+
+Mounted into the container:
+  <TMP>/w-schwab-web/home/.secrets  ->  /secrets
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web     ->  /data
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web    ->  /debug
+
+Override mounts via env:
+  SCHWAB_WEB_SECRETS_DIR=/path/to/secrets
+  SCHWAB_WEB_DATA_DIR=/path/to/data
+  SCHWAB_WEB_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  The Login ID is read from $SCHWAB_LOGIN_ID inside the container;
+  the password from $SCHWAB_PASSWORD. When either is unset, the
+  form is not pre-filled and Log In is driven by hand over
+  vnc-login. The login script sources /secrets/schwab-web.env
+  automatically (= $HOME/.secrets/schwab-web.env on the host).
+
+  Use SINGLE QUOTES around values containing $, \!, backtick, or
+  other shell metacharacters. Double quotes would let the host
+  shell do $-expansion when sourcing the file, which silently
+  mangles the password before it reaches the container:
+    SCHWAB_LOGIN_ID='your-login-id'
+    SCHWAB_PASSWORD='your-password-with-$pecial-chars'
+  chmod 600 the file.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-schwab-web/tree/collectors/schwab-web/Dockerfile
+  <TMP>/w-schwab-web/tree/collectors/schwab-web/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/schwab-web:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/schwab-web:latest
+  <TMP>/w-schwab-web/tree/collectors/schwab-web
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  download
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  load
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== collapse-statements
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  collapse-statements
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-schwab-web/tree/collectors/schwab-web/prune.py
+  --bronze-dir
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web
+  --debug-dir
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  vnc-login
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  sh
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  bash
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+exit: 0
+--- stdout
+--- stderr
+schwab-web: 'login' folds into 'download' — nothing to persist.
+  This one-shot scraper mints its session inside 'download'
+  (CLI-MFA prompt on stdin). Run 'download' directly, or
+  'vnc-login' when the CLI-MFA selectors drift.
+=== login --check
+--- calls
+exit: 0
+--- stdout
+--- stderr
+schwab-web: 'login' folds into 'download' — nothing to persist.
+  This one-shot scraper mints its session inside 'download'
+  (CLI-MFA prompt on stdin). Run 'download' directly, or
+  'vnc-login' when the CLI-MFA selectors drift.
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-schwab-web/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/silver:/silver
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-schwab-web/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/silver:/silver
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-schwab-web/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/alt-data:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  load
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-schwab-web/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/alt-data:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  load
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-schwab-web/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/alt-secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  download
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-schwab-web/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/alt-secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  download
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^schwab-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  schwab-web
+docker
+  run
+  --rm
+  --name
+  schwab-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  SCHWAB_LOGIN_ID
+  -e
+  SCHWAB_PASSWORD
+  -v
+  <TMP>/w-schwab-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-schwab-web/xdgdata/wealthdb/schwab-web:/data
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web:/debug
+  -v
+  <TMP>/w-schwab-web/tree/collectors/schwab-web:/app
+  wealthdb/schwab-web:latest
+  bogus-verb
+  [env] SCHWAB_LOGIN_ID=<unset>
+  [env] SCHWAB_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr

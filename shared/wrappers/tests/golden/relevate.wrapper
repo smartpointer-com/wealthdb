@@ -1,0 +1,767 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+relevate — host wrapper
+
+Subcommands:
+  build                 Build the Docker image (`docker build`).
+  login [args...]       Mint or refresh the Airlock session
+                        cookies. Prompts on stdin for the mTAN
+                        code sent to your phone. Pass --check to
+                        probe the existing session without
+                        triggering a new mTAN.
+  download [args...]    Bronze dump against /middlelayer/v2/.
+                        Pre-requisite: a session minted by
+                        `login` in /secrets/relevate-state.json.
+                        Use --dry-run to enumerate without
+                        per-portfolio / per-document fetches; use
+                        --mode + --limit-* for iteration-cheap
+                        reruns.
+  load [args...]        Parse bronze into silver SQLite. Idempotent:
+                        skips dumps already loaded, and skips a dump
+                        the walk never finished (a run.json status
+                        other than complete).
+  prune [args...]       Delete non-complete dumps (crashed walks +
+                        --dry-run shells) and `download --debug`
+                        HTTP traces from the bronze tree, and aged
+                        entries of the /debug cache. Use
+                        --dry-run to print the plan first;
+                        --min-age-hours (default 1) guards a download
+                        still in flight.
+  sh|bash               Open an interactive shell in the container.
+  help                  Show this message.
+
+Mounted into the container:
+  <TMP>/w-relevate/home/.secrets  ->  /secrets
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate     ->  /data
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate    ->  /debug
+
+Override mounts via env (or in <TMP>/w-relevate/xdgconfig/relevate.cfg):
+  RELEVATE_SECRETS_DIR=/path/to/secrets
+  RELEVATE_DATA_DIR=/path/to/data
+  RELEVATE_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  The Login is read from $RELEVATE_LOGIN inside the container; the
+  password from $RELEVATE_PASSWORD. Both are sourced on the host from
+  <secrets-dir>/relevate.env (default $HOME/.secrets/relevate.env;
+  override the path with $RELEVATE_ENV_FILE) before `docker run`.
+
+  Use SINGLE QUOTES around values containing $, \!, backtick, or
+  other shell metacharacters. Double quotes would let the host
+  shell do $-expansion when sourcing the file, which silently
+  mangles the password before it reaches the container:
+    export RELEVATE_LOGIN='your-login-or-OASI-number'
+    export RELEVATE_PASSWORD='your-password-with-$pecial-chars'
+  chmod 600 the file.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+relevate — host wrapper
+
+Subcommands:
+  build                 Build the Docker image (`docker build`).
+  login [args...]       Mint or refresh the Airlock session
+                        cookies. Prompts on stdin for the mTAN
+                        code sent to your phone. Pass --check to
+                        probe the existing session without
+                        triggering a new mTAN.
+  download [args...]    Bronze dump against /middlelayer/v2/.
+                        Pre-requisite: a session minted by
+                        `login` in /secrets/relevate-state.json.
+                        Use --dry-run to enumerate without
+                        per-portfolio / per-document fetches; use
+                        --mode + --limit-* for iteration-cheap
+                        reruns.
+  load [args...]        Parse bronze into silver SQLite. Idempotent:
+                        skips dumps already loaded, and skips a dump
+                        the walk never finished (a run.json status
+                        other than complete).
+  prune [args...]       Delete non-complete dumps (crashed walks +
+                        --dry-run shells) and `download --debug`
+                        HTTP traces from the bronze tree, and aged
+                        entries of the /debug cache. Use
+                        --dry-run to print the plan first;
+                        --min-age-hours (default 1) guards a download
+                        still in flight.
+  sh|bash               Open an interactive shell in the container.
+  help                  Show this message.
+
+Mounted into the container:
+  <TMP>/w-relevate/home/.secrets  ->  /secrets
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate     ->  /data
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate    ->  /debug
+
+Override mounts via env (or in <TMP>/w-relevate/xdgconfig/relevate.cfg):
+  RELEVATE_SECRETS_DIR=/path/to/secrets
+  RELEVATE_DATA_DIR=/path/to/data
+  RELEVATE_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  The Login is read from $RELEVATE_LOGIN inside the container; the
+  password from $RELEVATE_PASSWORD. Both are sourced on the host from
+  <secrets-dir>/relevate.env (default $HOME/.secrets/relevate.env;
+  override the path with $RELEVATE_ENV_FILE) before `docker run`.
+
+  Use SINGLE QUOTES around values containing $, \!, backtick, or
+  other shell metacharacters. Double quotes would let the host
+  shell do $-expansion when sourcing the file, which silently
+  mangles the password before it reaches the container:
+    export RELEVATE_LOGIN='your-login-or-OASI-number'
+    export RELEVATE_PASSWORD='your-password-with-$pecial-chars'
+  chmod 600 the file.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-relevate/tree/collectors/relevate
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/relevate:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/relevate:latest
+  <TMP>/w-relevate/tree/collectors/relevate
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  login
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  download
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  load
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-relevate/tree/collectors/relevate/prune.py
+  --bronze-dir
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate
+  --debug-dir
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  sh
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  bash
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  login
+  --check
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-relevate/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/silver:/silver
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-relevate/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/silver:/silver
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-relevate/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/alt-data:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  load
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-relevate/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/alt-data:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  load
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-relevate/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/alt-secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  download
+  [env] RELEVATE_LOGIN=<unset>
+  [env] RELEVATE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-relevate/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/alt-secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  download
+  [env] RELEVATE_LOGIN=<unset>
+  [env] RELEVATE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^relevate$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  relevate
+docker
+  run
+  --rm
+  --name
+  relevate
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RELEVATE_LOGIN
+  -e
+  RELEVATE_PASSWORD
+  -v
+  <TMP>/w-relevate/home/.secrets:/secrets
+  -v
+  <TMP>/w-relevate/xdgdata/wealthdb/relevate:/data
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
+  wealthdb/relevate:latest
+  bogus-verb
+  [env] RELEVATE_LOGIN=invented-RELEVATE_LOGIN
+  [env] RELEVATE_PASSWORD=invented-RELEVATE_PASSWORD
+exit: 0
+--- stdout
+--- stderr

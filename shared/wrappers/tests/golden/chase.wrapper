@@ -1,0 +1,896 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+chase — host wrapper
+
+Read-only scraper for the Chase retail relationship: deposit accounts
+(checking / savings) and credit-card reads. `download` is a one-shot
+login + scrape with 2FA driven from the terminal; `load` builds the SQLite
+silver. See DESIGN.md "Source behaviour" for the mapped flows.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  download [args...]  One-shot login + scrape with 2FA driven from the
+                      TERMINAL (no VNC): pre-fills + submits the sign-in
+                      form, prompts for the code on stdin (push / SMS /
+                      voice), then exports each account's activity (CSV +
+                      QFX) and statement PDFs into a UTC-stamped bronze run
+                      dir. --lookback bounds the statement pass (the
+                      activity export always fetches Chase's full ~24
+                      months); --no-documents skips statements; --dry-run
+                      walks without exporting.
+  vnc-login [args...] Fallback for download when the CLI 2FA can't drive a
+                      challenge control: exposes VNC for a by-hand sign-in.
+  login [args...]     Folds into download (the session dies with Firefox,
+                      §F). `login --check` probes a session read-only
+                      (exit 0 alive / 1 dead).
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, statements). --force rebuilds from all
+                      bronze.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / trace under /debug. --fresh wipes
+                      the profile so the next login forces a full 2FA.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-chase/home/.secrets  ->  /secrets
+  <TMP>/w-chase/xdgdata/wealthdb/chase     ->  /data
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase    ->  /debug
+
+Override mounts via env:
+  CHASE_SECRETS_DIR=/path/to/secrets
+  CHASE_DATA_DIR=/path/to/data
+  CHASE_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  CHASE_USERNAME / CHASE_PASSWORD are read from /secrets/chase.env inside
+  the container (= $HOME/.secrets/chase.env on the host). chmod 0600.
+  `download` drives the 2FA challenge from the terminal; `vnc-login`
+  and `explore` leave it to be completed by hand over VNC.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+chase — host wrapper
+
+Read-only scraper for the Chase retail relationship: deposit accounts
+(checking / savings) and credit-card reads. `download` is a one-shot
+login + scrape with 2FA driven from the terminal; `load` builds the SQLite
+silver. See DESIGN.md "Source behaviour" for the mapped flows.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  download [args...]  One-shot login + scrape with 2FA driven from the
+                      TERMINAL (no VNC): pre-fills + submits the sign-in
+                      form, prompts for the code on stdin (push / SMS /
+                      voice), then exports each account's activity (CSV +
+                      QFX) and statement PDFs into a UTC-stamped bronze run
+                      dir. --lookback bounds the statement pass (the
+                      activity export always fetches Chase's full ~24
+                      months); --no-documents skips statements; --dry-run
+                      walks without exporting.
+  vnc-login [args...] Fallback for download when the CLI 2FA can't drive a
+                      challenge control: exposes VNC for a by-hand sign-in.
+  login [args...]     Folds into download (the session dies with Firefox,
+                      §F). `login --check` probes a session read-only
+                      (exit 0 alive / 1 dead).
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, statements). --force rebuilds from all
+                      bronze.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / trace under /debug. --fresh wipes
+                      the profile so the next login forces a full 2FA.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-chase/home/.secrets  ->  /secrets
+  <TMP>/w-chase/xdgdata/wealthdb/chase     ->  /data
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase    ->  /debug
+
+Override mounts via env:
+  CHASE_SECRETS_DIR=/path/to/secrets
+  CHASE_DATA_DIR=/path/to/data
+  CHASE_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  CHASE_USERNAME / CHASE_PASSWORD are read from /secrets/chase.env inside
+  the container (= $HOME/.secrets/chase.env on the host). chmod 0600.
+  `download` drives the 2FA challenge from the terminal; `vnc-login`
+  and `explore` leave it to be completed by hand over VNC.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-chase/tree/collectors/chase/Dockerfile
+  <TMP>/w-chase/tree/collectors/chase/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/chase:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/chase:latest
+  <TMP>/w-chase/tree/collectors/chase
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  download
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  vnc-login
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  login
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  load
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-chase/tree/collectors/chase/prune.py
+  --bronze-dir
+  <TMP>/w-chase/xdgdata/wealthdb/chase
+  --debug-dir
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  explore
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  sh
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  bash
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  login
+  --check
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-chase/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/silver:/silver
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-chase/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/silver:/silver
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-chase/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/alt-data:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  load
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-chase/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/alt-data:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  load
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-chase/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/alt-secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  download
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-chase/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/alt-secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  download
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^chase$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  chase
+docker
+  run
+  --rm
+  --name
+  chase
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CHASE_USERNAME
+  -e
+  CHASE_PASSWORD
+  -v
+  <TMP>/w-chase/home/.secrets:/secrets
+  -v
+  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
+  -v
+  <TMP>/w-chase/tree/collectors/chase:/app
+  wealthdb/chase:latest
+  bogus-verb
+  [env] CHASE_USERNAME=<unset>
+  [env] CHASE_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr

@@ -1,0 +1,335 @@
+=== 
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+cointracking container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Launch Camoufox in the container's Xvfb display and
+              record every action taken in the VNC session (redacted
+              HAR + network/click logs under /debug; add --trace for a
+              Playwright trace, which nothing redacts). Use during
+              the discovery phase. Starts x11vnc on the first free
+              host port in 127.0.0.1:5900-6000 (printed at handoff).
+  login       Mint a long-lived cointracking session via headless
+              Playwright Firefox. Prompts for 2FA code on stdin;
+              ticks "Don't ask again" so the device-trust cookie
+              persists for years. Persists to the same Firefox
+              profile dir as explore (/secrets/cointracking-profile).
+              Pass --check to probe the existing session without
+              firing a 2FA push.
+  download    Headless Firefox per-portfolio loop: trade history
+              (Extended-with-additional-columns blob CSV) + balance
+              by exchange CSV + the daily balance overview CSV per
+              portfolio. Writes a UTC-timestamped
+              bronze subdir + run.json manifest; each CSV export is
+              zstd-compressed in place as it lands (.csv.zst). Pass
+              --dry-run to walk the navigation without firing exports.
+  load        Ingest bronze snapshots into DuckDB silver: refresh
+              transactions table, incremental upsert of
+              positions_daily (replays from genesis; rewrites
+              only from the first deviation day), populate
+              portfolio_prices from overview.csv, reconcile final
+              balances vs the balance.csv. Pass --replay-only to
+              re-run the holdings replay without re-ingesting
+              bronze; --force to delete the silver DB and rebuild
+              it from all bronze. Missing prices are filled after
+              ingest by default, crypto from Binance and fiat from the
+              ECB via Frankfurter; --no-fetch-prices skips it.
+  fetch-prices Fetch prices for every held coin: crypto
+              (USDT-denominated) from Binance public spot, fiat from
+              the ECB via Frankfurter. --missing fills gaps (same
+              as the default `load` price fill); no flag re-fetches the
+              full held range (corruption recovery). Either mode
+              always re-fetches the latest priced day so an intraday
+              snapshot from a previous run gets upgraded to the
+              close price. Stablecoins (USDT, USDC, DAI, …) emit
+              synthetic 1.0 USD prices.
+  prune       Delete non-complete dumps (crashed / in-progress) from
+              the bronze tree, and strip screenshots/ (the download
+              --debug captures) from complete dumps, whose load inputs
+              are kept intact. --debug-dir also reclaims the /debug
+              cache. --dry-run prints the plan first.
+  recompress  Convert the pre-compression bronze backlog: replace
+              plain cu_<id>/*.csv inside complete dumps with
+              sha256-verified .csv.zst twins. Manual one-time sweep;
+              --dry-run prints the plan first.
+  sh|bash     Open an interactive shell inside the container.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+cointracking container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Launch Camoufox in the container's Xvfb display and
+              record every action taken in the VNC session (redacted
+              HAR + network/click logs under /debug; add --trace for a
+              Playwright trace, which nothing redacts). Use during
+              the discovery phase. Starts x11vnc on the first free
+              host port in 127.0.0.1:5900-6000 (printed at handoff).
+  login       Mint a long-lived cointracking session via headless
+              Playwright Firefox. Prompts for 2FA code on stdin;
+              ticks "Don't ask again" so the device-trust cookie
+              persists for years. Persists to the same Firefox
+              profile dir as explore (/secrets/cointracking-profile).
+              Pass --check to probe the existing session without
+              firing a 2FA push.
+  download    Headless Firefox per-portfolio loop: trade history
+              (Extended-with-additional-columns blob CSV) + balance
+              by exchange CSV + the daily balance overview CSV per
+              portfolio. Writes a UTC-timestamped
+              bronze subdir + run.json manifest; each CSV export is
+              zstd-compressed in place as it lands (.csv.zst). Pass
+              --dry-run to walk the navigation without firing exports.
+  load        Ingest bronze snapshots into DuckDB silver: refresh
+              transactions table, incremental upsert of
+              positions_daily (replays from genesis; rewrites
+              only from the first deviation day), populate
+              portfolio_prices from overview.csv, reconcile final
+              balances vs the balance.csv. Pass --replay-only to
+              re-run the holdings replay without re-ingesting
+              bronze; --force to delete the silver DB and rebuild
+              it from all bronze. Missing prices are filled after
+              ingest by default, crypto from Binance and fiat from the
+              ECB via Frankfurter; --no-fetch-prices skips it.
+  fetch-prices Fetch prices for every held coin: crypto
+              (USDT-denominated) from Binance public spot, fiat from
+              the ECB via Frankfurter. --missing fills gaps (same
+              as the default `load` price fill); no flag re-fetches the
+              full held range (corruption recovery). Either mode
+              always re-fetches the latest priced day so an intraday
+              snapshot from a previous run gets upgraded to the
+              close price. Stablecoins (USDT, USDC, DAI, …) emit
+              synthetic 1.0 USD prices.
+  prune       Delete non-complete dumps (crashed / in-progress) from
+              the bronze tree, and strip screenshots/ (the download
+              --debug captures) from complete dumps, whose load inputs
+              are kept intact. --debug-dir also reclaims the /debug
+              cache. --dry-run prints the plan first.
+  recompress  Convert the pre-compression bronze backlog: replace
+              plain cu_<id>/*.csv inside complete dumps with
+              sha256-verified .csv.zst twins. Manual one-time sweep;
+              --dry-run prints the plan first.
+  sh|bash     Open an interactive shell inside the container.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== explore
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== explore --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/explore.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+exit: 0
+--- stdout
+--- stderr
+=== login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/download.py
+exit: 0
+--- stdout
+--- stderr
+=== download --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/download.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --scratch-dir
+  /tmp
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --scratch-dir
+  /tmp
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== fetch-prices
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/fetch_prices.py
+exit: 0
+--- stdout
+--- stderr
+=== fetch-prices --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/fetch_prices.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== recompress
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/recompress.py
+exit: 0
+--- stdout
+--- stderr
+=== recompress --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/recompress.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login --check
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --check
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/download.py
+  --dry-run
+  --lookback
+  1w
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/cointracking/entrypoint.sh: line N: exec: bogus-verb: not found

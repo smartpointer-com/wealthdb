@@ -1,0 +1,920 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+carta — host wrapper
+
+`login` (Camoufox SPA login + CLI 2FA) -> `download` (authenticated
+REST/JSON walk + document archive) -> `load` (event-dated silver
+deltas). See DESIGN.md and README.md.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  explore [args...]   Discovery harness: launch Camoufox in the
+                      container's Xvfb display and expose a VNC port for
+                      driving the live holder UI interactively; record
+                      HAR + Playwright trace + click log + saved blobs
+                      under /debug for analysis. --fresh wipes the
+                      profile so the next login forces 2FA.
+  login [args...]     Mint a Carta holder session via the SPA login form.
+                      Prompts for the 2FA code on stdin; the Camoufox
+                      profile in /secrets/carta-profile keeps future runs
+                      from re-prompting (exact cookie lifetime not measured).
+                      --check probes the existing session without firing a
+                      2FA push.
+  download [args...]  Capture bronze for both holding families: the
+                      cap-table side (holdings, grants, vesting, per-grant
+                      exercise-detail xlsx) and the fund-LP side (capital
+                      account, cap calls), plus the document archive
+                      (statements, notices, K-1 / 1042-S tax docs). Writes
+                      a UTC-timestamped subdir + run.json manifest under
+                      the data dir (<TMP>/w-carta/xdgdata/wealthdb/carta). --dry-run verifies
+                      discovery without writing; --no-documents skips the
+                      document pass (the run's dominant cost).
+  load [args...]      Ingest bronze snapshots into the SQLite silver:
+                      entities, securities, vesting_schedules +
+                      vesting_events, fund_metrics, cap_calls,
+                      capital_events, cash_flows, documents,
+                      k1_capital_accounts.
+                      --force deletes the silver DB and rebuilds from all bronze.
+  prune [args...]     Delete non-complete dumps (a crashed walk left
+                      run.json status="in-progress", or a walk that crashed
+                      before writing run.json left none) from the bronze
+                      tree. Runs host-side (pure file walk; no container),
+                      so it can reclaim disk while a download is
+                      mid-flight. Also
+                      strips screenshots/ (the download --debug captures)
+                      from complete dumps; their load inputs are never
+                      touched. Also deletes aged entries of the /debug
+                      cache. --dry-run prints the plan without deleting
+                      anything.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-carta/home/.secrets  ->  /secrets
+  <TMP>/w-carta/xdgdata/wealthdb/carta     ->  /data
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta    ->  /debug
+
+Override mounts via env:
+  CARTA_SECRETS_DIR=/path/to/secrets
+  CARTA_DATA_DIR=/path/to/data
+  CARTA_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  CARTA_USERNAME (or its alias CARTA_EMAIL) / CARTA_PASSWORD are read
+  from /secrets/carta.env inside the container
+  (= $HOME/.secrets/carta.env on the host). chmod 0600.
+  The 2FA code is prompted on stdin during `login`; the session that
+  lands in /secrets/carta-profile/ keeps future logins from firing a 2FA
+  push (exact persistence lifetime not measured).
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+carta — host wrapper
+
+`login` (Camoufox SPA login + CLI 2FA) -> `download` (authenticated
+REST/JSON walk + document archive) -> `load` (event-dated silver
+deltas). See DESIGN.md and README.md.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  explore [args...]   Discovery harness: launch Camoufox in the
+                      container's Xvfb display and expose a VNC port for
+                      driving the live holder UI interactively; record
+                      HAR + Playwright trace + click log + saved blobs
+                      under /debug for analysis. --fresh wipes the
+                      profile so the next login forces 2FA.
+  login [args...]     Mint a Carta holder session via the SPA login form.
+                      Prompts for the 2FA code on stdin; the Camoufox
+                      profile in /secrets/carta-profile keeps future runs
+                      from re-prompting (exact cookie lifetime not measured).
+                      --check probes the existing session without firing a
+                      2FA push.
+  download [args...]  Capture bronze for both holding families: the
+                      cap-table side (holdings, grants, vesting, per-grant
+                      exercise-detail xlsx) and the fund-LP side (capital
+                      account, cap calls), plus the document archive
+                      (statements, notices, K-1 / 1042-S tax docs). Writes
+                      a UTC-timestamped subdir + run.json manifest under
+                      the data dir (<TMP>/w-carta/xdgdata/wealthdb/carta). --dry-run verifies
+                      discovery without writing; --no-documents skips the
+                      document pass (the run's dominant cost).
+  load [args...]      Ingest bronze snapshots into the SQLite silver:
+                      entities, securities, vesting_schedules +
+                      vesting_events, fund_metrics, cap_calls,
+                      capital_events, cash_flows, documents,
+                      k1_capital_accounts.
+                      --force deletes the silver DB and rebuilds from all bronze.
+  prune [args...]     Delete non-complete dumps (a crashed walk left
+                      run.json status="in-progress", or a walk that crashed
+                      before writing run.json left none) from the bronze
+                      tree. Runs host-side (pure file walk; no container),
+                      so it can reclaim disk while a download is
+                      mid-flight. Also
+                      strips screenshots/ (the download --debug captures)
+                      from complete dumps; their load inputs are never
+                      touched. Also deletes aged entries of the /debug
+                      cache. --dry-run prints the plan without deleting
+                      anything.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-carta/home/.secrets  ->  /secrets
+  <TMP>/w-carta/xdgdata/wealthdb/carta     ->  /data
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta    ->  /debug
+
+Override mounts via env:
+  CARTA_SECRETS_DIR=/path/to/secrets
+  CARTA_DATA_DIR=/path/to/data
+  CARTA_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  CARTA_USERNAME (or its alias CARTA_EMAIL) / CARTA_PASSWORD are read
+  from /secrets/carta.env inside the container
+  (= $HOME/.secrets/carta.env on the host). chmod 0600.
+  The 2FA code is prompted on stdin during `login`; the session that
+  lands in /secrets/carta-profile/ keeps future logins from firing a 2FA
+  push (exact persistence lifetime not measured).
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-carta/tree/collectors/carta/Dockerfile
+  <TMP>/w-carta/tree/collectors/carta/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/carta:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/carta:latest
+  <TMP>/w-carta/tree/collectors/carta
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  explore
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  login
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  download
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  load
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-carta/tree/collectors/carta/prune.py
+  --bronze-dir
+  <TMP>/w-carta/xdgdata/wealthdb/carta
+  --debug-dir
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  sh
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  bash
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  login
+  --check
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-carta/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/silver:/silver
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-carta/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/silver:/silver
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-carta/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/alt-data:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  load
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-carta/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/alt-data:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  load
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-carta/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/alt-secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  download
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-carta/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/alt-secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  download
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^carta$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  carta
+docker
+  run
+  --rm
+  --name
+  carta
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  CARTA_USERNAME
+  -e
+  CARTA_EMAIL
+  -e
+  CARTA_PASSWORD
+  -v
+  <TMP>/w-carta/home/.secrets:/secrets
+  -v
+  <TMP>/w-carta/xdgdata/wealthdb/carta:/data
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
+  -v
+  <TMP>/w-carta/tree/collectors/carta:/app
+  wealthdb/carta:latest
+  bogus-verb
+  [env] CARTA_USERNAME=<unset>
+  [env] CARTA_EMAIL=<unset>
+  [env] CARTA_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr

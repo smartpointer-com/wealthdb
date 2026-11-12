@@ -1,0 +1,1131 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+cointracking — host wrapper
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Mint a long-lived session via headless Playwright
+                      Firefox. Prompts for the 6-digit TOTP code on
+                      stdin and ticks "Don't ask again" so subsequent
+                      runs skip the 2FA prompt for years. --check
+                      probes the existing session without firing 2FA.
+  download [args...]  Fetch fresh bronze for every linked portfolio:
+                      13-column trade history CSV, per-wallet balance
+                      CSV and overview CSV via the SPA Export blobs.
+                      Writes a UTC-
+                      timestamped subdir + run.json manifest under the
+                      data dir (<TMP>/w-cointracking/xdgdata/wealthdb/cointracking); each CSV export is zstd-
+                      compressed in place as it lands (.csv.zst).
+                      --dry-run skips the export-button clicks for a
+                      navigation-only smoke test.
+  load [args...]      Ingest bronze snapshots into the DuckDB silver:
+                      replaces `transactions`, runs the aggregate-
+                      then-window holdings replay, incrementally
+                      upserts `positions_daily` from the first
+                      deviation day onwards, populates
+                      `portfolio_prices` from overview.csv,
+                      reconciles final balances vs the balance CSV.
+                      Reads each trade's Date in the portfolio's
+                      CoinTracking timezone (see Settings) and
+                      stores it in UTC.
+                      Pass --replay-only / --force for diagnostics.
+                      The price fill (missing prices: crypto from
+                      Binance, fiat from the ECB via Frankfurter)
+                      runs by default at the end; --no-fetch-prices
+                      skips it.
+  fetch-prices [args] Price backfill into `coin_prices`: crypto
+                      (USDT-denominated) from Binance public spot,
+                      fiat from the ECB via Frankfurter. --missing
+                      fills (held, unpriced) gaps (same as the
+                      default `load` price fill); no flag re-fetches
+                      the full held range (corruption recovery).
+                      The latest priced day is always re-fetched to
+                      upgrade the previous run's intraday snapshot
+                      to a close price. Stablecoins (USDT, USDC,
+                      DAI, …) emit synthetic 1.0 USD prices.
+                      Optional BINANCE_API_KEY env raises the
+                      rate-limit ceiling.
+  prune [args...]     Reclaim bronze disk: delete whole non-complete
+                      dumps (a crashed / in-progress walk) from the
+                      data dir ($HOST_DATA), and strip screenshots/
+                      (the download --debug captures) from complete
+                      dumps, whose load inputs are untouched, plus
+                      stale entries of the /debug dir ($HOST_DEBUG).
+                      Runs host-side (no image deps). --dry-run prints the
+                      plan; --min-age-hours N (default 1) protects a
+                      walk still in flight.
+  recompress [args..] One-time backlog sweep: replace plain
+                      cu_<id>/*.csv inside complete dumps with
+                      sha256-verified .csv.zst twins — the form
+                      download writes. Runs in-container (needs
+                      the zstd codec; the single-writer guard keeps it
+                      from racing a live download). Manual only, never
+                      scheduled; review --dry-run first, then verify
+                      with `load --force`.
+  explore [args...]   Re-discovery harness for when cointracking
+                      changes a selector. Launches Camoufox in the
+                      container's Xvfb display and exposes a VNC port
+                      for driving the live browser interactively;
+                      records HAR + click log + saved blobs under
+                      /debug for analysis (--trace adds a Playwright
+                      trace). --fresh wipes the
+                      profile so the next login forces 2FA.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-cointracking/home/.secrets  ->  /secrets
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking     ->  /data
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking    ->  /debug
+
+Override mounts via env:
+  COINTRACKING_SECRETS_DIR=/path/to/secrets
+  COINTRACKING_DATA_DIR=/path/to/data
+  COINTRACKING_DEBUG_DIR=/path/to/debug
+
+Settings:
+  <TMP>/w-cointracking/xdgconfig/cointracking.cfg is sourced as bash when it exists
+  (override the path with COINTRACKING_CFG). Its COINTRACKING_TIMEZONES
+  names the timezone each portfolio's CoinTracking account is set to,
+  as cu_<id>=<zone> items separated by spaces:
+    COINTRACKING_TIMEZONES="cu_1001=Europe/Zurich cu_1002=America/New_York"
+  `load` reads a portfolio it does not name as UTC.
+
+Credentials:
+  COINTRACKING_USERNAME / COINTRACKING_PASSWORD are read from
+  /secrets/cointracking.env inside the container
+  (= $HOME/.secrets/cointracking.env on the host). chmod 0600.
+  The 2FA code is prompted on stdin during `login`; the device-trust
+  cookie that lands in /secrets/cointracking-profile/ keeps future
+  logins from firing a 2FA push.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+cointracking — host wrapper
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Mint a long-lived session via headless Playwright
+                      Firefox. Prompts for the 6-digit TOTP code on
+                      stdin and ticks "Don't ask again" so subsequent
+                      runs skip the 2FA prompt for years. --check
+                      probes the existing session without firing 2FA.
+  download [args...]  Fetch fresh bronze for every linked portfolio:
+                      13-column trade history CSV, per-wallet balance
+                      CSV and overview CSV via the SPA Export blobs.
+                      Writes a UTC-
+                      timestamped subdir + run.json manifest under the
+                      data dir (<TMP>/w-cointracking/xdgdata/wealthdb/cointracking); each CSV export is zstd-
+                      compressed in place as it lands (.csv.zst).
+                      --dry-run skips the export-button clicks for a
+                      navigation-only smoke test.
+  load [args...]      Ingest bronze snapshots into the DuckDB silver:
+                      replaces `transactions`, runs the aggregate-
+                      then-window holdings replay, incrementally
+                      upserts `positions_daily` from the first
+                      deviation day onwards, populates
+                      `portfolio_prices` from overview.csv,
+                      reconciles final balances vs the balance CSV.
+                      Reads each trade's Date in the portfolio's
+                      CoinTracking timezone (see Settings) and
+                      stores it in UTC.
+                      Pass --replay-only / --force for diagnostics.
+                      The price fill (missing prices: crypto from
+                      Binance, fiat from the ECB via Frankfurter)
+                      runs by default at the end; --no-fetch-prices
+                      skips it.
+  fetch-prices [args] Price backfill into `coin_prices`: crypto
+                      (USDT-denominated) from Binance public spot,
+                      fiat from the ECB via Frankfurter. --missing
+                      fills (held, unpriced) gaps (same as the
+                      default `load` price fill); no flag re-fetches
+                      the full held range (corruption recovery).
+                      The latest priced day is always re-fetched to
+                      upgrade the previous run's intraday snapshot
+                      to a close price. Stablecoins (USDT, USDC,
+                      DAI, …) emit synthetic 1.0 USD prices.
+                      Optional BINANCE_API_KEY env raises the
+                      rate-limit ceiling.
+  prune [args...]     Reclaim bronze disk: delete whole non-complete
+                      dumps (a crashed / in-progress walk) from the
+                      data dir ($HOST_DATA), and strip screenshots/
+                      (the download --debug captures) from complete
+                      dumps, whose load inputs are untouched, plus
+                      stale entries of the /debug dir ($HOST_DEBUG).
+                      Runs host-side (no image deps). --dry-run prints the
+                      plan; --min-age-hours N (default 1) protects a
+                      walk still in flight.
+  recompress [args..] One-time backlog sweep: replace plain
+                      cu_<id>/*.csv inside complete dumps with
+                      sha256-verified .csv.zst twins — the form
+                      download writes. Runs in-container (needs
+                      the zstd codec; the single-writer guard keeps it
+                      from racing a live download). Manual only, never
+                      scheduled; review --dry-run first, then verify
+                      with `load --force`.
+  explore [args...]   Re-discovery harness for when cointracking
+                      changes a selector. Launches Camoufox in the
+                      container's Xvfb display and exposes a VNC port
+                      for driving the live browser interactively;
+                      records HAR + click log + saved blobs under
+                      /debug for analysis (--trace adds a Playwright
+                      trace). --fresh wipes the
+                      profile so the next login forces 2FA.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-cointracking/home/.secrets  ->  /secrets
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking     ->  /data
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking    ->  /debug
+
+Override mounts via env:
+  COINTRACKING_SECRETS_DIR=/path/to/secrets
+  COINTRACKING_DATA_DIR=/path/to/data
+  COINTRACKING_DEBUG_DIR=/path/to/debug
+
+Settings:
+  <TMP>/w-cointracking/xdgconfig/cointracking.cfg is sourced as bash when it exists
+  (override the path with COINTRACKING_CFG). Its COINTRACKING_TIMEZONES
+  names the timezone each portfolio's CoinTracking account is set to,
+  as cu_<id>=<zone> items separated by spaces:
+    COINTRACKING_TIMEZONES="cu_1001=Europe/Zurich cu_1002=America/New_York"
+  `load` reads a portfolio it does not name as UTC.
+
+Credentials:
+  COINTRACKING_USERNAME / COINTRACKING_PASSWORD are read from
+  /secrets/cointracking.env inside the container
+  (= $HOME/.secrets/cointracking.env on the host). chmod 0600.
+  The 2FA code is prompted on stdin during `login`; the device-trust
+  cookie that lands in /secrets/cointracking-profile/ keeps future
+  logins from firing a 2FA push.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-cointracking/tree/collectors/cointracking/Dockerfile
+  <TMP>/w-cointracking/tree/collectors/cointracking/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/cointracking:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/cointracking:latest
+  <TMP>/w-cointracking/tree/collectors/cointracking
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  login
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  download
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  load
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== fetch-prices
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  fetch-prices
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-cointracking/tree/collectors/cointracking/prune.py
+  --bronze-dir
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking
+  --debug-dir
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking
+exit: 0
+--- stdout
+--- stderr
+=== recompress
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  recompress
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  explore
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  sh
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  bash
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  login
+  --check
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-cointracking/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/silver:/silver
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-cointracking/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/silver:/silver
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-cointracking/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/alt-data:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  load
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-cointracking/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/alt-data:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  load
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-cointracking/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/alt-secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  download
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-cointracking/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/alt-secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  download
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^cointracking$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  cointracking
+docker
+  run
+  --rm
+  --name
+  cointracking
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  COINTRACKING_USERNAME
+  -e
+  COINTRACKING_PASSWORD
+  -e
+  BINANCE_API_KEY
+  -e
+  COINTRACKING_TIMEZONES
+  -v
+  <TMP>/w-cointracking/home/.secrets:/secrets
+  -v
+  <TMP>/w-cointracking/xdgdata/wealthdb/cointracking:/data
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
+  -v
+  <TMP>/w-cointracking/tree/collectors/cointracking:/app
+  wealthdb/cointracking:latest
+  bogus-verb
+  [env] COINTRACKING_USERNAME=<unset>
+  [env] COINTRACKING_PASSWORD=<unset>
+  [env] BINANCE_API_KEY=<unset>
+  [env] COINTRACKING_TIMEZONES=<unset>
+exit: 0
+--- stdout
+--- stderr

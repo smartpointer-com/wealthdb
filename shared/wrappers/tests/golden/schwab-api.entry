@@ -1,0 +1,198 @@
+=== 
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+schwab-api login container
+
+Usage:
+  <wrapper> {login|vnc-login} [args...]
+
+  login          Automated OAuth refresh in headed Camoufox: pre-fills the
+                 Schwab login from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD
+                 (schwab-web.env), auto-submits, prompts for the 2FA code
+                 on stdin, drives the consent / account-link pages (ticking
+                 every account), captures the redirect, writes the token to
+                 /secrets. Stdin must be a TTY. Add --screenshot-dir /debug
+                 for page captures (off by default).
+  login --check  Show the stored token's age and prove it works (no
+                 browser, no 2FA).
+  login --manual Print the auth URL, paste the redirected URL back.
+  vnc-login      Manual fallback: login / 2FA / consent are driven by hand
+                 over VNC (starts x11vnc, prints the tunnel). Use if
+                 `login`'s selectors drift.
+  sh|bash        Open an interactive shell inside the container.
+  help           Show this message.
+--- stderr
+=== --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+schwab-api login container
+
+Usage:
+  <wrapper> {login|vnc-login} [args...]
+
+  login          Automated OAuth refresh in headed Camoufox: pre-fills the
+                 Schwab login from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD
+                 (schwab-web.env), auto-submits, prompts for the 2FA code
+                 on stdin, drives the consent / account-link pages (ticking
+                 every account), captures the redirect, writes the token to
+                 /secrets. Stdin must be a TTY. Add --screenshot-dir /debug
+                 for page captures (off by default).
+  login --check  Show the stored token's age and prove it works (no
+                 browser, no 2FA).
+  login --manual Print the auth URL, paste the redirected URL back.
+  vnc-login      Manual fallback: login / 2FA / consent are driven by hand
+                 over VNC (starts x11vnc, prints the tunnel). Use if
+                 `login`'s selectors drift.
+  sh|bash        Open an interactive shell inside the container.
+  help           Show this message.
+--- stderr
+=== login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== vnc-login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --no-cli-mfa
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== download
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/schwab-api/entrypoint.sh: line N: exec: download: not found
+=== download --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/schwab-api/entrypoint.sh: line N: exec: download: not found
+=== load
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/schwab-api/entrypoint.sh: line N: exec: load: not found
+=== load --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/schwab-api/entrypoint.sh: line N: exec: load: not found
+=== prune
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/schwab-api/entrypoint.sh: line N: exec: prune: not found
+=== prune --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/schwab-api/entrypoint.sh: line N: exec: prune: not found
+=== login --check
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --check
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/schwab-api/entrypoint.sh: line N: exec: download: not found
+=== bogus-verb
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/schwab-api/entrypoint.sh: line N: exec: bogus-verb: not found

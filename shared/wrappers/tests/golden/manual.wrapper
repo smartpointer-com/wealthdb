@@ -1,0 +1,205 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+manual — host wrapper for the wealthdb "manual" collector.
+
+Unlike every other collector, `manual` has NO source to fetch from: the
+bronze CSVs (accounts.csv / positions.csv / valuations.csv /
+cost_basis.csv / exits.csv) are maintained by hand in the data dir (default
+$XDG_DATA_HOME/wealthdb/manual/). accounts.csv, cost_basis.csv and
+exits.csv are optional — without accounts.csv every position lands in one
+default account. So there is no `login` and no `download` — only `load`,
+which validates those CSVs and rebuilds the SQLite silver from them.
+Host-venv collector (no Docker).
+
+Subcommands:
+  load [args...]      Validate the CSVs and rebuild the silver DB.
+  download | login    No-op (explains the manual model).
+  prune [args...]     No-op: manual keeps no bronze run-dirs and writes no
+                      debug artefacts, so there is nothing to reclaim.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default), accepted on `load`:
+  --data-dir  DIR     bronze CSVs dir  (default $XDG_DATA_HOME/wealthdb/manual)
+  --silver-db PATH    silver DB path   (default <data-dir>/manual.db)
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+manual — host wrapper for the wealthdb "manual" collector.
+
+Unlike every other collector, `manual` has NO source to fetch from: the
+bronze CSVs (accounts.csv / positions.csv / valuations.csv /
+cost_basis.csv / exits.csv) are maintained by hand in the data dir (default
+$XDG_DATA_HOME/wealthdb/manual/). accounts.csv, cost_basis.csv and
+exits.csv are optional — without accounts.csv every position lands in one
+default account. So there is no `login` and no `download` — only `load`,
+which validates those CSVs and rebuilds the SQLite silver from them.
+Host-venv collector (no Docker).
+
+Subcommands:
+  load [args...]      Validate the CSVs and rebuild the silver DB.
+  download | login    No-op (explains the manual model).
+  prune [args...]     No-op: manual keeps no bronze run-dirs and writes no
+                      debug artefacts, so there is nothing to reclaim.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default), accepted on `load`:
+  --data-dir  DIR     bronze CSVs dir  (default $XDG_DATA_HOME/wealthdb/manual)
+  --silver-db PATH    silver DB path   (default <data-dir>/manual.db)
+--- stderr
+=== load
+--- calls
+python3
+  <TMP>/w-manual/tree/collectors/manual/load.py
+  --bronze-dir
+  <TMP>/w-manual/xdgdata/wealthdb/manual
+  --silver-db
+  <TMP>/w-manual/xdgdata/wealthdb/manual/manual.db
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+exit: 0
+--- stdout
+--- stderr
+manual: no-op. This collector has no source to fetch from — the CSVs are
+the source of truth. Maintain the CSVs by hand in the data dir (default
+$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
+optionally accounts.csv to give positions their own tax sleeve and
+management style, cost_basis.csv for capital paid in over time, and
+exits.csv for what a position was sold for — then run `./manual load` to
+validate them and rebuild the silver. See README.md for the columns and how
+to maintain them.
+=== login
+--- calls
+exit: 0
+--- stdout
+--- stderr
+manual: no-op. This collector has no source to fetch from — the CSVs are
+the source of truth. Maintain the CSVs by hand in the data dir (default
+$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
+optionally accounts.csv to give positions their own tax sleeve and
+management style, cost_basis.csv for capital paid in over time, and
+exits.csv for what a position was sold for — then run `./manual load` to
+validate them and rebuild the silver. See README.md for the columns and how
+to maintain them.
+=== prune
+--- calls
+exit: 0
+--- stdout
+--- stderr
+manual: prune is a no-op — nothing to reclaim. This collector is load-only:
+it has no timestamped bronze run-dirs and writes no debug or diagnostic
+artefacts (no download, no browser, no capture surface). Bronze is just the
+hand-maintained CSVs (positions.csv, valuations.csv and the optional
+accounts.csv, cost_basis.csv and exits.csv) sitting flat in the data dir —
+they are load's only input and the collector's source of truth, so they are
+never deleted. The silver DB (manual.db) is rebuilt from them by `load`
+(delete it by hand to reclaim its space).
+=== login --check
+--- calls
+exit: 0
+--- stdout
+--- stderr
+manual: no session to probe — --check has nothing to check here.
+manual: no-op. This collector has no source to fetch from — the CSVs are
+the source of truth. Maintain the CSVs by hand in the data dir (default
+$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
+optionally accounts.csv to give positions their own tax sleeve and
+management style, cost_basis.csv for capital paid in over time, and
+exits.csv for what a position was sold for — then run `./manual load` to
+validate them and rebuild the silver. See README.md for the columns and how
+to maintain them.
+=== download --dry-run --lookback 1w
+--- calls
+exit: 0
+--- stdout
+--- stderr
+manual: no-op. This collector has no source to fetch from — the CSVs are
+the source of truth. Maintain the CSVs by hand in the data dir (default
+$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
+optionally accounts.csv to give positions their own tax sleeve and
+management style, cost_basis.csv for capital paid in over time, and
+exits.csv for what a position was sold for — then run `./manual load` to
+validate them and rebuild the silver. See README.md for the columns and how
+to maintain them.
+=== load --silver-db <TMP>/w-manual/silver/x.db
+--- calls
+python3
+  <TMP>/w-manual/tree/collectors/manual/load.py
+  --bronze-dir
+  <TMP>/w-manual/xdgdata/wealthdb/manual
+  --silver-db
+  <TMP>/w-manual/silver/x.db
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-manual/silver/x.db
+--- calls
+python3
+  <TMP>/w-manual/tree/collectors/manual/load.py
+  --bronze-dir
+  <TMP>/w-manual/xdgdata/wealthdb/manual
+  --silver-db
+  <TMP>/w-manual/silver/x.db
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-manual/alt-data
+--- calls
+python3
+  <TMP>/w-manual/tree/collectors/manual/load.py
+  --bronze-dir
+  <TMP>/w-manual/alt-data
+  --silver-db
+  <TMP>/w-manual/alt-data/manual.db
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-manual/alt-data
+--- calls
+python3
+  <TMP>/w-manual/tree/collectors/manual/load.py
+  --bronze-dir
+  <TMP>/w-manual/alt-data
+  --silver-db
+  <TMP>/w-manual/alt-data/manual.db
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-manual/alt-secrets
+--- calls
+exit: 0
+--- stdout
+--- stderr
+manual: no-op. This collector has no source to fetch from — the CSVs are
+the source of truth. Maintain the CSVs by hand in the data dir (default
+$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
+optionally accounts.csv to give positions their own tax sleeve and
+management style, cost_basis.csv for capital paid in over time, and
+exits.csv for what a position was sold for — then run `./manual load` to
+validate them and rebuild the silver. See README.md for the columns and how
+to maintain them.
+=== download --secrets-dir=<TMP>/w-manual/alt-secrets
+--- calls
+exit: 0
+--- stdout
+--- stderr
+manual: no-op. This collector has no source to fetch from — the CSVs are
+the source of truth. Maintain the CSVs by hand in the data dir (default
+$XDG_DATA_HOME/wealthdb/manual/): positions.csv, valuations.csv, and
+optionally accounts.csv to give positions their own tax sleeve and
+management style, cost_basis.csv for capital paid in over time, and
+exits.csv for what a position was sold for — then run `./manual load` to
+validate them and rebuild the silver. See README.md for the columns and how
+to maintain them.
+=== bogus-verb
+--- calls
+exit: 2
+--- stdout
+--- stderr
+manual: unknown command 'bogus-verb' (expected: load | download | login | prune | help)

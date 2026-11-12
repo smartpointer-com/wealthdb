@@ -1,0 +1,207 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+ubs-psn — host wrapper for the wealthdb "ubs-psn" collector.
+
+Host-venv collector (no Docker): runs the collector's own .py under its
+.venv, like schwab-api. UBS PSN is an SFTP file delivery authenticated by
+an SSH key — there is no interactive MFA login. Subcommands:
+  login               No-op (key-based; no session to mint).
+                      `login --check` probes the key: it opens and closes
+                      one authenticated SSH session, consuming no files.
+  download [args...]  Pull the nightly PSN files over SFTP into bronze.
+                      (UBS deletes each queue file server-side on success;
+                      --recover replays the ~2-month dated archive copies,
+                      which survive fetching.)
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Reclaim bronze disk. Safety-scoped: a fetched queue
+                      zip cannot be fetched again, so it only ever removes
+                      a zip-less shell, never a load input. --dry-run to
+                      preview.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default), accepted on any subcommand:
+  --secrets-dir DIR   SSH key (ubs_psn_key) + env  (default ~/.secrets)
+  --data-dir    DIR   bronze dumps root            (default $XDG_DATA_HOME/wealthdb/ubs-psn)
+  --silver-db   PATH  silver DB path               (default <data-dir>/ubs-psn.db)
+The SFTP login id is read from $UBS_PSN_CLIENT_ID, auto-sourced from
+<secrets-dir>/ubs-psn.env (override via $UBS_PSN_ENV_FILE); or pass --client-id.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+ubs-psn — host wrapper for the wealthdb "ubs-psn" collector.
+
+Host-venv collector (no Docker): runs the collector's own .py under its
+.venv, like schwab-api. UBS PSN is an SFTP file delivery authenticated by
+an SSH key — there is no interactive MFA login. Subcommands:
+  login               No-op (key-based; no session to mint).
+                      `login --check` probes the key: it opens and closes
+                      one authenticated SSH session, consuming no files.
+  download [args...]  Pull the nightly PSN files over SFTP into bronze.
+                      (UBS deletes each queue file server-side on success;
+                      --recover replays the ~2-month dated archive copies,
+                      which survive fetching.)
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Reclaim bronze disk. Safety-scoped: a fetched queue
+                      zip cannot be fetched again, so it only ever removes
+                      a zip-less shell, never a load input. --dry-run to
+                      preview.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default), accepted on any subcommand:
+  --secrets-dir DIR   SSH key (ubs_psn_key) + env  (default ~/.secrets)
+  --data-dir    DIR   bronze dumps root            (default $XDG_DATA_HOME/wealthdb/ubs-psn)
+  --silver-db   PATH  silver DB path               (default <data-dir>/ubs-psn.db)
+The SFTP login id is read from $UBS_PSN_CLIENT_ID, auto-sourced from
+<secrets-dir>/ubs-psn.env (override via $UBS_PSN_ENV_FILE); or pass --client-id.
+--- stderr
+=== login
+--- calls
+exit: 0
+--- stdout
+--- stderr
+ubs-psn: no-op. UBS PSN is an SSH-key-authenticated SFTP delivery — there is
+no interactive login / MFA session to mint. To verify the key is accepted
+(connect + host-key check, no files consumed), run:
+  ./ubs-psn login --check
+=== download
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/download.py
+  --bronze-dir
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn
+  --key
+  <TMP>/w-ubs-psn/home/.secrets/ubs_psn_key
+  [env] GOLDEN_ENV_FILE=invented-ubs-psn
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/load.py
+  --silver-db
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn/ubs-psn.db
+  --bronze-dir
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn
+  [env] GOLDEN_ENV_FILE=invented-ubs-psn
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/prune.py
+  --bronze-dir
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn
+  [env] GOLDEN_ENV_FILE=invented-ubs-psn
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/download.py
+  --bronze-dir
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn
+  --key
+  <TMP>/w-ubs-psn/home/.secrets/ubs_psn_key
+  --check
+  [env] GOLDEN_ENV_FILE=invented-ubs-psn
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/download.py
+  --bronze-dir
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn
+  --key
+  <TMP>/w-ubs-psn/home/.secrets/ubs_psn_key
+  --dry-run
+  --lookback
+  1w
+  [env] GOLDEN_ENV_FILE=invented-ubs-psn
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-ubs-psn/silver/x.db
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/load.py
+  --silver-db
+  <TMP>/w-ubs-psn/silver/x.db
+  --bronze-dir
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn
+  [env] GOLDEN_ENV_FILE=invented-ubs-psn
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-ubs-psn/silver/x.db
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/load.py
+  --silver-db
+  <TMP>/w-ubs-psn/silver/x.db
+  --bronze-dir
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn
+  [env] GOLDEN_ENV_FILE=invented-ubs-psn
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-ubs-psn/alt-data
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/load.py
+  --silver-db
+  <TMP>/w-ubs-psn/alt-data/ubs-psn.db
+  --bronze-dir
+  <TMP>/w-ubs-psn/alt-data
+  [env] GOLDEN_ENV_FILE=invented-ubs-psn
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-ubs-psn/alt-data
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/load.py
+  --silver-db
+  <TMP>/w-ubs-psn/alt-data/ubs-psn.db
+  --bronze-dir
+  <TMP>/w-ubs-psn/alt-data
+  [env] GOLDEN_ENV_FILE=invented-ubs-psn
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-ubs-psn/alt-secrets
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/download.py
+  --bronze-dir
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn
+  --key
+  <TMP>/w-ubs-psn/alt-secrets/ubs_psn_key
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-ubs-psn/alt-secrets
+--- calls
+python3
+  <TMP>/w-ubs-psn/tree/collectors/ubs-psn/download.py
+  --bronze-dir
+  <TMP>/w-ubs-psn/xdgdata/wealthdb/ubs-psn
+  --key
+  <TMP>/w-ubs-psn/alt-secrets/ubs_psn_key
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+exit: 2
+--- stdout
+--- stderr
+ubs-psn: unknown command 'bogus-verb' (expected: login|download|load|prune)

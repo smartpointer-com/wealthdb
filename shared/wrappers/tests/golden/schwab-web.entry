@@ -1,0 +1,253 @@
+=== 
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+schwab-web container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  download    One-shot CLI-MFA login + scrape. Pre-fills the
+              form from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD,
+              auto-submits, prompts for the 2FA code on stdin,
+              runs the statements + tx-history download in the
+              same Firefox session, exits. Default range: 3
+              months (widen with --lookback; --lookback all for a
+              full backfill, capped at Schwab's ~10 years). Stdin
+              must be a TTY.
+  load        Parse bronze into the silver SQLite database.
+  collapse-statements
+              Collapse re-rendered statement PDFs that parse
+              identically onto the oldest copy (reclaims the
+              per-download byte churn the fleet `wealthdb-collect
+              dedup` byte-identical sweep can't). --dry-run prints
+              the evidence report first.
+  prune       Delete <run>/screenshots/ and stray
+              transactions/*/page-*.html from complete dumps, whole
+              non-complete dumps, and idle entries of the /debug
+              cache. --dry-run prints the plan first.
+  vnc-login   Fallback to a VNC-driven login + scrape when the
+              CLI-MFA selectors drift or a non-code challenge is
+              required. Starts x11vnc; the wrapper publishes it on
+              the first free 127.0.0.1 port in 5900-6000 (printed at
+              start). Tunnel to it and connect a local VNC client.
+  sh|bash     Open an interactive shell inside the container.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+schwab-web container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  download    One-shot CLI-MFA login + scrape. Pre-fills the
+              form from SCHWAB_LOGIN_ID / SCHWAB_PASSWORD,
+              auto-submits, prompts for the 2FA code on stdin,
+              runs the statements + tx-history download in the
+              same Firefox session, exits. Default range: 3
+              months (widen with --lookback; --lookback all for a
+              full backfill, capped at Schwab's ~10 years). Stdin
+              must be a TTY.
+  load        Parse bronze into the silver SQLite database.
+  collapse-statements
+              Collapse re-rendered statement PDFs that parse
+              identically onto the oldest copy (reclaims the
+              per-download byte churn the fleet `wealthdb-collect
+              dedup` byte-identical sweep can't). --dry-run prints
+              the evidence report first.
+  prune       Delete <run>/screenshots/ and stray
+              transactions/*/page-*.html from complete dumps, whole
+              non-complete dumps, and idle entries of the /debug
+              cache. --dry-run prints the plan first.
+  vnc-login   Fallback to a VNC-driven login + scrape when the
+              CLI-MFA selectors drift or a non-code challenge is
+              required. Starts x11vnc; the wrapper publishes it on
+              the first free 127.0.0.1 port in 5900-6000 (printed at
+              start). Tunnel to it and connect a local VNC client.
+  sh|bash     Open an interactive shell inside the container.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== download
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== download --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== collapse-statements
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/dedup.py
+exit: 0
+--- stdout
+--- stderr
+=== collapse-statements --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/dedup.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== vnc-login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+--- stderr
+schwab-web: 'login' folds into 'download' — nothing to persist.
+  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'.
+=== login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+--- stderr
+schwab-web: 'login' folds into 'download' — nothing to persist.
+  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'.
+=== login --check
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+--- stderr
+schwab-web: 'login' folds into 'download' — nothing to persist.
+  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'.
+=== download --dry-run --lookback 1w
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/schwab-web/entrypoint.sh: line N: exec: bogus-verb: not found

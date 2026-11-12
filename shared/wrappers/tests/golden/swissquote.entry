@@ -1,0 +1,136 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+swissquote container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  login     Mint or refresh the Playwright session state.
+  download  Export bronze artefacts from the e-banking UI.
+  load      Parse bronze into the silver SQLite database.
+  prune     Delete non-complete dumps from the bronze tree.
+            --dry-run prints the plan first.
+  sh|bash   Open an interactive shell inside the container.
+  help      Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== --help
+--- calls
+exit: 0
+--- stdout
+swissquote container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  login     Mint or refresh the Playwright session state.
+  download  Export bronze artefacts from the e-banking UI.
+  load      Parse bronze into the silver SQLite database.
+  prune     Delete non-complete dumps from the bronze tree.
+            --dry-run prints the plan first.
+  sh|bash   Open an interactive shell inside the container.
+  help      Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== login
+--- calls
+python3
+  /app/login.py
+exit: 0
+--- stdout
+--- stderr
+=== login --help
+--- calls
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+python3
+  /app/download.py
+exit: 0
+--- stdout
+--- stderr
+=== download --help
+--- calls
+python3
+  /app/download.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+python3
+  /app/load.py
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+python3
+  /app/load.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login --check
+--- calls
+python3
+  /app/login.py
+  --check
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+python3
+  /app/download.py
+  --dry-run
+  --lookback
+  1w
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/swissquote/entrypoint.sh: line N: exec: bogus-verb: not found

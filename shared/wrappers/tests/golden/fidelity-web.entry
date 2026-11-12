@@ -1,0 +1,288 @@
+=== 
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+fidelity-web container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Discovery harness (DAF surface): Camoufox over VNC +
+              HAR/network log/click log/DOM snapshots under /debug.
+              See DESIGN.md §12.
+  download    One-shot login → walk → logout → exit. Prompts on stdin
+              for the Fidelity 2FA code; auto-skips MFA when the
+              device-trust cookie in --profile-dir is still valid.
+              Pass --check to only validate the session (no walk).
+  vnc-login   First-time profile-dir seed: pre-fills credentials,
+              hands off to a VNC client for the human-driven click +
+              2FA, then continues with the walk. Starts x11vnc on
+              the first free host port in 127.0.0.1:5900-6000 (the
+              wrapper picks; printed at handoff). Pass `--mode none`
+              to skip the walk and just seed cookies.
+  load        Parse bronze into the silver SQLite database.
+  prune       Delete debug artefacts and non-complete dumps from
+              the bronze tree, and aged entries of the /debug cache.
+              --dry-run prints the plan first.
+  recompress  Convert the pre-compression bronze backlog: replace
+              plain HTML/CSV inside complete dumps with sha256-
+              verified .zst twins. Manual one-time sweep; --dry-run
+              prints the plan first.
+  sh|bash     Open an interactive shell inside the container.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+fidelity-web container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Discovery harness (DAF surface): Camoufox over VNC +
+              HAR/network log/click log/DOM snapshots under /debug.
+              See DESIGN.md §12.
+  download    One-shot login → walk → logout → exit. Prompts on stdin
+              for the Fidelity 2FA code; auto-skips MFA when the
+              device-trust cookie in --profile-dir is still valid.
+              Pass --check to only validate the session (no walk).
+  vnc-login   First-time profile-dir seed: pre-fills credentials,
+              hands off to a VNC client for the human-driven click +
+              2FA, then continues with the walk. Starts x11vnc on
+              the first free host port in 127.0.0.1:5900-6000 (the
+              wrapper picks; printed at handoff). Pass `--mode none`
+              to skip the walk and just seed cookies.
+  load        Parse bronze into the silver SQLite database.
+  prune       Delete debug artefacts and non-complete dumps from
+              the bronze tree, and aged entries of the /debug cache.
+              --dry-run prints the plan first.
+  recompress  Convert the pre-compression bronze backlog: replace
+              plain HTML/CSV inside complete dumps with sha256-
+              verified .zst twins. Manual one-time sweep; --dry-run
+              prints the plan first.
+  sh|bash     Open an interactive shell inside the container.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== explore
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== explore --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/explore.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== download --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/download.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== vnc-login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/download.py
+  --vnc
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --bronze-dir
+  /data
+  --silver-db
+  /data/fidelity-web.db
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --bronze-dir
+  /data
+  --silver-db
+  /data/fidelity-web.db
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== recompress
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/recompress.py
+exit: 0
+--- stdout
+--- stderr
+=== recompress --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/recompress.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+--- stderr
+fidelity-web: 'login' folds into 'download' — nothing to persist.
+  The Fidelity session is browser-lifetime only, so
+  there's nothing to persist from a login-and-exit.
+  Use instead:
+    vnc-login   first-time / re-auth via VNC-assisted MFA
+    download    one-shot login -> walk (login is folded in)
+=== login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+--- stderr
+fidelity-web: 'login' folds into 'download' — nothing to persist.
+  The Fidelity session is browser-lifetime only, so
+  there's nothing to persist from a login-and-exit.
+  Use instead:
+    vnc-login   first-time / re-auth via VNC-assisted MFA
+    download    one-shot login -> walk (login is folded in)
+=== login --check
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+--- stderr
+fidelity-web: 'login' folds into 'download' — nothing to persist.
+  The Fidelity session is browser-lifetime only, so
+  there's nothing to persist from a login-and-exit.
+  Use instead:
+    vnc-login   first-time / re-auth via VNC-assisted MFA
+    download    one-shot login -> walk (login is folded in)
+=== download --dry-run --lookback 1w
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/fidelity-web/entrypoint.sh: line N: exec: bogus-verb: not found

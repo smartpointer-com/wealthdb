@@ -1,0 +1,218 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+refdata — host wrapper for the wealthdb "refdata" collector.
+
+Host-venv collector (no Docker): reads public reference data, what each
+fund holds and states about itself and what each security is and
+reports, for the funds and securities the engine names in its wanted
+list. No provider signs in to an account. One provider takes a
+credential. finra reads FINRA_CLIENT_ID and FINRA_CLIENT_SECRET.
+download and login, the verbs that ask FINRA, source both from
+<secrets-dir>/finra.env; $FINRA_ENV_FILE names another path.
+`--client-id ID` gives the id directly. Subcommands:
+  login               No-op: there is no session. `login --check` asks
+                      every enabled provider for its cheapest answer.
+  download [args...]  Ask the engine for the wanted list (or read
+                      --wanted FILE) and fetch what is missing into bronze.
+                      --backfill also fetches past dates; --dry-run plans
+                      only; --provider / --ref / --limit narrow a run.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Delete non-complete bronze run dirs and debug
+                      traces; complete dumps are kept. --dry-run previews.
+  compact [args...]   Give the complete runs' files the form download
+                      stores them in; nothing a parser reads goes. Manual
+                      only, never scheduled. --dry-run previews.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default), accepted on any subcommand:
+  --secrets-dir DIR   env file dir            (default ~/.secrets)
+  --data-dir    DIR   bronze dumps and inbox  (default $XDG_DATA_HOME/wealthdb/refdata)
+  --silver-db   PATH  silver DB path          (default <data-dir>/refdata.db)
+Settings live in $XDG_CONFIG_HOME/refdata.cfg (README.md). The engine
+that prints the wanted list: README.md, Settings (`engine`).
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+refdata — host wrapper for the wealthdb "refdata" collector.
+
+Host-venv collector (no Docker): reads public reference data, what each
+fund holds and states about itself and what each security is and
+reports, for the funds and securities the engine names in its wanted
+list. No provider signs in to an account. One provider takes a
+credential. finra reads FINRA_CLIENT_ID and FINRA_CLIENT_SECRET.
+download and login, the verbs that ask FINRA, source both from
+<secrets-dir>/finra.env; $FINRA_ENV_FILE names another path.
+`--client-id ID` gives the id directly. Subcommands:
+  login               No-op: there is no session. `login --check` asks
+                      every enabled provider for its cheapest answer.
+  download [args...]  Ask the engine for the wanted list (or read
+                      --wanted FILE) and fetch what is missing into bronze.
+                      --backfill also fetches past dates; --dry-run plans
+                      only; --provider / --ref / --limit narrow a run.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Delete non-complete bronze run dirs and debug
+                      traces; complete dumps are kept. --dry-run previews.
+  compact [args...]   Give the complete runs' files the form download
+                      stores them in; nothing a parser reads goes. Manual
+                      only, never scheduled. --dry-run previews.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default), accepted on any subcommand:
+  --secrets-dir DIR   env file dir            (default ~/.secrets)
+  --data-dir    DIR   bronze dumps and inbox  (default $XDG_DATA_HOME/wealthdb/refdata)
+  --silver-db   PATH  silver DB path          (default <data-dir>/refdata.db)
+Settings live in $XDG_CONFIG_HOME/refdata.cfg (README.md). The engine
+that prints the wanted list: README.md, Settings (`engine`).
+--- stderr
+=== login
+--- calls
+exit: 0
+--- stdout
+--- stderr
+refdata: no-op. No provider has a session to mint.
+To probe each enabled provider, run `./refdata login --check`.
+=== download
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/download.py
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+  [env] GOLDEN_ENV_FILE=invented-refdata
+  [env] GOLDEN_FINRA=invented-finra
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/load.py
+  --silver-db
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata/refdata.db
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+  [env] GOLDEN_ENV_FILE=invented-refdata
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/prune.py
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+  [env] GOLDEN_ENV_FILE=invented-refdata
+exit: 0
+--- stdout
+--- stderr
+=== compact
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/compact.py
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+  [env] GOLDEN_ENV_FILE=invented-refdata
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/download.py
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+  --check
+  [env] GOLDEN_ENV_FILE=invented-refdata
+  [env] GOLDEN_FINRA=invented-finra
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/download.py
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+  --dry-run
+  --lookback
+  1w
+  [env] GOLDEN_ENV_FILE=invented-refdata
+  [env] GOLDEN_FINRA=invented-finra
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-refdata/silver/x.db
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/load.py
+  --silver-db
+  <TMP>/w-refdata/silver/x.db
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+  [env] GOLDEN_ENV_FILE=invented-refdata
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-refdata/silver/x.db
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/load.py
+  --silver-db
+  <TMP>/w-refdata/silver/x.db
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+  [env] GOLDEN_ENV_FILE=invented-refdata
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-refdata/alt-data
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/load.py
+  --silver-db
+  <TMP>/w-refdata/alt-data/refdata.db
+  --bronze-dir
+  <TMP>/w-refdata/alt-data
+  [env] GOLDEN_ENV_FILE=invented-refdata
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-refdata/alt-data
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/load.py
+  --silver-db
+  <TMP>/w-refdata/alt-data/refdata.db
+  --bronze-dir
+  <TMP>/w-refdata/alt-data
+  [env] GOLDEN_ENV_FILE=invented-refdata
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-refdata/alt-secrets
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/download.py
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-refdata/alt-secrets
+--- calls
+python3
+  <TMP>/w-refdata/tree/collectors/refdata/download.py
+  --bronze-dir
+  <TMP>/w-refdata/xdgdata/wealthdb/refdata
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+exit: 2
+--- stdout
+--- stderr
+refdata: unknown command 'bogus-verb' (expected: login|download|load|prune|compact)

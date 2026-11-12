@@ -1,0 +1,244 @@
+=== 
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+firstcitizens container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Discovery harness: Camoufox over VNC + HAR/network log/click
+              log/DOM snapshots under /debug. See DESIGN.md §3.
+  login       Interactive login — registers this device, 2FA driven from the
+              TERMINAL. Leaves device-trust in the persistent profile so
+              `download` runs unattended. 'login --check' reports whether the
+              trusted-device logon still skips 2FA (sends no code).
+  vnc-login   Fallback for login: expose VNC and complete Sign In + 2FA by
+              hand. Pair with --fresh to force the untrusted-device 2FA
+              flow (wipes the profile's device-trust first).
+  download    Unattended logon (trusted device, no 2FA) + REST fetch of the
+              deposit accounts (roster, history, exports, statement PDFs)
+              into a UTC-stamped bronze run dir under /data. --format picks
+              export formats; --no-documents skips statements; --dry-run
+              enumerates without exporting.
+  load        Ingest bronze into the SQLite silver.
+  prune       Delete non-complete dumps from the bronze tree, and aged
+              entries of the /debug cache. --dry-run prints the plan.
+              Usually run host-side via the wrapper.
+  sh|bash     Open an interactive shell.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand flags.
+--- stderr
+=== --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+firstcitizens container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Discovery harness: Camoufox over VNC + HAR/network log/click
+              log/DOM snapshots under /debug. See DESIGN.md §3.
+  login       Interactive login — registers this device, 2FA driven from the
+              TERMINAL. Leaves device-trust in the persistent profile so
+              `download` runs unattended. 'login --check' reports whether the
+              trusted-device logon still skips 2FA (sends no code).
+  vnc-login   Fallback for login: expose VNC and complete Sign In + 2FA by
+              hand. Pair with --fresh to force the untrusted-device 2FA
+              flow (wipes the profile's device-trust first).
+  download    Unattended logon (trusted device, no 2FA) + REST fetch of the
+              deposit accounts (roster, history, exports, statement PDFs)
+              into a UTC-stamped bronze run dir under /data. --format picks
+              export formats; --no-documents skips statements; --dry-run
+              enumerates without exporting.
+  load        Ingest bronze into the SQLite silver.
+  prune       Delete non-complete dumps from the bronze tree, and aged
+              entries of the /debug cache. --dry-run prints the plan.
+              Usually run host-side via the wrapper.
+  sh|bash     Open an interactive shell.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand flags.
+--- stderr
+=== explore
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== explore --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/explore.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== vnc-login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --no-cli-mfa
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== download --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/download.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --bronze-dir
+  /data
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --bronze-dir
+  /data
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login --check
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/firstcitizens/entrypoint.sh: line N: exec: bogus-verb: not found

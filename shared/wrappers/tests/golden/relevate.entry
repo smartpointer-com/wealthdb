@@ -1,0 +1,160 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+relevate container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  login     Mint or refresh the Airlock session cookies in
+            /secrets/relevate-state.json. Prompts on stdin for
+            the mTAN code sent to your phone. Pass --check to
+            probe the existing session without triggering a new
+            mTAN.
+  download  Bronze dump against /middlelayer/v2/. Pre-requisite:
+            a session minted by `login` is present in
+            /secrets/relevate-state.json. Use --dry-run to
+            enumerate without per-portfolio / per-document
+            fetches. Use --mode + --limit-* for iteration-cheap
+            reruns.
+  load      Parse bronze into silver SQLite. Idempotent: skips
+            dumps already loaded (tracked via dump_runs.snapshot_at).
+            Default reads /data, writes /data/relevate.db.
+  prune     Delete non-complete dumps (crashed walks + --dry-run
+            shells) from the bronze tree. --dry-run prints the plan
+            first; --min-age-hours guards in-flight downloads.
+  sh|bash   Open an interactive shell inside the container.
+  help      Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== --help
+--- calls
+exit: 0
+--- stdout
+relevate container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  login     Mint or refresh the Airlock session cookies in
+            /secrets/relevate-state.json. Prompts on stdin for
+            the mTAN code sent to your phone. Pass --check to
+            probe the existing session without triggering a new
+            mTAN.
+  download  Bronze dump against /middlelayer/v2/. Pre-requisite:
+            a session minted by `login` is present in
+            /secrets/relevate-state.json. Use --dry-run to
+            enumerate without per-portfolio / per-document
+            fetches. Use --mode + --limit-* for iteration-cheap
+            reruns.
+  load      Parse bronze into silver SQLite. Idempotent: skips
+            dumps already loaded (tracked via dump_runs.snapshot_at).
+            Default reads /data, writes /data/relevate.db.
+  prune     Delete non-complete dumps (crashed walks + --dry-run
+            shells) from the bronze tree. --dry-run prints the plan
+            first; --min-age-hours guards in-flight downloads.
+  sh|bash   Open an interactive shell inside the container.
+  help      Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
+--- stderr
+=== login
+--- calls
+python3
+  /app/login.py
+exit: 0
+--- stdout
+--- stderr
+=== login --help
+--- calls
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+python3
+  /app/download.py
+exit: 0
+--- stdout
+--- stderr
+=== download --help
+--- calls
+python3
+  /app/download.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+python3
+  /app/load.py
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+python3
+  /app/load.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login --check
+--- calls
+python3
+  /app/login.py
+  --check
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+python3
+  /app/download.py
+  --dry-run
+  --lookback
+  1w
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/relevate/entrypoint.sh: line N: exec: bogus-verb: not found

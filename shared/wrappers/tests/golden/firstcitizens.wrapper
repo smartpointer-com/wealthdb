@@ -1,0 +1,939 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+firstcitizens — host wrapper
+
+Read-only scraper for the First Citizens Bank retail deposit relationship
+(checking / savings) over the Q2 mobilews REST API. `login` registers the
+device once (interactive 2FA); `download` then runs unattended and fetches
+each deposit account's activity + statement PDFs. `load` ingests that
+bronze into the SQLite silver. See DESIGN.md for the mapped flows.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Interactive login: pre-fills + submits the sign-in
+                      form, then drives 2FA from the TERMINAL (text / call).
+                      Registers the device so `download` runs unattended.
+                      `login --check` reports whether the trusted-device
+                      logon still skips 2FA (sends no code).
+  vnc-login [args...] Fallback for login: exposes VNC for a by-hand 2FA.
+                      Add --fresh to force the untrusted-device flow (wipes
+                      the stored device-trust so the full 2FA fires).
+  download [args...]  Unattended logon (trusted device, no 2FA) + REST fetch
+                      of the deposit accounts (roster, history, exports,
+                      statement PDFs) into a UTC-stamped bronze run dir.
+                      --format picks export formats; --no-documents skips
+                      statements; --dry-run enumerates without exporting.
+  load [args...]      Ingest bronze into the SQLite silver.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / DOM snapshots under /debug. --fresh
+                      wipes the profile so the next login forces a full 2FA.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-firstcitizens/home/.secrets  ->  /secrets
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens     ->  /data
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens    ->  /debug
+
+Override mounts via env:
+  FIRSTCITIZENS_SECRETS_DIR=/path/to/secrets
+  FIRSTCITIZENS_DATA_DIR=/path/to/data
+  FIRSTCITIZENS_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  FIRSTCITIZENS_USERNAME / FIRSTCITIZENS_PASSWORD are read from
+  /secrets/firstcitizens.env inside the container
+  (= $HOME/.secrets/firstcitizens.env on the host). chmod 0600.
+  The 2FA challenge is driven from the terminal (`login`) or by hand
+  over VNC (`vnc-login`).
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+firstcitizens — host wrapper
+
+Read-only scraper for the First Citizens Bank retail deposit relationship
+(checking / savings) over the Q2 mobilews REST API. `login` registers the
+device once (interactive 2FA); `download` then runs unattended and fetches
+each deposit account's activity + statement PDFs. `load` ingests that
+bronze into the SQLite silver. See DESIGN.md for the mapped flows.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Interactive login: pre-fills + submits the sign-in
+                      form, then drives 2FA from the TERMINAL (text / call).
+                      Registers the device so `download` runs unattended.
+                      `login --check` reports whether the trusted-device
+                      logon still skips 2FA (sends no code).
+  vnc-login [args...] Fallback for login: exposes VNC for a by-hand 2FA.
+                      Add --fresh to force the untrusted-device flow (wipes
+                      the stored device-trust so the full 2FA fires).
+  download [args...]  Unattended logon (trusted device, no 2FA) + REST fetch
+                      of the deposit accounts (roster, history, exports,
+                      statement PDFs) into a UTC-stamped bronze run dir.
+                      --format picks export formats; --no-documents skips
+                      statements; --dry-run enumerates without exporting.
+  load [args...]      Ingest bronze into the SQLite silver.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / DOM snapshots under /debug. --fresh
+                      wipes the profile so the next login forces a full 2FA.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-firstcitizens/home/.secrets  ->  /secrets
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens     ->  /data
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens    ->  /debug
+
+Override mounts via env:
+  FIRSTCITIZENS_SECRETS_DIR=/path/to/secrets
+  FIRSTCITIZENS_DATA_DIR=/path/to/data
+  FIRSTCITIZENS_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  FIRSTCITIZENS_USERNAME / FIRSTCITIZENS_PASSWORD are read from
+  /secrets/firstcitizens.env inside the container
+  (= $HOME/.secrets/firstcitizens.env on the host). chmod 0600.
+  The 2FA challenge is driven from the terminal (`login`) or by hand
+  over VNC (`vnc-login`).
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens/Dockerfile
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/firstcitizens:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/firstcitizens:latest
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  login
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  vnc-login
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  download
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  load
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens/prune.py
+  --bronze-dir
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens
+  --debug-dir
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  explore
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  sh
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  bash
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== over
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  over
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  login
+  --check
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-firstcitizens/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/silver:/silver
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-firstcitizens/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/silver:/silver
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-firstcitizens/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/alt-data:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  load
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-firstcitizens/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/alt-data:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  load
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-firstcitizens/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/alt-secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  download
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-firstcitizens/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/alt-secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  download
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^firstcitizens$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  firstcitizens
+docker
+  run
+  --rm
+  --name
+  firstcitizens
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIRSTCITIZENS_USERNAME
+  -e
+  FIRSTCITIZENS_PASSWORD
+  -v
+  <TMP>/w-firstcitizens/home/.secrets:/secrets
+  -v
+  <TMP>/w-firstcitizens/xdgdata/wealthdb/firstcitizens:/data
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens:/debug
+  -v
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens:/app
+  wealthdb/firstcitizens:latest
+  bogus-verb
+  [env] FIRSTCITIZENS_USERNAME=<unset>
+  [env] FIRSTCITIZENS_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr

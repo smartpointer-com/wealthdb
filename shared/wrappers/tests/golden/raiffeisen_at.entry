@@ -1,0 +1,246 @@
+=== 
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+raiffeisen_at container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Discovery harness: Camoufox over VNC + HAR/network log/click
+              log/DOM snapshots under /debug. See DESIGN.md §3-Surface.
+  download    One-shot login + REST fetch (deposit accounts), the pushTAN
+              approved on your phone — no VNC, nothing to type. Fills the
+              region/Verfüger/PIN form (or clicks the saved-user card),
+              then fetches each account's history + daily balances +
+              statement PDFs into a UTC-stamped bronze run dir under /data.
+              --lookback bounds the window; --no-documents skips statements;
+              --dry-run enumerates without fetching; --fresh forces the cold
+              form.
+  vnc-login   Fallback for download: expose VNC and complete the login by
+              hand (form/card + pushTAN), then fetch.
+  login       Folds into download (nothing to persist). 'login --check'
+              probes a session read-only (exit 0 alive / 1 dead; dead
+              between runs is expected).
+  load        Ingest bronze into the SQLite silver (accounts, transactions,
+              daily balances, statements). --force rebuilds from all bronze.
+  prune       Delete non-complete dumps from the bronze tree. --dry-run
+              prints the plan. Usually run host-side via the wrapper.
+  sh|bash     Open an interactive shell.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand flags.
+--- stderr
+=== --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+raiffeisen_at container
+
+Usage:
+  <wrapper> <subcommand> [args...]
+
+Subcommands:
+  explore     Discovery harness: Camoufox over VNC + HAR/network log/click
+              log/DOM snapshots under /debug. See DESIGN.md §3-Surface.
+  download    One-shot login + REST fetch (deposit accounts), the pushTAN
+              approved on your phone — no VNC, nothing to type. Fills the
+              region/Verfüger/PIN form (or clicks the saved-user card),
+              then fetches each account's history + daily balances +
+              statement PDFs into a UTC-stamped bronze run dir under /data.
+              --lookback bounds the window; --no-documents skips statements;
+              --dry-run enumerates without fetching; --fresh forces the cold
+              form.
+  vnc-login   Fallback for download: expose VNC and complete the login by
+              hand (form/card + pushTAN), then fetch.
+  login       Folds into download (nothing to persist). 'login --check'
+              probes a session read-only (exit 0 alive / 1 dead; dead
+              between runs is expected).
+  load        Ingest bronze into the SQLite silver (accounts, transactions,
+              daily balances, statements). --force rebuilds from all bronze.
+  prune       Delete non-complete dumps from the bronze tree. --dry-run
+              prints the plan. Usually run host-side via the wrapper.
+  sh|bash     Open an interactive shell.
+  help        Show this message.
+
+Run "<wrapper> <subcommand> --help" for subcommand flags.
+--- stderr
+=== explore
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== explore --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/explore.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== download --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== vnc-login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+--- stderr
+raiffeisen_at: 'login' folds into 'download' — nothing to persist (the pushTAN fires every sign-in; §F).
+  Run 'download' (one-shot login + fetch), or 'login --check' to probe a session.
+=== login --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/login.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --bronze-dir
+  /data
+exit: 0
+--- stdout
+--- stderr
+=== load --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/load.py
+  --bronze-dir
+  /data
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+exit: 0
+--- stdout
+--- stderr
+=== prune --help
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+python3
+  /app/prune.py
+  --help
+exit: 0
+--- stdout
+--- stderr
+=== sh -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== bash -c echo shell
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 0
+--- stdout
+shell
+--- stderr
+=== login --check
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+start_xvfb
+exit: 1
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+lib: mkdir
+  -p
+  /tmp/.cache
+exit: 127
+--- stdout
+--- stderr
+<REPO>/collectors/raiffeisen_at/entrypoint.sh: line N: exec: bogus-verb: not found

@@ -1,0 +1,268 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+plaid — host wrapper for the wealthdb "plaid" collector.
+
+Host-venv collector (no Docker): runs the collector's own .py under its
+.venv. Reads banks, brokers and card issuers through Plaid. Each
+institution login is one Plaid Item with a local name. Subcommands:
+  link --item NAME    Link an institution, or renew a link that exists.
+                      Prints the URL of Plaid's sign-in page and waits
+                      for the sign-in to finish in a browser. A name
+                      that is linked already opens in update mode: the
+                      same Item is renewed and no new one is made.
+                      --require PRODUCT names the product the login must
+                      support (default transactions; investments for a
+                      login with brokerage accounts only). A wait that
+                      stops claims an Item the page made; the sign-in's
+                      record stays only while its page is open.
+  login               Settle the sign-ins link left open: claim an Item
+                      one made, remove the record of a page that has
+                      closed. Opens no page; with none left open, it
+                      does nothing.
+  login --check       Probe the app keys and every stored Item, and list
+                      the sign-ins left open. Reads only; exit 0 when the
+                      keys are accepted, an Item is linked, and every
+                      Item is healthy.
+  download            Read every linked Item into bronze: accounts and
+                      balances, holdings, both ledgers, liabilities. One
+                      run per Item, under <data-dir>/<item>/<UTC-ts>/.
+                      --lookback bounds the ledgers (default ~90 days);
+                      --item NAME reads one Item; --dry-run reads each
+                      Item and its accounts and writes no run;
+                      --refresh first asks Plaid to fetch investments
+                      from the institution (billed per call on a paid
+                      plan; Production needs the opt-in in plaid.cfg).
+  load                Load each Item's complete runs into its own silver
+                      database, <data-dir>/<item>/<item>.db. --item NAME
+                      loads one Item; --silver-db PATH (or
+                      PLAID_SILVER_DB), with one --item, writes
+                      elsewhere; --force rebuilds from all runs.
+  prune               Delete the --debug traces of complete runs, and
+                      whole runs that did not complete. --dry-run prints
+                      the plan first.
+
+--sandbox on link, login and download uses Plaid's test institutions, the
+Sandbox secret, and only the Items made there. Sandbox downloads take a
+--data-dir of their own. `<verb> --help` lists every flag of a verb.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default):
+  --secrets-dir DIR   app keys and Item tokens   (default ~/.secrets)
+  --data-dir    DIR   one tree per Item below it (default $XDG_DATA_HOME/wealthdb/plaid)
+The app keys are read from PLAID_CLIENT_ID, PLAID_SECRET (Production)
+and PLAID_SANDBOX_SECRET, auto-sourced from <secrets-dir>/plaid.env
+(override the path with $PLAID_ENV_FILE). Each Item's access token is
+in <secrets-dir>/plaid-token-<name>.json. link writes it, and so does
+login when it settles a sign-in that link left open.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+plaid — host wrapper for the wealthdb "plaid" collector.
+
+Host-venv collector (no Docker): runs the collector's own .py under its
+.venv. Reads banks, brokers and card issuers through Plaid. Each
+institution login is one Plaid Item with a local name. Subcommands:
+  link --item NAME    Link an institution, or renew a link that exists.
+                      Prints the URL of Plaid's sign-in page and waits
+                      for the sign-in to finish in a browser. A name
+                      that is linked already opens in update mode: the
+                      same Item is renewed and no new one is made.
+                      --require PRODUCT names the product the login must
+                      support (default transactions; investments for a
+                      login with brokerage accounts only). A wait that
+                      stops claims an Item the page made; the sign-in's
+                      record stays only while its page is open.
+  login               Settle the sign-ins link left open: claim an Item
+                      one made, remove the record of a page that has
+                      closed. Opens no page; with none left open, it
+                      does nothing.
+  login --check       Probe the app keys and every stored Item, and list
+                      the sign-ins left open. Reads only; exit 0 when the
+                      keys are accepted, an Item is linked, and every
+                      Item is healthy.
+  download            Read every linked Item into bronze: accounts and
+                      balances, holdings, both ledgers, liabilities. One
+                      run per Item, under <data-dir>/<item>/<UTC-ts>/.
+                      --lookback bounds the ledgers (default ~90 days);
+                      --item NAME reads one Item; --dry-run reads each
+                      Item and its accounts and writes no run;
+                      --refresh first asks Plaid to fetch investments
+                      from the institution (billed per call on a paid
+                      plan; Production needs the opt-in in plaid.cfg).
+  load                Load each Item's complete runs into its own silver
+                      database, <data-dir>/<item>/<item>.db. --item NAME
+                      loads one Item; --silver-db PATH (or
+                      PLAID_SILVER_DB), with one --item, writes
+                      elsewhere; --force rebuilds from all runs.
+  prune               Delete the --debug traces of complete runs, and
+                      whole runs that did not complete. --dry-run prints
+                      the plan first.
+
+--sandbox on link, login and download uses Plaid's test institutions, the
+Sandbox secret, and only the Items made there. Sandbox downloads take a
+--data-dir of their own. `<verb> --help` lists every flag of a verb.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default):
+  --secrets-dir DIR   app keys and Item tokens   (default ~/.secrets)
+  --data-dir    DIR   one tree per Item below it (default $XDG_DATA_HOME/wealthdb/plaid)
+The app keys are read from PLAID_CLIENT_ID, PLAID_SECRET (Production)
+and PLAID_SANDBOX_SECRET, auto-sourced from <secrets-dir>/plaid.env
+(override the path with $PLAID_ENV_FILE). Each Item's access token is
+in <secrets-dir>/plaid-token-<name>.json. link writes it, and so does
+login when it settles a sign-in that link left open.
+--- stderr
+=== link
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/link.py
+  --secrets-dir
+  <TMP>/w-plaid/home/.secrets
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/login.py
+  --secrets-dir
+  <TMP>/w-plaid/home/.secrets
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/download.py
+  --bronze-dir
+  <TMP>/w-plaid/xdgdata/wealthdb/plaid
+  --secrets-dir
+  <TMP>/w-plaid/home/.secrets
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/load.py
+  --bronze-dir
+  <TMP>/w-plaid/xdgdata/wealthdb/plaid
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/prune.py
+  --bronze-dir
+  <TMP>/w-plaid/xdgdata/wealthdb/plaid
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/login.py
+  --secrets-dir
+  <TMP>/w-plaid/home/.secrets
+  --check
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/download.py
+  --bronze-dir
+  <TMP>/w-plaid/xdgdata/wealthdb/plaid
+  --secrets-dir
+  <TMP>/w-plaid/home/.secrets
+  --dry-run
+  --lookback
+  1w
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-plaid/silver/x.db
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/load.py
+  --bronze-dir
+  <TMP>/w-plaid/xdgdata/wealthdb/plaid
+  --silver-db
+  <TMP>/w-plaid/silver/x.db
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-plaid/silver/x.db
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/load.py
+  --bronze-dir
+  <TMP>/w-plaid/xdgdata/wealthdb/plaid
+  --silver-db
+  <TMP>/w-plaid/silver/x.db
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-plaid/alt-data
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/load.py
+  --bronze-dir
+  <TMP>/w-plaid/alt-data
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-plaid/alt-data
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/load.py
+  --bronze-dir
+  <TMP>/w-plaid/alt-data
+  [env] GOLDEN_ENV_FILE=invented-plaid
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-plaid/alt-secrets
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/download.py
+  --bronze-dir
+  <TMP>/w-plaid/xdgdata/wealthdb/plaid
+  --secrets-dir
+  <TMP>/w-plaid/alt-secrets
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-plaid/alt-secrets
+--- calls
+python3
+  <TMP>/w-plaid/tree/collectors/plaid/download.py
+  --bronze-dir
+  <TMP>/w-plaid/xdgdata/wealthdb/plaid
+  --secrets-dir
+  <TMP>/w-plaid/alt-secrets
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+exit: 2
+--- stdout
+--- stderr
+plaid: unknown command 'bogus-verb' (expected: link|login|download|load|prune)

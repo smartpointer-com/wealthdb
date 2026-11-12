@@ -1,0 +1,744 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+fidelity-web — host wrapper
+
+Subcommands:
+  build                 Build the Docker image (`docker build`).
+  download [args...]    One-shot: log in (prompts on stdin for the
+                        Fidelity 2FA code if MFA fires; auto-skips
+                        when the device-trust cookie is valid), run
+                        the requested walk phases, log out, exit.
+                        Stdin must be a TTY when MFA is expected.
+                        Pass --check to validate the session without
+                        scraping.
+  load [args...]        Parse bronze into the silver SQLite DB.
+                        Runs host-side on the venv python (decompresses
+                        zstd bronze in Python; no Docker spawn).
+  prune [args...]       Delete debug artefacts (<run>/screenshots/,
+                        written only by download --debug/--explore)
+                        and non-complete dumps from the bronze tree,
+                        plus aged-out entries of the /debug cache.
+                        Runs host-side. --dry-run prints the plan
+                        without deleting anything.
+  recompress [args...]  One-time backlog sweep: replace plain
+                        HTML/CSV bronze (balances/performance HTML,
+                        positions/activity/statement CSV) inside
+                        complete dumps with sha256-verified .zst
+                        twins — the form download writes. Runs
+                        host-side. Manual only, never scheduled;
+                        review --dry-run first, verify with
+                        `load --force`.
+  vnc-login [args...]   First-time profile-dir seed: pre-fills
+                        credentials, hands off to a VNC client for
+                        the human-driven click + 2FA, then runs the
+                        walk (or just exits with --mode none).
+                        Starts x11vnc on the first free port in
+                        127.0.0.1:5900-6000 (printed at handoff);
+                        tunnel + connect from your local VNC client.
+  explore [args...]     Discovery harness (DAF / Fidelity Charitable
+                        surface): Camoufox over VNC; the human signs
+                        in and tours the DAF while HAR / network log /
+                        click log / DOM snapshots land under /debug.
+                        Distinct from `download --explore` (scripted-
+                        walk DOM inventories). See DESIGN.md §12.
+  sh|bash               Open an interactive shell in the container.
+  help                  Show this message.
+
+Mounted into the container:
+  <TMP>/w-fidelity-web/home/.secrets  ->  /secrets
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web     ->  /data
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web    ->  /debug
+
+Override mounts via env:
+  FIDELITY_WEB_SECRETS_DIR=/path/to/secrets
+  FIDELITY_WEB_DATA_DIR=/path/to/data
+  FIDELITY_WEB_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  Read from $FIDELITY_WEB_USERNAME / $FIDELITY_WEB_PASSWORD inside
+  the container (the unprefixed $FIDELITY_USERNAME / $FIDELITY_PASSWORD
+  work as a fallback). The script sources
+  /secrets/fidelity-web.env automatically
+  (= $HOME/.secrets/fidelity-web.env on the host).
+
+  Use SINGLE QUOTES around values containing $, \!, backtick, or
+  other shell metacharacters. Double quotes would let the host
+  shell do $-expansion when sourcing the file, which silently
+  mangles the password before it reaches the container:
+    FIDELITY_WEB_USERNAME='your-username'
+    FIDELITY_WEB_PASSWORD='your-password-with-$pecial-chars'
+  chmod 600 the file.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+fidelity-web — host wrapper
+
+Subcommands:
+  build                 Build the Docker image (`docker build`).
+  download [args...]    One-shot: log in (prompts on stdin for the
+                        Fidelity 2FA code if MFA fires; auto-skips
+                        when the device-trust cookie is valid), run
+                        the requested walk phases, log out, exit.
+                        Stdin must be a TTY when MFA is expected.
+                        Pass --check to validate the session without
+                        scraping.
+  load [args...]        Parse bronze into the silver SQLite DB.
+                        Runs host-side on the venv python (decompresses
+                        zstd bronze in Python; no Docker spawn).
+  prune [args...]       Delete debug artefacts (<run>/screenshots/,
+                        written only by download --debug/--explore)
+                        and non-complete dumps from the bronze tree,
+                        plus aged-out entries of the /debug cache.
+                        Runs host-side. --dry-run prints the plan
+                        without deleting anything.
+  recompress [args...]  One-time backlog sweep: replace plain
+                        HTML/CSV bronze (balances/performance HTML,
+                        positions/activity/statement CSV) inside
+                        complete dumps with sha256-verified .zst
+                        twins — the form download writes. Runs
+                        host-side. Manual only, never scheduled;
+                        review --dry-run first, verify with
+                        `load --force`.
+  vnc-login [args...]   First-time profile-dir seed: pre-fills
+                        credentials, hands off to a VNC client for
+                        the human-driven click + 2FA, then runs the
+                        walk (or just exits with --mode none).
+                        Starts x11vnc on the first free port in
+                        127.0.0.1:5900-6000 (printed at handoff);
+                        tunnel + connect from your local VNC client.
+  explore [args...]     Discovery harness (DAF / Fidelity Charitable
+                        surface): Camoufox over VNC; the human signs
+                        in and tours the DAF while HAR / network log /
+                        click log / DOM snapshots land under /debug.
+                        Distinct from `download --explore` (scripted-
+                        walk DOM inventories). See DESIGN.md §12.
+  sh|bash               Open an interactive shell in the container.
+  help                  Show this message.
+
+Mounted into the container:
+  <TMP>/w-fidelity-web/home/.secrets  ->  /secrets
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web     ->  /data
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web    ->  /debug
+
+Override mounts via env:
+  FIDELITY_WEB_SECRETS_DIR=/path/to/secrets
+  FIDELITY_WEB_DATA_DIR=/path/to/data
+  FIDELITY_WEB_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  Read from $FIDELITY_WEB_USERNAME / $FIDELITY_WEB_PASSWORD inside
+  the container (the unprefixed $FIDELITY_USERNAME / $FIDELITY_PASSWORD
+  work as a fallback). The script sources
+  /secrets/fidelity-web.env automatically
+  (= $HOME/.secrets/fidelity-web.env on the host).
+
+  Use SINGLE QUOTES around values containing $, \!, backtick, or
+  other shell metacharacters. Double quotes would let the host
+  shell do $-expansion when sourcing the file, which silently
+  mangles the password before it reaches the container:
+    FIDELITY_WEB_USERNAME='your-username'
+    FIDELITY_WEB_PASSWORD='your-password-with-$pecial-chars'
+  chmod 600 the file.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web/Dockerfile
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/fidelity-web:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/fidelity-web:latest
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^fidelity-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  fidelity-web
+docker
+  run
+  --rm
+  --name
+  fidelity-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIDELITY_WEB_USERNAME
+  -e
+  FIDELITY_WEB_PASSWORD
+  -e
+  FIDELITY_USERNAME
+  -e
+  FIDELITY_PASSWORD
+  -v
+  <TMP>/w-fidelity-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web:/data
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web:/debug
+  -v
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web:/app
+  wealthdb/fidelity-web:latest
+  download
+  [env] FIDELITY_WEB_USERNAME=<unset>
+  [env] FIDELITY_WEB_PASSWORD=<unset>
+  [env] FIDELITY_USERNAME=<unset>
+  [env] FIDELITY_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+python3
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web/load.py
+  --silver-db
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web/fidelity-web.db
+  --bronze-dir
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web/prune.py
+  --bronze-dir
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web
+  --debug-dir
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web
+exit: 0
+--- stdout
+--- stderr
+=== recompress
+--- calls
+python3
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web/recompress.py
+  --bronze-dir
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^fidelity-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  fidelity-web
+docker
+  run
+  --rm
+  --name
+  fidelity-web
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIDELITY_WEB_USERNAME
+  -e
+  FIDELITY_WEB_PASSWORD
+  -e
+  FIDELITY_USERNAME
+  -e
+  FIDELITY_PASSWORD
+  -v
+  <TMP>/w-fidelity-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web:/data
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web:/debug
+  -v
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web:/app
+  wealthdb/fidelity-web:latest
+  vnc-login
+  [env] FIDELITY_WEB_USERNAME=<unset>
+  [env] FIDELITY_WEB_PASSWORD=<unset>
+  [env] FIDELITY_USERNAME=<unset>
+  [env] FIDELITY_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^fidelity-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  fidelity-web
+docker
+  run
+  --rm
+  --name
+  fidelity-web
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIDELITY_WEB_USERNAME
+  -e
+  FIDELITY_WEB_PASSWORD
+  -e
+  FIDELITY_USERNAME
+  -e
+  FIDELITY_PASSWORD
+  -v
+  <TMP>/w-fidelity-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web:/data
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web:/debug
+  -v
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web:/app
+  wealthdb/fidelity-web:latest
+  explore
+  [env] FIDELITY_WEB_USERNAME=<unset>
+  [env] FIDELITY_WEB_PASSWORD=<unset>
+  [env] FIDELITY_USERNAME=<unset>
+  [env] FIDELITY_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^fidelity-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  fidelity-web
+docker
+  run
+  --rm
+  --name
+  fidelity-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIDELITY_WEB_USERNAME
+  -e
+  FIDELITY_WEB_PASSWORD
+  -e
+  FIDELITY_USERNAME
+  -e
+  FIDELITY_PASSWORD
+  -v
+  <TMP>/w-fidelity-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web:/data
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web:/debug
+  -v
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web:/app
+  wealthdb/fidelity-web:latest
+  sh
+  [env] FIDELITY_WEB_USERNAME=<unset>
+  [env] FIDELITY_WEB_PASSWORD=<unset>
+  [env] FIDELITY_USERNAME=<unset>
+  [env] FIDELITY_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^fidelity-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  fidelity-web
+docker
+  run
+  --rm
+  --name
+  fidelity-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIDELITY_WEB_USERNAME
+  -e
+  FIDELITY_WEB_PASSWORD
+  -e
+  FIDELITY_USERNAME
+  -e
+  FIDELITY_PASSWORD
+  -v
+  <TMP>/w-fidelity-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web:/data
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web:/debug
+  -v
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web:/app
+  wealthdb/fidelity-web:latest
+  bash
+  [env] FIDELITY_WEB_USERNAME=<unset>
+  [env] FIDELITY_WEB_PASSWORD=<unset>
+  [env] FIDELITY_USERNAME=<unset>
+  [env] FIDELITY_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+exit: 0
+--- stdout
+--- stderr
+fidelity-web: 'login' folds into 'download' — nothing to persist.
+  The Fidelity session is browser-lifetime only. Use instead:
+    vnc-login   first-time / re-auth via VNC-assisted MFA
+    download    one-shot login -> walk (login is folded in)
+=== login --check
+--- calls
+exit: 0
+--- stdout
+--- stderr
+fidelity-web: 'login' folds into 'download' — nothing to persist.
+  The Fidelity session is browser-lifetime only. Use instead:
+    vnc-login   first-time / re-auth via VNC-assisted MFA
+    download    one-shot login -> walk (login is folded in)
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^fidelity-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  fidelity-web
+docker
+  run
+  --rm
+  --name
+  fidelity-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIDELITY_WEB_USERNAME
+  -e
+  FIDELITY_WEB_PASSWORD
+  -e
+  FIDELITY_USERNAME
+  -e
+  FIDELITY_PASSWORD
+  -v
+  <TMP>/w-fidelity-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web:/data
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web:/debug
+  -v
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web:/app
+  wealthdb/fidelity-web:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] FIDELITY_WEB_USERNAME=<unset>
+  [env] FIDELITY_WEB_PASSWORD=<unset>
+  [env] FIDELITY_USERNAME=<unset>
+  [env] FIDELITY_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-fidelity-web/silver/x.db
+--- calls
+python3
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web/load.py
+  --silver-db
+  <TMP>/w-fidelity-web/silver/x.db
+  --bronze-dir
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-fidelity-web/silver/x.db
+--- calls
+python3
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web/load.py
+  --silver-db
+  <TMP>/w-fidelity-web/silver/x.db
+  --bronze-dir
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-fidelity-web/alt-data
+--- calls
+python3
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web/load.py
+  --silver-db
+  <TMP>/w-fidelity-web/alt-data/fidelity-web.db
+  --bronze-dir
+  <TMP>/w-fidelity-web/alt-data
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-fidelity-web/alt-data
+--- calls
+python3
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web/load.py
+  --silver-db
+  <TMP>/w-fidelity-web/alt-data/fidelity-web.db
+  --bronze-dir
+  <TMP>/w-fidelity-web/alt-data
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-fidelity-web/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^fidelity-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  fidelity-web
+docker
+  run
+  --rm
+  --name
+  fidelity-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIDELITY_WEB_USERNAME
+  -e
+  FIDELITY_WEB_PASSWORD
+  -e
+  FIDELITY_USERNAME
+  -e
+  FIDELITY_PASSWORD
+  -v
+  <TMP>/w-fidelity-web/alt-secrets:/secrets
+  -v
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web:/data
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web:/debug
+  -v
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web:/app
+  wealthdb/fidelity-web:latest
+  download
+  [env] FIDELITY_WEB_USERNAME=<unset>
+  [env] FIDELITY_WEB_PASSWORD=<unset>
+  [env] FIDELITY_USERNAME=<unset>
+  [env] FIDELITY_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-fidelity-web/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^fidelity-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  fidelity-web
+docker
+  run
+  --rm
+  --name
+  fidelity-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIDELITY_WEB_USERNAME
+  -e
+  FIDELITY_WEB_PASSWORD
+  -e
+  FIDELITY_USERNAME
+  -e
+  FIDELITY_PASSWORD
+  -v
+  <TMP>/w-fidelity-web/alt-secrets:/secrets
+  -v
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web:/data
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web:/debug
+  -v
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web:/app
+  wealthdb/fidelity-web:latest
+  download
+  [env] FIDELITY_WEB_USERNAME=<unset>
+  [env] FIDELITY_WEB_PASSWORD=<unset>
+  [env] FIDELITY_USERNAME=<unset>
+  [env] FIDELITY_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^fidelity-web$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  fidelity-web
+docker
+  run
+  --rm
+  --name
+  fidelity-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  FIDELITY_WEB_USERNAME
+  -e
+  FIDELITY_WEB_PASSWORD
+  -e
+  FIDELITY_USERNAME
+  -e
+  FIDELITY_PASSWORD
+  -v
+  <TMP>/w-fidelity-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-fidelity-web/xdgdata/wealthdb/fidelity-web:/data
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web:/debug
+  -v
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web:/app
+  wealthdb/fidelity-web:latest
+  bogus-verb
+  [env] FIDELITY_WEB_USERNAME=<unset>
+  [env] FIDELITY_WEB_PASSWORD=<unset>
+  [env] FIDELITY_USERNAME=<unset>
+  [env] FIDELITY_PASSWORD=<unset>
+exit: 0
+--- stdout
+--- stderr

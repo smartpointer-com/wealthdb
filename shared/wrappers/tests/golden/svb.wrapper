@@ -1,0 +1,214 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+svb — host wrapper for the wealthdb "svb" collector.
+
+A one-shot historical sideload: it parses a static archive of SVB statement
+PDFs — brokerage, deposit and mortgage — into silver SQLites that use the
+fidelity-web schema, so the shared Fidelity gold adapter projects them, one
+gold source id per family. SVB wound down in 2023; there is no live source to
+log into and nothing to download on a schedule — the statements are a fixed
+archive dropped into the data dir — so `login` and `download` are no-ops.
+Host-venv collector (no Docker).
+
+Subcommands:
+  load [args...]      Rebuild the silver DBs from the statement PDFs in the
+                      data dir — one per statement family, each a gold source
+                      of its own (svb, svb-deposit, svb-mortgage).
+  download | login    No-op (explains the sideload model).
+  prune               No-op. The bronze holds the load-input statement PDFs
+                      themselves — no timestamped run dirs and no debug
+                      artefacts to reclaim — so there is nothing to prune and
+                      the PDFs are never deleted.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default), accepted on `load`:
+  --data-dir  DIR     data dir; PDFs under <data-dir>/bronze/, searched
+                      recursively (default $XDG_DATA_HOME/wealthdb/svb)
+  --silver-db PATH    brokerage silver DB path (default <data-dir>/svb.db);
+                      the deposit and mortgage DBs sit beside it
+Extra `load` flags pass through to load.py (e.g. --statement-signature).
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+svb — host wrapper for the wealthdb "svb" collector.
+
+A one-shot historical sideload: it parses a static archive of SVB statement
+PDFs — brokerage, deposit and mortgage — into silver SQLites that use the
+fidelity-web schema, so the shared Fidelity gold adapter projects them, one
+gold source id per family. SVB wound down in 2023; there is no live source to
+log into and nothing to download on a schedule — the statements are a fixed
+archive dropped into the data dir — so `login` and `download` are no-ops.
+Host-venv collector (no Docker).
+
+Subcommands:
+  load [args...]      Rebuild the silver DBs from the statement PDFs in the
+                      data dir — one per statement family, each a gold source
+                      of its own (svb, svb-deposit, svb-mortgage).
+  download | login    No-op (explains the sideload model).
+  prune               No-op. The bronze holds the load-input statement PDFs
+                      themselves — no timestamped run dirs and no debug
+                      artefacts to reclaim — so there is nothing to prune and
+                      the PDFs are never deleted.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default), accepted on `load`:
+  --data-dir  DIR     data dir; PDFs under <data-dir>/bronze/, searched
+                      recursively (default $XDG_DATA_HOME/wealthdb/svb)
+  --silver-db PATH    brokerage silver DB path (default <data-dir>/svb.db);
+                      the deposit and mortgage DBs sit beside it
+Extra `load` flags pass through to load.py (e.g. --statement-signature).
+--- stderr
+=== load
+--- calls
+python3
+  <TMP>/w-svb/tree/collectors/svb/load.py
+  --bronze-dir
+  <TMP>/w-svb/xdgdata/wealthdb/svb/bronze
+  --silver-db
+  <TMP>/w-svb/xdgdata/wealthdb/svb/svb.db
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+exit: 0
+--- stdout
+--- stderr
+svb: no-op. This collector has no live source — the SVB statements are a fixed
+historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
+(+ an optional signature.txt page-1 guard, and the derived-marks.xlsx
+performance workbook of month-end account values where the archive has
+interior gaps) into <data-dir>/bronze/ (default
+$XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
+searches it recursively — then run `./svb load` to rebuild the silver DBs from
+them.
+=== login
+--- calls
+exit: 0
+--- stdout
+--- stderr
+svb: no-op. This collector has no live source — the SVB statements are a fixed
+historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
+(+ an optional signature.txt page-1 guard, and the derived-marks.xlsx
+performance workbook of month-end account values where the archive has
+interior gaps) into <data-dir>/bronze/ (default
+$XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
+searches it recursively — then run `./svb load` to rebuild the silver DBs from
+them.
+=== prune
+--- calls
+exit: 0
+--- stdout
+--- stderr
+svb: prune is a no-op. The bronze holds the SVB statement PDFs (+ an optional
+signature.txt and the derived-marks.xlsx workbook) — the load inputs
+themselves, git-ignored and the only copy.
+There are no timestamped run dirs, no download stage, and no debug artefacts to
+reclaim, so there is nothing to prune. The statement PDFs are never deleted.
+=== login --check
+--- calls
+exit: 0
+--- stdout
+--- stderr
+svb: login --check is a no-op; there is no session to probe.
+svb: no-op. This collector has no live source — the SVB statements are a fixed
+historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
+(+ an optional signature.txt page-1 guard, and the derived-marks.xlsx
+performance workbook of month-end account values where the archive has
+interior gaps) into <data-dir>/bronze/ (default
+$XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
+searches it recursively — then run `./svb load` to rebuild the silver DBs from
+them.
+=== download --dry-run --lookback 1w
+--- calls
+exit: 0
+--- stdout
+--- stderr
+svb: no-op. This collector has no live source — the SVB statements are a fixed
+historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
+(+ an optional signature.txt page-1 guard, and the derived-marks.xlsx
+performance workbook of month-end account values where the archive has
+interior gaps) into <data-dir>/bronze/ (default
+$XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
+searches it recursively — then run `./svb load` to rebuild the silver DBs from
+them.
+=== load --silver-db <TMP>/w-svb/silver/x.db
+--- calls
+python3
+  <TMP>/w-svb/tree/collectors/svb/load.py
+  --bronze-dir
+  <TMP>/w-svb/xdgdata/wealthdb/svb/bronze
+  --silver-db
+  <TMP>/w-svb/silver/x.db
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-svb/silver/x.db
+--- calls
+python3
+  <TMP>/w-svb/tree/collectors/svb/load.py
+  --bronze-dir
+  <TMP>/w-svb/xdgdata/wealthdb/svb/bronze
+  --silver-db
+  <TMP>/w-svb/silver/x.db
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-svb/alt-data
+--- calls
+python3
+  <TMP>/w-svb/tree/collectors/svb/load.py
+  --bronze-dir
+  <TMP>/w-svb/alt-data/bronze
+  --silver-db
+  <TMP>/w-svb/alt-data/svb.db
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-svb/alt-data
+--- calls
+python3
+  <TMP>/w-svb/tree/collectors/svb/load.py
+  --bronze-dir
+  <TMP>/w-svb/alt-data/bronze
+  --silver-db
+  <TMP>/w-svb/alt-data/svb.db
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-svb/alt-secrets
+--- calls
+exit: 0
+--- stdout
+--- stderr
+svb: no-op. This collector has no live source — the SVB statements are a fixed
+historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
+(+ an optional signature.txt page-1 guard, and the derived-marks.xlsx
+performance workbook of month-end account values where the archive has
+interior gaps) into <data-dir>/bronze/ (default
+$XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
+searches it recursively — then run `./svb load` to rebuild the silver DBs from
+them.
+=== download --secrets-dir=<TMP>/w-svb/alt-secrets
+--- calls
+exit: 0
+--- stdout
+--- stderr
+svb: no-op. This collector has no live source — the SVB statements are a fixed
+historical archive (SVB wound down in 2023). Drop the in-scope statement PDFs
+(+ an optional signature.txt page-1 guard, and the derived-marks.xlsx
+performance workbook of month-end account values where the archive has
+interior gaps) into <data-dir>/bronze/ (default
+$XDG_DATA_HOME/wealthdb/svb/bronze/), in whatever folder layout suits — load
+searches it recursively — then run `./svb load` to rebuild the silver DBs from
+them.
+=== bogus-verb
+--- calls
+exit: 2
+--- stdout
+--- stderr
+svb: unknown command 'bogus-verb' (expected: load, download, login, prune, help)

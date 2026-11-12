@@ -1,0 +1,570 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+ubs-web — host wrapper
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Mint or refresh the session state file.
+  download [args...]  Export bronze artefacts from netbanking.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  explore [args...]   Discovery harness: headed Chromium over VNC. The
+                      session is driven by hand; the harness records the
+                      network, clicks, DOM and downloads into the /debug
+                      mount. Writes no bronze.
+  prune [args...]     Delete non-complete dumps (crashed walks,
+                      legacy dry-run shells) from the bronze tree, and
+                      aged entries of the /debug cache.
+                      --dry-run prints the plan first.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-ubs-web/home/.secrets  ->  /secrets
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web     ->  /data
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web    ->  /debug
+
+Override mounts via env:
+  UBS_WEB_SECRETS_DIR=/path/to/secrets
+  UBS_WEB_DATA_DIR=/path/to/data
+  UBS_WEB_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  The contract number is read from $UBS_CONTRACT_NUMBER inside the
+  container. The login script sources /secrets/ubs-web.env automatically
+  (= $HOME/.secrets/ubs-web.env on the host), so dropping a single line
+  UBS_CONTRACT_NUMBER=<your-contract-no> into that file is enough. The
+  bank-level ubs.env is read as a fallback when no ubs-web.env exists.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+ubs-web — host wrapper
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  login [args...]     Mint or refresh the session state file.
+  download [args...]  Export bronze artefacts from netbanking.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  explore [args...]   Discovery harness: headed Chromium over VNC. The
+                      session is driven by hand; the harness records the
+                      network, clicks, DOM and downloads into the /debug
+                      mount. Writes no bronze.
+  prune [args...]     Delete non-complete dumps (crashed walks,
+                      legacy dry-run shells) from the bronze tree, and
+                      aged entries of the /debug cache.
+                      --dry-run prints the plan first.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-ubs-web/home/.secrets  ->  /secrets
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web     ->  /data
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web    ->  /debug
+
+Override mounts via env:
+  UBS_WEB_SECRETS_DIR=/path/to/secrets
+  UBS_WEB_DATA_DIR=/path/to/data
+  UBS_WEB_DEBUG_DIR=/path/to/debug
+
+Credentials:
+  The contract number is read from $UBS_CONTRACT_NUMBER inside the
+  container. The login script sources /secrets/ubs-web.env automatically
+  (= $HOME/.secrets/ubs-web.env on the host), so dropping a single line
+  UBS_CONTRACT_NUMBER=<your-contract-no> into that file is enough. The
+  bank-level ubs.env is read as a fallback when no ubs-web.env exists.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-ubs-web/tree/collectors/ubs-web
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/ubs-web:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/ubs-web:latest
+  <TMP>/w-ubs-web/tree/collectors/ubs-web
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  login
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  download
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  load
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  explore
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-ubs-web/tree/collectors/ubs-web/prune.py
+  --bronze-dir
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web
+  --debug-dir
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  sh
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  bash
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  login
+  --check
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-ubs-web/silver/x.db
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/silver:/silver
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-ubs-web/silver/x.db
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/silver:/silver
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-ubs-web/alt-data
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/alt-data:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  load
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-ubs-web/alt-data
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/alt-data:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  load
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-ubs-web/alt-secrets
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/alt-secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  download
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-ubs-web/alt-secrets
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/alt-secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  download
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  run
+  --rm
+  --name
+  ubs-web
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  UBS_CONTRACT_NUMBER
+  -v
+  <TMP>/w-ubs-web/home/.secrets:/secrets
+  -v
+  <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web:/data
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
+  wealthdb/ubs-web:latest
+  bogus-verb
+  [env] UBS_CONTRACT_NUMBER=<unset>
+exit: 0
+--- stdout
+--- stderr

@@ -1,0 +1,946 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+raiffeisen_at — host wrapper
+
+Read-only collector for Mein ELBA, the Austrian Raiffeisen retail
+e-banking portal: deposit accounts (checking + savings), their
+transaction history, daily balances, and statement PDFs. Mein ELBA fires
+a pushTAN at every sign-in, so `login` folds into `download`: one
+browser lifetime per run, the challenge approved on your phone.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  download [args...]  One-shot login + REST fetch of the deposit accounts
+                      (history + daily balances + statement PDFs) into a
+                      UTC-stamped bronze run dir. The pushTAN is approved on
+                      your phone — no VNC, nothing to type. --lookback bounds
+                      the window; --no-documents skips statements; --dry-run
+                      enumerates without fetching; --fresh forces the cold
+                      region/Verfüger/PIN form.
+  login [args...]     Folds into download (nothing to persist). `login
+                      --check` reports whether a session is still alive
+                      (exit 0/1; dead between runs is expected).
+  vnc-login [args...] Fallback for download: expose VNC and complete the
+                      login by hand (form/card + pushTAN), then fetch.
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, daily balances, statements). --force
+                      rebuilds from all bronze.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / DOM snapshots under /debug. --fresh
+                      wipes the profile so the next login forces the cold
+                      form.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-raiffeisen_at/home/.secrets  ->  /secrets
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at     ->  /data
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at    ->  /debug
+
+Override mounts via env:
+  RAIFFEISEN_AT_SECRETS_DIR=/path/to/secrets
+  RAIFFEISEN_AT_DATA_DIR=/path/to/data
+  RAIFFEISEN_AT_DEBUG_DIR=/path/to/debug
+
+Credentials (read from /secrets/raiffeisen_at.env inside the container
+= $HOME/.secrets/raiffeisen_at.env on the host; chmod 0600):
+  RAIFFEISEN_AT_USERNAME   the personal Verfüger number, WITHOUT the region prefix
+  RAIFFEISEN_AT_PASSWORD   the PIN
+  RAIFFEISEN_AT_REGION     the Mandant code selecting the regional bank
+  The pushTAN confirmation happens in the Raiffeisen mobile app.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+raiffeisen_at — host wrapper
+
+Read-only collector for Mein ELBA, the Austrian Raiffeisen retail
+e-banking portal: deposit accounts (checking + savings), their
+transaction history, daily balances, and statement PDFs. Mein ELBA fires
+a pushTAN at every sign-in, so `login` folds into `download`: one
+browser lifetime per run, the challenge approved on your phone.
+
+Subcommands:
+  build               Build the Docker image (`docker build`).
+  download [args...]  One-shot login + REST fetch of the deposit accounts
+                      (history + daily balances + statement PDFs) into a
+                      UTC-stamped bronze run dir. The pushTAN is approved on
+                      your phone — no VNC, nothing to type. --lookback bounds
+                      the window; --no-documents skips statements; --dry-run
+                      enumerates without fetching; --fresh forces the cold
+                      region/Verfüger/PIN form.
+  login [args...]     Folds into download (nothing to persist). `login
+                      --check` reports whether a session is still alive
+                      (exit 0/1; dead between runs is expected).
+  vnc-login [args...] Fallback for download: expose VNC and complete the
+                      login by hand (form/card + pushTAN), then fetch.
+  load [args...]      Ingest bronze into the SQLite silver (accounts,
+                      transactions, daily balances, statements). --force
+                      rebuilds from all bronze.
+  prune [args...]     Delete non-complete dumps from the bronze tree, and
+                      aged entries of the /debug cache (runs host-side).
+                      --dry-run prints the plan.
+  explore [args...]   Discovery harness: Camoufox over VNC + HAR / network
+                      log / click log / DOM snapshots under /debug. --fresh
+                      wipes the profile so the next login forces the cold
+                      form.
+  sh|bash             Open an interactive shell in the container.
+  help                Show this message.
+
+Mounted into the container:
+  <TMP>/w-raiffeisen_at/home/.secrets  ->  /secrets
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at     ->  /data
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at    ->  /debug
+
+Override mounts via env:
+  RAIFFEISEN_AT_SECRETS_DIR=/path/to/secrets
+  RAIFFEISEN_AT_DATA_DIR=/path/to/data
+  RAIFFEISEN_AT_DEBUG_DIR=/path/to/debug
+
+Credentials (read from /secrets/raiffeisen_at.env inside the container
+= $HOME/.secrets/raiffeisen_at.env on the host; chmod 0600):
+  RAIFFEISEN_AT_USERNAME   the personal Verfüger number, WITHOUT the region prefix
+  RAIFFEISEN_AT_PASSWORD   the PIN
+  RAIFFEISEN_AT_REGION     the Mandant code selecting the regional bank
+  The pushTAN confirmation happens in the Raiffeisen mobile app.
+--- stderr
+=== build
+--- calls
+python3
+  -
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at/Dockerfile
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at/requirements.txt
+  --
+  missing
+docker
+  image
+  inspect
+  -f
+  {{index .Config.Labels "wealthdb.inputs"}}
+  wealthdb/raiffeisen_at:latest
+docker
+  build
+  --provenance=false
+  --build-arg
+  WEALTHDB_IMAGE_TAG=latest
+  -t
+  wealthdb/raiffeisen_at:latest
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at
+exit: 0
+--- stdout
+--- stderr
+=== download
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  download
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  login
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== vnc-login
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  vnc-login
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  load
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at/prune.py
+  --bronze-dir
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at
+  --debug-dir
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at
+exit: 0
+--- stdout
+--- stderr
+=== explore
+--- calls
+lsof
+  -nP
+  -iTCP:5900
+  -sTCP:LISTEN
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  -p
+  127.0.0.1:5900:5900
+  -e
+  VNC_HOST_PORT=5900
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  explore
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== sh
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  sh
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bash
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  bash
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  login
+  --check
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  download
+  --dry-run
+  --lookback
+  1w
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-raiffeisen_at/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/silver:/silver
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-raiffeisen_at/silver/x.db
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/silver:/silver
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  load
+  --silver-db
+  /silver/x.db
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-raiffeisen_at/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/alt-data:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  load
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-raiffeisen_at/alt-data
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/alt-data:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  load
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-raiffeisen_at/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/alt-secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  download
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-raiffeisen_at/alt-secrets
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/alt-secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  download
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+docker
+  ps
+  --filter
+  name=^raiffeisen_at$
+  --filter
+  status=running
+  -q
+docker
+  rm
+  -f
+  raiffeisen_at
+docker
+  run
+  --rm
+  --name
+  raiffeisen_at
+  --user
+  <UID>:<GID>
+  -e
+  HOME=/tmp
+  -e
+  RAIFFEISEN_AT_USERNAME
+  -e
+  RAIFFEISEN_AT_PASSWORD
+  -e
+  RAIFFEISEN_AT_REGION
+  -v
+  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
+  -v
+  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
+  -e
+  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
+  -v
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
+  wealthdb/raiffeisen_at:latest
+  bogus-verb
+  [env] RAIFFEISEN_AT_USERNAME=<unset>
+  [env] RAIFFEISEN_AT_PASSWORD=<unset>
+  [env] RAIFFEISEN_AT_REGION=<unset>
+exit: 0
+--- stdout
+--- stderr

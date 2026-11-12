@@ -27,6 +27,34 @@ summary() {
     [ "$FAIL" -eq 0 ]
 }
 
+# stub_docker DIR: writes a fake `docker` into DIR. It answers `ps` with
+# no container and `image inspect` with no image, starts nothing and
+# exits 0 otherwise. When STUB_LOG names a file, each call is appended to
+# it: "docker", then the argv one item per line, then, for each `-e NAME`
+# that passes a name only, the value NAME holds in the stub's
+# environment, since that value is what would reach the container.
+stub_docker() {
+    mkdir -p "$1"
+    cat > "$1/docker" <<'STUB'
+#!/usr/bin/env bash
+if [ -n "${STUB_LOG:-}" ]; then
+    {
+        echo docker
+        [ $# -gt 0 ] && printf '  %s\n' "$@"
+        prev=
+        for a in "$@"; do
+            if [ "$prev" = -e ] && [[ "$a" != *=* ]]; then
+                echo "  [env] $a=${!a-<unset>}"
+            fi
+            prev="$a"
+        done
+    } >> "$STUB_LOG"
+fi
+[ "${1:-}" != image ]
+STUB
+    chmod +x "$1/docker"
+}
+
 # sandbox_env DIR: keeps a wrapper away from the live tree. It unsets the
 # data and secrets roots and the TESTCOL_* dir overrides, and points the
 # XDG data, cache and config dirs into DIR.

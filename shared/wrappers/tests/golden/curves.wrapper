@@ -1,0 +1,184 @@
+=== 
+--- calls
+exit: 0
+--- stdout
+curves — host wrapper for the wealthdb "curves" collector.
+
+Host-venv collector (no Docker): runs the collector's own .py under its
+.venv. Pulls the public government yield curves of the euro (the ECB
+Data Portal) and the franc (the SNB data portal). No login anywhere,
+no key. Subcommands:
+  login               No-op: there is no session. `login --check` asks
+                      each portal for its cheapest answer (the ECB its
+                      newest ten-year rate, the SNB its latest update)
+                      and writes nothing.
+  download [args...]  Fetch every series into bronze. Bound the window
+                      with --lookback (default ~90 days; an early date
+                      such as `--lookback 1950-01-01` for each series'
+                      whole history); --series narrows it.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Delete non-complete (crashed / in-flight) bronze run
+                      dirs and the --debug trace in complete ones; their
+                      load inputs are kept. --dry-run to preview.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default):
+  --data-dir    DIR   bronze dumps root          (default $XDG_DATA_HOME/wealthdb/curves)
+  --silver-db   PATH  silver DB path, load only  (default <data-dir>/curves.db)
+--secrets-dir is accepted and unused: no portal needs a credential, so no
+env file is read.
+--- stderr
+=== help
+--- calls
+exit: 0
+--- stdout
+curves — host wrapper for the wealthdb "curves" collector.
+
+Host-venv collector (no Docker): runs the collector's own .py under its
+.venv. Pulls the public government yield curves of the euro (the ECB
+Data Portal) and the franc (the SNB data portal). No login anywhere,
+no key. Subcommands:
+  login               No-op: there is no session. `login --check` asks
+                      each portal for its cheapest answer (the ECB its
+                      newest ten-year rate, the SNB its latest update)
+                      and writes nothing.
+  download [args...]  Fetch every series into bronze. Bound the window
+                      with --lookback (default ~90 days; an early date
+                      such as `--lookback 1950-01-01` for each series'
+                      whole history); --series narrows it.
+  load [args...]      Parse bronze into the silver SQLite DB.
+  prune [args...]     Delete non-complete (crashed / in-flight) bronze run
+                      dirs and the --debug trace in complete ones; their
+                      load inputs are kept. --dry-run to preview.
+
+Uniform directory overrides (CLI flag > ${PREFIX}_* env > WEALTHDB_* env
+> default):
+  --data-dir    DIR   bronze dumps root          (default $XDG_DATA_HOME/wealthdb/curves)
+  --silver-db   PATH  silver DB path, load only  (default <data-dir>/curves.db)
+--secrets-dir is accepted and unused: no portal needs a credential, so no
+env file is read.
+--- stderr
+=== login
+--- calls
+exit: 0
+--- stdout
+--- stderr
+curves: no-op. The portals are public; there is no session to mint.
+To ask each portal for its cheapest answer, run `./curves login --check`.
+=== download
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/download.py
+  --bronze-dir
+  <TMP>/w-curves/xdgdata/wealthdb/curves
+exit: 0
+--- stdout
+--- stderr
+=== load
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/load.py
+  --silver-db
+  <TMP>/w-curves/xdgdata/wealthdb/curves/curves.db
+  --bronze-dir
+  <TMP>/w-curves/xdgdata/wealthdb/curves
+exit: 0
+--- stdout
+--- stderr
+=== prune
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/prune.py
+  --bronze-dir
+  <TMP>/w-curves/xdgdata/wealthdb/curves
+exit: 0
+--- stdout
+--- stderr
+=== login --check
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/download.py
+  --check
+exit: 0
+--- stdout
+--- stderr
+=== download --dry-run --lookback 1w
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/download.py
+  --bronze-dir
+  <TMP>/w-curves/xdgdata/wealthdb/curves
+  --dry-run
+  --lookback
+  1w
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db <TMP>/w-curves/silver/x.db
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/load.py
+  --silver-db
+  <TMP>/w-curves/silver/x.db
+  --bronze-dir
+  <TMP>/w-curves/xdgdata/wealthdb/curves
+exit: 0
+--- stdout
+--- stderr
+=== load --silver-db=<TMP>/w-curves/silver/x.db
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/load.py
+  --silver-db
+  <TMP>/w-curves/silver/x.db
+  --bronze-dir
+  <TMP>/w-curves/xdgdata/wealthdb/curves
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir <TMP>/w-curves/alt-data
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/load.py
+  --silver-db
+  <TMP>/w-curves/alt-data/curves.db
+  --bronze-dir
+  <TMP>/w-curves/alt-data
+exit: 0
+--- stdout
+--- stderr
+=== load --data-dir=<TMP>/w-curves/alt-data
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/load.py
+  --silver-db
+  <TMP>/w-curves/alt-data/curves.db
+  --bronze-dir
+  <TMP>/w-curves/alt-data
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir <TMP>/w-curves/alt-secrets
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/download.py
+  --bronze-dir
+  <TMP>/w-curves/xdgdata/wealthdb/curves
+exit: 0
+--- stdout
+--- stderr
+=== download --secrets-dir=<TMP>/w-curves/alt-secrets
+--- calls
+python3
+  <TMP>/w-curves/tree/collectors/curves/download.py
+  --bronze-dir
+  <TMP>/w-curves/xdgdata/wealthdb/curves
+exit: 0
+--- stdout
+--- stderr
+=== bogus-verb
+--- calls
+exit: 2
+--- stdout
+--- stderr
+curves: unknown command 'bogus-verb' (expected: login|download|load|prune)
