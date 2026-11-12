@@ -76,7 +76,7 @@ var SourceTables = []SourceTable{
 	{Name: "security_period_facts", TimeCol: "as_of", RefKind: canonical.RefPeriodFacts, Class: ClassReference},
 	{Name: "rate_observations", TimeCol: "as_of", Class: ClassReference},
 	{Name: "dividend_calendar", TimeCol: "as_of", RefKind: canonical.RefDividendEvents, Class: ClassReference},
-	{Name: "stated_periods", TimeCol: "as_of", Account: false, Class: ClassReference},
+	{Name: "stated_periods", TimeCol: "as_of", Account: true, Class: ClassReference},
 	{Name: "exposure_reports", TimeCol: "as_of", Class: ClassReference},
 
 	{Name: "transactions", TimeCol: "occurred_at", Account: true, Class: ClassFact},

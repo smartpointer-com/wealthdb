@@ -70,8 +70,8 @@ type SourceSpec struct {
 	// another source carries it from there (config `supersession`),
 	// as Unix seconds at UTC midnight per account_external_id. Rows
 	// dated on or after it are dropped before they reach gold —
-	// positions, lots, cash balances and transactions alike — so the two
-	// sources tile instead of double-counting. Dropping alone would
+	// positions, lots, cash balances, transactions and stated periods
+	// alike — so the two sources tile instead of double-counting. Dropping alone would
 	// not end the series: gold carries a key forward until something
 	// supersedes it, so one zero row is also written AT the date for
 	// every key the account still held at its last pre-handover
@@ -453,6 +453,12 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		batch.CashBalances = dropSuperseded(batch.CashBalances, spec.Supersession,
 			func(c canonical.CashBalanceChange) (string, int64) {
 				return c.AccountExternalID, c.SnapshotAt
+			})
+		// A stated period is dated by its last day: one that ends on or
+		// after the handover is the successor's to state.
+		batch.StatedPeriods = dropSuperseded(batch.StatedPeriods, spec.Supersession,
+			func(p canonical.StatedPeriodChange) (string, int64) {
+				return p.AccountExternalID, p.AsOf
 			})
 
 		if err := dims.AddBatch(&batch); err != nil {
@@ -998,8 +1004,8 @@ func applyPortfolioOverrides(accounts []canonical.AccountChange, overrides map[s
 // precedes it, so a statement or a dump straddling the handover still
 // contributes its earlier half.
 //
-// Generic over the fact kinds because all three are filtered the same
-// way and by the same pair of fields; `at` reads that pair off a row.
+// Generic over the row kinds because each is filtered the same way, by
+// an account and a date; `at` reads that pair off a row.
 // Returns the slice unchanged when nothing is configured, and when the
 // configured accounts appear in no row — an entry matching nothing is a
 // no-op, not an error, since a source that stops emitting the account

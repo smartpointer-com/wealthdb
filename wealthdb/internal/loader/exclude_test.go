@@ -258,3 +258,33 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestTheSweepTakesAnAccountsStatedPeriods: a stated period names an
+// account, and `returns stated` reads every row of the table, so an
+// excluded account's statements must go with it.
+func TestTheSweepTakesAnAccountsStatedPeriods(t *testing.T) {
+	ctx, tx, count := excludeFixture(t)
+	period := func(acct string) canonical.StatedPeriodChange {
+		return canonical.StatedPeriodChange{
+			SilverSourceID: "src", AccountExternalID: acct,
+			AsOf: 2000, PeriodStart: 1000, Currency: "USD", SourceSHA256: "doc-" + acct,
+		}
+	}
+	if err := gold.NewWriter(tx).InsertReference(ctx, &canonical.SnapshotBatch{
+		StatedPeriods: []canonical.StatedPeriodChange{period("IN_PF"), period("BY_NAME"), period("KEEP")},
+	}); err != nil {
+		t.Fatalf("seed stated periods: %v", err)
+	}
+	if err := deleteExcluded(ctx, tx, "src", exclusions{
+		accounts:   []string{"BY_NAME"},
+		portfolios: []string{"PF_DROP"},
+	}); err != nil {
+		t.Fatalf("deleteExcluded: %v", err)
+	}
+	if c := count(`SELECT COUNT(*) FROM stated_periods WHERE account_external_id IN ('IN_PF','BY_NAME')`); c != 0 {
+		t.Errorf("excluded accounts kept %d stated period(s)", c)
+	}
+	if c := count(`SELECT COUNT(*) FROM stated_periods WHERE account_external_id = 'KEEP'`); c != 1 {
+		t.Error("the kept account's stated period did not survive")
+	}
+}

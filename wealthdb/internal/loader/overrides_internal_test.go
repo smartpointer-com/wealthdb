@@ -502,6 +502,71 @@ func TestSupersessionClosingSurvivesAWindowPastTheHandover(t *testing.T) {
 	}
 }
 
+// TestSupersessionDropsStatedPeriodsFromTheHandover: a stated period is
+// cut by its own date, the period's last day, like every other row of a
+// superseded account. A period ending before the handover stays; one
+// ending on or after it goes, and another account's period is untouched.
+func TestSupersessionDropsStatedPeriodsFromTheHandover(t *testing.T) {
+	ctx := context.Background()
+	g, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
+	if err != nil {
+		t.Fatalf("gold.OpenFresh: %v", err)
+	}
+	t.Cleanup(func() { g.Close() })
+
+	const (
+		sourceID = "stub-source"
+		handover = int64(1700006400)
+	)
+	period := func(account, doc string, asOf int64) canonical.StatedPeriodChange {
+		return canonical.StatedPeriodChange{
+			AccountExternalID: account, AsOf: asOf, PeriodStart: asOf - 30*86400,
+			Currency: "USD", SourceSHA256: doc,
+		}
+	}
+	silver := &stubSilver{batch: canonical.SnapshotBatch{StatedPeriods: []canonical.StatedPeriodChange{
+		period("ACCT0001", "before", handover-86400),
+		period("ACCT0001", "on", handover),
+		period("ACCT0001", "after", handover+86400),
+		period("ACCT0002", "other-account", handover+86400),
+	}}}
+	spec := SourceSpec{ID: sourceID, Supersession: map[string]int64{"ACCT0001": handover}}
+	window := canonical.Window{Start: 0, End: handover + 86400, HasChanges: true, NewChangeNumber: 1}
+
+	tx, err := g.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := applySnapshots(ctx, tx, silver, window, spec); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("apply snapshots: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	rows, err := g.QueryContext(ctx, `SELECT source_sha256 FROM stated_periods
+	                                    WHERE silver_source_id = ? ORDER BY source_sha256`, sourceID)
+	if err != nil {
+		t.Fatalf("read stated periods: %v", err)
+	}
+	defer rows.Close()
+	var kept []string
+	for rows.Next() {
+		var doc string
+		if err := rows.Scan(&doc); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		kept = append(kept, doc)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read stated periods: %v", err)
+	}
+	if want := []string{"before", "other-account"}; !equalStrings(kept, want) {
+		t.Errorf("kept stated periods %v, want %v", kept, want)
+	}
+}
+
 // stubSilver is a silver connection carrying one snapshot of one
 // account — enough for applySnapshots, which is the only caller that
 // pulls from it. Status and ChangeWindow belong to the Connection

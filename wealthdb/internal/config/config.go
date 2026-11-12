@@ -110,11 +110,11 @@ type Config struct {
 	// and gold keys an account on (silver_source_id,
 	// account_external_id), so the two sources are two accounts and BOTH
 	// count. Naming the date the later source takes over stops the older
-	// one contributing from there: positions, cash balances and
-	// transactions alike. It also writes one zero row AT that date for
-	// whatever the account still held, because gold carries a key
-	// forward until something supersedes it and a source that simply
-	// stops reporting supersedes nothing.
+	// one contributing from there: positions, lots, cash balances,
+	// transactions and stated periods alike. It also writes one zero row
+	// AT that date for whatever the account still held, because gold
+	// carries a key forward until something supersedes it and a source
+	// that simply stops reporting supersedes nothing.
 	//
 	// What is cut is what the ADAPTER read. An `equity_transfers` row
 	// dated on or after the date is refused by name instead, failing the
