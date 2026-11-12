@@ -28,78 +28,109 @@ func BuiltinBenchmarkNames() []string { return slices.Sorted(maps.Keys(builtinBe
 // noise, not a typo.
 const benchmarkWeightTol = 1e-9
 
-// validateBenchmarks checks the benchmarks block: every name is usable
-// and differs from the others by more than its case, every fund
-// reference parses and names a fund once, every weight is positive, and
-// each mix sums to 100.
+// validateBenchmarks checks the benchmarks block and compiles it with
+// the built-in set (compileBenchmarks).
 func (c *Config) validateBenchmarks(map[string]bool) error {
+	defs, err := compileBenchmarks(c.Benchmarks)
+	if err != nil {
+		return err
+	}
+	c.benchmarkDefs = defs
+	return nil
+}
+
+// compileBenchmarks checks the configured mixes and returns the
+// built-in set with them over it, sorted by name. A configured name
+// replaces the built-in one whole. Every name is usable and differs
+// from the others by more than its case, every fund reference parses
+// and names a fund once, every weight is positive, and each mix sums
+// to 100.
+func compileBenchmarks(configured map[string]map[string]float64) ([]canonical.Benchmark, error) {
 	folded := map[string]string{}
 	for name := range builtinBenchmarks {
 		folded[strings.ToLower(name)] = name
 	}
-	for _, name := range slices.Sorted(maps.Keys(c.Benchmarks)) {
+	funds := map[string][]canonical.BenchmarkFund{}
+	for _, name := range slices.Sorted(maps.Keys(configured)) {
 		if strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
-			return fmt.Errorf("config: benchmarks[%q]: give the benchmark a name with no spaces around it", name)
+			return nil, fmt.Errorf("config: benchmarks[%q]: give the benchmark a name with no spaces around it", name)
 		}
 		if strings.EqualFold(name, canonical.NoBenchmark) {
-			return fmt.Errorf("config: benchmarks[%q]: %q is the picker's value for no benchmark; choose another name",
+			return nil, fmt.Errorf("config: benchmarks[%q]: %q is the picker's value for no benchmark; choose another name",
 				name, canonical.NoBenchmark)
 		}
 		if prev, dup := folded[strings.ToLower(name)]; dup && prev != name {
-			return fmt.Errorf("config: benchmarks[%q]: it differs from %q by case alone; use that exact name to redefine it, or another name",
+			return nil, fmt.Errorf("config: benchmarks[%q]: it differs from %q by case alone; use that exact name to redefine it, or another name",
 				name, prev)
 		}
 		folded[strings.ToLower(name)] = name
-		if err := validateBenchmarkMix(name, c.Benchmarks[name]); err != nil {
-			return err
+		mix, err := compileBenchmarkMix(name, configured[name])
+		if err != nil {
+			return nil, err
 		}
+		funds[name] = mix
 	}
-	return nil
+	for name, mix := range builtinBenchmarks {
+		if _, redefined := funds[name]; redefined {
+			continue
+		}
+		compiled, err := compileBenchmarkMix(name, mix)
+		if err != nil {
+			return nil, err
+		}
+		funds[name] = compiled
+	}
+	out := make([]canonical.Benchmark, 0, len(funds))
+	for _, name := range slices.Sorted(maps.Keys(funds)) {
+		_, own := configured[name]
+		out = append(out, canonical.Benchmark{Name: name, Builtin: !own, Funds: funds[name]})
+
+	}
+	return out, nil
 }
 
-func validateBenchmarkMix(name string, mix map[string]float64) error {
+// compileBenchmarkMix checks one mix and returns its funds, sorted by
+// fund reference.
+func compileBenchmarkMix(name string, mix map[string]float64) ([]canonical.BenchmarkFund, error) {
 	if len(mix) == 0 {
-		return fmt.Errorf("config: benchmarks[%q]: name at least one fund, such as \"symbol:ACWI\": 100", name)
+		return nil, fmt.Errorf("config: benchmarks[%q]: name at least one fund, such as \"symbol:ACWI\": 100", name)
 	}
 	seen := map[string]string{}
 	var sum float64
+	var out []canonical.BenchmarkFund
 	for _, key := range slices.Sorted(maps.Keys(mix)) {
 		ref, err := canonical.ParseFundRef(key)
 		if err != nil {
-			return fmt.Errorf("config: benchmarks[%q]: %w", name, err)
+			return nil, fmt.Errorf("config: benchmarks[%q]: %w", name, err)
 		}
 		if prev, dup := seen[ref]; dup {
-			return fmt.Errorf("config: benchmarks[%q]: %q and %q name the same fund; list it once", name, prev, key)
+			return nil, fmt.Errorf("config: benchmarks[%q]: %q and %q name the same fund; list it once", name, prev, key)
 		}
 		seen[ref] = key
 		w := mix[key]
 		if !(w > 0) || math.IsInf(w, 0) {
-			return fmt.Errorf("config: benchmarks[%q][%q]: weight %v: want a percentage above 0", name, key, w)
+			return nil, fmt.Errorf("config: benchmarks[%q][%q]: weight %v: want a percentage above 0", name, key, w)
 		}
 		sum += w
+		out = append(out, canonical.BenchmarkFund{FundRef: ref, WeightPct: w})
 	}
 	if math.Abs(sum-100) > benchmarkWeightTol {
-		return fmt.Errorf("config: benchmarks[%q]: the weights sum to %v; make them sum to 100", name, sum)
+		return nil, fmt.Errorf("config: benchmarks[%q]: the weights sum to %v; make them sum to 100", name, sum)
 	}
-	return nil
+	slices.SortFunc(out, func(x, y canonical.BenchmarkFund) int { return strings.Compare(x.FundRef, y.FundRef) })
+	return out, nil
 }
 
 // BenchmarkDefs is the built-in set with the config's benchmarks over
-// it, sorted by name. A configured name replaces the built-in one whole.
-// Only call after Validate.
+// it, sorted by name, as Validate compiled it. A Config never validated
+// reads as one with no benchmarks block: the built-in set alone.
 func (c *Config) BenchmarkDefs() []canonical.Benchmark {
-	mixes := maps.Clone(builtinBenchmarks)
-	maps.Copy(mixes, c.Benchmarks)
-	out := make([]canonical.Benchmark, 0, len(mixes))
-	for _, name := range slices.Sorted(maps.Keys(mixes)) {
-		_, configured := c.Benchmarks[name]
-		b := canonical.Benchmark{Name: name, Builtin: !configured}
-		for _, key := range slices.Sorted(maps.Keys(mixes[name])) {
-			ref, _ := canonical.ParseFundRef(key)
-			b.Funds = append(b.Funds, canonical.BenchmarkFund{FundRef: ref, WeightPct: mixes[name][key]})
-		}
-		slices.SortFunc(b.Funds, func(x, y canonical.BenchmarkFund) int { return strings.Compare(x.FundRef, y.FundRef) })
-		out = append(out, b)
+	if c.benchmarkDefs != nil {
+		return c.benchmarkDefs
 	}
-	return out
+	defs, err := compileBenchmarks(nil)
+	if err != nil {
+		panic(err) // the built-in set is valid by construction
+	}
+	return defs
 }

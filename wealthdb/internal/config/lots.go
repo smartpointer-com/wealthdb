@@ -69,12 +69,20 @@ func (c *Config) MissingBasis() lots.MissingBasis {
 	return lots.MissingBasis(c.Lots.MissingBasis)
 }
 
-// LotsEngine is the `lots` block in the engine's terms. Validate has
-// checked every value, so it cannot fail on a loaded config; it still
-// reports a bad value for a Config built by hand.
+// LotsEngine is the `lots` block in the engine's terms, as Validate
+// compiled it, so it cannot fail on a loaded config. A Config built by
+// hand and never validated is compiled here, and a bad value reported.
 func (c *Config) LotsEngine() (lots.Config, error) {
+	if c.lotsEngine != nil {
+		return *c.lotsEngine, nil
+	}
+	return c.Lots.engine()
+}
+
+// engine compiles the block into the engine's terms. A nil receiver is
+// the engine's defaults.
+func (l *LotsConfig) engine() (lots.Config, error) {
 	out := lots.Config{Method: lots.FIFO}
-	l := c.Lots
 	if l == nil {
 		return out, nil
 	}
@@ -201,6 +209,10 @@ func (c *Config) validateLots(seenIDs map[string]bool) error {
 		}
 		seen[k] = true
 	}
-	_, err := c.LotsEngine()
-	return err
+	eng, err := l.engine()
+	if err != nil {
+		return err
+	}
+	c.lotsEngine = &eng
+	return nil
 }

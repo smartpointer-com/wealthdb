@@ -110,6 +110,11 @@ func TestLoadSupersession(t *testing.T) {
 	if got := c.Supersession.Epochs()["cointracking"]["WALLET1"]; got != want {
 		t.Errorf("epoch = %d, want %d (UTC midnight of the handover)", got, want)
 	}
+	// Each call hands out its own maps: a load keeps one per source.
+	c.Supersession.Epochs()["cointracking"]["WALLET1"] = 0
+	if got := c.Supersession.Epochs()["cointracking"]["WALLET1"]; got != want {
+		t.Errorf("epoch = %d after a caller changed its copy, want %d", got, want)
+	}
 
 	// No block at all: the shape every deployment without a handover has.
 	c, err = Load(writeConfig(t, strings.TrimSuffix(base, ",")+`}`))

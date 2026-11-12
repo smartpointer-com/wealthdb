@@ -172,111 +172,145 @@ type YieldConvention struct {
 	DayCount  string `json:"day_count"`
 }
 
-// validateYield checks the yield block: every currency, tenor, country,
-// wrapper, fund, rating, market and sector is of its vocabulary, every
-// curve's series names a configured source, and each market's settlement
-// cycles ascend by day, each of a day or more. The keys are checked in
-// order, so the first error is the same at every run.
+// validateYield checks the yield block and compiles it
+// (YieldConfig.compile).
 func (c *Config) validateYield(seenIDs map[string]bool) error {
-	y := c.Yield
+	rows, err := c.Yield.compile(seenIDs)
+	if err != nil {
+		return err
+	}
+	c.yieldRows = &rows
+	return nil
+}
+
+// yieldBuiltins is the yield rows of an absent block: the built-in
+// conventions, cycles and settlement cycles alone.
+func yieldBuiltins() canonical.YieldRows {
+	return canonical.YieldRows{
+		Conventions:      canonical.BuiltinConventions(),
+		Cycles:           canonical.BuiltinCycles(),
+		SettlementCycles: canonical.BuiltinSettlementCycles(),
+	}
+}
+
+// compile checks the yield block and returns it as gold stores it, in a
+// stable order: every fund reference in the form gold builds, the
+// conventions, cycles and settlement cycles the built-in maps with the
+// block's entries over them. Every currency, tenor, country, wrapper,
+// fund, rating, market and sector is of its vocabulary, every curve's
+// series names a configured source, and each market's settlement cycles
+// ascend by day, each of a day or more. The keys are checked in order,
+// so the first error is the same at every run. A nil receiver yields
+// the built-in maps alone. The horizon stays in the config
+// (YieldHorizon).
+func (y *YieldConfig) compile(seenIDs map[string]bool) (canonical.YieldRows, error) {
+	out := yieldBuiltins()
 	if y == nil {
-		return nil
+		return out, nil
 	}
 	for _, ccy := range slices.Sorted(maps.Keys(y.Curves)) {
 		curve := y.Curves[ccy]
 		if !IsLikelyISO4217(ccy) {
-			return fmt.Errorf("config: yield.curves[%q]: not a 3-letter ISO 4217 code", ccy)
+			return out, fmt.Errorf("config: yield.curves[%q]: not a 3-letter ISO 4217 code", ccy)
 		}
 		if len(curve) == 0 {
-			return fmt.Errorf("config: yield.curves[%q]: a curve names at least one tenor", ccy)
+			return out, fmt.Errorf("config: yield.curves[%q]: a curve names at least one tenor", ccy)
 		}
 		lengths := map[int]string{}
 		for _, tenor := range slices.Sorted(maps.Keys(curve)) {
 			months, err := canonical.TenorMonths(tenor)
 			if err != nil {
-				return fmt.Errorf("config: yield.curves[%q][%q]: %w", ccy, tenor, err)
+				return out, fmt.Errorf("config: yield.curves[%q][%q]: %w", ccy, tenor, err)
 			}
 			if prev, dup := lengths[months]; dup {
-				return fmt.Errorf("config: yield.curves[%q]: %q and %q are the same tenor", ccy, prev, tenor)
+				return out, fmt.Errorf("config: yield.curves[%q]: %q and %q are the same tenor", ccy, prev, tenor)
 			}
 			lengths[months] = tenor
-			source, _, err := splitSeries(curve[tenor])
+			source, id, err := splitSeries(curve[tenor])
 			if err != nil {
-				return fmt.Errorf("config: yield.curves[%q][%q]: %w", ccy, tenor, err)
+				return out, fmt.Errorf("config: yield.curves[%q][%q]: %w", ccy, tenor, err)
 			}
 			if !seenIDs[source] {
-				return fmt.Errorf("config: yield.curves[%q][%q]: series %q: no silver_sources[].id matches",
+				return out, fmt.Errorf("config: yield.curves[%q][%q]: series %q: no silver_sources[].id matches",
 					ccy, tenor, curve[tenor])
 			}
+			out.Curves = append(out.Curves, canonical.YieldCurvePoint{Currency: ccy, Tenor: tenor, TenorMonths: months,
+				SilverSourceID: source, SeriesID: id})
 		}
 	}
 	for _, country := range slices.Sorted(maps.Keys(y.Withholding)) {
 		rates := y.Withholding[country]
 		if !isCountryCode(country) {
-			return fmt.Errorf("config: yield.withholding[%q]: not an ISO 3166 alpha-2 code", country)
+			return out, fmt.Errorf("config: yield.withholding[%q]: not an ISO 3166 alpha-2 code", country)
 		}
 		if country == canonical.EuropeanUnion {
-			return fmt.Errorf("config: yield.withholding[%q]: EU is the European Union, never a situs", country)
+			return out, fmt.Errorf("config: yield.withholding[%q]: EU is the European Union, never a situs", country)
 		}
 		if len(rates.Wrappers) == 0 && len(rates.Accounts) == 0 {
-			return fmt.Errorf("config: yield.withholding[%q]: name a rate for %q, a tax wrapper or an account",
+			return out, fmt.Errorf("config: yield.withholding[%q]: name a rate for %q, a tax wrapper or an account",
 				country, canonical.WithholdingDefault)
 		}
 		for _, wrapper := range slices.Sorted(maps.Keys(rates.Wrappers)) {
 			if wrapper != canonical.WithholdingDefault && !canonical.TaxWrapper(wrapper).Valid() {
-				return fmt.Errorf("config: yield.withholding[%q][%q]: want %q, a known tax wrapper or %q",
+				return out, fmt.Errorf("config: yield.withholding[%q][%q]: want %q, a known tax wrapper or %q",
 					country, wrapper, canonical.WithholdingDefault, withholdingAccountsKey)
 			}
 			if r := rates.Wrappers[wrapper]; !(r >= 0 && r <= 100) {
-				return fmt.Errorf("config: yield.withholding[%q][%q] %v: want a percent, 0 to 100", country, wrapper, r)
+				return out, fmt.Errorf("config: yield.withholding[%q][%q] %v: want a percent, 0 to 100", country, wrapper, r)
 			}
 		}
 		at := fmt.Sprintf("yield.withholding[%q][%q]", country, withholdingAccountsKey)
-		if err := validateNested(at, rates.Accounts, seenIDs, true, func(path string, r float64) error {
+		if err := validateNested(at, rates.Accounts, seenIDs, true, func(path, _, _ string, r float64) error {
+
 			if !(r >= 0 && r <= 100) {
 				return fmt.Errorf("config: %s %v: want a percent, 0 to 100", path, r)
+
 			}
 			return nil
 		}); err != nil {
-			return err
+			return out, err
 		}
 	}
 	rated := map[string]string{}
 	for _, key := range slices.Sorted(maps.Keys(y.RatingFunds)) {
 		ref, err := canonical.ParseFundRef(key)
 		if err != nil {
-			return fmt.Errorf("config: yield.rating_funds: %w", err)
+			return out, fmt.Errorf("config: yield.rating_funds: %w", err)
 		}
 		if prev, dup := rated[ref]; dup {
-			return fmt.Errorf("config: yield.rating_funds: %q and %q name the same fund", prev, key)
+			return out, fmt.Errorf("config: yield.rating_funds: %q and %q name the same fund", prev, key)
 		}
 		rated[ref] = key
-		if _, _, err := canonical.ParseRating(y.RatingFunds[key]); err != nil {
-			return fmt.Errorf("config: yield.rating_funds[%q] %q: %w", key, y.RatingFunds[key], err)
+		rating := y.RatingFunds[key]
+		high, low, err := canonical.ParseRating(rating)
+		if err != nil {
+			return out, fmt.Errorf("config: yield.rating_funds[%q] %q: %w", key, rating, err)
 		}
+		out.RatingFunds = append(out.RatingFunds, canonical.YieldRatingFund{FundRef: ref, Rating: rating,
+			BucketHigh: high, BucketLow: low})
 	}
 	for _, market := range slices.Sorted(maps.Keys(y.Conventions)) {
 		cv := y.Conventions[market]
 		if err := checkMarket(market); err != nil {
-			return fmt.Errorf("config: yield.conventions[%q]: %w", market, err)
+			return out, fmt.Errorf("config: yield.conventions[%q]: %w", market, err)
 		}
 		if cv.Frequency == nil {
-			return fmt.Errorf("config: yield.conventions[%q]: frequency is required", market)
+			return out, fmt.Errorf("config: yield.conventions[%q]: frequency is required", market)
 		}
 		if !canonical.ValidCouponFrequency(*cv.Frequency) {
-			return fmt.Errorf("config: yield.conventions[%q].frequency %d: want one of %s (0 for a discount instrument)",
+			return out, fmt.Errorf("config: yield.conventions[%q].frequency %d: want one of %s (0 for a discount instrument)",
 				market, *cv.Frequency, frequencyNames(true))
 		}
 		if cv.DayCount == "" {
-			return fmt.Errorf("config: yield.conventions[%q]: day_count is required", market)
+			return out, fmt.Errorf("config: yield.conventions[%q]: day_count is required", market)
 		}
 		if !canonical.DayCount(cv.DayCount).Valid() {
-			return fmt.Errorf("config: yield.conventions[%q].day_count %q: want one of %s", market, cv.DayCount,
+			return out, fmt.Errorf("config: yield.conventions[%q].day_count %q: want one of %s", market, cv.DayCount,
 				joinNames(canonical.DayCounts()))
 		}
 	}
 	if y.HorizonMonths < 0 || y.HorizonMonths > canonical.MaxHorizonMonths {
-		return fmt.Errorf("config: yield.horizon_months %d: want 1 to %d months, or 0 for the default",
+		return out, fmt.Errorf("config: yield.horizon_months %d: want 1 to %d months, or 0 for the default",
 			y.HorizonMonths, canonical.MaxHorizonMonths)
 	}
 	for _, sector := range slices.Sorted(maps.Keys(y.Cycles)) {
@@ -285,41 +319,90 @@ func (c *Config) validateYield(seenIDs map[string]bool) error {
 			for _, bc := range canonical.BuiltinCycles() {
 				sectors = append(sectors, bc.Sector)
 			}
-			return fmt.Errorf("config: yield.cycles[%q]: not one of the eleven sectors (%s)", sector, joinNames(sectors))
+			return out, fmt.Errorf("config: yield.cycles[%q]: not one of the eleven sectors (%s)", sector, joinNames(sectors))
 		}
 		if cy := y.Cycles[sector]; !canonical.Cycle(cy).Valid() {
-			return fmt.Errorf("config: yield.cycles[%q] %q: want one of %s", sector, cy, joinNames(canonical.Cycles()))
+			return out, fmt.Errorf("config: yield.cycles[%q] %q: want one of %s", sector, cy, joinNames(canonical.Cycles()))
 		}
 	}
+	var settlement []canonical.SettlementCycle
 	for _, market := range slices.Sorted(maps.Keys(y.SettlementCycles)) {
 		if !isCountryCode(market) || market == canonical.EuropeanUnion {
-			return fmt.Errorf("config: yield.settlement_cycles[%q]: not a market: want an ISO 3166 alpha-2 code", market)
+			return out, fmt.Errorf("config: yield.settlement_cycles[%q]: not a market: want an ISO 3166 alpha-2 code", market)
 		}
 		var prev time.Time
 		for i, c := range y.SettlementCycles[market] {
 			if c.Days < 1 {
-				return fmt.Errorf("config: yield.settlement_cycles[%q][%d].days %d: want 1 or more business days",
+				return out, fmt.Errorf("config: yield.settlement_cycles[%q][%d].days %d: want 1 or more business days",
 					market, i, c.Days)
 			}
+			sc := canonical.SettlementCycle{Market: market, Days: c.Days, Origin: canonical.OriginConfig}
 			if c.From == "" {
 				if i > 0 {
-					return fmt.Errorf("config: yield.settlement_cycles[%q][%d]: from is required past the first cycle",
+					return out, fmt.Errorf("config: yield.settlement_cycles[%q][%d]: from is required past the first cycle",
 						market, i)
 				}
+				settlement = append(settlement, sc)
 				continue
 			}
 			from, err := time.Parse(time.DateOnly, c.From)
 			if err != nil {
-				return fmt.Errorf("config: yield.settlement_cycles[%q][%d].from %q: want YYYY-MM-DD", market, i, c.From)
+				return out, fmt.Errorf("config: yield.settlement_cycles[%q][%d].from %q: want YYYY-MM-DD", market, i, c.From)
 			}
 			if i > 0 && !from.After(prev) {
-				return fmt.Errorf("config: yield.settlement_cycles[%q][%d].from %s: the cycles ascend by day, "+
+				return out, fmt.Errorf("config: yield.settlement_cycles[%q][%d].from %s: the cycles ascend by day, "+
 					"each after the one before", market, i, c.From)
 			}
 			prev = from
+			sc.From = &from
+			settlement = append(settlement, sc)
 		}
 	}
-	return nil
+
+	slices.SortFunc(out.Curves, func(a, b canonical.YieldCurvePoint) int {
+		return cmp.Or(strings.Compare(a.Currency, b.Currency), cmp.Compare(a.TenorMonths, b.TenorMonths))
+	})
+	for _, country := range slices.Sorted(maps.Keys(y.Withholding)) {
+		rates := y.Withholding[country]
+		for _, wrapper := range slices.Sorted(maps.Keys(rates.Wrappers)) {
+			out.Withholding = append(out.Withholding, canonical.YieldWithholding{Country: country, Wrapper: wrapper,
+				RatePct: rates.Wrappers[wrapper]})
+		}
+		for _, source := range slices.Sorted(maps.Keys(rates.Accounts)) {
+			for _, acct := range slices.Sorted(maps.Keys(rates.Accounts[source])) {
+				out.AccountWithholding = append(out.AccountWithholding, canonical.YieldAccountWithholding{
+					Country: country, SilverSourceID: source, AccountExternalID: acct,
+					RatePct: rates.Accounts[source][acct]})
+			}
+		}
+	}
+	slices.SortFunc(out.RatingFunds, func(a, b canonical.YieldRatingFund) int { return strings.Compare(a.FundRef, b.FundRef) })
+	for market, cv := range y.Conventions {
+		row := canonical.YieldConvention{Market: market, Frequency: *cv.Frequency, DayCount: canonical.DayCount(cv.DayCount),
+			Origin: canonical.OriginConfig}
+		if i := slices.IndexFunc(out.Conventions, func(b canonical.YieldConvention) bool { return b.Market == market }); i >= 0 {
+			out.Conventions[i] = row
+		} else {
+			out.Conventions = append(out.Conventions, row)
+		}
+	}
+	slices.SortFunc(out.Conventions, func(a, b canonical.YieldConvention) int { return strings.Compare(a.Market, b.Market) })
+	for i, bc := range out.Cycles {
+		if cy, ok := y.Cycles[string(bc.Sector)]; ok {
+			out.Cycles[i] = canonical.YieldCycle{Sector: bc.Sector, Cycle: canonical.Cycle(cy), Origin: canonical.OriginConfig}
+		}
+	}
+	out.SettlementCycles = slices.DeleteFunc(out.SettlementCycles, func(sc canonical.SettlementCycle) bool {
+		_, named := y.SettlementCycles[sc.Market]
+		return named
+	})
+	out.SettlementCycles = append(out.SettlementCycles, settlement...)
+	// A market's cycles keep their order, oldest first, whichever map
+	// gave them.
+	slices.SortStableFunc(out.SettlementCycles, func(a, b canonical.SettlementCycle) int {
+		return strings.Compare(a.Market, b.Market)
+	})
+	return out, nil
 }
 
 // splitSeries reads a curve's series, <silver_source_id>:<series_id>.
@@ -344,85 +427,12 @@ func checkMarket(market string) error {
 	return nil
 }
 
-// YieldRows is the yield block as gold stores it, in a stable order:
-// every fund reference in the form gold builds, the conventions, cycles
-// and settlement cycles the built-in maps with the block's entries over
-// them. Call after Validate. An absent block yields the built-in maps
-// alone. The horizon stays in the config (YieldHorizon).
+// YieldRows is the yield block as gold stores it, as Validate compiled
+// it. A Config never validated reads as one with no yield block: the
+// built-in maps alone.
 func (c *Config) YieldRows() canonical.YieldRows {
-	out := canonical.YieldRows{
-		Conventions:      canonical.BuiltinConventions(),
-		Cycles:           canonical.BuiltinCycles(),
-		SettlementCycles: canonical.BuiltinSettlementCycles(),
+	if c.yieldRows == nil {
+		return yieldBuiltins()
 	}
-	y := c.Yield
-	if y == nil {
-		return out
-	}
-	for ccy, curve := range y.Curves {
-		for tenor, series := range curve {
-			months, _ := canonical.TenorMonths(tenor)
-			source, id, _ := splitSeries(series)
-			out.Curves = append(out.Curves, canonical.YieldCurvePoint{Currency: ccy, Tenor: tenor, TenorMonths: months,
-				SilverSourceID: source, SeriesID: id})
-		}
-	}
-	slices.SortFunc(out.Curves, func(a, b canonical.YieldCurvePoint) int {
-		return cmp.Or(strings.Compare(a.Currency, b.Currency), cmp.Compare(a.TenorMonths, b.TenorMonths))
-	})
-	for _, country := range slices.Sorted(maps.Keys(y.Withholding)) {
-		rates := y.Withholding[country]
-		for _, wrapper := range slices.Sorted(maps.Keys(rates.Wrappers)) {
-			out.Withholding = append(out.Withholding, canonical.YieldWithholding{Country: country, Wrapper: wrapper,
-				RatePct: rates.Wrappers[wrapper]})
-		}
-		for _, source := range slices.Sorted(maps.Keys(rates.Accounts)) {
-			for _, acct := range slices.Sorted(maps.Keys(rates.Accounts[source])) {
-				out.AccountWithholding = append(out.AccountWithholding, canonical.YieldAccountWithholding{
-					Country: country, SilverSourceID: source, AccountExternalID: acct,
-					RatePct: rates.Accounts[source][acct]})
-			}
-		}
-	}
-	for key, rating := range y.RatingFunds {
-		ref, _ := canonical.ParseFundRef(key)
-		high, low, _ := canonical.ParseRating(rating)
-		out.RatingFunds = append(out.RatingFunds, canonical.YieldRatingFund{FundRef: ref, Rating: rating,
-			BucketHigh: high, BucketLow: low})
-	}
-	slices.SortFunc(out.RatingFunds, func(a, b canonical.YieldRatingFund) int { return strings.Compare(a.FundRef, b.FundRef) })
-	for market, cv := range y.Conventions {
-		row := canonical.YieldConvention{Market: market, Frequency: *cv.Frequency, DayCount: canonical.DayCount(cv.DayCount),
-			Origin: canonical.OriginConfig}
-		if i := slices.IndexFunc(out.Conventions, func(b canonical.YieldConvention) bool { return b.Market == market }); i >= 0 {
-			out.Conventions[i] = row
-		} else {
-			out.Conventions = append(out.Conventions, row)
-		}
-	}
-	slices.SortFunc(out.Conventions, func(a, b canonical.YieldConvention) int { return strings.Compare(a.Market, b.Market) })
-	for i, bc := range out.Cycles {
-		if cy, ok := y.Cycles[string(bc.Sector)]; ok {
-			out.Cycles[i] = canonical.YieldCycle{Sector: bc.Sector, Cycle: canonical.Cycle(cy), Origin: canonical.OriginConfig}
-		}
-	}
-	out.SettlementCycles = slices.DeleteFunc(out.SettlementCycles, func(sc canonical.SettlementCycle) bool {
-		_, named := y.SettlementCycles[sc.Market]
-		return named
-	})
-	for market, cycles := range y.SettlementCycles {
-		for _, entry := range cycles {
-			sc := canonical.SettlementCycle{Market: market, Days: entry.Days, Origin: canonical.OriginConfig}
-			if from, err := time.Parse(time.DateOnly, entry.From); err == nil {
-				sc.From = &from
-			}
-			out.SettlementCycles = append(out.SettlementCycles, sc)
-		}
-	}
-	// A market's cycles keep their order, oldest first, whichever map
-	// gave them.
-	slices.SortStableFunc(out.SettlementCycles, func(a, b canonical.SettlementCycle) int {
-		return strings.Compare(a.Market, b.Market)
-	})
-	return out
+	return *c.yieldRows
 }
