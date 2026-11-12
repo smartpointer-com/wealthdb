@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -104,6 +105,79 @@ func NewWriter(tx *sql.Tx) *Writer {
 	return &Writer{tx: tx}
 }
 
+// dimSpec is one dimension table's upsert under the docs/DESIGN.md §8.4
+// guard: recency arbitrates conflicts, absence never wins. Per-column
+// CASE keeps the seen-at union independent of the attribute guards.
+//
+// A newerWins column takes the newer observation's value outright. A
+// coalesce column is nullable, and BOTH its branches are
+// COALESCE-wrapped — NULL means "I don't carry this field", not "set
+// it to NULL":
+//   - newer branch: a later writer's NULL doesn't clobber an
+//     earlier writer's value (schwab-web emits AccountChange
+//     rows without DisplayName; without this they'd erase the
+//     api side's accountNumber);
+//   - older branch: an older record's value still fills a
+//     column that is NULL so far. Without this, a full rebuild
+//     would drop attributes only an older observation carries —
+//     schwab-web's statement-derived tax_wrapper (dated at its
+//     silver snapshot) would lose to newer wrapper-less api rows
+//     and silently fall back to the taxable_personal render default.
+//
+// Every dimension also carries payload, which merges as a coalesce
+// column, and first_seen_at / last_seen_at, which widen.
+type dimSpec struct {
+	table     string
+	key       []string
+	newerWins []string
+	coalesce  []string
+}
+
+// upsert is the spec's INSERT … ON CONFLICT statement. Its columns bind
+// in the order key, newerWins, coalesce, first_seen_at, last_seen_at,
+// payload.
+func (d dimSpec) upsert() string {
+	cols := slices.Concat(d.key, d.newerWins, d.coalesce, []string{"first_seen_at", "last_seen_at", "payload"})
+	newer := "EXCLUDED.last_seen_at >= " + d.table + ".last_seen_at"
+	var set []string
+	for _, c := range d.newerWins {
+		set = append(set, fmt.Sprintf("%s = CASE WHEN %s THEN EXCLUDED.%s ELSE %s.%s END",
+			c, newer, c, d.table, c))
+	}
+	for _, c := range append(slices.Clone(d.coalesce), "payload") {
+		set = append(set, fmt.Sprintf(
+			"%s = CASE WHEN %s THEN COALESCE(EXCLUDED.%s, %s.%s) ELSE COALESCE(%s.%s, EXCLUDED.%s) END",
+			c, newer, c, d.table, c, d.table, c, c))
+	}
+	set = append(set,
+		"first_seen_at = LEAST("+d.table+".first_seen_at, EXCLUDED.first_seen_at)",
+		"last_seen_at = GREATEST("+d.table+".last_seen_at, EXCLUDED.last_seen_at)")
+	return "INSERT INTO " + d.table + " (" + strings.Join(cols, ", ") + ") VALUES " + placeholders(strings.Join(cols, ",")) +
+		"\nON CONFLICT (" + strings.Join(d.key, ", ") + ") DO UPDATE SET\n    " + strings.Join(set, ",\n    ")
+}
+
+// The dimension upserts, built once.
+var (
+	accountsUpsert = dimSpec{
+		table:     "accounts",
+		key:       []string{"silver_source_id", "account_external_id"},
+		newerWins: []string{"account_kind"},
+		coalesce: []string{"display_name", "base_currency", "relationship_id", "nickname",
+			"account_category", "portfolio_external_id", "tax_wrapper", "management_style"},
+	}.upsert()
+	portfoliosUpsert = dimSpec{
+		table:    "portfolios",
+		key:      []string{"silver_source_id", "portfolio_external_id"},
+		coalesce: []string{"display_name", "base_currency", "relationship_id", "nickname"},
+	}.upsert()
+	instrumentsUpsert = dimSpec{
+		table:     "instruments",
+		key:       []string{"silver_source_id", "instrument_external_id"},
+		newerWins: []string{"asset_class"},
+		coalesce:  []string{"vehicle", "isin", "cusip", "symbol", "name", "currency"},
+	}.upsert()
+)
+
 // UpsertAccounts inserts/updates `accounts` rows. Implements the
 // docs/DESIGN.md §8.4 guard: per column, the newest non-NULL
 // observation wins, and an older observation still fills a column
@@ -112,55 +186,7 @@ func (w *Writer) UpsertAccounts(ctx context.Context, batch []canonical.AccountCh
 	if len(batch) == 0 {
 		return nil
 	}
-	// Guard semantics per docs/DESIGN.md §8.4: recency arbitrates
-	// conflicts, absence never wins. Per-column CASE keeps the
-	// seen-at union independent of the attribute guards.
-	//
-	// On nullable columns BOTH branches are COALESCE-wrapped —
-	// NULL means "I don't carry this field", not "set it to NULL":
-	//   - newer branch: a later writer's NULL doesn't clobber an
-	//     earlier writer's value (schwab-web emits AccountChange
-	//     rows without DisplayName; without this they'd erase the
-	//     api side's accountNumber);
-	//   - older branch: an older record's value still fills a
-	//     column that is NULL so far. Without this, a full rebuild
-	//     would drop attributes only an older observation carries —
-	//     schwab-web's statement-derived tax_wrapper (dated at its
-	//     silver snapshot) would lose to newer wrapper-less api rows
-	//     and silently fall back to the taxable_personal render default.
-	const q = `
-INSERT INTO accounts (
-    silver_source_id, account_external_id, account_kind,
-    display_name, base_currency, relationship_id,
-    nickname, account_category, portfolio_external_id,
-    tax_wrapper, management_style,
-    first_seen_at, last_seen_at, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (silver_source_id, account_external_id) DO UPDATE SET
-    account_kind     = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN EXCLUDED.account_kind ELSE accounts.account_kind END,
-    display_name     = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN COALESCE(EXCLUDED.display_name, accounts.display_name) ELSE COALESCE(accounts.display_name, EXCLUDED.display_name) END,
-    base_currency    = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN COALESCE(EXCLUDED.base_currency, accounts.base_currency) ELSE COALESCE(accounts.base_currency, EXCLUDED.base_currency) END,
-    relationship_id  = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN COALESCE(EXCLUDED.relationship_id, accounts.relationship_id) ELSE COALESCE(accounts.relationship_id, EXCLUDED.relationship_id) END,
-    nickname         = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN COALESCE(EXCLUDED.nickname, accounts.nickname) ELSE COALESCE(accounts.nickname, EXCLUDED.nickname) END,
-    account_category = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN COALESCE(EXCLUDED.account_category, accounts.account_category) ELSE COALESCE(accounts.account_category, EXCLUDED.account_category) END,
-    portfolio_external_id = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN COALESCE(EXCLUDED.portfolio_external_id, accounts.portfolio_external_id) ELSE COALESCE(accounts.portfolio_external_id, EXCLUDED.portfolio_external_id) END,
-    tax_wrapper      = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN COALESCE(EXCLUDED.tax_wrapper, accounts.tax_wrapper) ELSE COALESCE(accounts.tax_wrapper, EXCLUDED.tax_wrapper) END,
-    management_style = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN COALESCE(EXCLUDED.management_style, accounts.management_style) ELSE COALESCE(accounts.management_style, EXCLUDED.management_style) END,
-    payload          = CASE WHEN EXCLUDED.last_seen_at >= accounts.last_seen_at
-                            THEN COALESCE(EXCLUDED.payload, accounts.payload) ELSE COALESCE(accounts.payload, EXCLUDED.payload) END,
-    first_seen_at    = LEAST   (accounts.first_seen_at, EXCLUDED.first_seen_at),
-    last_seen_at     = GREATEST(accounts.last_seen_at,  EXCLUDED.last_seen_at)`
-
-	stmt, err := w.tx.PrepareContext(ctx, q)
+	stmt, err := w.tx.PrepareContext(ctx, accountsUpsert)
 	if err != nil {
 		return fmt.Errorf("prepare UpsertAccounts: %w", err)
 	}
@@ -205,27 +231,7 @@ func (w *Writer) UpsertPortfolios(ctx context.Context, batch []canonical.Portfol
 	if len(batch) == 0 {
 		return nil
 	}
-	const q = `
-INSERT INTO portfolios (
-    silver_source_id, portfolio_external_id,
-    display_name, base_currency, relationship_id, nickname,
-    first_seen_at, last_seen_at, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (silver_source_id, portfolio_external_id) DO UPDATE SET
-    display_name     = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN COALESCE(EXCLUDED.display_name, portfolios.display_name) ELSE COALESCE(portfolios.display_name, EXCLUDED.display_name) END,
-    base_currency    = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN COALESCE(EXCLUDED.base_currency, portfolios.base_currency) ELSE COALESCE(portfolios.base_currency, EXCLUDED.base_currency) END,
-    relationship_id  = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN COALESCE(EXCLUDED.relationship_id, portfolios.relationship_id) ELSE COALESCE(portfolios.relationship_id, EXCLUDED.relationship_id) END,
-    nickname         = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN COALESCE(EXCLUDED.nickname, portfolios.nickname) ELSE COALESCE(portfolios.nickname, EXCLUDED.nickname) END,
-    payload          = CASE WHEN EXCLUDED.last_seen_at >= portfolios.last_seen_at
-                            THEN COALESCE(EXCLUDED.payload, portfolios.payload) ELSE COALESCE(portfolios.payload, EXCLUDED.payload) END,
-    first_seen_at    = LEAST   (portfolios.first_seen_at, EXCLUDED.first_seen_at),
-    last_seen_at     = GREATEST(portfolios.last_seen_at,  EXCLUDED.last_seen_at)`
-
-	stmt, err := w.tx.PrepareContext(ctx, q)
+	stmt, err := w.tx.PrepareContext(ctx, portfoliosUpsert)
 	if err != nil {
 		return fmt.Errorf("prepare UpsertPortfolios: %w", err)
 	}
@@ -246,39 +252,12 @@ ON CONFLICT (silver_source_id, portfolio_external_id) DO UPDATE SET
 }
 
 // UpsertInstruments inserts/updates `instruments` rows with the
-// same guard semantics as UpsertAccounts.
+// same guard semantics as UpsertAccounts (dimSpec).
 func (w *Writer) UpsertInstruments(ctx context.Context, batch []canonical.InstrumentChange) error {
 	if len(batch) == 0 {
 		return nil
 	}
-	// Same guard semantics as UpsertAccounts; see comment there.
-	const q = `
-INSERT INTO instruments (
-    silver_source_id, instrument_external_id, asset_class, vehicle,
-    isin, cusip, symbol, name, currency,
-    first_seen_at, last_seen_at, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (silver_source_id, instrument_external_id) DO UPDATE SET
-    asset_class   = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN EXCLUDED.asset_class ELSE instruments.asset_class END,
-    vehicle       = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN COALESCE(EXCLUDED.vehicle, instruments.vehicle) ELSE COALESCE(instruments.vehicle, EXCLUDED.vehicle) END,
-    isin          = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN COALESCE(EXCLUDED.isin, instruments.isin) ELSE COALESCE(instruments.isin, EXCLUDED.isin) END,
-    cusip         = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN COALESCE(EXCLUDED.cusip, instruments.cusip) ELSE COALESCE(instruments.cusip, EXCLUDED.cusip) END,
-    symbol        = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN COALESCE(EXCLUDED.symbol, instruments.symbol) ELSE COALESCE(instruments.symbol, EXCLUDED.symbol) END,
-    name          = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN COALESCE(EXCLUDED.name, instruments.name) ELSE COALESCE(instruments.name, EXCLUDED.name) END,
-    currency      = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN COALESCE(EXCLUDED.currency, instruments.currency) ELSE COALESCE(instruments.currency, EXCLUDED.currency) END,
-    payload       = CASE WHEN EXCLUDED.last_seen_at >= instruments.last_seen_at
-                         THEN COALESCE(EXCLUDED.payload, instruments.payload) ELSE COALESCE(instruments.payload, EXCLUDED.payload) END,
-    first_seen_at = LEAST   (instruments.first_seen_at, EXCLUDED.first_seen_at),
-    last_seen_at  = GREATEST(instruments.last_seen_at,  EXCLUDED.last_seen_at)`
-
-	stmt, err := w.tx.PrepareContext(ctx, q)
+	stmt, err := w.tx.PrepareContext(ctx, instrumentsUpsert)
 	if err != nil {
 		return fmt.Errorf("prepare UpsertInstruments: %w", err)
 	}

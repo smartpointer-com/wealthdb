@@ -407,7 +407,47 @@ func (b *SnapshotBatch) ReferenceRows() int {
 		len(b.RateObservations) + len(b.DividendEvents) + len(b.StatedPeriods) + len(b.ExposureReports)
 }
 
+// SetSource sets SilverSourceID on every record of b. Adapters leave
+// it empty so they need not know their own registered name; the loader
+// is authoritative.
+func (b *SnapshotBatch) SetSource(id string) {
+	setSource(b.Portfolios, id, func(r *PortfolioChange) *string { return &r.SilverSourceID })
+	setSource(b.Accounts, id, func(r *AccountChange) *string { return &r.SilverSourceID })
+	setSource(b.Instruments, id, func(r *InstrumentChange) *string { return &r.SilverSourceID })
+	setSource(b.Positions, id, func(r *PositionChange) *string { return &r.SilverSourceID })
+	setSource(b.PositionLots, id, func(r *PositionLotChange) *string { return &r.SilverSourceID })
+	setSource(b.CashBalances, id, func(r *CashBalanceChange) *string { return &r.SilverSourceID })
+	setSource(b.FxRates, id, func(r *FxRateChange) *string { return &r.SilverSourceID })
+	setSource(b.FundCompositions, id, func(r *FundCompositionChange) *string { return &r.SilverSourceID })
+	setSource(b.FundLines, id, func(r *FundLineChange) *string { return &r.SilverSourceID })
+	setSource(b.FundAttributes, id, func(r *FundAttributesChange) *string { return &r.SilverSourceID })
+	setSource(b.FundCounterparties, id, func(r *FundCounterpartyChange) *string { return &r.SilverSourceID })
+	setSource(b.Securities, id, func(r *SecurityChange) *string { return &r.SilverSourceID })
+	setSource(b.SecurityFacts, id, func(r *SecurityFactChange) *string { return &r.SilverSourceID })
+	setSource(b.FundRisk, id, func(r *FundRiskChange) *string { return &r.SilverSourceID })
+	setSource(b.FundReturns, id, func(r *FundReturnChange) *string { return &r.SilverSourceID })
+	setSource(b.FundCharacteristics, id, func(r *FundCharacteristicChange) *string { return &r.SilverSourceID })
+	setSource(b.SecurityPeriodFacts, id, func(r *SecurityPeriodFactChange) *string { return &r.SilverSourceID })
+	setSource(b.RateObservations, id, func(r *RateObservationChange) *string { return &r.SilverSourceID })
+	setSource(b.DividendEvents, id, func(r *DividendEventChange) *string { return &r.SilverSourceID })
+	setSource(b.StatedPeriods, id, func(r *StatedPeriodChange) *string { return &r.SilverSourceID })
+	setSource(b.ExposureReports, id, func(r *ExposureReportChange) *string { return &r.SilverSourceID })
+}
+
 // TransactionBatch is one batch yielded by a TransactionStream.Next call.
 type TransactionBatch struct {
 	Transactions []TransactionChange
+}
+
+// SetSource sets SilverSourceID on every record of b, as
+// SnapshotBatch.SetSource does.
+func (b *TransactionBatch) SetSource(id string) {
+	setSource(b.Transactions, id, func(r *TransactionChange) *string { return &r.SilverSourceID })
+}
+
+// setSource sets the source id field of every row to id.
+func setSource[T any](rows []T, id string, field func(*T) *string) {
+	for i := range rows {
+		*field(&rows[i]) = id
+	}
 }

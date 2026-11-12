@@ -15,30 +15,6 @@ import (
 // statement of a distribution moves its as_of past the window of the
 // load that wrote the earlier one, and replaces that row.
 
-// ReferenceTables are the tables the reference records load into, every
-// one keyed by silver_source_id and windowed by as_of: a load's windowed
-// delete and a reset reach them by those two columns.
-var ReferenceTables = []string{
-	"fund_compositions", "fund_lines", "fund_attributes",
-	"fund_counterparties", "security_identities", "security_facts",
-	"fund_risk", "fund_returns", "fund_characteristics", "security_period_facts",
-	"rate_observations", "dividend_calendar", "stated_periods",
-	"exposure_reports",
-}
-
-// ReferenceTableKinds are the kind of record each reference table holds
-// (canonical.Window.Spans), so a load's windowed delete clears a table
-// over its kind's span. rate_observations, stated_periods and
-// exposure_reports, which no kind names, take the window whole.
-var ReferenceTableKinds = map[string]string{
-	"fund_compositions": canonical.RefFundDays, "fund_lines": canonical.RefFundDays,
-	"fund_attributes": canonical.RefFundDays, "fund_counterparties": canonical.RefFundDays,
-	"fund_risk": canonical.RefFundDays, "fund_returns": canonical.RefFundDays,
-	"fund_characteristics": canonical.RefFundDays,
-	"security_identities":  canonical.RefSecurities, "security_facts": canonical.RefSecurityFacts,
-	"security_period_facts": canonical.RefPeriodFacts, "dividend_calendar": canonical.RefDividendEvents,
-}
-
 // InsertReference writes every reference record of a batch.
 func (w *Writer) InsertReference(ctx context.Context, b *canonical.SnapshotBatch) error {
 	for _, insert := range []func() error{

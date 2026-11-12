@@ -347,42 +347,30 @@ func upsertSilverSource(ctx context.Context, tx *sql.Tx, spec SourceSpec, now in
 }
 
 // deleteWindow removes any existing gold rows whose key time
-// (snapshot_at for snapshot tables, occurred_at for transactions,
-// as_of for the reference tables) falls inside the window: a reference
-// table's inside its kind's span (gold.ReferenceTableKinds), none for a
-// kind without changes. Required before re-inserting the new change
-// records.
+// (gold.SourceTable.TimeCol: snapshot_at for snapshot tables,
+// occurred_at for transactions, as_of for the reference tables) falls
+// inside the window: a reference table's inside its kind's span, none
+// for a kind without changes. Required before re-inserting the new
+// change records.
 func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.Window) error {
-	type table struct {
-		name, timeCol string
-		span          canonical.Span
-	}
-	whole := canonical.Span{Start: w.Start, End: w.End}
-	tables := []table{
-		{"positions", "snapshot_at", whole},
-		{"position_lots", "snapshot_at", whole},
-		{"cash_balances", "snapshot_at", whole},
-		{"fx_rates", "snapshot_at", whole},
-		{"transactions", "occurred_at", whole},
-	}
-	for _, t := range gold.ReferenceTables {
-		span := whole
-		if kind := gold.ReferenceTableKinds[t]; kind != "" {
-			s, ok := w.SpanOf(kind)
+	for _, t := range gold.SourceTables {
+		if t.TimeCol == "" {
+			continue
+		}
+		span := canonical.Span{Start: w.Start, End: w.End}
+		if t.RefKind != "" {
+			s, ok := w.SpanOf(t.RefKind)
 			if !ok {
 				continue
 			}
 			span = s
 		}
-		tables = append(tables, table{t, "as_of", span})
-	}
-	for _, t := range tables {
 		q := fmt.Sprintf(
 			`DELETE FROM %s WHERE silver_source_id = ? AND %s BETWEEN ? AND ?`,
-			t.name, t.timeCol,
+			t.Name, t.TimeCol,
 		)
-		if _, err := tx.ExecContext(ctx, q, sourceID, t.span.Start, t.span.End); err != nil {
-			return fmt.Errorf("delete from %s: %w", t.name, err)
+		if _, err := tx.ExecContext(ctx, q, sourceID, span.Start, span.End); err != nil {
+			return fmt.Errorf("delete from %s: %w", t.Name, err)
 		}
 	}
 	return nil
@@ -435,7 +423,7 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		}
 
 		// Stamp the silver_source_id on every record before write.
-		stampSnapshotBatch(&batch, spec.ID)
+		batch.SetSource(spec.ID)
 		// Config-file statements go on top of whatever the adapter
 		// emitted; see DESIGN.md §13.8. Widest scope first, so a named
 		// account still overrules the blanket rule on the same column.
@@ -733,7 +721,7 @@ func applyTransactions(ctx context.Context, tx *sql.Tx, conn silver.Connection, 
 		if err != nil {
 			return total, err
 		}
-		stampTransactionBatch(&batch, spec.ID)
+		batch.SetSource(spec.ID)
 		// Config-file overrides go on top of whatever the adapter
 		// emitted, as they do on the snapshot side; see DESIGN.md §13.8.
 		applyTransactionInstruments(batch.Transactions, spec.TransactionInstruments)
@@ -845,82 +833,6 @@ func updateWatermark(ctx context.Context, tx *sql.Tx, sourceID string, newWaterm
 	return err
 }
 
-// stampSnapshotBatch fills in the SilverSourceID on every record
-// in a batch. Adapters intentionally leave this empty so they
-// don't need to know their own registered name; the loader is
-// authoritative.
-func stampSnapshotBatch(b *canonical.SnapshotBatch, sourceID string) {
-	for i := range b.Portfolios {
-		b.Portfolios[i].SilverSourceID = sourceID
-	}
-	for i := range b.Accounts {
-		b.Accounts[i].SilverSourceID = sourceID
-	}
-	for i := range b.Instruments {
-		b.Instruments[i].SilverSourceID = sourceID
-	}
-	for i := range b.Positions {
-		b.Positions[i].SilverSourceID = sourceID
-	}
-	for i := range b.PositionLots {
-		b.PositionLots[i].SilverSourceID = sourceID
-	}
-	for i := range b.CashBalances {
-		b.CashBalances[i].SilverSourceID = sourceID
-	}
-	for i := range b.FxRates {
-		b.FxRates[i].SilverSourceID = sourceID
-	}
-	for i := range b.FundCompositions {
-		b.FundCompositions[i].SilverSourceID = sourceID
-	}
-	for i := range b.FundLines {
-		b.FundLines[i].SilverSourceID = sourceID
-	}
-	for i := range b.FundAttributes {
-		b.FundAttributes[i].SilverSourceID = sourceID
-	}
-	for i := range b.FundCounterparties {
-		b.FundCounterparties[i].SilverSourceID = sourceID
-	}
-	for i := range b.Securities {
-		b.Securities[i].SilverSourceID = sourceID
-	}
-	for i := range b.SecurityFacts {
-		b.SecurityFacts[i].SilverSourceID = sourceID
-	}
-	for i := range b.FundRisk {
-		b.FundRisk[i].SilverSourceID = sourceID
-	}
-	for i := range b.FundReturns {
-		b.FundReturns[i].SilverSourceID = sourceID
-	}
-	for i := range b.FundCharacteristics {
-		b.FundCharacteristics[i].SilverSourceID = sourceID
-	}
-	for i := range b.SecurityPeriodFacts {
-		b.SecurityPeriodFacts[i].SilverSourceID = sourceID
-	}
-	for i := range b.RateObservations {
-		b.RateObservations[i].SilverSourceID = sourceID
-	}
-	for i := range b.DividendEvents {
-		b.DividendEvents[i].SilverSourceID = sourceID
-	}
-	for i := range b.StatedPeriods {
-		b.StatedPeriods[i].SilverSourceID = sourceID
-	}
-	for i := range b.ExposureReports {
-		b.ExposureReports[i].SilverSourceID = sourceID
-	}
-}
-
-func stampTransactionBatch(b *canonical.TransactionBatch, sourceID string) {
-	for i := range b.Transactions {
-		b.Transactions[i].SilverSourceID = sourceID
-	}
-}
-
 // exclusions is what the config removes from gold for one source:
 // accounts named outright (config.AccountOverride.Exclude) and whole
 // portfolios (config.PortfolioOverride.Exclude), whose member accounts
@@ -1011,13 +923,18 @@ func deleteExcluded(ctx context.Context, tx *sql.Tx, sourceID string, e exclusio
 		return nil
 	}
 
-	for _, table := range []string{"positions", "position_lots", "cash_balances", "transactions", "realized_lots"} {
-		if err := exec("DELETE FROM "+table+" WHERE "+factWhere, args...); err != nil {
-			return fmt.Errorf("delete excluded from %s: %w", table, err)
+	// gold.SourceTables lists the accounts dimension after every fact
+	// keyed to it.
+	for _, t := range gold.SourceTables {
+		if !t.Account {
+			continue
 		}
-	}
-	if err := exec("DELETE FROM accounts WHERE "+factWhere, args...); err != nil {
-		return fmt.Errorf("delete excluded accounts: %w", err)
+		if err := exec("DELETE FROM "+t.Name+" WHERE "+factWhere, args...); err != nil {
+			if t.Name == "accounts" {
+				return fmt.Errorf("delete excluded accounts: %w", err)
+			}
+			return fmt.Errorf("delete excluded from %s: %w", t.Name, err)
+		}
 	}
 	if len(e.portfolios) > 0 {
 		pfArgs := append([]any{sourceID}, ids(e.portfolios)...)

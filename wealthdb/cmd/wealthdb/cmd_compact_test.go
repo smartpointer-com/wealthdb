@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // bloatGold grows the on-disk gold file by writing then dropping a
@@ -320,5 +323,41 @@ func TestReloadFreshFailedBuildLeavesLiveUntouched(t *testing.T) {
 	matches, _ := filepath.Glob(goldPath + ".rebuild-*")
 	if len(matches) != 0 {
 		t.Errorf("failed build left rebuild temp files: %v", matches)
+	}
+}
+
+// TestTableListsAgreeWithTheRegistry: the compaction's parity check
+// covers every per-source fact table, and the per-source stores a
+// rebuild carries are the registry's store class.
+func TestTableListsAgreeWithTheRegistry(t *testing.T) {
+	t.Parallel()
+	class := map[string]gold.TableClass{}
+	for _, st := range gold.SourceTables {
+		class[st.Name] = st.Class
+	}
+	for _, table := range compactParityTables {
+		if c := class[table]; c != gold.ClassFact && c != gold.ClassDimension {
+			t.Errorf("parity table %s is of class %q, want a fact or a dimension", table, c)
+		}
+	}
+	for _, st := range gold.SourceTables {
+		if st.Class == gold.ClassFact && !slices.Contains(compactParityTables, st.Name) {
+			t.Errorf("fact table %s is not in compactParityTables", st.Name)
+		}
+	}
+	var carried []string
+	for _, store := range paidStores {
+		if _, ok := class[store.table]; ok {
+			carried = append(carried, store.table)
+		}
+	}
+	var stores []string
+	for _, st := range gold.SourceTables {
+		if st.Class == gold.ClassStore {
+			stores = append(stores, st.Name)
+		}
+	}
+	if !slices.Equal(carried, stores) {
+		t.Errorf("per-source paid stores = %v, store class = %v", carried, stores)
 	}
 }
