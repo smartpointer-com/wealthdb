@@ -4,15 +4,27 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
-// latestArg is the as-of a report macro reads as "the latest snapshot";
-// migration 0132 creates the tables with it.
+// latestArg is the as-of a report macro reads as "the latest snapshot".
 const latestArg = "9223372036854775807"
 
-// servingTables are the tables MaterializeServingTables rewrites, each
-// with the macro whose rows it holds verbatim (migrations 0132, 0171, 0177).
-var servingTables = []struct{ table, source string }{
+// servingTable is a table that holds a report macro's rows verbatim:
+// source is the macro's call.
+type servingTable struct{ table, source string }
+
+// macro is the name of the macro the table's rows come from.
+func (s servingTable) macro() string {
+	name, _, _ := strings.Cut(s.source, "(")
+	return name
+}
+
+// servingTables are the serving tables, each with the macro whose rows
+// it holds verbatim. The list is their one registry: applyDerived gives
+// each table its macro's columns, and MaterializeServingTables rewrites
+// its rows.
+var servingTables = []servingTable{
 	{"serving_sources_history", "report_sources_history_multi()"},
 	{"serving_accounts_history", "report_accounts_history_multi()"},
 	{"serving_cash_history", "report_cash_history_multi()"},

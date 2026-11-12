@@ -132,12 +132,13 @@ func open(path string, mode Mode, audit bool, options map[string]string) (*sql.D
 		_ = db.Close()
 		return nil, fmt.Errorf("ping duckdb %q: %w", path, err)
 	}
-	// Apply outstanding migrations on every RW open so the schema
-	// always matches the binary's expectations. Idempotent: a DB
-	// already at the latest version is a fast MAX(version) scan
-	// and zero ExecContexts. Skipped for read-only opens (can't
-	// write DDL) — RO callers rely on prior RW callers (init,
-	// load, reset) having brought the schema up to date.
+	// Apply outstanding migrations and the derived set on every RW
+	// open so the schema always matches the binary's expectations.
+	// Idempotent: a DB already at the binary's version and hash costs
+	// a MAX(version) scan, a one-row read and zero ExecContexts.
+	// Skipped for read-only opens (can't write DDL) — RO callers rely
+	// on prior RW callers (init, load, reset) having brought the
+	// schema up to date.
 	if mode == ModeReadWrite {
 		if err := Migrate(context.Background(), db); err != nil {
 			_ = db.Close()

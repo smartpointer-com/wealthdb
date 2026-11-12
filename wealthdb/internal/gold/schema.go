@@ -14,9 +14,12 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// Migrate applies every migration in migrations/ whose number is
-// strictly greater than MAX(gold_schema_version) in schema_meta.
-// Treats a missing schema_meta table as version 0.
+// Migrate brings the database to this binary's schema. It applies every
+// migration in migrations/ whose number is strictly greater than
+// MAX(gold_schema_version) in schema_meta, then the derived set
+// (derived.go) where the database is below the binary's version or
+// carries another set's hash. It treats a missing schema_meta table as
+// version 0, and it leaves a database above the binary's version alone.
 //
 // Each migration file is executed in its entirety inside a single
 // transaction; a failure mid-file rolls back. The last statement
@@ -58,6 +61,14 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+	set, err := derived()
+	if err != nil {
+		return err
+	}
+	want := wantVersion(migrations, set)
+	if current > want {
+		return nil
+	}
 
 	for _, m := range migrations {
 		if m.version <= current {
@@ -67,40 +78,60 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("apply migration %04d: %w", m.version, err)
 		}
 	}
+	if current, err = currentSchemaVersion(ctx, db); err != nil {
+		return fmt.Errorf("read current schema version: %w", err)
+	}
+	hash, err := derivedHash(ctx, db)
+	if err != nil {
+		return fmt.Errorf("read the derived hash: %w", err)
+	}
+	if current == want && hash == set.hash {
+		return nil
+	}
+	if err := applyDerived(ctx, db, set, current, want); err != nil {
+		return fmt.Errorf("apply the derived set %d: %w", set.version, err)
+	}
 	return nil
 }
 
-// MigrationsPending reports whether this binary carries a migration the
-// database has not applied. A read-only open applies none, so such a
-// database still lacks what they add.
+// MigrationsPending reports whether this binary carries a migration or a
+// derived set the database has not applied. A read-only open applies
+// neither, so such a database still lacks what they add.
 func MigrationsPending(ctx context.Context, db *sql.DB) (bool, error) {
-	current, latest, err := schemaVersions(ctx, db)
-	return current < latest, err
+	current, want, err := schemaVersions(ctx, db)
+	if err != nil || current != want {
+		return current < want, err
+	}
+	set, err := derived()
+	if err != nil {
+		return false, err
+	}
+	hash, err := derivedHash(ctx, db)
+	return hash != set.hash, err
 }
 
 // CheckSchemaKnown returns ErrStaleBinary, wrapped, when the database's
-// schema is newer than the newest migration this binary carries: a later
-// build has written the database, and this one may misread it. Unlike
+// schema is newer than this binary's version: a later build has written
+// the database, and this one may misread it. Unlike
 // Open's stale-binary check it needs no build stamp, so it also holds a
 // binary built without VCS information, such as the engine image's —
 // which is what a long-running server needs after the image is rebuilt
 // and a load migrates the database under it.
 func CheckSchemaKnown(ctx context.Context, db *sql.DB) error {
-	current, latest, err := schemaVersions(ctx, db)
+	current, want, err := schemaVersions(ctx, db)
 	if err != nil {
 		return err
 	}
-	if current > latest {
+	if current > want {
 		return fmt.Errorf("%w: the database is at schema %d, and this binary knows schema %d at most",
-			ErrStaleBinary, current, latest)
+			ErrStaleBinary, current, want)
 	}
 	return nil
 }
 
-// schemaVersions is the database's schema version and the newest
-// migration this binary carries. A binary that carries none reports the
-// database's version as its newest, so neither check above fires.
-func schemaVersions(ctx context.Context, db *sql.DB) (current, latest int, err error) {
+// schemaVersions is the database's schema version and this binary's: the
+// newer of its newest migration and its derived set's version.
+func schemaVersions(ctx context.Context, db *sql.DB) (current, want int, err error) {
 	if current, err = currentSchemaVersion(ctx, db); err != nil {
 		return 0, 0, err
 	}
@@ -108,10 +139,11 @@ func schemaVersions(ctx context.Context, db *sql.DB) (current, latest int, err e
 	if err != nil {
 		return 0, 0, err
 	}
-	if len(migrations) == 0 {
-		return current, current, nil
+	set, err := derived()
+	if err != nil {
+		return 0, 0, err
 	}
-	return current, migrations[len(migrations)-1].version, nil
+	return current, wantVersion(migrations, set), nil
 }
 
 // currentSchemaVersion returns MAX(gold_schema_version) or 0 if

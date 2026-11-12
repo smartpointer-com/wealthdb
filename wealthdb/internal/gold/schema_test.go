@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -166,18 +165,20 @@ func openAtVersion(t *testing.T, version int) (*sql.DB, context.Context) {
 	return db, ctx
 }
 
-// latestSchemaVersion returns the version number of the highest
-// embedded migration. Used by tests to assert post-Migrate state
+// latestSchemaVersion returns the schema version Migrate brings a
+// database to: the newer of the highest embedded migration and the
+// derived set's version. Used by tests to assert post-Migrate state
 // without hardcoding a version that drifts as new migrations land.
 func latestSchemaVersion() (int, error) {
 	ms, err := listMigrations()
 	if err != nil {
 		return 0, err
 	}
-	if len(ms) == 0 {
-		return 0, fmt.Errorf("no migrations embedded")
+	set, err := derived()
+	if err != nil {
+		return 0, err
 	}
-	return ms[len(ms)-1].version, nil
+	return wantVersion(ms, set), nil
 }
 
 // TestMigrateAppliesSchema is the smoke test that proves the
@@ -401,7 +402,7 @@ func assertTransactionsMacroAfterReplay(t *testing.T, db *sql.DB, ctx context.Co
 }
 
 // TestCheckSchemaKnown: a database a later build has migrated past this
-// binary's newest migration reads as stale, with or without a build
+// binary's schema version reads as stale, with or without a build
 // stamp; one at the binary's own schema does not.
 func TestCheckSchemaKnown(t *testing.T) {
 	t.Parallel()
@@ -409,12 +410,12 @@ func TestCheckSchemaKnown(t *testing.T) {
 	if err := CheckSchemaKnown(ctx, db); err != nil {
 		t.Fatalf("a database at this binary's schema: %v", err)
 	}
-	ms, err := listMigrations()
+	latest, err := latestSchemaVersion()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO schema_meta (gold_schema_version, applied_at) VALUES (?, 0)`,
-		ms[len(ms)-1].version+1); err != nil {
+		latest+1); err != nil {
 		t.Fatal(err)
 	}
 	if err := CheckSchemaKnown(ctx, db); !errors.Is(err, ErrStaleBinary) {

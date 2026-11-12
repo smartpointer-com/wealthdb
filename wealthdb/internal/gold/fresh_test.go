@@ -25,15 +25,9 @@ func TestOpenFreshCopiesAreCurrentAndIndependent(t *testing.T) {
 	a, b := open("a.db"), open("b.db")
 	t.Logf("fresh image: %d bytes", len(fresh.data))
 
-	migrations, err := listMigrations()
+	latest, err := latestSchemaVersion()
 	if err != nil {
 		t.Fatal(err)
-	}
-	latest := 0
-	for _, m := range migrations {
-		if m.version > latest {
-			latest = m.version
-		}
 	}
 	for name, db := range map[string]*sql.DB{"a": a, "b": b} {
 		v, err := currentSchemaVersion(ctx, db)

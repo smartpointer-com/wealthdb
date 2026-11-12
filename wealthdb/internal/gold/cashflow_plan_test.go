@@ -261,21 +261,18 @@ func TestPlanWindow(t *testing.T) {
 }
 
 // planIncomeClasses are the cash flow statement's operating-in classes,
-// as the newest migration defining cashflow_txn_nodes cases them, the
-// projected types aside; its two remaining arms are the SQL's own.
+// as the derived cashflow_txn_nodes cases them, the projected types
+// aside; its two remaining arms are the SQL's own.
 func TestThePlansIncomeClassesAreTheStatements(t *testing.T) {
 	t.Parallel()
-	ms, err := listMigrations()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var newest string
-	for _, m := range ms {
-		if strings.Contains(m.body, "MACRO cashflow_txn_nodes") {
-			newest = m.body
+	set := mustDerived(t)
+	var nodes string
+	for _, s := range set.stmts {
+		if s.name == "cashflow_txn_nodes" {
+			nodes = s.sql
 		}
 	}
-	in := regexp.MustCompile(`(?s)WHEN 'in' THEN\s*CASE(.*?)\bEND\b`).FindStringSubmatch(newest)
+	in := regexp.MustCompile(`(?s)WHEN 'in' THEN\s*CASE(.*?)\bEND\b`).FindStringSubmatch(nodes)
 	if in == nil {
 		t.Fatal("no operating-in CASE in cashflow_txn_nodes")
 	}

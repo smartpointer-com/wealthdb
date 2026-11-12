@@ -754,19 +754,24 @@ section("gold's spending label and the provisioner's constant")
 # The provisioner does not merely DISPLAY this label, it FILTERS on it
 # (the "Uncategorized share" card). Re-spelling either side would make
 # that card return zero and read as "nothing is uncategorised" — the most
-# reassuring possible way to be wrong. Scanning every migration rather
-# than one by number keeps this correct when a later migration re-issues
-# the view; set equality fails from either direction, and from a third
-# spelling appearing.
+# reassuring possible way to be wrong. Scanning every derived file rather
+# than one view keeps this correct when another view renders the label;
+# set equality fails from either direction, and from a third spelling
+# appearing.
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLD_MIGRATIONS = os.path.join(_REPO, "wealthdb", "internal", "gold", "migrations")
-MIGRATION_SQL = "\n".join(
-    open(os.path.join(GOLD_MIGRATIONS, f), encoding="utf-8").read()
-    for f in sorted(os.listdir(GOLD_MIGRATIONS)) if f.endswith(".sql"))
+# Every macro and view lives in gold's derived files, each object once;
+# the LOCK lists the derived versions.
+GOLD_DERIVED = os.path.join(_REPO, "wealthdb", "internal", "gold", "derived")
+DERIVED_SQL = "\n".join(
+    open(os.path.join(GOLD_DERIVED, f), encoding="utf-8").read()
+    for f in sorted(os.listdir(GOLD_DERIVED)) if f.endswith(".sql"))
+DERIVED_VERSIONS = [int(line.split()[0]) for line in
+                    open(os.path.join(GOLD_DERIVED, "LOCK"), encoding="utf-8").read().split("\n") if line.strip()]
 COALESCED = set(re.findall(
     r"COALESCE\(\s*(?:CASE\b[^()]*?END|spend_(?:primary|detailed))\s*,\s*"
-    r"'([^']*)'\s*\)", MIGRATION_SQL, re.S))
-check("the migrations really do render a label for an unresolved category",
+    r"'([^']*)'\s*\)", DERIVED_SQL, re.S))
+check("the derived views really do render a label for an unresolved category",
       bool(COALESCED), "the COALESCE shape moved; this check went vacuous")
 check("gold's spending views render exactly the label the "
       "uncategorized-share card filters on",
@@ -808,13 +813,15 @@ def _go_list(text, var, type_name=None):
         return None
 
 
-# The guard's version is a migration that exists, and no older than the
-# newest one that (re)defines an object the cards read: a web_* view in
-# the registry or a serving_* table a model names. A snapshot older than
-# that can carry every view by name; only the version tells it apart.
+# The guard's version is a migration that exists or a derived version,
+# and no older than the newest one that (re)defines an object the cards
+# read: a web_* view in the registry or a serving_* table a model names.
+# A snapshot older than that can carry every view by name; only the
+# version tells it apart.
 _MIG_FILES = sorted(f for f in os.listdir(GOLD_MIGRATIONS) if f.endswith(".sql"))
-check("the cards' minimum gold schema is a migration on disk",
-      any(f.startswith(f"{p.MIN_GOLD_SCHEMA:04d}_") for f in _MIG_FILES),
+check("the cards' minimum gold schema is a migration on disk or a derived version",
+      any(f.startswith(f"{p.MIN_GOLD_SCHEMA:04d}_") for f in _MIG_FILES)
+      or p.MIN_GOLD_SCHEMA in DERIVED_VERSIONS,
       p.MIN_GOLD_SCHEMA)
 _MIG_TEXT = {int(f[:4]): open(os.path.join(GOLD_MIGRATIONS, f), encoding="utf-8").read()
              for f in _MIG_FILES}
@@ -823,10 +830,19 @@ _SERVED = sorted(set(re.findall(r"\bserving_\w+", "\n".join(
 
 
 def _latest_definition(name):
-    """The text of the last migration statement that (re)defines `name`."""
-    found = re.findall(rf"CREATE OR REPLACE (?:VIEW|MACRO) {name}\b.*?;\n",
-                       MIGRATION_SQL, re.S)
-    return found[-1] if found else ""
+    """The derived statement that defines view or macro `name`, as a
+    CREATE OR REPLACE, so it runs over a stand-in of the same name. It
+    ends, as gold splits the files, at the first line that ends with `;`
+    and is no comment."""
+    found = re.search(rf"^CREATE ((?:VIEW|MACRO) {name}\b.*)", DERIVED_SQL, re.S | re.M)
+    if not found:
+        return ""
+    lines = []
+    for line in found.group(1).splitlines(keepends=True):
+        lines.append(line)
+        if line.rstrip().endswith(";") and not line.lstrip().startswith("--"):
+            break
+    return "CREATE OR REPLACE " + "".join(lines)
 
 
 def _defined_in(obj):
@@ -835,7 +851,47 @@ def _defined_in(obj):
     return [n for n, text in _MIG_TEXT.items() if re.search(pat, text)]
 
 
-_NEWEST = {o: max(_defined_in(o), default=None) for o in p.web_views_wanted() + _SERVED}
+def _statement_code(text):
+    """The code of the statement `text` starts with: comments left out,
+    white space collapsed, up to its first `;` outside a quote."""
+    out, i, quote = [], 0, None
+    while i < len(text):
+        c = text[i]
+        if quote:
+            quote = None if c == quote else quote
+        elif text.startswith("--", i):
+            i = text.find("\n", i)
+            i = len(text) if i < 0 else i
+            continue
+        elif c in "'\"":
+            quote = c
+        elif c == ";":
+            break
+        out.append(c)
+        i += 1
+    return " ".join("".join(out).split())
+
+
+def _last_migration_code(obj):
+    """The code of the last migration statement that defines `obj`, its
+    head left out."""
+    text = "\n".join(_MIG_TEXT.values())
+    heads = list(re.finditer(rf"CREATE OR REPLACE (?:VIEW|MACRO) {obj}\b", text))
+    return _statement_code(text[heads[-1].end():]) if heads else None
+
+
+def _newest(obj):
+    """The newest version that (re)defines `obj`. A derived object whose
+    code is its last migration's dates from that migration; one whose
+    code moved past it from the newest derived version, as the LOCK does
+    not say which version changed which object."""
+    derived = re.search(rf"^CREATE (?:VIEW|MACRO) {obj}\b", DERIVED_SQL, re.M)
+    if derived and _statement_code(DERIVED_SQL[derived.end():]) != _last_migration_code(obj):
+        return DERIVED_VERSIONS[-1]
+    return max(_defined_in(obj), default=None)
+
+
+_NEWEST = {o: _newest(o) for o in p.web_views_wanted() + _SERVED}
 check("the cards' minimum gold schema is no older than any view or table they read",
       bool(_SERVED) and all(n is not None and n <= p.MIN_GOLD_SCHEMA for n in _NEWEST.values()),
       {o: n for o, n in _NEWEST.items() if n is None or n > p.MIN_GOLD_SCHEMA})
@@ -847,10 +903,22 @@ check("the registry names exactly the web_* views the cards and models read",
       _READ_VIEWS == set(p.web_views_wanted()), sorted(_READ_VIEWS ^ set(p.web_views_wanted())))
 
 
+def _migration_objects(*ns):
+    """The tables of migrations ns, as they create or alter them, then the
+    derived definitions of the views and macros they define, in the
+    derived files' order: what a test database needs to stand in for that
+    part of gold."""
+    tables, names = [], set()
+    for n in ns:
+        tables += re.findall(r"^(?:CREATE TABLE|ALTER TABLE)\b.*?;\n", _MIG_TEXT[n], re.S | re.M)
+        names |= set(re.findall(r"^CREATE OR REPLACE (?:VIEW|MACRO) (\w+)", _MIG_TEXT[n], re.M))
+    ordered = sorted(names, key=lambda o: re.search(rf"^CREATE (?:VIEW|MACRO) {o}\b", DERIVED_SQL, re.M).start())
+    return "".join(tables + [_latest_definition(o) for o in ordered])
+
+
 def _view_body(view):
-    """The newest migration's CREATE statement for `view`, up to its `;`."""
-    text = _MIG_TEXT.get(_NEWEST.get(view), "")
-    m = re.search(rf"CREATE (?:OR REPLACE )?VIEW {view} AS(.*?);", text, re.S)
+    """The derived CREATE statement for `view`, up to its `;`."""
+    m = re.search(rf"VIEW {view} AS(.*);", _latest_definition(view), re.S)
     return m.group(1) if m else ""
 
 
@@ -1363,8 +1431,12 @@ _GO_SERVING = set(re.findall(r'\{"(serving_\w+)",', _sm_list.group(0))) if _sm_l
 check("every serving table a model reads is one web-materialize rewrites",
       bool(_SERVED) and set(_SERVED) <= _GO_SERVING,
       sorted(set(_SERVED) - _GO_SERVING) if _GO_SERVING else "servingTables not found")
-check("...and one a migration creates",
-      all(_defined_in(t) for t in _SERVED), [t for t in _SERVED if not _defined_in(t)])
+# gold creates each listed table from its macro's columns, so the macro
+# is a derived one.
+_GO_SERVING_MACROS = dict(re.findall(r'\{"(serving_\w+)", "(\w+)\(', _sm_list.group(0))) if _sm_list else {}
+check("...and one gold creates from a derived macro",
+      bool(_SERVED) and all(_latest_definition(_GO_SERVING_MACROS.get(t, "-")) for t in _SERVED),
+      [t for t in _SERVED if not _latest_definition(_GO_SERVING_MACROS.get(t, "-"))])
 
 
 # ---- Income dashboards ----------------------------------------------
@@ -2032,7 +2104,7 @@ check("...the Asset class picker's values those of the gains rows, `unknown` amo
       _gn_class["values_source_config"]["card_id"] == MID["report_gains_classes"]
       and _gn_class["values_source_config"]["value_field"][1] == "asset_class"
       and MODELS["report_gains_classes"][0] == "SELECT DISTINCT asset_class FROM web_gains"
-      and "COALESCE(g.asset_class, 'unknown') AS asset_class" in _MIG_TEXT[170]
+      and "COALESCE(g.asset_class, 'unknown') AS asset_class" in _latest_definition("web_gains")
       and all(q["values_source_config"]["card_id"] == MID["report_asset_classes_history"]
               for d in ("Wealth Overview", "Exposure")
               for q in p.dashboard_parameters(MID, "range", d) if q["slug"] == "asset_class"),
@@ -3130,12 +3202,12 @@ check("...and a label of any other type mapping to none",
       "INCOME_SALARY" not in _py_map and "INCOME_OTHER" not in _py_map)
 
 # The classes the other lines band by are the cash flow statement's
-# operating-in classes (cashflow_txn_nodes, as its newest migration
-# defines it), as gold keeps the plan's other income by them: a class per
+# operating-in classes (cashflow_txn_nodes, as the derived files
+# define it), as gold keeps the plan's other income by them: a class per
 # detailed type its CASE names, the projected types left to the
 # holdings' cards.
 _in_case = re.search(r"WHEN 'in' THEN\s*CASE(.*?)\bEND\b",
-                     _MIG_TEXT[max(_defined_in("cashflow_txn_nodes"))], re.S).group(1)
+                     _latest_definition("cashflow_txn_nodes"), re.S).group(1)
 _sql_classes = {}
 for _ds, _c in re.findall(r"WHEN p\.verdict IN \(([^)]*)\)\s*(?:--[^\n]*\n\s*)*THEN '(\w+)'", _in_case):
     for _d in re.findall(r"'(\w+)'", _ds):
@@ -3637,10 +3709,8 @@ check("both sources models render valued_at as a timestamp",
       all("epoch_ms(valued_at * 1000) AS valued_at" in MODELS[m][0]
           for m in ("report_sources_latest", "report_sources_latest_pct")),
       [MODELS[m][0][:200] for m in ("report_sources_latest", "report_sources_latest_pct")])
-_mig = open(os.path.join(GOLD_MIGRATIONS, "0122_observed_through.sql"), encoding="utf-8").read()
-check("source_observed is a gold view", "CREATE OR REPLACE VIEW source_observed" in _mig)
-_mig = open(os.path.join(GOLD_MIGRATIONS, "0123_valued_at.sql"), encoding="utf-8").read()
-check("the sources reports carry valued_at", "AS valued_at" in _mig and "report_sources_multi" in _mig)
+check("source_observed is a gold view", _latest_definition("source_observed").startswith("CREATE OR REPLACE VIEW"))
+check("the sources reports carry valued_at", "AS valued_at" in _latest_definition("report_sources_multi"))
 
 section("an API call that fails is never read as an empty answer")
 
@@ -3765,11 +3835,8 @@ finally:
     p.req = real_req
 # The one card that reads a list column reads it in native SQL, which a
 # sensitive field leaves as it is: no picker and no model may bind one.
-_list_cols = {m.group(1) for f in sorted(os.listdir(os.path.join(_REPO, "wealthdb", "internal", "gold", "migrations")))
-              if f.endswith(".sql")
-              for m in re.finditer(r"^\s+(\w+)\s+\w+(?:\(\d+(?:,\s*\d+)?\))?\[\]",
-                                   open(os.path.join(_REPO, "wealthdb", "internal", "gold", "migrations", f),
-                                        encoding="utf-8").read(), re.M)}
+_list_cols = {m.group(1) for text in list(_MIG_TEXT.values()) + [DERIVED_SQL]
+              for m in re.finditer(r"^\s+(\w+)\s+\w+(?:\(\d+(?:,\s*\d+)?\))?\[\]", text, re.M)}
 check("the gold's list columns are found", "tags" in _list_cols, _list_cols)
 check("no picker binds a list column",
       not _list_cols & {c for cs in p.FILTER_FIELD_COLUMNS.values() for c in cs}, _list_cols)
@@ -3919,14 +3986,11 @@ def _book():
                "CREATE TABLE web_income (occurred_at TIMESTAMP, silver_source_id TEXT, account_external_id TEXT,"
                " account_label TEXT, tax_wrapper TEXT, income_detailed TEXT, income_label TEXT,"
                " value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE);")
-    db.execute(_MIG_TEXT[138])
-    db.execute(_MIG_TEXT[146])
-    # The cash flow projection's table and view (0149, 0169); the pool's
-    # accounts the Cash Flow checks below define for themselves.
+    # The yield, income and cash flow projection tables and their views;
+    # the pool's accounts the Cash Flow checks below define for themselves.
     db.execute("CREATE MACRO cashflow_pool_accounts() AS TABLE"
                " SELECT silver_source_id, account_external_id FROM accounts")
-    db.execute(_MIG_TEXT[149])
-    db.execute(_MIG_TEXT[169])
+    db.execute(_migration_objects(138, 146, 149, 169))
 
     def insert(table, rows):
         for r in rows:
@@ -4626,7 +4690,7 @@ if duckdb is not None:
     _db.execute("CREATE TABLE serving_global_history (as_of_day BIGINT)")
     _db.execute("INSERT INTO serving_global_history SELECT epoch(d)::BIGINT"
                 " FROM range(TIMESTAMP '2026-08-01', TIMESTAMP '2026-10-22', INTERVAL 1 DAY) t(d)")
-    _db.execute(_MIG_TEXT[166])
+    _db.execute(_migration_objects(166))
     _db.execute("DELETE FROM report_exposure_issuer_ranks")
     for _at, _who, _v in (("2026-08-31 23:59:59", "Example Alpha", 500.0),
                           ("2026-09-30 23:59:59", "Example Beta", 600.0),
@@ -4663,7 +4727,7 @@ if duckdb is not None:
     # and cash of 400. A month end before, a stock of 50 alone. The card
     # sums the stock to one row with its heaviest slice's labels and its
     # two funds, each a share of the 1,500.
-    _db.execute(_MIG_TEXT[165])
+    _db.execute(_migration_objects(165))
     _sec_now = int(dt.datetime(2026, 10, 21, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp())
     _sec_sep = int(dt.datetime(2026, 9, 30, 23, 59, 59, tzinfo=dt.timezone.utc).timestamp())
     for _at, _src, _w, _cls, _key, _name, _sector, _country, _v, _direct, _funds in (
@@ -4807,9 +4871,7 @@ if duckdb is not None:
                 "INSERT INTO accounts (silver_source_id, account_external_id, display_name, account_kind, tax_wrapper)"
                 " VALUES ('src-3', 'acct-3', 'Plan', 'brokerage', 'roth_ira');"
                 + _latest_definition("cashflow_pool_accounts"))
-    _db.execute(_MIG_TEXT[149])
-    _db.execute(_MIG_TEXT[169])
-    _db.execute(_MIG_TEXT[172])
+    _db.execute(_migration_objects(149, 169, 172))
     _db.executemany("INSERT INTO report_yield_parts (computed_at, silver_source_id, account_external_id, "
                     "position_key, holding_currency, rule, month, month_start, month_only, type, basis, fixed, "
                     "principal, spread, roll_constant, roll_forward, roll_principal, fx_USD, fx_CHF) "
