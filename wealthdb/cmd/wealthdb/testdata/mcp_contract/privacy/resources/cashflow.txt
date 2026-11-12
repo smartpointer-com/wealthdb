@@ -1,0 +1,47 @@
+cashflow — Where the household's cash came from and went over a window (default: the last twelve months), as a cash flow statement; positive is cash arriving. view=summary: per period: operating_in, operating_out, investing, financing, vehicles (all retirement, education and health plans together), net_cash_flow. flows: per period and node (section, class, group); one plan or the mortgage is flows with a class filter (Mortgage sits under financing). sankey: the diagram's edges. transactions: the lines. coverage: per account and period, how far the statement can be trusted (read status first). projection: one row per month ahead (default: the horizon after this month; period monthly, quarterly or annual): investment_income, principal_returned and vehicles_income as the income projection expects them, other_income, operating_out and vehicles as trailing monthly averages, debt_service (each mortgage to its maturity), net and quality. Example: {view: "flows", from: "2025", to: "2025", level: "class"}.
+
+Parameters (all optional):
+  from         Window start; snaps to the unit's start.
+  to           Window end; snaps to the unit's end. Default today unless the tool says otherwise.
+  view         summary | flows | sankey | transactions | coverage | projection. Which rows to return (default summary).
+  period       daily | weekly | monthly | quarterly | annual | total. Bucket size (default total; monthly on projection, which takes no total). Not for sankey.
+  level        section | class | group. Node grain of flows and sankey: section, class or group (default group).
+  investing    whole | class. whole (default): investing as one node; class: one node per asset class.
+  rates        constant | forward. projection: constant or forward floating rates. Default constant.
+  maturing     cash | idle | roll. projection: what a maturing principal earns: cash, idle or roll (net then leaves principal_returned out). Default cash.
+  shift        projection: parallel shift of the floating rates in basis points (default 0).
+  source       Keep this source id only (e.g. "schwab"); a comma list keeps several.
+  account      Keep rows whose account name, id or nickname contains this (case-insensitive).
+  section      Keep one section: operating_in, operating_out, investing, financing, vehicles, cash.
+  class        Keep classes whose label contains this (e.g. "Mortgage", "Retirement").
+  group        Keep only groups whose label contains this text.
+  currency     Output currency, e.g. USD or CHF. Default: the configured one.
+  filter       Conditions, all of which hold: ["value > 1000", "date >= 2025-07", "category not in Rent, Groceries"].
+  search       Keep rows with this text in any cell.
+  columns      "default", "all", names, or "+add,-remove"; describe(topic=<tool>) lists them.
+  sort         Column to sort by; "-" for descending. "-value": the main money column, largest first whatever the sign.
+  max_chars    Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.
+  limit        Most rows to return (default: as many as fit).
+  offset       Rows to skip (default 0).
+  format       table | csv | json. Result format (default table).
+
+Columns (* = shown by default; columns=all shows every one):
+  summary: period*, period_start, txn_count, operating_in_USD*, operating_out_USD*, operating_USD*, investing_USD*, financing_USD*, vehicles_USD*, net_cash_flow_USD*, yield_USD, taxes_USD, fees_USD, giving_USD, savings_rate_pct, cash_measured_USD, fx_effect_USD, cash_flow_measured_USD, unexplained_USD
+  flows: period*, period_start, section*, class*, group*, section_id, class_id, group_id, txn_count*, inflow_USD*, outflow_USD*, net_USD*, share_pct*
+  sankey: stage*, source*, target*, source_id, target_id, section, value_USD*, share_pct*
+  transactions: silver_source*, date*, datetime, account*, account_id, account_kind, account_nickname, account_category, kind*, section*, class*, group*, class_id, group_id, name*, detailed, spend_detailed, income_detailed, provenance, currency*, net_amount*, value_USD*, counterparty, description, tx_id
+  coverage: period*, period_start, silver_source*, account*, account_kind, currency*, txn_count, ledger*, unsigned, measured*, gap*, status*
+  projection: period*, investment_income_USD*, principal_returned_USD*, vehicles_income_USD*, other_income_USD*, operating_out_USD*, debt_service_USD*, vehicles_USD*, net_USD*, consumption_USD, fees_USD, taxes_USD, giving_USD, uncategorized_USD, quality*
+
+Filters each view takes (a filter the view lacks moves the call to the first finer view that has it):
+  summary: none
+  flows: section, class, group
+  sankey: section
+  transactions: source, account, section, class, group
+  coverage: source, account
+  projection: none
+
+The four sections sum to net_cash_flow. vehicles is every plan together; for one plan read view=flows at level=class. The mortgage is under financing. A node is a net: inflow and outflow beside it are the gross lines under it. view=projection is the plan: investment_income is income projection's expected income on the pool's accounts and vehicles_income its income and principal on every other account, which net leaves out; other_income, operating_out and vehicles are monthly averages of the trailing months, and quality says what each part rests on; net = investment_income + other_income - operating_out - debt_service + vehicles, plus principal_returned unless maturing=roll.
+Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.
+
+This endpoint redacts amounts, quantities, account numbers and the names taken off statements (merchants, payers, narratives), and shows a name a person typed about an account as a pseudonym such as manual-1, or as its account number, redacted; source ids, other account names, holdings and their names, categories and shares stay visible.

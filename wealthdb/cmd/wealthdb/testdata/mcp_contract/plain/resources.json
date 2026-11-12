@@ -1,0 +1,97 @@
+[
+  {
+    "mimeType": "text/plain",
+    "name": "guide",
+    "uri": "wealthdb://guide"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: cashflow",
+    "uri": "wealthdb://guide/cashflow"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: categorizations",
+    "uri": "wealthdb://guide/categorizations"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: dates",
+    "uri": "wealthdb://guide/dates"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: exposure",
+    "uri": "wealthdb://guide/exposure"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: filter",
+    "uri": "wealthdb://guide/filter"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: gains",
+    "uri": "wealthdb://guide/gains"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: glossary",
+    "uri": "wealthdb://guide/glossary"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: holdings",
+    "uri": "wealthdb://guide/holdings"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: income",
+    "uri": "wealthdb://guide/income"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: privacy",
+    "uri": "wealthdb://guide/privacy"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: quality",
+    "uri": "wealthdb://guide/quality"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: resolutions",
+    "uri": "wealthdb://guide/resolutions"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: returns",
+    "uri": "wealthdb://guide/returns"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: snapshots",
+    "uri": "wealthdb://guide/snapshots"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: spending",
+    "uri": "wealthdb://guide/spending"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: status",
+    "uri": "wealthdb://guide/status"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: transactions",
+    "uri": "wealthdb://guide/transactions"
+  },
+  {
+    "mimeType": "text/plain",
+    "name": "guide: yield",
+    "uri": "wealthdb://guide/yield"
+  }
+]

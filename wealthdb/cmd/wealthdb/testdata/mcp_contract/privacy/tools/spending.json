@@ -1,0 +1,115 @@
+{
+  "name": "spending",
+  "title": "Spending",
+  "description": "What was spent over a window (default: the last twelve months). view=summary: per period. categories: per period and category, with its share. transactions: the lines with merchant and category. fees: what each portfolio, or account outside one, paid in fees, net of refunds, beside its mean value, annualized fee rate and return; a trust's or a plan's fees count. spend and refunds are positive; net_spend = spend - refunds. Card payments, transfers and mortgage payments are never spending: they are in cashflow. Example: {view: \"categories\", from: \"2025\", to: \"2025\"}.",
+  "inputSchema": {
+    "properties": {
+      "account": {
+        "description": "Keep rows whose account name, id or nickname contains this (case-insensitive).",
+        "type": "string"
+      },
+      "category": {
+        "description": "Keep categories whose label or id contains this (e.g. \"groceries\"); implies level=detailed.",
+        "type": "string"
+      },
+      "columns": {
+        "description": "\"default\", \"all\", names, or \"+add,-remove\"; describe(topic=<tool>) lists them.",
+        "type": "string"
+      },
+      "currency": {
+        "description": "Output currency, e.g. USD or CHF. Default: the configured one.",
+        "type": "string"
+      },
+      "filter": {
+        "description": "Conditions, all of which hold: [\"value > 1000\", \"date >= 2025-07\", \"category not in Rent, Groceries\"].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "format": {
+        "description": "Result format (default table).",
+        "enum": [
+          "table",
+          "csv",
+          "json"
+        ],
+        "type": "string"
+      },
+      "from": {
+        "description": "Window start; snaps to the unit's start.",
+        "type": "string"
+      },
+      "level": {
+        "description": "Category vocabulary of the categories view: primary (default, broad groups) or detailed.",
+        "enum": [
+          "primary",
+          "detailed"
+        ],
+        "type": "string"
+      },
+      "limit": {
+        "description": "Most rows to return (default: as many as fit).",
+        "type": "integer"
+      },
+      "max_chars": {
+        "description": "Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.",
+        "type": "integer"
+      },
+      "merchant": {
+        "description": "transactions only: keep only rows whose merchant contains this text.",
+        "type": "string"
+      },
+      "offset": {
+        "description": "Rows to skip (default 0).",
+        "type": "integer"
+      },
+      "period": {
+        "description": "Bucket size (default total: one row per category for the whole window).",
+        "enum": [
+          "daily",
+          "weekly",
+          "monthly",
+          "quarterly",
+          "annual",
+          "total"
+        ],
+        "type": "string"
+      },
+      "search": {
+        "description": "Keep rows with this text in any cell.",
+        "type": "string"
+      },
+      "sort": {
+        "description": "Column to sort by; \"-\" for descending. \"-value\": the main money column, largest first whatever the sign.",
+        "type": "string"
+      },
+      "source": {
+        "description": "Keep this source id only (e.g. \"schwab\"); a comma list keeps several.",
+        "type": "string"
+      },
+      "to": {
+        "description": "Window end; snaps to the unit's end. Default today unless the tool says otherwise.",
+        "type": "string"
+      },
+      "view": {
+        "description": "Which rows to return (default summary).",
+        "enum": [
+          "summary",
+          "categories",
+          "transactions",
+          "fees"
+        ],
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Spending"
+  }
+}

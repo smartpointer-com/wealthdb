@@ -1,0 +1,140 @@
+{
+  "name": "gains",
+  "title": "Gains",
+  "description": "What was gained or lost, realized and unrealized, over a window (default: the last twelve months). view=summary: one row: realized, unrealized at the start and end, change, gain = realized + change, share of value with a cost basis. sources, portfolios, accounts: the same per entity; they add up to the summary. positions: per account and holding. realized: each lot sold, as the tax document or statement states it or the lot engine rebuilt it. lots: the open lots at the window's end. coverage: per account, where the figures are blind. check: the lot engine against the stated lots and cost bases. quality names every gap. Example: {view: \"realized\", from: \"2025\", to: \"2025\"}.",
+  "inputSchema": {
+    "properties": {
+      "account": {
+        "description": "Keep rows whose account name, id or nickname contains this (case-insensitive).",
+        "type": "string"
+      },
+      "asset_class": {
+        "description": "positions only: keep only this asset class (e.g. public_equity, fixed_income, private_equity).",
+        "type": "string"
+      },
+      "columns": {
+        "description": "\"default\", \"all\", names, or \"+add,-remove\"; describe(topic=<tool>) lists them.",
+        "type": "string"
+      },
+      "currency": {
+        "description": "Output currency, e.g. USD or CHF. Default: the configured one.",
+        "type": "string"
+      },
+      "documents": {
+        "description": "realized only: each sale once (primary, default) or every document's copy (all).",
+        "enum": [
+          "primary",
+          "all"
+        ],
+        "type": "string"
+      },
+      "filter": {
+        "description": "Conditions, all of which hold: [\"value > 1000\", \"date >= 2025-07\", \"category not in Rent, Groceries\"].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "format": {
+        "description": "Result format (default table).",
+        "enum": [
+          "table",
+          "csv",
+          "json"
+        ],
+        "type": "string"
+      },
+      "from": {
+        "description": "Window start; snaps to the unit's start.",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Most rows to return (default: as many as fit).",
+        "type": "integer"
+      },
+      "max_chars": {
+        "description": "Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.",
+        "type": "integer"
+      },
+      "missing_basis": {
+        "description": "Not on coverage and check: a missing cost basis is blank (ignore, the default) or counts as 0 (zero; quality then says basis_assumed_zero=N); the config's lots.missing_basis sets the default.",
+        "enum": [
+          "ignore",
+          "zero"
+        ],
+        "type": "string"
+      },
+      "newest_first": {
+        "description": "realized only: newest first (default false: oldest first).",
+        "type": "boolean"
+      },
+      "offset": {
+        "description": "Rows to skip (default 0).",
+        "type": "integer"
+      },
+      "period": {
+        "description": "Bucket size on summary, sources, portfolios, accounts (default total: one row for the whole window).",
+        "enum": [
+          "daily",
+          "weekly",
+          "monthly",
+          "quarterly",
+          "annual",
+          "total"
+        ],
+        "type": "string"
+      },
+      "search": {
+        "description": "Keep rows with this text in any cell.",
+        "type": "string"
+      },
+      "sort": {
+        "description": "Column to sort by; \"-\" for descending. \"-value\": the main money column, largest first whatever the sign.",
+        "type": "string"
+      },
+      "source": {
+        "description": "Keep this source id only (e.g. \"schwab\"); a comma list keeps several.",
+        "type": "string"
+      },
+      "symbol": {
+        "description": "positions, realized and lots: keep only rows whose symbol or name contains this text.",
+        "type": "string"
+      },
+      "tax_wrapper": {
+        "description": "accounts and coverage: keep only this tax wrapper (e.g. taxable_joint, roth_ira).",
+        "type": "string"
+      },
+      "term": {
+        "description": "realized and lots: short or long.",
+        "type": "string"
+      },
+      "to": {
+        "description": "Window end; snaps to the unit's end. Default today unless the tool says otherwise.",
+        "type": "string"
+      },
+      "view": {
+        "description": "Which rows to return (default summary).",
+        "enum": [
+          "summary",
+          "sources",
+          "portfolios",
+          "accounts",
+          "positions",
+          "realized",
+          "lots",
+          "coverage",
+          "check"
+        ],
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Gains"
+  }
+}

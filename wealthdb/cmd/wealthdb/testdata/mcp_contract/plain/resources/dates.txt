@@ -1,0 +1,4 @@
+Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; "today", "yesterday", "last month", "last year" and "3 months ago" also work (English, UTC).
+from snaps to the start of its unit, to and as_of to the end: from="2025", to="2025" is the calendar year; from="2025-06" alone runs to today; to alone runs from the start of the data. Income's forward views and cashflow's projection differ: a lone from is its own span, and a lone to runs from the first day of next month. The projection takes whole months from next month on.
+Defaults: holdings, exposure and yield as of today; transactions the past 30 days; spending, cashflow and gains, and income's received views, the last twelve months; income's forward views and cashflow's projection the horizon after the current month; returns since the first snapshot.
+Every result header states the dates it used, as ISO dates.

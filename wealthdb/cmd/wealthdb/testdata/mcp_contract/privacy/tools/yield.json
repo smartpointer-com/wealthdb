@@ -1,0 +1,106 @@
+{
+  "name": "yield",
+  "title": "Yield",
+  "description": "What the holdings earn and how they move with interest rates, as of a date (default today). A rate belongs to a currency: an aggregate row is one entity in one currency, plus a value-weighted total (quality mixed). Views: global (per currency and a total, with duration and dv01: the whole portfolio's rate risk); sources, portfolios, accounts; positions (per holding; columns=+coupon,maturity_date,price on request); securities (each security, direct and through funds: a bond's coupon, maturity, price, implied yield and rating (columns=+rating), a stock's earnings yield, P/E, dividend yield, payout and growth); funds (each fund: what its lines imply, its page's yields and duration, as of when); cash (each balance, term deposit and money-market fund with rate, benchmark and gap, worst paid first); curve (DV01 per currency and tenor: 3M, 1Y, 5Y, 10Y, 30Y); coverage (what the figures rest on, what is missing, where each dividend's record day comes from). income_yield: the next twelve months' projected income over value; implied_yield: what the price implies; dv01: the value's fall per basis point. Read quality. Example: {view: \"cash\"}.",
+  "inputSchema": {
+    "properties": {
+      "as_of": {
+        "description": "As-of date. Default today.",
+        "type": "string"
+      },
+      "columns": {
+        "description": "\"default\", \"all\", names, or \"+add,-remove\"; describe(topic=<tool>) lists them.",
+        "type": "string"
+      },
+      "converted": {
+        "description": "global, sources, portfolios and accounts: one row per entity in the output currency (default false).",
+        "type": "boolean"
+      },
+      "currency": {
+        "description": "Output currency, e.g. USD or CHF. Default: the configured one.",
+        "type": "string"
+      },
+      "filter": {
+        "description": "Conditions, all of which hold: [\"value > 1000\", \"date >= 2025-07\", \"category not in Rent, Groceries\"].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "format": {
+        "description": "Result format (default table).",
+        "enum": [
+          "table",
+          "csv",
+          "json"
+        ],
+        "type": "string"
+      },
+      "from": {
+        "description": "With period: the series' start (YYYY, YYYY-MM, YYYY-MM-DD, today, yesterday, last month, last year).",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Most rows to return (default: as many as fit).",
+        "type": "integer"
+      },
+      "max_chars": {
+        "description": "Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.",
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Rows to skip (default 0).",
+        "type": "integer"
+      },
+      "period": {
+        "description": "global, sources, portfolios, accounts and curve: a series at the end of each period of from/to (default: the last twelve months).",
+        "enum": [
+          "monthly",
+          "quarterly",
+          "annual"
+        ],
+        "type": "string"
+      },
+      "search": {
+        "description": "Keep rows with this text in any cell.",
+        "type": "string"
+      },
+      "sort": {
+        "description": "Column to sort by; \"-\" for descending. \"-value\": the main money column, largest first whatever the sign.",
+        "type": "string"
+      },
+      "symbol": {
+        "description": "positions, funds and cash: keep only rows whose symbol contains this text.",
+        "type": "string"
+      },
+      "to": {
+        "description": "With period: the series' end, same forms. Default today.",
+        "type": "string"
+      },
+      "view": {
+        "description": "Which rows to return (default global).",
+        "enum": [
+          "global",
+          "sources",
+          "portfolios",
+          "accounts",
+          "positions",
+          "securities",
+          "funds",
+          "cash",
+          "curve",
+          "coverage"
+        ],
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Yield"
+  }
+}

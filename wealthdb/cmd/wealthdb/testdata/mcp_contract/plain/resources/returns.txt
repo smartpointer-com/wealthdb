@@ -1,0 +1,43 @@
+returns — How investments performed over a window (default: since the first snapshot), as twr and mwr %, after fees and taxes. view=global: the whole portfolio. sources, portfolios: per entity, best-effort. accounts: per account, exact. stated: a document's stated periods beside the engine's figures; it takes no method, period, annualize, netting, inception, benchmark or currency. bridge: why net worth moved, for the whole household: end_net_worth = start_net_worth + net_saved + onboarded + gain; whole months; it takes no method, annualize, netting, inception, benchmark, source or account. One row per entity for the whole window unless period adds buckets. quality names the reason for every n/a. Example: {view: "accounts", from: "2025", to: "2025"}.
+
+Parameters (all optional):
+  from         Window start; snaps to the unit's start.
+  to           Window end; snaps to the unit's end. Default today unless the tool says otherwise.
+  view         global | sources | portfolios | accounts | stated | bridge. Grain (default global); stated and bridge are side views.
+  method       twr | mwr | both. twr, mwr or both (default both).
+  period       monthly | quarterly | annual | total. Bucket size (default total: one row per entity for the whole window).
+  annualize    auto | always | never. auto (default; only spans of a year or more), always, never.
+  netting      Net internal transfers at coarse grains (default true).
+  inception    full | strict. full (default) or strict.
+  benchmark    view=global only: the benchmark beside each row, over the days both sides have. One of Global 60/40, Global 80/20, S&P 500, US total bond market, World (ACWI), or a name from the config's benchmarks block.
+  source       Keep this source id only (e.g. "schwab"); a comma list keeps several.
+  account      Keep rows whose account name, id or nickname contains this (case-insensitive).
+  currency     Output currency, e.g. USD or CHF. Default: the configured one.
+  filter       Conditions, all of which hold: ["value > 1000", "date >= 2025-07", "category not in Rent, Groceries"].
+  search       Keep rows with this text in any cell.
+  columns      "default", "all", names, or "+add,-remove"; describe(topic=<tool>) lists them.
+  sort         Column to sort by; "-" for descending. "-value": the main money column, largest first whatever the sign.
+  max_chars    Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.
+  limit        Most rows to return (default: as many as fit).
+  offset       Rows to skip (default 0).
+  format       table | csv | json. Result format (default table).
+
+Columns (* = shown by default; columns=all shows every one):
+  global: silver_source*, entity*, entity_id, period*, start_date, end_date, start_USD*, end_USD*, net_flow_USD*, gain_USD*, twr_pct*, twr_ann_pct, mwr_pct*, mwr_ann_pct, benchmark_twr_pct, compared_twr_pct, excess_pct, benchmark_mwr_pct, compared_mwr_pct, compared_from, compared_to, benchmark_quality, quality*
+  sources: silver_source*, entity*, entity_id, period*, start_date, end_date, start_USD*, end_USD*, net_flow_USD*, gain_USD*, twr_pct*, twr_ann_pct, mwr_pct*, mwr_ann_pct, benchmark_twr_pct, compared_twr_pct, excess_pct, benchmark_mwr_pct, compared_mwr_pct, compared_from, compared_to, benchmark_quality, quality*
+  portfolios: silver_source*, entity*, entity_id, period*, start_date, end_date, start_USD*, end_USD*, net_flow_USD*, gain_USD*, twr_pct*, twr_ann_pct, mwr_pct*, mwr_ann_pct, benchmark_twr_pct, compared_twr_pct, excess_pct, benchmark_mwr_pct, compared_mwr_pct, compared_from, compared_to, benchmark_quality, quality*
+  accounts: silver_source*, entity*, entity_id, period*, start_date, end_date, start_USD*, end_USD*, net_flow_USD*, gain_USD*, twr_pct*, twr_ann_pct, mwr_pct*, mwr_ann_pct, benchmark_twr_pct, compared_twr_pct, excess_pct, benchmark_mwr_pct, compared_mwr_pct, compared_from, compared_to, benchmark_quality, quality*
+  stated: silver_source*, account*, account_id, period*, start_date, end_date, currency*, stated_beginning, stated_ending*, stated_accrual, stated_net_additions*, stated_net_gain, stated_income, stated_fees, start_value, end_value*, net_flow*, flow_gap*, value_gap*, document, quality*
+  bridge: period*, start_date, end_date, start_net_worth_USD*, net_saved_USD*, onboarded_USD*, gain_USD*, end_net_worth_USD*, net_flow_USD, debt_repaid_USD, bridge_gap_USD, quality*
+
+Filters each view takes (a filter the view lacks moves the call to the first finer view that has it):
+  global: none
+  sources: source
+  portfolios: source
+  accounts: source, account
+Outside that order (a view of its own, which no filter moves a call to or from):
+  stated: source, account
+  bridge: none
+
+The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences. bridge explains net worth: end_net_worth = start_net_worth + net_saved + onboarded + gain. net_saved = net_flow + debt_repaid, onboarded is value that entered or left tracking, gain is the residual, returns' gain plus the FX move on debt. It reads whole months for the whole household.
+Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.

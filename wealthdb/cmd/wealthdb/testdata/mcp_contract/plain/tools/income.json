@@ -1,0 +1,149 @@
+{
+  "name": "income",
+  "title": "Income",
+  "description": "What was received over a window (default: the last twelve months): salary, dividends, interest, rent, refunds, rewards; and what the holdings are expected to pay. view=summary: per period. types: per period and type, with its share. transactions: the lines with payer and type. Gross as booked; net_income = income - reversals. The forward views take a window that may reach into the future (default: the months after this one; a lone from is its own span): projection (per month: received, expected, each type, withheld, and basis, what the expected part rests on; the view for how much is expected in a month or a year); calendar (each expected payment and each principal a maturity returns, dated); sources, portfolios, accounts, positions (received, expected, total, last_year and next_12m per entity; positions lists every holding). rates, maturing and shift set what the expected income assumes. Example: {view: \"projection\", from: \"2026\", to: \"2026\"}.",
+  "inputSchema": {
+    "properties": {
+      "account": {
+        "description": "Keep rows whose account name, id or nickname contains this (case-insensitive).",
+        "type": "string"
+      },
+      "columns": {
+        "description": "\"default\", \"all\", names, or \"+add,-remove\"; describe(topic=<tool>) lists them.",
+        "type": "string"
+      },
+      "currency": {
+        "description": "Output currency, e.g. USD or CHF. Default: the configured one.",
+        "type": "string"
+      },
+      "filter": {
+        "description": "Conditions, all of which hold: [\"value > 1000\", \"date >= 2025-07\", \"category not in Rent, Groceries\"].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "format": {
+        "description": "Result format (default table).",
+        "enum": [
+          "table",
+          "csv",
+          "json"
+        ],
+        "type": "string"
+      },
+      "from": {
+        "description": "Window start; snaps to the unit's start.",
+        "type": "string"
+      },
+      "kind": {
+        "description": "calendar only: income or principal.",
+        "type": "string"
+      },
+      "level": {
+        "description": "Type vocabulary of the types view: detailed (default) or primary.",
+        "enum": [
+          "primary",
+          "detailed"
+        ],
+        "type": "string"
+      },
+      "limit": {
+        "description": "Most rows to return (default: as many as fit).",
+        "type": "integer"
+      },
+      "maturing": {
+        "description": "Forward views: what a maturing principal earns: cash (its account's rate), idle (nothing) or roll (the same holding again). Default cash.",
+        "enum": [
+          "cash",
+          "idle",
+          "roll"
+        ],
+        "type": "string"
+      },
+      "max_chars": {
+        "description": "Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.",
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Rows to skip (default 0).",
+        "type": "integer"
+      },
+      "payer": {
+        "description": "transactions only: keep only rows whose payer contains this text.",
+        "type": "string"
+      },
+      "period": {
+        "description": "Bucket size (default total; monthly on the forward views).",
+        "enum": [
+          "daily",
+          "weekly",
+          "monthly",
+          "quarterly",
+          "annual",
+          "total"
+        ],
+        "type": "string"
+      },
+      "rates": {
+        "description": "Forward views: constant (today's rates) or forward (floating rates along the forward curve). Default constant.",
+        "enum": [
+          "constant",
+          "forward"
+        ],
+        "type": "string"
+      },
+      "search": {
+        "description": "Keep rows with this text in any cell.",
+        "type": "string"
+      },
+      "shift": {
+        "description": "Forward views: parallel shift of the floating rates in basis points (default 0).",
+        "type": "integer"
+      },
+      "sort": {
+        "description": "Column to sort by; \"-\" for descending. \"-value\": the main money column, largest first whatever the sign.",
+        "type": "string"
+      },
+      "source": {
+        "description": "Keep this source id only (e.g. \"schwab\"); a comma list keeps several.",
+        "type": "string"
+      },
+      "symbol": {
+        "description": "calendar and positions: keep only rows whose symbol contains this text.",
+        "type": "string"
+      },
+      "to": {
+        "description": "Window end; snaps to the unit's end. Default today unless the tool says otherwise.",
+        "type": "string"
+      },
+      "type": {
+        "description": "Keep income types whose label or id contains this (e.g. \"dividend\", \"salary\").",
+        "type": "string"
+      },
+      "view": {
+        "description": "Which rows to return (default summary).",
+        "enum": [
+          "summary",
+          "types",
+          "transactions",
+          "projection",
+          "calendar",
+          "sources",
+          "portfolios",
+          "accounts",
+          "positions"
+        ],
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Income"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "name": "resolutions",
+  "title": "Ticker resolutions",
+  "description": "Diagnostic: the resolved instrument ticker symbols (model-derived and manual overrides) the reports fall back on where a source carried no ticker.",
+  "inputSchema": {
+    "properties": {
+      "columns": {
+        "description": "\"default\", \"all\", names, or \"+add,-remove\"; describe(topic=<tool>) lists them.",
+        "type": "string"
+      },
+      "filter": {
+        "description": "Conditions, all of which hold: [\"value > 1000\", \"date >= 2025-07\", \"category not in Rent, Groceries\"].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "format": {
+        "description": "Result format (default table).",
+        "enum": [
+          "table",
+          "csv",
+          "json"
+        ],
+        "type": "string"
+      },
+      "limit": {
+        "description": "Most rows to return (default: as many as fit).",
+        "type": "integer"
+      },
+      "max_chars": {
+        "description": "Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.",
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Rows to skip (default 0).",
+        "type": "integer"
+      },
+      "search": {
+        "description": "Keep rows with this text in any cell.",
+        "type": "string"
+      },
+      "sort": {
+        "description": "Column to sort by; \"-\" for descending. \"-value\": the main money column, largest first whatever the sign.",
+        "type": "string"
+      },
+      "source": {
+        "description": "Keep this source id only (e.g. \"schwab\"); a comma list keeps several.",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Ticker resolutions"
+  }
+}

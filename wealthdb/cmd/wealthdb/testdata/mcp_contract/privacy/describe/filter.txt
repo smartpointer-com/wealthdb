@@ -1,0 +1,27 @@
+Conditions on a result's columns: filter takes one condition per item, and a row is kept when every condition holds.
+A condition is column op value. The column is any column the view prints, by its header (value_USD) or without its currency (value). The value is the rest of the condition and needs no quotes.
+
+Operators (a row is kept when the cell ...):
+  =             equals the value: the whole cell, any case, an underscore read as a space; a date or a period is any day in it (text, number, money, date)
+  !=            does not equal it (text, number, money, date)
+  <             is less, or before (number, money, date)
+  <=            is at most, or not after (number, money, date)
+  >             is greater, or after (number, money, date)
+  >=            is at least, or not before (number, money, date)
+  in            equals one of a comma list (text, number, money, date)
+  not in        equals none of a comma list (text, number, money, date)
+  contains      holds the text (text)
+  not contains  does not hold the text (text)
+  is empty      is blank or n/a (text, number, money, date)
+  is not empty  is not blank (text, number, money, date)
+
+Values:
+- Text compares in any case, an underscore read as a space. A list item that holds a comma goes in quotes.
+- Numbers and money are plain numbers, and money compares signed: spending lines are negative, so "over 500" is value <= -500.
+- Dates are YYYY, YYYY-Qn, YYYY-MM, YYYY-MM-DD, today, yesterday, this month, last month, this year, last year. A year, a quarter or a month is the whole period: maturity_date = 2027 keeps 2027, < 2027 what comes before it, >= 2027-07 from 1 July 2027 on.
+- A blank cell meets only is empty and the negations (!=, not in, not contains).
+
+Read as meant and echoed in the form above: == <> ≠ ≥ ≤, is null, like '%x%', between a and b, in (a, b), a leading WHERE, quotes around a value, several conditions joined by and.
+Refused: or (make one call per alternative, or use in for one column), two columns compared (a view's gain or _pct column holds the comparison), functions, ORDER BY, GROUP BY, LIMIT.
+
+Example: filter: ["asset_class = fixed_income", "maturity_date = 2027"]

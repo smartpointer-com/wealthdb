@@ -1,0 +1,151 @@
+{
+  "name": "cashflow",
+  "title": "Cash flow",
+  "description": "Where the household's cash came from and went over a window (default: the last twelve months), as a cash flow statement; positive is cash arriving. view=summary: per period: operating_in, operating_out, investing, financing, vehicles (all retirement, education and health plans together), net_cash_flow. flows: per period and node (section, class, group); one plan or the mortgage is flows with a class filter (Mortgage sits under financing). sankey: the diagram's edges. transactions: the lines. coverage: per account and period, how far the statement can be trusted (read status first). projection: one row per month ahead (default: the horizon after this month; period monthly, quarterly or annual): investment_income, principal_returned and vehicles_income as the income projection expects them, other_income, operating_out and vehicles as trailing monthly averages, debt_service (each mortgage to its maturity), net and quality. Example: {view: \"flows\", from: \"2025\", to: \"2025\", level: \"class\"}.",
+  "inputSchema": {
+    "properties": {
+      "account": {
+        "description": "Keep rows whose account name, id or nickname contains this (case-insensitive).",
+        "type": "string"
+      },
+      "class": {
+        "description": "Keep classes whose label contains this (e.g. \"Mortgage\", \"Retirement\").",
+        "type": "string"
+      },
+      "columns": {
+        "description": "\"default\", \"all\", names, or \"+add,-remove\"; describe(topic=<tool>) lists them.",
+        "type": "string"
+      },
+      "currency": {
+        "description": "Output currency, e.g. USD or CHF. Default: the configured one.",
+        "type": "string"
+      },
+      "filter": {
+        "description": "Conditions, all of which hold: [\"value > 1000\", \"date >= 2025-07\", \"category not in Rent, Groceries\"].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "format": {
+        "description": "Result format (default table).",
+        "enum": [
+          "table",
+          "csv",
+          "json"
+        ],
+        "type": "string"
+      },
+      "from": {
+        "description": "Window start; snaps to the unit's start.",
+        "type": "string"
+      },
+      "group": {
+        "description": "Keep only groups whose label contains this text.",
+        "type": "string"
+      },
+      "investing": {
+        "description": "whole (default): investing as one node; class: one node per asset class.",
+        "enum": [
+          "whole",
+          "class"
+        ],
+        "type": "string"
+      },
+      "level": {
+        "description": "Node grain of flows and sankey: section, class or group (default group).",
+        "enum": [
+          "section",
+          "class",
+          "group"
+        ],
+        "type": "string"
+      },
+      "limit": {
+        "description": "Most rows to return (default: as many as fit).",
+        "type": "integer"
+      },
+      "maturing": {
+        "description": "projection: what a maturing principal earns: cash, idle or roll (net then leaves principal_returned out). Default cash.",
+        "enum": [
+          "cash",
+          "idle",
+          "roll"
+        ],
+        "type": "string"
+      },
+      "max_chars": {
+        "description": "Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.",
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Rows to skip (default 0).",
+        "type": "integer"
+      },
+      "period": {
+        "description": "Bucket size (default total; monthly on projection, which takes no total). Not for sankey.",
+        "enum": [
+          "daily",
+          "weekly",
+          "monthly",
+          "quarterly",
+          "annual",
+          "total"
+        ],
+        "type": "string"
+      },
+      "rates": {
+        "description": "projection: constant or forward floating rates. Default constant.",
+        "enum": [
+          "constant",
+          "forward"
+        ],
+        "type": "string"
+      },
+      "search": {
+        "description": "Keep rows with this text in any cell.",
+        "type": "string"
+      },
+      "section": {
+        "description": "Keep one section: operating_in, operating_out, investing, financing, vehicles, cash.",
+        "type": "string"
+      },
+      "shift": {
+        "description": "projection: parallel shift of the floating rates in basis points (default 0).",
+        "type": "integer"
+      },
+      "sort": {
+        "description": "Column to sort by; \"-\" for descending. \"-value\": the main money column, largest first whatever the sign.",
+        "type": "string"
+      },
+      "source": {
+        "description": "Keep this source id only (e.g. \"schwab\"); a comma list keeps several.",
+        "type": "string"
+      },
+      "to": {
+        "description": "Window end; snaps to the unit's end. Default today unless the tool says otherwise.",
+        "type": "string"
+      },
+      "view": {
+        "description": "Which rows to return (default summary).",
+        "enum": [
+          "summary",
+          "flows",
+          "sankey",
+          "transactions",
+          "coverage",
+          "projection"
+        ],
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Cash flow"
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "name": "holdings",
+  "title": "Holdings",
+  "description": "What is held and what it is worth, as of a date (default today): every account, plus the property, loans and private holdings recorded by hand (a loan is negative). view=global: one row with cash_balance, positions_value and total_value (net worth); it has no per-account columns, so a filter needs another view. sources: per institution. portfolios: per portfolio. accounts: per account with kind, tax wrapper and value. positions: every holding with symbol, quantity and value. Example: {view: \"accounts\", as_of: \"2025-12-31\"}.",
+  "inputSchema": {
+    "properties": {
+      "account": {
+        "description": "Keep rows whose account name, id or nickname contains this (case-insensitive).",
+        "type": "string"
+      },
+      "as_of": {
+        "description": "As-of date. Default today.",
+        "type": "string"
+      },
+      "asset_class": {
+        "description": "positions only: keep only this asset class (e.g. public_equity, fixed_income, cash, real_estate, crypto).",
+        "type": "string"
+      },
+      "columns": {
+        "description": "\"default\", \"all\", names, or \"+add,-remove\"; describe(topic=<tool>) lists them.",
+        "type": "string"
+      },
+      "currency": {
+        "description": "Output currency, e.g. USD or CHF. Default: the configured one.",
+        "type": "string"
+      },
+      "filter": {
+        "description": "Conditions, all of which hold: [\"value > 1000\", \"date >= 2025-07\", \"category not in Rent, Groceries\"].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "format": {
+        "description": "Result format (default table).",
+        "enum": [
+          "table",
+          "csv",
+          "json"
+        ],
+        "type": "string"
+      },
+      "limit": {
+        "description": "Most rows to return (default: as many as fit).",
+        "type": "integer"
+      },
+      "max_chars": {
+        "description": "Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.",
+        "type": "integer"
+      },
+      "missing_basis": {
+        "description": "positions only: a missing cost basis is blank (ignore, the default) or counts as 0 (zero); the config's lots.missing_basis sets the default.",
+        "enum": [
+          "ignore",
+          "zero"
+        ],
+        "type": "string"
+      },
+      "offset": {
+        "description": "Rows to skip (default 0).",
+        "type": "integer"
+      },
+      "search": {
+        "description": "Keep rows with this text in any cell.",
+        "type": "string"
+      },
+      "sort": {
+        "description": "Column to sort by; \"-\" for descending. \"-value\": the main money column, largest first whatever the sign.",
+        "type": "string"
+      },
+      "source": {
+        "description": "Keep this source id only (e.g. \"schwab\"); a comma list keeps several.",
+        "type": "string"
+      },
+      "symbol": {
+        "description": "positions only: keep only holdings whose symbol or name contains this text.",
+        "type": "string"
+      },
+      "tax_wrapper": {
+        "description": "accounts only: keep only this tax wrapper (e.g. roth_ira, 401k, 529, taxable_joint).",
+        "type": "string"
+      },
+      "view": {
+        "description": "Which rows to return (default global).",
+        "enum": [
+          "global",
+          "sources",
+          "portfolios",
+          "accounts",
+          "positions"
+        ],
+        "type": "string"
+      },
+      "with_cash": {
+        "description": "positions only: also list cash as one row per account and currency.",
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Holdings"
+  }
+}

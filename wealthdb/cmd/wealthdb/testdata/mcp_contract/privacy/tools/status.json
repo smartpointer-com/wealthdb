@@ -1,0 +1,81 @@
+{
+  "name": "status",
+  "title": "Status",
+  "description": "Is the data current, and what does each source hold: per source its kind, row counts, latest snapshot, latest transaction and whether newer data is waiting to be loaded. source narrows to one source and adds detail. marks: how far a monthly return can be trusted instead: per month end, marked_pct, the share of value marked within five days, weighted by USD value in every currency. Example: {}.",
+  "inputSchema": {
+    "properties": {
+      "columns": {
+        "description": "\"default\", \"all\", names, or \"+add,-remove\"; describe(topic=<tool>) lists them.",
+        "type": "string"
+      },
+      "currency": {
+        "description": "marks only: the output currency of value_marked and value_total.",
+        "type": "string"
+      },
+      "filter": {
+        "description": "Conditions, all of which hold: [\"value > 1000\", \"date >= 2025-07\", \"category not in Rent, Groceries\"].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "format": {
+        "description": "Result format (default table).",
+        "enum": [
+          "table",
+          "csv",
+          "json"
+        ],
+        "type": "string"
+      },
+      "from": {
+        "description": "marks only: window start. Default: the first month end.",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Most rows to return (default: as many as fit).",
+        "type": "integer"
+      },
+      "marks": {
+        "description": "Month ends instead of sources. Takes from, to and currency; no source or verbose.",
+        "type": "boolean"
+      },
+      "max_chars": {
+        "description": "Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.",
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Rows to skip (default 0).",
+        "type": "integer"
+      },
+      "search": {
+        "description": "Keep rows with this text in any cell.",
+        "type": "string"
+      },
+      "sort": {
+        "description": "Column to sort by; \"-\" for descending. \"-value\": the main money column, largest first whatever the sign.",
+        "type": "string"
+      },
+      "source": {
+        "description": "One source id, for its detail and recent loads.",
+        "type": "string"
+      },
+      "to": {
+        "description": "marks only: window end. Default today.",
+        "type": "string"
+      },
+      "verbose": {
+        "description": "Add the counts of rows no category, type or asset class could be found for.",
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Status"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "describe",
+  "title": "Describe",
+  "description": "Help. Without topic: what this server is, the configured sources and their latest data dates, the default currency, the character budget, and which tool answers which question. topic=<tool name>: that tool's views, every column it can show, its filters and conventions. topic=dates, filter, privacy, quality or glossary: the conventions.",
+  "inputSchema": {
+    "properties": {
+      "topic": {
+        "description": "A tool name, or dates, filter, privacy, quality, glossary. Default: the overview.",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Describe"
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "name": "exposure",
+  "title": "Exposure",
+  "description": "What is really owned once every fund is looked through to what it holds, as of a date (default today). Views: classes; sectors (by class and sector); sizes (large, mid, small caps); countries (with region); currencies (the fiat currency, metal or coin a value moves with); credit (debt by rating bucket, IG or HY); maturities (debt and cash by time to maturity); coupons (fixed, floating, inflation_linked, zero); cycles (equity by cyclical, sensitive, defensive); situs (the country whose law each holding sits under; no fund looked through, so not exposure); securities (each security, direct and through funds); issuers (stock, bonds and deposits together, largest first, with the running share); funds (each fund held, what describes it and how old that is); coverage (what the figures rest on and what nothing describes). Every view sums to net worth: share_pct is of it; class_share_pct is within the row's dimension (its class on sectors and sizes; every row but (none) on credit, maturities, coupons, cycles), so those sum to 100. Read quality and coverage before trusting a figure. period with from/to: the view at the end of every month, quarter or year, in one call. Example: {view: \"countries\", as_of: \"2025-12-31\"}; quarter by quarter: {view: \"countries\", period: \"quarterly\", from: \"2025\", to: \"2025\", filter: [\"country = US\"]}.",
+  "inputSchema": {
+    "properties": {
+      "as_of": {
+        "description": "As-of date. Default today.",
+        "type": "string"
+      },
+      "benchmark": {
+        "description": "the benchmark's weight of each row and the row's share less it; not on situs, funds or coverage, and no period. One of Global 60/40, Global 80/20, S&P 500, US total bond market, World (ACWI), or a name from the config's benchmarks block.",
+        "type": "string"
+      },
+      "columns": {
+        "description": "\"default\", \"all\", names, or \"+add,-remove\"; describe(topic=<tool>) lists them.",
+        "type": "string"
+      },
+      "country": {
+        "description": "countries and securities: the country a security counts in, risk (default) or domicile.",
+        "enum": [
+          "risk",
+          "domicile"
+        ],
+        "type": "string"
+      },
+      "currency": {
+        "description": "Output currency, e.g. USD or CHF. Default: the configured one.",
+        "type": "string"
+      },
+      "filter": {
+        "description": "Conditions, all of which hold: [\"value > 1000\", \"date >= 2025-07\", \"category not in Rent, Groceries\"].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "format": {
+        "description": "Result format (default table).",
+        "enum": [
+          "table",
+          "csv",
+          "json"
+        ],
+        "type": "string"
+      },
+      "from": {
+        "description": "With period: the series' start (YYYY, YYYY-MM, YYYY-MM-DD, today, yesterday, last month, last year).",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Most rows to return (default: as many as fit).",
+        "type": "integer"
+      },
+      "max_chars": {
+        "description": "Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.",
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Rows to skip (default 0).",
+        "type": "integer"
+      },
+      "period": {
+        "description": "classes, sectors, sizes, countries, currencies, credit, maturities, coupons, cycles, situs and coverage: a series at the end of each period of from/to (default: the last twelve months).",
+        "enum": [
+          "monthly",
+          "quarterly",
+          "annual"
+        ],
+        "type": "string"
+      },
+      "search": {
+        "description": "Keep rows with this text in any cell.",
+        "type": "string"
+      },
+      "sort": {
+        "description": "Column to sort by; \"-\" for descending. \"-value\": the main money column, largest first whatever the sign.",
+        "type": "string"
+      },
+      "to": {
+        "description": "With period: the series' end, same forms. Default today.",
+        "type": "string"
+      },
+      "view": {
+        "description": "Which breakdown (default classes).",
+        "enum": [
+          "classes",
+          "sectors",
+          "sizes",
+          "countries",
+          "currencies",
+          "credit",
+          "maturities",
+          "coupons",
+          "cycles",
+          "situs",
+          "securities",
+          "issuers",
+          "funds",
+          "coverage"
+        ],
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true,
+    "title": "Exposure"
+  }
+}

@@ -1,0 +1,51 @@
+income — What was received over a window (default: the last twelve months): salary, dividends, interest, rent, refunds, rewards; and what the holdings are expected to pay. view=summary: per period. types: per period and type, with its share. transactions: the lines with payer and type. Gross as booked; net_income = income - reversals. The forward views take a window that may reach into the future (default: the months after this one; a lone from is its own span): projection (per month: received, expected, each type, withheld, and basis, what the expected part rests on; the view for how much is expected in a month or a year); calendar (each expected payment and each principal a maturity returns, dated); sources, portfolios, accounts, positions (received, expected, total, last_year and next_12m per entity; positions lists every holding). rates, maturing and shift set what the expected income assumes. Example: {view: "projection", from: "2026", to: "2026"}.
+
+Parameters (all optional):
+  from         Window start; snaps to the unit's start.
+  to           Window end; snaps to the unit's end. Default today unless the tool says otherwise.
+  view         summary | types | transactions | projection | calendar | sources | portfolios | accounts | positions. Which rows to return (default summary).
+  period       daily | weekly | monthly | quarterly | annual | total. Bucket size (default total; monthly on the forward views).
+  level        primary | detailed. Type vocabulary of the types view: detailed (default) or primary.
+  rates        constant | forward. Forward views: constant (today's rates) or forward (floating rates along the forward curve). Default constant.
+  maturing     cash | idle | roll. Forward views: what a maturing principal earns: cash (its account's rate), idle (nothing) or roll (the same holding again). Default cash.
+  shift        Forward views: parallel shift of the floating rates in basis points (default 0).
+  source       Keep this source id only (e.g. "schwab"); a comma list keeps several.
+  account      Keep rows whose account name, id or nickname contains this (case-insensitive).
+  type         Keep income types whose label or id contains this (e.g. "dividend", "salary").
+  payer        transactions only: keep only rows whose payer contains this text.
+  symbol       calendar and positions: keep only rows whose symbol contains this text.
+  kind         calendar only: income or principal.
+  currency     Output currency, e.g. USD or CHF. Default: the configured one.
+  filter       Conditions, all of which hold: ["value > 1000", "date >= 2025-07", "category not in Rent, Groceries"].
+  search       Keep rows with this text in any cell.
+  columns      "default", "all", names, or "+add,-remove"; describe(topic=<tool>) lists them.
+  sort         Column to sort by; "-" for descending. "-value": the main money column, largest first whatever the sign.
+  max_chars    Most characters the result may take (default 16000); the page ends at a row boundary and the last line says how to get the rest.
+  limit        Most rows to return (default: as many as fit).
+  offset       Rows to skip (default 0).
+  format       table | csv | json. Result format (default table).
+
+Columns (* = shown by default; columns=all shows every one):
+  summary: period*, period_start, txn_count*, income_USD*, reversals_USD*, net_income_USD*, withheld_USD
+  types: period*, period_start, type*, type_id, txn_count*, income_USD*, reversals_USD*, net_income_USD*, share_pct*
+  transactions: silver_source*, date*, datetime, account*, account_id, account_kind, account_nickname, account_category, kind*, payer*, payer_signature, income_type*, income_type_id, income_primary, income_primary_id, provenance*, provider_income_type, provider_income_type_id, currency*, net_amount*, value_USD*, counterparty, description, tx_id
+  projection: period*, received_USD*, expected_USD*, total_USD, interest_USD*, coupons_USD*, dividends_USD*, distributions_USD*, rent_USD, pension_USD, interest_received_USD, interest_expected_USD, coupons_received_USD, coupons_expected_USD, dividends_received_USD, dividends_expected_USD, distributions_received_USD, distributions_expected_USD, rent_received_USD, rent_expected_USD, pension_received_USD, pension_expected_USD, withheld_USD*, principal_USD, status*, basis*, quality*
+  calendar: date*, silver_source*, account*, account_id, position_key, symbol*, name, type*, kind*, currency*, amount*, value_USD*, withheld_USD, basis*, quality*
+  sources: silver_source*, received_USD*, expected_USD*, total_USD*, last_year_USD, next_12m_USD*, withheld_USD, basis*, quality*
+  portfolios: silver_source*, portfolio*, portfolio_id, received_USD*, expected_USD*, total_USD*, last_year_USD, next_12m_USD*, withheld_USD, basis*, quality*
+  accounts: silver_source*, account*, account_id, tax_wrapper*, received_USD*, expected_USD*, total_USD*, last_year_USD, next_12m_USD*, withheld_USD, basis*, quality*
+  positions: silver_source, account*, account_id, tax_wrapper, position_key, symbol*, name, vehicle*, currency, quantity*, price*, value_USD*, received_USD*, expected_USD*, total_USD*, last_year_USD, next_12m_USD*, withheld_USD, basis*, quality*
+
+Filters each view takes (a filter the view lacks moves the call to the first finer view that has it):
+  summary: none
+  types: type
+  transactions: source, account, type, payer
+  projection: none
+  calendar: source, account, symbol, type, kind
+  sources: source
+  portfolios: source
+  accounts: source, account
+  positions: source, account, symbol
+
+income and reversals are positive; net_income = income - reversals. The type rows of a period sum to its summary row. projection, calendar and the entity views put what was received beside what the holdings are expected to pay; their window may lie in the future, and basis says what the expected part rests on.
+Example: {view: "transactions", from: "2025", to: "2025", type: "dividend", sort: "-value"}.

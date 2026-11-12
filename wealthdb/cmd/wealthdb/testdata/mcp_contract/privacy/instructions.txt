@@ -1,0 +1,28 @@
+Today is 2026-10-04 (UTC).
+
+wealthdb holds a household's complete financial picture in one local, read-only database: every bank, card, brokerage, pension and crypto account, plus the property, loans and private holdings recorded by hand. A house, a mortgage or a venture fund is an account like any other; a loan or a card balance is a negative value.
+
+Pick the tool by the question:
+- what is held, where, and what it is worth (today or on a date); net worth; total cash (view=global); one account or one institution -> holdings
+- how investments performed, as a return % -> returns; why net worth moved, what was saved against what was gained, the household's total debt repaid (debt_repaid) -> returns (view=bridge)
+- what was gained or lost (P&L), realized or unrealized; a year's realized gains; the unrealized gain now (to=today); a holding's cost basis -> gains
+- what is really owned once every fund is looked through: allocation by asset class, sector, country, region or currency; debt by credit, maturity or coupon; the largest issuers; how much of one company is held through funds -> exposure
+- what the holdings yield or earn; interest rates, duration, DV01; a bond's credit rating; cash against its benchmark -> yield
+- the individual booked lines (a trade, a deposit, a transfer, the largest transactions) -> transactions; totals of dividends, interest, salary or spending are income and spending
+- what was spent, on what -> spending; what each portfolio cost in fees -> spending (view=fees)
+- what was received, from whom; what the holdings will pay and when -> income (view=projection or calendar)
+- where the household's cash came from and went; mortgage and loan payments; money into retirement, education or health plans -> cashflow (view=flows for one class)
+- is the data current -> status; how far a month's return can be trusted -> status (marks=true); which dates have data -> snapshots
+- help on a tool, its columns, or a term -> describe
+
+Conventions:
+- Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; also "today", "yesterday", "last month", "last year". from snaps to the start, to and as_of to the end.
+- Every parameter is optional; each description states its default. A filter such as account, category, type or class, or a condition in filter on any column (["maturity_date = 2027", "value <= -500"]), picks the view that has that column, and the result header says which view ran.
+- One call usually answers the question: a result is one row per entity, category or type for the whole window unless you ask for monthly, quarterly or annual buckets. Answer from it; do not call again to confirm. A total comes from a summary, types or projection view, or from the total line a filtered result ends with, never from adding up the lines of a calendar or transactions view yourself.
+- Each result starts with a header line that states the resolved window or as-of date, the currency and the row count; check it matches the question. A result holds as many rows as fit max_chars; when more exist, the last line says how many, the max_chars that holds them all, and how to narrow.
+- filter: a list of conditions, each "column op value" on a column the view prints, op one of = != < <= > >= in, not in, contains, not contains, is empty, is not empty; a row is kept when all hold. The value needs no quotes; a year or a month is the whole period; money leaving is negative.
+- Money columns are plain decimals in the currency named in the header (value_CHF). A blank cell means no value, not zero. In line views money leaving is negative; sort "-value" puts the largest amounts first whatever their sign.
+- In returns, gains, exposure and yield, read the quality column: it names the reason for every n/a or gap. Returns are not additive across views; gains are.
+- A holding before a source's first snapshot is missing history, not zero; snapshots shows where data begins.
+
+This endpoint redacts amounts, quantities, account numbers and the names taken off statements (merchants, payers, narratives), and shows a name a person typed about an account as a pseudonym such as manual-1, or as its account number, redacted; source ids, other account names, holdings and their names, categories and shares stay visible.
