@@ -578,18 +578,3 @@ func TestCheckReadsEachAccountsActiveSnapshot(t *testing.T) {
 		t.Fatalf("check rows %+v", rows)
 	}
 }
-
-// TestMigration0140DDLIsRerunnable holds the migration to the replay bar:
-// a second application changes no answer.
-func TestMigration0140DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	seedPartialRuns(t, db, ctx)
-	const accounts = `SELECT * FROM report_accounts_multi(9223372036854775807)`
-	const history = `SELECT * FROM hist_active_pos() UNION ALL BY NAME SELECT * FROM hist_active_cash()`
-	before, beforeHistory := rowsDigest(t, ctx, db, accounts), rowsDigest(t, ctx, db, history)
-	rerunMigrationDDL(t, db, ctx, "0140_snapshots_per_account.sql")
-	if rowsDigest(t, ctx, db, accounts) != before || rowsDigest(t, ctx, db, history) != beforeHistory || before == "" {
-		t.Error("the replay changed an answer")
-	}
-}

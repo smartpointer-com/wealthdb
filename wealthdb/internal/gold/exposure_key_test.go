@@ -39,5 +39,4 @@ func TestExposureKeyBindsTheCallersColumn(t *testing.T) {
 		t.Errorf("the alias resolves in a WHERE clause %d time(s), a select list %d, a join %d, qualified %d; want 1 each",
 			where, selected, joined, aliased)
 	}
-	rerunMigrationDDL(t, db, ctx, "0142_exposure_key_columns.sql")
 }

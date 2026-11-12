@@ -6,51 +6,8 @@ import (
 	"errors"
 	"regexp"
 	"slices"
-	"strings"
 	"testing"
 )
-
-// rerunMigrationDDL re-executes everything in a migration ahead of its
-// schema_meta stamp — that INSERT would collide on the version primary
-// key, and schema.go's Migrate contract puts it last. It pins that an
-// additive migration's DDL can be replayed against an already-migrated
-// database. A replayed macro or view goes back to that migration's body,
-// so each later migration that re-issues one replays after it, in
-// version order, as Migrate applied them: a rerun test asserts against
-// the schema at head. A later migration that drops a replayed macro or
-// view replays after it too, so the dropped object is gone again. The
-// re-issues and drops are read off the embedded migrations, so a new
-// one replays with no edit here. A later migration that only undoes a
-// seed (0111 deletes rows 0069 seeds) re-issues nothing: the seed's
-// rerun test replays it itself.
-func rerunMigrationDDL(t *testing.T, db *sql.DB, ctx context.Context, file string) {
-	t.Helper()
-	ms, err := listMigrations()
-	if err != nil {
-		t.Fatalf("list migrations: %v", err)
-	}
-	i := slices.IndexFunc(ms, func(m migration) bool { return m.name == file })
-	if i < 0 {
-		t.Fatalf("no embedded migration %s", file)
-	}
-	replayed := map[string]bool{}
-	for j, m := range ms[i:] {
-		ddl, _, found := strings.Cut(m.body, "INSERT INTO schema_meta")
-		if !found {
-			t.Fatalf("migration %s has no schema_meta stamp", m.name)
-		}
-		issued := reissuedNames(ddl)
-		if j > 0 && !slices.ContainsFunc(issued, func(n string) bool { return replayed[n] }) {
-			continue
-		}
-		if _, err := db.ExecContext(ctx, ddl); err != nil {
-			t.Errorf("re-applying %s DDL: %v", m.name, err)
-		}
-		for _, n := range issued {
-			replayed[n] = true
-		}
-	}
-}
 
 // mustExec runs one statement and fails the test on an error.
 func mustExec(t *testing.T, db *sql.DB, q string, args ...any) {
@@ -113,23 +70,6 @@ func rowsDigest(t *testing.T, ctx context.Context, q querier, sqlText string) st
 		t.Fatalf("%s: %v", sqlText, err)
 	}
 	return s.String
-}
-
-// reissueRE matches a macro or a view a migration's DDL creates,
-// replaces or drops, and sqlCommentRE a comment, which names none.
-var (
-	reissueRE    = regexp.MustCompile(`(?i)\b(?:CREATE\s+OR\s+REPLACE\s+(?:MACRO|VIEW)|DROP\s+(?:MACRO\s+TABLE|MACRO|VIEW)\s+IF\s+EXISTS)\s+(\w+)`)
-	sqlCommentRE = regexp.MustCompile(`--[^\n]*`)
-)
-
-// reissuedNames are the macros and views ddl creates, replaces or
-// drops, lower case.
-func reissuedNames(ddl string) []string {
-	var out []string
-	for _, m := range reissueRE.FindAllStringSubmatch(sqlCommentRE.ReplaceAllString(ddl, ""), -1) {
-		out = append(out, strings.ToLower(m[1]))
-	}
-	return out
 }
 
 // openAtVersion opens an in-memory gold database migrated through
@@ -246,9 +186,9 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 }
 
-// TestMultiStatementExecRunsEachOnce pins the driver behaviour
-// Migrate's replay contract rests on: one Exec of several statements
-// runs each of them exactly once.
+// TestMultiStatementExecRunsEachOnce pins the driver behaviour Migrate
+// rests on: one Exec of several statements runs each of them exactly
+// once.
 func TestMultiStatementExecRunsEachOnce(t *testing.T) {
 	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)
@@ -363,42 +303,6 @@ func TestTransactionEnrichmentColumns(t *testing.T) {
 			t.Errorf("transactions.%s is_nullable = %q, want YES", col, nullable)
 		}
 	}
-}
-
-// TestMigration0038DDLIsRerunnable proves the IF NOT EXISTS on 0038's
-// ALTERs is load-bearing rather than decorative: a bare ADD COLUMN
-// would raise "column already exists" when the body is replayed.
-// Re-executing the migration's DDL against an already-migrated DB must
-// stay clean.
-func TestMigration0038DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	rerunMigrationDDL(t, db, ctx, "0038_transactions_enrichment_columns.sql")
-}
-
-// TestMigration0039DDLIsRerunnable holds 0039 to the same bar: it drops and
-// re-creates web_transactions around the macro swap, so the DROP must be
-// IF EXISTS and the CREATEs OR REPLACE for a replay to be harmless. 0158
-// drops the view again after it.
-func TestMigration0039DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	rerunMigrationDDL(t, db, ctx, "0039_report_transactions_account_kind.sql")
-	assertTransactionsMacroAfterReplay(t, db, ctx)
-}
-
-// assertTransactionsMacroAfterReplay checks the schema at head after a
-// replay of a migration that swaps the transaction macros around
-// web_transactions: the macro still exposes account_kind, and nothing
-// names the view 0158 drops.
-func assertTransactionsMacroAfterReplay(t *testing.T, db *sql.DB, ctx context.Context) {
-	t.Helper()
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(account_kind) FROM report_transactions_multi(0, 9223372036854775807)`).Scan(&n); err != nil {
-		t.Fatalf("report_transactions_multi.account_kind: %v", err)
-	}
-	assertNothingNames(t, db, ctx, "web_transactions")
 }
 
 // TestCheckSchemaKnown: a database a later build has migrated past this
@@ -540,12 +444,4 @@ func TestMigration0124DropsOverRows(t *testing.T) {
 	if symbol != "VTI" || vehicle != "etf" {
 		t.Errorf("rows after the drop = %s/%s, want VTI/etf", symbol, vehicle)
 	}
-}
-
-// TestMigration0124DDLIsRerunnable holds the drops to the replay bar.
-func TestMigration0124DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	rerunMigrationDDL(t, db, ctx, "0124_drop_unread_reports.sql")
-	assertGone0124(t, db, ctx)
 }

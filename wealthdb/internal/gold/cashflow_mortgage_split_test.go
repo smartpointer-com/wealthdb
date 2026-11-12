@@ -640,15 +640,11 @@ func TestAMortgageSeenIntradayStandsThroughALaterRunThatDay(t *testing.T) {
 	}
 }
 
-// TestMigration0143DDLIsRerunnable holds the mortgage's end to the
-// replay bar. Replaying 0093, 0096 or 0143 puts an older end rule back,
-// so the rerun replays every later re-issue after it, as Migrate would.
-// 0144 re-issues cashflow_lines_base on the shared ending; its replay is
-// held here, on a mortgage book.
-// The monthly mortgage, reported at 02:00 in a run of its own, has no
-// company, while the feed at 03:00 runs two cadences past it: 0143's rule
-// reads it as repaid, the shared ending as standing, after each replay.
-func TestMigration0143DDLIsRerunnable(t *testing.T) {
+// TestAMortgageInARunOfItsOwnStands: the monthly mortgage, reported at
+// 02:00 in a run of its own, has no company, while the feed at 03:00
+// runs two cadences past it. The shared ending reads the mortgage as
+// standing, so its open instalment splits as interest.
+func TestAMortgageInARunOfItsOwnStands(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
@@ -657,16 +653,8 @@ func TestMigration0143DDLIsRerunnable(t *testing.T) {
 	seedMortgagePayment(t, db, ctx, "Q-OPEN", 195, -1500, "MORT")
 
 	want := map[string]float64{"mortgage_interest": -1500}
-	for _, file := range []string{
-		"0144_account_end_cadence.sql",
-		"0143_mortgage_end_cadence.sql",
-		"0096_cashflow_mortgage_drawdown_leaf.sql",
-		"0093_cashflow_mortgage_split_fixes.sql",
-	} {
-		rerunMigrationDDL(t, db, ctx, file)
-		if got := mortgageShares(t, db, ctx)["Q-OPEN"]; !maps.Equal(got, want) {
-			t.Errorf("after replaying %s the open instalment splits as %v, want %v", file, got, want)
-		}
+	if got := mortgageShares(t, db, ctx)["Q-OPEN"]; !maps.Equal(got, want) {
+		t.Errorf("the open instalment splits as %v, want %v", got, want)
 	}
 }
 

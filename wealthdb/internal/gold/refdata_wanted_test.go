@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"maps"
 	"os"
 	"slices"
@@ -157,12 +156,11 @@ func TestRefdataWantedPinned(t *testing.T) {
 	}
 }
 
-// A gold the exposure migrations have not reached yet (a read-only open
-// of an older file) yields the held funds and securities with nothing
-// known.
+// A gold below the schema the wanted list reads (a read-only open of an
+// older file) yields the held funds and securities with nothing known.
 func TestRefdataWantedBeforeMigration(t *testing.T) {
 	t.Parallel()
-	db, ctx := openAtVersion(t, 124)
+	db, ctx := openAtVersion(t, wantedSchema-1)
 	if _, err := db.ExecContext(ctx, `
 	    INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, first_seen_at, last_seen_at)
 	        VALUES ('test-src', 'S', 'public_equity', 'stock', 'S', 0, 0);
@@ -780,115 +778,6 @@ func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 		if !slices.Equal(f.Wants, want.wants) || !maps.EqualFunc(f.Facts, want.facts, slices.Equal) {
 			t.Errorf("%s wants %v, facts %v; want %v, %v", ref, f.Wants, f.Facts, want.wants, want.facts)
 		}
-	}
-}
-
-// A gold the fact tables have not reached yet (a read-only open of an
-// older file) lists the facts its funds and stocks want with no day, the
-// dividend calendar among them.
-func TestRefdataWantedBeforeTheFactTables(t *testing.T) {
-	t.Parallel()
-	db, ctx := openAtVersion(t, 133)
-	if _, err := db.ExecContext(ctx, `
-	    INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, first_seen_at, last_seen_at)
-	        VALUES ('test-src', 'S', 'public_equity', 'stock', 'S', 0, 0), ('test-src', 'B', 'fixed_income', 'etf', 'B', 0, 0);
-	    INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
-	        asset_class, vehicle, currency, market_value) VALUES
-	        ('test-src', 86400, 'A', 'S', 'S', 'public_equity', 'stock', 'USD', 1),
-	        ('test-src', 86400, 'A', 'B', 'B', 'fixed_income', 'etf', 'USD', 1)`); err != nil {
-		t.Fatal(err)
-	}
-	w, err := RefdataWanted(ctx, db, time.Unix(86400*10, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(w.Funds) != 1 || strings.Join(w.Funds[0].Wants, ",") !=
-		"risk_metrics,characteristics,line_durations,dividend_calendar" || len(w.Funds[0].Facts) != 0 {
-		t.Errorf("funds = %+v", w.Funds)
-	}
-	if len(w.Securities) != 1 || strings.Join(w.Securities[0].Missing, ",") !=
-		"sector,country,market_cap,earnings,dividends,financials" || len(w.Securities[0].Periods) != 0 ||
-		strings.Join(w.Securities[0].Wants, ",") != "dividend_calendar" || w.Securities[0].Calendar != nil {
-		t.Errorf("securities = %+v", w.Securities)
-	}
-}
-
-// A gold before the dividend calendar (migration 0147) wants every held
-// fund's and stock's calendar, and holds no day of any. A stock is a
-// depositary receipt as the yield's lag reads one: a lookup that types it
-// so, or GLEIF tying it to its issuer's other ISINs, makes it one; a name
-// that says so under an ISIN of a country other than the US does not.
-// A listed REIT, of
-// class real estate with an ISIN, wants its calendar too; one a broker
-// names by a symbol alone, and a bond, want none.
-func TestRefdataWantedBeforeTheCalendar(t *testing.T) {
-	t.Parallel()
-	db, ctx := openAtVersion(t, 146)
-	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
-	for _, q := range []string{
-		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, name,
-		 currency, first_seen_at, last_seen_at) VALUES
-		 ('test-src', 'QETF', 'public_equity', 'etf', NULL, 'QETF', NULL, 'USD', 0, 0),
-		 ('test-src', 'QREC', 'public_equity', 'stock', 'US0000000281', 'QREC', NULL, 'USD', 0, 0),
-		 ('test-src', 'QBON', 'fixed_income', 'bond', 'US0000000282', NULL, NULL, 'USD', 0, 0),
-		 ('test-src', 'QRET', 'real_estate', 'stock', 'US0000000283', 'QRET', NULL, 'USD', 0, 0),
-		 ('test-src', 'QRES', 'real_estate', 'stock', NULL, 'QRES', NULL, 'USD', 0, 0),
-		 ('test-src', 'QGLE', 'public_equity', 'stock', 'US0000000284', 'QGLE', 'Qorvant Holdings', 'USD', 0, 0),
-		 ('test-src', 'QDEW', 'public_equity', 'stock', 'DE0000000285', NULL, 'Qorvant AG ADR', 'EUR', 0, 0)`,
-		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
-		 asset_class, vehicle, currency, market_value) VALUES
-		 ('test-src', ?, 'A', 'QETF', 'QETF', 'public_equity', 'etf', 'USD', 1),
-		 ('test-src', ?, 'A', 'QREC', 'QREC', 'public_equity', 'stock', 'USD', 1),
-		 ('test-src', ?, 'A', 'QBON', 'QBON', 'fixed_income', 'bond', 'USD', 1),
-		 ('test-src', ?, 'A', 'QRET', 'QRET', 'real_estate', 'stock', 'USD', 1),
-		 ('test-src', ?, 'A', 'QRES', 'QRES', 'real_estate', 'stock', 'USD', 1),
-		 ('test-src', ?, 'A', 'QGLE', 'QGLE', 'public_equity', 'stock', 'USD', 1),
-		 ('test-src', ?, 'A', 'QDEW', 'QDEW', 'public_equity', 'stock', 'EUR', 1)`,
-		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, isin, security_type)
-		 VALUES ('refdata', 'isin:US0000000281', ?, 'openfigi', 'US0000000281', 'Depositary Receipt')`,
-		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
-		 VALUES ('refdata', 'isin:US0000000284', 'issuer_isins', ?, 'gleif', 'NL0000000286')`,
-	} {
-		if _, err := db.ExecContext(ctx, q, slices.Repeat([]any{day}, strings.Count(q, "?"))...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	// The gold stands at migration 146. The situs step reads columns a
-	// later migration adds, so the whole pass does not run here; the
-	// wanted list reads only what the steps up to the receipts write.
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback() //nolint:errcheck — no-op after Commit
-	steps := exposureSteps(ctx, tx)
-	upTo := slices.IndexFunc(steps, func(s step) bool { return s.name == "receipts" })
-	if upTo < 0 {
-		t.Fatal("the exposure pass has no receipts step")
-	}
-	if err := runSteps("exposure pass", steps[:upTo+1]); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(w.Funds) != 1 || !slices.Contains(w.Funds[0].Wants, "dividend_calendar") || len(w.Funds[0].Facts) != 0 {
-		t.Errorf("funds = %+v", w.Funds)
-	}
-	got := map[string]string{}
-	for _, s := range w.Securities {
-		got[s.Key] = fmt.Sprint(s.Receipt, s.Wants, s.Calendar)
-	}
-	want := map[string]string{"isin:US0000000281": "true [dividend_calendar] <nil>",
-		"isin:US0000000282": "false [] <nil>", "isin:US0000000283": "false [dividend_calendar] <nil>",
-		"symbol:QRES": "false [] <nil>", "isin:US0000000284": "true [dividend_calendar] <nil>",
-		"isin:DE0000000285": "false [dividend_calendar] <nil>"}
-	if !maps.Equal(got, want) {
-		t.Errorf("securities = %v, want %v", got, want)
 	}
 }
 

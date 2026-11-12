@@ -74,27 +74,23 @@ func TestWebIncomeViewShape(t *testing.T) {
 	}
 }
 
-// TestMigration0072DDLIsRerunnable holds the serving view to the replay
-// bar, and confirms it still answers afterwards.
-func TestMigration0072DDLIsRerunnable(t *testing.T) {
+// TestWebIncomeAnswersWithEveryColumn: after a materialize, web_income
+// holds rows and projects every column its dashboard reads.
+func TestWebIncomeAnswersWithEveryColumn(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
-
-	rerunMigrationDDL(t, db, ctx, "0072_web_income.sql")
 	if _, err := MaterializeServingTables(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_income`).Scan(&n); err != nil {
-		t.Fatalf("web_income after re-run: %v", err)
+		t.Fatalf("web_income: %v", err)
 	}
 	if n == 0 {
-		t.Error("web_income is empty after a re-run")
+		t.Error("web_income is empty")
 	}
-	// Replayed forward, the view is the head's: 0114 adds GBP, and
-	// 0132 the tax wrapper and the serving table it reads.
 	assertMacroProjects(t, db, ctx, "web_income",
 		"occurred_at", "silver_source_id", "account_external_id", "display_name",
 		"account_label", "account_kind", "tax_wrapper", "payer_name", "income_primary",

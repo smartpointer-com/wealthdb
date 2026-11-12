@@ -244,16 +244,17 @@ func TestCheckCountsAHandoverOnce(t *testing.T) {
 	}
 }
 
-func TestMigration0118DDLIsRerunnable(t *testing.T) {
+// TestLotPassFillsTheLedgerOnce: a FIFO fill writes the fixture's two
+// lots, and a second pass over the same inputs changes nothing.
+func TestLotPassFillsTheLedgerOnce(t *testing.T) {
 	t.Parallel()
 	db, ctx := lotFixture(t, tradesSeed)
 	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
-	rerunMigrationDDL(t, db, ctx, "0118_lot_engine.sql")
 	if n := queryFloat(t, db, `SELECT count(*) FROM lots`); n != 2 {
-		t.Errorf("a replay must keep the ledger: %v lots", n)
+		t.Errorf("the ledger holds %v lots, want 2", n)
 	}
 	if !rebuild(t, db, ctx, fillCfg(lots.FIFO), false).Unchanged {
-		t.Error("a replay changes no input")
+		t.Error("a second pass over the same inputs changed them")
 	}
 }
 

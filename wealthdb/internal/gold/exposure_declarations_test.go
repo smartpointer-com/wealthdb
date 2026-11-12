@@ -215,18 +215,20 @@ func TestExposureDeclarationLeavesTheRest(t *testing.T) {
 	}
 }
 
-func TestMigration0128DDLIsRerunnable(t *testing.T) {
+// TestExposureDeclarationsAfterASync: after a sync of the fixture's rows,
+// QPRV's rest of the world reads its declared part, and PE1 reads as
+// opaque and undeclared.
+func TestExposureDeclarationsAfterASync(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	rerunMigrationDDL(t, db, ctx, "0128_exposure_declarations.sql")
 	if _, err := SyncExposure(ctx, db, exposureFixtureRows()); err != nil {
 		t.Fatal(err)
 	}
 	if v := leafValue(t, db, ctx, `iid = 'QPRV' AND region = 'other'`); math.Abs(v-30) > 1e-6 {
-		t.Errorf("after replay: QPRV's rest of the world = %v", v)
+		t.Errorf("QPRV's rest of the world = %v", v)
 	}
 	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,undeclared" {
-		t.Errorf("after replay: PE1 flags = %q", f)
+		t.Errorf("PE1 flags = %q", f)
 	}
 }
 
@@ -484,23 +486,25 @@ func TestExposureParsedDeclarationParts(t *testing.T) {
 	}
 }
 
-func TestMigration0164DDLIsRerunnable(t *testing.T) {
+// TestAParsedReportBesideALedgerDeclaration: a parsed report and a
+// ledger declaration of one fund both stay, each with its origin, and
+// before the parsed date the fund reads the undated record.
+func TestAParsedReportBesideALedgerDeclaration(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	parseReport(t, db, ctx, exDay(7, 1), `{"country":{"FR":100}}`)
 	stampDeclarations(t, db, ctx, declaration(3, "PE1", nil, split{"country", []string{"CH"}, []float64{100}}))
-	rerunMigrationDDL(t, db, ctx, "0164_parsed_declarations.sql")
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM exposure_reports`).Scan(&n); err != nil || n != 1 {
-		t.Errorf("after replay: %d parsed reports (%v), want the one kept", n, err)
+		t.Errorf("%d parsed reports (%v), want the one kept", n, err)
 	}
 	var origins string
 	if err := db.QueryRowContext(ctx, `SELECT string_agg(origin, ',' ORDER BY line_no) FROM exposure_declarations
 	    WHERE instrument_external_id = 'PE1'`).Scan(&origins); err != nil || origins != "parsed,ledger" {
-		t.Errorf("after replay: origins %q (%v), want each kept", origins, err)
+		t.Errorf("origins %q (%v), want each kept", origins, err)
 	}
 	if got := leafText(t, db, ctx, "string_agg(DISTINCT country, ',')", `iid = 'PE1'`); got != "CH" {
-		t.Errorf("after replay: PE1 reads %q before the parsed date, want the undated record", got)
+		t.Errorf("PE1 reads %q before the parsed date, want the undated record", got)
 	}
 }
 

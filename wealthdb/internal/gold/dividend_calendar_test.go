@@ -14,7 +14,6 @@ import (
 
 // Migration 0147 seeds the built-in settlement cycles, which a sync of
 // the config's yield rows replaces with the config's markets over them.
-// Replaying it adds nothing.
 func TestTheSettlementCyclesSeedTheBuiltIns(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -35,10 +34,6 @@ func TestTheSettlementCyclesSeedTheBuiltIns(t *testing.T) {
 	}
 	if got, want := text(), builtin(canonical.BuiltinSettlementCycles()); !slices.Equal(got, want) {
 		t.Errorf("seeded cycles:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-	rerunMigrationDDL(t, db, ctx, "0147_dividend_calendar.sql")
-	if n := countRows(t, db, ctx, "yield_settlement_cycles"); n != len(canonical.BuiltinSettlementCycles()) {
-		t.Errorf("cycles after a replay = %d", n)
 	}
 	rows := []canonical.SettlementCycle{{Market: "HK", Days: 2, Origin: canonical.OriginConfig},
 		{Market: "US", Days: 1, Origin: canonical.OriginBuiltin}}

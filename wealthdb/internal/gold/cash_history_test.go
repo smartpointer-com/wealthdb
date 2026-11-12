@@ -248,21 +248,14 @@ func TestHoldingsLinesCarryCashByCurrency(t *testing.T) {
 	}
 }
 
-// TestMigration0171DDLIsRerunnable: a replay keeps what the table holds,
-// and every view on it still answers.
-func TestMigration0171DDLIsRerunnable(t *testing.T) {
+// TestCashHistoryViewsAnswer: the fixture materializes cash history, and
+// every view on it answers.
+func TestCashHistoryViewsAnswer(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCashHistoryFixture(t, db, ctx)
-	before := countRows(t, db, ctx, "serving_cash_history")
-	if before == 0 {
+	if countRows(t, db, ctx, "serving_cash_history") == 0 {
 		t.Fatal("the fixture materialized no cash history")
-	}
-
-	rerunMigrationDDL(t, db, ctx, "0171_cash_history_by_currency.sql")
-
-	if after := countRows(t, db, ctx, "serving_cash_history"); after != before {
-		t.Errorf("serving_cash_history holds %d rows after a replay, %d before", after, before)
 	}
 	for _, v := range []string{"holdings_lines_history", "web_positions_history", "web_currencies_history",
 		"web_sources_history", "web_asset_classes_history"} {

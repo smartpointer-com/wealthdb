@@ -177,22 +177,20 @@ func TestMultiReportsMatchTheSingleCurrencyOnes(t *testing.T) {
 	}
 }
 
-// TestMigration0114DDLIsRerunnable holds the helper and the re-issued
-// macros and views to the replay bar, and confirms each still answers.
-func TestMigration0114DDLIsRerunnable(t *testing.T) {
+// TestFxReportingObjectsAnswer: the helper and the reporting macros and
+// views each answer over the fixture.
+func TestFxReportingObjectsAnswer(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportingFixture(t, db, ctx)
-
-	rerunMigrationDDL(t, db, ctx, "0114_reporting_currencies_gbp.sql")
 
 	for _, q := range []string{
 		"fx_reporting_legs", "fx_reporting_bridges", "web_sources_latest",
 		"report_sources_history_multi()", "report_transactions_multi(0, 9223372036854775807)",
 	} {
 		var n int
-		if err := db.QueryRow("SELECT COUNT(*) FROM " + q).Scan(&n); err != nil {
-			t.Errorf("%s after re-run: %v", q, err)
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+q).Scan(&n); err != nil {
+			t.Errorf("%s: %v", q, err)
 		}
 	}
 }

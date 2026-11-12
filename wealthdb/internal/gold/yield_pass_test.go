@@ -451,11 +451,11 @@ func TestSyncExposureWritesYieldRecords(t *testing.T) {
 	}
 }
 
-// Migration 0135 replays over a gold that holds its tables filled: the
-// derived rows and the ledger's stay, and its seeds add nothing to a
-// convention table a load has stamped. A fresh gold reads the built-in
-// conventions and cycles before any load.
-func TestMigration0135DDLIsRerunnable(t *testing.T) {
+// TestYieldTermsTables: a fresh gold reads the built-in conventions and
+// cycles before any load. A sync of one configured convention leaves it
+// alone in its table, the terms tables keep their rows, and the terms
+// read the declared rating.
+func TestYieldTermsTables(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	var conv []string
@@ -490,16 +490,14 @@ func TestMigration0135DDLIsRerunnable(t *testing.T) {
 		`INSERT INTO yield_declared_ratings (line_no, silver_source_id, instrument_external_id, rating)
 		 VALUES (1, 's', 'i', 'AA')`)
 
-	rerunMigrationDDL(t, db, ctx, "0135_yield_terms.sql")
-
 	for table, want := range map[string]int{"instrument_terms": 1, "account_rates": 1, "yield_declared_ratings": 1,
 		"yield_conventions": 1} {
 		if got := countRows(t, db, ctx, table); got != want {
-			t.Errorf("%s holds %d rows after a replay, want %d", table, got, want)
+			t.Errorf("%s holds %d rows, want %d", table, got, want)
 		}
 	}
 	if got := scanStrings(t, db, `SELECT rating FROM instrument_terms_at(0)`); !slices.Equal(got, []string{"AA"}) {
-		t.Errorf("terms after a replay: %v", got)
+		t.Errorf("terms: %v", got)
 	}
 }
 

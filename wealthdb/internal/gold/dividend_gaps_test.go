@@ -282,25 +282,3 @@ func TestGapOf(t *testing.T) {
 		}
 	}
 }
-
-// Migration 0148 replays over a gold that holds learned gaps: its table
-// keeps its rows. The share and its two dividends are invented.
-func TestMigration0148DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	execEach(t, db, `INSERT INTO dividend_calendar (silver_source_id, ref, provider, event_id, as_of, kind, ex_day,
-	    record_day, pay_day, currency) VALUES
-	    ('ref', 'isin:US0000000510', 'issuer', 'a', 0, 'dividend', NULL, '2025-11-03', '2025-12-01', 'USD'),
-	    ('ref', 'isin:US0000000510', 'issuer', 'b', 0, 'dividend', NULL, '2026-02-02', '2026-03-02', 'USD')`)
-	rebuildGaps(t, db)
-	before := countRows(t, db, ctx, "dividend_gaps")
-	if before == 0 {
-		t.Fatal("no gap learned")
-	}
-	for range 2 {
-		rerunMigrationDDL(t, db, ctx, "0148_dividend_gaps.sql")
-	}
-	if after := countRows(t, db, ctx, "dividend_gaps"); after != before {
-		t.Errorf("rows %d, before %d", after, before)
-	}
-}

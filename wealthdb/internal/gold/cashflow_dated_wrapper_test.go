@@ -63,9 +63,7 @@ func TestADatedWrapperMovesTheBoundaryOnItsDay(t *testing.T) {
 			t.Errorf("%s: %d nodes for %d transactions (%v): a span join fanned out", when, nodes, txns, err)
 		}
 	}
-	check("at head")
-	rerunMigrationDDL(t, db, ctx, "0162_dated_wrapper_override.sql")
-	check("after replaying 0162")
+	check("dated")
 
 	// Without a history row the account has one span: the current wrapper
 	// throughout, as before the migration.

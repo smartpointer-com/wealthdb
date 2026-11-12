@@ -74,79 +74,48 @@ func assertSpendCategoriesMatchGoTable(t *testing.T, db *sql.DB, ctx context.Con
 	}
 }
 
-// TestMigration0040DDLIsRerunnable proves the CREATE TABLE IF NOT
-// EXISTS and the INSERT OR REPLACE seed both survive a replay — a bare
-// INSERT would collide on spend_detailed — and that the re-run neither
-// duplicates nor drops rows.
-func TestMigration0040DDLIsRerunnable(t *testing.T) {
+// TestSpendOverlayAnswers: each overlay table answers, and so does the
+// spending base.
+func TestSpendOverlayAnswers(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0040_spend_taxonomy.sql")
-
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM spend_categories`).Scan(&n); err != nil {
-		t.Fatalf("count spend_categories: %v", err)
-	}
-	if n != len(canonical.SpendCategories) {
-		t.Errorf("spend_categories = %d rows after re-run, want %d", n, len(canonical.SpendCategories))
-	}
-}
-
-// TestMigration0041DDLIsRerunnable holds the overlay migration to the
-// same bar, and confirms the macro still answers afterwards (CREATE OR
-// REPLACE MACRO must not have been left in a half-replaced state).
-func TestMigration0041DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0041_spend_categorizations.sql")
-
 	for _, tbl := range []string{
 		"spend_txn_enrichment", "spend_merchant_categories", "spend_account_scope",
 	} {
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+tbl).Scan(&n); err != nil {
-			t.Errorf("table %s after re-run: %v", tbl, err)
+			t.Errorf("table %s: %v", tbl, err)
 		}
 	}
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM spending_lines_base(0, 9223372036854775807)`).Scan(&n); err != nil {
-		t.Errorf("spending_lines_base after re-run: %v", err)
+		t.Errorf("spending_lines_base: %v", err)
 	}
 }
 
-// TestMigration0044DDLIsRerunnable holds the matcher-pool re-issue to
-// the same bar, and confirms the macro still answers afterwards.
-func TestMigration0044DDLIsRerunnable(t *testing.T) {
+// TestSpendMatcherPoolAnswers: the matcher pool answers over every
+// account.
+func TestSpendMatcherPoolAnswers(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0044_spend_matcher_pool_all_accounts.sql")
-
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM spend_matcher_pool(0, 9223372036854775807)`).Scan(&n); err != nil {
-		t.Errorf("spend_matcher_pool after re-run: %v", err)
+		t.Errorf("spend_matcher_pool: %v", err)
 	}
 }
 
-// TestMigration0045DDLIsRerunnable holds the investment migration to
-// the same bar: the INSERT OR REPLACE must not collide on the seeded
-// row, the re-issued base must still answer, and — the point of the
-// migration — a row resolving to `investment` must be out of it while
-// the backlog stays in.
-func TestMigration0045DDLIsRerunnable(t *testing.T) {
+// TestInvestmentIsNotSpend: the dimension holds `investment` once, a row
+// resolving to it is out of the spending base, and the backlog stays
+// in.
+func TestInvestmentIsNotSpend(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0045_spend_investment.sql")
-
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM spend_categories WHERE spend_detailed = 'investment'`).Scan(&n); err != nil || n != 1 {
-		t.Errorf("investment rows after re-run = %d (%v), want 1", n, err)
+		t.Errorf("investment rows = %d (%v), want 1", n, err)
 	}
 	seedSpendingFixture(t, db, ctx)
 	got := macroTxnIDs(t, db, ctx, "spending_lines_base", 0, 5000)
@@ -158,21 +127,16 @@ func TestMigration0045DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// TestMigration0046DDLIsRerunnable holds the card_spend migration to
-// the same bar: the INSERT OR REPLACE must not collide on the seeded
-// row, and — the point of the value — a row resolving to `card_spend`
-// is IN the base, as its own primary, while the two excluded deltas
-// still are not.
-func TestMigration0046DDLIsRerunnable(t *testing.T) {
+// TestCardSpendIsItsOwnPrimary: the dimension holds `card_spend` once,
+// and a row resolving to it is in the spending base as its own primary,
+// while the two excluded deltas still are not.
+func TestCardSpendIsItsOwnPrimary(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0046_spend_card_spend.sql")
-
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM spend_categories WHERE spend_detailed = 'card_spend'`).Scan(&n); err != nil || n != 1 {
-		t.Errorf("card_spend rows after re-run = %d (%v), want 1", n, err)
+		t.Errorf("card_spend rows = %d (%v), want 1", n, err)
 	}
 	seedSpendingFixture(t, db, ctx)
 	got := macroTxnIDs(t, db, ctx, "spending_lines_base", 0, 5000)
@@ -195,25 +159,20 @@ func TestMigration0046DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// TestMigration0047DDLIsRerunnable holds the gift migration to the
-// same bar: the INSERT OR REPLACE must not collide on the seeded row,
-// and — the point of the value — a row resolving to `gift` is IN the
-// base, as its own primary, while the two excluded deltas still are
-// not. The base admits it by construction (the migration does not
-// re-issue it; the exclusion list names `internal_transfer` and
-// `investment` alone), and the assertion is live rather than
-// structural: the same fixture and the same macro drop the two
-// excluded rows in this very query.
-func TestMigration0047DDLIsRerunnable(t *testing.T) {
+// TestAGiftIsItsOwnPrimary: the dimension holds `gift` once, and a row
+// resolving to it is in the spending base as its own primary, while the
+// two excluded deltas still are not. The exclusion list names
+// `internal_transfer` and `investment` alone, so the base admits a gift
+// by construction. The assertion is live rather than structural: the same
+// fixture and the same macro drop the two excluded rows in this very
+// query.
+func TestAGiftIsItsOwnPrimary(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0047_spend_gift.sql")
-
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM spend_categories WHERE spend_detailed = 'gift'`).Scan(&n); err != nil || n != 1 {
-		t.Errorf("gift rows after re-run = %d (%v), want 1", n, err)
+		t.Errorf("gift rows = %d (%v), want 1", n, err)
 	}
 	seedSpendingFixture(t, db, ctx)
 	got := macroTxnIDs(t, db, ctx, "spending_lines_base", 0, 5000)
@@ -236,18 +195,14 @@ func TestMigration0047DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// TestMigration0048DDLIsRerunnable holds the merchant-column re-issue
-// to the same bar, and pins its point on this fixture, whose store
-// names the grocery signature and carries a delta verdict on the
-// transfer's: a gift whose signature the store names, a row the STORE
-// resolved to an own-account move, and a grocery purchase — the first
-// two blank, the third named, whichever scope answered.
-func TestMigration0048DDLIsRerunnable(t *testing.T) {
+// TestADeltaLineCarriesNoMerchant: on this fixture the store names the
+// grocery signature and carries a delta verdict on the transfer's. A gift
+// whose signature the store names and a row the STORE resolved to an
+// own-account move read blank; a grocery purchase reads its name,
+// whichever scope answered.
+func TestADeltaLineCarriesNoMerchant(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0048_spend_delta_no_merchant.sql")
-
 	seedSpendingFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
@@ -259,8 +214,7 @@ func TestMigration0048DDLIsRerunnable(t *testing.T) {
 		"T-GIFT":        {"", "gift"},
 		"T-XFER-MERCH":  {"", "internal_transfer"},
 		"T-BY-MERCHANT": {"Corner Market", "FOOD_AND_DRINK_GROCERIES"},
-		// Replayed forward, the card bill shows the issuer its rule
-		// labels it with, as migration 0052 publishes.
+		// The card bill shows the issuer its rule labels it with.
 		"T-CARD-BILL": {"Example Card Issuer", "card_spend"},
 	}
 	for id, w := range want {
@@ -276,16 +230,12 @@ func TestMigration0048DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// TestMigration0050DDLIsRerunnable holds the provenance re-issue to the
-// same bar and pins what it resolves: a line the merchant store placed
-// reads 'model', which no tier writes to the overlay, while every line
-// the pass placed keeps the provenance it was stamped with.
-func TestMigration0050DDLIsRerunnable(t *testing.T) {
+// TestAStorePlacedLineReadsModel: a line the merchant store placed reads
+// 'model', which no tier writes to the overlay, while every line the pass
+// placed keeps the provenance it was stamped with.
+func TestAStorePlacedLineReadsModel(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0050_spend_model_provenance.sql")
-
 	seedSpendingFixture(t, db, ctx)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
@@ -320,17 +270,12 @@ func TestMigration0050DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// TestMigration0052DDLIsRerunnable holds the issuer re-issue to the
-// same bar — the ADD COLUMN must survive a replay, and the macro must
-// still answer — and pins what it publishes: a card bill shows the
-// issuer the rule labelled it with, while every other delta line still
-// shows nothing and a vendored line still shows the store's name.
-func TestMigration0052DDLIsRerunnable(t *testing.T) {
+// TestACardBillShowsItsIssuer: a card bill shows the issuer the rule
+// labelled it with, while every other delta line still shows nothing and
+// a vendored line still shows the store's name.
+func TestACardBillShowsItsIssuer(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0052_spend_card_bill_issuer.sql")
-
 	seedSpendingFixture(t, db, ctx)
 	// A store name for the card bill's signature and the gift's: on a
 	// delta line neither is published, whatever the store holds.
@@ -365,15 +310,13 @@ func TestMigration0052DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// TestMigration0055DDLIsRerunnable holds the scope-projection re-issue to
-// the replay bar. 0055 re-issues two macros, so a replay that dropped one
-// would leave the enrichment pass with no population to read.
-func TestMigration0055DDLIsRerunnable(t *testing.T) {
+// TestSpendPopulationProjectsTheScopeColumns: the scoped accounts and the
+// enrichment population answer, and the population projects the columns
+// a rule scope narrows by.
+func TestSpendPopulationProjectsTheScopeColumns(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
-
-	rerunMigrationDDL(t, db, ctx, "0055_spend_rule_scope.sql")
 
 	for _, q := range []string{
 		"SELECT COUNT(*) FROM spend_scoped_accounts()",
@@ -381,12 +324,12 @@ func TestMigration0055DDLIsRerunnable(t *testing.T) {
 	} {
 		var n int
 		if err := db.QueryRowContext(ctx, q).Scan(&n); err != nil {
-			t.Errorf("%s after re-run: %v", q, err)
+			t.Errorf("%s: %v", q, err)
 		}
 	}
 
-	// The population projects the columns a scoped rule narrows by; a
-	// re-issue that dropped one would fail the rule tier, not the query.
+	// A column the population drops would fail the rule tier, not the
+	// query.
 	rows, err := db.QueryContext(ctx,
 		"SELECT * FROM spend_enrichment_population(0, 9999999999) LIMIT 0")
 	if err != nil {
@@ -409,37 +352,13 @@ func TestMigration0055DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// TestMigration0056DDLIsRerunnable holds the extension-category seed to the
-// replay bar. Its INSERT is OR REPLACE for exactly this reason, so a second
-// application must neither fail nor duplicate the row.
-func TestMigration0056DDLIsRerunnable(t *testing.T) {
+// TestAMerchantFallsBackToTheSignature: a line no store row covers falls
+// back to its own signature, a line the store named still reads the
+// store, a delta still reads its label or nothing, and an empty signature
+// renders as nothing rather than as an empty name.
+func TestAMerchantFallsBackToTheSignature(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0056_spend_digital_services.sql")
-
-	var n int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM spend_categories WHERE spend_detailed = ?`,
-		canonical.SpendDetailedDigitalServices).Scan(&n); err != nil {
-		t.Fatalf("count the seeded row: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("got %d rows for the extension category after a re-run, want 1", n)
-	}
-}
-
-// TestMigration0054DDLIsRerunnable holds the signature-fallback
-// re-issue to the same bar and pins what it publishes: a line no store
-// row covers falls back to its own signature, a line the store named
-// still reads the store, a delta still reads its label or nothing, and
-// an empty signature renders as nothing rather than as an empty name.
-func TestMigration0054DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0054_spend_merchant_signature_fallback.sql")
-
 	seedSpendingFixture(t, db, ctx)
 	// A provider-placed line, which the model tier never sees, and a
 	// line whose signature came out empty.
@@ -841,15 +760,12 @@ func TestSpendPopulationLayering(t *testing.T) {
 	}
 }
 
-// TestMigration0057DDLIsRerunnable holds the issuer-view migration to the
-// replay bar: the ADD COLUMN must be IF NOT EXISTS, and the macro re-issue
-// must keep every refinement made since 0042 — a re-issue replaces the
-// whole body, so a carried-forward clause dropped here is a silent
-// regression in what every spending report reads.
-func TestMigration0057DDLIsRerunnable(t *testing.T) {
+// TestProviderSpendColumns: the enrichment overlay holds
+// provider_spend_detailed once, and spend_txn_categories projects the two
+// provider columns beside merchant, category and provenance.
+func TestProviderSpendColumns(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	rerunMigrationDDL(t, db, ctx, "0057_spend_provider_view.sql")
 
 	var n int
 	if err := db.QueryRowContext(ctx, `
@@ -864,7 +780,7 @@ func TestMigration0057DDLIsRerunnable(t *testing.T) {
 
 	rows, err := db.QueryContext(ctx, "SELECT * FROM spend_txn_categories() LIMIT 0")
 	if err != nil {
-		t.Fatalf("macro after re-run: %v", err)
+		t.Fatalf("spend_txn_categories: %v", err)
 	}
 	defer rows.Close()
 	cols, err := rows.Columns()
@@ -875,11 +791,11 @@ func TestMigration0057DDLIsRerunnable(t *testing.T) {
 	for _, c := range cols {
 		have[c] = true
 	}
-	// The two new columns, and the three refinements 0042 did not have.
+	// The two provider columns, and the four the reports read.
 	for _, c := range []string{"provider_spend_detailed", "provider_spend_primary",
 		"merchant_name", "spend_detailed", "spend_primary", "provenance"} {
 		if !have[c] {
-			t.Errorf("spend_txn_categories() lost %q in the re-issue", c)
+			t.Errorf("spend_txn_categories() lacks %q", c)
 		}
 	}
 }
@@ -975,21 +891,19 @@ func assertSpendCategoryLabelsMatchGoTable(t *testing.T, db *sql.DB, ctx context
 	}
 }
 
-// TestMigration0058DDLIsRerunnable holds the label seed to the replay
-// bar: the ALTERs are IF NOT EXISTS and the UPDATE is idempotent, so a
-// second application neither fails nor changes a label.
-func TestMigration0058DDLIsRerunnable(t *testing.T) {
+// TestTheATMFeesLabel: the dimension labels a seeded value by its
+// display label.
+func TestTheATMFeesLabel(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	rerunMigrationDDL(t, db, ctx, "0058_spend_category_labels.sql")
 	var label string
 	if err := db.QueryRowContext(ctx,
 		`SELECT label FROM spend_categories WHERE spend_detailed = 'BANK_FEES_ATM_FEES'`).
 		Scan(&label); err != nil {
-		t.Fatalf("read label after re-run: %v", err)
+		t.Fatalf("read label: %v", err)
 	}
 	if label != "ATM fees" {
-		t.Errorf("label = %q after a re-run, want %q", label, "ATM fees")
+		t.Errorf("label = %q, want %q", label, "ATM fees")
 	}
 }
 
@@ -1051,31 +965,14 @@ func assertSpendCategoryCatchAllMatchesGoTable(t *testing.T, db *sql.DB, ctx con
 	}
 }
 
-// TestMigration0069DDLIsRerunnable holds the income seed to the replay
-// bar and, in doing so, pins what that migration decides about every
-// row: its family. A value seeded before 0069 is spending's, a value
-// seeded by it is income's, and the three deltas both families read are
-// 'both'. And a replay neither duplicates a row nor changes a family.
-//
-// 0111 deletes five of the rows 0069 seeds and widens the catch-all
-// rule to mark income's catch-all, INCOME_OTHER. A replay of 0069 alone
-// brings the five back and re-runs the narrower rule, which unmarks
-// INCOME_OTHER, so 0111 is replayed after it, as Migrate would
-// (gold.Migrate's REPLAY note). The assertions read what the two leave
-// together: the rows and families of the current dimension, and
-// income's one catch-all.
-//
-// What it does NOT pin is the NULL guard on the blanket family stamp:
-// this migration re-asserts its own rows a few statements later, so
-// removing the guard leaves every assertion here green. The guard is
-// for rows it does not re-assert, and
-// TestMigration0069LeavesALaterFamilyStampAlone is what holds it.
-func TestMigration0069DDLIsRerunnable(t *testing.T) {
+// TestSpendCategoryFamilies: every row of the dimension is in the Go
+// table, and each row's family is the one it is told apart by. A value of
+// spending is spending's, a value of income is income's, and the three
+// deltas both families read are 'both'. Income has one catch-all,
+// INCOME_OTHER.
+func TestSpendCategoryFamilies(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-
-	rerunMigrationDDL(t, db, ctx, "0069_income_taxonomy.sql")
-	rerunMigrationDDL(t, db, ctx, "0111_spend_taxonomy_pfc_v2.sql")
 
 	current := map[string]bool{}
 	for _, c := range canonical.SpendCategories {
@@ -1094,14 +991,14 @@ func TestMigration0069DDLIsRerunnable(t *testing.T) {
 		}
 		n++
 		if !current[det] {
-			t.Errorf("%s survived the replay; the Go table does not hold it", det)
+			t.Errorf("%s is in the dimension; the Go table does not hold it", det)
 		}
 	}
 	if err := all.Err(); err != nil {
 		t.Fatalf("iterate spend_categories: %v", err)
 	}
 	if n != len(canonical.SpendCategories) {
-		t.Errorf("spend_categories = %d rows after re-run, want %d", n, len(canonical.SpendCategories))
+		t.Errorf("spend_categories = %d rows, want %d", n, len(canonical.SpendCategories))
 	}
 
 	for _, tc := range []struct{ detailed, family, label string }{
@@ -1118,14 +1015,14 @@ func TestMigration0069DDLIsRerunnable(t *testing.T) {
 		if err := db.QueryRowContext(ctx,
 			`SELECT family, label FROM spend_categories WHERE spend_detailed = ?`,
 			tc.detailed).Scan(&family, &label); err != nil {
-			t.Errorf("read %s after re-run: %v", tc.detailed, err)
+			t.Errorf("read %s: %v", tc.detailed, err)
 			continue
 		}
 		if family != tc.family {
-			t.Errorf("%s family = %q after a re-run, want %q", tc.detailed, family, tc.family)
+			t.Errorf("%s family = %q, want %q", tc.detailed, family, tc.family)
 		}
 		if label != tc.label {
-			t.Errorf("%s label = %q after a re-run, want %q", tc.detailed, label, tc.label)
+			t.Errorf("%s label = %q, want %q", tc.detailed, label, tc.label)
 		}
 	}
 
@@ -1151,72 +1048,8 @@ func TestMigration0069DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// TestMigration0069LeavesALaterFamilyStampAlone pins the one thing in
-// 0069 nothing else can reach: the `WHERE family IS NULL` guard on the
-// blanket 'spending' stamp.
-//
-// The guard is idle for the rows 0069 seeds itself — the INSERTs below
-// it re-assert their family in the same script — so every other
-// assertion about this migration stays green without it. What it
-// protects is a row a LATER migration seeds into a family of its own,
-// which 0069 knows nothing about and cannot restore. A replay against a
-// database holding one is exactly what the rerun tests do, and an
-// unguarded stamp would demote it to spending silently.
-//
-// The stand-in row is synthetic and local to this database: the point is
-// the stamp, not the value.
-func TestMigration0069LeavesALaterFamilyStampAlone(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-
-	const later = "INCOME_EXAMPLE_LATER_VALUE"
-	if _, err := db.ExecContext(ctx, `
-INSERT INTO spend_categories
-    (spend_primary, spend_detailed, description, label, primary_label, catch_all, family)
-VALUES ('INCOME', ?, 'A value a later migration seeds', 'Example later value', 'Income', FALSE, 'income')`,
-		later); err != nil {
-		t.Fatalf("seed a later value: %v", err)
-	}
-
-	rerunMigrationDDL(t, db, ctx, "0069_income_taxonomy.sql")
-
-	var family string
-	if err := db.QueryRowContext(ctx,
-		`SELECT family FROM spend_categories WHERE spend_detailed = ?`, later).Scan(&family); err != nil {
-		t.Fatalf("read %s after re-run: %v", later, err)
-	}
-	if family != "income" {
-		t.Errorf("%s family = %q after a 0069 replay, want %q: the blanket stamp must skip a row that already has one",
-			later, family, "income")
-	}
-}
-
-// TestMigration0111DDLIsRerunnable holds the move to version 2 of
-// Plaid's taxonomy to the replay bar, and pins that a replay changes
-// nothing: the seed is OR REPLACE, the renames find nothing left to
-// rename, the DELETE finds nothing left to delete, and the recompute is
-// a function of each row's own spelling. The whole dimension still
-// matches the Go table afterwards — rows, labels and catch-alls — and
-// the re-issued node macro still places a salary under earnings.
-func TestMigration0111DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	seedResolutionFixture(t, db, ctx)
-
-	rerunMigrationDDL(t, db, ctx, "0111_spend_taxonomy_pfc_v2.sql")
-
-	assertSpendCategoriesMatchGoTable(t, db, ctx)
-	assertSpendCategoryLabelsMatchGoTable(t, db, ctx)
-	assertSpendCategoryCatchAllMatchesGoTable(t, db, ctx)
-	lines := []line{{id: "R111-SALARY", account: "CASH", kind: "deposit", amount: 100,
-		income: "INCOME_SALARY", want: "operating_in.earnings.INCOME_SALARY",
-		why: "the replayed macro names the version 2 values"}}
-	check(t, seedLines(t, db, ctx, lines), lines)
-}
-
 // TestMigration0111MovesEveryStoredVerdictToItsSuccessor pins what 0111
-// does to a database that still stores the retired spellings, which a
-// replay cannot show: at the current version none are left to move. The
+// does to a database that still stores the retired spellings. The
 // database is built at version 110, every retired spelling is stored in
 // each column that holds an income verdict — the payer store, the
 // overlay's verdict and the provider's own filing — and Migrate carries
@@ -1370,8 +1203,6 @@ func TestMigration0111MovesEveryStoredVerdictToItsSuccessor(t *testing.T) {
 		t.Fatalf("migrate past version 110: %v", err)
 	}
 	verify("after the migration")
-	rerunMigrationDDL(t, db, ctx, "0111_spend_taxonomy_pfc_v2.sql")
-	verify("after a replay")
 }
 
 // TestSpendKindFloorPlacesWhatNothingElseCould pins the kind floor's

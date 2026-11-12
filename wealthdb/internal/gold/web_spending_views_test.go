@@ -270,19 +270,17 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
 	}
 }
 
-// TestMigration0043DDLIsRerunnable holds the web views to the replay
-// bar and confirms both still answer afterwards.
-func TestMigration0043DDLIsRerunnable(t *testing.T) {
+// TestWebSpendingViewsAnswer: both spending views answer over the
+// fixture.
+func TestWebSpendingViewsAnswer(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 
-	rerunMigrationDDL(t, db, ctx, "0043_web_spending_views.sql")
-
 	for _, v := range []string{"web_spending", "web_card_balances_history"} {
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+v).Scan(&n); err != nil {
-			t.Errorf("%s after re-run: %v", v, err)
+			t.Errorf("%s: %v", v, err)
 		}
 	}
 }
@@ -400,19 +398,16 @@ func TestWebViewsRenderEpochsInUTC(t *testing.T) {
 	}
 }
 
-// TestMigration0049DDLIsRerunnable holds the re-issued serving views to
-// the replay bar and confirms each still answers.
-func TestMigration0049DDLIsRerunnable(t *testing.T) {
+// TestWebViewsAnswer: every serving view answers over the fixture.
+func TestWebViewsAnswer(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 
-	rerunMigrationDDL(t, db, ctx, "0049_web_view_utc_timestamps.sql")
-
 	for _, v := range webViews {
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+v.view).Scan(&n); err != nil {
-			t.Errorf("%s after re-run: %v", v.view, err)
+			t.Errorf("%s: %v", v.view, err)
 		}
 	}
 }

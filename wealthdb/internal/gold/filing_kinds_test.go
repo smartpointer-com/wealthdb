@@ -305,14 +305,11 @@ func TestAFloatingRateFundThroughTheReports(t *testing.T) {
 	}
 }
 
-// The migration's macros replay over themselves and still read a
-// filing.
-func TestMigration0141DDLIsRerunnable(t *testing.T) {
+// TestFilingKindsReadAFiling: after a sync, fund_filing_kinds reads the
+// coupon kind a filing states for its line.
+func TestFilingKindsReadAFiling(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	for range 2 {
-		rerunMigrationDDL(t, db, ctx, "0141_filing_line_kinds.sql")
-	}
 	addComposition(t, db, "ref", "symbol:QFRF", 0, "sec_nport", "filing", "",
 		filingLine{key: "isin:US00000000F1", name: "EXAMPLE NOTE", assetType: "DBT", weight: 100, kind: "Floating"})
 	if _, err := SyncExposure(ctx, db, canonical.ExposureRows{

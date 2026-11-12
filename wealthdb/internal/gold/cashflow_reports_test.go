@@ -480,18 +480,15 @@ func TestTransactionsCarriesTheCashflowTrio(t *testing.T) {
 	}
 }
 
-// TestMigration0082DDLIsRerunnable holds the reports to the replay bar.
-func TestMigration0082DDLIsRerunnable(t *testing.T) {
+// TestCashflowSummaryReadsOneTotalRow: over the fixture with no balance
+// spine, the summary from the epoch reads one total row.
+func TestCashflowSummaryReadsOneTotalRow(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
-	// 0082 puts report_cashflow_summary back at its own 14-column shape,
-	// and CashflowSummary below scans the current one positionally: the
-	// rerun replays forward to it, as Migrate would.
-	rerunMigrationDDL(t, db, ctx, "0082_report_cashflow.sql")
 	rows, err := CashflowSummary(ctx, db, 0, 3500000, "USD", "total")
 	if err != nil || len(rows) != 1 {
-		t.Fatalf("the replayed summary returned %d rows: %v", len(rows), err)
+		t.Fatalf("the summary returned %d rows: %v", len(rows), err)
 	}
 }
 
@@ -763,35 +760,19 @@ func TestTheMemoSeparatesRevaluationFromError(t *testing.T) {
 	}
 }
 
-// TestMigration0083DDLIsRerunnable holds the memo to the replay bar.
-func TestMigration0083DDLIsRerunnable(t *testing.T) {
+// TestCashflowSummaryCarriesTheMeasuredFlow: over a balance spine, the
+// summary reads one total row, and its memo carries the measured flow.
+func TestCashflowSummaryCarriesTheMeasuredFlow(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedBalanceSpine(t, db, ctx, 10000, 12150)
 	seedReportFixture(t, db, ctx)
-	// 0083 puts both macros back at their pre-0086 shape, and
-	// CashflowSummary scans the current one positionally: the rerun
-	// replays forward to it, as Migrate would.
-	rerunMigrationDDL(t, db, ctx, "0083_cashflow_reconciliation.sql")
-	if rows, err := CashflowSummary(ctx, db, 172800, 3500000, "USD", "total"); err != nil || len(rows) != 1 {
-		t.Fatalf("the replayed summary returned %d rows: %v", len(rows), err)
-	}
-}
-
-// TestMigration0086DDLIsRerunnable holds the re-issued summary and memo
-// to the replay bar: two OR REPLACE macros and nothing else.
-func TestMigration0086DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	seedBalanceSpine(t, db, ctx, 10000, 12150)
-	seedReportFixture(t, db, ctx)
-	rerunMigrationDDL(t, db, ctx, "0086_cashflow_operating_columns.sql")
 	rows, err := CashflowSummary(ctx, db, 172800, 3500000, "USD", "total")
 	if err != nil || len(rows) != 1 {
-		t.Fatalf("the replayed summary returned %d rows: %v", len(rows), err)
+		t.Fatalf("the summary returned %d rows: %v", len(rows), err)
 	}
 	if rows[0].CashFlowMeasured == nil {
-		t.Error("the replayed summary lost the memo's flow term")
+		t.Error("the summary lost the memo's flow term")
 	}
 }
 
@@ -868,23 +849,21 @@ func TestWebCashflowIsLineGrainAndReadyToDraw(t *testing.T) {
 	}
 }
 
-// TestMigration0084DDLIsRerunnable holds the serving view to the replay
-// bar: one OR REPLACE VIEW. Replayed forward, it reads the serving table
-// that migration 0132 adds and the materialize pass fills.
-func TestMigration0084DDLIsRerunnable(t *testing.T) {
+// TestWebCashflowAnswers: the serving view reads the serving table the
+// materialize pass fills.
+func TestWebCashflowAnswers(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
-	rerunMigrationDDL(t, db, ctx, "0084_web_cashflow.sql")
 	if _, err := MaterializeServingTables(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_cashflow`).Scan(&n); err != nil {
-		t.Fatalf("web_cashflow after replay: %v", err)
+		t.Fatalf("web_cashflow: %v", err)
 	}
 	if n == 0 {
-		t.Error("the replayed view answers nothing")
+		t.Error("the view answers nothing")
 	}
 }
 
@@ -1241,51 +1220,12 @@ func TestCoverageCarriesTheNickname(t *testing.T) {
 	}
 }
 
-// TestMigration0150DDLIsRerunnable: the re-issued coverage macro re-runs
-// cleanly and still carries the nickname.
-func TestMigration0150DDLIsRerunnable(t *testing.T) {
+// TestCashflowCoverageAnswersOnAnEmptyGold: the coverage report reads a
+// gold that holds no account.
+func TestCashflowCoverageAnswersOnAnEmptyGold(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	seedBalanceSpine(t, db, ctx, 10000, 10000)
-	seedReportFixture(t, db, ctx)
-	if _, err := db.ExecContext(ctx,
-		`UPDATE accounts SET nickname = 'Rainy Day Fund' WHERE account_external_id = 'CASH'`); err != nil {
-		t.Fatal(err)
-	}
-	rerunMigrationDDL(t, db, ctx, "0150_coverage_nickname.sql")
-	if n := coverageNicknames(t, db, ctx)["Rainy Day Fund"]; n != "Rainy Day Fund" {
-		t.Errorf("after the re-run the nicknamed account's row carries %q", n)
-	}
-}
-
-// TestMigration0112DDLIsRerunnable: the re-issued coverage macro re-runs
-// cleanly.
-func TestMigration0112DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	rerunMigrationDDL(t, db, ctx, "0112_coverage_stable_order.sql")
 	if _, err := CashflowCoverage(ctx, db, 0, 3500000, "total"); err != nil {
-		t.Fatalf("the replayed coverage report: %v", err)
-	}
-}
-
-// TestMigration0108DDLIsRerunnable: the re-issued coverage macro re-runs
-// cleanly.
-func TestMigration0108DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	rerunMigrationDDL(t, db, ctx, "0108_coverage_measured_without_unsigned.sql")
-	if _, err := CashflowCoverage(ctx, db, 0, 3500000, "total"); err != nil {
-		t.Fatalf("the replayed coverage report: %v", err)
-	}
-}
-
-// TestMigration0105DDLIsRerunnable: the coverage macro re-issues cleanly.
-func TestMigration0105DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	rerunMigrationDDL(t, db, ctx, "0105_coverage_in_kind_and_ended.sql")
-	if _, err := CashflowCoverage(ctx, db, 0, 3500000, "total"); err != nil {
-		t.Fatalf("the replayed coverage report: %v", err)
+		t.Fatalf("the coverage report: %v", err)
 	}
 }

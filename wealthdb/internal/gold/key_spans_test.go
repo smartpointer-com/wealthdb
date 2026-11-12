@@ -158,27 +158,6 @@ func TestAMaterializerLeavesNoPin(t *testing.T) {
 	}
 }
 
-// TestMigration0145DDLIsRerunnable holds the migration to the replay bar:
-// a second application changes no ending, span or day of the history.
-// It holds 0144's endings too, which 0145 re-issues.
-func TestMigration0145DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	seedPartialRuns(t, db, ctx)
-	const answers = `
-        SELECT 'end' AS k, src, acct, NULL AS ccy, end_snap AS snap, NULL AS until FROM pos_key_ends()
-        UNION ALL SELECT 'end', src, acct, ccy, end_snap, NULL FROM cash_key_ends()
-        UNION ALL SELECT 'span', src, acct, NULL, snap, until FROM pos_key_spans()
-        UNION ALL SELECT 'span', src, acct, ccy, snap, until FROM cash_key_spans()
-        UNION ALL SELECT 'day', src, acct, NULL, snap, day FROM hist_active_pos()
-        UNION ALL SELECT 'day', src, acct, ccy, snap, day FROM hist_active_cash()`
-	before := rowsDigest(t, ctx, db, answers)
-	rerunMigrationDDL(t, db, ctx, "0145_key_observations.sql")
-	if after := rowsDigest(t, ctx, db, answers); after != before || before == "" {
-		t.Error("the replay changed an answer")
-	}
-}
-
 // planBlockwiseJoins counts the joins in a macro's query plan that test
 // their condition on every pair of rows, for want of an equality between
 // both inputs to hash on.

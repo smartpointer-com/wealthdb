@@ -64,17 +64,14 @@ func TestWebSourcesLatestMatchesTheMacro(t *testing.T) {
 	}
 }
 
-// TestMigration0113DDLIsRerunnable holds the serving view to the replay
-// bar, and confirms it still answers afterwards.
-func TestMigration0113DDLIsRerunnable(t *testing.T) {
+// TestWebSourcesLatestAnswers: the serving view answers over the fixture.
+func TestWebSourcesLatestAnswers(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
 
-	rerunMigrationDDL(t, db, ctx, "0113_web_sources_latest.sql")
-
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_sources_latest`).Scan(&n); err != nil {
-		t.Errorf("web_sources_latest after re-run: %v", err)
+		t.Errorf("web_sources_latest: %v", err)
 	}
 }

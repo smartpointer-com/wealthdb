@@ -945,28 +945,30 @@ func TestExposureLocalTickersAreNoUSSymbols(t *testing.T) {
 	}
 }
 
-func TestMigration0126DDLIsRerunnable(t *testing.T) {
+// TestExposureReportsAfterARebuild: a rebuild writes securities and
+// aliases, PE1 reads as opaque and undeclared, every report answers, and
+// the sectors read unknown, never unclassified.
+func TestExposureReportsAfterARebuild(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	rerunMigrationDDL(t, db, ctx, "0126_exposure_report.sql")
 	n, err := RebuildExposure(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n.Securities == 0 || n.Aliases == 0 {
-		t.Errorf("after replay: rebuilt %+v", n)
+		t.Errorf("rebuilt %+v", n)
 	}
 	if f := leafFlags(t, db, ctx, `iid = 'PE1'`); f != "opaque,undeclared" {
-		t.Errorf("after replay: PE1 flags = %q", f)
+		t.Errorf("PE1 flags = %q", f)
 	}
 	if rows, err := ExposureSizes(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
-		t.Errorf("sizes after replay: %d rows, %v", len(rows), err)
+		t.Errorf("sizes: %d rows, %v", len(rows), err)
 	}
 	if rows, err := ExposureCoverage(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
-		t.Errorf("coverage after replay: %d rows, %v", len(rows), err)
+		t.Errorf("coverage: %d rows, %v", len(rows), err)
 	}
 	if rows, err := ExposureCredit(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
-		t.Errorf("credit after replay: %d rows, %v", len(rows), err)
+		t.Errorf("credit: %d rows, %v", len(rows), err)
 	}
 	// Only the current views read what nothing describes as unknown.
 	sectors, err := ExposureSectors(ctx, db, exAsOf, "USD")
@@ -978,7 +980,7 @@ func TestMigration0126DDLIsRerunnable(t *testing.T) {
 		labels = append(labels, r.Sector)
 	}
 	if !slices.Contains(labels, canonical.Unknown) || slices.Contains(labels, "unclassified") {
-		t.Errorf("sectors after replay: %v, want unknown and no unclassified", labels)
+		t.Errorf("sectors: %v, want unknown and no unclassified", labels)
 	}
 }
 

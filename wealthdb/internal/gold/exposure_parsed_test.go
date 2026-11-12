@@ -195,24 +195,23 @@ func TestExposureParsedCompositionNeverReachesBack(t *testing.T) {
 	}
 }
 
-// TestMigration0167DDLIsRerunnable holds 0167 to the replay bar: a
-// replay keeps each composition's origin and bound.
-func TestMigration0167DDLIsRerunnable(t *testing.T) {
+// TestParsedCompositionsKeepOriginAndBound: each parsed composition
+// keeps its origin and its bound, and the provider compositions stay.
+func TestParsedCompositionsKeepOriginAndBound(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	seedParsedFund(t, db, ctx)
 	stampDeclarations(t, db, ctx)
-	rerunMigrationDDL(t, db, ctx, "0167_parsed_compositions.sql")
 	var got string
 	if err := db.QueryRowContext(ctx, `SELECT string_agg(origin || ':' || COALESCE(CAST(valid_until AS VARCHAR), '-'), ','
 	    ORDER BY fund_ref, as_of) FROM fund_compositions WHERE fund_ref = 'isin:XX00000000P1'`).Scan(&got); err != nil ||
 		got != "parsed:"+strconv.FormatInt(exDay(10, 1), 10)+",parsed:-" {
-		t.Errorf("after replay: %q (%v)", got, err)
+		t.Errorf("compositions %q (%v)", got, err)
 	}
 	var providers int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM fund_compositions WHERE origin = 'provider'`).
 		Scan(&providers); err != nil || providers == 0 {
-		t.Errorf("after replay: %d provider compositions (%v), want the fixture's", providers, err)
+		t.Errorf("%d provider compositions (%v), want the fixture's", providers, err)
 	}
 }
 

@@ -316,16 +316,17 @@ func TestSourcesAsOfCarriesTheObservedDate(t *testing.T) {
 	}
 }
 
-func TestMigration0122DDLIsRerunnable(t *testing.T) {
+// TestSourceObservedReadsTheWatermark: source_observed reads the
+// observed watermark silver_sources holds.
+func TestSourceObservedReadsTheWatermark(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `UPDATE silver_sources SET observed_snapshots_through = 4000`); err != nil {
 		t.Fatal(err)
 	}
-	rerunMigrationDDL(t, db, ctx, "0122_observed_through.sql")
 	var got int64
 	if err := db.QueryRowContext(ctx, `SELECT observed_snapshots_through FROM source_observed`).Scan(&got); err != nil || got != 4000 {
-		t.Errorf("after replay: %d %v", got, err)
+		t.Errorf("observed through %d %v, want 4000", got, err)
 	}
 }
 
@@ -367,7 +368,9 @@ func TestSourcesAsOfCarriesTheValuedDate(t *testing.T) {
 	}
 }
 
-func TestMigration0123DDLIsRerunnable(t *testing.T) {
+// TestSourcesAsOfReadsAPositionsMark: a source whose one position states
+// a mark older than its snapshot is valued at that mark.
+func TestSourcesAsOfReadsAPositionsMark(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	usd := "USD"
@@ -381,8 +384,7 @@ func TestMigration0123DDLIsRerunnable(t *testing.T) {
 			ValuedAt: 400, AccountExternalID: "CUST", PositionKey: "A", AssetClass: canonical.AssetClassPrivateEquity,
 			Vehicle: canonical.VehicleSPV, Currency: "USD", MarketValue: &v}})
 	})
-	rerunMigrationDDL(t, db, ctx, "0123_valued_at.sql")
 	if r, err := SourcesAsOf(ctx, db, 5000, "USD"); err != nil || len(r) != 1 || r[0].ValuedAt != 400 {
-		t.Errorf("after replay: %+v %v", r, err)
+		t.Errorf("%+v %v, want one source valued at 400", r, err)
 	}
 }

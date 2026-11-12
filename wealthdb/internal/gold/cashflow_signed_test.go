@@ -85,7 +85,5 @@ func TestASignPinnedCashLegJoinsInvesting(t *testing.T) {
 		}
 		t.Errorf("%s: no coverage row for the brokerage account", when)
 	}
-	check("at head")
-	rerunMigrationDDL(t, db, ctx, "0161_cash_signed_kinds.sql")
-	check("after replaying 0161")
+	check("the cash leg")
 }

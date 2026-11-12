@@ -114,7 +114,7 @@ type WantedSecurity struct {
 	// Receipt says gold reads the security as a depositary receipt: a
 	// lookup or GLEIF calls it one, or a name a lookup, a broker or a fund
 	// line gives it says so under a US ISIN or none (receiptKeysSQL).
-	// A gold before the exposure tables reads the name held alone.
+	// A gold below wantedSchema reads the name held alone.
 	Receipt bool `json:"receipt"`
 	// Wants are the facts the security is wanted for beyond its fields:
 	// the dividend calendar of a security held directly that pays
@@ -144,38 +144,28 @@ type heldInstrument struct {
 	open                           bool
 }
 
+// wantedSchema is the schema the whole wanted list reads: migration 0176
+// adds the last tables it reads, the benchmarks'.
+const wantedSchema = 176
+
 // RefdataWanted builds the wanted list as of now. A gold opened
-// read-only before the exposure migrations reached it has no reference
-// or exposure tables yet, one before migration 0134 no fact tables, and
-// one before migration 0147 no dividend calendar; it is read as holding
-// none, so the first fetch can run before the first load, and one
-// before migration 0176 as naming no benchmark. One before migration 0140 reads each source's newest snapshot as every account's
-// (heldInstruments).
+// read-only below wantedSchema, before a load migrated it, yields the
+// held instruments only, each source's newest snapshot read as every
+// account's, with nothing known of them. So the first fetch can run
+// before the first load.
 func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, error) {
-	held, err := heldInstruments(ctx, db, now)
+	current, err := currentSchemaVersion(ctx, db)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("wanted: schema version: %w", err)
 	}
-	migrated, err := hasTable(ctx, db, "security_aliases")
-	if err != nil {
-		return nil, err
-	}
-	// The tables of a fund's and a company's facts come with a later
-	// migration than the exposure tables.
-	withFacts, err := hasTable(ctx, db, "fund_risk")
-	if err != nil {
-		return nil, err
-	}
-	withCalendar, err := hasTable(ctx, db, "dividend_calendar")
-	if err != nil {
-		return nil, err
-	}
-	withBenchmarks, err := hasTable(ctx, db, "benchmark_funds")
+	migrated := current >= wantedSchema
+	held, err := heldInstruments(ctx, db, now, migrated)
 	if err != nil {
 		return nil, err
 	}
 	keys := keyReader{aliases: map[string]string{}}
 	maxGap := canonical.DefaultMaxGapDays
+	periods := map[string]map[string]string{}
 	if migrated {
 		if keys, err = readAliases(ctx, db); err != nil {
 			return nil, err
@@ -183,9 +173,6 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if err := db.QueryRowContext(ctx, `SELECT max_gap_days FROM exposure_settings_row()`).Scan(&maxGap); err != nil {
 			return nil, fmt.Errorf("wanted: settings: %w", err)
 		}
-	}
-	periods := map[string]map[string]string{}
-	if withFacts {
 		if periods, err = readPeriods(ctx, db, keys); err != nil {
 			return nil, err
 		}
@@ -228,9 +215,9 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 				h.symbol = sql.NullString{}
 			}
 			fillIDs(&s.ISIN, &s.CUSIP, &s.Symbol, &s.Name, &s.Currency, h)
-			// A gold before the exposure tables reads a receipt by the name
-			// held alone; one after them by the exposure pass's rule
-			// (addReceipts), which reads that name too.
+			// A gold below wantedSchema reads a receipt by the name held
+			// alone; one at it by the exposure pass's rule (addReceipts),
+			// which reads that name too.
 			s.Receipt = s.Receipt || !migrated && receiptWording.MatchString(strings.ToUpper(h.name.String))
 		}
 	}
@@ -243,10 +230,8 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if err := addProxiesAndReferences(ctx, db, funds, spans, now, keys); err != nil {
 			return nil, err
 		}
-		if withBenchmarks {
-			if err := addBenchmarkFunds(ctx, db, funds, spans, now, keys); err != nil {
-				return nil, err
-			}
+		if err := addBenchmarkFunds(ctx, db, funds, spans, now, keys); err != nil {
+			return nil, err
 		}
 		var open []string
 		for ref, f := range funds {
@@ -261,10 +246,8 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if err := addCompositionDates(ctx, db, funds, keys); err != nil {
 			return nil, err
 		}
-		if withFacts {
-			if err := addFundFacts(ctx, db, funds, keys, withCalendar, withBenchmarks); err != nil {
-				return nil, err
-			}
+		if err := addFundFacts(ctx, db, funds, keys); err != nil {
+			return nil, err
 		}
 		if err := addConstituents(ctx, db, securities, open, now, ids, periods); err != nil {
 			return nil, err
@@ -276,10 +259,8 @@ func RefdataWanted(ctx context.Context, db *sql.DB, now time.Time) (*Wanted, err
 		if err := addReceipts(ctx, db, securities); err != nil {
 			return nil, err
 		}
-		if withCalendar {
-			if err := addCalendarDays(ctx, db, securities, keys); err != nil {
-				return nil, err
-			}
+		if err := addCalendarDays(ctx, db, securities, keys); err != nil {
+			return nil, err
 		}
 	}
 	for ref, f := range funds {
@@ -370,15 +351,13 @@ func fillFromKey(key string, isin, cusip, symbol **string) {
 // still held. A position's key goes through holdingAliasJoins first, as
 // the gains reports read it, so a holding a source keys two ways is one
 // instrument. It is still held when its account's latest active snapshot
-// (pos_active_at at the open end, migration 0140) lists it and its source
-// was observed within stillHeldDays of now; a source that stopped
-// reporting ends it at its last snapshot. Before migration 0140, a
+// (pos_active_at at the open end) lists it and its source was observed
+// within stillHeldDays of now; a source that stopped reporting ends it
+// at its last snapshot. On a gold below wantedSchema (migrated false), a
 // source's newest snapshot is every account's.
-func heldInstruments(ctx context.Context, db *sql.DB, now time.Time) ([]heldInstrument, error) {
+func heldInstruments(ctx context.Context, db *sql.DB, now time.Time, migrated bool) ([]heldInstrument, error) {
 	active := `SELECT src, acct, snap FROM pos_active_at([` + latestArg + `])`
-	if perAccount, err := hasFunction(ctx, db, "pos_active_at"); err != nil {
-		return nil, fmt.Errorf("wanted: held instruments: %w", err)
-	} else if !perAccount {
+	if !migrated {
 		active = `SELECT DISTINCT silver_source_id, account_external_id, snapshot_at FROM positions
    QUALIFY snapshot_at = MAX(snapshot_at) OVER (PARTITION BY silver_source_id)`
 	}
@@ -737,21 +716,9 @@ func lastDay(days []string) string {
 // the fund read through its aliases as its compositions are. A
 // composition's day counts for line_durations where one of its lines
 // states a duration or a modified duration. A dividend calendar's days
-// are those its rows were stated on, where gold holds the table
-// (calendar), and its monthly returns' days are the filings' that state
-// them, where gold holds theirs (returns).
-func addFundFacts(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader, calendar, returns bool) error {
-	extraDays := ""
-	if calendar {
-		extraDays = `
-    UNION
-    SELECT ref, '` + wantDividendCalendar + `', as_of FROM dividend_calendar`
-	}
-	if returns {
-		extraDays += `
-    UNION
-    SELECT fund_ref, '` + wantMonthlyReturns + `', as_of FROM fund_returns`
-	}
+// are those its rows were stated on, and its monthly returns' days are
+// the filings' that state them.
+func addFundFacts(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader) error {
 	err := scanAll(ctx, db, `
 WITH f AS (
     SELECT fund_ref, '`+wantRiskMetrics+`' AS fact, as_of FROM fund_risk
@@ -761,7 +728,11 @@ WITH f AS (
       FROM fund_characteristics
     UNION
     SELECT fund_ref, '`+wantLineDurations+`', as_of FROM fund_lines
-     WHERE duration IS NOT NULL OR modified_duration IS NOT NULL`+extraDays+`)
+     WHERE duration IS NOT NULL OR modified_duration IS NOT NULL
+    UNION
+    SELECT ref, '`+wantDividendCalendar+`', as_of FROM dividend_calendar
+    UNION
+    SELECT fund_ref, '`+wantMonthlyReturns+`', as_of FROM fund_returns)
 SELECT DISTINCT `+keys.sql("fund_ref")+` AS k, fact, as_of FROM f ORDER BY 1, 2, 3`, func(rows *sql.Rows) error {
 		var ref, fact string
 		var asOf int64
@@ -1122,13 +1093,5 @@ SELECT security_key,
 func hasTable(ctx context.Context, db querier, name string) (bool, error) {
 	var n int
 	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?`, name).Scan(&n)
-	return n > 0, err
-}
-
-// hasFunction reports whether gold holds a function or macro of that
-// name.
-func hasFunction(ctx context.Context, db *sql.DB, name string) (bool, error) {
-	var n int
-	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = ?`, name).Scan(&n)
 	return n > 0, err
 }

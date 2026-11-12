@@ -22,10 +22,11 @@ import (
 
 // ErrStaleBinary is returned from Open when the binary's VCS
 // commit timestamp is older than the latest binary timestamp
-// recorded in the database's binary_versions table. The caller
-// (cmd/wealthdb) prints the wrapped message and exits non-zero —
-// the database has been written by a newer wealthdb, so the
-// current binary may misread its schema.
+// recorded in the database's binary_versions table, or when the
+// database's schema is newer than the binary's (CheckSchemaKnown).
+// The caller (cmd/wealthdb) prints the wrapped message and exits
+// non-zero — the database has been written by a newer wealthdb, so
+// the current binary may misread its schema.
 var ErrStaleBinary = errors.New("binary is older than the database's last writer")
 
 // StorageVersion is the storage format of a gold file DuckDB creates:
@@ -145,13 +146,22 @@ func open(path string, mode Mode, audit bool, options map[string]string) (*sql.D
 			return nil, fmt.Errorf("migrate gold %q: %w", path, err)
 		}
 	}
-	// Staleness check — runs on every Open (RO and RW). After
-	// migration so a brand-new DB has the binary_versions table
-	// in place; RO callers tolerate older databases that haven't
-	// yet been migrated (no table → skip).
+	// Staleness checks — both run on every Open (RO and RW), after
+	// migration so a brand-new DB has its tables in place. The first
+	// compares build stamps, which a binary built without VCS
+	// information (the engine image's) lacks; RO callers tolerate
+	// older databases that haven't yet been migrated (no table →
+	// skip). The second compares schema versions, which every binary
+	// carries: a database a later build has migrated past this one's
+	// schema has no migration path down, so it is refused in every
+	// mode. An older database passes it.
 	if err := checkBinaryNotStale(context.Background(), db, path); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if err := CheckSchemaKnown(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("gold %q: %w", path, err)
 	}
 	// RW opens record themselves on the way in, so the next RW or
 	// RO Open knows what the most-recent writer was. Best-effort:

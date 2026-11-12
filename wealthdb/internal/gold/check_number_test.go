@@ -86,40 +86,32 @@ func TestTransactionsCarriesTheCheckNumberInOrder(t *testing.T) {
 	}
 }
 
-// TestMigration0075DDLIsRerunnable replays the migration over an
-// already-migrated database, which is what gold.Migrate's REPLAY note
-// requires of every migration body.
-func TestMigration0075DDLIsRerunnable(t *testing.T) {
+// TestTransactionsKeepTheCheckNumber: report_transactions answers over
+// the fixture, and the cheque row carries its check number.
+func TestTransactionsKeepTheCheckNumber(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCheckFixture(t, db, ctx)
 
-	// 0075 puts report_transactions back at its own 28-column shape, and
-	// TransactionsBetween below scans the current one positionally: the
-	// rerun replays forward to it, as Migrate would.
-	rerunMigrationDDL(t, db, ctx, "0075_transactions_check_number.sql")
-
 	var n int
 	if err := db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM report_transactions(0, 5000, 'USD')").Scan(&n); err != nil {
-		t.Fatalf("report_transactions after the re-run: %v", err)
+		t.Fatalf("report_transactions: %v", err)
 	}
 	if n == 0 {
-		t.Error("the re-run left the macro answering nothing")
+		t.Error("the macro answers nothing")
 	}
-	// The ALTER is IF NOT EXISTS, so the replay must not have dropped
-	// the value the column already held.
 	rows, err := TransactionsBetween(ctx, db, 0, 5000, "USD", SortAscending)
 	if err != nil {
-		t.Fatalf("TransactionsBetween after the re-run: %v", err)
+		t.Fatalf("TransactionsBetween: %v", err)
 	}
 	for _, r := range rows {
 		if r.TransactionExternalID == "T-CHEQUE" {
 			if r.CheckNumber == nil || *r.CheckNumber != "9042" {
-				t.Errorf("after the re-run check_number = %v, want 9042", r.CheckNumber)
+				t.Errorf("check_number = %v, want 9042", r.CheckNumber)
 			}
 			return
 		}
 	}
-	t.Error("the cheque row vanished across the re-run")
+	t.Error("the cheque row is missing")
 }

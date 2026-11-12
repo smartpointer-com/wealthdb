@@ -165,33 +165,30 @@ func TestCashflowDeltaLabelsAreSeeded(t *testing.T) {
 	}
 }
 
-// TestMigration0078DDLIsRerunnable holds the seed and the two re-issued
-// bases to the replay bar: OR REPLACE throughout, and the catch-all
-// recompute guarded on NULL so a second application changes nothing.
-func TestMigration0078DDLIsRerunnable(t *testing.T) {
+// TestDebtRepaymentIsSeededAndNotSpend: the dimension holds
+// debt_repayment once, and the spending base charts no debt repayment.
+func TestDebtRepaymentIsSeededAndNotSpend(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCashflowTaxonomyFixture(t, db, ctx)
-	rerunMigrationDDL(t, db, ctx, "0078_cashflow_taxonomy.sql")
 
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM spend_categories WHERE spend_detailed = 'debt_repayment'`).
 		Scan(&n); err != nil {
-		t.Fatalf("count after replay: %v", err)
+		t.Fatalf("count debt_repayment: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("debt_repayment rows after replay = %d, want 1", n)
+		t.Errorf("debt_repayment rows = %d, want 1", n)
 	}
 	if _, ok := macroTxnIDs(t, db, ctx, "spending_lines_base", 0, 5000)["T-LOAN-OUT"]; ok {
-		t.Error("the replayed base charts a debt repayment")
+		t.Error("the spending base charts a debt repayment")
 	}
 }
 
-// TestMigration0079DDLIsRerunnable holds the far-account columns to the
-// replay bar: three IF NOT EXISTS ALTERs, so a second application
-// neither fails nor drops what the first wrote.
-func TestMigration0079DDLIsRerunnable(t *testing.T) {
+// TestEnrichmentHoldsTheFarClass: the enrichment overlay carries the far
+// account's class.
+func TestEnrichmentHoldsTheFarClass(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCashflowTaxonomyFixture(t, db, ctx)
@@ -200,23 +197,21 @@ func TestMigration0079DDLIsRerunnable(t *testing.T) {
          WHERE transaction_external_id = 'T-LOAN-OUT'`); err != nil {
 		t.Fatalf("seed a far class: %v", err)
 	}
-	rerunMigrationDDL(t, db, ctx, "0079_spend_far_account.sql")
 
 	var class sql.NullString
 	if err := db.QueryRowContext(ctx, `
         SELECT far_class FROM spend_txn_enrichment
          WHERE transaction_external_id = 'T-LOAN-OUT'`).Scan(&class); err != nil {
-		t.Fatalf("read far class after replay: %v", err)
+		t.Fatalf("read far class: %v", err)
 	}
 	if class.String != "mortgage" {
-		t.Errorf("far_class after replay = %q, want mortgage", class.String)
+		t.Errorf("far_class = %q, want mortgage", class.String)
 	}
 }
 
-// TestMigration0080DDLIsRerunnable holds the boundary tables to the same
-// bar: CREATE TABLE IF NOT EXISTS and an OR REPLACE macro, so a replay
-// keeps the stamped rows and the pool still reads them.
-func TestMigration0080DDLIsRerunnable(t *testing.T) {
+// TestCashflowPoolHoldsTheHouseholdSide: of two accounts, the pool holds
+// the one whose wrapper is on the household side.
+func TestCashflowPoolHoldsTheHouseholdSide(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	if _, err := db.ExecContext(ctx, `
@@ -229,15 +224,14 @@ func TestMigration0080DDLIsRerunnable(t *testing.T) {
             ('roth_ira', 'vehicle', 'retirement');`); err != nil {
 		t.Fatalf("seed the boundary: %v", err)
 	}
-	rerunMigrationDDL(t, db, ctx, "0080_cashflow_boundary.sql")
 
 	var pooled int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM cashflow_pool_accounts()`).Scan(&pooled); err != nil {
-		t.Fatalf("read the pool after replay: %v", err)
+		t.Fatalf("read the pool: %v", err)
 	}
 	if pooled != 1 {
-		t.Errorf("pool holds %d accounts after replay, want 1", pooled)
+		t.Errorf("pool holds %d accounts, want 1", pooled)
 	}
 }
 

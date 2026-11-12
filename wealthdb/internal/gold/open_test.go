@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,6 +139,75 @@ func TestOpenStampsAndReopenDoesNot(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("ReopenReadWrite recorded; calls = %d, want 1 — a re-open is the same command continuing", calls)
+	}
+}
+
+// Open refuses a database a later build has migrated past this binary's
+// schema, in every mode and with no build stamp: there is no migration
+// path down. A database below the binary's schema still opens read-only.
+func TestOpenRefusesANewerSchema(t *testing.T) {
+	t.Parallel()
+	latest, err := latestSchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamped := func(change string, args ...any) string {
+		path := filepath.Join(t.TempDir(), "gold.db")
+		db, err := OpenFresh(path)
+		if err != nil {
+			t.Fatalf("OpenFresh: %v", err)
+		}
+		if _, err := db.Exec(change, args...); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		return path
+	}
+
+	newer := stamped(`INSERT INTO schema_meta (gold_schema_version, applied_at) VALUES (?, 0)`, latest+1)
+	for _, mode := range []Mode{ModeReadWrite, ModeReadOnly} {
+		if db, err := Open(newer, mode); !errors.Is(err, ErrStaleBinary) {
+			if db != nil {
+				db.Close()
+			}
+			t.Errorf("Open(%d) of a newer schema: err = %v, want ErrStaleBinary", mode, err)
+		}
+	}
+	if db, err := OpenReadOnlyWith(newer, nil); !errors.Is(err, ErrStaleBinary) {
+		if db != nil {
+			db.Close()
+		}
+		t.Errorf("OpenReadOnlyWith of a newer schema: err = %v, want ErrStaleBinary", err)
+	}
+
+	older := stamped(`DELETE FROM schema_meta WHERE gold_schema_version = ?`, latest)
+	db, err := Open(older, ModeReadOnly)
+	if err != nil {
+		t.Fatalf("Open read-only of an older schema: %v", err)
+	}
+	db.Close()
+}
+
+// currentSchemaVersion reads a database with no schema_meta as version
+// 0, and returns any other failure to read it: a schema_meta it cannot
+// read is no version 0, which would have Migrate replay every
+// migration over it.
+func TestCurrentSchemaVersionReturnsAnUnreadableSchemaMeta(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if v, err := currentSchemaVersion(ctx, db); v != 0 || err != nil {
+		t.Errorf("no schema_meta: version %d, err %v; want 0, nil", v, err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_meta (applied_at BIGINT)`); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := currentSchemaVersion(ctx, db); err == nil {
+		t.Errorf("a schema_meta without its version column: version %d, err nil; want an error", v)
 	}
 }
 

@@ -171,10 +171,10 @@ func TestSyncYieldIsAtomic(t *testing.T) {
 	}
 }
 
-// Migration 0134 replays over a gold that holds its tables filled: the
-// fund line keeps its new columns, the reference rows and the config rows
-// stay (gold.Migrate's REPLAY note).
-func TestMigration0134DDLIsRerunnable(t *testing.T) {
+// TestYieldSyncKeepsTheReferenceRows: a sync of the built-in conventions
+// keeps the fund line's columns and the reference rows, and fills the
+// convention table.
+func TestYieldSyncKeepsTheReferenceRows(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	for _, q := range []string{
@@ -192,21 +192,19 @@ func TestMigration0134DDLIsRerunnable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rerunMigrationDDL(t, db, ctx, "0134_yield_reference.sql")
-
 	var kind string
 	var dur float64
 	if err := db.QueryRowContext(ctx, `SELECT coupon_kind, duration FROM fund_lines`).Scan(&kind, &dur); err != nil {
 		t.Fatal(err)
 	}
 	if kind != "Fixed" || dur != 5.25 {
-		t.Errorf("fund line reads %q, %v after a replay", kind, dur)
+		t.Errorf("fund line reads %q, %v", kind, dur)
 	}
 	for table, want := range map[string]int{"fund_risk": 1, "rate_observations": 1,
 		"yield_conventions":    len(canonical.BuiltinConventions()),
 		"fund_characteristics": 0, "security_period_facts": 0} {
 		if got := countRows(t, db, ctx, table); got != want {
-			t.Errorf("%s holds %d rows after a replay, want %d", table, got, want)
+			t.Errorf("%s holds %d rows, want %d", table, got, want)
 		}
 	}
 }

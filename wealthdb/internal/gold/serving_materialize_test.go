@@ -220,23 +220,14 @@ func TestWebHistoryViewsCarryTheWrapperAndClass(t *testing.T) {
 	}
 }
 
-// TestMigration0132DDLIsRerunnable holds the tables and views to the
-// replay bar: a replay keeps what the tables hold, and every view still
-// answers.
-func TestMigration0132DDLIsRerunnable(t *testing.T) {
+// TestServingViewsAnswer: every view over a serving table answers.
+func TestServingViewsAnswer(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedWebViewEpochFixture(t, db, ctx)
-	before := countRows(t, db, ctx, "serving_positions_history")
-
-	rerunMigrationDDL(t, db, ctx, "0132_web_serving_tables.sql")
-
-	if after := countRows(t, db, ctx, "serving_positions_history"); after != before {
-		t.Errorf("serving_positions_history holds %d rows after a replay, %d before", after, before)
-	}
-	for _, v := range []string{"holdings_lines_history", "holdings_lines_latest", "web_sources_latest",
-		"web_sources_history", "web_asset_classes_history", "web_vehicles_history", "web_accounts_history",
-		"web_positions_history", "web_card_balances_history", "web_income",
+	for _, v := range []string{"serving_positions_history", "holdings_lines_history", "holdings_lines_latest",
+		"web_sources_latest", "web_sources_history", "web_asset_classes_history", "web_vehicles_history",
+		"web_accounts_history", "web_positions_history", "web_card_balances_history", "web_income",
 		"web_spending", "web_cashflow"} {
 		countRows(t, db, ctx, v)
 	}
@@ -262,7 +253,7 @@ func TestWebTransactionsIsDropped(t *testing.T) {
 // web_history_calendar maps a day the history holds to itself, a day in a
 // gap or after its end to the last history day before it, and has no row
 // for a day before it; it reaches tomorrow, past a history that ended
-// earlier. It replays (migration 0166).
+// earlier.
 func TestWebHistoryCalendarReadsTheLastHistoryDay(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -292,9 +283,5 @@ func TestWebHistoryCalendarReadsTheLastHistoryDay(t *testing.T) {
 		if got := read(c.at); got != c.want {
 			t.Errorf("%s reads %q, want %q", time.Unix(c.at, 0).UTC().Format(time.DateOnly), got, c.want)
 		}
-	}
-	rerunMigrationDDL(t, db, ctx, "0166_history_calendar.sql")
-	if got := read(day(2026, 3, 20)); got != "2026-03-05" {
-		t.Errorf("after replay: %q", got)
 	}
 }

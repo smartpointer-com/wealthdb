@@ -12,7 +12,7 @@ import (
 // the tax a source withheld on the income's accounts: each negative tax
 // row, as a positive amount, in each reporting currency. A refund of
 // tax, another kind of row and an account outside the income's scope
-// stay out. Replaying migration 0146 changes neither.
+// stay out.
 func TestIncomeReceivedViews(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -79,12 +79,6 @@ func TestIncomeReceivedViews(t *testing.T) {
 	           'INCOME_SALARY' AS income_detailed, 100 AS value_usd`, day(2021, 4, 30))
 	if _, first, _ := days(); first != "2021-04-30" {
 		t.Errorf("with wages on 2021-04-30 the days start on %s", first)
-	}
-	n, first, last := days()
-	w := withheld()
-	rerunMigrationDDL(t, db, ctx, "0146_income_received_days.sql")
-	if n2, f2, l2 := days(); n2 != n || f2 != first || l2 != last || withheld() != w {
-		t.Errorf("the replay changed the views: %d %s %s %q", n2, f2, l2, withheld())
 	}
 	// With no yield report there is no today, and so no day.
 	mustExec(t, db, `DELETE FROM report_yield_positions`)

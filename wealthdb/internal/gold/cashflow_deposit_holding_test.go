@@ -62,7 +62,5 @@ func TestTheMemoSeesADepositStatedAsAHolding(t *testing.T) {
 		}
 		t.Errorf("%s: no coverage row for the savings account", when)
 	}
-	check("at head")
-	rerunMigrationDDL(t, db, ctx, "0163_memo_deposit_holdings.sql")
-	check("after replaying 0163")
+	check("the memo")
 }

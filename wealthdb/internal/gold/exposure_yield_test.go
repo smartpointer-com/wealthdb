@@ -489,27 +489,6 @@ func TestExposureYieldEdges(t *testing.T) {
 	}
 }
 
-// Migration 0137 replays over a gold whose fund lines it has read: the
-// LEI a payload states as text fills the column, once; any other reads
-// none.
-func TestMigration0137DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	for i, payload := range []string{`{"lei":"QQQQ00000000000000L1"}`, `{"lei":""}`, `{"lei":12}`, `{"l":1}`, ``} {
-		if _, err := db.ExecContext(ctx, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no,
-		    weight, payload) VALUES ('s', 'symbol:F', 0, 'holdings', ?, 1, NULLIF(?, '')::JSON)`, i+1, payload); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for range 2 {
-		rerunMigrationDDL(t, db, ctx, "0137_exposure_yield_views.sql")
-	}
-	if got := scanStrings(t, db, `SELECT COALESCE(lei, '-') FROM fund_lines ORDER BY line_no`); strings.Join(got, " ") !=
-		"QQQQ00000000000000L1 - - - -" {
-		t.Errorf("lei %v", got)
-	}
-}
-
 // The dashboard's debt, issuer and security tables are the views': in
 // every reporting currency, each dimension's buckets at an instant are
 // the CLI view's, the issuers its rows, in rank order with their shares,

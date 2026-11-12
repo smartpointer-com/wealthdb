@@ -273,25 +273,18 @@ func TestFirstHoldingsAtCountsCash(t *testing.T) {
 	}
 }
 
-// 0127, 0130, 0131 and 0133 each replay safely, and forward to the head
-// web_exposure.
-func TestMigrations0127To0133DDLAreRerunnable(t *testing.T) {
+// TestWebExposureSizesTheUnknown: over a materialized gold, web_exposure
+// holds rows of the unknown size.
+func TestWebExposureSizesTheUnknown(t *testing.T) {
 	t.Parallel()
-	for _, file := range []string{"0127_exposure_dashboard.sql", "0130_exposure_filters.sql",
-		"0131_exposure_unknown.sql", "0133_deterministic_labels.sql"} {
-		t.Run(file, func(t *testing.T) {
-			t.Parallel()
-			db, ctx := openExposureFixture(t)
-			if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
-				t.Fatal(err)
-			}
-			rerunMigrationDDL(t, db, ctx, file)
-			var n int
-			if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
-				n == 0 {
-				t.Errorf("after replay: %d sized rows, err %v", n, err)
-			}
-		})
+	db, ctx := openExposureFixture(t)
+	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
+		n == 0 {
+		t.Errorf("%d sized rows, err %v", n, err)
 	}
 }
 
@@ -382,17 +375,17 @@ func checkSecuritySlicesNarrow(t *testing.T, db *sql.DB, at int64, ccy string) {
 	}
 }
 
-// 0165 replays over a materialized gold and keeps its slices.
-func TestMigration0165DDLIsRerunnable(t *testing.T) {
+// TestWebExposureSecuritiesAnswers: over a materialized gold, the
+// securities view holds slices of a tax wrapper.
+func TestWebExposureSecuritiesAnswers(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
 		t.Fatal(err)
 	}
-	rerunMigrationDDL(t, db, ctx, "0165_exposure_securities_dashboard.sql")
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure_securities WHERE tax_wrapper = 'taxable_personal'`).
 		Scan(&n); err != nil || n == 0 {
-		t.Errorf("after replay: %d slices, err %v", n, err)
+		t.Errorf("%d slices, err %v", n, err)
 	}
 }

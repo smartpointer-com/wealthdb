@@ -731,21 +731,13 @@ func TestIncomeScopeIsItsOwn(t *testing.T) {
 	}
 }
 
-// TestMigration0073DDLIsRerunnable holds the floor-over-store re-issue
-// to the replay bar, and pins the re-issue itself.
-//
-// A re-issue replaces a whole macro body, so the risk here is not the
-// change but everything carried forward with it: the payer's four
-// steps, the delta arm, the floor's seven kinds and the four provider
-// columns all live in the body 0073 restates. The projection check and
-// the resolution table below are what would catch a clause dropped in
-// the copy.
-func TestMigration0073DDLIsRerunnable(t *testing.T) {
+// TestIncomeResolutionLattice: income_txn_categories projects every
+// column, and each fixture line resolves through the lattice: overlay,
+// then floor, then store, with the payer steps beside them.
+func TestIncomeResolutionLattice(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
-
-	rerunMigrationDDL(t, db, ctx, "0073_income_floor_over_store.sql")
 
 	assertMacroProjects(t, db, ctx, "income_txn_categories()",
 		"silver_source_id", "transaction_external_id", "payer_signature",
@@ -754,8 +746,6 @@ func TestMigration0073DDLIsRerunnable(t *testing.T) {
 		"provider_income_primary", "provider_income_label",
 		"provider_income_primary_label")
 
-	// The whole lattice, after the re-run: overlay, then floor, then
-	// store, and the payer steps untouched by the re-order.
 	for id, want := range map[string][3]string{
 		"T-DIST-PIN":   {"INCOME_INTEREST_EARNED", "manual", "Example Dividend Corp"},
 		"T-WIRE":       {"INCOME_SALARY", "model", "Blue Harbour Payroll"},
@@ -769,31 +759,25 @@ func TestMigration0073DDLIsRerunnable(t *testing.T) {
 		r := readIncomeResolution(t, db, ctx, id)
 		got := [3]string{r.detailed.String, r.provenance, r.payer.String}
 		if got != want {
-			t.Errorf("%s after the re-run = %v, want %v", id, got, want)
+			t.Errorf("%s = %v, want %v", id, got, want)
 		}
 	}
 }
 
-// TestMigration0070DDLIsRerunnable holds the income overlay to the
-// replay bar: the CREATEs are IF NOT EXISTS, the macros are OR REPLACE,
-// and a re-run leaves every macro answering. It also pins the `reward`
-// move, which is the one thing in this migration that changes an
-// existing answer — a re-issue replaces a whole macro body, so a
-// carried-forward clause dropped here would be a silent regression in
-// what every spending report reads.
-func TestMigration0070DDLIsRerunnable(t *testing.T) {
+// TestIncomeOverlayAnswersAndMovesTheReward: every income table and
+// macro answers, the populations project what their readers read, and a
+// rewards credit is income, not spend.
+func TestIncomeOverlayAnswersAndMovesTheReward(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeFixture(t, db, ctx)
-
-	rerunMigrationDDL(t, db, ctx, "0070_income_overlay.sql")
 
 	for _, tbl := range []string{
 		"income_txn_enrichment", "income_payer_categories", "income_account_scope",
 	} {
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+tbl).Scan(&n); err != nil {
-			t.Errorf("table %s after re-run: %v", tbl, err)
+			t.Errorf("table %s: %v", tbl, err)
 		}
 	}
 	for _, macro := range []string{
@@ -806,21 +790,17 @@ func TestMigration0070DDLIsRerunnable(t *testing.T) {
 	} {
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+macro).Scan(&n); err != nil {
-			t.Errorf("%s after re-run: %v", macro, err)
+			t.Errorf("%s: %v", macro, err)
 		}
 	}
 
-	// The spending population still projects everything 0055 gave it. A
-	// re-issue replaces a whole body, so a column dropped here would not
-	// fail this migration — it would fail the rule tier, or a report,
-	// later and elsewhere.
+	// A column the spending population drops would fail the rule tier,
+	// or a report, later and elsewhere.
 	assertMacroProjects(t, db, ctx, "spend_enrichment_population(0, 5000)",
 		"silver_source_id", "transaction_external_id", "occurred_at",
 		"account_external_id", "account_kind", "display_name", "nickname",
 		"account_category", "portfolio_external_id", "kind", "currency",
 		"net_amount", "description", "counterparty", "provider_category")
-	// ...and the income macros project what the milestones above them
-	// will read.
 	assertMacroProjects(t, db, ctx, "income_enrichment_population(0, 5000)",
 		"silver_source_id", "transaction_external_id", "occurred_at",
 		"account_external_id", "account_kind", "display_name", "nickname",
@@ -849,23 +829,21 @@ func TestMigration0070DDLIsRerunnable(t *testing.T) {
 		"T-REFUND":  "a refund still offsets spend",
 	} {
 		if _, ok := got[id]; !ok {
-			t.Errorf("%s left the spending population after the re-issue (%s)", id, why)
+			t.Errorf("%s is not in the spending population (%s)", id, why)
 		}
 	}
 	for id, why := range map[string]string{
-		"T-REWARD":  "a rewards credit is income now",
+		"T-REWARD":  "a rewards credit is income",
 		"T-INT-POS": "credited interest was never spend",
 	} {
 		if _, ok := got[id]; ok {
-			t.Errorf("%s is in the spending population after the re-issue (%s)", id, why)
+			t.Errorf("%s is in the spending population (%s)", id, why)
 		}
 	}
 }
 
-// assertMacroProjects names every column a macro must project. The
-// pattern is TestMigration0055DDLIsRerunnable's: a macro is re-issued
-// whole, so what a re-issue silently drops is a COLUMN, and the query
-// that stops working is somewhere else entirely.
+// assertMacroProjects names every column a macro must project. A body
+// that silently drops a COLUMN breaks a query somewhere else entirely.
 func assertMacroProjects(t *testing.T, db *sql.DB, ctx context.Context, macro string, want ...string) {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, "SELECT * FROM "+macro+" LIMIT 0")

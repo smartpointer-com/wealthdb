@@ -46,25 +46,6 @@ func TestMaterializeInputsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestMigration0155DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	ctx := context.Background()
-	want := MaterializeKey{LoadKey: "0/0", ConfigHash: "abc", EngineVersion: "test", AsOf: 100}
-	if err := WriteMaterializeKey(ctx, db, WebMaterializeScope, want); err != nil {
-		t.Fatal(err)
-	}
-	rerunMigrationDDL(t, db, ctx, "0155_materialize_inputs.sql")
-	got, ok, err := ReadMaterializeKey(ctx, db, WebMaterializeScope)
-	if err != nil || !ok || got != want {
-		t.Fatalf("after a replay %+v ok=%v err=%v, want %+v", got, ok, err, want)
-	}
-}
-
 func TestLoadKeyMovesWithEachStampedTable(t *testing.T) {
 	t.Parallel()
 	db, err := Open(":memory:", ModeReadWrite)

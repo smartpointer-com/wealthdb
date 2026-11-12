@@ -372,9 +372,9 @@ func TestFeeGroupsAreTheSQLLabels(t *testing.T) {
 	}
 }
 
-// TestMigration0177DDLIsRerunnable: a replay of 0177 keeps what report_bridge
-// and serving_marks hold, and its views still answer.
-func TestMigration0177DDLIsRerunnable(t *testing.T) {
+// TestHistoricalAnalysisViewsAnswer: the fixture materializes the bridge
+// and the marks, and every view on them answers.
+func TestHistoricalAnalysisViewsAnswer(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedFeeHousehold(t, db, ctx)
@@ -383,13 +383,8 @@ func TestMigration0177DDLIsRerunnable(t *testing.T) {
 	if _, err := MaterializeReturns(ctx, db, MaterializeParams{ToEpoch: p.ToEpoch, ComputedAt: 1}); err != nil {
 		t.Fatalf("MaterializeReturns: %v", err)
 	}
-	bridge, marks := countRows(t, db, ctx, "report_bridge"), countRows(t, db, ctx, "serving_marks")
-	if bridge == 0 || marks == 0 {
+	if bridge, marks := countRows(t, db, ctx, "report_bridge"), countRows(t, db, ctx, "serving_marks"); bridge == 0 || marks == 0 {
 		t.Fatalf("the fixture materialized %d bridge and %d marks rows", bridge, marks)
-	}
-	rerunMigrationDDL(t, db, ctx, "0177_historical_analysis.sql")
-	if b, m := countRows(t, db, ctx, "report_bridge"), countRows(t, db, ctx, "serving_marks"); b != bridge || m != marks {
-		t.Errorf("after a replay: %d bridge rows (%d before), %d marks rows (%d before)", b, bridge, m, marks)
 	}
 	for _, v := range []string{"web_bridge", "web_fees", "web_marks"} {
 		countRows(t, db, ctx, v)

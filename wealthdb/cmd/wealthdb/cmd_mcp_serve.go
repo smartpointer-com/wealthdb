@@ -369,11 +369,6 @@ func (s *mcpServer) withGold(ctx context.Context, cfg *config.Config, fn func(*s
 		return fmt.Errorf("could not open the database: %w", err)
 	}
 	defer db.Close()
-	// Open's own staleness check needs a build stamp the image binary
-	// does not carry; the schema version does not.
-	if err := gold.CheckSchemaKnown(ctx, db); errors.Is(err, gold.ErrStaleBinary) {
-		return errGoldStale
-	}
 	return fn(db)
 }
 

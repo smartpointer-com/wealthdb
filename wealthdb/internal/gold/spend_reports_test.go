@@ -1183,19 +1183,19 @@ func TestTransactionsBetweenCarriesSpendCategory(t *testing.T) {
 	}
 }
 
-// TestMigration0042DDLIsRerunnable holds the spending report migration
-// to the replay bar: it drops and re-creates web_transactions around the
-// report_transactions_multi swap, and 0158 drops the view again after it.
-func TestMigration0042DDLIsRerunnable(t *testing.T) {
+// TestSpendingReportsAnswer: report_transactions_multi exposes
+// account_kind, every spending report answers over the fixture, and so
+// does web_spending, which reads one of them.
+func TestSpendingReportsAnswer(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingReportFixture(t, db, ctx)
 
-	rerunMigrationDDL(t, db, ctx, "0042_report_spending.sql")
-	assertTransactionsMacroAfterReplay(t, db, ctx)
-	// The macros still answer, including the one the re-run replaced
-	// underneath a view that reads it.
 	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(account_kind) FROM report_transactions_multi(0, 9223372036854775807)`).Scan(&n); err != nil {
+		t.Fatalf("report_transactions_multi.account_kind: %v", err)
+	}
 	from, to := spendWindow()
 	for _, q := range []string{
 		`SELECT COUNT(*) FROM report_spending_summary(?, ?, 'USD', 'month')`,
@@ -1204,11 +1204,11 @@ func TestMigration0042DDLIsRerunnable(t *testing.T) {
 		`SELECT COUNT(*) FROM spending_lines_base(?, ?)`,
 	} {
 		if err := db.QueryRowContext(ctx, q, from, to).Scan(&n); err != nil {
-			t.Errorf("after re-run: %s: %v", q, err)
+			t.Errorf("%s: %v", q, err)
 		}
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM web_spending`).Scan(&n); err != nil {
-		t.Errorf("web_spending after the macro re-issue: %v", err)
+		t.Errorf("web_spending: %v", err)
 	}
 }
 

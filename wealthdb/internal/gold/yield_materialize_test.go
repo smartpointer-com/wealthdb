@@ -265,52 +265,6 @@ func TestMaterializeYieldCurveIsTheBooks(t *testing.T) {
 	}
 }
 
-// Migration 0138 replays over a materialized gold: its tables keep their
-// rows and its views their shape.
-func TestMigration0138DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx, at := seedYieldBookFX(t)
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
-		t.Fatal(err)
-	}
-	count := func() string {
-		return strings.Join(scanStrings(t, db, `SELECT (SELECT count(*) FROM report_yield_positions)::VARCHAR || ' ' ||
-		    (SELECT count(*) FROM report_yield_parts) || ' ' || (SELECT count(*) FROM web_yield_parts) || ' ' ||
-		    (SELECT count(*) FROM web_yield_holdings)`), "")
-	}
-	before := count()
-	for range 2 {
-		rerunMigrationDDL(t, db, ctx, "0138_yield_dashboard.sql")
-	}
-	if after := count(); after != before {
-		t.Errorf("rows %s, before %s", after, before)
-	}
-}
-
-// Migration 0149 replays over a materialized gold: its table keeps its
-// rows and its view its shape.
-func TestMigration0149DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx, at := seedYieldBookFX(t)
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
-		t.Fatal(err)
-	}
-	count := func() string {
-		return strings.Join(scanStrings(t, db, `SELECT (SELECT count(*) FROM report_cashflow_plan)::VARCHAR || ' ' ||
-		    (SELECT count(*) FROM web_cashflow_plan)`), "")
-	}
-	before := count()
-	if before == "0 0" {
-		t.Fatal("no plan rows materialized")
-	}
-	for range 2 {
-		rerunMigrationDDL(t, db, ctx, "0149_cashflow_plan.sql")
-	}
-	if after := count(); after != before {
-		t.Errorf("rows %s, before %s", after, before)
-	}
-}
-
 // seedPlanWage adds a wage to seedYieldBookFX's franc account inside
 // the look-back: other income the projection does not read. Invented.
 func seedPlanWage(t *testing.T, db *sql.DB) {
@@ -348,31 +302,6 @@ func TestThePlansOtherIncomeIsStoredByClassAndAccount(t *testing.T) {
 	    FROM web_cashflow_plan WHERE part = 'other_income' AND currency = 'USD' GROUP BY 1)`).Scan(&months, &lo, &hi); err != nil ||
 		months != yield.Months || math.Abs(lo-lb.OtherIncome) > 1e-6 || math.Abs(hi-lb.OtherIncome) > 1e-6 {
 		t.Errorf("%d months from %v to %v, want %v each (%v)", months, lo, hi, lb.OtherIncome, err)
-	}
-}
-
-// Migration 0169 replays over a materialized gold: the split columns
-// keep their values and the view its shape.
-func TestMigration0169DDLIsRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx, at := seedYieldBookFX(t)
-	seedPlanWage(t, db)
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
-		t.Fatal(err)
-	}
-	split := func() string {
-		return strings.Join(scanStrings(t, db, `SELECT count(*)::VARCHAR || ' ' || count(DISTINCT account_external_id)
-		    FROM web_cashflow_plan WHERE part = 'other_income'`), "")
-	}
-	before := split()
-	if strings.HasPrefix(before, "0 ") {
-		t.Fatal("no other income rows materialized")
-	}
-	for range 2 {
-		rerunMigrationDDL(t, db, ctx, "0169_cashflow_plan_income_split.sql")
-	}
-	if after := split(); after != before {
-		t.Errorf("split %s, before %s", after, before)
 	}
 }
 
@@ -578,37 +507,6 @@ func TestThePlansPoolIncomeIsTheIncomeLinesAverage(t *testing.T) {
 	// other_income stays the look-back's, the statement's figure.
 	if math.Abs(lb.OtherIncome-statement["earnings"]-statement["other_receipts"]) > 1e-6 {
 		t.Errorf("look-back other income %v, statement parts %v", lb.OtherIncome, statement)
-	}
-}
-
-// Migration 0172 replays over a materialized gold, and 0174 after it:
-// the pool and outside rows stay and the view keeps its shape.
-func TestMigrations0172And0174DDLAreRerunnable(t *testing.T) {
-	t.Parallel()
-	db, ctx, at := seedYieldBookFX(t)
-	seedPlanWage(t, db)
-	seedPlanVehicle(t, db)
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
-		t.Fatal(err)
-	}
-	count := func(part string) string {
-		return strings.Join(scanStrings(t, db, `SELECT count(*)::VARCHAR FROM web_cashflow_plan WHERE part = ?`,
-			part), "")
-	}
-	parts := []string{PlanPoolPart, PlanOutsidePart}
-	before := map[string]string{}
-	for _, part := range parts {
-		if before[part] = count(part); before[part] == "0" {
-			t.Fatalf("no %s rows materialized", part)
-		}
-	}
-	for range 2 {
-		rerunMigrationDDL(t, db, ctx, "0172_cashflow_plan_outside_income.sql")
-	}
-	for _, part := range parts {
-		if after := count(part); after != before[part] {
-			t.Errorf("%s rows %s, before %s", part, after, before[part])
-		}
 	}
 }
 

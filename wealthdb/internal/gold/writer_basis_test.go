@@ -180,10 +180,9 @@ func TestInsertRealizedLotsRefusesBadRows(t *testing.T) {
 	}
 }
 
-// TestMigration0115DDLIsRerunnable replays the cost-basis migration over a
-// migrated database holding a stamped row and a lot of each kind, and
-// pins that nothing is lost.
-func TestMigration0115DDLIsRerunnable(t *testing.T) {
+// TestWriterStoresAStatedBasisAndLots: a position with a stated basis, a
+// position lot and a realized lot each land in their table.
+func TestWriterStoresAStatedBasisAndLots(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	p := basisPosition("XYZ")
@@ -201,12 +200,11 @@ func TestMigration0115DDLIsRerunnable(t *testing.T) {
 			SilverSourceID: "test-src", RealizedLotExternalID: "L1", AccountExternalID: "ACC1",
 			DocumentKind: canonical.RealizedTrade, TaxYear: 2024, Currency: "USD"}})
 	})
-	rerunMigrationDDL(t, db, ctx, "0115_cost_basis.sql")
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT
 	      (SELECT COUNT(*) FROM positions WHERE basis_origin = 'stated')
 	    + (SELECT COUNT(*) FROM position_lots)
 	    + (SELECT COUNT(*) FROM realized_lots)`).Scan(&n); err != nil || n != 3 {
-		t.Errorf("rows after replay = %d (err %v), want 3", n, err)
+		t.Errorf("rows = %d (err %v), want 3", n, err)
 	}
 }

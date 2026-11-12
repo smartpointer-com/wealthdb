@@ -202,16 +202,11 @@ func TestExposureSplitsAForwardHeldDirectlyIntoItsLegs(t *testing.T) {
 		t.Errorf("funds = %v, want the fund at 500 and the forwards' marks among the other holdings", funds)
 	}
 
-	// Migration 0173 replays, and 0175 after it: the macros read the
-	// same.
-	zero, _ := leaves("QFW0")
-	rerunMigrationDDL(t, db, ctx, "0173_forward_legs_at_notional.sql")
-	if got, _ := leaves("QFW0"); got != zero {
-		t.Errorf("QFW0 leaves after the replay = %q, want %q", got, zero)
-	}
+	// The leaves split as the views do: the forwards' marks direct, the
+	// fund via funds.
 	if d, v := split(`SELECT SUM(value) FILTER (WHERE direct), SUM(value) FILTER (WHERE NOT direct)
 	    FROM exposure_leaves(?, 'USD')`); !near(d, -25) || !near(v, 500) {
-		t.Errorf("after the replays: direct %v, via funds %v; want -25 and 500", d, v)
+		t.Errorf("leaves: direct %v, via funds %v; want -25 and 500", d, v)
 	}
 
 	// A forward its legs describe is no private holding a declaration

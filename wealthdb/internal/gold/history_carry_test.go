@@ -820,26 +820,24 @@ var historyMacroColumns = []struct {
 		"value_usd", "value_chf", "value_eur", "value_gbp"}},
 }
 
-// TestMigration0051DDLIsRerunnable holds the re-issued history macros
-// to the replay bar and confirms each still answers afterwards.
-func TestMigration0051DDLIsRerunnable(t *testing.T) {
+// TestHistoryMacrosAnswerOverASeededSource: each history macro reads
+// rows over one seeded account.
+func TestHistoryMacrosAnswerOverASeededSource(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	const src = "replay-src"
+	const src = "history-src"
 	seedHistAccount(t, db, ctx, src, "R-0000", "brokerage", "Brokerage EXAMPLE")
 	seedHistPosition(t, db, ctx, src, "R-0000", "X", -2, "1000")
 	seedHistCash(t, db, ctx, src, "R-0000", -1, "250")
 
-	rerunMigrationDDL(t, db, ctx, "0051_history_per_account_carry.sql")
-
 	for _, m := range historyMacroColumns {
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+m.macro).Scan(&n); err != nil {
-			t.Errorf("%s after re-run: %v", m.macro, err)
+			t.Errorf("%s: %v", m.macro, err)
 			continue
 		}
 		if n == 0 {
-			t.Errorf("%s after re-run: no rows over a seeded source", m.macro)
+			t.Errorf("%s: no rows over a seeded source", m.macro)
 		}
 	}
 }

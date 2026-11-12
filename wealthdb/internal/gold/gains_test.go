@@ -417,12 +417,13 @@ func TestPositionsCarryTheCostBasis(t *testing.T) {
 	}
 }
 
-func TestMigration0116DDLIsRerunnable(t *testing.T) {
+// TestGainsBucketsReadOneTotal: the gains buckets over the fixture read
+// one row with the fixture's gain.
+func TestGainsBucketsReadOneTotal(t *testing.T) {
 	t.Parallel()
 	db, ctx := openGainsFixture(t)
-	rerunMigrationDDL(t, db, ctx, "0116_gains_reports.sql")
 	rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAll, lots.MissingIgnore)
 	if err != nil || len(rows) != 1 || !near(num(t, rows[0].Gain), 365) {
-		t.Errorf("after replay: rows %v err %v", rows, err)
+		t.Errorf("rows %v err %v", rows, err)
 	}
 }

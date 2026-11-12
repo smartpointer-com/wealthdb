@@ -654,19 +654,20 @@ func TestExposureSitusFollowsAHoldingAlias(t *testing.T) {
 	}
 }
 
-func TestMigration0129DDLIsRerunnable(t *testing.T) {
+// TestExposureSitusAfterARebuild: after a rebuild, QPRV reads its
+// declared situs, and the situs report answers.
+func TestExposureSitusAfterARebuild(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
 	seedSitus(t, db, ctx)
-	rerunMigrationDDL(t, db, ctx, "0129_exposure_situs.sql")
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	if got := situsAt(t, db, ctx, exAsOf, "QPRV"); got != "KY declared" {
-		t.Errorf("after replay: QPRV %s", got)
+		t.Errorf("QPRV %s", got)
 	}
 	if rows, err := ExposureSitus(ctx, db, exAsOf, "USD"); err != nil || len(rows) == 0 {
-		t.Errorf("situs after replay: %d rows, %v", len(rows), err)
+		t.Errorf("situs: %d rows, %v", len(rows), err)
 	}
 }
 
