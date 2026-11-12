@@ -1,0 +1,51 @@
+# The Go module and build caches that wealthdb/wealthdb-go mounts into
+# the container. The module cache has one entry per module graph and
+# toolchain. Each job kind keeps a build cache of its own, and a run
+# restores the newest of its kind. A job calls this action twice: once
+# with save empty to restore both caches, and last with save set.
+name: go-cache
+description: Restore or save the Go module and build caches of one job kind.
+inputs:
+  kind:
+    description: The build cache's job kind, such as lint or a go matrix name.
+    required: true
+  save:
+    description: >-
+      Empty restores both caches. build saves the build cache, and all
+      saves the module cache too.
+    default: ""
+outputs:
+  mod-hit:
+    description: Whether the restore found the module cache for this module graph.
+    value: ${{ steps.mod.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Restore the Go module cache
+      id: mod
+      if: inputs.save == ''
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/wealthdb/go/go-mod
+        key: go-mod-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}
+    - name: Restore the Go build cache
+      if: inputs.save == ''
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/wealthdb/go/go-build
+        key: go-build-${{ inputs.kind }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: go-build-${{ inputs.kind }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-
+    # always(), as on the caller's step: a job saves after a failed step
+    # too.
+    - name: Save the Go module cache
+      if: always() && inputs.save == 'all'
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.cache/wealthdb/go/go-mod
+        key: go-mod-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}
+    - name: Save the Go build cache
+      if: always() && inputs.save != ''
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.cache/wealthdb/go/go-build
+        key: go-build-${{ inputs.kind }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}

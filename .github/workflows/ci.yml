@@ -70,40 +70,26 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      # The Go module and build caches that wealthdb-go mounts into the
-      # container. The module cache has one entry per module graph and
-      # toolchain, and only this job saves it, after downloading every
-      # module. Each job kind keeps a build cache of its own.
-      - name: Restore the Go module cache
-        id: gomod
-        uses: actions/cache/restore@v6
+      # The Go caches (.github/actions/go-cache). Only this job saves the
+      # module cache, after downloading every module, and only when the
+      # restore did not find it.
+      - name: Restore the Go caches
+        id: gocache
+        uses: ./.github/actions/go-cache
         with:
-          path: ~/.cache/wealthdb/go/go-mod
-          key: go-mod-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}
-      - name: Restore the Go build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/wealthdb/go/go-build
-          key: go-build-lint-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: go-build-lint-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-
+          kind: lint
       - name: Go modules
         run: |
           make build-wealthdb
           wealthdb/wealthdb-go mod download
       - name: Lint
         run: make lint
-      - name: Save the Go module cache
-        if: always() && github.event_name == 'push' && steps.gomod.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/wealthdb/go/go-mod
-          key: go-mod-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}
-      - name: Save the Go build cache
+      - name: Save the Go caches
         if: always() && github.event_name == 'push'
-        uses: actions/cache/save@v6
+        uses: ./.github/actions/go-cache
         with:
-          path: ~/.cache/wealthdb/go/go-build
-          key: go-build-lint-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          kind: lint
+          save: ${{ steps.gocache.outputs.mod-hit == 'true' && 'build' || 'all' }}
 
   go:
     name: go (${{ matrix.name }})
@@ -132,39 +118,34 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Restore the Go module cache
-        uses: actions/cache/restore@v6
+      - name: Restore the Go caches
+        uses: ./.github/actions/go-cache
         with:
-          path: ~/.cache/wealthdb/go/go-mod
-          key: go-mod-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}
-      - name: Restore the Go build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/wealthdb/go/go-build
-          key: go-build-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: go-build-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-
+          kind: ${{ matrix.name }}
       # -count=1: Go cannot see the files DuckDB opens through C, so a
       # cached pass could hide a change.
       - name: Test
         env:
           PKGS: ${{ matrix.pkgs }}
           FLAGS: ${{ matrix.flags }}
-          # The packages of the entries that name theirs.
-          OWN: ./internal/gold/ ./cmd/wealthdb/
         run: |
           make build-wealthdb
           if [ -z "$PKGS" ]; then
-            own=$(wealthdb/wealthdb-go list $OWN)
+            # The packages the other entries name, read from this
+            # job's matrix.
+            own=$(sed -n '/^  go:$/,/^  [a-z]/s/^ *pkgs: *\(\..*\)$/\1/p' .github/workflows/ci.yml)
+            [ -n "$own" ] || { echo "no matrix entry names a package" >&2; exit 1; }
+            own=$(wealthdb/wealthdb-go list $own)
             PKGS=$(wealthdb/wealthdb-go list ./... | grep -vxF -e "$own" | tr '\n' ' ')
             [ -n "$PKGS" ] || { echo "no other package to test" >&2; exit 1; }
           fi
           make test-wealthdb WEALTHDB_PKGS="$PKGS" GO_TEST_FLAGS="-count=1 $FLAGS"
       - name: Save the Go build cache
         if: always() && github.event_name == 'push'
-        uses: actions/cache/save@v6
+        uses: ./.github/actions/go-cache
         with:
-          path: ~/.cache/wealthdb/go/go-build
-          key: go-build-${{ matrix.name }}-${{ runner.os }}-${{ hashFiles('wealthdb/go.sum', 'wealthdb/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          kind: ${{ matrix.name }}
+          save: build
 
   demo:
     runs-on: ubuntu-24.04

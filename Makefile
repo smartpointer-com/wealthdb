@@ -81,12 +81,16 @@ if [ ! -x $(1)/bin/python ] || \
 fi
 endef
 
-# VENV_REQS dir,reqs,label,target — ENSURE_VENV, then pip install -r reqs
-# when the venv's .stamp is older than reqs.
-define VENV_REQS
-$(call ENSURE_VENV,$(1),$(3),$(4)); \
-if [ ! $(1)/.stamp -nt $(2) ]; then \
-	$(1)/bin/pip install -q -r $(2) && touch $(1)/.stamp || exit 1; \
+# VENV dir,stamp-files — pip install $(dir)_PIP (see VENVS) into the
+# venv at dir, unless its .stamp holds the bytes of stamp-files and then
+# those arguments, as the last install that succeeded wrote them. It
+# compares contents, not mtimes, because the pre-commit hook lints a
+# fresh export of the index against this checkout's venv. A failed pip
+# stops the recipe.
+define VENV
+if ! { cat $(2) && echo '$($(1)_PIP)'; } | cmp -s - $(1)/.stamp 2>/dev/null; then \
+	$(1)/bin/pip install -q $($(1)_PIP) && \
+	{ cat $(2) && echo '$($(1)_PIP)'; } > $(1)/.stamp || exit 1; \
 fi
 endef
 
@@ -134,29 +138,7 @@ SUITES = $(TEST_SUITES)
 test:
 	$(if $(strip $(SUITES)),,$(error SUITES names no suite))
 	$(if $(subst $(strip $(TEST_SUITES)),,$(strip $(SUITES))),@echo "make test: running $(words $(SUITES)) of $(words $(TEST_SUITES)) suites (SUITES)")
-	@dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wealthdb-test.XXXXXX"); \
-	trap 'rm -rf "$$dir"' EXIT; \
-	printf '%s\n' $(SUITES) > "$$dir/suites"; \
-	< "$$dir/suites" xargs -P $(NCPU) -I{} $(SHELL) -c ' \
-		name="$$1"; dir="$$2"; \
-		echo "start $$name"; \
-		start=$$(date +%s); \
-		$(MAKE) --no-print-directory test-$$name > "$$dir/$$name.log" 2>&1; \
-		echo $$? > "$$dir/$$name.rc"; \
-		echo $$(( $$(date +%s) - start )) > "$$dir/$$name.time"; \
-		exit 0' _ {} "$$dir"; \
-	fail=0; \
-	while IFS= read -r name; do \
-		secs=$$(cat "$$dir/$$name.time" 2>/dev/null) && secs="$${secs}s" || secs="(no time)"; \
-		rc=$$(cat "$$dir/$$name.rc" 2>/dev/null || echo 1); \
-		echo "==> $$name $$secs"; \
-		cat "$$dir/$$name.log" 2>/dev/null || true; \
-		if [ "$$rc" != 0 ]; then \
-			echo "==> $$name failed ($$rc)"; \
-			fail=1; \
-		fi; \
-	done < "$$dir/suites"; \
-	exit $$fail
+	@shared/wrappers/fanout.sh -j $(NCPU) --times -- '$(MAKE) --no-print-directory test-"$$1"' $(SUITES)
 
 list-suites:
 	@printf '%s\n' $(TEST_SUITES)
@@ -298,33 +280,20 @@ CK_VENV := $(CK_DIR)/.venv
 # dependency-free). Shared with update-venvs so the two can't drift.
 CK_TEST_DEPS := pytest zstandard
 
-# pip runs only when the venv's .stamp is older than collectorkit's
-# pyproject.toml, or names other test deps than CK_TEST_DEPS. The
-# editable install picks up source edits without a reinstall.
+# pip runs only when collectorkit's pyproject.toml or CK_TEST_DEPS
+# changes. The editable install picks up source edits without a
+# reinstall.
 test-collectorkit:
 	@echo "==> test collectorkit"
 	@$(call ENSURE_VENV,$(CK_VENV),collectorkit,test-collectorkit)
-	@if [ ! $(CK_VENV)/.stamp -nt $(CK_DIR)/pyproject.toml ] || \
-	   [ "$$(cat $(CK_VENV)/.stamp)" != "$(CK_TEST_DEPS)" ]; then \
-		$(CK_VENV)/bin/pip install -q -e $(CK_DIR) $(CK_TEST_DEPS) && \
-		echo "$(CK_TEST_DEPS)" > $(CK_VENV)/.stamp || exit 1; \
-	fi
+	@$(call VENV,$(CK_VENV),$(CK_DIR)/pyproject.toml)
 	@$(CK_VENV)/bin/python -m pytest -q -p no:cacheprovider $(CK_DIR)/tests
 
 # The test files run side by side, and each one's output prints once all
 # have finished, in file order.
 test-wrappers:
 	@echo "==> test wrappers (shared/wrappers)"
-	@dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wealthdb-wrappers.XXXXXX"); \
-	trap 'rm -rf "$$dir"' EXIT; \
-	printf '%s\n' shared/wrappers/tests/test_*.sh | xargs -P $(NCPU) -I{} $(SHELL) -c \
-		'n=$$(basename "$$1"); bash "$$1" > "$$2/$$n.log" 2>&1; echo $$? > "$$2/$$n.rc"' _ {} "$$dir"; \
-	fail=0; \
-	for t in shared/wrappers/tests/test_*.sh; do \
-		n=$$(basename "$$t"); cat "$$dir/$$n.log"; \
-		if [ "$$(cat "$$dir/$$n.rc" 2>/dev/null)" != 0 ]; then echo "==> $$n failed"; fail=1; fi; \
-	done; \
-	exit $$fail
+	@shared/wrappers/fanout.sh -j $(NCPU) -- 'bash "$$1"' shared/wrappers/tests/test_*.sh
 
 # The privacy check the hooks and CI run (shared/pii): stdlib only, so
 # it runs on the host interpreter, no venv.
@@ -374,10 +343,7 @@ cleanall-lint:
 #
 # ruff comes from a venv of its own, pinned in shared/lint/requirements.txt
 # and refreshed by update-venvs; the rule set is /ruff.toml, which covers
-# every Python module in the tree. The venv's .stamp is a copy of the
-# requirements it was installed from, so an edit to the pin reinstalls.
-# It compares contents, not mtimes, because the pre-commit hook lints a
-# fresh export of the index against this checkout's venv.
+# every Python module in the tree. An edit to the pin reinstalls.
 LINT_DIR  := shared/lint
 LINT_VENV := $(LINT_DIR)/.venv
 
@@ -398,10 +364,7 @@ lint-python:
 		rm -rf $(LINT_VENV); \
 		$(PYTHON) -m venv $(LINT_VENV) || exit 1; \
 	fi
-	@if [ ! -x $(LINT_VENV)/bin/ruff ] || ! cmp -s $(LINT_DIR)/requirements.txt $(LINT_VENV)/.stamp; then \
-		$(LINT_VENV)/bin/pip install -q -r $(LINT_DIR)/requirements.txt && \
-		cp $(LINT_DIR)/requirements.txt $(LINT_VENV)/.stamp || exit 1; \
-	fi
+	@$(call VENV,$(LINT_VENV),$(LINT_DIR)/requirements.txt)
 	@$(LINT_VENV)/bin/ruff check --quiet .
 
 # ---- wealthdb gold engine ---------------------------------------------
@@ -571,7 +534,8 @@ SITE_TMP   := $(CACHE_ROOT)/site-shots-$(TAG)
 site-shots: build-wealthdb build-web base-images
 	@$(MAKE) --no-print-directory demo SEED=$(SITE_SEED) AS_OF=$(SITE_AS_OF)
 	@$(MAKE) --no-print-directory demo-web
-	@$(call VENV_REQS,$(SITE_VENV),site/requirements.txt,the site tools,site-shots)
+	@$(call ENSURE_VENV,$(SITE_VENV),the site tools,site-shots); \
+	$(call VENV,$(SITE_VENV),site/requirements.txt)
 	@echo "==> shoot the demo's dashboards"
 	@rm -rf "$(SITE_TMP)" && mkdir -p "$(SITE_TMP)" && trap 'rm -rf "$(SITE_TMP)"' EXIT && \
 	docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp --add-host=host.docker.internal:host-gateway \
@@ -601,7 +565,8 @@ site-publish:
 # with Pillow from site/.venv. No Docker, no network.
 test-site:
 	@echo "==> test site (site/tests)"
-	@$(call VENV_REQS,$(SITE_VENV),site/requirements.txt,the site tests,test-site)
+	@$(call ENSURE_VENV,$(SITE_VENV),the site tests,test-site); \
+	$(call VENV,$(SITE_VENV),site/requirements.txt)
 	@$(SITE_VENV)/bin/python -m unittest discover -s site/tests -t site
 
 clean-site:
@@ -629,13 +594,13 @@ build-web:
 # definitions; no Docker needed. provision.py's tests run the projection
 # cards' SQL on DuckDB, so they run in a venv of their own that holds the
 # duckdb module, pinned in web/requirements-test.txt and refreshed by
-# update-venvs. pip runs only when the requirements are newer than the
-# venv's .stamp.
+# update-venvs. pip runs only when the requirements change.
 WEB_VENV := web/.venv
 
 test-web:
 	@echo "==> test web (web/test_web.sh)"
-	@$(call VENV_REQS,$(WEB_VENV),web/requirements-test.txt,the web tests,test-web)
+	@$(call ENSURE_VENV,$(WEB_VENV),the web tests,test-web); \
+	$(call VENV,$(WEB_VENV),web/requirements-test.txt)
 	@WEALTHDB_WEB_PYTHON="$(abspath $(WEB_VENV))/bin/python" web/test_web.sh
 
 clean-web:
@@ -646,6 +611,23 @@ cleanall-web: clean-web
 	@echo "==> cleanall web (image, test venv)"
 	@docker image rm -f wealthdb/metabase:$(TAG) >/dev/null 2>&1 || true
 	@rm -rf $(WEB_VENV)
+
+# ---- host venvs ---------------------------------------------------------
+# VENVS is every host venv the Makefile installs, and <dir>_PIP what pip
+# installs into each: a host-venv or hybrid collector's requirements and
+# collectorkit, editable; collectorkit's test deps; ruff; the web tests'
+# deps; the site tools. The target that uses a venv installs it with
+# VENV, and update-venvs upgrades every one that exists. A host-venv
+# collector has a requirements.txt and no Dockerfile; a hybrid has all
+# three of requirements.txt, Dockerfile and .host-venv.
+HOST_VENV_COLLECTORS := $(foreach c,$(COLLECTORS),$(if $(wildcard collectors/$(c)/requirements.txt),$(if $(wildcard collectors/$(c)/Dockerfile),$(if $(wildcard collectors/$(c)/.host-venv),$(c)),$(c))))
+VENVS := $(foreach c,$(HOST_VENV_COLLECTORS),collectors/$(c)/.venv) \
+         $(CK_VENV) $(LINT_VENV) $(WEB_VENV) $(SITE_VENV)
+$(foreach c,$(HOST_VENV_COLLECTORS),$(eval collectors/$(c)/.venv_PIP := -r collectors/$(c)/requirements.txt -e $(CK_DIR)))
+$(CK_VENV)_PIP   := -e $(CK_DIR) $(CK_TEST_DEPS)
+$(LINT_VENV)_PIP := -r $(LINT_DIR)/requirements.txt
+$(WEB_VENV)_PIP  := -r web/requirements-test.txt
+$(SITE_VENV)_PIP := -r site/requirements.txt
 
 # ---- per-collector rules (generated for each discovered collector) ----
 
@@ -666,9 +648,9 @@ define COLLECTOR_RULES
 # exactly like a real one. Make updates a prerequisite at most once per
 # invocation, so the fleet-wide targets still pay for it only once.
 #
-# A host venv reruns pip only when its .stamp is older than the
-# collector's requirements.txt or collectorkit's pyproject.toml. The
-# editable collectorkit picks up source edits without a reinstall.
+# A host venv reruns pip only when the collector's requirements.txt or
+# collectorkit's pyproject.toml changes. The editable collectorkit picks
+# up source edits without a reinstall.
 build-$(1): $(if $(wildcard collectors/$(1)/Dockerfile),base-images)
 	@echo "==> build collector: $(1)"
 	@if [ -x collectors/$(1)/$(1) ] && [ -f collectors/$(1)/Dockerfile ]; then \
@@ -676,12 +658,7 @@ build-$(1): $(if $(wildcard collectors/$(1)/Dockerfile),base-images)
 	fi
 	@if [ -f collectors/$(1)/requirements.txt ] && { [ ! -f collectors/$(1)/Dockerfile ] || [ -f collectors/$(1)/.host-venv ]; }; then \
 		$(call ENSURE_VENV,collectors/$(1)/.venv,$(1),build-$(1)); \
-		if [ ! collectors/$(1)/.venv/.stamp -nt collectors/$(1)/requirements.txt ] || \
-		   [ ! collectors/$(1)/.venv/.stamp -nt $(CK_DIR)/pyproject.toml ]; then \
-			collectors/$(1)/.venv/bin/pip install -q -r collectors/$(1)/requirements.txt && \
-			collectors/$(1)/.venv/bin/pip install -q -e $(CK_DIR) && \
-			touch collectors/$(1)/.venv/.stamp || exit 1; \
-		fi; \
+		$(call VENV,collectors/$(1)/.venv,collectors/$(1)/requirements.txt $(CK_DIR)/pyproject.toml); \
 	elif [ ! -f collectors/$(1)/Dockerfile ]; then \
 		echo "    $(1): nothing to build"; \
 	fi
@@ -710,7 +687,7 @@ test-$(1): build-$(1)
 		if [ -x collectors/$(1)/.venv/bin/python ]; then \
 			collectors/$(1)/.venv/bin/python -m pytest -q -p no:cacheprovider collectors/$(1); \
 		else \
-			echo "    $(1): cannot run tests (no venv)"; \
+			echo "    $(1): cannot run tests (no venv)" >&2; exit 1; \
 		fi; \
 	else \
 		docker run --rm --user "$$$$(id -u):$$$$(id -g)" -e HOME=/tmp \
@@ -757,15 +734,11 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 # The one pin set `make update` does not move is the GitHub actions in
 # .github/workflows/: their major tags move by hand.
 #
-# Host venvs are auto-discovered as any collectors/<name>/.venv that
-# already exists — the venv has to have been created by `make build-<name>`
-# at least once. Docker collectors have no .venv on the host; their pip
-# is inside the image and refreshes when the image rebuilds. The venvs
-# outside collectors/ are collectorkit's test venv
-# (`make test-collectorkit`), the web tests' (`make test-web`), the site
-# tools' (`make test-site`, `make site-shots`) and ruff's (`make lint`),
-# each updated alongside them once it exists.
-HOST_VENV_COLLECTORS := $(patsubst collectors/%/.venv,%,$(wildcard collectors/*/.venv))
+# update-venvs upgrades each venv of VENVS that exists: its target
+# (`make build-<name>`, `make test-collectorkit`, `make lint`,
+# `make test-web`, `make test-site`) has to have created it once. Docker
+# collectors have no venv on the host; their pip is inside the image and
+# refreshes when the image rebuilds.
 
 # UPDATE_VENV venv,args: upgrade pip, setuptools and wheel in venv, then
 # `pip install --upgrade args`. A failed pip stops the recipe, so `make
@@ -785,27 +758,12 @@ update: update-venvs update-wealthdb
 	@echo "==> update done. Run \`make all\` to rebuild collector images on top of the refreshed bases."
 
 update-venvs:
-	@if [ -z "$(HOST_VENV_COLLECTORS)" ] && [ ! -x $(CK_VENV)/bin/python ] && \
-	   [ ! -x $(LINT_VENV)/bin/python ] && [ ! -x $(WEB_VENV)/bin/python ] && \
-	   [ ! -x $(SITE_VENV)/bin/python ]; then \
+	@if $(foreach v,$(VENVS),[ ! -x $(v)/bin/python ] &&) true; then \
 		echo "==> no host venvs to update"; \
 	fi
-	@for c in $(HOST_VENV_COLLECTORS); do \
-		req=; [ -f "collectors/$$c/requirements.txt" ] && req="-r collectors/$$c/requirements.txt"; \
-		$(call UPDATE_VENV,collectors/$$c/.venv,$$req -e $(CK_DIR)); \
-	done
-	@if [ -x $(CK_VENV)/bin/python ]; then \
-		$(call UPDATE_VENV,$(CK_VENV),-e $(CK_DIR) $(CK_TEST_DEPS)); \
-	fi
-	@if [ -x $(LINT_VENV)/bin/python ]; then \
-		$(call UPDATE_VENV,$(LINT_VENV),-r $(LINT_DIR)/requirements.txt); \
-	fi
-	@if [ -x $(WEB_VENV)/bin/python ]; then \
-		$(call UPDATE_VENV,$(WEB_VENV),-r web/requirements-test.txt); \
-	fi
-	@if [ -x $(SITE_VENV)/bin/python ]; then \
-		$(call UPDATE_VENV,$(SITE_VENV),-r site/requirements.txt); \
-	fi
+	@$(foreach v,$(VENVS),if [ -x $(v)/bin/python ]; then \
+		$(call UPDATE_VENV,$(v),$($(v)_PIP)); \
+	fi;) true
 
 # The module graph is refreshed by the IMAGE's Go toolchain, never the
 # host's: build first so the pinned toolchain exists, resolve against it,

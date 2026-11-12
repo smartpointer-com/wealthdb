@@ -5,20 +5,25 @@
 #   - a Docker collector's tests run in its image directly, not through
 #     its wrapper: no secrets or data mount and no fixed container name;
 #     they run on a tmpfs copy of the checkout at /app;
-#   - a host-venv or hybrid collector's tests run on its venv;
+#   - a host-venv or hybrid collector's tests run on its venv, and fail
+#     when it has none;
 #   - clean-wealthdb clears the Go cache wealthdb-go uses;
 #   - test-demo's scratch roots are the image tag's own, and clean-demo
 #     removes that root only when it holds the tests' marker;
-#   - lint reinstalls ruff when its pin changes, and update-venvs stops
-#     at the first pip that fails;
+#   - lint reinstalls ruff when its pin changes, a collector's venv
+#     reinstalls only when its requirements change, and update-venvs
+#     stops at the first pip that fails;
+#   - make test runs the suites it is given, prints each one's log after
+#     its name and seconds, and fails when one fails;
 #   - site-shots runs as the caller, with the checkout read-only and no
 #     secrets;
 #   - an exported SHOW prints no value from make pii;
 #   - site-publish exports the env file's token, and refuses a file that
 #     does not parse without printing its lines.
 # Nothing is built: make prints, and a stub docker prints. clean-demo,
-# lint-python, update-venvs and site-publish run for real, on roots,
-# stub venvs and a stub interpreter under the temp dir.
+# lint-python, build-host, update-venvs, test and site-publish run for
+# real, on roots, stub venvs, stub suites and a stub interpreter under
+# the temp dir.
 set -uo pipefail
 # The makes this test starts read only what it gives them: an outer
 # make's flags and command-line variables (make test-wrappers X=…) stay
@@ -38,7 +43,8 @@ TREE="$TMP/tree"
 mkdir -p "$TREE/shared/wrappers" "$TREE/wealthdb" "$TMP/bin"
 cp "$ROOT/Makefile" "$TREE/"
 cp "$ROOT/shared/wrappers/image-tag.sh" "$ROOT/shared/wrappers/demo-root.sh" \
-   "$ROOT/shared/wrappers/envfile-lib.sh" "$TREE/shared/wrappers/"
+   "$ROOT/shared/wrappers/envfile-lib.sh" "$ROOT/shared/wrappers/fanout.sh" \
+   "$TREE/shared/wrappers/"
 cp "$ROOT/wealthdb/wealthdb-go" "$TREE/wealthdb/"
 # One collector per runtime: Docker, host venv, and a hybrid.
 for c in dock host hyb; do mkdir -p "$TREE/collectors/$c/tests"; done
@@ -72,6 +78,14 @@ has "a host-venv collector tests on its venv" \
     "collectors/host/.venv/bin/python -m pytest" "$(dry test-host)"
 has "a hybrid tests on its host venv" \
     "collectors/hyb/.venv/bin/python -m pytest" "$(dry test-hyb)"
+
+# A host collector with tests and nothing to build has no venv: its
+# tests fail rather than pass unrun.
+mkdir -p "$TREE/collectors/bare/tests"
+out="$(cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" make test-bare 2>&1)"; rc=$?
+[ "$rc" != 0 ] && ok "tests without a venv fail" || bad "test-bare exit 0: $out"
+has "the failure says why" "bare: cannot run tests (no venv)" "$out"
+rm -rf "$TREE/collectors/bare"
 
 # The Go cache wealthdb-go mounts, from its argv under a stub docker.
 cat > "$TMP/bin/docker" <<'STUB'
@@ -120,6 +134,25 @@ real lint-python >/dev/null
 [ "$(pips)" = 2 ] && ok "lint reinstalls after a pin edit" || bad "pip calls: $(pips)"
 rm -rf "$lint/.venv"
 
+# A host collector's venv: one pip for its requirements and collectorkit,
+# none while neither changes.
+mkdir -p "$TREE/shared/collectorkit"
+printf '[project]\n' > "$TREE/shared/collectorkit/pyproject.toml"
+printf 'requests\n' > "$TREE/collectors/host/requirements.txt"
+printf '#!/bin/sh\necho "pip $*" >> "%s"\n' "$TMP/pip.log" > "$TREE/collectors/host/.venv/bin/pip"
+chmod +x "$TREE/collectors/host/.venv/bin/pip"
+: > "$TMP/pip.log"
+real build-host >/dev/null
+[ "$(pips)" = 1 ] && ok "a collector venv installs once" || bad "pip calls: $(pips)"
+has "one pip takes the requirements and collectorkit" \
+    "pip install -q -r collectors/host/requirements.txt -e shared/collectorkit" "$(cat "$TMP/pip.log")"
+real build-host >/dev/null
+[ "$(pips)" = 1 ] && ok "a warm build starts no pip" || bad "pip calls: $(pips)"
+printf 'requests\nidna\n' > "$TREE/collectors/host/requirements.txt"
+real build-host >/dev/null
+[ "$(pips)" = 2 ] && ok "an edit to the requirements reinstalls" || bad "pip calls: $(pips)"
+rm -f "$TREE/collectors/host/.venv/.stamp" "$TREE/collectors/host/.venv/bin/pip"
+
 # A failed pip stops update-venvs at once, with a failure status.
 printf '#!/bin/sh\nexit 1\n' > "$TREE/collectors/host/.venv/bin/python"
 out="$(real update-venvs)"; rc=$?
@@ -129,6 +162,21 @@ printf '#!/bin/sh\n' > "$TREE/collectors/host/.venv/bin/python"
 out="$(real update-venvs)"; rc=$?
 [ "$rc" = 0 ] && ok "update-venvs succeeds over working venvs" || bad "update-venvs exit $rc: $out"
 has "update-venvs updates every collector venv" "update collectors/hyb/.venv" "$out"
+
+# make test for real, on stub suites every make reads (MAKEFILES), one
+# that fails and one that passes.
+echo "make test:"
+printf 'test-sa: ; @echo "sa ran"\ntest-sb: ; @echo "sb ran"; exit 3\n' > "$TMP/suites.mk"
+suites() { MAKEFILES="$TMP/suites.mk" real test SUITES="$1"; }
+out="$(suites "sb sa")"; rc=$?
+[ "$rc" != 0 ] && ok "a failed suite fails make test" || bad "make test exit 0: $out"
+has_item "each suite's start prints" "start sa" "$out"
+has_item "a failed suite is named with its status" "==> sb failed (2)" "$out"
+order="$(grep -E '^(==> s[ab] [0-9]+s|s[ab] ran)$' <<<"$out" | sed -E 's/ [0-9]+s$/ Ns/' | tr '\n' ' ')"
+[ "$order" = "==> sb Ns sb ran ==> sa Ns sa ran " ] && \
+    ok "each log follows its name and seconds, in the order given" || bad "order: $order"
+out="$(suites sa)"; rc=$?
+[ "$rc" = 0 ] && ok "passing suites pass make test" || bad "make test exit $rc: $out"
 
 echo "make site rules:"
 out="$(cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" \
