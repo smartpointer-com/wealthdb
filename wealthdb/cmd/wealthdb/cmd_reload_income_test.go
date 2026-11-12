@@ -12,12 +12,6 @@ import (
 // rebuild cannot regenerate: it was paid for and has no config backup.
 // A store left out of the carry list is lost silently, so the carry is
 // pinned per store rather than once.
-//
-// The carry also respells. A file no read-write open has migrated
-// since a retirement still holds the retired spellings in its store.
-// The rebuilt file was migrated before the rows arrived, so nothing
-// else would move them to their successors, and a verdict on a retired
-// value is one no report can show.
 func TestReloadFreshCarriesThePayerStore(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
@@ -29,14 +23,12 @@ func TestReloadFreshCarriesThePayerStore(t *testing.T) {
 	}
 	goldPath := goldPathFromCfg(cfg)
 
-	// Written straight into the store, past the migration that would
-	// have respelled them, the way a file from before it holds them.
 	execGold(t, goldPath, `
         INSERT INTO income_payer_categories (payer_signature, payer_name, income_detailed,
                                              signature_version, assigned_at, model_name) VALUES
-            ('sig-payroll',     'Blue Harbour Payroll',  'INCOME_WAGES',                     1, 100, 'test-model'),
-            ('sig-maintenance', 'Example Maintenance',   'INCOME_ALIMONY_AND_CHILD_SUPPORT', 1, 200, 'test-model'),
-            ('sig-letting',     'Example Letting Agent', 'INCOME_RENTAL',                    1, 300, 'test-model')`)
+            ('sig-payroll',     'Blue Harbour Payroll',  'INCOME_SALARY',        1, 100, 'test-model'),
+            ('sig-maintenance', 'Example Maintenance',   'INCOME_CHILD_SUPPORT', 1, 200, 'test-model'),
+            ('sig-letting',     'Example Letting Agent', 'INCOME_RENTAL',        1, 300, 'test-model')`)
 
 	so, se, code := run(t, "-c", cfg, "reload", "-a")
 	if code != 0 {
@@ -46,9 +38,6 @@ func TestReloadFreshCarriesThePayerStore(t *testing.T) {
 	// nothing reads exactly like one that carried everything.
 	if !strings.Contains(so, "carried 3 payer verdict(s) across the rebuild") {
 		t.Errorf("reload -a did not report the payer carry-across:\n%s", so)
-	}
-	if !strings.Contains(so, "respelled 2 carried payer verdict(s)") {
-		t.Errorf("reload -a did not report the respelled verdicts:\n%s", so)
 	}
 
 	ro, err := sql.Open("duckdb", goldPath+"?access_mode=read_only")
@@ -60,13 +49,8 @@ func TestReloadFreshCarriesThePayerStore(t *testing.T) {
 		sig, name, detailed string
 		assignedAt          int64
 	}{
-		// A rename moves to the one value that replaced it.
 		{"sig-payroll", "Blue Harbour Payroll", "INCOME_SALARY", 100},
-		// A split moves to the successor stored data takes. A stored
-		// verdict cannot say which half it meant; a rule or a pin
-		// places a payer at the other one.
 		{"sig-maintenance", "Example Maintenance", "INCOME_CHILD_SUPPORT", 200},
-		// A current value is carried verbatim.
 		{"sig-letting", "Example Letting Agent", "INCOME_RENTAL", 300},
 	} {
 		var name, detailed, model string
@@ -84,8 +68,7 @@ func TestReloadFreshCarriesThePayerStore(t *testing.T) {
 		}
 		// Every other column travels verbatim: a carried verdict must
 		// still say which model produced it, when, and under which
-		// fold, rather than claiming to be new work. The respell
-		// changes the value and nothing else.
+		// fold, rather than claiming to be new work.
 		if model != "test-model" || version != 1 || assignedAt != want.assignedAt {
 			t.Errorf("%s: carried verdict lost its provenance: model=%q version=%d assigned_at=%d",
 				want.sig, model, version, assignedAt)

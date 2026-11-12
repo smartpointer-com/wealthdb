@@ -2606,10 +2606,11 @@ docs/SPENDING.md §8. The invariant is pinned by
 compact file, which is swapped over the live path. The three paid
 stores are carried across (`carryVerdictStore`, once per entry in
 `paidStores`): the merchant store, the payer store and
-`symbol_resolutions`. A carried taxonomy store has any retired spelling
-in its category column respelled to its successor
-(`canonical.RetiredDetailed`), so a carry from a file older than
-migration 0111 brings none into the rebuilt file. `report_returns` does
+`symbol_resolutions`. The rebuild first opens the outgoing file
+read-write once, which migrates it as any load does. Both files then
+have one schema, and each store is copied by name. A file older than
+migration 0111 is respelled by that migration, so no retired spelling
+reaches the rebuilt file. `report_returns` does
 not survive the swap, nor do `report_gains`, `report_exposure` and the
 serving tables. `web-materialize` writes them (§10.9, §10.13, §10.14,
 web/DESIGN.md §8), so the rebuilt file has none until a materialization

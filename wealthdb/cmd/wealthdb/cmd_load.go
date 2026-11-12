@@ -48,25 +48,13 @@ load semantics.`)
 	if err != nil {
 		return err
 	}
-	ledger, err := loader.ParseTransferLedger(cfg.EquityTransfers)
+	var ids []string
+	if id != "" {
+		ids = []string{id}
+	}
+	run, specs, err := prepareLoad(cfg, "load", ids, stdout, stderr)
 	if err != nil {
 		return err
-	}
-	in, err := readLoadInputs(cfg)
-	if err != nil {
-		return err
-	}
-	targets, err := selectSources(cfg, id, "load")
-	if err != nil {
-		return err
-	}
-	specs := make([]loader.SourceSpec, 0, len(targets))
-	for _, s := range targets {
-		spec, err := buildSourceSpec(s, cfg, ledger)
-		if err != nil {
-			return err
-		}
-		specs = append(specs, spec)
 	}
 
 	// load mutates the live gold file: gate for write, then open RW.
@@ -77,21 +65,147 @@ load semantics.`)
 	defer lock.unlock()
 	defer db.Close()
 
-	ld := loader.New(db)
+	firstErr := run.sources(ctx, loader.New(db), specs, false)
+	return errors.Join(firstErr, run.finish(ctx, db, nil))
+}
+
+// loadRun is one load, reload or rebuild: the config, what it applies
+// beside the sources, the verb its lines start with and where they go.
+type loadRun struct {
+	verb           string
+	cfg            *config.Config
+	in             loadInputs
+	stdout, stderr io.Writer
+}
+
+// prepareLoad reads what a load applies beside the sources and builds
+// the spec of each source it covers: every configured one for ids nil,
+// else the named ones in that order. It runs before gold is opened
+// read-write, so a ledger or a source this build refuses fails the
+// command before anything is migrated or loaded.
+func prepareLoad(cfg *config.Config, verb string, ids []string, stdout, stderr io.Writer) (loadRun, []loader.SourceSpec, error) {
+	in, err := readLoadInputs(cfg)
+	if err != nil {
+		return loadRun{}, nil, err
+	}
+	targets, err := loadTargets(cfg, verb, ids)
+	if err != nil {
+		return loadRun{}, nil, err
+	}
+	specs := make([]loader.SourceSpec, 0, len(targets))
+	for _, s := range targets {
+		spec, err := buildSourceSpec(s, cfg, in.transfers)
+		if err != nil {
+			return loadRun{}, nil, err
+		}
+		specs = append(specs, spec)
+	}
+	return loadRun{verb: verb, cfg: cfg, in: in, stdout: stdout, stderr: stderr}, specs, nil
+}
+
+// loadTargets is every configured source for ids nil (-a), or the
+// named sources in that order. A missing id fails before any source
+// is touched.
+func loadTargets(cfg *config.Config, verb string, ids []string) ([]config.SilverSource, error) {
+	if ids == nil {
+		if len(cfg.SilverSources) == 0 {
+			return nil, fmt.Errorf("%s: -a passed but no silver sources are configured", verb)
+		}
+		return cfg.SilverSources, nil
+	}
+	out := make([]config.SilverSource, 0, len(ids))
+	for _, id := range ids {
+		s, ok := cfg.Lookup(id)
+		if !ok {
+			return nil, fmt.Errorf("%s: silver source %q not found in config", verb, id)
+		}
+		out = append(out, *s)
+	}
+	return out, nil
+}
+
+// sources loads each source into db, resetting it first when reset is
+// set, and prints a line per source. A source that fails is reported
+// and does not stop the next; the first failure comes back.
+func (r loadRun) sources(ctx context.Context, ld *loader.Loader, specs []loader.SourceSpec, reset bool) error {
 	var firstErr error
+	failed := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
 	for _, spec := range specs {
+		if reset {
+			// Reset is best-effort per source: surface failures but
+			// keep going so '-a' isn't blocked by a single bad source.
+			if err := ld.Reset(ctx, spec.ID); err != nil {
+				fmt.Fprintf(r.stderr, "%s: %s: reset: %s\n", r.verb, spec.ID, err.Error())
+				failed(err)
+				continue
+			}
+		}
 		res, err := ld.Load(ctx, spec)
 		if err != nil {
-			fmt.Fprintf(stderr, "load: %s: %s\n", spec.ID, err.Error())
-			if firstErr == nil {
-				firstErr = err
+			if r.verb == "load" {
+				fmt.Fprintf(r.stderr, "load: %s: %s\n", spec.ID, err.Error())
+			} else {
+				fmt.Fprintf(r.stderr, "%s: %s: load: %s\n", r.verb, spec.ID, err.Error())
 			}
+			failed(err)
 			continue
 		}
-		printLoadResult(stdout, res)
+		r.printResult(res, reset)
 	}
-	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, in, "load", stdout, stderr))
-	return errors.Join(firstErr, runGoldPasses(ctx, db, cfg, in.enrichment, "load", stdout, stderr))
+	return firstErr
+}
+
+// printResult prints one source's line: a load's, an in-place reload's
+// after its reset, or a rebuild's into a fresh file.
+func (r loadRun) printResult(res *loader.LoadResult, reset bool) {
+	switch {
+	case r.verb == "load" && res.AlreadyUpToDate:
+		fmt.Fprintf(r.stdout, "load: %s: up-to-date (watermark %d)\n", res.SourceID, res.ChangeNumberAfter)
+	case r.verb == "load":
+		fmt.Fprintf(r.stdout, "load: %s: %d snapshot row(s) + %d transaction(s)%s (watermark %d → %d)\n",
+			res.SourceID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res),
+			res.ChangeNumberBefore, res.ChangeNumberAfter)
+	case reset && res.AlreadyUpToDate:
+		// Vacuously true after a reset — silver has no
+		// changes for an empty watermark, e.g. no dump_runs.
+		fmt.Fprintf(r.stdout, "%s: %s: reset; nothing to load (watermark %d)\n",
+			r.verb, res.SourceID, res.ChangeNumberAfter)
+	case reset:
+		fmt.Fprintf(r.stdout, "%s: %s: reset + %d snapshot row(s) + %d transaction(s)%s (watermark → %d)\n",
+			r.verb, res.SourceID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res),
+			res.ChangeNumberAfter)
+	default:
+		fmt.Fprintf(r.stdout, "%s: %s: %d snapshot row(s) + %d transaction(s)%s (watermark → %d)\n",
+			r.verb, res.SourceID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res),
+			res.ChangeNumberAfter)
+	}
+}
+
+// realizedLotsNote is the realized-lot count for a load line, empty for
+// a source that states none.
+func realizedLotsNote(r *loader.LoadResult) string {
+	if r.RealizedLotsLoaded == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" + %d realized lot(s)", r.RealizedLotsLoaded)
+}
+
+// finish ends a load once its sources are in: the config stamps, then
+// carry when it is set, then the gold passes. A failed stamp or pass is
+// reported and does not stop the rest; the failures come back joined.
+// A failed carry stops the run and comes back alone.
+func (r loadRun) finish(ctx context.Context, db *sql.DB, carry func() error) error {
+	stampErr := stampConfig(ctx, db, r.cfg, r.in, r.verb, r.stdout, r.stderr)
+	if carry != nil {
+		if err := carry(); err != nil {
+			return err
+		}
+	}
+	return errors.Join(stampErr, runGoldPasses(ctx, db, r.cfg, r.in.enrichment, r.verb, r.stdout, r.stderr))
 }
 
 // sourceArg reads the `<silver_source_id> | -a` argument the
@@ -108,22 +222,6 @@ func sourceArg(fs *flag.FlagSet, all bool, cmd string) (string, error) {
 	}
 	fs.Usage()
 	return "", errs.Newf(errs.ExitUsage, "%s: expected one silver_source_id or -a", cmd)
-}
-
-// selectSources is the configured sources a load or reload covers:
-// every one for id "" (-a), else the one id names.
-func selectSources(cfg *config.Config, id, cmd string) ([]config.SilverSource, error) {
-	if id == "" {
-		if len(cfg.SilverSources) == 0 {
-			return nil, fmt.Errorf("%s: -a passed but no silver sources are configured", cmd)
-		}
-		return cfg.SilverSources, nil
-	}
-	s, ok := cfg.Lookup(id)
-	if !ok {
-		return nil, fmt.Errorf("%s: silver source %q not found in config", cmd, id)
-	}
-	return []config.SilverSource{*s}, nil
 }
 
 // stampConfig writes what gold takes from the config once the sources
@@ -222,17 +320,23 @@ type enrichmentLedgers struct {
 }
 
 // loadInputs is what a load or reload applies beside the sources, read
-// before gold is opened read-write: the enrichment ledgers, the exposure
-// rows with the declarations ledger, and the yield rows.
+// before gold is opened read-write: the equity-transfer ledger by
+// source, the enrichment ledgers, the exposure rows with the
+// declarations ledger, and the yield rows.
 type loadInputs struct {
+	transfers  map[string][]loader.TransferEntry
 	enrichment enrichmentLedgers
 	exposure   canonical.ExposureRows
 	yield      canonical.YieldRows
 }
 
-// readLoadInputs reads the loadInputs (parseEnrichmentLedgers,
-// config.ExposureRows, config.YieldRows).
+// readLoadInputs reads the loadInputs (loader.ParseTransferLedger,
+// parseEnrichmentLedgers, config.ExposureRows, config.YieldRows).
 func readLoadInputs(cfg *config.Config) (loadInputs, error) {
+	transfers, err := loader.ParseTransferLedger(cfg.EquityTransfers)
+	if err != nil {
+		return loadInputs{}, err
+	}
 	enrichment, err := parseEnrichmentLedgers(cfg)
 	if err != nil {
 		return loadInputs{}, err
@@ -241,7 +345,7 @@ func readLoadInputs(cfg *config.Config) (loadInputs, error) {
 	if err != nil {
 		return loadInputs{}, err
 	}
-	return loadInputs{enrichment: enrichment, exposure: exposure, yield: cfg.YieldRows()}, nil
+	return loadInputs{transfers: transfers, enrichment: enrichment, exposure: exposure, yield: cfg.YieldRows()}, nil
 }
 
 // parseEnrichmentLedgers reads the ledgers the pass applies. Every
@@ -604,26 +708,6 @@ func buildSourceSpec(
 		spec.Supersession = ends
 	}
 	return spec, nil
-}
-
-// realizedLotsNote is the realized-lot count for a load line, empty for
-// a source that states none.
-func realizedLotsNote(r *loader.LoadResult) string {
-	if r.RealizedLotsLoaded == 0 {
-		return ""
-	}
-	return fmt.Sprintf(" + %d realized lot(s)", r.RealizedLotsLoaded)
-}
-
-func printLoadResult(w io.Writer, r *loader.LoadResult) {
-	switch {
-	case r.AlreadyUpToDate:
-		fmt.Fprintf(w, "load: %s: up-to-date (watermark %d)\n", r.SourceID, r.ChangeNumberAfter)
-	default:
-		fmt.Fprintf(w, "load: %s: %d snapshot row(s) + %d transaction(s)%s (watermark %d → %d)\n",
-			r.SourceID, r.SnapshotsLoaded, r.TransactionsLoaded, realizedLotsNote(r),
-			r.ChangeNumberBefore, r.ChangeNumberAfter)
-	}
 }
 
 // runClassPass reads OpenFIGI's security types over the classes of the

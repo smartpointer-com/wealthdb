@@ -209,12 +209,13 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	// ends in a rename — anything stored after that read would be
 	// swapped away and still reported as stored.
 	openMode := gold.ModeReadWrite
-	var enrichment enrichmentLedgers
+	var in loadInputs
 	if *dryRun {
 		openMode = gold.ModeReadOnly
-	} else if enrichment, err = parseEnrichmentLedgers(cfg); err != nil {
-		// Only a real run applies the ledgers, and it reads them before
-		// gold is opened read-write (parseEnrichmentLedgers).
+	} else if in, err = readLoadInputs(cfg); err != nil {
+		// Only a real run stamps the config and applies the ledgers,
+		// and it reads them before gold is opened read-write
+		// (readLoadInputs).
 		return err
 	}
 	db, lock, err := openGoldForOverlay(ctx, g, cfg.GoldDB, "categorize", defaultMissingGoldMsg, "see the plan", *dryRun)
@@ -239,11 +240,15 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	// plan below is as of the last load either way.
 	//
 	// It runs ONCE for both families, because it writes both overlays
-	// in one transaction.
+	// in one transaction. The config stamp comes first, as on a load:
+	// a rule's far account is a declared account, which reaches the
+	// accounts dimension only through the stamp.
 	if *dryRun {
 		fmt.Fprintln(stdout, "categorize: dry-run — gold opened read-only, so the deterministic pass did NOT run.")
 		fmt.Fprintln(stdout, "categorize: the candidate set below is AS OF THE LAST LOAD; a real run re-asserts it first.")
-	} else if err := runEnrichmentPass(ctx, db, cfg, enrichment, stdout); err != nil {
+	} else if err := stampConfig(ctx, db, cfg, in, "categorize", stdout, stderr); err != nil {
+		return err
+	} else if err := runEnrichmentPass(ctx, db, cfg, in.enrichment, stdout); err != nil {
 		return err
 	}
 

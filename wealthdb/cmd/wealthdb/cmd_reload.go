@@ -7,9 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strings"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
@@ -72,15 +70,7 @@ or below the high watermark. Reload forces a full re-projection.`)
 	if err != nil {
 		return err
 	}
-	ledger, err := loader.ParseTransferLedger(cfg.EquityTransfers)
-	if err != nil {
-		return err
-	}
-	in, err := readLoadInputs(cfg)
-	if err != nil {
-		return err
-	}
-	targets, err := reloadTargets(cfg, ids)
+	run, specs, err := prepareLoad(cfg, "reload", ids, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -99,10 +89,10 @@ or below the high watermark. Reload forces a full re-projection.`)
 
 	// Default '-a': build a fresh file from scratch and swap it in.
 	if *all && !*inPlace {
-		return reloadFreshAndSwap(ctx, cfg, targets, ledger, in, stdout, stderr)
+		return reloadFreshAndSwap(ctx, run, specs)
 	}
 
-	return reloadInPlace(ctx, cfg, targets, ledger, in, stdout, stderr)
+	return reloadInPlace(ctx, run, specs)
 }
 
 // reloadIDs is the sources a reload names: nil for -a, otherwise the
@@ -129,38 +119,25 @@ func reloadIDs(fs *flag.FlagSet, all bool) ([]string, error) {
 	return ids, nil
 }
 
-// reloadTargets is every configured source for ids nil (-a), or the
-// named sources in that order. A missing id fails before any source
-// is reset.
-func reloadTargets(cfg *config.Config, ids []string) ([]config.SilverSource, error) {
-	if ids == nil {
-		return selectSources(cfg, "", "reload")
-	}
-	out := make([]config.SilverSource, 0, len(ids))
-	for _, id := range ids {
-		s, err := selectSources(cfg, id, "reload")
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, s...)
-	}
-	return out, nil
-}
-
 // reloadFreshAndSwap builds a complete gold DB from every target
 // source into a fresh temp file and atomically swaps it over the live
 // path. The temp starts empty, so no per-source reset is needed; the
 // load repopulates load_audit / silver_sources exactly as a live
 // reset+load would. If any source fails to build, the error is
-// surfaced and the live DB is left untouched (no swap).
-func reloadFreshAndSwap(
-	ctx context.Context,
-	cfg *config.Config,
-	targets []config.SilverSource,
-	ledger map[string][]loader.TransferEntry,
-	in loadInputs,
-	stdout, stderr io.Writer,
-) error {
+// surfaced and nothing is swapped: the live DB keeps its rows.
+func reloadFreshAndSwap(ctx context.Context, run loadRun, specs []loader.SourceSpec) error {
+	// Migrate the outgoing file first, as any load does, by opening it
+	// read-write once. Both files then have one schema, and the carry
+	// copies each store by name. A build that fails after this leaves
+	// the live file migrated, as a failed load does.
+	live, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(run.cfg.GoldDB, gold.ModeReadWrite) })
+	if err != nil {
+		return errs.Wrap(errs.ExitOpenFailed, err)
+	}
+	if err := live.Close(); err != nil {
+		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("close migrated gold: %w", err))
+	}
+
 	var buildErr error
 	build := func(tmp string) error {
 		db, err := gold.Open(tmp, gold.ModeReadWrite)
@@ -169,81 +146,29 @@ func reloadFreshAndSwap(
 		}
 		// The temp DB is empty, so no per-source reset is needed —
 		// each Load registers the source and populates its rows fresh.
-		ld := loader.New(db)
-		var firstErr error
-		for _, s := range targets {
-			spec, err := buildSourceSpec(s, cfg, ledger)
-			if err != nil {
-				fmt.Fprintf(stderr, "reload: %s: %s\n", s.ID, err.Error())
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			res, err := ld.Load(ctx, spec)
-			if err != nil {
-				fmt.Fprintf(stderr, "reload: %s: load: %s\n", s.ID, err.Error())
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			fmt.Fprintf(stdout, "reload: %s: %d snapshot row(s) + %d transaction(s)%s (watermark → %d)\n",
-				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res), res.ChangeNumberAfter)
+		firstErr := run.sources(ctx, loader.New(db), specs, false)
+		// Carry the paid-for stores over from the outgoing file, between
+		// the config stamps and the passes. A hard error: those verdicts
+		// were bought from a model and have no config backup to re-stamp
+		// them from. Both spending families have one and so does symbol
+		// resolution, and a store missing from the list is lost silently
+		// — which is why the list is walked rather than one store named.
+		//
+		// The passes run AFTER the carry: the signature-version re-key
+		// reads the stores, and a pass that ran before the carry would
+		// see them empty and carry nothing forward. Before the
+		// CHECKPOINT, so the swapped-in file has had every pass rather
+		// than needing a follow-up load to become correct.
+		var carryErr error
+		finishErr := run.finish(ctx, db, func() error {
+			carryErr = carryStores(ctx, db, run.cfg.GoldDB, run.stdout, run.stderr)
+			return carryErr
+		})
+		if carryErr != nil {
+			_ = db.Close()
+			return carryErr
 		}
-		firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, in, "reload", stdout, stderr))
-		// Carry the paid-for stores over from the outgoing file. A hard
-		// error: those verdicts were bought from a model and have no
-		// config backup to re-stamp them from. Both spending families
-		// have one and so does symbol resolution, and a store missing
-		// from the list is lost silently — which is why the list is
-		// walked rather than one store named.
-		var present bool
-		var carried int
-		for _, store := range paidStores {
-			present, carried, err = carryVerdictStore(ctx, db, cfg.GoldDB, store)
-			if err != nil {
-				_ = db.Close()
-				return err
-			}
-			switch {
-			case carried > 0:
-				fmt.Fprintf(stdout, "reload: carried %d %s verdict(s) across the rebuild\n", carried, store.noun)
-			case present:
-				fmt.Fprintf(stdout, "reload: outgoing gold's %s store is empty; nothing to carry\n", store.noun)
-			default:
-				fmt.Fprintf(stdout, "reload: outgoing gold has no %s store; nothing to carry\n", store.noun)
-			}
-			if carried == 0 {
-				continue
-			}
-			respelled, err := respellRetiredVerdicts(ctx, db, store)
-			if err != nil {
-				_ = db.Close()
-				return err
-			}
-			if respelled > 0 {
-				fmt.Fprintf(stdout, "reload: respelled %d carried %s verdict(s) whose value the taxonomy retired\n",
-					respelled, store.noun)
-			}
-		}
-		// The cash-flow boundary comes across too. The enrichment pass
-		// rewrites it whole, but it reads an empty one as the first pass
-		// ever to stamp it and says every earlier report was wrong. The
-		// outgoing gold's boundary makes that true only where it had
-		// none. Not carrying it costs a false notice, never a figure, so
-		// a failure here warns and the rebuild goes on.
-		if _, _, err := carryVerdictStore(ctx, db, cfg.GoldDB, boundaryStamp); err != nil {
-			fmt.Fprintf(stderr, "reload: the cash-flow boundary did not carry across (%s); "+
-				"the load may call itself its first pass\n", err.Error())
-		}
-		// Run runGoldPasses AFTER the stores have been carried across:
-		// the signature-version re-key reads that store, and a pass
-		// that ran before the carry would see it empty and carry
-		// nothing forward. Before the CHECKPOINT, so the swapped-in
-		// file has had every pass rather than needing a follow-up
-		// load to become correct.
-		firstErr = errors.Join(firstErr, runGoldPasses(ctx, db, cfg, in.enrichment, "reload", stdout, stderr))
+		firstErr = errors.Join(firstErr, finishErr)
 		// Checkpoint then close so the temp file is complete and clean
 		// (no leftover WAL) before it is verified and swapped.
 		if _, err := db.ExecContext(ctx, "CHECKPOINT"); err != nil {
@@ -259,53 +184,75 @@ func reloadFreshAndSwap(
 		return firstErr
 	}
 
-	reclaimed, err := gold.BuildFreshAndSwap(ctx, cfg.GoldDB, build)
+	reclaimed, err := gold.BuildFreshAndSwap(ctx, run.cfg.GoldDB, build)
 	if err != nil {
 		if buildErr != nil {
-			// A source failed to build; the live DB is untouched.
+			// A source failed to build; nothing was swapped.
 			return buildErr
 		}
 		return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("reload -a: %w", err))
 	}
-	fmt.Fprintf(stdout, "reload: rebuilt gold from %d source(s), reclaimed %s\n",
-		len(targets), formatBytes(reclaimed))
+	fmt.Fprintf(run.stdout, "reload: rebuilt gold from %d source(s), reclaimed %s\n",
+		len(specs), formatBytes(reclaimed))
 	return nil
 }
 
-// paidStore names one paid-for verdict store: the table, the word its
-// rows are about, its key column — which the carry-across checks for
-// by name, since a store whose key did not survive into the rebuilt
-// schema cannot be carried at all — and the column holding its
-// taxonomy value, which the carry respells (respellRetiredVerdicts).
-// A store whose verdicts are not taxonomy values leaves it empty.
+// carryStores carries every paid store, then the cash-flow boundary,
+// from the outgoing gold file at livePath into the rebuilt one, and
+// says what each carried.
+func carryStores(ctx context.Context, db *sql.DB, livePath string, stdout, stderr io.Writer) error {
+	for _, store := range paidStores {
+		carried, err := carryVerdictStore(ctx, db, livePath, store)
+		if err != nil {
+			return err
+		}
+		if carried > 0 {
+			fmt.Fprintf(stdout, "reload: carried %d %s verdict(s) across the rebuild\n", carried, store.noun)
+		} else {
+			fmt.Fprintf(stdout, "reload: outgoing gold's %s store is empty; nothing to carry\n", store.noun)
+		}
+	}
+	// The cash-flow boundary comes across too. The enrichment pass
+	// rewrites it whole, but it reads an empty one as the first pass
+	// ever to stamp it and says every earlier report was wrong. The
+	// outgoing gold's boundary makes that true only where it had
+	// none. Not carrying it costs a false notice, never a figure, so
+	// a failure here warns and the rebuild goes on.
+	if _, err := carryVerdictStore(ctx, db, livePath, boundaryStamp); err != nil {
+		fmt.Fprintf(stderr, "reload: the cash-flow boundary did not carry across (%s); "+
+			"the load may call itself its first pass\n", err.Error())
+	}
+	return nil
+}
+
+// paidStore names one paid-for verdict store: the table and the word
+// its rows are about.
 type paidStore struct {
-	table     string
-	noun      string
-	signature string
-	category  string
+	table string
+	noun  string
 }
 
 // paidStores is every store `reload -a` must carry. Adding a family
 // means adding a row here; a store left out is lost on the next
 // rebuild, silently and with nothing to restore it from.
 var paidStores = []paidStore{
-	{"spend_merchant_categories", "merchant", "merchant_signature", "spend_detailed"},
-	{"income_payer_categories", "payer", "payer_signature", "income_detailed"},
+	{"spend_merchant_categories", "merchant"},
+	{"income_payer_categories", "payer"},
 	// Symbol resolutions are per-source rather than global, and they
 	// resolve an instrument rather than categorise a counterparty, but
 	// they are paid for by the same model and regenerated by nothing.
-	{"symbol_resolutions", "symbol", "lookup_value", ""},
+	{"symbol_resolutions", "symbol"},
 }
 
 // boundaryStamp is the cash-flow boundary (cashflow_wrapper_sides), carried
 // the way a paid store is, so the rebuilt file starts with the outgoing
 // file's rows. It is in no list of paid stores: the enrichment pass
 // re-stamps it from the config.
-var boundaryStamp = paidStore{"cashflow_wrapper_sides", "boundary", "tax_wrapper", ""}
+var boundaryStamp = paidStore{"cashflow_wrapper_sides", "boundary"}
 
 // carryVerdictStore copies one global verdict store out of the
-// outgoing gold file into the freshly built one, and reports whether
-// the outgoing file had the table at all and how many rows it carried.
+// outgoing gold file into the freshly built one, and reports how many
+// rows it carried.
 //
 // 'reload -a' builds an empty temp file and swaps it over the live
 // path, and the verdict stores are the one thing in gold that a
@@ -315,237 +262,33 @@ var boundaryStamp = paidStore{"cashflow_wrapper_sides", "boundary", "tax_wrapper
 // exists only in its store and was paid for. Without this
 // carry-across, routine compaction-by-reload would silently wipe it.
 //
-// The copied column list is derived — the intersection of the two
-// files' columns, read from duckdb_columns() — rather than named in
-// Go, so neither drift direction needs a Go-side edit: a column a
-// later migration adds is carried as soon as both files have it, and
-// a column only the outgoing file has is left behind instead of
-// raising a binder error.
-//
-// The intersection alone does not make the live-behind direction
-// SAFE, only silent: a column the rebuilt schema requires and the
-// outgoing file does not have yet is dropped from the SELECT and then
-// fails the target table's NOT NULL on INSERT. Nearly every column of
-// these tables is NOT NULL, so that is the normal shape of the next
-// additive migration met by a live file no load has touched since. Such
-// columns are therefore named in an error before the INSERT runs,
-// rather than surfacing as a constraint violation with nothing
-// actionable in it.
+// The outgoing file was migrated before the build, so the two copies
+// of the store have one schema and the rows copy by name.
 //
 // ATTACH is per-connection, so the sequence runs on one pinned conn.
-// A live file predating the store's own migration — 0041 for the
-// merchant store, 0070 for the payer store — has no such table, which
-// carries nothing rather than erroring.
-func carryVerdictStore(ctx context.Context, db *sql.DB, livePath string, store paidStore) (bool, int, error) {
+func carryVerdictStore(ctx context.Context, db *sql.DB, livePath string, store paidStore) (int, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return false, 0, fmt.Errorf("pin connection for the %s-store carry-across: %w", store.noun, err)
+		return 0, fmt.Errorf("pin connection for the %s-store carry-across: %w", store.noun, err)
 	}
 	defer conn.Close()
 
 	if _, err := conn.ExecContext(ctx,
 		"ATTACH "+sqlLiteral(livePath)+" AS live_gold (READ_ONLY)"); err != nil {
-		return false, 0, fmt.Errorf("attach live gold for the %s-store carry-across: %w", store.noun, err)
+		return 0, fmt.Errorf("attach live gold for the %s-store carry-across: %w", store.noun, err)
 	}
 	defer func() { _, _ = conn.ExecContext(ctx, "DETACH live_gold") }()
 
-	var tables int
-	if err := conn.QueryRowContext(ctx, `
-        SELECT count(*) FROM duckdb_tables()
-         WHERE database_name = 'live_gold'
-           AND table_name = ?`, store.table).Scan(&tables); err != nil {
-		return false, 0, fmt.Errorf("probe live gold for the %s store: %w", store.noun, err)
-	}
-	if tables == 0 {
-		return false, 0, nil
-	}
-
-	// An outgoing store with no rows carries nothing, so it also
-	// cannot lose anything — it takes the column check with it, and a
-	// routine rebuild is not blocked over rows that do not exist.
-	var live int
-	if err := conn.QueryRowContext(ctx,
-		"SELECT count(*) FROM live_gold."+store.table).Scan(&live); err != nil {
-		return true, 0, fmt.Errorf("count the outgoing %s store: %w", store.noun, err)
-	}
-	if live == 0 {
-		return true, 0, nil
-	}
-
-	if err := checkStoreColumnsSatisfiable(ctx, conn, store); err != nil {
-		return true, 0, err
-	}
-	columns, err := carriedStoreColumns(ctx, conn, store)
-	if err != nil {
-		return true, 0, err
-	}
-
 	res, err := conn.ExecContext(ctx,
-		"INSERT INTO "+store.table+" ("+columns+") "+
-			"SELECT "+columns+" FROM live_gold."+store.table)
+		"INSERT INTO "+store.table+" BY NAME SELECT * FROM live_gold."+store.table)
 	if err != nil {
-		return true, 0, fmt.Errorf("carry the %s store across the rebuild: %w", store.noun, err)
+		return 0, fmt.Errorf("carry the %s store across the rebuild: %w", store.noun, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return true, 0, fmt.Errorf("count the carried %s store: %w", store.noun, err)
+		return 0, fmt.Errorf("count the carried %s store: %w", store.noun, err)
 	}
-	return true, int(n), nil
-}
-
-// respellRetiredVerdicts moves every carried verdict whose value the
-// taxonomy retired to the value that replaced it in stored data
-// (canonical.RetiredDetailed's Successor), and reports how many rows
-// it rewrote.
-//
-// A migration that respells stored verdicts (0111) never reaches the
-// rows a rebuild carries. It ran on the rebuilt file before they
-// arrived, and a rebuild attaches the outgoing file read-only, so it
-// never migrates that one either. A carry from a file that predates
-// the migration would bring the retired spellings across verbatim,
-// into a store whose taxonomy no longer holds them and whose reports
-// cannot show them. This applies the migration's table to the carried
-// rows.
-//
-// The values are read from the store rather than listed, so a later
-// retirement needs only its canonical entry.
-func respellRetiredVerdicts(ctx context.Context, db *sql.DB, store paidStore) (int, error) {
-	if store.category == "" {
-		return 0, nil
-	}
-	retired, err := retiredValuesIn(ctx, db, store)
-	if err != nil {
-		return 0, err
-	}
-	total := 0
-	for _, value := range retired {
-		r, _ := canonical.RetiredDetailed(value)
-		res, err := db.ExecContext(ctx,
-			"UPDATE "+store.table+" SET "+store.category+" = ? WHERE "+store.category+" = ?",
-			r.Successor, value)
-		if err != nil {
-			return 0, fmt.Errorf("respell the carried %s verdicts on %s: %w", store.noun, value, err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return 0, fmt.Errorf("count the respelled %s verdicts: %w", store.noun, err)
-		}
-		total += int(n)
-	}
-	return total, nil
-}
-
-// retiredValuesIn returns the distinct retired spellings one store's
-// taxonomy column holds.
-func retiredValuesIn(ctx context.Context, db *sql.DB, store paidStore) ([]string, error) {
-	rows, err := db.QueryContext(ctx,
-		"SELECT DISTINCT "+store.category+" FROM "+store.table+" WHERE "+store.category+" IS NOT NULL")
-	if err != nil {
-		return nil, fmt.Errorf("read the carried %s store's values: %w", store.noun, err)
-	}
-	defer rows.Close()
-	var retired []string
-	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
-			return nil, fmt.Errorf("scan the carried %s store's values: %w", store.noun, err)
-		}
-		if _, ok := canonical.RetiredDetailed(value); ok {
-			retired = append(retired, value)
-		}
-	}
-	return retired, rows.Err()
-}
-
-// checkStoreColumnsSatisfiable refuses the carry-across when the
-// rebuilt store requires a column the outgoing one cannot
-// supply: NOT NULL, no default, and absent from the outgoing table.
-// The intersection drops such a column from both sides of the INSERT,
-// which leaves the target table to reject the row — a constraint
-// error naming nothing actionable, in the middle of a rebuild. Named
-// here instead, together with the command that fixes it: a read-write
-// open migrates the live file, and 'reload -a' never opens it that
-// way.
-func checkStoreColumnsSatisfiable(ctx context.Context, conn *sql.Conn, store paidStore) error {
-	rows, err := conn.QueryContext(ctx, `
-        SELECT f.column_name
-          FROM duckdb_columns() f
-         WHERE f.database_name  = current_database()
-           AND f.table_name     = ?
-           AND NOT f.is_nullable
-           AND f.column_default IS NULL
-           AND f.column_name NOT IN (
-                 SELECT l.column_name
-                   FROM duckdb_columns() l
-                  WHERE l.database_name = 'live_gold'
-                    AND l.table_name    = ?)
-         ORDER BY f.column_index`, store.table, store.table)
-	if err != nil {
-		return fmt.Errorf("compare the %s store's required columns: %w", store.noun, err)
-	}
-	defer rows.Close()
-
-	var missing []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("scan the %s store's required columns: %w", store.noun, err)
-		}
-		missing = append(missing, name)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf("the outgoing gold's %s store (%s) has no %s column(s), which the rebuilt schema "+
-		"requires (NOT NULL, no default); run 'wealthdb load <silver_source_id>' first — it opens the live "+
-		"file read-write and migrates it — then re-run 'reload -a'",
-		store.noun, store.table, strings.Join(missing, ", "))
-}
-
-// carriedStoreColumns returns the quoted, comma-joined column list the
-// two copies of ONE verdict store have in common — the freshly built
-// one (current_database(), which resolves to the rebuild temp file even
-// with live_gold attached) intersected with the outgoing one, in the
-// new table's own column order.
-func carriedStoreColumns(ctx context.Context, conn *sql.Conn, store paidStore) (string, error) {
-	rows, err := conn.QueryContext(ctx, `
-        SELECT f.column_name
-          FROM duckdb_columns() f
-          JOIN duckdb_columns() l
-            ON l.database_name = 'live_gold'
-           AND l.table_name    = ?
-           AND l.column_name   = f.column_name
-         WHERE f.database_name = current_database()
-           AND f.table_name    = ?
-         ORDER BY f.column_index`, store.table, store.table)
-	if err != nil {
-		return "", fmt.Errorf("read the %s store's columns: %w", store.noun, err)
-	}
-	defer rows.Close()
-
-	var quoted []string
-	keyed := false
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return "", fmt.Errorf("scan the %s store's columns: %w", store.noun, err)
-		}
-		if name == store.signature {
-			keyed = true
-		}
-		quoted = append(quoted, `"`+strings.ReplaceAll(name, `"`, `""`)+`"`)
-	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-	if !keyed {
-		return "", fmt.Errorf("the outgoing %s store shares no key column with the rebuilt one; refusing to carry it",
-			store.noun)
-	}
-	return strings.Join(quoted, ", "), nil
+	return int(n), nil
 }
 
 // reloadInPlace resets and loads each source on the live DB, for
@@ -553,59 +296,13 @@ func carriedStoreColumns(ctx context.Context, conn *sql.Conn, store paidStore) (
 // need no carry-across here: the live file is never replaced, and
 // Reset leaves both of them alone. The gold passes run once, after
 // every named source has loaded.
-func reloadInPlace(
-	ctx context.Context,
-	cfg *config.Config,
-	targets []config.SilverSource,
-	ledger map[string][]loader.TransferEntry,
-	in loadInputs,
-	stdout, stderr io.Writer,
-) error {
-	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(cfg.GoldDB, gold.ModeReadWrite) })
+func reloadInPlace(ctx context.Context, run loadRun, specs []loader.SourceSpec) error {
+	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(run.cfg.GoldDB, gold.ModeReadWrite) })
 	if err != nil {
 		return errs.Wrap(errs.ExitOpenFailed, err)
 	}
 	defer db.Close()
 
-	ld := loader.New(db)
-	var firstErr error
-	for _, s := range targets {
-		// Reset is best-effort per source — surface failures but
-		// keep going so '-a' isn't blocked by a single bad source.
-		if err := ld.Reset(ctx, s.ID); err != nil {
-			fmt.Fprintf(stderr, "reload: %s: reset: %s\n", s.ID, err.Error())
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		spec, err := buildSourceSpec(s, cfg, ledger)
-		if err != nil {
-			fmt.Fprintf(stderr, "reload: %s: %s\n", s.ID, err.Error())
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		res, err := ld.Load(ctx, spec)
-		if err != nil {
-			fmt.Fprintf(stderr, "reload: %s: load: %s\n", s.ID, err.Error())
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		switch {
-		case res.AlreadyUpToDate:
-			// Vacuously true after a reset — silver has no
-			// changes for an empty watermark, e.g. no dump_runs.
-			fmt.Fprintf(stdout, "reload: %s: reset; nothing to load (watermark %d)\n",
-				s.ID, res.ChangeNumberAfter)
-		default:
-			fmt.Fprintf(stdout, "reload: %s: reset + %d snapshot row(s) + %d transaction(s)%s (watermark → %d)\n",
-				s.ID, res.SnapshotsLoaded, res.TransactionsLoaded, realizedLotsNote(res), res.ChangeNumberAfter)
-		}
-	}
-	firstErr = errors.Join(firstErr, stampConfig(ctx, db, cfg, in, "reload", stdout, stderr))
-	return errors.Join(firstErr, runGoldPasses(ctx, db, cfg, in.enrichment, "reload", stdout, stderr))
+	firstErr := run.sources(ctx, loader.New(db), specs, true)
+	return errors.Join(firstErr, run.finish(ctx, db, nil))
 }

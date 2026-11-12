@@ -1821,3 +1821,46 @@ func TestRefineBacklogAsksOnlyWhereTheModelGaveUp(t *testing.T) {
 		t.Error("backlogOf does not map the flags to the backlogs they name")
 	}
 }
+
+// TestCategorizeStampsTheConfigBeforeThePass: a real run stamps the
+// config before its deterministic pass, as a load does. A rule's far
+// account is a declared account, and one the config gained since the
+// last load reaches the accounts dimension only through that stamp.
+func TestCategorizeStampsTheConfigBeforeThePass(t *testing.T) {
+	t.Parallel()
+	cfg := setupCLITest(t)
+	enableCategorization(t, cfg)
+	if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
+		t.Fatalf("init failed: %s", se)
+	}
+	if _, se, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatalf("load failed: %s", se)
+	}
+
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatalf("read cfg: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("parse cfg: %v", err)
+	}
+	m["declared_accounts"] = map[string]any{
+		"DECL0001": map[string]any{"account_kind": "cash", "tax_wrapper": "taxable_personal"},
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("encode cfg: %v", err)
+	}
+	if err := os.WriteFile(cfg, out, 0o644); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	if _, se, code := run(t, "-c", cfg, "categorize"); code != 0 {
+		t.Fatalf("categorize: exit %d, stderr=%s", code, se)
+	}
+	if n := countGold(t, goldPathFromCfg(cfg), `SELECT COUNT(*) FROM accounts
+            WHERE silver_source_id = '`+canonical.DeclaredSourceID+`' AND account_external_id = 'DECL0001'`); n != 1 {
+		t.Errorf("declared account rows after categorize = %d, want 1 (stamped before the pass)", n)
+	}
+}

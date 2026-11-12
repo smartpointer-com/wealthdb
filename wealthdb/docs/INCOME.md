@@ -333,8 +333,8 @@ Migration 0111 moves each stored verdict to the first value in its row
 above. A stored verdict of the split value therefore reads
 `INCOME_CHILD_SUPPORT`. A config rule on the payer's narrative moves a
 payer of maintenance to `INCOME_ALIMONY`, and a pin moves one payment.
-`reload -a` respells the payer store it carries across the same way
-(§9).
+`reload -a` migrates the outgoing file before it carries the payer store
+across, so the carried store is respelled too (§9).
 
 A verdict placed under the wider meaning of a narrowed value keeps it.
 Examples:
@@ -701,10 +701,11 @@ Everything in SPENDING.md §8 holds, with the income names:
 
 `reload -a` carries the payer store across beside the merchant store. A
 store that is not carried is lost with no backup, so the rebuild walks
-a list of stores rather than naming one. After carrying a store, the
-rebuild respells any retired value in it to its successor (§2). So a
-carry from a file older than migration 0111 brings no retired spelling
-into the rebuilt file.
+a list of stores rather than naming one. The rebuild first migrates the
+outgoing file, as any load does. Both files then have one schema, and
+each store is copied by name. A file older than migration 0111 is
+respelled by that migration (§2), so no retired spelling reaches the
+rebuilt file.
 
 `wealthdb status -v` prints an `income:` block with the backlog count.
 The catch-all-kind counter (`excluded_unmapped`) is not repeated per
