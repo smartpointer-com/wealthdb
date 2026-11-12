@@ -41,7 +41,7 @@ type PositionRow struct {
 	ValueOutCcy *string
 	// The cost basis the source states (gold's book_value), in the
 	// position's currency and converted like ValueOutCcy, with the
-	// figures derived from it (migration 0116, docs/GAINS.md). The
+	// figures derived from it (docs/GAINS.md). The
 	// basis fields are nil on a cash row and wherever the source states
 	// no basis, and the unrealized gain is nil too on a line no cost
 	// basis describes, such as a mortgage. AccruedInterest is the
@@ -67,10 +67,10 @@ type PositionRow struct {
 // PositionsAsOf returns the consolidated portfolio as of the given
 // Unix-seconds timestamp, with market_value converted to outCcy and a
 // missing cost basis read as missing says. For each account, the rows
-// of its active snapshot at asOf (migration 0140) are returned, sorted by
+// of its active snapshot at asOf (pos_active_at) are returned, sorted by
 // (silver_source_id, account_external_id, position_key). FX (and
 // everything else) is computed in SQL by the report_positions table
-// macro (migration 0123); this is just the scan. See docs/DESIGN.md
+// macro (derived/30_holdings.sql); this is just the scan. See docs/DESIGN.md
 // §10.1.
 func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, missing lots.MissingBasis) ([]PositionRow, error) {
 	return scanPositionRows(ctx, db, "PositionsAsOf",

@@ -20,7 +20,7 @@ import (
 //     own account (SameAccountReversals, with TransferLeg.Signature and
 //     Reversal from reversalRe);
 //   - the pool spans every account in gold, and its kind filter is the
-//     spend_matcher_pool macro's own (migration 0044);
+//     spend_matcher_pool macro's own;
 //   - amounts and currencies are native, converted only in the converted
 //     phase, for a pair a narrative names (gold.MatchedByConversion);
 //   - legs carry the reference a source stamped on both halves

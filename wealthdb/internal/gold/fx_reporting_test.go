@@ -10,7 +10,7 @@ import (
 )
 
 // reportingCurrencies is the set the `_multi` macros emit a column set
-// for (migration 0114) — the same set the returns materializer writes.
+// for — the same set the returns materializer writes.
 var reportingCurrencies = materializeCurrencies
 
 // seedReportingFX lays down a rate history that reaches every path the

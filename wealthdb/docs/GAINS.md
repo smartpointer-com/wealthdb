@@ -9,7 +9,8 @@ from it.
 
 Related design: DESIGN.md §4.15 (the `gains` command), §7.1 (accrued
 income), §7.4 (cost basis), §10.13 (the report macros), docs/LOTS.md
-(the lot engine), and migrations 0116 to 0121.
+(the lot engine), `derived/50_gains.sql` (the macros), and migrations
+0117, 0118, 0120 and 0121 (the tables).
 
 Every figure here is a sum or a difference of figures a source states,
 or that the lot engine rebuilt from the trades where a source states

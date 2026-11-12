@@ -35,7 +35,7 @@ import (
 //
 // A `reimburse` line pairs no transfer. It names a repayment and the
 // outflow it repays, both legs required, so the repayment nets against
-// that outflow's spending category (gold migration 0160). The matcher and
+// that outflow's spending category (spend_reimbursements). The matcher and
 // the returns engine skip it; the spending pass resolves it
 // (spending.resolveReimbursements).
 

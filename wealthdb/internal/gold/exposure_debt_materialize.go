@@ -89,7 +89,7 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
 // exposureSecuritiesSQL is the instant's report_exposure_securities rows
 // per reporting currency, cut by source, tax wrapper and the leaf's asset
 // class: a security's slices (migration 0165). A leaf's security is the
-// view's (report_exposure_securities, migrations 0128 and 0175): keep
+// view's (report_exposure_securities, derived/60_exposure.sql): keep
 // the CASE and the direct split the same. Each label is its largest
 // leaf's that has one, the greater label on a tie, with that leaf's
 // absolute value as its weight, so a card that takes the label of the

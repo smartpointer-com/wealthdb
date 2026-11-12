@@ -136,9 +136,9 @@ func accountsOnDay(t *testing.T, db *sql.DB, ctx context.Context, day int64) []s
 }
 
 // TestAccountHistoryKeepsBothClocks pins the account-history macros
-// against a fixture that defeats a per-source resolution (gold
-// migration 0051). A card's balances arrive on the statement clock
-// while the same source's deposit accounts are re-dumped constantly.
+// against a fixture that defeats a per-source resolution. A card's balances
+// arrive on the statement clock while the same source's deposit accounts are
+// re-dumped constantly.
 // Resolving the active snapshot per (source, ACCOUNT, day) reports
 // both accounts on every day; one active snapshot per source would
 // report only whichever of them happened to snapshot last.
@@ -459,8 +459,8 @@ func TestWebSpendingLabelsAnUnnamedAccount(t *testing.T) {
 	}
 }
 
-// TestWebSpendingLabelsAnAccountWithSourceAndKind pins what migration
-// 0063 adds. An account's own name is what its institution calls it and
+// TestWebSpendingLabelsAnAccountWithSourceAndKind pins account_label.
+// An account's own name is what its institution calls it and
 // no more: a bar reading `Checking` says neither which bank it belongs
 // to nor whether the money left a deposit account or a card, and the
 // names collide across sources. The label carries all three, name
@@ -509,7 +509,7 @@ func TestWebSpendingLabelsAnAccountWithSourceAndKind(t *testing.T) {
 	}
 	// An account whose kind gold never learned still says so, rather
 	// than trailing an empty bracket or collapsing the whole label to
-	// NULL — a NULL label is the "null" bar migration 0061 removed.
+	// NULL — a NULL label would chart as a "null" bar.
 	var unknown string
 	if err := db.QueryRowContext(ctx,
 		`SELECT account_label(NULL, 'ID1', 'test-src', NULL)`).Scan(&unknown); err != nil {

@@ -315,7 +315,7 @@ check("...as stacked bands over a continuous axis",
 # The merchant rankings rank merchants. A line resolved to a delta — a
 # gift, a card bill, cash out of an ATM — is not a merchant
 # transaction, and a card bill carries the issuer it was paid to as its
-# merchant (migration 0052), so a blank merchant does not stand for
+# merchant, so a blank merchant does not stand for
 # "not a delta". Both rankings exclude the delta CATEGORIES — a
 # delta is primary-level, so the two category columns are equal on one
 # — and still require a name to rank by. Only the rankings filter: a
@@ -2695,7 +2695,7 @@ section("the Allocation dashboard's day")
 
 # Every Allocation card, on the base and the twin, reads the last day of
 # the history on or before the As of day: the picker binds the calendar
-# view (gold migration 0166), whose history day the card reads.
+# view (web_history_calendar), whose history day the card reads.
 _al_cards = [n for n, *_ in DEFS["Allocation"][3]] + [n for n, *_ in DEFS["Allocation" + p.PRIVACY_SUFFIX][3]]
 _history_day = ("(SELECT max(history_day) FROM web_history_calendar WHERE TRUE\n"
                 "     [[AND {{as_of_day}}]])")
@@ -4070,7 +4070,7 @@ def _book():
          **{f"value_{c.lower()}": v * per_usd.get(c, 1.0) for c in p.REPORTING_CURRENCIES}}
         for src, acct, _key, day, typ, v, _w in
         [*received, ("src-1", "acct-1", None, dt.date(2026, 9, 25), "salary", 1000.0, None)]])
-    # The run-rate of the pool's income lines (gold 0174): 200 a month of
+    # The run-rate of the pool's income lines: 200 a month of
     # earnings into src-1 and 10 of other receipts into src-2. The cash
     # flow projection's other_income, the statement's figure, holds a
     # reimbursement besides, which no income line holds.
@@ -4496,7 +4496,7 @@ if duckdb is not None:
           [round(a, 6) for a, _ in _paid] == [200.0, 200.0, 50.0, 0.0]
           and all(_near(b, 200.0) for _, b in _paid), _paid)
     # An account outside the pool carries its run-rate as outside_income
-    # (gold 0172): the Income cards read it beside the pool's.
+    # (web_cashflow_plan): the Income cards read it beside the pool's.
     _db.execute("BEGIN")
     _db.execute("INSERT INTO report_cashflow_plan (computed_at, currency, month, month_start, part, class,"
                 " silver_source_id, account_external_id, value, quality)"
@@ -4686,7 +4686,7 @@ if duckdb is not None:
     # for a day inside October before the refresh, the refresh from its
     # day on, a day after the history included, and nothing for a day
     # before the first instant. The day reaches it through the calendar
-    # over the history (migration 0166).
+    # over the history (web_history_calendar).
     _db.execute("CREATE TABLE serving_global_history (as_of_day BIGINT)")
     _db.execute("INSERT INTO serving_global_history SELECT epoch(d)::BIGINT"
                 " FROM range(TIMESTAMP '2026-08-01', TIMESTAMP '2026-10-22', INTERVAL 1 DAY) t(d)")
@@ -4769,7 +4769,7 @@ if duckdb is not None:
 
     # One day's positions: a stock on two accounts and one on one, both
     # sized, a stock nothing sizes, a fund, and two accounts' cash in
-    # francs (migration 0171). The size joins after the ranking, so a
+    # francs. The size joins after the ranking, so a
     # card keeps its rows, order and values; a stock on two lines stays
     # one row, and each account's cash is a row of its own.
     _db.execute("CREATE TABLE web_positions_history (as_of_day DATE, silver_source_id TEXT, tax_wrapper TEXT,"
@@ -4810,7 +4810,7 @@ if duckdb is not None:
 
     section("the Allocation by currency cards' SQL, run on an invented book")
 
-    # One day's lines by currency (migration 0171): positions and cash in
+    # One day's lines by currency: positions and cash in
     # francs and dollars on one source, euros on another. The cards sum
     # every bucket, cash included, largest first; the twin's shares total
     # 100; the Source picker narrows both.
@@ -4889,8 +4889,8 @@ if duckdb is not None:
         for _m in range(1, 37):
             # The other income's 50 a month, split by class and account
             # as gold 0169 stores it, and the income lines' run-rate: in
-            # the pool (0174) and a wage on the vehicle's account outside
-            # it (0172). No Cash Flow card reads either.
+            # the pool and a wage on the vehicle's account outside
+            # it. No Cash Flow card reads either.
             _parts = [("other_income", "earnings", "src-1", "acct-1", 30.0),
                       ("other_income", "other_receipts", "src-2", "acct-2", 20.0),
                       ("pool_income", "earnings", "src-1", "acct-1", 30.0),

@@ -427,7 +427,7 @@ alike.
 
 **The investing class has three roads, in order:**
 
-1. the trade's own exposure (migrations 0097 and 0100). A feed that
+1. the trade's own exposure (the columns of migration 0097). A feed that
    cannot name the instrument can still name what it traded;
 2. the instrument's asset class;
 3. beside an `investment` or `capital_return` verdict, the
@@ -531,15 +531,15 @@ makes readable. The two differ:
 - A **delta** is primary-level, so `card_spend`, `cash_withdrawal` and
   `other` are their own leaves either way.
 - **One detailed value is promoted**: `GENERAL_SERVICES_EDUCATION`
-  (migration 0088). `GENERAL_SERVICES` is a catch-all rather than a
+  (`cashflow_txn_nodes`). `GENERAL_SERVICES` is a catch-all rather than a
   category, and school fees are a bigger line in most households than
   several primaries that get an edge. The criterion is a property of
   the vendored vocabulary, not of any deployment's data: a detailed
   value whose primary does not describe it. Its siblings under the
   catch-all still group by primary.
 
-The vehicle classes are named for the act, not the subject (migration
-0087): **Education savings** and **Retirement savings**, not
+The vehicle classes are named for the act, not the subject
+(`cashflow_class_label`): **Education savings** and **Retirement savings**, not
 `Education` and `Retirement`. Each bare word names two things: a 529
 contribution and a tuition payment, a plan contribution and a pension.
 Those sit in different sections but would read as one node on a
@@ -1371,9 +1371,9 @@ The refresh also stores two parts this view does not read. They hold
 the income lines (§5) instead of the statement's lines, each on the
 side of the pool its day puts it:
 
-- `pool_income` (migration 0174) holds the lines in the pool. It is
+- `pool_income` holds the lines in the pool. It is
   spread over the months `other_income` is spread over.
-- `outside_income` (migration 0172) holds the lines outside the pool:
+- `outside_income` holds the lines outside the pool:
   a vehicle's, such as a wage paid into a retirement account, or one
   on an account `cashflow.accounts` fences out. Each account's sum is
   spread over the window's months from its first line outside the

@@ -39,7 +39,7 @@ func TestEveryDeltaLeavesTheFamilyBases(t *testing.T) {
 	check := func(when string) {
 		t.Helper()
 		// spending_lines_base is spending_lines_own and the linked
-		// repayments (0160); the exclusions live in the first, and a
+		// repayments; the exclusions live in the first, and a
 		// repayment's category is held to them in spend_reimbursements.
 		spending, income := body("spending_lines_own"), body("income_lines_base")
 		repaid := body("spend_reimbursements")

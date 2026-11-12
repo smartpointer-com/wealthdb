@@ -15,8 +15,10 @@ Related design:
   records;
 - [INCOME.md §12](INCOME.md#12-the-forward-views): the income
   projection;
-- migrations 0134 to 0136; 0138 for the dashboard's tables; 0141 for
-  what a fund's filing states of its lines.
+- migrations 0134 and 0135 for the tables, 0138 for the dashboard's;
+- `derived/70_yield.sql` for the holdings macro, and `fund_filing_kinds`
+  in `derived/60_exposure.sql` for what a fund's filing states of its
+  lines.
 
 Every figure belongs to one holding first. A grain sums or weighs the
 figures of its holdings, so the grains reconcile by construction. A

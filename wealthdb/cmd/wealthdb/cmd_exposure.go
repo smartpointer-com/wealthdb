@@ -20,9 +20,9 @@ import (
 
 // `wealthdb exposure <view>` — what is really owned, every fund looked
 // through to what it holds, as of a day. docs/EXPOSURE.md defines every
-// figure; the look-through is gold's (gold/exposure.go and the exposure
-// migrations), and this file is the views, their columns and the usage
-// text.
+// figure; the look-through is gold's (gold/exposure.go and
+// derived/60_exposure.sql), and this file is the views, their columns
+// and the usage text.
 //
 // The holdings idiom: a positional view and an as-of day (-d, default
 // today). --country belongs to the views that place a security in a

@@ -10,8 +10,9 @@ import (
 )
 
 // Reimbursements: a repayment nets against the outflow it answers (gold
-// migration 0160, docs/SPENDING.md §3). Two of its three roads need no pass:
-// the signature road and the merchant-store road are SQL, read at query time,
+// spend_reimbursements, docs/SPENDING.md §3). Two of its three roads need no
+// pass: the signature road and the merchant-store road are SQL, read at
+// query time,
 // so a verdict the model places later links too. The ledger road is the
 // holder naming the pair, and resolving a natural key to a transaction is the
 // pass's work, so it writes `spend_reimbursement_pairs` here.

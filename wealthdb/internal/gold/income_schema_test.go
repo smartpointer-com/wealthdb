@@ -277,9 +277,9 @@ func TestIncomeLinesBasePopulation(t *testing.T) {
 	}
 
 	// The `reward` move, asserted from both sides: the kind is income's
-	// now, and the spending population it sat in since migration 0041
-	// no longer holds it. Both accounts here are in spending's scope
-	// too — nothing excludes them — so its absence there is the move
+	// now, and the spending population does not hold it. Both accounts here
+	// are in spending's scope too — nothing excludes them — so its absence
+	// there is the move
 	// and not a scope artefact.
 	spending := macroTxnIDs(t, db, ctx, "spend_enrichment_population", 0, 5000)
 	if _, ok := spending["T-REWARD"]; ok {
@@ -378,7 +378,7 @@ func readIncomeResolution(t *testing.T, db *sql.DB, ctx context.Context, id stri
 // its own source gives, so the floor reads that verdict rather than
 // re-deriving it from prose.
 //
-// The floor sits OVER the payer store on this side (migration 0073),
+// The floor sits OVER the payer store on this side,
 // which is where the two families part company: spending's floor sits
 // UNDER its merchant store, because there the model names a merchant
 // and a name is finer than a kind. Here the model is asked what kind of
@@ -410,7 +410,7 @@ func TestIncomeKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 		// unplaced deposit is shown as uncategorised, never guessed at.
 		"T-DEPOSIT": {"", "signature-only"},
 		"T-SIGONLY": {"", "signature-only"},
-		// The floor read OVER the store (migration 0073), on rows
+		// The floor read OVER the store, on rows
 		// where the two disagree. The model is asked what kind of
 		// income a receipt is, and on a kind that answers that
 		// question itself the model can only be wrong: a capital_gain

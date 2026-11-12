@@ -307,7 +307,7 @@ isins AS (
 // names its holding, with its exposure key, under which its compositions
 // are found, and the facts situsOf reads. A position reads as
 // its latest snapshot; a cash balance is the holding cash:<currency>.
-// Its key is read as exposure_holdings reads it (0126): through
+// Its key is read as exposure_holdings reads it: through
 // holdingAliasJoins, then instrument_keys and security_aliases. The
 // parameter is receiptWording (receiptKeysSQL). Beside countries and
 // isins (statedISINsSQL), domiciles are a security's own country of

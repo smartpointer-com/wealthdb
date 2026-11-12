@@ -7,8 +7,8 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
-// TestTransactionSpendColumns pins the spending columns migration 0042
-// put on report_transactions through to the CLI: they resolve by name
+// TestTransactionSpendColumns pins the spending columns of
+// report_transactions through to the CLI: they resolve by name
 // as a delta on the default set, render the overlay's verdict, and read
 // empty for a row the enrichment pass never reached. They are opt-in —
 // most of a ledger is investment rows, where all three are blank.
@@ -131,8 +131,8 @@ func TestTransactionNamePrivacyFollowsFallback(t *testing.T) {
 	}
 }
 
-// TestTransactionsCarriesTheIncomeTrio pins migration 0071's addition
-// to `wealthdb transactions`: the income columns are in the registry,
+// TestTransactionsCarriesTheIncomeTrio pins the income columns of
+// `wealthdb transactions`: they are in the registry,
 // off by default, and carry the privacy classes their contents need.
 func TestTransactionsCarriesTheIncomeTrio(t *testing.T) {
 	t.Parallel()
@@ -173,8 +173,8 @@ func TestTransactionsCarriesTheIncomeTrio(t *testing.T) {
 	}
 }
 
-// TestTransactionCheckNumberColumn pins the cheque-number column
-// migration 0075 put on report_transactions through to the CLI: opt-in,
+// TestTransactionCheckNumberColumn pins the cheque-number column of
+// report_transactions through to the CLI: opt-in,
 // rendered verbatim, empty on the overwhelming majority of rows that
 // carry no cheque, and masked by -p.
 //

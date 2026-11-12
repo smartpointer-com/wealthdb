@@ -28,7 +28,7 @@ type GlobalRow struct {
 
 // GlobalAsOf rolls the per-account view into one GlobalRow via the
 // report_global macro (Σ over report_accounts), guaranteeing
-// `global` == Σ `accounts`. See migration 0021.
+// `global` == Σ `accounts`. See derived/30_holdings.sql.
 func GlobalAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) (GlobalRow, error) {
 	var (
 		g                      GlobalRow

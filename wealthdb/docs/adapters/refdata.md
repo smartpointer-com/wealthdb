@@ -427,12 +427,11 @@ The security facts come first, then the period facts:
 | `dividends_per_share` | `dividends`, a period fact |
 | `net_income`, `revenue`, `operating_income`, `interest_expense`, `long_term_debt`, `cash`, `operating_cash_flow`, `capex` | `financials`, a period fact |
 
-A gold opened read-only before the exposure tables existed has no
-reference data and no exposure config yet. The list then names the
-held funds and securities with nothing known, so the first fetch can
-run before the first load. A gold before the fact tables (migration
-0134) holds no facts. Its funds list their wants with no days, and its
-stocks miss every family.
+A gold opened read-only below schema version 176, before a load
+migrated it, may lack the tables the list reads. The list then names
+the held instruments only, each source's newest snapshot read as every
+account's, with nothing known of them. So the first fetch can run
+before the first load.
 
 ## 6. The synthetic kind
 

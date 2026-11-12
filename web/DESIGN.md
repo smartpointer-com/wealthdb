@@ -93,36 +93,36 @@ preserves it so a restart keeps everything.
 
 ## 6. Provisioning (skip the setup wizard)
 
-A private loopback service should not require the "tell us about
-your company" wizard. Metabase's declarative config file
+A private loopback service should not require the "tell us about your
+company" wizard. Metabase's declarative config file
 (`MB_CONFIG_FILE_PATH`) can create users/databases — but that is a
-Pro/EE feature, a silent no-op on OSS. So `web start` provisions over the
-OSS **setup API** ([`provision.py`](provision.py), stdlib only): create
-the admin (`POST /api/setup`, which also finishes the wizard), pre-add
-the gold DuckDB database (`POST /api/database`, `read_only`), and create
-the pre-defined report models (`POST /api/card`, `type: "model"`) as native-query
-shims over the gold **multi-currency** report macros (migration 0024). The
-macros build on the same line bases the CLI's single-currency macros use and
-emit one value-column set per currency (USD/CHF/EUR/GBP). A model reads a
-macro's rows from the serving table `web refresh` fills with them (§8), so
-the models track command output by construction and bake in no data.
-They sit in a `wealthdb (pre-defined)` collection:
+Pro/EE feature, a silent no-op on OSS. So `web start` provisions over
+the OSS **setup API** ([`provision.py`](provision.py), stdlib only):
+create the admin (`POST /api/setup`, which also finishes the wizard),
+pre-add the gold DuckDB database (`POST /api/database`, `read_only`),
+and create the pre-defined report models (`POST /api/card`, `type:
+"model"`) as native-query shims over the gold **multi-currency** report
+macros (`wealthdb/internal/gold/derived/30_holdings.sql`). The macros
+build on the same line bases the CLI's single-currency macros use and
+emit one value-column set per currency (USD/CHF/EUR/GBP). A model reads
+a macro's rows from the serving table `web refresh` fills with them
+(§8), so the models track command output by construction and bake in no
+data. They sit in a `wealthdb (pre-defined)` collection:
 
 - the `_latest` snapshot reports, and the all-time `report_transactions`;
-- the daily `_history` reports (migration 0022), for time-series charts;
-- the two taxonomy models over the `web_*` breakdown views (migration
-  0032);
+- the daily `_history` reports, for time-series charts;
+- the two taxonomy models over the `web_*` breakdown views;
 - cast-only shims over the materialized `report_returns` table (§8);
-- the spending models over `web_spending` (migration 0043);
-- the income model over `web_income` (migration 0072);
-- the `report_cashflow` model over `web_cashflow` (migration 0084). It
+- the spending models over `web_spending`;
+- the income model over `web_income`;
+- the `report_cashflow` model over `web_cashflow`. It
   backs the Cash Flow dashboard's Section picker, not a card;
-- the `report_gains_classes` model of the classes `web_gains` carries
-  (migration 0170). It backs the Gains Asset class picker alone;
+- the `report_gains_classes` model of the classes `web_gains` carries.
+  It backs the Gains Asset class picker alone;
 - the `report_yield_classes` model of the classes `web_yield` and
-  `web_yield_curve` carry (migration 0138). It backs the Yield Asset
+  `web_yield_curve` carry. It backs the Yield Asset
   class picker alone;
-- the `report_benchmarks` model of `web_benchmarks` (migration 0176). It
+- the `report_benchmarks` model of `web_benchmarks`. It
   backs the Benchmark picker alone;
 - two `_pct` privacy variants, `report_sources_latest_pct` and
   `report_spending_pct`. They back the privacy twins' MBQL cards and
@@ -143,12 +143,12 @@ ten dashboards. Their pickers:
   the last refresh, so a snapshot not refreshed today still shows its
   latest holdings. A day before the history or later than tomorrow
   reads nothing. The day reaches the tiles through
-  `web_history_calendar` (migration 0166). It maps every day from the
+  `web_history_calendar`. It maps every day from the
   history's first to tomorrow to the last history day on or before it.
   So the default stays the same, and a refresh does not resend
   Allocation or its twin. Cash is a position in every breakdown. The
   currency card sums every line by its native currency, a cash balance
-  by its own (migration 0171). It leaves out a line with no currency or
+  by its own. It leaves out a line with no currency or
   no value, such as an FX deal with no mark. A forward counts at its
   mark in the mark's currency, and the Exposure dashboard shows its
   legs. The Top 100 positions tile lists each account's cash in a
@@ -173,7 +173,7 @@ ten dashboards. Their pickers:
   cost basis* picker (ignore or zero; the default is
   `lots.missing_basis` from wealthdb.cfg, else ignore). Every tile takes
   all six. The asset class is each position's, `unknown` where nothing
-  classes it (migration 0170). Its picker lists the classes the gains
+  classes it. Its picker lists the classes the gains
   rows carry, through the `report_gains_classes` model.
 - **Spending**: the time range and source, a required currency, an
   account, and a category multi-select.
@@ -207,7 +207,7 @@ ten dashboards. Their pickers:
   months). All four are required. They default to the CLI's built-in
   assumptions: constant rates, cash, no shift and 12 months, whatever
   the config's `horizon_months` says. The asset class is each
-  holding's, `unknown` where nothing classes it (migration 0138). Its
+  holding's, `unknown` where nothing classes it. Its
   picker lists the classes `web_yield` and `web_yield_curve` carry,
   through the `report_yield_classes` model.
 - **Data Freshness**: no pickers.
@@ -224,7 +224,7 @@ declines a picker by design, its own description says why.
 
 A tile that sums money in the chosen currency is native SQL over a gold
 `web_*` serving view. The views carry each reporting currency as a
-column (gold migration 0114), and a dashboard picker selects rows but
+column, and a dashboard picker selects rows but
 never a column. So each such tile reads a required `{{currency}}`
 variable, which picks the column with a CASE. The Gains tiles are the
 exception: `web_gains` (§8) carries a row set per currency and per
@@ -239,7 +239,7 @@ template variables' defaults, an MBQL card over every row of its model.
 Its description does not say so. `web/web` passes it to
 `provision.py` from `wealthdb web-config`. The
 Wealth Overview's three headline figures read `web_sources_latest`
-(migrations 0113 and 0132), each account at its latest active
+(`derived/90_web.sql`), each account at its latest active
 snapshot, so they print what `wealthdb holdings sources` prints. They
 take no time range: a filter on the snapshot would drop a source whose
 last snapshot falls before the range. The Stalest source tile beside
@@ -278,54 +278,51 @@ the CLI's `-p` masks ([DESIGN.md §4.6](../wealthdb/docs/DESIGN.md)). A
 test lists every twin card with a name in its output.
 
 The twins' charts are native SQL over the gold `web_*` serving views
-(TIMESTAMP-cast reductions of the report macros to
-the grain each card reads, some folding cash in as a class of its own;
-each `FILTER_FIELD_COLUMNS` entry names the migration that adds its view;
-Metabase syncs views like tables and assigns their columns field ids), with the
-dashboard pickers landing on the cards as field filters. Each card computes
-its normalization denominator in-query with those same filters applied:
-holdings divide by the *selected* sources' total at the selected window's
-end (the net-worth envelope ends at 100, and a subset still totals 100),
-the flows by their own peak month within the selected window
-(the tallest bar always reads 100). The Wealth Overview twin's scalars are
-ratios of sums over the selected sources' latest holdings (`web_sources_latest`,
-migrations 0113 and 0132) — net worth reads a constant 100, positions + cash split it.
-Each figure from another dashboard is that dashboard's privacy figure,
-except the income received and net spend. Each is the total
-its own twin divides by, so it reads 100 by construction. The overview's
-twin leaves them out. The two gains, whose dashboard has no twin, read as a percent of the
-cost basis they are gains on.
-The **Spending** twin adds redaction to normalization, the way the Returns
+(TIMESTAMP-cast reductions of the report macros to the grain each card
+reads, some folding cash in as a class of its own; Metabase syncs views
+like tables and assigns their columns field ids), with the dashboard
+pickers landing on the cards as field filters. Each card computes its
+normalization denominator in-query with those same filters applied:
+holdings divide by the *selected* sources' total at the selected
+window's end (the net-worth envelope ends at 100, and a subset still
+totals 100), the flows by their own peak month within the selected
+window (the tallest bar always reads 100). The Wealth Overview twin's
+scalars are ratios of sums over the selected sources' latest holdings
+(`web_sources_latest`) — net worth reads a constant 100, positions +
+cash split it. Each figure from another dashboard is that dashboard's
+privacy figure, except the income received and net spend. Each is the
+total its own twin divides by, so it reads 100 by construction. The
+overview's twin leaves them out. The two gains, whose dashboard has no
+twin, read as a percent of the cost basis they are gains on. The
+**Spending** twin adds redaction to normalization, the way the Returns
 twin redacts money columns: its shares are of the window's own net spend
-(the breakdowns, merchant and account lists) or of its biggest month (the
-trend and the monthly bands), and no card renders a merchant or account
-label — the merchant list ranks unnamed rows, the account breakdown regroups
-onto source × account kind, and `report_spending_pct` drops the merchant
-column so a scalar's drill-through cannot surface a counterparty either.
-The **Income** dashboard's cards of the income lines are Spending read
-in the other direction, over the `web_income` serving view (migration
-0072): the same pickers and the same native-over-the-view
-construction, for the same reason (the view carries a row per
-reporting currency, and a required `{{currency}}` variable picks the
-column rather than filtering rows).
-Two tiles have no counterpart, by design: there is no second ring, the
-income taxonomy having one vendored primary and so no subcategory level
-worth one, and no balance-history chart, nothing on this side being a
-liability. Its *type* picker binds to the DETAILED label rather than the
-primary one for the same reason the second ring is absent — a
-primary-level dropdown would offer a handful of values and hide every
-distinction a reader opens the dashboard for. The **Income** twin
-redacts the way the Spending twin does: shares of the window's own net
-income or of its biggest month, the payer list ranked unnamed, and no
-card projecting a payer or an account in any projection it renders.
-The uncategorised share is a proportion of ROWS, so its FIGURE needs
-no twin — but it is built twice anyway, once per dashboard. A native
-card carries its own field-filter template tags wherever it is opened,
-and the base card's include an `account` filter, which Metabase renders
-as a dropdown of account labels; the twin's copy is built over
-`PRIVACY_INCOME_FILTERS` like every other card there.
-Neither declares a currency variable, a share of rows being the same in
-every currency.
+(the breakdowns, merchant and account lists) or of its biggest month
+(the trend and the monthly bands), and no card renders a merchant or
+account label — the merchant list ranks unnamed rows, the account
+breakdown regroups onto source × account kind, and `report_spending_pct`
+drops the merchant column so a scalar's drill-through cannot surface a
+counterparty either. The **Income** dashboard's cards of the income
+lines are Spending read in the other direction, over the `web_income`
+serving view: the same pickers and the same native-over-the-view
+construction, for the same reason (the view carries a row per reporting
+currency, and a required `{{currency}}` variable picks the column rather
+than filtering rows). Two tiles have no counterpart, by design: there is
+no second ring, the income taxonomy having one vendored primary and so
+no subcategory level worth one, and no balance-history chart, nothing on
+this side being a liability. Its *type* picker binds to the DETAILED
+label rather than the primary one for the same reason the second ring is
+absent — a primary-level dropdown would offer a handful of values and
+hide every distinction a reader opens the dashboard for. The **Income**
+twin redacts the way the Spending twin does: shares of the window's own
+net income or of its biggest month, the payer list ranked unnamed, and
+no card projecting a payer or an account in any projection it renders.
+The uncategorised share is a proportion of ROWS, so its FIGURE needs no
+twin — but it is built twice anyway, once per dashboard. A native card
+carries its own field-filter template tags wherever it is opened, and
+the base card's include an `account` filter, which Metabase renders as a
+dropdown of account labels; the twin's copy is built over
+`PRIVACY_INCOME_FILTERS` like every other card there. Neither declares a
+currency variable, a share of rows being the same in every currency.
 
 The **Exposure** dashboard shows what is really owned once every fund
 is looked through ([wealthdb/docs/EXPOSURE.md](../wealthdb/docs/EXPOSURE.md)).
@@ -375,10 +372,10 @@ Those charts are privacy-exempt, so the twin shows the same cards. The
 currencies chart shows money, so its privacy card shows the same bands
 as shares.
 Country, region, situs and currency labels stay, since none names an
-account. Its tiles read `web_exposure` (migration 0127), a view over a
+account. Its tiles read `web_exposure`, a view over a
 materialized table (§8).
 
-The four debt cards read `web_exposure_debt` (migration 0138). It
+The four debt cards read `web_exposure_debt`. It
 holds today and the last second of each of the twelve months before,
 so a window that ends earlier shows nothing on them. Each card reads
 the latest of those instants in the window:
@@ -406,10 +403,10 @@ The debt view carries no asset class, so the class picker does not
 reach those four. These are compositions as of a day, so no projection
 picker reaches them. Their twins drop the value.
 
-The Top securities card reads `web_exposure_securities` (migration
-0165), at the debt cards' instants. It holds each security's slice per
-source, tax wrapper and asset class, so all three pickers reach it. The
-card adds up a security's slices in the selection:
+The Top securities card reads `web_exposure_securities`, at the debt
+cards' instants. It holds each security's slice per source, tax wrapper
+and asset class, so all three pickers reach it. The card adds up a
+security's slices in the selection:
 
 - each label is that of its heaviest slice, as the CLI takes the labels
   of a security's largest leaves;
@@ -441,8 +438,8 @@ It reads in this order:
 - the yields over time, beside the duration over time. They are two
   charts, a yield and a duration differing in unit.
 
-A figure as of a day reads the latest day in the range from `web_yield`
-(migration 0138), a row set per currency and instant. It covers today
+A figure as of a day reads the latest day in the range from `web_yield`,
+a row set per currency and instant. It covers today
 and the twelve month ends before, so a window that ends earlier shows
 nothing on those cards. A rate weighs the holdings that state it as
 `yield.summarize` does: over the assets, or over every holding where a
@@ -497,7 +494,7 @@ Metabase traits shape the waterfall, Why net worth moved:
   increase. Net worth at start and Net worth at end sit in a column
   beside it instead, and the changes fill the chart.
 
-The **Spending** dashboard's fee tiles read `web_fees` (migrations 0177 and 0179),
+The **Spending** dashboard's fee tiles read `web_fees`,
 a view over the serving tables and `report_returns` at day grain. They
 take the card balance tile's pickers: Currency, Time range, Source and
 Account. Fees are one category, so they take no Category. Every figure equals
@@ -520,8 +517,8 @@ leaves its type out:
   and the other income's run-rate, by operating-in class and account
   (`web_cashflow_plan`). It is the average of the income lines, split
   by each line's day. A line on a day its account sits in the cash
-  pool is `pool_income` (migration 0174). Any other line is
-  `outside_income` (0172), such as a wage paid into a retirement
+  pool is `pool_income`. Any other line is
+  `outside_income`, such as a wage paid into a retirement
   account. An account under a dated wrapper override has lines on both
   sides. So each class on an account expects what it received on
   average. The cash flow projection reads the statement's
@@ -572,8 +569,8 @@ figure of what is expected takes no Time range. On the twin it is a
 share of both halves, so it takes the Time range too.
 
 A card reads several views, and a picker reaches one template tag of a
-card. So the Time range is bound to `web_income_days` (migrations 0146
-and 0169), one row per day to today from the first income line, the
+card. So the Time range is bound to `web_income_days`,
+one row per day to today from the first income line, the
 first day tax was withheld, or 1 January of last year, whichever is
 earliest. A card
 keeps the received rows and the withheld tax of the days it selects. It
@@ -603,7 +600,7 @@ pay it.
 The Withholding tile reads two things:
 
 - over the Time range, the tax booked on the income's accounts
-  (`web_income_withheld`, migration 0146): every negative tax row
+  (`web_income_withheld`): every negative tax row
   there, the rows `wealthdb income summary -C +withheld` counts. A row
   counts whatever income it was withheld from, holdings' or not.
 - over the Horizon, what the config's withholding table withholds at
@@ -668,10 +665,10 @@ The investment income is what the Income cards expect on the pool's
 accounts, read from `web_yield_parts` under the four projection
 pickers. The principal returned comes from `web_yield_events` under the
 Maturing rule. It counts towards the net unless the rule is `roll`, as
-in the CLI. `web_cashflow_pool` (migration 0149) lists the pool's
+in the CLI. `web_cashflow_pool` lists the pool's
 accounts. A projected part on any other account is the vehicles'
 income, and the net leaves it out. The other parts come from
-`web_cashflow_plan` (migrations 0149 and 0169): the look-back's monthly averages,
+`web_cashflow_plan`: the look-back's monthly averages,
 which a refresh stores per currency. So the projection's cards take the
 Currency and the projection's four pickers, and no Time range, Source,
 Section or Investing picker. The other cards of
@@ -687,7 +684,7 @@ Horizon expects none, the shares are blank. No amount reaches it.
 tiles. Its figures are shares, so the twin shows the card as it is.
 
 **Data Freshness** counts a source's age from its last read, not from
-its latest snapshot: gold's `source_observed` (migration 0122) says
+its latest snapshot: gold's `source_observed` says
 when a run last read each source, whether or not anything changed
 (wealthdb/docs/DESIGN.md §6.4). A portal that marks its holdings
 quarterly and was read today is current. The table shows the read,
@@ -759,12 +756,12 @@ resolved, so both are left out of the ranking. The predicate is the delta
 categories themselves (a delta is primary-level, so the two category columns
 are equal on one, and equal at `(uncategorized)` on a line nothing resolved)
 plus a merchant to rank by. The two halves are tested separately because a
-blank merchant does not imply a delta: 0048 blanks the column on a delta
-line, but 0052 gives a card bill the ISSUER it was paid to — a handle on which
+blank merchant does not imply a delta: a delta line leaves the column blank,
+but a card bill carries the ISSUER it was paid to — a handle on which
 card the money went to, not a shop to rank among.
 
 The merchant column is the store's name where the model tier named one, and
-otherwise the line's own merchant signature (0054). It is still NULL where a
+otherwise the line's own merchant signature. It is still NULL where a
 line has no signature at all, which is why the predicate tests for one rather
 than assuming it. So what may rank is every line whose category is not a
 delta, and what does rank is each of those that carries a signature, at
@@ -786,7 +783,7 @@ probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
-these migrations falls short of the cards:
+these schema versions falls short of the cards:
 
 - 0179: its `web_fees` counts a portfolio's mortgages and cards in
   the value the fee rate divides by;
@@ -1017,19 +1014,17 @@ The last point is the start of the current year, so the stretch from
 then to today is not drawn.
 
 **Gains** are materialized too, into `report_gains` (migration 0117),
-for a different reason. The gains figures are SQL (`gains_windows`,
-migration 0116), so a view would work. But one dashboard open fires two
-dozen tiles, and each would compute the whole history again. So
-`web-materialize` computes the monthly gains rows of every reporting
-currency under both readings of a missing cost basis (`ignore`, `zero`;
-docs/GAINS.md §8) in one evaluation (`gains_windows_all`, migration
-0119) and stores them, a second or two per refresh. The rows are that
-call's output, less the figures in a holding's own currency. So the
-rows summed by month equal `wealthdb gains summary --period monthly -x
-CCY --missing-basis M`, and a Go test holds that.
-The `web_gains` view labels the accounts and joins in their tax
-wrapper. A sale no snapshot classes reads the asset class `unknown`
-(migration 0170).
+for a different reason. The gains figures are SQL (`gains_windows`), so
+a view would work. But one dashboard open fires two dozen tiles, and
+each would compute the whole history again. So `web-materialize`
+computes the monthly gains rows of every reporting currency under both
+readings of a missing cost basis (`ignore`, `zero`; docs/GAINS.md §8) in
+one evaluation (`gains_windows_all`) and stores them, a second or two
+per refresh. The rows are that call's output, less the figures in a
+holding's own currency. So the rows summed by month equal `wealthdb
+gains summary --period monthly -x CCY --missing-basis M`, and a Go test
+holds that. The `web_gains` view labels the accounts and joins in their
+tax wrapper. A sale no snapshot classes reads the asset class `unknown`.
 
 The Gains dashboard reads it month by month. A figure over the window
 sums the months in it. A figure at the window's end reads the last
@@ -1100,10 +1095,10 @@ wealthdb/docs/DESIGN.md §10.15 has the engine side):
   the projection (`report_cashflow_plan`, migration 0149).
 
 Four views sit beside them. `web_income_days` and `web_income_withheld`
-(migration 0146) list each day the received figures cover and the tax
-booked on the income's accounts. `web_cashflow_plan` (migrations 0149, 0169, 0172 and 0174)
+list each day the received figures cover and the tax
+booked on the income's accounts. `web_cashflow_plan`
 serves the cash flow projection's look-back parts, which depend on no
-picker. `web_cashflow_pool` (migration 0149) lists the cash pool's
+picker. `web_cashflow_pool` lists the cash pool's
 accounts, which split the income projection for it.
 
 The pickers multiply: two rate paths, three maturing rules, any shift,
@@ -1114,7 +1109,8 @@ assumptions to the sum of the holdings' `income_12m`. The `web_yield*`
 views label the rows and render each instant as a day. The refresh
 computes the yield tables for 13 instants in 4 currencies.
 
-The **serving tables** (`serving_*`, migration 0132) hold report macros'
+The **serving tables** (`serving_*`, the `servingTables` list of
+`wealthdb/internal/gold/serving_materialize.go`) hold report macros'
 rows verbatim, for the reason §7 gives. They are:
 
 - the daily histories: global, per source, account, portfolio and
@@ -1123,7 +1119,7 @@ rows verbatim, for the reason §7 gives. They are:
   position;
 - every transaction line: all of them, and the spending, income and
   cash flow lines;
-- each month end's marked share (`serving_marks`, migration 0177).
+- each month end's marked share (`serving_marks`).
 
 Each table is one macro's output. `web-materialize` rewrites them all
 in one transaction, so a reader sees all old or all new. A Go test
@@ -1132,7 +1128,7 @@ them: `holdings_lines_history` and `holdings_lines_latest` hold each
 position line and each account's cash. A line carries its
 account's tax wrapper and its asset class, cash being the class `cash`.
 The history holds one cash line per account and currency
-(`serving_cash_history`, migration 0171), with its currency. Its rows
+(`serving_cash_history`), with its currency. Its rows
 sum to the account history's cash on every day. An account with no
 cash has no cash line. The latest view keeps an account's cash as one
 line.

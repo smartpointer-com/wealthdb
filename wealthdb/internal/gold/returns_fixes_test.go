@@ -133,7 +133,7 @@ func seedCashAcct(t *testing.T, db *sql.DB, ctx context.Context, src, acct strin
 
 // TestRunReturnsCashZeroingIsAClosure: an account whose collector writes an
 // explicit 0 balance ends on that day and stays at 0 — the history keeps zero
-// rows (gold migration 0051), so the spine carries the zero instead of ending
+// rows, so the spine carries the zero instead of ending
 // the series at the last non-zero balance. The engine reads that as a closure,
 // not as a feed drop.
 func TestRunReturnsCashZeroingIsAClosure(t *testing.T) {

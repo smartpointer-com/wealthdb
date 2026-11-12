@@ -745,7 +745,7 @@ func TestConfigRuleMatchesTheIssuersOwnFiling(t *testing.T) {
 }
 
 // TestRuleCategoryBrokerageNarratives pins the rules a brokerage
-// account brought into scope (migration 0064) needs.
+// account in scope needs.
 //
 // The account kind widened, and the narratives that arrive with it are
 // new to this tier. Four shapes, three verdicts: a custodian's

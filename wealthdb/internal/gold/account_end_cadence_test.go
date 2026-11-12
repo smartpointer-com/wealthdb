@@ -8,7 +8,7 @@ import (
 
 // A key's last observation ends at its re-cover snapshot only where its
 // source's newest snapshot lies more than one and a half of the key's
-// cadences past it (migration 0144). These tests pin that second
+// cadences past it (pos_key_ends, cash_key_ends). These tests pin that second
 // condition on invented books, in the history and at an instant alike.
 
 // cadenceEnd is a key's ending snapshot by pos_key_ends (no ccy) or

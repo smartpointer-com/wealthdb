@@ -137,7 +137,7 @@ func statedLot(qty, cost float64, costKnown bool, acq sql.NullInt64) lots.Stated
 }
 
 // lotAliases maps an instrument a source keys by its CUSIP to the ticker
-// the source also keys it by (instrument_aliases, migration 0120): a
+// the source also keys it by (instrument_aliases): a
 // statement names a security by CUSIP and the trades by ticker.
 func (f *lotFeed) lotAliases(ctx context.Context, db *sql.DB) (map[[2]string]string, error) {
 	rows, err := db.QueryContext(ctx, `

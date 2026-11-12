@@ -2,7 +2,7 @@ package gold
 
 import "testing"
 
-// TestTheMemoSeesADepositStatedAsAHolding covers migration 0163: an
+// TestTheMemoSeesADepositStatedAsAHolding covers this case: an
 // account whose source states its balance as a demand-deposit holding,
 // and no cash balance, joins the memo's balance pool and is measured by
 // coverage; an account with a cash balance keeps reading that alone.

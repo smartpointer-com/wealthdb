@@ -233,7 +233,7 @@ func TestCollectPayerCandidatesBacklogOnly(t *testing.T) {
 // counterparty after a taxonomy revision. On the income side it must
 // not also lift the KIND gate: a dividend the floor placed carries a
 // signature, so an unrestricted --all would send the holdings list to
-// a model and buy a verdict for every instrument in it. Migration 0073
+// a model and buy a verdict for every instrument in it. income_txn_categories
 // makes such a verdict harmless (the floor outranks it); this makes it
 // unbought.
 //

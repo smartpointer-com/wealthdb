@@ -22,7 +22,7 @@ func day(n int64) int64 { return n * gold.SecondsPerDay }
 // the silver kind with a provider-category map, so a fixture can
 // exercise that tier.
 //
-// NO account kind is out of the spending scope: since migration 0068
+// NO account kind is out of the spending scope:
 // the default is `include` for every account and `spend_account_scope`
 // is the only thing that takes one out. A fixture that wants an
 // out-of-scope account therefore has to EXCLUDE it through the config,
@@ -703,7 +703,7 @@ func inEnrichmentPopulation(t *testing.T, db *sql.DB, ctx context.Context, sourc
 }
 
 // TestPassMatchesOntoAnAccountOutsideTheSpendingScope is the
-// regression the widened matcher pool (migration 0044) exists for.
+// regression the widened matcher pool exists for.
 //
 // Money moved out of a cash account into an investment account is
 // booked as a withdrawal on one side and a credit on the other, and
@@ -1791,7 +1791,7 @@ func TestPassOwnsManualRows(t *testing.T) {
 // it — the population macros read the table the pass just wrote.
 func TestPassStampsAccountScope(t *testing.T) {
 	db, ctx := openGold(t)
-	// Since migration 0068 every account is in scope by default, so
+	// Every account is in scope by default, so
 	// EXCLUDE is the direction that carries the proof: an include is a
 	// no-op on an account already in, and only a removed exclude can
 	// show that the re-stamp is whole.

@@ -13,7 +13,7 @@ import (
 )
 
 // The point-in-time readers take each key's active snapshot at their
-// instant by the history's rule (migration 0140): a snapshot speaks
+// instant by the history's rule (pos_active_at): a snapshot speaks
 // only for the accounts it names. These tests hold every point-in-time
 // report to the daily history on a book of partial runs, pin the
 // history's own answer, and check the readers that pick in Go. All

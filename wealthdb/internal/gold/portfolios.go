@@ -46,9 +46,9 @@ type PortfolioRow struct {
 // PortfoliosAsOf returns one PortfolioRow per registered portfolio
 // plus a per-source sentinel (PortfolioExternalID == "") catching
 // accounts with no registered portfolio — both NULL and an
-// unregistered portfolio_external_id (migration 0023). Aggregation,
+// unregistered portfolio_external_id. Aggregation,
 // taxonomy rollup, sentinel generation, FX, and ordering are all the
-// report_portfolios macro (migration 0024); this is the scan.
+// report_portfolios macro (derived/30_holdings.sql); this is the scan.
 // Rows are ordered by (silver_source_id, portfolio_external_id) — ""
 // sorts first within each source.
 func PortfoliosAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string) ([]PortfolioRow, error) {

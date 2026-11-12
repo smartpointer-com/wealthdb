@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// TestASignPinnedCashLegJoinsInvesting covers migration 0161: a
+// TestASignPinnedCashLegJoinsInvesting covers this case: a
 // corporate action's cash leg, on a source whose kind the sign table
 // pins, is investing and in the coverage ledger; the same kind moving
 // shares, the same cash leg on an unpinned source, and an FX leg stay

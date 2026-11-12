@@ -129,7 +129,7 @@ type Result struct {
 	// ReimbursementPairs is the number of ledger `reimburse` lines that
 	// named a repayment and its outflow, UnmatchedReimbursements the lines
 	// that named none, and UnlinkedReimbursements the repayments no road
-	// links (gold migration 0160): each stays out of both bases, and a
+	// links: each stays out of both bases, and a
 	// ledger line is what links it.
 	ReimbursementPairs      int
 	UnmatchedReimbursements int
@@ -972,7 +972,7 @@ type enrichmentRow struct {
 	// source: no other tier writes it, and a tier that overrules the
 	// rule clears it, because the label describes the verdict the card
 	// rule placed rather than the row. spend_txn_categories() reads it
-	// as the merchant of a delta line (migration 0052).
+	// as the merchant of a delta line.
 	merchantLabel string
 	// providerDetailed is what the issuer's own filing of this row
 	// translates to, recorded whether or not the provider tier claimed

@@ -71,7 +71,7 @@ func (f *lotFeed) resolveValues() {
 const lotRateMaxAge = 7
 
 // lotRateBridges are the currencies a cross rate goes through, in the
-// order fx_rates_into (0119) tries them.
+// order fx_rates_into tries them.
 var lotRateBridges = []string{"CHF", "USD"}
 
 // lotRates prices a currency or a coin in another on a day, from

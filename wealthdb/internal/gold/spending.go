@@ -5,20 +5,20 @@ import (
 	"database/sql"
 )
 
-// The read side of the spending reports (migration 0042). Three
+// The read side of the spending reports (derived/40_flows.sql). Three
 // grains, three query funcs, one shape each: run the macro, scan it
 // positionally, hand the caller decimal strings.
 //
 // Everything that decides WHAT a spending line is — which accounts are
 // in scope, which kinds are spend, how a category resolves, that
-// own-account moves are out — lives in SQL (migrations 0041/0042).
+// own-account moves are out — lives in SQL (derived/40_flows.sql).
 // Nothing here restates any of it; the period bucketing, the sign
 // split and the shares are the macros' work too.
 //
 // `SELECT *` with a positional Scan, like TransactionsBetween: any
 // column added to a macro must be added to the row struct and to the
 // scan list below in the same position, in the same change as the
-// migration.
+// macro.
 
 // SpendSummaryRow is one period bucket of the spending summary.
 // Money columns are canonical decimal strings; nil where no line in
@@ -59,8 +59,8 @@ type SpendCategoryRow struct {
 //
 // MerchantName is the merchant store's name for the line's signature
 // where the store holds one, and the signature itself where it does
-// not (migration 0054) — nil only on a delta line, which carries its
-// issuer label or nothing at all (migrations 0048 and 0052). It is
+// not — nil only on a delta line, which carries its issuer label or
+// nothing at all (spend_txn_categories). It is
 // therefore a narrative fold as often as a written name, like
 // MerchantSignature and Description beside it, and all three can carry
 // a person. The CLI gives every one of them the free-text privacy

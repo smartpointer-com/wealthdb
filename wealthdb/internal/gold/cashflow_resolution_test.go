@@ -913,9 +913,9 @@ func TestAConsumptionLeafIsItsPrimaryUnlessThePrimarySaysNothing(t *testing.T) {
 	check(t, seedLines(t, db, ctx, lines), lines)
 }
 
-// ---- migration 0102: the holder may say what the capital went into ------
+// ---- the holder may say what the capital went into ---------------------
 
-// TestAStatedExposureNamesTheInvestingClass walks the whole of 0102.
+// TestAStatedExposureNamesTheInvestingClass walks the whole of it.
 // The investing class is otherwise the instrument's, and a bank payment
 // order names none — so capital deployed into a destination the product
 // holds, in a source that carries no transactions to pair against, drew

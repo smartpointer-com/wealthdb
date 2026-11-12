@@ -216,7 +216,7 @@ func TestGainsLotsOnlyAndFxMissingCountOnce(t *testing.T) {
 }
 
 // report_positions' first 17 columns equal the 0031 body's, each account
-// at its own active snapshot (migration 0140), with a bridged FX path
+// at its own active snapshot (pos_active_at), with a bridged FX path
 // whose legs change on different days.
 func TestReportPositionsKeepsItsEarlierColumns(t *testing.T) {
 	t.Parallel()

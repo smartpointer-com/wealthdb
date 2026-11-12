@@ -59,7 +59,7 @@ it.
 | `income_lines_base(f, t)` | what a view charts: the population with its type resolved, less the deltas §2 keeps out of the base |
 
 There is **no income matcher pool**. The internal-transfer matcher
-admits `deposit` on every account (migration 0044), so a funding wire
+admits `deposit` on every account, so a funding wire
 pairs. It writes `internal_transfer` on both legs. Income reads those
 verdicts and pairs nothing (§10, decision 8).
 
@@ -120,7 +120,7 @@ is right either way.
 `interest` is the one kind with a **sign guard**. The guard is not a
 policy about reversals. One canonical kind carries two opposite events,
 interest credited and interest charged. Only the sign tells them apart,
-and spending claims the negative half (migration 0041).
+and spending claims the negative half.
 
 A negative `deposit` is a reversal by construction:
 
@@ -421,7 +421,7 @@ writing both families** in one transaction: one matcher run, both
 overlays deleted and re-asserted, both verdict stores re-keyed, one
 commit. Only the model tier is a separate command.
 
-### The floor above the model (migration 0073)
+### The floor above the model
 
 The two families ask a model **different questions**. Which question it
 is decides whether the model or the floor ranks higher.
@@ -431,7 +431,7 @@ merchant's category. It may never decide that a card purchase was
 really an investment. The nature of the row is the data's, and the
 model adds a finer reading of who was paid. A merchant verdict is
 finer than any kind floor, so spending reads the floor under the store
-(migration 0066).
+(`spend_txn_categories`).
 
 On the inflow side the model is asked **what kind of income** a
 receipt is. That is a claim about the transaction itself, not about who
@@ -751,7 +751,7 @@ which is the default, one number answers for both.
     income side it is asked what kind of income a receipt is, which is
     a claim about the transaction. The data makes that claim itself on
     every admitted kind but `deposit`. So two independent guards apply:
-    the kind floor is read over the payer store (migration 0073, §3),
+    the kind floor is read over the payer store (§3),
     and candidacy is restricted to `deposit` in every backlog mode (§7).
 14. **The projection reads today's holdings.** A past month shows what
     was received, never what the holdings of then were expected to pay.

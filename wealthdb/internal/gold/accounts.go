@@ -9,7 +9,7 @@ import (
 // gold `accounts` row's promoted columns plus derived aggregate
 // columns (positions / cash / total in the account's base currency
 // and in the requested output currency), computed by the
-// report_accounts table macro (migration 0024).
+// report_accounts table macro (derived/30_holdings.sql).
 //
 // All decimals come back as their canonical string form. Aggregate
 // pointers are nil when:

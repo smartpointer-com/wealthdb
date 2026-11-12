@@ -44,7 +44,7 @@ calls:
 - A command that opens gold read-write retries on the same ladder when
   a reader is in the way: a write command, and a read command where the
   file is writable, since it opens read-write to apply a pending
-  migration. A reader holds its handle for one report, seconds at most.
+  schema change. A reader holds its handle for one report, seconds at most.
   The write mutex between writers stays non-blocking: another writer
   may run for an hour.
 - `compact` and `reload -a` rename a new file over the path. The next
@@ -56,7 +56,7 @@ size itself to the host, and the default spill path beside the
 database is on a read-only mount.
 
 After a rebuild of the image, a running server keeps the old binary.
-Once a load migrates gold past the newest migration that binary
+Once a load migrates gold past the schema version that binary
 carries, every call answers "run `wealthdb mcp restart`":
 `gold.CheckSchemaKnown` compares gold's schema version with the
 binary's own, which needs no build stamp (the image binary carries

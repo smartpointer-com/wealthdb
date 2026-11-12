@@ -217,14 +217,14 @@ func CashflowPlanLookback(ctx context.Context, db querier, from, to int64, outCc
 	return out, nil
 }
 
-// PlanOutsidePart is report_cashflow_plan's part (migration 0172) of the
+// PlanOutsidePart is report_cashflow_plan's part of the
 // income lines outside the pool on their own day: a vehicle's, such as a
 // retirement account's own wage, or one cashflow.accounts fences out.
 // The cash flow projection does not read it, as the household boundary
 // keeps their income out of the pool.
 const PlanOutsidePart = "outside_income"
 
-// PlanPoolPart is report_cashflow_plan's part (migration 0174) of the
+// PlanPoolPart is report_cashflow_plan's part of the
 // income lines in the pool on their own day. It is other_income's
 // average read from the income lines, not from the statement, so it
 // leaves out what the statement counts as operating income and no income

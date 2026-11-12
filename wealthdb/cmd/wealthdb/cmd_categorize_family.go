@@ -71,7 +71,7 @@ type categorizeFamily struct {
 	// only possible outcome is a worse one.
 	//
 	// It is the second of two independent guards, the way the fence
-	// and the context level are two. Migration 0073 reads the floor
+	// and the context level are two. income_txn_categories reads the floor
 	// OVER the store, so a verdict on a floor-kind signature cannot
 	// change what that row resolves to; this keeps the verdict from
 	// being bought at all. Either alone would hold; both are cheap.

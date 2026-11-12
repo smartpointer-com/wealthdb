@@ -18,8 +18,9 @@ func init() {
 }
 
 // spendingViews are the views of `wealthdb spending <view>`: the three
-// grains migration 0042 defines over the spending population, coarsest
-// first, then `fees`, what each portfolio paid against what it held.
+// grains the report_spending_* macros define over the spending population,
+// coarsest first, then `fees`, what each portfolio paid against what it
+// held.
 var spendingViews = []string{"summary", "categories", "transactions", "fees"}
 
 // reportPeriods maps the CLI's bucket vocabulary onto the date_trunc
@@ -203,7 +204,7 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 		// candidacy for the merchant STORE, not this column: a wire,
 		// an ACH, a P2P narrative is refused a verdict, has no store
 		// name, and falls back to the signature folded from that very
-		// narrative (migration 0054) — so a payment to a person prints
+		// narrative (spend_txn_categories) — so a payment to a person prints
 		// its payee here. A store name carries the same exposure by a
 		// slower route: the store is append-only across signature
 		// revisions and across widenings of the fence itself, and the
@@ -246,7 +247,7 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 		// enrichment pass; `model` is not stored anywhere, because the
 		// model tier writes to the merchant store rather than the
 		// overlay. spend_txn_categories() resolves it at the point the
-		// two scopes meet (migration 0050), which is the only place the
+		// two scopes meet, which is the only place the
 		// store's verdict is distinguishable from the backlog.
 		textCol("provenance", func(r gold.SpendTransactionRow) *string { return r.Provenance }),
 		// The counterparty is the adapter's merchant field, published

@@ -69,9 +69,8 @@ func seedCashflowTaxonomyFixture(t *testing.T, db *sql.DB, ctx context.Context) 
 	}
 }
 
-// TestCashflowDeltasLeaveBothBases is the whole of migration 0078's
-// behavioural change: the five values are enriched and visible, and
-// neither family's base charts them.
+// TestCashflowDeltasLeaveBothBases pins what the five values do: the five
+// values are enriched and visible, and neither family's base charts them.
 func TestCashflowDeltasLeaveBothBases(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

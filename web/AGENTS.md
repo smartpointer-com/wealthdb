@@ -63,8 +63,15 @@ port-forward; auth is Metabase's own login.
   the single registry both the field-id resolution and the startup probe
   read, and the probe aborts the run rather than converging every card
   to a degraded shape when a view the cards need is missing.
-- A card that starts reading a newer migration's view or table raises
-  `MIN_GOLD_SCHEMA` to that migration. A test holds it there.
+- The `web_*` views live in `wealthdb/internal/gold/derived/90_web.sql`,
+  beside every other macro and view of gold. A view is added or changed
+  there, never in a migration.
+  [derived/README.md](../wealthdb/internal/gold/derived/README.md) says
+  how: edit the body, take the next number, append it to `LOCK`.
+- A card that starts reading a new view or table raises
+  `MIN_GOLD_SCHEMA` to the gold schema version that brings it: the
+  derived version for a view, the migration for a table. A test holds
+  it there.
 - The gold DuckDB connection is added at runtime by `provision.py`,
   never baked into the image.
 - This component holds **no source credentials**. Its one secret is the

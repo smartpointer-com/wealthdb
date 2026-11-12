@@ -9,9 +9,9 @@ import (
 
 // The gains reports read the cost basis, open lots and realized lots
 // the adapters load (migration 0115) and the lot engine writes, through
-// the report macros of migrations 0116 to 0118. docs/GAINS.md defines every figure; these are the
-// scans. Money comes back in the output currency unless a field says
-// otherwise, as trimmed decimal strings; ratios as float64.
+// the report macros of derived/50_gains.sql. docs/GAINS.md defines every
+// figure; these are the scans. Money comes back in the output currency
+// unless a field says otherwise, as trimmed decimal strings; ratios as float64.
 
 // GainsGrain is the row grain of GainsBuckets.
 type GainsGrain string

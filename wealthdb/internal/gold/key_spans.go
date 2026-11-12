@@ -7,7 +7,7 @@ import (
 )
 
 // pinnedKeyMacros are the macros beginPinned reads once and shadows: the
-// endings first, since the spans read them (migration 0145).
+// endings first, since the spans read them.
 var pinnedKeyMacros = []string{"pos_key_ends", "cash_key_ends", "pos_key_spans", "cash_key_spans"}
 
 // beginPinned begins a transaction of db in which every key's endings and

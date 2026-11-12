@@ -77,8 +77,8 @@ type accountKey struct{ src, acct string }
 // unitWindowCTE are the instruments $1 and $2 name (one source and one
 // id a pair), by the id the matching folds an instrument into (paid); and
 // the snapshots of their sources that hold on some day from $3 to $4: from
-// the oldest of the accounts' active snapshots at $3 (pos_active_at,
-// migration 0140), else the first, every one to $4.
+// the oldest of the accounts' active snapshots at $3 (pos_active_at),
+// else the first, every one to $4.
 const unitWindowCTE = `
 WITH paid AS (SELECT DISTINCT unnest($1::VARCHAR[]) AS src, unnest($2::VARCHAR[]) AS k),
 snaps AS (
@@ -96,7 +96,7 @@ window_snaps AS (
 // unitAccountsCTE are the snapshots that speak for each account of the
 // sources (account_grid): those that name it, by a position or a cash
 // balance, and every one from the end of its positions' last
-// observation on (pos_key_spans, migration 0140), where it holds
+// observation on (pos_key_spans), where it holds
 // nothing. A snapshot of only some accounts, such as a statement's, says
 // nothing of the others.
 const unitAccountsCTE = `,

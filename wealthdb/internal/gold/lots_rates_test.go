@@ -1,7 +1,6 @@
 package gold
 
 import (
-	"io/fs"
 	"strings"
 	"testing"
 )
@@ -10,16 +9,15 @@ import (
 // or a figure the engine values and one a report converts disagree.
 func TestLotRatesBridgeInTheReportsOrder(t *testing.T) {
 	t.Parallel()
-	b, err := fs.ReadFile(migrationsFS, "migrations/0119_gains_one_pass.sql")
-	if err != nil {
-		t.Fatal(err)
+	var body string
+	for _, s := range mustDerived(t).stmts {
+		if s.name == "fx_rates_into" {
+			body = stripComments(s.sql)
+		}
 	}
-	body := string(b)
-	at := strings.Index(body, "CREATE OR REPLACE MACRO fx_rates_into")
-	if at < 0 {
+	if body == "" {
 		t.Fatal("fx_rates_into not found")
 	}
-	body = body[at:]
 	prev := -1
 	for _, ccy := range lotRateBridges {
 		i := strings.Index(body, "to_ccy = '"+ccy+"'")

@@ -80,7 +80,7 @@ type feeEntity struct {
 	spans                []*accountData
 }
 
-// feeGroups are the detailed groups of migration 0177's fee_group, in
+// feeGroups are the detailed groups of fee_group, in
 // column order. A test holds the two to one set.
 var feeGroups = []string{"investment", "bank", "atm", "other"}
 

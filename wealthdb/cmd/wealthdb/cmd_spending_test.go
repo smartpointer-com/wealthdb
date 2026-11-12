@@ -158,8 +158,9 @@ func headersOf[T any](cols []columnSpec[T]) []string {
 // like the narrative it was named from. The fence gates candidacy for
 // the merchant STORE, not this column — a wire, an ACH, a P2P
 // narrative is refused a verdict, acquires no store name, and falls
-// back to the signature folded from that very narrative (migration
-// 0054), so the cell prints the payee the fence refused to have named.
+// back to the signature folded from that very narrative
+// (spend_txn_categories), so the cell prints the payee the fence
+// refused to have named.
 // A store name carries the same exposure by a slower route: the store
 // is append-only across signature revisions and across widenings of
 // the fence itself, and a stored verdict is applied by signature
@@ -540,14 +541,13 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 		if strings.Contains(so, "EXAMPLE BANK ATM") {
 			t.Errorf("a store name reached the merchant column of a cash_withdrawal line:\n%s", so)
 		}
-		// The provider placed the restaurant line, so the model tier
-		// never sees it and the store never names it: the merchant
-		// column falls back to the line's own signature (migration
-		// 0054). The backlog line has no verdict at all and falls back
-		// the same way. merchant_signature is not among the columns
-		// selected here, so either value can only be the merchant
-		// column's — which is what makes the -p subtest's matching
-		// assertion non-vacuous.
+		// The provider placed the restaurant line, so the model tier never
+		// sees it and the store never names it: the merchant column falls
+		// back to the line's own signature (spend_txn_categories). The
+		// backlog line has no verdict at all and falls back the same way.
+		// merchant_signature is not among the columns selected here, so
+		// either value can only be the merchant column's — which is what
+		// makes the -p subtest's matching assertion non-vacuous.
 		for _, fold := range []string{"sig-diner", "sig-unknown"} {
 			if !strings.Contains(so, fold) {
 				t.Errorf("a line the store never named shows no merchant, want %q:\n%s", fold, so)
@@ -592,7 +592,7 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 			t.Errorf("privacy leaked the merchant name:\n%s", so)
 		}
 		// The column's other content masks with it: a line the store
-		// never named prints its own signature there (migration 0054),
+		// never named prints its own signature there (spend_txn_categories),
 		// and merchant_signature is not among the columns selected
 		// here, so either token can only have come through the
 		// merchant column.

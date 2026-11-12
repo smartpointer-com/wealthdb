@@ -336,7 +336,7 @@ func TestIncomePassIsIdempotent(t *testing.T) {
 // and its same-amount reversal on one account read as when they sit a
 // day apart, well inside the matcher's window.
 //
-// The matcher pool has no sign guard (migration 0044): it admits
+// The matcher pool has no sign guard: it admits
 // `deposit` rows of either sign, and a negative one is the outgoing
 // shape it looks for. With no partner on another account, the reversal
 // phase pairs the two: both read `internal_transfer` and leave the

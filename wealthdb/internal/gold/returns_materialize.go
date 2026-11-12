@@ -11,7 +11,7 @@ import (
 )
 
 // materializeCurrencies is the output-currency set report_returns carries —
-// the reporting currencies the `_multi` report macros emit (migration 0114),
+// the reporting currencies the `_multi` report macros emit,
 // loaded in one pass. Another currency is a schema decision rather than a
 // config knob: the macros must emit its columns, and every currency adds a
 // full set of partitions to the table. web/test_provision.py reads this

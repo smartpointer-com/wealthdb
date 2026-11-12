@@ -12,7 +12,7 @@ import (
 // projection, the row struct and the scan list are edited together in
 // one change. Where the shapes differ there is a reason, and there is
 // exactly one: the summary carries `withheld`, which has no spending
-// twin (migration 0071).
+// twin.
 
 // IncomeSummaryRow is one period bucket of the income summary.
 //

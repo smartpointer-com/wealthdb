@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestADatedWrapperMovesTheBoundaryOnItsDay covers migration 0162: a trust
+// TestADatedWrapperMovesTheBoundaryOnItsDay covers a dated wrapper: a trust
 // that was the household's (grantor) until a day and a separate taxpayer
 // (non-grantor) after it. Before the day a move into it is pool-internal
 // and its own spending is a line; after it the move is a vehicles

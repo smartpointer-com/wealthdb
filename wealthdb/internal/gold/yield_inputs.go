@@ -574,7 +574,7 @@ SELECT r.key, r.as_of, r.currency, r.tenor, r.dv01, MAX(c.net_assets)::DOUBLE
 }
 
 // readFundFilings reads, for each fund of list, the share of its filing's
-// lines at the instant (fund_filings_at, migration 0141) that float, by
+// lines at the instant (fund_filings_at) that float, by
 // weight, and the name the filing gives it.
 func readFundFilings(ctx context.Context, db querier, in *yield.Inputs, out map[string]*fundRead, list string,
 	args func(...any) []any) error {
@@ -635,8 +635,8 @@ type fundLine struct {
 // are the shares of debt and of equity, by the class each line's asset
 // type maps to, as exposure reads it. A line that states no coupon kind,
 // default flag or arrears flag takes what the filing of the fund whose
-// lines they are states of its security (fund_filing_kinds, migration
-// 0141), as exposure_leaves reads its coupon kind. It keeps each fund's
+// lines they are states of its security (fund_filing_kinds),
+// as exposure_leaves reads its coupon kind. It keeps each fund's
 // lines and what each says of its security (readLine) in out, for every
 // currency's pickLines.
 func readFundLines(ctx context.Context, db querier, in *yield.Inputs, out map[string]*fundRead, list string,
@@ -1399,14 +1399,14 @@ func trailing(periods []periodFact, day time.Time, years int) (float64, bool) {
 
 // readAmounts reads each position's amount on each day of the twelve
 // months to the instant, one yield.Daily per currency it is valued in,
-// and the instrument it names: a position as positions_at
-// reads it on the day, a cash balance as cash_chosen does, a day it was
-// not held as zero. Both read a day at its last second, the instant's own
-// day at the instant, and take each account's active snapshot at it
-// (migration 0140). So an observation's amounts hold over its span
-// (pos_key_spans, cash_key_spans), from the first day read at or after it
-// to the first day read at or after its end, and one read of the
-// observations whose span meets the window gives every day.
+// and the instrument it names: a position as positions_at reads it on the
+// day, a cash balance as cash_chosen does, a day it was not held as zero.
+// Both read a day at its last second, the instant's own day at the instant,
+// and take each account's active snapshot at it (pos_active_at,
+// cash_active_at). So an observation's amounts hold over its span
+// (pos_key_spans, cash_key_spans), from the first day read at or after it to
+// the first day read at or after its end, and one read of the observations
+// whose span meets the window gives every day.
 func (b *yieldBase) readAmounts(ctx context.Context, db querier) error {
 	w := newDayWindow(b.in)
 	b.amounts, b.instrument = map[amountKey]*yield.Daily{}, map[yield.HoldingKey]string{}
@@ -1579,7 +1579,7 @@ func (b *yieldBase) daily(in *yield.Inputs) {
 // (yield.Inputs.Aliases), as holdingAliasJoins reads a holding's key: a
 // holding alias for one account, else for every account of its source,
 // else, for the CUSIP id of an instrument its source also keys by its
-// ticker, the ticker (instrument_aliases, migration 0120).
+// ticker, the ticker (instrument_aliases).
 func readYieldAliases(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 SELECT silver_source_id, account_external_id, from_key, to_key FROM holding_aliases

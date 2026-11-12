@@ -242,9 +242,9 @@ func TestMigration0132DDLIsRerunnable(t *testing.T) {
 	}
 }
 
-// TestWebTransactionsIsDropped: web_transactions is gone (migration
-// 0158), no view or macro left names it, and the table it read stays for
-// the report_transactions model and web_income_withheld.
+// TestWebTransactionsIsDropped: no view web_transactions exists, no view or
+// macro left names it, and the table it read stays for the
+// report_transactions model and web_income_withheld.
 func TestWebTransactionsIsDropped(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

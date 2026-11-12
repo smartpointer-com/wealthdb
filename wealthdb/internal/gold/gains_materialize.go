@@ -10,7 +10,7 @@ import (
 
 // gainsInsertSQL copies the monthly gains_windows rows of every
 // currency and reading it is given, from one evaluation
-// (gains_windows_all, migration 0119, re-issued since), into
+// (gains_windows_all), into
 // report_gains (migrations 0117, 0118, 0120), by column name.
 const gainsInsertSQL = `INSERT INTO report_gains BY NAME
     SELECT CAST(? AS BIGINT) AS computed_at, out_currency AS currency, missing_basis,

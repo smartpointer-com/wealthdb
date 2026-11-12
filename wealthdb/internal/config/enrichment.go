@@ -91,7 +91,7 @@ type SpendingRule struct {
 	// instrument's, and a bank payment order names none — so capital
 	// deployed into a destination the product holds in a source that
 	// carries no transactions has no road onto its own class and draws
-	// as "Untracked investments" (migration 0102).
+	// as "Untracked investments" (cashflow_txn_nodes).
 	AssetClass string `json:"asset_class,omitempty"`
 }
 

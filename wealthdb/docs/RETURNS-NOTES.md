@@ -127,7 +127,7 @@ up to quarters and years. Beside `returns`' own gain it can differ by a
 few cents of rounding.
 
 **Debt in its own currency.** Each mortgage or card line is measured in
-the currency it is held in (`report_debt_history`, migration 0177). Its
+the currency it is held in (`report_debt_history`). Its
 fall over a month is converted at that month's end rate
 (`report_debt_fx`). An FX move on a debt held in another currency must
 not read as saving, so it stays in `gain`.
@@ -277,8 +277,8 @@ macro of its own:
   boundary before an account's first snapshot reads NULL ("not yet alive",
   not 0). Every grain is driven off the per-account spine (aggregated in
   Go), which is what synthetic onboarding needs.
-  - The macro resolves the active snapshot **per account** (migration
-    0051). An account a partial run did not cover keeps its own last
+  - The macro resolves the active snapshot **per account**.
+    An account a partial run did not cover keeps its own last
     observation, so it stays in the spine for that day. The spine therefore
     has no holes where a source writes different accounts under different
     snapshots. A deposit run, a card run and a statement backfill each

@@ -233,7 +233,7 @@ func TestSpendDeltasAreSelfDetailed(t *testing.T) {
 
 // TestSpendDeltaMarkerIsExact pins the structural marker gold reads
 // delta-ness off: a row is a delta if and only if its primary equals
-// its detailed value. Migration 0048's spend_txn_categories() tests
+// its detailed value. spend_txn_categories() tests
 // exactly that on the seeded dimension to blank the merchant column,
 // the income resolution does the same for the payer, and neither
 // restates a list — so the marker must hold for every delta and for

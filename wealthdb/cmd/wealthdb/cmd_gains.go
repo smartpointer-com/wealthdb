@@ -18,7 +18,7 @@ import (
 
 // `wealthdb gains <view>` — what was gained or lost, realized and
 // unrealized, over a window. docs/GAINS.md defines every figure; the
-// sums are gold's (migrations 0116 to 0118), and this file is the views,
+// sums are gold's macros (derived/50_gains.sql), and this file is the views,
 // their columns and the usage text.
 //
 // The families' idiom: the grain in a positional view, the window

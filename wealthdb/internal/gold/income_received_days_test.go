@@ -8,7 +8,7 @@ import (
 // web_income_days holds every day to the yield report's latest day from
 // the earliest of the first day of last year, the first day income was
 // received, the first day tax was withheld and the first income line of
-// any type (0169). web_income_withheld holds
+// any type. web_income_withheld holds
 // the tax a source withheld on the income's accounts: each negative tax
 // row, as a positive amount, in each reporting currency. A refund of
 // tax, another kind of row and an account outside the income's scope

@@ -12,7 +12,7 @@ import (
 // portfolio).
 //
 // Aggregation, the base/taxonomy rollup, FX, and ordering are all
-// the report_sources macro (migration 0123); this is the scan.
+// the report_sources macro (derived/30_holdings.sql); this is the scan.
 // sum(sources.total_<CCY>) == sum(accounts.total_<CCY>) ==
 // sum(portfolios.total_<CCY>) by construction.
 type SourceRow struct {

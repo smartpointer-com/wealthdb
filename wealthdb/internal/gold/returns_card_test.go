@@ -325,7 +325,7 @@ func TestServingTransactionsAccountKind(t *testing.T) {
 }
 
 // TestTransactionsBetweenCarriesAccountKind pins the C5 lockstep: the
-// report_transactions macro gained account_kind (migration 0039) and
+// report_transactions macro carries account_kind and
 // TransactionsBetween scans it positionally, so a drifted projection would
 // surface here rather than at runtime.
 func TestTransactionsBetweenCarriesAccountKind(t *testing.T) {

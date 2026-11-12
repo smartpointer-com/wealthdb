@@ -123,14 +123,14 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		// narrative to expose.
 		{Name: "description", Align: output.AlignLeft, Privacy: PrivacyFreeText,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Description) }},
-		// The spending overlay's verdict on the row (migration 0042).
+		// The spending overlay's verdict on the row (spend_txn_categories).
 		// Empty for everything the enrichment pass does not reach:
 		// investment rows, and anything outside the spending account
 		// scope. The merchant is the store's name for the row's
 		// signature, or that signature itself where the store holds
-		// none (migration 0054), and is empty on a delta row — an
+		// none, and is empty on a delta row — an
 		// own-account move, capital deployed, a gift — which carries
-		// its issuer label or nothing (migrations 0048 and 0052).
+		// its issuer label or nothing.
 		// Free-text class, as on the spending view: the transfer fence
 		// gates what may acquire a STORE name, not what this column
 		// prints, so a narrative the fence refused surfaces here as
@@ -140,10 +140,10 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.MerchantName) }},
 		textCol("spend_primary", func(r gold.TransactionRow) *string { return r.SpendPrimary }),
 		textCol("spend_detailed", func(r gold.TransactionRow) *string { return r.SpendDetailed }),
-		// The INCOME overlay's verdict on the same row (migration
-		// 0071), and a row can carry both: a deposit the matcher
-		// paired is `internal_transfer` on each side, and this is the
-		// one surface that shows a transaction from both at once.
+		// The INCOME overlay's verdict on the same row
+		// (income_txn_categories), and a row can carry both: a deposit the
+		// matcher paired is `internal_transfer` on each side, and this is
+		// the one surface that shows a transaction from both at once.
 		// `payer` takes the free-text class for the reason `merchant`
 		// does — on a dividend it is the instrument, but on a deposit
 		// it is the store's name for the signature or the fold of the
@@ -161,7 +161,7 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		{Name: "check_no", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.CheckNumber) }},
 		// The node the cash flow statement resolved the row to
-		// (migration 0081), beside the two families' trios: which
+		// (cashflow_txn_nodes), beside the two families' trios: which
 		// section of the statement, which inner node, which leaf. The
 		// three are vocabulary and stay legible under -p, as the
 		// families' categories do. Blank where the resolution reached

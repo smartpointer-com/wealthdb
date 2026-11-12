@@ -329,7 +329,7 @@ var vendoredIncomeCategories = []SpendCategory{
 //
 // A delta is primary-level, so a report grouped by primary shows it as
 // its own bucket, and gold reads delta-ness off that equality rather
-// than off a list (migration 0048).
+// than off a list (spend_txn_categories).
 var deltaCategories = []SpendCategory{
 	{SpendDetailedInternalTransfer, SpendDetailedInternalTransfer,
 		"Movement between two accounts the product already tracks, either leg — card payments, funding wires, mortgage payments, a pension contribution arriving", FamilyBoth},

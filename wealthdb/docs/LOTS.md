@@ -8,8 +8,9 @@ figure says so: its basis stamp is
 replaced.
 
 Related: DESIGN.md §7.4 (the stated cost basis), §7.5 (the engine's
-place), §8.1 (where the pass runs), docs/GAINS.md (the readers), and
-migrations 0118 and 0121.
+place), §8.1 (where the pass runs), docs/GAINS.md (the readers),
+migrations 0118 and 0121 (the tables), and `derived/50_gains.sql` (the
+macros).
 
 ---
 

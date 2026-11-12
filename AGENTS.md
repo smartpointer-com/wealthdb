@@ -235,6 +235,12 @@ Underneath, each component also builds directly:
   image's toolchain — no host Go, and `make update` resolves the
   module graph there too, so the Dockerfile's base-image tag is the
   only place the Go version is declared.
+  Gold's schema is SQL under `wealthdb/internal/gold/`. The tables
+  and data moves are migrations in `migrations/`. Every macro and
+  view lives once in `derived/`, and a change to one is an edit
+  there, never a migration.
+  [derived/README.md](wealthdb/internal/gold/derived/README.md) says
+  how.
 - **Collectors**: every collector has a wrapper,
   `collectors/<name>/<name> <login|download|load|prune>`.
   - A **Docker** collector (a Dockerfile + `entrypoint.sh`): the

@@ -120,8 +120,8 @@ func SyncBenchmarks(ctx context.Context, db *sql.DB, defs []canonical.Benchmark)
 }
 
 // The origins of a declaration: the ledger's own records, and those a
-// source parses from a document. Migration 0164 spells 'ledger' in the
-// column default and in exposure_declarations_at, and 0167 in
+// source parses from a document. The column default of migration 0164
+// spells 'ledger', and so do exposure_declarations_at and
 // exposure_composition_wins.
 const (
 	declarationLedger = "ledger"

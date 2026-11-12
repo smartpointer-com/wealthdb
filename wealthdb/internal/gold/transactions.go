@@ -36,23 +36,22 @@ type TransactionRow struct {
 	Price                 *string
 	Description           *string // transactions.description; free-text label
 	// MerchantName, SpendPrimary and SpendDetailed come from the
-	// spending overlay (migration 0042's spend_txn_categories): the
+	// spending overlay (spend_txn_categories): the
 	// merchant the row's signature resolved to and the category the
 	// enrichment tiers settled on. Nil for every row the enrichment
 	// pass does not reach — investment transactions, and anything
 	// outside the spending account scope. MerchantName is the store's
 	// name where the store holds one and the row's own signature where
-	// it does not (migration 0054); it is nil on a delta row — an
-	// own-account move, capital deployed, a gift — which carries its
-	// issuer label or nothing (migrations 0048 and 0052).
+	// it does not; it is nil on a delta row — an own-account move,
+	// capital deployed, a gift — which carries its issuer label or
+	// nothing.
 	MerchantName  *string
 	SpendPrimary  *string
 	SpendDetailed *string
-	// PayerName, IncomePrimary and IncomeDetailed are the same three
-	// from the INCOME overlay (income_txn_categories, migration 0070
-	// and re-issued by 0073): who paid, and what kind of income the
-	// tiers and the kind floor settled on. Nil for every row the income
-	// pass does not reach — a purchase, a sale, anything outside the
+	// PayerName, IncomePrimary and IncomeDetailed are the same three from
+	// the INCOME overlay (income_txn_categories): who paid, and what kind of
+	// income the tiers and the kind floor settled on. Nil for every row the
+	// income pass does not reach — a purchase, a sale, anything outside the
 	// income account scope.
 	//
 	// A row can carry both trios, and routinely does: a deposit the
@@ -72,7 +71,7 @@ type TransactionRow struct {
 	// needed or it succeeded. `transaction_instruments` is keyed by it.
 	InstrumentHint *string
 	// CashflowSection, CashflowClass and CashflowGroup are the node the
-	// cash flow statement resolved the row to (migration 0081): which
+	// cash flow statement resolved the row to (cashflow_txn_nodes): which
 	// section of the statement, which inner node, which leaf. Read from
 	// the RESOLUTION rather than from the base, so a row on an account
 	// no cashflow report charts still carries its node.
@@ -107,12 +106,12 @@ const (
 // converted to outCcy at occurred_at. Sorted by occurred_at (asc or
 // desc per `order`), then (silver_source_id,
 // transaction_external_id) as a stable tiebreaker. The query and FX
-// are the report_transactions table macro (migration 0099); the macro
+// are the report_transactions table macro (derived/40_flows.sql); the macro
 // emits ascending, so the descending case re-sorts here.
 //
 // `SELECT *` with a positional Scan: any column added to the macro
 // must be added to TransactionRow and to the scan list below in the
-// same position, in the same change as the migration.
+// same position, in the same change as the macro.
 func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy string, order SortOrder) ([]TransactionRow, error) {
 	q := `SELECT * FROM report_transactions(?, ?, ?)`
 	if order == SortDescending {

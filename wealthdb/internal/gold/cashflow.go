@@ -21,7 +21,7 @@ import (
 // are signed, the Cash row included.
 
 // poolSpanJoin keeps a cashflow_txn_nodes row n where its own account is
-// in the pool on the row's day (poolSpanOn), as 0162's
+// in the pool on the row's day (poolSpanOn), as
 // cashflow_lines_base applies the test, so a row on a dated wrapper
 // override's day reads the override's wrapper.
 var poolSpanJoin = "\n      JOIN cashflow_pool_spans() p ON " + poolSpanOn("n")

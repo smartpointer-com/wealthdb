@@ -203,8 +203,8 @@ func planBlockwiseJoins(t *testing.T, db *sql.DB, ctx context.Context, from stri
 	return n
 }
 
-// TestYieldHoldingsReadsEachKindsOwnRow holds yield_holdings, whose joins
-// key on the holding's kind (migration 0145), to 0136's answers: a cash
+// TestYieldHoldingsReadsEachKindsOwnRow pins yield_holdings, whose joins
+// key on the holding's kind: a cash
 // holding reads its balance and no position, though a position at the
 // same snapshot bears its key, a position reads its own row, and a
 // position with no value reads no balance. The kind in the keys is what

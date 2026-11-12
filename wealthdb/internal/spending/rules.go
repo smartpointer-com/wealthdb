@@ -93,7 +93,7 @@ type cardIssuer struct {
 // paid to it — one phrase per known statement format.
 //
 // The name is what the bill is LABELLED with. A `card_spend` line
-// carries it as its merchant (migration 0052), because the issuer is
+// carries it as its merchant, because the issuer is
 // the only handle on which card the money went to; the bill's
 // signature names the payer's own bank or the holder, and is not a
 // merchant. An entry with an EMPTY name is a descriptor that says a
@@ -453,7 +453,7 @@ func rulePlacement(rules []spendRule, signature, counterparty, description, prov
 // argument rather than reading it from a descriptor so the gate cannot
 // be bypassed by calling the rule directly. `deposit` is the one kind
 // the narrative tiers exist for; every other admitted kind is answered
-// by the floor, which outranks a narrative here (migration 0073). An
+// by the floor, which outranks a narrative here. An
 // ungated phrase match reaches them anyway, because the rule tier is
 // ABOVE the floor and stays there — a config rule promoting a
 // `distribution` depends on that — so an `interest` row narrated

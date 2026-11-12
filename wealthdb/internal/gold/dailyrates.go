@@ -9,10 +9,10 @@ import (
 
 // DailyRates is fx_daily read whole: per currency pair, one rate per epoch
 // day, day-ascending, each the price of one unit of `from` in `to`. The
-// source priority is already applied (migration 0020), and each pair has
-// a day-0 floor row (0023). It holds the data only; a caller sets its own
-// policy on top (the lot engine's age limit and bridges, the matcher's
-// direct pairs).
+// source priority is already applied (fx_norm), and each pair has a day-0
+// floor row (both in derived/10_fx.sql). It holds the data only; a caller
+// sets its own policy on top (the lot engine's age limit and bridges, the
+// matcher's direct pairs).
 type DailyRates struct {
 	pairs map[[2]string][]dayRate
 }

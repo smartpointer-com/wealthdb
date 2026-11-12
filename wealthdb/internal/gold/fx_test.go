@@ -25,7 +25,7 @@ func seedFX(t *testing.T, db *sql.DB, snap int64, base, quote, mid string) {
 // from == to, otherwise the first of the direct / CHF-triangulated /
 // USD-triangulated paths that resolves, each via an at-or-before ASOF
 // match on the day bucket. It is the exact COALESCE/ASOF shape the
-// report_* macros embed (migration 0021), isolated so the FX layer
+// report_* macros embed, isolated so the FX layer
 // can be asserted without seeding whole accounts. Returns the
 // DECIMAL(28,4) string the macros render, or ok=false when no path
 // resolves (the macros' NULL). `day` is a UTC-day bucket (epoch //
@@ -132,7 +132,7 @@ func TestFxTriangulationMissingLeg(t *testing.T) {
 // TestFxFlatAtOrBefore pins the no-interpolation + clamp contract: between
 // two dated rates the earlier is carried forward flat (not blended), and a
 // date before the first rate CLAMPS to the earliest available rate
-// (migration 0023's fx_daily floor) rather than failing — so deep-history
+// (fx_daily's floor) rather than failing — so deep-history
 // holdings still convert. Days 10 and 12 are distinct UTC-day buckets.
 func TestFxFlatAtOrBefore(t *testing.T) {
 	t.Parallel()

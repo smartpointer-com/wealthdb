@@ -180,12 +180,11 @@ SELECT DISTINCT k FROM (
 }
 
 // holdingAliasJoins joins a holding to the aliases that rename it, as
-// exposure_holdings (0126) and the gains reports read a holding's key:
+// exposure_holdings and the gains reports read a holding's key:
 // holding_aliases for its account (ha), then for every account (hd),
 // then instrument_aliases() (ia). src, acct, iid and posKey name the
 // holding's columns; its aliased key is COALESCE(ha.to_key, hd.to_key,
-// ia.k). A migration that changes exposure_holdings' keying changes
-// this too.
+// ia.k). A change to exposure_holdings' keying changes this too.
 func holdingAliasJoins(src, acct, iid, posKey string) string {
 	from := `holding_key(` + iid + `, ` + posKey + `)`
 	return `

@@ -489,7 +489,7 @@ func TestMigration0054DDLIsRerunnable(t *testing.T) {
 // admitted like the four the enrichment pass derives. 'model' is not
 // admitted and must not be: no tier writes it, because the model tier
 // writes to the merchant store instead — spend_txn_categories()
-// resolves it (migration 0050), and DuckDB cannot widen a CHECK in
+// resolves it, and DuckDB cannot widen a CHECK in
 // place anyway.
 func TestSpendOverlayCheckConstraints(t *testing.T) {
 	t.Parallel()
@@ -1374,7 +1374,7 @@ func TestMigration0111MovesEveryStoredVerdictToItsSuccessor(t *testing.T) {
 	verify("after a replay")
 }
 
-// TestSpendKindFloorPlacesWhatNothingElseCould pins migration 0066's
+// TestSpendKindFloorPlacesWhatNothingElseCould pins the kind floor's
 // last-resort arm, and above all WHERE it sits.
 //
 // A brokerage books security-level fees and tax withheld at source

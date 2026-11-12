@@ -14,7 +14,7 @@ import (
 // leaf carries its holding's legal situs and its basis, and its
 // holding's source and account's tax wrapper, which the dashboard's
 // pickers narrow to. A leaf is via funds where it is not held directly
-// (exposure_leaves' direct, migration 0175): a forward held directly
+// (exposure_leaves' direct): a forward held directly
 // holds its legs directly.
 var exposureInsertSQL = `INSERT INTO report_exposure BY NAME
 WITH ` + scaledLeavesSQL(`l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD'))`) + `
