@@ -126,23 +126,53 @@ func (c columnSpec[T]) header() string {
 // Unknown names produce a helpful error listing every column the
 // command knows about.
 func resolveColumns[T any](flagValue string, defaults []string, registry []columnSpec[T]) ([]columnSpec[T], error) {
-	flagValue = strings.TrimSpace(flagValue)
-	if adds, removes, isDelta := parseColumnsDelta(flagValue); isDelta {
-		return columnsByName(applyColumnsDelta(defaults, registryNames(adds, registry), registryNames(removes, registry)), registry)
-	}
-	switch flagValue {
-	case "", "default":
+	e := parseColumnsExpr(flagValue, false)
+	switch {
+	case e.delta:
+		return columnsByName(applyColumnsDelta(defaults, registryNames(e.adds, registry), registryNames(e.removes, registry)), registry)
+	case e.defaults:
 		return columnsByName(defaults, registry)
-	case "all":
+	case e.all:
 		out := make([]columnSpec[T], len(registry))
 		copy(out, registry)
 		return out, nil
 	}
-	names := strings.Split(flagValue, ",")
-	for i, n := range names {
-		names[i] = strings.TrimSpace(n)
+	return columnsByName(registryNames(e.names, registry), registry)
+}
+
+// columnsExpr is a parsed column expression, the grammar the CLI's -C
+// and MCP's columns share: the defaults, every column, a delta against
+// the defaults, or a list of names. Each side resolves the names its
+// own way: the CLI exactly, MCP tolerantly with notes.
+type columnsExpr struct {
+	defaults, all, delta bool
+	adds, removes, names []string
+}
+
+// parseColumnsExpr parses expr. foldKeywords reads "default" and "all"
+// in any case. A list drops its empty names.
+func parseColumnsExpr(expr string, foldKeywords bool) columnsExpr {
+	expr = strings.TrimSpace(expr)
+	if adds, removes, isDelta := parseColumnsDelta(expr); isDelta {
+		return columnsExpr{delta: true, adds: adds, removes: removes}
 	}
-	return columnsByName(registryNames(names, registry), registry)
+	keyword := expr
+	if foldKeywords {
+		keyword = strings.ToLower(expr)
+	}
+	switch keyword {
+	case "", "default":
+		return columnsExpr{defaults: true}
+	case "all":
+		return columnsExpr{all: true}
+	}
+	var e columnsExpr
+	for _, n := range strings.Split(expr, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			e.names = append(e.names, n)
+		}
+	}
+	return e
 }
 
 // registryNames reads each name as the server's columnLookup.exact does:

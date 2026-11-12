@@ -56,11 +56,11 @@ func BuildFreshAndSwap(ctx context.Context, goldPath string, build func(tmpPath 
 		return 0, fmt.Errorf("verify rebuilt gold %q: %w", tmp, err)
 	}
 
-	oldSize, err := fileSize(goldPath)
+	oldSize, err := FileSize(goldPath)
 	if err != nil {
 		return 0, err
 	}
-	newSize, err := fileSize(tmp)
+	newSize, err := FileSize(tmp)
 	if err != nil {
 		return 0, err
 	}
@@ -109,8 +109,8 @@ func verifyGold(ctx context.Context, path string) error {
 	return nil
 }
 
-// fileSize returns the byte size of the file at path.
-func fileSize(path string) (int64, error) {
+// FileSize returns the byte size of the file at path.
+func FileSize(path string) (int64, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return 0, fmt.Errorf("stat %q: %w", path, err)

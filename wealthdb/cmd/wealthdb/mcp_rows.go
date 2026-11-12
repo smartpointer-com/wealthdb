@@ -438,22 +438,22 @@ func (l columnLookup) pick(expr string, defaults []string) ([]int, []string, err
 		return nil, nil, err
 	}
 	expr = strings.TrimSpace(expr)
-	switch strings.ToLower(expr) {
-	case "", "default":
+	e := parseColumnsExpr(expr, true)
+	switch {
+	case e.defaults:
 		return defIdx, nil, nil
-	case "all":
+	case e.all:
 		all := make([]int, len(l.cols))
 		for i := range all {
 			all[i] = i
 		}
 		return all, nil, nil
-	}
-	if adds, removes, isDelta := parseColumnsDelta(expr); isDelta {
-		addIdx, err := resolve(adds)
+	case e.delta:
+		addIdx, err := resolve(e.adds)
 		if err != nil {
 			return nil, nil, err
 		}
-		remIdx, err := resolve(removes)
+		remIdx, err := resolve(e.removes)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -474,13 +474,7 @@ func (l columnLookup) pick(expr string, defaults []string) ([]int, []string, err
 		}
 		return out, notes, nil
 	}
-	var names []string
-	for _, n := range strings.Split(expr, ",") {
-		if n = strings.TrimSpace(n); n != "" {
-			names = append(names, n)
-		}
-	}
-	out, err := resolve(names)
+	out, err := resolve(e.names)
 	if err != nil {
 		return nil, nil, err
 	}

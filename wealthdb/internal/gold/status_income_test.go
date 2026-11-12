@@ -21,8 +21,8 @@ func TestStatusIncomeCounters(t *testing.T) {
 
 	var s SourceStatus
 	s.SilverSourceID = "inc-src"
-	if err := spendDrift(ctx, db, &s); err != nil {
-		t.Fatalf("spendDrift: %v", err)
+	if _, err := driftCounts(ctx, db, map[string]*SourceStatus{s.SilverSourceID: &s}); err != nil {
+		t.Fatalf("driftCounts: %v", err)
 	}
 
 	// The backlog is the base's unplaced rows. A floored dividend is

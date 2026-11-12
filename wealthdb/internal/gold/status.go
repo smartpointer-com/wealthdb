@@ -135,6 +135,48 @@ type AccountKindActivity struct {
 // source isn't registered in gold; callers that want a hard
 // error in that case should check the return value.
 func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, includeDrift bool) (*SourceStatus, error) {
+	r := StatusForSources(ctx, db, []string{silverSourceID}, includeDrift)[0]
+	return r.Status, r.Err
+}
+
+// SourceStatusResult is one source's StatusForSource answer.
+type SourceStatusResult struct {
+	Status *SourceStatus
+	Err    error
+}
+
+// StatusForSources is StatusForSource for each of ids, in their order.
+// The enrichment and cash flow drift counters (driftCounts) are each
+// evaluated once for all the sources, grouped by source: each reads a
+// layered macro over all history, and DuckDB does not narrow that to one
+// source when a query filters on it. A source's error is its own; a
+// drift counter that fails, fails every source it counts.
+func StatusForSources(ctx context.Context, db *sql.DB, ids []string, includeDrift bool) []SourceStatusResult {
+	out := make([]SourceStatusResult, len(ids))
+	drift := map[string]*SourceStatus{}
+	for i, id := range ids {
+		st, err := statusBase(ctx, db, id, includeDrift)
+		out[i] = SourceStatusResult{Status: st, Err: err}
+		if includeDrift && st != nil && err == nil {
+			drift[id] = st
+		}
+	}
+	if len(drift) == 0 {
+		return out
+	}
+	if label, err := driftCounts(ctx, db, drift); err != nil {
+		for i := range out {
+			if st := out[i].Status; st != nil && drift[st.SilverSourceID] == st {
+				out[i] = SourceStatusResult{Err: fmt.Errorf("StatusForSource(%s) %s: %w", st.SilverSourceID, label, err)}
+			}
+		}
+	}
+	return out
+}
+
+// statusBase is StatusForSource but for the drift counters
+// driftCounts fills.
+func statusBase(ctx context.Context, db *sql.DB, silverSourceID string, includeDrift bool) (*SourceStatus, error) {
 	s := &SourceStatus{SilverSourceID: silverSourceID}
 
 	err := db.QueryRowContext(ctx,
@@ -227,9 +269,6 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 		).Scan(&s.MissingVehicleCount); err != nil {
 			return nil, err
 		}
-		if err := spendDrift(ctx, db, s); err != nil {
-			return nil, err
-		}
 		if err := perKindActivity(ctx, db, s); err != nil {
 			return nil, err
 		}
@@ -238,13 +277,15 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 	return s, nil
 }
 
-// spendDrift fills the enrichment counters, one per family plus the
-// catch-all kinds, and hands off to cashflowDrift for the statement's
-// own three. Each reads the layered macros rather than restating their
-// predicates, so a change to what counts as a scoped account or a
-// family's kind moves the status numbers with it.
+// driftCounts fills the drift counters of the statuses, keyed by
+// source, one query per counter: the enrichment counters, one per
+// family plus the catch-all kinds, and the cash flow statement's three.
+// On a failure it returns the counter's label beside the error. Each
+// reads the layered macros rather than restating their predicates, so
+// a change to what counts as a scoped account or a family's kind moves
+// the status numbers with it.
 //
-// The last counter watches the two CATCH-ALL kinds — `other` and
+// The catch-all counter watches the two CATCH-ALL kinds — `other` and
 // `journal` — on in-scope accounts. Those are where an adapter files a
 // row it could not classify, so money landing there is money that
 // silently left the base. The deliberate exclusions (buy, sell, fx,
@@ -260,67 +301,82 @@ func StatusForSource(ctx context.Context, db *sql.DB, silverSourceID string, inc
 // deployment excludes an account from one scope and not the other, it
 // answers for spending's, and an account only income scopes in
 // contributes nothing to it.
-func spendDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
-	if err := db.QueryRowContext(ctx, `
-        SELECT COUNT(*) FROM spending_lines_base(?, ?)
-         WHERE silver_source_id = ? AND spend_detailed IS NULL`,
-		int64(0), MaxEpoch, s.SilverSourceID,
-	).Scan(&s.UncategorizedSpendCount); err != nil {
-		return fmt.Errorf("StatusForSource(%s) uncategorised spend: %w", s.SilverSourceID, err)
+//
+// The cash flow counters read the pool's span join (poolSpanJoin,
+// shared with the plan), so a change to what the pool holds or to what
+// the resolution declines moves the numbers with it. The first two join
+// the pool: a vehicle's own FX legs are not the household's, and
+// counting them would make the number permanently large and therefore
+// unreadable.
+func driftCounts(ctx context.Context, db *sql.DB, byID map[string]*SourceStatus) (string, error) {
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
 	}
-	if err := db.QueryRowContext(ctx, `
-        SELECT COUNT(*) FROM income_lines_base(?, ?)
-         WHERE silver_source_id = ? AND income_detailed IS NULL`,
-		int64(0), MaxEpoch, s.SilverSourceID,
-	).Scan(&s.UncategorizedIncomeCount); err != nil {
-		return fmt.Errorf("StatusForSource(%s) uncategorised income: %w", s.SilverSourceID, err)
-	}
-	if err := db.QueryRowContext(ctx, `
-        SELECT COUNT(*)
+	in := func(col string) string { return col + " IN (SELECT unnest(?::VARCHAR[]))" }
+	for _, c := range []struct {
+		label string
+		query string
+		args  []any
+		field func(*SourceStatus) *int
+	}{
+		{"uncategorised spend", `
+        SELECT silver_source_id, COUNT(*) FROM spending_lines_base(?, ?)
+         WHERE ` + in("silver_source_id") + ` AND spend_detailed IS NULL GROUP BY 1`,
+			[]any{int64(0), MaxEpoch, ids}, func(s *SourceStatus) *int { return &s.UncategorizedSpendCount }},
+		{"uncategorised income", `
+        SELECT silver_source_id, COUNT(*) FROM income_lines_base(?, ?)
+         WHERE ` + in("silver_source_id") + ` AND income_detailed IS NULL GROUP BY 1`,
+			[]any{int64(0), MaxEpoch, ids}, func(s *SourceStatus) *int { return &s.UncategorizedIncomeCount }},
+		{"excluded-unmapped spend", `
+        SELECT t.silver_source_id, COUNT(*)
           FROM transactions t
           JOIN spend_scoped_accounts() sa
                  ON sa.silver_source_id    = t.silver_source_id
                 AND sa.account_external_id = t.account_external_id
-         WHERE t.silver_source_id = ? AND t.kind IN ('other', 'journal')`,
-		s.SilverSourceID,
-	).Scan(&s.ExcludedUnmappedCount); err != nil {
-		return fmt.Errorf("StatusForSource(%s) excluded-unmapped spend: %w", s.SilverSourceID, err)
+         WHERE ` + in("t.silver_source_id") + ` AND t.kind IN ('other', 'journal') GROUP BY 1`,
+			[]any{ids}, func(s *SourceStatus) *int { return &s.ExcludedUnmappedCount }},
+		{"cashflow excluded by kind", `
+        SELECT n.silver_source_id, COUNT(*)
+          FROM cashflow_txn_nodes(?, ?) n` + poolSpanJoin + `
+         WHERE ` + in("n.silver_source_id") + ` AND n.disposition = 'excluded' GROUP BY 1`,
+			[]any{int64(0), MaxEpoch, ids}, func(s *SourceStatus) *int { return &s.CashflowExcludedByKindCount }},
+		{"cashflow wrapper coverage", `
+        SELECT silver_source_id, COUNT(*) FROM cashflow_pool_accounts()
+         WHERE ` + in("silver_source_id") + ` AND tax_wrapper IS NULL GROUP BY 1`,
+			[]any{ids}, func(s *SourceStatus) *int { return &s.CashflowPooledNoWrapperCount }},
+		{"cashflow moves with no far account", `
+        SELECT silver_source_id, COUNT(*) FROM cashflow_lines_base(?, ?)
+         WHERE ` + in("silver_source_id") + ` AND class = 'unpaired' AND NOT far_known GROUP BY 1`,
+			[]any{int64(0), MaxEpoch, ids}, func(s *SourceStatus) *int { return &s.CashflowNoFarAccountCount }},
+	} {
+		if err := scanCounts(ctx, db, c.query, c.args, func(id string, n int) {
+			if s := byID[id]; s != nil {
+				*c.field(s) = n
+			}
+		}); err != nil {
+			return c.label, err
+		}
 	}
-	return cashflowDrift(ctx, db, s)
+	return "", nil
 }
 
-// cashflowDrift fills the cash flow statement's three canaries.
-//
-// Each reads the layered macros rather than restating their predicates
-// (the pool's span join is poolSpanJoin, shared with the plan), so a
-// change to what the pool holds or to what the resolution declines
-// moves the numbers with it. The first two join the pool: a vehicle's
-// own FX legs are not the household's, and counting them would make the
-// number permanently large and therefore unreadable.
-func cashflowDrift(ctx context.Context, db *sql.DB, s *SourceStatus) error {
-	if err := db.QueryRowContext(ctx, `
-        SELECT COUNT(*)
-          FROM cashflow_txn_nodes(?, ?) n`+poolSpanJoin+`
-         WHERE n.silver_source_id = ? AND n.disposition = 'excluded'`,
-		int64(0), MaxEpoch, s.SilverSourceID,
-	).Scan(&s.CashflowExcludedByKindCount); err != nil {
-		return fmt.Errorf("StatusForSource(%s) cashflow excluded by kind: %w", s.SilverSourceID, err)
+// scanCounts runs a (source, count) query and hands each row to set.
+func scanCounts(ctx context.Context, db *sql.DB, query string, args []any, set func(id string, n int)) error {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
 	}
-	if err := db.QueryRowContext(ctx, `
-        SELECT COUNT(*) FROM cashflow_pool_accounts()
-         WHERE silver_source_id = ? AND tax_wrapper IS NULL`,
-		s.SilverSourceID,
-	).Scan(&s.CashflowPooledNoWrapperCount); err != nil {
-		return fmt.Errorf("StatusForSource(%s) cashflow wrapper coverage: %w", s.SilverSourceID, err)
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return err
+		}
+		set(id, n)
 	}
-	if err := db.QueryRowContext(ctx, `
-        SELECT COUNT(*) FROM cashflow_lines_base(?, ?)
-         WHERE silver_source_id = ? AND class = 'unpaired' AND NOT far_known`,
-		int64(0), MaxEpoch, s.SilverSourceID,
-	).Scan(&s.CashflowNoFarAccountCount); err != nil {
-		return fmt.Errorf("StatusForSource(%s) cashflow moves with no far account: %w", s.SilverSourceID, err)
-	}
-	return nil
+	return rows.Err()
 }
 
 // perKindActivity fills PerKindActivity for a source holding more than

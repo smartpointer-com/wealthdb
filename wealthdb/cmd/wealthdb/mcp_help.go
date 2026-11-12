@@ -164,11 +164,7 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 	}
 	fam := t.family
 	columns := func(fam *family, v string) string {
-		req := defaultRequest(v, cfg.DefaultCurrency)
-		if level := map[string]string{"cashflow": "group", "income": "detailed"}[t.name]; level != "" {
-			req.level = level
-		}
-		rep := fam.buildDefault(cfg, req)
+		rep := fam.buildDefault(cfg, defaultRequest(v, cfg.DefaultCurrency))
 		var cols []string
 		for _, c := range rep.columns {
 			name := c.header

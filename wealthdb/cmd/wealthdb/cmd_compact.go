@@ -91,13 +91,13 @@ then discards it without touching the live DB.`)
 		if err := build(tmp); err != nil {
 			return errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("compact --dry-run: %w", err))
 		}
-		oldSize, err := fileBytes(cfg.GoldDB)
+		oldSize, err := gold.FileSize(cfg.GoldDB)
 		if err != nil {
-			return err
+			return errs.Wrap(errs.ExitOpenFailed, err)
 		}
-		newSize, err := fileBytes(tmp)
+		newSize, err := gold.FileSize(tmp)
 		if err != nil {
-			return err
+			return errs.Wrap(errs.ExitOpenFailed, err)
 		}
 		fmt.Fprintf(stdout, "compact --dry-run: current %s → compacted %s (reclaim %s)\n",
 			formatBytes(oldSize), formatBytes(newSize), formatBytes(oldSize-newSize))
@@ -170,15 +170,6 @@ func compactBuild(ctx context.Context, goldPath string) func(string) error {
 // doubling any embedded single quotes.
 func sqlLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-}
-
-// fileBytes returns the byte size of the file at path.
-func fileBytes(path string) (int64, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return 0, errs.Wrap(errs.ExitOpenFailed, fmt.Errorf("stat %q: %w", path, err))
-	}
-	return fi.Size(), nil
 }
 
 // formatBytes renders a byte count in the largest unit that keeps the

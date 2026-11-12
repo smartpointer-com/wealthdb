@@ -97,10 +97,10 @@ func statusReport(cfg *config.Config, verbose bool) *report {
 		defaults = append(append([]string{}, defaultStatusColumns...), statusVerboseColumns...)
 	}
 	return newReport(statusColumns(), defaults, func(ctx context.Context, db *sql.DB) ([]statusRow, error) {
+		results := gold.StatusForSources(ctx, db, sourceIDs(cfg), verbose)
 		out := make([]statusRow, 0, len(cfg.SilverSources))
 		for i := range cfg.SilverSources {
-			src := &cfg.SilverSources[i]
-			out = append(out, sourceStatus(ctx, db, src, verbose))
+			out = append(out, sourceStatus(ctx, results[i], &cfg.SilverSources[i]))
 		}
 		return out, nil
 	})
@@ -110,9 +110,9 @@ func statusReport(cfg *config.Config, verbose bool) *report {
 // whether a load would bring anything new. A silver that cannot be
 // opened — one in WAL mode on a read-only mount, say — leaves new_data
 // unknown rather than failing the row.
-func sourceStatus(ctx context.Context, db *sql.DB, src *config.SilverSource, verbose bool) statusRow {
+func sourceStatus(ctx context.Context, res gold.SourceStatusResult, src *config.SilverSource) statusRow {
 	r := statusRow{source: src.ID, kind: src.Kind, newData: "unknown"}
-	st, err := gold.StatusForSource(ctx, db, src.ID, verbose)
+	st, err := res.Status, res.Err
 	if err != nil {
 		r.failed = true
 		return r
@@ -136,13 +136,9 @@ func sourceStatus(ctx context.Context, db *sql.DB, src *config.SilverSource, ver
 func statusDetail(ctx context.Context, db *sql.DB, cfg *config.Config, id string, verbose bool) (string, error) {
 	src, ok := cfg.Lookup(id)
 	if !ok {
-		ids := make([]string, len(cfg.SilverSources))
-		for i, s := range cfg.SilverSources {
-			ids[i] = s.ID
-		}
-		return "", fmt.Errorf("status: no source %q; the sources are %s", id, strings.Join(ids, ", "))
+		return "", fmt.Errorf("status: no source %q; the sources are %s", id, strings.Join(sourceIDs(cfg), ", "))
 	}
-	row := sourceStatus(ctx, db, src, verbose)
+	row := sourceStatus(ctx, gold.StatusForSources(ctx, db, []string{id}, verbose)[0], src)
 	if row.failed {
 		return "", fmt.Errorf("status: gold could not report on source %q", id)
 	}

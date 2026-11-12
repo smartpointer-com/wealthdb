@@ -25,13 +25,6 @@ const (
 	ModeReadOnly
 )
 
-func (m Mode) String() string {
-	if m == ModeReadOnly {
-		return "read-only"
-	}
-	return "read-write"
-}
-
 // Reason explains why a particular Mode was chosen. Mostly used
 // for log lines and error messages that show *why* a
 // (RW) subcommand was refused.
