@@ -3,7 +3,8 @@
 
     python3 demo/check_dashboards.py [--base URL] [--password-file PATH]
                                      [--email ADDR] [--first-year YYYY]
-                                     [--workers N]
+                                     [--workers N] [--save-rows FILE]
+                                     [--compare FILE]
 
 The defaults are the demo's: its port, its admin password file under
 the checkout's demo root (shared/wrappers/demo-root.sh), and the year
@@ -44,15 +45,28 @@ sources of a card that had not run are counted, not checked. Empty runs
 under any other picker value are listed, not failed: many card and
 source pairs are empty by nature (card balances for a source with no
 card). Exits 1 on any failure. Stdlib only.
+
+--save-rows FILE writes the rows of every run, keyed by dashboard, card
+and picker label, with the seconds its query took. The file holds the
+book's values: it belongs outside the tree. --compare FILE runs the
+same check and then lists each run whose status or rows differ from
+FILE's, and fails on any. Two floats match within 1e-13 relative or
+1e-9 absolute, the bar two gold builds are held to; any other value
+matches exactly. It also lists each tile whose runs took, in all,
+SLOWER_RATIO times their time in FILE and SLOWER_FLOOR seconds more.
+Two runs compare on the same day: the full window's label holds today's
+date, and the relative windows move with it.
 """
 
 import argparse
 import concurrent.futures
 import datetime as dt
 import json
+import math
 import pathlib
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -73,6 +87,11 @@ EMPTY_AT_DEFAULTS_OK = {"Expected payments", provision.privacy_name("Expected pa
                         *provision.BENCHMARK_CARDS, *map(provision.privacy_name, provision.BENCHMARK_CARDS)}
 # The dashboards whose figures read 0 where nothing counts, never null.
 NO_NULL_DASHBOARDS = provision.INCOME_DASHBOARDS
+# --compare: the float bar, relative and absolute, and when a tile's runs
+# count as slower: SLOWER_RATIO times their saved seconds and
+# SLOWER_FLOOR seconds more, which keeps a fast tile's noise out.
+FLOAT_REL, FLOAT_ABS = 1e-13, 1e-9
+SLOWER_RATIO, SLOWER_FLOOR = 1.5, 0.25
 
 
 def call(base, path, method="GET", body=None, headers=None):
@@ -205,6 +224,71 @@ def unchecked_columns(dashes):
                if (m.get("source") or {}).get("type") == "column")
 
 
+def run_record(dashboard, card, label, ok, rows, err, seconds):
+    """One run as --save-rows keeps it."""
+    return {"dashboard": dashboard, "card": card, "label": label, "ok": ok,
+            "error": None if ok else str(err), "rows": rows, "seconds": round(seconds, 3)}
+
+
+def save_runs(path, records):
+    """Write `records` (run_record) to `path`, sorted by their key."""
+    records = sorted(records, key=lambda r: (r["dashboard"], r["card"], r["label"]))
+    pathlib.Path(path).write_text(json.dumps({"runs": records}, indent=1, ensure_ascii=False) + "\n",
+                                  encoding="utf-8")
+
+
+def load_runs(path):
+    """(dashboard, card, label) -> record, from a --save-rows file."""
+    runs = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))["runs"]
+    return {(r["dashboard"], r["card"], r["label"]): r for r in runs}
+
+
+def same_value(a, b):
+    """True when two cells match: floats within FLOAT_REL or FLOAT_ABS,
+    lists cell by cell, anything else exactly."""
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(same_value(x, y) for x, y in zip(a, b, strict=True))
+    numbers = (int, float)
+    if isinstance(a, numbers) and isinstance(b, numbers) and not isinstance(a, bool) \
+            and not isinstance(b, bool) and (isinstance(a, float) or isinstance(b, float)):
+        return a == b or math.isclose(a, b, rel_tol=FLOAT_REL, abs_tol=FLOAT_ABS)
+    return type(a) is type(b) and a == b
+
+
+def compare_runs(old, new):
+    """(dashboard, card, label, what) for each run whose status or rows
+    differ between `old` and `new`, both load_runs maps, and each run on
+    one side only. A row is named by its place, never by its values."""
+    out = []
+    for key in sorted(old.keys() | new.keys()):
+        a, b = old.get(key), new.get(key)
+        if a is None or b is None:
+            out.append((*key, "only in the saved runs" if b is None else "not in the saved runs"))
+        elif a["ok"] != b["ok"]:
+            out.append((*key, "now fails" if a["ok"] else "now runs"))
+        elif len(a["rows"]) != len(b["rows"]):
+            out.append((*key, f"{len(a['rows'])} rows saved, {len(b['rows'])} now"))
+        else:
+            diff = [i for i, (x, y) in enumerate(zip(a["rows"], b["rows"], strict=True))
+                    if not same_value(x, y)]
+            if diff:
+                out.append((*key, f"{len(diff)} of {len(a['rows'])} rows differ, the first is row {diff[0]}"))
+    return out
+
+
+def slower_tiles(old, new):
+    """(dashboard, card, saved seconds, seconds) for each tile whose
+    runs on both sides took SLOWER_RATIO times their saved time and
+    SLOWER_FLOOR seconds more, in all."""
+    totals = {}
+    for key in old.keys() & new.keys():
+        t = totals.setdefault(key[:2], [0.0, 0.0])
+        t[0] += old[key]["seconds"]
+        t[1] += new[key]["seconds"]
+    return [(d, c, round(a, 3), round(b, 3)) for (d, c), (a, b) in sorted(totals.items())
+            if b > a * SLOWER_RATIO and b - a > SLOWER_FLOOR]
+
+
 def run_card(base, auth, dash, dc, ptypes, values):
     mapped = {m["parameter_id"]: m for m in dc.get("parameter_mappings", [])}
     body = {"parameters": [{"id": pid, "type": ptypes[pid], "value": v, "target": mapped[pid]["target"]}
@@ -239,7 +323,11 @@ def main(argv=None):
     ap.add_argument("--password-file")
     ap.add_argument("--first-year", type=int, default=spec.load().history_start.year)
     ap.add_argument("--workers", type=int, default=3)
+    ap.add_argument("--save-rows", metavar="FILE", help="write every run's rows and seconds to FILE")
+    ap.add_argument("--compare", metavar="FILE",
+                    help="list each run whose rows differ from FILE's, and each tile that got slower")
     a = ap.parse_args(argv)
+    saved = load_runs(a.compare) if a.compare else None
     password_file = pathlib.Path(a.password_file) if a.password_file else demo_root() / "web/admin-password.txt"
     password = password_file.read_text().strip()
     admin_auth, key_id, auth = mint_key(a.base, a.email, password)
@@ -250,6 +338,7 @@ def main(argv=None):
         _, items = call(a.base, f"/api/collection/{coll['id']}/items?models=dashboard", headers=auth)
         dashboards = sorted(items["data"], key=lambda d: d["name"])
         failures, empties, figures, runs, freshness, dashes = [], set(), [], 0, None, {}
+        records = []
         for d in dashboards:
             _, dash = call(a.base, f"/api/dashboard/{d['id']}", headers=auth)
             dashes[d["id"]] = dash
@@ -270,13 +359,17 @@ def main(argv=None):
                 for label, values in combos(dash.get("parameters", []), sources, currencies, a.first_year, today):
                     jobs.append((dc, label, values))
             def run(job, dash=dash, ptypes=ptypes):
-                return job, run_card(a.base, auth, dash, job[0], ptypes, job[2])
+                start = time.monotonic()
+                result = run_card(a.base, auth, dash, job[0], ptypes, job[2])
+                return job, result, time.monotonic() - start
 
             with concurrent.futures.ThreadPoolExecutor(a.workers) as pool:
-                results = list(pool.map(run, jobs))
-            for (dc, label, _values), (ok, rows, err, params) in results:
+                timed = list(pool.map(run, jobs))
+            results = [(job, result) for job, result, _seconds in timed]
+            for (dc, label, _values), (ok, rows, err, params), seconds in timed:
                 runs += 1
                 name = dc["card"]["name"]
+                records.append(run_record(d["name"], name, label, ok, rows, err, seconds))
                 if not ok:
                     failures.append((d["name"], name, params, err))
                 elif not rows:
@@ -310,7 +403,21 @@ def main(argv=None):
         for d, c, why in clicks:
             print("  CLICK", d, "|", c, "|", why)
         print(f"clicks not checked against columns: {unchecked_columns(dashes)}")
-        return 1 if failures or at_defaults or nulls or clicks else 0
+        if a.save_rows:
+            save_runs(a.save_rows, records)
+            print(f"rows of {len(records)} runs saved to {a.save_rows}")
+        changed = []
+        if saved is not None:
+            new = {(r["dashboard"], r["card"], r["label"]): r for r in records}
+            changed = compare_runs(saved, new)
+            print(f"runs that differ from {a.compare}: {len(changed)}")
+            for d, c, label, what in changed:
+                print("  DIFF", d, "|", c, "|", label, "|", what)
+            slower = slower_tiles(saved, new)
+            print(f"tiles slower than in {a.compare}: {len(slower)}")
+            for d, c, was, now in slower:
+                print(f"  SLOWER {d} | {c} | {was}s -> {now}s")
+        return 1 if failures or at_defaults or nulls or clicks or changed else 0
     finally:
         call(a.base, f"/api/api-key/{key_id}", "DELETE", headers=admin_auth)
 

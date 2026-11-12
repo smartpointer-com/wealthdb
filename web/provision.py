@@ -12,6 +12,11 @@ command line, where `ps` would show it.
 Exit status: 0 when provisioned, EXIT_STALE_SNAPSHOT (3) when the
 mounted gold snapshot is older than the cards need (MIN_GOLD_SCHEMA),
 and 1 on any other failure.
+
+With --dump FILE it opens no connection: it writes every model, card
+and dashboard payload a provision into an empty collection sends, with
+ids numbered in definition order, to FILE as JSON (payload_dump). Two
+trees' dumps diff to what a change does to the payloads.
 """
 import argparse
 import concurrent.futures
@@ -65,20 +70,39 @@ def wait_health(base, limit=270, delay=0.25):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", required=True)
-    ap.add_argument("--email", required=True)
-    ap.add_argument("--gold-path", required=True)
+    ap.add_argument("--base")
+    ap.add_argument("--email")
+    ap.add_argument("--gold-path")
     ap.add_argument("--db-name", default="gold")
     ap.add_argument("--default-currency", default="USD")
     ap.add_argument("--missing-basis", default=MISSING_BASIS_READINGS[0], choices=MISSING_BASIS_READINGS)
     ap.add_argument("--source-colors", default="",
                     help="the file that keeps each source's colour (SOURCE_PALETTE)")
+    ap.add_argument("--dump", metavar="FILE",
+                    help="write the payloads to FILE as JSON and exit, with no connection;"
+                         " --base, --email and --gold-path are then not needed")
+    ap.add_argument("--withholding", default="yes", choices=DUMP_WITHHOLDING,
+                    help="with --dump: whether the snapshot holds a withholding table"
+                         " (unknown: the probe did not answer)")
+    ap.add_argument("--sources", default="", metavar="A,B",
+                    help="with --dump: the sources that hold an account, in load order")
     a = ap.parse_args()
+    missing = [f for f, v in (("--base", a.base), ("--email", a.email), ("--gold-path", a.gold_path))
+               if v is None]
+    if missing and not a.dump:
+        ap.error("the following arguments are required: " + ", ".join(missing))
+    global DEFAULT_CURRENCY, DEFAULT_MISSING_BASIS
+    if a.dump:
+        DEFAULT_CURRENCY = default_currency(a.default_currency)
+        DEFAULT_MISSING_BASIS = a.missing_basis
+        dump = payload_dump(DUMP_WITHHOLDING[a.withholding], [s for s in a.sources.split(",") if s])
+        with open(a.dump, "w", encoding="utf-8") as f:
+            f.write(json.dumps(dump, sort_keys=True, indent=1, ensure_ascii=False) + "\n")
+        return 0
     password = os.environ.get("WEALTHDB_WEB_ADMIN_PASSWORD", "")
     if not password:
         print("provision: WEALTHDB_WEB_ADMIN_PASSWORD is not set", file=sys.stderr)
         return 1
-    global DEFAULT_CURRENCY, DEFAULT_MISSING_BASIS
     DEFAULT_CURRENCY = default_currency(a.default_currency)
     DEFAULT_MISSING_BASIS = a.missing_basis
 
@@ -147,6 +171,65 @@ def main():
     card_ids, descs = saved
     titles = tile_titles(withholding_table(a.base, sid, db_id))
     return ensure_dashboards(a.base, sid, coll_id, card_ids, model_ids, titles, descs)
+
+
+# --dump's --withholding: what the snapshot's withholding probe answers
+# (withholding_table), unknown standing for a probe that did not answer.
+DUMP_WITHHOLDING = {"yes": True, "no": False, "unknown": None}
+
+
+def offline_field_ids():
+    """(table, column) -> field id for every column of
+    FILTER_FIELD_COLUMNS, numbered from 1 in its order: the ids a sync
+    would resolve, for a run with no Metabase."""
+    cols = [(t, c) for t, names in FILTER_FIELD_COLUMNS.items() for c in names]
+    return {key: i for i, key in enumerate(cols, start=1)}
+
+
+def payload_dump(withholding, sources):
+    """{"models", "cards", "dashboards"}: name -> payload for every
+    model, question and dashboard that a provision into an empty
+    collection sends, built without a connection, and "ids": the id of
+    each of them and of each field ("table.column"), which the payloads
+    refer to. The database and the collection are 1, fields are numbered
+    by offline_field_ids, models then cards from 1 in the order they are
+    saved, dashboards from 1 in definition order. `withholding` is what
+    withholding_table answers, `sources` the snapshot's sources that
+    hold an account (source_colors with no kept file). A dashboard's
+    payload is its full layout PUT. Sets FIELD_IDS and the picker
+    registry, as main() does."""
+    global FIELD_IDS
+    FIELD_IDS = offline_field_ids()
+    models = {
+        name: card_payload(1, name, "model", "table", desc,
+                           {"type": "native", "database": 1,
+                            "native": {"query": query, "template-tags": {}}},
+                           {})
+        for name, (query, desc) in report_models().items()
+    }
+    model_ids = {name: i for i, name in enumerate(models, start=1)}
+    colors = assign_source_colors({}, [*sources, DECLARED_SOURCE])
+    cards = {}
+    for name, (display, desc, query, viz) in question_defs(1, model_ids).items():
+        cards[name] = card_payload(1, name, "question", display, desc, query,
+                                   with_source_colors(viz, colors))
+    for name, (ctype, display, desc, query, viz) in privacy_card_defs(1, model_ids).items():
+        cards[name] = card_payload(1, name, ctype, display, desc, query,
+                                   with_source_colors(viz, colors))
+    card_ids = {name: i for i, name in enumerate(cards, start=len(models) + 1)}
+    defs = dashboard_defs()
+    dash_ids = {name: i for i, name in enumerate(defs, start=1)}
+    params = {name: dashboard_parameters(model_ids, mode, name)
+              for name, (_desc, mode, _sibling, _tiles) in defs.items()}
+    descs = {name: body["description"] for name, body in cards.items()}
+    payloads = dashboard_payloads(defs, params, card_ids, dash_ids,
+                                  tile_titles(withholding), descs)
+    dashboards = {name: {"name": name, "description": desc, "parameters": parameters,
+                         "dashcards": dashcards}
+                  for name, (desc, parameters, dashcards) in payloads.items()}
+    return {"models": models, "cards": cards, "dashboards": dashboards,
+            "ids": {"models": model_ids, "cards": card_ids, "dashboards": dash_ids,
+                    "fields": {f"{t}.{c}": i for (t, c), i in FIELD_IDS.items()}}}
 
 
 # The reporting currencies: the value column sets the `_multi` report
@@ -6954,56 +7037,13 @@ def crossfilter_viz(card, param_ids):
         for c in cols}}
 
 
-def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, descs=None):
-    """Create/refresh the pre-defined dashboards (and their privacy twins)
-    with their global filters (see dashboard_parameters) linked to every
-    tile and, where there is a twin, a switch link to it on the top row,
-    and archive any retired (renamed-away) ones. A card in `titles`
-    (tile_titles) shows that title on its tiles. `descs`, card name ->
-    description, lets a tile carry its card's description with the
-    pickers of its dashboard that do not reach it named. A dashboard in
-    DASHBOARD_HEADINGS gets its full-width rows of text, and a Wealth Overview
-    tile opens its home dashboard (overview_click). An unchanged dashboard
-    is left in place. One that differs has its parameter list and its
-    tiles replaced wholesale, so the layout converges to spec and a tile
-    added by hand does not survive. The dashboard description says to
-    duplicate before customizing."""
-    titles = titles or {}
-    descs = descs or {}
-    st, items = req(base, f"/api/collection/{coll_id}/items?models=dashboard",
-                    session=sid)
-    if st != 200:
-        # Read as empty, a failed listing would create every dashboard twice.
-        print(f"provision: could not list dashboards ({st}): {items.get('message')}",
-              file=sys.stderr)
-        return 1
-    existing = {d.get("name"): d.get("id") for d in (items.get("data") or [])}
-
-    defs = dashboard_defs()
-    n = {"created": 0, "updated": 0, "skipped": 0}
-    # First pass: make sure every dashboard exists, so the switch links
-    # can point at the sibling's id.
-    dash_ids = {}
-    for name, (desc, _mode, _sibling, _tiles) in defs.items():
-        did = existing.get(name)
-        if did is None:
-            st, body = req(base, "/api/dashboard", "POST",
-                           {"name": name, "description": desc,
-                            "collection_id": coll_id}, session=sid)
-            if st not in (200, 201) or not body.get("id"):
-                print(f"provision: failed to create dashboard '{name}' ({st}): "
-                      f"{body.get('message')}", file=sys.stderr)
-                return 1
-            did = body["id"]
-            n["created"] += 1
-        dash_ids[name] = did
-    # The dashboards listed before this run, read for the comparison. One
-    # created above has no tiles yet, so it is sent without a read.
-    stored = _get_all(base, sid, {name: f"/api/dashboard/{existing[name]}"
-                                  for name in defs if existing.get(name) is not None})
-
-    params = {name: dashboard_parameters(model_ids, mode, name)
-              for name, (_desc, mode, _sibling, _tiles) in defs.items()}
+def dashboard_payloads(defs, params, card_ids, dash_ids, titles, descs):
+    """name -> (description, parameters, tiles) of each dashboard in
+    `defs` (dashboard_defs), in its order: the payload ensure_dashboards
+    sends. `params` is name -> its parameters (dashboard_parameters),
+    `dash_ids` name -> its id, and `titles` and `descs` are as
+    ensure_dashboards takes them. Sends nothing."""
+    out = {}
     for name, (desc, mode, sibling, tiles) in defs.items():
         parameters = params[name]
         param_ids = {x["id"] for x in parameters}
@@ -7065,6 +7105,62 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
                                   [VEHICLE_PARAM_ID] if mode == "asof"
                                   and card in POSITION_FILTERED_CARDS else [],
                               "parameter_mappings": maps})
+        out[name] = (desc, parameters, dashcards)
+    return out
+
+
+def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, descs=None):
+    """Create/refresh the pre-defined dashboards (and their privacy twins)
+    with their global filters (see dashboard_parameters) linked to every
+    tile and, where there is a twin, a switch link to it on the top row,
+    and archive any retired (renamed-away) ones. A card in `titles`
+    (tile_titles) shows that title on its tiles. `descs`, card name ->
+    description, lets a tile carry its card's description with the
+    pickers of its dashboard that do not reach it named. A dashboard in
+    DASHBOARD_HEADINGS gets its full-width rows of text, and a Wealth Overview
+    tile opens its home dashboard (overview_click). An unchanged dashboard
+    is left in place. One that differs has its parameter list and its
+    tiles replaced wholesale, so the layout converges to spec and a tile
+    added by hand does not survive. The dashboard description says to
+    duplicate before customizing."""
+    titles = titles or {}
+    descs = descs or {}
+    st, items = req(base, f"/api/collection/{coll_id}/items?models=dashboard",
+                    session=sid)
+    if st != 200:
+        # Read as empty, a failed listing would create every dashboard twice.
+        print(f"provision: could not list dashboards ({st}): {items.get('message')}",
+              file=sys.stderr)
+        return 1
+    existing = {d.get("name"): d.get("id") for d in (items.get("data") or [])}
+
+    defs = dashboard_defs()
+    n = {"created": 0, "updated": 0, "skipped": 0}
+    # First pass: make sure every dashboard exists, so the switch links
+    # can point at the sibling's id.
+    dash_ids = {}
+    for name, (desc, _mode, _sibling, _tiles) in defs.items():
+        did = existing.get(name)
+        if did is None:
+            st, body = req(base, "/api/dashboard", "POST",
+                           {"name": name, "description": desc,
+                            "collection_id": coll_id}, session=sid)
+            if st not in (200, 201) or not body.get("id"):
+                print(f"provision: failed to create dashboard '{name}' ({st}): "
+                      f"{body.get('message')}", file=sys.stderr)
+                return 1
+            did = body["id"]
+            n["created"] += 1
+        dash_ids[name] = did
+    # The dashboards listed before this run, read for the comparison. One
+    # created above has no tiles yet, so it is sent without a read.
+    stored = _get_all(base, sid, {name: f"/api/dashboard/{existing[name]}"
+                                  for name in defs if existing.get(name) is not None})
+
+    params = {name: dashboard_parameters(model_ids, mode, name)
+              for name, (_desc, mode, _sibling, _tiles) in defs.items()}
+    payloads = dashboard_payloads(defs, params, card_ids, dash_ids, titles, descs)
+    for name, (desc, parameters, dashcards) in payloads.items():
         current = stored.get(name)
         if dashboard_unchanged(current, name, desc, parameters, dashcards):
             n["skipped"] += 1

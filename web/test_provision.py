@@ -19,6 +19,7 @@ accepts a payload — that needs a live instance.
 Prints the same "  ok / FAIL" lines web/test_web.sh does and exits with
 the number of failures.
 """
+import concurrent.futures
 import contextlib
 import datetime as dt
 import importlib.util
@@ -5504,6 +5505,279 @@ check("ensure_cards saves each per-source card with the sources' colours",
               for n in _by_source), _nw)
 check("...and any other card's settings as its definition gives them",
       all(_saved[n]["visualization_settings"] == VIZ[n] for n in VIZ if n not in _by_source))
+
+
+# ---- the offline payload dump -----------------------------------------
+
+section("the offline payload dump")
+
+
+class RecordingAPI:
+    """A stand-in for provision.req over an empty collection: answers the
+    sources and withholding probes, hands out ids the way a fresh
+    Metabase does, and keeps every model, card and dashboard layout
+    provisioning sends."""
+
+    def __init__(self, withholding, sources):
+        self.withholding, self.sources = withholding, sources
+        self.phase, self.next_card, self.next_dash = "models", 0, 0
+        self.sent = {"models": {}, "cards": {}, "dashboards": {}}
+        self.ids = {"models": {}, "cards": {}, "dashboards": {}}
+
+    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+        if path == "/api/dataset":
+            if "silver_sources" in data["native"]["query"]:
+                return 202, {"data": {"rows": [[s] for s in self.sources]}}
+            if self.withholding is None:
+                return 500, {}
+            return 202, {"data": {"rows": [[self.withholding]]}}
+        if method == "POST" and path == "/api/card":
+            self.next_card += 1
+            self.sent[self.phase][data["name"]] = data
+            self.ids[self.phase][data["name"]] = self.next_card
+            return 200, {"id": self.next_card}
+        if method == "POST" and path == "/api/dashboard":
+            self.next_dash += 1
+            self.ids["dashboards"][data["name"]] = self.next_dash
+            return 200, {"id": self.next_dash}
+        if method == "PUT" and "dashcards" in (data or {}):
+            self.sent["dashboards"][data["name"]] = data
+        return 200, {"data": []}
+
+
+def _dump_text(dump):
+    return json.dumps(dump, sort_keys=True, indent=1, ensure_ascii=False) + "\n"
+
+
+def _recorded(withholding, sources):
+    """What a provision into an empty collection sends, in the dump's
+    shape, driven through RecordingAPI."""
+    api, real = RecordingAPI(withholding, sources), p.req
+    p.req = api
+    try:
+        with quiet():
+            p.FIELD_IDS = p.offline_field_ids()
+            mids = p.ensure_models("b", "s", 1, 1, {})
+            api.phase = "cards"
+            colors = p.source_colors("b", "s", 1, "")
+            ids, descs = p.ensure_cards("b", "s", 1, 1, {}, mids, colors)
+            rc = p.ensure_dashboards("b", "s", 1, ids, mids,
+                                     p.tile_titles(p.withholding_table("b", "s", 1)), descs)
+    finally:
+        p.req = real
+    fields = {f"{t}.{c}": i for (t, c), i in p.FIELD_IDS.items()}
+    return rc, {**api.sent, "ids": {**api.ids, "fields": fields}}
+
+
+_saved_globals = (p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS)
+_matrix_bad, _unstable, _texts = [], [], {}
+try:
+    for _ccy in ("USD", "CHF"):
+        for _mb in p.MISSING_BASIS_READINGS:
+            for _wh in p.DUMP_WITHHOLDING:
+                for _srcs in ([], ["src-a", "src-b"]):
+                    p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = _ccy, _mb
+                    _key = (_ccy, _mb, _wh, len(_srcs))
+                    _first = _dump_text(p.payload_dump(p.DUMP_WITHHOLDING[_wh], _srcs))
+                    _rc, _rec = _recorded(p.DUMP_WITHHOLDING[_wh], _srcs)
+                    if _rc != 0 or _dump_text(_rec) != _first:
+                        _matrix_bad.append(_key)
+                    if _dump_text(p.payload_dump(p.DUMP_WITHHOLDING[_wh], _srcs)) != _first:
+                        _unstable.append(_key)
+                    _texts[_key] = _first
+finally:
+    p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS = _saved_globals
+    all_cards(1, MID)                       # restore the registry
+check("over currency, missing basis, withholding and sources, the dump is what provisioning sends",
+      not _matrix_bad, _matrix_bad)
+check("...and two dumps give the same bytes", not _unstable, _unstable)
+check("each setting reaches the payloads: currency, missing basis, a withholding table, sources",
+      all(_texts[a] != _texts[b] for a, b in (
+          (("USD", "ignore", "yes", 0), ("CHF", "ignore", "yes", 0)),
+          (("USD", "ignore", "yes", 0), ("USD", "zero", "yes", 0)),
+          (("USD", "ignore", "yes", 0), ("USD", "ignore", "no", 0)),
+          (("USD", "ignore", "yes", 0), ("USD", "ignore", "yes", 2)))))
+check("...and a withholding probe that does not answer keeps the cards' names, as one that finds a table",
+      _texts[("USD", "ignore", "unknown", 0)] == _texts[("USD", "ignore", "yes", 0)])
+_one = json.loads(_texts[("USD", "ignore", "yes", 2)])
+check("the dump holds every model, card and dashboard, each with its id",
+      set(_one) == {"models", "cards", "dashboards", "ids"}
+      and len(_one["models"]) == len(p.report_models()) == len(_one["ids"]["models"])
+      and len(_one["cards"]) == len(CARDS) == len(_one["ids"]["cards"])
+      and len(_one["dashboards"]) == len(p.dashboard_defs()) == len(_one["ids"]["dashboards"]))
+check("...and the id of every field a tag names",
+      {t["dimension"][1] for c in _one["cards"].values() if c["dataset_query"]["type"] == "native"
+       for t in c["dataset_query"]["native"]["template-tags"].values() if t.get("dimension")}
+      <= set(_one["ids"]["fields"].values()))
+
+
+def _main_with(argv):
+    """(exit status, stderr) of main() under `argv`, with any API call an
+    error; main()'s globals are restored."""
+    saved = (sys.argv, p.req, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS)
+
+    def no_network(*_a, **_k):
+        raise AssertionError("the dump called the API")
+    sys.argv, p.req = ["provision.py", *argv], no_network
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            try:
+                rc = p.main()
+            except SystemExit as e:
+                rc = e.code
+    finally:
+        sys.argv, p.req, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS = saved
+    return rc, err.getvalue()
+
+
+with tempfile.TemporaryDirectory() as _d:
+    _out = os.path.join(_d, "dump.json")
+    _rc, _ = _main_with(["--dump", _out, "--default-currency", "chf", "--missing-basis", "zero",
+                         "--withholding", "no", "--sources", "src-a,src-b"])
+    with open(_out, encoding="utf-8") as _f:
+        _written = _f.read()
+    _saved_globals = (p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS)
+    try:
+        p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = "CHF", "zero"
+        _want = _dump_text(p.payload_dump(False, ["src-a", "src-b"]))
+    finally:
+        p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS = _saved_globals
+        all_cards(1, MID)                   # restore the registry
+check("--dump writes the payloads with no API call, its options read as provisioning reads them",
+      _rc == 0 and _written == _want)
+_rc, _err = _main_with([])
+check("without --dump, --base, --email and --gold-path are still required",
+      _rc == 2 and "error: the following arguments are required: --base, --email, --gold-path" in _err, _err)
+
+
+# ---- the tile timings tool --------------------------------------------
+
+section("the tile timings tool")
+import tile_timings as tt                                # noqa: E402
+
+check("it runs the DuckDB release of the driver web/Dockerfile pins",
+      _driver and tt.duckdb_release().split(".")[:2] == list(_driver.groups()), tt.duckdb_release())
+
+
+class DatabaseAPI:
+    """A stand-in for provision.req that keeps the details of the
+    database ensure_database adds."""
+
+    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+        if method == "POST":
+            self.details = data["details"]
+            return 200, {"id": 1}
+        return 200, {"data": []}
+
+
+_db_api, _real_req = DatabaseAPI(), p.req
+try:
+    p.req = _db_api
+    with quiet():
+        p.ensure_database("b", "s", "gold", "/gold/wealthdb.db")
+finally:
+    p.req = _real_req
+check("...with the memory limit and threads provisioning gives the gold database",
+      (_db_api.details["memory_limit"], _db_api.details["threads"], _db_api.details["read_only"])
+      == (tt.MEMORY_LIMIT, tt.THREADS, True), _db_api.details)
+
+_today = dt.date(2026, 11, 12)                           # a Thursday
+_windows = {"past12months~": ("2025-11-01", "2026-11-30"), "past3months": ("2026-08-01", "2026-10-31"),
+            "past30days~": ("2026-10-13", "2026-11-12"), "past2years": ("2024-01-01", "2025-12-31"),
+            "past1quarters~": ("2026-07-01", "2026-12-31"), "thisday": ("2026-11-12", "2026-11-12"),
+            "thisweek": ("2026-11-08", "2026-11-14"), "next2weeks": ("2026-11-15", "2026-11-28"),
+            "2024-03-01~2024-04-30": ("2024-03-01", "2024-04-30"), "~2024-04-30": (None, "2024-04-30"),
+            "2024-03-01~": ("2024-03-01", None), "2025-12-31": ("2025-12-31", "2025-12-31")}
+_got = {v: tuple(d and d.isoformat() for d in tt.date_window(v, _today)) for v in _windows}
+check("a date picker's value reads as Metabase's window", _got == _windows,
+      {k: v for k, v in _got.items() if v != _windows[k]})
+
+_q = {"native": {"query": "SELECT {{currency}}, {{n}} FROM t WHERE {{when}} [[AND {{source}}]] [[AND {{kind}}]]",
+                 "template-tags": {
+                     "currency": {"type": "text", "default": "USD"},
+                     "n": {"type": "number", "default": "0"},
+                     "when": {"type": "dimension", "widget-type": "date/all-options",
+                              "dimension": ["field", 2, None], "default": None},
+                     "source": {"type": "dimension", "widget-type": "string/=",
+                                "dimension": ["field", 1, None], "default": None},
+                     "kind": {"type": "dimension", "widget-type": "string/=",
+                              "dimension": ["field", 3, None], "default": ["a"]}}}}
+_fields = {1: ("t", "src"), 2: ("t", "day"), 3: ("t", "kind")}
+check("a tag with no value drops its clause, and a field filter outside one reads 1 = 1",
+      tt.render(_q, {}, _fields, _today)
+      == """SELECT 'USD', 0 FROM t WHERE 1 = 1  AND "main"."t"."kind" = 'a'""",
+      tt.render(_q, {}, _fields, _today))
+_given = tt.render(_q, {"currency": ["O'C"], "n": [3], "when": "past3months", "source": ["x", "y"]},
+                   _fields, _today)
+check("...and given values, a variable is a literal and a field filter a predicate on its column",
+      _given == ("""SELECT 'O''C', 3 FROM t WHERE ("main"."t"."day" >= DATE '2026-08-01'"""
+                 """ AND "main"."t"."day" < DATE '2026-11-01')"""
+                 """ AND "main"."t"."src" IN ('x', 'y') AND "main"."t"."kind" = 'a'"""), _given)
+
+_tq = tt.queries(_one)
+_tiles = [(d, names) for d, db in sorted(_one["dashboards"].items())
+          for names in [dc["card_id"] for dc in db["dashcards"] if dc.get("card_id")]]
+check("one query per tile of every dashboard, in layout order, then one per model",
+      [(d, _one["ids"]["cards"][c]) for d, c, kind, _q2, _v in _tq if kind != "model"] == _tiles
+      and [c for d, c, kind, _q2, _v in _tq if kind == "model"] == sorted(_one["models"]))
+check("...an MBQL tile among them, and every native tile renders with no tag left",
+      any(k == "mbql" for _d, _c, k, _q2, _v in _tq)
+      and not [c for _d, c, k, q2, v in _tq if k != "mbql"
+               and re.search(r"\{\{|\[\[", tt.render(q2, v, {i: tuple(f.split(".", 1)) for f, i in
+                                                             _one["ids"]["fields"].items()}, _today))])
+_spend = [v for d, c, k, _q2, v in _tq if d == "Spending" and k == "native" and "time_range" in v]
+check("a tile takes its dashboard's picker defaults, the time window included",
+      _spend and all(v["time_range"] == "past12months~" for v in _spend), _spend[:1])
+check("...and with --wide no time window",
+      all(v.get("time_range", None) is None for d, c, k, _q2, v in tt.queries(_one, wide=True)
+          if d == "Spending" and k == "native"))
+
+if duckdb is not None:
+    with tempfile.TemporaryDirectory() as _d:
+        _db = os.path.join(_d, "gold.db")
+        _con = duckdb.connect(_db)
+        _con.execute("CREATE TABLE t AS SELECT range AS v FROM range(3)")
+        _con.close()
+        _rel = duckdb.__version__
+        # Side by side: each query is a process of its own.
+        with concurrent.futures.ThreadPoolExecutor(4) as _pool:
+            _ok, _err, _other, _slow = _pool.map(lambda a: tt.run_query(sys.executable, _db, *a), [
+                ("SELECT v FROM t", _rel, 60), ("SELECT nope FROM t", _rel, 60),
+                ("SELECT v FROM t", "0.0.1", 60), ("SELECT count(*) FROM range(10000000000)", _rel, 0.2)])
+        check("a query runs in its own process and reports its rows, seconds and peak memory",
+              _ok[0] == "ok" and _ok[1] == 0 and _ok[5] == 3 and _ok[2] >= 0 and _ok[3] > 0 and _ok[4] > 1, _ok)
+        check("...a failing one only the name of its error",
+              _err[0] == "error:BinderException" and _err[1] == 1 and _err[5] is None, _err)
+        check("...one under another DuckDB release does not run", _other[0] == "release:" + _rel, _other)
+        check("...and one past the timeout is killed", _slow[0] == "timeout", _slow)
+
+        _mini = {"ids": {"cards": {"Tile": 2}, "fields": {"t.v": 1}},
+                 "models": {"m": {"dataset_query": {"type": "native", "native": {
+                     "query": "SELECT v FROM t", "template-tags": {}}}}},
+                 "cards": {"Tile": {"dataset_query": {"type": "native", "native": {
+                     "query": "SELECT v FROM t WHERE TRUE [[AND {{v}}]]", "template-tags": {
+                         "v": {"type": "dimension", "widget-type": "number/=",
+                               "dimension": ["field", 1, None], "default": None}}}}}},
+                 "dashboards": {"D": {"parameters": [{"id": "p1", "default": [1]}], "dashcards": [
+                     {"card_id": None}, {"card_id": 2, "parameter_mappings": [
+                         {"parameter_id": "p1", "target": ["dimension", ["template-tag", "v"]]}]}]}}}
+        _dump_path, _tsv = os.path.join(_d, "dump.json"), os.path.join(_d, "out.tsv")
+        with open(_dump_path, "w", encoding="utf-8") as _f:
+            json.dump(_mini, _f)
+        _real_release = tt.duckdb_release
+        try:
+            tt.duckdb_release = lambda: _rel
+            with quiet():
+                _rc = tt.main([_dump_path, _db, _tsv, "--python", sys.executable])
+        finally:
+            tt.duckdb_release = _real_release
+        with open(_tsv, encoding="utf-8") as _f:
+            _rows = [line.split("\t") for line in _f.read().splitlines()]
+        check("the tool writes one line per query: status, exit, seconds, memory and rows",
+              _rc == 0 and _rows[0] == list(tt.COLUMNS)
+              and [r[:5] + r[8:] for r in _rows[1:]] == [["D", "Tile", "native", "ok", "0", "1"],
+                                                       ["", "m", "model", "ok", "0", "3"]], _rows)
 
 
 if FAILS:

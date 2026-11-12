@@ -300,7 +300,8 @@ A findings build is a one-off picture: it cannot be appended to.
   so the script counts it as not checked. It uses a temporary API key,
   so no filter values stay behind on the admin account. Its defaults
   are the demo's port and the demo root `make demo` uses. Another root
-  needs `--password-file`.
+  needs `--password-file`. `--save-rows FILE` keeps every tile's rows,
+  and `--compare FILE` lists the rows that differ from that file.
 - `demo/disjoint.py --demo <gold> --live <gold>` lists every
   identifying value a demo gold shares with another gold: ids, names,
   symbols, keys, descriptions, the ledger's notes, (date, amount) pairs

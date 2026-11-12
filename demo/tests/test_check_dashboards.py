@@ -1,10 +1,14 @@
 """check_dashboards: a cut-off response is asked once more; a reported
 error is not; each picker is varied alone around the defaults, a listed
-one over the values the dashboard offers."""
+one over the values the dashboard offers; the rows a run saves compare
+with the next run's, and a tile that got slower is listed."""
 
+import contextlib
 import datetime as dt
+import io
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -156,6 +160,100 @@ class BrokenClicks(unittest.TestCase):
                 "id": tid, "source": {"type": "column", "id": col}}
         self.assertEqual(check_dashboards.broken_clicks(dashes), [])
         self.assertEqual(check_dashboards.unchecked_columns(dashes), 1)
+
+
+class FakeMetabase:
+    """Recorded answers of a Metabase with one dashboard of two tiles
+    and no pickers, for check_dashboards.call. `rows` is card id -> the
+    rows its query answers."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __call__(self, base, path, method="GET", body=None, headers=None):
+        if path == "/api/session":
+            return 200, {"id": "sess"}
+        if path == "/api/permissions/group":
+            return 200, [{"id": 2, "name": "Administrators"}]
+        if path == "/api/api-key":
+            return 200, {"id": 5, "unmasked_key": "mb_synthetic"}
+        if path.startswith("/api/api-key/"):
+            return 204, None
+        if path == "/api/collection":
+            return 200, [{"id": 7, "name": provision.COLLECTION_NAME}]
+        if path.startswith("/api/collection/7/items"):
+            return 200, {"data": [{"id": 1, "name": "Board"}]}
+        if path == "/api/dashboard/1":
+            return 200, {"id": 1, "name": "Board", "parameters": [], "dashcards": [
+                {"id": 10 + c, "card_id": c, "parameter_mappings": [],
+                 "card": {"name": f"Tile {c}", "display": "table"}} for c in sorted(self.rows)]}
+        card = int(path.rsplit("/card/", 1)[1].split("/")[0])
+        return 202, {"status": "completed", "data": {"rows": self.rows[card]}}
+
+
+class SavedRows(unittest.TestCase):
+    """--save-rows keeps every run's rows; --compare names each run that
+    differs, floats within the bar, and fails on any."""
+
+    def run_main(self, rows, *flags):
+        with tempfile.TemporaryDirectory() as d:
+            pw = pathlib.Path(d, "pw")
+            pw.write_text("synthetic\n")
+            out = io.StringIO()
+            with mock.patch.object(check_dashboards, "call", FakeMetabase(rows)), \
+                    contextlib.redirect_stdout(out):
+                rc = check_dashboards.main(["--password-file", str(pw), *flags])
+        return rc, out.getvalue()
+
+    def test_saved_rows_compare_equal_and_name_a_difference(self):
+        with tempfile.TemporaryDirectory() as d:
+            saved = str(pathlib.Path(d, "rows.json"))
+            rows = {3: [["a", 1.5], ["b", 2.0]], 4: [[7]]}
+            rc, _ = self.run_main(rows, "--save-rows", saved)
+            self.assertEqual(rc, 0)
+            runs = check_dashboards.load_runs(saved)
+            self.assertEqual(sorted(runs), [("Board", "Tile 3", "defaults"), ("Board", "Tile 4", "defaults")])
+            self.assertEqual(runs[("Board", "Tile 3", "defaults")]["rows"], [["a", 1.5], ["b", 2.0]])
+
+            rc, out = self.run_main({3: [["a", 1.5 * (1 + 1e-15)], ["b", 2.0]], 4: [[7]]}, "--compare", saved)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("runs that differ from", out)
+            self.assertNotIn("DIFF", out)
+
+            rc, out = self.run_main({3: [["a", 1.5], ["b", 2.5]], 4: [[7], [8]]}, "--compare", saved)
+            self.assertEqual(rc, 1)
+            self.assertIn("DIFF Board | Tile 3 | defaults | 1 of 2 rows differ, the first is row 1", out)
+            self.assertIn("DIFF Board | Tile 4 | defaults | 1 rows saved, 2 now", out)
+
+
+class CompareRuns(unittest.TestCase):
+    @staticmethod
+    def runs(*records):
+        return {(d, c, label): {"ok": ok, "rows": rows, "seconds": s} for d, c, label, ok, rows, s in records}
+
+    def test_floats_match_within_the_bar_and_nothing_else_does(self):
+        same = check_dashboards.same_value
+        self.assertTrue(same([1.0, "x", None], [1.0 + 1e-14, "x", None]))
+        self.assertTrue(same([0.0], [5e-10]))
+        self.assertTrue(same([3], [3.0]))
+        self.assertFalse(same([1.0], [1.0 + 1e-9]))
+        self.assertFalse(same(["1"], [1]))
+        self.assertFalse(same([True], [1]))
+        self.assertFalse(same([1, 2], [1]))
+
+    def test_a_status_change_and_a_run_on_one_side_are_named(self):
+        old = self.runs(("D", "a", "defaults", True, [[1]], 0.1), ("D", "b", "defaults", True, [], 0.1))
+        new = self.runs(("D", "a", "defaults", False, [], 0.1), ("D", "c", "defaults", True, [], 0.1))
+        self.assertEqual(check_dashboards.compare_runs(old, new),
+                         [("D", "a", "defaults", "now fails"), ("D", "b", "defaults", "only in the saved runs"),
+                          ("D", "c", "defaults", "not in the saved runs")])
+
+    def test_a_tile_whose_runs_took_longer_in_all_is_slower(self):
+        old = self.runs(("D", "a", "x", True, [], 0.4), ("D", "a", "y", True, [], 0.4),
+                        ("D", "b", "x", True, [], 0.01), ("D", "c", "x", True, [], 2.0))
+        new = self.runs(("D", "a", "x", True, [], 0.9), ("D", "a", "y", True, [], 0.4),
+                        ("D", "b", "x", True, [], 0.2), ("D", "c", "x", True, [], 2.5))
+        self.assertEqual(check_dashboards.slower_tiles(old, new), [("D", "a", 0.8, 1.3)])
 
 
 if __name__ == "__main__":
