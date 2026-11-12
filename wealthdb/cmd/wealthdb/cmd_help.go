@@ -134,8 +134,9 @@ func hostSideCommand(name string) (commandHelp, bool) {
 // hiddenSubcommands are registered (so they're callable) but omitted
 // from the usage listing — internal plumbing, not user-facing.
 // TestUsageListsEverySubcommand holds commandHelps to that.
-// `web-config` and `mcp-config` emit resolved settings for the
-// host-side `wealthdb web` and `wealthdb mcp` wrappers;
+// `config-env` emits resolved settings for the host-side scripts,
+// `web-config` and `mcp-config` being its aliases for the `wealthdb web`
+// and `wealthdb mcp` wrappers;
 // `web-materialize` rewrites the serving tables and the report tables
 // (returns, gains, exposure, yield) before the wrapper snapshots gold;
 // `refdata-wanted` prints the wanted list the refdata collector reads.
@@ -143,6 +144,7 @@ var hiddenSubcommands = map[string]bool{
 	"web-config":      true,
 	"web-materialize": true,
 	"mcp-config":      true,
+	"config-env":      true,
 	"refdata-wanted":  true,
 }
 

@@ -44,8 +44,8 @@ _resolve_knobs() {
 
 # _load_config reads the resolved `web` settings (enabled, port), the
 # gold DB path, the default currency and the default reading of a
-# missing cost basis from wealthdb.cfg, via the engine's `web-config`
-# subcommand — the one component that parses + validates the JSON. The
+# missing cost basis from wealthdb.cfg, via the engine's `config-env
+# web` — the one component that parses + validates the JSON. The
 # default currency stays in WEALTHDB_DEFAULT_CURRENCY and the default
 # reading of a missing cost basis in WEALTHDB_MISSING_BASIS, which
 # _provision passes on. It checks each step's status itself: start and
@@ -55,12 +55,12 @@ _load_config() {
     _require_docker || return 1
     local out
     if [ -n "${WEALTHDB_CONFIG:-}" ]; then
-        out="$("$WEALTHDB" -c "$WEALTHDB_CONFIG" web-config)" || out=""
+        out="$("$WEALTHDB" -c "$WEALTHDB_CONFIG" config-env web)" || out=""
     else
-        out="$("$WEALTHDB" web-config)" || out=""
+        out="$("$WEALTHDB" config-env web)" || out=""
     fi
     if [ -z "$out" ]; then
-        echo "web: could not read settings via 'wealthdb web-config' (is wealthdb.cfg valid?)" >&2
+        echo "web: could not read settings via 'wealthdb config-env web' (is wealthdb.cfg valid?)" >&2
         return 1
     fi
     eval "$out"

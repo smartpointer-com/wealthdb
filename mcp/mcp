@@ -49,19 +49,19 @@ _resolve_knobs() {
 }
 
 # _load_config reads the resolved `mcp` settings and the gold path via
-# the engine's hidden `mcp-config` subcommand, the one component that
+# the engine's hidden `config-env mcp`, the one component that
 # parses and validates wealthdb.cfg. WEALTHDB_MCP_AUTH and
 # WEALTHDB_MCP_INSECURE in the environment win over the config.
 _load_config() {
     _require_docker || return 1
     local out
     if [ -n "${WEALTHDB_CONFIG:-}" ]; then
-        out="$("$WEALTHDB" -c "$WEALTHDB_CONFIG" mcp-config)" || out=""
+        out="$("$WEALTHDB" -c "$WEALTHDB_CONFIG" config-env mcp)" || out=""
     else
-        out="$("$WEALTHDB" mcp-config)" || out=""
+        out="$("$WEALTHDB" config-env mcp)" || out=""
     fi
     if [ -z "$out" ]; then
-        echo "mcp: could not read settings via 'wealthdb mcp-config' (is wealthdb.cfg valid?)" >&2
+        echo "mcp: could not read settings via 'wealthdb config-env mcp' (is wealthdb.cfg valid?)" >&2
         return 1
     fi
     eval "$out"
