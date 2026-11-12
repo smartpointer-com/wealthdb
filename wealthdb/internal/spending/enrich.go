@@ -249,7 +249,11 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	// read its verdicts. A movement is own-account or it is not, and two
 	// matchers with two bandings would call the same wire internal on
 	// one side and external on the other.
-	legs, poolNarratives, ambiguousRefs, err := loadMatcherPool(ctx, tx, opts.MatchNames)
+	evidence, err := loadPassEvidence(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	legs, poolNarratives, err := loadMatcherPool(ctx, tx, opts.MatchNames, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -264,18 +268,29 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	}
 	pairs := matchTransferPairs(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides, rates)
 	matched := matchedPartners(pairs)
-	res.Cashflow.AmbiguousReferences = ambiguousRefs
+	res.Cashflow.AmbiguousReferences = evidence.ambiguousRefs
 
 	// Read once and shared, for the matcher's reason: where a movement
 	// went is one fact, and two families reading it apart could disagree.
-	stated, err := loadStatedCounterAccounts(ctx, tx)
+	stated := evidence.counterAccounts
+
+	// Each ledger's pins are resolved once, against the whole of
+	// `transactions`, because a pin describes a row by what a statement
+	// shows and owes nothing to any population. A family writes its own
+	// pins; the spending family steps around the income family's.
+	spendPinned, spendUnmatched, err := resolvePins(ctx, tx, spendingFamily.name, opts.Pins)
+	if err != nil {
+		return nil, err
+	}
+	incomePinned, incomeUnmatched, err := resolvePins(ctx, tx, incomeFamily.name, opts.Income.Pins)
 	if err != nil {
 		return nil, err
 	}
 
 	spendRows, err := enrichFamily(ctx, tx, spendingFamily, familyInput{
 		include: opts.Include, exclude: opts.Exclude,
-		rules: opts.Rules, farRules: rulesWithFar(opts.Income.Rules), otherPins: opts.Income.Pins, pins: opts.Pins,
+		rules: opts.Rules, farRules: rulesWithFar(opts.Income.Rules),
+		pinned: spendPinned, otherPinned: incomePinned, unmatchedPins: spendUnmatched,
 		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
 	}, &res.FamilyResult)
 	if err != nil {
@@ -293,7 +308,8 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 
 	if _, err := enrichFamily(ctx, tx, incomeFamily, familyInput{
 		include: opts.Income.Include, exclude: opts.Income.Exclude,
-		rules: opts.Income.Rules, pins: opts.Income.Pins,
+		rules:  opts.Income.Rules,
+		pinned: incomePinned, unmatchedPins: incomeUnmatched,
 		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
 	}, &res.Income); err != nil {
 		return nil, err
@@ -336,9 +352,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 // stamped FIRST because the population macro reads it, so a scope edit
 // takes effect in the same pass that applies it. The old signatures
 // are captured BEFORE the delete, because the signature-version re-key
-// needs to know where a verdict used to hang. Pins are resolved
-// against the whole of `transactions`, because a pin describes a row
-// by what a statement shows and owes nothing to any population.
+// needs to know where a verdict used to hang.
 //
 // It returns the rows it wrote.
 func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, out *FamilyResult) ([]enrichmentRow, error) {
@@ -355,18 +369,10 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 	}
 	out.Population = len(population)
 
-	pinned, unmatched, err := resolvePins(ctx, tx, fam.name, in.pins)
-	if err != nil {
-		return nil, err
-	}
-	out.UnmatchedPins = unmatched
-	// The other family's pins are resolved only to be stepped around;
-	// what they say is that family's to write, and a pin describing
-	// nothing is that family's to count.
-	otherPinned, _, err := resolvePins(ctx, tx, fam.name, in.otherPins)
-	if err != nil {
-		return nil, err
-	}
+	// A family counts its own pins that described nothing. The other
+	// family's pins are only stepped around: what they say, and what
+	// they missed, are that family's.
+	out.UnmatchedPins = in.unmatchedPins
 
 	oldSignatures, err := loadExistingSignatures(ctx, tx, fam)
 	if err != nil {
@@ -381,7 +387,7 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 		return nil, err
 	}
 
-	rows := assignCategories(fam, population, in.pool, in.matched, in.stated, in.kinds, in.rules, in.farRules, pinned, otherPinned, out)
+	rows := assignCategories(fam, population, in.pool, in.matched, in.stated, in.kinds, in.rules, in.farRules, in.pinned, in.otherPinned, out)
 	if err := insertEnrichment(ctx, tx, fam, rows, in.now); err != nil {
 		return nil, err
 	}
@@ -513,11 +519,95 @@ type candidate struct {
 	occurredAt int64
 }
 
+// passEvidence is what the sources state in their payloads about where
+// each movement went (canonical/payloadkeys.go), read in one scan
+// (loadPassEvidence).
+type passEvidence struct {
+	refs            map[txKey]string
+	ambiguousRefs   int
+	counterLegs     map[txKey]statedCounterLeg
+	counterAccounts map[txKey]farAccount
+}
+
+// evidenceRow is one transaction's row of txn_evidence(), with its own
+// account and its counter account normalised as the stated counter
+// accounts compare them.
+type evidenceRow struct {
+	key                                 txKey
+	bankRef, counterAccount, own, named sql.NullString
+	counterCcy                          sql.NullString
+	counterAmt                          sql.NullFloat64
+}
+
+// loadPassEvidence reads every transaction that states a reference, a
+// counter account or a counter leg, in one scan of txn_evidence(), and
+// the accounts gold holds, and finds the three kinds of evidence in them.
+func loadPassEvidence(ctx context.Context, tx querier) (passEvidence, error) {
+	rows, err := tx.QueryContext(ctx, `
+        SELECT silver_source_id, transaction_external_id, bank_ref, counter_account,
+               upper(replace(account_external_id, ' ', '')),
+               upper(replace(counter_account, ' ', '')),
+               counter_currency, counter_amount
+          FROM txn_evidence()
+         WHERE (bank_ref IS NOT NULL AND bank_ref <> '')
+            OR (counter_account IS NOT NULL AND counter_account <> '')
+            OR (counter_currency IS NOT NULL AND counter_currency <> '' AND counter_amount IS NOT NULL)`)
+	if err != nil {
+		return passEvidence{}, fmt.Errorf("spending: read payload evidence: %w", err)
+	}
+	defer rows.Close()
+	var evidence []evidenceRow
+	for rows.Next() {
+		var r evidenceRow
+		if err := rows.Scan(&r.key.source, &r.key.txID, &r.bankRef, &r.counterAccount,
+			&r.own, &r.named, &r.counterCcy, &r.counterAmt); err != nil {
+			return passEvidence{}, fmt.Errorf("spending: scan payload evidence: %w", err)
+		}
+		evidence = append(evidence, r)
+	}
+	if err := rows.Err(); err != nil {
+		return passEvidence{}, fmt.Errorf("spending: read payload evidence: %w", err)
+	}
+	accounts, err := loadNormalisedAccounts(ctx, tx)
+	if err != nil {
+		return passEvidence{}, err
+	}
+	ev := passEvidence{
+		counterLegs:     statedCounterLegs(evidence),
+		counterAccounts: statedCounterAccounts(evidence, accounts),
+	}
+	ev.refs, ev.ambiguousRefs = movementReferences(evidence)
+	return ev, nil
+}
+
+// loadNormalisedAccounts reads the accounts gold holds, keyed by the id
+// upper-cased with its spaces removed: the form a stated counter account
+// is compared in.
+func loadNormalisedAccounts(ctx context.Context, tx querier) (map[string][]farAccount, error) {
+	rows, err := tx.QueryContext(ctx, `
+        SELECT silver_source_id, account_external_id, upper(replace(account_external_id, ' ', ''))
+          FROM accounts`)
+	if err != nil {
+		return nil, fmt.Errorf("spending: read stated counter accounts: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]farAccount{}
+	for rows.Next() {
+		var a farAccount
+		var norm string
+		if err := rows.Scan(&a.source, &a.account, &norm); err != nil {
+			return nil, fmt.Errorf("spending: scan stated counter accounts: %w", err)
+		}
+		out[norm] = append(out[norm], a)
+	}
+	return out, rows.Err()
+}
+
 // farAccount is an account gold holds, named as the other side of a
 // movement.
 type farAccount struct{ source, account string }
 
-// loadStatedCounterAccounts reads, per transaction, the OWN account the
+// statedCounterAccounts finds, per transaction, the OWN account the
 // source itself named as the other side of the movement.
 //
 // It is the far account arriving by the road that needs only ONE leg. The
@@ -544,58 +634,36 @@ type farAccount struct{ source, account string }
 // It places no verdict. What a row IS stays the tiers' question — the
 // evidence here answers only where it went, which is the one thing a tier
 // below the matcher has never been able to say.
-func loadStatedCounterAccounts(ctx context.Context, tx querier) (map[txKey]farAccount, error) {
-	rows, err := tx.QueryContext(ctx, `
-        WITH stated AS (
-            SELECT t.silver_source_id, t.transaction_external_id,
-                   upper(replace(t.account_external_id, ' ', '')) AS own,
-                   upper(replace(json_extract_string(t.payload, '$.counter_account'), ' ', '')) AS named
-              FROM transactions t
-             WHERE json_extract_string(t.payload, '$.counter_account') IS NOT NULL
-               AND json_extract_string(t.payload, '$.counter_account') <> ''
-        ),
-        held AS (
-            SELECT s.silver_source_id, s.transaction_external_id,
-                   a.silver_source_id AS far_source, a.account_external_id AS far_account,
-                   a.silver_source_id = s.silver_source_id AS same_source
-              FROM stated s
-              JOIN accounts a ON upper(replace(a.account_external_id, ' ', '')) = s.named
-             WHERE s.named <> s.own
-        ),
-        counted AS (
-            SELECT *,
-                   COUNT(*) FILTER (WHERE same_source)
-                       OVER (PARTITION BY silver_source_id, transaction_external_id) AS n_same,
-                   COUNT(*) OVER (PARTITION BY silver_source_id, transaction_external_id) AS n_all
-              FROM held
-        )
-        SELECT silver_source_id, transaction_external_id, far_source, far_account
-          FROM counted
-         WHERE (same_source AND n_same = 1)
-            OR (n_same = 0 AND n_all = 1)`)
-	if err != nil {
-		return nil, fmt.Errorf("spending: read stated counter accounts: %w", err)
-	}
-	defer rows.Close()
+func statedCounterAccounts(rows []evidenceRow, accounts map[string][]farAccount) map[txKey]farAccount {
 	out := map[txKey]farAccount{}
-	for rows.Next() {
-		var k txKey
-		var far farAccount
-		if err := rows.Scan(&k.source, &k.txID, &far.source, &far.account); err != nil {
-			return nil, fmt.Errorf("spending: scan stated counter accounts: %w", err)
+	for _, r := range rows {
+		if !r.counterAccount.Valid || r.counterAccount.String == "" || !r.own.Valid || r.named.String == r.own.String {
+			continue
 		}
-		out[k] = far
+		var same, all []farAccount
+		for _, a := range accounts[r.named.String] {
+			if a.source == r.key.source {
+				same = append(same, a)
+			}
+			all = append(all, a)
+		}
+		switch {
+		case len(same) == 1:
+			out[r.key] = same[0]
+		case len(same) == 0 && len(all) == 1:
+			out[r.key] = all[0]
+		}
 	}
-	return out, rows.Err()
+	return out
 }
 
-// loadMovementReferences reads, per transaction, the reference the source
+// movementReferences finds, per transaction, the reference the source
 // stamped on BOTH halves of one money movement — the bank's own transaction
 // number, written once and printed on the debit and on the credit alike.
 //
 // The far account arrives by two roads (CASHFLOW.md §4): the matcher's, which
 // is a pairing, and the source's, which is the counter account it states
-// outright (loadStatedCounterAccounts). This feeds the first, and of the ways
+// outright (statedCounterAccounts). This feeds the first, and of the ways
 // that road joins two legs it is the strongest short of the holder's own
 // word — the only one that is an identity rather than an inference. The
 // source names the MOVEMENT, and because it names it rather than describing
@@ -611,7 +679,7 @@ func loadStatedCounterAccounts(ctx context.Context, tx querier) (map[txKey]farAc
 // a reader that serves every source, and would mis-fire on the next source
 // whose ids happen to look similar.
 //
-// THE UNIQUENESS TEST IS THE SAFETY, and it is why this is a query rather
+// THE UNIQUENESS TEST IS THE SAFETY, and it is why this is a census rather
 // than a column. A reference is trustworthy exactly insofar as the source
 // mints one per movement, so a reference carried by anything other than two
 // rows of one source is not offered at all: a reference the bank also stamped
@@ -628,56 +696,44 @@ func loadStatedCounterAccounts(ctx context.Context, tx querier) (map[txKey]farAc
 // reference is an identity only inside one source's id space; two banks can
 // mint the same string, and a pair drawn across that seam would be a
 // coincidence wearing the clothes of a fact.
-func loadMovementReferences(ctx context.Context, tx querier) (map[txKey]string, int, error) {
-	rows, err := tx.QueryContext(ctx, `
-        SELECT silver_source_id, transaction_external_id, ref, rows_under_ref
-          FROM (
-            SELECT silver_source_id, transaction_external_id, ref,
-                   COUNT(*) OVER (PARTITION BY silver_source_id, ref) AS rows_under_ref
-              FROM (
-                SELECT silver_source_id, transaction_external_id,
-                       json_extract_string(payload, '$.bank_ref') AS ref
-                  FROM transactions
-              )
-             WHERE ref IS NOT NULL AND ref <> ''
-          )
-         ORDER BY silver_source_id, ref, transaction_external_id`)
-	if err != nil {
-		return nil, 0, fmt.Errorf("spending: read movement references: %w", err)
-	}
-	defer rows.Close()
-	out := map[txKey]string{}
-	ambiguous := map[string]bool{}
-	for rows.Next() {
-		var k txKey
-		var ref string
-		var under int
-		if err := rows.Scan(&k.source, &k.txID, &ref, &under); err != nil {
-			return nil, 0, fmt.Errorf("spending: scan movement references: %w", err)
+func movementReferences(rows []evidenceRow) (map[txKey]string, int) {
+	type sourceRef struct{ source, ref string }
+	under := map[sourceRef]int{}
+	for _, r := range rows {
+		if r.bankRef.Valid && r.bankRef.String != "" {
+			under[sourceRef{r.key.source, r.bankRef.String}]++
 		}
-		if under != 2 {
-			// More than two rows under one reference is the case worth
-			// counting: there the source HAS named something, and what it
-			// named is not one movement, so a pairing had to be refused.
-			// A few are ordinary — a bank books a charge under the
-			// reference of the payment it belongs to — but the number
-			// climbing with the archive is how a reference space that is
-			// per-day or per-batch rather than per-movement announces
-			// itself, and nothing else downstream would say so.
-			//
-			// One row under a reference is NOT counted. It is the ordinary
-			// shape of most rows, whose other half belongs to a third
-			// party and was never gold's to hold; there is nothing to
-			// refuse, and counting it would bury the signal above under
-			// the whole archive.
-			if under > 2 {
-				ambiguous[k.source+"\x00"+ref] = true
-			}
+	}
+	out := map[txKey]string{}
+	ambiguous := 0
+	for _, r := range rows {
+		if !r.bankRef.Valid || r.bankRef.String == "" {
 			continue
 		}
-		out[k] = ref
+		if under[sourceRef{r.key.source, r.bankRef.String}] == 2 {
+			out[r.key] = r.bankRef.String
+		}
 	}
-	return out, len(ambiguous), rows.Err()
+	for _, n := range under {
+		// More than two rows under one reference is the case worth
+		// counting: there the source HAS named something, and what it
+		// named is not one movement, so a pairing had to be refused.
+		// A few are ordinary — a bank books a charge under the
+		// reference of the payment it belongs to — but the number
+		// climbing with the archive is how a reference space that is
+		// per-day or per-batch rather than per-movement announces
+		// itself, and nothing else downstream would say so.
+		//
+		// One row under a reference is NOT counted. It is the ordinary
+		// shape of most rows, whose other half belongs to a third
+		// party and was never gold's to hold; there is nothing to
+		// refuse, and counting it would bury the signal above under
+		// the whole archive.
+		if n > 2 {
+			ambiguous++
+		}
+	}
+	return out, ambiguous
 }
 
 // statedCounterLeg is the other leg of a movement as the source describes it:
@@ -687,7 +743,7 @@ type statedCounterLeg struct {
 	amount   float64
 }
 
-// loadStatedCounterLegs reads, per transaction, the OTHER LEG the source
+// statedCounterLegs finds, per transaction, the OTHER LEG the source
 // itself described — `payload.$.counter_currency` and `$.counter_amount`.
 //
 // It is the third thing a source can say about where a movement went, and the
@@ -704,7 +760,7 @@ type statedCounterLeg struct {
 // tolerance can bring them together. The sentence in the narrative is then
 // the only link between the two rows there is.
 //
-// UNLIKE the reference phase, THE CENSUS IS NOT HERE. The reference query
+// UNLIKE the reference phase, THE CENSUS IS NOT HERE. The reference census
 // refuses a reference the source did not mint per movement, because a leg
 // carrying an over-used reference must reach the matcher looking like a leg
 // carrying none. A description is different: whether it resolves depends on
@@ -712,29 +768,14 @@ type statedCounterLeg struct {
 // is offered, not about every row of the table. So this reads the
 // description as written and matchStatedCounters does all the counting, over
 // the legs it was actually offered.
-func loadStatedCounterLegs(ctx context.Context, tx querier) (map[txKey]statedCounterLeg, error) {
-	rows, err := tx.QueryContext(ctx, `
-        SELECT silver_source_id, transaction_external_id,
-               json_extract_string(payload, '$.counter_currency'),
-               TRY_CAST(json_extract_string(payload, '$.counter_amount') AS DOUBLE)
-          FROM transactions
-         WHERE json_extract_string(payload, '$.counter_currency') IS NOT NULL
-           AND json_extract_string(payload, '$.counter_currency') <> ''
-           AND TRY_CAST(json_extract_string(payload, '$.counter_amount') AS DOUBLE) IS NOT NULL`)
-	if err != nil {
-		return nil, fmt.Errorf("spending: read stated counter legs: %w", err)
-	}
-	defer rows.Close()
+func statedCounterLegs(rows []evidenceRow) map[txKey]statedCounterLeg {
 	out := map[txKey]statedCounterLeg{}
-	for rows.Next() {
-		var k txKey
-		var leg statedCounterLeg
-		if err := rows.Scan(&k.source, &k.txID, &leg.currency, &leg.amount); err != nil {
-			return nil, fmt.Errorf("spending: scan stated counter legs: %w", err)
+	for _, r := range rows {
+		if r.counterCcy.Valid && r.counterCcy.String != "" && r.counterAmt.Valid {
+			out[r.key] = statedCounterLeg{r.counterCcy.String, r.counterAmt.Float64}
 		}
-		out[k] = leg
 	}
-	return out, rows.Err()
+	return out
 }
 
 // loadPopulation reads one family's candidates. The two populations
@@ -769,12 +810,12 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 }
 
 // loadMatcherPool reads the matcher's legs and, alongside them, the
-// narrative of each leg and the count of source references it had to
-// refuse. A matched leg outside the spending population still gets an
-// enrichment row, and that row needs a signature like any other.
+// narrative of each leg. A matched leg outside the spending population
+// still gets an enrichment row, and that row needs a signature like any
+// other.
 //
-// The references are read HERE, rather than beside the pool at the call
-// site, because this is the one place a leg is built.
+// Each leg carries the reference and the counter leg its source stated
+// (evidence), because this is the one place a leg is built.
 //
 // Most of the pool is outside the population — the pool spans every
 // account and admits the income kinds — and the enrichment table takes
@@ -785,15 +826,7 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 // which reads spend_txn_categories() directly and so can name the leg
 // for what it is. Nothing leaks and nothing is orphaned: the next
 // pass deletes every derived row before re-asserting.
-func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName) ([]gold.TransferLeg, map[txKey]candidate, int, error) {
-	refs, ambiguous, err := loadMovementReferences(ctx, tx)
-	if err != nil {
-		return nil, nil, 0, err
-	}
-	counters, err := loadStatedCounterLegs(ctx, tx)
-	if err != nil {
-		return nil, nil, 0, err
-	}
+func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName, evidence passEvidence) ([]gold.TransferLeg, map[txKey]candidate, error) {
 	// The scope facts ride along with the narrative: a far rule is
 	// tested against a pool row exactly as against a population row
 	// (farRuleReaches), and a rule scoped to an account, a portfolio or
@@ -809,7 +842,7 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName) 
            AND a.account_external_id = p.account_external_id
          ORDER BY p.silver_source_id, p.transaction_external_id`, int64(0), gold.MaxEpoch)
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("spending: read matcher pool: %w", err)
+		return nil, nil, fmt.Errorf("spending: read matcher pool: %w", err)
 	}
 	defer rows.Close()
 
@@ -824,7 +857,7 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName) 
 		)
 		if err := rows.Scan(&leg.Group, &leg.Owner, &leg.ID, &occurredAt,
 			&leg.Ccy, &amount, &row.counterparty, &row.description, &row.portfolio); err != nil {
-			return nil, nil, 0, fmt.Errorf("spending: scan matcher pool: %w", err)
+			return nil, nil, fmt.Errorf("spending: scan matcher pool: %w", err)
 		}
 		row.account, row.occurredAt = leg.Owner, occurredAt
 		if !amount.Valid {
@@ -839,17 +872,17 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName) 
 		leg.Reversal = reversalRe.MatchString(row.counterparty + " " + row.description)
 		leg.Names = legNames(names, leg.Group, leg.Owner, row.counterparty, row.description)
 		row.key = txKey{leg.Group, leg.ID}
-		leg.Ref = refs[row.key]
-		if c, ok := counters[row.key]; ok {
+		leg.Ref = evidence.refs[row.key]
+		if c, ok := evidence.counterLegs[row.key]; ok {
 			leg.CounterCcy, leg.CounterAmt = c.currency, c.amount
 		}
 		legs = append(legs, leg)
 		narratives[row.key] = row
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, 0, err
+		return nil, nil, err
 	}
-	return legs, narratives, ambiguous, nil
+	return legs, narratives, nil
 }
 
 func loadSilverKinds(ctx context.Context, tx *sql.Tx) (map[string]string, error) {

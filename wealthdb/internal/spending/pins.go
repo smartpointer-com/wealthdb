@@ -60,21 +60,54 @@ var requiredPinCols = []string{"silver_source_id", "account", "occurred_at", "am
 // showing two decimals; gold stores four.
 const pinAmountEps = gold.TransferMatchMinEps
 
-// naturalKeySQL follows a SELECT of transactions' columns with the
-// natural key a pin and a ledger leg name a transaction by: its source,
-// account and currency, its UTC day, and its amount to within
-// pinAmountEps. naturalKeyArgs gives its arguments.
-const naturalKeySQL = `
-  FROM transactions
- WHERE silver_source_id = ? AND account_external_id = ? AND currency = ?
-   AND occurred_at >= ? AND occurred_at < ?
-   AND abs(CAST(net_amount AS DOUBLE) - ?) <= ?`
+// naturalKey is how a pin and a ledger leg name a transaction: its
+// source, account and currency, its UTC day (the one that starts at
+// dayStart), and its amount to within pinAmountEps.
+type naturalKey struct {
+	source, account, currency string
+	dayStart                  int64
+	amount                    float64
+}
 
-// naturalKeyArgs are naturalKeySQL's arguments: a transaction of the
-// source, account and currency, on the UTC day that starts at dayStart,
-// of the amount.
-func naturalKeyArgs(source, account, currency string, dayStart int64, amount float64) []any {
-	return []any{source, account, currency, dayStart, dayStart + gold.SecondsPerDay, amount, pinAmountEps}
+// matchNaturalKeys reads every transaction each key describes, in one
+// query: the keys are a VALUES list joined to transactions. The result
+// holds one list per key, in key order, each in transaction_external_id
+// order, with the narrative a pinned row is signed by.
+func matchNaturalKeys(ctx context.Context, tx querier, keys []naturalKey) ([][]candidate, error) {
+	out := make([][]candidate, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	values := make([]string, len(keys))
+	args := make([]any, 0, len(keys)*7+1)
+	for i, k := range keys {
+		values[i] = "(CAST(? AS INTEGER), CAST(? AS VARCHAR), CAST(? AS VARCHAR), CAST(? AS VARCHAR)," +
+			" CAST(? AS BIGINT), CAST(? AS BIGINT), CAST(? AS DOUBLE))"
+		args = append(args, i, k.source, k.account, k.currency, k.dayStart, k.dayStart+gold.SecondsPerDay, k.amount)
+	}
+	args = append(args, pinAmountEps)
+	rows, err := tx.QueryContext(ctx, `
+SELECT k.i, t.transaction_external_id, COALESCE(t.counterparty, ''), COALESCE(t.description, '')
+  FROM (VALUES `+strings.Join(values, ", ")+`) AS k(i, source, account, currency, day_from, day_to, amount)
+  JOIN transactions t
+    ON t.silver_source_id = k.source AND t.account_external_id = k.account AND t.currency = k.currency
+   AND t.occurred_at >= k.day_from AND t.occurred_at < k.day_to
+   AND abs(CAST(t.net_amount AS DOUBLE) - k.amount) <= ?
+ ORDER BY k.i, t.transaction_external_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var i int
+		var row candidate
+		if err := rows.Scan(&i, &row.key.txID, &row.counterparty, &row.description); err != nil {
+			return nil, err
+		}
+		row.key.source = keys[i].source
+		out[i] = append(out[i], row)
+	}
+	return out, rows.Err()
 }
 
 // ParsePinLedger reads the pins ledger CSV at path. An empty path or a
@@ -264,20 +297,15 @@ func resolvePins(ctx context.Context, tx *sql.Tx, fam string, pins []Pin) (map[t
 	if len(pins) == 0 {
 		return nil, 0, nil
 	}
-	stmt, err := tx.PrepareContext(ctx, `
-SELECT transaction_external_id, COALESCE(counterparty, ''), COALESCE(description, '')`+naturalKeySQL+`
- ORDER BY transaction_external_id`)
-	if err != nil {
-		return nil, 0, fmt.Errorf("%s: prepare pin lookup: %w", fam, err)
-	}
-	defer stmt.Close()
-
 	resolvers := map[string]gold.AccountResolver{}
-	out := map[txKey]pinnedRow{}
+	keys := make([]naturalKey, 0, len(pins))
+	// of is the pin each key was made from.
+	of := make([]int, 0, len(pins))
 	unmatched := 0
-	for _, p := range pins {
+	for i, p := range pins {
 		resolve, ok := resolvers[p.Source]
 		if !ok {
+			var err error
 			if resolve, err = gold.NewAccountResolver(ctx, tx, p.Source); err != nil {
 				return nil, 0, fmt.Errorf("%s: resolve pin accounts for %s: %w", fam, p.Source, err)
 			}
@@ -291,36 +319,23 @@ SELECT transaction_external_id, COALESCE(counterparty, ''), COALESCE(description
 		if err != nil {
 			return nil, 0, fmt.Errorf("%s: pin: %w", fam, err)
 		}
-		matches, err := pinMatches(ctx, stmt, fam, p, account)
-		if err != nil {
-			return nil, 0, err
-		}
-		if len(matches) == 0 {
+		keys = append(keys, naturalKey{p.Source, account, p.Currency, p.Day, p.Amount})
+		of = append(of, i)
+	}
+	matches, err := matchNaturalKeys(ctx, tx, keys)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: look up pins: %w", fam, err)
+	}
+	// In ledger order, so a later pin on a row overrides an earlier one.
+	out := map[txKey]pinnedRow{}
+	for j, rows := range matches {
+		p := pins[of[j]]
+		if len(rows) == 0 {
 			unmatched++
 		}
-		for _, row := range matches {
+		for _, row := range rows {
 			out[row.key] = pinnedRow{row: row, detailed: p.Detailed, assetClass: p.AssetClass}
 		}
 	}
 	return out, unmatched, nil
-}
-
-// pinMatches reads every transaction one pin describes, fully, before
-// the next pin is looked up: the statement runs on the pass's
-// transaction, which holds one connection.
-func pinMatches(ctx context.Context, stmt *sql.Stmt, fam string, p Pin, account string) ([]candidate, error) {
-	rows, err := stmt.QueryContext(ctx, naturalKeyArgs(p.Source, account, p.Currency, p.Day, p.Amount)...)
-	if err != nil {
-		return nil, fmt.Errorf("%s: look up pin %s/%s: %w", fam, p.Source, p.Account, err)
-	}
-	defer rows.Close()
-	var out []candidate
-	for rows.Next() {
-		row := candidate{key: txKey{source: p.Source}}
-		if err := rows.Scan(&row.key.txID, &row.counterparty, &row.description); err != nil {
-			return nil, fmt.Errorf("%s: scan pin match: %w", fam, err)
-		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
 }

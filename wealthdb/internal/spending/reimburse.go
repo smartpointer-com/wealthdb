@@ -31,7 +31,10 @@ func resolveReimbursements(ctx context.Context, tx *sql.Tx, rules []gold.Transfe
 	if _, err := tx.ExecContext(ctx, `DELETE FROM spend_reimbursement_pairs`); err != nil {
 		return 0, 0, fmt.Errorf("spending: reimbursement pairs: %w", err)
 	}
-	seen := map[txKey]bool{}
+	// Each line's two legs, the repayment first, resolved in one query.
+	type line struct{ in, out gold.TransferOverrideSelector }
+	var lines []line
+	var keys []naturalKey
 	for _, r := range rules {
 		if r.Verb != gold.VerbReimburse || r.B == nil {
 			continue
@@ -40,14 +43,18 @@ func resolveReimbursements(ctx context.Context, tx *sql.Tx, rules []gold.Transfe
 		if in.Amount < 0 {
 			in, out = out, in
 		}
-		repay, ok, err := describedTransaction(ctx, tx, in)
-		if err != nil {
-			return 0, 0, err
-		}
-		spent, ok2, err := describedTransaction(ctx, tx, out)
-		if err != nil {
-			return 0, 0, err
-		}
+		lines = append(lines, line{in, out})
+		keys = append(keys, legKey(in), legKey(out))
+	}
+	matches, err := matchNaturalKeys(ctx, tx, keys)
+	if err != nil {
+		return 0, 0, fmt.Errorf("spending: reimbursement leg: %w", err)
+	}
+	seen := map[txKey]bool{}
+	for i, l := range lines {
+		in, out := l.in, l.out
+		repay, ok := describedTransaction(matches[2*i])
+		spent, ok2 := describedTransaction(matches[2*i+1])
 		if !ok || !ok2 || in.Amount <= 0 || out.Amount >= 0 || seen[repay] {
 			unresolved++
 			continue
@@ -82,28 +89,20 @@ INSERT INTO spend_reimbursement_pairs (silver_source_id, transaction_external_id
 	return written, unresolved, nil
 }
 
-// describedTransaction finds the one transaction a ledger leg describes by
-// the natural key a pin resolves by (naturalKeySQL). ok is false where none
-// or several answer.
-func describedTransaction(ctx context.Context, tx *sql.Tx, s gold.TransferOverrideSelector) (txKey, bool, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT transaction_external_id`+naturalKeySQL+` LIMIT 2`,
-		naturalKeyArgs(s.Source, s.Account, s.Currency, gold.EpochDay(s.Day)*gold.SecondsPerDay, s.Amount)...)
-	if err != nil {
-		return txKey{}, false, fmt.Errorf("spending: reimbursement leg: %w", err)
+// legKey is the natural key a ledger leg names its transaction by, the
+// key a pin resolves by.
+func legKey(s gold.TransferOverrideSelector) naturalKey {
+	return naturalKey{s.Source, s.Account, s.Currency, gold.EpochDay(s.Day) * gold.SecondsPerDay, s.Amount}
+}
+
+// describedTransaction is the one transaction a ledger leg describes,
+// among the matches of its natural key. ok is false where none or
+// several answer.
+func describedTransaction(matches []candidate) (txKey, bool) {
+	if len(matches) != 1 {
+		return txKey{}, false
 	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return txKey{}, false, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil || len(ids) != 1 {
-		return txKey{}, false, err
-	}
-	return txKey{s.Source, ids[0]}, true, nil
+	return matches[0].key, true
 }
 
 // spendingCounts reports whether spending counts the outflow: a line of

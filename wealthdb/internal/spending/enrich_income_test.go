@@ -557,3 +557,21 @@ func TestIncomeCustodyRuleGivesWay(t *testing.T) {
 		t.Error("the custody rule reads deposits alone; a distribution is the floor's")
 	}
 }
+
+// TestAnIncomePinErrorNamesTheIncomeLedger: an ambiguous nickname in
+// the income pins is a fault of the income ledger, and the error names
+// that family, so a reader opens the right file.
+func TestAnIncomePinErrorNamesTheIncomeLedger(t *testing.T) {
+	db, ctx := openGold(t)
+	if _, err := db.ExecContext(ctx, `
+        UPDATE accounts SET nickname = 'Everyday Cash'
+         WHERE silver_source_id = 'bank' AND account_external_id IN ('CASH1', 'CARD1')`); err != nil {
+		t.Fatalf("give two accounts one nickname: %v", err)
+	}
+	_, err := RunDeterministicPass(ctx, db, Options{MatchWindowDays: 5, MatchTolerancePct: 0.5, Now: 1,
+		Income: IncomeOptions{Pins: []Pin{{Source: "bank", Account: "Everyday Cash", Day: day(10),
+			Amount: 900, Currency: "USD", Detailed: "INCOME_SALARY"}}}})
+	if err == nil || !strings.HasPrefix(err.Error(), "income: ") {
+		t.Errorf("err = %v, want an error that starts with %q", err, "income: ")
+	}
+}

@@ -977,7 +977,7 @@ func loadFlowTransactions(ctx context.Context, db *sql.DB, outCcy string) ([]flo
 	rows, err := db.QueryContext(ctx,
 		`SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
 		        r.currency, r.transaction_external_id, r.value_outccy, r.net_amount,
-		        COALESCE(t.payload ->> 'returns_flow' = 'internal', FALSE) AS returns_internal
+		        COALESCE(t.payload ->> '`+canonical.PayloadReturnsFlow+`' = 'internal', FALSE) AS returns_internal
 		   FROM report_transactions(?, ?, ?) r
 		   LEFT JOIN transactions t
 		          ON t.silver_source_id         = r.silver_source_id

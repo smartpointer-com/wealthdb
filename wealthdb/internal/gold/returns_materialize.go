@@ -403,7 +403,7 @@ func loadTransactionsMulti(ctx context.Context, db *sql.DB) ([]txnMultiRow, erro
 		`SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
 		        r.currency, r.transaction_external_id, `+multiColumns("r.value")+`,
 		        CAST(r.net_amount AS VARCHAR),
-		        COALESCE(t.payload ->> 'returns_flow' = 'internal', FALSE) AS returns_internal
+		        COALESCE(t.payload ->> '`+canonical.PayloadReturnsFlow+`' = 'internal', FALSE) AS returns_internal
 		   FROM report_transactions_multi(?, ?) r
 		   LEFT JOIN transactions t
 		          ON t.silver_source_id        = r.silver_source_id

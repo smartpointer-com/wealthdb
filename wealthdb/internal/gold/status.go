@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // SourceStatus summarises the gold-side state for one silver
@@ -257,7 +259,7 @@ func statusBase(ctx context.Context, db *sql.DB, silverSourceID string, includeD
 		if err := db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM transactions
 			  WHERE silver_source_id = ? AND kind <> 'other'
-			    AND json_extract_string(payload, '$.source_kind') IS NOT NULL`,
+			    AND json_extract_string(payload, '$.`+canonical.PayloadSourceKind+`') IS NOT NULL`,
 			silverSourceID,
 		).Scan(&s.GuessedTxKindCount); err != nil {
 			return nil, err

@@ -204,9 +204,9 @@ WITH s AS (
      WHERE t.kind = 'sell' AND t.net_amount IS NOT NULL AND `+inLotSources("t.silver_source_id")+`
        AND (t.instrument_external_id IS NOT NULL OR t.instrument_hint IS NOT NULL)),
 fees AS (
-    SELECT silver_source_id AS src, json_extract_string(payload, '$.fee_for') AS txn, SUM(CAST(net_amount AS DOUBLE)) AS fee
+    SELECT silver_source_id AS src, json_extract_string(payload, '$.`+canonical.PayloadFeeFor+`') AS txn, SUM(CAST(net_amount AS DOUBLE)) AS fee
       FROM transactions
-     WHERE kind = 'fee' AND json_extract_string(payload, '$.fee_for') IS NOT NULL AND `+inLotSources("silver_source_id")+`
+     WHERE kind = 'fee' AND json_extract_string(payload, '$.`+canonical.PayloadFeeFor+`') IS NOT NULL AND `+inLotSources("silver_source_id")+`
      GROUP BY ALL),
 p AS (
     SELECT s.src, s.txn, CAST(p.quantity AS DOUBLE) AS quantity, p.book_value, p.basis_origin, p.basis_method,

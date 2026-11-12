@@ -109,10 +109,11 @@ func TestAReferenceSharedWithARowOutsideThePoolPairsNothing(t *testing.T) {
 		stampMovementReference(t, db, ctx, "bank", id, "TXNO-2")
 	}
 
-	refs, ambiguous, err := loadMovementReferences(ctx, db)
+	evidence, err := loadPassEvidence(ctx, db)
 	if err != nil {
-		t.Fatalf("loadMovementReferences: %v", err)
+		t.Fatalf("loadPassEvidence: %v", err)
 	}
+	refs, ambiguous := evidence.refs, evidence.ambiguousRefs
 	if len(refs) != 0 {
 		t.Errorf("a reference on three rows was offered anyway: %v", refs)
 	}
@@ -153,10 +154,11 @@ func TestMovementReferencesAreOfferedOnlyWhereTheyNameOneMovement(t *testing.T) 
 	stampMovementReference(t, db, ctx, "bank", "T-COLLIDE", "TXNO-5")
 	stampMovementReference(t, db, ctx, "other-bank", "T-COLLIDE-TOO", "TXNO-5")
 
-	refs, ambiguous, err := loadMovementReferences(ctx, db)
+	evidence, err := loadPassEvidence(ctx, db)
 	if err != nil {
-		t.Fatalf("loadMovementReferences: %v", err)
+		t.Fatalf("loadPassEvidence: %v", err)
 	}
+	refs, ambiguous := evidence.refs, evidence.ambiguousRefs
 	// None of the refusals here is a reference naming MORE than one
 	// movement: the lone leg and each half of the cross-source collision
 	// carry one row apiece, which is the ordinary shape of a row whose
@@ -191,7 +193,11 @@ func TestTheMatcherPoolCarriesTheReference(t *testing.T) {
 	stampMovementReference(t, db, ctx, "bank", "T-REF-OUT", "TXNO-6")
 	stampMovementReference(t, db, ctx, "bank", "T-REF-IN", "TXNO-6")
 
-	legs, _, _, err := loadMatcherPool(ctx, db, nil)
+	evidence, err := loadPassEvidence(ctx, db)
+	if err != nil {
+		t.Fatalf("loadPassEvidence: %v", err)
+	}
+	legs, _, err := loadMatcherPool(ctx, db, nil, evidence)
 	if err != nil {
 		t.Fatalf("loadMatcherPool: %v", err)
 	}

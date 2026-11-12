@@ -266,7 +266,11 @@ func TestTransferLinksAreThePassesPairs(t *testing.T) {
 	opts := seedFrozenIncomeFixture(t, db, ctx)
 	runPass(t, db, ctx, opts)
 
-	legs, _, _, err := loadMatcherPool(ctx, db, nil)
+	evidence, err := loadPassEvidence(ctx, db)
+	if err != nil {
+		t.Fatalf("loadPassEvidence: %v", err)
+	}
+	legs, _, err := loadMatcherPool(ctx, db, nil, evidence)
 	if err != nil {
 		t.Fatalf("loadMatcherPool: %v", err)
 	}

@@ -24,7 +24,7 @@ import (
 //   - amounts and currencies are native, converted only in the converted
 //     phase, for a pair a narrative names (gold.MatchedByConversion);
 //   - legs carry the reference a source stamped on both halves
-//     (`payload.$.bank_ref`, loadMovementReferences), the other leg a
+//     (`payload.$.bank_ref`, loadPassEvidence), the other leg a
 //     source describes (`payload.$.counter_currency` / `$.counter_amount`),
 //     the card rail (legRail) and the accounts a narrative names
 //     (legNames, from spending.internal_transfer_matching.names).

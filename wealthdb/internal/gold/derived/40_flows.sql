@@ -81,6 +81,24 @@ CREATE MACRO spend_matcher_pool(p_from, p_to) AS TABLE (
                       'transfer_in', 'transfer_out')
 );
 
+-- txn_evidence: the evidence a source states in a transaction's payload
+-- about where its movement went, one typed column per key
+-- (internal/canonical/payloadkeys.go names each key and its writers).
+-- One row per transaction. A key the payload lacks reads NULL, and so
+-- does a counter_amount that is not a number.
+CREATE MACRO txn_evidence() AS TABLE (
+    SELECT t.silver_source_id, t.transaction_external_id, t.account_external_id,
+           json_extract_string(t.payload, '$.bank_ref') AS bank_ref,
+           json_extract_string(t.payload, '$.counter_account') AS counter_account,
+           json_extract_string(t.payload, '$.counter_currency') AS counter_currency,
+           TRY_CAST(json_extract_string(t.payload, '$.counter_amount') AS DOUBLE) AS counter_amount,
+           json_extract_string(t.payload, '$.returns_flow') AS returns_flow,
+           json_extract_string(t.payload, '$.source_kind') AS source_kind,
+           json_extract_string(t.payload, '$.fee_for') AS fee_for,
+           json_extract_string(t.payload, '$.equity_transfer_ledger') AS equity_transfer_ledger
+      FROM transactions t
+);
+
 -- spend_scoped_accounts: every account can spend, so there is no kind
 -- gate.
 --

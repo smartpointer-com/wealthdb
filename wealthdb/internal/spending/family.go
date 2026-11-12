@@ -159,14 +159,16 @@ type familyInput struct {
 	// overlay, which is the one overlay a far account has a column on.
 	// Empty for the family without far columns.
 	farRules []Rule
-	// otherPins are the other family's pins, for the same reason: a row
-	// that family pinned is that family's whole answer, and a far
-	// account written beside it would name a move the pin says is
-	// something else.
-	otherPins []Pin
-	pins      []Pin
-	kinds     map[string]string
-	matched   map[txKey]gold.TransferLeg
+	// pinned are this family's pins resolved onto gold's transactions,
+	// and unmatchedPins how many of them described none. otherPinned are
+	// the other family's, for the same reason as farRules: a row that
+	// family pinned is that family's whole answer, and a far account
+	// written beside it would name a move the pin says is something
+	// else.
+	pinned, otherPinned map[txKey]pinnedRow
+	unmatchedPins       int
+	kinds               map[string]string
+	matched             map[txKey]gold.TransferLeg
 	// stated is the far account the SOURCE named, for the rows the
 	// matcher could not pair. Read once for both families, as `matched`
 	// is and for the same reason.

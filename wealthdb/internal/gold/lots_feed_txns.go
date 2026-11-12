@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
@@ -33,7 +34,7 @@ func (f *lotFeed) readTransactions(ctx context.Context, db *sql.DB) error {
 SELECT silver_source_id, transaction_external_id, occurred_at, account_external_id,
        instrument_external_id, instrument_hint, kind, currency,
        CAST(quantity AS DOUBLE), CAST(net_amount AS DOUBLE), `+lotTxnColumns+`,
-       CASE WHEN json_extract_string(payload, '$.equity_transfer_ledger') = 'true'
+       CASE WHEN json_extract_string(payload, '$.`+canonical.PayloadEquityTransferLedger+`') = 'true'
             THEN COALESCE(TRY_CAST(json_extract_string(payload, '$.cost_basis') AS DOUBLE), 0) ELSE 0 END
   FROM transactions
  WHERE `+inLotSources("silver_source_id")+`
