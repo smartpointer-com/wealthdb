@@ -179,8 +179,8 @@ func TestMovementReferencesAreOfferedOnlyWhereTheyNameOneMovement(t *testing.T) 
 }
 
 // The pool is the one place the legs are built, so the reference travels with
-// them and the pass and the audit surface cannot disagree about a pairing.
-func TestTheMatcherPoolCarriesTheReferenceToEveryCaller(t *testing.T) {
+// them, and the pair it forms is the one the audit surface lists.
+func TestTheMatcherPoolCarriesTheReference(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
 		txn{source: "bank", id: "T-REF-OUT", account: "CASH1", kind: "withdrawal",
@@ -203,7 +203,8 @@ func TestTheMatcherPoolCarriesTheReferenceToEveryCaller(t *testing.T) {
 			t.Errorf("leg %s reached the matcher with Ref %q, want TXNO-6", l.ID, l.Ref)
 		}
 	}
-	pairs, _, err := MatchedPairs(ctx, db, 5, 0.5, nil, nil)
+	runPass(t, db, ctx, Options{})
+	pairs, _, err := MatchedPairs(ctx, db)
 	if err != nil {
 		t.Fatalf("MatchedPairs: %v", err)
 	}

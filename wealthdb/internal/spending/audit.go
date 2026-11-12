@@ -3,6 +3,7 @@ package spending
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"math"
 	"sort"
 
@@ -38,16 +39,13 @@ import (
 // every pair regardless; it is the caller's listing that decides what
 // that distinction is worth showing.
 //
-// This re-runs the matcher rather than reading the enrichment table
-// back, because the table records per-leg verdicts and has no memory of
-// which leg was paired with which. Re-deriving is cheap (the pool is
-// the same one the pass reads) and deterministic (MatchTransferLegs
-// sorts its input), so the pairs reported here are exactly the pairs
-// the last pass acted on, as long as gold has not changed underneath.
+// The pairs are the ones the last pass stored in transfer_links, so they
+// are exactly the pairs that pass acted on, and listing them runs no
+// matcher.
 
 // querier is the read subset shared by *sql.DB and *sql.Tx, so the
-// pool loader serves both the pass (inside its transaction) and the
-// audit surface (a plain read-only handle).
+// readers serve both the pass (inside its transaction) and the audit
+// surface (a plain read-only handle).
 type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
@@ -96,14 +94,12 @@ func (p Pair) RemovedFromSpending() bool {
 	return p.Debit.InPopulation || p.Credit.InPopulation
 }
 
-// MatchedPairs re-runs the internal-transfer matcher over gold's
-// matcher pool and returns the pairs it found together with every leg
-// it left unpaired. Both results are sorted for stable output.
-func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct float64, names []CounterpartyName, rules []gold.TransferOverrideRule) ([]Pair, []Leg, error) {
-	legs, narratives, _, err := loadMatcherPool(ctx, db, names)
-	if err != nil {
-		return nil, nil, err
-	}
+// MatchedPairs reads the pairs the last enrichment pass stored in
+// transfer_links, and every leg of the matcher pool it left unpaired.
+// Both results are sorted for stable output. A gold without the table
+// (TransferLinksStored) holds no stored pairs, so it lists none, and
+// every leg of the pool as unpaired.
+func MatchedPairs(ctx context.Context, db querier) ([]Pair, []Leg, error) {
 	population, err := loadPopulation(ctx, db, spendingFamily)
 	if err != nil {
 		return nil, nil, err
@@ -112,41 +108,44 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 	for _, c := range population {
 		inPopulation[c.key] = true
 	}
-	overrides, _, err := gold.ResolveTransferOverrides(rules, legs)
+	stored, err := TransferLinksStored(ctx, db)
 	if err != nil {
 		return nil, nil, err
 	}
-	rates, err := gold.LoadDailyRates(ctx, db)
+	var pairs []Pair
+	paired := ""
+	if stored {
+		if pairs, err = readLinkedPairs(ctx, db, inPopulation); err != nil {
+			return nil, nil, err
+		}
+		paired = `
+           AND NOT EXISTS (
+               SELECT 1 FROM transfer_links l
+                WHERE l.silver_source_id        = p.silver_source_id
+                  AND l.transaction_external_id = p.transaction_external_id
+                  AND l.far_transaction_external_id IS NOT NULL)`
+	}
+
+	// The pool's legs with no partner. A leg with no amount was never
+	// offered to the matcher (loadMatcherPool).
+	rows, err := db.QueryContext(ctx, `
+        SELECT `+legColumns("p")+`
+          FROM spend_matcher_pool(?, ?) p
+         WHERE p.net_amount IS NOT NULL`+paired, int64(0), gold.MaxEpoch)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("spending: read unpaired legs: %w", err)
 	}
-	raw := matchTransferPairs(legs, windowDays, tolerancePct, overrides, rates)
-	matched := matchedPartners(raw)
-
-	byKey := make(map[txKey]Leg, len(legs))
-	for _, l := range legs {
-		key := txKey{l.Group, l.ID}
-		n := narratives[key]
-		byKey[key] = Leg{
-			Source:       l.Group,
-			TxID:         l.ID,
-			Account:      l.Owner,
-			Day:          l.Day,
-			Currency:     l.Ccy,
-			Amount:       l.Amt,
-			Signature:    Normalize(n.counterparty, n.description),
-			InPopulation: inPopulation[key],
+	defer rows.Close()
+	var unmatched []Leg
+	for rows.Next() {
+		var l legScan
+		if err := rows.Scan(l.dest()...); err != nil {
+			return nil, nil, fmt.Errorf("spending: scan unpaired legs: %w", err)
 		}
+		unmatched = append(unmatched, l.leg(inPopulation))
 	}
-	pairs := liftPairs(raw, byKey)
-
-	unmatched := make([]Leg, 0, len(legs)-len(matched))
-	for _, l := range legs {
-		key := txKey{l.Group, l.ID}
-		if _, ok := matched[key]; ok {
-			continue
-		}
-		unmatched = append(unmatched, byKey[key])
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("spending: iterate unpaired legs: %w", err)
 	}
 	sort.Slice(unmatched, func(i, j int) bool {
 		a, b := unmatched[i], unmatched[j]
@@ -162,8 +161,97 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 	return pairs, unmatched, nil
 }
 
-// liftPairs turns the core's matched pairs into the audit shape, ordered so
-// that the pairs worth a human's attention survive the listing's cap.
+// TransferLinksStored reports whether gold holds transfer_links. A gold
+// that no build with migration 0182 has opened read-write lacks it, and
+// a read-only open does not migrate.
+func TransferLinksStored(ctx context.Context, db querier) (bool, error) {
+	rows, err := db.QueryContext(ctx, `
+        SELECT 1 FROM duckdb_tables()
+         WHERE table_name = 'transfer_links' AND schema_name = 'main'
+           AND database_name = current_database()`)
+	if err != nil {
+		return false, fmt.Errorf("spending: look for transfer links: %w", err)
+	}
+	defer rows.Close()
+	found := rows.Next()
+	return found, rows.Err()
+}
+
+// readLinkedPairs reads the stored pairs, sorted (sortPairs).
+func readLinkedPairs(ctx context.Context, db querier, inPopulation map[txKey]bool) ([]Pair, error) {
+	// One row per pair: the leg that sent the money, joined to its
+	// partner. A pair is one debit and one credit (gold.TransferLeg.Amt),
+	// so its debit names it once.
+	rows, err := db.QueryContext(ctx, `
+        SELECT l.evidence, `+legColumns("d")+`, `+legColumns("c")+`
+          FROM transfer_links l
+          JOIN transactions d
+            ON d.silver_source_id        = l.silver_source_id
+           AND d.transaction_external_id = l.transaction_external_id
+          JOIN transactions c
+            ON c.silver_source_id        = l.far_silver_source_id
+           AND c.transaction_external_id = l.far_transaction_external_id
+         WHERE l.far_transaction_external_id IS NOT NULL
+           AND CAST(d.net_amount AS DOUBLE) < 0`)
+	if err != nil {
+		return nil, fmt.Errorf("spending: read transfer links: %w", err)
+	}
+	defer rows.Close()
+	var pairs []Pair
+	for rows.Next() {
+		var (
+			evidence      string
+			debit, credit legScan
+		)
+		if err := rows.Scan(append(append([]any{&evidence}, debit.dest()...), credit.dest()...)...); err != nil {
+			return nil, fmt.Errorf("spending: scan transfer links: %w", err)
+		}
+		pairs = append(pairs, Pair{
+			Debit:  debit.leg(inPopulation),
+			Credit: credit.leg(inPopulation),
+			By:     evidencePhase[evidence],
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("spending: iterate transfer links: %w", err)
+	}
+	sortPairs(pairs)
+	return pairs, nil
+}
+
+// legColumns are the columns of the transactions row alias that a Leg
+// is read from, in legScan's order.
+func legColumns(alias string) string {
+	return alias + ".silver_source_id, " + alias + ".transaction_external_id, " +
+		alias + ".account_external_id, " + alias + ".occurred_at, " + alias + ".currency, " +
+		"CAST(" + alias + ".net_amount AS DOUBLE), " +
+		"COALESCE(" + alias + ".counterparty, ''), COALESCE(" + alias + ".description, '')"
+}
+
+// legScan is one leg as legColumns reads it.
+type legScan struct {
+	base                      Leg
+	occurredAt                int64
+	counterparty, description string
+}
+
+func (s *legScan) dest() []any {
+	return []any{&s.base.Source, &s.base.TxID, &s.base.Account, &s.occurredAt,
+		&s.base.Currency, &s.base.Amount, &s.counterparty, &s.description}
+}
+
+// leg is the scanned leg with its day, its signature and its population
+// flag.
+func (s *legScan) leg(inPopulation map[txKey]bool) Leg {
+	l := s.base
+	l.Day = gold.EpochDay(s.occurredAt)
+	l.Signature = Normalize(s.counterparty, s.description)
+	l.InPopulation = inPopulation[txKey{l.Source, l.TxID}]
+	return l
+}
+
+// sortPairs orders the pairs so that the ones worth a human's attention
+// survive the listing's cap.
 //
 // ASSERTED pairs (override, reference, stated-counter) come FIRST, ahead of the
 // chronological order the named and amount pairs keep, and in MatchTransferLegs'
@@ -174,17 +262,9 @@ func MatchedPairs(ctx context.Context, db querier, windowDays int, tolerancePct 
 // every time, and so the one most in need of a reader. Asserted pairs are
 // also the ones whose legs a reader is told to expect to disagree, so they
 // are precisely the ones the cut must not swallow.
-func liftPairs(raw []gold.TransferMatchPair, byKey map[txKey]Leg) []Pair {
-	out := make([]Pair, 0, len(raw))
-	for _, p := range raw {
-		out = append(out, Pair{
-			Debit:  byKey[txKey{p.Debit.Group, p.Debit.ID}],
-			Credit: byKey[txKey{p.Credit.Group, p.Credit.ID}],
-			By:     p.By,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
+func sortPairs(pairs []Pair) {
+	sort.Slice(pairs, func(i, j int) bool {
+		a, b := pairs[i], pairs[j]
 		if ar, br := phaseRank(a.By), phaseRank(b.By); ar != br {
 			return ar < br
 		}
@@ -196,7 +276,6 @@ func liftPairs(raw []gold.TransferMatchPair, byKey map[txKey]Leg) []Pair {
 		}
 		return a.Debit.TxID < b.Debit.TxID
 	})
-	return out
 }
 
 // assertedRank is the listing order of the asserted phases: MatchTransferLegs'

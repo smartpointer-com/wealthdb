@@ -200,3 +200,233 @@ const (
 	frozenPinRows           = 2
 	frozenSignatureOnlyRows = 2
 )
+
+// The frozen oracle for the income family, and for the far facts the
+// income family's rules and pins move on the spending overlay.
+//
+// Same contract as the spending oracle above: one fixture reaches every
+// income tier, the WHOLE income overlay is compared against a literal,
+// and so is the spending overlay the same fixture leaves, because an
+// income rule's far account and an income pin's step-around are written
+// there. assigned_at is excluded, being wall-clock.
+
+// frozenIncomeSnapshot is every column the pass writes on the income
+// overlay but assigned_at.
+func frozenIncomeSnapshot(t *testing.T, db *sql.DB, ctx context.Context) string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+        SELECT silver_source_id, transaction_external_id,
+               COALESCE(payer_signature, '(null)'), signature_version,
+               COALESCE(income_detailed, '(null)'), provenance,
+               COALESCE(stated_asset_class, '(null)'),
+               COALESCE(provider_income_detailed, '(null)')
+          FROM income_txn_enrichment
+         ORDER BY silver_source_id, transaction_external_id`)
+	if err != nil {
+		t.Fatalf("read income overlay: %v", err)
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var src, id, sig, detailed, prov, exposure, provider string
+		var version int
+		if err := rows.Scan(&src, &id, &sig, &version, &detailed, &prov, &exposure, &provider); err != nil {
+			t.Fatalf("scan income overlay: %v", err)
+		}
+		fmt.Fprintf(&b, "%s/%s sig=%q v%d cat=%s via=%s exposure=%s provider=%s\n",
+			src, id, sig, version, detailed, prov, exposure, provider)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate income overlay: %v", err)
+	}
+	return b.String()
+}
+
+// seedFrozenIncomeFixture reaches every income tier, and the far facts
+// the spending overlay records: a pair, a reversal, a far rule in both
+// directions, a stated counter account and the mortgage rule's class.
+// Narratives are synthetic; amounts differ so that no two rows pair
+// except the ones meant to.
+func seedFrozenIncomeFixture(t *testing.T, db *sql.DB, ctx context.Context) Options {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
+                                    high_watermark, first_loaded_at, last_loaded_at)
+             VALUES ('swiss', 'ubs', '/tmp/ubs.db', -1, 0, 0);
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              tax_wrapper, display_name, first_seen_at, last_seen_at)
+             VALUES ('swiss', 'CASH9', 'cash', NULL, 'Swiss', 1, 1),
+                    (?, 'savings-bank', 'cash', 'taxable_personal', 'Example Savings', 1, 1);
+    `, canonical.DeclaredSourceID); err != nil {
+		t.Fatalf("seed a bank source and a declared account: %v", err)
+	}
+	seedTxns(t, db, ctx,
+		// signature-only: nothing places it, and it is the model
+		// tier's backlog.
+		txn{"bank", "I-BACKLOG", "CASH1", "deposit", day(10), 901, "Example Payer", "", ""},
+		// provider: the bank names the movement.
+		txn{"swiss", "I-PROVIDER", "CASH9", "deposit", day(20), 5000, "", "", "SALARY PAYMENT"},
+		// provider, a rail rather than a payer.
+		txn{"swiss", "I-PROVIDER-RAIL", "CASH9", "deposit", day(22), 601, "Example Payer Two", "", "e-banking credit"},
+		// built-in narrative rule over provider.
+		txn{"swiss", "I-RULE", "CASH9", "deposit", day(24), 402, "CASH DEPOSIT BRANCH", "", "SALARY PAYMENT"},
+		// built-in custody rule: a deposit on a custody account.
+		txn{"bank", "I-CUSTODY", "CUST1", "deposit", day(26), 2503, "Wire received", "", ""},
+		// config rule over provider.
+		txn{"swiss", "I-CONFIG-RULE", "CASH9", "deposit", day(28), 904, "EXAMPLE LETTING AGENT", "", "SALARY PAYMENT"},
+		// config rule with a stated exposure.
+		txn{"bank", "I-EXPOSURE", "CASH1", "deposit", day(30), 9005, "", "EXAMPLE VENTURE FUND RETURN", ""},
+		// matcher over everything below it, across two sources.
+		txn{"swiss", "I-MATCH-IN", "CASH9", "deposit", day(40), 706, "Own Transfer", "", "SALARY PAYMENT"},
+		txn{"bank", "I-MATCH-OUT", "CASH1", "withdrawal", day(40), -706, "Own Transfer", "", ""},
+		// pin over everything, on a row the matcher also paired.
+		txn{"swiss", "I-PIN", "CASH9", "deposit", day(50), 257, "Looks Internal", "", "SALARY PAYMENT"},
+		txn{"bank", "I-PIN-PAIR", "CASH1", "withdrawal", day(50), -257, "Looks Internal", "", ""},
+		// pin on a row OUTSIDE the income population: its account is
+		// excluded from income's scope.
+		txn{"other-bank", "I-PIN-OUTSIDE", "CUST2", "deposit", day(60), 158, "Funds received", "", ""},
+		// an income far rule: the verdict on the income overlay, the
+		// declared account on the spending one.
+		txn{"bank", "I-FAR-IN", "CASH1", "deposit", day(70), 2009, "", "Transfer from Example Savings Bank", ""},
+		// the same rule on a row income pinned: the pin is the whole
+		// answer, and the spending overlay steps around it.
+		txn{"bank", "I-FAR-PINNED", "CASH1", "deposit", day(72), 510, "", "Transfer from Example Savings Bank", ""},
+		// a kind the floor answers.
+		txn{"bank", "I-DIVIDEND", "BRK1", "dividend", day(80), 41, "", "", ""},
+		// a deposit and its reversal on one account.
+		txn{"bank", "I-BOOKED", "CASH1", "deposit", day(90), 911, "Example Payer Three", "", ""},
+		txn{"bank", "I-REVERSED", "CASH1", "deposit", day(91), -911, "Example Payer Three", "", ""},
+		// the mortgage rule's far class, on the spending side.
+		txn{"bank", "I-MORTGAGE", "CASH1", "withdrawal", day(100), -1812, "", "MORTGAGE PAYMENT", ""},
+		// a stated counter account on an outflow, and on an inflow.
+		txn{"bank", "I-STATED-OUT", "CASH1", "withdrawal", day(110), -333, "", "Wire to own account", ""},
+		txn{"bank", "I-STATED-IN", "CASH1", "deposit", day(120), 444, "", "Wire from own account", ""},
+		// a spending far rule on the spending side's own row.
+		txn{"bank", "I-FAR-OUT", "CASH1", "withdrawal", day(130), -3007, "", "Transfer to Example Savings Bank", ""},
+	)
+	seedCounterAccount(t, db, ctx, "bank", "I-STATED-OUT", "CUST2")
+	seedCounterAccount(t, db, ctx, "bank", "I-STATED-IN", "CASH2")
+
+	far := Rule{Match: regexp.MustCompile(`(?i)EXAMPLE SAVINGS BANK`),
+		Category: canonical.SpendDetailedInternalTransfer, Far: "savings-bank"}
+	return Options{
+		Rules: []Rule{far},
+		Income: IncomeOptions{
+			Exclude: map[string][]string{"other-bank": {"CUST2"}},
+			Rules: []Rule{
+				{Match: regexp.MustCompile(`(?i)EXAMPLE LETTING AGENT`), Category: "INCOME_RENTAL"},
+				{Match: regexp.MustCompile(`(?i)EXAMPLE VENTURE FUND RETURN`),
+					Category: canonical.IncomeDetailedCapitalReturn, AssetClass: "private_debt"},
+				far,
+			},
+			Pins: []Pin{
+				{Source: "swiss", Account: "CASH9", Day: day(50), Amount: 257, Currency: "USD",
+					Detailed: canonical.IncomeDetailedInheritance},
+				{Source: "other-bank", Account: "CUST2", Day: day(60), Amount: 158, Currency: "USD",
+					Detailed: "INCOME_OTHER"},
+				{Source: "bank", Account: "CASH1", Day: day(72), Amount: 510, Currency: "USD",
+					Detailed: "INCOME_OTHER"},
+			},
+		},
+	}
+}
+
+// TestIncomePassOutputIsFrozen is the income oracle.
+func TestIncomePassOutputIsFrozen(t *testing.T) {
+	db, ctx := openGold(t)
+	opts := seedFrozenIncomeFixture(t, db, ctx)
+	res := runPass(t, db, ctx, opts)
+
+	if got := frozenIncomeSnapshot(t, db, ctx); got != frozenIncomeOverlay {
+		t.Errorf("the income overlay moved.\n--- got ---\n%s\n--- want ---\n%s", got, frozenIncomeOverlay)
+	}
+	if got := frozenSnapshot(t, db, ctx); got != frozenIncomeFixtureSpendingOverlay {
+		t.Errorf("the spending overlay of the income fixture moved.\n--- got ---\n%s\n--- want ---\n%s",
+			got, frozenIncomeFixtureSpendingOverlay)
+	}
+	// Fifteen population rows, plus the one pinned row outside it
+	// (I-PIN-OUTSIDE). The pair counters are the load summary's, read
+	// off the same pass.
+	for _, tc := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"Income.Population", res.Income.Population, 15},
+		{"Income.Enriched", res.Income.Enriched, 16},
+		{"Income.MatcherRows", res.Income.MatcherRows, 3},
+		{"Income.RuleRows", res.Income.RuleRows, 5},
+		{"Income.ProviderRows", res.Income.ProviderRows, 1},
+		{"Income.PinRows", res.Income.PinRows, 3},
+		{"Income.SignatureOnlyRows", res.Income.SignatureOnlyRows, 4},
+		{"Income.StatedExposures", res.Income.StatedExposures, 1},
+		{"StatedFarAccounts", res.StatedFarAccounts, 1},
+		{"Cashflow.ReferencePairs", res.Cashflow.ReferencePairs, 0},
+		{"Cashflow.StatedCounterPairs", res.Cashflow.StatedCounterPairs, 0},
+		{"Cashflow.NamedPairs", res.Cashflow.NamedPairs, 0},
+		{"Cashflow.ReversalPairs", res.Cashflow.ReversalPairs, 1},
+		{"Cashflow.ConvertedPairs", res.Cashflow.ConvertedPairs, 0},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("Result.%s = %d, want %d", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// The goldens of the income oracle, captured from the pass as it stood
+// when the oracle was written. Never edited to make a test pass.
+const frozenIncomeOverlay = `bank/I-BACKLOG sig="EXAMPLE PAYER" v13 cat=(null) via=signature-only exposure=(null) provider=(null)
+bank/I-BOOKED sig="EXAMPLE PAYER THREE" v13 cat=internal_transfer via=matcher exposure=(null) provider=(null)
+bank/I-CUSTODY sig="WIRE RECEIVED" v13 cat=capital_return via=rule exposure=(null) provider=(null)
+bank/I-DIVIDEND sig="(null)" v13 cat=(null) via=signature-only exposure=(null) provider=(null)
+bank/I-EXPOSURE sig="EXAMPLE VENTURE FUND RETURN" v13 cat=capital_return via=rule exposure=private_debt provider=(null)
+bank/I-FAR-IN sig="TRANSFER FROM EXAMPLE SAVINGS BANK" v13 cat=internal_transfer via=rule exposure=(null) provider=(null)
+bank/I-FAR-PINNED sig="TRANSFER FROM EXAMPLE SAVINGS BANK" v13 cat=INCOME_OTHER via=manual exposure=(null) provider=(null)
+bank/I-REVERSED sig="EXAMPLE PAYER THREE" v13 cat=internal_transfer via=matcher exposure=(null) provider=(null)
+bank/I-STATED-IN sig="WIRE FROM OWN ACCOUNT" v13 cat=(null) via=signature-only exposure=(null) provider=(null)
+other-bank/I-PIN-OUTSIDE sig="FUNDS RECEIVED" v13 cat=INCOME_OTHER via=manual exposure=(null) provider=(null)
+swiss/I-CONFIG-RULE sig="EXAMPLE LETTING AGENT" v13 cat=INCOME_RENTAL via=rule exposure=(null) provider=INCOME_SALARY
+swiss/I-MATCH-IN sig="OWN TRANSFER" v13 cat=internal_transfer via=matcher exposure=(null) provider=INCOME_SALARY
+swiss/I-PIN sig="LOOKS INTERNAL" v13 cat=inheritance via=manual exposure=(null) provider=INCOME_SALARY
+swiss/I-PROVIDER sig="(null)" v13 cat=INCOME_SALARY via=provider exposure=(null) provider=INCOME_SALARY
+swiss/I-PROVIDER-RAIL sig="EXAMPLE PAYER TWO" v13 cat=(null) via=signature-only exposure=(null) provider=(null)
+swiss/I-RULE sig="CASH DEPOSIT BRANCH" v13 cat=cash_deposit via=rule exposure=(null) provider=INCOME_SALARY
+`
+
+const frozenIncomeFixtureSpendingOverlay = `bank/I-BOOKED sig="EXAMPLE PAYER THREE" v13 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+bank/I-FAR-IN sig="TRANSFER FROM EXAMPLE SAVINGS BANK" v13 cat=internal_transfer via=rule label=(null) far=declared/savings-bank farclass=(null) exposure=(null) issuer=(null)
+bank/I-FAR-OUT sig="TRANSFER TO EXAMPLE SAVINGS BANK" v13 cat=internal_transfer via=rule label=(null) far=declared/savings-bank farclass=(null) exposure=(null) issuer=(null)
+bank/I-MATCH-OUT sig="OWN TRANSFER" v13 cat=internal_transfer via=matcher label=(null) far=swiss/CASH9 farclass=(null) exposure=(null) issuer=(null)
+bank/I-MORTGAGE sig="MORTGAGE PAYMENT" v13 cat=internal_transfer via=rule label=(null) far=(null)/(null) farclass=mortgage exposure=(null) issuer=(null)
+bank/I-PIN-PAIR sig="LOOKS INTERNAL" v13 cat=internal_transfer via=matcher label=(null) far=swiss/CASH9 farclass=(null) exposure=(null) issuer=(null)
+bank/I-REVERSED sig="EXAMPLE PAYER THREE" v13 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+bank/I-STATED-OUT sig="WIRE TO OWN ACCOUNT" v13 cat=(null) via=signature-only label=(null) far=other-bank/CUST2 farclass=(null) exposure=(null) issuer=(null)
+swiss/I-MATCH-IN sig="OWN TRANSFER" v13 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+swiss/I-PIN sig="LOOKS INTERNAL" v13 cat=internal_transfer via=matcher label=(null) far=bank/CASH1 farclass=(null) exposure=(null) issuer=(null)
+`
+
+// TestTransferLinksAreFrozen holds transfer_links to a literal over the
+// income fixture, which reaches every road a link has but the ledger,
+// the reference and the described counter leg: a pair on amount, a
+// reversal, a stated counter account, a far rule in both directions and
+// the mortgage rule's class.
+func TestTransferLinksAreFrozen(t *testing.T) {
+	db, ctx := openGold(t)
+	runPass(t, db, ctx, seedFrozenIncomeFixture(t, db, ctx))
+	if got := strings.Join(linkRows(t, db, ctx), "\n") + "\n"; got != frozenTransferLinks {
+		t.Errorf("transfer_links moved.\n--- got ---\n%s\n--- want ---\n%s", got, frozenTransferLinks)
+	}
+}
+
+// The golden of transfer_links, captured when the table was added.
+const frozenTransferLinks = `bank/I-BOOKED far=bank/CASH1 tx=I-REVERSED class=(null) by=reversal measure=cash
+bank/I-FAR-IN far=declared/savings-bank tx=(null) class=(null) by=rule measure=cash
+bank/I-FAR-OUT far=declared/savings-bank tx=(null) class=(null) by=rule measure=cash
+bank/I-MATCH-OUT far=swiss/CASH9 tx=I-MATCH-IN class=(null) by=amount measure=cash
+bank/I-MORTGAGE far=(null)/(null) tx=(null) class=mortgage by=rule measure=cash
+bank/I-PIN-PAIR far=swiss/CASH9 tx=I-PIN class=(null) by=amount measure=cash
+bank/I-REVERSED far=bank/CASH1 tx=I-BOOKED class=(null) by=reversal measure=cash
+bank/I-STATED-OUT far=other-bank/CUST2 tx=(null) class=(null) by=stated-account measure=cash
+swiss/I-MATCH-IN far=bank/CASH1 tx=I-MATCH-OUT class=(null) by=amount measure=cash
+swiss/I-PIN far=bank/CASH1 tx=I-PIN-PAIR class=(null) by=amount measure=cash
+`

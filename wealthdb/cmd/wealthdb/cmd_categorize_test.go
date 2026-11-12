@@ -1864,3 +1864,34 @@ func TestCategorizeStampsTheConfigBeforeThePass(t *testing.T) {
 		t.Errorf("declared account rows after categorize = %d, want 1 (stamped before the pass)", n)
 	}
 }
+
+// TestCategorizeAdvisesALoadWithoutStoredPairs: a dry run over a gold
+// that has no transfer_links yet goes on, lists no pairs, and says on
+// stderr which command brings them.
+func TestCategorizeAdvisesALoadWithoutStoredPairs(t *testing.T) {
+	t.Parallel()
+	db, ctx := openCategorizeGold(t)
+	seedSpendTxn(t, db, ctx, "T-IN", "CASH1", "deposit", 20, 400, "Inbound", "")
+	if _, err := db.ExecContext(ctx, `DROP TABLE transfer_links`); err != nil {
+		t.Fatalf("drop the table: %v", err)
+	}
+	cfg := writeTwoFamilyConfig(t, t.TempDir(), filepath.Join(t.TempDir(), "unused.db"))
+
+	var out, errOut strings.Builder
+	if _, err := runCategorizeFamily(ctx, db, cfg, spendingCategorizeFamily,
+		categorizeRunOptions{dryRun: true, maxAttempts: 1, maxAnchors: 1, batch: 1},
+		&out, &errOut); err != nil {
+		t.Fatalf("runCategorizeFamily: %v", err)
+	}
+	if got := errOut.String(); got != pairsNotStoredNote+"\n" {
+		t.Errorf("stderr = %q, want the advice line", got)
+	}
+	for _, want := range []string{
+		"internal-transfer pairs excluded from spending: 0",
+		"largest unmatched transfer legs (1 unpaired in total",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out.String())
+		}
+	}
+}

@@ -95,7 +95,14 @@ type spendCanaries struct {
 	PairsOutsideSpending int
 	Unmatched            []spending.Leg
 	CrossCurrency        []crossCurrencyShape
+	// PairsNotStored says gold has no transfer_links yet: the pairs list
+	// empty until the next load runs the pass.
+	PairsNotStored bool
 }
+
+// pairsNotStoredNote is the advice a run prints when PairsNotStored.
+const pairsNotStoredNote = "categorize: gold holds no stored internal-transfer pairs yet; " +
+	"they appear after the next `wealthdb load`"
 
 // collectSpendCanaries reads gold for everything the report prints
 // beside the run's own counters.
@@ -108,18 +115,23 @@ func collectSpendCanaries(ctx context.Context, db *sql.DB, cfg *config.Config) (
 	if out.ProviderMisses, err = collectProviderMisses(ctx, db); err != nil {
 		return nil, err
 	}
-	m := cfg.SpendMatching()
-	overrideRules, err := gold.ParseTransferOverrideLedger(cfg.SpendTransferOverrides())
-	if err != nil {
+	// A dry run reads the override ledger nowhere else, and a malformed
+	// one fails it here as it fails a real run.
+	if _, err := gold.ParseTransferOverrideLedger(cfg.SpendTransferOverrides()); err != nil {
 		return nil, err
 	}
-	pairs, unmatched, err := spending.MatchedPairs(ctx, db, m.Window(), m.Tolerance(), matchNames(m), overrideRules)
+	stored, err := spending.TransferLinksStored(ctx, db)
+	if err != nil {
+		return nil, fmt.Errorf("categorize: matcher audit: %w", err)
+	}
+	out.PairsNotStored = !stored
+	pairs, unmatched, err := spending.MatchedPairs(ctx, db)
 	if err != nil {
 		return nil, fmt.Errorf("categorize: matcher audit: %w", err)
 	}
 	out.Pairs, out.PairsOutsideSpending = splitPairsBySpending(pairs)
 	out.Unmatched = unmatched
-	out.CrossCurrency = findCrossCurrencyShapes(out.Unmatched, m.Window())
+	out.CrossCurrency = findCrossCurrencyShapes(out.Unmatched, cfg.SpendMatching().Window())
 	return out, nil
 }
 

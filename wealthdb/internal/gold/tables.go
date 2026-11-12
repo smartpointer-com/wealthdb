@@ -56,6 +56,7 @@ var SourceTables = []SourceTable{
 	{Name: "symbol_resolutions", Class: ClassStore},
 	{Name: "spend_txn_enrichment", Class: ClassOverlay},
 	{Name: "income_txn_enrichment", Class: ClassOverlay},
+	{Name: "transfer_links", Class: ClassOverlay},
 	{Name: "account_wrapper_history", Class: ClassOverlay},
 
 	{Name: "lots", Class: ClassLotLedger},

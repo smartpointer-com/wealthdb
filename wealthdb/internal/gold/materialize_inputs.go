@@ -64,6 +64,7 @@ var loadKeyTables = []string{
 	"spend_txn_enrichment",
 	"income_txn_enrichment",
 	"spend_reimbursement_pairs",
+	"transfer_links",
 	"cash_signed_kinds",
 	"account_wrapper_history",
 	"spend_account_scope",

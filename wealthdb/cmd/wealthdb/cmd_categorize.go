@@ -374,6 +374,9 @@ func runCategorizeFamily(
 		if canaries, err = collectSpendCanaries(ctx, db, cfg); err != nil {
 			return false, err
 		}
+		if canaries.PairsNotStored {
+			fmt.Fprintln(stderr, pairsNotStoredNote)
+		}
 	}
 
 	if len(candidates) == 0 {

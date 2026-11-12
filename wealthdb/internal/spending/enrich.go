@@ -264,11 +264,6 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	}
 	pairs := matchTransferPairs(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides, rates)
 	matched := matchedPartners(pairs)
-	res.Cashflow.ReferencePairs = countPairsBy(pairs, gold.MatchedByReference)
-	res.Cashflow.StatedCounterPairs = countPairsBy(pairs, gold.MatchedByStatedCounter)
-	res.Cashflow.NamedPairs = countPairsBy(pairs, gold.MatchedByName)
-	res.Cashflow.ReversalPairs = countPairsBy(pairs, gold.MatchedByReversal)
-	res.Cashflow.ConvertedPairs = countPairsBy(pairs, gold.MatchedByConversion)
 	res.Cashflow.AmbiguousReferences = ambiguousRefs
 
 	// Read once and shared, for the matcher's reason: where a movement
@@ -278,15 +273,25 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 		return nil, err
 	}
 
-	if err := enrichFamily(ctx, tx, spendingFamily, familyInput{
+	spendRows, err := enrichFamily(ctx, tx, spendingFamily, familyInput{
 		include: opts.Include, exclude: opts.Exclude,
 		rules: opts.Rules, farRules: rulesWithFar(opts.Income.Rules), otherPins: opts.Income.Pins, pins: opts.Pins,
 		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
-	}, &res.FamilyResult); err != nil {
+	}, &res.FamilyResult)
+	if err != nil {
+		return nil, err
+	}
+	// The links hold what the spending overlay's far columns hold, so
+	// they are written from its rows, and the pair counters are read
+	// back off them.
+	if err := writeTransferLinks(ctx, tx, spendRows, pairs); err != nil {
+		return nil, err
+	}
+	if err := countLinkedPairs(ctx, tx, &res.Cashflow); err != nil {
 		return nil, err
 	}
 
-	if err := enrichFamily(ctx, tx, incomeFamily, familyInput{
+	if _, err := enrichFamily(ctx, tx, incomeFamily, familyInput{
 		include: opts.Income.Include, exclude: opts.Income.Exclude,
 		rules: opts.Income.Rules, pins: opts.Income.Pins,
 		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
@@ -334,23 +339,25 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 // needs to know where a verdict used to hang. Pins are resolved
 // against the whole of `transactions`, because a pin describes a row
 // by what a statement shows and owes nothing to any population.
-func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, out *FamilyResult) error {
+//
+// It returns the rows it wrote.
+func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, out *FamilyResult) ([]enrichmentRow, error) {
 	var err error
 	out.ScopeRows, out.UnresolvedScopeAccounts, err =
 		syncAccountScope(ctx, tx, fam.name, fam.scopeTable, in.include, in.exclude)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	population, err := loadPopulation(ctx, tx, fam)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	out.Population = len(population)
 
 	pinned, unmatched, err := resolvePins(ctx, tx, fam.name, in.pins)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	out.UnmatchedPins = unmatched
 	// The other family's pins are resolved only to be stepped around;
@@ -358,31 +365,31 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 	// nothing is that family's to count.
 	otherPinned, _, err := resolvePins(ctx, tx, fam.name, in.otherPins)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	oldSignatures, err := loadExistingSignatures(ctx, tx, fam)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	verdicts, err := loadVerdictStore(ctx, tx, fam)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := deleteEnrichmentRows(ctx, tx, fam); err != nil {
-		return err
+		return nil, err
 	}
 
 	rows := assignCategories(fam, population, in.pool, in.matched, in.stated, in.kinds, in.rules, in.farRules, pinned, otherPinned, out)
 	if err := insertEnrichment(ctx, tx, fam, rows, in.now); err != nil {
-		return err
+		return nil, err
 	}
 	out.Enriched = len(rows)
 
 	out.RekeyedVerdicts, out.SplitVerdicts, err =
 		rekeyStore(ctx, tx, fam, rows, oldSignatures, verdicts, in.now)
-	return err
+	return rows, err
 }
 
 // ---- phase 1: the account scope ------------------------------------------
@@ -767,11 +774,7 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 // enrichment row, and that row needs a signature like any other.
 //
 // The references are read HERE, rather than beside the pool at the call
-// site, because this is the one place a leg is built. Both callers — the
-// pass and the audit surface — take their legs from it, and a reference
-// fetched at one call site and not the other would let the two disagree
-// about which movements paired, which is the drift matchTransferPairs
-// exists to prevent for the options.
+// site, because this is the one place a leg is built.
 //
 // Most of the pool is outside the population — the pool spans every
 // account and admits the income kinds — and the enrichment table takes
@@ -1005,6 +1008,12 @@ type enrichmentRow struct {
 	// that road answers where the money went and never what the
 	// movement was, so the verdict it describes is still standing.
 	statedAssetClass string
+	// farTxID is the partner leg of a pair, and farEvidence the road
+	// that named the far side of a one-legged move: a rule or the
+	// source's stated counter account. Neither is an overlay column:
+	// transfer_links carries them, and a pair's evidence is its phase
+	// (writeTransferLinks).
+	farTxID, farEvidence string
 }
 
 // farRuleReaches reports whether one of the far-naming rules fires on
@@ -1132,13 +1141,14 @@ func assignCategories(
 					row.merchantLabel = label
 				}
 				if len(fam.farCols) > 0 {
-					row.farClass = farClass
+					row.farClass, row.farEvidence = farClass, evidenceRule
 				}
 			} else if placement, ok := ConfigRuleCategory(rules, r.ruleRow()); ok {
 				row.detailed, row.provenance = placement.Category, ProvenanceRule
 				row.statedAssetClass = placement.AssetClass
 				if placement.Far != "" && len(fam.farCols) > 0 {
 					row.farSource, row.farAccount = canonical.DeclaredSourceID, placement.Far
+					row.farEvidence = evidenceRule
 				}
 			}
 		} else if placement, ok := ConfigRuleCategory(farRules, r.ruleRow()); ok {
@@ -1147,6 +1157,7 @@ func assignCategories(
 			// and only where the money went is written here.
 			row.detailed, row.provenance = placement.Category, ProvenanceRule
 			row.farSource, row.farAccount = canonical.DeclaredSourceID, placement.Far
+			row.farEvidence = evidenceRule
 		}
 		// A tier above the rule clears the label and the far class with
 		// the verdict it replaces. The label says which issuer a card
@@ -1165,6 +1176,7 @@ func assignCategories(
 			row.statedAssetClass = ""
 			if len(fam.farCols) > 0 {
 				row.farSource, row.farAccount = partner.Group, partner.Owner
+				row.farTxID = partner.ID
 			}
 		} else if far, ok := stated[r.key]; ok && len(fam.farCols) > 0 {
 			// No pairing, but the source named the far account itself.
@@ -1174,7 +1186,7 @@ func assignCategories(
 			// first. A rule's far CLASS is a stand-in for exactly this
 			// and gives way to it, the way it gives way to a pairing.
 			row.farSource, row.farAccount = far.source, far.account
-			row.farClass = ""
+			row.farClass, row.farEvidence = "", evidenceStatedAccount
 			counts.StatedFarAccounts++
 		}
 		if p, ok := pinned[r.key]; ok {
@@ -1257,9 +1269,10 @@ func assignCategories(
 // insertEnrichment writes the overlay: the whole population, plus the
 // pinned rows outside it and, on the family that emits them, the
 // matched legs. It goes through gold.InsertChunked, the same multi-row
-// VALUES batching gold's writer gives the fact tables. This is the pass's one bulk write and it runs after every
-// load, so the shape matters: DuckDB's per-statement cost dwarfs its
-// per-row cost, and a statement per row is the slowest way to feed it.
+// VALUES batching gold's writer gives the fact tables. This is the
+// pass's largest bulk write and it runs after every load, so the shape
+// matters: DuckDB's per-statement cost dwarfs its per-row cost, and a
+// statement per row is the slowest way to feed it.
 //
 // An error names a row range rather than a transaction: assignCategories
 // emits each key once and the table is emptied first, so a primary-key
@@ -1294,6 +1307,83 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 			args = append(args, nullableString(r.statedAssetClass))
 			return append(args, nullableString(r.providerDetailed), now)
 		})
+}
+
+// writeTransferLinks rewrites transfer_links from the spending overlay's
+// rows: one link per row whose far account or far class is known, with
+// the same far account and class the overlay holds. A leg of a pair
+// links to its partner leg, with the pair's phase as its evidence; any
+// other row links to its far account alone.
+//
+// It goes through the same gold.InsertChunked batching as
+// insertEnrichment.
+func writeTransferLinks(ctx context.Context, tx *sql.Tx, rows []enrichmentRow, pairs []gold.TransferMatchPair) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM transfer_links`); err != nil {
+		return fmt.Errorf("spending: clear transfer links: %w", err)
+	}
+	phases := make(map[txKey]gold.TransferMatchPhase, len(pairs)*2)
+	for _, p := range pairs {
+		phases[txKey{p.Debit.Group, p.Debit.ID}] = p.By
+		phases[txKey{p.Credit.Group, p.Credit.ID}] = p.By
+	}
+	links := make([]*enrichmentRow, 0, len(pairs)*2)
+	for i := range rows {
+		if rows[i].farAccount != "" || rows[i].farClass != "" {
+			links = append(links, &rows[i])
+		}
+	}
+	return gold.InsertChunked(ctx, tx, "spending: write transfer links", `
+        INSERT INTO transfer_links (silver_source_id, transaction_external_id,
+                                    far_silver_source_id, far_account_external_id,
+                                    far_transaction_external_id, far_class,
+                                    evidence, measure) VALUES `,
+		"(?, ?, ?, ?, ?, ?, ?, ?)", len(links),
+		func(i int, args []any) []any {
+			r := links[i]
+			evidence := r.farEvidence
+			if r.farTxID != "" {
+				evidence = phaseEvidence[phases[r.key]]
+			}
+			return append(args, r.key.source, r.key.txID,
+				nullableString(r.farSource), nullableString(r.farAccount),
+				nullableString(r.farTxID), nullableString(r.farClass),
+				evidence, measureCash)
+		})
+}
+
+// countLinkedPairs reads the load summary's pair counters off
+// transfer_links: the pairs each phase the summary names formed. A pair
+// is two links, one per leg, with one evidence. What the counters are
+// for is the summary: a road whose traffic nobody can see is a road
+// nobody can tell has stopped carrying any.
+func countLinkedPairs(ctx context.Context, tx querier, out *CashflowResult) error {
+	rows, err := tx.QueryContext(ctx, `
+        SELECT evidence, COUNT(*) // 2
+          FROM transfer_links
+         WHERE far_transaction_external_id IS NOT NULL
+         GROUP BY evidence`)
+	if err != nil {
+		return fmt.Errorf("spending: count linked pairs: %w", err)
+	}
+	defer rows.Close()
+	counters := map[gold.TransferMatchPhase]*int{
+		gold.MatchedByReference:     &out.ReferencePairs,
+		gold.MatchedByStatedCounter: &out.StatedCounterPairs,
+		gold.MatchedByName:          &out.NamedPairs,
+		gold.MatchedByReversal:      &out.ReversalPairs,
+		gold.MatchedByConversion:    &out.ConvertedPairs,
+	}
+	for rows.Next() {
+		var evidence string
+		var n int
+		if err := rows.Scan(&evidence, &n); err != nil {
+			return fmt.Errorf("spending: scan linked pairs: %w", err)
+		}
+		if c, ok := counters[evidencePhase[evidence]]; ok {
+			*c = n
+		}
+	}
+	return rows.Err()
 }
 
 // ---- phase 4: the signature-version re-key ---------------------------------
