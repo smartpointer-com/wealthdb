@@ -1,0 +1,166 @@
+=== call 1: system ===
+You are a financial data assistant. You map instrument descriptions and instrument identifiers (ISIN, CUSIP) to their commonly-listed ticker symbols. You output CSV only — no prose, no markdown, no explanations.
+=== call 1: user ===
+A user maintains a portfolio across several brokers. Their database has rows where the ticker symbol is missing. Given the unresolved rows below, emit one CSV row per row you can confidently resolve.
+
+Broker context:
+- schwab: US brokerage; expect US-listed tickers (e.g. SCHD, TFLO, BABA, VTI).
+- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. NOVN.SW, KPN.AS, INGA.AS, DBK.DE).
+- swissquote: Swiss broker; expect SIX / Xetra / LSE tickers.
+
+Reference examples — same portfolio, already resolved. Each example shows the INPUT row (same shape as the unresolved candidates below) followed by the correct OUTPUT row (the 4-column response format).
+
+INPUT rows (with hint columns):
+schwab-test,instrument_external_id,EX00000101,EXAMPLE ANCHOR ONE,USD
+schwab-test,instrument_external_id,EX00000102,"EXAMPLE ANCHOR, TWO",EUR
+
+CORRECT OUTPUT rows (4 columns, this is the format your response must use):
+schwab-test,instrument_external_id,EX00000101,EXA
+schwab-test,instrument_external_id,EX00000102,EXB
+
+Unresolved rows that need a ticker (same INPUT shape as above):
+schwab-test,instrument_external_id,EX00000001,EXAMPLE FUND 1,
+schwab-test,instrument_external_id,EX00000002,EXAMPLE FUND 2,
+
+Output format:
+- CSV with columns: silver_source_id,lookup_kind,lookup_value,symbol
+- No header row. One row per resolved item.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- silver_source_id and lookup_kind must match the input row exactly.
+- lookup_value must appear verbatim in the input set above.
+- symbol must be the security's commonly-listed ticker (uppercase letters/digits/dots/hyphens, no spaces, 1-12 characters).
+
+Skip any row you cannot confidently resolve. In particular skip:
+- cash interest credits like "BANK INT 010100-020100 SCHWAB BANK", "INTEREST 01/01THRU 02/01", "SCHWAB1 INT 01/01-02/01";
+- bank journal / fee / tax rows with no security in the description;
+- descriptions so mangled that multiple unrelated tickers would plausibly fit.
+
+Do not include explanatory prose. Output CSV only.
+
+=== call 2: system ===
+You are a financial data assistant. You map instrument descriptions and instrument identifiers (ISIN, CUSIP) to their commonly-listed ticker symbols. You output CSV only — no prose, no markdown, no explanations.
+=== call 2: user ===
+A user maintains a portfolio across several brokers. Their database has rows where the ticker symbol is missing. Given the unresolved rows below, emit one CSV row per row you can confidently resolve.
+
+Broker context:
+- schwab: US brokerage; expect US-listed tickers (e.g. SCHD, TFLO, BABA, VTI).
+- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. NOVN.SW, KPN.AS, INGA.AS, DBK.DE).
+- swissquote: Swiss broker; expect SIX / Xetra / LSE tickers.
+
+Reference examples — same portfolio, already resolved. Each example shows the INPUT row (same shape as the unresolved candidates below) followed by the correct OUTPUT row (the 4-column response format).
+
+INPUT rows (with hint columns):
+schwab-test,instrument_external_id,EX00000101,EXAMPLE ANCHOR ONE,USD
+schwab-test,instrument_external_id,EX00000102,"EXAMPLE ANCHOR, TWO",EUR
+
+CORRECT OUTPUT rows (4 columns, this is the format your response must use):
+schwab-test,instrument_external_id,EX00000101,EXA
+schwab-test,instrument_external_id,EX00000102,EXB
+
+Unresolved rows that need a ticker (same INPUT shape as above):
+schwab-test,instrument_external_id,EX00000001,EXAMPLE FUND 1,
+schwab-test,instrument_external_id,EX00000002,EXAMPLE FUND 2,
+
+Output format:
+- CSV with columns: silver_source_id,lookup_kind,lookup_value,symbol
+- No header row. One row per resolved item.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- silver_source_id and lookup_kind must match the input row exactly.
+- lookup_value must appear verbatim in the input set above.
+- symbol must be the security's commonly-listed ticker (uppercase letters/digits/dots/hyphens, no spaces, 1-12 characters).
+
+Skip any row you cannot confidently resolve. In particular skip:
+- cash interest credits like "BANK INT 010100-020100 SCHWAB BANK", "INTEREST 01/01THRU 02/01", "SCHWAB1 INT 01/01-02/01";
+- bank journal / fee / tax rows with no security in the description;
+- descriptions so mangled that multiple unrelated tickers would plausibly fit.
+
+Do not include explanatory prose. Output CSV only.
+
+Your previous response contained the following rows that I rejected:
+  [nowhere instrument_external_id EX00000002 TK2] — reason: unknown silver_source_id "nowhere"
+
+Re-emit your full response with those invalid rows dropped. Keep the rows that WERE valid; do not add new invalid ones. Output CSV only.
+
+=== call 3: system ===
+You are a financial data assistant. You map instrument descriptions and instrument identifiers (ISIN, CUSIP) to their commonly-listed ticker symbols. You output CSV only — no prose, no markdown, no explanations.
+=== call 3: user ===
+A user maintains a portfolio across several brokers. Their database has rows where the ticker symbol is missing. Given the unresolved rows below, emit one CSV row per row you can confidently resolve.
+
+Broker context:
+- schwab: US brokerage; expect US-listed tickers (e.g. SCHD, TFLO, BABA, VTI).
+- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. NOVN.SW, KPN.AS, INGA.AS, DBK.DE).
+- swissquote: Swiss broker; expect SIX / Xetra / LSE tickers.
+
+Reference examples — same portfolio, already resolved. Each example shows the INPUT row (same shape as the unresolved candidates below) followed by the correct OUTPUT row (the 4-column response format).
+
+INPUT rows (with hint columns):
+schwab-test,instrument_external_id,EX00000101,EXAMPLE ANCHOR ONE,USD
+schwab-test,instrument_external_id,EX00000102,"EXAMPLE ANCHOR, TWO",EUR
+
+CORRECT OUTPUT rows (4 columns, this is the format your response must use):
+schwab-test,instrument_external_id,EX00000101,EXA
+schwab-test,instrument_external_id,EX00000102,EXB
+
+Unresolved rows that need a ticker (same INPUT shape as above):
+schwab-test,instrument_external_id,EX00000003,EXAMPLE FUND 3,
+schwab-test,name,DIVIDEND RECEIVED EXAMPLE COMPANY,,USD
+
+Output format:
+- CSV with columns: silver_source_id,lookup_kind,lookup_value,symbol
+- No header row. One row per resolved item.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- silver_source_id and lookup_kind must match the input row exactly.
+- lookup_value must appear verbatim in the input set above.
+- symbol must be the security's commonly-listed ticker (uppercase letters/digits/dots/hyphens, no spaces, 1-12 characters).
+
+Skip any row you cannot confidently resolve. In particular skip:
+- cash interest credits like "BANK INT 010100-020100 SCHWAB BANK", "INTEREST 01/01THRU 02/01", "SCHWAB1 INT 01/01-02/01";
+- bank journal / fee / tax rows with no security in the description;
+- descriptions so mangled that multiple unrelated tickers would plausibly fit.
+
+Do not include explanatory prose. Output CSV only.
+
+=== call 4: system ===
+You are a financial data assistant. You map instrument descriptions and instrument identifiers (ISIN, CUSIP) to their commonly-listed ticker symbols. You output CSV only — no prose, no markdown, no explanations.
+=== call 4: user ===
+A user maintains a portfolio across several brokers. Their database has rows where the ticker symbol is missing. Given the unresolved rows below, emit one CSV row per row you can confidently resolve.
+
+Broker context:
+- schwab: US brokerage; expect US-listed tickers (e.g. SCHD, TFLO, BABA, VTI).
+- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. NOVN.SW, KPN.AS, INGA.AS, DBK.DE).
+- swissquote: Swiss broker; expect SIX / Xetra / LSE tickers.
+
+Reference examples — same portfolio, already resolved. Each example shows the INPUT row (same shape as the unresolved candidates below) followed by the correct OUTPUT row (the 4-column response format).
+
+INPUT rows (with hint columns):
+schwab-test,instrument_external_id,EX00000101,EXAMPLE ANCHOR ONE,USD
+schwab-test,instrument_external_id,EX00000102,"EXAMPLE ANCHOR, TWO",EUR
+
+CORRECT OUTPUT rows (4 columns, this is the format your response must use):
+schwab-test,instrument_external_id,EX00000101,EXA
+schwab-test,instrument_external_id,EX00000102,EXB
+
+Unresolved rows that need a ticker (same INPUT shape as above):
+schwab-test,instrument_external_id,EX00000003,EXAMPLE FUND 3,
+schwab-test,name,DIVIDEND RECEIVED EXAMPLE COMPANY,,USD
+
+Output format:
+- CSV with columns: silver_source_id,lookup_kind,lookup_value,symbol
+- No header row. One row per resolved item.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- silver_source_id and lookup_kind must match the input row exactly.
+- lookup_value must appear verbatim in the input set above.
+- symbol must be the security's commonly-listed ticker (uppercase letters/digits/dots/hyphens, no spaces, 1-12 characters).
+
+Skip any row you cannot confidently resolve. In particular skip:
+- cash interest credits like "BANK INT 010100-020100 SCHWAB BANK", "INTEREST 01/01THRU 02/01", "SCHWAB1 INT 01/01-02/01";
+- bank journal / fee / tax rows with no security in the description;
+- descriptions so mangled that multiple unrelated tickers would plausibly fit.
+
+Do not include explanatory prose. Output CSV only.
+
+Your previous response contained the following rows that I rejected:
+  [nowhere name DIVIDEND RECEIVED EXAMPLE COMPANY TKY] — reason: unknown silver_source_id "nowhere"
+
+Re-emit your full response with those invalid rows dropped. Keep the rows that WERE valid; do not add new invalid ones. Output CSV only.
+

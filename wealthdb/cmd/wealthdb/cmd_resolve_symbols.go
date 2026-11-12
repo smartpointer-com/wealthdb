@@ -181,8 +181,8 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 
 // resolveSymbolsOpts are the command's flags.
 type resolveSymbolsOpts struct {
-	dryRun, overridesOnly, noCurrency, showPrompt bool
-	maxAttempts, maxAnchors, batch                int
+	modelFlags
+	overridesOnly, noCurrency bool
 }
 
 // parseResolveSymbolsFlags reads the flags, returning flag.ErrHelp for
@@ -191,13 +191,14 @@ func parseResolveSymbolsFlags(subargs []string, stderr io.Writer) (resolveSymbol
 	var o resolveSymbolsOpts
 	fs := flag.NewFlagSet("wealthdb resolve-symbols", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.BoolVar(&o.dryRun, "n", false, "show resolution plan without writing to gold")
-	fs.BoolVar(&o.dryRun, "dry-run", false, "show resolution plan without writing to gold")
-	fs.IntVar(&o.maxAttempts, "max-attempts", 3, "max LLM round-trips when responses include hallucinated rows")
+	registerModelFlags(fs, &o.modelFlags, defaultResolveBatch, modelFlagDocs{
+		dryRun:      "show resolution plan without writing to gold",
+		maxAttempts: "max LLM round-trips when responses include hallucinated rows",
+		maxAnchors:  "max anchor examples per silver source to include in the prompt",
+		batch:       "candidates per model call",
+		showPrompt:  "print the LLM prompt to stderr before sending (debugging)",
+	})
 	fs.BoolVar(&o.noCurrency, "no-currency", false, "drop the currency hint from the prompt (experiment / ablation)")
-	fs.IntVar(&o.maxAnchors, "max-anchors", 30, "max anchor examples per silver source to include in the prompt")
-	fs.IntVar(&o.batch, "batch", defaultResolveBatch, "candidates per model call")
-	fs.BoolVar(&o.showPrompt, "show-prompt", false, "print the LLM prompt to stderr before sending (debugging)")
 	fs.BoolVar(&o.overridesOnly, "overrides-only", false, "apply cfg.symbol_resolution.overrides and exit; skip the LLM round-trip entirely")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, resolveSymbolsUsage())
@@ -290,36 +291,41 @@ type batchTally struct {
 // as it completes (unless dry-run), so a later batch failing — a wedged
 // serve, the per-call ceiling — never costs the answers already paid
 // for: a failed batch's partial answers are stored before its error is
-// returned, and a store failure wins over the model's error.
+// returned. A store that fails holds its rows and the run goes on; the
+// held rows are retried with the next batch and once more at the end,
+// and a store failure that outlasts the run wins over the model's error.
 func runResolveBatches(ctx context.Context, run resolveRun, batches [][]candidate, anchors []anchor, stdout, stderr io.Writer) (batchTally, error) {
 	t := batchTally{stored: map[string]int{}}
-	call := modelCaller(run.model)
+	store := newResolutionStore(ctx, run.goldPath, run.model.Name, t.stored, stderr)
+	pass := resolvePass(modelCaller(run.model), anchors, run.sources, run.opts, stdout, stderr)
+	var runErr error
+	stoppedAt := 0
 	for i, b := range batches {
-		got, n, invalid, err := resolveWithLLM(ctx, call, b, anchorsFor(anchors, b),
-			candidateKeyset(b), run.sources, run.opts.maxAttempts, run.opts.noCurrency,
-			run.opts.showPrompt, stdout, stderr)
+		got, n, invalid, err := pass.ask(ctx, b, batchAt{i + 1, len(batches)})
 		t.attempts += n
 		t.invalid += invalid
 		t.valid = append(t.valid, got...)
-		if !run.opts.dryRun && len(got) > 0 {
-			perSource, total, serr := storeResolutions(ctx, run.goldPath, got, run.model.Name, stdout)
-			if serr != nil {
-				return t, serr
-			}
-			for src, c := range perSource {
-				t.stored[src] += c
-			}
-			t.persisted += len(got)
-			t.total = total
+		if !run.opts.dryRun {
+			store.accept(got)
 		}
 		if err != nil {
-			if !run.opts.dryRun {
-				fmt.Fprintf(stdout, "resolve-symbols: stopped in batch %d of %d; the %d resolution(s) answered so far are stored\n",
-					i+1, len(batches), t.persisted)
-			}
-			return t, err
+			runErr, stoppedAt = err, i+1
+			break
 		}
 		fmt.Fprintf(stdout, "resolve-symbols: batch %d/%d: %d of %d resolved\n", i+1, len(batches), len(got), len(b))
+	}
+	if !run.opts.dryRun {
+		if err := flushResolutions(ctx, store, run.goldPath, stdout); err != nil {
+			return t, err
+		}
+	}
+	t.persisted, t.total = store.stored, store.total
+	if runErr != nil {
+		if !run.opts.dryRun {
+			fmt.Fprintf(stdout, "resolve-symbols: stopped in batch %d of %d; the %d resolution(s) answered so far are stored\n",
+				stoppedAt, len(batches), t.persisted)
+		}
+		return t, runErr
 	}
 	return t, nil
 }
@@ -391,49 +397,56 @@ func anchorsFor(anchors []anchor, batch []candidate) []anchor {
 	return out
 }
 
-// storeResolutions re-takes the gold handle and upserts what the model
-// answered for one batch. It returns the rows upserted per source and
-// the table's row count after the upsert.
+// newResolutionStore is the run's write path: each write re-takes the
+// gold handle and upserts what the model answered, adding the rows
+// upserted per source to stored.
 //
-// The re-open is retried on the bounded backoff, because it can lose a
-// race it did not have to run before the handle was released for the
-// length of the model pass: DuckDB refuses a read-write attach while
-// any other handle is open on the file, and a single concurrent read
-// command is enough. These rows have already been paid for.
+// The re-open can lose a race it did not have to run before the handle
+// was released for the length of the model pass: DuckDB refuses a
+// read-write attach while any other handle is open on the file, and a
+// single concurrent read command is enough. These rows have already been
+// paid for, so a failed write holds them (batchStore).
+//
+// The re-open does not stamp binary_versions: this is the same command
+// continuing, and its first open already recorded which binary wrote
+// the file.
+func newResolutionStore(ctx context.Context, goldPath, modelName string, stored map[string]int, warn io.Writer) *batchStore[resolution] {
+	return &batchStore[resolution]{cmd: "resolve-symbols", noun: "resolution", warn: warn,
+		write: func(rows []resolution) (int, error) {
+			wdb, err := gold.ReopenReadWrite(goldPath)
+			if err != nil {
+				return 0, err
+			}
+			defer wdb.Close()
+			perSource, total, err := persistResolutions(ctx, wdb, rows, time.Now().Unix(), modelName)
+			if err != nil {
+				return 0, err
+			}
+			for src, n := range perSource {
+				stored[src] += n
+			}
+			return total, nil
+		}}
+}
+
+// flushResolutions writes what the run still holds, retried on the
+// bounded backoff.
 //
 // When even the retries fail, the rows are printed in the plan format
 // before the error is returned: text on stdout is the last place a
 // paid-for answer can survive a persist that cannot happen, and it is
 // the same shape --dry-run prints, so it can be re-applied.
-//
-// The re-open does not stamp binary_versions: this is the same command
-// continuing, and its first open already recorded which binary wrote
-// the file.
-func storeResolutions(ctx context.Context, goldPath string, valid []resolution, modelName string, stdout io.Writer) (map[string]int, int, error) {
-	var perSource map[string]int
-	var total int
-	err := retryFlush(ctx, func() error {
-		wdb, err := gold.ReopenReadWrite(goldPath)
-		if err != nil {
-			return err
-		}
-		defer wdb.Close()
-		ps, n, err := persistResolutions(ctx, wdb, valid, time.Now().Unix(), modelName)
-		if err != nil {
-			return err
-		}
-		perSource, total = ps, n
+func flushResolutions(ctx context.Context, store *batchStore[resolution], goldPath string, stdout io.Writer) error {
+	err := retryFlush(ctx, store.flush)
+	if err == nil {
 		return nil
-	})
-	if err != nil {
-		printResolutionPlan(stdout,
-			fmt.Sprintf("--- %d resolution(s) the model answered but gold would not accept ---", len(valid)),
-			valid)
-		return nil, 0, errs.Wrap(errs.ExitOpenFailed,
-			fmt.Errorf("resolve-symbols: could not store the resolutions above; re-run once nothing else "+
-				"holds %q open, or carry them into cfg.symbol_resolution.overrides: %w", goldPath, err))
 	}
-	return perSource, total, nil
+	printResolutionPlan(stdout,
+		fmt.Sprintf("--- %d resolution(s) the model answered but gold would not accept ---", len(store.pending)),
+		store.pending)
+	return errs.Wrap(errs.ExitOpenFailed,
+		fmt.Errorf("resolve-symbols: could not store the resolutions above; re-run once nothing else "+
+			"holds %q open, or carry them into cfg.symbol_resolution.overrides: %w", goldPath, err))
 }
 
 // printResolutionPlan renders resolutions one per line under a
@@ -810,69 +823,31 @@ func sortedKeys(m map[string]int) []string {
 	return keys
 }
 
-// ---- retry loop -----------------------------------------------------------
-
-// resolveWithLLM runs the candidate set through the model, by way of
-// call. On each attempt, it parses the response, partitions into
-// valid + invalid, merges valid rows into the running set (deduped by
-// key), and re-prompts with targeted feedback if any invalid rows
-// remain. Returns the union of valid resolutions across all attempts,
-// the number of attempts spent, and the total number of invalid rows
-// rejected.
-func resolveWithLLM(
-	ctx context.Context,
-	call llmCall,
-	candidates []candidate,
-	anchors []anchor,
-	candKeyset map[string]bool,
-	configuredSources map[string]bool,
-	maxAttempts int,
-	noCurrency, showPrompt bool,
-	stdout, stderr io.Writer,
-) (validUnion []resolution, attempts int, totalInvalid int, err error) {
-	if maxAttempts < 1 {
-		maxAttempts = 1
+// resolvePass is the run's conversation with the model. The anchors a
+// batch is shown are its own sources' (anchorsFor), and an answer is
+// about its (silver_source_id, lookup_kind, lookup_value) key.
+func resolvePass(call llmCall, anchors []anchor, configuredSources map[string]bool, opts resolveSymbolsOpts, stdout, stderr io.Writer) modelPass[candidate, resolution] {
+	p := modelPass[candidate, resolution]{
+		system: buildSystemPrompt(),
+		prompt: func(batch []candidate, feedback []invalidRow) string {
+			return buildUserPrompt(batch, anchorsFor(anchors, batch), opts.noCurrency, feedback)
+		},
+		parse: func(body string, batch []candidate) ([]resolution, []invalidRow) {
+			return parseAndValidate(body, candidateKeyset(batch), configuredSources)
+		},
+		key:            func(r resolution) string { return candKey(r.SilverSourceID, r.LookupKind, r.LookupValue) },
+		call:           call,
+		maxAttempts:    opts.maxAttempts,
+		stdout:         stdout,
+		label:          func(_ batchAt, attempt int) string { return fmt.Sprintf("resolve-symbols: attempt %d", attempt) },
+		countResponses: true,
 	}
-	seenValid := map[string]bool{}
-	var lastInvalid []invalidRow
-
-	systemPrompt := buildSystemPrompt()
-	for attempts = 1; attempts <= maxAttempts; attempts++ {
-		userPrompt := buildUserPrompt(candidates, anchors, noCurrency, lastInvalid)
-		if showPrompt {
-			fmt.Fprintf(stderr, "--- LLM prompt (attempt %d) ---\n%s\n--- end prompt ---\n", attempts, userPrompt)
+	if opts.showPrompt {
+		p.showPrompt = func(_ batchAt, attempt int, prompt string) {
+			fmt.Fprintf(stderr, "--- LLM prompt (attempt %d) ---\n%s\n--- end prompt ---\n", attempt, prompt)
 		}
-		raw, err := call(ctx, systemPrompt, userPrompt)
-		if err != nil {
-			return validUnion, attempts, totalInvalid, fmt.Errorf("LLM call (attempt %d): %w", attempts, err)
-		}
-		body := stripThinkingBlocks(raw)
-		fmt.Fprintf(stdout, "resolve-symbols: attempt %d: %d chars of CSV response (after stripping reasoning)\n",
-			attempts, len(body))
-
-		fresh, invalid := parseAndValidate(body, candKeyset, configuredSources)
-		totalInvalid += len(invalid)
-
-		for _, r := range fresh {
-			k := candKey(r.SilverSourceID, r.LookupKind, r.LookupValue)
-			if seenValid[k] {
-				continue
-			}
-			seenValid[k] = true
-			validUnion = append(validUnion, r)
-		}
-
-		if len(invalid) == 0 {
-			return validUnion, attempts, totalInvalid, nil
-		}
-		fmt.Fprintf(stdout, "resolve-symbols: attempt %d: %d invalid row(s) — sample:\n", attempts, len(invalid))
-		printInvalidSample(stdout, invalid)
-		if attempts == maxAttempts {
-			break
-		}
-		lastInvalid = invalid
 	}
-	return validUnion, attempts, totalInvalid, nil
+	return p
 }
 
 // ---- prompt assembly -------------------------------------------------------

@@ -1,0 +1,129 @@
+=== call 1: system ===
+You are a personal-finance data assistant. You are given payer signatures — short upper-cased fragments of bank statement narratives describing money RECEIVED — and you name the payer and pick the kind of income it is from a fixed taxonomy. You output CSV only — no prose, no markdown, no explanations.
+=== call 1: user ===
+Payer signatures below come from bank and brokerage statements, and each one describes money ARRIVING. For each, emit the payer's real-world name and the single best income type from the taxonomy.
+
+Taxonomy — income_detailed values you may emit, with the primary bucket each belongs to and what it covers:
+  INCOME_CHILD_SUPPORT	(INCOME)	Child support refers to court-ordered payments made by a parent to financially support their child’s living expenses
+  INCOME_CONTRACTOR	(INCOME)	Income from freelance or independent contract work.	Note: Also a sole trader's takings and an owner's draw from their own company.
+  INCOME_DIVIDENDS	(INCOME)	Income from dividends
+  INCOME_GIG_ECONOMY	(INCOME)	Money earned by working in the gig economy, for example by driving for Lyft, Uber, etc.
+  INCOME_INTEREST_EARNED	(INCOME)	Income from interest on savings accounts
+  INCOME_LONG_TERM_DISABILITY	(INCOME)	Disability payments, for example from social security.
+  INCOME_MILITARY	(INCOME)	Money earned from veterans benefits. Salary earned from serving in the military (through DFAS) is categorized as salary
+  INCOME_RENTAL	(INCOME)	Rental income includes money earned from payments related to property rentals, lease income, and short-term rental platforms such as airbnb and VRBO.	Note: Not a returned tenancy deposit and not the proceeds of selling the property: skip those.
+  INCOME_RETIREMENT_PENSION	(INCOME)	Payments from the social security administration, private retirement systems, (eg. 401k) pensions, and government retirement programs	Note: Only a pension paid from a pool the holder does not own, such as social security or a defined-benefit plan. A payout from a plan whose balance is the holder's own — a 401(k), an IRA, a pillar 3a or vested-benefits account — is not income: skip it.
+  INCOME_SALARY	(INCOME)	Income from salaries and wages
+  INCOME_TAX_REFUND	(INCOME)	Government tax refund provided to the user
+  INCOME_UNEMPLOYMENT	(INCOME)	Money earned from unemployment benefits
+  INCOME_OTHER	(INCOME)	Other miscellaneous income
+  INCOME_GOVERNMENT_BENEFITS	(INCOME)	State transfers no other value names — child and family allowances, parental-leave pay, housing benefits, social assistance, stimulus payments; not a state pension (INCOME_RETIREMENT_PENSION), an unemployment benefit (INCOME_UNEMPLOYMENT), a disability benefit (INCOME_LONG_TERM_DISABILITY), a veterans benefit (INCOME_MILITARY) or child support an agency pays out or advances (INCOME_CHILD_SUPPORT), and not a tax refund, which is INCOME_TAX_REFUND whichever tax office pays it and in whatever language
+  INCOME_ROYALTIES	(INCOME)	Royalties and creator payouts — book, music, software-licence and patent royalties, and a platform's share of what a creator's work earned
+  INCOME_ENERGY_FEED_IN	(INCOME)	What a grid operator or an energy retailer pays for electricity the household's own generation fed into the grid — a solar feed-in tariff or a net-metering credit paid out; income from an asset the household owns, not a refund of a utility bill, which is a reimbursement
+  INCOME_ALIMONY	(INCOME)	Maintenance received from a former spouse or partner — alimony, spousal or separation maintenance; not child support, which is INCOME_CHILD_SUPPORT whether a court ordered it or the parents agreed it, and not a cash gift or family support given freely
+  INCOME_INSURANCE_PAYOUT	(INCOME)	What an insurer pays out on a policy — a claim settled, a damage or health cost covered, a premium refunded on cancellation; not a recurring disability benefit, which is INCOME_LONG_TERM_DISABILITY whoever pays it. Income rather than a reimbursement because the premium that bought the cover was already counted as spending, and nothing links a payout back to the premiums it answers: netting the payout out would count the outflow and drop the inflow
+  INCOME_STAKING	(INCOME)	Proof-of-stake rewards and validator income earned by committing a crypto holding; kept apart from interest because jurisdictions tax the two differently
+  INCOME_REWARDS	(INCOME)	Card cashback, statement credits, account-opening and referral bonuses, and airdrops — earned on spending or on holding an account, and never netted against the spending itself
+  INCOME_DISTRIBUTIONS	(INCOME)	A fund's cash payout of realised gains on a holding still held, returning no basis; not a company's dividend, and not a private fund returning contributed capital
+
+Emit nothing outside that list. In particular NEVER emit internal_transfer, gift, other, capital_return, loan_proceeds, reimbursement, inheritance, cash_deposit, retirement_transfer, education_transfer, health_transfer, trust_transfer, mortgage_transfer, deposit_transfer: those are assigned elsewhere from information you do not have, and emitting one will be rejected.
+
+Reference examples — payers from this same dataset, already categorised. The INPUT row is the shape you are given; the OUTPUT row is the shape you must reply in.
+
+INPUT rows:
+ORCHARD LANE TRUST
+
+CORRECT OUTPUT rows (3 columns, this is the format your response must use):
+ORCHARD LANE TRUST,Orchard Lane Trust,INCOME_OTHER
+
+Payers to categorise — payer_signature,transaction_count:
+BLUE HARBOUR STUDIO,1
+EXAMPLE LETTING AGENT LTD,1
+
+Raw statement narratives these signatures were folded from — payer_signature,narrative:
+BLUE HARBOUR STUDIO,Blue Harbour Studio
+EXAMPLE LETTING AGENT LTD,Example Letting Agent Ltd
+
+Example transactions — payer_signature,date,amount,currency,account_kind,nearby_signatures:
+BLUE HARBOUR STUDIO,1970-01-11,900.00,USD,cash,EXAMPLE LETTING AGENT LTD
+EXAMPLE LETTING AGENT LTD,1970-01-11,450.00,USD,cash,BLUE HARBOUR STUDIO
+
+Output format:
+- CSV with columns: payer_signature,payer_name,income_detailed
+- No header row. Exactly three columns per row. One row per payer you can confidently name.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- payer_signature must appear verbatim in the list above.
+- payer_name is the payer's real-world name in normal casing ("Blue Harbour Payroll", not "BLUE HARBOUR PAYROLL"). Never repeat the signature unchanged.
+- income_detailed must be one of the taxonomy values listed above.
+
+Skip any signature you cannot confidently place. A skipped row costs nothing; a guessed one is invisible in a report and wrong forever.
+
+Do not include explanatory prose. Output CSV only.
+
+=== call 2: system ===
+You are a personal-finance data assistant. You are given payer signatures — short upper-cased fragments of bank statement narratives describing money RECEIVED — and you name the payer and pick the kind of income it is from a fixed taxonomy. You output CSV only — no prose, no markdown, no explanations.
+=== call 2: user ===
+Payer signatures below come from bank and brokerage statements, and each one describes money ARRIVING. For each, emit the payer's real-world name and the single best income type from the taxonomy.
+
+Taxonomy — income_detailed values you may emit, with the primary bucket each belongs to and what it covers:
+  INCOME_CHILD_SUPPORT	(INCOME)	Child support refers to court-ordered payments made by a parent to financially support their child’s living expenses
+  INCOME_CONTRACTOR	(INCOME)	Income from freelance or independent contract work.	Note: Also a sole trader's takings and an owner's draw from their own company.
+  INCOME_DIVIDENDS	(INCOME)	Income from dividends
+  INCOME_GIG_ECONOMY	(INCOME)	Money earned by working in the gig economy, for example by driving for Lyft, Uber, etc.
+  INCOME_INTEREST_EARNED	(INCOME)	Income from interest on savings accounts
+  INCOME_LONG_TERM_DISABILITY	(INCOME)	Disability payments, for example from social security.
+  INCOME_MILITARY	(INCOME)	Money earned from veterans benefits. Salary earned from serving in the military (through DFAS) is categorized as salary
+  INCOME_RENTAL	(INCOME)	Rental income includes money earned from payments related to property rentals, lease income, and short-term rental platforms such as airbnb and VRBO.	Note: Not a returned tenancy deposit and not the proceeds of selling the property: skip those.
+  INCOME_RETIREMENT_PENSION	(INCOME)	Payments from the social security administration, private retirement systems, (eg. 401k) pensions, and government retirement programs	Note: Only a pension paid from a pool the holder does not own, such as social security or a defined-benefit plan. A payout from a plan whose balance is the holder's own — a 401(k), an IRA, a pillar 3a or vested-benefits account — is not income: skip it.
+  INCOME_SALARY	(INCOME)	Income from salaries and wages
+  INCOME_TAX_REFUND	(INCOME)	Government tax refund provided to the user
+  INCOME_UNEMPLOYMENT	(INCOME)	Money earned from unemployment benefits
+  INCOME_OTHER	(INCOME)	Other miscellaneous income
+  INCOME_GOVERNMENT_BENEFITS	(INCOME)	State transfers no other value names — child and family allowances, parental-leave pay, housing benefits, social assistance, stimulus payments; not a state pension (INCOME_RETIREMENT_PENSION), an unemployment benefit (INCOME_UNEMPLOYMENT), a disability benefit (INCOME_LONG_TERM_DISABILITY), a veterans benefit (INCOME_MILITARY) or child support an agency pays out or advances (INCOME_CHILD_SUPPORT), and not a tax refund, which is INCOME_TAX_REFUND whichever tax office pays it and in whatever language
+  INCOME_ROYALTIES	(INCOME)	Royalties and creator payouts — book, music, software-licence and patent royalties, and a platform's share of what a creator's work earned
+  INCOME_ENERGY_FEED_IN	(INCOME)	What a grid operator or an energy retailer pays for electricity the household's own generation fed into the grid — a solar feed-in tariff or a net-metering credit paid out; income from an asset the household owns, not a refund of a utility bill, which is a reimbursement
+  INCOME_ALIMONY	(INCOME)	Maintenance received from a former spouse or partner — alimony, spousal or separation maintenance; not child support, which is INCOME_CHILD_SUPPORT whether a court ordered it or the parents agreed it, and not a cash gift or family support given freely
+  INCOME_INSURANCE_PAYOUT	(INCOME)	What an insurer pays out on a policy — a claim settled, a damage or health cost covered, a premium refunded on cancellation; not a recurring disability benefit, which is INCOME_LONG_TERM_DISABILITY whoever pays it. Income rather than a reimbursement because the premium that bought the cover was already counted as spending, and nothing links a payout back to the premiums it answers: netting the payout out would count the outflow and drop the inflow
+  INCOME_STAKING	(INCOME)	Proof-of-stake rewards and validator income earned by committing a crypto holding; kept apart from interest because jurisdictions tax the two differently
+  INCOME_REWARDS	(INCOME)	Card cashback, statement credits, account-opening and referral bonuses, and airdrops — earned on spending or on holding an account, and never netted against the spending itself
+  INCOME_DISTRIBUTIONS	(INCOME)	A fund's cash payout of realised gains on a holding still held, returning no basis; not a company's dividend, and not a private fund returning contributed capital
+
+Emit nothing outside that list. In particular NEVER emit internal_transfer, gift, other, capital_return, loan_proceeds, reimbursement, inheritance, cash_deposit, retirement_transfer, education_transfer, health_transfer, trust_transfer, mortgage_transfer, deposit_transfer: those are assigned elsewhere from information you do not have, and emitting one will be rejected.
+
+Reference examples — payers from this same dataset, already categorised. The INPUT row is the shape you are given; the OUTPUT row is the shape you must reply in.
+
+INPUT rows:
+ORCHARD LANE TRUST
+
+CORRECT OUTPUT rows (3 columns, this is the format your response must use):
+ORCHARD LANE TRUST,Orchard Lane Trust,INCOME_OTHER
+
+Payers to categorise — payer_signature,transaction_count:
+BLUE HARBOUR STUDIO,1
+EXAMPLE LETTING AGENT LTD,1
+
+Raw statement narratives these signatures were folded from — payer_signature,narrative:
+BLUE HARBOUR STUDIO,Blue Harbour Studio
+EXAMPLE LETTING AGENT LTD,Example Letting Agent Ltd
+
+Example transactions — payer_signature,date,amount,currency,account_kind,nearby_signatures:
+BLUE HARBOUR STUDIO,1970-01-11,900.00,USD,cash,EXAMPLE LETTING AGENT LTD
+EXAMPLE LETTING AGENT LTD,1970-01-11,450.00,USD,cash,BLUE HARBOUR STUDIO
+
+Output format:
+- CSV with columns: payer_signature,payer_name,income_detailed
+- No header row. Exactly three columns per row. One row per payer you can confidently name.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- payer_signature must appear verbatim in the list above.
+- payer_name is the payer's real-world name in normal casing ("Blue Harbour Payroll", not "BLUE HARBOUR PAYROLL"). Never repeat the signature unchanged.
+- income_detailed must be one of the taxonomy values listed above.
+
+Skip any signature you cannot confidently place. A skipped row costs nothing; a guessed one is invisible in a report and wrong forever.
+
+Do not include explanatory prose. Output CSV only.
+
+Your previous response contained the following rows that I rejected:
+  [EXAMPLE LETTING AGENT LTD example letting agent ltd NOT_A_CATEGORY] — reason: income_detailed "NOT_A_CATEGORY" is not a value of the taxonomy
+
+Re-emit your full response with those invalid rows dropped or corrected. Keep the rows that WERE valid; do not add new invalid ones. Output CSV only.
+

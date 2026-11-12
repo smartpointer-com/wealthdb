@@ -1,0 +1,522 @@
+=== call 1: system ===
+You are a personal-finance data assistant. You are given merchant signatures — short upper-cased fragments of card and bank statement narratives — and you name the merchant and pick its spending category from a fixed taxonomy. You output CSV only — no prose, no markdown, no explanations.
+=== call 1: user ===
+Merchant signatures below come from card and bank statements. For each one, emit the merchant's real-world name and the single best category from the taxonomy.
+
+Taxonomy — spend_detailed values you may emit, with the primary bucket each belongs to and what it covers:
+  BANK_FEES_ATM_FEES	(BANK_FEES)	Fees incurred for out-of-network ATMs
+  BANK_FEES_INSUFFICIENT_FUNDS	(BANK_FEES)	Fees relating to insufficient funds
+  BANK_FEES_INTEREST_CHARGE	(BANK_FEES)	Fees incurred for interest on purchases (this excludes cash advance interest fee)
+  BANK_FEES_FOREIGN_TRANSACTION_FEES	(BANK_FEES)	Fees incurred on non-domestic transactions
+  BANK_FEES_OVERDRAFT_FEES	(BANK_FEES)	Penalty payment for overdrafts
+  BANK_FEES_LATE_FEES	(BANK_FEES)	Penalty payment for late payment
+  BANK_FEES_CASH_ADVANCE	(BANK_FEES)	Fees incurred for withdrawing cash using a credit card, including transaction fees and interest fees.
+  BANK_FEES_OTHER_BANK_FEES	(BANK_FEES)	Other miscellaneous bank fees, including annual fee
+  ENTERTAINMENT_CASINOS_AND_GAMBLING	(ENTERTAINMENT)	Gambling, casinos, and sports betting
+  ENTERTAINMENT_MUSIC_AND_AUDIO	(ENTERTAINMENT)	Digital and in-person music purchases, including music streaming services
+  ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS	(ENTERTAINMENT)	Purchases made at sporting events, music venues, concerts, museums, and amusement parks
+  ENTERTAINMENT_TV_AND_MOVIES	(ENTERTAINMENT)	In home movie streaming services and movie theaters
+  ENTERTAINMENT_VIDEO_GAMES	(ENTERTAINMENT)	Digital and in-person video game purchases
+  ENTERTAINMENT_OTHER_ENTERTAINMENT	(ENTERTAINMENT)	Other miscellaneous entertainment purchases, including night life and adult entertainment
+  FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR	(FOOD_AND_DRINK)	Beer, wine, and liquor stores.
+  FOOD_AND_DRINK_COFFEE	(FOOD_AND_DRINK)	Purchases at coffee shops or cafes
+  FOOD_AND_DRINK_FAST_FOOD	(FOOD_AND_DRINK)	Dining expenses for fast food chains
+  FOOD_AND_DRINK_GROCERIES	(FOOD_AND_DRINK)	Purchases for fresh produce and groceries, including farmers' markets
+  FOOD_AND_DRINK_RESTAURANT	(FOOD_AND_DRINK)	Dining expenses for restaurants, bars, gastropubs, and diners
+  FOOD_AND_DRINK_VENDING_MACHINES	(FOOD_AND_DRINK)	Purchases made at vending machine operators
+  FOOD_AND_DRINK_OTHER_FOOD_AND_DRINK	(FOOD_AND_DRINK)	Other miscellaneous food and drink, including desserts, juice bars, and delis
+  GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS	(GENERAL_MERCHANDISE)	Books, magazines, and news
+  GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES	(GENERAL_MERCHANDISE)	Apparel, shoes, and jewelry
+  GENERAL_MERCHANDISE_CONVENIENCE_STORES	(GENERAL_MERCHANDISE)	Purchases at convenience stores
+  GENERAL_MERCHANDISE_DEPARTMENT_STORES	(GENERAL_MERCHANDISE)	Retail stores with wide ranges of consumer goods, typically specializing in clothing and home goods
+  GENERAL_MERCHANDISE_DISCOUNT_STORES	(GENERAL_MERCHANDISE)	Stores selling goods at a discounted price
+  GENERAL_MERCHANDISE_ELECTRONICS	(GENERAL_MERCHANDISE)	Electronics stores and websites
+  GENERAL_MERCHANDISE_GIFTS_AND_NOVELTIES	(GENERAL_MERCHANDISE)	Photo, gifts, cards, and floral stores
+  GENERAL_MERCHANDISE_OFFICE_SUPPLIES	(GENERAL_MERCHANDISE)	Stores that specialize in office goods
+  GENERAL_MERCHANDISE_ONLINE_MARKETPLACES	(GENERAL_MERCHANDISE)	Multi-purpose e-commerce platforms such as Etsy, Ebay and Amazon
+  GENERAL_MERCHANDISE_PET_SUPPLIES	(GENERAL_MERCHANDISE)	Pet supplies and pet food
+  GENERAL_MERCHANDISE_SPORTING_GOODS	(GENERAL_MERCHANDISE)	Sporting goods, camping gear, and outdoor equipment
+  GENERAL_MERCHANDISE_SUPERSTORES	(GENERAL_MERCHANDISE)	Superstores such as Target and Walmart, selling both groceries and general merchandise
+  GENERAL_MERCHANDISE_TOBACCO_AND_VAPE	(GENERAL_MERCHANDISE)	Purchases for tobacco and vaping products
+  GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE	(GENERAL_MERCHANDISE)	Other miscellaneous merchandise, including toys, hobbies, and arts and crafts
+  HOME_IMPROVEMENT_FURNITURE	(HOME_IMPROVEMENT)	Furniture, bedding, and home accessories
+  HOME_IMPROVEMENT_HARDWARE	(HOME_IMPROVEMENT)	Building materials, hardware stores, paint, and wallpaper
+  HOME_IMPROVEMENT_REPAIR_AND_MAINTENANCE	(HOME_IMPROVEMENT)	Plumbing, lighting, gardening, and roofing
+  HOME_IMPROVEMENT_SECURITY	(HOME_IMPROVEMENT)	Home security system purchases
+  HOME_IMPROVEMENT_OTHER_HOME_IMPROVEMENT	(HOME_IMPROVEMENT)	Other miscellaneous home purchases, including pool installation and pest control
+  MEDICAL_DENTAL_CARE	(MEDICAL)	Dentists and general dental care
+  MEDICAL_EYE_CARE	(MEDICAL)	Optometrists, contacts, and glasses stores
+  MEDICAL_NURSING_CARE	(MEDICAL)	Nursing care and facilities
+  MEDICAL_PHARMACIES_AND_SUPPLEMENTS	(MEDICAL)	Pharmacies and nutrition shops
+  MEDICAL_PRIMARY_CARE	(MEDICAL)	Doctors and physicians
+  MEDICAL_VETERINARY_SERVICES	(MEDICAL)	Prevention and care procedures for animals
+  MEDICAL_OTHER_MEDICAL	(MEDICAL)	Other miscellaneous medical, including blood work, hospitals, and ambulances
+  PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS	(PERSONAL_CARE)	Gyms, fitness centers, and workout classes
+  PERSONAL_CARE_HAIR_AND_BEAUTY	(PERSONAL_CARE)	Manicures, haircuts, waxing, spa/massages, and bath and beauty products
+  PERSONAL_CARE_LAUNDRY_AND_DRY_CLEANING	(PERSONAL_CARE)	Wash and fold, and dry cleaning expenses
+  PERSONAL_CARE_OTHER_PERSONAL_CARE	(PERSONAL_CARE)	Other miscellaneous personal care, including mental health apps and services
+  GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING	(GENERAL_SERVICES)	Financial planning, tax, and accounting services.
+  GENERAL_SERVICES_AUTOMOTIVE	(GENERAL_SERVICES)	Oil changes, car washes, repairs, and towing
+  GENERAL_SERVICES_CHILDCARE	(GENERAL_SERVICES)	Babysitters and daycare
+  GENERAL_SERVICES_CONSULTING_AND_LEGAL	(GENERAL_SERVICES)	Consulting and legal services
+  GENERAL_SERVICES_EDUCATION	(GENERAL_SERVICES)	Elementary, high school, professional schools, and college tuition
+  GENERAL_SERVICES_INSURANCE	(GENERAL_SERVICES)	Insurance for auto, home, and healthcare
+  GENERAL_SERVICES_POSTAGE_AND_SHIPPING	(GENERAL_SERVICES)	Mail, packaging, and shipping services
+  GENERAL_SERVICES_STORAGE	(GENERAL_SERVICES)	Storage services and facilities
+  GENERAL_SERVICES_OTHER_GENERAL_SERVICES	(GENERAL_SERVICES)	Other miscellaneous services, including advertising and cloud storage
+  GOVERNMENT_AND_NON_PROFIT_DONATIONS	(GOVERNMENT_AND_NON_PROFIT)	Charitable, political, and religious donations
+  GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES	(GOVERNMENT_AND_NON_PROFIT)	Government departments and agencies, such as driving licenses, and passport renewal
+  GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT	(GOVERNMENT_AND_NON_PROFIT)	Tax payments, including income and property taxes
+  GOVERNMENT_AND_NON_PROFIT_OTHER_GOVERNMENT_AND_NON_PROFIT	(GOVERNMENT_AND_NON_PROFIT)	Other miscellaneous government and non-profit agencies
+  TRANSPORTATION_BIKES_AND_SCOOTERS	(TRANSPORTATION)	Bike and scooter rentals
+  TRANSPORTATION_GAS	(TRANSPORTATION)	Purchases at a gas station
+  TRANSPORTATION_PARKING	(TRANSPORTATION)	Parking fees and expenses
+  TRANSPORTATION_PUBLIC_TRANSIT	(TRANSPORTATION)	Public transportation, including rail and train, buses, and metro
+  TRANSPORTATION_TAXIS_AND_RIDE_SHARES	(TRANSPORTATION)	Taxi and ride share services
+  TRANSPORTATION_TOLLS	(TRANSPORTATION)	Toll expenses
+  TRANSPORTATION_OTHER_TRANSPORTATION	(TRANSPORTATION)	Other miscellaneous transportation expenses
+  TRAVEL_FLIGHTS	(TRAVEL)	Airline expenses
+  TRAVEL_LODGING	(TRAVEL)	Hotels, motels, and hosted accommodation such as Airbnb
+  TRAVEL_RENTAL_CARS	(TRAVEL)	Rental cars, charter buses, and trucks
+  TRAVEL_OTHER_TRAVEL	(TRAVEL)	Other miscellaneous travel expenses
+  RENT_AND_UTILITIES_GAS_AND_ELECTRICITY	(RENT_AND_UTILITIES)	Gas and electricity bills
+  RENT_AND_UTILITIES_INTERNET_AND_CABLE	(RENT_AND_UTILITIES)	Internet and cable bills
+  RENT_AND_UTILITIES_RENT	(RENT_AND_UTILITIES)	Rent payment
+  RENT_AND_UTILITIES_SEWAGE_AND_WASTE_MANAGEMENT	(RENT_AND_UTILITIES)	Sewage and garbage disposal bills
+  RENT_AND_UTILITIES_TELEPHONE	(RENT_AND_UTILITIES)	Telephone bills
+  RENT_AND_UTILITIES_WATER	(RENT_AND_UTILITIES)	Water bills
+  RENT_AND_UTILITIES_OTHER_UTILITIES	(RENT_AND_UTILITIES)	Other miscellaneous utility bills
+  GENERAL_SERVICES_DIGITAL_SERVICES	(GENERAL_SERVICES)	Software and online subscriptions — SaaS, cloud storage and hosting, VPNs, password managers, AI assistants; not the internet connection itself and not a physical device
+  BANK_FEES_INVESTMENT_FEES	(BANK_FEES)	Fees for holding or managing investments — advisory and management fees, custody and platform fees, and security-level pass-throughs such as ADR depositary charges; not a fee for banking itself
+  GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX	(GOVERNMENT_AND_NON_PROFIT)	Tax withheld at source from investment income, such as foreign dividend or non-resident withholding; deducted before the money is received rather than paid on assessment
+
+Emit nothing outside that list. In particular NEVER emit internal_transfer, cash_withdrawal, card_spend, gift, investment, other, debt_repayment, retirement_transfer, education_transfer, health_transfer, trust_transfer, mortgage_transfer, deposit_transfer: those are assigned elsewhere from information you do not have, and emitting one will be rejected.
+
+Reference examples — merchants from this same dataset, already categorised. The INPUT row is the shape you are given; the OUTPUT row is the shape you must reply in.
+
+INPUT rows:
+NORTHWIND HARDWARE
+
+CORRECT OUTPUT rows (3 columns, this is the format your response must use):
+NORTHWIND HARDWARE,Northwind Hardware,HOME_IMPROVEMENT_HARDWARE
+
+Merchants to categorise — merchant_signature,transaction_count:
+ASHGROVE BAKERY,1
+CEDAR POINT PHARMACY,1
+
+Raw statement narratives these signatures were folded from — merchant_signature,narrative:
+ASHGROVE BAKERY,Ashgrove Bakery
+CEDAR POINT PHARMACY,Cedar Point Pharmacy
+
+Example transactions — merchant_signature,date,amount,currency,account_kind,nearby_signatures:
+ASHGROVE BAKERY,1970-01-11,-8.40,USD,card,CEDAR POINT PHARMACY | DUNMORE BOOKS | NORTHWIND HARDWARE
+CEDAR POINT PHARMACY,1970-01-11,-23.10,USD,card,ASHGROVE BAKERY | DUNMORE BOOKS | NORTHWIND HARDWARE
+
+Output format:
+- CSV with columns: merchant_signature,merchant_name,spend_detailed
+- No header row. Exactly three columns per row. One row per merchant you can confidently name.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- merchant_signature must appear verbatim in the list above.
+- merchant_name is the merchant's real-world name in normal casing ("Corner Market", not "CORNER MARKET"). Never repeat the signature unchanged.
+- spend_detailed must be one of the taxonomy values listed above.
+
+Skip any signature you cannot confidently place. A skipped row costs nothing; a guessed one is invisible in a report and wrong forever.
+
+Do not include explanatory prose. Output CSV only.
+
+=== call 2: system ===
+You are a personal-finance data assistant. You are given merchant signatures — short upper-cased fragments of card and bank statement narratives — and you name the merchant and pick its spending category from a fixed taxonomy. You output CSV only — no prose, no markdown, no explanations.
+=== call 2: user ===
+Merchant signatures below come from card and bank statements. For each one, emit the merchant's real-world name and the single best category from the taxonomy.
+
+Taxonomy — spend_detailed values you may emit, with the primary bucket each belongs to and what it covers:
+  BANK_FEES_ATM_FEES	(BANK_FEES)	Fees incurred for out-of-network ATMs
+  BANK_FEES_INSUFFICIENT_FUNDS	(BANK_FEES)	Fees relating to insufficient funds
+  BANK_FEES_INTEREST_CHARGE	(BANK_FEES)	Fees incurred for interest on purchases (this excludes cash advance interest fee)
+  BANK_FEES_FOREIGN_TRANSACTION_FEES	(BANK_FEES)	Fees incurred on non-domestic transactions
+  BANK_FEES_OVERDRAFT_FEES	(BANK_FEES)	Penalty payment for overdrafts
+  BANK_FEES_LATE_FEES	(BANK_FEES)	Penalty payment for late payment
+  BANK_FEES_CASH_ADVANCE	(BANK_FEES)	Fees incurred for withdrawing cash using a credit card, including transaction fees and interest fees.
+  BANK_FEES_OTHER_BANK_FEES	(BANK_FEES)	Other miscellaneous bank fees, including annual fee
+  ENTERTAINMENT_CASINOS_AND_GAMBLING	(ENTERTAINMENT)	Gambling, casinos, and sports betting
+  ENTERTAINMENT_MUSIC_AND_AUDIO	(ENTERTAINMENT)	Digital and in-person music purchases, including music streaming services
+  ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS	(ENTERTAINMENT)	Purchases made at sporting events, music venues, concerts, museums, and amusement parks
+  ENTERTAINMENT_TV_AND_MOVIES	(ENTERTAINMENT)	In home movie streaming services and movie theaters
+  ENTERTAINMENT_VIDEO_GAMES	(ENTERTAINMENT)	Digital and in-person video game purchases
+  ENTERTAINMENT_OTHER_ENTERTAINMENT	(ENTERTAINMENT)	Other miscellaneous entertainment purchases, including night life and adult entertainment
+  FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR	(FOOD_AND_DRINK)	Beer, wine, and liquor stores.
+  FOOD_AND_DRINK_COFFEE	(FOOD_AND_DRINK)	Purchases at coffee shops or cafes
+  FOOD_AND_DRINK_FAST_FOOD	(FOOD_AND_DRINK)	Dining expenses for fast food chains
+  FOOD_AND_DRINK_GROCERIES	(FOOD_AND_DRINK)	Purchases for fresh produce and groceries, including farmers' markets
+  FOOD_AND_DRINK_RESTAURANT	(FOOD_AND_DRINK)	Dining expenses for restaurants, bars, gastropubs, and diners
+  FOOD_AND_DRINK_VENDING_MACHINES	(FOOD_AND_DRINK)	Purchases made at vending machine operators
+  FOOD_AND_DRINK_OTHER_FOOD_AND_DRINK	(FOOD_AND_DRINK)	Other miscellaneous food and drink, including desserts, juice bars, and delis
+  GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS	(GENERAL_MERCHANDISE)	Books, magazines, and news
+  GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES	(GENERAL_MERCHANDISE)	Apparel, shoes, and jewelry
+  GENERAL_MERCHANDISE_CONVENIENCE_STORES	(GENERAL_MERCHANDISE)	Purchases at convenience stores
+  GENERAL_MERCHANDISE_DEPARTMENT_STORES	(GENERAL_MERCHANDISE)	Retail stores with wide ranges of consumer goods, typically specializing in clothing and home goods
+  GENERAL_MERCHANDISE_DISCOUNT_STORES	(GENERAL_MERCHANDISE)	Stores selling goods at a discounted price
+  GENERAL_MERCHANDISE_ELECTRONICS	(GENERAL_MERCHANDISE)	Electronics stores and websites
+  GENERAL_MERCHANDISE_GIFTS_AND_NOVELTIES	(GENERAL_MERCHANDISE)	Photo, gifts, cards, and floral stores
+  GENERAL_MERCHANDISE_OFFICE_SUPPLIES	(GENERAL_MERCHANDISE)	Stores that specialize in office goods
+  GENERAL_MERCHANDISE_ONLINE_MARKETPLACES	(GENERAL_MERCHANDISE)	Multi-purpose e-commerce platforms such as Etsy, Ebay and Amazon
+  GENERAL_MERCHANDISE_PET_SUPPLIES	(GENERAL_MERCHANDISE)	Pet supplies and pet food
+  GENERAL_MERCHANDISE_SPORTING_GOODS	(GENERAL_MERCHANDISE)	Sporting goods, camping gear, and outdoor equipment
+  GENERAL_MERCHANDISE_SUPERSTORES	(GENERAL_MERCHANDISE)	Superstores such as Target and Walmart, selling both groceries and general merchandise
+  GENERAL_MERCHANDISE_TOBACCO_AND_VAPE	(GENERAL_MERCHANDISE)	Purchases for tobacco and vaping products
+  GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE	(GENERAL_MERCHANDISE)	Other miscellaneous merchandise, including toys, hobbies, and arts and crafts
+  HOME_IMPROVEMENT_FURNITURE	(HOME_IMPROVEMENT)	Furniture, bedding, and home accessories
+  HOME_IMPROVEMENT_HARDWARE	(HOME_IMPROVEMENT)	Building materials, hardware stores, paint, and wallpaper
+  HOME_IMPROVEMENT_REPAIR_AND_MAINTENANCE	(HOME_IMPROVEMENT)	Plumbing, lighting, gardening, and roofing
+  HOME_IMPROVEMENT_SECURITY	(HOME_IMPROVEMENT)	Home security system purchases
+  HOME_IMPROVEMENT_OTHER_HOME_IMPROVEMENT	(HOME_IMPROVEMENT)	Other miscellaneous home purchases, including pool installation and pest control
+  MEDICAL_DENTAL_CARE	(MEDICAL)	Dentists and general dental care
+  MEDICAL_EYE_CARE	(MEDICAL)	Optometrists, contacts, and glasses stores
+  MEDICAL_NURSING_CARE	(MEDICAL)	Nursing care and facilities
+  MEDICAL_PHARMACIES_AND_SUPPLEMENTS	(MEDICAL)	Pharmacies and nutrition shops
+  MEDICAL_PRIMARY_CARE	(MEDICAL)	Doctors and physicians
+  MEDICAL_VETERINARY_SERVICES	(MEDICAL)	Prevention and care procedures for animals
+  MEDICAL_OTHER_MEDICAL	(MEDICAL)	Other miscellaneous medical, including blood work, hospitals, and ambulances
+  PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS	(PERSONAL_CARE)	Gyms, fitness centers, and workout classes
+  PERSONAL_CARE_HAIR_AND_BEAUTY	(PERSONAL_CARE)	Manicures, haircuts, waxing, spa/massages, and bath and beauty products
+  PERSONAL_CARE_LAUNDRY_AND_DRY_CLEANING	(PERSONAL_CARE)	Wash and fold, and dry cleaning expenses
+  PERSONAL_CARE_OTHER_PERSONAL_CARE	(PERSONAL_CARE)	Other miscellaneous personal care, including mental health apps and services
+  GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING	(GENERAL_SERVICES)	Financial planning, tax, and accounting services.
+  GENERAL_SERVICES_AUTOMOTIVE	(GENERAL_SERVICES)	Oil changes, car washes, repairs, and towing
+  GENERAL_SERVICES_CHILDCARE	(GENERAL_SERVICES)	Babysitters and daycare
+  GENERAL_SERVICES_CONSULTING_AND_LEGAL	(GENERAL_SERVICES)	Consulting and legal services
+  GENERAL_SERVICES_EDUCATION	(GENERAL_SERVICES)	Elementary, high school, professional schools, and college tuition
+  GENERAL_SERVICES_INSURANCE	(GENERAL_SERVICES)	Insurance for auto, home, and healthcare
+  GENERAL_SERVICES_POSTAGE_AND_SHIPPING	(GENERAL_SERVICES)	Mail, packaging, and shipping services
+  GENERAL_SERVICES_STORAGE	(GENERAL_SERVICES)	Storage services and facilities
+  GENERAL_SERVICES_OTHER_GENERAL_SERVICES	(GENERAL_SERVICES)	Other miscellaneous services, including advertising and cloud storage
+  GOVERNMENT_AND_NON_PROFIT_DONATIONS	(GOVERNMENT_AND_NON_PROFIT)	Charitable, political, and religious donations
+  GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES	(GOVERNMENT_AND_NON_PROFIT)	Government departments and agencies, such as driving licenses, and passport renewal
+  GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT	(GOVERNMENT_AND_NON_PROFIT)	Tax payments, including income and property taxes
+  GOVERNMENT_AND_NON_PROFIT_OTHER_GOVERNMENT_AND_NON_PROFIT	(GOVERNMENT_AND_NON_PROFIT)	Other miscellaneous government and non-profit agencies
+  TRANSPORTATION_BIKES_AND_SCOOTERS	(TRANSPORTATION)	Bike and scooter rentals
+  TRANSPORTATION_GAS	(TRANSPORTATION)	Purchases at a gas station
+  TRANSPORTATION_PARKING	(TRANSPORTATION)	Parking fees and expenses
+  TRANSPORTATION_PUBLIC_TRANSIT	(TRANSPORTATION)	Public transportation, including rail and train, buses, and metro
+  TRANSPORTATION_TAXIS_AND_RIDE_SHARES	(TRANSPORTATION)	Taxi and ride share services
+  TRANSPORTATION_TOLLS	(TRANSPORTATION)	Toll expenses
+  TRANSPORTATION_OTHER_TRANSPORTATION	(TRANSPORTATION)	Other miscellaneous transportation expenses
+  TRAVEL_FLIGHTS	(TRAVEL)	Airline expenses
+  TRAVEL_LODGING	(TRAVEL)	Hotels, motels, and hosted accommodation such as Airbnb
+  TRAVEL_RENTAL_CARS	(TRAVEL)	Rental cars, charter buses, and trucks
+  TRAVEL_OTHER_TRAVEL	(TRAVEL)	Other miscellaneous travel expenses
+  RENT_AND_UTILITIES_GAS_AND_ELECTRICITY	(RENT_AND_UTILITIES)	Gas and electricity bills
+  RENT_AND_UTILITIES_INTERNET_AND_CABLE	(RENT_AND_UTILITIES)	Internet and cable bills
+  RENT_AND_UTILITIES_RENT	(RENT_AND_UTILITIES)	Rent payment
+  RENT_AND_UTILITIES_SEWAGE_AND_WASTE_MANAGEMENT	(RENT_AND_UTILITIES)	Sewage and garbage disposal bills
+  RENT_AND_UTILITIES_TELEPHONE	(RENT_AND_UTILITIES)	Telephone bills
+  RENT_AND_UTILITIES_WATER	(RENT_AND_UTILITIES)	Water bills
+  RENT_AND_UTILITIES_OTHER_UTILITIES	(RENT_AND_UTILITIES)	Other miscellaneous utility bills
+  GENERAL_SERVICES_DIGITAL_SERVICES	(GENERAL_SERVICES)	Software and online subscriptions — SaaS, cloud storage and hosting, VPNs, password managers, AI assistants; not the internet connection itself and not a physical device
+  BANK_FEES_INVESTMENT_FEES	(BANK_FEES)	Fees for holding or managing investments — advisory and management fees, custody and platform fees, and security-level pass-throughs such as ADR depositary charges; not a fee for banking itself
+  GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX	(GOVERNMENT_AND_NON_PROFIT)	Tax withheld at source from investment income, such as foreign dividend or non-resident withholding; deducted before the money is received rather than paid on assessment
+
+Emit nothing outside that list. In particular NEVER emit internal_transfer, cash_withdrawal, card_spend, gift, investment, other, debt_repayment, retirement_transfer, education_transfer, health_transfer, trust_transfer, mortgage_transfer, deposit_transfer: those are assigned elsewhere from information you do not have, and emitting one will be rejected.
+
+Reference examples — merchants from this same dataset, already categorised. The INPUT row is the shape you are given; the OUTPUT row is the shape you must reply in.
+
+INPUT rows:
+NORTHWIND HARDWARE
+
+CORRECT OUTPUT rows (3 columns, this is the format your response must use):
+NORTHWIND HARDWARE,Northwind Hardware,HOME_IMPROVEMENT_HARDWARE
+
+Merchants to categorise — merchant_signature,transaction_count:
+ASHGROVE BAKERY,1
+CEDAR POINT PHARMACY,1
+
+Raw statement narratives these signatures were folded from — merchant_signature,narrative:
+ASHGROVE BAKERY,Ashgrove Bakery
+CEDAR POINT PHARMACY,Cedar Point Pharmacy
+
+Example transactions — merchant_signature,date,amount,currency,account_kind,nearby_signatures:
+ASHGROVE BAKERY,1970-01-11,-8.40,USD,card,CEDAR POINT PHARMACY | DUNMORE BOOKS | NORTHWIND HARDWARE
+CEDAR POINT PHARMACY,1970-01-11,-23.10,USD,card,ASHGROVE BAKERY | DUNMORE BOOKS | NORTHWIND HARDWARE
+
+Output format:
+- CSV with columns: merchant_signature,merchant_name,spend_detailed
+- No header row. Exactly three columns per row. One row per merchant you can confidently name.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- merchant_signature must appear verbatim in the list above.
+- merchant_name is the merchant's real-world name in normal casing ("Corner Market", not "CORNER MARKET"). Never repeat the signature unchanged.
+- spend_detailed must be one of the taxonomy values listed above.
+
+Skip any signature you cannot confidently place. A skipped row costs nothing; a guessed one is invisible in a report and wrong forever.
+
+Do not include explanatory prose. Output CSV only.
+
+Your previous response contained the following rows that I rejected:
+  [CEDAR POINT PHARMACY cedar point pharmacy NOT_A_CATEGORY] — reason: spend_detailed "NOT_A_CATEGORY" is not a value of the taxonomy
+
+Re-emit your full response with those invalid rows dropped or corrected. Keep the rows that WERE valid; do not add new invalid ones. Output CSV only.
+
+=== call 3: system ===
+You are a personal-finance data assistant. You are given merchant signatures — short upper-cased fragments of card and bank statement narratives — and you name the merchant and pick its spending category from a fixed taxonomy. You output CSV only — no prose, no markdown, no explanations.
+=== call 3: user ===
+Merchant signatures below come from card and bank statements. For each one, emit the merchant's real-world name and the single best category from the taxonomy.
+
+Taxonomy — spend_detailed values you may emit, with the primary bucket each belongs to and what it covers:
+  BANK_FEES_ATM_FEES	(BANK_FEES)	Fees incurred for out-of-network ATMs
+  BANK_FEES_INSUFFICIENT_FUNDS	(BANK_FEES)	Fees relating to insufficient funds
+  BANK_FEES_INTEREST_CHARGE	(BANK_FEES)	Fees incurred for interest on purchases (this excludes cash advance interest fee)
+  BANK_FEES_FOREIGN_TRANSACTION_FEES	(BANK_FEES)	Fees incurred on non-domestic transactions
+  BANK_FEES_OVERDRAFT_FEES	(BANK_FEES)	Penalty payment for overdrafts
+  BANK_FEES_LATE_FEES	(BANK_FEES)	Penalty payment for late payment
+  BANK_FEES_CASH_ADVANCE	(BANK_FEES)	Fees incurred for withdrawing cash using a credit card, including transaction fees and interest fees.
+  BANK_FEES_OTHER_BANK_FEES	(BANK_FEES)	Other miscellaneous bank fees, including annual fee
+  ENTERTAINMENT_CASINOS_AND_GAMBLING	(ENTERTAINMENT)	Gambling, casinos, and sports betting
+  ENTERTAINMENT_MUSIC_AND_AUDIO	(ENTERTAINMENT)	Digital and in-person music purchases, including music streaming services
+  ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS	(ENTERTAINMENT)	Purchases made at sporting events, music venues, concerts, museums, and amusement parks
+  ENTERTAINMENT_TV_AND_MOVIES	(ENTERTAINMENT)	In home movie streaming services and movie theaters
+  ENTERTAINMENT_VIDEO_GAMES	(ENTERTAINMENT)	Digital and in-person video game purchases
+  ENTERTAINMENT_OTHER_ENTERTAINMENT	(ENTERTAINMENT)	Other miscellaneous entertainment purchases, including night life and adult entertainment
+  FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR	(FOOD_AND_DRINK)	Beer, wine, and liquor stores.
+  FOOD_AND_DRINK_COFFEE	(FOOD_AND_DRINK)	Purchases at coffee shops or cafes
+  FOOD_AND_DRINK_FAST_FOOD	(FOOD_AND_DRINK)	Dining expenses for fast food chains
+  FOOD_AND_DRINK_GROCERIES	(FOOD_AND_DRINK)	Purchases for fresh produce and groceries, including farmers' markets
+  FOOD_AND_DRINK_RESTAURANT	(FOOD_AND_DRINK)	Dining expenses for restaurants, bars, gastropubs, and diners
+  FOOD_AND_DRINK_VENDING_MACHINES	(FOOD_AND_DRINK)	Purchases made at vending machine operators
+  FOOD_AND_DRINK_OTHER_FOOD_AND_DRINK	(FOOD_AND_DRINK)	Other miscellaneous food and drink, including desserts, juice bars, and delis
+  GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS	(GENERAL_MERCHANDISE)	Books, magazines, and news
+  GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES	(GENERAL_MERCHANDISE)	Apparel, shoes, and jewelry
+  GENERAL_MERCHANDISE_CONVENIENCE_STORES	(GENERAL_MERCHANDISE)	Purchases at convenience stores
+  GENERAL_MERCHANDISE_DEPARTMENT_STORES	(GENERAL_MERCHANDISE)	Retail stores with wide ranges of consumer goods, typically specializing in clothing and home goods
+  GENERAL_MERCHANDISE_DISCOUNT_STORES	(GENERAL_MERCHANDISE)	Stores selling goods at a discounted price
+  GENERAL_MERCHANDISE_ELECTRONICS	(GENERAL_MERCHANDISE)	Electronics stores and websites
+  GENERAL_MERCHANDISE_GIFTS_AND_NOVELTIES	(GENERAL_MERCHANDISE)	Photo, gifts, cards, and floral stores
+  GENERAL_MERCHANDISE_OFFICE_SUPPLIES	(GENERAL_MERCHANDISE)	Stores that specialize in office goods
+  GENERAL_MERCHANDISE_ONLINE_MARKETPLACES	(GENERAL_MERCHANDISE)	Multi-purpose e-commerce platforms such as Etsy, Ebay and Amazon
+  GENERAL_MERCHANDISE_PET_SUPPLIES	(GENERAL_MERCHANDISE)	Pet supplies and pet food
+  GENERAL_MERCHANDISE_SPORTING_GOODS	(GENERAL_MERCHANDISE)	Sporting goods, camping gear, and outdoor equipment
+  GENERAL_MERCHANDISE_SUPERSTORES	(GENERAL_MERCHANDISE)	Superstores such as Target and Walmart, selling both groceries and general merchandise
+  GENERAL_MERCHANDISE_TOBACCO_AND_VAPE	(GENERAL_MERCHANDISE)	Purchases for tobacco and vaping products
+  GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE	(GENERAL_MERCHANDISE)	Other miscellaneous merchandise, including toys, hobbies, and arts and crafts
+  HOME_IMPROVEMENT_FURNITURE	(HOME_IMPROVEMENT)	Furniture, bedding, and home accessories
+  HOME_IMPROVEMENT_HARDWARE	(HOME_IMPROVEMENT)	Building materials, hardware stores, paint, and wallpaper
+  HOME_IMPROVEMENT_REPAIR_AND_MAINTENANCE	(HOME_IMPROVEMENT)	Plumbing, lighting, gardening, and roofing
+  HOME_IMPROVEMENT_SECURITY	(HOME_IMPROVEMENT)	Home security system purchases
+  HOME_IMPROVEMENT_OTHER_HOME_IMPROVEMENT	(HOME_IMPROVEMENT)	Other miscellaneous home purchases, including pool installation and pest control
+  MEDICAL_DENTAL_CARE	(MEDICAL)	Dentists and general dental care
+  MEDICAL_EYE_CARE	(MEDICAL)	Optometrists, contacts, and glasses stores
+  MEDICAL_NURSING_CARE	(MEDICAL)	Nursing care and facilities
+  MEDICAL_PHARMACIES_AND_SUPPLEMENTS	(MEDICAL)	Pharmacies and nutrition shops
+  MEDICAL_PRIMARY_CARE	(MEDICAL)	Doctors and physicians
+  MEDICAL_VETERINARY_SERVICES	(MEDICAL)	Prevention and care procedures for animals
+  MEDICAL_OTHER_MEDICAL	(MEDICAL)	Other miscellaneous medical, including blood work, hospitals, and ambulances
+  PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS	(PERSONAL_CARE)	Gyms, fitness centers, and workout classes
+  PERSONAL_CARE_HAIR_AND_BEAUTY	(PERSONAL_CARE)	Manicures, haircuts, waxing, spa/massages, and bath and beauty products
+  PERSONAL_CARE_LAUNDRY_AND_DRY_CLEANING	(PERSONAL_CARE)	Wash and fold, and dry cleaning expenses
+  PERSONAL_CARE_OTHER_PERSONAL_CARE	(PERSONAL_CARE)	Other miscellaneous personal care, including mental health apps and services
+  GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING	(GENERAL_SERVICES)	Financial planning, tax, and accounting services.
+  GENERAL_SERVICES_AUTOMOTIVE	(GENERAL_SERVICES)	Oil changes, car washes, repairs, and towing
+  GENERAL_SERVICES_CHILDCARE	(GENERAL_SERVICES)	Babysitters and daycare
+  GENERAL_SERVICES_CONSULTING_AND_LEGAL	(GENERAL_SERVICES)	Consulting and legal services
+  GENERAL_SERVICES_EDUCATION	(GENERAL_SERVICES)	Elementary, high school, professional schools, and college tuition
+  GENERAL_SERVICES_INSURANCE	(GENERAL_SERVICES)	Insurance for auto, home, and healthcare
+  GENERAL_SERVICES_POSTAGE_AND_SHIPPING	(GENERAL_SERVICES)	Mail, packaging, and shipping services
+  GENERAL_SERVICES_STORAGE	(GENERAL_SERVICES)	Storage services and facilities
+  GENERAL_SERVICES_OTHER_GENERAL_SERVICES	(GENERAL_SERVICES)	Other miscellaneous services, including advertising and cloud storage
+  GOVERNMENT_AND_NON_PROFIT_DONATIONS	(GOVERNMENT_AND_NON_PROFIT)	Charitable, political, and religious donations
+  GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES	(GOVERNMENT_AND_NON_PROFIT)	Government departments and agencies, such as driving licenses, and passport renewal
+  GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT	(GOVERNMENT_AND_NON_PROFIT)	Tax payments, including income and property taxes
+  GOVERNMENT_AND_NON_PROFIT_OTHER_GOVERNMENT_AND_NON_PROFIT	(GOVERNMENT_AND_NON_PROFIT)	Other miscellaneous government and non-profit agencies
+  TRANSPORTATION_BIKES_AND_SCOOTERS	(TRANSPORTATION)	Bike and scooter rentals
+  TRANSPORTATION_GAS	(TRANSPORTATION)	Purchases at a gas station
+  TRANSPORTATION_PARKING	(TRANSPORTATION)	Parking fees and expenses
+  TRANSPORTATION_PUBLIC_TRANSIT	(TRANSPORTATION)	Public transportation, including rail and train, buses, and metro
+  TRANSPORTATION_TAXIS_AND_RIDE_SHARES	(TRANSPORTATION)	Taxi and ride share services
+  TRANSPORTATION_TOLLS	(TRANSPORTATION)	Toll expenses
+  TRANSPORTATION_OTHER_TRANSPORTATION	(TRANSPORTATION)	Other miscellaneous transportation expenses
+  TRAVEL_FLIGHTS	(TRAVEL)	Airline expenses
+  TRAVEL_LODGING	(TRAVEL)	Hotels, motels, and hosted accommodation such as Airbnb
+  TRAVEL_RENTAL_CARS	(TRAVEL)	Rental cars, charter buses, and trucks
+  TRAVEL_OTHER_TRAVEL	(TRAVEL)	Other miscellaneous travel expenses
+  RENT_AND_UTILITIES_GAS_AND_ELECTRICITY	(RENT_AND_UTILITIES)	Gas and electricity bills
+  RENT_AND_UTILITIES_INTERNET_AND_CABLE	(RENT_AND_UTILITIES)	Internet and cable bills
+  RENT_AND_UTILITIES_RENT	(RENT_AND_UTILITIES)	Rent payment
+  RENT_AND_UTILITIES_SEWAGE_AND_WASTE_MANAGEMENT	(RENT_AND_UTILITIES)	Sewage and garbage disposal bills
+  RENT_AND_UTILITIES_TELEPHONE	(RENT_AND_UTILITIES)	Telephone bills
+  RENT_AND_UTILITIES_WATER	(RENT_AND_UTILITIES)	Water bills
+  RENT_AND_UTILITIES_OTHER_UTILITIES	(RENT_AND_UTILITIES)	Other miscellaneous utility bills
+  GENERAL_SERVICES_DIGITAL_SERVICES	(GENERAL_SERVICES)	Software and online subscriptions — SaaS, cloud storage and hosting, VPNs, password managers, AI assistants; not the internet connection itself and not a physical device
+  BANK_FEES_INVESTMENT_FEES	(BANK_FEES)	Fees for holding or managing investments — advisory and management fees, custody and platform fees, and security-level pass-throughs such as ADR depositary charges; not a fee for banking itself
+  GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX	(GOVERNMENT_AND_NON_PROFIT)	Tax withheld at source from investment income, such as foreign dividend or non-resident withholding; deducted before the money is received rather than paid on assessment
+
+Emit nothing outside that list. In particular NEVER emit internal_transfer, cash_withdrawal, card_spend, gift, investment, other, debt_repayment, retirement_transfer, education_transfer, health_transfer, trust_transfer, mortgage_transfer, deposit_transfer: those are assigned elsewhere from information you do not have, and emitting one will be rejected.
+
+Reference examples — merchants from this same dataset, already categorised. The INPUT row is the shape you are given; the OUTPUT row is the shape you must reply in.
+
+INPUT rows:
+ASHGROVE BAKERY
+CEDAR POINT PHARMACY
+NORTHWIND HARDWARE
+
+CORRECT OUTPUT rows (3 columns, this is the format your response must use):
+ASHGROVE BAKERY,ashgrove bakery,FOOD_AND_DRINK_COFFEE
+CEDAR POINT PHARMACY,cedar point pharmacy,FOOD_AND_DRINK_COFFEE
+NORTHWIND HARDWARE,Northwind Hardware,HOME_IMPROVEMENT_HARDWARE
+
+Merchants to categorise — merchant_signature,transaction_count:
+DUNMORE BOOKS,1
+ELMFIELD GARAGE,1
+
+Raw statement narratives these signatures were folded from — merchant_signature,narrative:
+DUNMORE BOOKS,Dunmore Books
+ELMFIELD GARAGE,Elmfield Garage
+
+Example transactions — merchant_signature,date,amount,currency,account_kind,nearby_signatures:
+DUNMORE BOOKS,1970-01-12,-15.00,USD,card,ASHGROVE BAKERY | CEDAR POINT PHARMACY | NORTHWIND HARDWARE
+ELMFIELD GARAGE,1970-01-13,-32.00,USD,card,DUNMORE BOOKS | NORTHWIND HARDWARE
+
+Output format:
+- CSV with columns: merchant_signature,merchant_name,spend_detailed
+- No header row. Exactly three columns per row. One row per merchant you can confidently name.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- merchant_signature must appear verbatim in the list above.
+- merchant_name is the merchant's real-world name in normal casing ("Corner Market", not "CORNER MARKET"). Never repeat the signature unchanged.
+- spend_detailed must be one of the taxonomy values listed above.
+
+Skip any signature you cannot confidently place. A skipped row costs nothing; a guessed one is invisible in a report and wrong forever.
+
+Do not include explanatory prose. Output CSV only.
+
+=== call 4: system ===
+You are a personal-finance data assistant. You are given merchant signatures — short upper-cased fragments of card and bank statement narratives — and you name the merchant and pick its spending category from a fixed taxonomy. You output CSV only — no prose, no markdown, no explanations.
+=== call 4: user ===
+Merchant signatures below come from card and bank statements. For each one, emit the merchant's real-world name and the single best category from the taxonomy.
+
+Taxonomy — spend_detailed values you may emit, with the primary bucket each belongs to and what it covers:
+  BANK_FEES_ATM_FEES	(BANK_FEES)	Fees incurred for out-of-network ATMs
+  BANK_FEES_INSUFFICIENT_FUNDS	(BANK_FEES)	Fees relating to insufficient funds
+  BANK_FEES_INTEREST_CHARGE	(BANK_FEES)	Fees incurred for interest on purchases (this excludes cash advance interest fee)
+  BANK_FEES_FOREIGN_TRANSACTION_FEES	(BANK_FEES)	Fees incurred on non-domestic transactions
+  BANK_FEES_OVERDRAFT_FEES	(BANK_FEES)	Penalty payment for overdrafts
+  BANK_FEES_LATE_FEES	(BANK_FEES)	Penalty payment for late payment
+  BANK_FEES_CASH_ADVANCE	(BANK_FEES)	Fees incurred for withdrawing cash using a credit card, including transaction fees and interest fees.
+  BANK_FEES_OTHER_BANK_FEES	(BANK_FEES)	Other miscellaneous bank fees, including annual fee
+  ENTERTAINMENT_CASINOS_AND_GAMBLING	(ENTERTAINMENT)	Gambling, casinos, and sports betting
+  ENTERTAINMENT_MUSIC_AND_AUDIO	(ENTERTAINMENT)	Digital and in-person music purchases, including music streaming services
+  ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS	(ENTERTAINMENT)	Purchases made at sporting events, music venues, concerts, museums, and amusement parks
+  ENTERTAINMENT_TV_AND_MOVIES	(ENTERTAINMENT)	In home movie streaming services and movie theaters
+  ENTERTAINMENT_VIDEO_GAMES	(ENTERTAINMENT)	Digital and in-person video game purchases
+  ENTERTAINMENT_OTHER_ENTERTAINMENT	(ENTERTAINMENT)	Other miscellaneous entertainment purchases, including night life and adult entertainment
+  FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR	(FOOD_AND_DRINK)	Beer, wine, and liquor stores.
+  FOOD_AND_DRINK_COFFEE	(FOOD_AND_DRINK)	Purchases at coffee shops or cafes
+  FOOD_AND_DRINK_FAST_FOOD	(FOOD_AND_DRINK)	Dining expenses for fast food chains
+  FOOD_AND_DRINK_GROCERIES	(FOOD_AND_DRINK)	Purchases for fresh produce and groceries, including farmers' markets
+  FOOD_AND_DRINK_RESTAURANT	(FOOD_AND_DRINK)	Dining expenses for restaurants, bars, gastropubs, and diners
+  FOOD_AND_DRINK_VENDING_MACHINES	(FOOD_AND_DRINK)	Purchases made at vending machine operators
+  FOOD_AND_DRINK_OTHER_FOOD_AND_DRINK	(FOOD_AND_DRINK)	Other miscellaneous food and drink, including desserts, juice bars, and delis
+  GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS	(GENERAL_MERCHANDISE)	Books, magazines, and news
+  GENERAL_MERCHANDISE_CLOTHING_AND_ACCESSORIES	(GENERAL_MERCHANDISE)	Apparel, shoes, and jewelry
+  GENERAL_MERCHANDISE_CONVENIENCE_STORES	(GENERAL_MERCHANDISE)	Purchases at convenience stores
+  GENERAL_MERCHANDISE_DEPARTMENT_STORES	(GENERAL_MERCHANDISE)	Retail stores with wide ranges of consumer goods, typically specializing in clothing and home goods
+  GENERAL_MERCHANDISE_DISCOUNT_STORES	(GENERAL_MERCHANDISE)	Stores selling goods at a discounted price
+  GENERAL_MERCHANDISE_ELECTRONICS	(GENERAL_MERCHANDISE)	Electronics stores and websites
+  GENERAL_MERCHANDISE_GIFTS_AND_NOVELTIES	(GENERAL_MERCHANDISE)	Photo, gifts, cards, and floral stores
+  GENERAL_MERCHANDISE_OFFICE_SUPPLIES	(GENERAL_MERCHANDISE)	Stores that specialize in office goods
+  GENERAL_MERCHANDISE_ONLINE_MARKETPLACES	(GENERAL_MERCHANDISE)	Multi-purpose e-commerce platforms such as Etsy, Ebay and Amazon
+  GENERAL_MERCHANDISE_PET_SUPPLIES	(GENERAL_MERCHANDISE)	Pet supplies and pet food
+  GENERAL_MERCHANDISE_SPORTING_GOODS	(GENERAL_MERCHANDISE)	Sporting goods, camping gear, and outdoor equipment
+  GENERAL_MERCHANDISE_SUPERSTORES	(GENERAL_MERCHANDISE)	Superstores such as Target and Walmart, selling both groceries and general merchandise
+  GENERAL_MERCHANDISE_TOBACCO_AND_VAPE	(GENERAL_MERCHANDISE)	Purchases for tobacco and vaping products
+  GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE	(GENERAL_MERCHANDISE)	Other miscellaneous merchandise, including toys, hobbies, and arts and crafts
+  HOME_IMPROVEMENT_FURNITURE	(HOME_IMPROVEMENT)	Furniture, bedding, and home accessories
+  HOME_IMPROVEMENT_HARDWARE	(HOME_IMPROVEMENT)	Building materials, hardware stores, paint, and wallpaper
+  HOME_IMPROVEMENT_REPAIR_AND_MAINTENANCE	(HOME_IMPROVEMENT)	Plumbing, lighting, gardening, and roofing
+  HOME_IMPROVEMENT_SECURITY	(HOME_IMPROVEMENT)	Home security system purchases
+  HOME_IMPROVEMENT_OTHER_HOME_IMPROVEMENT	(HOME_IMPROVEMENT)	Other miscellaneous home purchases, including pool installation and pest control
+  MEDICAL_DENTAL_CARE	(MEDICAL)	Dentists and general dental care
+  MEDICAL_EYE_CARE	(MEDICAL)	Optometrists, contacts, and glasses stores
+  MEDICAL_NURSING_CARE	(MEDICAL)	Nursing care and facilities
+  MEDICAL_PHARMACIES_AND_SUPPLEMENTS	(MEDICAL)	Pharmacies and nutrition shops
+  MEDICAL_PRIMARY_CARE	(MEDICAL)	Doctors and physicians
+  MEDICAL_VETERINARY_SERVICES	(MEDICAL)	Prevention and care procedures for animals
+  MEDICAL_OTHER_MEDICAL	(MEDICAL)	Other miscellaneous medical, including blood work, hospitals, and ambulances
+  PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS	(PERSONAL_CARE)	Gyms, fitness centers, and workout classes
+  PERSONAL_CARE_HAIR_AND_BEAUTY	(PERSONAL_CARE)	Manicures, haircuts, waxing, spa/massages, and bath and beauty products
+  PERSONAL_CARE_LAUNDRY_AND_DRY_CLEANING	(PERSONAL_CARE)	Wash and fold, and dry cleaning expenses
+  PERSONAL_CARE_OTHER_PERSONAL_CARE	(PERSONAL_CARE)	Other miscellaneous personal care, including mental health apps and services
+  GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING	(GENERAL_SERVICES)	Financial planning, tax, and accounting services.
+  GENERAL_SERVICES_AUTOMOTIVE	(GENERAL_SERVICES)	Oil changes, car washes, repairs, and towing
+  GENERAL_SERVICES_CHILDCARE	(GENERAL_SERVICES)	Babysitters and daycare
+  GENERAL_SERVICES_CONSULTING_AND_LEGAL	(GENERAL_SERVICES)	Consulting and legal services
+  GENERAL_SERVICES_EDUCATION	(GENERAL_SERVICES)	Elementary, high school, professional schools, and college tuition
+  GENERAL_SERVICES_INSURANCE	(GENERAL_SERVICES)	Insurance for auto, home, and healthcare
+  GENERAL_SERVICES_POSTAGE_AND_SHIPPING	(GENERAL_SERVICES)	Mail, packaging, and shipping services
+  GENERAL_SERVICES_STORAGE	(GENERAL_SERVICES)	Storage services and facilities
+  GENERAL_SERVICES_OTHER_GENERAL_SERVICES	(GENERAL_SERVICES)	Other miscellaneous services, including advertising and cloud storage
+  GOVERNMENT_AND_NON_PROFIT_DONATIONS	(GOVERNMENT_AND_NON_PROFIT)	Charitable, political, and religious donations
+  GOVERNMENT_AND_NON_PROFIT_GOVERNMENT_DEPARTMENTS_AND_AGENCIES	(GOVERNMENT_AND_NON_PROFIT)	Government departments and agencies, such as driving licenses, and passport renewal
+  GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT	(GOVERNMENT_AND_NON_PROFIT)	Tax payments, including income and property taxes
+  GOVERNMENT_AND_NON_PROFIT_OTHER_GOVERNMENT_AND_NON_PROFIT	(GOVERNMENT_AND_NON_PROFIT)	Other miscellaneous government and non-profit agencies
+  TRANSPORTATION_BIKES_AND_SCOOTERS	(TRANSPORTATION)	Bike and scooter rentals
+  TRANSPORTATION_GAS	(TRANSPORTATION)	Purchases at a gas station
+  TRANSPORTATION_PARKING	(TRANSPORTATION)	Parking fees and expenses
+  TRANSPORTATION_PUBLIC_TRANSIT	(TRANSPORTATION)	Public transportation, including rail and train, buses, and metro
+  TRANSPORTATION_TAXIS_AND_RIDE_SHARES	(TRANSPORTATION)	Taxi and ride share services
+  TRANSPORTATION_TOLLS	(TRANSPORTATION)	Toll expenses
+  TRANSPORTATION_OTHER_TRANSPORTATION	(TRANSPORTATION)	Other miscellaneous transportation expenses
+  TRAVEL_FLIGHTS	(TRAVEL)	Airline expenses
+  TRAVEL_LODGING	(TRAVEL)	Hotels, motels, and hosted accommodation such as Airbnb
+  TRAVEL_RENTAL_CARS	(TRAVEL)	Rental cars, charter buses, and trucks
+  TRAVEL_OTHER_TRAVEL	(TRAVEL)	Other miscellaneous travel expenses
+  RENT_AND_UTILITIES_GAS_AND_ELECTRICITY	(RENT_AND_UTILITIES)	Gas and electricity bills
+  RENT_AND_UTILITIES_INTERNET_AND_CABLE	(RENT_AND_UTILITIES)	Internet and cable bills
+  RENT_AND_UTILITIES_RENT	(RENT_AND_UTILITIES)	Rent payment
+  RENT_AND_UTILITIES_SEWAGE_AND_WASTE_MANAGEMENT	(RENT_AND_UTILITIES)	Sewage and garbage disposal bills
+  RENT_AND_UTILITIES_TELEPHONE	(RENT_AND_UTILITIES)	Telephone bills
+  RENT_AND_UTILITIES_WATER	(RENT_AND_UTILITIES)	Water bills
+  RENT_AND_UTILITIES_OTHER_UTILITIES	(RENT_AND_UTILITIES)	Other miscellaneous utility bills
+  GENERAL_SERVICES_DIGITAL_SERVICES	(GENERAL_SERVICES)	Software and online subscriptions — SaaS, cloud storage and hosting, VPNs, password managers, AI assistants; not the internet connection itself and not a physical device
+  BANK_FEES_INVESTMENT_FEES	(BANK_FEES)	Fees for holding or managing investments — advisory and management fees, custody and platform fees, and security-level pass-throughs such as ADR depositary charges; not a fee for banking itself
+  GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX	(GOVERNMENT_AND_NON_PROFIT)	Tax withheld at source from investment income, such as foreign dividend or non-resident withholding; deducted before the money is received rather than paid on assessment
+
+Emit nothing outside that list. In particular NEVER emit internal_transfer, cash_withdrawal, card_spend, gift, investment, other, debt_repayment, retirement_transfer, education_transfer, health_transfer, trust_transfer, mortgage_transfer, deposit_transfer: those are assigned elsewhere from information you do not have, and emitting one will be rejected.
+
+Reference examples — merchants from this same dataset, already categorised. The INPUT row is the shape you are given; the OUTPUT row is the shape you must reply in.
+
+INPUT rows:
+ASHGROVE BAKERY
+CEDAR POINT PHARMACY
+NORTHWIND HARDWARE
+
+CORRECT OUTPUT rows (3 columns, this is the format your response must use):
+ASHGROVE BAKERY,ashgrove bakery,FOOD_AND_DRINK_COFFEE
+CEDAR POINT PHARMACY,cedar point pharmacy,FOOD_AND_DRINK_COFFEE
+NORTHWIND HARDWARE,Northwind Hardware,HOME_IMPROVEMENT_HARDWARE
+
+Merchants to categorise — merchant_signature,transaction_count:
+DUNMORE BOOKS,1
+ELMFIELD GARAGE,1
+
+Raw statement narratives these signatures were folded from — merchant_signature,narrative:
+DUNMORE BOOKS,Dunmore Books
+ELMFIELD GARAGE,Elmfield Garage
+
+Example transactions — merchant_signature,date,amount,currency,account_kind,nearby_signatures:
+DUNMORE BOOKS,1970-01-12,-15.00,USD,card,ASHGROVE BAKERY | CEDAR POINT PHARMACY | NORTHWIND HARDWARE
+ELMFIELD GARAGE,1970-01-13,-32.00,USD,card,DUNMORE BOOKS | NORTHWIND HARDWARE
+
+Output format:
+- CSV with columns: merchant_signature,merchant_name,spend_detailed
+- No header row. Exactly three columns per row. One row per merchant you can confidently name.
+- Double-quote any field containing a comma; backslash-escape inner quotes.
+- merchant_signature must appear verbatim in the list above.
+- merchant_name is the merchant's real-world name in normal casing ("Corner Market", not "CORNER MARKET"). Never repeat the signature unchanged.
+- spend_detailed must be one of the taxonomy values listed above.
+
+Skip any signature you cannot confidently place. A skipped row costs nothing; a guessed one is invisible in a report and wrong forever.
+
+Do not include explanatory prose. Output CSV only.
+
+Your previous response contained the following rows that I rejected:
+  [ELMFIELD GARAGE elmfield garage NOT_A_CATEGORY] — reason: spend_detailed "NOT_A_CATEGORY" is not a value of the taxonomy
+
+Re-emit your full response with those invalid rows dropped or corrected. Keep the rows that WERE valid; do not add new invalid ones. Output CSV only.
+

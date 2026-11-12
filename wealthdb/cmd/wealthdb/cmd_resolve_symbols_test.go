@@ -304,8 +304,11 @@ func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
 		LookupValue:    "EXAMPLE GLOBAL FUND",
 		Symbol:         "EXGF",
 	}}
-	var out bytes.Buffer
-	_, _, storeErr := storeResolutions(context.Background(), goldPath, rows, "test-model", &out)
+	var out, warn bytes.Buffer
+	ctx := context.Background()
+	store := newResolutionStore(ctx, goldPath, "test-model", map[string]int{}, &warn)
+	store.accept(rows)
+	storeErr := flushResolutions(ctx, store, goldPath, &out)
 	reader.Close()
 
 	if storeErr != nil {

@@ -201,7 +201,7 @@ func TestCategorizeRunsBothFamiliesEndToEnd(t *testing.T) {
 
 	var out strings.Builder
 	opts := categorizeRunOptions{
-		maxAttempts: 2, maxAnchors: 10, batch: 40, call: answers.call(t),
+		modelFlags: modelFlags{maxAttempts: 2, maxAnchors: 10, batch: 40}, call: answers.call(t),
 	}
 	db, dbOpen, err := runCategorizeFamilies(ctx, db, true, cfg,
 		categorizeFamilies, opts, gold.ModeReadWrite, &out, &out)
@@ -364,7 +364,7 @@ func TestPersonFenceReachesCandidacyFromConfig(t *testing.T) {
 			var out strings.Builder
 			db, dbOpen, err := runCategorizeFamilies(ctx, db, true, cfg,
 				[]categorizeFamily{incomeCategorizeFamily},
-				categorizeRunOptions{maxAttempts: 1, maxAnchors: 10, batch: 40, call: call},
+				categorizeRunOptions{modelFlags: modelFlags{maxAttempts: 1, maxAnchors: 10, batch: 40}, call: call},
 				gold.ModeReadWrite, &out, &out)
 			if err != nil {
 				t.Fatalf("run: %v\n%s", err, out.String())
@@ -478,7 +478,7 @@ func TestCategorizeFlushesOneFamilyBeforeTheNextSpends(t *testing.T) {
 
 	var out strings.Builder
 	db, dbOpen, err := runCategorizeFamilies(ctx, db, true, cfg, categorizeFamilies,
-		categorizeRunOptions{maxAttempts: 2, maxAnchors: 10, batch: 40, call: call},
+		categorizeRunOptions{modelFlags: modelFlags{maxAttempts: 2, maxAnchors: 10, batch: 40}, call: call},
 		gold.ModeReadWrite, &out, &out)
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, out.String())

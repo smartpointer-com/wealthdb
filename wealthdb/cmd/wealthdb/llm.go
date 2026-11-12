@@ -18,10 +18,11 @@ import (
 // for a verdict and stores it in gold: `resolve-symbols` (tickers,
 // per-source) and `categorize` (spend categories, per merchant).
 //
-// The two commands share the transport, the response hygiene, and the
-// config check; they share nothing else. Each owns its own prompt, its
-// own CSV columns, and its own validation gauntlet, because what makes
-// a response wrong is entirely specific to what was asked.
+// Here are the transport, the response hygiene and the config check;
+// the retry loop and the store policy are in modelpass.go. Each command
+// owns its own prompt, its own CSV columns, and its own validation
+// gauntlet, because what makes a response wrong is entirely specific to
+// what was asked.
 
 // llmCall is the seam a retry loop calls through. Production passes a
 // closure over callLLM; a test passes a scripted responder, so a

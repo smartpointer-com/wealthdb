@@ -516,6 +516,34 @@ func TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails(t *testing.T) {
 	})
 }
 
+// TestCategorizeWithLLMHandsOverAFailedBatchsVerdicts: a batch whose
+// endpoint dies on a retry has already accepted the verdicts of its
+// earlier attempts. They were paid for, so they reach the sink before
+// the run stops.
+func TestCategorizeWithLLMHandsOverAFailedBatchsVerdicts(t *testing.T) {
+	t.Parallel()
+	n := 0
+	call := func(_ context.Context, _, _ string) (string, error) {
+		n++
+		if n == 1 {
+			return "BLUE HARBOUR CAFE,Blue Harbour Cafe,FOOD_AND_DRINK_COFFEE\n" +
+				"NORTHWIND HARDWARE,Northwind Hardware,NOT_A_CATEGORY", nil
+		}
+		return "", errors.New("read response: context deadline exceeded")
+	}
+	var sunk []batchOutcome
+	sink := func(o batchOutcome) error { sunk = append(sunk, o); return nil }
+	var out, errOut bytes.Buffer
+	_, _, _, err := categorizeWithLLM(context.Background(), call, spendingCategorizeFamily,
+		splitBatches(twoCandidates(), 10), nil, config.SpendContextMerchant, 3, 30, false, sink, &out, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "batch 1/1") {
+		t.Fatalf("err = %v, want the failing batch named", err)
+	}
+	if len(sunk) != 1 || len(sunk[0].Accepted) != 1 || sunk[0].Accepted[0].Signature != "BLUE HARBOUR CAFE" {
+		t.Errorf("the verdict accepted before the failure must reach the sink: %+v", sunk)
+	}
+}
+
 // TestCategorizeShowPromptPrintsTheFirstBatchInFull: fifty full
 // prompts would bury the one worth reading, so only the first batch's
 // is printed; later ones report their size.
@@ -1879,7 +1907,7 @@ func TestCategorizeAdvisesALoadWithoutStoredPairs(t *testing.T) {
 
 	var out, errOut strings.Builder
 	if _, err := runCategorizeFamily(ctx, db, cfg, spendingCategorizeFamily,
-		categorizeRunOptions{dryRun: true, maxAttempts: 1, maxAnchors: 1, batch: 1},
+		categorizeRunOptions{modelFlags: modelFlags{dryRun: true, maxAttempts: 1, maxAnchors: 1, batch: 1}},
 		&out, &errOut); err != nil {
 		t.Fatalf("runCategorizeFamily: %v", err)
 	}

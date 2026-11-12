@@ -1,13 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // The command's paths end to end, stdout pinned line for line where the
@@ -219,5 +225,79 @@ func TestResolveSymbolsStopsAtAFailedBatchKeepingTheOthers(t *testing.T) {
 	}
 	if got := storedSymbols(t, goldPath); len(got) != 2 {
 		t.Errorf("stored = %v, want the first batch's 2", got)
+	}
+}
+
+// TestResolveSymbolsHoldsAFailedStoreAndRetriesIt: a batch whose store
+// fails does not end the run. Its resolutions are held, the run asks
+// the next batch, and the held rows reach gold with the next store.
+// The gold file is made unwritable while the first batch is answered
+// and writable again while the second is.
+func TestResolveSymbolsHoldsAFailedStoreAndRetriesIt(t *testing.T) {
+	t.Parallel()
+	goldPath := filepath.Join(t.TempDir(), "gold.db")
+	db, err := gold.OpenFresh(goldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	good, _ := standInModel(t)
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mode := os.FileMode(0o644)
+		if n.Add(1) == 1 {
+			mode = 0o444
+		}
+		if err := os.Chmod(goldPath, mode); err != nil {
+			t.Error(err)
+		}
+		proxy, err := http.NewRequest(r.Method, good.URL+r.URL.Path, r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxy.Header = r.Header
+		resp, err := http.DefaultClient.Do(proxy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		w.WriteHeader(resp.StatusCode)
+		var body json.RawMessage
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+
+	var cands []candidate
+	for i := 1; i <= 3; i++ {
+		cands = append(cands, candidate{SilverSourceID: "schwab-test", LookupKind: "instrument_external_id",
+			LookupValue: fmt.Sprintf("EX0000000%d", i)})
+	}
+	run := resolveRun{
+		model:    &config.ModelConfig{BaseURL: srv.URL + "/v1", Name: "stand-in"},
+		goldPath: goldPath,
+		sources:  map[string]bool{"schwab-test": true},
+		opts:     resolveSymbolsOpts{modelFlags: modelFlags{maxAttempts: 1, batch: 2}},
+	}
+	var out, errOut strings.Builder
+	tally, err := runResolveBatches(context.Background(), run, splitBatches(cands, 2), nil, &out, &errOut)
+	if err != nil {
+		t.Fatalf("run: %v\n%s\n%s", err, out.String(), errOut.String())
+	}
+	printResolveOutcome(&out, false, tally)
+	if !strings.Contains(errOut.String(), "resolve-symbols: 2 resolution(s) held after a failed store (") ||
+		!strings.Contains(errOut.String(), "they are retried before the run ends") {
+		t.Errorf("stderr lacks the hold warning:\n%s", errOut.String())
+	}
+	for _, line := range []string{
+		"resolve-symbols: batch 2/2: 1 of 1 resolved\n",
+		"  schwab-test: 3 rows upserted\nresolve-symbols: total symbol_resolutions rows in gold now 3\n",
+	} {
+		if !strings.Contains(out.String(), line) {
+			t.Errorf("stdout lacks %q:\n%s", line, out.String())
+		}
+	}
+	if got := storedSymbols(t, goldPath); len(got) != 3 {
+		t.Errorf("stored = %v, want all 3", got)
 	}
 }

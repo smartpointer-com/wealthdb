@@ -86,7 +86,7 @@ func TestPersistCategorizationsUpsertsBySignature(t *testing.T) {
 }
 
 // TestPersistCategorizationsWritesNothingWhenGoldRefuses pins the
-// contract verdictStore's hold depends on: a write that cannot go through
+// contract batchStore's hold depends on: a write that cannot go through
 // reports it and leaves the store exactly as it was, so the caller can
 // safely keep the verdicts and try again. Read-only is the real case —
 // gold is one read-write handle or many read-only ones, so a concurrent
@@ -131,15 +131,15 @@ func TestPersistCategorizationsWritesNothingWhenGoldRefuses(t *testing.T) {
 	}
 }
 
-// ---- verdictStore ------------------------------------------------------------
+// ---- batchStore --------------------------------------------------------------
 
-// recordingStore is a verdictStore whose writes are captured instead of
+// recordingStore is a batchStore whose writes are captured instead of
 // made, with `fail` deciding which write attempt fails.
-func recordingStore(fail func(attempt int) error) (*verdictStore, *[][]string, *bytes.Buffer) {
+func recordingStore(fail func(attempt int) error) (*batchStore[categorization], *[][]string, *bytes.Buffer) {
 	var writes [][]string
 	warn := &bytes.Buffer{}
 	attempt := 0
-	s := &verdictStore{warn: warn}
+	s := &batchStore[categorization]{warn: warn, cmd: "categorize", noun: "verdict"}
 	s.write = func(rows []categorization) (int, error) {
 		attempt++
 		if err := fail(attempt); err != nil {
@@ -155,12 +155,12 @@ func recordingStore(fail func(attempt int) error) (*verdictStore, *[][]string, *
 	return s, &writes, warn
 }
 
-func acceptedBatch(sigs ...string) batchOutcome {
-	o := batchOutcome{Size: len(sigs)}
+func acceptedBatch(sigs ...string) []categorization {
+	var out []categorization
 	for _, s := range sigs {
-		o.Accepted = append(o.Accepted, categorization{s, s, "FOOD_AND_DRINK_COFFEE"})
+		out = append(out, categorization{s, s, "FOOD_AND_DRINK_COFFEE"})
 	}
-	return o
+	return out
 }
 
 // TestVerdictStoreWritesEachBatchAsItCompletes pins why the write is not
@@ -169,10 +169,8 @@ func acceptedBatch(sigs ...string) batchOutcome {
 func TestVerdictStoreWritesEachBatchAsItCompletes(t *testing.T) {
 	t.Parallel()
 	s, writes, warn := recordingStore(func(int) error { return nil })
-	for _, o := range []batchOutcome{acceptedBatch("A", "B"), acceptedBatch("C")} {
-		if err := s.accept(o); err != nil {
-			t.Fatalf("accept: %v", err)
-		}
+	for _, rows := range [][]categorization{acceptedBatch("A", "B"), acceptedBatch("C")} {
+		s.accept(rows)
 	}
 	if len(*writes) != 2 || (*writes)[0][0] != "A" || (*writes)[1][0] != "C" {
 		t.Errorf("writes = %v, want one per batch", *writes)
@@ -205,9 +203,7 @@ func TestVerdictStoreHoldsVerdictsAFailedWriteWouldLose(t *testing.T) {
 		}
 		return nil
 	})
-	if err := s.accept(acceptedBatch("A", "B")); err != nil {
-		t.Fatalf("accept must not fail the run: %v", err)
-	}
+	s.accept(acceptedBatch("A", "B"))
 	if len(s.pending) != 2 || s.stored != 0 || s.completed != 0 {
 		t.Fatalf("after a failed write: pending=%d stored=%d completed=%d, want 2/0/0",
 			len(s.pending), s.stored, s.completed)
@@ -219,9 +215,7 @@ func TestVerdictStoreHoldsVerdictsAFailedWriteWouldLose(t *testing.T) {
 
 	// The next batch's flush writes the held verdicts with its own, and
 	// both batches complete at once.
-	if err := s.accept(acceptedBatch("C")); err != nil {
-		t.Fatalf("accept: %v", err)
-	}
+	s.accept(acceptedBatch("C"))
 	if len(*writes) != 1 || strings.Join((*writes)[0], ",") != "A,B,C" {
 		t.Errorf("writes = %v, want one write carrying the held verdicts too", *writes)
 	}
@@ -240,9 +234,7 @@ func TestVerdictStoreCompletesABatchThatAcceptedNothing(t *testing.T) {
 		t.Error("an empty batch must not open gold")
 		return nil
 	})
-	if err := s.accept(batchOutcome{Size: 4}); err != nil {
-		t.Fatalf("accept: %v", err)
-	}
+	s.accept(nil)
 	if len(*writes) != 0 || s.stored != 0 || s.completed != 1 {
 		t.Errorf("writes=%d stored=%d completed=%d, want 0/0/1", len(*writes), s.stored, s.completed)
 	}
@@ -259,9 +251,7 @@ func TestVerdictStoreRetriedFlushWritesWhatTheRunHeld(t *testing.T) {
 		}
 		return nil
 	})
-	if err := s.accept(acceptedBatch("A")); err != nil {
-		t.Fatalf("accept: %v", err)
-	}
+	s.accept(acceptedBatch("A"))
 	if err := retryFlush(context.Background(), s.flush); err != nil {
 		t.Fatalf("retryFlush: %v", err)
 	}
