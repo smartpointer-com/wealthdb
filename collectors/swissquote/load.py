@@ -234,6 +234,10 @@ POSITIONS_EXPECTED_HEADER = [
     "Positions %",
 ]
 
+# Labelled columns some positions exports add after "Positions %". The
+# loader reads no field from them, so their presence changes nothing.
+POSITIONS_OPTIONAL_TAIL = ["Comment"]
+
 
 def _xls_row(sheet, r: int) -> list:
     return [sheet.cell_value(r, c) for c in range(sheet.ncols)]
@@ -262,18 +266,20 @@ def _trim_trailing_blanks(cells: list) -> list:
 
 
 def _check_xls_header(header: list, expected: list, path: Path,
-                      kind: str) -> None:
+                      kind: str, optional_tail: list = ()) -> None:
     """Fail loud unless the header's labelled columns match `expected`
-    exactly. Trailing blank cells are ignored: the XLS export engine
-    emits one on some exports and not on others (see
-    POSITIONS_EXPECTED_HEADER), and a cosmetic blank must not block the
-    load — but any change to a labelled column (rename, reorder, add,
-    remove) still aborts.
+    exactly, or `expected` followed by `optional_tail`. Trailing blank
+    cells are ignored: the XLS export engine emits one on some exports
+    and not on others (see POSITIONS_EXPECTED_HEADER), and a cosmetic
+    blank must not block the load — but any other change to a labelled
+    column (rename, reorder, add, remove) still aborts.
     """
-    if _trim_trailing_blanks(header) != expected:
+    labelled = _trim_trailing_blanks(header)
+    if labelled not in (expected, expected + list(optional_tail)):
+        tail = f" (+ optional {list(optional_tail)})" if optional_tail else ""
         raise SystemExit(
             f"Unexpected {kind} XLS header in {path}:\n"
-            f"  expected: {expected} (+ any trailing blank cells)\n"
+            f"  expected: {expected}{tail} (+ any trailing blank cells)\n"
             f"  actual:   {header}"
         )
 
@@ -292,7 +298,8 @@ def parse_positions_xls(path: Path) -> list[dict]:
     if sheet.nrows == 0:
         raise SystemExit(f"{path}: empty sheet")
     header = _strip_cells(_xls_row(sheet, 0))
-    _check_xls_header(header, POSITIONS_EXPECTED_HEADER, path, "positions")
+    _check_xls_header(header, POSITIONS_EXPECTED_HEADER, path, "positions",
+                      POSITIONS_OPTIONAL_TAIL)
 
     out = []
     asset_class = None

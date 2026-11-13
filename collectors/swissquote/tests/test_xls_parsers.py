@@ -3,9 +3,10 @@ Fixture tests for the Positions and List of Assets XLS parsers.
 
 Workbooks are synthesised with xlwt at test time (no binary fixtures
 in the repo), with obviously fake values. The header gates must:
-  - accept both header variants the export engine has produced —
+  - accept the header variants the export engine has produced —
     with and without a trailing blank cell (the 2026-08-19 positions
-    export dropped its historical trailing blank);
+    export dropped its historical trailing blank), and positions with
+    a trailing "Comment" column;
   - still fail loud on any change to a labelled column.
 Row handling: section headers set asset_class, subtotal/Total rows
 drop, position rows land with their named fields.
@@ -91,6 +92,26 @@ class PositionsXlsTests(unittest.TestCase):
     def test_extra_labelled_column_fails(self):
         with self.assertRaises(SystemExit):
             self._parse(list(POSITIONS_LABELS) + ["Extra"])
+
+    def test_header_with_comment_column(self):
+        # The comment cells carry text on the rows; no field reads them.
+        header = list(POSITIONS_LABELS) + ["Comment", ""]
+        body = [row + ["a note"] if len(row) == 13 else row
+                for row in _POSITIONS_BODY]
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "positions.xls"
+            write_xls(p, [header] + body)
+            self._check_rows(load.parse_positions_xls(p))
+
+    def test_column_after_comment_fails(self):
+        with self.assertRaises(SystemExit):
+            self._parse(list(POSITIONS_LABELS) + ["Comment", "Extra"])
+
+    def test_comment_column_out_of_place_fails(self):
+        bad = list(POSITIONS_LABELS)
+        bad.insert(2, "Comment")
+        with self.assertRaises(SystemExit):
+            self._parse(bad)
 
 
 class ListOfAssetsXlsTests(unittest.TestCase):
