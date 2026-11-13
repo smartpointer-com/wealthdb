@@ -3,17 +3,19 @@
 #
 # Wrapper side: each collectors/<name>/<name> runs from a copy of itself
 # and shared/wrappers/*.sh in a temp tree, so it finds no .venv. Its
-# environment is empty but for a sandboxed HOME, XDG dirs and stub
-# programs: `docker`, `python3` and `lsof` record their argv and start
-# nothing. The secrets dir holds an env file of invented values, and the
-# stubs print each forwarded variable, since `-e VAR` passes a name and
-# the value travels in the environment.
+# environment is empty but for a sandboxed HOME, TMPDIR, XDG dirs and
+# stub programs: `docker`, `python3` and `lsof` record their argv and
+# start nothing. The secrets dir holds an env file of invented values,
+# and the stubs print each forwarded variable, since `-e VAR` passes a
+# name and the value travels in the environment.
 #
 # Entrypoint side: each collectors/<name>/entrypoint.sh runs under a bash
 # whose BASH_ENV defines a `source` that loads a recording library in
 # place of /opt/entrypoint-lib.sh. That library sources the real one with
 # its file commands recorded, then replaces start_xvfb and start_x11vnc
-# with recorders. `python3`, `firefox` and `openssl` are stubs.
+# with recorders. `python3`, `firefox` and `openssl` are stubs. The
+# environment is the wrapper side's, so a file an entrypoint writes
+# under TMPDIR lands in the temp root.
 #
 # Each case records the calls in order, the exit status, stdout and
 # stderr, with the temp root, the checkout and uid:gid masked. The cases
@@ -46,7 +48,7 @@ stub_docker "$BIN"
 recorder() {
     cat > "$BIN/$1" <<STUB
 #!/usr/bin/env bash
-{ echo $1; [ \$# -gt 0 ] && printf '  %s\n' "\$@"; $2; } >> "\$STUB_LOG"
+{ echo $1; if [ \$# -gt 0 ]; then printf '  %s\n' "\$@"; fi; $2; } >> "\$STUB_LOG"
 $3
 STUB
     chmod +x "$BIN/$1"
@@ -62,7 +64,7 @@ ln -s "$BASH" "$BIN/bash"
 
 # The entrypoint side's BASH_ENV, and the library it loads.
 cat > "$TMP/bashenv.sh" <<'EOF'
-_rec() { { echo "$1"; shift; [ $# -gt 0 ] && printf '  %s\n' "$@"; } >> "$STUB_LOG"; }
+_rec() { { echo "$1"; shift; if [ $# -gt 0 ]; then printf '  %s\n' "$@"; fi; } >> "$STUB_LOG"; }
 source() {
     if [ "${1:-}" = /opt/entrypoint-lib.sh ]; then
         shift

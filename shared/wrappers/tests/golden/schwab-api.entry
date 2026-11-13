@@ -60,7 +60,9 @@ lib: mkdir
   -p
   /tmp/.cache
 start_xvfb
-exit: 1
+python3
+  /app/login.py
+exit: 0
 --- stdout
 --- stderr
 === login --help
@@ -80,7 +82,12 @@ lib: mkdir
   -p
   /tmp/.cache
 start_xvfb
-exit: 1
+start_x11vnc
+  vnc-login
+python3
+  /app/login.py
+  --no-cli-mfa
+exit: 0
 --- stdout
 --- stderr
 === vnc-login --help

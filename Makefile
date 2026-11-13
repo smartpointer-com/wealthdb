@@ -732,7 +732,7 @@ $(foreach c,$(COLLECTORS),$(eval $(call COLLECTOR_RULES,$(c))))
 # `make all` then rebuilds the collector images on the refreshed bases.
 # The host venvs and the gold engine pick up their updates at once.
 # The one pin set `make update` does not move is the GitHub actions in
-# .github/workflows/: their major tags move by hand.
+# .github/workflows/ and .github/actions/: their major tags move by hand.
 #
 # update-venvs upgrades each venv of VENVS that exists: its target
 # (`make build-<name>`, `make test-collectorkit`, `make lint`,

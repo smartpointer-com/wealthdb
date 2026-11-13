@@ -88,7 +88,14 @@ lib: mkdir
   -p
   /tmp/.cache
 start_xvfb
-exit: 1
+python3
+  /app/login.py
+  --profile-dir
+  /secrets/schwab-web-profile
+  --cli-mfa
+  --bronze-dir
+  /data
+exit: 0
 --- stdout
 --- stderr
 === download --help
@@ -171,7 +178,16 @@ lib: mkdir
   -p
   /tmp/.cache
 start_xvfb
-exit: 1
+start_x11vnc
+  vnc-login
+python3
+  /app/login.py
+  --profile-dir
+  /secrets/schwab-web-profile
+  --no-cli-mfa
+  --bronze-dir
+  /data
+exit: 0
 --- stdout
 --- stderr
 === vnc-login --help
@@ -239,7 +255,17 @@ lib: mkdir
   -p
   /tmp/.cache
 start_xvfb
-exit: 1
+python3
+  /app/login.py
+  --profile-dir
+  /secrets/schwab-web-profile
+  --cli-mfa
+  --bronze-dir
+  /data
+  --dry-run
+  --lookback
+  1w
+exit: 0
 --- stdout
 --- stderr
 === bogus-verb

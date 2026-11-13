@@ -7,7 +7,8 @@
 # The exit status is 1 when a run failed, else 0. With --times, each
 # run prints "start ITEM" as it starts, each log follows a
 # "==> NAME Ns" line with the run's seconds, and the failure line ends
-# in the run's exit status. An item holds no white space.
+# in the run's exit status. An item holds no white space, quote or
+# backslash.
 set -u
 
 usage() {

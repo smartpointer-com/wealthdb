@@ -82,7 +82,11 @@ lib: mkdir
   -p
   /tmp/.cache
 start_xvfb
-exit: 1
+start_x11vnc
+  explore
+python3
+  /app/explore.py
+exit: 0
 --- stdout
 --- stderr
 === explore --help
@@ -102,7 +106,9 @@ lib: mkdir
   -p
   /tmp/.cache
 start_xvfb
-exit: 1
+python3
+  /app/download.py
+exit: 0
 --- stdout
 --- stderr
 === download --help
@@ -122,7 +128,12 @@ lib: mkdir
   -p
   /tmp/.cache
 start_xvfb
-exit: 1
+start_x11vnc
+  vnc-login
+python3
+  /app/download.py
+  --vnc
+exit: 0
 --- stdout
 --- stderr
 === vnc-login --help
@@ -274,7 +285,12 @@ lib: mkdir
   -p
   /tmp/.cache
 start_xvfb
-exit: 1
+python3
+  /app/download.py
+  --dry-run
+  --lookback
+  1w
+exit: 0
 --- stdout
 --- stderr
 === bogus-verb

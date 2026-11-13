@@ -40,7 +40,7 @@ stub_docker() {
 if [ -n "${STUB_LOG:-}" ]; then
     {
         echo docker
-        [ $# -gt 0 ] && printf '  %s\n' "$@"
+        if [ $# -gt 0 ]; then printf '  %s\n' "$@"; fi
         prev=
         for a in "$@"; do
             if [ "$prev" = -e ] && [[ "$a" != *=* ]]; then
