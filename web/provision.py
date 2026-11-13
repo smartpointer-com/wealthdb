@@ -92,9 +92,9 @@ def main():
     if missing and not a.dump:
         ap.error("the following arguments are required: " + ", ".join(missing))
     global DEFAULT_CURRENCY, DEFAULT_MISSING_BASIS
+    DEFAULT_CURRENCY = default_currency(a.default_currency)
+    DEFAULT_MISSING_BASIS = a.missing_basis
     if a.dump:
-        DEFAULT_CURRENCY = default_currency(a.default_currency)
-        DEFAULT_MISSING_BASIS = a.missing_basis
         dump = payload_dump(DUMP_WITHHOLDING[a.withholding], [s for s in a.sources.split(",") if s])
         with open(a.dump, "w", encoding="utf-8") as f:
             f.write(json.dumps(dump, sort_keys=True, indent=1, ensure_ascii=False) + "\n")
@@ -103,8 +103,6 @@ def main():
     if not password:
         print("provision: WEALTHDB_WEB_ADMIN_PASSWORD is not set", file=sys.stderr)
         return 1
-    DEFAULT_CURRENCY = default_currency(a.default_currency)
-    DEFAULT_MISSING_BASIS = a.missing_basis
 
     if not wait_health(a.base):
         print("provision: Metabase did not become healthy in time", file=sys.stderr)
@@ -200,29 +198,14 @@ def payload_dump(withholding, sources):
     registry, as main() does."""
     global FIELD_IDS
     FIELD_IDS = offline_field_ids()
-    models = {
-        name: card_payload(1, name, "model", "table", desc,
-                           {"type": "native", "database": 1,
-                            "native": {"query": query, "template-tags": {}}},
-                           {})
-        for name, (query, desc) in report_models().items()
-    }
+    models = model_payloads(1, 1)
     model_ids = {name: i for i, name in enumerate(models, start=1)}
-    colors = assign_source_colors({}, [*sources, DECLARED_SOURCE])
-    cards = {}
-    for name, (display, desc, query, viz) in question_defs(1, model_ids).items():
-        cards[name] = card_payload(1, name, "question", display, desc, query,
-                                   with_source_colors(viz, colors))
-    for name, (ctype, display, desc, query, viz) in privacy_card_defs(1, model_ids).items():
-        cards[name] = card_payload(1, name, ctype, display, desc, query,
-                                   with_source_colors(viz, colors))
+    cards = card_payloads(1, 1, model_ids, account_source_colors({}, sources))
     card_ids = {name: i for i, name in enumerate(cards, start=len(models) + 1)}
     defs = dashboard_defs()
     dash_ids = {name: i for i, name in enumerate(defs, start=1)}
-    params = {name: dashboard_parameters(model_ids, mode, name)
-              for name, (_desc, mode, _sibling, _tiles) in defs.items()}
     descs = {name: body["description"] for name, body in cards.items()}
-    payloads = dashboard_payloads(defs, params, card_ids, dash_ids,
+    payloads = dashboard_payloads(defs, model_ids, card_ids, dash_ids,
                                   tile_titles(withholding), descs)
     dashboards = {name: {"name": name, "description": desc, "parameters": parameters,
                          "dashcards": dashcards}
@@ -233,9 +216,9 @@ def payload_dump(withholding, sources):
 
 
 # The reporting currencies: the value column sets the `_multi` report
-# macros and the web_* serving views carry, and the
-# rows report_returns carries. Every currency list, CASE and picker below
-# is generated from this one tuple.
+# macros and the web_* serving views carry, and the rows report_returns
+# carries. Every currency list, CASE and picker below is generated from
+# this one tuple.
 REPORTING_CURRENCIES = ("USD", "CHF", "EUR", "GBP")
 
 # The currency every picker and every native card's {{currency}}
@@ -340,20 +323,19 @@ RETURNS_MONEY_COLUMNS = ("start_value", "end_value", "net_flow")
 def report_models():
     """model name -> (native SQL, description). The report_*_multi DuckDB
     macros (gold derived/30_holdings.sql) are the single source of truth.
-    Each model
-    wraps the serving table `web refresh` fills with a macro's output
-    (gold servingTables), a macro computing its whole output on every
-    read, and renders epoch columns as TIMESTAMP (`epoch_ms` -> zone-free
-    UTC, not `to_timestamp`, which is TIMESTAMPTZ and renders in the
-    reading session's zone) for Metabase. The taxonomy, spending, income
-    and cashflow models instead wrap the web_* serving views (gold
-    derived/90_web.sql) that do that rendering, the
-    cash fold-in and the '(uncategorized)' labelling themselves, and the
-    gains- and yield-classes models list the classes of web_gains and
-    of web_yield and web_yield_curve. The macros already emit DECIMAL
-    money/quantity columns and one value column set per reporting
-    currency (REPORTING_CURRENCIES), so no value casting is needed here.
-    The `_latest` reports are as of each account's latest snapshot; the
+    Each model wraps the serving table `web refresh` fills with a macro's
+    output (gold servingTables), a macro computing its whole output on
+    every read, and renders epoch columns as TIMESTAMP (`epoch_ms` ->
+    zone-free UTC, not `to_timestamp`, which is TIMESTAMPTZ and renders
+    in the reading session's zone) for Metabase. The taxonomy, spending,
+    income and cashflow models instead wrap the web_* serving views (gold
+    derived/90_web.sql) that do that rendering, the cash fold-in and the
+    '(uncategorized)' labelling themselves, and the gains- and
+    yield-classes models list the classes of web_gains and of web_yield
+    and web_yield_curve. The macros already emit DECIMAL money/quantity
+    columns and one value column set per reporting currency
+    (REPORTING_CURRENCIES), so no value casting is needed here. The
+    `_latest` reports are as of each account's latest snapshot; the
     `_history` reports carry value forward per day;
     the two `_pct` models are the privacy variants the privacy twins'
     MBQL cards run over (values as % of the latest global net worth,
@@ -374,10 +356,10 @@ def report_models():
     # constant keeps every aggregate's shape; the privacy dashboards'
     # charts recompute a selection-aware denominator per query instead
     # (privacy_card_defs), so this constant only backs the twins' MBQL
-    # cards and their drill-through. Guarded to NULL
-    # when the latest total is zero or negative (empty or under-water
-    # gold): dividing would render inf/NaN resp. sign-flipped
-    # percentages, where NULL just blanks the values.
+    # cards and their drill-through. Guarded to NULL when the latest
+    # total is zero or negative (empty or under-water gold): dividing
+    # would render inf/NaN resp. sign-flipped percentages, where NULL
+    # just blanks the values.
     NW_LATEST = ("(SELECT " + ", ".join(
         f"CASE WHEN total_value_{c} > 0 THEN total_value_{c} END AS nw_{c}"
         for c in _ccy_lower()) +
@@ -408,15 +390,14 @@ def report_models():
         already renders occurred_at as TIMESTAMP and labels an
         unresolved category '(uncategorized)'.
 
-        `spend_primary` and `spend_detailed` carry the DISPLAY LABEL
-        (migration 0058), not the vendored value: a dashboard picker's
-        dropdown is the list of labels it filters by, so the label is what
-        a reader both sees and selects. The vendored values travel beside
-        them as `*_id` for a filter that must survive a label being
-        reworded. Swapping the two is safe for the cards that compare
-        them, because the labels preserve the relation the comparison
-        turns on: a delta's primary and detailed read the same, a vendored
-        pair does not.
+        `spend_primary` and `spend_detailed` carry the DISPLAY LABEL, not
+        the vendored value: a dashboard picker's dropdown is the list of
+        labels it filters by, so the label is what a reader both sees and
+        selects. The vendored values travel beside them as `*_id` for a
+        filter that must survive a label being reworded. Swapping the two
+        is safe for the cards that compare them, because the labels
+        preserve the relation the comparison turns on: a delta's primary
+        and detailed read the same, a vendored pair does not.
 
         `provider_category` is the ISSUER's own classification of the line
         (migration 0057), kept for a reader who wants the card provider's
@@ -533,10 +514,10 @@ def report_models():
     BASE3 = ("positions_value_base", "cash_balance_base", "total_value_base")
 
     # Each source's newest snapshot, the latest mark it rides on
-    # (valued_at, gold migration 0123) and the instant a run last read it
-    # (gold source_observed, migration 0122): a quiet source is observed
-    # through its latest download although its latest mark is older.
-    # Unknown reads as the snapshot itself.
+    # (valued_at) and the instant a run last read it (gold's
+    # source_observed view): a quiet source is observed through its
+    # latest download although its latest mark is older. Unknown
+    # reads as the snapshot itself.
     sources_latest = (
         "(SELECT r.*, GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at),"
         " r.snapshot_at) AS observed_at FROM serving_sources_latest r"
@@ -577,16 +558,15 @@ def report_models():
         # History reports: one row per entity per UTC day, from the first snapshot to
         # today, value carried forward between snapshots — per ACCOUNT (per account and
         # currency for cash), so a run that covered only part of a source carries the
-        # rest rather than dropping it. For time-series charts;
-        # filter / aggregate by as_of_day. history@today reconciles with the matching
-        # _latest report on totals for a source that writes every account in one run;
-        # where runs are partial the history carries every account while _latest values
-        # only the last run's. In report_positions_history, snapshot_at is the ACCOUNT's
-        # active snapshot, so several values can share one source-day. Each reads the
-        # serving table `web refresh` fills from its macro: a
-        # macro computes the whole history on every read, and every tile of a
-        # dashboard would pay for it at once. So do the latest models and the
-        # transactions ones.
+        # rest rather than dropping it. For time-series charts; filter / aggregate by
+        # as_of_day. history@today reconciles with the matching _latest report on totals
+        # for a source that writes every account in one run; where runs are partial the
+        # history carries every account while _latest values only the last run's. In
+        # report_positions_history, snapshot_at is the ACCOUNT's active snapshot, so
+        # several values can share one source-day. Each reads the serving table `web
+        # refresh` fills from its macro: a macro computes the whole history on every
+        # read, and every tile of a dashboard would pay for it at once. So do the latest
+        # models and the transactions ones.
         "report_global_history": (
             wrap("serving_global_history", ["as_of_day"]),
             "Whole-portfolio value for every day from the first snapshot to today "
@@ -705,18 +685,17 @@ def report_models():
             "and negative is cash leaving it. Mirrors `wealthdb cashflow "
             "transactions`."),
         # The classes the gains rows carry, `unknown` among them where
-        # nothing classes a position: the Gains
-        # dashboard's Asset class picker lists them, as the asset class
-        # history may never hold `unknown`. It backs that picker alone.
+        # nothing classes a position: the Gains dashboard's Asset class
+        # picker lists them, as the asset class history may never hold
+        # `unknown`. It backs that picker alone.
         "report_gains_classes": (
             "SELECT DISTINCT asset_class FROM web_gains",
             "The asset classes the gains rows carry, `unknown` where nothing classes a "
             "position. It backs the Gains dashboard's Asset class picker."),
         # The classes web_yield and web_yield_curve carry, `unknown` among
-        # them where nothing classes a holding: the
-        # Yield dashboard's Asset class picker lists them, as the asset
-        # class history may never hold `unknown`. It backs that picker
-        # alone.
+        # them where nothing classes a holding: the Yield dashboard's
+        # Asset class picker lists them, as the asset class history may
+        # never hold `unknown`. It backs that picker alone.
         "report_benchmarks": (
             "SELECT benchmark FROM web_benchmarks",
             "The benchmarks, built-in and configured, and None. It backs the "
@@ -742,9 +721,8 @@ def report_models():
 
 # The label gold's spending views carry for a line whose category the
 # enrichment pass could not resolve. Rendered at the view rather than left
-# NULL, so a breakdown shows the backlog as a
-# bucket instead of an unlabelled slice; the uncategorized-share card
-# counts rows carrying it.
+# NULL, so a breakdown shows the backlog as a bucket instead of an
+# unlabelled slice; the uncategorized-share card counts rows carrying it.
 UNCATEGORIZED = "(uncategorized)"
 
 # Card names retired by renames and removals, each group noted where it
@@ -1034,13 +1012,18 @@ def source_colors(base, sid, db_id, path):
                       "SELECT silver_source_id FROM silver_sources"
                       " WHERE silver_source_id IN (SELECT silver_source_id FROM accounts)"
                       " ORDER BY first_loaded_at, silver_source_id")
-    sources = [r[0] for r in rows or [] if r and r[0]]
-    if rows is not None:
-        sources.append(DECLARED_SOURCE)
-    colors = assign_source_colors(kept, sources)
+    colors = account_source_colors(kept, None if rows is None else
+                                   [r[0] for r in rows if r and r[0]])
     if path and colors != kept:
         save_source_colors(path, colors)
     return colors
+
+
+def account_source_colors(kept, sources):
+    """assign_source_colors over `sources`, the snapshot's sources that
+    hold an account, then DECLARED_SOURCE. None, a probe that did not
+    answer, adds no source."""
+    return assign_source_colors(kept, [] if sources is None else [*sources, DECLARED_SOURCE])
 
 
 def with_source_colors(viz, colors):
@@ -1190,15 +1173,15 @@ INVESTING_TAG = {"id": "inv-tag", "name": "investing",
 # The gold columns backing the native cards' field filters: the returns
 # charts filter report_returns; every other native card filters the
 # web_* serving views (gold derived/90_web.sql). Field ids are
-# per-Metabase-instance (assigned when
-# the DB syncs), so main() resolves them at provision time into FIELD_IDS,
-# and ensure_synced refuses to build a card while any is missing.
+# per-Metabase-instance (assigned when the DB syncs), so main() resolves
+# them at provision time into FIELD_IDS, and ensure_synced refuses to
+# build a card while any is missing.
 FILTER_FIELD_COLUMNS = {
     "report_returns": ("currency", "silver_source_id"),
-    # The Wealth Overview's headline figures. They read
-    # the latest snapshot whatever the time range, so no time filter
-    # binds the view. The holdings views carry each line's account tax
-    # wrapper and asset class, the flow views the tax wrapper.
+    # The Wealth Overview's headline figures. They read the latest
+    # snapshot whatever the time range, so no time filter binds the
+    # view. The holdings views carry each line's account tax wrapper
+    # and asset class, the flow views the tax wrapper.
     "web_sources_latest": ("silver_source_id", "tax_wrapper", "asset_class"),
     "web_sources_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
     "web_asset_classes_history": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
@@ -1210,22 +1193,22 @@ FILTER_FIELD_COLUMNS = {
     # Each day to the last history day on or before it:
     # the Allocation cards' As of day lands on it.
     "web_history_calendar": ("as_of_day",),
-    # The spending views. On the money dashboard both
-    # bind their account picker to account_label rather than
-    # account_external_id — see dashboard_parameters for why the readable
-    # column wins, and why the privacy twin carries no such picker.
-    # spend_primary_label, not spend_primary: a field filter's widget is
-    # a dropdown of the values its column takes, and the Category picker
-    # is SHARED with the money dashboard, whose model column of the same
-    # name holds the display label. Binding the two to different
-    # vocabularies would leave the picker offering labels and the native
-    # cards matching them against vendored values — every tile empty.
+    # The spending views. On the money dashboard both bind their account
+    # picker to account_label rather than account_external_id — see
+    # dashboard_parameters for why the readable column wins, and why the
+    # privacy twin carries no such picker. spend_primary_label, not
+    # spend_primary: a field filter's widget is a dropdown of the values
+    # its column takes, and the Category picker is SHARED with the money
+    # dashboard, whose model column of the same name holds the display
+    # label. Binding the two to different vocabularies would leave the
+    # picker offering labels and the native cards matching them against
+    # vendored values — every tile empty.
     "web_spending": ("occurred_at", "silver_source_id", "account_label",
                      "spend_primary_label"),
-    # The cashflow view. No account column is bound:
-    # the Cash Flow dashboard carries no account picker, because a
-    # picker that moved accounts in and out of the cash pool would turn
-    # every crossing it split into an unexplained disappearance.
+    # The cashflow view. No account column is bound: the Cash Flow
+    # dashboard carries no account picker, because a picker that moved
+    # accounts in and out of the cash pool would turn every crossing it
+    # split into an unexplained disappearance.
     "web_cashflow": ("occurred_at", "silver_source_id", "section"),
     # The income view. `income_label`, not
     # `income_primary_label`: the income taxonomy has ONE vendored
@@ -1237,18 +1220,17 @@ FILTER_FIELD_COLUMNS = {
     # The card balances, a spending view.
     "web_card_balances_history": ("as_of_day", "silver_source_id",
                                   "account_label"),
-    # The gains view. Its currency is a row filter
-    # through the {{currency}} variable, so no field filter binds it.
+    # The gains view. Its currency is a row filter through the
+    # {{currency}} variable, so no field filter binds it.
     "web_gains": ("period", "silver_source_id", "tax_wrapper", "asset_class"),
-    # The exposure view: month ends and today, a row set
-    # per currency like web_gains, and per source and account wrapper
-    # (migration 0130). The pickers narrow those and each leaf's asset
-    # class.
+    # The exposure view: month ends and today, a row set per currency
+    # like web_gains, and per source and account wrapper. The pickers
+    # narrow those and each leaf's asset class.
     "web_exposure": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
-    # The exposure of the debt and the largest issuers,
-    # at the same instants. The debt view carries no asset class. No field
-    # filter binds the issuers view: the Allocation card reaches its as-of
-    # day through web_history_calendar.
+    # The exposure of the debt and the largest issuers, at the same
+    # instants. The debt view carries no asset class. No field filter
+    # binds the issuers view: the Allocation card reaches its as-of day
+    # through web_history_calendar.
     "web_exposure_debt": ("as_of_day", "silver_source_id", "tax_wrapper"),
     "web_exposure_issuers": (),
     # Each security's slice per source, tax wrapper and asset class,
@@ -1256,15 +1238,15 @@ FILTER_FIELD_COLUMNS = {
     # web_exposure.
     "web_exposure_securities": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
     # The yield report per holding and its DV01 per tenor: today and the
-    # twelve month ends before, a row set per
-    # currency, narrowed like web_exposure.
+    # twelve month ends before, a row set per currency, narrowed like
+    # web_exposure.
     "web_yield": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
     "web_yield_curve": ("as_of_day", "silver_source_id", "tax_wrapper", "asset_class"),
     # Today's projection, its rates, the principals maturities return and
     # the income received, and the tax a source withheld on the income's
-    # accounts. No field filter binds them: a Yield card
-    # narrows them to the holdings web_yield selects, an Income card
-    # through the views its pickers list (INCOME_PROJECTED_SELECTION).
+    # accounts. No field filter binds them: a Yield card narrows them to
+    # the holdings web_yield selects, an Income card through the views
+    # its pickers list (INCOME_PROJECTED_SELECTION).
     "web_yield_parts": (),
     # The Benchmark picker's values. No field filter
     # binds them.
@@ -1273,14 +1255,14 @@ FILTER_FIELD_COLUMNS = {
     "web_yield_events": (),
     "web_yield_received": (),
     "web_income_withheld": (),
-    # The days the income received covers: the Income
-    # cards' Time range lands on them, and a card keeps the received rows
-    # and the withheld tax of the days it selects.
+    # The days the income received covers: the Income cards' Time range
+    # lands on them, and a card keeps the received rows and the withheld
+    # tax of the days it selects.
     "web_income_days": ("day",),
-    # The cash flow projection's look-back parts, per
-    # currency and month ahead, and the accounts of the cash pool its cards
-    # split the income projection by. No field filter binds them: those
-    # cards take no picker but the currency and the projection's four.
+    # The cash flow projection's look-back parts, per currency and month
+    # ahead, and the accounts of the cash pool its cards split the income
+    # projection by. No field filter binds them: those cards take no picker
+    # but the currency and the projection's four.
     "web_cashflow_plan": (),
     "web_cashflow_pool": (),
     # The net worth bridge's months. The Time range lands
@@ -1990,20 +1972,20 @@ def question_defs(db_id, mid):
         # bill on a card not itemised, cash out of an ATM — is not a
         # merchant transaction, and one kind of delta line carries a
         # name: a card bill labelled with the issuer it was paid to.
-        # A blank merchant therefore does not mark a
-        # delta, so the ranking excludes the delta CATEGORIES outright —
-        # a delta is primary-level, so `spend_primary <> spend_detailed`
-        # reads the dimension's own marker rather than restating a list
-        # of values — and still needs a name to rank by. A line nothing
-        # resolved is kept out by its two category columns being equal
-        # at '(uncategorized)'. A line the merchant store never named
-        # shows its own signature, so the rows are at
-        # the signature's grain — a chain appears once per branch
-        # signature, and a fold that is only the bank's own booking tag
-        # ranks under that tag, since the gates that keep such a fold
-        # from the model fence the merchant store and not this column.
-        # Only the ranking filters: the transaction list below keeps
-        # every line, since a line is a line.
+        # A blank merchant therefore does not mark a delta, so the
+        # ranking excludes the delta CATEGORIES outright — a delta is
+        # primary-level, so `spend_primary <> spend_detailed` reads the
+        # dimension's own marker rather than restating a list of values
+        # — and still needs a name to rank by. A line nothing resolved
+        # is kept out by its two category columns being equal at
+        # '(uncategorized)'. A line the merchant store never named shows
+        # its own signature, so the rows are at the signature's grain —
+        # a chain appears once per branch signature, and a fold that is
+        # only the bank's own booking tag ranks under that tag, since
+        # the gates that keep such a fold from the model fence the
+        # merchant store and not this column. Only the ranking filters:
+        # the transaction list below keeps every line, since a line is a
+        # line.
         "Top 50 merchants": ("table",
             f"Top fifty merchants by net spend, ranked in {DEFAULT_CURRENCY}. Delta lines, a card "
             "issuer's bill among them, and lines nothing resolved are outside the ranking.",
@@ -2383,12 +2365,12 @@ def question_defs(db_id, mid):
 
 
 def gains_question_defs(db_id, privacy=False):
-    """The Gains dashboard's cards: native SQL over web_gains (gold
-    migration 0117), the monthly gains rows materialized per reporting
-    currency. The view carries a row set per currency, so {{currency}}
-    is a row filter here, where the other families pick a value column
-    with it. A figure over the window sums the months in it; a figure at
-    the window's end reads its last month. docs/GAINS.md defines the
+    """The Gains dashboard's cards: native SQL over web_gains, the
+    monthly gains rows materialized per reporting currency. The view
+    carries a row set per currency, so {{currency}} is a row filter
+    here, where the other families pick a value column with it. A
+    figure over the window sums the months in it; a figure at the
+    window's end reads its last month. docs/GAINS.md defines the
     figures and the quality counters. It carries a row set per reading
     of a missing cost basis too, and {{missing_basis}} picks one the same
     way (docs/GAINS.md §8).
@@ -3236,27 +3218,26 @@ def _columns_with_benchmark(sql, order, *cols):
 def exposure_cards(db_id, privacy):
     """The Exposure dashboard's cards, or with `privacy` their privacy
     variants: name -> (display, description, dataset_query, viz). Native
-    SQL over web_exposure, the look-through at
-    every month end and today, materialized per reporting currency, so
-    {{currency}} is a row filter as on Gains, and per source and tax
-    wrapper. The pickers narrow those and the asset class. Every share
-    is of the selection, its day's net worth with nothing picked,
-    computed over the rows a card reads. Sizes and cycles plot a share
-    of the public equity instead, and the debt cards one of the debt, or
-    of the debt and cash. A breakdown reads the latest day in the window
-    and plots each share: a bar carries its figure, a map colours each
-    country by its share. Its base card keeps the value as a column and
-    shows it in the tooltip; its privacy card has the share
-    alone, a share being scale-free. A chart over time shows each month
-    end's shares on both, so it is privacy-exempt and has no privacy
-    variant. Currencies over time is the exception: its base card plots
-    each month end's value in the picked currency, its privacy card the
-    shares.
+    SQL over web_exposure, the look-through at every month end and
+    today, materialized per reporting currency, so {{currency}} is a row
+    filter as on Gains, and per source and tax wrapper. The pickers
+    narrow those and the asset class. Every share is of the selection,
+    its day's net worth with nothing picked, computed over the rows a
+    card reads. Sizes and cycles plot a share of the public equity
+    instead, and the debt cards one of the debt, or of the debt and
+    cash. A breakdown reads the latest day in the window and plots each
+    share: a bar carries its figure, a map colours each country by its
+    share. Its base card keeps the value as a column and shows it in the
+    tooltip; its privacy card has the share alone, a share being
+    scale-free. A chart over time shows each month end's shares on both,
+    so it is privacy-exempt and has no privacy variant. Currencies over
+    time is the exception: its base card plots each month end's value in
+    the picked currency, its privacy card the shares.
 
-    The debt cards read web_exposure_debt, at the same
-    instants and currencies. The Top securities card reads
-    web_exposure_securities, each security's slices at
-    those instants. docs/EXPOSURE.md defines every figure.
+    The debt cards read web_exposure_debt, at the same instants and
+    currencies. The Top securities card reads web_exposure_securities,
+    each security's slices at those instants. docs/EXPOSURE.md defines
+    every figure.
 
     A breakdown of the design's table sets the picked benchmark beside
     the selection (_beside): today's look-through of its funds, which no
@@ -3490,12 +3471,13 @@ def exposure_cards(db_id, privacy):
                "cycle", "cycle", CYCLE_BUCKETS)
 
     # The securities, each summed over its slices of the selection
-    # (migration 0165): the labels of its heaviest slice that has them,
-    # the greater label on a tie, the funds counted once, as `wealthdb
-    # exposure securities` gives them with nothing picked. The share is
-    # of the selection, all of its securities counted. The twin drops the
-    # values and hides a key that is a holding's own, which can carry a
-    # contract's or an account's id. The name shows, less any address.
+    # (web_exposure_securities): the labels of its heaviest slice that
+    # has them, the greater label on a tie, the funds counted once, as
+    # `wealthdb exposure securities` gives them with nothing picked. The
+    # share is of the selection, all of its securities counted. The twin
+    # drops the values and hides a key that is a holding's own, which
+    # can carry a contract's or an account's id. The name shows, less any
+    # address.
     stags = {**native_tags("web_exposure_securities", EXPOSURE_FILTERS), "benchmark": BENCHMARK_TAG}
     hidden = f"security LIKE '%{HOLDING_KEY_PREFIX}%'"
     shown = ((f"CASE WHEN {hidden} THEN '(unnamed)' ELSE security END AS security,\n"
@@ -3541,14 +3523,14 @@ def exposure_cards(db_id, privacy):
 def issuer_cards(db_id, privacy):
     """The Allocation dashboard's issuers card, or with `privacy` its
     privacy variant: name -> (display, description, dataset_query, viz).
-    Native SQL over web_exposure_issuers: the
-    largest issuers of the whole book, per reporting currency, today and
-    at the twelve month ends before. The dashboard's as-of day reaches it
-    through web_history_calendar (_history_day), and the card reads the
-    latest instant on or before that history day. The issuers view
-    carries no source, tax wrapper or asset class, so those pickers do
-    not reach it. A security no source names reads its key, which the
-    privacy card hides where it is a holding's own; the privacy card also
+    Native SQL over web_exposure_issuers: the largest issuers of the
+    whole book, per reporting currency, today and at the twelve month
+    ends before. The dashboard's as-of day reaches it through
+    web_history_calendar (_history_day), and the card reads the latest
+    instant on or before that history day. The issuers view carries no
+    source, tax wrapper or asset class, so those pickers do not reach it.
+    A security no source names reads its key, which the privacy card
+    hides where it is a holding's own; the privacy card also
     drops the value."""
     tags = {"currency": currency_tag(), "benchmark": BENCHMARK_TAG, **_calendar_tags()}
     tail = PRIVACY_DESC if privacy else ""
@@ -3616,8 +3598,8 @@ def _rate(x):
 # A group's realized yield, pooled as yield.summarize pools a row's: its
 # holdings' income of the twelve months over the sum of their mean daily
 # values, over the assets, else over every row (gold macro
-# yield_realized_pct). The days are not in the table, so
-# the engine's thin rule for a row does not apply to a selection.
+# yield_realized_pct). The days are not in the table, so the engine's
+# thin rule for a row does not apply to a selection.
 REALIZED_YIELD = "yield_realized_pct(received_12m, mean_value, weighs)"
 
 # The value a group's income yield divides by, weighed as its rates are.
@@ -3663,12 +3645,11 @@ def yield_cards(db_id, privacy):
     """The Yield dashboard's cards, or with `privacy` their privacy
     variants: name -> (display, description, dataset_query, viz). Native
     SQL over the yield report's figures per holding (web_yield), a row set
-    per reporting currency and instant (today
-    and the last second of each of the twelve months before), so
-    {{currency}} is a row filter, as on Exposure. A figure as of a day
-    reads the latest day in the window, and a rate weighs the rows that
-    state it as yield.summarize does (_rate), so a figure is `wealthdb
-    yield global`'s over the same selection.
+    per reporting currency and instant (today and the last second of each
+    of the twelve months before), so {{currency}} is a row filter, as on
+    Exposure. A figure as of a day reads the latest day in the window, and
+    a rate weighs the rows that state it as yield.summarize does (_rate),
+    so a figure is `wealthdb yield global`'s over the same selection.
 
     A card with an expected figure reads today's projection
     (web_yield_parts) for today's selected holdings under the four
@@ -3936,10 +3917,10 @@ PROJECTED_DETAILED = tuple(sorted({d for ds in INCOME_DETAILED_TYPES.values() fo
 UNCATEGORIZED_CLASS = "(uncategorized)"
 OTHER_RECEIPTS = "other_receipts"
 # The operating-in class of an income line no holding pays, as the cash
-# flow statement classes it (cashflow_txn_nodes),
-# and as the cash flow projection keeps its other income (0169): a
-# line nothing placed, labelled UNCATEGORIZED, is the unresolved class,
-# any other one other receipts. A test holds it to the macro's.
+# flow statement classes it (cashflow_txn_nodes), and as the cash flow
+# projection keeps its other income (0169): a line nothing placed,
+# labelled UNCATEGORIZED, is the unresolved class, any other one other
+# receipts. A test holds it to the macro's.
 INCOME_LINE_CLASSES = {"earnings": ("INCOME_SALARY", "INCOME_GIG_ECONOMY", "INCOME_CONTRACTOR"),
                        "yield": ("INCOME_STAKING", "INCOME_ROYALTIES", "INCOME_ENERGY_FEED_IN"),
                        "benefits": ("INCOME_GOVERNMENT_BENEFITS", "INCOME_UNEMPLOYMENT",
@@ -3998,8 +3979,8 @@ def income_projected_cards(db_id, privacy):
     - what the holdings are expected to pay (web_yield_parts, under the
       projection's pickers);
     - the other income's run-rate (web_cashflow_plan's pool_income
-      and outside_income), by class and account: the
-      average of the income lines on every account a line arrives on.
+      and outside_income), by class and account: the average of the
+      income lines on every account a line arrives on.
 
     What was received is the Time range's: the picker reaches a card
     through the days web_income_days lists. What is expected is the
@@ -4420,8 +4401,8 @@ def income_projected_cards(db_id, privacy):
 # The parts of web_cashflow_plan the Income cards' run-rate reads: the
 # income lines on a day their account sits in the cash pool and
 # every other income line. So the run-rate reads the lines the
-# received half reads. The
-# cash flow projection reads the statement's other_income instead.
+# received half reads. The cash flow projection reads the statement's
+# other_income instead.
 RUN_RATE_PARTS = ("pool_income", "outside_income")
 
 # The cash flow projection's look-back parts (web_cashflow_plan) and the
@@ -4447,12 +4428,11 @@ def cashflow_plan_cards(db_id, privacy):
     (docs/CASHFLOW.md §12): the income projection's investment income and
     the principal its maturities return, read from today's projection
     (web_yield_parts, web_yield_rates, web_yield_events) under the four
-    projection pickers as the Income cards read
-    them, and split by the cash pool's accounts (web_cashflow_pool): the
-    rest is the vehicles' income. They are set against the look-back's
-    monthly averages a refresh stores (web_cashflow_plan). The cash flow
-    projection starts with the month after this
-    one, so month 0 never counts.
+    projection pickers as the Income cards read them, and split by the
+    cash pool's accounts (web_cashflow_pool): the rest is the vehicles'
+    income. They are set against the look-back's monthly averages a
+    refresh stores (web_cashflow_plan). The cash flow projection starts
+    with the month after this one, so month 0 never counts.
 
     The cards take the Currency and the projection's pickers and none of
     the dashboard's own: the look-back is fixed when a refresh writes
@@ -4554,9 +4534,9 @@ def bridge_cards(db_id, privacy):
     """The Cash Flow dashboard's bridge tiles, or with `privacy` their
     twins: name -> (display, description, dataset_query, viz). They read
     the months of `wealthdb returns bridge` (web_bridge), which sum to any
-    window. A bridge exists for the whole household
-    only, since returns do not add across grains, so the cards take the
-    Currency and the Time range and decline Source, Section and Investing.
+    window. A bridge exists for the whole household only, since returns do
+    not add across grains, so the cards take the Currency and the Time
+    range and decline Source, Section and Investing.
 
     The waterfall shows the window's changes alone, so its steps fill the
     chart, and two figures beside it state the net worth they lead from and
@@ -5913,12 +5893,12 @@ def spending_privacy_defs(db_id, model_ids):
     # is. As on the money tile, a delta line is not a merchant
     # transaction and is outside the ranking — including a card bill,
     # which names the issuer it was paid to rather than a merchant
-    # — but not outside the denominator: the shares
-    # are of the window's whole net spend, the anchor the twin's scalar
-    # reads as 100, so the total is summed apart from the ranked rows.
-    # A line the merchant store never named carries its own signature,
-    # so the ranking covers every non-delta line
-    # carrying a signature, at the signature's grain.
+    # — but not outside the denominator: the shares are of the window's
+    # whole net spend, the anchor the twin's scalar reads as 100, so the
+    # total is summed apart from the ranked rows. A line the merchant
+    # store never named carries its own signature, so the ranking covers
+    # every non-delta line carrying a signature, at the signature's
+    # grain.
     spend_card("Top 50 merchants (privacy)", "table",
         "Top fifty merchants, unnamed, as shares of net spend. A card "
         "issuer's bill is outside the ranking.",
@@ -6824,20 +6804,38 @@ def archive_all(base, sid, kind, ids):
     return n
 
 
-def ensure_models(base, sid, db_id, coll_id, by_name):
-    """Create/refresh the pre-defined report models in `coll_id`, and
-    archive any retired (renamed-away) ones. An unchanged model is left
-    in place. The models are content-free shims over the gold serving
-    tables and views — no source data is baked in. Returns model name ->
-    card id, or None on failure."""
-    payloads = {
+def model_payloads(db_id, coll_id):
+    """name -> /api/card payload of every report model. Sends nothing."""
+    return {
         name: card_payload(coll_id, name, "model", "table", desc,
                            {"type": "native", "database": db_id,
                             "native": {"query": query, "template-tags": {}}},
                            {})
         for name, (query, desc) in report_models().items()
     }
-    saved = upsert_cards(base, sid, by_name, payloads, "model")
+
+
+def card_payloads(db_id, coll_id, model_ids, colors):
+    """name -> /api/card payload of every question and privacy card over
+    the models in `model_ids`, a card that draws a series per source
+    with `colors` (source id -> colour). Sends nothing."""
+    payloads = {}
+    for name, (display, desc, query, viz) in question_defs(db_id, model_ids).items():
+        payloads[name] = card_payload(coll_id, name, "question", display,
+                                      desc, query, with_source_colors(viz, colors))
+    for name, (ctype, display, desc, query, viz) in privacy_card_defs(db_id, model_ids).items():
+        payloads[name] = card_payload(coll_id, name, ctype, display,
+                                      desc, query, with_source_colors(viz, colors))
+    return payloads
+
+
+def ensure_models(base, sid, db_id, coll_id, by_name):
+    """Create/refresh the pre-defined report models in `coll_id`, and
+    archive any retired (renamed-away) ones. An unchanged model is left
+    in place. The models are content-free shims over the gold serving
+    tables and views — no source data is baked in. Returns model name ->
+    card id, or None on failure."""
+    saved = upsert_cards(base, sid, by_name, model_payloads(db_id, coll_id), "model")
     if saved is None:
         return None
     ids, created, updated, skipped = saved
@@ -6856,13 +6854,7 @@ def ensure_cards(base, sid, db_id, coll_id, by_name, model_ids, colors=None):
     draws a series per source takes `colors` (source id -> colour).
     Returns card name -> id (the dashboards' tile lookup) and card name
     -> its description, or None on failure."""
-    payloads = {}
-    for name, (display, desc, query, viz) in question_defs(db_id, model_ids).items():
-        payloads[name] = card_payload(coll_id, name, "question", display,
-                                      desc, query, with_source_colors(viz, colors or {}))
-    for name, (ctype, display, desc, query, viz) in privacy_card_defs(db_id, model_ids).items():
-        payloads[name] = card_payload(coll_id, name, ctype, display,
-                                      desc, query, with_source_colors(viz, colors or {}))
+    payloads = card_payloads(db_id, coll_id, model_ids, colors or {})
     saved = upsert_cards(base, sid, by_name, payloads, "card")
     if saved is None:
         return None
@@ -7036,12 +7028,14 @@ def crossfilter_viz(card, param_ids):
         for c in cols}}
 
 
-def dashboard_payloads(defs, params, card_ids, dash_ids, titles, descs):
+def dashboard_payloads(defs, model_ids, card_ids, dash_ids, titles, descs):
     """name -> (description, parameters, tiles) of each dashboard in
     `defs` (dashboard_defs), in its order: the payload ensure_dashboards
-    sends. `params` is name -> its parameters (dashboard_parameters),
-    `dash_ids` name -> its id, and `titles` and `descs` are as
+    sends. Its parameters are dashboard_parameters over `model_ids`,
+    `dash_ids` is name -> its id, and `titles` and `descs` are as
     ensure_dashboards takes them. Sends nothing."""
+    params = {name: dashboard_parameters(model_ids, mode, name)
+              for name, (_desc, mode, _sibling, _tiles) in defs.items()}
     out = {}
     for name, (desc, mode, sibling, tiles) in defs.items():
         parameters = params[name]
@@ -7156,9 +7150,7 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     stored = _get_all(base, sid, {name: f"/api/dashboard/{existing[name]}"
                                   for name in defs if existing.get(name) is not None})
 
-    params = {name: dashboard_parameters(model_ids, mode, name)
-              for name, (_desc, mode, _sibling, _tiles) in defs.items()}
-    payloads = dashboard_payloads(defs, params, card_ids, dash_ids, titles, descs)
+    payloads = dashboard_payloads(defs, model_ids, card_ids, dash_ids, titles, descs)
     for name, (desc, parameters, dashcards) in payloads.items():
         current = stored.get(name)
         if dashboard_unchanged(current, name, desc, parameters, dashcards):

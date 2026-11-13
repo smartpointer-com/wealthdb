@@ -12,12 +12,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# Engine stub: prints the mcp-config lines in $tmp/mcp-config. mcp/mcp
-# resolves WEALTHDB from WEALTHDB_BIN when it is SOURCED, so the stub is
-# exported before the source line.
+# Engine stub: records its argv (one arg per line) and prints the
+# `config-env mcp` lines in $tmp/config-env-mcp. mcp/mcp resolves
+# WEALTHDB from WEALTHDB_BIN when it is SOURCED, so the stub is exported
+# before the source line.
 cat > "$tmp/engine-stub" <<EOF
 #!/bin/sh
-cat "$tmp/mcp-config"
+printf '%s\n' "\$@" > "$tmp/engine-args"
+cat "$tmp/config-env-mcp"
 EOF
 chmod +x "$tmp/engine-stub"
 export WEALTHDB_BIN="$tmp/engine-stub"
@@ -59,7 +61,7 @@ $(seq 1 300000)"
 
 config() { # enabled port auth insecure
     printf 'WEALTHDB_MCP_ENABLED=%s\nWEALTHDB_MCP_PORT=%s\nWEALTHDB_MCP_CONFIG_AUTH=%s\nWEALTHDB_MCP_CONFIG_INSECURE=%s\nWEALTHDB_GOLD_DB=%s\n' \
-        "$1" "$2" "$3" "$4" "'$tmp/gold.db'" > "$tmp/mcp-config"
+        "$1" "$2" "$3" "$4" "'$tmp/gold.db'" > "$tmp/config-env-mcp"
 }
 
 echo "== _publish_args =="
@@ -152,7 +154,14 @@ if WEALTHDB_MCP_TOKEN=short _ensure_token 2>/dev/null; then fail "short env toke
 echo "== _load_config (env forms win) =="
 config 1 3300 token 0
 unset WEALTHDB_MCP_AUTH WEALTHDB_MCP_INSECURE
-_load_config
+WEALTHDB_CONFIG= _load_config
+if [ "$(cat "$tmp/engine-args")" = "$(printf 'config-env\nmcp')" ]; then
+    pass "asks the engine for config-env mcp"
+else fail "asks the engine for config-env mcp"; cat "$tmp/engine-args"; fi
+WEALTHDB_CONFIG=/cfg/wealthdb.cfg _load_config
+if [ "$(cat "$tmp/engine-args")" = "$(printf -- '-c\n/cfg/wealthdb.cfg\nconfig-env\nmcp')" ]; then
+    pass "...with -c WEALTHDB_CONFIG before it"
+else fail "...with -c WEALTHDB_CONFIG before it"; cat "$tmp/engine-args"; fi
 check     "port read back"         "3300"                                         "$PORT"
 check     "auth read back"         "token"                                        "$AUTH"
 WEALTHDB_MCP_AUTH=none WEALTHDB_MCP_INSECURE=1 _load_config

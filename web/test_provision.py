@@ -33,6 +33,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import provision as p                                   # noqa: E402
+import tile_timings as tt                                # noqa: E402
 
 FAILS = 0
 
@@ -3847,11 +3848,12 @@ check("no model reads a list column",
 section("the projection cards' SQL, run on an invented book")
 
 # The cards' SQL, rendered the way Metabase fills its template tags and
-# run on DuckDB over migration 0138's tables. The book is small and
-# invented, and each figure below is worked out by hand in its comment,
-# so a wrong join, horizon or weighing changes a number. These are the
-# only checks that run the projection's SQL, so a host without the
-# duckdb module fails here rather than passing without them.
+# run on DuckDB over the yield and income tables and their derived
+# views. The book is small and invented, and each figure below is
+# worked out by hand in its comment, so a wrong join, horizon or
+# weighing changes a number. These are the only checks that run the
+# projection's SQL, so a host without the duckdb module fails here
+# rather than passing without them.
 try:
     import duckdb
 except ImportError:
@@ -3895,35 +3897,20 @@ if duckdb is not None:
           ordered_series(*_latest, legend_last="low") == ["low", "nil-a", "nil-b", "tied-a", "tied-b", "Benchmark"])
 
 _FIELD = {v: k for k, v in p.FIELD_IDS.items()}
+# The day a relative window counts from, fixed so the checks do not move
+# with the calendar.
+_RENDER_TODAY = dt.date(2026, 6, 30)
 
 
 def _render(query, values):
-    """Card `query`'s SQL with its tags filled as Metabase fills them: a
-    variable takes its value, else its default; a field filter given
-    values becomes a predicate on its column, a date one given its first
-    and last day a range; an optional clause whose tag has no value drops
-    out."""
-    sql, tags = query["native"]["query"], query["native"]["template-tags"]
-
-    def value(name):
-        return values.get(name, tags[name].get("default"))
-
-    def fill(name):
-        tag, v = tags[name], value(name)
-        if tag["type"] == "dimension":
-            table, col = _FIELD[tag["dimension"][1]]
-            if tag["widget-type"].startswith("date"):
-                return f'"main"."{table}"."{col}" BETWEEN DATE \'{v[0]}\' AND DATE \'{v[1]}\''
-            return f'"main"."{table}"."{col}" IN (' + ", ".join(f"'{x}'" for x in v) + ")"
-        return str(v) if tag["type"] == "number" else f"'{v}'"
-
-    def clause(m):
-        names = re.findall(r"\{\{(\w+)\}\}", m.group(1))
-        if any(value(n) is None for n in names):
-            return ""
-        return re.sub(r"\{\{(\w+)\}\}", lambda x: fill(x.group(1)), m.group(1))
-    sql = re.sub(r"\[\[(.*?)\]\]", clause, sql, flags=re.S)
-    return re.sub(r"\{\{(\w+)\}\}", lambda x: fill(x.group(1)), sql)
+    """Card `query`'s SQL with its tags filled as Metabase fills them
+    (tile_timings.render). A date field filter takes its (first, last)
+    day as the range `first~last`."""
+    tags = query["native"]["template-tags"]
+    picked = {name: f"{v[0]}~{v[1]}"
+              if tags.get(name, {}).get("widget-type", "").startswith("date") and isinstance(v, (list, tuple))
+              else v for name, v in values.items()}
+    return tt.render(query, picked, _FIELD, _RENDER_TODAY)
 
 
 def _month_start(m):
@@ -3933,8 +3920,9 @@ def _month_start(m):
 
 
 def _book():
-    """A DuckDB holding migrations 0138's and 0146's tables and views, the
-    few gold objects their views read, and the invented book:
+    """A DuckDB holding the tables of migrations 0138, 0146, 0149 and 0169
+    with the derived views and macros they define (_migration_objects),
+    the few gold objects those views read, and the invented book:
 
     - src-1/acct-1 (USD): cash of 12,000 at the USD benchmark less 1.00,
       and a bond of 8,000 paying 400 in months 2, 8, 14, 20, 26 and 32,
@@ -5716,7 +5704,6 @@ check("without --dump, --base, --email and --gold-path are still required",
 # ---- the tile timings tool --------------------------------------------
 
 section("the tile timings tool")
-import tile_timings as tt                                # noqa: E402
 
 check("it runs the DuckDB release of the driver web/Dockerfile pins",
       _driver and tt.duckdb_release().split(".")[:2] == list(_driver.groups()), tt.duckdb_release())
@@ -5749,6 +5736,7 @@ _windows = {"past12months~": ("2025-11-01", "2026-11-30"), "past3months": ("2026
             "past30days~": ("2026-10-13", "2026-11-12"), "past2years": ("2024-01-01", "2025-12-31"),
             "past1quarters~": ("2026-07-01", "2026-12-31"), "thisday": ("2026-11-12", "2026-11-12"),
             "thisweek": ("2026-11-08", "2026-11-14"), "next2weeks": ("2026-11-15", "2026-11-28"),
+            "next2weeks~": ("2026-11-08", "2026-11-28"),
             "2024-03-01~2024-04-30": ("2024-03-01", "2024-04-30"), "~2024-04-30": (None, "2024-04-30"),
             "2024-03-01~": ("2024-03-01", None), "2025-12-31": ("2025-12-31", "2025-12-31")}
 _got = {v: tuple(d and d.isoformat() for d in tt.date_window(v, _today)) for v in _windows}
@@ -5814,16 +5802,21 @@ if duckdb is not None:
         check("...one under another DuckDB release does not run", _other[0] == "release:" + _rel, _other)
         check("...and one past the timeout is killed", _slow[0] == "timeout", _slow)
 
-        _mini = {"ids": {"cards": {"Tile": 2}, "fields": {"t.v": 1}},
+        # An ok tile, an MBQL one the tool skips and one whose query fails.
+        _mini = {"ids": {"cards": {"Tile": 2, "Mbql": 3, "Bad": 4}, "fields": {"t.v": 1}},
                  "models": {"m": {"dataset_query": {"type": "native", "native": {
                      "query": "SELECT v FROM t", "template-tags": {}}}}},
                  "cards": {"Tile": {"dataset_query": {"type": "native", "native": {
                      "query": "SELECT v FROM t WHERE TRUE [[AND {{v}}]]", "template-tags": {
                          "v": {"type": "dimension", "widget-type": "number/=",
-                               "dimension": ["field", 1, None], "default": None}}}}}},
+                               "dimension": ["field", 1, None], "default": None}}}}},
+                           "Mbql": {"dataset_query": {"type": "query", "query": {"source-table": 1}}},
+                           "Bad": {"dataset_query": {"type": "native", "native": {
+                               "query": "SELECT nope FROM t", "template-tags": {}}}}},
                  "dashboards": {"D": {"parameters": [{"id": "p1", "default": [1]}], "dashcards": [
                      {"card_id": None}, {"card_id": 2, "parameter_mappings": [
-                         {"parameter_id": "p1", "target": ["dimension", ["template-tag", "v"]]}]}]}}}
+                         {"parameter_id": "p1", "target": ["dimension", ["template-tag", "v"]]}]},
+                     {"card_id": 3, "parameter_mappings": []}, {"card_id": 4, "parameter_mappings": []}]}}}
         _dump_path, _tsv = os.path.join(_d, "dump.json"), os.path.join(_d, "out.tsv")
         with open(_dump_path, "w", encoding="utf-8") as _f:
             json.dump(_mini, _f)
@@ -5837,9 +5830,14 @@ if duckdb is not None:
         with open(_tsv, encoding="utf-8") as _f:
             _rows = [line.split("\t") for line in _f.read().splitlines()]
         check("the tool writes one line per query: status, exit, seconds, memory and rows",
-              _rc == 0 and _rows[0] == list(tt.COLUMNS)
+              _rows[0] == list(tt.COLUMNS)
               and [r[:5] + r[8:] for r in _rows[1:]] == [["D", "Tile", "native", "ok", "0", "1"],
+                                                       ["D", "Mbql", "mbql", "skipped", "", ""],
+                                                       ["D", "Bad", "native", "error:BinderException", "1", ""],
                                                        ["", "m", "model", "ok", "0", "3"]], _rows)
+        check("...an MBQL tile a line of its own with empty cells",
+              _rows[2] == ["D", "Mbql", "mbql", "skipped", "", "", "", "", ""], _rows[2])
+        check("...and it exits 1 when a query does not run", _rc == 1, _rc)
 
 
 if FAILS:

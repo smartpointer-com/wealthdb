@@ -8,7 +8,7 @@ to use it; [AGENTS.md](AGENTS.md) holds the rules for changing it.
 | Piece | Where | What |
 | --- | --- | --- |
 | Server | `wealthdb/cmd/wealthdb/mcp_*.go`, `cmd_mcp_serve.go` | the `mcp-serve` subcommand: protocol, tools, rows, rendering, auth |
-| Settings | `cmd_mcp_config.go`, `internal/config` | the `mcp` block, read back by the hidden `mcp-config` |
+| Settings | `cmd_config_env.go`, `internal/config` | the `mcp` block, read back by the hidden `config-env mcp` |
 | Lifecycle | `mcp/mcp` | `docker run` geometry, token, status, the stdio launcher |
 
 The server is a second front-end over the reports the CLI runs. Each
@@ -88,9 +88,10 @@ resolved dates, for a stdio session that outlives the day.
 
 `wealthdb mcp start|stop|status|restart|logs|stdio|url`, modelled on
 `wealthdb web`: the wrapper delegates to `mcp/mcp`, which reads the
-settings back through the hidden `mcp-config`, the engine being the one
-JSON reader. There is no `build` (it is the engine image) and no
-`refresh` (live gold).
+settings back through the hidden `config-env mcp`
+([DESIGN.md §4.1](../wealthdb/docs/DESIGN.md#41-subcommands)), the
+engine being the one JSON reader. There is no `build` (it is the engine
+image) and no `refresh` (live gold).
 
 ```
 docker run -d --name wealthdb-mcp --restart unless-stopped \
@@ -224,7 +225,7 @@ narrow ones:
 
 Not exposed, because they write or prompt: `config`, `init`, `load`,
 `reset`, `reload`, `compact`, `lots`, `categorize`, `resolve-symbols`,
-`categorizations --forget`, `web-*`, `mcp-config`. There is no SQL tool
+`categorizations --forget`, `web-*`, `config-env`. There is no SQL tool
 and no grouping beyond what the reports do.
 
 `describe` and the resources (`wealthdb://guide`,

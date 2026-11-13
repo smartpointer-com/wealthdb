@@ -67,7 +67,7 @@ port-forward; auth is Metabase's own login.
   beside every other macro and view of gold. A view is added or changed
   there, never in a migration.
   [derived/README.md](../wealthdb/internal/gold/derived/README.md) says
-  how: edit the body, take the next number, append it to `LOCK`.
+  how.
 - A card that starts reading a new view or table raises
   `MIN_GOLD_SCHEMA` to the gold schema version that brings it: the
   derived version for a view, the migration for a table. A test holds

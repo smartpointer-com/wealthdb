@@ -15,10 +15,12 @@ trap 'rm -rf "$tmp"' EXIT
 
 # Engine stub: web/web resolves WEALTHDB from WEALTHDB_BIN when it is
 # SOURCED, so the stub must be exported before the source line. It
-# records its argv (one arg per line) for the materialize tests.
+# records its argv (one arg per line) for the materialize and config
+# tests, and prints $tmp/engine-out where that file exists.
 cat > "$tmp/engine-stub" <<EOF
 #!/bin/sh
 printf '%s\n' "\$@" > "$tmp/engine-args"
+cat "$tmp/engine-out" 2>/dev/null || true
 EOF
 chmod +x "$tmp/engine-stub"
 export WEALTHDB_BIN="$tmp/engine-stub"
@@ -169,6 +171,21 @@ check "passes -c with WEALTHDB_CONFIG" "-c"                "$args"
 check "passes the configured path"     "/cfg/wealthdb.cfg" "$args"
 check "still invokes web-materialize"  "web-materialize"   "$args"
 unset WEALTHDB_CONFIG
+
+echo "== _load_config (stubbed engine) =="
+printf 'WEALTHDB_WEB_ENABLED=1\nWEALTHDB_WEB_PORT=3100\nWEALTHDB_GOLD_DB=%s\n' "'$tmp/gold.db'" > "$tmp/engine-out"
+cfg_out="$(
+    docker() { :; }
+    _load_config && printf '%s %s %s\n' "$ENABLED" "$PORT" "$GOLD_DB"
+    tr '\n' ' ' < "$tmp/engine-args"; echo
+    WEALTHDB_CONFIG="/cfg/wealthdb.cfg" _load_config
+    tr '\n' ' ' < "$tmp/engine-args"
+)"
+check_eq "it asks the engine for config-env web and reads the settings back" \
+    "1 3100 $tmp/gold.db
+config-env web 
+-c /cfg/wealthdb.cfg config-env web " "$cfg_out"
+rm -f "$tmp/engine-out"
 
 echo "== a failed materialize repeats the engine's error line =="
 # An engine that runs a phase, then fails as DuckDB's assertion does:

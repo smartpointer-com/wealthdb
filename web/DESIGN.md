@@ -12,11 +12,12 @@ verb (like `build`) and execs [`web/web`](web), which drives `docker`
 on the host. The Go engine stays pure (CLI/query only; no daemon).
 
 The one thing the host script needs from the engine is config it cannot
-easily parse itself (`wealthdb.cfg` is JSON, validated in Go): it calls
-`wealthdb web-config`, a hidden read-only subcommand that prints the
-resolved `web.enabled`, `web.port`, `gold_db`, `default_currency` and
-`lots.missing_basis` as shell-evalable `KEY=VALUE` lines. One source of truth (the Go parser), no
-`jq` dependency, no bash JSON parsing.
+easily parse itself (`wealthdb.cfg` is JSON, validated in Go). It calls
+`wealthdb config-env web`, a hidden read-only subcommand
+([DESIGN.md §4.1](../wealthdb/docs/DESIGN.md#41-subcommands)). It prints
+the resolved `web.enabled`, `web.port`, `gold_db`, `default_currency`
+and `lots.missing_basis` as shell-evalable `KEY=VALUE` lines. One source
+of truth (the Go parser), no `jq` dependency, no bash JSON parsing.
 
 ## 2. Read-only snapshot, not the live gold file
 
@@ -237,7 +238,7 @@ Every Currency picker, and every card opened on its own, defaults to
 and to USD otherwise. A native card opened on its own runs at its
 template variables' defaults, an MBQL card over every row of its model.
 Its description does not say so. `web/web` passes it to
-`provision.py` from `wealthdb web-config`. The
+`provision.py` from `wealthdb config-env web`. The
 Wealth Overview's three headline figures read `web_sources_latest`
 (`derived/90_web.sql`), each account at its latest active
 snapshot, so they print what `wealthdb holdings sources` prints. They
@@ -516,14 +517,13 @@ leaves its type out:
 - expected: what the holdings are expected to pay (`web_yield_parts`),
   and the other income's run-rate, by operating-in class and account
   (`web_cashflow_plan`). It is the average of the income lines, split
-  by each line's day. A line on a day its account sits in the cash
-  pool is `pool_income`. Any other line is
-  `outside_income`, such as a wage paid into a retirement
-  account. An account under a dated wrapper override has lines on both
-  sides. So each class on an account expects what it received on
-  average. The cash flow projection reads the statement's
-  `other_income` (0169) instead. The statement also counts lines no
-  income line holds, such as a reimbursement.
+  by each line's day. A line on a day its account sits in the cash pool
+  is `pool_income`. Any other line is `outside_income`, such as a wage
+  paid into a retirement account. An account under a dated wrapper
+  override has lines on both sides. So each class on an account expects
+  what it received on average. The cash flow projection reads the
+  statement's `other_income` (0169) instead. The statement also counts
+  lines no income line holds, such as a reimbursement.
 
 The two received sources convert a line each at its own day's rate,
 but by two reports. So "Income received" equals Net income to rounding.
@@ -558,32 +558,31 @@ The dashboard reads in this order:
 - the largest receipts.
 
 The Time range sets every figure of what was received, and the Horizon
-every figure of what is expected: the rest of the current month and
-the horizon's months after it. The run-rate's months are the calendar
+every figure of what is expected: the rest of the current month and the
+horizon's months after it. The run-rate's months are the calendar
 months after the current one. In the current month a run-rate expects
 its monthly figure less what its class and account received so far,
-never below 0. A wage arrives on a pay day, not spread over the days.
-A figure of what was received depends on no assumption, so it takes no
-projection picker. On the base dashboard a
-figure of what is expected takes no Time range. On the twin it is a
-share of both halves, so it takes the Time range too.
+never below 0. A wage arrives on a pay day, not spread over the days. A
+figure of what was received depends on no assumption, so it takes no
+projection picker. On the base dashboard a figure of what is expected
+takes no Time range. On the twin it is a share of both halves, so it
+takes the Time range too.
 
 A card reads several views, and a picker reaches one template tag of a
-card. So the Time range is bound to `web_income_days`,
-one row per day to today from the first income line, the
-first day tax was withheld, or 1 January of last year, whichever is
-earliest. A card
-keeps the received rows and the withheld tax of the days it selects. It
-also counts its months by them: each day counts its share of its month.
-The Horizon counts its months and the rest of the current one. The
-monthly average divides by both. With no Time range, a card counts
-every other line, as Net income does. The Source, Account and Tax
-wrapper field filters are bound to the views their dropdowns list. The
-source and the tax wrapper bind `web_sources_latest`, which holds every
-account's, and the account binds `web_income`. Each view the card reads
-keeps the rows whose source, account or tax wrapper those select. The
-tax booked and the run-rate carry no tax wrapper of their own, so they
-keep their account's.
+card. So the Time range is bound to `web_income_days`, one row per day
+to today from the first income line, the first day tax was withheld, or
+1 January of last year, whichever is earliest. A card keeps the
+received rows and the withheld tax of the days it selects. It also
+counts its months by them: each day counts its share of its month. The
+Horizon counts its months and the rest of the current one. The monthly
+average divides by both. With no Time range, a card counts every other
+line, as Net income does. The Source, Account and Tax wrapper field
+filters are bound to the views their dropdowns list. The source and the
+tax wrapper bind `web_sources_latest`, which holds every account's, and
+the account binds `web_income`. Each view the card reads keeps the rows
+whose source, account or tax wrapper those select. The tax booked and
+the run-rate carry no tax wrapper of their own, so they keep their
+account's.
 
 The Type picker lists the income lines' labels. A row of the six types
 keeps its type where a picked label's detailed type maps to it, the
@@ -1262,8 +1261,19 @@ Exposure and Allocation cards among them. So the tests need the
 test-web` runs them in a venv of its own, `web/.venv`, that holds it
 (`web/requirements-test.txt`). Whether Metabase *accepts* a payload
 needs a live instance: `demo/check_dashboards.py` runs every card of a
-running demo Metabase through its API (demo/README.md). The Go side
-(`web` config block, validation, the `web-config` emitter,
+running demo Metabase through its API (demo/README.md).
+
+Two tools sit beside these tests:
+
+- `provision.py --dump FILE` writes every payload a provision into an
+  empty collection sends, with no connection. Two trees' dumps diff to
+  what a change does to the cards.
+- `web/tile_timings.py DUMP DB OUT.tsv` runs each tile's query from
+  that dump on a gold file, under the DuckDB release the driver
+  bundles. It writes each query's seconds, peak memory and row count.
+
+The Go side
+(`web` config block, validation, the `config-env` emitter,
 `MaterializeReturns`, `MaterializeGains`, `MaterializeExposure`,
 `MaterializeYield`, `MaterializeServingTables` and the
 `web-materialize` command) is covered by `go test ./...` (`make
