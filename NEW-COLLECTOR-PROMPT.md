@@ -184,7 +184,11 @@ and move on.
    form actually asks for once explore shows it); env only, never
    argv; ask the user to create the file, stating the exact variable
    names. Verify make build-<name> and make test-<name> resolve via
-   the root Makefile's auto-discovery.
+   the root Makefile's auto-discovery. A wrapper's and an entrypoint's
+   command lines are pinned in shared/wrappers/tests/golden/, so a new
+   collector fails make test-wrappers until its files exist.
+   make test-wrappers UPDATE_GOLDEN=1 writes them; review the diff
+   before committing it.
 2. **Explore** (live, user-triggered) — verify the knowns and answer
    the open questions, recorded in DESIGN.md sections that state the
    source's behaviour as fact (no dates, no session counts): bot-defense

@@ -133,9 +133,26 @@ wealthdb resolutions [-s <id>]        (RO)    Dump the symbol_resolutions table 
 wealthdb categorize [spending|income] (RW)    Categorise the unplaced merchants and payers via the configured LLM.
 wealthdb categorizations [spending|income] (RO) Dump the model-derived verdict stores; --forget SIG removes one (RW).
 wealthdb mcp-serve --stdio | --http ADDR (RO) Serve the read-only reports to AI agents over MCP (mcp/DESIGN.md).
+wealthdb web <verb>                   (host)  The dashboards (web/README.md).
+wealthdb mcp <verb>                   (host)  The MCP server (mcp/README.md).
 wealthdb version                      (RO)    Print the version: a release tag, or `<last release> nightly <commit>`.
 wealthdb help [<subcommand> | filter | benchmarks]
 ```
+
+`(host)` marks a command the host-side `wealthdb` wrapper serves, not
+the engine binary.
+
+Three hidden commands serve the host scripts and the collectors.
+`help` does not list them.
+
+- `config-env web|mcp|sources` prints one block of the resolved config
+  as shell `KEY=VALUE` lines. The `web` and `mcp` wrappers read their
+  settings through it. `sources` prints one line per silver path, for
+  host scripts.
+- `web-materialize` rewrites the report and serving tables
+  ([web/DESIGN.md §8](../../web/DESIGN.md#8-materialized-returns-gains-exposure-yield-and-serving-tables)).
+- `refdata-wanted` prints the wanted list
+  ([adapters/refdata.md §5](adapters/refdata.md#5-the-wanted-list)).
 
 `-a` means "all configured silver sources". `<id>` is the
 `silver_source_id` the config file defines.
@@ -556,10 +573,12 @@ a write.
 release the DuckDB handle across their model calls, so readers are
 not shut out for the length of a run. Both send their candidates
 in batches and store each batch's answers as it completes. Re-taking
-the handle to store them can lose the race against a reader
-that got in meanwhile, so that store is retried on a short bounded
-backoff, and a final failure prints the unstored answers in the
-`--dry-run` plan format rather than discarding what was paid for.
+the handle to store them can lose the race against a reader that got
+in meanwhile. A batch whose store fails holds its answers, and the
+next batch's store writes them. At the end of the run, whatever is
+still held is retried on a short bounded backoff. If that fails too,
+the unstored answers are printed in the `--dry-run` plan format rather
+than discarded.
 
 #### Subcommand gating
 
@@ -579,11 +598,12 @@ crash.
 | RO subcommand on non-existent DB | 3 | `wealthdb: gold database '<path>' does not exist. Run 'wealthdb init' first (requires write access).` |
 | `init` on existing DB | 4 | `wealthdb: gold database '<path>' already exists. Use 'wealthdb reset -a' to clear data, or delete the file manually if you really want a fresh DB.` |
 | DuckDB open fails mid-run | 5 | the driver's own error, passed through whole and prefixed by the stage that hit it: `wealthdb: ping duckdb "<path>": <driver error>` (or `open duckdb` / `migrate gold`) |
+| Gold written by a newer wealthdb, or at a newer schema | 5 | `wealthdb: gold "<path>": binary is older than the database's last writer` with both commits and the rebuild command, or `wealthdb: gold "<path>": binary is older than the database's last writer: the database is at schema <N>, and this binary knows schema <M> at most` |
 | Write subcommand while another holds the write mutex | 5 | `wealthdb: '<cmd>' cannot write '<path>': another wealthdb write command (load / reset / reload / compact / lots / categorize / categorizations --forget / resolve-symbols / web-materialize) is running and holds '<path>.wealthdb.lock'. Wait for it to finish and re-run.` |
 | Silver DB unreadable during load | 6 (reserved) | not emitted: a silver open failure returns a plain error and exits 1 |
 
-`<reason>` in row 1 is one of: `parent directory not writeable`,
-`file mode lacks owner write bit`, `mounted read-only`, etc. The
+`<reason>` in row 1 is one of: `parent directory is not writeable`,
+`gold database file is not writeable`. The
 DuckDB-open row synthesises nothing — no cause of its own and no hint:
 the driver's message is the whole diagnosis, and the case worth
 branching on is the lock conflict
@@ -1011,7 +1031,7 @@ Example config file:
 | `spending.categorization.descriptor_samples` | integer | Optional, 0–20, default 3. Caps the raw narratives sent per merchant at the two context levels that send any. Range-checked even at the `merchant` level, where nothing reads it. |
 | `spending.categorization.fence_person_names` | boolean | Optional, **default `true`**. Keeps a signature that is a bare person's name — two or more all-letter tokens with no organisation marker — off a non-card account out of the model tier, at every context level. Turn it off only when the model endpoint is on this machine: a person's name is the one signature shape that is PII by itself, and every other arm of the fence reads a marker beside the name rather than the name. Card rows are exempt by construction (most card merchants are two plain words). `income.categorization` inherits it with the rest of the block. See docs/SPENDING.md §5. |
 | `symbol_resolution` | object | Optional. Groups the knobs for `wealthdb resolve-symbols`: the LLM endpoint (`model`) and the ticker-mapping override list (`overrides`). Both inner fields optional; the subcommand fails if `model` is unset and `--overrides-only` was not passed. |
-| `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported today. |
+| `symbol_resolution.model` | object | Optional. LLM endpoint used to back-fill missing instrument tickers (`baseUrl`, `api`, `apiKey`, `name`). Only the OpenAI-compatible Chat Completions API (`api: "openai-completions"`) is supported. A `thinkingFormat` key is accepted and ignored: `<think>` stripping runs for every model. |
 | `symbol_resolution.overrides[]` | array | Optional. User-authored ticker-mapping overrides applied at the start of every run under `model_name='manual-override'`. Each entry keys on `silver_source_id` + `lookup_kind` (`instrument_external_id` or `name`) + `lookup_value`; set `symbol` to correct a ticker, or `delete: true` to suppress a row where no real ticker exists. |
 
 ### 5.2 Adapter kinds
@@ -1548,15 +1568,18 @@ config file. Two directories under `internal/gold/` define the schema:
   new table, column or data move is a new file. A migration creates and
   reads no macro or view.
 - `derived/*.sql` hold every macro and view, each in one place. The set
-  applies whole, after the migrations, when the database is below its
-  version or carries another hash. To change a macro or a view, edit
-  its body there, take the next free number and append it to
-  `derived/LOCK`.
+  applies whole, after the migrations.
   [derived/README.md](../internal/gold/derived/README.md) states the
-  contract.
+  contract and how to change an object.
 
 The migrations and the derived versions share one number line. The
 newest of them is the gold schema version.
+
+A read-write open applies what the database lacks. It runs the
+migrations above the database's version, then the derived set where
+the version or the hash differs. A read-only open applies nothing.
+Every open refuses a database at a newer schema than the binary, or
+one last written by a newer build (§4.10, the exit table).
 
 ### 7.1 Conventions
 
@@ -1646,6 +1669,8 @@ is documented where it is used:
 
 - `symbol_resolutions` (migration `0006`) — §4.1, `resolutions`.
 - `binary_versions` (migration `0012`).
+- `derived_state` (migration `0180`), the hash of the derived set the
+  database carries (§7).
 - `report_returns` (migration `0026`) — §10.9.
 - `report_bridge` (migration `0177`) — the net worth bridge by month
   ([RETURNS-NOTES.md](RETURNS-NOTES.md), "The net worth bridge").
@@ -1667,6 +1692,8 @@ is documented where it is used:
 - The serving table `report_cashflow_plan` (migration `0149`) —
   §10.12.
 - The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
+- `transfer_links` (migration `0182`), each own-account move's far
+  side, partner leg and evidence (docs/SPENDING.md §8).
 - `materialize_inputs` (migration `0155`), the inputs the last
   `web-materialize` built from — web/DESIGN.md §8.
 - The spending overlay: `spend_categories` (migration `0040`;
@@ -1685,7 +1712,8 @@ is documented where it is used:
 -- META / BOOKKEEPING
 -- ============================================================
 
--- Applied gold migrations. Each migration ends with an INSERT here.
+-- The schema versions applied. Each migration ends with an INSERT
+-- here, and so does each derived version (§7).
 CREATE TABLE schema_meta (
     gold_schema_version INTEGER PRIMARY KEY,
     applied_at          BIGINT  NOT NULL    -- Unix seconds UTC
@@ -2567,48 +2595,36 @@ data.
 
 ## 9. Reset semantics
 
-`wealthdb reset <id>` runs:
+`wealthdb reset <id>` deletes the source's rows from every per-source
+table in one transaction. `gold.SourceTables`
+(`internal/gold/tables.go`) lists these tables in delete order:
 
-```sql
-BEGIN TRANSACTION;
-DELETE FROM symbol_resolutions    WHERE silver_source_id = ?;
-DELETE FROM spend_txn_enrichment  WHERE silver_source_id = ?;
-DELETE FROM income_txn_enrichment WHERE silver_source_id = ?;
-DELETE FROM lots                  WHERE silver_source_id = ?;  -- and lot_disposals, lot_realized,
-                                                               -- lot_findings, lot_anchors
-DELETE FROM fund_compositions     WHERE silver_source_id = ?;  -- and the other reference
-                                                               -- tables (§7.6)
-DELETE FROM transactions          WHERE silver_source_id = ?;
-DELETE FROM realized_lots         WHERE silver_source_id = ?;
-DELETE FROM fx_rates              WHERE silver_source_id = ?;
-DELETE FROM cash_balances         WHERE silver_source_id = ?;
-DELETE FROM position_lots         WHERE silver_source_id = ?;
-DELETE FROM positions             WHERE silver_source_id = ?;
-DELETE FROM instruments           WHERE silver_source_id = ?;
-DELETE FROM accounts              WHERE silver_source_id = ?;
-DELETE FROM portfolios            WHERE silver_source_id = ?;
-DELETE FROM load_audit            WHERE silver_source_id = ?;
-DELETE FROM silver_sources        WHERE silver_source_id = ?;
-COMMIT;
-```
+1. the derived tables: `symbol_resolutions`, the two enrichment
+   overlays, `transfer_links`, `spend_reimbursement_pairs`,
+   `account_wrapper_history` and the lot ledger;
+2. the reference tables (§7.6);
+3. the facts;
+4. the dimensions;
+5. the registration: `load_audit`, then `silver_sources`.
 
-The order is facts, then dimensions, then registration: the order the
-documented foreign keys would need (§7.1). The silver database
-itself is untouched. The watermark is removed with the
+This is the order the documented foreign keys would need (§7.1). The
+silver database itself is untouched. The watermark is removed with the
 `silver_sources` row, so a follow-up `wealthdb load <id>` starts
 fresh (treating `high_watermark` as -1).
 
-`symbol_resolutions`, the two enrichment tables and the lot ledger go
-with the rest because all are per-source derived data. The next
-resolve, enrichment or lot pass regenerates them. Six tables deliberately
-survive, two per family: the verdict stores `spend_merchant_categories`
-and `income_payer_categories` are global knowledge keyed by signature,
-with no source column and verdicts that were paid for, and the scope
-stamps `spend_account_scope`, `income_account_scope`,
-`cashflow_account_scope` and `cashflow_wrapper_sides` are configuration
-stamped into gold and re-stamped whole by every enrichment pass — the
-`fx_priority` precedent rather than source data. Lifecycle table:
-docs/SPENDING.md §8. The invariant is pinned by
+The derived tables go with the rest because they hold per-source
+derived data. The next resolve, enrichment or lot pass regenerates
+them. Six tables survive, two per family:
+
+- The verdict stores `spend_merchant_categories` and
+  `income_payer_categories` are global knowledge keyed by signature.
+  They have no source column, and their verdicts were paid for.
+- The scope stamps `spend_account_scope`, `income_account_scope`,
+  `cashflow_account_scope` and `cashflow_wrapper_sides` are
+  configuration stamped into gold. Every enrichment pass re-stamps them
+  whole, as `fx_priority` is, so they are not source data.
+
+Lifecycle table: docs/SPENDING.md §8. The invariant is pinned by
 `TestResetClearsEnrichmentKeepsMerchantStore` and
 `TestResetClearsBothOverlays`.
 
@@ -2617,7 +2633,9 @@ docs/SPENDING.md §8. The invariant is pinned by
 compact file, which is swapped over the live path. The three paid
 stores are carried across (`carryVerdictStore`, once per entry in
 `paidStores`): the merchant store, the payer store and
-`symbol_resolutions`. The rebuild first opens the outgoing file
+`symbol_resolutions`. The `cashflow_wrapper_sides` boundary is carried
+too, so the first pass in the rebuilt file does not report itself as
+the first. The rebuild first opens the outgoing file
 read-write once, which migrates it as any load does. Both files then
 have one schema, and each store is copied by name. A file older than
 migration 0111 is respelled by that migration, so no retired spelling
@@ -3338,7 +3356,7 @@ The exposure macros look every holding through to what it holds.
 [EXPOSURE.md](EXPOSURE.md) defines every figure they return.
 
 Migrations 0126, 0128 and 0129 create the derived tables, and
-migrations 0127, 0130 and 0138 the dashboard's tables (below). The
+migrations 0127, 0130, 0138 and 0165 the dashboard's tables (below). The
 macros live in `derived/60_exposure.sql`, the dashboard's views in
 `derived/90_web.sql`.
 The exposure pass (`gold.RebuildExposure`) runs after the lot pass at
@@ -3874,6 +3892,27 @@ cp "$GOLD" ~/gold-check/before.db && wealthdb reload -a && cp "$GOLD" ~/gold-che
 WEALTHDB_GOLD_VERIFY=~/gold-check/after.db WEALTHDB_GOLD_BEFORE=~/gold-check/before.db \
   ./wealthdb-test ./internal/gold/ -run TestTaxonomyInvariants -v -count=1
 ```
+
+**Proof harnesses.** The tests below show what a change moves. Each
+test's comment says how to run it.
+
+- `TestReportCorpus` (cmd/wealthdb/corpus_test.go) writes what the CLI
+  and the MCP server answer to every report, view and option. It runs
+  when `WEALTHDB_CORPUS_DIR` is set. `WEALTHDB_CORPUS_CONFIG` points it
+  at one config's gold, and `WEALTHDB_CORPUS_TODAY` sets its clock. Two
+  runs diff to what a change does.
+- `TestCanonicalDumpTool` (cmd/wealthdb/canonical_dump_tool_test.go)
+  writes each silver source's canonical dump. It runs when
+  `WEALTHDB_CANONICAL_OUT` is set.
+- `TestMCPContract` (cmd/wealthdb/mcp_contract_test.go) holds what a
+  model reads of the MCP server (instructions, tools, resources) to
+  `testdata/mcp_contract`. `-update` rewrites the
+  files.
+- `TestGoldenCategorizePrompts` and `TestGoldenResolveSymbolsPrompt`
+  (cmd/wealthdb/modelpass_golden_test.go) hold the model prompts to `testdata/prompts`. `-update-prompts` rewrites them.
+
+Over real gold or a real config, the corpus and the dumps hold real
+data. They are written outside the tree and never committed.
 
 `make lint` runs `gofmt -l` and `go vet ./...` through `./wealthdb-go`
 on the same toolchain (gofmt as `go run cmd/gofmt`, the wrapper's

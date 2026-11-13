@@ -14,8 +14,8 @@ Related design:
 - DESIGN.md §10.14: the derived tables and macros;
 - [adapters/refdata.md](adapters/refdata.md): how reference data loads,
   the keys and aliases, and the wanted list;
-- migrations 0125 to 0131, 0137 and 0138 for the tables; 0135 for the
-  ledger's yield records;
+- migrations 0125 to 0131, 0137, 0138, 0164, 0165 and 0167 for the
+  tables; 0135 for the ledger's yield records;
 - `derived/60_exposure.sql` for the macros.
 
 Every figure is a share of a holding's market value, the value

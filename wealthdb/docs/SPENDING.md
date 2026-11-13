@@ -213,8 +213,8 @@ bill is the only trace of that spending, and filing it as
 `internal_transfer` deletes real consumption from every total,
 silently, at whatever size the bill was. So the built-in card-payment
 rule (§3) places `card_spend`: a placeholder primary, **included** in
-`spending_lines_base` (migration 0046; the base's exclusion list
-names each excluded value, not "every delta"), shown as its own line
+`spending_lines_base`, whose exclusion list names each excluded
+value, not "every delta". It is shown as its own line
 in every category report so it is
 visible rather than hidden, and replaced by itemised purchases the day
 the card is collected, because the matcher outranks the rule. It is a
@@ -233,7 +233,7 @@ under `GENERAL_SERVICES_OTHER_GENERAL_SERVICES`, which is false —
 nothing was bought and no service rendered. `internal_transfer` would
 be false too, since the money left the household. So `gift` is a
 primary in its own right, **included** in `spending_lines_base` by the
-same construction as `card_spend` (migration 0047) and shown as its
+same construction as `card_spend` and shown as its
 own line in every
 category report. It is a delta, so the model may never emit it; and
 no built-in rule places it either, because nothing in a transfer's
@@ -403,7 +403,7 @@ kind is not a guess: each adapter derives it from whatever evidence its
 own source gives, which is where source-specific knowledge belongs, so
 the floor reads that verdict rather than re-deriving it from prose.
 
-A fee's floor reads its account as well (0103, 0110). A bank account
+A fee's floor reads its account as well. A bank account
 books fees too — account maintenance, card and payment charges — and so
 does a card: an annual, late or cash-advance fee. On an account that
 holds no investments "investment fee" is simply wrong. So a fee on a card,

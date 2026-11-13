@@ -359,8 +359,8 @@ called an own-account move. Where neither road knows a far account, the
 rules that place the verdict can carry a class instead (`far_class`).
 
 The ladder is ordered, and the first match wins. **The wrapper is
-asked before the kind**: a mortgage on a trust-owned property and a
-card inside a foundation exist, and the wrapper says whose money moved.
+asked before the kind**: any account kind can sit inside any wrapper,
+and the wrapper says whose money moved.
 
 1. The far account's wrapper is on the **vehicle** side → that
    wrapper's class, in the leg's own direction. An outgoing leg to a
@@ -1141,7 +1141,7 @@ overlays, four stamped tables, and one serving table:
 |---|---|---|---|
 | `spend_txn_enrichment.far_*` (three columns) | per transaction | no | n/a, re-derived |
 | `spend_txn_enrichment.stated_asset_class`, `income_txn_enrichment.stated_asset_class` | per transaction | no | n/a, re-derived |
-| `cashflow_wrapper_sides` | one row per tax wrapper | yes | re-stamped from config |
+| `cashflow_wrapper_sides` | one row per tax wrapper | yes | yes, so the rebuilt file's first pass is not read as the first ever; then re-stamped from config |
 | `cashflow_account_scope` | config, stamped into gold | yes | re-stamped from config |
 | `cash_signed_kinds` | one row per sign pin (adapter kind, kind) | yes | re-stamped from code by every pass |
 | `account_wrapper_history` | one row per account with a dated wrapper override | no | n/a, rewritten by the source's load |
