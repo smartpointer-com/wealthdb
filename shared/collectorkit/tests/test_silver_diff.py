@@ -118,6 +118,49 @@ def test_one_extra_table_and_column_are_named(tmp_path, old, capsys):
     assert _run(capsys, new, old)[1][0] == "table only in old: extra (1 rows)"
 
 
+def test_a_one_collector_clock_is_ignored_in_that_collector_only(tmp_path, capsys):
+    edits = ("CREATE TABLE documents (sha TEXT PRIMARY KEY, first_seen_at INTEGER)",)
+
+    def pair(name: str) -> tuple[Path, Path]:
+        a, b = tmp_path / "a" / name, tmp_path / "b" / name
+        a.parent.mkdir(exist_ok=True)
+        b.parent.mkdir(exist_ok=True)
+        return (_silver(a, *edits, "INSERT INTO documents VALUES ('d', 1)"),
+                _silver(b, *edits, "INSERT INTO documents VALUES ('d', 2)"))
+
+    assert _run(capsys, *pair("swissquote.db")) == (0, [])
+    assert _run(capsys, *pair("carta.db")) == (
+        1, ["documents.first_seen_at: 1 rows changed"])
+
+
+def test_the_manual_bronze_dir_is_a_path_column(tmp_path, capsys):
+    def build(path: Path, bronze_dir: str) -> Path:
+        return _silver(path, "CREATE TABLE load_runs (load_at INTEGER PRIMARY KEY,"
+                       " bronze_dir TEXT)",
+                       f"INSERT INTO load_runs VALUES (1, '{bronze_dir}')")
+
+    old, new = build(tmp_path / "old.db", "/a"), build(tmp_path / "new.db", "/b")
+    assert _run(capsys, old, new)[0] == 1
+    assert _run(capsys, old, new, "--ignore-paths") == (0, [])
+
+
+def test_a_database_that_cannot_be_read_is_exit_2(tmp_path, old, capsys,
+                                                   monkeypatch):
+    def broken(*_args, **_kwargs):
+        raise sqlite3.OperationalError("a driver message")
+
+    monkeypatch.setattr(silver_diff, "diff", broken)
+    assert _run(capsys, old, old) == (2, [])
+
+
+def test_duckdb_files_without_the_package_are_exit_2(tmp_path, capsys,
+                                                     monkeypatch):
+    for name in ("old.duckdb", "new.duckdb"):
+        (tmp_path / name).write_bytes(b"\0" * 8 + b"DUCK" + b"\0" * 8)
+    monkeypatch.setitem(sys.modules, "duckdb", None)
+    assert _run(capsys, tmp_path / "old.duckdb", tmp_path / "new.duckdb") == (2, [])
+
+
 def test_usage_errors(tmp_path, old, capsys):
     with pytest.raises(SystemExit) as e:
         silver_diff.main([str(old), str(tmp_path / "absent.db")])
@@ -135,6 +178,7 @@ def test_help_names_the_ignored_columns():
     out = subprocess.run([sys.executable, "-I", str(TOOL), "--help"],
                          capture_output=True, text=True, check=True).stdout
     assert "schema_meta.applied_at" in out
+    assert "swissquote:documents.first_seen_at" in out
     assert "dump_runs.run_dir" in out
 
 

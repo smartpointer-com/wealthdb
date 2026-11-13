@@ -135,7 +135,7 @@ case "${1:-help}" in
         echo "login:   wealthdb data dir (mounted here at /data)." >&2
         echo "login: Then CLOSE the Firefox window to lift the cookie." >&2
         firefox -profile "$FXPROFILE" -no-remote -new-instance \
-            "https://venture.angellist.com/v/login" >/tmp/firefox.log 2>&1 || true
+            "https://venture.angellist.com/v/login" >"${TMPDIR:-/tmp}/firefox.log" 2>&1 || true
         echo "login: Firefox closed — extracting AngelList cookies…" >&2
         exec python3 /app/extract_cookies.py \
             --db "$FXPROFILE/cookies.sqlite" --out "$COOKIES"

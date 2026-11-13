@@ -264,22 +264,6 @@ class BronzeTest(unittest.TestCase):
                              {"status": "complete"})
             self.assertEqual(bronze.run_status(path), "complete")
 
-    def test_manifest_is_complete(self):
-        with tempfile.TemporaryDirectory() as d:
-            run = Path(d)
-            self.assertFalse(bronze.manifest_is_complete(run))  # no manifest
-            (run / "run.json").write_text("{")
-            self.assertFalse(bronze.manifest_is_complete(run))  # corrupt
-            for meta, want in (('{"status": "complete"}', True),
-                               ("{}", True),     # statusless: written last
-                               ('{"status": "in-progress"}', False),
-                               ('{"status": "dry-run"}', False)):
-                (run / "run.json").write_text(meta)
-                self.assertIs(bronze.manifest_is_complete(run), want, meta)
-            (run / "manifest.json").write_text('{"status": "complete"}')
-            (run / "run.json").unlink()
-            self.assertTrue(bronze.manifest_is_complete(run, "manifest.json"))
-
     def test_safe_stem_keeps_one_path_segment(self):
         for value, want in (("7000001", "7000001"),
                             ("07/31/2026", "07-31-2026"),

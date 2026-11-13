@@ -38,71 +38,61 @@ UNREAD = "the adapter does not read it"
 
 @dataclass(frozen=True)
 class Copy:
-    collector: str
     # Under GO_SILVER, applied in order to one database.
     scripts: tuple[str, ...]
     # Migrated tables the copy leaves out, and why.
     omitted: dict[str, str] = field(default_factory=dict)
 
 
+# Keyed by the collector, as its directory under collectors/ names it.
 COPIES = {
-    "amex": Copy("amex", ("amex/testdata/silver_schema.sql",), {
+    "amex": Copy(("amex/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING}),
-    "angellist": Copy("angellist", ("angellist/testdata/silver_schema.sql",), {
+    "angellist": Copy(("angellist/testdata/silver_schema.sql",), {
         "commitments": UNREAD, "portfolio_timeseries": UNREAD,
         "tax_documents": UNREAD, "vehicles": UNREAD}),
-    "carta": Copy("carta", ("carta/testdata/silver_schema.sql",), {
+    "carta": Copy(("carta/testdata/silver_schema.sql",), {
         "k1_capital_accounts": "read; basis_test.go creates it inline"}),
-    "chase": Copy("chase", ("chase/testdata/silver_schema.sql",), {
+    "chase": Copy(("chase/testdata/silver_schema.sql",), {
         "loader_state": BOOKKEEPING, "parser_generations": BOOKKEEPING}),
-    "curves": Copy("curves", ("curves/testdata/silver_schema.sql",), {
+    "curves": Copy(("curves/testdata/silver_schema.sql",), {
         "schema_meta": VERSION}),
-    "equityzen": Copy("equityzen", ("equityzen/testdata/silver_schema.sql",), {
+    "equityzen": Copy(("equityzen/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "capital_account_statements": UNREAD,
         "k1_documents": UNREAD, "tax_documents": UNREAD}),
-    "fidelity-web": Copy("fidelity-web", (
+    "fidelity-web": Copy((
         "fidelity/testdata/silver_schema.sql",
         "fidelity/testdata/lots_schema.sql"), {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
         "documents": UNREAD}),
-    "firstcitizens": Copy("firstcitizens", ("firstcitizens/testdata/silver_schema.sql",), {
+    "firstcitizens": Copy(("firstcitizens/testdata/silver_schema.sql",), {
         "parsed_statements": BOOKKEEPING, "parser_generations": BOOKKEEPING}),
-    "fred": Copy("fred", ("fred/testdata/silver_schema.sql",), {
+    "fred": Copy(("fred/testdata/silver_schema.sql",), {
         "schema_meta": VERSION}),
-    "manual": Copy("manual", ("manual/testdata/silver_schema.sql",)),
-    "plaid": Copy("plaid", ("plaid/testdata/silver_schema.sql",)),
-    "raiffeisen_at": Copy("raiffeisen_at", ("raiffeisen_at/testdata/silver_schema.sql",), {
+    "manual": Copy(("manual/testdata/silver_schema.sql",)),
+    "plaid": Copy(("plaid/testdata/silver_schema.sql",)),
+    "raiffeisen_at": Copy(("raiffeisen_at/testdata/silver_schema.sql",), {
         "run_windows": BOOKKEEPING}),
-    "refdata": Copy("refdata", ("refdata/testdata/silver_schema.sql",)),
-    "relevate": Copy("relevate", ("relevate/testdata/silver_schema.sql",), {
+    "refdata": Copy(("refdata/testdata/silver_schema.sql",)),
+    "relevate": Copy(("relevate/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
         "documents": UNREAD, "performance_points": UNREAD,
         "historical_position_snapshots": "read by historical.go; no test holds it",
         "historical_cash_balances": "read by historical.go; no test holds it"}),
-    "schwab-api": Copy("schwab-api", ("schwab/testdata/silver_schema.sql",), {
+    "schwab-api": Copy(("schwab/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "open_orders": UNREAD, "user_preference": UNREAD}),
-    "schwab-web": Copy("schwab-web", ("schwab/testdata/web_silver_schema.sql",), {
+    "schwab-web": Copy(("schwab/testdata/web_silver_schema.sql",), {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
         "parsed_documents": BOOKKEEPING, "documents": UNREAD,
         "cost_basis_methods": UNREAD}),
-    "swissquote": Copy("swissquote", ("swissquote/testdata/silver_schema.sql",), {
+    "swissquote": Copy(("swissquote/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "documents": UNREAD}),
-    "ubs-psn": Copy("ubs-psn", ("ubs/testdata/silver_schema.sql",), {
+    "ubs-psn": Copy(("ubs/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "cash_account_pricing": UNREAD,
         "portfolio_performance": UNREAD}),
-    "viac": Copy("viac", ("viac/testdata/silver_schema.sql",), {
+    "viac": Copy(("viac/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
         "documents": UNREAD, "wealth_history": UNREAD}),
-}
-
-# Where a copy differs from the migrations today, the problems it has.
-# A fix to the copy or to the migrations fails the test until its entry
-# goes.
-DRIFT = {
-    # Migration 0005 renamed the column to account_product.
-    "swissquote": ["accounts.account_type is in no migration"],
-    # The adapter reads the column when a silver has it.
-    "relevate": ["accounts.management_style is in no migration"],
 }
 
 # Schemas under testdata/ that no case above checks, and why.
@@ -147,7 +137,7 @@ def _copy(scripts: tuple[str, ...]) -> dict[str, dict[str, str]]:
 @pytest.mark.parametrize("name", sorted(COPIES))
 def test_the_go_copy_matches_the_migrations(name):
     copy = COPIES[name]
-    migrated, held = _migrated(copy.collector), _copy(copy.scripts)
+    migrated, held = _migrated(name), _copy(copy.scripts)
     problems = [f"table {t} is in no migration" for t in held if t not in migrated]
     for table, columns in held.items():
         for col, typ in columns.items():
@@ -157,7 +147,7 @@ def test_the_go_copy_matches_the_migrations(name):
             elif want is not None and want != typ:
                 problems.append(f"{table}.{col} is {typ!r}, migrated {want!r}")
     left_out = sorted(set(migrated) - set(held))
-    assert problems == DRIFT.get(name, [])
+    assert problems == []
     assert left_out == sorted(copy.omitted)
 
 

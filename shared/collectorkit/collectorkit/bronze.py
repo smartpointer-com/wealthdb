@@ -1,8 +1,9 @@
-"""Bronze-artifact helpers shared by collector download.py.
+"""Bronze helpers shared by collectors.
 
-UTC-timestamped run directories, atomic writes (tmp + rename so an
-interrupted run never leaves a half-written artifact), and the
-canonical-JSON form used for content-based dedup.
+UTC-timestamped run directories, the one classification of a run that
+loaders and prune share (:func:`classify_run`), atomic writes (tmp +
+rename so an interrupted run never leaves a half-written artifact), and
+the canonical-JSON form used for content-based dedup.
 """
 from __future__ import annotations
 
@@ -236,16 +237,26 @@ def classify_run(
     return state, reason
 
 
-def run_is_loadable(run_dir: Path) -> bool:
-    """Whether a loader reads `run_dir`: its ``run.json`` is a file, and
-    :func:`classify_run` does not call it NON_COMPLETE.
+def run_skip_reason(run_dir: Path) -> str | None:
+    """Why a loader skips `run_dir`, or ``None`` when it reads it.
 
-    A run dir without a manifest is still being written, or its download
-    crashed before the first manifest write; ``prune`` reclaims it, so no
-    loader reads it either. An UNKNOWN run (an unreadable or corrupt
-    manifest) stays loadable, so the load surfaces the error.
+    A loader reads a run whose ``run.json`` is a file and that
+    :func:`classify_run` does not call NON_COMPLETE. A run dir without a
+    manifest is still being written, or its download crashed before the
+    first manifest write; ``prune`` reclaims it, so no loader reads it
+    either. An UNKNOWN run (an unreadable or corrupt manifest) stays
+    loadable, so the load surfaces the error.
     """
-    return (Path(run_dir) / "run.json").is_file() and classify_run(run_dir)[0] != NON_COMPLETE
+    if not (Path(run_dir) / "run.json").is_file():
+        return "no run.json (still writing?)"
+    state, reason = classify_run(run_dir)
+    return f"run.json {reason}" if state == NON_COMPLETE else None
+
+
+def run_is_loadable(run_dir: Path) -> bool:
+    """Whether a loader reads `run_dir`: :func:`run_skip_reason` gives no
+    reason to skip it."""
+    return run_skip_reason(run_dir) is None
 
 
 def manifest_is_complete(run_dir: Path, manifest_name: str = "run.json") -> bool:
@@ -265,9 +276,9 @@ def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
 
     A run dir without a ``run.json`` is still being written, and one whose
     status is not loadable (:func:`is_loadable_status`) never finished;
-    both are skipped with a line on `log`, and so is a slug that names no
-    real instant (a 30 February). A statusless or unreadable manifest stays
-    loadable (see :func:`run_status`).
+    both are skipped with a line on `log` (:func:`run_skip_reason`), and so
+    is a slug that names no real instant (a 30 February). A statusless or
+    unreadable manifest stays loadable (see :func:`run_is_loadable`).
     """
     if not Path(bronze_dir).is_dir():
         return []
@@ -281,12 +292,9 @@ def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
             continue
         if ts in loaded:
             continue
-        if not run_is_loadable(d):
-            run_json = d / "run.json"
-            if run_json.is_file():
-                log.info("skipping %s — run.json status=%s", d.name, run_status(run_json))
-            else:
-                log.info("skipping %s — no run.json (still writing?)", d.name)
+        reason = run_skip_reason(d)
+        if reason is not None:
+            log.info("skipping %s — %s", d.name, reason)
             continue
         pending.append(d)
     return pending

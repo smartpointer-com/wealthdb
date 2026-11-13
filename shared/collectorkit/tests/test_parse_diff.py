@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -121,6 +122,24 @@ def test_a_function_that_does_not_load_is_a_usage_error(tmp_path, bronze, capsys
     (new / "fakeparse.py").write_text("raise ImportError('gone')\n")
     assert _run(capsys, tmp_path, old, new, bronze) == (2, [
         "documents: 3 unique of 4 files"])
+
+
+def test_an_interpreter_that_does_not_start_is_exit_2(tmp_path, bronze, capsys):
+    old = _checkout(tmp_path / "old")
+    rc, _ = _run(capsys, tmp_path, old, old, bronze,
+                 "--python", str(tmp_path.parent / "no-such-python"))
+    assert rc == 2
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file of mode 0")
+def test_an_unreadable_document_is_exit_2(tmp_path, bronze, capsys):
+    old = _checkout(tmp_path / "old")
+    doc = bronze / "20260102T000000Z" / "c.pdf"
+    doc.chmod(0)
+    try:
+        assert _run(capsys, tmp_path, old, old, bronze) == (2, [])
+    finally:
+        doc.chmod(0o600)
 
 
 def test_usage_errors(tmp_path, bronze):

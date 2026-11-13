@@ -13,7 +13,7 @@ from datetime import date
 
 import pytest
 
-from collectorkit import bronze, docdedup, documents, parse, prune, silver
+from collectorkit import bronze, docdedup, documents, parse, silver
 
 # ---- docdedup.classify ---------------------------------------------------
 
@@ -92,8 +92,10 @@ def test_pending_run_dirs(tmp_path, caplog):
         got = bronze.pending_run_dirs(conn, tmp_path, log=log)
     assert got == [done, statusless, corrupt]
     assert "no run.json" in caplog.text
-    assert "status=in-progress" in caplog.text and "status=dry-run" in caplog.text
-    assert "status=incomplete" in caplog.text
+    assert "20980103T000000Z — no run.json" in caplog.text
+    assert "20980104T000000Z — run.json status='in-progress'" in caplog.text
+    assert "status='dry-run'" in caplog.text
+    assert "status='incomplete'" in caplog.text
     assert "20980230T000000Z — not a valid run timestamp" in caplog.text
 
 
@@ -113,13 +115,6 @@ def test_pending_run_dirs_without_a_bronze_dir(tmp_path):
 ])
 def test_is_loadable_status(status, want):
     assert bronze.is_loadable_status(status) is want
-
-
-@pytest.mark.parametrize("status",
-                         ["complete", "in-progress", "dry-run", "incomplete"])
-def test_prune_keeps_exactly_the_present_statuses_a_loader_loads(status):
-    state, _ = prune.status_classification({"status": status})
-    assert (state == prune.COMPLETE) is bronze.is_loadable_status(status)
 
 
 # ---- documents.index_documents -------------------------------------------

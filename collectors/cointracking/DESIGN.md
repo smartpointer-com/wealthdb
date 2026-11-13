@@ -329,9 +329,9 @@ engine. The engine's safety envelope is described in
 [collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze).
 cointracking's configuration:
 
-- **Completeness:** `prune.status_classification` with a legacy
-  fallback of `m is not None`. A readable manifest with no `status` is
-  a complete older dump. `load` and `recompress` use the same rule.
+- **Completeness:** `prune.lenient_classification`. A readable
+  manifest with no `status` is a complete older dump. `load` and
+  `recompress` use the same rule.
 - **Debug subdirs:** `debug_subdirs = ("screenshots",)`, the `--debug`
   captures. Every other file in a run dir is a `load` input: `run.json`
   and each `cu_<id>/{trades,balance,overview}.csv.zst` (plain `.csv` in

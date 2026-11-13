@@ -301,16 +301,14 @@ def apply_migrations(conn: duckdb.DuckDBPyConnection) -> int:
 
 def discover_bronze_snapshots(bronze_dir: Path) -> list[Path]:
     """Return the timestamped subdirs of bronze_dir whose run.json marks
-    a finished dump (`bronze.is_loadable_status`), oldest first. An
-    unreadable run.json reads as no status; its load then fails loudly
+    a finished dump (`bronze.run_is_loadable`), oldest first. An
+    unreadable run.json stays loadable; its load then fails loudly
     rather than being skipped."""
     snapshots = []
     for p in bronze.iter_run_dirs(bronze_dir):
-        run_json = p / "run.json"
-        if not run_json.is_file():
-            continue
-        if not bronze.is_loadable_status(bronze.run_status(run_json)):
-            log.info("skipping %s (run.json status not complete)", p.name)
+        reason = bronze.run_skip_reason(p)
+        if reason is not None:
+            log.info("skipping %s (%s)", p.name, reason)
             continue
         snapshots.append(p)
     return snapshots

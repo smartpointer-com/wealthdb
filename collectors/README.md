@@ -513,6 +513,25 @@ them re-parses the documents of every collector whose parser imports it.
 A shared helper therefore gets a module of its own and is never
 re-exported from `__init__`.
 
+Two tools prove that a change keeps what silver holds. Both print names,
+counts and file hashes, never a value; `--help` shows their flags.
+
+- [`parse_diff.py`](../shared/collectorkit/tools/parse_diff.py) runs a
+  parser function from two checkouts over every stored document and
+  names the documents whose result changes. Run it before a change
+  inside a parser closure.
+- [`silver_diff.py`](../shared/collectorkit/tools/silver_diff.py)
+  compares two silvers by table, row and column counts. Run it after a
+  loader change, over silvers built from the same bronze.
+
+```sh
+python3 -I shared/collectorkit/tools/parse_diff.py \
+    --old ../wealthdb-base/collectors/svb --new collectors/svb \
+    --bronze "$BRONZE" --python collectors/svb/.venv/bin/python \
+    pdf_parsers_svbdep:parse_svbdep_statement_pdf
+python3 -I shared/collectorkit/tools/silver_diff.py old/svb.db new/svb.db
+```
+
 ### Debug artefacts, run status, and pruning bronze
 
 A bronze run dir holds **only what `load` reads**, plus the run's
@@ -582,8 +601,8 @@ uniform convention:
   each collector from its own terminal signal: the manifest itself, or a
   terminal artefact where the collector writes no `run.json`. `load`
   takes a run whose status is `complete` or absent and skips every other
-  status (`collectorkit.bronze.is_loadable_status`). `prune` reclaims
-  the runs `load` skips. Two collectors depart from this rule on
+  status (`collectorkit.bronze.classify_run`; `prune` applies the same
+  function). `prune` reclaims the runs `load` skips. Two collectors depart from this rule on
   purpose:
   - **ubs-psn** loads every zip in a run dir, whatever the run's
     status, and its `prune` never deletes a run dir that holds a zip.
@@ -621,8 +640,9 @@ a reviewed, unit-tested engine. Each collector with run dirs ships a
 **thin `prune.py`** that hands the engine a `PruneConfig`: the
 `debug_subdirs` to reclaim (empty for collectors that write none) and
 an `is_complete(run_dir, meta)`
-predicate (most delegate to `prune.status_classification`, which encodes
-the `status` lifecycle plus a per-collector legacy fallback). The engine
+predicate (most pass `prune.lenient_classification`; the rest build on
+`prune.status_classification`, which encodes the `status` lifecycle plus
+a per-collector legacy fallback). The engine
 guarantees, for every collector:
 
 - a **`load` input is never deleted** — inside bronze the only paths
@@ -696,6 +716,10 @@ must pass before any commit. `make lint` runs ruff over every collector
 with the rules in the root `ruff.toml`; it has to be clean too. The
 pre-commit hook (`make hooks`) refuses a commit whose staged tree fails
 the lint or the privacy check (root [AGENTS.md](../AGENTS.md) §4).
+A wrapper's help text and an entrypoint's command lines are pinned in
+`shared/wrappers/tests/golden/`. After a deliberate change, `make
+test-wrappers UPDATE_GOLDEN=1` rewrites them; review the diff before
+committing it.
 Fixtures are where real data most often slips in, and no pattern
 catches all of it: run the privacy review
 ([../.claude/skills/wealthdb-pii-review/SKILL.md](../.claude/skills/wealthdb-pii-review/SKILL.md))

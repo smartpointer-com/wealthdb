@@ -60,7 +60,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from collections.abc import Callable, Iterable
 
-from collectorkit import bronze, prune
+from collectorkit import bronze
 
 log = logging.getLogger("collectorkit.docdedup")
 
@@ -192,10 +192,10 @@ def mode_for_class(doc_class: str | None) -> str:
     return CLASS_MODES.get(doc_class, MODE_FETCH_VERIFY)
 
 
-# Completeness classification reuses prune's shared lenient config
-# (``prune.LENIENT_CLASSIFY_CFG``), exactly as dedup does, so docdedup only
-# ever indexes COMPLETE prior runs and can never disagree with prune / dedup /
-# recompress about what "complete" means.
+# Completeness classification is the lenient one (``bronze.classify_run``'s
+# default), exactly as dedup does, so docdedup only ever indexes COMPLETE
+# prior runs and can never disagree with prune / dedup / recompress about
+# what "complete" means.
 
 
 # ---------------------------------------------------------------------------
@@ -250,8 +250,9 @@ class SkipSet:
         ``extract(run_dir, manifest) -> Iterable[DocRef]`` recovers each prior
         run's documents (disk-driven glob or manifest-driven — either is fine).
 
-        Only COMPLETE runs (via ``prune.classify``) contribute, so an abandoned
-        / in-progress / dry-run prior never seeds a phantom "already have it".
+        Only COMPLETE runs (via ``bronze.classify_run``) contribute, so an
+        abandoned / in-progress / dry-run prior never seeds a phantom
+        "already have it".
         ``exclude_run`` (normally the current in-progress run dir) is skipped
         outright; its in-progress status would exclude it anyway, but naming it
         is belt-and-braces.
@@ -281,8 +282,8 @@ class SkipSet:
                 continue
             if run_dir.is_symlink():
                 continue
-            state, _reason = prune.classify(run_dir, prune.LENIENT_CLASSIFY_CFG)
-            if state != prune.COMPLETE:
+            state, _reason = bronze.classify_run(run_dir)
+            if state != bronze.COMPLETE:
                 continue
             manifest = bronze.read_manifest(run_dir / "run.json")
             for ref in extract(run_dir, manifest):

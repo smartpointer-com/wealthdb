@@ -14,13 +14,16 @@ shared columns, so only its one-sided row counts are reported.
 
 It prints table names, column names and counts, never a value. Clock
 columns that differ on every load are left out, and so are the path
-columns when the two bronze roots differ (``--ignore-paths``).
+columns when the two bronze roots differ (``--ignore-paths``). A column
+that is a clock in one collector only is left out when a silver file is
+named after that collector (``<name>.db``); in every other collector it
+holds a bronze fact and is compared.
 
 Both files must be SQLite, or both DuckDB (cointracking). DuckDB needs
 the ``duckdb`` package of the interpreter that runs this tool.
 
 Exit status: 0 when the two agree, 1 when they differ, 2 on a usage
-error.
+error or when a database cannot be read.
 """
 from __future__ import annotations
 
@@ -28,14 +31,15 @@ import argparse
 import sys
 from pathlib import Path
 
-# Columns that hold the time of a load, not a fact of the bronze.
+# Columns that hold the time of a load, not a fact of the bronze. An entry
+# `collector:table.column` is a clock in that collector only.
 CLOCK_COLUMNS = (
     "schema_meta.applied_at",
     "parser_generations.stamped_at",
     "dump_runs.loaded_at",
-    "tax_documents.retrieved_at",
+    "angellist:tax_documents.retrieved_at",
     "load_runs.load_at",
-    "documents.first_seen_at",
+    "swissquote:documents.first_seen_at",
     "coin_prices.fetched_at",
     "coin_mapping.mapped_at",
 )
@@ -45,10 +49,23 @@ PATH_COLUMNS = (
     "dump_runs.run_dir",
     "documents.file_path",
     "card_statements.file_path",
+    "load_runs.bronze_dir",
 )
 
 SQLITE_MAGIC = b"SQLite format 3\x00"
 DUCKDB_MAGIC = b"DUCK"  # at byte offset 8
+
+
+def clock_columns(old: Path, new: Path) -> set[str]:
+    """The clock columns of two silvers: every unscoped entry, and a scoped
+    one when either file is named after its collector."""
+    names = {old.stem, new.stem}
+    out = set()
+    for entry in CLOCK_COLUMNS:
+        collector, sep, column = entry.rpartition(":")
+        if not sep or collector in names:
+            out.add(column)
+    return out
 
 
 def _kind(path: Path) -> str:
@@ -116,6 +133,13 @@ class _Catalog:
             (db, table)).fetchall()
         return [r[0] for r in rows], (list(pk_rows[0][0]) if pk_rows else [])
 
+    def same(self, a: str, b: str) -> str:
+        """SQL that is true when two values are equal or both NULL. SQLite's
+        ``IS`` works on every version; ``IS NOT DISTINCT FROM`` needs 3.39."""
+        if self.kind == "sqlite":
+            return f"{a} IS {b}"
+        return f"{a} IS NOT DISTINCT FROM {b}"
+
     def distinct(self, a: str, b: str) -> str:
         """SQL that is true when two values differ, in value or in type."""
         if self.kind == "sqlite":
@@ -142,7 +166,7 @@ def _keyed(cat: _Catalog, table: str, key: list[str],
     """Rows only in old, only in new, and per-column change counts on rows
     whose key matches."""
     t = _q(table)
-    on = " AND ".join(f"a.{_q(k)} IS NOT DISTINCT FROM b.{_q(k)}" for k in key)
+    on = " AND ".join(cat.same(f"a.{_q(k)}", f"b.{_q(k)}") for k in key)
 
     def one_sided(this: str, other: str) -> int:
         return cat.one(
@@ -175,7 +199,7 @@ def _multiset(cat: _Catalog, table: str, cols: list[str]) -> tuple[int, int]:
                 f" GROUP BY {groups}")
 
     width = len(cat.multiset_exprs("x", cols))
-    on = " AND ".join(f"a.v{i} IS NOT DISTINCT FROM b.v{i}"
+    on = " AND ".join(cat.same(f"a.v{i}", f"b.v{i}")
                       for i in range(width)) or "1 = 1"
 
     def one_sided(this: str, other: str) -> int:
@@ -239,7 +263,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Compare two silver databases by table and column names "
                     "and counts. Never prints a value.",
         epilog="Always ignored (clock columns): " + ", ".join(CLOCK_COLUMNS)
-               + ". With --ignore-paths also: " + ", ".join(PATH_COLUMNS) + ".")
+               + ". An entry COLLECTOR:TABLE.COLUMN applies only when a file"
+               " is named COLLECTOR.db; for a renamed copy, pass --ignore."
+               " With --ignore-paths also: " + ", ".join(PATH_COLUMNS) + ".")
     p.add_argument("old", type=Path, help="The silver built by the old code.")
     p.add_argument("new", type=Path, help="The silver built by the new code.")
     p.add_argument("--ignore", action="append", default=[],
@@ -257,13 +283,18 @@ def main(argv: list[str] | None = None) -> int:
     for path in (args.old, args.new):
         if not path.is_file():
             p.error(f"{path}: no such file")
-    ignore = set(CLOCK_COLUMNS) | set(args.ignore)
+    ignore = clock_columns(args.old, args.new) | set(args.ignore)
     if args.ignore_paths:
         ignore |= set(PATH_COLUMNS)
     try:
         lines = diff(args.old, args.new, ignore)
     except ValueError as e:
         print(f"silver_diff: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:  # no duckdb, a corrupt file, a driver error
+        # The class only: a driver message can quote a path or a value.
+        print(f"silver_diff: cannot read the databases ({e.__class__.__name__})",
+              file=sys.stderr)
         return 2
     for line in lines:
         print(line)

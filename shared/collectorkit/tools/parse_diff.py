@@ -20,7 +20,8 @@ It prints counts and the SHA-256 of each mismatching file, never a path
 or a parsed value.
 
 Exit status: 0 when the two sides agree on every document, 1 when they
-differ, 2 on a usage error or when a side cannot import a function.
+differ, 2 on a usage error, when a document cannot be read, or when a
+side cannot start or import a function.
 """
 from __future__ import annotations
 
@@ -205,13 +206,22 @@ def main(argv: list[str] | None = None) -> int:
             p.error(f"{flag} {d}: not a directory")
     if args.jobs < 1:
         p.error("--jobs must be at least 1")
-    seen, files = unique_documents(args.bronze, args.glob or ["*.pdf"])
+    try:
+        seen, files = unique_documents(args.bronze, args.glob or ["*.pdf"])
+    except OSError as e:  # the class only: the message names the path
+        print(f"parse_diff: cannot read a document ({e.__class__.__name__})",
+              file=sys.stderr)
+        return 2
     print(f"documents: {len(files)} unique of {seen} files")
     try:
         report = run(args.old.resolve(), args.new.resolve(), files, args.specs,
                      python=args.python, jobs=args.jobs)
     except RuntimeError as e:
         print(f"parse_diff: {e}", file=sys.stderr)
+        return 2
+    except OSError as e:  # --python does not start
+        print(f"parse_diff: cannot run {args.python} ({e.__class__.__name__})",
+              file=sys.stderr)
         return 2
     differs = False
     for spec, r in report.items():
