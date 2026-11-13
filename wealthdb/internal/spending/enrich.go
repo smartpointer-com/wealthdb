@@ -1260,9 +1260,12 @@ func assignCategories(
 		// The legs the other family's far-naming rules reach — an
 		// inbound move from a declared account — for the same reason:
 		// the far account has a column on this overlay alone. A row
-		// either family pinned is left alone: this family's pin loop
-		// writes its own, and the other family's pin is the whole answer
-		// for a row a rule would otherwise call an own-account move.
+		// this family pinned is skipped here because the pin loop below
+		// emits it: the far rules reach it there, with its own account,
+		// portfolio and date, and the pin then sets the verdict. A row
+		// only the other family pinned is not emitted at all: that pin
+		// is the whole answer for a row a rule would otherwise call an
+		// own-account move.
 		if len(farRules) > 0 {
 			for _, key := range sortedTxKeys(pool) {
 				_, mine := pinned[key]
@@ -1278,6 +1281,8 @@ func assignCategories(
 	}
 	// Pinned rows outside both: a pin describes a row by what a
 	// statement shows, and the holder may name a row on any account.
+	// Each carries the scope facts matchNaturalKeys read for it, so a
+	// scoped far rule tests it as it tests any other row.
 	for _, key := range sortedTxKeys(pinned) {
 		emit(pinned[key].row, false)
 	}

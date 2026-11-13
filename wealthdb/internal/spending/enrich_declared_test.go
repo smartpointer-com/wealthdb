@@ -137,3 +137,68 @@ func TestPassScopedFarRuleReachesThePool(t *testing.T) {
 		t.Errorf("a row before the scope's start took the far rule (n=%d err=%v)", n, err)
 	}
 }
+
+// TestPassScopedFarRuleReachesASpendingPin: a spending pin on a deposit
+// outside the spending population is emitted through the income far
+// rules with its own account, portfolio and date. A rule scoped by any
+// of them places the far account on it exactly as an unscoped rule
+// does, and a pinned row outside the scope takes none.
+func TestPassScopedFarRuleReachesASpendingPin(t *testing.T) {
+	db, ctx := openGold(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              tax_wrapper, display_name, first_seen_at, last_seen_at)
+             VALUES (?, 'savings-bank', 'cash', 'taxable_personal', 'Example Savings', 1, 1)`,
+		canonical.DeclaredSourceID); err != nil {
+		t.Fatalf("declare account: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+        UPDATE accounts SET portfolio_external_id = 'PF1'
+         WHERE silver_source_id = 'bank' AND account_external_id = 'CASH1'`); err != nil {
+		t.Fatalf("place the account in a portfolio: %v", err)
+	}
+	seedTxns(t, db, ctx,
+		txn{"bank", "T-IN-EARLY", "CASH1", "deposit", day(60), 1500, "", "Transfer from Example Savings Bank", ""},
+		txn{"bank", "T-IN", "CASH1", "deposit", day(75), 2000, "", "Transfer from Example Savings Bank", ""},
+	)
+	pins := []Pin{
+		{Source: "bank", Account: "CASH1", Day: day(60), Amount: 1500, Currency: "USD",
+			Detailed: canonical.SpendDetailedInternalTransfer},
+		{Source: "bank", Account: "CASH1", Day: day(75), Amount: 2000, Currency: "USD",
+			Detailed: canonical.SpendDetailedInternalTransfer},
+	}
+	match := regexp.MustCompile(`(?i)EXAMPLE SAVINGS BANK`)
+	for _, tc := range []struct {
+		name     string
+		scope    RuleScope
+		earlyFar bool // whether the scope admits the earlier deposit
+	}{
+		{name: "date", scope: RuleScope{From: day(70)}},
+		{name: "account", scope: RuleScope{Account: "CASH1"}, earlyFar: true},
+		{name: "portfolio", scope: RuleScope{Portfolio: "PF1"}, earlyFar: true},
+		{name: "unscoped", earlyFar: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			far := Rule{Match: match, Category: canonical.SpendDetailedInternalTransfer,
+				Far: "savings-bank", Scope: tc.scope}
+			runPass(t, db, ctx, Options{Pins: pins, Income: IncomeOptions{Rules: []Rule{far}}})
+
+			if _, ok := spendingBaseIDs(t, db, ctx)["T-IN"]; ok {
+				t.Fatal("the deposit is in the spending population; the test needs it outside")
+			}
+			if s, a, _ := farOf(t, db, ctx, "bank", "T-IN"); s != canonical.DeclaredSourceID || a != "savings-bank" {
+				t.Errorf("T-IN far = (%q, %q), want the declared account", s, a)
+			}
+			if d, p := verdictOf(t, db, ctx, "bank", "T-IN"); d != canonical.SpendDetailedInternalTransfer || p != ProvenanceManual {
+				t.Errorf("T-IN = (%q, %q), want the pin's verdict", d, p)
+			}
+			want := ""
+			if tc.earlyFar {
+				want = "savings-bank"
+			}
+			if _, a, _ := farOf(t, db, ctx, "bank", "T-IN-EARLY"); a != want {
+				t.Errorf("T-IN-EARLY far account = %q, want %q", a, want)
+			}
+		})
+	}
+}

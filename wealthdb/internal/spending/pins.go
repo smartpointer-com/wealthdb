@@ -72,7 +72,9 @@ type naturalKey struct {
 // matchNaturalKeys reads every transaction each key describes, in one
 // query: the keys are a VALUES list joined to transactions. The result
 // holds one list per key, in key order, each in transaction_external_id
-// order, with the narrative a pinned row is signed by.
+// order, with the narrative a pinned row is signed by and the scope
+// facts (account, portfolio, date) a far rule reads on a pinned row
+// outside the population.
 func matchNaturalKeys(ctx context.Context, tx querier, keys []naturalKey) ([][]candidate, error) {
 	out := make([][]candidate, len(keys))
 	if len(keys) == 0 {
@@ -87,12 +89,15 @@ func matchNaturalKeys(ctx context.Context, tx querier, keys []naturalKey) ([][]c
 	}
 	args = append(args, pinAmountEps)
 	rows, err := tx.QueryContext(ctx, `
-SELECT k.i, t.transaction_external_id, COALESCE(t.counterparty, ''), COALESCE(t.description, '')
+SELECT k.i, t.transaction_external_id, COALESCE(t.counterparty, ''), COALESCE(t.description, ''),
+       t.occurred_at, COALESCE(a.portfolio_external_id, '')
   FROM (VALUES `+strings.Join(values, ", ")+`) AS k(i, source, account, currency, day_from, day_to, amount)
   JOIN transactions t
     ON t.silver_source_id = k.source AND t.account_external_id = k.account AND t.currency = k.currency
    AND t.occurred_at >= k.day_from AND t.occurred_at < k.day_to
    AND abs(CAST(t.net_amount AS DOUBLE) - k.amount) <= ?
+  LEFT JOIN accounts a
+    ON a.silver_source_id = t.silver_source_id AND a.account_external_id = t.account_external_id
  ORDER BY k.i, t.transaction_external_id`, args...)
 	if err != nil {
 		return nil, err
@@ -101,10 +106,11 @@ SELECT k.i, t.transaction_external_id, COALESCE(t.counterparty, ''), COALESCE(t.
 	for rows.Next() {
 		var i int
 		var row candidate
-		if err := rows.Scan(&i, &row.key.txID, &row.counterparty, &row.description); err != nil {
+		if err := rows.Scan(&i, &row.key.txID, &row.counterparty, &row.description,
+			&row.occurredAt, &row.portfolio); err != nil {
 			return nil, err
 		}
-		row.key.source = keys[i].source
+		row.key.source, row.account = keys[i].source, keys[i].account
 		out[i] = append(out[i], row)
 	}
 	return out, rows.Err()
