@@ -1,6 +1,0 @@
-account_kind: what an account is: brokerage, cash, card, mortgage, custody, crypto_exchange, donor_advised_fund, other and more.
-tax_wrapper: how an account is taxed: taxable_personal, taxable_joint, roth_ira, traditional_ira, 401k, hsa, 529, pillar_2, pillar_3a, trust_grantor and more. A blank on the sources view means its accounts differ.
-management_style: who decides what an account holds: self_directed, advisory, discretionary, automated.
-asset_class: what a position is exposed to: public_equity, private_equity, fixed_income, real_estate, cash, crypto, metal, multi_asset and more.
-vehicle: how a position is held: stock, etf, fund, bond, demand_deposit, time_deposit, physical, loan, mortgage and more.
-(the values present could not be read: there is no database yet: run 'wealthdb init' and 'wealthdb load -a' first)

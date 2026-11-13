@@ -17,10 +17,11 @@ import (
 // disappear from every chart. That makes it the tier whose mistakes
 // are hardest to notice — an over-eager pair does not show up as a
 // wrong category, it shows up as a month that was quietly cheaper than
-// it was. So the pairs are re-derived and listed on demand, both legs
-// together, and the legs it could NOT pair are listed beside them: a
-// large one-legged movement is either a real outflow or a pair the
-// matcher missed, and only a human can say which.
+// it was. So the pairs the last pass stored in transfer_links are
+// listed on demand, both legs together, with no matcher run, and the
+// legs it could NOT pair are listed beside them: a large one-legged
+// movement is either a real outflow or a pair the matcher missed, and
+// only a human can say which.
 //
 // Each pair says which PHASE asserted it, because the check a reader
 // performs on two legs depends on the answer. On a pair the amounts
@@ -38,10 +39,6 @@ import (
 // population removed nothing from spending. The audit surface reports
 // every pair regardless; it is the caller's listing that decides what
 // that distinction is worth showing.
-//
-// The pairs are the ones the last pass stored in transfer_links, so they
-// are exactly the pairs that pass acted on, and listing them runs no
-// matcher.
 
 // querier is the read subset shared by *sql.DB and *sql.Tx, so the
 // readers serve both the pass (inside its transaction) and the audit

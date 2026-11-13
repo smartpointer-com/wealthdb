@@ -15,9 +15,6 @@ import (
 
 func init() {
 	register("config-env", cmdConfigEnv)
-	// Aliases of `config-env web` and `config-env mcp`.
-	register("web-config", configEnvAlias("web"))
-	register("mcp-config", configEnvAlias("mcp"))
 }
 
 // configEnvBlocks are the blocks config-env prints, by name. Each writes
@@ -66,14 +63,6 @@ a host script to eval. The blocks:
 	return printConfigEnv(g, stdout, emit)
 }
 
-// configEnvAlias is config-env for one block, under a name of its own.
-// It takes no arguments and reads none.
-func configEnvAlias(block string) subcommandHandler {
-	return func(_ context.Context, g globalFlags, _ []string, _ io.Reader, stdout, _ io.Writer) error {
-		return printConfigEnv(g, stdout, configEnvBlocks[block])
-	}
-}
-
 // printConfigEnv loads the config, through its validation, and prints
 // one block.
 func printConfigEnv(g globalFlags, stdout io.Writer, emit func(*config.Config, io.Writer)) error {
@@ -91,13 +80,8 @@ func webEnv(cfg *config.Config, stdout io.Writer) {
 	if cfg.Web != nil && cfg.Web.Enabled {
 		enabled = "1"
 	}
-	port := config.DefaultWebPort
-	if cfg.Web != nil && cfg.Web.Port != 0 {
-		port = cfg.Web.Port
-	}
-
 	fmt.Fprintf(stdout, "WEALTHDB_WEB_ENABLED=%s\n", enabled)
-	fmt.Fprintf(stdout, "WEALTHDB_WEB_PORT=%d\n", port)
+	fmt.Fprintf(stdout, "WEALTHDB_WEB_PORT=%d\n", cfg.Web.EffectivePort())
 	fmt.Fprintf(stdout, "WEALTHDB_GOLD_DB=%s\n", shellSingleQuote(cfg.GoldDB))
 	// Passed to provision.py's --default-currency: the currency every
 	// dashboard's Currency picker opens on, when it is one of the

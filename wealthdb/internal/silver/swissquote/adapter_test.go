@@ -249,8 +249,8 @@ func TestSnapshotsHistoricalPositionsConsolidatedByISIN(t *testing.T) {
             (2000, '1234567', '{}');
         INSERT INTO positions(snapshot_at, account_external_id, symbol, currency, payload, name, isin, source) VALUES
             -- Live row, ticker symbol.
-            (2000, '1234567', 'SMMCHA', 'CHF',
-             '{"asset_class":"ETFs","currency":"CHF","symbol":"SMMCHA","quantity":100,"total_value":10000.00}',
+            (2000, '1234567', 'SYNCHFE', 'CHF',
+             '{"asset_class":"ETFs","currency":"CHF","symbol":"SYNCHFE","quantity":100,"total_value":10000.00}',
              'Example Fund CHF dis', 'CH0000000060', 'live'),
             -- Historical row from a Portfolio Performance PDF —
             -- silver writes the long name into the symbol column,
@@ -286,35 +286,59 @@ func keysOf(m map[string]canonical.InstrumentChange) []string {
 }
 
 // TestSnapshotsAccountCategoryPassthrough verifies the
-// swissquote v2 `account_type` column is forwarded as
+// swissquote `account_product` column is forwarded as
 // AccountCategory, and that the empty string maps to nil (older
 // snapshots predate the column).
 func TestSnapshotsAccountCategoryPassthrough(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
-        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 2, '/x/1');
-        INSERT INTO accounts(snapshot_at, account_external_id, payload, account_type) VALUES
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 5, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload, account_product) VALUES
             (1000, '1234567', '{"customer_id":"1234567"}', 'Trading'),
             (1000, '7654321', '{"customer_id":"7654321"}', '');
     `); err != nil {
 		t.Fatal(err)
 	}
+	byID := accountCategories(t, path)
+	if got := byID["1234567"]; got == nil || *got != "Trading" {
+		t.Errorf("1234567 category = %v, want 'Trading'", got)
+	}
+	if got := byID["7654321"]; got != nil {
+		t.Errorf("7654321 category = %v, want nil (empty account_product)", got)
+	}
+}
+
+// TestSnapshotsAccountCategoryPreV5 verifies a pre-v5 silver, whose
+// column is still named `account_type`, forwards it the same way.
+func TestSnapshotsAccountCategoryPreV5(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	if _, err := seed.Exec(`
+        ALTER TABLE accounts RENAME COLUMN account_product TO account_type;
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 2, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload, account_type) VALUES
+            (1000, '1234567', '{"customer_id":"1234567"}', 'Trading');
+    `); err != nil {
+		t.Fatal(err)
+	}
+	if got := accountCategories(t, path)["1234567"]; got == nil || *got != "Trading" {
+		t.Errorf("1234567 category = %v, want 'Trading'", got)
+	}
+}
+
+// accountCategories is the AccountCategory of each account in the first
+// snapshot batch of the silver at path.
+func accountCategories(t *testing.T, path string) map[string]*string {
+	t.Helper()
 	conn := openAdapter(t, path)
 	w, _ := conn.ChangeWindow(context.Background(), -1)
 	stream, _ := conn.Snapshots(context.Background(), w)
 	defer stream.Close()
 	batch, _, _ := stream.Next(context.Background())
-
 	byID := map[string]*string{}
 	for i := range batch.Accounts {
 		byID[batch.Accounts[i].AccountExternalID] = batch.Accounts[i].AccountCategory
 	}
-	if got := byID["1234567"]; got == nil || *got != "Trading" {
-		t.Errorf("1234567 category = %v, want 'Trading'", got)
-	}
-	if got := byID["7654321"]; got != nil {
-		t.Errorf("7654321 category = %v, want nil (empty account_type)", got)
-	}
+	return byID
 }
 
 func TestSnapshotsCurrencyBalancesAndFxRates(t *testing.T) {

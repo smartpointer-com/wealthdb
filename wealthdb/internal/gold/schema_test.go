@@ -3,10 +3,11 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"regexp"
 	"slices"
+	"strconv"
 	"testing"
+	"time"
 )
 
 // mustExec runs one statement and fails the test on an error.
@@ -23,6 +24,28 @@ func execEach(t *testing.T, db *sql.DB, stmts ...string) {
 	for _, q := range stmts {
 		mustExec(t, db, q)
 	}
+}
+
+// utcMidnight is the epoch second of the day's UTC midnight.
+func utcMidnight(y int, m time.Month, d int) int64 {
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix()
+}
+
+// fmtFloatPtr is a nullable float for a failure message, "-" for NULL.
+// It keeps every digit, so two renders compare bit for bit.
+func fmtFloatPtr(v *float64) string {
+	if v == nil {
+		return "-"
+	}
+	return strconv.FormatFloat(*v, 'g', 17, 64)
+}
+
+// fmtStrPtr is a nullable string for a failure message, "-" for NULL.
+func fmtStrPtr(s *string) string {
+	if s == nil {
+		return "-"
+	}
+	return *s
 }
 
 // scanStrings is the one column q reads, a string a row.
@@ -85,7 +108,7 @@ func openAtVersion(t *testing.T, version int) (*sql.DB, context.Context) {
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
 
-	ms, err := listMigrations()
+	ms, err := migrations()
 	if err != nil {
 		t.Fatalf("list migrations: %v", err)
 	}
@@ -105,95 +128,14 @@ func openAtVersion(t *testing.T, version int) (*sql.DB, context.Context) {
 	return db, ctx
 }
 
-// latestSchemaVersion returns the schema version Migrate brings a
-// database to: the newer of the highest embedded migration and the
-// derived set's version. Used by tests to assert post-Migrate state
-// without hardcoding a version that drifts as new migrations land.
-func latestSchemaVersion() (int, error) {
-	ms, err := listMigrations()
-	if err != nil {
-		return 0, err
-	}
-	set, err := derived()
-	if err != nil {
-		return 0, err
-	}
-	return wantVersion(ms, set), nil
-}
-
-// TestMigrateAppliesSchema is the smoke test that proves the
-// DuckDB driver loads, the embedded migrations run end-to-end,
-// and schema_meta records the latest applied version.
-func TestMigrateAppliesSchema(t *testing.T) {
-	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer db.Close()
-
-	ctx := context.Background()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	want, err := latestSchemaVersion()
-	if err != nil {
-		t.Fatalf("latestSchemaVersion: %v", err)
-	}
-
-	var version int
-	if err := db.QueryRowContext(ctx,
-		`SELECT MAX(gold_schema_version) FROM schema_meta`).Scan(&version); err != nil {
-		t.Fatalf("read schema_meta: %v", err)
-	}
-	if version != want {
-		t.Errorf("schema version = %d, want %d", version, want)
-	}
-}
-
-// TestMigrateIdempotent verifies that a second Migrate call against
-// an already-migrated database is a no-op (no re-application of
-// already-applied migrations).
-func TestMigrateIdempotent(t *testing.T) {
-	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer db.Close()
-
-	ctx := context.Background()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatalf("first Migrate: %v", err)
-	}
-
-	var before int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_meta`).Scan(&before); err != nil {
-		t.Fatalf("count schema_meta (before): %v", err)
-	}
-
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatalf("second Migrate (should be no-op): %v", err)
-	}
-
-	var after int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_meta`).Scan(&after); err != nil {
-		t.Fatalf("count schema_meta (after): %v", err)
-	}
-	if after != before {
-		t.Errorf("schema_meta row count = %d, want %d (idempotent)", after, before)
-	}
-}
-
 // TestMultiStatementExecRunsEachOnce pins the driver behaviour Migrate
 // rests on: one Exec of several statements runs each of them exactly
 // once.
 func TestMultiStatementExecRunsEachOnce(t *testing.T) {
 	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
+	db, err := sql.Open("duckdb", "")
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatal(err)
 	}
 	defer db.Close()
 
@@ -210,17 +152,7 @@ func TestMultiStatementExecRunsEachOnce(t *testing.T) {
 // docs/DESIGN.md §7.2 is present after migration.
 func TestMigrateCreatesAllTables(t *testing.T) {
 	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer db.Close()
-
-	ctx := context.Background()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
+	db, ctx := openEmpty(t)
 	want := []string{
 		"schema_meta",
 		"silver_sources",
@@ -245,6 +177,29 @@ func TestMigrateCreatesAllTables(t *testing.T) {
 		if n != 0 && table != "schema_meta" {
 			t.Errorf("expected table %q to be empty, got %d rows", table, n)
 		}
+	}
+}
+
+// currentSchemaVersion reads a database with no schema_meta as version
+// 0, and returns any other failure to read it: a schema_meta it cannot
+// read is no version 0, which would have Migrate replay every
+// migration over it.
+func TestCurrentSchemaVersionReturnsAnUnreadableSchemaMeta(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if v, err := currentSchemaVersion(ctx, db); v != 0 || err != nil {
+		t.Errorf("no schema_meta: version %d, err %v; want 0, nil", v, err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_meta (applied_at BIGINT)`); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := currentSchemaVersion(ctx, db); err == nil {
+		t.Errorf("a schema_meta without its version column: version %d, err nil; want an error", v)
 	}
 }
 
@@ -302,28 +257,6 @@ func TestTransactionEnrichmentColumns(t *testing.T) {
 		if nullable != "YES" {
 			t.Errorf("transactions.%s is_nullable = %q, want YES", col, nullable)
 		}
-	}
-}
-
-// TestCheckSchemaKnown: a database a later build has migrated past this
-// binary's schema version reads as stale, with or without a build
-// stamp; one at the binary's own schema does not.
-func TestCheckSchemaKnown(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	if err := CheckSchemaKnown(ctx, db); err != nil {
-		t.Fatalf("a database at this binary's schema: %v", err)
-	}
-	latest, err := latestSchemaVersion()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO schema_meta (gold_schema_version, applied_at) VALUES (?, 0)`,
-		latest+1); err != nil {
-		t.Fatal(err)
-	}
-	if err := CheckSchemaKnown(ctx, db); !errors.Is(err, ErrStaleBinary) {
-		t.Errorf("a database one migration ahead: err = %v, want ErrStaleBinary", err)
 	}
 }
 

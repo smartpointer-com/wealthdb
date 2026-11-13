@@ -33,7 +33,7 @@ func seedCheckFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 }
 
 // TestTransactionsCarriesTheCheckNumberInOrder is the positional-scan
-// guard for the column migration 0075 added.
+// guard for transactions.check_number.
 //
 // report_transactions is scanned POSITIONALLY, so the row struct, the
 // scan list and the macro projection are one contract. A column

@@ -242,3 +242,58 @@ func TestReloadFreshSaysWhenAStoreIsEmpty(t *testing.T) {
 		t.Errorf("reload -a over an empty (but present) merchant store did not say so:\n%s", so)
 	}
 }
+
+// TestReloadFreshMigratesTheOutgoingFile: a live file with a migration
+// still to apply is migrated before the build, so every paid store
+// carries whole from a file of the rebuilt one's schema, and the
+// swapped-in file is at the head version.
+func TestReloadFreshMigratesTheOutgoingFile(t *testing.T) {
+	t.Parallel()
+	cfg := setupCLITest(t)
+	freshGoldFor(t, cfg)
+	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
+		t.Fatal("load failed")
+	}
+	goldPath := goldPathFromCfg(cfg)
+	seedMerchantStore(t, goldPath)
+	execGold(t, goldPath, `
+        INSERT INTO income_payer_categories (payer_signature, payer_name, income_detailed,
+                                             signature_version, assigned_at, model_name) VALUES
+            ('sig-payroll', 'Blue Harbour Payroll', 'INCOME_SALARY', 1, 100, 'test-model');
+        INSERT INTO symbol_resolutions (silver_source_id, lookup_kind, lookup_value,
+                                        symbol, resolved_at, model_name) VALUES
+            ('schwab-test', 'name', 'Example Growth Fund', 'EXGF', 100, 'test-model');`)
+	head := schemaVersionOf(t, goldPath)
+	execGold(t, goldPath, `DELETE FROM schema_meta WHERE gold_schema_version = (SELECT max(gold_schema_version) FROM schema_meta)`)
+	if got := schemaVersionOf(t, goldPath); got >= head {
+		t.Fatalf("schema version %d after the delete, want one below %d", got, head)
+	}
+
+	so, se, code := run(t, "-c", cfg, "reload", "-a")
+	if code != 0 {
+		t.Fatalf("reload -a failed: code=%d stderr=%s", code, se)
+	}
+	for _, store := range paidStores {
+		if want := fmt.Sprintf("carried 1 %s verdict(s) across the rebuild", store.noun); !strings.Contains(so, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, so)
+		}
+	}
+	if got := schemaVersionOf(t, goldPath); got != head {
+		t.Errorf("the rebuilt file is at schema version %d, want the head %d", got, head)
+	}
+}
+
+// schemaVersionOf reads a gold file's newest applied migration.
+func schemaVersionOf(t *testing.T, goldPath string) int {
+	t.Helper()
+	db, err := sql.Open("duckdb", goldPath+"?access_mode=read_only")
+	if err != nil {
+		t.Fatalf("open gold read-only: %v", err)
+	}
+	defer db.Close()
+	var v int
+	if err := db.QueryRow(`SELECT max(gold_schema_version) FROM schema_meta`).Scan(&v); err != nil {
+		t.Fatalf("read the schema version: %v", err)
+	}
+	return v
+}

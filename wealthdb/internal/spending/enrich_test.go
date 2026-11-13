@@ -946,6 +946,39 @@ func TestPassAppliesConfigRules(t *testing.T) {
 	}
 }
 
+// TestTheLaterPinOnARowWins: a pin by nickname and a pin by id name one
+// row under two identities, so the ledger parse lets both through. The
+// row takes the verdict of the pin later in the ledger, whichever form
+// it names the account in.
+func TestTheLaterPinOnARowWins(t *testing.T) {
+	byNickname := Pin{Source: "bank", Account: "Everyday Cash", Day: day(80), Amount: -2500, Currency: "USD",
+		Detailed: canonical.SpendDetailedInvestment}
+	byID := Pin{Source: "bank", Account: "CASH1", Day: day(80), Amount: -2500, Currency: "USD",
+		Detailed: canonical.SpendDetailedGift}
+	for _, tc := range []struct {
+		name string
+		pins []Pin
+		want string
+	}{
+		{"nickname then id", []Pin{byNickname, byID}, canonical.SpendDetailedGift},
+		{"id then nickname", []Pin{byID, byNickname}, canonical.SpendDetailedInvestment},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, ctx := openGold(t)
+			if _, err := db.ExecContext(ctx, `
+                UPDATE accounts SET nickname = 'Everyday Cash'
+                 WHERE silver_source_id = 'bank' AND account_external_id = 'CASH1'`); err != nil {
+				t.Fatalf("nickname the cash account: %v", err)
+			}
+			seedTxns(t, db, ctx, txn{"bank", "T-TWICE", "CASH1", "withdrawal", day(80), -2500, "", "", ""})
+			runPass(t, db, ctx, Options{Pins: tc.pins})
+			if detailed, prov := verdictOf(t, db, ctx, "bank", "T-TWICE"); detailed != tc.want || prov != ProvenanceManual {
+				t.Errorf("T-TWICE = (%q, %q), want (%q, manual)", detailed, prov, tc.want)
+			}
+		})
+	}
+}
+
 // TestPassAppliesPins pins the ledger end to end. A pin resolves its
 // account by nickname or by id; it applies to every row it describes,
 // so two identical bare withdrawals both take it; it beats a matcher

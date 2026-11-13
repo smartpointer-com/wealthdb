@@ -64,9 +64,8 @@ CREATE MACRO portfolio_buckets() AS TABLE (
 -- empty bucket -> 0; a bucket with lines but no FX path -> NULL; the base
 -- trio -> NULL when the source's base currency is unknown/mixed.
 --
--- report_sources_history / _history_multi (below) are the daily-series
--- variants for Metabase, the per-source analogues of
--- report_portfolios_history.
+-- report_sources_history_multi (below) is the daily-series variant for
+-- Metabase, the per-source analogue of report_portfolios_history_multi.
 
 -- source_buckets: one bucket per source (every source with at least one
 -- account) carrying its rolled-up taxonomy + effective base currency. The
@@ -532,10 +531,10 @@ CREATE MACRO instrument_labels() AS TABLE (
 );
 
 -- ============================================================
--- Shared predicates. The lot pass (internal/gold/lots_feed.go) reads
--- through the same macros, so the engine and the readers agree on
--- which holdings a cost basis describes, which basis a source states,
--- and which sales a document covers.
+-- Shared predicates. The lot pass (internal/gold/lots_keys.go,
+-- lots_feed_stated.go) reads through the same macros, so the engine
+-- and the readers agree on which holdings a cost basis describes,
+-- which basis a source states, and which sales a document covers.
 -- ============================================================
 
 -- basis_applies: whether a cost basis describes a holding of this class

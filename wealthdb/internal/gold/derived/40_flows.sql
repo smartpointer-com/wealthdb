@@ -1393,9 +1393,9 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
     ),
     -- THE ORDERED FAR-ACCOUNT TEST (docs/CASHFLOW.md §4). First match
     -- wins, and
-    -- the WRAPPER is asked before the account KIND: a mortgage on a
-    -- trust-owned property and a card inside a foundation are both, and
-    -- the wrapper is what says whose money moved.
+    -- the WRAPPER is asked before the account KIND: any account kind can
+    -- sit inside any wrapper, and the wrapper is what says whose money
+    -- moved.
     --
     -- A far account whose wrapper is unset falls past the first three
     -- arms to the pool test, which admits it — the same render-time

@@ -20,7 +20,7 @@ func init() {
 // collector reads to learn which funds and securities gold wants
 // reference data for (gold.Wanted; docs/adapters/refdata.md §5). It is
 // the one way the collector reads gold. Read-only, and hidden from
-// `wealthdb help`, like mcp-config: the collector runs it as
+// `wealthdb help`, like config-env: the collector runs it as
 // `wealthdb -r refdata-wanted`.
 func cmdRefdataWanted(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("wealthdb refdata-wanted", flag.ContinueOnError)

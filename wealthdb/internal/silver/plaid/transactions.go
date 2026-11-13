@@ -174,7 +174,7 @@ func (c *Connection) appendInvestmentLedger(ctx context.Context, w canonical.Win
 		}
 		extra := map[string]any{}
 		if !bk.known || bk.kind == canonical.TxKindOther {
-			extra["source_kind"] = r.typ + "/" + r.subtype
+			extra[canonical.PayloadSourceKind] = r.typ + "/" + r.subtype
 		}
 		if bk.unvalued {
 			extra["unvalued"] = true

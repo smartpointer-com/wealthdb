@@ -212,7 +212,7 @@ type Config struct {
 	Cashflow *CashflowConfig `json:"cashflow,omitempty"`
 	// SymbolResolution groups the per-deployment knobs that drive
 	// `wealthdb resolve-symbols`: the LLM endpoint and the
-	// user-authored override list. Both fields inside are optional;
+	// override list in the config. Both fields inside are optional;
 	// the subcommand fails loudly if Model is unset and
 	// --overrides-only wasn't passed.
 	SymbolResolution *SymbolResolutionConfig `json:"symbol_resolution,omitempty"`
@@ -254,7 +254,8 @@ type Config struct {
 	Yield *YieldConfig `json:"yield,omitempty"`
 
 	// The blocks in the engine's terms, each compiled once by Validate
-	// and returned by its accessor. Nil on a Config never validated.
+	// and returned by its accessor. Nil on a Config never validated,
+	// whose accessors read it as one with none of these blocks.
 	lotsEngine    *lots.Config
 	benchmarkDefs []canonical.Benchmark
 	exposureRows  *canonical.ExposureRows
@@ -287,7 +288,7 @@ func Load(path string) (*Config, error) {
 	// path-shape checks see the resolved value.
 	configDir := filepath.Dir(absPath)
 	for _, f := range c.pathFields() {
-		if f.optional && *f.p == "" {
+		if *f.p == "" {
 			continue
 		}
 		expanded, err := expandPath(*f.p, configDir)
@@ -304,13 +305,11 @@ func Load(path string) (*Config, error) {
 }
 
 // pathField is one path-valued key of the file: key names it in an
-// error, p points at its value. An optional path that is empty stays
-// empty; a required one is expanded even then, so an empty value fails
-// as a path.
+// error, p points at its value. An empty path stays empty, and Validate
+// refuses a required one by name.
 type pathField struct {
-	key      string
-	p        *string
-	optional bool
+	key string
+	p   *string
 }
 
 // pathFields lists every path-valued key of c, in the order Load
@@ -321,22 +320,22 @@ type pathField struct {
 func (c *Config) pathFields() []pathField {
 	out := []pathField{
 		{key: "gold_db", p: &c.GoldDB},
-		{key: "equity_transfers", p: &c.EquityTransfers, optional: true},
+		{key: "equity_transfers", p: &c.EquityTransfers},
 	}
 	if c.Exposure != nil {
-		out = append(out, pathField{key: "exposure.declarations", p: (*string)(&c.Exposure.Declarations), optional: true})
+		out = append(out, pathField{key: "exposure.declarations", p: (*string)(&c.Exposure.Declarations)})
 	}
 	if c.Spending != nil {
 		out = append(out,
-			pathField{key: "spending.pins", p: &c.Spending.Pins, optional: true},
-			pathField{key: "spending.transfer_overrides", p: &c.Spending.TransferOverrides, optional: true})
+			pathField{key: "spending.pins", p: &c.Spending.Pins},
+			pathField{key: "spending.transfer_overrides", p: &c.Spending.TransferOverrides})
 	}
 	if c.Income != nil {
-		out = append(out, pathField{key: "income.pins", p: &c.Income.Pins, optional: true})
+		out = append(out, pathField{key: "income.pins", p: &c.Income.Pins})
 	}
 	for i := range c.SilverSources {
 		s := &c.SilverSources[i]
-		out = append(out, pathField{key: fmt.Sprintf("silver_sources[%d].path", i), p: &s.Path, optional: true})
+		out = append(out, pathField{key: fmt.Sprintf("silver_sources[%d].path", i), p: &s.Path})
 		for j := range s.Subsources {
 			out = append(out, pathField{key: fmt.Sprintf("silver_sources[%d].subsources[%d].path", i, j),
 				p: &s.Subsources[j].Path})

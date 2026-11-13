@@ -96,7 +96,7 @@ type spendCanaries struct {
 	Unmatched            []spending.Leg
 	CrossCurrency        []crossCurrencyShape
 	// PairsNotStored says gold has no transfer_links yet: the pairs list
-	// empty until the next load runs the pass.
+	// stays empty until the next load runs the pass.
 	PairsNotStored bool
 }
 

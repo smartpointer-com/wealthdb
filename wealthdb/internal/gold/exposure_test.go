@@ -56,7 +56,7 @@ func exDay(m time.Month, d int, y ...int) int64 {
 	if len(y) > 0 {
 		year = y[0]
 	}
-	return time.Date(year, m, d, 0, 0, 0, 0, time.UTC).Unix()
+	return utcMidnight(year, m, d)
 }
 
 func seedExposureFixture(t *testing.T, db *sql.DB, ctx context.Context) {
@@ -751,17 +751,13 @@ func TestExposureAliases(t *testing.T) {
 func TestExposureAliasPrecedence(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	for _, q := range []string{
+	execEach(t, db,
 		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, isin, currency,
 		 first_seen_at, last_seen_at) VALUES ('test-src', 'C2', 'public_equity', 'stock', 'QQZ', 'XX0000000021', 'USD', 0, 0),
 		 ('test-src', 'C3', 'public_equity', 'stock', 'QVN', 'AT0000000023', 'EUR', 0, 0)`,
 		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, isin, ticker)
 		 VALUES ('test-src', 'symbol:QQZ', 0, 'p1', 'XX0000000022', 'QQZ'), ('test-src', 'symbol:QQZ', 0, 'p2', 'XX0000000022', 'QQZ')`,
-	} {
-		if _, err := db.ExecContext(ctx, q); err != nil {
-			t.Fatal(err)
-		}
-	}
+	)
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
@@ -791,7 +787,7 @@ func TestExposureABrokersSymbolAndCUSIPFillEachOther(t *testing.T) {
 	db, ctx := openMigrated(t)
 	isin := func(body string) string { return body + string(rune('0'+canonical.ISINCheckDigit(body))) }
 	ca := isin("CA00000AB07")
-	for _, q := range []string{
+	execEach(t, db,
 		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, cusip, currency,
 		 first_seen_at, last_seen_at) VALUES ('test-src', 'QCS1', 'public_equity', 'stock', 'QCS1', '00000AB02', 'USD', 0, 0),
 		 ('test-src', 'QCS2', 'public_equity', 'stock', 'QCS2', '00000AB03', 'USD', 0, 0),
@@ -809,7 +805,7 @@ func TestExposureABrokersSymbolAndCUSIPFillEachOther(t *testing.T) {
 		 VALUES ('test-src', 'symbol:FUNDX', 0, 'holdings', 80, 'isin:XX0000000051', 'XX0000000051', '00000AB03', NULL, NULL, 'USD', 'Cusip Co', 0),
 		        ('test-src', 'symbol:FUNDX', 0, 'holdings', 81, 'isin:XX0000000054', 'XX0000000054', NULL, 'QCS4', 'New York Stock Exchange', 'USD', 'New Co', 0),
 		        ('test-src', 'symbol:FUNDX', 0, 'holdings', 82, 'isin:XX0000000056', 'XX0000000056', '00000AB06', NULL, NULL, 'USD', 'Receipt Co', 0),
-		        ('test-src', 'symbol:FUNDX', 0, 'holdings', 83, 'isin:` + ca + `', '` + ca + `', NULL, 'QCS6', 'New York Stock Exchange', 'USD', 'Toronto Co', 0),
+		        ('test-src', 'symbol:FUNDX', 0, 'holdings', 83, 'isin:`+ca+`', '`+ca+`', NULL, 'QCS6', 'New York Stock Exchange', 'USD', 'Toronto Co', 0),
 		        ('test-src', 'symbol:FUNDX', 0, 'holdings', 84, 'isin:US0000000611', 'US0000000611', NULL, 'QCSA', 'NASDAQ', 'USD', 'Other Co', 0)`,
 		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, isin, ticker)
 		 VALUES ('test-src', 'symbol:QCS2', 0, 'p1', 'XX0000000052', 'QCS2'),
@@ -818,11 +814,7 @@ func TestExposureABrokersSymbolAndCUSIPFillEachOther(t *testing.T) {
 		        ('test-src', 'symbol:QCSC', 0, 'p1', 'XX0000000621', 'QCSC')`,
 		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
 		 VALUES ('test-src', 'symbol:QCS3', 'legal_country', 0, 'gleif', 'DE')`,
-	} {
-		if _, err := db.ExecContext(ctx, q); err != nil {
-			t.Fatal(err)
-		}
-	}
+	)
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}

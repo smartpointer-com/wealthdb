@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sort"
-	"strings"
+	"regexp"
 	"testing"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
@@ -257,59 +257,60 @@ func linkRows(t *testing.T, db *sql.DB, ctx context.Context) []string {
 	return out
 }
 
-// TestTransferLinksAreThePassesPairs holds the table to the matcher it
-// stores: its pair rows are the matcher's pairs over the same pool,
-// flattened to one row per leg, and every row holds what the spending
-// overlay's far columns hold.
-func TestTransferLinksAreThePassesPairs(t *testing.T) {
+// TestMatchedPairsListsOneLeggedLinksAsUnpaired: a link that names only
+// a far account (a stated counter account, a far rule) has no partner,
+// so its leg is still unpaired. A pair one leg of which is pinned is
+// still a pair, and neither leg is unpaired.
+func TestMatchedPairsListsOneLeggedLinksAsUnpaired(t *testing.T) {
 	db, ctx := openGold(t)
-	opts := seedFrozenIncomeFixture(t, db, ctx)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              tax_wrapper, display_name, first_seen_at, last_seen_at)
+             VALUES (?, 'savings-bank', 'cash', 'taxable_personal', 'Example Savings', 1, 1)`,
+		canonical.DeclaredSourceID); err != nil {
+		t.Fatalf("declare an account: %v", err)
+	}
+	opts := seedFrozenFixture(t, db, ctx)
+	seedTxns(t, db, ctx,
+		txn{"bank", "T-STATED", "CASH1", "withdrawal", day(40), -333, "", "Wire to own account", ""},
+		txn{"bank", "T-FAR", "CASH1", "withdrawal", day(41), -3007, "", "Transfer to Example Savings Bank", ""},
+	)
+	seedCounterAccount(t, db, ctx, "bank", "T-STATED", "CUST2")
+	opts.Rules = append(opts.Rules, Rule{Match: regexp.MustCompile(`(?i)EXAMPLE SAVINGS BANK`),
+		Category: canonical.SpendDetailedInternalTransfer, Far: "savings-bank"})
 	runPass(t, db, ctx, opts)
 
-	evidence, err := loadPassEvidence(ctx, db)
-	if err != nil {
-		t.Fatalf("loadPassEvidence: %v", err)
+	oneLegged := scanPairs(t, db, `
+        SELECT transaction_external_id, evidence FROM transfer_links
+         WHERE far_transaction_external_id IS NULL AND far_account_external_id IS NOT NULL`)
+	if oneLegged["T-STATED"] != evidenceStatedAccount || oneLegged["T-FAR"] != evidenceRule {
+		t.Fatalf("one-legged links = %v, want T-STATED by %s and T-FAR by %s",
+			oneLegged, evidenceStatedAccount, evidenceRule)
 	}
-	legs, _, err := loadMatcherPool(ctx, db, nil, evidence)
+	pairs, unmatched, err := MatchedPairs(ctx, db)
 	if err != nil {
-		t.Fatalf("loadMatcherPool: %v", err)
+		t.Fatalf("MatchedPairs: %v", err)
 	}
-	rates, err := gold.LoadDailyRates(ctx, db)
-	if err != nil {
-		t.Fatalf("LoadDailyRates: %v", err)
+	unpaired := map[string]bool{}
+	for _, l := range unmatched {
+		unpaired[l.TxID] = true
 	}
-	var want []string
-	for _, p := range matchTransferPairs(legs, 5, 0.5, gold.TransferOverrides{}, rates) {
-		for _, leg := range [][2]gold.TransferLeg{{p.Debit, p.Credit}, {p.Credit, p.Debit}} {
-			want = append(want, fmt.Sprintf("%s/%s far=%s/%s tx=%s class=(null) by=%s measure=cash",
-				leg[0].Group, leg[0].ID, leg[1].Group, leg[1].Owner, leg[1].ID, phaseEvidence[p.By]))
+	for _, id := range []string{"T-STATED", "T-FAR"} {
+		if !unpaired[id] {
+			t.Errorf("%s has no partner and is not listed as unpaired", id)
 		}
 	}
-	sort.Strings(want)
-	var got []string
-	for _, l := range linkRows(t, db, ctx) {
-		if !strings.Contains(l, " tx=(null) ") {
-			got = append(got, l)
+	for _, id := range []string{"T-PIN-OVER-MATCH", "T-PIN-PAIR"} {
+		if unpaired[id] {
+			t.Errorf("%s is half of a pair and is listed as unpaired", id)
 		}
 	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("pair links:\n%s\nwant the matcher's pairs:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	found := false
+	for _, p := range pairs {
+		found = found || p.Debit.TxID == "T-PIN-OVER-MATCH" && p.Credit.TxID == "T-PIN-PAIR"
 	}
-
-	// Every link is an overlay row's far account or class, and back.
-	overlay := scanPairs(t, db, `
-        SELECT silver_source_id || '/' || transaction_external_id,
-               COALESCE(far_silver_source_id, '(null)') || '/' ||
-               COALESCE(far_account_external_id, '(null)') || ' ' || COALESCE(far_class, '(null)')
-          FROM spend_txn_enrichment
-         WHERE far_account_external_id IS NOT NULL OR far_class IS NOT NULL`)
-	links := scanPairs(t, db, `
-        SELECT silver_source_id || '/' || transaction_external_id,
-               COALESCE(far_silver_source_id, '(null)') || '/' ||
-               COALESCE(far_account_external_id, '(null)') || ' ' || COALESCE(far_class, '(null)')
-          FROM transfer_links`)
-	if fmt.Sprint(links) != fmt.Sprint(overlay) {
-		t.Errorf("links hold %v, the overlay %v", links, overlay)
+	if !found {
+		t.Errorf("the pinned pair is not listed: %+v", pairs)
 	}
 }
 

@@ -20,7 +20,8 @@ var fresh struct {
 
 // OpenFresh writes a migrated, empty gold database at path and opens it
 // read-write. The path must not exist yet: an existing file is never
-// overwritten. Tests build their gold with it; production opens with Open.
+// overwritten. Tests build their gold with it, and so does `reload -a`
+// for the temp file it rebuilds; every other open goes through Open.
 func OpenFresh(path string) (*sql.DB, error) {
 	data, err := freshImage()
 	if err != nil {

@@ -247,8 +247,8 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 		// enrichment pass; `model` is not stored anywhere, because the
 		// model tier writes to the merchant store rather than the
 		// overlay. spend_txn_categories() resolves it at the point the
-		// two scopes meet, which is the only place the
-		// store's verdict is distinguishable from the backlog.
+		// two scopes meet, which is the only place the store's verdict
+		// is distinguishable from the backlog.
 		textCol("provenance", func(r gold.SpendTransactionRow) *string { return r.Provenance }),
 		// The counterparty is the adapter's merchant field, published
 		// unfiltered: on a card row it is a shop, on a transfer it is

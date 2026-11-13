@@ -14,7 +14,7 @@ import (
 // config's fx_priority and re-loading any source refreshes precedence
 // globally without per-source drift.
 //
-// The load path (cmd_load / cmd_reload) calls this after the config's
+// stampConfig (cmd/wealthdb/cmd_load.go) calls this once the config's
 // FxSourceOrder() is known and the silver_sources rows are upserted, so
 // the SQL FX layer honours config-driven precedence. A no-op-ish call
 // with an empty order clears ranks (date-only tiebreaking).

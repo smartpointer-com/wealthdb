@@ -539,23 +539,6 @@ func TestRefdataWantedHoldsWhatItsAccountCarries(t *testing.T) {
 	}
 }
 
-// TestRefdataWantedBeforeMigration0140: a gold at migration 0139 (a
-// read-only open of an older file) has no pos_active_at and reads its
-// source's newest snapshot as every account's, so the fund ends at its
-// own last snapshot.
-func TestRefdataWantedBeforeMigration0140(t *testing.T) {
-	t.Parallel()
-	db, ctx := openAtVersion(t, 139)
-	seedCarriedFund(t, db, ctx)
-	w, err := RefdataWanted(ctx, db, ymd(2026, 4, 10))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if f := wantedFund(w, "symbol:FUNDQ"); f == nil || f.HeldTo == nil || *f.HeldTo != "2026-01-15" {
-		t.Errorf("FUNDQ %+v of %+v", f, w.Funds)
-	}
-}
-
 // TestCheckReadsEachAccountsActiveSnapshot: B's own run lands after
 // A's last snapshot in the window; the positions check still compares A
 // at its own.

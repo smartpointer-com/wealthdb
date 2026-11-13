@@ -191,13 +191,7 @@ func parseResolveSymbolsFlags(subargs []string, stderr io.Writer) (resolveSymbol
 	var o resolveSymbolsOpts
 	fs := flag.NewFlagSet("wealthdb resolve-symbols", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	registerModelFlags(fs, &o.modelFlags, defaultResolveBatch, modelFlagDocs{
-		dryRun:      "show resolution plan without writing to gold",
-		maxAttempts: "max LLM round-trips when responses include hallucinated rows",
-		maxAnchors:  "max anchor examples per silver source to include in the prompt",
-		batch:       "candidates per model call",
-		showPrompt:  "print the LLM prompt to stderr before sending (debugging)",
-	})
+	registerModelFlags(fs, &o.modelFlags, defaultResolveBatch)
 	fs.BoolVar(&o.noCurrency, "no-currency", false, "drop the currency hint from the prompt (experiment / ablation)")
 	fs.BoolVar(&o.overridesOnly, "overrides-only", false, "apply cfg.symbol_resolution.overrides and exit; skip the LLM round-trip entirely")
 	fs.Usage = func() {
@@ -209,11 +203,7 @@ func parseResolveSymbolsFlags(subargs []string, stderr io.Writer) (resolveSymbol
 	if err := noPositionals(fs, "resolve-symbols"); err != nil {
 		return o, err
 	}
-	if o.batch < 1 {
-		fs.Usage()
-		return o, errs.Newf(errs.ExitUsage, "resolve-symbols: --batch must be at least 1, got %d", o.batch)
-	}
-	return o, nil
+	return o, o.check(fs, "resolve-symbols")
 }
 
 // resolveModel returns the model the run asks, validated. The model is
@@ -277,6 +267,9 @@ type resolveRun struct {
 	goldPath string
 	sources  map[string]bool
 	opts     resolveSymbolsOpts
+	// call overrides the model endpoint, as categorizeRunOptions.call
+	// does: nil in production, where the configured model is asked.
+	call llmCall
 }
 
 // batchTally accumulates the batches of one run.
@@ -287,44 +280,39 @@ type batchTally struct {
 	persisted, total  int            // rows stored by this run; table size after the last store
 }
 
-// runResolveBatches asks the model batch by batch. Each batch is stored
-// as it completes (unless dry-run), so a later batch failing — a wedged
-// serve, the per-call ceiling — never costs the answers already paid
-// for: a failed batch's partial answers are stored before its error is
-// returned. A store that fails holds its rows and the run goes on; the
-// held rows are retried with the next batch and once more at the end,
-// and a store failure that outlasts the run wins over the model's error.
+// runResolveBatches asks the model batch by batch (modelPass.run).
+// Each batch is stored as it completes (unless dry-run), so a later
+// batch failing (a wedged serve, the per-call ceiling) never costs the
+// answers already paid for: a failed batch's partial answers are stored
+// before its error is returned. A store that fails holds its rows and
+// the run goes on; the held rows are retried with the next batch and
+// once more at the end, and a store failure that outlasts the run wins
+// over the model's error.
 func runResolveBatches(ctx context.Context, run resolveRun, batches [][]candidate, anchors []anchor, stdout, stderr io.Writer) (batchTally, error) {
 	t := batchTally{stored: map[string]int{}}
-	store := newResolutionStore(ctx, run.goldPath, run.model.Name, t.stored, stderr)
-	pass := resolvePass(modelCaller(run.model), anchors, run.sources, run.opts, stdout, stderr)
-	var runErr error
-	stoppedAt := 0
-	for i, b := range batches {
-		got, n, invalid, err := pass.ask(ctx, b, batchAt{i + 1, len(batches)})
-		t.attempts += n
-		t.invalid += invalid
-		t.valid = append(t.valid, got...)
-		if !run.opts.dryRun {
-			store.accept(got)
-		}
-		if err != nil {
-			runErr, stoppedAt = err, i+1
-			break
-		}
-		fmt.Fprintf(stdout, "resolve-symbols: batch %d/%d: %d of %d resolved\n", i+1, len(batches), len(got), len(b))
-	}
+	var store *batchStore[resolution]
 	if !run.opts.dryRun {
-		if err := flushResolutions(ctx, store, run.goldPath, stdout); err != nil {
-			return t, err
-		}
+		store = newResolutionStore(ctx, run.goldPath, run.model.Name, t.stored, stderr)
+	}
+	call := run.call
+	if call == nil {
+		call = modelCaller(run.model)
+	}
+	pass := resolvePass(call, anchors, run.sources, run.opts, stdout, stderr)
+	r, runErr := pass.run(ctx, batches, store, func(at batchAt, batch []candidate, got []resolution, _, _ int) {
+		fmt.Fprintf(stdout, "resolve-symbols: batch %d/%d: %d of %d resolved\n", at.index, at.count, len(got), len(batch))
+	})
+	t.valid, t.attempts, t.invalid = r.answers, r.attempts, r.rejected
+	if store == nil {
+		return t, runErr
+	}
+	if err := flushResolutions(ctx, store, run.goldPath, stdout); err != nil {
+		return t, err
 	}
 	t.persisted, t.total = store.stored, store.total
 	if runErr != nil {
-		if !run.opts.dryRun {
-			fmt.Fprintf(stdout, "resolve-symbols: stopped in batch %d of %d; the %d resolution(s) answered so far are stored\n",
-				stoppedAt, len(batches), t.persisted)
-		}
+		fmt.Fprintf(stdout, "resolve-symbols: stopped in batch %d of %d; the %d resolution(s) answered so far are stored\n",
+			r.stopped.index, r.stopped.count, t.persisted)
 		return t, runErr
 	}
 	return t, nil
@@ -429,24 +417,17 @@ func newResolutionStore(ctx context.Context, goldPath, modelName string, stored 
 		}}
 }
 
-// flushResolutions writes what the run still holds, retried on the
-// bounded backoff.
-//
+// flushResolutions writes what the run still holds (batchStore.finish).
 // When even the retries fail, the rows are printed in the plan format
-// before the error is returned: text on stdout is the last place a
-// paid-for answer can survive a persist that cannot happen, and it is
-// the same shape --dry-run prints, so it can be re-applied.
+// before the error is returned: the same shape --dry-run prints, so
+// they can be re-applied.
 func flushResolutions(ctx context.Context, store *batchStore[resolution], goldPath string, stdout io.Writer) error {
-	err := retryFlush(ctx, store.flush)
-	if err == nil {
-		return nil
-	}
-	printResolutionPlan(stdout,
-		fmt.Sprintf("--- %d resolution(s) the model answered but gold would not accept ---", len(store.pending)),
-		store.pending)
-	return errs.Wrap(errs.ExitOpenFailed,
-		fmt.Errorf("resolve-symbols: could not store the resolutions above; re-run once nothing else "+
-			"holds %q open, or carry them into cfg.symbol_resolution.overrides: %w", goldPath, err))
+	return store.finish(ctx, func(held []resolution, err error) error {
+		printResolutionPlan(stdout,
+			fmt.Sprintf("--- %d resolution(s) the model answered but gold would not accept ---", len(held)), held)
+		return fmt.Errorf("resolve-symbols: could not store the resolutions above; re-run once nothing else "+
+			"holds %q open, or carry them into cfg.symbol_resolution.overrides: %w", goldPath, err)
+	})
 }
 
 // printResolutionPlan renders resolutions one per line under a
@@ -757,48 +738,6 @@ func printSummary(w io.Writer, stats candidateStats, valid []resolution, unresol
 // modes.
 func candidateGroup(c candidate) string { return c.SilverSourceID + "/" + c.LookupKind }
 
-// stratifiedSample picks up to maxN items by round-robin'ing across
-// the groups `group` assigns, keeping the head-of-list bias out so the
-// sample shows every group present in the input rather than the front
-// of the biggest one. Both LLM commands' run reports sample this way —
-// resolve-symbols by source × lookup kind, categorize by a merchant's
-// dominant source.
-func stratifiedSample[T any](items []T, maxN int, group func(T) string) []T {
-	if maxN >= len(items) {
-		return items
-	}
-	byKey := map[string][]T{}
-	var keys []string
-	for _, it := range items {
-		k := group(it)
-		if _, ok := byKey[k]; !ok {
-			keys = append(keys, k)
-		}
-		byKey[k] = append(byKey[k], it)
-	}
-	sort.Strings(keys)
-
-	out := make([]T, 0, maxN)
-	for len(out) < maxN {
-		progressed := false
-		for _, k := range keys {
-			if len(byKey[k]) == 0 {
-				continue
-			}
-			out = append(out, byKey[k][0])
-			byKey[k] = byKey[k][1:]
-			progressed = true
-			if len(out) == maxN {
-				break
-			}
-		}
-		if !progressed {
-			break
-		}
-	}
-	return out
-}
-
 func formatResolutionRate(total, resolved map[string]int) string {
 	keys := sortedKeys(total)
 	parts := make([]string, len(keys))
@@ -812,15 +751,6 @@ func formatResolutionRate(total, resolved map[string]int) string {
 		parts[i] = fmt.Sprintf("%s=%.1f%% (%d/%d)", k, pct, r, t)
 	}
 	return strings.Join(parts, ", ")
-}
-
-func sortedKeys(m map[string]int) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // resolvePass is the run's conversation with the model. The anchors a
@@ -867,8 +797,8 @@ func buildUserPrompt(candidates []candidate, anchors []anchor, noCurrency bool, 
 	b.WriteString(`A user maintains a portfolio across several brokers. Their database has rows where the ticker symbol is missing. Given the unresolved rows below, emit one CSV row per row you can confidently resolve.
 
 Broker context:
-- schwab: US brokerage; expect US-listed tickers (e.g. SCHD, TFLO, BABA, VTI).
-- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. NOVN.SW, KPN.AS, INGA.AS, DBK.DE).
+- schwab: US brokerage; expect US-listed tickers (e.g. QQQ, VTI, IVV).
+- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. ROG.SW, AIR.PA, ULVR.L, DBK.DE).
 - swissquote: Swiss broker; expect SIX / Xetra / LSE tickers.
 
 `)
@@ -1164,12 +1094,9 @@ func planSymbolOverrides(ctx context.Context, db *sql.DB, overrides []config.Sym
 	return purged, upserted, suppressed, nil
 }
 
-// persistResolutions upserts the validated rows into the
-// symbol_resolutions table. Returns a per-source count of rows
-// INSERTed (NB: ON CONFLICT DO UPDATE doesn't distinguish insert
-// vs update at the row level, so the "new" counter here is the
-// count of touched rows, which is fine for the user-facing summary)
-// and the total row count of the table after the upsert.
+// persistResolutions upserts the validated rows into symbol_resolutions
+// in one transaction. It returns the rows upserted per source, inserted
+// or updated alike, and the table's row count afterwards.
 func persistResolutions(ctx context.Context, db *sql.DB, rows []resolution, resolvedAt int64, modelName string) (map[string]int, int, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

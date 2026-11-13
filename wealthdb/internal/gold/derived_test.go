@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"maps"
 	"regexp"
 	"slices"
@@ -34,7 +35,7 @@ func TestMigrationsAndDerivedVersionsFormOneRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms, err := listMigrations()
+	ms, err := migrations()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +65,33 @@ func TestDerivedLockHoldsTheFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	if last := lock[len(lock)-1]; last.hash != set.hash {
+		next, err := binaryVersion()
+		if err != nil {
+			t.Fatal(err)
+		}
 		t.Errorf("derived/LOCK ends at %d %s; the files hash to %s: append \"%d %s\"",
-			last.version, last.hash, set.hash, last.version+1, set.hash)
+			last.version, last.hash, set.hash, next+1, set.hash)
+	}
+}
+
+// The hash covers what the apply gives a database: a statement's code
+// and the serving registry move it, a comment line does not.
+func TestDerivedSetHashCoversCodeAndServingOnly(t *testing.T) {
+	t.Parallel()
+	stmts := []derivedStmt{{file: "derived/10_a.sql", name: "a", sql: "-- a is one.\nCREATE MACRO a() AS 1;\n"}}
+	serving := []servingTable{{"serving_a", "a()"}}
+	base := derivedSetHash(stmts, serving)
+	for name, other := range map[string]string{
+		"a body edit":         derivedSetHash([]derivedStmt{{sql: "-- a is one.\nCREATE MACRO a() AS 2;\n"}}, serving),
+		"a new serving entry": derivedSetHash(stmts, append(slices.Clone(serving), servingTable{"serving_b", "a()"})),
+		"another source":      derivedSetHash(stmts, []servingTable{{"serving_a", "a(1)"}}),
+	} {
+		if other == base {
+			t.Errorf("%s kept the hash", name)
+		}
+	}
+	if got := derivedSetHash([]derivedStmt{{sql: "-- a is 1, the unit.\n--\nCREATE MACRO a() AS 1;\n"}}, serving); got != base {
+		t.Error("a comment edit moved the hash")
 	}
 }
 
@@ -188,7 +214,7 @@ func TestNoMigrationFrom0180TouchesADerivedObject(t *testing.T) {
 	for _, s := range set.stmts {
 		names[s.name] = true
 	}
-	ms, err := listMigrations()
+	ms, err := migrations()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,13 +509,16 @@ func TestMigrateAppliesTheSetWhereTheHashDiffers(t *testing.T) {
 	db, ctx := openMigrated(t)
 	set := mustDerived(t)
 	mustExec(t, db, probeMacro)
+	meta := schemaRows(t, ctx, db)
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	if !probeSurvives(t, ctx, db) {
 		t.Fatal("Migrate re-applied a set the database already carries")
 	}
-	meta := schemaRows(t, ctx, db)
+	if after := schemaRows(t, ctx, db); !slices.Equal(after, meta) {
+		t.Fatalf("a second Migrate wrote schema rows %v, want %v", after, meta)
+	}
 	mustExec(t, db, `UPDATE derived_state SET hash = 'another build'`)
 	if pending, err := MigrationsPending(ctx, db); err != nil || !pending {
 		t.Errorf("another hash: pending=%v err=%v, want pending", pending, err)
@@ -532,6 +561,96 @@ func TestMigrateLeavesANewerDatabaseAlone(t *testing.T) {
 	}
 	if pending, err := MigrationsPending(ctx, db); err != nil || pending {
 		t.Errorf("a newer database: pending=%v err=%v", pending, err)
+	}
+}
+
+// A gold one version behind is pending, and a gold at the binary's
+// version and hash is not.
+func TestMigrationsPendingBelowTheVersion(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	if pending, err := MigrationsPending(ctx, db); err != nil || pending {
+		t.Fatalf("a migrated gold: pending=%v err=%v", pending, err)
+	}
+	mustExec(t, db, `DELETE FROM schema_meta WHERE gold_schema_version = (SELECT max(gold_schema_version) FROM schema_meta)`)
+	if pending, err := MigrationsPending(ctx, db); err != nil || !pending {
+		t.Fatalf("a gold one version behind: pending=%v err=%v", pending, err)
+	}
+}
+
+// A derived version that changes only the serving registry is applied
+// where a later migration carries the database to the binary's version:
+// the registry is part of the hash, so the database's hash differs.
+func TestMigrateAppliesAServingOnlyVersionBelowAMigration(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	ms, err := migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := currentSchemaVersion(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := mustDerived(t)
+	next := set
+	next.version = current + 1
+	next.serving = append(slices.Clone(set.serving), servingTable{"serving_probe", set.serving[0].source})
+	next.hash = derivedSetHash(next.stmts, next.serving)
+	later := append(slices.Clone(ms), migration{version: current + 2, name: "probe",
+		body: fmt.Sprintf(`INSERT INTO schema_meta (gold_schema_version, applied_at) VALUES (%d, 0)`, current+2)})
+	if err := migrate(ctx, db, later, next); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := hasTable(ctx, db, "serving_probe"); err != nil || !ok {
+		t.Errorf("serving_probe: exists=%v err=%v, want it created", ok, err)
+	}
+	if h, err := derivedHash(ctx, db); err != nil || h != next.hash {
+		t.Errorf("derived hash %q (err %v), want %q", h, err, next.hash)
+	}
+}
+
+// A migration that fails rolls back whole, and Migrate names it.
+func TestMigrateRollsBackAFailingMigration(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	ms, err := migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := currentSchemaVersion(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := schemaRows(t, ctx, db)
+	broken := append(slices.Clone(ms), migration{version: current + 1, name: "broken",
+		body: `CREATE TABLE migrate_probe (x INTEGER); SELECT * FROM no_such_table;`})
+	err = migrate(ctx, db, broken, mustDerived(t))
+	if want := fmt.Sprintf("apply migration %04d", current+1); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("migrate = %v, want an error naming %q", err, want)
+	}
+	if ok, err := hasTable(ctx, db, "migrate_probe"); err != nil || ok {
+		t.Errorf("migrate_probe: exists=%v err=%v, want it rolled back", ok, err)
+	}
+	if after := schemaRows(t, ctx, db); !slices.Equal(after, meta) {
+		t.Errorf("schema rows %v, want %v", after, meta)
+	}
+}
+
+// applyDerived stamps the version it brings a database to where the
+// database is below it.
+func TestApplyDerivedStampsTheVersion(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	current, err := currentSchemaVersion(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyDerived(ctx, db, mustDerived(t), current, current+1); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := currentSchemaVersion(ctx, db); err != nil || v != current+1 {
+		t.Errorf("schema version %d (err %v), want %d", v, err, current+1)
 	}
 }
 

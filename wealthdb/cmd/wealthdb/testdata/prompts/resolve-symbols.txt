@@ -4,8 +4,8 @@ You are a financial data assistant. You map instrument descriptions and instrume
 A user maintains a portfolio across several brokers. Their database has rows where the ticker symbol is missing. Given the unresolved rows below, emit one CSV row per row you can confidently resolve.
 
 Broker context:
-- schwab: US brokerage; expect US-listed tickers (e.g. SCHD, TFLO, BABA, VTI).
-- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. NOVN.SW, KPN.AS, INGA.AS, DBK.DE).
+- schwab: US brokerage; expect US-listed tickers (e.g. QQQ, VTI, IVV).
+- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. ROG.SW, AIR.PA, ULVR.L, DBK.DE).
 - swissquote: Swiss broker; expect SIX / Xetra / LSE tickers.
 
 Reference examples — same portfolio, already resolved. Each example shows the INPUT row (same shape as the unresolved candidates below) followed by the correct OUTPUT row (the 4-column response format).
@@ -43,8 +43,8 @@ You are a financial data assistant. You map instrument descriptions and instrume
 A user maintains a portfolio across several brokers. Their database has rows where the ticker symbol is missing. Given the unresolved rows below, emit one CSV row per row you can confidently resolve.
 
 Broker context:
-- schwab: US brokerage; expect US-listed tickers (e.g. SCHD, TFLO, BABA, VTI).
-- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. NOVN.SW, KPN.AS, INGA.AS, DBK.DE).
+- schwab: US brokerage; expect US-listed tickers (e.g. QQQ, VTI, IVV).
+- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. ROG.SW, AIR.PA, ULVR.L, DBK.DE).
 - swissquote: Swiss broker; expect SIX / Xetra / LSE tickers.
 
 Reference examples — same portfolio, already resolved. Each example shows the INPUT row (same shape as the unresolved candidates below) followed by the correct OUTPUT row (the 4-column response format).
@@ -87,8 +87,8 @@ You are a financial data assistant. You map instrument descriptions and instrume
 A user maintains a portfolio across several brokers. Their database has rows where the ticker symbol is missing. Given the unresolved rows below, emit one CSV row per row you can confidently resolve.
 
 Broker context:
-- schwab: US brokerage; expect US-listed tickers (e.g. SCHD, TFLO, BABA, VTI).
-- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. NOVN.SW, KPN.AS, INGA.AS, DBK.DE).
+- schwab: US brokerage; expect US-listed tickers (e.g. QQQ, VTI, IVV).
+- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. ROG.SW, AIR.PA, ULVR.L, DBK.DE).
 - swissquote: Swiss broker; expect SIX / Xetra / LSE tickers.
 
 Reference examples — same portfolio, already resolved. Each example shows the INPUT row (same shape as the unresolved candidates below) followed by the correct OUTPUT row (the 4-column response format).
@@ -126,8 +126,8 @@ You are a financial data assistant. You map instrument descriptions and instrume
 A user maintains a portfolio across several brokers. Their database has rows where the ticker symbol is missing. Given the unresolved rows below, emit one CSV row per row you can confidently resolve.
 
 Broker context:
-- schwab: US brokerage; expect US-listed tickers (e.g. SCHD, TFLO, BABA, VTI).
-- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. NOVN.SW, KPN.AS, INGA.AS, DBK.DE).
+- schwab: US brokerage; expect US-listed tickers (e.g. QQQ, VTI, IVV).
+- ubs: Swiss bank with global UCITS / European coverage; expect Xetra / LSE / SIX tickers for ETFs (e.g. XDEW, EQQE, MEUD); native-exchange tickers for individual stocks (e.g. ROG.SW, AIR.PA, ULVR.L, DBK.DE).
 - swissquote: Swiss broker; expect SIX / Xetra / LSE tickers.
 
 Reference examples — same portfolio, already resolved. Each example shows the INPUT row (same shape as the unresolved candidates below) followed by the correct OUTPUT row (the 4-column response format).

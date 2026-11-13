@@ -9,8 +9,10 @@ import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 type SourceTable struct {
 	Name string
 	// TimeCol is the column a load's windowed delete clears the table
-	// by. A table without one is not windowed: a load replaces it whole
-	// or a pass rewrites it.
+	// by. A table without one is not windowed: a load upserts it (the
+	// dimensions, the registration), appends to it (load_audit) or
+	// replaces it whole (realized_lots), or a pass or a model run
+	// rewrites it.
 	TimeCol string
 	// RefKind is the kind of record a reference table holds
 	// (canonical.Window.Spans), so the windowed delete clears it over
@@ -57,6 +59,7 @@ var SourceTables = []SourceTable{
 	{Name: "spend_txn_enrichment", Class: ClassOverlay},
 	{Name: "income_txn_enrichment", Class: ClassOverlay},
 	{Name: "transfer_links", Class: ClassOverlay},
+	{Name: "spend_reimbursement_pairs", Class: ClassOverlay},
 	{Name: "account_wrapper_history", Class: ClassOverlay},
 
 	{Name: "lots", Class: ClassLotLedger},
@@ -95,15 +98,14 @@ var SourceTables = []SourceTable{
 	{Name: "silver_sources", Class: ClassRegistry},
 }
 
+// LotLedgerTables are the tables of the engine's ledger that every lot
+// pass rewrites whole.
+var LotLedgerTables = sourceTableNames(ClassLotLedger)
+
 // ReferenceTables are the tables the reference records load into, every
 // one keyed by silver_source_id and windowed by as_of: a load's windowed
 // delete and a reset reach them by those two columns.
 var ReferenceTables = sourceTableNames(ClassReference)
-
-// ReferenceTableKinds are the kind of record each reference table holds
-// (SourceTable.RefKind). rate_observations, stated_periods and
-// exposure_reports, which no kind names, take the window whole.
-var ReferenceTableKinds = referenceTableKinds()
 
 // sourceTableNames are the names of the source tables of class c, in
 // SourceTables order.
@@ -112,16 +114,6 @@ func sourceTableNames(c TableClass) []string {
 	for _, t := range SourceTables {
 		if t.Class == c {
 			out = append(out, t.Name)
-		}
-	}
-	return out
-}
-
-func referenceTableKinds() map[string]string {
-	out := map[string]string{}
-	for _, t := range SourceTables {
-		if t.RefKind != "" {
-			out[t.Name] = t.RefKind
 		}
 	}
 	return out

@@ -45,8 +45,8 @@ func TestSnapshotsDerivedMarketValue(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`
         INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
-        INSERT INTO accounts(snapshot_at, account_external_id, currency_code, name, product_name, management_style, payload) VALUES
-            (1000, 'ACC1', 'CHF', 'Strategy 50', 'PensFree', NULL, '{}');
+        INSERT INTO accounts(snapshot_at, account_external_id, currency_code, name, product_name, payload) VALUES
+            (1000, 'ACC1', 'CHF', 'Strategy 50', 'PensFree', '{}');
         INSERT INTO cash_balances(snapshot_at, account_external_id, currency, balance_kind, amount, payload) VALUES
             (1000, 'ACC1', 'CHF', 'cash', 200.00, NULL),
             (1000, 'ACC1', 'CHF', 'securities', 1000.00, NULL);

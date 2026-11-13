@@ -54,14 +54,6 @@ func edgeTotal(t *testing.T, db *sql.DB, ctx context.Context, ccy string, grain 
 	return rows
 }
 
-// show prints a decimal field for a failure message.
-func show(p *string) string {
-	if p == nil {
-		return "<nil>"
-	}
-	return *p
-}
-
 // A basis that appears or vanishes between the boundaries leaves the
 // change unknown and flags it, rather than booking the whole gain since
 // purchase.
@@ -74,7 +66,7 @@ func TestGainsBasisChangeIsFlaggedNotBooked(t *testing.T) {
 			edgePos(200000, "A1", "X", "X", "USD", 10, 1050, bv[1]))
 		r := edgeTotal(t, db, ctx, "USD", GainsAll)[0]
 		if r.UnrealizedChange != nil || r.Gain != nil || r.Quality != "basis_changed=1" {
-			t.Errorf("basis %s: change %s gain %s quality %q", name, show(r.UnrealizedChange), show(r.Gain), r.Quality)
+			t.Errorf("basis %s: change %s gain %s quality %q", name, fmtStrPtr(r.UnrealizedChange), fmtStrPtr(r.Gain), r.Quality)
 		}
 	}
 }
@@ -113,7 +105,7 @@ func TestGainsHintLotMeetsItsPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || show(rows[0].PositionKey) != "X" || !near(num(t, rows[0].Realized), 250) || rows[0].Quality != "" {
+	if len(rows) != 1 || fmtStrPtr(rows[0].PositionKey) != "X" || !near(num(t, rows[0].Realized), 250) || rows[0].Quality != "" {
 		t.Errorf("rows = %+v, want one X row carrying its lot, unflagged", rows)
 	}
 }
@@ -174,7 +166,7 @@ func TestGainsPositionsAgreeWithTheAccount(t *testing.T) {
 		}
 	}
 	if !near(sum, num(t, acct.Gain)) || !near(sum, 50) {
-		t.Errorf("positions Σ %v, account %s; want both 50 (X has no full basis)", sum, show(acct.Gain))
+		t.Errorf("positions Σ %v, account %s; want both 50 (X has no full basis)", sum, fmtStrPtr(acct.Gain))
 	}
 }
 
@@ -190,7 +182,7 @@ func TestGainsChangeCarriesTheRateOnTheGain(t *testing.T) {
 		edgePos(200000, "A1", "X", "CHF", "CHF", 10, 200, "100"))
 	r := edgeTotal(t, db, ctx, "USD", GainsAll)[0]
 	if d := num(t, r.UnrealizedEnd) - num(t, r.UnrealizedStart); !near(num(t, r.UnrealizedChange), d) || near(d, 0) {
-		t.Errorf("start %s end %s change %s", show(r.UnrealizedStart), show(r.UnrealizedEnd), show(r.UnrealizedChange))
+		t.Errorf("start %s end %s change %s", fmtStrPtr(r.UnrealizedStart), fmtStrPtr(r.UnrealizedEnd), fmtStrPtr(r.UnrealizedChange))
 	}
 }
 
@@ -215,9 +207,9 @@ func TestGainsLotsOnlyAndFxMissingCountOnce(t *testing.T) {
 	}
 }
 
-// report_positions' first 17 columns equal the 0031 body's, each account
-// at its own active snapshot (pos_active_at), with a bridged FX path
-// whose legs change on different days.
+// report_positions' leading columns keep their order and meaning, each
+// account at its own active snapshot (pos_active_at), with a bridged FX
+// path whose legs change on different days.
 func TestReportPositionsKeepsItsEarlierColumns(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -301,7 +293,7 @@ func TestGainsEveryPeriodAddsUpToTheTotal(t *testing.T) {
 			}
 		}
 		if !near(g, num(t, total[0].Gain)) {
-			t.Errorf("%s: Σ %v != total %s", p, g, show(total[0].Gain))
+			t.Errorf("%s: Σ %v != total %s", p, g, fmtStrPtr(total[0].Gain))
 		}
 	}
 }
@@ -318,7 +310,7 @@ func TestGainsAnonymousLotCounts(t *testing.T) {
             ('test-src', 'R1', 'A1', 'statement', 1970, FALSE, DATE '1970-02-01', 'USD', 5, 550, 300, TRUE);`)
 	r := edgeTotal(t, db, ctx, "USD", GainsAll)[0]
 	if !near(num(t, r.Realized), 250) || r.RealizedLots != 1 {
-		t.Errorf("realized %s lots %d, want 250 and 1", show(r.Realized), r.RealizedLots)
+		t.Errorf("realized %s lots %d, want 250 and 1", fmtStrPtr(r.Realized), r.RealizedLots)
 	}
 	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD", lots.MissingIgnore)
 	if err != nil || len(rows) != 1 || rows[0].LotKey != nil || rows[0].Quality != "unmatched_lots=1" {
@@ -352,7 +344,7 @@ func TestGainsLineWithoutValueIsNotALoss(t *testing.T) {
 		strings.Replace(edgePos(200000, "A1", "X", "X", "USD", 10, 0, "600"), ", 0, 600,", ", NULL, 600,", 1))
 	r := edgeTotal(t, db, ctx, "USD", GainsAll)[0]
 	if r.UnrealizedChange != nil || r.Gain != nil || r.Quality != "basis_changed=1" {
-		t.Errorf("change %s gain %s quality %q", show(r.UnrealizedChange), show(r.Gain), r.Quality)
+		t.Errorf("change %s gain %s quality %q", fmtStrPtr(r.UnrealizedChange), fmtStrPtr(r.Gain), r.Quality)
 	}
 }
 
@@ -385,7 +377,7 @@ func TestGainsSoldOutAccountIsNotUnobserved(t *testing.T) {
             ('test-src', 'R1', 'A1', 'X', 'form_1099b', 1970, FALSE, DATE '1970-02-01', 'USD', 10, 1000, 600, TRUE);`)
 	r := edgeTotal(t, db, ctx, "USD", GainsAll)[0]
 	if r.Quality != "" || !near(num(t, r.Gain), 0) {
-		t.Errorf("gain %s quality %q, want 0 and no flag", show(r.Gain), r.Quality)
+		t.Errorf("gain %s quality %q, want 0 and no flag", fmtStrPtr(r.Gain), r.Quality)
 	}
 }
 

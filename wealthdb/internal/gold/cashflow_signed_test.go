@@ -77,9 +77,9 @@ func TestASignPinnedCashLegJoinsInvesting(t *testing.T) {
 			if r.SourceID != "cf" || r.Account != "Brokerage" {
 				continue
 			}
-			if show(r.Ledger) != "15.5" || show(r.UnsignedVolume) != "900" {
+			if fmtStrPtr(r.Ledger) != "15.5" || fmtStrPtr(r.UnsignedVolume) != "900" {
 				t.Errorf("%s: brokerage coverage: ledger %v, unsigned %v; want the two cash legs in the ledger, "+
-					"the share leg unsigned", when, show(r.Ledger), show(r.UnsignedVolume))
+					"the share leg unsigned", when, fmtStrPtr(r.Ledger), fmtStrPtr(r.UnsignedVolume))
 			}
 			return
 		}

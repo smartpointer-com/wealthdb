@@ -30,10 +30,6 @@ type lotWriter struct {
 	realized []string
 }
 
-// LotLedgerTables are the tables of the engine's ledger that every pass
-// rewrites whole; loader.Reset drops a source's rows.
-var LotLedgerTables = []string{"lots", "lot_disposals", "lot_realized", "lot_findings", "lot_anchors"}
-
 func (w *lotWriter) write(ctx context.Context, prints map[string]string) error {
 	var clearSQL []string
 	for _, t := range LotLedgerTables {

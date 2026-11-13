@@ -1,13 +1,10 @@
 package cointracking
 
 import (
-	"flag"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
-
-var update = flag.Bool("update", false, "rewrite testdata/canonical.jsonl")
 
 // canonicalFixture reaches every type of the kind map, inbound and
 // outbound, in fiat and in crypto, plus a type the map does not know and
@@ -118,5 +115,5 @@ INSERT INTO coin_prices VALUES
 // canonicalFixture to testdata/canonical.jsonl.
 func TestCanonicalGolden(t *testing.T) {
 	path := newFixtureSilver(t, canonicalFixture)
-	silvertest.Golden(t, openAdapter(t, path), "testdata/canonical.jsonl", *update)
+	silvertest.Golden(t, openAdapter(t, path), "testdata/canonical.jsonl")
 }

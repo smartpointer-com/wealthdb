@@ -25,9 +25,12 @@ const contractDir = "testdata/mcp_contract"
 // TestMCPContract holds what a model reads of the server to the files
 // under testdata/mcp_contract, one per item and endpoint: the
 // instructions, every tool as tools/list carries it (name, title,
-// description, input schema, annotations), the resource list, every
-// resource and every describe topic. These texts were tuned; a change
-// to one shows here as a diff, and -update rewrites the files.
+// description, input schema, annotations), the resource list and every
+// resource. Every describe topic is its resource's text, so it is held
+// to that rather than to a file of its own. These texts were tuned; a
+// change to one shows here as a diff, and -update rewrites the files:
+//
+//	wealthdb/wealthdb-test -run '^TestMCPContract$' ./cmd/wealthdb -args -update
 //
 // The config names a gold that does not exist, so the overview and
 // the glossary state that they cannot read it, and nothing is opened.
@@ -80,14 +83,14 @@ func TestMCPContract(t *testing.T) {
 		w, ok := want[name]
 		switch {
 		case !ok:
-			t.Errorf("%s is new; run go test -run TestMCPContract -update and review the diff", name)
+			t.Errorf("%s is new; run wealthdb/wealthdb-test -run '^TestMCPContract$' ./cmd/wealthdb -args -update and review the diff", name)
 		case w != got[name]:
-			t.Errorf("%s changed; run go test -run TestMCPContract -update and review the diff", name)
+			t.Errorf("%s changed; run wealthdb/wealthdb-test -run '^TestMCPContract$' ./cmd/wealthdb -args -update and review the diff", name)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		if _, ok := got[name]; !ok {
-			t.Errorf("%s is gone; run go test -run TestMCPContract -update and review the diff", name)
+			t.Errorf("%s is gone; run wealthdb/wealthdb-test -run '^TestMCPContract$' ./cmd/wealthdb -args -update and review the diff", name)
 		}
 	}
 }
@@ -149,7 +152,13 @@ func contractItems(t *testing.T, cfg string, privacy bool) map[string]string {
 		if name == "" {
 			name = "overview"
 		}
-		items[ep+"describe/"+name+".txt"] = text + "\n"
+		resource, ok := items[ep+"resources/"+name+".txt"]
+		switch {
+		case !ok:
+			t.Errorf("%sdescribe %q has no resource", ep, topic)
+		case resource != text+"\n":
+			t.Errorf("%sdescribe %q and its resource differ", ep, topic)
+		}
 	}
 	return items
 }

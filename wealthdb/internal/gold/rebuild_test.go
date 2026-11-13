@@ -20,7 +20,7 @@ func TestBuildFreshAndSwapAbortsOnBadBuild(t *testing.T) {
 	goldPath := filepath.Join(dir, "gold.db")
 
 	// A real, migrated live gold DB (has positions/accounts).
-	db, err := Open(goldPath, ModeReadWrite)
+	db, err := OpenFresh(goldPath)
 	if err != nil {
 		t.Fatalf("open live gold: %v", err)
 	}

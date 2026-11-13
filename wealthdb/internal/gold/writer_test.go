@@ -13,18 +13,23 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// openMigrated returns a fresh copy of the migrated gold image, opened
-// read-write. A silver_sources row is seeded so subsequent inserts can
-// satisfy the foreign key.
-func openMigrated(t *testing.T) (*sql.DB, context.Context) {
+// openEmpty returns a fresh copy of the migrated gold image, opened
+// read-write, with no source's rows in it.
+func openEmpty(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
 	db, err := OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
 		t.Fatalf("OpenFresh: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
+	return db, context.Background()
+}
 
-	ctx := context.Background()
+// openMigrated is openEmpty with a silver_sources row seeded, so
+// subsequent inserts can satisfy the foreign key.
+func openMigrated(t *testing.T) (*sql.DB, context.Context) {
+	t.Helper()
+	db, ctx := openEmpty(t)
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources(
             silver_source_id, silver_kind, silver_path,

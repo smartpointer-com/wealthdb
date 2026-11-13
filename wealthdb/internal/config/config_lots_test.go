@@ -28,10 +28,7 @@ func TestLotsBlock(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	lc, err := c.LotsEngine()
-	if err != nil {
-		t.Fatal(err)
-	}
+	lc := c.LotsEngine()
 	if lc.Method != lots.HIFO || *lc.Sources["ct"].Method != lots.LIFO || *lc.Sources["ct"].Mode != lots.Shadow ||
 		*lc.Sources["ct"].Grain != lots.GrainAccount || lc.Portfolios["ct"]["P1"] != lots.LOFO ||
 		lc.Accounts["ct"]["A1"] != lots.Average {
@@ -53,18 +50,34 @@ func TestLotsBlock(t *testing.T) {
 		t.Error("an absent block reads a missing basis as ignore")
 	}
 
+	// The engine is what Validate compiled: a block dropped and
+	// validated again is the defaults, and a block never validated
+	// reads as absent.
+	c.Lots = nil
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if lc := c.LotsEngine(); lc.Method != lots.FIFO || lc.Sources != nil || lc.Basis != nil {
+		t.Errorf("after the block is dropped: %+v, want the defaults", lc)
+	}
+	if lc := base(`{"method": "hifo"}`).LotsEngine(); lc.Method != lots.FIFO {
+		t.Errorf("never validated: %+v, want the defaults", lc)
+	}
+
 	for block, want := range map[string]string{
-		`{"method": "random"}`:                                                                     "unknown lot method",
-		`{"missing_basis": "half"}`:                                                                "lots.missing_basis",
-		`{"sources": {"nope": {"method": "fifo"}}}`:                                                "no silver_sources[].id matches",
-		`{"sources": {"ct": {"mode": "maybe"}}}`:                                                   "unknown lots mode",
-		`{"sources": {"ct": {"grain": "wallet"}}}`:                                                 "unknown lots grain",
-		`{"accounts": {"ct": {"A1": {"method": "newest"}}}}`:                                       "unknown lot method",
-		`{"portfolios": {"other": {"P": {"method": "fifo"}}}}`:                                     "no silver_sources[].id matches",
-		`{"basis": [{"source": "nope", "instrument": "X", "per_unit": 1}]}`:                        "no silver_sources[].id matches source",
-		`{"basis": [{"source": "ct", "per_unit": 1}]}`:                                             "instrument is required",
-		`{"basis": [{"source": "ct", "instrument": "X", "per_unit": -1}]}`:                         "0 or more",
-		`{"basis": [{"source": "ct", "instrument": "X", "per_unit": 1, "acquired": "yesterday"}]}`: "lots.basis[0].acquired",
+		`{"method": "random"}`:                                                                                                "unknown lot method",
+		`{"missing_basis": "half"}`:                                                                                           "lots.missing_basis",
+		`{"sources": {"nope": {"method": "fifo"}}}`:                                                                           "no silver_sources[].id matches",
+		`{"sources": {"ct": {"mode": "maybe"}}}`:                                                                              "unknown lots mode",
+		`{"sources": {"ct": {"grain": "wallet"}}}`:                                                                            "unknown lots grain",
+		`{"accounts": {"ct": {"A1": {"method": "newest"}}}}`:                                                                  "unknown lot method",
+		`{"portfolios": {"other": {"P": {"method": "fifo"}}}}`:                                                                "no silver_sources[].id matches",
+		`{"accounts": {"other": {"A1": {"method": "fifo"}}}}`:                                                                 "lots.accounts[\"other\"]: no silver_sources[].id matches",
+		`{"portfolios": {"ct": {"": {"method": "fifo"}}}}`:                                                                    "lots.portfolios[\"ct\"]: empty id key",
+		`{"basis": [{"source": "nope", "instrument": "X", "per_unit": 1}]}`:                                                   "no silver_sources[].id matches source",
+		`{"basis": [{"source": "ct", "per_unit": 1}]}`:                                                                        "instrument is required",
+		`{"basis": [{"source": "ct", "instrument": "X", "per_unit": -1}]}`:                                                    "0 or more",
+		`{"basis": [{"source": "ct", "instrument": "X", "per_unit": 1, "acquired": "yesterday"}]}`:                            "lots.basis[0].acquired",
 		`{"basis": [{"source": "ct", "instrument": "X", "per_unit": 1}, {"source": "ct", "instrument": "X", "per_unit": 2}]}`: "a second basis",
 	} {
 		if err := base(block).Validate(); err == nil || !strings.Contains(err.Error(), want) {

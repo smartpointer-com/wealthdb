@@ -128,9 +128,9 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		// investment rows, and anything outside the spending account
 		// scope. The merchant is the store's name for the row's
 		// signature, or that signature itself where the store holds
-		// none, and is empty on a delta row — an
-		// own-account move, capital deployed, a gift — which carries
-		// its issuer label or nothing.
+		// none, and is empty on a delta row (an own-account move,
+		// capital deployed, a gift), which carries its issuer label or
+		// nothing.
 		// Free-text class, as on the spending view: the transfer fence
 		// gates what may acquire a STORE name, not what this column
 		// prints, so a narrative the fence refused surfaces here as

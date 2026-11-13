@@ -132,9 +132,9 @@ func TestCompactShrinksAndPreservesRows(t *testing.T) {
 
 	// A fresh gold is in the pinned format already; rewritten in
 	// DuckDB's own newest, the source shows compact writes the pinned
-	// one from a newer file. The rewrite copies live rows alone, so the bloat comes
-	// after it: compact then has dead blocks to reclaim, whatever the
-	// format change alone would save.
+	// one from a newer file. The rewrite copies live rows alone, so
+	// the bloat comes after it: compact then has dead blocks to
+	// reclaim, whatever the format change alone would save.
 	rewriteInNewestFormat(t, goldPath)
 	bloatGold(t, goldPath)
 	if got := storageHeader(t, goldPath); got == v15Header {

@@ -262,7 +262,7 @@ func TestRunReturnsMWRErrorFlags(t *testing.T) {
 }
 
 // TestRunReturnsFxClampFlags: a cross-currency window/flow valued
-// before the FX history (off the migration-0023 day-0 clamp) is flagged.
+// before the FX history (off fx_daily's day-0 floor) is flagged.
 func TestRunReturnsFxClampFlags(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

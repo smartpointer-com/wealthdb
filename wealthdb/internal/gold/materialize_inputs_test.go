@@ -1,7 +1,6 @@
 package gold
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,12 +9,7 @@ import (
 
 func TestMaterializeInputsRoundTrip(t *testing.T) {
 	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	ctx := context.Background()
+	db, ctx := openEmpty(t)
 
 	key, err := LoadKey(ctx, db)
 	if err != nil {
@@ -48,12 +42,7 @@ func TestMaterializeInputsRoundTrip(t *testing.T) {
 
 func TestLoadKeyMovesWithEachStampedTable(t *testing.T) {
 	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	ctx := context.Background()
+	db, ctx := openEmpty(t)
 	if _, err := db.ExecContext(ctx, `
 INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
 VALUES ('a', 'manual', '/tmp/a.db', 5, 0, 10),
@@ -131,12 +120,7 @@ VALUES ('a', 'name', 'Example Growth Fund', 'EGF', 1, 'm')`); err != nil {
 // gold with the table.
 func TestLoadKeyReadsAnAbsentTable(t *testing.T) {
 	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	ctx := context.Background()
+	db, ctx := openEmpty(t)
 	with, err := LoadKey(ctx, db)
 	if err != nil {
 		t.Fatal(err)
@@ -194,35 +178,11 @@ func TestHashInputsCoversEveryFile(t *testing.T) {
 	}
 }
 
-func TestMigrationsPending(t *testing.T) {
-	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	ctx := context.Background()
-	if pending, err := MigrationsPending(ctx, db); err != nil || pending {
-		t.Fatalf("a migrated gold: pending=%v err=%v", pending, err)
-	}
-	if _, err := db.ExecContext(ctx, `DELETE FROM schema_meta WHERE gold_schema_version = (SELECT max(gold_schema_version) FROM schema_meta)`); err != nil {
-		t.Fatal(err)
-	}
-	if pending, err := MigrationsPending(ctx, db); err != nil || !pending {
-		t.Fatalf("a gold one migration behind: pending=%v err=%v", pending, err)
-	}
-}
-
 // Swapping two sources' FX priority, an account scope, and a pair of
 // equal rows (whose hashes cancel in the xor) each move the key.
 func TestLoadKeySeesASwapAScopeAndAPair(t *testing.T) {
 	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	ctx := context.Background()
+	db, ctx := openEmpty(t)
 	key := func() string {
 		t.Helper()
 		k, err := LoadKey(ctx, db)

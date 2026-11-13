@@ -559,9 +559,8 @@ func TestSchwabMarkGuard(t *testing.T) {
 			t.Errorf("%s: %v", source, err)
 			continue
 		}
-		spec, err := c.SilverSources[0].ToSilverOpenSpec()
-		if got := spec.MarkGuard.WithDefaults(); err != nil || got != want {
-			t.Errorf("%s: guard %+v (%v), want %+v", source, got, err, want)
+		if got := c.SilverSources[0].ToSilverOpenSpec().MarkGuard.WithDefaults(); got != want {
+			t.Errorf("%s: guard %+v, want %+v", source, got, want)
 		}
 	}
 	for source, want := range map[string]string{
@@ -579,14 +578,16 @@ func TestSchwabMarkGuard(t *testing.T) {
 }
 
 // The open spec carries the source's id, its subsources and its
-// relationships, each override as the epoch of its day.
+// relationships, each override as the epoch of the day Validate
+// compiled.
 func TestToSilverOpenSpecCarriesTheSource(t *testing.T) {
-	s := SilverSource{ID: "u", Kind: "ubs", Subsources: []SilverSubsource{{Kind: "ubs-psn", Path: "/p"}},
-		Relationships: []RelationshipPair{{Label: "main", WebID: "W1", PSNID: "SYNTH01", PSNStartOverride: "2024-01-31"}}}
-	spec, err := s.ToSilverOpenSpec()
-	if err != nil {
+	c := &Config{GoldDB: "/x", DefaultCurrency: "USD", SilverSources: []SilverSource{{ID: "u", Kind: "ubs",
+		Subsources:    []SilverSubsource{{Kind: "ubs-psn", Path: "/p"}},
+		Relationships: []RelationshipPair{{Label: "main", WebID: "W1", PSNID: "SYNTH01", PSNStartOverride: "2024-01-31"}}}}}
+	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	spec := c.SilverSources[0].ToSilverOpenSpec()
 	want := silver.OpenSpec{ID: "u", Subsources: []silver.Subsource{{Kind: "ubs-psn", Path: "/p"}},
 		Relationships: []silver.RelationshipPair{{Label: "main", WebID: "W1", PSNID: "SYNTH01",
 			PSNStartOverride: time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC).Unix()}}}
@@ -699,7 +700,7 @@ func TestInstrumentOverrides(t *testing.T) {
 // resolve-symbols' model answers are held to.
 func TestTickerShape(t *testing.T) {
 	t.Parallel()
-	goodTickers := []string{"AAPL", "BRK.B", "XDEW", "TFLO", "005930", "9988", "BRK-B", "DBK.DE"}
+	goodTickers := []string{"AAPL", "BRK.B", "XDEW", "IVV", "005930", "7203", "BRK-B", "DBK.DE"}
 	for _, s := range goodTickers {
 		if !TickerShape.MatchString(s) {
 			t.Errorf("%q should be ticker-shaped", s)
@@ -729,7 +730,7 @@ func TestValidateSymbolOverrides(t *testing.T) {
 	t.Run("accepts upsert", func(t *testing.T) {
 		c := base()
 		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
-			{SilverSourceID: "ubs", LookupKind: "instrument_external_id", LookupValue: "CH0000000020", Symbol: "NOVN"},
+			{SilverSourceID: "ubs", LookupKind: "instrument_external_id", LookupValue: "CH0000000020", Symbol: "ROG"},
 		}}
 		if err := c.Validate(); err != nil {
 			t.Fatal(err)
@@ -756,7 +757,7 @@ func TestValidateSymbolOverrides(t *testing.T) {
 	t.Run("rejects unknown lookup_kind", func(t *testing.T) {
 		c := base()
 		c.SymbolResolution = &SymbolResolutionConfig{Overrides: []SymbolOverride{
-			{SilverSourceID: "ubs", LookupKind: "isin", LookupValue: "CH0000000020", Symbol: "NOVN"},
+			{SilverSourceID: "ubs", LookupKind: "isin", LookupValue: "CH0000000020", Symbol: "ROG"},
 		}}
 		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "lookup_kind") {
 			t.Fatalf("err = %v, want lookup_kind complaint", err)
@@ -1178,78 +1179,133 @@ func TestLoadSpendingRules(t *testing.T) {
 	}
 }
 
-// TestLoadSpendingPins pins the ledger path's handling: expanded like
-// equity_transfers — a relative path resolves against the config file's
-// directory — and "" when absent, which the parser reads as "no pins".
-func TestLoadSpendingPins(t *testing.T) {
-	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
-
-	path := writeConfig(t, base+`"spending":{"pins":"pins.csv"}}`)
-	c, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if want := filepath.Join(filepath.Dir(path), "pins.csv"); c.SpendPins() != want {
-		t.Errorf("spending.pins = %q, want %q (resolved against the config directory)", c.SpendPins(), want)
-	}
-
-	c2, err := Load(writeConfig(t, base+`"spending":{}}`))
-	if err != nil {
-		t.Fatalf("Load without pins: %v", err)
-	}
-	if c2.SpendPins() != "" {
-		t.Errorf("absent pins = %q, want empty", c2.SpendPins())
-	}
-	c3, err := Load(writeConfig(t, base[:len(base)-1]+`}`))
-	if err != nil {
-		t.Fatalf("Load absent block: %v", err)
-	}
-	if c3.SpendPins() != "" {
-		t.Errorf("absent spending block pins = %q, want empty", c3.SpendPins())
-	}
-}
-
-// TestLoadIncomePins is TestLoadSpendingPins for the other family, and
-// it exists because the expansion was not shared: every path field is
-// expanded by its own named branch in Load, so a new one is a branch
-// somebody has to remember to add.
+// TestLoadExpandsEveryPathField loads every path-valued key, once
+// relative and once under `~/`, and reads each back absolute: relative
+// to the config's directory, or under $HOME.
 //
 // The failure it guards is silent in the worst way. An unexpanded
 // `~/…` reaches os.Open verbatim, the open fails with not-exist, and a
-// missing pins file is a NO-OP by design — so a whole ledger of
+// missing ledger is a NO-OP by design, so a whole ledger of
 // per-transaction pins would simply never apply, with nothing said on
-// any run.
-func TestLoadIncomePins(t *testing.T) {
-	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
-
-	path := writeConfig(t, base+`"income":{"pins":"income_pins.csv"}}`)
-	c, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+// any run. A path field added to pathFields fails as unnamed until it
+// is added here.
+func TestLoadExpandsEveryPathField(t *testing.T) {
+	names := map[string]string{
+		"gold_db":                              "gold.db",
+		"equity_transfers":                     "equity.csv",
+		"exposure.declarations":                "declarations.ndjson",
+		"spending.pins":                        "spend-pins.csv",
+		"spending.transfer_overrides":          "transfer-overrides.csv",
+		"income.pins":                          "income-pins.csv",
+		"silver_sources[0].path":               "a.db",
+		"silver_sources[1].subsources[0].path": "b-web.db",
 	}
-	if want := filepath.Join(filepath.Dir(path), "income_pins.csv"); c.IncomePins() != want {
-		t.Errorf("income.pins = %q, want %q (resolved against the config directory)", c.IncomePins(), want)
+	body := func(prefix string) string {
+		q := func(key string) string { return `"` + prefix + names[key] + `"` }
+		return `{"gold_db": ` + q("gold_db") + `, "default_currency": "USD",
+            "equity_transfers": ` + q("equity_transfers") + `,
+            "exposure": {"declarations": ` + q("exposure.declarations") + `},
+            "spending": {"pins": ` + q("spending.pins") + `, "transfer_overrides": ` + q("spending.transfer_overrides") + `},
+            "income": {"pins": ` + q("income.pins") + `},
+            "silver_sources": [{"id": "a", "kind": "chase", "path": ` + q("silver_sources[0].path") + `},
+                {"id": "b", "kind": "ubs", "subsources": [{"kind": "web", "path": ` + q("silver_sources[1].subsources[0].path") + `}]}]}`
 	}
-
-	// $HOME too, which is the spelling a ledger outside the repo takes.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	c, err = Load(writeConfig(t, base+`"income":{"pins":"~/income_pins.csv"}}`))
-	if err != nil {
-		t.Fatalf("Load with ~: %v", err)
-	}
-	if want := filepath.Join(home, "income_pins.csv"); c.IncomePins() != want {
-		t.Errorf("income.pins = %q, want %q (~ expanded)", c.IncomePins(), want)
+	path := writeConfig(t, body(""))
+	for base, cfgPath := range map[string]string{filepath.Dir(path): path, home: writeConfig(t, body("~/"))} {
+		c, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("Load %s: %v", cfgPath, err)
+		}
+		set := 0
+		for _, f := range c.pathFields() {
+			name, ok := names[f.key]
+			switch {
+			case !ok && f.key == "silver_sources[1].path":
+				// The source has subsources, so its own path is empty.
+				if *f.p != "" {
+					t.Errorf("%s = %q, want it left empty", f.key, *f.p)
+				}
+				continue
+			case !ok:
+				t.Errorf("%s is a path field the test does not name", f.key)
+				continue
+			}
+			set++
+			if want := filepath.Join(base, name); *f.p != want {
+				t.Errorf("%s = %q, want %q", f.key, *f.p, want)
+			}
+		}
+		if set != len(names) {
+			t.Errorf("%d of the %d named path fields are path fields", set, len(names))
+		}
 	}
 
-	for _, body := range []string{base + `"income":{}}`, base[:len(base)-1] + `}`} {
-		c, err := Load(writeConfig(t, body))
-		if err != nil {
-			t.Fatalf("Load %s: %v", body, err)
+	// An absent optional path stays empty.
+	c, err := loadWith(t, `"spending": {}, "income": {}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SpendPins() != "" || c.IncomePins() != "" || c.EquityTransfers != "" {
+		t.Errorf("absent paths = %q, %q, %q, want empty", c.SpendPins(), c.IncomePins(), c.EquityTransfers)
+	}
+}
+
+// TestLoadNamesAnEmptyRequiredPath: an empty path is left for Validate,
+// which names the key that needs one.
+func TestLoadNamesAnEmptyRequiredPath(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"gold_db": "", "default_currency": "USD", "silver_sources": []}`: "config: gold_db is required",
+		`{"gold_db": "/tmp/g.db", "default_currency": "USD", "silver_sources": [
+            {"id": "b", "kind": "ubs", "subsources": [{"kind": "web", "path": ""}]}]}`: "config: silver_sources[0].subsources[0].path is required",
+	} {
+		if _, err := Load(writeConfig(t, body)); err == nil || err.Error() != want {
+			t.Errorf("%s: err = %v, want %q", body, err, want)
 		}
-		if c.IncomePins() != "" {
-			t.Errorf("absent income pins = %q, want empty", c.IncomePins())
+	}
+}
+
+// TestLoadAcceptsTheRetiredThinkingFormat: a model block's
+// `thinkingFormat` is accepted and ignored, so a config written for an
+// older release still parses under DisallowUnknownFields.
+func TestLoadAcceptsTheRetiredThinkingFormat(t *testing.T) {
+	c, err := loadWith(t, `"symbol_resolution": {"model": {"baseUrl": "http://127.0.0.1:1/v1",
+        "api": "openai-completions", "name": "test-model", "thinkingFormat": "r1"}}`)
+	if err != nil {
+		t.Fatalf("a model block with thinkingFormat must load: %v", err)
+	}
+	if c.SymbolResolution.Model.Name != "test-model" {
+		t.Errorf("model = %+v", c.SymbolResolution.Model)
+	}
+}
+
+// TestValidateRefusesEmptyAndUnknownKeys holds the rest of the
+// source-keyed blocks to their refusals: an inner key that is empty, a
+// source no silver_sources entry declares, a wrapper outside the
+// vocabulary.
+func TestValidateRefusesEmptyAndUnknownKeys(t *testing.T) {
+	for body, want := range map[string]string{
+		`"portfolio_overrides": {"bank": {"": {"exclude": true}}}`:                                                        `config: portfolio_overrides["bank"]: empty portfolio_external_id key`,
+		`"account_overrides": {"bank": {"": {"nickname": "Example"}}}`:                                                    `config: account_overrides["bank"]: empty account_external_id key`,
+		`"instrument_overrides": {"bank": {"": {"asset_class": "metal", "vehicle": "etf"}}}`:                              `config: instrument_overrides["bank"]: empty instrument_external_id key`,
+		`"transaction_instruments": {"bank": {"": "EX0000000001"}}`:                                                       `config: transaction_instruments["bank"]: empty lookup token key`,
+		`"portfolio_overrides": {"nope": {"P1": {"exclude": true}}}`:                                                      `config: portfolio_overrides["nope"]: no silver_sources[].id matches`,
+		`"spending": {"rules": [{"match": "example", "category": "FOOD_AND_DRINK_COFFEE", "scope": {"source": "nope"}}]}`: `config: spending.rules[0].scope.source "nope": no silver_sources[].id matches`,
+		`"income": {"rules": [{"match": "example", "type": "INCOME_SALARY", "scope": {"source": "nope"}}]}`:               `config: income.rules[0].scope.source "nope": no silver_sources[].id matches`,
+	} {
+		if _, err := loadWith(t, body); err == nil || err.Error() != want {
+			t.Errorf("%s: err = %v, want %q", body, err, want)
 		}
+	}
+	if _, err := Load(writeConfig(t, `{"gold_db": "/tmp/g.db", "default_currency": "USD", "silver_sources": [
+        {"id": "bank", "kind": "chase", "path": "/tmp/s.db", "taxable_wrapper": "offshore"}]}`)); err == nil ||
+		err.Error() != `config: silver_sources[0].taxable_wrapper "offshore" is not a known tax wrapper` {
+		t.Errorf("an unknown taxable_wrapper: err = %v", err)
+	}
+	// A scope naming a declared source loads.
+	if _, err := loadWith(t, `"spending": {"rules": [{"match": "example", "category": "FOOD_AND_DRINK_COFFEE", "scope": {"source": "bank"}}]}`); err != nil {
+		t.Errorf("a scope naming a declared source: %v", err)
 	}
 }
 

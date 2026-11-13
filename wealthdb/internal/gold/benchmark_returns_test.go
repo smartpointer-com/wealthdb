@@ -35,11 +35,6 @@ func seedBenchmark(t *testing.T, db *sql.DB, ctx context.Context, name string, f
 	}
 }
 
-// day0 is a day as the benchmark tables store it: its UTC midnight.
-func day0(y int, m time.Month, d int) int64 {
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix()
-}
-
 func month(y int, m time.Month) int64 {
 	return EpochDay(time.Date(y, m+1, 0, 0, 0, 0, 0, time.UTC).Unix())
 }
@@ -164,7 +159,7 @@ func TestMaterializeBenchmarkComparesOverTheMonthsBothSidesHave(t *testing.T) {
 	}
 	twr, portfolio, excess, _, _, last, q := benchmarkRow(t, db, ctx,
 		`benchmark = 'Test' AND currency = 'USD' AND granularity = 'total' AND window_from_year = 0`)
-	if last != day0(2024, time.April, 30) {
+	if last != utcMidnight(2024, time.April, 30) {
 		t.Errorf("the window ends %d, want the benchmark's last month", last)
 	}
 	if want := 1.01*1.02*1.03*1.04 - 1; math.Abs(twr.Float64-want) > 1e-9 {
@@ -242,7 +237,7 @@ func TestMaterializeBenchmarkStartsAtItsFirstMonthAndSaysSo(t *testing.T) {
 	}
 	twr, _, _, _, start, last, q := benchmarkRow(t, db, ctx,
 		`currency = 'USD' AND granularity = 'total' AND window_from_year = 0`)
-	if start != day0(2024, time.February, 29) || last != day0(2024, time.June, 30) {
+	if start != utcMidnight(2024, time.February, 29) || last != utcMidnight(2024, time.June, 30) {
 		t.Errorf("window %d to %d", start, last)
 	}
 	if math.Abs(twr.Float64-(math.Pow(1.01, 4)-1)) > 1e-9 {
@@ -315,7 +310,7 @@ AND series = ? AND end_day = ?`, series, day).Scan(&value, &mwr); err != nil {
 		}
 		return
 	}
-	june := day0(2024, time.June, 30)
+	june := utcMidnight(2024, time.June, 30)
 	// 1000 grows six months and the 100 of March 31 three.
 	want := 1000*math.Pow(1.01, 6) + 100*math.Pow(1.01, 3)
 	shadow, shadowMWR := line("benchmark", june)
@@ -357,7 +352,7 @@ func TestMaterializeBenchmarkLineHasAGapWhereTheShadowHasNoValue(t *testing.T) {
 	var value, mwr sql.NullFloat64
 	var q string
 	if err := db.QueryRowContext(ctx, `SELECT value, mwr, quality FROM benchmark_mwr WHERE currency = 'USD'
-AND window_from_year = 0 AND series = 'benchmark' AND end_day = ?`, day0(2024, time.June, 30)).Scan(&value, &mwr, &q); err != nil {
+AND window_from_year = 0 AND series = 'benchmark' AND end_day = ?`, utcMidnight(2024, time.June, 30)).Scan(&value, &mwr, &q); err != nil {
 		t.Fatal(err)
 	}
 	if value.Valid || mwr.Valid || q != benchmarkGap {
@@ -378,7 +373,7 @@ func TestMaterializeBenchmarkWindowPastItsMonthsSaysSo(t *testing.T) {
 	}
 	twr, _, _, _, _, last, q := benchmarkRow(t, db, ctx,
 		`currency = 'USD' AND granularity = 'total' AND window_from_year = 2024`)
-	if twr.Valid || last != day0(2023, time.December, 31) || !strings.Contains(q, benchmarkNoOverlap) {
+	if twr.Valid || last != utcMidnight(2023, time.December, 31) || !strings.Contains(q, benchmarkNoOverlap) {
 		t.Errorf("twr %v, last %d, quality %q", twr, last, q)
 	}
 }
@@ -403,9 +398,7 @@ func TestMaterializeBenchmarkWithNoReturnsWritesNothing(t *testing.T) {
 func TestLoadBenchmarksReadsFundsThroughTheirAliases(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	if _, err := db.ExecContext(ctx, `INSERT INTO security_aliases (alias, security_key) VALUES ('symbol:IDX', 'isin:XX0000000001')`); err != nil {
-		t.Skipf("security_aliases shape: %v", err)
-	}
+	mustExec(t, db, `INSERT INTO security_aliases (alias, security_key, origin) VALUES ('symbol:IDX', 'isin:XX0000000001', 'lookup')`)
 	seedFundMonths(t, db, ctx, "isin:XX0000000001", time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC), 2)
 	seedBenchmark(t, db, ctx, "Test", canonical.BenchmarkFund{FundRef: "symbol:IDX", WeightPct: 100})
 	got, err := LoadBenchmarks(ctx, db, fxBounds{}, []string{"USD"})
@@ -422,7 +415,7 @@ func TestWantedNamesABenchmarksFunds(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedBenchmark(t, db, ctx, "Test", canonical.BenchmarkFund{FundRef: "symbol:IDX", WeightPct: 100})
 	if _, err := db.ExecContext(ctx, `INSERT INTO fund_returns (silver_source_id, fund_ref, as_of, month, total_return)
-VALUES ('test-src', 'symbol:IDX', ?, '2024-03-31', 1)`, day0(2024, time.March, 31)); err != nil {
+VALUES ('test-src', 'symbol:IDX', ?, '2024-03-31', 1)`, utcMidnight(2024, time.March, 31)); err != nil {
 		t.Fatal(err)
 	}
 	w, err := RefdataWanted(ctx, db, time.Date(2024, time.June, 1, 0, 0, 0, 0, time.UTC))
@@ -487,7 +480,7 @@ func TestMaterializeBenchmarkLineReadsRolledValues(t *testing.T) {
 	var lineMWR, tile float64
 	var quality string
 	if err := db.QueryRowContext(ctx, `SELECT mwr FROM benchmark_mwr WHERE currency = 'USD' AND window_from_year = 0
-AND series = 'portfolio' AND end_day = ?`, day0(2024, time.June, 30)).Scan(&lineMWR); err != nil {
+AND series = 'portfolio' AND end_day = ?`, utcMidnight(2024, time.June, 30)).Scan(&lineMWR); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT mwr, quality FROM report_returns WHERE grain = 'global' AND granularity = 'total'

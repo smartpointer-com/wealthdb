@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,11 +33,11 @@ func DumpCanonical(ctx context.Context, conn silver.Connection, since int64) ([]
 	var out bytes.Buffer
 	status, err := conn.Status(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Status: %w", err)
+		return nil, fmt.Errorf("conn.Status: %w", err)
 	}
 	w, err := conn.ChangeWindow(ctx, since)
 	if err != nil {
-		return nil, fmt.Errorf("ChangeWindow: %w", err)
+		return nil, fmt.Errorf("conn.ChangeWindow: %w", err)
 	}
 	if err := writeGroup(&out, "status", []canonical.Status{status}); err != nil {
 		return nil, err
@@ -50,7 +51,7 @@ func DumpCanonical(ctx context.Context, conn silver.Connection, since int64) ([]
 
 	snaps, err := conn.Snapshots(ctx, w)
 	if err != nil {
-		return nil, fmt.Errorf("Snapshots: %w", err)
+		return nil, fmt.Errorf("conn.Snapshots: %w", err)
 	}
 	var all canonical.SnapshotBatch
 	av := reflect.ValueOf(&all).Elem()
@@ -59,7 +60,7 @@ func DumpCanonical(ctx context.Context, conn silver.Connection, since int64) ([]
 		b, more, err = snaps.Next(ctx)
 		if err != nil {
 			snaps.Close()
-			return nil, fmt.Errorf("Snapshots Next: %w", err)
+			return nil, fmt.Errorf("conn.Snapshots: next: %w", err)
 		}
 		bv := reflect.ValueOf(b)
 		for i := range av.NumField() {
@@ -67,7 +68,7 @@ func DumpCanonical(ctx context.Context, conn silver.Connection, since int64) ([]
 		}
 	}
 	if err := snaps.Close(); err != nil {
-		return nil, fmt.Errorf("Snapshots Close: %w", err)
+		return nil, fmt.Errorf("conn.Snapshots: close: %w", err)
 	}
 	for i := range av.NumField() {
 		if err := writeGroup(&out, snakeCase(av.Type().Field(i).Name), av.Field(i).Interface()); err != nil {
@@ -77,7 +78,7 @@ func DumpCanonical(ctx context.Context, conn silver.Connection, since int64) ([]
 
 	txs, err := conn.Transactions(ctx, w)
 	if err != nil {
-		return nil, fmt.Errorf("Transactions: %w", err)
+		return nil, fmt.Errorf("conn.Transactions: %w", err)
 	}
 	var tx []canonical.TransactionChange
 	for more := true; more; {
@@ -85,12 +86,12 @@ func DumpCanonical(ctx context.Context, conn silver.Connection, since int64) ([]
 		b, more, err = txs.Next(ctx)
 		if err != nil {
 			txs.Close()
-			return nil, fmt.Errorf("Transactions Next: %w", err)
+			return nil, fmt.Errorf("conn.Transactions: next: %w", err)
 		}
 		tx = append(tx, b.Transactions...)
 	}
 	if err := txs.Close(); err != nil {
-		return nil, fmt.Errorf("Transactions Close: %w", err)
+		return nil, fmt.Errorf("conn.Transactions: close: %w", err)
 	}
 	if err := writeGroup(&out, "transactions", tx); err != nil {
 		return nil, err
@@ -99,7 +100,7 @@ func DumpCanonical(ctx context.Context, conn silver.Connection, since int64) ([]
 	if r, ok := conn.(silver.RealizedLotReader); ok {
 		lots, err := r.RealizedLots(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("RealizedLots: %w", err)
+			return nil, fmt.Errorf("conn.RealizedLots: %w", err)
 		}
 		if err := writeGroup(&out, "realized_lots", lots); err != nil {
 			return nil, err
@@ -171,11 +172,23 @@ func snakeCase(s string) string {
 	return b.String()
 }
 
+// updateCanonical is the -update-canonical flag of every test binary
+// that imports this package: with it set, Golden rewrites its file. The
+// name is its own, so a tree-wide run rewrites no other golden file.
+var updateCanonical = flag.Bool("update-canonical", false, "rewrite the canonical golden files")
+
 // Golden compares conn's canonical dump since change number 0 with the
-// file golden, a path relative to the test's package. With update set it
-// writes the file instead. A mismatch lists the lines found on one side
-// only, a few of each.
-func Golden(t testing.TB, conn silver.Connection, golden string, update bool) {
+// file golden, a path relative to the test's package. Under
+// -update-canonical it writes the file instead. A mismatch lists the
+// lines found on one side only, a few of each, and the command that
+// rewrites the file.
+func Golden(t testing.TB, conn silver.Connection, golden string) {
+	t.Helper()
+	compareGolden(t, conn, golden, *updateCanonical)
+}
+
+// compareGolden is Golden with the flag's value passed in.
+func compareGolden(t testing.TB, conn silver.Connection, golden string, update bool) {
 	t.Helper()
 	got, err := DumpCanonical(context.Background(), conn, 0)
 	if err != nil {
@@ -192,14 +205,45 @@ func Golden(t testing.TB, conn silver.Connection, golden string, update bool) {
 	}
 	want, err := os.ReadFile(golden)
 	if err != nil {
-		t.Fatalf("%v (run with -update to write it)", err)
+		t.Fatalf("%v (run %s to write it)", err, rerun(t))
 	}
 	if bytes.Equal(got, want) {
 		return
 	}
 	gotOnly, wantOnly := lineDiff(string(got), string(want))
-	t.Errorf("canonical dump differs from %s (run with -update to rewrite it)\nonly in the dump:\n%s\nonly in the golden file:\n%s",
-		golden, firstLines(gotOnly), firstLines(wantOnly))
+	t.Errorf("canonical dump differs from %s (run %s to rewrite it)\nonly in the dump:\n%s\nonly in the golden file:\n%s",
+		golden, rerun(t), firstLines(gotOnly), firstLines(wantOnly))
+}
+
+// rerun is the wealthdb-test command that rewrites the golden files of
+// t's top-level test: the test's package directory relative to the
+// module root, which is the directory a test runs in.
+func rerun(t testing.TB) string {
+	pkg := "."
+	if wd, err := os.Getwd(); err == nil {
+		if root := moduleRoot(wd); root != "" {
+			if rel, err := filepath.Rel(root, wd); err == nil {
+				pkg = "./" + filepath.ToSlash(rel)
+			}
+		}
+	}
+	name, _, _ := strings.Cut(t.Name(), "/")
+	return fmt.Sprintf("wealthdb/wealthdb-test %s -run '^%s$' -update-canonical", pkg, name)
+}
+
+// moduleRoot is the nearest directory at or above dir that holds a
+// go.mod, or "" when there is none.
+func moduleRoot(dir string) string {
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 // lineDiff is the lines of a that b lacks and those of b that a lacks,

@@ -2,7 +2,7 @@
 -- instant or on each day, and what each source has observed.
 
 -- Daily-history variants of the report macros, for time-series
--- analytics in Metabase. Each report_*_history(p_ccy) produces one row per entity per
+-- analytics in Metabase. Each report_*_history_multi() produces one row per entity per
 -- UTC day, from the first snapshot day to today, with the value CARRIED FORWARD: on a
 -- day with no new snapshot, the most recent snapshot's value is repeated (positions and
 -- cash carried independently, since their snapshot series can diverge). Every line is
@@ -110,7 +110,7 @@ CREATE MACRO hist_days() AS TABLE (
 --     global` reads the point-in-time macros, so its headline can sit
 --     below a chart built on the history for such a source (DESIGN.md
 --     §10.7).
---   * `report_positions_history.snapshot_at` varies per account within
+--   * `report_positions_history_multi.snapshot_at` varies per account within
 --     a source-day: it is the account's own active snapshot, not the
 --     source's.
 --   * Cost: the day spine is crossed with (source, account) — for cash,

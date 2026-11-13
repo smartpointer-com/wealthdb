@@ -1,13 +1,10 @@
 package ubs
 
 import (
-	"flag"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
-
-var update = flag.Bool("update", false, "rewrite testdata/canonical.jsonl")
 
 // TestCanonicalGolden holds every record the adapter yields over a PSN
 // silver to testdata/canonical.jsonl. The silver joins the rows of the
@@ -72,5 +69,5 @@ func TestCanonicalGolden(t *testing.T) {
              '{"amount":25.0,"credit_debit":"D","narrative":"FRAIS BANCAIRES","account":"CH00CASH","funds":"CHF"}'),
             ('CASH3', 1300, 'SFTPCHxx', 'CH00CASH', 'cash_movement', 'CHF',
              '{"amount":1000.0,"credit_debit":"C","narrative":"Salary","account":"CH00CASH","funds":"CHF"}');`)
-	silvertest.Golden(t, openAdapter(t, path), "testdata/canonical.jsonl", *update)
+	silvertest.Golden(t, openAdapter(t, path), "testdata/canonical.jsonl")
 }

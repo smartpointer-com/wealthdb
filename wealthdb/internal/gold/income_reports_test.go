@@ -35,8 +35,8 @@ func seedIncomeReportFixture(t *testing.T, db *sql.DB, ctx context.Context) {
                                   account_external_id, kind, currency, net_amount)
         VALUES ('inc-src', 'T-WHT', 1000, 'BRK1', 'tax', 'USD', -6);
 
-        -- One spending row with a verdict, so the report_transactions
-        -- re-issue can be checked from both sides at once.
+        -- One spending row with a verdict, so report_transactions can
+        -- be checked from both sides at once.
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, kind, currency, net_amount, counterparty)
         VALUES ('inc-src', 'T-BUY', 1000, 'CASH1', 'purchase', 'USD', -25, 'Corner Market');
@@ -423,10 +423,10 @@ func TestIncomeTransactionsCarryThePayer(t *testing.T) {
 	}
 }
 
-// TestIncomeReportColumnsSurviveAReissue is the positional-scan guard:
-// each reader scans `SELECT *`, so a macro re-issue that adds, removes
-// or reorders a column breaks the scan rather than the query.
-func TestIncomeReportColumnsSurviveAReissue(t *testing.T) {
+// TestIncomeReportsKeepTheirColumns is the positional-scan guard: each
+// reader scans `SELECT *`, so a body edit that adds, removes or reorders
+// a column breaks the scan rather than the query.
+func TestIncomeReportsKeepTheirColumns(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	assertMacroProjects(t, db, ctx, "report_income_summary(0, 5000, 'USD', 'total')",
@@ -507,11 +507,11 @@ func closeEnough(a, b float64) bool {
 }
 
 // TestTransactionsCarriesBothFamiliesInOrder is the positional-scan
-// guard for report_transactions, which 0071 re-issued with three new
-// columns. The row struct, the scan list and the macro must move
-// together, and a permutation of two same-typed columns is a SILENT
-// shift rather than an error — so the values are read back and matched
-// to the rows that should carry them.
+// guard for report_transactions' income columns (derived/40_flows.sql).
+// The row struct, the scan list and the macro must move together, and
+// a permutation of two same-typed columns is a SILENT shift rather than
+// an error — so the values are read back and matched to the rows that
+// should carry them.
 func TestTransactionsCarriesBothFamiliesInOrder(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

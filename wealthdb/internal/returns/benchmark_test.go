@@ -10,13 +10,6 @@ func day(y int, m time.Month, d int) int64 {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() / 86400
 }
 
-func near(t *testing.T, name string, got, want float64) {
-	t.Helper()
-	if math.Abs(got-want) > 1e-12 {
-		t.Errorf("%s = %.15f, want %.15f", name, got, want)
-	}
-}
-
 // threeMonths is January to March 2024 at 10%, -5% and 2%.
 func threeMonths() *Index {
 	return NewIndex([]BenchmarkMonth{
@@ -55,7 +48,7 @@ func TestGrowthCompoundsWholeMonths(t *testing.T) {
 			t.Errorf("%s: no growth", c.name)
 			continue
 		}
-		near(t, c.name, g, c.want)
+		almost(t, g, c.want, 1e-12, c.name)
 	}
 }
 
@@ -63,11 +56,11 @@ func TestGrowthInsideAMonthCompoundsPerDay(t *testing.T) {
 	ix := threeMonths()
 	// February 2024 has 29 days; the end of the 10th has 10 of them done.
 	g, _ := ix.Growth(day(2024, 2, 10), day(2024, 2, 29))
-	near(t, "rest of February", g, math.Pow(0.95, 19.0/29))
+	almost(t, g, math.Pow(0.95, 19.0/29), 1e-12, "rest of February")
 	g, _ = ix.Growth(day(2024, 1, 31), day(2024, 2, 10))
-	near(t, "start of February", g, math.Pow(0.95, 10.0/29))
+	almost(t, g, math.Pow(0.95, 10.0/29), 1e-12, "start of February")
 	g, _ = ix.Growth(day(2024, 1, 16), day(2024, 3, 16))
-	near(t, "across months", g, math.Pow(1.10, 15.0/31)*0.95*math.Pow(1.02, 16.0/31))
+	almost(t, g, math.Pow(1.10, 15.0/31)*0.95*math.Pow(1.02, 16.0/31), 1e-12, "across months")
 }
 
 func TestGrowthStopsAtTheIndexEdges(t *testing.T) {
@@ -137,7 +130,7 @@ func TestShadowValues(t *testing.T) {
 		if !ok[i] {
 			t.Fatalf("end %d has no value", i)
 		}
-		near(t, "shadow", got[i], want)
+		almost(t, got[i], want, 1e-12, "shadow")
 	}
 }
 
@@ -152,7 +145,7 @@ func TestShadowValuesStopAtAGap(t *testing.T) {
 	if !ok[0] || ok[1] || ok[2] {
 		t.Fatalf("ok = %v", ok)
 	}
-	near(t, "before the gap", got[0], 110)
+	almost(t, got[0], 110, 1e-12, "before the gap")
 }
 
 // The public market equivalent: a shadow with the benchmark's own return

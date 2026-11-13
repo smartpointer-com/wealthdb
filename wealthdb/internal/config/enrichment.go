@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
@@ -645,7 +644,7 @@ func (c *Config) validateSpending(seenIDs map[string]bool) error {
 		}
 		rules, err := compileRuleList("spending.rules", "category", "spend_detailed", "docs/SPENDING.md §2",
 			canonical.SpendDetailedInvestment,
-			spendingRuleList(sp.Rules), canonical.ValidSpendDetailed, c.declares)
+			spendingRuleList(sp.Rules), canonical.ValidSpendDetailed, c.declares, seenIDs)
 		if err != nil {
 			return err
 		}
@@ -669,7 +668,7 @@ func (c *Config) validateIncome(seenIDs map[string]bool) error {
 		}
 		rules, err := compileRuleList("income.rules", "type", "income_detailed", "docs/INCOME.md §2",
 			canonical.IncomeDetailedCapitalReturn,
-			incomeRuleList(in.Rules), canonical.ValidIncomeDetailed, c.declares)
+			incomeRuleList(in.Rules), canonical.ValidIncomeDetailed, c.declares, seenIDs)
 		if err != nil {
 			return err
 		}
@@ -845,8 +844,10 @@ func incomeRuleList(rules []IncomeRule) []ruleEntry {
 // does nothing is worse than one that is absent. A `far` is refused on
 // the same terms beside anything but `internal_transfer`, and where it
 // names no declared account: a far side that exists nowhere would be
-// stamped and read by nothing.
-func compileRuleList(key, valueField, valueNoun, doc, investingValue string, rules []ruleEntry, valid, declares func(string) bool) ([]CompiledSpendRule, error) {
+// stamped and read by nothing. A scope's source names a silver source
+// in seenIDs, since a misspelt one is a rule that never fires.
+func compileRuleList(key, valueField, valueNoun, doc, investingValue string, rules []ruleEntry, valid, declares func(string) bool,
+	seenIDs map[string]bool) ([]CompiledSpendRule, error) {
 	if len(rules) == 0 {
 		return nil, nil
 	}
@@ -885,6 +886,9 @@ func compileRuleList(key, valueField, valueNoun, doc, investingValue string, rul
 				return nil, fmt.Errorf("config: %s[%d].far %q names no declared_accounts entry", key, i, r.far)
 			}
 		}
+		if r.scope != nil && r.scope.Source != "" && !seenIDs[r.scope.Source] {
+			return nil, fmt.Errorf("config: %s[%d].scope.source %q: no silver_sources[].id matches", key, i, r.scope.Source)
+		}
 		scope, err := compileSpendScope(r.scope)
 		if err != nil {
 			return nil, fmt.Errorf("config: %s[%d].scope: %w", key, i, err)
@@ -908,18 +912,18 @@ func compileSpendScope(sc *SpendingRuleScope) (CompiledSpendScope, error) {
 		Source: sc.Source, Portfolio: sc.Portfolio, Account: sc.Account,
 	}
 	if sc.From != "" {
-		t, err := time.Parse(time.DateOnly, sc.From)
+		from, err := parseYYYYMMDD(sc.From)
 		if err != nil {
-			return out, fmt.Errorf("from %q is not a YYYY-MM-DD date: %w", sc.From, err)
+			return out, fmt.Errorf("from: %w", err)
 		}
-		out.From = t.UTC().Unix()
+		out.From = from
 	}
 	if sc.To != "" {
-		t, err := time.Parse(time.DateOnly, sc.To)
+		to, err := parseYYYYMMDD(sc.To)
 		if err != nil {
-			return out, fmt.Errorf("to %q is not a YYYY-MM-DD date: %w", sc.To, err)
+			return out, fmt.Errorf("to: %w", err)
 		}
-		out.To = t.UTC().Add(24*time.Hour - time.Second).Unix()
+		out.To = to + 24*60*60 - 1
 	}
 	if out.From != 0 && out.To != 0 && out.To < out.From {
 		return out, fmt.Errorf("to %q is before from %q; the scope could never admit a row", sc.To, sc.From)

@@ -31,9 +31,6 @@ const (
 func computeBenchmarks(ctx context.Context, db *sql.DB, datasets map[string]*returnsDataset, fx fxBounds,
 	p MaterializeParams, minYear, maxYear int, globals map[[2]string][]ReturnRow) (*benchmarkTables, error) {
 	out := &benchmarkTables{}
-	if ok, err := hasTable(ctx, db, "benchmark_funds"); err != nil || !ok {
-		return out, err
-	}
 	benchmarks, err := LoadBenchmarks(ctx, db, fx, materializeCurrencies)
 	if err != nil {
 		return nil, fmt.Errorf("MaterializeReturns benchmarks: %w", err)
@@ -105,11 +102,8 @@ func benchmarksInCurrency(benchmarks []*Benchmark, ccy string, ds *returnsDatase
 }
 
 // write replaces the benchmark tables' rows and returns how many it
-// wrote. A gold before migration 0176 has neither.
+// wrote.
 func (t *benchmarkTables) write(ctx context.Context, tx *sql.Tx, computedAt int64) (int, error) {
-	if ok, err := hasTable(ctx, tx, "benchmark_returns"); err != nil || !ok {
-		return 0, err
-	}
 	for _, table := range []string{"benchmark_returns", "benchmark_mwr"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
 			return 0, fmt.Errorf("%s: delete: %w", table, err)

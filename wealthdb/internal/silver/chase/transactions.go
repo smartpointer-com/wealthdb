@@ -75,7 +75,7 @@ SELECT fitid, posted_at, account_external_id, amount,
 			var known bool
 			kind, known = cardTxKind(rawKind, amt)
 			if !known {
-				extra["source_kind"] = rawKind
+				extra[canonical.PayloadSourceKind] = rawKind
 			}
 			net = canonical.ApplyCanonicalSign(kind, &amt)
 		} else {

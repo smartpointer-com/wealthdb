@@ -23,6 +23,23 @@ import (
 // with diff -r; a refactoring of an adapter leaves them equal. Over a real
 // config the files hold real data, so the directory must lie outside the
 // repository, and the test refuses one inside it.
+//
+// The tests run in the image (wealthdb-test), which gets no host variable
+// and sees the module directory, the Go cache and the directory of a
+// WEALTHDB_GOLD_* file, read-only, and no other path. go test's -exec
+// hands the variables in, and the output goes under the Go cache, the one
+// writable mount outside the repository. The config and every silver file
+// it names must lie under a mounted directory, such as a demo root mounted
+// through WEALTHDB_GOLD_VERIFY (the demo keeps silver/ under its root). A
+// silver file in WAL mode cannot open on the read-only mount. Pass only
+// this test's -run:
+//
+//	out=${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go/canonical/before
+//	demo=$HOME/wealthdb-demo
+//	WEALTHDB_GOLD_VERIFY=$demo/wealthdb.db wealthdb/wealthdb-test -count=1 \
+//	    -run '^TestCanonicalDumpTool$' \
+//	    -exec "env WEALTHDB_CANONICAL_OUT=$out WEALTHDB_CONFIG=$demo/wealthdb.cfg" \
+//	    ./cmd/wealthdb
 func TestCanonicalDumpTool(t *testing.T) {
 	out := os.Getenv("WEALTHDB_CANONICAL_OUT")
 	if out == "" {
@@ -57,11 +74,7 @@ func TestCanonicalDumpTool(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			spec, err := src.ToSilverOpenSpec()
-			if err != nil {
-				t.Fatal(err)
-			}
-			conn, err := adapter.Open(ctx, spec)
+			conn, err := adapter.Open(ctx, src.ToSilverOpenSpec())
 			if err != nil {
 				t.Fatal(err)
 			}

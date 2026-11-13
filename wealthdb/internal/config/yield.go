@@ -260,11 +260,9 @@ func (y *YieldConfig) compile(seenIDs map[string]bool) (canonical.YieldRows, err
 			}
 		}
 		at := fmt.Sprintf("yield.withholding[%q][%q]", country, withholdingAccountsKey)
-		if err := validateNested(at, rates.Accounts, seenIDs, true, func(path, _, _ string, r float64) error {
-
+		if err := validateNested(at, "", rates.Accounts, seenIDs, true, func(path, _, _ string, r float64) error {
 			if !(r >= 0 && r <= 100) {
 				return fmt.Errorf("config: %s %v: want a percent, 0 to 100", path, r)
-
 			}
 			return nil
 		}); err != nil {

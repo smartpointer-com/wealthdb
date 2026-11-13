@@ -432,7 +432,7 @@ func accountsGrainBlanked(assets []*accountData) bool {
 }
 
 // fxBounds holds the earliest FX-rate day per currency, so the engine can flag
-// conversions that fall back to the migration-0023 day-0 clamped rate.
+// conversions that fall back to fx_daily's day-0 floor rate (derived/10_fx.sql).
 type fxBounds struct {
 	earliest map[string]int64 // currency → earliest rate day; absent ⇒ no rate at all
 }
@@ -495,7 +495,7 @@ type accountData struct {
 	transferLike   []returns.Flow        // transfer_in/out/journal — netting candidates at coarse grains
 	journalPresent bool
 	cryptoExcluded bool
-	hasClampedFlow bool // a flow was valued at the migration-0023 day-0 clamped FX rate
+	hasClampedFlow bool // a flow was valued at fx_daily's day-0 floor rate
 	droppedNonzero bool // left the spine (superseded, or past its carry horizon) while still holding value
 
 	// crossLinks maps a flow's transaction id to its cross-source counterparty

@@ -35,7 +35,7 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
        instrument_external_id, instrument_hint, kind, currency,
        CAST(quantity AS DOUBLE), CAST(net_amount AS DOUBLE), `+lotTxnColumns+`,
        CASE WHEN json_extract_string(payload, '$.`+canonical.PayloadEquityTransferLedger+`') = 'true'
-            THEN COALESCE(TRY_CAST(json_extract_string(payload, '$.cost_basis') AS DOUBLE), 0) ELSE 0 END
+            THEN COALESCE(TRY_CAST(json_extract_string(payload, '$.`+canonical.PayloadCostBasis+`') AS DOUBLE), 0) ELSE 0 END
   FROM transactions
  WHERE `+inLotSources("silver_source_id")+`
    AND (instrument_external_id IS NOT NULL OR instrument_hint IS NOT NULL)

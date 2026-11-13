@@ -1,13 +1,10 @@
 package swissquote
 
 import (
-	"flag"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
-
-var update = flag.Bool("update", false, "rewrite testdata/canonical.jsonl")
 
 // TestCanonicalGolden holds every record the adapter yields to
 // testdata/canonical.jsonl, over the cost-basis seed and the rows of the
@@ -19,7 +16,7 @@ func TestCanonicalGolden(t *testing.T) {
 	seedCostRows(t, db)
 	silvertest.Exec(t, db, `
         INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (2000, 6, '/x/2');
-        INSERT INTO accounts(snapshot_at, account_external_id, payload, account_type) VALUES
+        INSERT INTO accounts(snapshot_at, account_external_id, payload, account_product) VALUES
             (1000, '1234567', '{"customer_id":"1234567"}', 'Trading'),
             (1000, '7654321', '{"customer_id":"7654321"}', ''),
             (2000, '1234567', '{}', 'Trading');
@@ -55,8 +52,8 @@ func TestCanonicalGolden(t *testing.T) {
              '{"asset_class":"Structured Products","currency":"CHF","symbol":"SYNSP","quantity":1,"total_value":1}',
              'Placeholder Structured Note', NULL);
         INSERT INTO positions(snapshot_at, account_external_id, symbol, currency, payload, name, isin, source) VALUES
-            (2000, '1234567', 'SMMCHA', 'CHF',
-             '{"asset_class":"ETFs","currency":"CHF","symbol":"SMMCHA","quantity":100,"total_value":10000.00}',
+            (2000, '1234567', 'SYNCHFE', 'CHF',
+             '{"asset_class":"ETFs","currency":"CHF","symbol":"SYNCHFE","quantity":100,"total_value":10000.00}',
              'Example Fund CHF dis', 'CH0000000060', 'live'),
             (1500, '1234567', 'Example Fund CHF DIS', 'CHF',
              '{"asset_class":"ETFs","currency":"CHF","symbol":"Example Fund CHF DIS","quantity":80,"total_value":7500.00}',
@@ -73,5 +70,5 @@ func TestCanonicalGolden(t *testing.T) {
             ('1234567', 1800, 'Debit', NULL, NULL, 'CHF', -200.00,
              '{"name":"Outgoing wire"}'),
             ('1234567', 1900, 'Custody Fees', NULL, NULL, 'CHF', -30.00, '{"name":""}');`)
-	silvertest.Golden(t, openAdapter(t, path), "testdata/canonical.jsonl", *update)
+	silvertest.Golden(t, openAdapter(t, path), "testdata/canonical.jsonl")
 }

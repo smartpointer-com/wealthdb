@@ -17,16 +17,12 @@
 --                                one-legged move.
 --   far_class                    the class a rule stands for where it
 --                                names no account (the mortgage rule).
---   evidence                     what says so. A pair carries the phase
---                                of the matcher that formed it: ledger
---                                (the transfer-override ledger),
---                                reference, stated-counter, named,
---                                amount, converted, reversal. A
---                                one-legged row is stated-account (the
---                                source names the counter account) or
---                                rule (a rule's far account or class).
---   measure                      cash: a movement of money. in_kind is
---                                reserved for a movement of securities.
+--   evidence                     what says so: the phase of the matcher
+--                                that formed a pair, or the road that
+--                                named a one-legged row's far side. The
+--                                words live in internal/spending
+--                                (phaseEvidence), not in a CHECK.
+--   measure                      cash: a movement of money.
 --
 -- The pass rewrites the table whole, in the transaction that writes the
 -- overlays, and a row holds what the spending overlay's far columns
@@ -40,11 +36,8 @@ CREATE TABLE IF NOT EXISTS transfer_links (
     far_account_external_id     TEXT,
     far_transaction_external_id TEXT,
     far_class                   TEXT,
-    evidence                    TEXT NOT NULL CHECK (evidence IN (
-        'ledger', 'reference', 'stated-counter', 'named', 'amount',
-        'converted', 'reversal', 'stated-account', 'rule'
-    )),
-    measure                     TEXT NOT NULL CHECK (measure IN ('cash', 'in_kind')),
+    evidence                    TEXT NOT NULL,
+    measure                     TEXT NOT NULL,
     PRIMARY KEY (silver_source_id, transaction_external_id)
 );
 

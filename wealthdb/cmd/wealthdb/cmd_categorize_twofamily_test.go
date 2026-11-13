@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,13 +13,13 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // candidateHeaderFor is the prompt's candidate block header for a
-// family. It was a spending-literal constant until the prompt learned
-// this family's nouns; a test that reads back what a prompt carried has
-// to ask the same question the prompt answered.
+// family, in that family's nouns: a test that reads back what a prompt
+// carried has to ask the same question the prompt answered.
 func candidateHeaderFor(fam categorizeFamily) string {
 	plural := fam.plural()
 	return fmt.Sprintf("%s to categorise — %s_signature,transaction_count:",
@@ -396,20 +397,20 @@ func TestPersonFenceReachesCandidacyFromConfig(t *testing.T) {
 // lock hazard, and the one property the loop test above cannot
 // reach.
 //
-// The batch sink stores each batch as it completes, so in the ordinary
-// case there is nothing left over and the family's closing retryFlush
-// is a no-op — which is exactly why moving that flush out of the family
-// and after the loop passes every other test. It only bites when a
+// The store writes each batch as it completes, so in the ordinary case
+// there is nothing left over and the family's closing finish is a
+// no-op — which is exactly why moving that finish out of the family and
+// after the loop passes every other test. It only bites when a
 // batch's persist LOSES the re-open race: the verdicts are then held in
-// the store, unpaid-for work in memory, and a two-family run must land
+// the store, paid-for work in memory, and a two-family run must land
 // them before the second family spends another model pass rather than
 // carrying them across it.
 //
-// So the race is staged. A writer's handle is held over the instant
+// So the race is staged. A reader's handle is held over the instant
 // spending's batch persists and released again shortly after; the
-// sink's re-open fails, the family's retryFlush retries into the window
+// store's re-open fails, the family's finish retries into the window
 // where it succeeds, and income's first prompt then finds the verdict
-// already committed. With the flush moved after the loop it finds an
+// already committed. With the finish moved after the loop it finds an
 // empty store. The window is wall-clock, so the test does not run in
 // parallel with the rest of the package.
 func TestCategorizeFlushesOneFamilyBeforeTheNextSpends(t *testing.T) {
@@ -433,9 +434,9 @@ func TestCategorizeFlushesOneFamilyBeforeTheNextSpends(t *testing.T) {
 	// and a reader present when a batch persists is the race.
 	//
 	// Held from the moment spending's prompt is answered — so it is
-	// open when the batch's persist runs — and released 1.2s later,
-	// inside retryFlush's 0s / 1s / 3s backoff but after its first two
-	// attempts.
+	// open when the batch's persist runs — and released 500ms later:
+	// after the batch's store and the finish's first attempt, before
+	// its second (retryFlush's 0s / 1s / 3s backoff).
 	release := func() {
 		mu.Lock()
 		defer mu.Unlock()
@@ -455,7 +456,7 @@ func TestCategorizeFlushesOneFamilyBeforeTheNextSpends(t *testing.T) {
 			mu.Lock()
 			blocker = held
 			mu.Unlock()
-			time.AfterFunc(1200*time.Millisecond, release)
+			time.AfterFunc(500*time.Millisecond, release)
 			var b strings.Builder
 			for _, sig := range promptBlock(user, candidateHeaderFor(spendingCategorizeFamily)) {
 				fmt.Fprintf(&b, "%s,Example Merchant,HOME_IMPROVEMENT_HARDWARE\n", sig)
@@ -512,6 +513,53 @@ func TestCategorizeFlushesOneFamilyBeforeTheNextSpends(t *testing.T) {
 		}
 		if n != want {
 			t.Errorf("%s = %d row(s) at the end, want %d", tbl, n, want)
+		}
+	}
+}
+
+// TestCategorizeDumpsTheVerdictsItCannotStore: when gold refuses every
+// write, the run prints the verdicts the model answered in the dry-run
+// plan format and exits ExitOpenFailed. The gold file turns read-only
+// while the model answers, after the run has released its handle.
+func TestCategorizeDumpsTheVerdictsItCannotStore(t *testing.T) {
+	shortFlushLadder(t)
+	dir := t.TempDir()
+	goldPath := filepath.Join(dir, "gold.db")
+	ctx := context.Background()
+	db := seedTwoFamilyGold(t, ctx, goldPath)
+	cfg := writeTwoFamilyConfig(t, dir, goldPath)
+
+	call := func(_ context.Context, _, user string) (string, error) {
+		if err := os.Chmod(goldPath, 0o444); err != nil {
+			return "", err
+		}
+		var b strings.Builder
+		for _, sig := range promptBlock(user, candidateHeaderFor(spendingCategorizeFamily)) {
+			fmt.Fprintf(&b, "%s,Example Merchant,HOME_IMPROVEMENT_HARDWARE\n", sig)
+		}
+		return b.String(), nil
+	}
+	var out strings.Builder
+	db, dbOpen, err := runCategorizeFamilies(ctx, db, true, cfg, []categorizeFamily{spendingCategorizeFamily},
+		categorizeRunOptions{modelFlags: modelFlags{maxAttempts: 1, maxAnchors: 10, batch: 40}, call: call},
+		gold.ModeReadWrite, &out, &out)
+	if dbOpen {
+		db.Close()
+	}
+	var exit *errs.ExitError
+	if !errors.As(err, &exit) || exit.Code != errs.ExitOpenFailed {
+		t.Fatalf("err = %v, want an ExitError with code %d\n%s", err, errs.ExitOpenFailed, out.String())
+	}
+	if !strings.Contains(err.Error(), "categorize: could not store the spending verdicts above") {
+		t.Errorf("err = %v, want it to point at the printed verdicts", err)
+	}
+	for _, want := range []string{
+		"categorize: 1 verdict(s) held after a failed store (",
+		"--- 1 spending verdict(s) the model answered but gold would not accept ---\n" +
+			"  NORTHWIND HARDWARE → Example Merchant [HOME_IMPROVEMENT_HARDWARE]\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
 	}
 }

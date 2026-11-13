@@ -5,13 +5,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 )
 
 // The model pass both model commands run: `categorize` asks for a
 // counterparty's name and category per signature, `resolve-symbols`
 // for an instrument's ticker. What a command brings is its prompt, its
-// gauntlet and the key that makes two answers one; the retry loop, the
-// store-per-batch policy and the shared flags are here, once.
+// gauntlet and the key that makes two answers one; the batch loop, the
+// retry loop, the store-per-batch policy and the shared flags are here,
+// once.
 
 // The model flags' defaults, the same for both commands so the two
 // behave alike under the same flags. The batch size is each command's
@@ -30,21 +33,25 @@ type modelFlags struct {
 	showPrompt  bool
 }
 
-// modelFlagDocs are the descriptions a command registers its model
-// flags under, in its own words.
-type modelFlagDocs struct {
-	dryRun, maxAttempts, maxAnchors, batch, showPrompt string
+// registerModelFlags registers the five model flags on fs, with batch
+// as the --batch default. Each command's usage text is what describes
+// them.
+func registerModelFlags(fs *flag.FlagSet, o *modelFlags, batch int) {
+	fs.BoolVar(&o.dryRun, "n", false, "ask the model and write nothing to gold")
+	fs.BoolVar(&o.dryRun, "dry-run", false, "ask the model and write nothing to gold")
+	fs.IntVar(&o.maxAttempts, "max-attempts", defaultModelMaxAttempts, "max model round-trips per batch while answers include invalid rows")
+	fs.IntVar(&o.maxAnchors, "max-anchors", defaultModelMaxAnchors, "max anchor examples in the prompt")
+	fs.IntVar(&o.batch, "batch", batch, "candidates per model call")
+	fs.BoolVar(&o.showPrompt, "show-prompt", false, "print the prompt to stderr (debugging)")
 }
 
-// registerModelFlags registers the five model flags on fs, with batch
-// as the --batch default.
-func registerModelFlags(fs *flag.FlagSet, o *modelFlags, batch int, docs modelFlagDocs) {
-	fs.BoolVar(&o.dryRun, "n", false, docs.dryRun)
-	fs.BoolVar(&o.dryRun, "dry-run", false, docs.dryRun)
-	fs.IntVar(&o.maxAttempts, "max-attempts", defaultModelMaxAttempts, docs.maxAttempts)
-	fs.IntVar(&o.maxAnchors, "max-anchors", defaultModelMaxAnchors, docs.maxAnchors)
-	fs.IntVar(&o.batch, "batch", batch, docs.batch)
-	fs.BoolVar(&o.showPrompt, "show-prompt", false, docs.showPrompt)
+// check refuses a parsed flag value no run can use, as a usage error.
+func (o modelFlags) check(fs *flag.FlagSet, cmd string) error {
+	if o.batch < 1 {
+		fs.Usage()
+		return errs.Newf(errs.ExitUsage, "%s: --batch must be at least 1, got %d", cmd, o.batch)
+	}
+	return nil
 }
 
 // batchAt is a batch's 1-based position in its run.
@@ -128,14 +135,53 @@ func (p modelPass[C, V]) ask(ctx context.Context, batch []C, at batchAt) (accept
 	return accepted, attempts, rejected, nil
 }
 
+// passResult is what a run of the model pass produced.
+type passResult[V any] struct {
+	answers  []V // every batch's accepted answers, in batch order
+	attempts int // model calls made
+	rejected int // invalid rows across them
+	// stopped is the batch an endpoint error stopped the run in; zero
+	// when the run finished.
+	stopped batchAt
+}
+
+// run asks the batches in order and hands each batch's answers to
+// store as the batch completes, so a later batch failing never costs
+// an earlier one's answers. A nil store (a dry run) keeps nothing.
+// after runs once a batch has completed and been handed over. An
+// endpoint error stops the run at that batch, and the answers the
+// batch accepted before it were paid for, so store takes them first.
+func (p modelPass[C, V]) run(ctx context.Context, batches [][]C, store *batchStore[V],
+	after func(at batchAt, batch []C, accepted []V, attempts, rejected int)) (passResult[V], error) {
+	var r passResult[V]
+	for i, batch := range batches {
+		at := batchAt{i + 1, len(batches)}
+		accepted, attempts, rejected, err := p.ask(ctx, batch, at)
+		r.attempts += attempts
+		r.rejected += rejected
+		r.answers = append(r.answers, accepted...)
+		if store != nil {
+			store.accept(accepted)
+		}
+		if err != nil {
+			r.stopped = at
+			return r, err
+		}
+		if after != nil {
+			after(at, batch, accepted, attempts, rejected)
+		}
+	}
+	return r, nil
+}
+
 // batchStore is a model run's write path. Answers reach gold as each
 // batch completes, not when the run ends: a run that dies at batch 30 of
 // 50 has kept 29 batches' worth of paid answers, and a re-run asks only
 // about the rest.
 //
-// A write that fails holds its answers rather than dropping them — an
-// answer already paid for is never lost to a transient open failure — so
-// the next batch's write, or the end-of-run retryFlush, writes them.
+// A write that fails holds its answers rather than dropping them, since
+// an answer already paid for is never lost to a transient open failure.
+// The next batch's write, or the end-of-run finish, writes them.
 type batchStore[V any] struct {
 	// write persists one flush's answers and reports the store's row
 	// count afterwards. A field, so the bookkeeping below is exercisable
@@ -145,11 +191,9 @@ type batchStore[V any] struct {
 	// cmd and noun word the warning a held write prints.
 	cmd, noun string
 
-	pending   []V // accepted, not yet written
-	held      int // batches accepted, not yet written
-	stored    int // answers that reached gold
-	completed int // batches whose answers reached gold
-	total     int // store rows after the last write
+	pending []V // accepted, not yet written
+	stored  int // answers that reached gold
+	total   int // store rows after the last write
 }
 
 // accept takes one batch's answers and writes everything outstanding. A
@@ -157,29 +201,37 @@ type batchStore[V any] struct {
 // batches are still worth asking for.
 func (s *batchStore[V]) accept(rows []V) {
 	s.pending = append(s.pending, rows...)
-	s.held++
 	if err := s.flush(); err != nil {
 		fmt.Fprintf(s.warn, "%s: %d %s(s) held after a failed store (%s); "+
 			"they are retried before the run ends\n", s.cmd, len(s.pending), s.noun, err.Error())
 	}
 }
 
-// flush writes the outstanding answers. A batch that accepted nothing
-// still completes — there is nothing to write and nothing to hold.
+// flush writes the outstanding answers. With none outstanding it opens
+// nothing.
 func (s *batchStore[V]) flush() error {
-	if s.held == 0 {
+	if len(s.pending) == 0 {
 		return nil
 	}
-	if len(s.pending) > 0 {
-		total, err := s.write(s.pending)
-		if err != nil {
-			return err
-		}
-		s.stored += len(s.pending)
-		s.total = total
-		s.pending = nil
+	total, err := s.write(s.pending)
+	if err != nil {
+		return err
 	}
-	s.completed += s.held
-	s.held = 0
+	s.stored += len(s.pending)
+	s.total = total
+	s.pending = nil
 	return nil
+}
+
+// finish ends a run's writes: whatever is still held is retried on
+// retryFlush's backoff. When even that fails, dump prints the held
+// answers and words the error, which exits ExitOpenFailed. Text on
+// stdout is the last place a paid-for answer can survive a store that
+// cannot happen.
+func (s *batchStore[V]) finish(ctx context.Context, dump func(held []V, err error) error) error {
+	err := retryFlush(ctx, s.flush)
+	if err == nil {
+		return nil
+	}
+	return errs.Wrap(errs.ExitOpenFailed, dump(s.pending, err))
 }

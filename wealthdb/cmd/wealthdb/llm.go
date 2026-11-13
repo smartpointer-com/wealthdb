@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -91,6 +92,58 @@ func printUnsampled[T any](w io.Writer, items, sample []T, key func(T) string, l
 			fmt.Fprintln(w, line(it))
 		}
 	}
+}
+
+// stratifiedSample picks up to maxN items by round-robin'ing across
+// the groups `group` assigns, keeping the head-of-list bias out so the
+// sample shows every group present in the input rather than the front
+// of the biggest one. Both LLM commands' run reports sample this way —
+// resolve-symbols by source × lookup kind, categorize by a merchant's
+// dominant source.
+func stratifiedSample[T any](items []T, maxN int, group func(T) string) []T {
+	if maxN >= len(items) {
+		return items
+	}
+	byKey := map[string][]T{}
+	var keys []string
+	for _, it := range items {
+		k := group(it)
+		if _, ok := byKey[k]; !ok {
+			keys = append(keys, k)
+		}
+		byKey[k] = append(byKey[k], it)
+	}
+	sort.Strings(keys)
+
+	out := make([]T, 0, maxN)
+	for len(out) < maxN {
+		progressed := false
+		for _, k := range keys {
+			if len(byKey[k]) == 0 {
+				continue
+			}
+			out = append(out, byKey[k][0])
+			byKey[k] = byKey[k][1:]
+			progressed = true
+			if len(out) == maxN {
+				break
+			}
+		}
+		if !progressed {
+			break
+		}
+	}
+	return out
+}
+
+// sortedKeys is m's keys in order.
+func sortedKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // splitBatches cuts a model pass's candidates into consecutive runs of

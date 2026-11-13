@@ -13,7 +13,6 @@ CREATE TABLE accounts (
     currency_code       TEXT    NOT NULL DEFAULT 'CHF',
     name                TEXT,
     product_name        TEXT,
-    management_style    TEXT,
     payload             TEXT    NOT NULL,
     PRIMARY KEY (snapshot_at, account_external_id)
 );

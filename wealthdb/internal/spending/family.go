@@ -168,7 +168,10 @@ type familyInput struct {
 	pinned, otherPinned map[txKey]pinnedRow
 	unmatchedPins       int
 	kinds               map[string]string
-	matched             map[txKey]gold.TransferLeg
+	// accounts are the account ids gold holds, per source, which the
+	// family's scope entries are checked against.
+	accounts map[string]map[string]struct{}
+	matched  map[txKey]gold.TransferLeg
 	// stated is the far account the SOURCE named, for the rows the
 	// matcher could not pair. Read once for both families, as `matched`
 	// is and for the same reason.

@@ -3,7 +3,6 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -104,7 +103,7 @@ func TestWebGainsLabelsTheAccount(t *testing.T) {
 	}
 }
 
-// web_gains reads a row with no asset class as `unknown` (0170): BBB, a
+// web_gains reads a row with no asset class as `unknown`: BBB, a
 // sale within a month no snapshot shows it at the start or the end of,
 // and ZZZ, sold with no snapshot at all, leave report_gains' class blank;
 // every other row, DDD's among them, keeps its class. So the gains of
@@ -319,7 +318,7 @@ func TestMaterializedGainSplitsHeldAndSold(t *testing.T) {
 		}
 		heldOK := held == nil && math.IsNaN(c.held) || held != nil && near(*held, c.held)
 		if !heldOK || sold == nil || !near(*sold, c.sold) {
-			t.Errorf("%s %s %s: held %s sold %s, want %v %v", c.ccy, c.month, c.key, floatText(held), floatText(sold), c.held, c.sold)
+			t.Errorf("%s %s %s: held %s sold %s, want %v %v", c.ccy, c.month, c.key, fmtFloatPtr(held), fmtFloatPtr(sold), c.held, c.sold)
 		}
 	}
 }
@@ -384,15 +383,8 @@ func TestMaterializedSplitTakesTheNewestStartRate(t *testing.T) {
 			soldOK := sold == nil && math.IsNaN(c.sold) || sold != nil && near(*sold, c.sold)
 			if held == nil || !near(*held, c.held) || !soldOK {
 				t.Errorf("run %d, %s %s: held %s sold %s, want %v %v",
-					run, c.ccy, c.acct, floatText(held), floatText(sold), c.held, c.sold)
+					run, c.ccy, c.acct, fmtFloatPtr(held), fmtFloatPtr(sold), c.held, c.sold)
 			}
 		}
 	}
-}
-
-func floatText(f *float64) string {
-	if f == nil {
-		return "NULL"
-	}
-	return fmt.Sprint(*f)
 }

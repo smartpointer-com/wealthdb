@@ -9,9 +9,9 @@ import (
 )
 
 // TestResetClearsBothOverlays pins what a per-source reset owns. Both
-// enrichment overlays are derived from the transactions being deleted
-// and are re-asserted by the next pass; both verdict stores are global,
-// were paid for, and must survive.
+// enrichment overlays and the reimbursement pairs are derived from the
+// transactions being deleted and are re-asserted by the next pass; both
+// verdict stores are global, were paid for, and must survive.
 func TestResetClearsBothOverlays(t *testing.T) {
 	db, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
 	if err != nil {
@@ -34,6 +34,11 @@ func TestResetClearsBothOverlays(t *testing.T) {
             payer_signature, signature_version, income_detailed, provenance, assigned_at)
         VALUES ('gone', 'T3', 'SIG', 1, NULL, 'signature-only', 1),
                ('kept', 'T4', 'SIG', 1, NULL, 'signature-only', 1);
+
+        INSERT INTO spend_reimbursement_pairs(silver_source_id, transaction_external_id,
+            out_silver_source_id, out_transaction_external_id)
+        VALUES ('gone', 'T5', 'kept', 'T6'),
+               ('kept', 'T7', 'gone', 'T8');
 
         INSERT INTO spend_merchant_categories(merchant_signature, merchant_name,
             spend_detailed, signature_version, assigned_at, model_name)
@@ -73,6 +78,11 @@ func TestResetClearsBothOverlays(t *testing.T) {
 			`SELECT COUNT(*) FROM spend_txn_enrichment WHERE silver_source_id = 'kept'`, 1},
 		{"the other source's income overlay",
 			`SELECT COUNT(*) FROM income_txn_enrichment WHERE silver_source_id = 'kept'`, 1},
+		{"the reset source's reimbursement pairs",
+			`SELECT COUNT(*) FROM spend_reimbursement_pairs WHERE silver_source_id = 'gone'`, 0},
+		// The next pass rewrites every pair, a pair whose outflow went too.
+		{"the other source's reimbursement pairs",
+			`SELECT COUNT(*) FROM spend_reimbursement_pairs WHERE silver_source_id = 'kept'`, 1},
 		// Global, paid for, and keyed by signature rather than source.
 		{"the merchant store", `SELECT COUNT(*) FROM spend_merchant_categories`, 1},
 		{"the payer store", `SELECT COUNT(*) FROM income_payer_categories`, 1},

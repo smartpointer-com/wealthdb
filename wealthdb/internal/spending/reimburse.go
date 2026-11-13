@@ -106,7 +106,8 @@ func describedTransaction(matches []candidate) (txKey, bool) {
 }
 
 // spendingCounts reports whether spending counts the outflow: a line of
-// spending_lines_own with a category, the set 0160's pair road joins to.
+// spending_lines_own with a category, the set spend_reimbursements' pair
+// road joins to.
 func spendingCounts(ctx context.Context, tx *sql.Tx, k txKey) (bool, error) {
 	var one int
 	err := tx.QueryRowContext(ctx, `

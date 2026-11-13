@@ -1,13 +1,10 @@
 package fidelity
 
 import (
-	"flag"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
-
-var update = flag.Bool("update", false, "rewrite testdata/canonical_*.jsonl")
 
 // TestCanonicalGolden holds every record the adapter yields to a golden
 // file per case, over the rows of the adapter tests: open lots carried
@@ -113,7 +110,7 @@ func TestCanonicalGolden(t *testing.T) {
 			path, db := newFixtureSilver(t)
 			addLotsSchema(t, db)
 			seedSQL(t, db, c.seed)
-			silvertest.Golden(t, openAdapter(t, path), "testdata/canonical_"+c.name+".jsonl", *update)
+			silvertest.Golden(t, openAdapter(t, path), "testdata/canonical_"+c.name+".jsonl")
 		})
 	}
 }

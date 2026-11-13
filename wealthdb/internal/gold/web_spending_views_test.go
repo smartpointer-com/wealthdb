@@ -147,7 +147,7 @@ func TestAccountHistoryKeepsBothClocks(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedCardBalanceFixture(t, db, ctx)
 
-	day := func(d int) int64 { return bucketAt(2026, time.January, d) }
+	day := func(d int) int64 { return utcMidnight(2026, time.January, d) }
 
 	// Day 11's newest snapshot is the deposit re-dump; the card's day-10
 	// closing is still its own latest, so it is carried alongside.
@@ -180,7 +180,7 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
           FROM report_card_balances_history_multi()
          WHERE as_of_day BETWEEN ? AND ?
          ORDER BY as_of_day, account_external_id`,
-		bucketAt(2026, time.January, 10), bucketAt(2026, time.January, 15))
+		utcMidnight(2026, time.January, 10), utcMidnight(2026, time.January, 15))
 	if err != nil {
 		t.Fatalf("report_card_balances_history_multi: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
 		{14, 0},    // paid off, and the zero survives
 		{15, 0},
 	} {
-		day := bucketAt(2026, time.January, w.d)
+		day := utcMidnight(2026, time.January, w.d)
 		r, ok := got[day]
 		if !ok {
 			t.Errorf("no card row on Jan %d", w.d)
@@ -234,7 +234,7 @@ func TestCardBalancesHistoryCarriesEachAccountIndependently(t *testing.T) {
 		}
 	}
 	// Days before the card's first balance have nothing to carry.
-	if _, ok := got[bucketAt(2026, time.January, 9)]; ok {
+	if _, ok := got[utcMidnight(2026, time.January, 9)]; ok {
 		t.Error("a card row exists before the card's first balance")
 	}
 
@@ -466,8 +466,8 @@ func TestWebSpendingLabelsAnAccountWithSourceAndKind(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
-	// An account with no name of its own is labelled by its id: 0061's
-	// rule, now shared by both views through account_display_name.
+	// An account with no name of its own is labelled by its id
+	// (account_display_name), in both views.
 	if _, err := db.ExecContext(ctx, `
         UPDATE accounts SET display_name = NULL WHERE account_external_id = 'CASH1';
     `); err != nil {

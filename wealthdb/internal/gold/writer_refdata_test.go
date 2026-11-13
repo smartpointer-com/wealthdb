@@ -348,16 +348,20 @@ func TestEveryReferenceTableHasAKind(t *testing.T) {
 		kinds[k] = true
 	}
 	whole := map[string]bool{"rate_observations": true, "stated_periods": true, "exposure_reports": true}
-	for _, table := range ReferenceTables {
-		kind, ok := ReferenceTableKinds[table]
+	for _, st := range SourceTables {
+		if st.Class != ClassReference {
+			continue
+		}
 		switch {
-		case whole[table] && ok:
-			t.Errorf("%s names kind %q, want none", table, kind)
-		case !whole[table] && !kinds[kind]:
-			t.Errorf("%s names kind %q, want one of the reference kinds", table, kind)
+		case whole[st.Name] && st.RefKind != "":
+			t.Errorf("%s names kind %q, want none", st.Name, st.RefKind)
+		case !whole[st.Name] && !kinds[st.RefKind]:
+			t.Errorf("%s names kind %q, want one of the reference kinds", st.Name, st.RefKind)
 		}
 	}
-	if len(ReferenceTableKinds) != len(ReferenceTables)-len(whole) {
-		t.Errorf("ReferenceTableKinds has %d tables, ReferenceTables %d", len(ReferenceTableKinds), len(ReferenceTables))
+	for table := range whole {
+		if !slices.Contains(ReferenceTables, table) {
+			t.Errorf("%s is not a reference table", table)
+		}
 	}
 }

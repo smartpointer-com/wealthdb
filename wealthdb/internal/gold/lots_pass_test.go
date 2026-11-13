@@ -162,6 +162,9 @@ func TestLotPassSkipsUnchangedInputs(t *testing.T) {
 	db, ctx := lotFixture(t, tradesSeed)
 	cfg := fillCfg(lots.FIFO)
 	rebuild(t, db, ctx, cfg, false)
+	if n := queryFloat(t, db, `SELECT count(*) FROM lots`); n != 2 {
+		t.Errorf("the ledger holds %v lots, want 2", n)
+	}
 	if !rebuild(t, db, ctx, cfg, false).Unchanged {
 		t.Fatal("a second pass over the same inputs should replay nothing")
 	}

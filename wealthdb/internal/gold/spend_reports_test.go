@@ -8,12 +8,6 @@ import (
 	"time"
 )
 
-// bucketAt is the epoch second at UTC midnight, which is what
-// spend_period_bucket emits for the period a date opens.
-func bucketAt(y int, m time.Month, d int) int64 {
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix()
-}
-
 // seedSpendingReportFixture lays down two months of spending across
 // three accounts and two currencies, with every category-resolution
 // path represented: merchant-store, transaction-scope, an own-account
@@ -188,8 +182,8 @@ func TestSpendingSummaryBuckets(t *testing.T) {
 		count                 int64
 		spend, refunds, netSp float64
 	}{
-		{bucketAt(2026, time.January, 1), 5, 380, 20, 360},
-		{bucketAt(2026, time.February, 1), 2, 104, 0, 104},
+		{utcMidnight(2026, time.January, 1), 5, 380, 20, 360},
+		{utcMidnight(2026, time.February, 1), 2, 104, 0, 104},
 	}
 	for i, w := range want {
 		got := months[i]
@@ -1212,15 +1206,13 @@ func TestSpendingReportsAnswer(t *testing.T) {
 	}
 }
 
-// TestSpendReportColumnsSurviveAReissue pins the column set every
-// spending report publishes.
+// TestSpendReportsKeepTheirColumns pins the column set every spending
+// report publishes.
 //
-// A macro is re-issued whole, so a migration that adds one column has to
-// retype every other. Twice now that has silently dropped columns a
-// later migration had added — and nothing failed until a caller went
-// looking for one. This is the cheap guard: it does not care what a
-// column means, only that the report still has it.
-func TestSpendReportColumnsSurviveAReissue(t *testing.T) {
+// Every reader scans these reports by name or by position, so a body
+// edit that drops a column breaks a caller far away. The guard checks
+// only that each report still has its columns.
+func TestSpendReportsKeepTheirColumns(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	cols := func(q string) map[string]bool {

@@ -235,8 +235,8 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 }
 
 // printOneLineStatus emits a single-line summary for the overview
-// view. Tolerates per-source errors — prints a "?" / message
-// rather than failing the whole report.
+// view. Tolerates a per-source error: the line says ERROR and the
+// message, and the next source still prints.
 func printOneLineStatus(ctx context.Context, r gold.SourceStatusResult, src *config.SilverSource, verbose bool, stdout io.Writer) {
 	st, err := r.Status, r.Err
 	if err != nil {
@@ -294,11 +294,7 @@ func probeSilverStatus(ctx context.Context, src *config.SilverSource) (canonical
 	if err != nil {
 		return canonical.Status{}, err
 	}
-	spec, err := src.ToSilverOpenSpec()
-	if err != nil {
-		return canonical.Status{}, err
-	}
-	conn, err := adapter.Open(ctx, spec)
+	conn, err := adapter.Open(ctx, src.ToSilverOpenSpec())
 	if err != nil {
 		return canonical.Status{}, err
 	}

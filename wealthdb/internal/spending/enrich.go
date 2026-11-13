@@ -244,12 +244,18 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	if err != nil {
 		return nil, err
 	}
+	// Nothing the pass writes changes the accounts, so one read serves
+	// the three scopes and the stated counter accounts.
+	held, err := loadHeldAccounts(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 
 	// The matcher runs ONCE, before either family is enriched, and both
 	// read its verdicts. A movement is own-account or it is not, and two
 	// matchers with two bandings would call the same wire internal on
 	// one side and external on the other.
-	evidence, err := loadPassEvidence(ctx, tx)
+	evidence, err := loadPassEvidence(ctx, tx, held.byNorm)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +297,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 		include: opts.Include, exclude: opts.Exclude,
 		rules: opts.Rules, farRules: rulesWithFar(opts.Income.Rules),
 		pinned: spendPinned, otherPinned: incomePinned, unmatchedPins: spendUnmatched,
-		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
+		kinds: kinds, accounts: held.ids, matched: matched, stated: stated, pool: poolNarratives, now: now,
 	}, &res.FamilyResult)
 	if err != nil {
 		return nil, err
@@ -310,7 +316,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 		include: opts.Income.Include, exclude: opts.Income.Exclude,
 		rules:  opts.Income.Rules,
 		pinned: incomePinned, unmatchedPins: incomeUnmatched,
-		kinds: kinds, matched: matched, stated: stated, pool: poolNarratives, now: now,
+		kinds: kinds, accounts: held.ids, matched: matched, stated: stated, pool: poolNarratives, now: now,
 	}, &res.Income); err != nil {
 		return nil, err
 	}
@@ -327,7 +333,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	// The cash flow statement's boundary, last: it is a stamp rather
 	// than an enrichment, and it reads the accounts dimension the two
 	// families have already been scoped against.
-	if err := stampCashflowBoundary(ctx, tx, opts.Cashflow, &res.Cashflow); err != nil {
+	if err := stampCashflowBoundary(ctx, tx, opts.Cashflow, held.ids, &res.Cashflow); err != nil {
 		return nil, err
 	}
 	// Carried across from the spending family, which is where the far
@@ -358,7 +364,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, out *FamilyResult) ([]enrichmentRow, error) {
 	var err error
 	out.ScopeRows, out.UnresolvedScopeAccounts, err =
-		syncAccountScope(ctx, tx, fam.name, fam.scopeTable, in.include, in.exclude)
+		syncAccountScope(ctx, tx, fam.name, fam.scopeTable, in.accounts, in.include, in.exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +412,7 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 // point, and a whole re-stamp means removing an entry from the config
 // removes it from gold rather than leaving it behind to haunt a later
 // report. It returns the rows stamped and how many of them name an
-// account gold does not hold.
+// account gold does not hold (known, by source).
 //
 // It takes the table and the name to prefix its errors with rather
 // than a family, because the cash pool has a scope table and is not a
@@ -422,11 +428,8 @@ func enrichFamily(ctx context.Context, tx *sql.Tx, fam family, in familyInput, o
 // for the caller to report, because a scope knob that silently does
 // nothing is the wrong failure mode for the surface that decides which
 // accounts the model tier may ever see.
-func syncAccountScope(ctx context.Context, tx *sql.Tx, name, table string, include, exclude map[string][]string) (stamped, unresolved int, err error) {
-	known, err := loadAccountIDs(ctx, tx, name)
-	if err != nil {
-		return 0, 0, err
-	}
+func syncAccountScope(ctx context.Context, tx *sql.Tx, name, table string, known map[string]map[string]struct{},
+	include, exclude map[string][]string) (stamped, unresolved int, err error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
 		return 0, 0, fmt.Errorf("%s: clear account scope: %w", name, err)
 	}
@@ -459,33 +462,41 @@ func syncAccountScope(ctx context.Context, tx *sql.Tx, name, table string, inclu
 	return stamped, unresolved, nil
 }
 
-// loadAccountIDs reads the account ids gold holds, per source — the
-// set a configured scope entry has to hit to fence anything.
-//
-// It reads the `accounts` table whole and is scope-blind, but it is
-// called once per scope table, so its errors carry that table's name:
-// a failure on an income run reported as `spending:` sends a reader to
-// the wrong block of the config.
-func loadAccountIDs(ctx context.Context, tx querier, name string) (map[string]map[string]struct{}, error) {
+// heldAccounts are the accounts gold holds, in the two shapes the pass
+// reads them in.
+type heldAccounts struct {
+	// ids are the account ids per source: the set a configured scope
+	// entry has to hit to fence anything.
+	ids map[string]map[string]struct{}
+	// byNorm are the accounts keyed by the id upper-cased with its
+	// spaces removed: the form a stated counter account is compared in.
+	byNorm map[string][]farAccount
+}
+
+// loadHeldAccounts reads the accounts table whole, once per pass.
+func loadHeldAccounts(ctx context.Context, tx querier) (heldAccounts, error) {
 	rows, err := tx.QueryContext(ctx, `
-        SELECT DISTINCT silver_source_id, account_external_id FROM accounts`)
+        SELECT silver_source_id, account_external_id, upper(replace(account_external_id, ' ', ''))
+          FROM accounts`)
 	if err != nil {
-		return nil, fmt.Errorf("%s: read account ids: %w", name, err)
+		return heldAccounts{}, fmt.Errorf("spending: read accounts: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]map[string]struct{}{}
+	out := heldAccounts{ids: map[string]map[string]struct{}{}, byNorm: map[string][]farAccount{}}
 	for rows.Next() {
-		var source, id string
-		if err := rows.Scan(&source, &id); err != nil {
-			return nil, fmt.Errorf("%s: scan account ids: %w", name, err)
+		var a farAccount
+		var norm string
+		if err := rows.Scan(&a.source, &a.account, &norm); err != nil {
+			return heldAccounts{}, fmt.Errorf("spending: scan accounts: %w", err)
 		}
-		if out[source] == nil {
-			out[source] = map[string]struct{}{}
+		if out.ids[a.source] == nil {
+			out.ids[a.source] = map[string]struct{}{}
 		}
-		out[source][id] = struct{}{}
+		out.ids[a.source][a.account] = struct{}{}
+		out.byNorm[norm] = append(out.byNorm[norm], a)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: iterate account ids: %w", name, err)
+		return heldAccounts{}, fmt.Errorf("spending: read accounts: %w", err)
 	}
 	return out, nil
 }
@@ -541,8 +552,9 @@ type evidenceRow struct {
 
 // loadPassEvidence reads every transaction that states a reference, a
 // counter account or a counter leg, in one scan of txn_evidence(), and
-// the accounts gold holds, and finds the three kinds of evidence in them.
-func loadPassEvidence(ctx context.Context, tx querier) (passEvidence, error) {
+// finds the three kinds of evidence in them against the accounts gold
+// holds (heldAccounts.byNorm).
+func loadPassEvidence(ctx context.Context, tx querier, accounts map[string][]farAccount) (passEvidence, error) {
 	rows, err := tx.QueryContext(ctx, `
         SELECT silver_source_id, transaction_external_id, bank_ref, counter_account,
                upper(replace(account_external_id, ' ', '')),
@@ -568,39 +580,12 @@ func loadPassEvidence(ctx context.Context, tx querier) (passEvidence, error) {
 	if err := rows.Err(); err != nil {
 		return passEvidence{}, fmt.Errorf("spending: read payload evidence: %w", err)
 	}
-	accounts, err := loadNormalisedAccounts(ctx, tx)
-	if err != nil {
-		return passEvidence{}, err
-	}
 	ev := passEvidence{
 		counterLegs:     statedCounterLegs(evidence),
 		counterAccounts: statedCounterAccounts(evidence, accounts),
 	}
 	ev.refs, ev.ambiguousRefs = movementReferences(evidence)
 	return ev, nil
-}
-
-// loadNormalisedAccounts reads the accounts gold holds, keyed by the id
-// upper-cased with its spaces removed: the form a stated counter account
-// is compared in.
-func loadNormalisedAccounts(ctx context.Context, tx querier) (map[string][]farAccount, error) {
-	rows, err := tx.QueryContext(ctx, `
-        SELECT silver_source_id, account_external_id, upper(replace(account_external_id, ' ', ''))
-          FROM accounts`)
-	if err != nil {
-		return nil, fmt.Errorf("spending: read stated counter accounts: %w", err)
-	}
-	defer rows.Close()
-	out := map[string][]farAccount{}
-	for rows.Next() {
-		var a farAccount
-		var norm string
-		if err := rows.Scan(&a.source, &a.account, &norm); err != nil {
-			return nil, fmt.Errorf("spending: scan stated counter accounts: %w", err)
-		}
-		out[norm] = append(out[norm], a)
-	}
-	return out, rows.Err()
 }
 
 // farAccount is an account gold holds, named as the other side of a
@@ -880,7 +865,7 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName, 
 		narratives[row.key] = row
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("spending: read matcher pool: %w", err)
 	}
 	return legs, narratives, nil
 }

@@ -212,31 +212,22 @@ func (o AccountOverride) TaxWrapperFromEpoch() int64 {
 // account_overrides but keyed by portfolio_external_id, with tax_wrapper and
 // exclude as the only fields.
 func (c *Config) validatePortfolioOverrides(seenIDs map[string]bool) error {
-	for _, sourceID := range slices.Sorted(maps.Keys(c.PortfolioOverrides)) {
-		perPortfolio := c.PortfolioOverrides[sourceID]
-		if !seenIDs[sourceID] {
-			return fmt.Errorf("config: portfolio_overrides[%q]: no silver_sources[].id matches", sourceID)
-		}
-		for _, portfolioID := range slices.Sorted(maps.Keys(perPortfolio)) {
-			ov := perPortfolio[portfolioID]
-			if portfolioID == "" {
-				return fmt.Errorf("config: portfolio_overrides[%q]: empty portfolio_external_id key", sourceID)
-			}
+	return validateNested("portfolio_overrides", "portfolio_external_id", c.PortfolioOverrides, seenIDs, false,
+		func(path, _, _ string, ov PortfolioOverride) error {
 			if ov.TaxWrapper == "" && !ov.Exclude {
-				return fmt.Errorf("config: portfolio_overrides[%q][%q]: tax_wrapper or exclude must be set", sourceID, portfolioID)
+				return fmt.Errorf("config: %s: tax_wrapper or exclude must be set", path)
 			}
 			// Same contradiction the account grain refuses: the rows a
 			// wrapper would be stamped on are the rows the exclusion
 			// removes.
 			if ov.Exclude && ov.TaxWrapper != "" {
-				return fmt.Errorf("config: portfolio_overrides[%q][%q]: exclude cannot be combined with tax_wrapper — the portfolio is dropped, so there is no row to stamp", sourceID, portfolioID)
+				return fmt.Errorf("config: %s: exclude cannot be combined with tax_wrapper — the portfolio is dropped, so there is no row to stamp", path)
 			}
 			if ov.TaxWrapper != "" && !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
-				return fmt.Errorf("config: portfolio_overrides[%q][%q]: invalid tax_wrapper %q", sourceID, portfolioID, ov.TaxWrapper)
+				return fmt.Errorf("config: %s: invalid tax_wrapper %q", path, ov.TaxWrapper)
 			}
-		}
-	}
-	return nil
+			return nil
+		})
 }
 
 // validateDeclaredAccounts checks declared_accounts: every id is a
@@ -309,22 +300,14 @@ func (c *Config) declares(id string) bool {
 // validateAccountOverrides checks account_overrides: every outer key must
 // name a declared silver source (catches typos early); every inner key must
 // be non-empty (an empty account_external_id can't match anything and is
-// almost always user error); typed fields validate against the canonical
-// enums.
+// almost always a typo); typed fields validate against the canonical
+// enums. A valid tax_wrapper_from is compiled onto its override.
 func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
-	for _, sourceID := range slices.Sorted(maps.Keys(c.AccountOverrides)) {
-		perAccount := c.AccountOverrides[sourceID]
-		if !seenIDs[sourceID] {
-			return fmt.Errorf("config: account_overrides[%q]: no silver_sources[].id matches", sourceID)
-		}
-		for _, acctID := range slices.Sorted(maps.Keys(perAccount)) {
-			ov := perAccount[acctID]
-			if acctID == "" {
-				return fmt.Errorf("config: account_overrides[%q]: empty account_external_id key", sourceID)
-			}
+	return validateNested("account_overrides", "account_external_id", c.AccountOverrides, seenIDs, false,
+		func(path, sourceID, acctID string, ov AccountOverride) error {
 			if ov.Nickname == "" && ov.Category == "" && ov.AccountKind == "" &&
 				ov.TaxWrapper == "" && ov.ManagementStyle == "" && !ov.Exclude {
-				return fmt.Errorf("config: account_overrides[%q][%q]: at least one of nickname, category, account_kind, tax_wrapper, management_style, or exclude must be set", sourceID, acctID)
+				return fmt.Errorf("config: %s: at least one of nickname, category, account_kind, tax_wrapper, management_style, or exclude must be set", path)
 			}
 			// Excluding an account and stamping a column on it are
 			// contradictory instructions: the row the column would go
@@ -333,7 +316,7 @@ func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 			// that was meant.
 			if ov.Exclude && (ov.Nickname != "" || ov.Category != "" || ov.AccountKind != "" ||
 				ov.TaxWrapper != "" || ov.ManagementStyle != "") {
-				return fmt.Errorf("config: account_overrides[%q][%q]: exclude cannot be combined with a column override — the account is dropped, so there is no row to stamp", sourceID, acctID)
+				return fmt.Errorf("config: %s: exclude cannot be combined with a column override — the account is dropped, so there is no row to stamp", path)
 			}
 			// A kind that follows its source (AccountKind.FollowsSource)
 			// is no target: an overlay is synthetic, and a card's or a
@@ -341,38 +324,36 @@ func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 			switch kind := canonical.AccountKind(ov.AccountKind); {
 			case ov.AccountKind == "":
 			case !kind.Valid() || kind == canonical.AccountKindOverlay:
-				return fmt.Errorf("config: account_overrides[%q][%q]: invalid account_kind %q", sourceID, acctID, ov.AccountKind)
+				return fmt.Errorf("config: %s: invalid account_kind %q", path, ov.AccountKind)
 			case kind.FollowsSource():
-				return fmt.Errorf("config: account_overrides[%q][%q]: account_kind %q: a liability's kind follows its source", sourceID, acctID, ov.AccountKind)
+				return fmt.Errorf("config: %s: account_kind %q: a liability's kind follows its source", path, ov.AccountKind)
 			}
 			if ov.TaxWrapper != "" && !canonical.TaxWrapper(ov.TaxWrapper).Valid() {
-				return fmt.Errorf("config: account_overrides[%q][%q]: invalid tax_wrapper %q", sourceID, acctID, ov.TaxWrapper)
+				return fmt.Errorf("config: %s: invalid tax_wrapper %q", path, ov.TaxWrapper)
 			}
 			ov.taxWrapperFrom = 0
 			if ov.TaxWrapperFrom != "" {
 				if ov.TaxWrapper == "" {
-					return fmt.Errorf("config: account_overrides[%q][%q]: tax_wrapper_from dates a tax_wrapper, and none is set", sourceID, acctID)
+					return fmt.Errorf("config: %s: tax_wrapper_from dates a tax_wrapper, and none is set", path)
 				}
 				from, err := parseYYYYMMDD(ov.TaxWrapperFrom)
 				if err != nil {
-					return fmt.Errorf("config: account_overrides[%q][%q]: tax_wrapper_from: %w", sourceID, acctID, err)
+					return fmt.Errorf("config: %s: tax_wrapper_from: %w", path, err)
 				}
 				// The dimension carries the override's wrapper from the
 				// load on, so a day ahead would date it falsely; a day on
 				// or before the epoch is no day a wrapper changed on.
 				if from <= 0 || from > time.Now().Unix() {
-					return fmt.Errorf("config: account_overrides[%q][%q]: tax_wrapper_from %s is after today or not after 1970-01-01", sourceID, acctID, ov.TaxWrapperFrom)
+					return fmt.Errorf("config: %s: tax_wrapper_from %s is after today or not after 1970-01-01", path, ov.TaxWrapperFrom)
 				}
 				ov.taxWrapperFrom = from
 			}
 			if ov.ManagementStyle != "" && !canonical.ManagementStyle(ov.ManagementStyle).Valid() {
-				return fmt.Errorf("config: account_overrides[%q][%q]: invalid management_style %q", sourceID, acctID, ov.ManagementStyle)
+				return fmt.Errorf("config: %s: invalid management_style %q", path, ov.ManagementStyle)
 			}
-			perAccount[acctID] = ov
-		}
-
-	}
-	return nil
+			c.AccountOverrides[sourceID][acctID] = ov
+			return nil
+		})
 }
 
 // validateInstrumentOverrides checks instrument_overrides: same shape rules
@@ -380,31 +361,22 @@ func (c *Config) validateAccountOverrides(seenIDs map[string]bool) error {
 // (the exposure) and vehicle are required and must form an admitted taxonomy
 // pair.
 func (c *Config) validateInstrumentOverrides(seenIDs map[string]bool) error {
-	for _, sourceID := range slices.Sorted(maps.Keys(c.InstrumentOverrides)) {
-		perInstrument := c.InstrumentOverrides[sourceID]
-		if !seenIDs[sourceID] {
-			return fmt.Errorf("config: instrument_overrides[%q]: no silver_sources[].id matches", sourceID)
-		}
-		for _, instrID := range slices.Sorted(maps.Keys(perInstrument)) {
-			ov := perInstrument[instrID]
-			if instrID == "" {
-				return fmt.Errorf("config: instrument_overrides[%q]: empty instrument_external_id key", sourceID)
-			}
+	return validateNested("instrument_overrides", "instrument_external_id", c.InstrumentOverrides, seenIDs, false,
+		func(path, _, _ string, ov InstrumentOverride) error {
 			if ov.AssetClass == "" || ov.Vehicle == "" {
-				return fmt.Errorf("config: instrument_overrides[%q][%q]: asset_class and vehicle must both be set", sourceID, instrID)
+				return fmt.Errorf("config: %s: asset_class and vehicle must both be set", path)
 			}
 			if !canonical.AssetClass(ov.AssetClass).Valid() {
-				return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid asset_class %q", sourceID, instrID, ov.AssetClass)
+				return fmt.Errorf("config: %s: invalid asset_class %q", path, ov.AssetClass)
 			}
 			if !canonical.Vehicle(ov.Vehicle).Valid() {
-				return fmt.Errorf("config: instrument_overrides[%q][%q]: invalid vehicle %q", sourceID, instrID, ov.Vehicle)
+				return fmt.Errorf("config: %s: invalid vehicle %q", path, ov.Vehicle)
 			}
 			if !canonical.ValidTaxonomyPair(canonical.AssetClass(ov.AssetClass), canonical.Vehicle(ov.Vehicle)) {
-				return fmt.Errorf("config: instrument_overrides[%q][%q]: (%q, %q) is not an admitted taxonomy pair", sourceID, instrID, ov.AssetClass, ov.Vehicle)
+				return fmt.Errorf("config: %s: (%q, %q) is not an admitted taxonomy pair", path, ov.AssetClass, ov.Vehicle)
 			}
-		}
-	}
-	return nil
+			return nil
+		})
 }
 
 // validateTransactionInstruments checks transaction_instruments: the source
@@ -413,20 +385,14 @@ func (c *Config) validateInstrumentOverrides(seenIDs map[string]bool) error {
 // (no DB access at config load) — the same known gap the families above
 // carry — so a typo'd id resolves to a dimension row that is not there.
 func (c *Config) validateTransactionInstruments(seenIDs map[string]bool) error {
-	for _, sourceID := range slices.Sorted(maps.Keys(c.TransactionInstruments)) {
-		byToken := c.TransactionInstruments[sourceID]
-		if !seenIDs[sourceID] {
-			return fmt.Errorf("config: transaction_instruments[%q]: no silver_sources[].id matches", sourceID)
-		}
-		for _, token := range slices.Sorted(maps.Keys(byToken)) {
-			instrID := byToken[token]
+	return validateNested("transaction_instruments", "lookup token", c.TransactionInstruments, seenIDs, false,
+		func(path, sourceID, token, instrID string) error {
 			if strings.TrimSpace(token) == "" {
 				return fmt.Errorf("config: transaction_instruments[%q]: empty lookup token key", sourceID)
 			}
 			if strings.TrimSpace(instrID) == "" {
-				return fmt.Errorf("config: transaction_instruments[%q][%q]: empty instrument_external_id", sourceID, token)
+				return fmt.Errorf("config: %s: empty instrument_external_id", path)
 			}
-		}
-	}
-	return nil
+			return nil
+		})
 }

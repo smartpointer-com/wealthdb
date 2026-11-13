@@ -33,7 +33,7 @@ type Reason string
 const (
 	ReasonExplicitFlag     Reason = "-r/--read-only flag set"
 	ReasonDirNotWriteable  Reason = "parent directory is not writeable"
-	ReasonFileNotWriteable Reason = "file mode lacks owner write bit"
+	ReasonFileNotWriteable Reason = "gold database file is not writeable"
 	ReasonDBMissingForInit Reason = "gold database does not exist (init will create)"
 	ReasonDBWriteable      Reason = "gold database and parent directory are writeable"
 	ReasonDBMissingForRO   Reason = "gold database does not exist"
@@ -54,10 +54,11 @@ type Decision struct {
 // which has a special rule (missing DB ⇒ proceed RW because
 // init will create it).
 //
-// Returns an error only when the state is unsalvageable in any
-// mode (e.g. the parent directory doesn't exist either). Routine
-// "RO is the right answer here" outcomes are reported via the
-// Decision, not an error.
+// Returns an error only when the file cannot be probed at all: a
+// stat that fails for any reason but a missing file (permission
+// denied on a parent, ENOTDIR). A missing file, even under a
+// missing parent, is reported through the Decision, as are the
+// routine "RO is the right answer here" outcomes.
 func Detect(path string, forceReadOnly, subcommandIsInit bool) (Decision, error) {
 	if forceReadOnly {
 		return Decision{Mode: ModeReadOnly, Reason: ReasonExplicitFlag, DBExists: pathExists(path)}, nil

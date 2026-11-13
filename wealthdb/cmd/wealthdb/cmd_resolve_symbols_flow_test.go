@@ -191,27 +191,13 @@ func TestResolveSymbolsNeedsAModelUnlessOverridesOnly(t *testing.T) {
 // fails ends the run, and the batches answered before it are stored.
 func TestResolveSymbolsStopsAtAFailedBatchKeepingTheOthers(t *testing.T) {
 	t.Parallel()
-	good, _ := standInModel(t)
 	var n atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if n.Add(1) > 1 {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		proxy, err := http.NewRequest(r.Method, good.URL+r.URL.Path, r.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		proxy.Header = r.Header
-		resp, err := http.DefaultClient.Do(proxy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		w.WriteHeader(resp.StatusCode)
-		var body json.RawMessage
-		_ = json.NewDecoder(resp.Body).Decode(&body)
-		_, _ = w.Write(body)
+		serveStandIn(t, w, r)
 	}))
 	t.Cleanup(srv.Close)
 	cfgPath, goldPath := resolveSymbolsFixture(t, srv.URL, 3, nil)
@@ -228,6 +214,36 @@ func TestResolveSymbolsStopsAtAFailedBatchKeepingTheOthers(t *testing.T) {
 	}
 }
 
+// exampleCandidates are n by-id candidates of the test source,
+// EX00000001 onwards.
+func exampleCandidates(n int) []candidate {
+	var cands []candidate
+	for i := 1; i <= n; i++ {
+		cands = append(cands, candidate{SilverSourceID: "schwab-test", LookupKind: "instrument_external_id",
+			LookupValue: fmt.Sprintf("EX0000000%d", i)})
+	}
+	return cands
+}
+
+// freshResolveRun is a run of the model pass over a fresh gold file,
+// asking call.
+func freshResolveRun(t *testing.T, call llmCall, maxAttempts int) (resolveRun, string) {
+	t.Helper()
+	goldPath := filepath.Join(t.TempDir(), "gold.db")
+	db, err := gold.OpenFresh(goldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	return resolveRun{
+		model:    &config.ModelConfig{Name: "stand-in"},
+		goldPath: goldPath,
+		sources:  map[string]bool{"schwab-test": true},
+		opts:     resolveSymbolsOpts{modelFlags: modelFlags{maxAttempts: maxAttempts, batch: 2}},
+		call:     call,
+	}, goldPath
+}
+
 // TestResolveSymbolsHoldsAFailedStoreAndRetriesIt: a batch whose store
 // fails does not end the run. Its resolutions are held, the run asks
 // the next batch, and the held rows reach gold with the next store.
@@ -235,52 +251,23 @@ func TestResolveSymbolsStopsAtAFailedBatchKeepingTheOthers(t *testing.T) {
 // and writable again while the second is.
 func TestResolveSymbolsHoldsAFailedStoreAndRetriesIt(t *testing.T) {
 	t.Parallel()
-	goldPath := filepath.Join(t.TempDir(), "gold.db")
-	db, err := gold.OpenFresh(goldPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	good, _ := standInModel(t)
-	var n atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var goldPath string
+	n := 0
+	call := func(_ context.Context, _, user string) (string, error) {
+		n++
 		mode := os.FileMode(0o644)
-		if n.Add(1) == 1 {
+		if n == 1 {
 			mode = 0o444
 		}
 		if err := os.Chmod(goldPath, mode); err != nil {
-			t.Error(err)
+			return "", err
 		}
-		proxy, err := http.NewRequest(r.Method, good.URL+r.URL.Path, r.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		proxy.Header = r.Header
-		resp, err := http.DefaultClient.Do(proxy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		w.WriteHeader(resp.StatusCode)
-		var body json.RawMessage
-		_ = json.NewDecoder(resp.Body).Decode(&body)
-		_, _ = w.Write(body)
-	}))
-	t.Cleanup(srv.Close)
-
-	var cands []candidate
-	for i := 1; i <= 3; i++ {
-		cands = append(cands, candidate{SilverSourceID: "schwab-test", LookupKind: "instrument_external_id",
-			LookupValue: fmt.Sprintf("EX0000000%d", i)})
+		_, answer := standInReply(t, user)
+		return answer, nil
 	}
-	run := resolveRun{
-		model:    &config.ModelConfig{BaseURL: srv.URL + "/v1", Name: "stand-in"},
-		goldPath: goldPath,
-		sources:  map[string]bool{"schwab-test": true},
-		opts:     resolveSymbolsOpts{modelFlags: modelFlags{maxAttempts: 1, batch: 2}},
-	}
+	rr, goldPath := freshResolveRun(t, call, 1)
 	var out, errOut strings.Builder
-	tally, err := runResolveBatches(context.Background(), run, splitBatches(cands, 2), nil, &out, &errOut)
+	tally, err := runResolveBatches(context.Background(), rr, splitBatches(exampleCandidates(3), 2), nil, &out, &errOut)
 	if err != nil {
 		t.Fatalf("run: %v\n%s\n%s", err, out.String(), errOut.String())
 	}
@@ -299,5 +286,41 @@ func TestResolveSymbolsHoldsAFailedStoreAndRetriesIt(t *testing.T) {
 	}
 	if got := storedSymbols(t, goldPath); len(got) != 3 {
 		t.Errorf("stored = %v, want all 3", got)
+	}
+}
+
+// TestResolveSymbolsStoresAFailedBatchsPartialAnswers: a batch that
+// accepts part of its rows on one attempt and loses the endpoint on the
+// next has paid for those rows, so they are stored before the run
+// stops.
+func TestResolveSymbolsStoresAFailedBatchsPartialAnswers(t *testing.T) {
+	t.Parallel()
+	n := 0
+	call := func(_ context.Context, _, user string) (string, error) {
+		n++
+		switch n {
+		case 1:
+			_, answer := standInReply(t, user)
+			return answer, nil
+		case 2:
+			// The first row answered, the second under a source the
+			// config does not name, so the batch retries.
+			rows, _ := standInReply(t, user)
+			return fmt.Sprintf("schwab-test,instrument_external_id,%s,TKP\nnowhere,instrument_external_id,%s,TKQ\n",
+				rows[0][2], rows[1][2]), nil
+		}
+		return "", fmt.Errorf("read response: context deadline exceeded")
+	}
+	rr, goldPath := freshResolveRun(t, call, 2)
+	var out, errOut strings.Builder
+	_, err := runResolveBatches(context.Background(), rr, splitBatches(exampleCandidates(4), 2), nil, &out, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("err = %v, want the endpoint's\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "resolve-symbols: stopped in batch 2 of 2; the 3 resolution(s) answered so far are stored\n") {
+		t.Errorf("stdout lacks the stop line:\n%s", out.String())
+	}
+	if got := storedSymbols(t, goldPath); len(got) != 3 {
+		t.Errorf("stored = %v, want batch 1's 2 and batch 2's partial 1", got)
 	}
 }

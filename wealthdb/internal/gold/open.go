@@ -31,10 +31,10 @@ var ErrStaleBinary = errors.New("binary is older than the database's last writer
 
 // StorageVersion is the storage format of a gold file DuckDB creates:
 // the newest that Metabase's DuckDB driver reads (web/Dockerfile pins
-// the driver; a web test holds the two together). Left to itself, DuckDB writes its own newest format, which that
-// driver cannot open, so a fresh `init`, a full reload or a compaction
-// would take the dashboards down. A file keeps the format it was
-// created in.
+// the driver; a web test holds the two together). Left to itself,
+// DuckDB writes its own newest format, which that driver cannot open,
+// so a fresh `init`, a full reload or a compaction would take the
+// dashboards down. A file keeps the format it was created in.
 const StorageVersion = "v1.5.0"
 
 // Mode controls whether the gold DB is opened read-write or
@@ -136,7 +136,8 @@ func open(path string, mode Mode, audit bool, options map[string]string) (*sql.D
 	// Apply outstanding migrations and the derived set on every RW
 	// open so the schema always matches the binary's expectations.
 	// Idempotent: a DB already at the binary's version and hash costs
-	// a MAX(version) scan, a one-row read and zero ExecContexts.
+	// a MAX(version) scan, a one-row hash read and zero ExecContexts;
+	// CheckSchemaKnown below scans MAX(version) once more.
 	// Skipped for read-only opens (can't write DDL) — RO callers rely
 	// on prior RW callers (init, load, reset) having brought the
 	// schema up to date.

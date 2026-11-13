@@ -67,11 +67,7 @@ func cmdLots(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, 
 // an error: the positions a load rewrote would otherwise carry no
 // rebuilt basis without saying why.
 func runLotPass(ctx context.Context, db *sql.DB, cfg *config.Config, force bool, stdout io.Writer) error {
-	lc, err := cfg.LotsEngine()
-	if err != nil {
-		return err
-	}
-	sum, err := gold.RebuildLots(ctx, db, gold.LotsOptions{Config: lc, Force: force})
+	sum, err := gold.RebuildLots(ctx, db, gold.LotsOptions{Config: cfg.LotsEngine(), Force: force})
 	if err != nil {
 		return fmt.Errorf("lots: %w", err)
 	}

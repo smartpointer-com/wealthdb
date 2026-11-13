@@ -203,5 +203,9 @@ func isGoldLockConflict(err error) bool {
 // one, and the caller reports it rather than holding the answers
 // forever.
 func retryFlush(ctx context.Context, flush func() error) error {
-	return retryOn(ctx, []time.Duration{0, time.Second, 3 * time.Second}, func(error) bool { return true }, flush)
+	return retryOn(ctx, flushLadder, func(error) bool { return true }, flush)
 }
+
+// flushLadder is retryFlush's wait before each attempt: three tries
+// over four seconds. A variable, so a test can shorten it.
+var flushLadder = []time.Duration{0, time.Second, 3 * time.Second}

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // The frozen oracle for the spending pass.
@@ -142,6 +143,7 @@ func TestSpendingPassOutputIsFrozen(t *testing.T) {
 	if got := frozenSnapshot(t, db, ctx); got != frozenSpendingOverlay {
 		t.Errorf("the spending overlay moved.\n--- got ---\n%s\n--- want ---\n%s", got, frozenSpendingOverlay)
 	}
+	assertLinksAreTheOverlay(t, db)
 
 	// The counters are the pass's own observability, and a refactor
 	// that routed a row through a different tier would move one of
@@ -165,11 +167,8 @@ func TestSpendingPassOutputIsFrozen(t *testing.T) {
 	}
 }
 
-// The golden. The verdict fields were captured from the pass as it
-// stood before the income family was folded in; the three far columns
-// and the exposure were widened in when migration 0102 moved the
-// golden anyway, having been outside the oracle until then. Never
-// edited to make a test pass.
+// The golden. It moves only with SignatureVersion or a
+// deliberate verdict change, never to make a test pass.
 const frozenSpendingOverlay = `bank/T-BACKLOG sig="UNPLACEABLE COUNTERPARTY" v13 cat=(null) via=signature-only label=(null) far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
 bank/T-CARD-BILL sig="PAYMENT TO CHASE CARD ENDING IN" v13 cat=card_spend via=rule label=Chase far=(null)/(null) farclass=(null) exposure=(null) issuer=(null)
 bank/T-CONFIG-RULE sig="EXAMPLE BROKER SUBSCRIPTION" v13 cat=investment via=rule label=(null) far=(null)/(null) farclass=(null) exposure=private_equity issuer=(null)
@@ -344,6 +343,7 @@ func TestIncomePassOutputIsFrozen(t *testing.T) {
 		t.Errorf("the spending overlay of the income fixture moved.\n--- got ---\n%s\n--- want ---\n%s",
 			got, frozenIncomeFixtureSpendingOverlay)
 	}
+	assertLinksAreTheOverlay(t, db)
 	// Fifteen population rows, plus the one pinned row outside it
 	// (I-PIN-OUTSIDE). The pair counters are the load summary's, read
 	// off the same pass.
@@ -373,8 +373,8 @@ func TestIncomePassOutputIsFrozen(t *testing.T) {
 	}
 }
 
-// The goldens of the income oracle, captured from the pass as it stood
-// when the oracle was written. Never edited to make a test pass.
+// The goldens of the income oracle. They move only with SignatureVersion
+// or a deliberate verdict change, never to make a test pass.
 const frozenIncomeOverlay = `bank/I-BACKLOG sig="EXAMPLE PAYER" v13 cat=(null) via=signature-only exposure=(null) provider=(null)
 bank/I-BOOKED sig="EXAMPLE PAYER THREE" v13 cat=internal_transfer via=matcher exposure=(null) provider=(null)
 bank/I-CUSTODY sig="WIRE RECEIVED" v13 cat=capital_return via=rule exposure=(null) provider=(null)
@@ -407,7 +407,8 @@ swiss/I-PIN sig="LOOKS INTERNAL" v13 cat=internal_transfer via=matcher label=(nu
 
 // TestTransferLinksAreFrozen holds transfer_links to a literal over the
 // income fixture, which reaches every road a link has but the ledger,
-// the reference and the described counter leg: a pair on amount, a
+// the reference, the described counter leg and the name
+// (TestTransferLinksCarryTheAssertedRoads): a pair on amount, a
 // reversal, a stated counter account, a far rule in both directions and
 // the mortgage rule's class.
 func TestTransferLinksAreFrozen(t *testing.T) {
@@ -418,7 +419,8 @@ func TestTransferLinksAreFrozen(t *testing.T) {
 	}
 }
 
-// The golden of transfer_links, captured when the table was added.
+// The golden of transfer_links. It moves only with SignatureVersion or a
+// deliberate verdict change, never to make a test pass.
 const frozenTransferLinks = `bank/I-BOOKED far=bank/CASH1 tx=I-REVERSED class=(null) by=reversal measure=cash
 bank/I-FAR-IN far=declared/savings-bank tx=(null) class=(null) by=rule measure=cash
 bank/I-FAR-OUT far=declared/savings-bank tx=(null) class=(null) by=rule measure=cash
@@ -429,4 +431,98 @@ bank/I-REVERSED far=bank/CASH1 tx=I-BOOKED class=(null) by=reversal measure=cash
 bank/I-STATED-OUT far=other-bank/CUST2 tx=(null) class=(null) by=stated-account measure=cash
 swiss/I-MATCH-IN far=bank/CASH1 tx=I-MATCH-OUT class=(null) by=amount measure=cash
 swiss/I-PIN far=bank/CASH1 tx=I-PIN-PAIR class=(null) by=amount measure=cash
+`
+
+// assertLinksAreTheOverlay holds transfer_links to the spending overlay
+// it is written from: every link is an overlay row's far account or
+// class, and back.
+func assertLinksAreTheOverlay(t *testing.T, db *sql.DB) {
+	t.Helper()
+	overlay := scanPairs(t, db, `
+        SELECT silver_source_id || '/' || transaction_external_id,
+               COALESCE(far_silver_source_id, '(null)') || '/' ||
+               COALESCE(far_account_external_id, '(null)') || ' ' || COALESCE(far_class, '(null)')
+          FROM spend_txn_enrichment
+         WHERE far_account_external_id IS NOT NULL OR far_class IS NOT NULL`)
+	links := scanPairs(t, db, `
+        SELECT silver_source_id || '/' || transaction_external_id,
+               COALESCE(far_silver_source_id, '(null)') || '/' ||
+               COALESCE(far_account_external_id, '(null)') || ' ' || COALESCE(far_class, '(null)')
+          FROM transfer_links`)
+	if fmt.Sprint(links) != fmt.Sprint(overlay) {
+		t.Errorf("links hold %v, the overlay %v", links, overlay)
+	}
+}
+
+// TestTransferLinksCarryTheAssertedRoads holds the links of the three
+// roads the income fixture does not reach to a literal: a pair the
+// override ledger forces, a pair one leg's payload describes in another
+// currency, and a pair a configured name points at. Each pair's counter
+// and the phase the audit listing reads back move with it.
+func TestTransferLinksCarryTheAssertedRoads(t *testing.T) {
+	db, ctx := openGold(t)
+	seedTxns(t, db, ctx,
+		// Fifteen days apart: only the ledger pairs them.
+		txn{"bank", "L-LEDGER-OUT", "CASH1", "withdrawal", day(10), -620, "", "Outgoing payment", ""},
+		txn{"other-bank", "L-LEDGER-IN", "CUST2", "deposit", day(25), 620, "", "Incoming payment", ""},
+		// The debit's payload states the CHF figure it became.
+		txn{"bank", "L-FX-OUT", "CASH1", "withdrawal", day(40), -500, "", "Currency exchange", ""},
+		// A narrative names the receiving account.
+		txn{"bank", "L-NAMED-OUT", "CASH1", "withdrawal", day(60), -1234, "", "TO EXAMPLE NAMED BANK", ""},
+		txn{"other-bank", "L-NAMED-IN", "CASH2", "deposit", day(61), 1234, "", "Incoming transfer", ""},
+	)
+	seedTxnsIn(t, db, ctx, "CHF",
+		txn{"bank", "L-FX-IN", "BRK1", "deposit", day(40), 450, "", "Currency exchange", ""})
+	if _, err := db.ExecContext(ctx, `
+        UPDATE transactions SET payload = '{"counter_currency":"CHF","counter_amount":450}'
+         WHERE transaction_external_id = 'L-FX-OUT'`); err != nil {
+		t.Fatalf("stamp the counter leg: %v", err)
+	}
+	res := runPass(t, db, ctx, Options{
+		MatchNames: []CounterpartyName{
+			{Source: "other-bank", Account: "CASH2", Pattern: regexp.MustCompile(`(?i)example named bank`)},
+		},
+		TransferOverrides: []gold.TransferOverrideRule{{
+			Verb: gold.VerbMatch,
+			A:    gold.TransferOverrideSelector{Source: "bank", Account: "CASH1", Day: day(10), Amount: -620, Currency: "USD"},
+			B:    &gold.TransferOverrideSelector{Source: "other-bank", Account: "CUST2", Day: day(25), Amount: 620, Currency: "USD"},
+		}},
+	})
+
+	if got := strings.Join(linkRows(t, db, ctx), "\n") + "\n"; got != frozenAssertedLinks {
+		t.Errorf("transfer_links moved.\n--- got ---\n%s\n--- want ---\n%s", got, frozenAssertedLinks)
+	}
+	assertLinksAreTheOverlay(t, db)
+	if res.Cashflow.StatedCounterPairs != 1 || res.Cashflow.NamedPairs != 1 {
+		t.Errorf("StatedCounterPairs, NamedPairs = %d, %d, want 1, 1",
+			res.Cashflow.StatedCounterPairs, res.Cashflow.NamedPairs)
+	}
+
+	pairs, _, err := MatchedPairs(ctx, db)
+	if err != nil {
+		t.Fatalf("MatchedPairs: %v", err)
+	}
+	by := map[string]gold.TransferMatchPhase{}
+	for _, p := range pairs {
+		by[p.Debit.TxID+"/"+p.Credit.TxID] = p.By
+	}
+	want := map[string]gold.TransferMatchPhase{
+		"L-LEDGER-OUT/L-LEDGER-IN": gold.MatchedByOverride,
+		"L-FX-OUT/L-FX-IN":         gold.MatchedByStatedCounter,
+		"L-NAMED-OUT/L-NAMED-IN":   gold.MatchedByName,
+	}
+	if fmt.Sprint(by) != fmt.Sprint(want) {
+		t.Errorf("the listed pairs are %v, want %v", by, want)
+	}
+}
+
+// The golden of the asserted roads' links. It moves only with
+// SignatureVersion or a deliberate verdict change, never to make a test
+// pass.
+const frozenAssertedLinks = `bank/L-FX-IN far=bank/CASH1 tx=L-FX-OUT class=(null) by=stated-counter measure=cash
+bank/L-FX-OUT far=bank/BRK1 tx=L-FX-IN class=(null) by=stated-counter measure=cash
+bank/L-LEDGER-OUT far=other-bank/CUST2 tx=L-LEDGER-IN class=(null) by=ledger measure=cash
+bank/L-NAMED-OUT far=other-bank/CASH2 tx=L-NAMED-IN class=(null) by=named measure=cash
+other-bank/L-LEDGER-IN far=bank/CASH1 tx=L-LEDGER-OUT class=(null) by=ledger measure=cash
+other-bank/L-NAMED-IN far=bank/CASH1 tx=L-NAMED-OUT class=(null) by=named measure=cash
 `

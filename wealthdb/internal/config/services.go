@@ -11,9 +11,9 @@ const DefaultWebPort = 3000
 
 // WebConfig is the optional `web` block of wealthdb.cfg, driving the
 // dockerized Metabase server managed by `wealthdb web`. The lifecycle
-// runs host-side; the host wrapper reads these settings back via the
-// `web-config` subcommand (the one component that already parses this
-// JSON). Keep the field names in sync with web/web.
+// runs host-side; the host wrapper reads these settings back as shell
+// lines through `wealthdb config-env web`, the engine being the one
+// component that parses this JSON. Keep the lines in sync with web/web.
 type WebConfig struct {
 	// Enabled gates `wealthdb web start`. False (or an omitted block)
 	// means the server is not configured.
@@ -22,6 +22,14 @@ type WebConfig struct {
 	// (127.0.0.1:Port and [::1]:Port → container :3000). Zero/omitted
 	// → DefaultWebPort.
 	Port int `json:"port,omitempty"`
+}
+
+// EffectivePort is the configured port, or DefaultWebPort.
+func (w *WebConfig) EffectivePort() int {
+	if w == nil || w.Port == 0 {
+		return DefaultWebPort
+	}
+	return w.Port
 }
 
 // DefaultMCPPort is the host loopback port the MCP server is published
@@ -37,9 +45,9 @@ const (
 )
 
 // MCPConfig is the optional `mcp` block of wealthdb.cfg, driving the MCP
-// server managed by `wealthdb mcp`. The lifecycle runs host-side and
-// reads these settings back via the hidden `mcp-config` subcommand.
-// Keep the field names in sync with mcp/mcp.
+// server managed by `wealthdb mcp`. The lifecycle runs host-side; the
+// host wrapper reads these settings back as shell lines through
+// `wealthdb config-env mcp`. Keep the lines in sync with mcp/mcp.
 type MCPConfig struct {
 	// Enabled gates `wealthdb mcp start` and `wealthdb mcp stdio`.
 	Enabled bool `json:"enabled"`
@@ -129,8 +137,7 @@ type ModelConfig struct {
 // used by the symbol_resolutions table, every lookup_value must be
 // non-empty, every symbol must look ticker-shaped (unless the entry is a
 // `delete: true` suppression). Also reject duplicate (source, kind, value)
-// tuples so the downstream UPSERT loop can't surprise us with
-// last-write-wins.
+// tuples, so the UPSERT loop never resolves a duplicate by last write.
 func (c *Config) validateSymbolResolution(seenIDs map[string]bool) error {
 	if c.SymbolResolution != nil {
 		seenOverrideKey := map[string]bool{}
@@ -187,11 +194,7 @@ func (c *Config) validateMCP() error {
 		return fmt.Errorf("config: mcp.port %d is out of range (1-65535)", m.Port)
 	}
 	if c.Web != nil {
-		webPort := c.Web.Port
-		if webPort == 0 {
-			webPort = DefaultWebPort
-		}
-		if m.EffectivePort() == webPort {
+		if webPort := c.Web.EffectivePort(); m.EffectivePort() == webPort {
 			return fmt.Errorf("config: mcp.port %d is also the web server's port; pick another", webPort)
 		}
 	}

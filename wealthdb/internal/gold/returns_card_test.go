@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -103,22 +102,6 @@ func seedCardFixture(t *testing.T, db *sql.DB, ctx context.Context, withCard boo
 // is the path a card leg could do the most damage on (netting away a real
 // checking withdrawal), so the comparisons run with it enabled.
 var cardTestMatching = &TransferMatching{WindowDays: 3, TolerancePct: 1}
-
-func fmtFloatPtr(v *float64) string {
-	if v == nil {
-		return "-"
-	}
-	// Full precision: "identical" here is a bit-level claim about the
-	// aggregates, not a rounded-display one.
-	return strconv.FormatFloat(*v, 'g', 17, 64)
-}
-
-func fmtStrPtr(s *string) string {
-	if s == nil {
-		return "-"
-	}
-	return *s
-}
 
 // renderReturnRows serializes a returns result to a comparable string, every
 // field included, in the engine's own row order.

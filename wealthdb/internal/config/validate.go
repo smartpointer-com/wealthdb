@@ -16,7 +16,7 @@ var IDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // TickerShape is the strict ticker-shape pattern: 1-12 chars of
 // uppercase ASCII letters, digits, dots, or hyphens. It captures the
-// surface forms brokers emit (BRK.B, XDEW, TFLO, EUNH.DE, etc.) and
+// surface forms brokers emit (BRK.B, XDEW, IVV, EUNH.DE, etc.) and
 // rejects obvious garbage like "BANK INT 07/30". Both
 // `symbol_resolution.overrides[].symbol` and the symbols
 // resolve-symbols accepts from a model are held to it, so neither
@@ -27,7 +27,6 @@ var TickerShape = regexp.MustCompile(`^[A-Z0-9.\-]{1,12}$`)
 // compiles each block into the engine's terms its accessors return.
 // Returns a non-nil error describing the first failure; runs no
 // I/O.
-
 func (c *Config) Validate() error {
 	if c.GoldDB == "" {
 		return fmt.Errorf("config: gold_db is required")
@@ -92,7 +91,7 @@ func compileNestedDates(block, grain string, m map[string]map[string]string, see
 	for source, inner := range m {
 		out[source] = make(map[string]int64, len(inner))
 	}
-	err := validateNested(block+"."+grain, m, seenIDs, false, func(path, source, id, d string) error {
+	err := validateNested(block+"."+grain, "external-id", m, seenIDs, false, func(path, source, id, d string) error {
 		e, err := parseYYYYMMDD(d)
 		if err != nil {
 			return fmt.Errorf("config: %s: %w", path, err)
@@ -109,14 +108,14 @@ func compileNestedDates(block, grain string, m map[string]map[string]string, see
 // validateNested checks a source_id -> external_id -> value map, the
 // block at: every source id names a declared silver source (which
 // catches a typo at load), and check passes every value, at its
-// [source][id] path, and its two keys. Without strict, an empty inner
-// key is refused.
-// With strict, the inner ids are account ids written exactly: a source
-// names at least one, and none is blank or has space around it. Inner
-// ids can't be checked against gold here — no DB access at config load
-// — so a typo'd one silently no-ops, as the other override families'
-// do.
-func validateNested[V any](at string, m map[string]map[string]V, seenIDs map[string]bool, strict bool,
+// [source][id] path, and its two keys. Both levels are walked in key
+// order, so the first error is the same at every run. Without strict,
+// an empty inner key is refused, with noun naming it. With strict, the
+// inner ids are account ids written exactly: a source names at least
+// one, and none is blank or has space around it. Inner ids cannot be
+// checked against gold here (no DB access at config load), so a
+// mistyped one silently no-ops, as the other override families' do.
+func validateNested[V any](at, noun string, m map[string]map[string]V, seenIDs map[string]bool, strict bool,
 	check func(path, source, id string, v V) error) error {
 	for _, sourceID := range slices.Sorted(maps.Keys(m)) {
 		inner := m[sourceID]
@@ -130,14 +129,13 @@ func validateNested[V any](at string, m map[string]map[string]V, seenIDs map[str
 		for _, id := range slices.Sorted(maps.Keys(inner)) {
 			switch {
 			case !strict && id == "":
-				return fmt.Errorf("config: %s: empty external-id key", src)
+				return fmt.Errorf("config: %s: empty %s key", src, noun)
 			case strict && strings.TrimSpace(id) == "":
 				return fmt.Errorf("config: %s: an account id is empty", src)
 			case strict && strings.TrimSpace(id) != id:
 				return fmt.Errorf("config: %s[%q]: an account id has space around it", src, id)
 			}
 			if err := check(fmt.Sprintf("%s[%q]", src, id), sourceID, id, inner[id]); err != nil {
-
 				return err
 			}
 		}

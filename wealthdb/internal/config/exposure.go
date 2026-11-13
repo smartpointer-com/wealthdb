@@ -99,7 +99,9 @@ func (e *ExposureConfig) compile(seenIDs map[string]bool) (canonical.ExposureRow
 	}
 	proxied := map[string]string{}
 	proxyOf := map[string]string{}
-	for key, p := range e.Proxies {
+	proxyKeys := slices.Sorted(maps.Keys(e.Proxies))
+	for _, key := range proxyKeys {
+		p := e.Proxies[key]
 		from, err := canonical.ParseFundRef(key)
 		if err != nil {
 			return out, fmt.Errorf("config: exposure.proxies: %w", err)
@@ -126,9 +128,9 @@ func (e *ExposureConfig) compile(seenIDs map[string]bool) (canonical.ExposureRow
 		}
 		out.Proxies = append(out.Proxies, canonical.ExposureProxy{FundRef: from, ProxyRef: to, Always: p.Always, Leverage: lev})
 	}
-	for key, p := range e.Proxies {
+	for _, key := range proxyKeys {
 		if _, chained := proxied[proxyOf[key]]; chained {
-			return out, fmt.Errorf("config: exposure.proxies[%q]: its proxy %q has a proxy of its own; name the last one directly", key, p.Fund)
+			return out, fmt.Errorf("config: exposure.proxies[%q]: its proxy %q has a proxy of its own; name the last one directly", key, e.Proxies[key].Fund)
 		}
 	}
 	slices.SortFunc(out.Proxies, func(a, b canonical.ExposureProxy) int { return strings.Compare(a.FundRef, b.FundRef) })
@@ -146,7 +148,8 @@ func (e *ExposureConfig) compile(seenIDs map[string]bool) (canonical.ExposureRow
 	}
 	slices.Sort(out.ReferenceFunds)
 	sized := map[string]string{}
-	for key, cov := range e.SizeFunds {
+	for _, key := range slices.Sorted(maps.Keys(e.SizeFunds)) {
+		cov := e.SizeFunds[key]
 		ref, err := canonical.ParseFundRef(key)
 		if err != nil {
 			return out, fmt.Errorf("config: exposure.size_funds: %w", err)
@@ -161,7 +164,8 @@ func (e *ExposureConfig) compile(seenIDs map[string]bool) (canonical.ExposureRow
 		out.SizeFunds = append(out.SizeFunds, canonical.ExposureSizeFund{FundRef: ref, CoveragePct: cov})
 	}
 	slices.SortFunc(out.SizeFunds, func(a, b canonical.ExposureSizeFund) int { return strings.Compare(a.FundRef, b.FundRef) })
-	for sourceID, cu := range e.Custody {
+	for _, sourceID := range slices.Sorted(maps.Keys(e.Custody)) {
+		cu := e.Custody[sourceID]
 		if !seenIDs[sourceID] {
 			return out, fmt.Errorf("config: exposure.custody[%q]: no silver_sources[].id matches", sourceID)
 		}
@@ -171,10 +175,7 @@ func (e *ExposureConfig) compile(seenIDs map[string]bool) (canonical.ExposureRow
 		if cu.Country != "" && !isCountryCode(cu.Country) {
 			return out, fmt.Errorf("config: exposure.custody[%q]: country %q is not an ISO 3166 alpha-2 code", sourceID, cu.Country)
 		}
-	}
-	for _, src := range slices.Sorted(maps.Keys(e.Custody)) {
-		cu := e.Custody[src]
-		out.Custody = append(out.Custody, canonical.ExposureCustody{SilverSourceID: src,
+		out.Custody = append(out.Custody, canonical.ExposureCustody{SilverSourceID: sourceID,
 			Custodian: strings.TrimSpace(cu.Custodian), Country: cu.Country})
 	}
 	return out, nil
@@ -196,26 +197,21 @@ func joinNames[T ~string](vs []T) string {
 	return strings.Join(names, ", ")
 }
 
-// ExposureRows is the exposure block as gold stores it (compile), with
-// the declarations ledger read and checked. An absent block yields the
-// default settings alone. A Config built by hand and never validated is
-// compiled here, against its configured sources.
+// ExposureRows is the exposure block as gold stores it, as Validate
+// compiled it, with the declarations ledger read and checked. An absent
+// block yields the default settings alone, and a Config never validated
+// reads as one with no exposure block.
 func (c *Config) ExposureRows() (canonical.ExposureRows, error) {
+	if c.exposureRows == nil {
+		return (*ExposureConfig)(nil).compile(nil)
+	}
+	out := *c.exposureRows
+	if c.Exposure == nil {
+		return out, nil
+	}
 	sources := map[string]bool{}
 	for _, s := range c.SilverSources {
 		sources[s.ID] = true
-	}
-	compiled := c.exposureRows
-	if compiled == nil {
-		rows, err := c.Exposure.compile(sources)
-		if err != nil {
-			return rows, err
-		}
-		compiled = &rows
-	}
-	out := *compiled
-	if c.Exposure == nil {
-		return out, nil
 	}
 	declarations, err := readDeclarationsFile(string(c.Exposure.Declarations), sources)
 	if err != nil {

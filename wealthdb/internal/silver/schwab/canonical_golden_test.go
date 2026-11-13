@@ -1,13 +1,10 @@
 package schwab
 
 import (
-	"flag"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
-
-var update = flag.Bool("update", false, "rewrite testdata/canonical_*.jsonl")
 
 // TestCanonicalGolden holds every record the adapter yields to a golden
 // file per case, over the rows of the adapter tests: the api feed alone,
@@ -35,7 +32,7 @@ func TestCanonicalGolden(t *testing.T) {
                  "amount":-1505.00,"cost":-1505.00}]}'),
             ('A2', 2000, 'ACC1', 'DIVIDEND_OR_INTEREST',
              '{"netAmount":50.00,"transferItems":[]}');`)
-		silvertest.Golden(t, openAdapter(t, path), "testdata/canonical_api.jsonl", *update)
+		silvertest.Golden(t, openAdapter(t, path), "testdata/canonical_api.jsonl")
 	})
 	t.Run("web", func(t *testing.T) {
 		periodStart, asOf := utcDay("2023-12-01"), utcDay("2023-12-31")
@@ -60,7 +57,7 @@ func TestCanonicalGolden(t *testing.T) {
             ('T1', 500,  '5678', 'Deposit', NULL, 'statement_pdf', 'sha-stmt', '{"amount":250,"description":"FUNDS"}'),
             ('T2', 2000, '5678', 'Buy',     'VTI', 'statement_pdf', 'sha-stmt', '{"amount":-100,"quantity":1,"description":"VTI"}');`,
 			asOf, periodStart)
-		silvertest.Golden(t, c, "testdata/canonical_web.jsonl", *update)
+		silvertest.Golden(t, c, "testdata/canonical_web.jsonl")
 	})
 	t.Run("merged", func(t *testing.T) {
 		f := newMergedFixture(t)
@@ -96,6 +93,6 @@ func TestCanonicalGolden(t *testing.T) {
              '{"holding_days":60,"raw_line":"lot line S"}'),
             (?1, '9999', 'VTI', 0, 1, 100, 100, '2020-01-02', 50, 'LONG', NULL, NULL, 'sha-other',
              '{"holding_days":1400,"raw_line":"unbridged"}');`, asOf)
-		silvertest.Golden(t, f.open(t), "testdata/canonical_merged.jsonl", *update)
+		silvertest.Golden(t, f.open(t), "testdata/canonical_merged.jsonl")
 	})
 }

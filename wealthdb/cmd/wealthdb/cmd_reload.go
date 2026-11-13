@@ -140,7 +140,10 @@ func reloadFreshAndSwap(ctx context.Context, run loadRun, specs []loader.SourceS
 
 	var buildErr error
 	build := func(tmp string) error {
-		db, err := gold.Open(tmp, gold.ModeReadWrite)
+		// BuildFreshAndSwap has removed any file at tmp, so it starts as
+		// a copy of the migrated empty image (gold.OpenFresh) rather
+		// than a run of every migration.
+		db, err := gold.OpenFresh(tmp)
 		if err != nil {
 			return err
 		}
@@ -250,16 +253,15 @@ var paidStores = []paidStore{
 // re-stamps it from the config.
 var boundaryStamp = paidStore{"cashflow_wrapper_sides", "boundary"}
 
-// carryVerdictStore copies one global verdict store out of the
-// outgoing gold file into the freshly built one, and reports how many
-// rows it carried.
+// carryVerdictStore copies one table out of the outgoing gold file into
+// the freshly built one, and reports how many rows it carried.
 //
 // 'reload -a' builds an empty temp file and swaps it over the live
 // path, and the verdict stores are the one thing in gold that a
 // rebuild cannot regenerate: FX priorities and the account/instrument
 // overrides are re-stamped from config, every fact table is re-derived
-// from silver, but an LLM verdict on a merchant or payer signature
-// exists only in its store and was paid for. Without this
+// from silver, but an LLM verdict exists only in its store and was
+// paid for. Without this
 // carry-across, routine compaction-by-reload would silently wipe it.
 //
 // The outgoing file was migrated before the build, so the two copies
@@ -292,10 +294,11 @@ func carryVerdictStore(ctx context.Context, db *sql.DB, livePath string, store p
 }
 
 // reloadInPlace resets and loads each source on the live DB, for
-// named sources and for 'reload -a --in-place'. The verdict stores
-// need no carry-across here: the live file is never replaced, and
-// Reset leaves both of them alone. The gold passes run once, after
-// every named source has loaded.
+// named sources and for 'reload -a --in-place'. The live file is never
+// replaced, so nothing is carried across. Reset keeps the two global
+// verdict stores and drops the source's symbol_resolutions, as
+// `reload <id>` always has (DESIGN.md §9). The gold passes run once,
+// after every named source has loaded.
 func reloadInPlace(ctx context.Context, run loadRun, specs []loader.SourceSpec) error {
 	db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(run.cfg.GoldDB, gold.ModeReadWrite) })
 	if err != nil {

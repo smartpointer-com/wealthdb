@@ -46,7 +46,7 @@ type SilverSource struct {
 	TaxableWrapper string            `json:"taxable_wrapper,omitempty"`
 	Subsources     []SilverSubsource `json:"subsources,omitempty"`
 	// Relationships pairs cross-subsource entity identities under
-	// a single user-chosen label. Used by the UBS adapter to link
+	// a single label the config chooses. Used by the UBS adapter to link
 	// the web `banking_relationship_id` (opaque SPA token) to the
 	// PSN `relationship_id` (SFTPCHxx, etc.). Optional.
 	Relationships []RelationshipPair `json:"relationships,omitempty"`
@@ -125,8 +125,8 @@ type SilverSubsource struct {
 
 // RelationshipPair is one entry under `silver_sources[].relationships`.
 // At least one of `web_id` or `psn_id` must be set. `label` is
-// the canonical user-readable name the adapter stamps on canonical
-// records. `psn_start_override`, when set (YYYY-MM-DD), overrides
+// the display name the adapter stamps on canonical records.
+// `psn_start_override`, when set (YYYY-MM-DD), overrides
 // the auto-detected cutover date used to splice web↔PSN
 // transactions for this relationship.
 type RelationshipPair struct {
@@ -134,6 +134,10 @@ type RelationshipPair struct {
 	WebID            string `json:"web_id,omitempty"`
 	PSNID            string `json:"psn_id,omitempty"`
 	PSNStartOverride string `json:"psn_start_override,omitempty"`
+
+	// psnStart is PSNStartOverride at UTC midnight, as Validate
+	// compiled it; 0 when unset or never validated.
+	psnStart int64
 }
 
 // Lookup returns the named silver source from the config, or
@@ -150,9 +154,9 @@ func (c *Config) Lookup(id string) (*SilverSource, bool) {
 // ToSilverOpenSpec converts a config.SilverSource into the
 // silver.OpenSpec the adapter contract expects. Lives here (not
 // in silver) so config carries the JSON tags / parse logic and
-// silver stays JSON-free. Returns an error when a relationship's
-// psn_start_override fails to parse (YYYY-MM-DD).
-func (s *SilverSource) ToSilverOpenSpec() (silver.OpenSpec, error) {
+// silver stays JSON-free. A psn_start_override is the day Validate
+// compiled.
+func (s *SilverSource) ToSilverOpenSpec() silver.OpenSpec {
 	out := silver.OpenSpec{ID: s.ID, Path: s.Path, MarkGuard: s.Schwab.markGuard()}
 	for _, sub := range s.Subsources {
 		out.Subsources = append(out.Subsources, silver.Subsource{
@@ -161,24 +165,14 @@ func (s *SilverSource) ToSilverOpenSpec() (silver.OpenSpec, error) {
 		})
 	}
 	for _, rel := range s.Relationships {
-		var override int64
-		if rel.PSNStartOverride != "" {
-			t, err := parseYYYYMMDD(rel.PSNStartOverride)
-			if err != nil {
-				return silver.OpenSpec{}, fmt.Errorf(
-					"silver_sources[%q].relationships[%q].psn_start_override: %w",
-					s.ID, rel.Label, err)
-			}
-			override = t
-		}
 		out.Relationships = append(out.Relationships, silver.RelationshipPair{
 			Label:            rel.Label,
 			WebID:            rel.WebID,
 			PSNID:            rel.PSNID,
-			PSNStartOverride: override,
+			PSNStartOverride: rel.psnStart,
 		})
 	}
-	return out, nil
+	return out
 }
 
 // registeredKind refuses a kind no adapter registers, naming the kinds
@@ -194,9 +188,10 @@ func registeredKind(kind string, known []string) error {
 // validateSources checks every silver_sources entry and returns the set of
 // declared source ids the later sections check references against.
 func (c *Config) validateSources() (map[string]bool, error) {
-	known := silver.Kinds() // empty during tests that don't blank-import adapters; we tolerate that
+	known := silver.Kinds() // empty in tests that import no adapter, which admits any kind
 	seenIDs := make(map[string]bool, len(c.SilverSources))
-	for i, s := range c.SilverSources {
+	for i := range c.SilverSources {
+		s := &c.SilverSources[i]
 		if !IDPattern.MatchString(s.ID) {
 			return nil, fmt.Errorf("config: silver_sources[%d].id %q must match %s", i, s.ID, IDPattern.String())
 		}
@@ -242,17 +237,21 @@ func (c *Config) validateSources() (map[string]bool, error) {
 				return nil, fmt.Errorf("config: silver_sources[%d].subsources[%d].path is required", i, j)
 			}
 		}
-		for j, rel := range s.Relationships {
+		for j := range s.Relationships {
+			rel := &s.Relationships[j]
 			if rel.Label == "" {
 				return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d].label is required", i, j)
 			}
 			if rel.WebID == "" && rel.PSNID == "" {
 				return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d]: at least one of web_id or psn_id must be set", i, j)
 			}
+			rel.psnStart = 0
 			if rel.PSNStartOverride != "" {
-				if _, err := parseYYYYMMDD(rel.PSNStartOverride); err != nil {
+				start, err := parseYYYYMMDD(rel.PSNStartOverride)
+				if err != nil {
 					return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d].psn_start_override: %w", i, j, err)
 				}
+				rel.psnStart = start
 			}
 		}
 		if err := s.Schwab.validate(s.Kind); err != nil {

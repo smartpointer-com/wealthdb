@@ -52,13 +52,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	fs := flag.NewFlagSet("wealthdb categorize", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var mf modelFlags
-	registerModelFlags(fs, &mf, defaultCategorizeBatch, modelFlagDocs{
-		dryRun:      "show the categorisation plan without writing to gold",
-		maxAttempts: "max LLM round-trips when responses include invalid rows",
-		maxAnchors:  "max anchor examples to include in the prompt",
-		batch:       "signatures per model call; the default keeps a local model's answer well inside the 5-minute call timeout",
-		showPrompt:  "print the first batch's prompt to stderr in full; later batches only its size (debugging)",
-	})
+	registerModelFlags(fs, &mf, defaultCategorizeBatch)
 	all := fs.Bool("all", false, "re-ask every signature candidacy admits, including ones already in the verdict store")
 	refine := fs.Bool("refine", false, "re-ask only the counterparties the model itself could place no better than a catch-all")
 	fs.Usage = func() {
@@ -71,9 +65,8 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 	if err != nil {
 		return err
 	}
-	if mf.batch < 1 {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "categorize: --batch must be at least 1, got %d", mf.batch)
+	if err := mf.check(fs, "categorize"); err != nil {
+		return err
 	}
 	// Beside the other flag check, and before the pass takes the gold
 	// write lock: a usage error must not cost a full overlay rewrite.
@@ -312,47 +305,50 @@ func runCategorizeFamily(
 
 	// Verdicts are stored as each batch completes. A re-run of a run
 	// that died asks only about the rest, because the backlog excludes
-	// every signature the store answers.
-	store := &batchStore[categorization]{cmd: "categorize", noun: "verdict", warn: stderr,
-		write: func(rows []categorization) (int, error) {
-			wdb, err := gold.ReopenReadWrite(cfg.GoldDB)
-			if err != nil {
-				return 0, err
-			}
-			defer wdb.Close()
-			return persistCategorizations(ctx, wdb, fam, rows, time.Now().Unix(), modelCfg.Name)
-		}}
-	sink := func(o batchOutcome) error { store.accept(o.Accepted); return nil }
-	if opts.dryRun {
-		sink = func(batchOutcome) error { return nil }
+	// every signature the store answers. A dry run stores nothing.
+	var store *batchStore[categorization]
+	if !opts.dryRun {
+		store = &batchStore[categorization]{cmd: "categorize", noun: "verdict", warn: stderr,
+			write: func(rows []categorization) (int, error) {
+				wdb, err := gold.ReopenReadWrite(cfg.GoldDB)
+				if err != nil {
+					return 0, err
+				}
+				defer wdb.Close()
+				return persistCategorizations(ctx, wdb, fam, rows, time.Now().Unix(), modelCfg.Name)
+			}}
 	}
 	call := opts.call
 	if call == nil {
 		call = modelCaller(modelCfg)
 	}
 	valid, calls, totalInvalid, runErr := categorizeWithLLM(ctx, call, fam, batches, anchors,
-		level, opts.maxAttempts, opts.maxAnchors, opts.showPrompt, sink, stdout, stderr)
-	// The retry flush runs whether or not the family's own run
+		level, opts.maxAttempts, opts.maxAnchors, opts.showPrompt, store, stdout, stderr)
+	// The held verdicts are written whether or not the family's own run
 	// stopped, and BEFORE the next family is started: a run of two
-	// families must not leave the first one's last batch unflushed
-	// while the second spends another model pass.
-	flushErr := retryFlush(ctx, store.flush)
+	// families must not leave the first one's last batch unwritten while
+	// the second spends another model pass. A store that cannot be
+	// written wins over the model's error, since its verdicts are lost
+	// unless printed.
+	if store != nil {
+		if err := store.finish(ctx, func(held []categorization, err error) error {
+			printCategorizationPlan(stdout,
+				fmt.Sprintf("--- %d %s verdict(s) the model answered but gold would not accept ---", len(held), fam.name),
+				held)
+			return fmt.Errorf("categorize: could not store the %s verdicts above; re-run once nothing else "+
+				"holds %q open, and the run asks for them again: %w", fam.name, cfg.GoldDB, err)
+		}); err != nil {
+			return closed, err
+		}
+	}
 	if runErr != nil {
 		if opts.dryRun {
 			fmt.Fprintf(stdout, "categorize: stopped; nothing stored (dry run)\n")
 		} else {
-			if flushErr != nil {
-				fmt.Fprintf(stderr, "categorize: %d verdict(s) could not be stored: %v\n",
-					len(store.pending), flushErr)
-			}
-			fmt.Fprintf(stdout, "categorize: stopped; %d verdict(s) from %d completed batch(es) are already stored — re-run to continue with the rest\n",
-				store.stored, store.completed)
+			fmt.Fprintf(stdout, "categorize: stopped; %d verdict(s) are already stored — re-run to continue with the rest\n",
+				store.stored)
 		}
 		return closed, runErr
-	}
-	if flushErr != nil {
-		return closed, fmt.Errorf("categorize: %d verdict(s) could not be stored; re-run to ask for them again: %w",
-			len(store.pending), flushErr)
 	}
 	sort.Slice(valid, func(i, j int) bool { return valid[i].Signature < valid[j].Signature })
 
@@ -360,10 +356,8 @@ func runCategorizeFamily(
 	printCategorizeSummary(stdout, fam, candidates, valid, leftovers, len(batches), calls, totalInvalid, canaries)
 
 	if opts.dryRun {
-		fmt.Fprintf(stdout, "--- %s dry-run plan (no rows written; candidates as of the last load) ---\n", fam.name)
-		for _, v := range valid {
-			fmt.Fprintf(stdout, "  %s → %s [%s]\n", v.Signature, v.MerchantName, v.Detailed)
-		}
+		printCategorizationPlan(stdout,
+			fmt.Sprintf("--- %s dry-run plan (no rows written; candidates as of the last load) ---", fam.name), valid)
 		return closed, nil
 	}
 	if store.stored == 0 {
@@ -405,23 +399,18 @@ func backlogOf(all, refine bool) backlog {
 	return backlogUnplaced
 }
 
-// ---- batching ----------------------------------------------------------------
-
-// batchOutcome is what one batch produced, handed to the sink as the
-// batch completes so its verdicts can be stored before the next batch
-// is asked.
-type batchOutcome struct {
-	Index    int // 1-based position in the run
-	Count    int // batches in the run
-	Size     int // candidates in this batch
-	Accepted []categorization
-	Rejected int // invalid rows across this batch's attempts
-	Attempts int
+// printCategorizationPlan renders verdicts one per line under a
+// heading. One renderer for both the dry-run plan and the
+// could-not-store fallback, so what a failed store leaves on stdout is
+// exactly what a plan looks like.
+func printCategorizationPlan(w io.Writer, heading string, rows []categorization) {
+	fmt.Fprintln(w, heading)
+	for _, v := range rows {
+		fmt.Fprintf(w, "  %s → %s [%s]\n", v.Signature, v.MerchantName, v.Detailed)
+	}
 }
 
-// batchSink receives each batch's outcome, in order, as it completes.
-// The write path persists here; a dry run observes and stores nothing.
-type batchSink func(batchOutcome) error
+// ---- batching ----------------------------------------------------------------
 
 // estimateTokens is the run's cost preview. Four characters per
 // token is the usual rough ratio for English prose and CSV; the point
@@ -504,13 +493,12 @@ func refreshAnchors(anchors []merchantAnchor, accepted []categorization, maxAnch
 	return out
 }
 
-// categorizeWithLLM runs the batches through the model in order. Each
-// batch is its own retry loop with its own feedback; its accepted
-// verdicts go to the sink the moment the batch completes, and become
-// the newest anchors for the batch after it. An error — from the
-// endpoint or from the sink — stops the run at that batch, and
-// everything the sink already took stays taken. A batch the endpoint
-// fails under still hands its accepted verdicts to the sink first.
+// categorizeWithLLM runs the batches through the model in order
+// (modelPass.run). Each batch is its own retry loop with its own
+// feedback; its accepted verdicts go to store the moment the batch
+// completes, and become the newest anchors for the batch after it. An
+// endpoint error stops the run at that batch, and everything store
+// already took stays taken. A nil store (a dry run) keeps nothing.
 func categorizeWithLLM(
 	ctx context.Context,
 	call llmCall,
@@ -520,13 +508,13 @@ func categorizeWithLLM(
 	level string,
 	maxAttempts, maxAnchors int,
 	showPrompt bool,
-	sink batchSink,
+	store *batchStore[categorization],
 	stdout, stderr io.Writer,
 ) (validUnion []categorization, calls int, totalInvalid int, err error) {
 	pass := modelPass[merchantCandidate, categorization]{
 		system: fam.systemPrompt(),
-		// The anchors are the batch's own: the loop below refreshes them
-		// once a batch completes.
+		// The anchors are the batch's own: the run refreshes them once a
+		// batch completes.
 		prompt: func(batch []merchantCandidate, feedback []invalidRow) string {
 			return buildCategorizeUserPrompt(fam, batch, anchors, level, feedback)
 		},
@@ -555,33 +543,15 @@ func categorizeWithLLM(
 			}
 		}
 	}
-	for i, batch := range batches {
-		o := batchOutcome{Index: i + 1, Count: len(batches), Size: len(batch)}
-		o.Accepted, o.Attempts, o.Rejected, err = pass.ask(ctx, batch, batchAt{o.Index, o.Count})
-		calls += o.Attempts
-		totalInvalid += o.Rejected
-		if err != nil {
-			// The verdicts the batch accepted before its endpoint
-			// failed were paid for, so the sink takes them too.
-			validUnion = append(validUnion, o.Accepted...)
-			if sink != nil && len(o.Accepted) > 0 {
-				if serr := sink(o); serr != nil {
-					err = serr
-				}
-			}
-			return validUnion, calls, totalInvalid, fmt.Errorf("batch %d/%d: %w", o.Index, o.Count, err)
-		}
+	r, err := pass.run(ctx, batches, store, func(at batchAt, batch []merchantCandidate, accepted []categorization, attempts, rejected int) {
 		fmt.Fprintf(stdout, "categorize: batch %d/%d: %d %s(s), %d accepted, %d rejected, %d attempt(s)\n",
-			o.Index, o.Count, o.Size, fam.counterparty, len(o.Accepted), o.Rejected, o.Attempts)
-		validUnion = append(validUnion, o.Accepted...)
-		if sink != nil {
-			if err := sink(o); err != nil {
-				return validUnion, calls, totalInvalid, fmt.Errorf("batch %d/%d: %w", o.Index, o.Count, err)
-			}
-		}
-		anchors = refreshAnchors(anchors, o.Accepted, maxAnchors)
+			at.index, at.count, len(batch), fam.counterparty, len(accepted), rejected, attempts)
+		anchors = refreshAnchors(anchors, accepted, maxAnchors)
+	})
+	if err != nil {
+		err = fmt.Errorf("batch %d/%d: %w", r.stopped.index, r.stopped.count, err)
 	}
-	return validUnion, calls, totalInvalid, nil
+	return r.answers, r.attempts, r.rejected, err
 }
 
 // ---- usage --------------------------------------------------------------------

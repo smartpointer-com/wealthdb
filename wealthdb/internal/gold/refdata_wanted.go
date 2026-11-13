@@ -1088,10 +1088,3 @@ SELECT security_key,
 	}
 	return out, nil
 }
-
-// hasTable reports whether gold holds a table of that name.
-func hasTable(ctx context.Context, db querier, name string) (bool, error) {
-	var n int
-	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?`, name).Scan(&n)
-	return n > 0, err
-}

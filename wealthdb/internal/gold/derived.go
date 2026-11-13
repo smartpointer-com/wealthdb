@@ -26,7 +26,7 @@ var derivedFS embed.FS
 // derivedSet is the derived set this binary carries.
 type derivedSet struct {
 	version int    // the LOCK's last version
-	hash    string // sha256 of the files' bytes, in name order
+	hash    string // derivedSetHash of stmts and serving
 	stmts   []derivedStmt
 	serving []servingTable
 }
@@ -51,31 +51,45 @@ func readDerived(fsys fs.FS) (derivedSet, error) {
 	if err != nil {
 		return set, err
 	}
-	h := sha256.New()
 	for _, name := range names { // fs.Glob returns names in order
 		body, err := fs.ReadFile(fsys, name)
 		if err != nil {
 			return set, err
 		}
-		h.Write(body)
 		stmts, err := splitDerived(name, string(body))
 		if err != nil {
 			return set, err
 		}
 		set.stmts = append(set.stmts, stmts...)
 	}
-	set.hash = hex.EncodeToString(h.Sum(nil))
 	lock, err := readLock(fsys)
 	if err != nil {
 		return set, err
 	}
 	set.version = lock[len(lock)-1].version
 	set.serving = servingTables
+	set.hash = derivedSetHash(set.stmts, set.serving)
 	return set, nil
 }
 
-// lockLine is one line of derived/LOCK: a derived version and the hash
-// of the files at that version.
+// derivedSetHash is the sha256 of what the apply gives a database: each
+// statement's code, its whole-line comments left out, in order, and then
+// each serving table with its source. DuckDB keeps no comment, so a
+// comment edit keeps the hash; a serving entry changes it as a body edit
+// does.
+func derivedSetHash(stmts []derivedStmt, serving []servingTable) string {
+	h := sha256.New()
+	for _, s := range stmts {
+		h.Write([]byte(stripComments(s.sql)))
+	}
+	for _, st := range serving {
+		h.Write([]byte(st.table + "\x00" + st.source + "\n"))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// lockLine is one line of derived/LOCK: a derived version and the set's
+// hash (derivedSetHash) at that version.
 type lockLine struct {
 	version int
 	hash    string
@@ -149,10 +163,10 @@ func stripComments(sql string) string {
 	return b.String()
 }
 
-// wantVersion is the schema version this binary brings a database to:
-// its newest migration, or its derived version where that is newer.
-func wantVersion(migrations []migration, set derivedSet) int {
-	return max(migrations[len(migrations)-1].version, set.version)
+// wantVersion is the schema version ms and set bring a database to: the
+// newest migration, or the derived version where that is newer.
+func wantVersion(ms []migration, set derivedSet) int {
+	return max(ms[len(ms)-1].version, set.version)
 }
 
 // derivedHash is the hash of the derived set the database carries, ""
@@ -246,20 +260,16 @@ func reshapeServing(ctx context.Context, tx *sql.Tx, st servingTable) error {
 	if err != nil {
 		return err
 	}
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM duckdb_tables()
-	    WHERE database_name = current_database() AND schema_name = 'main' AND table_name = ?`,
-		st.table).Scan(&n); err != nil {
+	cols, err := tableColumns(ctx, tx, st.table)
+	if err != nil {
 		return err
 	}
-	if n > 0 {
-		have, err := columnsOf(ctx, tx, `SELECT * FROM `+st.table)
-		if err != nil {
-			return err
-		}
-		if slices.Equal(have, want) {
-			return nil
-		}
+	have := make([]string, len(cols))
+	for i, c := range cols {
+		have[i] = c.name + " " + c.typ
+	}
+	if len(have) > 0 && slices.Equal(have, want) {
+		return nil
 	}
 	_, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+st.table+`;
 	    CREATE TABLE `+st.table+` AS SELECT * FROM `+st.source+` LIMIT 0`)

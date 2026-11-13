@@ -25,7 +25,7 @@ func TestOpenFreshCopiesAreCurrentAndIndependent(t *testing.T) {
 	a, b := open("a.db"), open("b.db")
 	t.Logf("fresh image: %d bytes", len(fresh.data))
 
-	latest, err := latestSchemaVersion()
+	latest, err := binaryVersion()
 	if err != nil {
 		t.Fatal(err)
 	}

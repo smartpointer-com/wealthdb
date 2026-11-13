@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"maps"
 	"os"
 	"slices"
@@ -158,6 +159,8 @@ func TestRefdataWantedPinned(t *testing.T) {
 
 // A gold below the schema the wanted list reads (a read-only open of an
 // older file) yields the held funds and securities with nothing known.
+// It reads a source's newest snapshot as every account's, so a fund only
+// an older account's statement lists ends at its own last snapshot.
 func TestRefdataWantedBeforeMigration(t *testing.T) {
 	t.Parallel()
 	db, ctx := openAtVersion(t, wantedSchema-1)
@@ -174,6 +177,74 @@ func TestRefdataWantedBeforeMigration(t *testing.T) {
 	}
 	if len(w.Securities) != 1 || len(w.Securities[0].Missing) != 6 || w.Settings.MaxGapDays != 400 {
 		t.Errorf("wanted = %+v", w)
+	}
+	seedCarriedFund(t, db, ctx)
+	if w, err = RefdataWanted(ctx, db, ymd(2026, 4, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if f := wantedFund(w, "symbol:FUNDQ"); f == nil || f.HeldTo == nil || *f.HeldTo != "2026-01-15" {
+		t.Errorf("FUNDQ %+v of %+v", f, w.Funds)
+	}
+}
+
+// A held fund and stock want their dividend calendar. A stock is a
+// depositary receipt as the yield's lag reads one: a lookup that types it
+// so, or GLEIF tying it to its issuer's other ISINs, makes it one; a name
+// that says so under an ISIN of a country other than the US does not. A
+// listed REIT, of class real estate with an ISIN, wants its calendar
+// too; one a broker names by a symbol alone, and a bond, want none.
+func TestRefdataWantedCalendarsAndReceipts(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	for _, q := range []string{
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, isin, symbol, name,
+		 currency, first_seen_at, last_seen_at) VALUES
+		 ('test-src', 'QETF', 'public_equity', 'etf', NULL, 'QETF', NULL, 'USD', 0, 0),
+		 ('test-src', 'QREC', 'public_equity', 'stock', 'US0000000281', 'QREC', NULL, 'USD', 0, 0),
+		 ('test-src', 'QBON', 'fixed_income', 'bond', 'US0000000282', NULL, NULL, 'USD', 0, 0),
+		 ('test-src', 'QRET', 'real_estate', 'stock', 'US0000000283', 'QRET', NULL, 'USD', 0, 0),
+		 ('test-src', 'QRES', 'real_estate', 'stock', NULL, 'QRES', NULL, 'USD', 0, 0),
+		 ('test-src', 'QGLE', 'public_equity', 'stock', 'US0000000284', 'QGLE', 'Qorvant Holdings', 'USD', 0, 0),
+		 ('test-src', 'QDEW', 'public_equity', 'stock', 'DE0000000285', NULL, 'Qorvant AG ADR', 'EUR', 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, market_value) VALUES
+		 ('test-src', ?, 'A', 'QETF', 'QETF', 'public_equity', 'etf', 'USD', 1),
+		 ('test-src', ?, 'A', 'QREC', 'QREC', 'public_equity', 'stock', 'USD', 1),
+		 ('test-src', ?, 'A', 'QBON', 'QBON', 'fixed_income', 'bond', 'USD', 1),
+		 ('test-src', ?, 'A', 'QRET', 'QRET', 'real_estate', 'stock', 'USD', 1),
+		 ('test-src', ?, 'A', 'QRES', 'QRES', 'real_estate', 'stock', 'USD', 1),
+		 ('test-src', ?, 'A', 'QGLE', 'QGLE', 'public_equity', 'stock', 'USD', 1),
+		 ('test-src', ?, 'A', 'QDEW', 'QDEW', 'public_equity', 'stock', 'EUR', 1)`,
+		`INSERT INTO security_identities (silver_source_id, security_key, as_of, provider, isin, security_type)
+		 VALUES ('refdata', 'isin:US0000000281', ?, 'openfigi', 'US0000000281', 'Depositary Receipt')`,
+		`INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value)
+		 VALUES ('refdata', 'isin:US0000000284', 'issuer_isins', ?, 'gleif', 'NL0000000286')`,
+	} {
+		mustExec(t, db, q, slices.Repeat([]any{day}, strings.Count(q, "?"))...)
+	}
+	rebuildExposureWithDefaults(t, db, ctx)
+	w, err := RefdataWanted(ctx, db, time.Unix(day+86400, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := wantedFund(w, "symbol:QETF"); f == nil || !slices.Contains(f.Wants, wantDividendCalendar) {
+		t.Errorf("QETF %+v of %+v", f, w.Funds)
+	}
+	got := map[string]string{}
+	for _, s := range w.Securities {
+		got[s.Key] = fmt.Sprintf("receipt=%v calendar=%v", s.Receipt, slices.Contains(s.Wants, wantDividendCalendar))
+	}
+	want := map[string]string{
+		"isin:US0000000281": "receipt=true calendar=true",
+		"isin:US0000000282": "receipt=false calendar=false",
+		"isin:US0000000283": "receipt=false calendar=true",
+		"symbol:QRES":       "receipt=false calendar=false",
+		"isin:US0000000284": "receipt=true calendar=true",
+		"isin:DE0000000285": "receipt=false calendar=true",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("securities = %v, want %v", got, want)
 	}
 }
 
@@ -681,12 +752,12 @@ func TestRefdataWantedFundsStateTheirAliases(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, f := range w.Funds {
-		got[f.Ref] = strings.Join([]string{show(f.ISIN), show(f.CUSIP), show(f.Symbol)}, " ")
+		got[f.Ref] = strings.Join([]string{fmtStrPtr(f.ISIN), fmtStrPtr(f.CUSIP), fmtStrPtr(f.Symbol)}, " ")
 	}
 	want := map[string]string{
-		"isin:XX0000000021": "XX0000000021 <nil> QPX1",
+		"isin:XX0000000021": "XX0000000021 - QPX1",
 		"isin:XX0000000031": "XX0000000031 Q0000SZ31 QSZ1",
-		"isin:XX0000000032": "XX0000000032 <nil> <nil>",
+		"isin:XX0000000032": "XX0000000032 - -",
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("funds = %q, want %q", got, want)

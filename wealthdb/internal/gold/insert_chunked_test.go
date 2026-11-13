@@ -1,7 +1,6 @@
 package gold
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,12 +11,7 @@ import (
 // its row range.
 func TestInsertChunkedFullChunksAndTail(t *testing.T) {
 	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	ctx := context.Background()
+	db, ctx := openEmpty(t)
 	if _, err := db.ExecContext(ctx, `CREATE TABLE chunk_probe (i BIGINT, s VARCHAR, x DOUBLE)`); err != nil {
 		t.Fatal(err)
 	}
@@ -66,12 +60,7 @@ func TestInsertChunkedFullChunksAndTail(t *testing.T) {
 // an empty list, a date as text, across a chunk boundary.
 func TestInsertColumnsMatchesInsertChunked(t *testing.T) {
 	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	ctx := context.Background()
+	db, ctx := openEmpty(t)
 	for _, table := range []string{"by_values", "by_columns"} {
 		if _, err := db.ExecContext(ctx, `CREATE TABLE `+table+` (i BIGINT, s VARCHAR, x DOUBLE, b BOOLEAN NOT NULL, d DATE, tags VARCHAR[])`); err != nil {
 			t.Fatal(err)
@@ -131,12 +120,7 @@ func TestInsertColumnsMatchesInsertChunked(t *testing.T) {
 // column no list carries, rather than cast either.
 func TestInsertColumnsRefusesWhatItCannotCarry(t *testing.T) {
 	t.Parallel()
-	db, err := Open(":memory:", ModeReadWrite)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	ctx := context.Background()
+	db, ctx := openEmpty(t)
 	if _, err := db.ExecContext(ctx, `CREATE TABLE carry_probe (i BIGINT, ns INTEGER[])`); err != nil {
 		t.Fatal(err)
 	}

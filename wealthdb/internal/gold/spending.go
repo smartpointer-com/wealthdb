@@ -86,7 +86,7 @@ type SpendTransactionRow struct {
 	Provenance        *string
 	// ProviderSpendDetailed and ProviderSpendLabel are the ISSUER's own
 	// classification of the line, mapped to the wealthdb vocabulary
-	// and kept beside SpendDetailed (migration 0057). Nil where the
+	// and kept beside SpendDetailed (spend_txn_categories). Nil where the
 	// issuer published nothing this build translates. Never summed
 	// with SpendDetailed: the two disagree by design.
 	ProviderSpendDetailed *string

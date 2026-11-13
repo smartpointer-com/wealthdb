@@ -1139,8 +1139,8 @@ func TestCoverageObscuresAGapTheUnsignedVolumeCovers(t *testing.T) {
 	}
 }
 
-// TestCoverageOrderIsStable pins the tiebreak 0112 added: accounts with
-// the same gap — every unmeasurable one has none — list by source,
+// TestCoverageOrderIsStable pins the coverage order's tiebreak: accounts
+// with the same gap — every unmeasurable one has none — list by source,
 // account and currency, the same way on every run.
 func TestCoverageOrderIsStable(t *testing.T) {
 	t.Parallel()

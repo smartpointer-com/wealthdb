@@ -16,7 +16,7 @@ import (
 func TestWebPositionSizesNamesAShareSize(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	for _, q := range []string{
+	execEach(t, db,
 		`INSERT INTO serving_positions_history BY NAME
 		 SELECT 'test-src' AS silver_source_id, acct AS account_external_id, iid AS instrument_external_id,
 		        iid AS position_key, symbol, symbol || ' Example' AS name, class AS asset_class, vehicle,
@@ -57,11 +57,7 @@ func TestWebPositionSizesNamesAShareSize(t *testing.T) {
 		     ('isin:XX0000000705', 'small'), ('isin:XX0000000706', 'large'), ('isin:XX0000000707', 'mid'),
 		     ('isin:XX0000000708', 'small'), ('isin:XX0000000710', 'mid'), ('isin:XX0000000711', 'large'),
 		     ('isin:XX0000000712', 'small')`,
-	} {
-		if _, err := db.ExecContext(ctx, q); err != nil {
-			t.Fatalf("seed: %v\n%s", err, q)
-		}
-	}
+	)
 
 	got := map[string]string{}
 	if err := scanAll(ctx, db, `SELECT symbol, size FROM web_position_sizes`, func(rows *sql.Rows) error {

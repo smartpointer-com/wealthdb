@@ -177,17 +177,13 @@ func TestSyncYieldIsAtomic(t *testing.T) {
 func TestYieldSyncKeepsTheReferenceRows(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	for _, q := range []string{
+	execEach(t, db,
 		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, coupon_kind, is_default, duration)
 		 VALUES ('ref', 'isin:XX0000000001', 86400, 'holdings', 1, 'Fixed', FALSE, 5.25)`,
 		`INSERT INTO fund_risk (silver_source_id, fund_ref, as_of, currency, tenor, dv01)
 		 VALUES ('ref', 'isin:XX0000000001', 86400, 'USD', '5Y', 40)`,
 		`INSERT INTO rate_observations (silver_source_id, series_id, as_of, value) VALUES ('fx', 'USD-3M', 86400, 4.1)`,
-	} {
-		if _, err := db.ExecContext(ctx, q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
+	)
 	if _, err := SyncYield(ctx, db, canonical.YieldRows{Conventions: canonical.BuiltinConventions()}); err != nil {
 		t.Fatal(err)
 	}

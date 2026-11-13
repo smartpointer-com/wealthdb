@@ -103,9 +103,9 @@ func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct fl
 }
 
 // The evidence a transfer_links row carries (gold migration 0182). A
-// pair carries its phase's name, but the override phase's, which is the
-// ledger's word. A one-legged row carries the road that named its far
-// side: the source's stated counter account, or a rule.
+// pair carries its phase's name, and an override pair carries `ledger`:
+// the override ledger's word. A one-legged row carries the road that
+// named its far side: the source's stated counter account, or a rule.
 const (
 	evidenceStatedAccount = "stated-account"
 	evidenceRule          = "rule"

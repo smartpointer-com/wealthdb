@@ -84,7 +84,6 @@ func compileBenchmarks(configured map[string]map[string]float64) ([]canonical.Be
 	for _, name := range slices.Sorted(maps.Keys(funds)) {
 		_, own := configured[name]
 		out = append(out, canonical.Benchmark{Name: name, Builtin: !own, Funds: funds[name]})
-
 	}
 	return out, nil
 }

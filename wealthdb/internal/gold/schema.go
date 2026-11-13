@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 //go:embed migrations/*.sql
@@ -27,12 +28,7 @@ var migrationsFS embed.FS
 // schema_meta(...), so that "what's the current version" stays
 // accurate.
 func Migrate(ctx context.Context, db *sql.DB) error {
-	current, err := currentSchemaVersion(ctx, db)
-	if err != nil {
-		return fmt.Errorf("read current schema version: %w", err)
-	}
-
-	migrations, err := listMigrations()
+	ms, err := migrations()
 	if err != nil {
 		return err
 	}
@@ -40,21 +36,34 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	want := wantVersion(migrations, set)
+	return migrate(ctx, db, ms, set)
+}
+
+// migrate is Migrate over the migrations ms and the derived set set.
+func migrate(ctx context.Context, db *sql.DB, ms []migration, set derivedSet) error {
+	current, err := currentSchemaVersion(ctx, db)
+	if err != nil {
+		return fmt.Errorf("read current schema version: %w", err)
+	}
+	want := wantVersion(ms, set)
 	if current > want {
 		return nil
 	}
 
-	for _, m := range migrations {
+	ran := false
+	for _, m := range ms {
 		if m.version <= current {
 			continue
 		}
 		if err := applyMigration(ctx, db, m); err != nil {
 			return fmt.Errorf("apply migration %04d: %w", m.version, err)
 		}
+		ran = true
 	}
-	if current, err = currentSchemaVersion(ctx, db); err != nil {
-		return fmt.Errorf("read current schema version: %w", err)
+	if ran {
+		if current, err = currentSchemaVersion(ctx, db); err != nil {
+			return fmt.Errorf("read current schema version: %w", err)
+		}
 	}
 	hash, err := derivedHash(ctx, db)
 	if err != nil {
@@ -105,21 +114,28 @@ func CheckSchemaKnown(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// schemaVersions is the database's schema version and this binary's: the
-// newer of its newest migration and its derived set's version.
+// schemaVersions is the database's schema version and this binary's
+// (binaryVersion).
 func schemaVersions(ctx context.Context, db *sql.DB) (current, want int, err error) {
 	if current, err = currentSchemaVersion(ctx, db); err != nil {
 		return 0, 0, err
 	}
-	migrations, err := listMigrations()
+	want, err = binaryVersion()
+	return current, want, err
+}
+
+// binaryVersion is the schema version this binary brings a database to:
+// the newer of its newest migration and its derived set's version.
+func binaryVersion() (int, error) {
+	ms, err := migrations()
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	set, err := derived()
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
-	return current, wantVersion(migrations, set), nil
+	return wantVersion(ms, set), nil
 }
 
 // currentSchemaVersion returns MAX(gold_schema_version) or 0 if
@@ -138,12 +154,25 @@ func currentSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	return v, nil
 }
 
+// hasTable reports whether the database's own main schema holds a
+// table of that name.
+func hasTable(ctx context.Context, q querier, name string) (bool, error) {
+	var n int
+	err := q.QueryRowContext(ctx, `SELECT count(*) FROM duckdb_tables()
+	    WHERE database_name = current_database() AND schema_name = 'main' AND table_name = ?`, name).Scan(&n)
+	return n > 0, err
+}
+
 type migration struct {
 	version int
 	name    string
 	body    string
 }
 
+// migrations reads the embedded migrations once per process.
+var migrations = sync.OnceValues(listMigrations)
+
+// listMigrations is the embedded migrations, in version order.
 func listMigrations() ([]migration, error) {
 	entries, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {

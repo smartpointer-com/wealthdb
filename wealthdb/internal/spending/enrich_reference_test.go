@@ -109,10 +109,7 @@ func TestAReferenceSharedWithARowOutsideThePoolPairsNothing(t *testing.T) {
 		stampMovementReference(t, db, ctx, "bank", id, "TXNO-2")
 	}
 
-	evidence, err := loadPassEvidence(ctx, db)
-	if err != nil {
-		t.Fatalf("loadPassEvidence: %v", err)
-	}
+	evidence := passEvidenceOf(t, db, ctx)
 	refs, ambiguous := evidence.refs, evidence.ambiguousRefs
 	if len(refs) != 0 {
 		t.Errorf("a reference on three rows was offered anyway: %v", refs)
@@ -154,10 +151,7 @@ func TestMovementReferencesAreOfferedOnlyWhereTheyNameOneMovement(t *testing.T) 
 	stampMovementReference(t, db, ctx, "bank", "T-COLLIDE", "TXNO-5")
 	stampMovementReference(t, db, ctx, "other-bank", "T-COLLIDE-TOO", "TXNO-5")
 
-	evidence, err := loadPassEvidence(ctx, db)
-	if err != nil {
-		t.Fatalf("loadPassEvidence: %v", err)
-	}
+	evidence := passEvidenceOf(t, db, ctx)
 	refs, ambiguous := evidence.refs, evidence.ambiguousRefs
 	// None of the refusals here is a reference naming MORE than one
 	// movement: the lone leg and each half of the cross-source collision
@@ -193,10 +187,7 @@ func TestTheMatcherPoolCarriesTheReference(t *testing.T) {
 	stampMovementReference(t, db, ctx, "bank", "T-REF-OUT", "TXNO-6")
 	stampMovementReference(t, db, ctx, "bank", "T-REF-IN", "TXNO-6")
 
-	evidence, err := loadPassEvidence(ctx, db)
-	if err != nil {
-		t.Fatalf("loadPassEvidence: %v", err)
-	}
+	evidence := passEvidenceOf(t, db, ctx)
 	legs, _, err := loadMatcherPool(ctx, db, nil, evidence)
 	if err != nil {
 		t.Fatalf("loadMatcherPool: %v", err)
@@ -232,4 +223,18 @@ func TestTheReturnsCallersSettingsLeaveTheReferencePhaseInert(t *testing.T) {
 	if len(got) != 0 {
 		t.Errorf("the returns caller's options paired a same-source reference twin: %+v", got)
 	}
+}
+
+// passEvidenceOf is the payload evidence a pass would read from db.
+func passEvidenceOf(t *testing.T, db *sql.DB, ctx context.Context) passEvidence {
+	t.Helper()
+	held, err := loadHeldAccounts(ctx, db)
+	if err != nil {
+		t.Fatalf("loadHeldAccounts: %v", err)
+	}
+	evidence, err := loadPassEvidence(ctx, db, held.byNorm)
+	if err != nil {
+		t.Fatalf("loadPassEvidence: %v", err)
+	}
+	return evidence
 }

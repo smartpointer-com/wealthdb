@@ -1,13 +1,10 @@
 package viac
 
 import (
-	"flag"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
-
-var update = flag.Bool("update", false, "rewrite testdata/canonical.jsonl")
 
 // TestCanonicalGolden holds every record the adapter yields to
 // testdata/canonical.jsonl, over the rows of the adapter tests in one
@@ -41,5 +38,5 @@ func TestCanonicalGolden(t *testing.T) {
             ('tx3', 1000, 920, 'P3A1', 'TRADE_BUY',  'buy',   -25.00, 'CHF', '{"description":"Something Unresolved"}', NULL),
             ('tx4', 1000, 930, 'P3A1', 'FEE_CHARGE', 'fee',    -4.00, 'CHF', '{}', NULL),
             ('tx5', 1000, 950, 'P3A1', 'DIVIDEND',   'dividend', 42.00, 'CHF', '{}', NULL);`)
-	silvertest.Golden(t, openAdapter(t, path), "testdata/canonical.jsonl", *update)
+	silvertest.Golden(t, openAdapter(t, path), "testdata/canonical.jsonl")
 }

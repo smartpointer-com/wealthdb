@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
@@ -70,18 +69,33 @@ func (c *Config) MissingBasis() lots.MissingBasis {
 }
 
 // LotsEngine is the `lots` block in the engine's terms, as Validate
-// compiled it, so it cannot fail on a loaded config. A Config built by
-// hand and never validated is compiled here, and a bad value reported.
-func (c *Config) LotsEngine() (lots.Config, error) {
-	if c.lotsEngine != nil {
-		return *c.lotsEngine, nil
+// compiled it. A Config never validated reads as one with no lots
+// block: the engine's defaults.
+func (c *Config) LotsEngine() lots.Config {
+	if c.lotsEngine == nil {
+		defaults, _ := (*LotsConfig)(nil).compile(nil)
+		return defaults
 	}
-	return c.Lots.engine()
+	return *c.lotsEngine
 }
 
-// engine compiles the block into the engine's terms. A nil receiver is
-// the engine's defaults.
-func (l *LotsConfig) engine() (lots.Config, error) {
+// validateLots checks the `lots` block and compiles it (compile). An
+// absent block compiles to the engine's defaults.
+func (c *Config) validateLots(seenIDs map[string]bool) error {
+	eng, err := c.Lots.compile(seenIDs)
+	if err != nil {
+		return err
+	}
+	c.lotsEngine = &eng
+	return nil
+}
+
+// compile checks the block and returns it in the engine's terms: every
+// source id names a declared silver source, as returns_policy_overrides'
+// do, and every method, mode, grain and missing-basis reading is one the
+// engine knows. The keys are checked in order, so the first error is the
+// same at every run. A nil receiver is the engine's defaults.
+func (l *LotsConfig) compile(seenIDs map[string]bool) (lots.Config, error) {
 	out := lots.Config{Method: lots.FIFO}
 	if l == nil {
 		return out, nil
@@ -93,10 +107,19 @@ func (l *LotsConfig) engine() (lots.Config, error) {
 		}
 		out.Method = m
 	}
+	if l.MissingBasis != "" {
+		if _, err := lots.ParseMissingBasis(l.MissingBasis); err != nil {
+			return out, fmt.Errorf("config: lots.missing_basis: %w", err)
+		}
+	}
 	if len(l.Sources) > 0 {
 		out.Sources = make(map[string]lots.SourceConfig, len(l.Sources))
 	}
-	for id, s := range l.Sources {
+	for _, id := range slices.Sorted(maps.Keys(l.Sources)) {
+		if !seenIDs[id] {
+			return out, fmt.Errorf("config: lots.sources[%q]: no silver_sources[].id matches", id)
+		}
+		s := l.Sources[id]
 		var sc lots.SourceConfig
 		if s.Method != "" {
 			m, err := lots.ParseMethod(s.Method)
@@ -122,97 +145,61 @@ func (l *LotsConfig) engine() (lots.Config, error) {
 		out.Sources[id] = sc
 	}
 	var err error
-	if out.Portfolios, err = lotsMethods("portfolios", l.Portfolios); err != nil {
+	if out.Portfolios, err = lotsMethods("portfolios", l.Portfolios, seenIDs); err != nil {
 		return out, err
 	}
-	if out.Accounts, err = lotsMethods("accounts", l.Accounts); err != nil {
+	if out.Accounts, err = lotsMethods("accounts", l.Accounts, seenIDs); err != nil {
 		return out, err
 	}
+	seen := map[[3]string]bool{}
 	for i, b := range l.Basis {
+		switch {
+		case !seenIDs[b.Source]:
+			return out, fmt.Errorf("config: lots.basis[%d]: no silver_sources[].id matches source %q", i, b.Source)
+		case b.Instrument == "":
+			return out, fmt.Errorf("config: lots.basis[%d]: instrument is required", i)
+		case !(b.PerUnit >= 0):
+			return out, fmt.Errorf("config: lots.basis[%d]: per_unit must be 0 or more", i)
+		}
+		k := [3]string{b.Source, b.Account, b.Instrument}
+		if seen[k] {
+			return out, fmt.Errorf("config: lots.basis[%d]: a second basis for %q in source %q", i, b.Instrument, b.Source)
+		}
+		seen[k] = true
 		rule := lots.BasisRule{Source: b.Source, Account: b.Account, Instrument: b.Instrument,
 			Basis: lots.Basis{PerUnit: b.PerUnit, AcqDay: lots.NoDay}}
 		if b.Acquired != "" {
-			d, err := time.Parse("2006-01-02", b.Acquired)
+			at, err := parseYYYYMMDD(b.Acquired)
 			if err != nil {
 				return out, fmt.Errorf("config: lots.basis[%d].acquired: %w", i, err)
 			}
-			rule.Basis.AcqDay = lots.DayOf(d.Unix())
+			rule.Basis.AcqDay = lots.DayOf(at)
 		}
 		out.Basis = append(out.Basis, rule)
 	}
 	return out, nil
 }
 
-func lotsMethods(grain string, in map[string]map[string]LotsMethodConfig) (map[string]map[string]lots.Method, error) {
+// lotsMethods compiles one grain's source -> id -> method map
+// (validateNested); nil for an empty one.
+func lotsMethods(grain string, in map[string]map[string]LotsMethodConfig, seenIDs map[string]bool) (map[string]map[string]lots.Method, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
 	out := make(map[string]map[string]lots.Method, len(in))
 	for src, ids := range in {
-		inner := make(map[string]lots.Method, len(ids))
-		for id, mc := range ids {
-			if id == "" {
-				return nil, fmt.Errorf("config: lots.%s[%q]: empty id", grain, src)
-			}
-			m, err := lots.ParseMethod(mc.Method)
-			if err != nil {
-				return nil, fmt.Errorf("config: lots.%s[%q][%q].method: %w", grain, src, id, err)
-			}
-			inner[id] = m
+		out[src] = make(map[string]lots.Method, len(ids))
+	}
+	err := validateNested("lots."+grain, "id", in, seenIDs, false, func(path, src, id string, mc LotsMethodConfig) error {
+		m, err := lots.ParseMethod(mc.Method)
+		if err != nil {
+			return fmt.Errorf("config: %s.method: %w", path, err)
 		}
-		out[src] = inner
+		out[src][id] = m
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
-}
-
-// validateLots checks the `lots` block: every source id names a
-// declared silver source, as returns_policy_overrides' do, and every
-// method, mode, grain and missing-basis reading is one the engine
-// knows.
-func (c *Config) validateLots(seenIDs map[string]bool) error {
-	l := c.Lots
-	if l == nil {
-		return nil
-	}
-	if l.MissingBasis != "" {
-		if _, err := lots.ParseMissingBasis(l.MissingBasis); err != nil {
-			return fmt.Errorf("config: lots.missing_basis: %w", err)
-		}
-	}
-	for _, grain := range []struct {
-		name string
-		ids  []string
-	}{
-		{"sources", slices.Sorted(maps.Keys(l.Sources))},
-		{"portfolios", slices.Sorted(maps.Keys(l.Portfolios))},
-		{"accounts", slices.Sorted(maps.Keys(l.Accounts))},
-	} {
-		for _, id := range grain.ids {
-			if !seenIDs[id] {
-				return fmt.Errorf("config: lots.%s[%q]: no silver_sources[].id matches", grain.name, id)
-			}
-		}
-	}
-	seen := map[[3]string]bool{}
-	for i, b := range l.Basis {
-		switch {
-		case !seenIDs[b.Source]:
-			return fmt.Errorf("config: lots.basis[%d]: no silver_sources[].id matches source %q", i, b.Source)
-		case b.Instrument == "":
-			return fmt.Errorf("config: lots.basis[%d]: instrument is required", i)
-		case !(b.PerUnit >= 0):
-			return fmt.Errorf("config: lots.basis[%d]: per_unit must be 0 or more", i)
-		}
-		k := [3]string{b.Source, b.Account, b.Instrument}
-		if seen[k] {
-			return fmt.Errorf("config: lots.basis[%d]: a second basis for %q in source %q", i, b.Instrument, b.Source)
-		}
-		seen[k] = true
-	}
-	eng, err := l.engine()
-	if err != nil {
-		return err
-	}
-	c.lotsEngine = &eng
-	return nil
 }

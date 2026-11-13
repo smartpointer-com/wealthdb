@@ -3,7 +3,6 @@ package pathmode
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -52,6 +51,29 @@ func TestMissingDBNonInit(t *testing.T) {
 	}
 }
 
+func TestMissingParentIsADecision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no_such_dir", "missing.db")
+	d, err := Detect(path, false, false)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if d.Mode != ModeReadOnly || d.Reason != ReasonDBMissingForRO || d.DBExists {
+		t.Errorf("got %+v, want ModeReadOnly/ReasonDBMissingForRO, no file", d)
+	}
+}
+
+func TestStatFailureIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "plain")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A path under a regular file fails stat with ENOTDIR.
+	if _, err := Detect(filepath.Join(file, "x.db"), false, false); err == nil {
+		t.Error("Detect under a regular file: want an error")
+	}
+}
+
 func TestExistingWriteableDB(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "exists.db")
@@ -68,16 +90,12 @@ func TestExistingWriteableDB(t *testing.T) {
 }
 
 func TestReadOnlyFile(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod semantics differ on Windows")
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ro.db")
 	if err := os.WriteFile(path, []byte("x"), 0o444); err != nil {
 		t.Fatal(err)
 	}
-	// Sanity: chmod must have worked. Skip if running as root
-	// (root bypasses mode bits and would falsely pass).
+	// Root bypasses mode bits and would falsely pass.
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses file mode bits")
 	}
@@ -95,9 +113,6 @@ func TestReadOnlyFile(t *testing.T) {
 }
 
 func TestReadOnlyDir(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod semantics differ on Windows")
-	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses dir mode bits")
 	}

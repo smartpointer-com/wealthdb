@@ -181,3 +181,47 @@ func TestStatusCountsAKindGuessedBySign(t *testing.T) {
 		t.Errorf("OtherTxKindCount = %d, want 1", st.OtherTxKindCount)
 	}
 }
+
+// TestStatusForSourcesCountsEachSourceApart: the drift counters run once
+// for all the sources, grouped, and each count lands on its own source.
+// A source with no such rows keeps 0, an unregistered id answers nil,
+// and an id given twice answers the same both times.
+func TestStatusForSourcesCountsEachSourceApart(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	execEach(t, db, `
+        INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
+                                    high_watermark, first_loaded_at, last_loaded_at)
+             VALUES ('second-src', 'schwab', '/tmp/second.db', -1, 0, 0);
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              display_name, first_seen_at, last_seen_at) VALUES
+            ('test-src',   'CASH1', 'cash', 'Everyday', 1, 1),
+            ('second-src', 'CASH2', 'cash', 'Savings',  1, 1);
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                  account_external_id, kind, currency, net_amount) VALUES
+            ('test-src',   'T-WD1', 100, 'CASH1', 'withdrawal', 'USD', -80),
+            ('test-src',   'T-WD2', 100, 'CASH1', 'withdrawal', 'USD', -15),
+            ('test-src',   'T-OT',  100, 'CASH1', 'other',      'USD', -30),
+            ('second-src', 'T-WD3', 100, 'CASH2', 'withdrawal', 'USD', -40);`)
+	got := StatusForSources(ctx, db, []string{"test-src", "no-such-src", "second-src", "test-src"}, true)
+	if len(got) != 4 {
+		t.Fatalf("%d results for 4 ids", len(got))
+	}
+	if r := got[1]; r.Status != nil || r.Err != nil {
+		t.Errorf("an unregistered id: %+v, want nil and no error", r)
+	}
+	for _, c := range []struct {
+		i                     int
+		uncategorized, mapped int
+	}{{0, 2, 1}, {2, 1, 0}, {3, 2, 1}} {
+		r := got[c.i]
+		if r.Err != nil || r.Status == nil {
+			t.Errorf("ids[%d]: %+v", c.i, r)
+			continue
+		}
+		if r.Status.UncategorizedSpendCount != c.uncategorized || r.Status.ExcludedUnmappedCount != c.mapped {
+			t.Errorf("%s: uncategorised %d, excluded-unmapped %d; want %d and %d", r.Status.SilverSourceID,
+				r.Status.UncategorizedSpendCount, r.Status.ExcludedUnmappedCount, c.uncategorized, c.mapped)
+		}
+	}
+}

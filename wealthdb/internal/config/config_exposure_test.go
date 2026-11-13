@@ -89,7 +89,7 @@ func TestExposureRows(t *testing.T) {
 func TestExposureRowsDefaults(t *testing.T) {
 	t.Parallel()
 	none := DeclarationsPath(filepath.Join(t.TempDir(), "none.ndjson"))
-	for _, c := range []*Config{{}, {Exposure: &ExposureConfig{Declarations: none}}} {
+	for _, c := range []*Config{validExposure(t, nil), validExposure(t, &ExposureConfig{Declarations: none})} {
 		rows, err := c.ExposureRows()
 		if err != nil || rows.Settings.MaxGapDays != canonical.DefaultMaxGapDays ||
 			len(rows.Proxies)+len(rows.Declarations)+len(rows.Custody)+len(rows.ReferenceFunds)+len(rows.SizeFunds) != 0 {
@@ -108,8 +108,7 @@ func TestDeclarationsFileUnreadable(t *testing.T) {
 		dir:                           "exposure.declarations: " + dir + ": ",
 		filepath.Join(file, "ledger"): "exposure.declarations: open " + filepath.Join(file, "ledger") + ": ",
 	} {
-		c := &Config{SilverSources: []SilverSource{{ID: "manual"}}, Exposure: &ExposureConfig{
-			Declarations: DeclarationsPath(path)}}
+		c := validExposure(t, &ExposureConfig{Declarations: DeclarationsPath(path)})
 		if _, err := c.ExposureRows(); err == nil || !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("%s: err %v, want %q", path, err, want)
 		}
@@ -125,12 +124,23 @@ func writeLedger(t *testing.T, body string) string {
 	return path
 }
 
+// validExposure is a validated config of one source, manual, with the
+// exposure block e.
+func validExposure(t *testing.T, e *ExposureConfig) *Config {
+	t.Helper()
+	c := &Config{GoldDB: "/tmp/g.db", DefaultCurrency: "USD",
+		SilverSources: []SilverSource{{ID: "manual", Kind: "manual", Path: "/tmp/m.db"}}, Exposure: e}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 // declarations reads a ledger body through the config of one source,
 // manual.
 func declarations(t *testing.T, body string) ([]canonical.ExposureDeclaration, error) {
 	t.Helper()
-	c := &Config{SilverSources: []SilverSource{{ID: "manual"}}, Exposure: &ExposureConfig{
-		Declarations: DeclarationsPath(writeLedger(t, body))}}
+	c := validExposure(t, &ExposureConfig{Declarations: DeclarationsPath(writeLedger(t, body))})
 	rows, err := c.ExposureRows()
 	return rows.Declarations, err
 }

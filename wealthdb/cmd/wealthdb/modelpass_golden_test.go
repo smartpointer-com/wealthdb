@@ -17,10 +17,14 @@ import (
 
 // The golden prompts: every word the two model commands send, pinned to
 // the byte. A prompt is tuned text, and a refactoring that moved one
-// space would change what a model answers. Each golden covers a run of
-// two batches whose first attempt draws a rejection, so the anchors, the
-// candidate blocks at their widest context level and the feedback block
-// all appear. Every name in the fixtures is invented.
+// space would change what a model answers. The spending and
+// resolve-symbols goldens each cover two batches, and income one; every
+// batch's first attempt draws a rejection, so the anchors, the candidate
+// blocks at their widest context level and the feedback block all
+// appear. Every name in the fixtures is invented. -update-prompts
+// rewrites the files:
+//
+//	wealthdb/wealthdb-test -run '^TestGolden' ./cmd/wealthdb -args -update-prompts
 
 var updatePrompts = flag.Bool("update-prompts", false, "rewrite testdata/prompts/*.txt")
 
@@ -61,10 +65,11 @@ func checkGoldenPrompt(t *testing.T, name, got string) {
 	}
 	want, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s (run with -update-prompts to create it): %v", path, err)
+		t.Fatalf("read %s (create it with wealthdb/wealthdb-test -run '^TestGolden' ./cmd/wealthdb -args -update-prompts): %v", path, err)
 	}
 	if got != string(want) {
-		t.Errorf("the prompts differ from %s; diff the two:\n%s", path, got)
+		t.Errorf("the prompts differ from %s; diff the two, and rewrite it with "+
+			"wealthdb/wealthdb-test -run '^TestGolden' ./cmd/wealthdb -args -update-prompts:\n%s", path, got)
 	}
 }
 

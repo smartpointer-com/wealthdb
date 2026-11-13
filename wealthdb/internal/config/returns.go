@@ -254,7 +254,6 @@ func (c *Config) validateReturns(seenIDs map[string]bool) error {
 			}
 			ov.grain = &m
 		}
-
 	}
 
 	if m := c.ReturnsTransferMatching; m != nil {

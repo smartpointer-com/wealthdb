@@ -54,8 +54,8 @@ func TestTheMemoSeesADepositStatedAsAHolding(t *testing.T) {
 		}
 		for _, r := range cov {
 			if r.Account == "Savings" {
-				if r.Status != "measured" || show(r.Measured) != "250" {
-					t.Errorf("%s: Savings coverage: status %s, measured %s; want measured 250", when, r.Status, show(r.Measured))
+				if r.Status != "measured" || fmtStrPtr(r.Measured) != "250" {
+					t.Errorf("%s: Savings coverage: status %s, measured %s; want measured 250", when, r.Status, fmtStrPtr(r.Measured))
 				}
 				return
 			}

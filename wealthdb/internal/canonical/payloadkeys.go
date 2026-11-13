@@ -8,7 +8,9 @@ package canonical
 // Each key's writers are named below. Another adapter may write a key
 // only with the meaning stated here, since the reader cannot tell the
 // writers apart. The txn_evidence() macro (gold derived/40_flows.sql)
-// projects the keys the enrichment pass reads as typed columns.
+// projects every key but PayloadCostBasis as a typed column. The
+// enrichment pass reads the first four from it, and the other readers
+// extract theirs from the payload.
 const (
 	// PayloadBankRef is the reference a bank stamps on both halves of
 	// one movement, minted once per movement. The enrichment pass pairs
@@ -33,8 +35,9 @@ const (
 	// policy's ExternalOnly. Written by the ubs adapter.
 	PayloadReturnsFlow = "returns_flow"
 	// PayloadSourceKind is the source's own kind for the row, before the
-	// adapter mapped it. status counts the rows by it. Written by the
-	// amex, chase and plaid adapters.
+	// adapter mapped it. status counts the rows that carry it under a
+	// kind other than 'other' (GuessedTxKindCount). Written by the amex,
+	// chase and plaid adapters.
 	PayloadSourceKind = "source_kind"
 	// PayloadFeeFor names the transaction a fee row belongs to, by its
 	// transaction_external_id. The lot writer takes the fee off that
@@ -44,4 +47,9 @@ const (
 	// from the equity-transfer ledger. The lot feed reads it. Written by
 	// the loader.
 	PayloadEquityTransferLedger = "equity_transfer_ledger"
+	// PayloadCostBasis is the basis the equity-transfer ledger states for
+	// the shares a row moves, beside PayloadEquityTransferLedger. The lot
+	// feed reads it on a ledger row. Written by the loader, on the same
+	// rows.
+	PayloadCostBasis = "cost_basis"
 )

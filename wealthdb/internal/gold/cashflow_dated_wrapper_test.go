@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// TestADatedWrapperMovesTheBoundaryOnItsDay covers a dated wrapper: a trust
-// that was the household's (grantor) until a day and a separate taxpayer
-// (non-grantor) after it. Before the day a move into it is pool-internal
+// TestADatedWrapperMovesTheBoundaryOnItsDay covers a dated wrapper: an account
+// whose wrapper changes on a day, inside the household's pool before it and
+// a vehicle after it. Before the day a move into it is pool-internal
 // and its own spending is a line; after it the move is a vehicles
 // crossing and its spending is the vehicle's. Every figure is invented.
 func TestADatedWrapperMovesTheBoundaryOnItsDay(t *testing.T) {

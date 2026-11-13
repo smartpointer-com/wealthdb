@@ -8,14 +8,14 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// The Stage A pins for migration 0078: the five values exist in the
-// dimension, and both bases drop a row that resolves to one of them.
+// The cash flow taxonomy pins: the five values exist in the dimension,
+// and both bases drop a row that resolves to one of them.
 //
 // TestSpendCategoriesMatchGoTable already compares the whole dimension
 // against canonical.SpendCategories, so nothing here re-checks the
 // seed's contents. What it checks is the consequence: a base names its
 // exclusions one by one, so a value added to the taxonomy without a
-// re-issue would stay IN the base and double-count against the
+// base edit would stay IN the base and double-count against the
 // cashflow statement that placed it.
 
 // seedCashflowTaxonomyFixture lays down one transaction per new value,

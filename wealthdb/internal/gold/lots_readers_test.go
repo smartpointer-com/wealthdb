@@ -244,20 +244,6 @@ func TestCheckCountsAHandoverOnce(t *testing.T) {
 	}
 }
 
-// TestLotPassFillsTheLedgerOnce: a FIFO fill writes the fixture's two
-// lots, and a second pass over the same inputs changes nothing.
-func TestLotPassFillsTheLedgerOnce(t *testing.T) {
-	t.Parallel()
-	db, ctx := lotFixture(t, tradesSeed)
-	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
-	if n := queryFloat(t, db, `SELECT count(*) FROM lots`); n != 2 {
-		t.Errorf("the ledger holds %v lots, want 2", n)
-	}
-	if !rebuild(t, db, ctx, fillCfg(lots.FIFO), false).Unchanged {
-		t.Error("a second pass over the same inputs changed them")
-	}
-}
-
 func TestOpenLotsStandAtTheirPositionsSnapshot(t *testing.T) {
 	t.Parallel()
 	// A buy after the last snapshot is not in the lots of the position

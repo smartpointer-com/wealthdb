@@ -152,11 +152,18 @@ type SourceStatusResult struct {
 // evaluated once for all the sources, grouped by source: each reads a
 // layered macro over all history, and DuckDB does not narrow that to one
 // source when a query filters on it. A source's error is its own; a
-// drift counter that fails, fails every source it counts.
+// drift counter that fails, fails every source it counts. An id given
+// twice answers twice, with one status.
 func StatusForSources(ctx context.Context, db *sql.DB, ids []string, includeDrift bool) []SourceStatusResult {
 	out := make([]SourceStatusResult, len(ids))
 	drift := map[string]*SourceStatus{}
+	first := map[string]int{}
 	for i, id := range ids {
+		if j, seen := first[id]; seen {
+			out[i] = out[j]
+			continue
+		}
+		first[id] = i
 		st, err := statusBase(ctx, db, id, includeDrift)
 		out[i] = SourceStatusResult{Status: st, Err: err}
 		if includeDrift && st != nil && err == nil {

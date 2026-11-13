@@ -1,2 +1,0 @@
-This endpoint serves full data. The server's /mcp/privacy endpoint (or a stdio server started with --privacy) serves the same tools with amounts, quantities, account numbers and the names taken off statements redacted, and every name a person typed about an account, an account category the config sets included, shown as a pseudonym; other account names, holdings and their names, spending and income categories, types, dates and shares stay legible.
-Which endpoint a client is given is the operator's choice; no parameter changes it.

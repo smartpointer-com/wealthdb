@@ -320,6 +320,15 @@ func promptBlock(prompt, header string) []string {
 
 func joined(ss []string) string { return strings.Join(ss, " | ") }
 
+// joinedWrites renders a recording store's writes, one joined list each.
+func joinedWrites(writes [][]string) string {
+	parts := make([]string, len(writes))
+	for i, w := range writes {
+		parts[i] = joined(w)
+	}
+	return strings.Join(parts, " / ")
+}
+
 func fiveCandidates() []merchantCandidate {
 	var out []merchantCandidate
 	for _, sig := range []string{
@@ -356,11 +365,10 @@ func TestCategorizeWithLLMBatchesInOrder(t *testing.T) {
 		t.Fatalf("batches = %d, want 3", len(batches))
 	}
 	var prompts []string
-	var sunk []batchOutcome
-	sink := func(o batchOutcome) error { sunk = append(sunk, o); return nil }
+	store, writes, _ := recordingStore(func(int) error { return nil })
 	var out, errOut bytes.Buffer
 	valid, calls, totalInvalid, err := categorizeWithLLM(context.Background(), answerEverything(&prompts), spendingCategorizeFamily,
-		batches, nil, config.SpendContextMerchant, 3, 3, false, sink, &out, &errOut)
+		batches, nil, config.SpendContextMerchant, 3, 3, false, store, &out, &errOut)
 	if err != nil {
 		t.Fatalf("categorizeWithLLM: %v", err)
 	}
@@ -395,9 +403,8 @@ func TestCategorizeWithLLMBatchesInOrder(t *testing.T) {
 	if valid[0].Signature != "ASHGROVE BAKERY" || valid[4].Signature != "ELMFIELD GARAGE" {
 		t.Errorf("verdicts out of batch order: %v", valid)
 	}
-	if len(sunk) != 3 || sunk[0].Index != 1 || sunk[2].Index != 3 || sunk[2].Count != 3 ||
-		sunk[0].Size != 2 || sunk[2].Size != 1 || len(sunk[1].Accepted) != 2 {
-		t.Errorf("sink saw %+v", sunk)
+	if got := joinedWrites(*writes); got != "ASHGROVE BAKERY | BLUE HARBOUR CAFE / CEDAR POINT PHARMACY | DUNMORE BOOKS / ELMFIELD GARAGE" {
+		t.Errorf("the store wrote %s, want one write per batch", got)
 	}
 	for _, want := range []string{
 		"categorize: batch 1/3: 2 merchant(s), 2 accepted, 0 rejected, 1 attempt(s)",
@@ -423,11 +430,10 @@ func TestCategorizeWithLLMRetriesOnlyTheFailingBatch(t *testing.T) {
 		"CEDAR POINT PHARMACY,Cedar Point Pharmacy,MEDICAL_PHARMACIES_AND_SUPPLEMENTS\n" +
 			"DUNMORE BOOKS,Dunmore Books,GENERAL_MERCHANDISE_BOOKSTORES_AND_NEWSSTANDS",
 	}}
-	var sunk []batchOutcome
-	sink := func(o batchOutcome) error { sunk = append(sunk, o); return nil }
+	store, writes, _ := recordingStore(func(int) error { return nil })
 	var out, errOut bytes.Buffer
 	valid, calls, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call, spendingCategorizeFamily,
-		splitBatches(fiveCandidates()[:4], 2), nil, config.SpendContextMerchant, 3, 30, false, sink, &out, &errOut)
+		splitBatches(fiveCandidates()[:4], 2), nil, config.SpendContextMerchant, 3, 30, false, store, &out, &errOut)
 	if err != nil {
 		t.Fatalf("categorizeWithLLM: %v", err)
 	}
@@ -444,19 +450,23 @@ func TestCategorizeWithLLMRetriesOnlyTheFailingBatch(t *testing.T) {
 	if got := promptBlock(retry, candidateBlockHeader); joined(got) != "CEDAR POINT PHARMACY | DUNMORE BOOKS" {
 		t.Errorf("the retry must re-ask the failing batch only, got %v", got)
 	}
-	if len(sunk) != 2 || sunk[0].Attempts != 1 || sunk[0].Rejected != 0 ||
-		sunk[1].Attempts != 2 || sunk[1].Rejected != 1 || len(sunk[1].Accepted) != 2 {
-		t.Errorf("sink saw %+v", sunk)
+	if len(*writes) != 2 || len((*writes)[1]) != 2 {
+		t.Errorf("the store wrote %s, want both batches whole", joinedWrites(*writes))
 	}
-	if !strings.Contains(out.String(), "categorize: batch 2/2: 2 merchant(s), 2 accepted, 1 rejected, 2 attempt(s)") {
-		t.Errorf("progress must show the retry on its batch:\n%s", out.String())
+	for _, want := range []string{
+		"categorize: batch 1/2: 2 merchant(s), 2 accepted, 0 rejected, 1 attempt(s)",
+		"categorize: batch 2/2: 2 merchant(s), 2 accepted, 1 rejected, 2 attempt(s)",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("progress must show the retry on its batch only, missing %q:\n%s", want, out.String())
+		}
 	}
 }
 
 // TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails covers the
-// reason the sink exists: what an early batch bought is handed over
-// before the next batch is asked, whether the later one merely runs
-// out of attempts or the endpoint dies under it.
+// reason the store writes per batch: what an early batch bought is
+// stored before the next batch is asked, whether the later one merely
+// runs out of attempts or the endpoint dies under it.
 func TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails(t *testing.T) {
 	t.Parallel()
 	batch1 := "ASHGROVE BAKERY,Ashgrove Bakery,FOOD_AND_DRINK_COFFEE\n" +
@@ -466,27 +476,26 @@ func TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails(t *testing.T) {
 
 	t.Run("later batch exhausts its attempts", func(t *testing.T) {
 		llm := &scriptedLLM{responses: []string{batch1, badBatch2, badBatch2}}
-		var sunk []batchOutcome
-		var callsAtSink []int
-		sink := func(o batchOutcome) error {
-			sunk = append(sunk, o)
-			callsAtSink = append(callsAtSink, len(llm.prompts))
+		var callsAtWrite []int
+		store, writes, _ := recordingStore(func(int) error {
+			callsAtWrite = append(callsAtWrite, len(llm.prompts))
 			return nil
-		}
+		})
 		var out, errOut bytes.Buffer
 		valid, calls, totalInvalid, err := categorizeWithLLM(context.Background(), llm.call, spendingCategorizeFamily,
-			splitBatches(fiveCandidates()[:4], 2), nil, config.SpendContextMerchant, 2, 30, false, sink, &out, &errOut)
+			splitBatches(fiveCandidates()[:4], 2), nil, config.SpendContextMerchant, 2, 30, false, store, &out, &errOut)
 		if err != nil {
 			t.Fatalf("running out of attempts is not an error: %v", err)
 		}
 		if calls != 3 || totalInvalid != 2 || len(valid) != 3 {
 			t.Fatalf("calls=%d invalid=%d valid=%d, want 3/2/3", calls, totalInvalid, len(valid))
 		}
-		if len(sunk) != 2 || len(sunk[0].Accepted) != 2 || callsAtSink[0] != 1 {
-			t.Fatalf("batch 1 must reach the sink before batch 2 is asked: sunk=%+v callsAtSink=%v", sunk, callsAtSink)
+		if len(*writes) != 2 || len((*writes)[0]) != 2 || callsAtWrite[0] != 1 {
+			t.Fatalf("batch 1 must be stored before batch 2 is asked: writes=%s callsAtWrite=%v",
+				joinedWrites(*writes), callsAtWrite)
 		}
-		if len(sunk[1].Accepted) != 1 || sunk[1].Accepted[0].Signature != "CEDAR POINT PHARMACY" || sunk[1].Attempts != 2 {
-			t.Errorf("batch 2 must hand over its good row and drop the bad one: %+v", sunk[1])
+		if got := joined((*writes)[1]); got != "CEDAR POINT PHARMACY" {
+			t.Errorf("batch 2 must store its good row and drop the bad one: %s", got)
 		}
 	})
 
@@ -499,27 +508,26 @@ func TestCategorizeWithLLMKeepsEarlyBatchesWhenALaterOneFails(t *testing.T) {
 			}
 			return "", errors.New("read response: context deadline exceeded")
 		}
-		var sunk []batchOutcome
-		sink := func(o batchOutcome) error { sunk = append(sunk, o); return nil }
+		store, writes, _ := recordingStore(func(int) error { return nil })
 		var out, errOut bytes.Buffer
 		_, calls, _, err := categorizeWithLLM(context.Background(), call, spendingCategorizeFamily,
-			splitBatches(fiveCandidates()[:4], 2), nil, config.SpendContextMerchant, 3, 30, false, sink, &out, &errOut)
+			splitBatches(fiveCandidates()[:4], 2), nil, config.SpendContextMerchant, 3, 30, false, store, &out, &errOut)
 		if err == nil || !strings.Contains(err.Error(), "batch 2/2") {
 			t.Fatalf("err = %v, want the failing batch named", err)
 		}
 		if calls != 2 {
 			t.Errorf("calls = %d, want 2 (the run stops at the failure)", calls)
 		}
-		if len(sunk) != 1 || len(sunk[0].Accepted) != 2 {
-			t.Errorf("batch 1's verdicts must have reached the sink before the failure: %+v", sunk)
+		if len(*writes) != 1 || len((*writes)[0]) != 2 {
+			t.Errorf("batch 1's verdicts must have been stored before the failure: %s", joinedWrites(*writes))
 		}
 	})
 }
 
 // TestCategorizeWithLLMHandsOverAFailedBatchsVerdicts: a batch whose
 // endpoint dies on a retry has already accepted the verdicts of its
-// earlier attempts. They were paid for, so they reach the sink before
-// the run stops.
+// earlier attempts. They were paid for, so they are stored before the
+// run stops.
 func TestCategorizeWithLLMHandsOverAFailedBatchsVerdicts(t *testing.T) {
 	t.Parallel()
 	n := 0
@@ -531,16 +539,15 @@ func TestCategorizeWithLLMHandsOverAFailedBatchsVerdicts(t *testing.T) {
 		}
 		return "", errors.New("read response: context deadline exceeded")
 	}
-	var sunk []batchOutcome
-	sink := func(o batchOutcome) error { sunk = append(sunk, o); return nil }
+	store, writes, _ := recordingStore(func(int) error { return nil })
 	var out, errOut bytes.Buffer
 	_, _, _, err := categorizeWithLLM(context.Background(), call, spendingCategorizeFamily,
-		splitBatches(twoCandidates(), 10), nil, config.SpendContextMerchant, 3, 30, false, sink, &out, &errOut)
+		splitBatches(twoCandidates(), 10), nil, config.SpendContextMerchant, 3, 30, false, store, &out, &errOut)
 	if err == nil || !strings.Contains(err.Error(), "batch 1/1") {
 		t.Fatalf("err = %v, want the failing batch named", err)
 	}
-	if len(sunk) != 1 || len(sunk[0].Accepted) != 1 || sunk[0].Accepted[0].Signature != "BLUE HARBOUR CAFE" {
-		t.Errorf("the verdict accepted before the failure must reach the sink: %+v", sunk)
+	if got := joinedWrites(*writes); got != "BLUE HARBOUR CAFE" {
+		t.Errorf("the verdict accepted before the failure must be stored, got %q", got)
 	}
 }
 
@@ -1848,6 +1855,8 @@ func TestRefineBacklogAsksOnlyWhereTheModelGaveUp(t *testing.T) {
 // config before its deterministic pass, as a load does. A rule's far
 // account is a declared account, and one the config gained since the
 // last load reaches the accounts dimension only through that stamp.
+// The pass counts the declarations off the dimension, so its report
+// names the account only when the stamp came first.
 func TestCategorizeStampsTheConfigBeforeThePass(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
@@ -1868,6 +1877,9 @@ func TestCategorizeStampsTheConfigBeforeThePass(t *testing.T) {
 	m["declared_accounts"] = map[string]any{
 		"DECL0001": map[string]any{"account_kind": "cash", "tax_wrapper": "taxable_personal"},
 	}
+	m["spending"].(map[string]any)["rules"] = []any{map[string]any{
+		"match": "(?i)EXAMPLE SAVINGS", "category": "internal_transfer", "far": "DECL0001",
+	}}
 	out, err := json.Marshal(m)
 	if err != nil {
 		t.Fatalf("encode cfg: %v", err)
@@ -1876,12 +1888,27 @@ func TestCategorizeStampsTheConfigBeforeThePass(t *testing.T) {
 		t.Fatalf("write cfg: %v", err)
 	}
 
-	if _, se, code := run(t, "-c", cfg, "categorize"); code != 0 {
+	goldPath := goldPathFromCfg(cfg)
+	execGold(t, goldPath, `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                  account_external_id, kind, currency, net_amount, counterparty)
+             VALUES ('schwab-test', 'T-OUT', 864000, 'ACC1', 'withdrawal', 'USD', -500,
+                     'Transfer to Example Savings Bank')`)
+
+	so, se, code := run(t, "-c", cfg, "categorize")
+	if code != 0 {
 		t.Fatalf("categorize: exit %d, stderr=%s", code, se)
 	}
-	if n := countGold(t, goldPathFromCfg(cfg), `SELECT COUNT(*) FROM accounts
+	if n := countGold(t, goldPath, `SELECT COUNT(*) FROM accounts
             WHERE silver_source_id = '`+canonical.DeclaredSourceID+`' AND account_external_id = 'DECL0001'`); n != 1 {
 		t.Errorf("declared account rows after categorize = %d, want 1 (stamped before the pass)", n)
+	}
+	if n := countGold(t, goldPath, `SELECT COUNT(*) FROM spend_txn_enrichment
+            WHERE transaction_external_id = 'T-OUT' AND far_account_external_id = 'DECL0001'`); n != 1 {
+		t.Errorf("rows the rule placed on DECL0001 = %d, want 1", n)
+	}
+	if !strings.Contains(so, "cashflow: 1 declared account(s)") || strings.Contains(so, "named by no rule-placed row") {
+		t.Errorf("the pass did not see the declared account the stamp wrote:\n%s", so)
 	}
 }
 

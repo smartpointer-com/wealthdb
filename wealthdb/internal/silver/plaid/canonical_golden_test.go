@@ -1,13 +1,10 @@
 package plaid
 
 import (
-	"flag"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
-
-var update = flag.Bool("update", false, "rewrite testdata/canonical_*.jsonl")
 
 // TestCanonicalGolden holds every record the adapter yields to a golden
 // file per case. The item case is the shared seed item with the bank and
@@ -71,7 +68,7 @@ func TestCanonicalGolden(t *testing.T) {
 		} {
 			inv(t, db, r)
 		}
-		silvertest.Golden(t, openConn(t, path), "testdata/canonical_item.jsonl", *update)
+		silvertest.Golden(t, openConn(t, path), "testdata/canonical_item.jsonl")
 	})
 	t.Run("lots", func(t *testing.T) {
 		path, db := lotsFixture(t)
@@ -86,6 +83,6 @@ func TestCanonicalGolden(t *testing.T) {
 		{"cost_basis":null,"current_value":null,"institution_lot_id":null,
 		 "original_purchase_datetime":null,"position_type":null,
 		 "purchase_price":null,"quantity":1}]`)
-		silvertest.Golden(t, openConn(t, path), "testdata/canonical_lots.jsonl", *update)
+		silvertest.Golden(t, openConn(t, path), "testdata/canonical_lots.jsonl")
 	})
 }

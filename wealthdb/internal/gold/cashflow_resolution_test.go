@@ -895,10 +895,10 @@ func TestAConsumptionLeafIsItsPrimaryUnlessThePrimarySaysNothing(t *testing.T) {
 // as `elsewhere`: "Untracked investments", for a book gold holds.
 //
 // The GROUP is asserted alongside the class on every row, and that is
-// the point of asserting the whole triple: until 0102 the verdict
-// reached the group only while the class was still `elsewhere`, so
-// giving a row its class would have cost it its group and a house
-// purchase would have read `Real estate · Private capital`.
+// the point of asserting the whole triple: a verdict that reached the
+// group only while the class was still `elsewhere` would cost a row its
+// group once it had its class, and a house purchase would read
+// `Real estate · Private capital`.
 func TestAStatedExposureNamesTheInvestingClass(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

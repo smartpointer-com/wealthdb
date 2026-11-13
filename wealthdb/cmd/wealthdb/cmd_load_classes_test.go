@@ -17,20 +17,14 @@ func TestBuildSourceSpecForwardsTheMarkGuard(t *testing.T) {
 	t.Parallel()
 	spike, revert := 15.0, 1.5
 	cfg := &config.Config{}
-	spec, err := buildSourceSpec(config.SilverSource{
+	spec := buildSourceSpec(config.SilverSource{
 		ID: "s", Kind: "schwab", Path: "/tmp/s.db",
 		Schwab: &config.SchwabSettings{MarkSpikePct: &spike, MarkRevertPct: &revert},
 	}, cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if want := (silver.MarkGuard{SpikePct: 15, RevertPct: 1.5}); spec.MarkGuard != want {
 		t.Errorf("MarkGuard = %+v, want %+v", spec.MarkGuard, want)
 	}
-	spec, err = buildSourceSpec(config.SilverSource{ID: "s", Kind: "schwab", Path: "/tmp/s.db"}, cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	spec = buildSourceSpec(config.SilverSource{ID: "s", Kind: "schwab", Path: "/tmp/s.db"}, cfg, nil)
 	if spec.MarkGuard != (silver.MarkGuard{}) {
 		t.Errorf("MarkGuard = %+v for a source with no schwab object, want the zero guard", spec.MarkGuard)
 	}

@@ -96,7 +96,7 @@ var commandHelps = []commandHelp{
 	{name: "init", group: "load", short: "create the empty database at the configured path"},
 	{name: "load", args: "<id> | -a", group: "load", short: "load a source's new data (or every source's) into the database"},
 	{name: "reset", args: "<id> | -a", group: "load", short: "remove a source's data from the database"},
-	{name: "reload", args: "<id>... | -a", group: "load", short: "reset then load (use after upgrading wealthdb)"},
+	{name: "reload", args: "<id>... | -a [--in-place]", group: "load", short: "reset then load (use after upgrading wealthdb)"},
 	{name: "compact", args: "[--dry-run]", group: "load", short: "rewrite the database file to reclaim dead space"},
 	{name: "lots", args: "rebuild", group: "load", short: "replay the trades into lots: the cost basis no source states (load runs it too)"},
 
@@ -134,16 +134,12 @@ func hostSideCommand(name string) (commandHelp, bool) {
 // hiddenSubcommands are registered (so they're callable) but omitted
 // from the usage listing — internal plumbing, not user-facing.
 // TestUsageListsEverySubcommand holds commandHelps to that.
-// `config-env` emits resolved settings for the host-side scripts,
-// `web-config` and `mcp-config` being its aliases for the `wealthdb web`
-// and `wealthdb mcp` wrappers;
+// `config-env` emits resolved settings for the host-side scripts;
 // `web-materialize` rewrites the serving tables and the report tables
 // (returns, gains, exposure, yield) before the wrapper snapshots gold;
 // `refdata-wanted` prints the wanted list the refdata collector reads.
 var hiddenSubcommands = map[string]bool{
-	"web-config":      true,
 	"web-materialize": true,
-	"mcp-config":      true,
 	"config-env":      true,
 	"refdata-wanted":  true,
 }

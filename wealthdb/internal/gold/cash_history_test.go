@@ -21,7 +21,7 @@ func seedCashHistoryFixture(t *testing.T, db *sql.DB, ctx context.Context) (day1
 	seedFX(t, db, day1, "CHF", "USD", "1.10")
 	seedFX(t, db, day1, "USD", "EUR", "0.90")
 	seedFX(t, db, day1, "USD", "GBP", "0.80")
-	for _, q := range []string{
+	execEach(t, db,
 		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
                                display_name, base_currency, tax_wrapper, management_style,
                                first_seen_at, last_seen_at) VALUES
@@ -29,11 +29,7 @@ func seedCashHistoryFixture(t *testing.T, db *sql.DB, ctx context.Context) (day1
             ('bank-src', 'BANK2', 'cash', 'Bank two', 'CHF', 'taxable_joint', NULL, 1, 1),
             ('bank-src', 'BANK3', 'cash', 'Metal', 'CHF', NULL, NULL, 1, 1),
             ('brk-src', 'BRK1', 'brokerage', 'Brokerage', 'USD', NULL, NULL, 1, 1)`,
-	} {
-		if _, err := db.ExecContext(ctx, q); err != nil {
-			t.Fatalf("seed accounts: %v", err)
-		}
-	}
+	)
 	for _, snap := range []int64{day1, day3} {
 		chf := "1000"
 		if snap == day3 {

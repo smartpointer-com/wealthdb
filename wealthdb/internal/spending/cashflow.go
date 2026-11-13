@@ -150,7 +150,8 @@ type CashflowResult struct {
 // place a wrapper's side is decided. Stamping only the overrides would mean the defaults lived a
 // second time in SQL, and a wrapper added for a new jurisdiction would
 // take two edits to reach the statement instead of one.
-func stampCashflowBoundary(ctx context.Context, tx *sql.Tx, opts CashflowOptions, out *CashflowResult) error {
+func stampCashflowBoundary(ctx context.Context, tx *sql.Tx, opts CashflowOptions, accounts map[string]map[string]struct{},
+	out *CashflowResult) error {
 	// Read BEFORE stampWrapperSides clears the table: an empty
 	// boundary is what the state between the migrations and the first
 	// load looks like, and it is unrecoverable once this pass has
@@ -164,7 +165,7 @@ func stampCashflowBoundary(ctx context.Context, tx *sql.Tx, opts CashflowOptions
 
 	var err error
 	out.ScopeRows, out.UnresolvedScopeAccounts, err =
-		syncAccountScope(ctx, tx, "cashflow", "cashflow_account_scope", nil, opts.Exclude)
+		syncAccountScope(ctx, tx, "cashflow", "cashflow_account_scope", accounts, nil, opts.Exclude)
 	if err != nil {
 		return err
 	}

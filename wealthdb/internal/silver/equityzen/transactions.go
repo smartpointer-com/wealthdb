@@ -202,9 +202,9 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 // leaving the decision out is what keeps both answers derivable.
 func feePayload(cfID string, leg canonical.TxKind, role string) json.RawMessage {
 	b, _ := json.Marshal(map[string]string{
-		"fee_type": "execution_fee",
-		"fee_role": role,
-		"fee_for":  cfID + ":" + string(leg),
+		"fee_type":              "execution_fee",
+		"fee_role":              role,
+		canonical.PayloadFeeFor: cfID + ":" + string(leg),
 	})
 	return b
 }

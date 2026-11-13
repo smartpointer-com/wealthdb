@@ -76,7 +76,7 @@ func seedFeeHousehold(t *testing.T, db *sql.DB, ctx context.Context) {
 }
 
 func feeParams(ccy, period string) ReturnParams {
-	return ReturnParams{FromEpoch: bucketAt(2024, time.January, 1), ToEpoch: bucketAt(2025, time.January, 1) - 1,
+	return ReturnParams{FromEpoch: utcMidnight(2024, time.January, 1), ToEpoch: utcMidnight(2025, time.January, 1) - 1,
 		OutCcy: ccy, Period: period}
 }
 
@@ -269,7 +269,7 @@ func TestChainMonths(t *testing.T) {
 
 func TestFeeBucketsClipToTheWindow(t *testing.T) {
 	t.Parallel()
-	day := func(y int, m time.Month, d int) int64 { return EpochDay(bucketAt(y, m, d)) }
+	day := func(y int, m time.Month, d int) int64 { return EpochDay(utcMidnight(y, m, d)) }
 	got := feeBuckets(day(2024, time.February, 10), day(2024, time.April, 2), "monthly")
 	want := []feeBucket{{"2024-02", day(2024, time.February, 10), day(2024, time.February, 29)},
 		{"2024-03", day(2024, time.March, 1), day(2024, time.March, 31)},

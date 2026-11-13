@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
@@ -102,14 +104,14 @@ func TestParseAndValidate(t *testing.T) {
 	t.Parallel()
 	sources := map[string]bool{"schwab": true, "ubs": true}
 	candKeys := map[string]bool{
-		candKey("schwab", "name", "ISHARES TREASURY FLOATNGRATE BD ETF"): true,
-		candKey("schwab", "name", "INVSC S P 500 EQUAL WEIGHT ETF"):      true,
-		candKey("ubs", "instrument_external_id", "IE0000000040"):         true,
-		candKey("ubs", "instrument_external_id", "US0000000030"):         true,
+		candKey("schwab", "name", "ISHARES CORE S&P 500 ETF"):       true,
+		candKey("schwab", "name", "INVSC S P 500 EQUAL WEIGHT ETF"): true,
+		candKey("ubs", "instrument_external_id", "IE0000000040"):    true,
+		candKey("ubs", "instrument_external_id", "US0000000030"):    true,
 	}
 
 	t.Run("happy path", func(t *testing.T) {
-		body := `schwab,name,ISHARES TREASURY FLOATNGRATE BD ETF,TFLO
+		body := `schwab,name,ISHARES CORE S&P 500 ETF,IVV
 ubs,instrument_external_id,IE0000000040,XDEW`
 		valid, invalid := parseAndValidate(body, candKeys, sources)
 		if len(valid) != 2 {
@@ -118,7 +120,7 @@ ubs,instrument_external_id,IE0000000040,XDEW`
 		if len(invalid) != 0 {
 			t.Errorf("want 0 invalid, got %d (%v)", len(invalid), invalid)
 		}
-		if valid[0].Symbol != "TFLO" || valid[1].Symbol != "XDEW" {
+		if valid[0].Symbol != "IVV" || valid[1].Symbol != "XDEW" {
 			t.Errorf("unexpected symbols: %+v", valid)
 		}
 	})
@@ -137,7 +139,7 @@ ubs,instrument_external_id,IE0000000040,XDEW`
 	})
 
 	t.Run("rejects unknown source", func(t *testing.T) {
-		body := `binance,name,ISHARES TREASURY FLOATNGRATE BD ETF,TFLO`
+		body := `binance,name,ISHARES CORE S&P 500 ETF,IVV`
 		valid, invalid := parseAndValidate(body, candKeys, sources)
 		if len(valid) != 0 || len(invalid) != 1 {
 			t.Errorf("want 0 valid + 1 invalid, got %d + %d", len(valid), len(invalid))
@@ -161,7 +163,7 @@ ubs,instrument_external_id,IE0000000040,XDEW`
 	})
 
 	t.Run("rejects bad ticker shape", func(t *testing.T) {
-		body := `schwab,name,ISHARES TREASURY FLOATNGRATE BD ETF,this is not a ticker`
+		body := `schwab,name,ISHARES CORE S&P 500 ETF,this is not a ticker`
 		_, invalid := parseAndValidate(body, candKeys, sources)
 		if len(invalid) != 1 {
 			t.Errorf("want 1 invalid (bad ticker shape), got %d", len(invalid))
@@ -198,7 +200,7 @@ ubs,instrument_external_id,IE0000000040,XDEW`
 	})
 
 	t.Run("tolerates code fences", func(t *testing.T) {
-		body := "```csv\nschwab,name,ISHARES TREASURY FLOATNGRATE BD ETF,TFLO\n```"
+		body := "```csv\nschwab,name,ISHARES CORE S&P 500 ETF,IVV\n```"
 		valid, invalid := parseAndValidate(body, candKeys, sources)
 		if len(valid) != 1 || len(invalid) != 0 {
 			t.Errorf("code-fenced body should parse cleanly: valid=%d invalid=%d", len(valid), len(invalid))
@@ -206,7 +208,7 @@ ubs,instrument_external_id,IE0000000040,XDEW`
 	})
 
 	t.Run("tolerates ragged rows (parser doesn't abort)", func(t *testing.T) {
-		body := `schwab,name,ISHARES TREASURY FLOATNGRATE BD ETF,TFLO
+		body := `schwab,name,ISHARES CORE S&P 500 ETF,IVV
 this is not csv at all
 ubs,instrument_external_id,IE0000000040,XDEW`
 		valid, _ := parseAndValidate(body, candKeys, sources)
@@ -280,13 +282,13 @@ func TestUnresolvedCandidates(t *testing.T) {
 //
 // The handle is released across the model pass so readers get in, and
 // DuckDB will not attach a file read-write while any other handle is
-// open on it — so a single concurrent read command can make the
-// re-open that stores the answers fail. Either outcome is acceptable;
-// losing the answers silently is not. The resolutions must end up in
-// gold, or, when the reader outlasts the whole backoff, on stdout in
-// the plan format that can be re-applied.
+// open on it, so a single concurrent read command can make the re-open
+// that stores the answers fail. A reader that outlasts the whole
+// backoff leaves the resolutions on stdout, in the plan format that can
+// be re-applied, and the run exits ExitOpenFailed. The in-process
+// reader stays open throughout, so every attempt fails.
 func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
-	t.Parallel()
+	shortFlushLadder(t)
 	cfg := setupCLITest(t)
 	freshGoldFor(t, cfg)
 	goldPath := goldPathFromCfg(cfg)
@@ -295,6 +297,7 @@ func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open gold read-only: %v", err)
 	}
+	defer reader.Close()
 
 	rows := []resolution{{
 		SilverSourceID: "schwab-test",
@@ -306,29 +309,18 @@ func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
 	ctx := context.Background()
 	store := newResolutionStore(ctx, goldPath, "test-model", map[string]int{}, &warn)
 	store.accept(rows)
-	storeErr := flushResolutions(ctx, store, goldPath, &out)
-	reader.Close()
+	err = flushResolutions(ctx, store, goldPath, &out)
 
-	if storeErr != nil {
-		if !strings.Contains(out.String(), "EXAMPLE GLOBAL FUND → EXGF") {
-			t.Errorf("the persist failed and the paid-for resolutions were not printed either:\n%s", out.String())
-		}
-		return
+	var exit *errs.ExitError
+	if !errors.As(err, &exit) || exit.Code != errs.ExitOpenFailed {
+		t.Fatalf("err = %v, want an ExitError with code %d", err, errs.ExitOpenFailed)
 	}
-
-	// The re-open won the race, so the rows are in gold.
-	db, err := sql.Open("duckdb", goldPath+"?access_mode=read_only")
-	if err != nil {
-		t.Fatalf("re-open gold read-only: %v", err)
+	if !strings.Contains(err.Error(), "could not store the resolutions above") {
+		t.Errorf("err = %v, want it to point at the printed resolutions", err)
 	}
-	defer db.Close()
-	var symbol string
-	if err := db.QueryRow(`SELECT symbol FROM symbol_resolutions
-                            WHERE lookup_value = 'EXAMPLE GLOBAL FUND'`).Scan(&symbol); err != nil {
-		t.Fatalf("read back the stored resolution: %v", err)
-	}
-	if symbol != "EXGF" {
-		t.Errorf("stored symbol = %q, want EXGF", symbol)
+	if want := "--- 1 resolution(s) the model answered but gold would not accept ---\n" +
+		"  schwab-test [name] EXAMPLE GLOBAL FUND → EXGF\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("the paid-for resolution was not printed; want %q in:\n%s", want, out.String())
 	}
 }
 
@@ -349,34 +341,50 @@ func TestAnchorsForKeepsTheBatchSources(t *testing.T) {
 }
 
 // standInModel serves chat completions that answer every candidate the
-// prompt carries with a ticker made of its lookup value's last character,
-// recording the candidate rows of each call it receives.
+// prompt carries with a ticker made of its lookup value's last character
+// (standInReply), recording the candidate rows of each call it receives.
 func standInModel(t *testing.T) (*httptest.Server, *[][][]string) {
 	t.Helper()
 	var calls [][][]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req openAIRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode request: %v", err)
-		}
-		_, block, _ := strings.Cut(req.Messages[len(req.Messages)-1].Content,
-			"Unresolved rows that need a ticker (same INPUT shape as above):\n")
-		block, _, _ = strings.Cut(block, "\n\n")
-		rows, err := csv.NewReader(strings.NewReader(block)).ReadAll()
-		if err != nil {
-			t.Errorf("read prompt candidates: %v", err)
-		}
-		calls = append(calls, rows)
-		var answer strings.Builder
-		for _, row := range rows {
-			fmt.Fprintf(&answer, "%s,%s,%s,TK%s\n", row[0], row[1], row[2], row[2][len(row[2])-1:])
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"choices": []any{map[string]any{"message": map[string]any{"content": answer.String()}}},
-		})
+		calls = append(calls, serveStandIn(t, w, r))
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &calls
+}
+
+// serveStandIn answers one chat-completion request as standInModel
+// does, and returns the candidate rows its prompt carried.
+func serveStandIn(t *testing.T, w http.ResponseWriter, r *http.Request) [][]string {
+	t.Helper()
+	var req openAIRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		t.Errorf("decode request: %v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+	rows, answer := standInReply(t, req.Messages[len(req.Messages)-1].Content)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"choices": []any{map[string]any{"message": map[string]any{"content": answer}}},
+	})
+	return rows
+}
+
+// standInReply reads the candidate rows of a resolve prompt and answers
+// each with a ticker made of its lookup value's last character.
+func standInReply(t *testing.T, user string) (rows [][]string, answer string) {
+	t.Helper()
+	_, block, _ := strings.Cut(user, "Unresolved rows that need a ticker (same INPUT shape as above):\n")
+	block, _, _ = strings.Cut(block, "\n\n")
+	rows, err := csv.NewReader(strings.NewReader(block)).ReadAll()
+	if err != nil {
+		t.Errorf("read prompt candidates: %v", err)
+	}
+	var b strings.Builder
+	for _, row := range rows {
+		fmt.Fprintf(&b, "%s,%s,%s,TK%s\n", row[0], row[1], row[2], row[2][len(row[2])-1:])
+	}
+	return rows, b.String()
 }
 
 // resolveSymbolsFixture initialises a gold holding n symbol-less

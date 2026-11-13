@@ -79,7 +79,7 @@ SELECT txn_id, posted_at, account_external_id, amount,
 		kind, known := cardTxKind(rawKind, category, amt)
 		extra := map[string]any{}
 		if !known {
-			extra["source_kind"] = rawKind
+			extra[canonical.PayloadSourceKind] = rawKind
 		}
 		// OccurredAt is the POST date — the date the balance moved, which is
 		// what the balance series is keyed on. The charge date is carried

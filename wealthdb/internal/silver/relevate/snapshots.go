@@ -62,29 +62,15 @@ func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Wind
 }
 
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	// A silver may carry a promoted per-account
-	// `management_style` column. Read the silver value when
-	// present; fall back to the adapter default ('automated')
-	// otherwise. Relevate's robo-style
-	// strategy menu maps to canonical 'automated': the holder
-	// picks a strategy from a fixed list, then an algorithm
-	// allocates and rebalances with no human in the loop.
-	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
-	if err != nil {
-		return err
-	}
-	mgmtCol := "NULL"
-	if hasMgmt {
-		mgmtCol = "management_style"
-	}
-	q := fmt.Sprintf(`
+	// Every account is vested_benefits and automated; the package
+	// doc gives the mapping.
+	const q = `
 SELECT snapshot_at, account_external_id, currency_code,
        COALESCE(name, ''),
        COALESCE(product_name, ''),
-       COALESCE(%s, ''),
        payload
   FROM accounts
- WHERE snapshot_at BETWEEN ? AND ?`, mgmtCol)
+ WHERE snapshot_at BETWEEN ? AND ?`
 	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("appendAccounts: %w", err)
@@ -93,11 +79,10 @@ SELECT snapshot_at, account_external_id, currency_code,
 	wrapper := canonical.TaxWrapperVestedBenefits
 	for rows.Next() {
 		var (
-			snap                                       int64
-			extID, currency, name, product, silverMgmt string
-			payload                                    string
+			snap                                    int64
+			extID, currency, name, product, payload string
 		)
-		if err := rows.Scan(&snap, &extID, &currency, &name, &product, &silverMgmt, &payload); err != nil {
+		if err := rows.Scan(&snap, &extID, &currency, &name, &product, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -106,9 +91,6 @@ SELECT snapshot_at, account_external_id, currency_code,
 		}
 		w := wrapper
 		style := canonical.ManagementStyleAutomated
-		if silverMgmt != "" {
-			style = canonical.ManagementStyle(silverMgmt)
-		}
 		ccy := currency
 		change := canonical.AccountChange{
 			AccountExternalID: extID,

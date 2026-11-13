@@ -23,11 +23,12 @@ CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/go"
 
 mkdir -p "$CACHE/go-build" "$CACHE/go-mod" "$CACHE/gopath"
 
-# The reload-verification harness (TestTaxonomyInvariants, docs/DESIGN.md
-# §12.5) reads gold files that live outside the repo. When its variables
-# are set, each is forwarded as an absolute path and its file's directory
-# is mounted read-only at the same path. The image and the go argv end
-# the positional list; docker's own options go in front of them.
+# Harnesses that read gold outside the repo (TestTaxonomyInvariants, and
+# TestReportCorpus or TestCanonicalDumpTool over a demo root; docs/DESIGN.md
+# §12.5) name it in these variables. Each is forwarded as an absolute path,
+# and its file's directory is mounted read-only at the same path. The
+# image and the go argv end the positional list; docker's own options go
+# in front of them.
 set -- "$IMAGE" "$@"
 mounted=""
 for var in WEALTHDB_GOLD_VERIFY WEALTHDB_GOLD_BEFORE; do

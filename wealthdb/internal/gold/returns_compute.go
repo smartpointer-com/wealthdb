@@ -193,7 +193,7 @@ func bucketRow(base ReturnRow, bs, be int64, period string, av func(int64) (floa
 
 // preFxHistory reports whether the entity's window starts before the earliest FX
 // rate for a held non-output currency, so its boundary values were converted off
-// the migration-0023 day-0 clamped rate.
+// fx_daily's day-0 floor rate (derived/10_fx.sql).
 func preFxHistory(assets []*accountData, outCcy string, winFrom int64, fx fxBounds) bool {
 	for _, a := range assets {
 		if a.baseCurrency == "" || a.baseCurrency == outCcy {

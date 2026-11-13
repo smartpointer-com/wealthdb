@@ -233,23 +233,6 @@ func TestServingViewsAnswer(t *testing.T) {
 	}
 }
 
-// TestWebTransactionsIsDropped: no view web_transactions exists, no view or
-// macro left names it, and the table it read stays for the
-// report_transactions model and web_income_withheld.
-func TestWebTransactionsIsDropped(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	assertNothingNames(t, db, ctx, "web_transactions")
-	var tables int
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM duckdb_tables() WHERE table_name = 'serving_transactions'`).Scan(&tables); err != nil {
-		t.Fatal(err)
-	}
-	if tables != 1 {
-		t.Errorf("serving_transactions tables %d, want 1", tables)
-	}
-}
-
 // web_history_calendar maps a day the history holds to itself, a day in a
 // gap or after its end to the last history day before it, and has no row
 // for a day before it; it reaches tomorrow, past a history that ended

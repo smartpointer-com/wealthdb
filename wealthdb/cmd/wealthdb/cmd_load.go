@@ -94,11 +94,7 @@ func prepareLoad(cfg *config.Config, verb string, ids []string, stdout, stderr i
 	}
 	specs := make([]loader.SourceSpec, 0, len(targets))
 	for _, s := range targets {
-		spec, err := buildSourceSpec(s, cfg, in.transfers)
-		if err != nil {
-			return loadRun{}, nil, err
-		}
-		specs = append(specs, spec)
+		specs = append(specs, buildSourceSpec(s, cfg, in.transfers))
 	}
 	return loadRun{verb: verb, cfg: cfg, in: in, stdout: stdout, stderr: stderr}, specs, nil
 }
@@ -227,8 +223,8 @@ func sourceArg(fs *flag.FlagSet, all bool, cmd string) (string, error) {
 // stampConfig writes what gold takes from the config once the sources
 // are in: the FX source precedence, which the SQL FX layer (fx_daily)
 // reads, the declared accounts, the holding aliases, the exposure rows
-// (read, with the declarations ledger, before gold opened) and the yield
-// rows. The precedence re-stamps every source, so a single-source load
+// (read, with the declarations ledger, before gold opened), the yield
+// rows and the benchmarks. The precedence re-stamps every source, so a single-source load
 // keeps it globally correct; failing to stamp it degrades a conversion
 // and is a warning.
 // A failure to sync the rows is an error (syncConfigRows).
@@ -272,8 +268,8 @@ func warnUnmatchedDeclarations(ctx context.Context, db *sql.DB, verb string, std
 
 // syncConfigRows stamps the config's declared accounts into the
 // accounts dimension, its holding aliases into holding_aliases, its
-// exposure block into the exposure tables and its yield block into the
-// yield tables, after the per-source loads and before the passes that
+// exposure block into the exposure tables, its yield block into the
+// yield tables and the benchmarks into theirs, after the per-source loads and before the passes that
 // read them. A failure is an error rather than a warning: a rule naming
 // a declared account the dimension does not hold would place its rows
 // onto a far account the statement cannot resolve, which is the hole
@@ -646,17 +642,13 @@ func matchNames(m *config.SpendingTransferMatching) []spending.CounterpartyName 
 // silver source: translates `path` / `subsources` / `relationships` /
 // `schwab` to their silver-package counterparts and folds in every config
 // statement scoped to this source — the override families and
-// `transaction_instruments`. Returns an error when the config can't
-// be translated (e.g. invalid psn_start_override date).
+// `transaction_instruments`.
 func buildSourceSpec(
 	s config.SilverSource,
 	cfg *config.Config,
 	transferLedger map[string][]loader.TransferEntry,
-) (loader.SourceSpec, error) {
-	openSpec, err := s.ToSilverOpenSpec()
-	if err != nil {
-		return loader.SourceSpec{}, err
-	}
+) loader.SourceSpec {
+	openSpec := s.ToSilverOpenSpec()
 	spec := loader.SourceSpec{
 		ID:             s.ID,
 		Kind:           s.Kind,
@@ -707,7 +699,7 @@ func buildSourceSpec(
 	if ends := cfg.Supersession.Epochs()[s.ID]; len(ends) > 0 {
 		spec.Supersession = ends
 	}
-	return spec, nil
+	return spec
 }
 
 // runClassPass reads OpenFIGI's security types over the classes of the
