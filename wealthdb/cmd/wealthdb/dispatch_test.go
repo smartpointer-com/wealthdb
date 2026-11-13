@@ -296,9 +296,7 @@ func TestLoadAllNoSources(t *testing.T) {
     }`, filepath.Join(dir, "wealthdb.db"))
 	os.WriteFile(cfg, []byte(body), 0o644)
 
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatalf("init failed")
-	}
+	freshGoldFor(t, cfg)
 	_, se, code := run(t, "-c", cfg, "load", "-a")
 	if code == 0 {
 		t.Errorf("load -a with empty sources should fail; stderr=%s", se)
@@ -308,9 +306,7 @@ func TestLoadAllNoSources(t *testing.T) {
 func TestPositionsColumnsFlag(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -362,9 +358,7 @@ func TestPositionsColumnsFlag(t *testing.T) {
 func TestPositionsCurrencyConversion(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -423,9 +417,7 @@ func TestPositionsCurrencyConversion(t *testing.T) {
 func TestAccountsBasicRollup(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -458,9 +450,7 @@ func TestAccountsBasicRollup(t *testing.T) {
 func TestPortfoliosBasic(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -485,9 +475,7 @@ func TestPortfoliosBasic(t *testing.T) {
 func TestAccountsAllColumnsAndBadColumn(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -516,9 +504,7 @@ func TestAccountsAllColumnsAndBadColumn(t *testing.T) {
 func TestResetClearsSource(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -563,9 +549,7 @@ func TestResetClearsSource(t *testing.T) {
 func TestReloadIsResetThenLoad(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -606,9 +590,7 @@ func TestReloadSeveralSourcesRunsThePassesOnce(t *testing.T) {
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	so, se, code := run(t, "-c", cfg, "reload", "schwab-test", "schwab-other")
 	if code != 0 {
 		t.Fatalf("reload failed; code=%d so=%q se=%q", code, so, se)
@@ -656,9 +638,7 @@ func TestReloadAllNoSources(t *testing.T) {
 	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	_, se, code := run(t, "-c", cfg, "reload", "-a")
 	if code != 1 {
 		t.Errorf("reload -a on empty config exit = %d, want 1", code)
@@ -683,9 +663,7 @@ func TestResetMissingDB(t *testing.T) {
 func TestSnapshotsListsLoadedTimes(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -707,9 +685,7 @@ func TestSnapshotsListsLoadedTimes(t *testing.T) {
 func TestSnapshotsAll(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -725,9 +701,7 @@ func TestSnapshotsAll(t *testing.T) {
 func TestStatusOverviewAndDetailed(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 
 	// Status with no load yet — overview should still work.
 	so, _, code := run(t, "-c", cfg, "status")
@@ -781,9 +755,7 @@ func TestStatusOverviewAndDetailed(t *testing.T) {
 func TestPositionsCSVAndJSON(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -899,9 +871,7 @@ func TestHelp(t *testing.T) {
 func TestHoldingsDispatch(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}

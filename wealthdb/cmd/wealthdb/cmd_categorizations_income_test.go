@@ -27,9 +27,7 @@ func seedBothStores(t *testing.T, goldPath string) {
 func TestCategorizationsNamesOneFamily(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	seedBothStores(t, goldPathFromCfg(cfg))
 
 	both, se, code := run(t, "-c", cfg, "categorizations")
@@ -71,9 +69,7 @@ func TestCategorizationsNamesOneFamily(t *testing.T) {
 func TestCategorizationsForgetSpansBothStores(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	goldPath := goldPathFromCfg(cfg)
 	seedBothStores(t, goldPath)
 

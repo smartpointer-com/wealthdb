@@ -39,9 +39,7 @@ func TestStalePinFailsBeforeGoldIsOpened(t *testing.T) {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 			cfg := writeStalePinConfig(t)
-			if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
-				t.Fatalf("init failed: %s", se)
-			}
+			freshGoldFor(t, cfg)
 			goldPath := goldPathFromCfg(cfg)
 			behind := putGoldOneMigrationBehind(t, goldPath)
 
@@ -87,9 +85,7 @@ func TestBadDeclarationFailsBeforeGoldIsOpened(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeCLIConfig(t, cfgPath, fmt.Sprintf(`, "exposure": {"declarations": %q}`, ledger))
-			if _, se, code := run(t, "-c", cfgPath, "init"); code != 0 {
-				t.Fatalf("init failed: %s", se)
-			}
+			freshGoldFor(t, cfgPath)
 			goldPath := goldPathFromCfg(cfgPath)
 			behind := putGoldOneMigrationBehind(t, goldPath)
 			so, se, code := run(t, append([]string{"-c", cfgPath}, args...)...)
@@ -128,9 +124,7 @@ func TestLoadWarnsOfADeclarationNamingNoHolding(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeCLIConfig(t, cfgPath, fmt.Sprintf(`, "exposure": {"declarations": %q}`, ledger))
-			if _, se, code := run(t, "-c", cfgPath, "init"); code != 0 {
-				t.Fatalf("init failed: %s", se)
-			}
+			freshGoldFor(t, cfgPath)
 			so, se, code := run(t, "-c", cfgPath, "load", "schwab-test")
 			if code != 0 || !strings.Contains(se, lines) {
 				t.Errorf("exit %d, stderr:\n%s", code, se)

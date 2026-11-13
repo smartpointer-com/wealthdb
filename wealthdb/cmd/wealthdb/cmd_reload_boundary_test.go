@@ -14,9 +14,7 @@ func TestReloadFreshCallsItselfTheFirstPassOnlyWithoutABoundary(t *testing.T) {
 	const notice = "FIRST pass to stamp the boundary"
 
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	so, se, code := run(t, "-c", cfg, "reload", "-a")
 	if code != 0 {
 		t.Fatalf("reload -a failed: code=%d stderr=%s", code, se)

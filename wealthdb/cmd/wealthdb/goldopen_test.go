@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
@@ -64,6 +65,25 @@ func startGoldReader(t *testing.T, goldPath string, hold time.Duration) *exec.Cm
 		t.Fatalf("reader helper did not take the handle: %q %v", line, err)
 	}
 	return cmd
+}
+
+// freshGoldFor writes the gold the config at cfgPath names: migrated
+// and empty, as init leaves it, but copied from the package's one image
+// instead of built by the whole migration chain. A test that checks
+// init itself runs init.
+func freshGoldFor(t *testing.T, cfgPath string) {
+	t.Helper()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	db, err := gold.OpenFresh(cfg.GoldDB)
+	if err != nil {
+		t.Fatalf("create gold: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func freshGold(t *testing.T) string {

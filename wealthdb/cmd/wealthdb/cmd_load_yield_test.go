@@ -23,9 +23,7 @@ func TestLoadStampsTheYieldBlock(t *testing.T) {
                 "conventions": {"USD": {"frequency": 4, "day_count": "ACT/365"}},
                 "horizon_months": 24,
                 "cycles": {"utilities": "sensitive"}}`)
-			if _, se, code := run(t, "-c", cfgPath, "init"); code != 0 {
-				t.Fatalf("init failed: %s", se)
-			}
+			freshGoldFor(t, cfgPath)
 			so, se, code := run(t, append([]string{"-c", cfgPath}, args...)...)
 			if code != 0 {
 				t.Fatalf("exit %d, stderr:\n%s", code, se)

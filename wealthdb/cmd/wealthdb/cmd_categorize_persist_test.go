@@ -94,14 +94,11 @@ func TestPersistCategorizationsUpsertsBySignature(t *testing.T) {
 func TestPersistCategorizationsWritesNothingWhenGoldRefuses(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "gold.db")
-	db, err := gold.Open(path, gold.ModeReadWrite)
+	db, err := gold.OpenFresh(path)
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
 	}
 	ctx := context.Background()
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate gold: %v", err)
-	}
 	if _, err := persistCategorizations(ctx, db, spendingCategorizeFamily, []categorization{
 		{"BLUE HARBOUR CAFE", "Blue Harbour Cafe", "FOOD_AND_DRINK_COFFEE"},
 	}, 1_700_000_000, "first-model"); err != nil {

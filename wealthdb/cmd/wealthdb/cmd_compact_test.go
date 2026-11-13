@@ -124,17 +124,15 @@ func fileSizeT(t *testing.T, path string) int64 {
 func TestCompactShrinksAndPreservesRows(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
 	goldPath := goldPathFromCfg(cfg)
 
-	// init writes the pinned format already; rewritten in DuckDB's own
-	// newest, the source shows compact writes the pinned one from a
-	// newer file. The rewrite copies live rows alone, so the bloat comes
+	// A fresh gold is in the pinned format already; rewritten in
+	// DuckDB's own newest, the source shows compact writes the pinned
+	// one from a newer file. The rewrite copies live rows alone, so the bloat comes
 	// after it: compact then has dead blocks to reclaim, whatever the
 	// format change alone would save.
 	rewriteInNewestFormat(t, goldPath)
@@ -178,9 +176,7 @@ func TestCompactShrinksAndPreservesRows(t *testing.T) {
 func TestCompactDryRunChangesNothing(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -251,9 +247,7 @@ func TestReloadFreshEqualsInPlace(t *testing.T) {
 	cfgFresh := writeCfg(goldFresh)
 
 	for _, c := range []string{cfgInPlace, cfgFresh} {
-		if _, _, code := run(t, "-c", c, "init"); code != 0 {
-			t.Fatalf("init failed for %s", c)
-		}
+		freshGoldFor(t, c)
 		if _, _, code := run(t, "-c", c, "load", "schwab-test"); code != 0 {
 			t.Fatalf("load failed for %s", c)
 		}
@@ -290,9 +284,7 @@ func TestReloadFreshEqualsInPlace(t *testing.T) {
 func TestReloadFreshFailedBuildLeavesLiveUntouched(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}

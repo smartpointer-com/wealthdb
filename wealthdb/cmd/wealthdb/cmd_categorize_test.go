@@ -1261,9 +1261,7 @@ func TestCategorizeDryRunIsReadOnlyAndSaysSo(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
 	enableCategorization(t, cfg)
-	if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatalf("init failed: %s", se)
-	}
+	freshGoldFor(t, cfg)
 	if _, se, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatalf("load failed: %s", se)
 	}
@@ -1308,9 +1306,7 @@ func TestCategorizeDryRunIsReadOnlyAndSaysSo(t *testing.T) {
 func TestCategorizeRefusesWithoutAModel(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	_, se, code := run(t, "-c", cfg, "categorize", "-n")
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)
@@ -1326,9 +1322,7 @@ func TestCategorizeRefusesWithoutAModel(t *testing.T) {
 func seedTwoMerchantVerdicts(t *testing.T) (cfg string) {
 	t.Helper()
 	cfg = setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	execGold(t, goldPathFromCfg(cfg), `
         INSERT INTO spend_merchant_categories (merchant_signature, merchant_name, spend_detailed,
                                                signature_version, assigned_at, model_name) VALUES
@@ -1858,9 +1852,7 @@ func TestCategorizeStampsTheConfigBeforeThePass(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
 	enableCategorization(t, cfg)
-	if _, se, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatalf("init failed: %s", se)
-	}
+	freshGoldFor(t, cfg)
 	if _, se, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatalf("load failed: %s", se)
 	}

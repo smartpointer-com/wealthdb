@@ -106,12 +106,9 @@ func (f *familyAwareAnswers) storeRowCounts(t *testing.T) map[string]int {
 // reader.
 func seedTwoFamilyGold(t *testing.T, ctx context.Context, goldPath string) *sql.DB {
 	t.Helper()
-	db, err := gold.Open(goldPath, gold.ModeReadWrite)
+	db, err := gold.OpenFresh(goldPath)
 	if err != nil {
 		t.Fatalf("open gold: %v", err)
-	}
-	if err := gold.Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
         INSERT INTO silver_sources(silver_source_id, silver_kind, silver_path,

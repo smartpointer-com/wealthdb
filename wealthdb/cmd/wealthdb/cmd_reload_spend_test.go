@@ -105,9 +105,7 @@ func merchantRow(t *testing.T, goldPath string) map[string]string {
 func TestReloadFreshCarriesMerchantStore(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -150,9 +148,7 @@ func TestReloadFreshCarriesMerchantStore(t *testing.T) {
 func TestReloadInPlaceKeepsMerchantStore(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -180,9 +176,7 @@ func TestReloadInPlaceKeepsMerchantStore(t *testing.T) {
 func TestCompactPreservesSpendOverlay(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
@@ -210,9 +204,7 @@ func TestCompactPreservesSpendOverlay(t *testing.T) {
 func TestSpendingPassRunsOnEveryLoadPath(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -237,9 +229,7 @@ func TestSpendingPassRunsOnEveryLoadPath(t *testing.T) {
 func TestReloadFreshSaysWhenAStoreIsEmpty(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}

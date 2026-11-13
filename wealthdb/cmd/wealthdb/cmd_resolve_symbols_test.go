@@ -288,9 +288,7 @@ func TestUnresolvedCandidates(t *testing.T) {
 func TestStoreResolutionsSurvivesAReaderHoldingGold(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	goldPath := goldPathFromCfg(cfg)
 
 	reader, err := gold.Open(goldPath, gold.ModeReadOnly)
@@ -403,9 +401,7 @@ func resolveSymbolsFixture(t *testing.T, modelURL string, n int, overrides []any
 	if err := os.WriteFile(cfgPath, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, code := run(t, "-c", cfgPath, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfgPath)
 	goldPath = goldPathFromCfg(cfgPath)
 	db, err := sql.Open("duckdb", goldPath)
 	if err != nil {

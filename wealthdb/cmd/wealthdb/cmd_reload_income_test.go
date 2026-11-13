@@ -15,9 +15,7 @@ import (
 func TestReloadFreshCarriesThePayerStore(t *testing.T) {
 	t.Parallel()
 	cfg := setupCLITest(t)
-	if _, _, code := run(t, "-c", cfg, "init"); code != 0 {
-		t.Fatal("init failed")
-	}
+	freshGoldFor(t, cfg)
 	if _, _, code := run(t, "-c", cfg, "load", "schwab-test"); code != 0 {
 		t.Fatal("load failed")
 	}
