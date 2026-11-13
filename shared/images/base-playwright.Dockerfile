@@ -6,8 +6,8 @@
 # one disagrees with this file. chrome-major is the major of the Chromium
 # this tag bundles. Build context is shared/:
 #   docker build -f images/base-playwright.Dockerfile -t wealthdb/base-playwright:latest .
-# chrome-major: 156
-FROM mcr.microsoft.com/playwright/python:v1.64.1-noble
+# chrome-major: 158
+FROM mcr.microsoft.com/playwright/python:v1.65.1-noble
 
 # Fetch Ubuntu's archives over HTTPS instead of the image default of HTTP.
 # Port 80 to the Ubuntu archive hosts is unreachable from some networks —
