@@ -1237,7 +1237,7 @@ func ForwardIncome(ctx context.Context, db querier, p ForwardParams) (*Forward, 
 	f := &Forward{Book: b, Window: w, Amounts: b.Amounts(received, w, p.Assumptions)}
 	lw := yield.Window{From: w.From.AddDate(-1, 0, 0), To: w.To.AddDate(-1, 0, 0)}
 	if lw.To.Unix() <= p.At {
-		prior, err := IncomeReceived(ctx, db, b.In, lw.From.Unix(), min(lw.To.Unix(), p.At))
+		prior, err := IncomeReceived(ctx, db, b.In, lw.From.Unix(), lw.To.Unix())
 		if err != nil {
 			return nil, err
 		}

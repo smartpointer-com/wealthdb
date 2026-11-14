@@ -981,7 +981,11 @@ CREATE MACRO report_gains_buckets(p_from, p_to, p_ccy, p_period, p_grain, p_miss
            CASE WHEN p_grain = 'portfolios' THEN m.g_pid END AS portfolio_external_id,
            pb.display_name AS portfolio_display_name,
            NULLIF(m.g_acct, '') AS account_external_id,
-           a.display_name, a.nickname, a.account_kind, account_wrapper(a.tax_wrapper) AS tax_wrapper, a.account_category, a.relationship_id,
+           a.display_name, a.nickname, a.account_kind,
+           -- A grain with no account has no wrapper, so the default
+           -- reads at the accounts grain alone.
+           CASE WHEN p_grain = 'accounts' THEN account_wrapper(a.tax_wrapper) END AS tax_wrapper,
+           a.account_category, a.relationship_id,
            CAST(m.realized_x::DECIMAL(28,4) AS VARCHAR) AS realized,
            CAST(m.realized_short_x::DECIMAL(28,4) AS VARCHAR) AS realized_short,
            CAST(m.realized_long_x::DECIMAL(28,4) AS VARCHAR) AS realized_long,

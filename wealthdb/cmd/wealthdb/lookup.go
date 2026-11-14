@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // columnLookup resolves the names a model sends for columns: a
@@ -58,8 +60,10 @@ func (l columnLookup) find(name string) (int, string, error) {
 	// A name with a currency suffix means a converted column, even when
 	// it is misspelt or names another currency: total_valu_usd is
 	// total_value_<CCY>, never the base-currency total_value; _pct is
-	// the percentage suffix, not a currency. The
-	// result is in one currency, and the note says which.
+	// the percentage suffix, not a currency. The result is in one
+	// currency, and the note says which, and how to get another
+	// reporting currency the suffix names: start_val is start_<CCY>, but
+	// val is no currency to pass.
 	if m := currencySuffixed.FindStringSubmatch(want); m != nil && m[2] != "pct" && ccy != "" {
 		var converted []string
 		for _, c := range l.cols {
@@ -75,7 +79,7 @@ func (l columnLookup) find(name string) (int, string, error) {
 			for i, c := range l.cols {
 				if c.converted() && l.stem(c) == stem {
 					note := l.note(name, i, true)
-					if m[2] != ccy {
+					if m[2] != ccy && slices.Contains(gold.MaterializedCurrencies(), strings.ToUpper(m[2])) {
 						note += fmt.Sprintf(" (amounts are in %s; pass currency=%s for %s)",
 							l.currency, strings.ToUpper(m[2]), strings.ToUpper(m[2]))
 					}
@@ -215,18 +219,7 @@ func (l columnLookup) pick(expr string, defaults []string) ([]int, []string, err
 		if err != nil {
 			return nil, nil, err
 		}
-		drop := map[int]bool{}
-		for _, i := range remIdx {
-			drop[i] = true
-		}
-		var out []int
-		seen := map[int]bool{}
-		for _, i := range append(defIdx, addIdx...) {
-			if !seen[i] && !drop[i] {
-				seen[i] = true
-				out = append(out, i)
-			}
-		}
+		out := applyColumnsDelta(defIdx, addIdx, remIdx)
 		if len(out) == 0 {
 			return nil, nil, fmt.Errorf("columns %q leaves no column", expr)
 		}

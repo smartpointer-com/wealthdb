@@ -125,12 +125,12 @@ var toolSpecs = namedTools([]toolSpec{
 		params: rowParams(false,
 			stringParam("view", "Which rows to return (default global).", holdingsFamily.names()...),
 			stringParam("as_of", "As-of date. Default today."),
-			param{name: "with_cash", kind: paramBoolean, doc: "positions only: also list cash as one row per account and currency."},
+			param{name: "with_cash", kind: paramBoolean, doc: takenBy(holdingsFamily, "with_cash") + "also list cash as one row per account and currency."},
 			sourceParam, accountParam,
 			scopedParam(holdingsFamily, "symbol", "keep only holdings whose symbol or name contains this text."),
 			scopedParam(holdingsFamily, "asset_class", "keep only this asset class (e.g. public_equity, fixed_income, cash, real_estate, crypto)."),
 			scopedParam(holdingsFamily, "tax_wrapper", "keep only this tax wrapper (e.g. roth_ira, 401k, 529, taxable_joint)."),
-			missingBasisParam("positions only: ", ""),
+			missingBasisParam(takenBy(holdingsFamily, "missing_basis"), ""),
 		),
 		notes: `Totals reconcile: global = sum of sources = sum of portfolios = sum of accounts = positions with with_cash. A loan or a card balance is negative. positions_value, cash_balance and total_value are in each account's own currency; the columns with a currency suffix are converted.
 Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
@@ -170,14 +170,15 @@ Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "
 		params: rowParams(true,
 			stringParam("view", "Which rows to return (default summary).", gainsFamily.names()...),
 			stringParam("period", "Bucket size on summary, sources, portfolios, accounts (default total: one row for the whole window).", reportPeriodNames...),
-			stringParam("documents", "realized only: each sale once (primary, default) or every document's copy (all).", gainsDocuments...),
-			param{name: "newest_first", kind: paramBoolean, doc: "realized only: newest first (default false: oldest first)."},
+			stringParam("documents", takenBy(gainsFamily, "documents")+"each sale once (primary, default) or every document's copy (all).", gainsDocuments...),
+			param{name: "newest_first", kind: paramBoolean, doc: takenBy(gainsFamily, "newest_first") + "newest first (default false: oldest first)."},
 			sourceParam, accountParam,
 			scopedParam(gainsFamily, "symbol", "keep only rows whose symbol or name contains this text."),
 			scopedParam(gainsFamily, "asset_class", "keep only this asset class (e.g. public_equity, fixed_income, private_equity)."),
 			scopedParam(gainsFamily, "term", "short or long."),
 			scopedParam(gainsFamily, "tax_wrapper", "keep only this tax wrapper (e.g. taxable_joint, roth_ira)."),
-			missingBasisParam("Not on coverage and check: ", "; quality then says basis_assumed_zero=N"),
+			missingBasisParam("Not on "+andList(gainsFamily.namesWhere(func(v *view) bool { return !v.takesOption("missing_basis") }))+": ",
+				"; quality then says basis_assumed_zero=N"),
 		),
 		notes: `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state, else what the lot engine rebuilt from the trades; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind, and the check view compares the lot engine with the stated lots.
 Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,
@@ -197,9 +198,10 @@ Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_join
 		params: rowParams(false, append([]param{
 			stringParam("view", "Which breakdown (default classes).", exposureFamily.names()...),
 			stringParam("as_of", "As-of date. Default today."),
-			stringParam("country", "countries and securities: the country a security counts in, risk (default) or domicile.",
+			stringParam("country", takenBy(exposureFamily, "country")+"the country a security counts in, risk (default) or domicile.",
 				exposureCountryBases...),
-			stringParam("benchmark", benchmarkParamDoc("the benchmark's weight of each row and the row's share less it; not on situs, funds or coverage, and no period.")),
+			stringParam("benchmark", benchmarkParamDoc("the benchmark's weight of each row and the row's share less it; not on "+
+				orList(exposureFamily.namesWhere(func(v *view) bool { return v.benchmark == "" }))+", and no period.")),
 		}, seriesParams(exposureFamily.seriesViews())...)...),
 		notes: `Every view sums to net worth, as holdings view=global gives it: what a fund's composition does not explain is a remainder row, and a holding nothing describes is unknown, never dropped. A fund's composition is the one nearest the as-of day (the funds view says which, and how old); quality flags such as proxy, aged or partial carry the share of the row they touch (describe topic=quality). view=situs reads every holding whole, at its legal situs: it looks through no fund, and its quality says what each situs rests on; coverage's situs section lists the holdings whose situs is unknown. The view sums are in the output currency; the shares need none.
 Example: {view: "sectors", as_of: "2025-12-31", currency: "CHF"}.`,
@@ -218,7 +220,7 @@ Example: {view: "sectors", as_of: "2025-12-31", currency: "CHF"}.`,
 			stringParam("view", "Which rows to return (default global).", yieldFamily.names()...),
 			stringParam("as_of", "As-of date. Default today."),
 		}, seriesParams(yieldFamily.seriesViews())...),
-			param{name: "converted", kind: paramBoolean, doc: andList(yieldFamily.taking("converted")) + ": one row per entity in the output currency (default false)."},
+			param{name: "converted", kind: paramBoolean, doc: takenBy(yieldFamily, "converted") + "one row per entity in the output currency (default false)."},
 			scopedParam(yieldFamily, "symbol", "keep only rows whose symbol contains this text."),
 		)...),
 		notes: `A rate belongs to a currency: an aggregate row is one entity in one currency, and the total row weighs the currencies by value (quality mixed); converted gives one row per entity. dv01 is the value lost for a rise of one basis point; a liability's is negative and nets. The quality column says what each figure rests on (describe topic=quality); view=coverage lists what is missing, and counts where the dividends' record days come from: the dividend calendar, an ex day, the issuer's learned gap, the market's lag, or none.
@@ -394,6 +396,16 @@ func (s *mcpServer) tools() []toolSpec {
 
 // ---- options ------------------------------------------------------------
 
+// takenBy opens the doc of an option only some views of fam take with
+// those views: "positions only: ", "countries and securities: ".
+func takenBy(fam *family, option string) string {
+	views := fam.taking(option)
+	if len(views) == 1 {
+		return views[0] + " only: "
+	}
+	return andList(views) + ": "
+}
+
 // missingBasisParam is the missing_basis argument of the tools that
 // read a cost basis; scope opens its doc (the views it belongs to), and
 // note follows the zero reading inside its parentheses.
@@ -423,7 +435,7 @@ func seriesArg(tool string, views []string, a *toolArgs, req *request, notes *[]
 		}
 		return nil
 	}
-	if err := checkSeriesOptions(tool, req.view, views, a.has, func(name string) string { return name }); err != nil {
+	if err := checkSeriesOptions(tool, req.view, views, a.has, mcpOptions{}.spell); err != nil {
 		return err
 	}
 	var err error
@@ -469,17 +481,18 @@ var statusFamily = &family{
 	views: []view{{
 		// source asks for one source's detail block; kind is the source's.
 		excludes: []string{"source", "kind"},
-		build: func(cfg *config.Config, _ request, a *toolArgs) *report {
-			return statusReport(cfg, a.flag("verbose", false))
+		build: func(cfg *config.Config, req request) *report {
+			return statusReport(cfg, req.verbose)
 		},
 	}},
 	narrow: "search",
-	settle: func(_ *family, in optionSource, _ *request, _ *[]string) error {
+	settle: func(_ *family, in optionSource, req *request, _ *[]string) error {
 		for _, name := range []string{"from", "to", "currency"} {
 			if in.has(name) {
 				return fmt.Errorf("status: %s belongs to marks", name)
 			}
 		}
+		req.verbose = in.on("verbose")
 		return nil
 	},
 }
@@ -492,7 +505,7 @@ var marksFamily = &family{
 		// "-value" sort reads the main money column; marked_pct goes by its
 		// own name.
 		principal: fixedColumn("value_total"),
-		build:     func(_ *config.Config, req request, _ *toolArgs) *report { return marksReport(req) },
+		build:     func(_ *config.Config, req request) *report { return marksReport(req) },
 	}},
 	window:   sinceInception,
 	currency: true,
@@ -510,27 +523,35 @@ var marksFamily = &family{
 
 var snapshotsFamily = &family{
 	name: "snapshots",
-	views: []view{{build: func(_ *config.Config, _ request, a *toolArgs) *report {
-		return snapshotsReport(a.flag("latest_only", false))
+	views: []view{{build: func(_ *config.Config, req request) *report {
+		return snapshotsReport(req.latestOnly)
 	}}},
 	narrow: "source or latest_only",
+	settle: func(_ *family, in optionSource, req *request, _ *[]string) error {
+		req.latestOnly = in.on("latest_only")
+		return nil
+	},
 }
 
 var resolutionsFamily = &family{
 	name:   "resolutions",
-	views:  []view{{build: func(*config.Config, request, *toolArgs) *report { return resolutionsReport("") }}},
+	views:  []view{{build: func(*config.Config, request) *report { return resolutionsReport("") }}},
 	narrow: "source or search",
 }
 
 var categorizationsFamily = &family{
 	name: "categorizations",
-	views: []view{{build: func(_ *config.Config, _ request, a *toolArgs) *report {
+	views: []view{{build: func(_ *config.Config, req request) *report {
 		// The parameter's enum has already admitted only a family
 		// name, or nothing for both.
-		families, _ := resolveCategorizeFamilies(a.str("family"))
+		families, _ := resolveCategorizeFamilies(req.categorizeFamily)
 		return categorizationsReport(families, "")
 	}}},
 	narrow: "family, category or search",
+	settle: func(_ *family, in optionSource, req *request, _ *[]string) error {
+		req.categorizeFamily = in.str("family")
+		return nil
+	},
 }
 
 // ---- the call pipeline ---------------------------------------------------
@@ -569,7 +590,7 @@ func (s *mcpServer) runFamily(ctx context.Context, spec toolSpec, a *toolArgs) (
 	if err != nil {
 		return toolOutput{}, err
 	}
-	rep := fam.build(cfg, req, a)
+	rep := fam.build(cfg, req)
 	lookup := fam.lookup(rep, req)
 	sh, err := s.shape(tool, rep, lookup, a)
 	if err != nil {
@@ -773,7 +794,7 @@ func (s *mcpServer) shape(tool string, rep *report, lookup columnLookup, a *tool
 		if err != nil {
 			return sh, fmt.Errorf("%s: sort: %v", tool, err)
 		}
-		if c := rep.columns[i]; s.privacy && (c.privacy == PrivacyMoney || c.privacy == PrivacyQuantity) {
+		if c := rep.columns[i]; s.privacy && c.privacy.hidesFigure() {
 			return sh, fmt.Errorf("%s: %s is redacted on this endpoint, so it cannot order the rows; sort by another column", tool, c.header)
 		}
 		sh.sortCol, sh.desc = i, strings.HasPrefix(spec, "-")
@@ -828,7 +849,7 @@ func (s *mcpServer) header(tool string, fam *family, rep *report, req request, r
 	if sh.sortCol >= 0 {
 		c := rep.columns[sh.sortCol]
 		name, dir := c.header, "ascending"
-		if c.privacy == PrivacyMoney {
+		if c.kind == MoneyColumn {
 			name = "|" + name + "|"
 		}
 		if sh.desc {
@@ -874,17 +895,21 @@ func resolveDates(fam *family, a *toolArgs, now time.Time, horizon int, req *req
 		}
 		return nil
 	case trailingYear:
-		// The forward views (view.forward) compute today's holdings,
+		// The forward views (view.window) compute today's holdings,
 		// over a window that may reach into the future.
 		req.asOf = anchorToDay(now.UTC(), true).Unix()
-		if fam.view(req.view).forward {
-			req.from, req.to, err = parseForwardWindow(from, to, now, horizon)
+		if window := fam.view(req.view).window; window != nil {
+			req.from, req.to, err = window(from, to, now, horizon)
 		} else {
 			req.from, req.to, err = parseTrailingYearWindow(args, now)
 		}
 	case sinceInception:
 		req.asOf = anchorToDay(now.UTC(), true).Unix()
 		req.from, req.to, err = parseReturnsWindow(args, now)
+		if check := fam.view(req.view).checkWindow; err == nil && check != nil {
+			// The refusal names the bounds in words both front ends read.
+			return check(req.from, req.to, req.asOf)
+		}
 	case pastMonth:
 		req.from, req.to, err = parseDateRange(args, now)
 	default:

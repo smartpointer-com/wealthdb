@@ -42,7 +42,8 @@ var gainsFamily = &family{
 		gainsBucketView("portfolios", gold.GainsPortfolios),
 		gainsBucketView("accounts", gold.GainsAccounts),
 		{name: "positions", total: flowTotal, principal: fixedColumn("gain"), header: gainsLineHeader,
-			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+			takes: []string{"missing_basis"},
+			build: func(cfg *config.Config, req request) *report {
 				ccy, missing := req.currency, missingOr(req.missing, cfg)
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildGainsPositionColumnRegistry(ccy, kindOf), defaultGainsPositionColumns,
@@ -51,7 +52,8 @@ var gainsFamily = &family{
 					}), loadKinds)
 			}},
 		{name: "realized", total: flowTotal, principal: fixedColumn("gain_outccy"), header: gainsLineHeader,
-			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+			takes: []string{"documents", "newest_first", "missing_basis"},
+			build: func(cfg *config.Config, req request) *report {
 				ccy, missing := req.currency, missingOr(req.missing, cfg)
 				kindOf, loadKinds := sourceKinds()
 				order := gold.SortAscending
@@ -64,7 +66,8 @@ var gainsFamily = &family{
 					}), loadKinds)
 			}},
 		{name: "lots", total: balanceTotal, principal: fixedColumn("unrealized_gain_outccy"), header: gainsLineHeader,
-			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+			takes: []string{"missing_basis"},
+			build: func(cfg *config.Config, req request) *report {
 				ccy, missing := req.currency, missingOr(req.missing, cfg)
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildOpenLotColumnRegistry(ccy, kindOf), defaultOpenLotColumns,
@@ -73,7 +76,7 @@ var gainsFamily = &family{
 					}), loadKinds)
 			}},
 		{name: "coverage", principal: fixedColumn("value"), header: gainsLineHeader,
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				ccy := req.currency
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildGainsCoverageColumnRegistry(ccy, kindOf), defaultGainsCoverageColumns,
@@ -82,7 +85,7 @@ var gainsFamily = &family{
 					}), loadKinds)
 			}},
 		{name: "check", principal: fixedColumn("cost_delta"), header: gainsLineHeader,
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				ccy := req.currency
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildGainsCheckColumnRegistry(ccy, kindOf), defaultGainsCheckColumns,
@@ -100,15 +103,16 @@ var gainsFamily = &family{
 	window:   trailingYear,
 	currency: true,
 	narrow:   "from/to or a filter",
-	settle: func(_ *family, in optionSource, req *request, _ *[]string) error {
+	settle: func(fam *family, in optionSource, req *request, _ *[]string) error {
 		// On another view the two would ask a question it cannot answer.
-		if req.view != "realized" && (in.has("documents") || in.has("newest_first")) {
+		v := fam.view(req.view)
+		if !v.takesOption("documents") && (in.has("documents") || in.has("newest_first")) {
 			if in.cli() {
 				return errs.Newf(errs.ExitUsage, "gains: --documents and -r belong to the realized view")
 			}
 			return fmt.Errorf("gains: documents and newest_first belong to view=realized")
 		}
-		if !gainsReadsBasis(req.view) && in.has("missing_basis") {
+		if !v.takesOption("missing_basis") && in.has("missing_basis") {
 			if in.cli() {
 				return errs.Newf(errs.ExitUsage, "gains: --missing-basis does not apply to the %s view", req.view)
 			}
@@ -140,11 +144,12 @@ var gainsFamily = &family{
 }
 
 // gainsBucketView is an aggregate view at its grain: its figures add up
-// over a window, and its main column is gain.
+// over a window, and its main column is gain. It reads a missing cost
+// basis under a reading.
 func gainsBucketView(name string, grain gold.GainsGrain) view {
-	return view{name: name, total: flowTotal, principal: fixedColumn("gain"),
-		header: func(req request) []string { return []string{"period=" + req.period} },
-		build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+	return view{name: name, total: flowTotal, principal: fixedColumn("gain"), header: periodHeader,
+		takes: []string{"missing_basis"},
+		build: func(cfg *config.Config, req request) *report {
 			ccy, missing := req.currency, missingOr(req.missing, cfg)
 			kindOf, loadKinds := sourceKinds()
 			return withLoads(newReport(buildGainsBucketColumnRegistry(ccy, req.period, grain, kindOf, req.categories),
@@ -209,10 +214,6 @@ func resolveMissingBasis(asked string, cfg *config.Config, cmd string) (lots.Mis
 func missingOr(m lots.MissingBasis, cfg *config.Config) lots.MissingBasis {
 	return cmp.Or(m, cfg.MissingBasis())
 }
-
-// gainsReadsBasis reports whether a gains view reads a missing cost
-// basis under a reading. coverage and check count one instead.
-func gainsReadsBasis(view string) bool { return view != "coverage" && view != "check" }
 
 // ---- column registries ---------------------------------------------------
 //

@@ -288,12 +288,12 @@ func (t filterTarget) unknownColumn(r rawCond) error {
 	want := strings.ToLower(r.col)
 	fit := t.fittingColumns(r)
 	// The nearest names, those of the kind the condition reads first.
-	var fitting, others []string
+	var fitting, others []reportColumn
 	for _, c := range t.lookup.cols {
 		if len(fit) > 0 && slices.Contains(fit[1:], c.header) {
-			fitting = append(fitting, c.header)
+			fitting = append(fitting, c)
 		} else {
-			others = append(others, c.header)
+			others = append(others, c)
 		}
 	}
 	near := t.nearest(want, fitting, 2)
@@ -357,24 +357,25 @@ func (t filterTarget) fittingColumns(r rawCond) []string {
 	return out
 }
 
-// nearest are up to n of the headers closest to s, by the header or by
-// its stem, closest first, of those at least half alike.
-func (t filterTarget) nearest(s string, headers []string, n int) []string {
+// nearest are the headers of up to n of cols closest to s, by the header
+// or by its stem (columnLookup.stem), closest first, of those at least
+// half alike.
+func (t filterTarget) nearest(s string, cols []reportColumn, n int) []string {
 	type scored struct {
 		name  string
 		score float64
 	}
 	var all []scored
-	for _, h := range headers {
+	for _, col := range cols {
 		score := 0.0
-		for _, c := range []string{strings.ToLower(h), strings.TrimSuffix(strings.ToLower(h), "_"+strings.ToLower(t.lookup.currency))} {
+		for _, c := range []string{strings.ToLower(col.header), t.lookup.stem(col)} {
 			score = max(score, similarity(s, c))
 			if strings.Contains(c, s) || strings.Contains(s, c) {
 				score = max(score, 0.75)
 			}
 		}
 		if score >= 0.6 {
-			all = append(all, scored{h, score})
+			all = append(all, scored{col.header, score})
 		}
 	}
 	sort.SliceStable(all, func(a, b int) bool { return all[a].score > all[b].score })
@@ -506,15 +507,15 @@ func columnElsewhere(cfg *config.Config, tool, view, col string, cli bool) strin
 		return "the " + t + " tool's " + v + " view"
 	}
 	var same, other []string
-	for _, rf := range reportFamilies {
-		for _, v := range rf.fam.viewsOrOne() {
-			if rf.name == tool && v == view || !prints(rf.fam, v) {
+	for _, fam := range reportFamilies {
+		for _, v := range fam.viewsOrOne() {
+			if fam.name == tool && v == view || !prints(fam, v) {
 				continue
 			}
-			if rf.name == tool {
-				same = append(same, spell(rf.name, v))
+			if fam.name == tool {
+				same = append(same, spell(fam.name, v))
 			} else if len(other) < 2 {
-				other = append(other, spell(rf.name, v))
+				other = append(other, spell(fam.name, v))
 			}
 		}
 	}

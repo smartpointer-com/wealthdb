@@ -35,15 +35,16 @@ var returnsFamily = &family{
 		// ending value.
 		{name: "stated", side: true, principal: fixedColumn("end_value"), usage: returnsStatedUsage,
 			refuses:     statedRefusedFlags,
+			refuseWhy:   " — the periods and the currency are the document's",
 			ownCurrency: "each period in the currency its document states",
-			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+			build: func(cfg *config.Config, req request) *report {
 				return returnsStatedReport(req, cfg)
 			}},
 		// On the bridge, "value" is the net worth it ends on.
 		{name: "bridge", side: true, principal: fixedColumn("end_net_worth"), usage: returnsBridgeUsage,
 			refuses: bridgeRefusedFlags, checkWindow: checkBridgeWindow,
-			header: func(req request) []string { return []string{"period=" + req.period} },
-			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+			header: periodHeader,
+			build: func(cfg *config.Config, req request) *report {
 				return returnsBridgeReport(req, cfg)
 			}},
 	},
@@ -63,33 +64,18 @@ var returnsFamily = &family{
 	settle: func(_ *family, in optionSource, req *request, _ *[]string) error {
 		switch req.view {
 		case "stated":
-			// The document fixes the periods and the currency. The CLI
-			// refuses the return flags as it parses them, then -x.
-			if !in.cli() {
-				return refuseOptions(in, "returns", "stated", append([]string{"currency"}, statedRefusedFlags...),
-					" — the periods and the currency are the document's")
-			}
-			if in.has("currency") {
+			// The document fixes the periods and the currency. Both front
+			// ends refuse the return options before the settle, MCP the
+			// currency with them (refuseMCP); the CLI refuses -x here.
+			if in.cli() && in.has("currency") {
 				return errs.Newf(errs.ExitUsage, "returns: stated takes no -x/--currency — "+
 					"every amount is in the currency the document states")
 			}
 			return nil
 		case "bridge":
-			if !in.cli() {
-				if err := refuseOptions(in, "returns", "bridge", bridgeRefusedFlags, ""); err != nil {
-					return err
-				}
-			}
 			var err error
-			if req.period, err = choose(in, "returns", "period"); err != nil {
-				return err
-			}
-			// The CLI checks the months as it reads the window
-			// (view.checkWindow).
-			if !in.cli() {
-				return checkBridgeWindow(req.from, req.to, req.asOf)
-			}
-			return nil
+			req.period, err = choose(in, "returns", "period")
+			return err
 		}
 		for _, o := range []struct {
 			name string
@@ -111,7 +97,7 @@ var returnsFamily = &family{
 }
 
 // buildReturns is a grain's report (returnsReport).
-func buildReturns(cfg *config.Config, req request, _ *toolArgs) *report {
+func buildReturns(cfg *config.Config, req request) *report {
 	return returnsReport(req, cfg)
 }
 
@@ -301,31 +287,21 @@ func buildReturnColumnRegistry(outCcy, level string, kindOf func(string) string,
 		asDate(strCol("period", func(r gold.ReturnRow) string { return r.Period })),
 		asDate(strCol("start_date", func(r gold.ReturnRow) string { return formatEpochDay(r.StartDay) })),
 		asDate(strCol("end_date", func(r gold.ReturnRow) string { return formatEpochDay(r.EndDay) })),
-		{Name: "start_value", Header: "start_" + outCcy, Kind: MoneyColumn, Unit: OutputCurrency,
-			Extract: func(r gold.ReturnRow) string { return formatCents(r.StartValue) }},
-		{Name: "end_value", Header: "end_" + outCcy, Kind: MoneyColumn, Unit: OutputCurrency,
-			Extract: func(r gold.ReturnRow) string { return formatCents(r.EndValue) }},
+		outCcyColAs("start_value", "start_"+outCcy, outCcy, func(r gold.ReturnRow) *string { return r.StartValue }),
+		outCcyColAs("end_value", "end_"+outCcy, outCcy, func(r gold.ReturnRow) *string { return r.EndValue }),
 		outCcyCol("net_flow", outCcy, func(r gold.ReturnRow) *string { return r.NetFlow }),
-		{Name: "gain", Header: "gain_" + outCcy, Kind: MoneyColumn, Unit: OutputCurrency,
-			Extract: func(r gold.ReturnRow) string { return formatCents(r.Gain()) }},
-		{Name: "twr", Header: "twr_pct", Kind: PercentColumn,
-			Extract: func(r gold.ReturnRow) string { return formatPct(r.TWR) }},
-		{Name: "twr_annualized", Header: "twr_ann_pct", Kind: PercentColumn,
-			Extract: func(r gold.ReturnRow) string { return formatPct(r.TWRAnnualized) }},
-		{Name: "mwr", Header: "mwr_pct", Kind: PercentColumn,
-			Extract: func(r gold.ReturnRow) string { return formatPct(r.MWR) }},
-		{Name: "mwr_annualized", Header: "mwr_ann_pct", Kind: PercentColumn,
-			Extract: func(r gold.ReturnRow) string { return formatPct(r.MWRAnnualized) }},
-		{Name: "benchmark_twr", Header: "benchmark_twr_pct", Kind: PercentColumn,
-			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.TWR })},
-		{Name: "compared_twr", Header: "compared_twr_pct", Kind: PercentColumn,
-			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.PortfolioTWR })},
-		{Name: "excess", Header: "excess_pct", Kind: PercentColumn,
-			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.Excess })},
-		{Name: "benchmark_mwr", Header: "benchmark_mwr_pct", Kind: PercentColumn,
-			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.MWR })},
-		{Name: "compared_mwr", Header: "compared_mwr_pct", Kind: PercentColumn,
-			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.PortfolioMWR })},
+		outCcyColAs("gain", "gain_"+outCcy, outCcy, func(r gold.ReturnRow) *string { return r.Gain() }),
+		ratioCol("twr", func(r gold.ReturnRow) *float64 { return r.TWR }),
+		percentCol("twr_annualized", "twr_ann_pct", func(r gold.ReturnRow) string { return formatPct(r.TWRAnnualized) }),
+		ratioCol("mwr", func(r gold.ReturnRow) *float64 { return r.MWR }),
+		percentCol("mwr_annualized", "mwr_ann_pct", func(r gold.ReturnRow) string { return formatPct(r.MWRAnnualized) }),
+		percentCol("benchmark_twr", "benchmark_twr_pct", benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.TWR })),
+		percentCol("compared_twr", "compared_twr_pct",
+			benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.PortfolioTWR })),
+		percentCol("excess", "excess_pct", benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.Excess })),
+		percentCol("benchmark_mwr", "benchmark_mwr_pct", benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.MWR })),
+		percentCol("compared_mwr", "compared_mwr_pct",
+			benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.PortfolioMWR })),
 		asDate(strCol("compared_from", benchmarkDay(func(b *gold.BenchmarkRow) int64 { return b.StartDay }))),
 		asDate(strCol("compared_to", benchmarkDay(func(b *gold.BenchmarkRow) int64 { return b.EndDay }))),
 		strCol("benchmark_quality", func(r gold.ReturnRow) string {

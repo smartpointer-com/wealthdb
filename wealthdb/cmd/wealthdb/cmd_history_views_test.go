@@ -306,4 +306,10 @@ func TestStatusMarksBindsAsTheServerDoes(t *testing.T) {
 	if !strings.Contains(help, "  marks=true: month_end*, marked_pct*, value_marked_USD*, value_total_USD*, quality*") {
 		t.Errorf("describe status does not list the marks columns:\n%s", help)
 	}
+	// A condition's message names the command typed, and no view: the
+	// request's marks is no view a command spells.
+	_, se, code = runToday(t, "-c", cfg, "status", "--marks", "-F", "no_such_column > 0")
+	if code == 0 || !strings.Contains(se, `wealthdb status: -F "no_such_column > 0": this result has no column`) {
+		t.Errorf("exit %d, want the command's message: %s", code, se)
+	}
 }

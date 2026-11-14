@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// TestDateMarksMatchTheCells holds the registries' date marks to what
-// the views print, over every view of every fixture: a marked column
-// prints dates or periods only, and a left-aligned column whose every
-// cell is a date or a period is marked, or a condition on it would
-// compare text. A view that takes a period runs monthly too, so its
-// period columns print.
+// TestDateMarksMatchTheCells holds the registries' date columns to what
+// the views print, over every view of every fixture: a column of the
+// date kind prints dates or periods only, and a text column whose every
+// cell is a date or a period is of the date kind, or a condition on it
+// would compare text. A view that takes a period runs monthly too, so
+// its period columns print.
 func TestDateMarksMatchTheCells(t *testing.T) {
 	t.Parallel()
 	tools := newTestMCP("", false).tools()
@@ -75,7 +75,7 @@ func checkDateMarks(t *testing.T, srv *mcpServer, tool toolSpec, v, period strin
 	if err != nil || len(recs) < 2 {
 		return
 	}
-	rep := tool.family.build(nil, req, &toolArgs{values: map[string]any{}})
+	rep := tool.family.build(nil, req)
 	for j, h := range recs[0] {
 		var col *reportColumn
 		for i := range rep.columns {
@@ -98,16 +98,16 @@ func checkDateMarks(t *testing.T, srv *mcpServer, tool toolSpec, v, period strin
 		}
 		switch {
 		case col.kind == DateColumn && dates < cells:
-			t.Errorf("%s %s %s: %s is marked a date, but prints %d cells that are none", tool.name, v, period, h, cells-dates)
+			t.Errorf("%s %s %s: %s is of the date kind, but prints %d cells that are none", tool.name, v, period, h, cells-dates)
 		case col.kind != DateColumn && cells > 0 && dates == cells:
-			t.Errorf("%s %s %s: %s prints dates only, but is not marked a date", tool.name, v, period, h)
+			t.Errorf("%s %s %s: %s prints dates only, but is not of the date kind", tool.name, v, period, h)
 		}
 	}
 }
 
 // TestDateNamedColumnsAreMarked holds every registry to its names: a
 // column named as a date (date, datetime, period, period_start, *_date,
-// *_at, *as_of) is marked one, whether or not a fixture prints it.
+// *_at, *as_of) is of the date kind, whether or not a fixture prints it.
 func TestDateNamedColumnsAreMarked(t *testing.T) {
 	t.Parallel()
 	dateNamed := func(name string) bool {
@@ -127,9 +127,9 @@ func TestDateNamedColumnsAreMarked(t *testing.T) {
 				if series {
 					req.series = []seriesPoint{{}}
 				}
-				for _, c := range tool.family.build(nil, req, &toolArgs{values: map[string]any{}}).columns {
+				for _, c := range tool.family.build(nil, req).columns {
 					if dateNamed(c.name) && c.kind != DateColumn {
-						t.Errorf("%s %s: %s is named as a date, but is not marked one", tool.name, v, c.name)
+						t.Errorf("%s %s: %s is named as a date, but is not of the date kind", tool.name, v, c.name)
 					}
 				}
 			}

@@ -28,10 +28,9 @@ import (
 // Omitted rather than set to null, because absence is unambiguous
 // where null is not — a null can be read as "known to be nothing",
 // which is a claim this renderer is in no position to make. It also
-// keeps the format to the two states it already had: a key is present
-// with a value, or it is not there. The privacy path established that
-// shape by dropping a redacted money column from the object entirely
-// rather than blanking it.
+// keeps the format to two states: a key is present with a value, or it
+// is not there. The privacy path drops a redacted money column the same
+// way.
 //
 // Output ends with a trailing newline so it composes cleanly
 // with shell pipes.

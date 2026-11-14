@@ -100,15 +100,6 @@ func TestFundLines(t *testing.T) {
 	}
 }
 
-// YieldInputs reads from gold: a holding's amount with its accrual and
-// the key exposure names it by; the newest rate schedule that holds,
-// every tier of it, the latest snapshot's on or before the day, and a
-// ledger rate dated on or before the day over an undated one, which
-// leaves the account's stated debit rate; a fund's newest filed rate
-// sensitivity with that filing's net assets; the ledger's dividend in
-// force; the payments a holding and an account received; the
-// daily amounts over the year; reported figures by their periods' ends,
-// a restated one as restated. The book is invented.
 // An account with no stated wrapper reads taxable_personal, marked as the
 // default, so the withholding by wrapper passes it by.
 func TestYieldAccountsReadTheDefaultWrapper(t *testing.T) {
@@ -129,6 +120,15 @@ func TestYieldAccountsReadTheDefaultWrapper(t *testing.T) {
 	}
 }
 
+// YieldInputs reads from gold: a holding's amount with its accrual and
+// the key exposure names it by; the newest rate schedule that holds,
+// every tier of it, the latest snapshot's on or before the day, and a
+// ledger rate dated on or before the day over an undated one, which
+// leaves the account's stated debit rate; a fund's newest filed rate
+// sensitivity with that filing's net assets; the ledger's dividend in
+// force; the payments a holding and an account received; the
+// daily amounts over the year; reported figures by their periods' ends,
+// a restated one as restated. The book is invented.
 func TestYieldInputsReadsGold(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

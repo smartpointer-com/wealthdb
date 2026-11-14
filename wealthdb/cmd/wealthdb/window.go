@@ -47,12 +47,3 @@ var reportPeriods = map[string]string{
 // reportPeriodNames is reportPeriods' key set in display order,
 // for usage text and error messages.
 var reportPeriodNames = []string{"daily", "weekly", "monthly", "quarterly", "annual", "total"}
-
-// periodStart renders the bucket's opening date, empty for the
-// `total` bucket, which has no start beyond the window's own.
-func periodStart(periodStart *int64) string {
-	if periodStart == nil {
-		return ""
-	}
-	return formatDate(*periodStart)
-}

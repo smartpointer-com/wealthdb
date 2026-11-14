@@ -38,8 +38,9 @@ var PlanOutClasses = []string{string(canonical.ClassConsumption), string(canonic
 const planUncategorized = "(uncategorized)"
 
 // PlanParts are the look-back's parts of report_cashflow_plan (migration
-// 0149), PlanOutsidePart and PlanPoolPart aside, in the order web/provision.py's
-// PLAN_LOOKBACK_PARTS reads them; operating_out holds a row per class of
+// 0149), PlanOutsidePart and PlanPoolPart aside, in the order
+// PLAN_LOOKBACK_PARTS (web/dashboards/cashflow.py) reads them;
+// operating_out holds a row per class of
 // PlanOutClasses, and other_income a row per class and account
 // (OtherIncomeBy, migration 0169).
 var PlanParts = []string{"other_income", "operating_out", "debt_service", "vehicles"}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -47,26 +48,13 @@ func TestUsageListsEverySubcommand(t *testing.T) {
 	}
 }
 
-// A report's listing line ends with every view its command accepts, in
-// the command's order.
-func TestUsageListsEveryReportsViews(t *testing.T) {
+// Every report family is a command the listing names.
+func TestUsageListsEveryReport(t *testing.T) {
 	t.Parallel()
-	families := map[string][]string{
-		"holdings": holdingsFamily.names(), "returns": returnsFamily.names(), "gains": gainsFamily.names(), "exposure": exposureFamily.names(),
-		"yield": yieldFamily.names(), "spending": spendingFamily.names(), "income": incomeFamily.names(), "cashflow": cashflowFamily.names(),
-	}
-	for _, c := range commandHelps {
-		views, ok := families[c.name]
-		if !ok {
-			continue
+	for _, fam := range reportFamilies {
+		if !slices.ContainsFunc(commandHelps, func(c commandHelp) bool { return c.name == fam.name }) {
+			t.Errorf("%s is not listed", fam.name)
 		}
-		delete(families, c.name)
-		if want := ": " + strings.Join(views, ", "); !strings.HasSuffix(c.short, want) {
-			t.Errorf("%s's line %q does not end with its views %q", c.name, c.short, want)
-		}
-	}
-	for name := range families {
-		t.Errorf("%s is not listed", name)
 	}
 }
 

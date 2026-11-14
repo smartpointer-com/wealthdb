@@ -17,7 +17,7 @@ type bondRow struct {
 
 func fp(f float64) *float64 { return &f }
 
-// testBonds is a result set over bondRows, as a view of a tool prints it.
+// testBonds is a result set of bondRow rows, as a view of a tool prints it.
 func testBonds(t *testing.T, privacy bool) *resultSet {
 	t.Helper()
 	rows := []bondRow{

@@ -177,20 +177,13 @@ func TestSpendingTransactionPrivacyClasses(t *testing.T) {
 	for _, c := range cols {
 		byName[c.Name] = c
 	}
+	// The shared line columns are txnLineClasses'.
 	want := map[string]PrivacyClass{
 		"merchant":           PrivacyFreeText,
 		"spend_primary":      PrivacyNone,
 		"spend_detailed":     PrivacyNone,
 		"provenance":         PrivacyNone,
 		"merchant_signature": PrivacyFreeText,
-		"counterparty":       PrivacyFreeText,
-		"description":        PrivacyFreeText,
-		"account":            PrivacyAccountID,
-		"account_id":         PrivacyAccountID,
-		"account_nickname":   PrivacyPseudonym,
-		"tx_id":              PrivacyAccountID,
-		"net_amount":         PrivacyMoney,
-		"value":              PrivacyMoney,
 	}
 	for name, class := range want {
 		c, ok := byName[name]

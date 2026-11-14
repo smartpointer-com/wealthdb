@@ -78,10 +78,11 @@ func parseColumnsDelta(s string) (adds, removes []string, isDelta bool) {
 // already present in base are skipped (no duplicates, no reorder).
 // Removes that aren't in the result are a silent no-op so
 // "-account_id" works without first checking it's in the
-// default for that command.
-func applyColumnsDelta(base, adds, removes []string) []string {
-	out := make([]string, 0, len(base)+len(adds))
-	seen := make(map[string]bool, len(base)+len(adds))
+// default for that command. The CLI's -C applies it to names, the MCP
+// columns parameter to registry indices.
+func applyColumnsDelta[K comparable](base, adds, removes []K) []K {
+	out := make([]K, 0, len(base)+len(adds))
+	seen := make(map[K]bool, len(base)+len(adds))
 	for _, n := range base {
 		if !seen[n] {
 			out = append(out, n)
@@ -97,7 +98,7 @@ func applyColumnsDelta(base, adds, removes []string) []string {
 	if len(removes) == 0 {
 		return out
 	}
-	drop := make(map[string]bool, len(removes))
+	drop := make(map[K]bool, len(removes))
 	for _, n := range removes {
 		drop[n] = true
 	}

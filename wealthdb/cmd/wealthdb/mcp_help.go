@@ -164,7 +164,7 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 	}
 	fam := t.family
 	columns := func(fam *family, v string) string {
-		rep := fam.buildDefault(cfg, fam.defaultRequest(v, cfg.DefaultCurrency, s.now(), cfg.YieldHorizon()))
+		rep := fam.build(cfg, fam.defaultRequest(v, cfg.DefaultCurrency, s.now(), cfg.YieldHorizon()))
 		var cols []string
 		for _, c := range rep.columns {
 			name := c.header

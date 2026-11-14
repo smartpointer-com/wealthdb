@@ -16,8 +16,9 @@ import (
 // account exposing opening + closing + available at one snapshot
 // isn't double-counted.
 //
-// Rows reuse PositionRow (so cmd/wealthdb's column extractors apply
-// unchanged); the report_cash macro sets the synthetic fields
+// Rows reuse PositionRow, so PositionsAsOf merges them with the
+// positions and one column set reads both; the report_cash macro sets
+// the synthetic fields
 // (asset_class='cash', vehicle='demand_deposit',
 // position_key='cash:<CCY>', symbol=<CCY>, name='Cash <CCY>', quantity
 // NULL, market_value = the amount). See derived/30_holdings.sql.

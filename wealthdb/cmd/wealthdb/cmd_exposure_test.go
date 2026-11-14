@@ -87,16 +87,12 @@ func TestExposureClassesAndSectors(t *testing.T) {
 	}
 }
 
-// Each view's default column set resolves against its registry, and the
-// usage lists every view.
-func TestExposureViewsResolveTheirDefaults(t *testing.T) {
+// The usage's hand-written view list names every view.
+func TestExposureUsageListsEveryView(t *testing.T) {
 	t.Parallel()
-	usage := exposureUsage()
+	views, _, _ := strings.Cut(exposureUsage(), "Available columns (per view):")
 	for _, view := range exposureFamily.names() {
-		if _, err := exposureFamily.build(nil, request{view: view, currency: "USD"}, nil).pick("default"); err != nil {
-			t.Errorf("%s defaults: %v", view, err)
-		}
-		if !strings.Contains(usage, "\n  "+view+" ") {
+		if !strings.Contains(views, "\n  "+view+" ") {
 			t.Errorf("usage does not list the %s view", view)
 		}
 	}

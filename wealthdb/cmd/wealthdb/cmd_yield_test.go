@@ -307,23 +307,16 @@ func TestYieldPrivacyAndFlags(t *testing.T) {
 	}
 }
 
-// Each view's default column set resolves against its registry, and the
-// usage lists every view with its columns and defaults, and names the
-// views --period and --converted apply to, every flag line within the
-// usage's width.
+// The usage's hand-written view list names every view, and the usage
+// names the views --period and --converted apply to, every flag line
+// within the usage's width.
 func TestYieldUsageListsEveryView(t *testing.T) {
 	t.Parallel()
 	usage := yieldUsage()
-	_, columns, _ := strings.Cut(usage, "Available columns (per view):")
-	_, defaults, _ := strings.Cut(columns, "Default column sets:")
+	views, _, _ := strings.Cut(usage, "Available columns (per view):")
 	for _, view := range yieldFamily.names() {
-		if _, err := yieldFamily.build(nil, request{view: view, currency: "USD"}, nil).pick("default"); err != nil {
-			t.Errorf("%s defaults: %v", view, err)
-		}
-		for what, text := range map[string]string{"views": usage, "columns": columns, "defaults": defaults} {
-			if !strings.Contains(text, "\n  "+view+" ") {
-				t.Errorf("usage does not list the %s view under its %s", view, what)
-			}
+		if !strings.Contains(views, "\n  "+view+" ") {
+			t.Errorf("usage does not list the %s view", view)
 		}
 	}
 	flat := strings.Join(strings.Fields(usage), " ")

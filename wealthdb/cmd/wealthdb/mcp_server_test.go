@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -130,22 +132,10 @@ func TestMCPToolList(t *testing.T) {
 	}
 }
 
-// TestMCPCoversEveryCLIView holds the tools against the CLI's reports,
-// the way TestUsageListsEverySubcommand holds the listing against
-// dispatch: a report the CLI gains cannot ship without its tool. A
-// tool's views are its family's, which the CLI routes by.
-func TestMCPCoversEveryCLIView(t *testing.T) {
+// TestEveryDiagnosticToolHasACommand: each diagnostic the server serves
+// beside the reports is a CLI command too.
+func TestEveryDiagnosticToolHasACommand(t *testing.T) {
 	t.Parallel()
-	served := map[string]bool{}
-	for _, tool := range newTestMCP("", false).tools() {
-		served[tool.name] = true
-	}
-	for _, name := range []string{"holdings", "returns", "spending", "income", "cashflow", "gains", "exposure", "yield"} {
-		if !served[name] {
-			t.Errorf("no tool serves the CLI's %s", name)
-		}
-	}
-	// The diagnostics the CLI has beside the reports.
 	for _, name := range []string{"transactions", "status", "snapshots", "resolutions", "categorizations"} {
 		if _, ok := subcommands[name]; !ok {
 			t.Errorf("the CLI has no %s, yet the server serves it", name)
@@ -298,6 +288,75 @@ func TestMCPCashflowPlanRefusals(t *testing.T) {
 		{map[string]any{"view": "projection", "level": "class"}, "projection takes no level or investing"},
 		{map[string]any{"view": "projection", "period": "total"}, "projection takes period monthly"},
 		{map[string]any{"view": "summary", "rates": "forward"}, "rates, maturing and shift belong to the projection view"},
+	})
+}
+
+// paramDefault finds the default a parameter's doc states: "(default
+// both)", "full (default)", "(primary, default)".
+var paramDefault = regexp.MustCompile(`\(default ([a-z0-9_]+)|([a-z0-9_]+) \(default[);]|\(([a-z0-9_]+), default\)`)
+
+// TestMCPParamDocsStateTheDefault: a parameter doc that states its
+// option's default states the one MCP applies (option.def), on every
+// view the option is the family's or the view's own.
+func TestMCPParamDocsStateTheDefault(t *testing.T) {
+	t.Parallel()
+	checked := 0
+	for _, spec := range toolSpecs {
+		fam := spec.family
+		if fam == nil {
+			continue
+		}
+		for _, p := range spec.params {
+			m := paramDefault.FindStringSubmatch(p.doc)
+			if m == nil || !slices.ContainsFunc(fam.options, func(o option) bool { return o.name == p.name }) {
+				continue
+			}
+			stated := m[1] + m[2] + m[3]
+			for i := range fam.views {
+				o := optionOf(fam.optionsFor(&fam.views[i]), p.name)
+				def := o.def[1]
+				switch {
+				case def == "" && o.kind == optFlag:
+					def = "false"
+				case def == "" && o.kind == optInt:
+					def = "0"
+				}
+				if def != stated {
+					t.Errorf("%s %s on %q: the doc says default %s, the option %q", spec.name, p.name,
+						fam.views[i].name, stated, def)
+				}
+			}
+			checked++
+		}
+	}
+	if checked < 10 {
+		t.Errorf("only %d documented defaults checked; the pattern misses the docs", checked)
+	}
+}
+
+// TestMCPGainsHoldingsRefusals: an option of one view is refused on the
+// others, never ignored: realized's documents and order, the cost-basis
+// reading off the views that count a missing basis, and positions' cash
+// and cost-basis reading.
+func TestMCPGainsHoldingsRefusals(t *testing.T) {
+	t.Parallel()
+	cs := connect(t, newTestMCP(setupGainsGold(t), false), time.Now())
+	refusals(t, cs, "gains", []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"view": "summary", "documents": "all"}, "gains: documents and newest_first belong to view=realized"},
+		{map[string]any{"view": "lots", "newest_first": true}, "gains: documents and newest_first belong to view=realized"},
+		{map[string]any{"view": "coverage", "missing_basis": "zero"}, "gains: missing_basis does not apply to view=coverage"},
+		{map[string]any{"view": "check", "missing_basis": "zero"}, "gains: missing_basis does not apply to view=check"},
+	})
+	refusals(t, cs, "holdings", []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"view": "accounts", "missing_basis": "zero"}, "holdings: missing_basis belongs to view=positions"},
+		{map[string]any{"view": "accounts", "with_cash": true}, "holdings: with_cash belongs to view=positions"},
+		{map[string]any{"with_cash": false}, "holdings: with_cash belongs to view=positions"},
 	})
 }
 

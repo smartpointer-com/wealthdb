@@ -17,7 +17,7 @@ func init() {
 var transactionsFamily = &family{
 	name: "transactions",
 	views: []view{{total: flowTotal, principal: fixedColumn("value"),
-		build: func(_ *config.Config, req request, _ *toolArgs) *report { return transactionsReport(req) }}},
+		build: func(_ *config.Config, req request) *report { return transactionsReport(req) }}},
 	options:  []option{{name: "newest_first", cli: []string{"r", "reverse"}, kind: optFlag}},
 	window:   pastMonth,
 	currency: true,

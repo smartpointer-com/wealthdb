@@ -87,7 +87,7 @@ func TestIncomePositionsAndTheCalendarAgree(t *testing.T) {
 		req := request{view: v, currency: "USD", from: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
 			to: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC).Unix() - 1, asOf: time.Date(2026, 11, 20, 23, 59, 59, 0,
 				time.UTC).Unix(), period: "annual", assumptions: yield.DefaultAssumptions}
-		rep := incomeFamily.build(nil, req, nil)
+		rep := incomeFamily.build(nil, req)
 		rows, err := rep.fetch(ctx, db)
 		if err != nil {
 			t.Fatalf("%s: %v", v, err)

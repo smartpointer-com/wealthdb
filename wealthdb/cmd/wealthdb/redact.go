@@ -20,8 +20,8 @@ import (
 //     so this branch isn't reached for JSON, but
 //     returning "" is the safe fallback).
 //
-// AccountID is always the visible placeholder — every format
-// needs row-identity to remain scannable. FreeText is likewise
+// PrivacyAccountID is always the visible placeholder — every format
+// needs row-identity to remain scannable. PrivacyFreeText is likewise
 // format-independent, but it masks the whole value: there is no
 // safe slice of a narrative to expose, since the identifying part
 // can sit anywhere in it. A Pseudonym cell takes its name from the

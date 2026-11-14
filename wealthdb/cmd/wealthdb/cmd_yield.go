@@ -40,7 +40,7 @@ var yieldFamily = &family{
 		yieldAggregateView("portfolios", yield.GrainPortfolios),
 		yieldAggregateView("accounts", yield.GrainAccounts),
 		{name: "positions", total: balanceTotal, principal: fixedColumn("value"),
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(bookView(req, buildYieldPositionColumns(req.currency, kindOf), defaultYieldPositionColumns,
 					func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.Position, error) {
@@ -81,7 +81,7 @@ var yieldFamily = &family{
 // it, and so does --converted. It carries a total row of its own.
 func yieldAggregateView(name string, grain yield.Grain) view {
 	return view{name: name, series: true, takes: []string{"converted"}, principal: fixedColumn("value"),
-		build: func(_ *config.Config, req request, _ *toolArgs) *report {
+		build: func(_ *config.Config, req request) *report {
 			ccy := req.currency
 			kindOf, loadKinds := sourceKinds()
 			return withLoads(seriesView(req, buildYieldRowColumns(ccy, grain, kindOf), yieldRowDefaults[grain],

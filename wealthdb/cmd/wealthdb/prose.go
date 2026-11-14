@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // wrapWords breaks s at spaces into lines of at most width bytes; a
 // longer word stands alone on its line.
@@ -102,4 +105,36 @@ func similarity(a, b string) float64 {
 // underscore read as a space, so an id spelling matches a label.
 func normalizeCell(s string) string {
 	return strings.TrimSpace(strings.ReplaceAll(strings.ToLower(s), "_", " "))
+}
+
+// tagNote is a tag a column prints and what it means: a quality tag, a
+// basis.
+type tagNote struct{ tag, meaning string }
+
+// tagNotes are tags as the usage texts list them: aligned, each meaning
+// wrapped beside its tag.
+func tagNotes(tags []tagNote) string {
+	width := 0
+	for _, q := range tags {
+		width = max(width, len(q.tag))
+	}
+	var b strings.Builder
+	for _, q := range tags {
+		tag := q.tag
+		for _, line := range wrapWords(q.meaning, 72-4-width-2) {
+			fmt.Fprintf(&b, "\n    %-*s  %s", width, tag, line)
+			tag = ""
+		}
+	}
+	return b.String()
+}
+
+// tagList are tags as the MCP help lists them: one "- tag: meaning."
+// line each.
+func tagList(tags []tagNote) string {
+	var b strings.Builder
+	for _, q := range tags {
+		b.WriteString("\n- " + q.tag + ": " + q.meaning + ".")
+	}
+	return b.String()
 }

@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// ---- keeping rows -------------------------------------------------------
-
 // keeps reports whether a printed cell meets the condition. A missing
 // cell meets only is empty and the negations.
 func (c condition) keeps(cell string) bool {

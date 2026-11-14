@@ -15,7 +15,7 @@ import (
 // Returns an empty TaxWrapper when the product is unrecognised
 // or empty — the caller should leave AccountChange.TaxWrapper
 // nil in that case so a config-side override can supply a value
-// (or gold's default-aware display renders 'taxable_personal').
+// (or gold's account_wrapper reads it as 'taxable_personal').
 func taxWrapperFor(accountProduct string) canonical.TaxWrapper {
 	switch accountProduct {
 	case "Trading", "Savings":

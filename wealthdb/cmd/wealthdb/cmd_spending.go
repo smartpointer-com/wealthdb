@@ -23,7 +23,7 @@ var spendingFamily = &family{
 	name: "spending",
 	views: []view{
 		{name: "summary", total: flowTotal, principal: fixedColumn("net_spend"), header: periodHeader,
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				part := reportPeriods[req.period]
 				return newReport(buildSpendSummaryColumnRegistry(req.currency, req.period), defaultSpendSummaryColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.SpendSummaryRow, error) {
@@ -31,7 +31,7 @@ var spendingFamily = &family{
 					})
 			}},
 		{name: "categories", total: flowTotal, principal: fixedColumn("net_spend"), header: periodLevelHeader,
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				part := reportPeriods[req.period]
 				return newReport(buildSpendCategoryColumnRegistry(req.currency, req.period), defaultSpendCategoryColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.SpendCategoryRow, error) {
@@ -39,7 +39,7 @@ var spendingFamily = &family{
 					})
 			}},
 		{name: "transactions", total: flowTotal, principal: fixedColumn("value"),
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildSpendTransactionColumnRegistry(req.currency, kindOf, req.categories),
 					defaultSpendTransactionColumns,
@@ -54,7 +54,7 @@ var spendingFamily = &family{
 				def: [2]string{"total", "total"}}},
 			refuses:  feesRefusedFlags,
 			keyAlias: map[string]string{"account": "entity"},
-			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+			build: func(cfg *config.Config, req request) *report {
 				return spendingFeesReport(req, cfg)
 			}},
 	},
@@ -67,12 +67,6 @@ var spendingFamily = &family{
 	narrow:   "from/to or a filter",
 	settle: func(_ *family, in optionSource, req *request, notes *[]string) error {
 		if req.view == "fees" {
-			// The CLI refuses the level as it parses it.
-			if !in.cli() {
-				if err := refuseOptions(in, "spending", "fees", feesRefusedFlags, ""); err != nil {
-					return err
-				}
-			}
 			var err error
 			req.period, err = choose(in, "spending", "period")
 			return err

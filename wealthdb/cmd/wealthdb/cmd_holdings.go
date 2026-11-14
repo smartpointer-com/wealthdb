@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
@@ -27,7 +26,7 @@ var holdingsFamily = &family{
 			principal: fixedColumn("total_value_outccy"),
 			// The global rollup is one fixed row, so its default column
 			// set is its whole registry.
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				ccy, asOf := req.currency, req.asOf
 				registry := buildGlobalColumnRegistry(ccy)
 				return newReport(registry, columnNames(registry), func(ctx context.Context, db *sql.DB) ([]gold.GlobalRow, error) {
@@ -45,7 +44,7 @@ var holdingsFamily = &family{
 			// common one, blank where they differ: a filter there would
 			// drop the rest.
 			excludes: []string{"tax_wrapper"},
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				ccy, asOf := req.currency, req.asOf
 				return newReport(buildSourceColumnRegistry(ccy), defaultSourceColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.SourceRow, error) {
@@ -56,7 +55,7 @@ var holdingsFamily = &family{
 		{
 			name: "portfolios", usage: portfoliosUsage, total: balanceTotal, principal: fixedColumn("total_value_outccy"),
 			excludes: []string{"tax_wrapper"},
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				ccy, asOf := req.currency, req.asOf
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildPortfolioColumnRegistry(ccy, kindOf), defaultPortfolioColumns,
@@ -67,7 +66,7 @@ var holdingsFamily = &family{
 		},
 		{
 			name: "accounts", usage: accountsUsage, total: balanceTotal, principal: fixedColumn("total_value_outccy"),
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				ccy, asOf := req.currency, req.asOf
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildAccountColumnRegistry(ccy, kindOf, req.categories), defaultAccountColumns,
@@ -79,7 +78,7 @@ var holdingsFamily = &family{
 		{
 			name: "positions", usage: positionsUsage, total: balanceTotal, principal: fixedColumn("value"),
 			takes: []string{"with_cash", "missing_basis"},
-			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+			build: func(cfg *config.Config, req request) *report {
 				ccy, asOf := req.currency, req.asOf
 				missing, withCash := missingOr(req.missing, cfg), req.withCash
 				kindOf, loadKinds := sourceKinds()
@@ -100,15 +99,13 @@ var holdingsFamily = &family{
 	narrow:     "a filter",
 	viewPrefix: true,
 	usage:      func() string { return holdingsUsage },
-	settle: func(_ *family, in optionSource, req *request, notes *[]string) error {
-		// The CLI knows the two flags on positions alone.
-		if req.view != "positions" && in.has("missing_basis") {
-			return fmt.Errorf("holdings: missing_basis belongs to view=positions")
-		}
-		req.withCash = req.view == "positions" && in.on("with_cash")
+	settle: func(fam *family, in optionSource, req *request, notes *[]string) error {
+		// The views that do not take with_cash know no such option: the
+		// CLI registers no flag there, MCP refuses it (refuseMCP).
+		req.withCash = in.on("with_cash")
 		// Cash is a position only when asked for; a filter for the cash
 		// class has asked.
-		if req.view == "positions" && !req.withCash && normalizeCell(in.str("asset_class")) == "cash" {
+		if fam.view(req.view).takesOption("with_cash") && !req.withCash && normalizeCell(in.str("asset_class")) == "cash" {
 			req.withCash = true
 			*notes = append(*notes, "with_cash on for the cash filter")
 		}

@@ -58,7 +58,7 @@ func (c reportColumn) filterKind() colKind {
 }
 
 // numeric reports whether the column's cells are figures.
-func (c reportColumn) numeric() bool { return c.kind != TextColumn && c.kind != DateColumn }
+func (c reportColumn) numeric() bool { return c.kind.figure() }
 
 // converted reports whether the column holds money in the output
 // currency, its header ending in _<CCY>.

@@ -268,12 +268,6 @@ func (fam *family) carries() map[string][]string {
 	return fam.carried
 }
 
-// buildDefault builds req's report with no call arguments: a view's
-// columns as describe lists them.
-func (fam *family) buildDefault(cfg *config.Config, req request) *report {
-	return fam.build(cfg, req, &toolArgs{values: map[string]any{}})
-}
-
 // defaultLookup is the column lookup of view at every option's default
 // (family.defaultRequest), in the configured currency. series reads the
 // view as a series, which prints its period column ahead of the view's
@@ -283,7 +277,7 @@ func (fam *family) defaultLookup(cfg *config.Config, view string, series bool) c
 	if series {
 		req.series = []seriesPoint{{}}
 	}
-	return fam.lookup(fam.buildDefault(cfg, req), req)
+	return fam.lookup(fam.build(cfg, req), req)
 }
 
 // escalate picks the view a call's filters need. A small model starts

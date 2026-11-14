@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
@@ -23,13 +23,11 @@ var bridgeRefusedFlags = []string{"method", "annualize", "netting", "inception",
 func checkBridgeWindow(fromEpoch, toEpoch, today int64) error {
 	from, to := time.Unix(fromEpoch, 0).UTC(), time.Unix(toEpoch, 0).UTC()
 	if fromEpoch > 0 && from.Day() != 1 {
-		return errs.Newf(errs.ExitUsage, "returns: bridge reads whole months: from %s is no month's first day",
-			from.Format(time.DateOnly))
+		return fmt.Errorf("bridge reads whole months: from %s is no month's first day", from.Format(time.DateOnly))
 	}
 	lastOfMonth := to.AddDate(0, 0, 1).Day() == 1
 	if !lastOfMonth && toEpoch < today {
-		return errs.Newf(errs.ExitUsage, "returns: bridge reads whole months: to %s is no month's last day",
-			to.Format(time.DateOnly))
+		return fmt.Errorf("bridge reads whole months: to %s is no month's last day", to.Format(time.DateOnly))
 	}
 	return nil
 }

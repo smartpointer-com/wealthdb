@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// ---- binding ------------------------------------------------------------
-
 // filterTarget is one view's columns, for conditions to bind to.
 type filterTarget struct {
 	view    string // the view's name in a message ("positions"; "" for a tool of one shape)
@@ -107,7 +105,7 @@ func (t filterTarget) bindOne(r rawCond) (condition, error) {
 			}
 			c.days = append(c.days, [2]int64{lo, hi})
 			canon = append(canon, v)
-			if v != epochDayString(lo) || lo != hi {
+			if v != formatEpochDay(lo) || lo != hi {
 				ranges = append(ranges, periodNote(r.op.name, lo, hi))
 			}
 		default:
@@ -128,7 +126,7 @@ func (t filterTarget) bindOne(r rawCond) (condition, error) {
 // redactedClass is a privacy class whose cells the privacy endpoint
 // hides, so a condition on it could only probe the hidden value.
 func redactedClass(p PrivacyClass) bool {
-	return p == PrivacyMoney || p == PrivacyQuantity || p == PrivacyFreeText
+	return p.hidesFigure() || p == PrivacyFreeText
 }
 
 // columnNamed reports the column a value names exactly, for a

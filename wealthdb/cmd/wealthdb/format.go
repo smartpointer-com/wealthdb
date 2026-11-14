@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
@@ -77,4 +79,73 @@ func thousands(n int) string {
 		s = s[:i] + "," + s[i:]
 	}
 	return s
+}
+
+// fixedOrBlank is a figure with prec decimals, blank for nil.
+func fixedOrBlank(p *float64, prec int) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*p, 'f', prec, 64)
+}
+
+// strOrEmpty is a nullable text, blank for nil.
+func strOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// formatDate is an epoch second's UTC date.
+func formatDate(epoch int64) string {
+	return time.Unix(epoch, 0).UTC().Format("2006-01-02")
+}
+
+// formatEpochDay renders a day number (days since the epoch) as a date.
+func formatEpochDay(day int64) string {
+	return formatDate(day * gold.SecondsPerDay)
+}
+
+// formatPercent is a figure already in percent with two decimals, blank
+// for nil.
+func formatPercent(p *float64) string { return fixedOrBlank(p, 2) }
+
+// intOrEmpty is a nullable count, blank for nil.
+func intOrEmpty(p *int64) string {
+	if p == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *p)
+}
+
+// yesNo renders a stated flag, empty where the source states nothing.
+func yesNo(b *bool) string {
+	switch {
+	case b == nil:
+		return ""
+	case *b:
+		return "yes"
+	default:
+		return "no"
+	}
+}
+
+// unsignedZero is a figure's cell without the sign of a zero: a tiny
+// negative that rounds to zero prints as 0.00, never as -0.00.
+func unsignedZero(cell string) string {
+	digits, negative := strings.CutPrefix(cell, "-")
+	if !negative || digits == "" || digits[0] < '0' || digits[0] > '9' || strings.Trim(digits, "0.") != "" {
+		return cell
+	}
+	return digits
+}
+
+// periodStart renders the bucket's opening date, empty for the
+// `total` bucket, which has no start beyond the window's own.
+func periodStart(periodStart *int64) string {
+	if periodStart == nil {
+		return ""
+	}
+	return formatDate(*periodStart)
 }

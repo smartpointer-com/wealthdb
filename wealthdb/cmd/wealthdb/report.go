@@ -86,6 +86,10 @@ type request struct {
 	allDocuments bool              // gains realized: every copy of a sale, not the primary set
 	missing      lots.MissingBasis // gains, holdings positions: how a missing cost basis counts
 	categories   typedCategories   // the account_category values -p prints as pseudonyms
+
+	verbose          bool   // status: the counts of the rows nothing classified
+	latestOnly       bool   // snapshots: each source's latest snapshot alone
+	categorizeFamily string // categorizations: the family a call names, "" for both
 }
 
 // newReport wraps a typed registry and fetch function as a report.
@@ -226,25 +230,29 @@ type reportOutput struct {
 // views that print it.
 type cliFilter struct {
 	conds []string
-	tool  string
 	fam   *family
 	req   request
 	cfg   *config.Config
 	now   time.Time
 }
 
+// view is the name of the view the conditions bind to: "" for a tool of
+// one shape, whose request may name a view no command spells (status
+// --marks).
+func (f *cliFilter) view() string { return f.fam.view(f.req.view).name }
+
 // label names the command in a condition's message: "wealthdb yield
-// positions".
+// positions", "wealthdb status".
 func (f *cliFilter) label() string {
-	return strings.TrimSpace("wealthdb " + f.tool + " " + f.req.view)
+	return strings.TrimSpace("wealthdb " + f.fam.name + " " + f.view())
 }
 
 // bind reads the conditions against rep, as the server reads its filter
 // parameter.
 func (f *cliFilter) bind(rep *report, privacy bool) ([]condition, error) {
 	front := filterFront{prefix: f.label() + ":", cli: true}
-	target := filterTarget{view: f.req.view, lookup: f.fam.lookup(rep, f.req), privacy: privacy, now: f.now, front: front,
-		elsewhere: func(col string) string { return columnElsewhere(f.cfg, f.tool, f.req.view, col, true) }}
+	target := filterTarget{view: f.view(), lookup: f.fam.lookup(rep, f.req), privacy: privacy, now: f.now, front: front,
+		elsewhere: func(col string) string { return columnElsewhere(f.cfg, f.fam.name, f.view(), col, true) }}
 	raws, bad := parseConditions(f.conds, front)
 	conds, err := target.bind(raws, bad)
 	if err != nil {
@@ -280,30 +288,17 @@ func writeReport(ctx context.Context, rep *report, out reportOutput, open func()
 	if err != nil {
 		return err
 	}
-	// Under -p, pseudonyms number over every row: the default columns
-	// first, as the default output prints them, then every other column.
-	// So a typed value reads one name whatever -C shows and whatever rows
-	// -F keeps.
-	var names *pseudonyms
-	if out.privacy {
-		names = newPseudonyms()
-		if defaults, err := rep.pick("default"); err == nil {
-			rows.table(nil, defaults, true, output.FormatTable, names)
-		}
-	}
 	if out.filter == nil {
-		if names != nil {
-			rows.table(nil, rep.allColumns(), true, output.FormatTable, names)
+		// Under -p the pseudonyms number as a filtered run's do
+		// (numberedCells).
+		var names *pseudonyms
+		if out.privacy {
+			_, names = numberedCells(rep, rows)
 		}
 		return writeFormatted(w, out.format, rows.table(nil, cols, out.privacy, out.format, names))
 	}
-	rs := newResultSet(rep, rows, false)
-	if names != nil {
-		// The conditions read the cells as printed, so they number the
-		// same way.
-		rs = &resultSet{rep: rep, rows: rows, privacy: true, names: names,
-			cells: rows.table(nil, rep.allColumns(), true, output.FormatTable, names).Rows}
-	}
+	// The conditions read the cells as printed.
+	rs := newResultSet(rep, rows, out.privacy)
 	all := rs.filter(nil, "")
 	idx, _ := keepRows(rs.cells, all, conds)
 	if err := writeFormatted(w, out.format, rows.table(idx, cols, out.privacy, out.format, rs.names)); err != nil {

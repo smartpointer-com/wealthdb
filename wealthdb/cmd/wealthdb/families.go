@@ -20,16 +20,16 @@ import (
 // A report family is a command of the CLI and a tool of the MCP server:
 // its views, how it reads its dates, and how a front-end's options
 // become a request. A view is one row: how its report is built and
-// everything the front-ends need to know of it. Each family is declared
-// beside its registries, in cmd_<family>.go.
+// everything the front-ends need to know of it. Each report family is
+// declared beside its registries in cmd_<family>.go; the diagnostics'
+// in mcp_tools.go.
 
 // view is one view of a family.
 type view struct {
 	name string
 	// build is the view's report, the runner the CLI and the MCP server
-	// share. a holds an MCP call's arguments, which only the diagnostics
-	// read; the CLI passes nil.
-	build func(cfg *config.Config, req request, a *toolArgs) *report
+	// share.
+	build func(cfg *config.Config, req request) *report
 	// total says how the view's money adds up over its rows, for the
 	// total line of a filtered result.
 	total totalRule
@@ -42,11 +42,11 @@ type view struct {
 	side bool
 	// series says --period (period on MCP) makes the view a series.
 	series bool
-	// forward says the view looks forward: its window defaults to the
-	// horizon after the current month and may reach into the future
-	// (parseForwardWindow). window is how the CLI reads its FROM [TO].
-	forward bool
-	window  windowParser
+	// window is how a view that looks forward reads its FROM and TO (from
+	// and to on MCP): its window defaults to the horizon after the current
+	// month and may reach into the future (parseForwardWindow). nil for a
+	// view that does not look forward.
+	window windowParser
 	// checkWindow refuses a window the view cannot read (the bridge's
 	// whole months); today is the end of the current day.
 	checkWindow func(from, to, today int64) error
@@ -58,9 +58,12 @@ type view struct {
 	takes []string
 	// options replace the family's options of the same name on this view
 	// (spending fees' period); refuses are the family's options the view
-	// does not take, which the CLI registers to refuse by name.
-	options []option
-	refuses []string
+	// does not take, which the CLI registers to refuse by name. refuseWhy
+	// follows an MCP refusal of one of them, or of the currency of a view
+	// in its own currencies (ownCurrency).
+	options   []option
+	refuses   []string
+	refuseWhy string
 	// fixed marks a view of one fixed shape (holdings global): the CLI
 	// takes no -C and no -F there.
 	fixed bool
@@ -78,6 +81,10 @@ type view struct {
 	// usage is the view's own -h text, where it has one (holdings).
 	usage func() string
 }
+
+// forward reports whether the view looks forward: it reads its own
+// window.
+func (v *view) forward() bool { return v.window != nil }
 
 // takesOption reports whether the view takes option, one of the
 // family's options only some views take.
@@ -189,7 +196,7 @@ func (fam *family) seriesViews() []string {
 
 // forwardViews are the views that look forward, in order.
 func (fam *family) forwardViews() []string {
-	return fam.namesWhere(func(v *view) bool { return v.forward })
+	return fam.namesWhere((*view).forward)
 }
 
 // taking are the views that take option, in order.
@@ -213,12 +220,12 @@ func (fam *family) view(name string) *view {
 }
 
 // build is req's report: its view's.
-func (fam *family) build(cfg *config.Config, req request, a *toolArgs) *report {
+func (fam *family) build(cfg *config.Config, req request) *report {
 	v := fam.view(req.view)
 	if v == nil {
 		panic(fmt.Sprintf("%s: no view %q", fam.name, req.view))
 	}
-	return v.build(cfg, req, a)
+	return v.build(cfg, req)
 }
 
 // headerFor names the options in force for req: the family's, then its
@@ -249,25 +256,18 @@ func (fam *family) walk(name string) []string {
 	return fam.ladder()
 }
 
-// reportFamilies are the report tools and commands by name, in
-// describe's order: where a column a view lacks is printed instead, and
-// the family a CLI condition binds with. They are the tools whose family
-// reads a window or a date; the diagnostics read neither.
-var reportFamilies = func() []reportFamily {
-	var out []reportFamily
+// reportFamilies are the report families, in describe's order: where
+// columnElsewhere looks for a column a view lacks. They are the tools
+// whose family reads a window or a date; the diagnostics read neither.
+var reportFamilies = func() []*family {
+	var out []*family
 	for _, t := range toolSpecs {
 		if t.family != nil && t.family.window != noWindow {
-			out = append(out, reportFamily{t.family.name, t.family})
+			out = append(out, t.family)
 		}
 	}
 	return out
 }()
-
-// reportFamily is a report family by its name.
-type reportFamily struct {
-	name string
-	fam  *family
-}
 
 // columnSets is the tail of a family's usage text for views: each
 // view's columns, then each view's default set, one line each, the
@@ -278,7 +278,7 @@ func columnSets(fam *family, pad int, views []string, req request, columns map[s
 	var a, d strings.Builder
 	for _, name := range views {
 		req.view = name
-		rep := fam.build(nil, req, nil)
+		rep := fam.build(nil, req)
 		cols, ok := columns[name]
 		if !ok {
 			names := make([]string, len(rep.columns))
@@ -400,14 +400,11 @@ type cliOptions struct {
 	now  time.Time
 }
 
-// cliShared are the spellings of the options every report registers
-// (registerReportFlags) and the as-of date.
-var cliShared = map[string][]string{"currency": {"x", "currency"}, "columns": {"C", "columns"},
-	"filter": {"F", "filter"}, "format": {"f", "format"}, "privacy": {"p", "privacy"}}
-
+// names are the CLI spellings of the option: the family's, or the
+// output currency's, which every report registers (currencyFlags).
 func (c cliOptions) names(name string) []string {
-	if n, ok := cliShared[name]; ok {
-		return n
+	if name == "currency" {
+		return currencyFlags
 	}
 	return optionOf(c.opts, name).cli
 }
@@ -524,13 +521,18 @@ func (m mcpOptions) series(cmd string, views []string, req *request, notes *[]st
 	return seriesArg(cmd, views, m.a, req, notes)
 }
 
-// settleMCP settles an MCP call's options for req's view: the family's
-// settle, then its after.
+// settleMCP settles an MCP call's options for req's view: the options
+// the view does not take refused first, as the CLI refuses them while it
+// parses, then the family's settle, then its after.
 func (fam *family) settleMCP(a *toolArgs, req *request, notes *[]string) error {
 	if fam.settle == nil {
 		return nil
 	}
-	in := mcpOptions{a: a, opts: fam.optionsFor(fam.view(req.view))}
+	v := fam.view(req.view)
+	in := mcpOptions{a: a, opts: fam.optionsFor(v)}
+	if err := fam.refuseMCP(in, v); err != nil {
+		return err
+	}
 	if err := fam.settle(fam, in, req, notes); err != nil {
 		return err
 	}
@@ -538,6 +540,22 @@ func (fam *family) settleMCP(a *toolArgs, req *request, notes *[]string) error {
 		return nil
 	}
 	return fam.after(in, nil, req)
+}
+
+// refuseMCP refuses the options of an MCP call that v does not take:
+// one only its sibling views take (option.only), then the currency of a
+// view in its own currencies and those v refuses, with v.refuseWhy.
+func (fam *family) refuseMCP(in mcpOptions, v *view) error {
+	for _, o := range in.opts {
+		if o.only && !v.takesOption(o.name) && in.has(o.name) {
+			return fmt.Errorf("%s: %s belongs to view=%s", fam.name, o.name, andList(fam.taking(o.name)))
+		}
+	}
+	refused := v.refuses
+	if v.ownCurrency != "" {
+		refused = append([]string{"currency"}, refused...)
+	}
+	return refuseOptions(in, fam.name, v.name, refused, v.refuseWhy)
 }
 
 // defaultRequest is a request for view with every option at its MCP
@@ -606,7 +624,7 @@ func runReport(ctx context.Context, g globalFlags, fam *family, view string, arg
 		fmtChoice, cfg, req.currency, err = rf.resolve(g, prefix)
 		return err
 	}
-	window := func() error { return fam.readWindow(fs, v, prefix, now, cfg, &req) }
+	window := func() error { return fam.readWindow(in, v, prefix, now, cfg, &req) }
 	steps := []func() error{window, resolve}
 	if fam.configFirst {
 		steps = []func() error{resolve, window}
@@ -626,16 +644,17 @@ func runReport(ctx context.Context, g globalFlags, fam *family, view string, arg
 	if skeletons {
 		return fam.skeletons(ctx, open, req.asOf, req.currency, stdout)
 	}
-	out := rf.output(fmtChoice, fam.name, fam, req, cfg, now)
+	out := rf.output(fmtChoice, fam, req, cfg, now)
 	out.prefix = prefix
-	return writeReport(ctx, fam.build(cfg, req, nil), out, open, stdout)
+	return writeReport(ctx, fam.build(cfg, req), out, open, stdout)
 }
 
-// readWindow reads the CLI's window into req under the family's rule:
-// the as-of date (-d), or FROM [TO] with the family's default, the
+// readWindow reads the CLI's window off in into req under the family's
+// rule: the as-of date (-d), or FROM [TO] with the family's default, the
 // view's own parser for a forward view. A family with forward views
 // reads them at today.
-func (fam *family) readWindow(fs *flag.FlagSet, v *view, prefix string, now time.Time, cfg *config.Config, req *request) error {
+func (fam *family) readWindow(in cliOptions, v *view, prefix string, now time.Time, cfg *config.Config, req *request) error {
+	fs := in.fs
 	var err error
 	switch fam.window {
 	case asOfDate:
@@ -645,7 +664,7 @@ func (fam *family) readWindow(fs *flag.FlagSet, v *view, prefix string, now time
 				return err
 			}
 		}
-		if req.asOf, err = parseAsOf(cliOptions{fs: fs, opts: fam.options}.str("as_of"), now); err != nil {
+		if req.asOf, err = parseAsOf(in.str("as_of"), now); err != nil {
 			return errs.Newf(errs.ExitUsage, "%s: %s", prefix, err.Error())
 		}
 		return nil
@@ -655,7 +674,9 @@ func (fam *family) readWindow(fs *flag.FlagSet, v *view, prefix string, now time
 			return errs.Newf(errs.ExitUsage, "%s: %s", prefix, err.Error())
 		}
 		if v.checkWindow != nil {
-			return v.checkWindow(req.from, req.to, anchorToDay(now.UTC(), true).Unix())
+			if err := v.checkWindow(req.from, req.to, anchorToDay(now.UTC(), true).Unix()); err != nil {
+				return errs.Newf(errs.ExitUsage, "%s: %s", prefix, err.Error())
+			}
 		}
 		return nil
 	case trailingYear:

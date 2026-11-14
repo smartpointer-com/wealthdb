@@ -117,7 +117,7 @@ func runStatusMarks(ctx context.Context, g globalFlags, fs *flag.FlagSet, rf *re
 	}
 	req := request{view: "marks", currency: outCcy, from: fromEpoch, to: toEpoch}
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, marksReport(req), rf.output(fmtChoice, "status", marksFamily, req, cfg, g.clock()), open, stdout)
+	return writeReport(ctx, marksReport(req), rf.output(fmtChoice, marksFamily, req, cfg, g.clock()), open, stdout)
 }
 
 // marksReport is `status --marks`, the runner the CLI and the MCP server

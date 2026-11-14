@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/csv"
 	"maps"
 	"net/http"
@@ -987,7 +988,7 @@ func typedLabelCalls(s *mcpServer, today time.Time) []typedLabelCall {
 				c.cli = append(c.cli, view)
 			}
 			window := [2]string{"2026-04-01", "2026-06-30"}
-			if fam.view(view).forward {
+			if fam.view(view).forward() {
 				window = fwd
 			}
 			if spec.name == "cashflow" && view == "projection" {
@@ -1468,5 +1469,36 @@ func TestPrivacyPseudonymsHoldWithinARun(t *testing.T) {
 				t.Errorf("sorted, at offset %d: %s reads %q, want %q as unpaged", offset, source, name, names[source])
 			}
 		}
+	}
+}
+
+// TestPseudonymsNumberAsTheDefaultOutput: a CLI run and an MCP call
+// number pseudonyms alike (numberedCells): the default columns first,
+// over every row, then the rest. So a value a default column prints
+// takes the first number even where a column the defaults leave out
+// comes before it in the registry, as it does in the CLI's output.
+func TestPseudonymsNumberAsTheDefaultOutput(t *testing.T) {
+	t.Parallel()
+	type row struct{ alias, label string }
+	typed := func(name string, get func(row) string) columnSpec[row] {
+		return columnSpec[row]{Name: name, Privacy: PrivacyPseudonym, Extract: get,
+			Pseudonym: func(row) (string, string) { return "manual", "" }}
+	}
+	registry := []columnSpec[row]{typed("alias", func(r row) string { return r.alias }),
+		typed("label", func(r row) string { return r.label })}
+	rows := []row{{"Example Alias", "Example Label"}, {"Other Alias", "Example Alias"}}
+	rep := newReport(registry, []string{"label"}, func(context.Context, *sql.DB) ([]row, error) { return rows, nil })
+	fetched, err := rep.fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := newResultSet(rep, fetched, true)
+	want := [][]string{{"manual-2", "manual-1"}, {"manual-3", "manual-2"}}
+	if !slices.EqualFunc(rs.cells, want, slices.Equal) {
+		t.Errorf("cells = %q, want %q", rs.cells, want)
+	}
+	if got := fetched.table(nil, []int{1}, true, output.FormatTable, rs.names).Rows; got[0][0] != "manual-1" ||
+		got[1][0] != "manual-2" {
+		t.Errorf("the default output reads %q, want manual-1 and manual-2", got)
 	}
 }

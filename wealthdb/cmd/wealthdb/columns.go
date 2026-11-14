@@ -3,12 +3,9 @@ package main
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
@@ -70,13 +67,17 @@ const (
 	DateColumn     // a date or a period, read through the date grammar
 )
 
+// figure reports whether the kind's cells are figures: every kind but
+// text and dates.
+func (k ColumnKind) figure() bool { return k != TextColumn && k != DateColumn }
+
 // align is how a column of the kind pads: text and dates to the left,
 // figures to the right.
 func (k ColumnKind) align() output.Alignment {
-	if k == TextColumn || k == DateColumn {
-		return output.AlignLeft
+	if k.figure() {
+		return output.AlignRight
 	}
-	return output.AlignRight
+	return output.AlignLeft
 }
 
 // MoneyUnit is the currency of a money column's figures.
@@ -152,6 +153,10 @@ const (
 	// "*****.**" verbatim.
 	PrivacyMoney
 )
+
+// hidesFigure reports whether the class hides a figure whole: money and
+// a quantity.
+func (p PrivacyClass) hidesFigure() bool { return p == PrivacyMoney || p == PrivacyQuantity }
 
 // header returns the column's display label — Header if set,
 // else Name. Used so registries can carry a stable lookup name
@@ -285,6 +290,14 @@ func outCcyCol[T any](name, outCcy string, get func(T) *string) columnSpec[T] {
 	return inOutCcy(moneyCol(name, get), outCcy)
 }
 
+// outCcyColAs is outCcyCol printed header: a figure whose header is no
+// <name>_<CCY> (returns' start_<CCY> for start_value).
+func outCcyColAs[T any](name, header, outCcy string, get func(T) *string) columnSpec[T] {
+	c := outCcyCol(name, outCcy, get)
+	c.Header = header
+	return c
+}
+
 // valueCol is a holding's value in the output currency, named value:
 // market_value's twin.
 func valueCol[T any](outCcy string, get func(T) *string) columnSpec[T] {
@@ -344,10 +357,16 @@ func asDate[T any](c columnSpec[T]) columnSpec[T] {
 // qualityCol is a report's quality column.
 func qualityCol[T any](get func(T) string) columnSpec[T] { return strCol("quality", get) }
 
-// floatMoneyCol is a money figure in the output currency, named name and
-// printed name_<CCY>, two decimals, blank for nil, redacted as money.
+// floatOwnMoneyCol is a money figure in its own currency, two decimals,
+// blank for nil, redacted as money.
+func floatOwnMoneyCol[T any](name string, get func(T) *float64) columnSpec[T] {
+	return kindCol(name, MoneyColumn, func(r T) string { return fixedOrBlank(get(r), 2) })
+}
+
+// floatMoneyCol is floatOwnMoneyCol in the output currency, printed
+// name_<CCY>.
 func floatMoneyCol[T any](name, outCcy string, get func(T) *float64) columnSpec[T] {
-	return inOutCcy(kindCol(name, MoneyColumn, func(r T) string { return fixedOrBlank(get(r), 2) }), outCcy)
+	return inOutCcy(floatOwnMoneyCol(name, get), outCcy)
 }
 
 // floatValCol is floatMoneyCol of a figure every row has.
@@ -365,54 +384,6 @@ func priceCol[T any](get func(T) *float64) columnSpec[T] {
 // a ratio such as P/E.
 func decimalCol[T any](name string, get func(T) *float64) columnSpec[T] {
 	return kindCol(name, NumberColumn, func(r T) string { return fixedOrBlank(get(r), 2) })
-}
-
-// tagNote is a tag a column prints and what it means: a quality tag, a
-// basis.
-type tagNote struct{ tag, meaning string }
-
-// tagNotes are tags as the usage texts list them: aligned, each meaning
-// wrapped beside its tag.
-func tagNotes(tags []tagNote) string {
-	width := 0
-	for _, q := range tags {
-		width = max(width, len(q.tag))
-	}
-	var b strings.Builder
-	for _, q := range tags {
-		tag := q.tag
-		for _, line := range wrapWords(q.meaning, 72-4-width-2) {
-			fmt.Fprintf(&b, "\n    %-*s  %s", width, tag, line)
-			tag = ""
-		}
-	}
-	return b.String()
-}
-
-// tagList are tags as the MCP help lists them: one "- tag: meaning."
-// line each.
-func tagList(tags []tagNote) string {
-	var b strings.Builder
-	for _, q := range tags {
-		b.WriteString("\n- " + q.tag + ": " + q.meaning + ".")
-	}
-	return b.String()
-}
-
-// fixedOrBlank is a figure with prec decimals, blank for nil.
-func fixedOrBlank(p *float64, prec int) string {
-	if p == nil {
-		return ""
-	}
-	return strconv.FormatFloat(*p, 'f', prec, 64)
-}
-
-// strOrEmpty is a nullable text, blank for nil.
-func strOrEmpty(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
 }
 
 // dateCol is a date column, blank where the epoch is 0: a source that
@@ -434,16 +405,6 @@ func datePtrCol[T any](name string, get func(T) *int64) columnSpec[T] {
 		}
 		return ""
 	}))
-}
-
-// formatDate is an epoch second's UTC date.
-func formatDate(epoch int64) string {
-	return time.Unix(epoch, 0).UTC().Format("2006-01-02")
-}
-
-// formatEpochDay renders a day number (days since the epoch) as a date.
-func formatEpochDay(day int64) string {
-	return formatDate(day * gold.SecondsPerDay)
 }
 
 // pctCol is a figure already in percent, named name and printed
@@ -474,10 +435,6 @@ func ratioOrBlankCol[T any](name, header string, get func(T) *float64) columnSpe
 	return percentCol(name, header, func(r T) string { return formatPctOrBlank(get(r)) })
 }
 
-// formatPercent is a figure already in percent with two decimals, blank
-// for nil.
-func formatPercent(p *float64) string { return fixedOrBlank(p, 2) }
-
 // countCol is a legible count.
 func countCol[T any](name string, get func(T) int64) columnSpec[T] {
 	return kindCol(name, CountColumn, func(r T) string { return fmt.Sprintf("%d", get(r)) })
@@ -488,29 +445,9 @@ func intPtrCol[T any](name string, get func(T) *int64) columnSpec[T] {
 	return kindCol(name, CountColumn, func(r T) string { return intOrEmpty(get(r)) })
 }
 
-// intOrEmpty is a nullable count, blank for nil.
-func intOrEmpty(p *int64) string {
-	if p == nil {
-		return ""
-	}
-	return fmt.Sprintf("%d", *p)
-}
-
 // yesNoCol is a stated flag, blank where the source states nothing.
 func yesNoCol[T any](name string, get func(T) *bool) columnSpec[T] {
 	return strCol(name, func(r T) string { return yesNo(get(r)) })
-}
-
-// yesNo renders a stated flag, empty where the source states nothing.
-func yesNo(b *bool) string {
-	switch {
-	case b == nil:
-		return ""
-	case *b:
-		return "yes"
-	default:
-		return "no"
-	}
 }
 
 func joinColumnNames[T any](registry []columnSpec[T]) string {
@@ -558,7 +495,7 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 	if privacy && format == output.FormatJSON {
 		kept := make([]columnSpec[T], 0, len(cols))
 		for _, c := range cols {
-			if class := c.class(); class == PrivacyMoney || class == PrivacyQuantity {
+			if c.class().hidesFigure() {
 				continue
 			}
 			kept = append(kept, c)
@@ -570,14 +507,16 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 		Aligns:  make([]output.Alignment, len(cols)),
 	}
 	extract := make([]func(T) string, len(cols))
+	classes := make([]PrivacyClass, len(cols))
 	for i, c := range cols {
 		t.Columns[i] = c.header()
 		t.Aligns[i] = c.Kind.align()
+		classes[i] = c.class()
 		extract[i] = c.Extract
 		if privacy && c.PrivacyExtract != nil {
 			extract[i] = c.PrivacyExtract
 		}
-		if figure := extract[i]; c.Kind.align() == output.AlignRight {
+		if figure := extract[i]; c.Kind.figure() {
 			extract[i] = func(r T) string { return unsignedZero(figure(r)) }
 		}
 	}
@@ -586,7 +525,7 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 		for i, c := range cols {
 			cell := extract[i](r)
 			if privacy {
-				class := c.class()
+				class := classes[i]
 				if c.PrivacyFunc != nil {
 					class = c.PrivacyFunc(r)
 				}
@@ -613,16 +552,6 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 		t.Rows = append(t.Rows, cells)
 	}
 	return t
-}
-
-// unsignedZero is a figure's cell without the sign of a zero: a tiny
-// negative that rounds to zero prints as 0.00, never as -0.00.
-func unsignedZero(cell string) string {
-	digits, negative := strings.CutPrefix(cell, "-")
-	if !negative || digits == "" || digits[0] < '0' || digits[0] > '9' || strings.Trim(digits, "0.") != "" {
-		return cell
-	}
-	return digits
 }
 
 // sensitiveIDPatterns are the shapes that scrubSensitiveIDs masks
@@ -663,8 +592,8 @@ var sensitiveIDPatterns = []struct {
 		// house number, a comma, a postal code of four or five digits
 		// and a town, to the end of the value. A bank can name a
 		// mortgage by the property. The product name before it stays.
-		// web/provision.py's ADDRESS_PATTERN is the same pattern for
-		// the privacy twins, and both engines read it as RE2.
+		// web/sqlkit.py's ADDRESS_PATTERN is the same pattern for the
+		// privacy twins, and both engines read it as RE2.
 		re: regexp.MustCompile(`, [^,]* \d+[a-zA-Z]?, \d{4,5} .*$`),
 		mask: func(m string) string {
 			return strings.Map(func(r rune) rune {

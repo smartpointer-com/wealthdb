@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 	"unicode"
-)
 
-// ---- values -------------------------------------------------------------
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+)
 
 // fixableValue is a value that does not read, with the plain forms that
 // would.
@@ -106,7 +106,9 @@ var (
 // where day and month are ambiguous.
 func parseDateValue(v string, now time.Time) (int64, int64, error) {
 	s := strings.TrimSpace(v)
-	day := func(y, m, d int) int64 { return time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC).Unix() / 86400 }
+	day := func(y, m, d int) int64 {
+		return time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC).Unix() / gold.SecondsPerDay
+	}
 	atoi := func(s string) int { n, _ := strconv.Atoi(s); return n }
 	switch {
 	case isoDayRe.MatchString(s):
@@ -139,7 +141,7 @@ func parseDateValue(v string, now time.Time) (int64, int64, error) {
 		if err != nil {
 			return 0, 0, fixableValue{}
 		}
-		return lo.Unix() / 86400, hi.Unix() / 86400, nil
+		return lo.Unix() / gold.SecondsPerDay, hi.Unix() / gold.SecondsPerDay, nil
 	}
 	pad := func(n int) string { return fmt.Sprintf("%02d", n) }
 	if m := slashDayRe.FindStringSubmatch(s); m != nil {
@@ -191,25 +193,23 @@ func parseDateValue(v string, now time.Time) (int64, int64, error) {
 	return 0, 0, fixableValue{}
 }
 
-func epochDayString(d int64) string { return formatDate(d * 86400) }
-
 // periodNote is the header's reading of a date value under op: the
 // days it keeps.
 func periodNote(op string, lo, hi int64) string {
 	switch op {
 	case "<":
-		return "before " + epochDayString(lo)
+		return "before " + formatEpochDay(lo)
 	case "<=":
-		return "to " + epochDayString(hi)
+		return "to " + formatEpochDay(hi)
 	case ">":
-		return "after " + epochDayString(hi)
+		return "after " + formatEpochDay(hi)
 	case ">=":
-		return "from " + epochDayString(lo)
+		return "from " + formatEpochDay(lo)
 	}
 	if lo == hi {
-		return epochDayString(lo)
+		return formatEpochDay(lo)
 	}
-	return epochDayString(lo) + " → " + epochDayString(hi)
+	return formatEpochDay(lo) + " → " + formatEpochDay(hi)
 }
 
 // cellDay is the first day a date or period cell names, in epoch days:
@@ -233,7 +233,7 @@ func cellDay(cell string) (int64, bool) {
 	}
 	day := func(y, m, d int) (int64, bool) {
 		t := time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC)
-		return t.Unix() / 86400, m >= 1 && m <= 12 && int(t.Month()) == m && t.Day() == d
+		return t.Unix() / gold.SecondsPerDay, m >= 1 && m <= 12 && int(t.Month()) == m && t.Day() == d
 	}
 	y, ok := digits(cell[:min(4, len(cell))])
 	switch {

@@ -230,7 +230,7 @@ func TestIncomeCLIEndToEnd(t *testing.T) {
 // `wealthdb income types 2025 --period annual` — so without the
 // reordering the documented invocation fails.
 //
-// It drives the COMMAND, not the helper. runIncomeView is where the
+// It drives the COMMAND, not the helper: runReport is where the
 // reordering is either applied or forgotten; a test of
 // reorderFlagsFirst alone passes with the call site deleted, which is
 // the defect it was written to catch.
@@ -318,40 +318,22 @@ func TestIncomeTransactionPrivacyClasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("columns: %v", err)
 	}
+	// The shared line columns are txnLineClasses'; the rest are stated
+	// rather than skipped, so that a column added to the registry has to
+	// be classified here before the suite goes green.
 	want := map[string]PrivacyClass{
-		"payer":                PrivacyFreeText,
-		"payer_signature":      PrivacyFreeText,
-		"counterparty":         PrivacyFreeText,
-		"description":          PrivacyFreeText,
-		"account":              PrivacyAccountID,
-		"account_id":           PrivacyAccountID,
-		"net_amount":           PrivacyMoney,
-		"value":                PrivacyMoney,
-		"income_type":          PrivacyNone,
-		"income_type_id":       PrivacyNone,
-		"income_primary":       PrivacyNone,
-		"provenance":           PrivacyNone,
-		"kind":                 PrivacyNone,
-		"provider_income_type": PrivacyNone,
-		// The source's own id for the line: an identifier, so it takes
-		// the identifier class even though it names nobody.
-		"tx_id": PrivacyAccountID,
-		// The rest, stated rather than skipped, so that a column added
-		// to the registry has to be classified here before the suite
-		// goes green.
-		//
-		// `account_nickname` is the holder's own label for an account,
-		// from `account_overrides`: typed text, a pseudonym under -p on
-		// every surface (nicknameCol).
-		"account_nickname":        PrivacyPseudonym,
-		"silver_source":           PrivacyNone,
-		"date":                    PrivacyNone,
-		"datetime":                PrivacyNone,
-		"account_kind":            PrivacyNone,
-		"account_category":        PrivacyNone,
+		"payer":                   PrivacyFreeText,
+		"payer_signature":         PrivacyFreeText,
+		"income_type":             PrivacyNone,
+		"income_type_id":          PrivacyNone,
+		"income_primary":          PrivacyNone,
 		"income_primary_id":       PrivacyNone,
+		"provenance":              PrivacyNone,
+		"provider_income_type":    PrivacyNone,
 		"provider_income_type_id": PrivacyNone,
-		"currency":                PrivacyNone,
+	}
+	for name, class := range txnLineClasses {
+		want[name] = class
 	}
 	seen := map[string]bool{}
 	for _, c := range all {

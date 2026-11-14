@@ -66,7 +66,7 @@ func feeBuckets(from, to int64, period string) []feeBucket {
 			next = time.Date(t.Year(), time.Month((int(t.Month())-1)/3*3+4), 1, 0, 0, 0, 0, time.UTC)
 		}
 		end := min(EpochDay(next.Unix())-1, to)
-		out = append(out, feeBucket{PeriodLabel(time.Unix(end*SecondsPerDay, 0).UTC(), period), start, end})
+		out = append(out, feeBucket{PeriodLabel(t, period), start, end})
 		start = end + 1
 	}
 	return out

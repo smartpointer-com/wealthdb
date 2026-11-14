@@ -246,6 +246,18 @@ func TestGainsPortfolioAndAccountRows(t *testing.T) {
 	if !strings.Contains(ports[0].Quality, "sells_without_documents=1") {
 		t.Errorf("ungrouped quality = %q, want the BRK2 sale flagged", ports[0].Quality)
 	}
+	// A grain with no account has no wrapper: no default stands in.
+	for _, grain := range []GainsGrain{GainsPortfolios, GainsSources, GainsAll} {
+		rows, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", grain, lots.MissingIgnore)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if r.TaxWrapper != nil {
+				t.Errorf("grain %v: tax_wrapper = %q, want none", grain, *r.TaxWrapper)
+			}
+		}
+	}
 
 	accts, err := GainsBuckets(ctx, db, gainsFrom, gainsTo, "USD", "total", GainsAccounts, lots.MissingIgnore)
 	if err != nil {

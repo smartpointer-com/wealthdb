@@ -70,8 +70,8 @@ type PositionRow struct {
 // of its active snapshot at asOf (pos_active_at) are returned, sorted by
 // (silver_source_id, account_external_id, position_key). FX (and
 // everything else) is computed in SQL by the report_positions table
-// macro (derived/30_holdings.sql); this is just the scan. See docs/DESIGN.md
-// §10.1. withCash adds the cash lines of CashAsOf, each in its place in
+// macro (derived/30_holdings.sql). See docs/DESIGN.md §10.1. withCash
+// merges in the cash lines of CashAsOf (§10.2), each in its place in
 // that order.
 func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, missing lots.MissingBasis,
 	withCash bool) ([]PositionRow, error) {

@@ -79,40 +79,37 @@ func forwardAssumptions(in optionSource, cmd string) (yield.Assumptions, error) 
 	return yield.Assumptions{Path: yield.Path(rates), Rule: yield.Rule(maturing), ShiftBP: float64(in.num("shift"))}, nil
 }
 
-// checkForwardOptions refuses the options a view does not take, the CLI
-// and the MCP server alike: the assumptions off the forward views; on
-// them the type level, a period off projection, and a period that is
-// none of seriesPeriods. has says an option is given; flag spells an
-// option's name as the front-end does.
-func checkForwardOptions(fam *family, view, period string, has func(string) bool, flag func(string) string) error {
-	if !fam.view(view).forward {
-		return refuseAssumptions("income", "the "+andList(fam.forwardViews())+" views",
-			has, flag)
+// checkForwardOptions refuses the options in a view does not take: the
+// assumptions off the forward views; on them the type level, a period off
+// projection, and a period that is none of seriesPeriods.
+func checkForwardOptions(fam *family, view, period string, in optionSource) error {
+	if !fam.view(view).forward() {
+		return refuseAssumptions("income", "the "+andList(fam.forwardViews())+" views", in)
 	}
 	switch {
-	case has("level"):
-		return errs.Newf(errs.ExitUsage, "income: %s belongs to the types view", flag("level"))
-	case view != "projection" && has("period"):
-		return errs.Newf(errs.ExitUsage, "income: of the forward views, %s belongs to projection", flag("period"))
+	case in.has("level"):
+		return errs.Newf(errs.ExitUsage, "income: %s belongs to the types view", in.spell("level"))
+	case view != "projection" && in.has("period"):
+		return errs.Newf(errs.ExitUsage, "income: of the forward views, %s belongs to projection", in.spell("period"))
 	}
-	return checkSeriesPeriod("income", "the forward views take", period, flag)
+	return checkSeriesPeriod("income", "the forward views take", period, in)
 }
 
 // refuseAssumptions refuses the projection's assumptions on a view of cmd
 // that does not look forward; where names the views that take them.
-func refuseAssumptions(cmd, where string, has func(string) bool, flag func(string) string) error {
-	if has("rates") || has("maturing") || has("shift") {
-		return errs.Newf(errs.ExitUsage, "%s: %s, %s and %s belong to %s", cmd, flag("rates"), flag("maturing"),
-			flag("shift"), where)
+func refuseAssumptions(cmd, where string, in optionSource) error {
+	if in.has("rates") || in.has("maturing") || in.has("shift") {
+		return errs.Newf(errs.ExitUsage, "%s: %s, %s and %s belong to %s", cmd, in.spell("rates"), in.spell("maturing"),
+			in.spell("shift"), where)
 	}
 	return nil
 }
 
 // checkSeriesPeriod refuses a forward view's period that is none of
 // seriesPeriods; takes says who takes them ("projection takes").
-func checkSeriesPeriod(cmd, takes, period string, flag func(string) string) error {
+func checkSeriesPeriod(cmd, takes, period string, in optionSource) error {
 	if !slices.Contains(seriesPeriods, period) {
-		return errs.Newf(errs.ExitUsage, "%s: %s %s %s", cmd, takes, flag("period"), strings.Join(seriesPeriods, " | "))
+		return errs.Newf(errs.ExitUsage, "%s: %s %s %s", cmd, takes, in.spell("period"), strings.Join(seriesPeriods, " | "))
 	}
 	return nil
 }
@@ -170,7 +167,7 @@ func loadForwardIncome(ctx context.Context, db *sql.DB, req request) (*gold.Forw
 
 // incomeProjectionReport is the projection: per month, received and
 // expected.
-func incomeProjectionReport(_ *config.Config, req request, _ *toolArgs) *report {
+func incomeProjectionReport(_ *config.Config, req request) *report {
 	months := seriesPeriodMonths(req.period)
 	return newReport(buildProjectionColumns(req.currency, req.period), defaultProjectionColumns,
 		func(ctx context.Context, db *sql.DB) ([]yield.ProjectionRow, error) {
@@ -184,7 +181,7 @@ func incomeProjectionReport(_ *config.Config, req request, _ *toolArgs) *report 
 
 // incomeCalendarReport is the calendar: each expected payment and each
 // principal a maturity returns.
-func incomeCalendarReport(_ *config.Config, req request, _ *toolArgs) *report {
+func incomeCalendarReport(_ *config.Config, req request) *report {
 	kindOf, loadKinds := sourceKinds()
 	return withLoads(newReport(buildCalendarColumns(req.currency, kindOf), defaultCalendarColumns,
 		func(ctx context.Context, db *sql.DB) ([]yield.CalendarRow, error) {
@@ -199,8 +196,8 @@ func incomeCalendarReport(_ *config.Config, req request, _ *toolArgs) *report {
 // incomeEntityView is a forward view per entity at grain: received,
 // expected and total, last year's and the next twelve months'.
 func incomeEntityView(name string, grain yield.Grain) view {
-	return view{name: name, forward: true, window: parseForwardWindow, total: flowTotal, principal: fixedColumn("total"), header: forwardHeader,
-		build: func(_ *config.Config, req request, _ *toolArgs) *report {
+	return view{name: name, window: parseForwardWindow, total: flowTotal, principal: fixedColumn("total"), header: forwardHeader,
+		build: func(_ *config.Config, req request) *report {
 			kindOf, loadKinds := sourceKinds()
 			return withLoads(newReport(buildIncomeEntityColumns(req.currency, grain, kindOf), incomeEntityDefaults[grain],
 				func(ctx context.Context, db *sql.DB) ([]yield.IncomeRow, error) {
@@ -303,7 +300,7 @@ func buildCalendarColumns(outCcy string, kindOf func(string) string) []columnSpe
 			return "income"
 		}),
 		strCol("currency", func(r row) string { return r.Currency }),
-		kindCol("amount", MoneyColumn, func(r row) string { return fmt.Sprintf("%.2f", r.Own) }),
+		floatOwnMoneyCol("amount", func(r row) *float64 { return &r.Own }),
 		floatValCol("value", outCcy, func(r row) float64 { return r.Value }),
 		floatMoneyCol("withheld", outCcy, func(r row) *float64 { return r.Withheld }),
 		strCol("basis", func(r row) string { return string(r.Basis) }),

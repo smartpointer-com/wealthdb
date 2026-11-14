@@ -269,11 +269,11 @@ func TestSortMoneyByMagnitude(t *testing.T) {
 // TestColumnLookup pins the names a model may use for a column.
 func TestColumnLookup(t *testing.T) {
 	t.Parallel()
-	accounts := holdingsFamily.build(nil, request{view: "accounts", currency: "USD"}, nil)
+	accounts := holdingsFamily.build(nil, request{view: "accounts", currency: "USD"})
 	returns := returnsReport(request{currency: "USD", method: "both"}, nil)
-	spending := spendingFamily.build(nil, request{view: "categories", currency: "USD", period: "total"}, nil)
-	gainsBuckets := gainsFamily.build(nil, request{view: "summary", currency: "USD", period: "total"}, nil)
-	gainsLots := gainsFamily.build(nil, request{view: "lots", currency: "USD"}, nil)
+	spending := spendingFamily.build(nil, request{view: "categories", currency: "USD", period: "total"})
+	gainsBuckets := gainsFamily.build(nil, request{view: "summary", currency: "USD", period: "total"})
+	gainsLots := gainsFamily.build(nil, request{view: "lots", currency: "USD"})
 	cases := []struct {
 		rep       *report
 		principal string
@@ -319,7 +319,7 @@ func TestColumnLookup(t *testing.T) {
 	}
 	// A currency suffix means the converted column, whichever currency
 	// it names; the note says what the result is in.
-	chf := holdingsFamily.build(nil, request{view: "accounts", currency: "CHF"}, nil)
+	chf := holdingsFamily.build(nil, request{view: "accounts", currency: "CHF"})
 	l := columnLookup{cols: chf.columns, currency: "CHF", principal: "total_value_outccy"}
 	for _, c := range []struct {
 		name string
@@ -335,6 +335,14 @@ func TestColumnLookup(t *testing.T) {
 			t.Errorf("%s (CHF): %v, note %q", c.name, err, note)
 		}
 	}
+	// A three-letter tail that is no reporting currency still reads the
+	// converted column, but names no currency to pass.
+	global := returnsFamily.build(nil, request{view: "global", currency: "CHF", method: "both", period: "total"})
+	l = columnLookup{cols: global.columns, currency: "CHF"}
+	if i, note, err := l.resolve("start_val", false); err != nil || global.columns[i].header != "start_CHF" ||
+		strings.Contains(note, "pass currency") {
+		t.Errorf("start_val (CHF): %v, note %q", err, note)
+	}
 	l = columnLookup{cols: accounts.columns, currency: "USD"}
 	if _, _, err := l.resolve("colour", false); err == nil || !strings.Contains(err.Error(), "available: silver_source") {
 		t.Errorf("unknown column: err = %v, want the available list", err)
@@ -344,7 +352,7 @@ func TestColumnLookup(t *testing.T) {
 // TestColumnsParameter covers default, all, a list and a delta.
 func TestColumnsParameter(t *testing.T) {
 	t.Parallel()
-	rep := spendingFamily.build(nil, request{view: "categories", currency: "USD", period: "total"}, nil)
+	rep := spendingFamily.build(nil, request{view: "categories", currency: "USD", period: "total"})
 	l := columnLookup{cols: rep.columns, currency: "USD"}
 	headers := func(expr string) string {
 		idx, _, err := l.pick(expr, rep.defaults)
@@ -420,36 +428,40 @@ func TestDerivedCarries(t *testing.T) {
 		"spending": {"categories": {"category"}, "transactions": {"source", "account", "category", "kind", "merchant"},
 			"fees": {"source", "account"}},
 	}
-	for _, rf := range reportFamilies {
-		w, ok := want[rf.name]
+	for _, fam := range reportFamilies {
+		w, ok := want[fam.name]
 		if !ok {
 			continue
 		}
-		for _, v := range rf.fam.viewsOrOne() {
-			if got := rf.fam.carries()[v]; !slices.Equal(got, w[v]) {
-				t.Errorf("%s %s carries %v, want %v", rf.name, v, got, w[v])
+		for _, v := range fam.viewsOrOne() {
+			if got := fam.carries()[v]; !slices.Equal(got, w[v]) {
+				t.Errorf("%s %s carries %v, want %v", fam.name, v, got, w[v])
 			}
 		}
 	}
 }
 
-// TestEveryCarriedFilterHasAColumn holds the derived carries against
-// the named filters' columns: a filter a view carries must read a column
-// the view has, or it would match nothing.
+// TestEveryCarriedFilterHasAColumn: a view carries a filter when it
+// prints one of the filter's keys or the view's alias of them (carries),
+// so each key and each alias must be a column the filter reads, or a
+// carried filter would match nothing.
 func TestEveryCarriedFilterHasAColumn(t *testing.T) {
 	t.Parallel()
-	s := newTestMCP("", false)
-	for _, tool := range s.tools() {
-		fam := tool.family
-		if fam == nil {
+	for _, f := range namedFilters {
+		for _, k := range f.keys {
+			if !slices.Contains(f.columns, k) {
+				t.Errorf("%s: key %s is none of its columns %v", f.name, k, f.columns)
+			}
+		}
+	}
+	for _, tool := range toolSpecs {
+		if tool.family == nil {
 			continue
 		}
-		for _, v := range fam.viewsOrOne() {
-			req := request{view: v, currency: "USD", period: "total", level: "primary", method: "both", investing: "whole"}
-			rep := fam.build(nil, req, &toolArgs{values: map[string]any{}})
-			for _, f := range fam.carries()[v] {
-				if len(newRowFilter(rep, f, "x").cols) == 0 {
-					t.Errorf("%s %s carries %s, but has none of its columns %v", tool.name, v, f, namedFilterOf(f).columns)
+		for _, v := range tool.family.views {
+			for name, alias := range v.keyAlias {
+				if f := namedFilterOf(name); !slices.Contains(f.columns, alias) {
+					t.Errorf("%s %s: %s's alias %s is none of its columns %v", tool.name, v.name, name, alias, f.columns)
 				}
 			}
 		}
@@ -479,7 +491,7 @@ func TestEveryViewsPrincipalIsAColumn(t *testing.T) {
 				if principal == "" {
 					continue
 				}
-				rep := fam.build(nil, req, &toolArgs{values: map[string]any{}})
+				rep := fam.build(nil, req)
 				if (columnLookup{cols: rep.columns}).byName(principal) < 0 {
 					t.Errorf("%s %s (method %s): principal %q is none of the view's columns", tool.name, v, method, principal)
 				}

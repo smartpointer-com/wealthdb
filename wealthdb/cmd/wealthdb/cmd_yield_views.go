@@ -13,13 +13,13 @@ import (
 
 // The list views' reports: securities, funds, cash, curve and coverage.
 
-func yieldSecuritiesReport(_ *config.Config, req request, _ *toolArgs) *report {
+func yieldSecuritiesReport(_ *config.Config, req request) *report {
 	kindOf, loadKinds := sourceKinds()
 	return withLoads(bookView(req, buildYieldSecurityColumns(req.currency, kindOf), defaultYieldSecurityColumns,
 		gold.YieldSecurities), loadKinds)
 }
 
-func yieldFundsReport(_ *config.Config, req request, _ *toolArgs) *report {
+func yieldFundsReport(_ *config.Config, req request) *report {
 	kindOf, loadKinds := sourceKinds()
 	return withLoads(bookView(req, buildYieldFundColumns(req.currency, kindOf), defaultYieldFundColumns,
 		func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.FundRow, error) {
@@ -27,7 +27,7 @@ func yieldFundsReport(_ *config.Config, req request, _ *toolArgs) *report {
 		}), loadKinds)
 }
 
-func yieldCashReport(_ *config.Config, req request, _ *toolArgs) *report {
+func yieldCashReport(_ *config.Config, req request) *report {
 	kindOf, loadKinds := sourceKinds()
 	return withLoads(bookView(req, buildYieldCashColumns(req.currency, kindOf), defaultYieldCashColumns,
 		func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CashRow, error) {
@@ -35,7 +35,7 @@ func yieldCashReport(_ *config.Config, req request, _ *toolArgs) *report {
 		}), loadKinds)
 }
 
-func yieldCurveReport(_ *config.Config, req request, _ *toolArgs) *report {
+func yieldCurveReport(_ *config.Config, req request) *report {
 	ccy := req.currency
 	return seriesView(req, buildYieldCurveColumns(ccy), defaultYieldCurveColumns,
 		func(ctx context.Context, db *sql.DB, at int64) ([]yield.CurveRow, error) {
@@ -47,7 +47,7 @@ func yieldCurveReport(_ *config.Config, req request, _ *toolArgs) *report {
 		})
 }
 
-func yieldCoverageReport(_ *config.Config, req request, _ *toolArgs) *report {
+func yieldCoverageReport(_ *config.Config, req request) *report {
 	kindOf, loadKinds := sourceKinds()
 	return withLoads(bookView(req, buildYieldCoverageColumns(req.currency, kindOf), defaultYieldCoverageColumns,
 		func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CoverageRow, error) {
@@ -160,7 +160,7 @@ func buildYieldCashColumns(outCcy string, kindOf func(string) string) []columnSp
 		floatValCol("value", outCcy, func(r row) float64 { return r.Value }),
 		pctCol("rate", func(r row) *float64 { return r.Stated }),
 		countCol("tiers", func(r row) int64 { return int64(r.Tiers) }),
-		kindCol("tier_up_to", MoneyColumn, func(r row) string { return fixedOrBlank(r.UpTo, 2) }),
+		floatOwnMoneyCol("tier_up_to", func(r row) *float64 { return r.UpTo }),
 		asDate(strCol("valid_from", func(r row) string { return dateOrBlank(r.ValidFrom) })),
 		asDate(strCol("term_end", func(r row) string { return dateOrBlank(r.TermEnd) })),
 		pctCol("realized_yield", func(r row) *float64 { return r.Realized }),

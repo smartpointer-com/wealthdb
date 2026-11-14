@@ -32,6 +32,10 @@ func (c *conditionFlags) Set(v string) error {
 	return nil
 }
 
+// currencyFlags are the spellings of the output currency flag, the one
+// output flag a family's settle reads (cliOptions.names).
+var currencyFlags = []string{"x", "currency"}
+
 // registerReportFlags registers the output flags on fs. A report with
 // one fixed shape (holdings global) takes no -C and no -F, and cols
 // then reads "default".
@@ -48,8 +52,8 @@ func registerReportFlags(fs *flag.FlagSet, withColumns bool) *reportFlags {
 		cols := "default"
 		rf.cols = &cols
 	}
-	rf.currency = fs.String("x", "", "output currency (default: config.default_currency)")
-	fs.StringVar(rf.currency, "currency", "", "output currency (default: config.default_currency)")
+	rf.currency = fs.String(currencyFlags[0], "", "output currency (default: config.default_currency)")
+	fs.StringVar(rf.currency, currencyFlags[1], "", "output currency (default: config.default_currency)")
 	rf.privacy = fs.Bool("p", false, "redact amounts, ids and account names")
 	fs.BoolVar(rf.privacy, "privacy", false, "redact amounts, ids and account names")
 	return rf
@@ -98,12 +102,12 @@ func (rf *reportFlags) resolve(g globalFlags, cmd string) (output.Format, *confi
 
 // output is how the report is written: the -C columns, the format, -p,
 // and the -F conditions, which bind as the report tool's family fam
-// binds them for req. The tool names the command in a column error
-// ("gains").
-func (rf *reportFlags) output(format output.Format, tool string, fam *family, req request, cfg *config.Config, now time.Time) reportOutput {
-	out := reportOutput{cols: *rf.cols, prefix: tool, privacy: *rf.privacy, format: format}
+// binds them for req. The family's name names the command in a column
+// error ("gains").
+func (rf *reportFlags) output(format output.Format, fam *family, req request, cfg *config.Config, now time.Time) reportOutput {
+	out := reportOutput{cols: *rf.cols, prefix: fam.name, privacy: *rf.privacy, format: format}
 	if len(rf.filters) > 0 {
-		out.filter = &cliFilter{conds: rf.filters, tool: tool, fam: fam, req: req, cfg: cfg, now: now}
+		out.filter = &cliFilter{conds: rf.filters, fam: fam, req: req, cfg: cfg, now: now}
 	}
 	return out
 }

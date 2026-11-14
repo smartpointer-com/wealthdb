@@ -53,7 +53,7 @@ var cashflowFamily = &family{
 	name: "cashflow",
 	views: []view{
 		{name: "summary", total: flowTotal, principal: fixedColumn("net_cash_flow"), header: periodHeader,
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				part := reportPeriods[req.period]
 				return newReport(buildCashflowSummaryColumnRegistry(req.currency, req.period), defaultCashflowSummaryColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.CashflowSummaryRow, error) {
@@ -64,7 +64,7 @@ var cashflowFamily = &family{
 			header: func(req request) []string {
 				return append([]string{"period=" + req.period, "level=" + req.level}, investingHeader(req)...)
 			},
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				part := reportPeriods[req.period]
 				return newReport(buildCashflowFlowColumnRegistry(req.currency, req.period), defaultCashflowFlowColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.CashflowFlowRow, error) {
@@ -75,14 +75,14 @@ var cashflowFamily = &family{
 			header: func(req request) []string {
 				return append([]string{"level=" + req.level}, investingHeader(req)...)
 			},
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				return newReport(buildCashflowSankeyColumnRegistry(req.currency), defaultCashflowSankeyColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.CashflowSankeyRow, error) {
 						return gold.CashflowSankey(ctx, db, req.from, req.to, req.currency, req.level, req.investing)
 					})
 			}},
 		{name: "transactions", total: flowTotal, principal: fixedColumn("value"),
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildCashflowTransactionColumnRegistry(req.currency, kindOf, req.categories),
 					defaultCashflowTransactionColumns,
@@ -92,7 +92,8 @@ var cashflowFamily = &family{
 			}},
 		{name: "coverage", principal: fixedColumn("gap"), header: periodHeader,
 			ownCurrency: "each account in its own currency",
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			refuseWhy:   " — each account is measured against its own balances, in its own currency",
+			build: func(_ *config.Config, req request) *report {
 				part := reportPeriods[req.period]
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildCashflowCoverageColumnRegistry(req.period, kindOf),
@@ -101,11 +102,11 @@ var cashflowFamily = &family{
 						return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
 					}), loadKinds)
 			}},
-		{name: "projection", forward: true, window: parsePlanWindow, total: flowTotal, principal: fixedColumn("net"),
+		{name: "projection", window: parsePlanWindow, total: flowTotal, principal: fixedColumn("net"),
 			header: func(req request) []string {
 				return append([]string{"period=" + req.period}, assumptionsHeader(req.assumptions)...)
 			},
-			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+			build: func(cfg *config.Config, req request) *report {
 				req.lookback = cfg.CashflowLookback()
 				return newReport(buildCashflowPlanColumns(req.currency, req.period), defaultCashflowPlanColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.PlanRow, error) { return cashflowPlan(ctx, db, req) })
@@ -127,12 +128,10 @@ var cashflowFamily = &family{
 		// being misspelled.
 		switch req.view {
 		case "coverage":
-			if in.has("currency") {
-				if in.cli() {
-					return errs.Newf(errs.ExitUsage, "cashflow: coverage takes no -x/--currency — "+
-						"each account is measured against its own balances, in its own currency")
-				}
-				return fmt.Errorf("cashflow: coverage takes no currency — each account is measured against its own balances, in its own currency")
+			// MCP refuses the currency before the settle (refuseMCP).
+			if in.cli() && in.has("currency") {
+				return errs.Newf(errs.ExitUsage, "cashflow: coverage takes no -x/--currency — "+
+					"each account is measured against its own balances, in its own currency")
 			}
 		case "sankey":
 			if in.has("period") {
@@ -153,7 +152,7 @@ var cashflowFamily = &family{
 		if req.view == "projection" && !in.has("period") {
 			period = "monthly"
 		}
-		if err := checkCashflowPlanOptions(req.view, period, in.has, in.spell); err != nil {
+		if err := checkCashflowPlanOptions(req.view, period, in); err != nil {
 			return err
 		}
 		as, err := forwardAssumptions(in, "cashflow")
@@ -166,17 +165,9 @@ var cashflowFamily = &family{
 			}
 		}
 		req.period, req.level, req.investing = period, in.str("level"), in.str("investing")
-		if req.view != "projection" {
-			return nil
+		if req.view == "projection" {
+			req.assumptions = as
 		}
-		// The CLI checks the plan's window as it reads it
-		// (parsePlanWindow).
-		if !in.cli() {
-			if err := checkPlanWindow(req.from, req.to, time.Unix(req.asOf, 0)); err != nil {
-				return fmt.Errorf("cashflow: %w; dates are %s", err, dateDoc)
-			}
-		}
-		req.assumptions = as
 		return nil
 	},
 }
@@ -196,19 +187,17 @@ var cashflowInvestingGrains = []string{"whole", "class"}
 // cashflowLevels are the `--level` node grains, coarsest first.
 var cashflowLevels = []string{"section", "class", "group"}
 
-// checkCashflowPlanOptions refuses the options a view does not take, the
-// CLI and the MCP server alike: the projection's assumptions off it; on
-// it the level, the investing grain, and a period that is none of
-// seriesPeriods. has says an option is given; flag spells an option's
-// name as the front-end does.
-func checkCashflowPlanOptions(view, period string, has func(string) bool, flag func(string) string) error {
+// checkCashflowPlanOptions refuses the options in a view does not take:
+// the projection's assumptions off it; on it the level, the investing
+// grain, and a period that is none of seriesPeriods.
+func checkCashflowPlanOptions(view, period string, in optionSource) error {
 	if view != "projection" {
-		return refuseAssumptions("cashflow", "the projection view", has, flag)
+		return refuseAssumptions("cashflow", "the projection view", in)
 	}
-	if has("level") || has("investing") {
-		return errs.Newf(errs.ExitUsage, "cashflow: projection takes no %s or %s", flag("level"), flag("investing"))
+	if in.has("level") || in.has("investing") {
+		return errs.Newf(errs.ExitUsage, "cashflow: projection takes no %s or %s", in.spell("level"), in.spell("investing"))
 	}
-	return checkSeriesPeriod("cashflow", "projection takes", period, flag)
+	return checkSeriesPeriod("cashflow", "projection takes", period, in)
 }
 
 // parsePlanWindow is the projection's window: the forward window of the

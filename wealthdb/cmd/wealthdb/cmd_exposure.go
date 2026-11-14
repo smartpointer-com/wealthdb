@@ -28,7 +28,8 @@ import (
 // today). --country belongs to the views that place a security in a
 // country, countries and securities, and is refused elsewhere. --period
 // P turns the as-of view into a series over a positional window (FROM
-// [TO]); it applies to exposureSeriesViews and refuses -d. -f ndjson is
+// [TO]); it applies to the views marked series
+// (exposureFamily.seriesViews) and refuses -d. -f ndjson is
 // coverage's alone: the declarations ledger's records still to fill in.
 // situs reads every holding whole, at its legal situs: it looks through
 // no fund.
@@ -188,7 +189,7 @@ var exposureFamily = &family{
 // series takes it.
 func exposureView(name, benchmark string, series bool, build func(req request, benchmark string) *report) view {
 	return view{name: name, series: series, benchmark: benchmark, total: balanceTotal, principal: fixedColumn("value"),
-		build: func(_ *config.Config, req request, _ *toolArgs) *report { return build(req, benchmark) }}
+		build: func(_ *config.Config, req request) *report { return build(req, benchmark) }}
 }
 
 // exposureBucketView is a bucket view: its benchmark dimension, the name

@@ -13,18 +13,10 @@ import (
 )
 
 // `wealthdb income <view>` — the read surface for what the tracked
-// accounts received.
+// accounts received: cmd_spending.go read in the other direction.
 //
-// cmd_spending.go read in the other direction, and deliberately not a
-// generalisation of it: the two commands share the flag idiom, the
-// period vocabulary, the window default and the column machinery
-// (reportPeriods, periodLabel, parseTrailingYearWindow, the report
-// seam), and differ in the three
-// places a reader should be able to see at a glance — the views, the
-// registries, and the usage text.
-//
-// One default differs from spending's, and it is the one decision in
-// this file: `--level` is `detailed` rather than `primary`. The income
+// One default differs from spending's: `--level` is `detailed` rather
+// than `primary`. The income
 // vocabulary has ONE vendored primary, so at the primary level every
 // vendored type and extension folds into INCOME beside `gift`,
 // `inheritance` and `cash_deposit`. That view has a use — what was
@@ -43,7 +35,7 @@ var incomeFamily = &family{
 	name: "income",
 	views: []view{
 		{name: "summary", total: flowTotal, principal: fixedColumn("net_income"), header: periodHeader,
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				part := reportPeriods[req.period]
 				return newReport(buildIncomeSummaryColumnRegistry(req.currency, req.period), defaultIncomeSummaryColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.IncomeSummaryRow, error) {
@@ -51,7 +43,7 @@ var incomeFamily = &family{
 					})
 			}},
 		{name: "types", total: flowTotal, principal: fixedColumn("net_income"), header: periodLevelHeader,
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				part := reportPeriods[req.period]
 				return newReport(buildIncomeTypeColumnRegistry(req.currency, req.period), defaultIncomeTypeColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.IncomeTypeRow, error) {
@@ -61,7 +53,7 @@ var incomeFamily = &family{
 		// kind is income or principal on the calendar; on transactions
 		// the column is the booked kind.
 		{name: "transactions", total: flowTotal, principal: fixedColumn("value"), excludes: []string{"kind"},
-			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			build: func(_ *config.Config, req request) *report {
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildIncomeTransactionColumnRegistry(req.currency, kindOf, req.categories),
 					defaultIncomeTransactionColumns,
@@ -69,12 +61,12 @@ var incomeFamily = &family{
 						return gold.IncomeTransactions(ctx, db, req.from, req.to, req.currency)
 					}), loadKinds)
 			}},
-		{name: "projection", forward: true, window: parseForwardWindow, total: flowTotal, principal: fixedColumn("total"),
+		{name: "projection", window: parseForwardWindow, total: flowTotal, principal: fixedColumn("total"),
 			header: func(req request) []string {
 				return append([]string{"period=" + req.period}, assumptionsHeader(req.assumptions)...)
 			},
 			build: incomeProjectionReport},
-		{name: "calendar", forward: true, window: parseForwardWindow, total: flowTotal, principal: fixedColumn("value"),
+		{name: "calendar", window: parseForwardWindow, total: flowTotal, principal: fixedColumn("value"),
 			header: forwardHeader, build: incomeCalendarReport},
 		incomeEntityView("sources", yield.GrainSources),
 		incomeEntityView("portfolios", yield.GrainPortfolios),
@@ -97,12 +89,12 @@ var incomeFamily = &family{
 		if req.level, err = choose(in, "income", "level"); err != nil {
 			return err
 		}
-		forward := fam.view(req.view).forward
+		forward := fam.view(req.view).forward()
 		if forward && !in.has("period") {
 			period = "monthly"
 		}
 		req.period = period
-		if err := checkForwardOptions(fam, req.view, period, in.has, in.spell); err != nil {
+		if err := checkForwardOptions(fam, req.view, period, in); err != nil {
 			return err
 		}
 		as, err := forwardAssumptions(in, "income")
@@ -177,8 +169,8 @@ func buildIncomeTransactionColumnRegistry(outCcy string, kindOf func(string) str
 		textCol("income_primary", func(r gold.IncomeTransactionRow) *string { return r.IncomePrimaryLabel }),
 		textCol("income_primary_id", func(r gold.IncomeTransactionRow) *string { return r.IncomePrimary }),
 		textCol("provenance", func(r gold.IncomeTransactionRow) *string { return r.Provenance }),
-		// The source's own filing, beside ours and never summed with
-		// it.
+		// The source's own filing, beside the engine's and never summed
+		// with it.
 		textCol("provider_income_type", func(r gold.IncomeTransactionRow) *string { return r.ProviderIncomeLabel }),
 		textCol("provider_income_type_id", func(r gold.IncomeTransactionRow) *string { return r.ProviderIncomeDetailed }),
 		line("currency"), line("net_amount"), line("value"),
