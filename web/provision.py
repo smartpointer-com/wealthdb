@@ -26,42 +26,18 @@ import os
 import re
 import sys
 import time
-import urllib.error
-import urllib.request
+
+import metabase
 
 
-def req(base, path, method="GET", data=None, session=None, timeout=30):
-    """(HTTP status, decoded JSON body) for one API call. A call that
-    gets no HTTP answer at all returns (0, {})."""
-    body = json.dumps(data).encode() if data is not None else None
-    r = urllib.request.Request(base + path, data=body, method=method)
-    r.add_header("Content-Type", "application/json")
-    if session:
-        r.add_header("X-Metabase-Session", session)
-    try:
-        with urllib.request.urlopen(r, timeout=timeout) as resp:
-            raw = resp.read().decode()
-            return resp.status, (json.loads(raw) if raw else {})
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode()
-        try:
-            return e.code, json.loads(raw)
-        except Exception:
-            return e.code, {"message": raw}
-    except OSError:
-        # Connection refused or reset, and a timeout: urlopen raises a
-        # connect timeout as URLError but a read timeout as TimeoutError.
-        return 0, {}
-
-
-def wait_health(base, limit=270, delay=0.25):
+def wait_health(client, limit=270, delay=0.25):
     """Polls Metabase's health endpoint until it answers, for at most
     `limit` seconds; once it answers, prints how long the wait took. A
     short poll: a restarted server answers within seconds of coming up,
     and each poll is one local request."""
     start = time.monotonic()
     while time.monotonic() - start < limit:
-        st, _ = req(base, "/api/health", timeout=5)
+        st, _ = client.get("/api/health", timeout=5)
         if st == 200:
             print(f"provision: timing: wait for Metabase {time.monotonic() - start:.3f}s", file=sys.stderr)
             return True
@@ -69,7 +45,8 @@ def wait_health(base, limit=270, delay=0.25):
     return False
 
 
-def main():
+def main(client=None):
+    """Provision the Metabase --base names, or `client`, the tests' stand-in."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--base")
     ap.add_argument("--email")
@@ -105,16 +82,17 @@ def main():
         print("provision: WEALTHDB_WEB_ADMIN_PASSWORD is not set", file=sys.stderr)
         return 1
 
-    if not wait_health(a.base):
+    client = client or metabase.Client(a.base)
+    if not wait_health(client):
         print("provision: Metabase did not become healthy in time", file=sys.stderr)
         return 1
 
-    _, props = req(a.base, "/api/session/properties")
+    _, props = client.get("/api/session/properties")
     setup_done = bool(props.get("has-user-setup"))
     token = props.get("setup-token")
 
     if not setup_done and token:
-        st, body = req(a.base, "/api/setup", "POST", {
+        st, body = client.post("/api/setup", {
             "token": token,
             "user": {"first_name": "wealthdb", "last_name": "admin",
                      "email": a.email, "password": password},
@@ -130,8 +108,7 @@ def main():
     # Log in to add the database. If setup was done earlier with a
     # different password (changed since in Metabase), don't fail the
     # start — the database was added on the first provision.
-    _, body = req(a.base, "/api/session", "POST",
-                  {"username": a.email, "password": password})
+    _, body = client.post("/api/session", {"username": a.email, "password": password})
     sid = body.get("id")
     if not sid:
         if setup_done:
@@ -140,35 +117,36 @@ def main():
         print(f"provision: login failed: {body.get('message')}", file=sys.stderr)
         return 1
 
-    db_id = ensure_database(a.base, sid, a.db_name, a.gold_path)
+    client = client.with_auth(session=sid)
+    db_id = ensure_database(client, a.db_name, a.gold_path)
     if db_id is None:
         return 1
 
-    status = check_gold_schema(a.base, sid, db_id)
+    status = check_gold_schema(client, db_id)
     if status:
         return status
-    tables = ensure_synced(a.base, sid, db_id)
+    tables = ensure_synced(client, db_id)
     if tables is None:
         return 1
     field_ids = field_ids_from(tables)
-    unfingerprint_lists(a.base, sid, tables)
+    unfingerprint_lists(client, tables)
 
-    coll_id = ensure_collection(a.base, sid, COLLECTION_NAME)
+    coll_id = ensure_collection(client, COLLECTION_NAME)
     if coll_id is None:
         return 1
-    by_name = pre_defined_cards(a.base, sid, coll_id)
+    by_name = pre_defined_cards(client, coll_id)
     if by_name is None:
         return 1
-    model_ids = ensure_models(a.base, sid, db_id, coll_id, by_name)
+    model_ids = ensure_models(client, db_id, coll_id, by_name)
     if model_ids is None:
         return 1
-    colors = source_colors(a.base, sid, db_id, a.source_colors)
-    saved = ensure_cards(a.base, sid, db_id, coll_id, by_name, field_ids, model_ids, colors)
+    colors = source_colors(client, db_id, a.source_colors)
+    saved = ensure_cards(client, db_id, coll_id, by_name, field_ids, model_ids, colors)
     if saved is None:
         return 1
     card_ids, descs = saved
-    titles = tile_titles(withholding_table(a.base, sid, db_id))
-    return ensure_dashboards(a.base, sid, coll_id, card_ids, model_ids, titles, descs)
+    titles = tile_titles(withholding_table(client, db_id))
+    return ensure_dashboards(client, coll_id, card_ids, model_ids, titles, descs)
 
 
 # --dump's --withholding: what the snapshot's withholding probe answers
@@ -1000,14 +978,14 @@ def save_source_colors(path, colors):
         print(f"provision: could not save {path}: {e}", file=sys.stderr)
 
 
-def source_colors(base, sid, db_id, path):
+def source_colors(client, db_id, path):
     """Each source's colour: the kept assignment, with the snapshot's
     sources that hold an account added in the order gold first loaded
     them, then `declared`. A reference source, such as FX rates, holds
     no account and draws no series. A probe that does not answer adds
     none, and the cards keep the colours already kept."""
     kept = load_source_colors(path) if path else {}
-    rows = probe_rows(base, sid, db_id,
+    rows = probe_rows(client, db_id,
                       "SELECT silver_source_id FROM silver_sources"
                       " WHERE silver_source_id IN (SELECT silver_source_id FROM accounts)"
                       " ORDER BY first_loaded_at, silver_source_id")
@@ -6194,13 +6172,13 @@ def dashboard_parameters(model_ids, mode, name=""):
     return pickers
 
 
-def gold_metadata(base, sid, db_id, tries=3, delay=2):
+def gold_metadata(client, db_id, tries=3, delay=2):
     """The synced gold tables metadata, with a short retry. A transient
     failure here must fail the run loudly rather than read as a gold with
     no columns, whose cards no field id could bind. Returns the tables
     list, or None when the metadata stays unreadable."""
     for _ in range(tries):
-        st, meta = req(base, f"/api/database/{db_id}/metadata", session=sid)
+        st, meta = client.get(f"/api/database/{db_id}/metadata")
         if st == 200 and isinstance(meta, dict):
             return meta.get("tables", [])
         time.sleep(delay)
@@ -6255,7 +6233,7 @@ def list_fields(tables):
             if (f.get("database_type") or "").endswith("[]") and f.get("visibility_type") != "sensitive"]
 
 
-def unfingerprint_lists(base, sid, tables):
+def unfingerprint_lists(client, tables):
     """Keep Metabase's field sync off the gold's list columns. Its
     fingerprint reads a table in one query that cuts each text column to
     a prefix with substring(). The DuckDB driver reports a list as text,
@@ -6267,7 +6245,7 @@ def unfingerprint_lists(base, sid, tables):
     warning, so it is reported, not fatal."""
     marked = 0
     for fid, name in list_fields(tables):
-        st, body = req(base, f"/api/field/{fid}", "PUT", {"visibility_type": "sensitive"}, session=sid)
+        st, body = client.put(f"/api/field/{fid}", {"visibility_type": "sensitive"})
         if st == 200:
             marked += 1
         else:
@@ -6293,20 +6271,19 @@ def web_views_wanted():
     return [t for t in filter_field_columns() if t.startswith("web_")]
 
 
-def probe_rows(base, sid, db_id, sql):
+def probe_rows(client, db_id, sql):
     """The rows native `sql` returns through the driver, or None when the
     probe does not answer. Metabase answers a query that fails with 202
     as well, its status `failed` and an error beside empty rows: that is
     no answer, not an answer of no rows."""
-    st, res = req(base, "/api/dataset", "POST",
-                  {"type": "native", "database": db_id,
-                   "native": {"query": sql, "template-tags": {}}}, session=sid)
+    st, res = client.post("/api/dataset", {"type": "native", "database": db_id,
+                                           "native": {"query": sql, "template-tags": {}}})
     if st != 202 or res.get("status") == "failed" or "error" in res:
         return None
     return (res.get("data") or {}).get("rows")
 
 
-def missing_web_views(base, sid, db_id):
+def missing_web_views(client, db_id):
     """The wanted web_* serving views the mounted gold snapshot does not
     carry, probed through the driver itself. A snapshot predating the
     schema version that adds one cannot be fixed by a Metabase schema sync —
@@ -6319,7 +6296,7 @@ def missing_web_views(base, sid, db_id):
     provisioning — the conservative reading, since the alternative is a
     sync no snapshot without the view can complete."""
     want = web_views_wanted()
-    rows = probe_rows(base, sid, db_id,
+    rows = probe_rows(client, db_id,
                       "SELECT view_name FROM duckdb_views() "
                       f"WHERE NOT internal AND view_name IN ({_sql_list(want)})")
     if rows is None:
@@ -6339,24 +6316,24 @@ MIN_GOLD_SCHEMA = 179
 EXIT_STALE_SNAPSHOT = 3
 
 
-def gold_schema_version(base, sid, db_id):
+def gold_schema_version(client, db_id):
     """The mounted gold snapshot's schema version, probed through the
     driver, or None when the probe does not answer."""
-    rows = probe_rows(base, sid, db_id, "SELECT max(gold_schema_version) FROM schema_meta")
+    rows = probe_rows(client, db_id, "SELECT max(gold_schema_version) FROM schema_meta")
     try:
         return int(rows[0][0])
     except (TypeError, IndexError, ValueError):
         return None
 
 
-def check_gold_schema(base, sid, db_id):
+def check_gold_schema(client, db_id):
     """0 when the mounted gold snapshot is at MIN_GOLD_SCHEMA or newer,
     else the status main() exits with: EXIT_STALE_SNAPSHOT for an older
     snapshot, 1 when the version probe does not answer. Checked before
     anything is synced or converged: an older snapshot carries its views
     by name but not what the cards read from them, so every card would
     converge onto SQL that fails or reads them wrong."""
-    version = gold_schema_version(base, sid, db_id)
+    version = gold_schema_version(client, db_id)
     if version is None:
         print("provision: cannot read the gold snapshot's schema version; "
               "leaving the existing cards untouched", file=sys.stderr)
@@ -6376,12 +6353,12 @@ WITHHOLDING_PROBE = ("SELECT (SELECT count(*) FROM yield_withholding)"
                      " + (SELECT count(*) FROM yield_withholding_accounts) > 0")
 
 
-def withholding_table(base, sid, db_id):
+def withholding_table(client, db_id):
     """Whether the mounted gold snapshot holds a withholding table with
     any rate in it (yield_withholding and yield_withholding_accounts, the
     config's yield.withholding), probed through the driver; None when the
     probe does not answer."""
-    rows = probe_rows(base, sid, db_id, WITHHOLDING_PROBE)
+    rows = probe_rows(client, db_id, WITHHOLDING_PROBE)
     try:
         return bool(rows[0][0])
     except (TypeError, IndexError):
@@ -6407,7 +6384,7 @@ def tile_titles(table):
     return titles
 
 
-def ensure_synced(base, sid, db_id, tries=20, delay=3):
+def ensure_synced(client, db_id, tries=20, delay=3):
     """Make every column behind filter_field_columns available: when
     some are missing from the synced metadata, either Metabase simply
     has not synced the new gold DDL yet (trigger a sync, wait bounded)
@@ -6419,7 +6396,7 @@ def ensure_synced(base, sid, db_id, tries=20, delay=3):
     same way, because a card whose filter has no field id cannot be
     bound (bind). main() has already refused a snapshot older than
     MIN_GOLD_SCHEMA (check_gold_schema)."""
-    tables = gold_metadata(base, sid, db_id)
+    tables = gold_metadata(client, db_id)
     if tables is None:
         print("provision: cannot read the gold metadata — aborting before "
               "converging cards to a degraded shape", file=sys.stderr)
@@ -6429,7 +6406,7 @@ def ensure_synced(base, sid, db_id, tries=20, delay=3):
         # The columns are already there. A sync would not change them.
         print("provision: schema sync skipped")
         return tables
-    absent = missing_web_views(base, sid, db_id)
+    absent = missing_web_views(client, db_id)
     if absent:
         print("provision: the gold snapshot is missing serving views the "
               f"cards read ({', '.join(absent)}) — run `wealthdb web "
@@ -6437,10 +6414,10 @@ def ensure_synced(base, sid, db_id, tries=20, delay=3):
               "existing cards untouched", file=sys.stderr)
         return None
     print(f"provision: syncing gold schema (missing: {', '.join(gone)})")
-    req(base, f"/api/database/{db_id}/sync_schema", "POST", {}, session=sid)
+    client.post(f"/api/database/{db_id}/sync_schema", {})
     for _ in range(tries):
         time.sleep(delay)
-        latest = gold_metadata(base, sid, db_id)
+        latest = gold_metadata(client, db_id)
         # A read that failed says nothing about the sync; only overwrite on a
         # successful one, so `tables` is always the newest metadata actually
         # read — at worst the pre-sync one. Coercing a failed last read to []
@@ -6461,7 +6438,7 @@ def ensure_synced(base, sid, db_id, tries=20, delay=3):
     return None
 
 
-def ensure_database(base, sid, db_name, gold_path):
+def ensure_database(client, db_name, gold_path):
     """Add the gold DuckDB connection, or converge an existing one's
     settings. Returns the database id, or None on failure.
 
@@ -6493,7 +6470,7 @@ def ensure_database(base, sid, db_name, gold_path):
                "memory_limit": "4GB", "threads": "8", "init_sql": ""}
 
     db_id, cur = None, None
-    st, dbs = req(base, "/api/database", session=sid)
+    st, dbs = client.get("/api/database")
     if st != 200:
         # Read as empty, a failed listing would add the database twice.
         print(f"provision: could not list databases ({st}): {dbs.get('message')}",
@@ -6505,9 +6482,9 @@ def ensure_database(base, sid, db_name, gold_path):
             break
 
     if db_id is None:
-        st, body = req(base, "/api/database", "POST", {
+        st, body = client.post("/api/database", {
             "engine": "duckdb", "name": db_name, "details": details,
-        }, session=sid)
+        })
         if st in (200, 201) and body.get("id"):
             print(f"provision: added DuckDB database '{db_name}' -> {gold_path}")
             return body["id"]
@@ -6515,8 +6492,7 @@ def ensure_database(base, sid, db_name, gold_path):
               file=sys.stderr)
         return None
     if any(cur.get(k) != v for k, v in details.items()):
-        st, body = req(base, f"/api/database/{db_id}", "PUT",
-                       {"details": {**cur, **details}}, session=sid)
+        st, body = client.put(f"/api/database/{db_id}", {"details": {**cur, **details}})
         if st not in (200, 201):
             print(f"provision: could not update database settings ({st}): "
                   f"{body.get('message')}", file=sys.stderr)
@@ -6528,7 +6504,7 @@ def ensure_database(base, sid, db_name, gold_path):
     return db_id
 
 
-def ensure_collection(base, sid, name):
+def ensure_collection(client, name):
     """The id of the collection named `name`, created if absent, or None
     on failure.
 
@@ -6537,14 +6513,14 @@ def ensure_collection(base, sid, name):
     one would update or archive any user item there that shares a
     pre-defined name. A listing that fails aborts too, since reading it
     as empty would create a second collection of the same name."""
-    st, cols = req(base, "/api/collection", session=sid)
-    if st != 200 or not isinstance(cols, list):
-        print(f"provision: could not list collections ({st})", file=sys.stderr)
+    try:
+        found = client.collection(name)
+    except metabase.Error as e:
+        print(f"provision: could not list collections ({e.status})", file=sys.stderr)
         return None
-    for c in cols:
-        if c.get("name") == name and not c.get("archived"):
-            return c.get("id")
-    st, body = req(base, "/api/collection", "POST", {"name": name}, session=sid)
+    if found is not None:
+        return found.get("id")
+    st, body = client.post("/api/collection", {"name": name})
     if st in (200, 201) and body.get("id"):
         print(f"provision: created collection '{name}'")
         return body["id"]
@@ -6553,13 +6529,13 @@ def ensure_collection(base, sid, name):
     return None
 
 
-def pre_defined_cards(base, sid, coll_id):
+def pre_defined_cards(client, coll_id):
     """name -> card, for the non-archived cards in the pre-defined
     collection, or None when the card list is unreadable — read as
     empty, it would create every card a second time. Scoped to that
     collection so a user card that happens to share a name is never
     touched."""
-    st, cards = req(base, "/api/card", session=sid)
+    st, cards = client.get("/api/card")
     if st != 200 or not isinstance(cards, list):
         print(f"provision: could not list cards ({st})", file=sys.stderr)
         return None
@@ -6612,14 +6588,14 @@ def card_same(existing, payload):
     return True
 
 
-def _get_all(base, sid, paths):
+def _get_all(client, paths):
     """key -> the body of GET `path`, for each key -> path in `paths`,
     read in parallel. A read that fails or answers anything but a JSON
     object is left out, so the caller sends that object."""
     def fetch(item):
         key, path = item
         try:
-            st, body = req(base, path, session=sid)
+            st, body = client.get(path)
         except Exception:
             # A body that is no JSON, or a read cut short.
             return key, None
@@ -6629,16 +6605,16 @@ def _get_all(base, sid, paths):
         return {key: body for key, body in pool.map(fetch, paths.items()) if body}
 
 
-def stored_cards(base, sid, by_name, names):
+def stored_cards(client, by_name, names):
     """name -> the server's card, for each of `names` already in
     `by_name`. The card list carries each query in MBQL 5, which no
     payload equals, so every card is read again in the legacy form.
     A card that cannot be read is left out, and so is sent."""
-    return _get_all(base, sid, {name: f"/api/card/{by_name[name]['id']}?legacy-mbql=true"
+    return _get_all(client, {name: f"/api/card/{by_name[name]['id']}?legacy-mbql=true"
                                 for name in names if name in by_name})
 
 
-def upsert_card(base, sid, by_name, name, payload, stored=None):
+def upsert_card(client, by_name, name, payload, stored=None):
     """Create card `name` or update it in place. `stored` is the
     server's card (stored_cards); one equal to the payload is left in
     place. Returns (card id, 'created'|'updated'|'skipped') on success,
@@ -6647,11 +6623,11 @@ def upsert_card(base, sid, by_name, name, payload, stored=None):
     if card_same(stored, payload):
         return stored["id"], "skipped"
     if existing:
-        st, body = req(base, f"/api/card/{existing['id']}", "PUT", payload, session=sid)
+        st, body = client.put(f"/api/card/{existing['id']}", payload)
         if st in (200, 201):
             return existing["id"], "updated"
     else:
-        st, body = req(base, "/api/card", "POST", payload, session=sid)
+        st, body = client.post("/api/card", payload)
         if st in (200, 201) and body.get("id"):
             return body["id"], "created"
     return None, f"({st}): {body.get('message')}"
@@ -6698,15 +6674,15 @@ def card_payload(coll_id, name, ctype, display, desc, query, viz):
     }
 
 
-def upsert_cards(base, sid, by_name, payloads, label):
+def upsert_cards(client, by_name, payloads, label):
     """Create or update-in-place every card in `payloads` (name -> full
     /api/card payload). An unchanged card is left in place. Returns
     (name -> card id, #created, #updated, #skipped), or None on the
     first failure."""
     ids, n = {}, {"created": 0, "updated": 0, "skipped": 0}
-    stored = stored_cards(base, sid, by_name, payloads)
+    stored = stored_cards(client, by_name, payloads)
     for name, payload in payloads.items():
-        cid, how = upsert_card(base, sid, by_name, name, payload, stored.get(name))
+        cid, how = upsert_card(client, by_name, name, payload, stored.get(name))
         if cid is None:
             print(f"provision: failed to save {label} '{name}' {how}",
                   file=sys.stderr)
@@ -6716,12 +6692,11 @@ def upsert_cards(base, sid, by_name, payloads, label):
     return ids, n["created"], n["updated"], n["skipped"]
 
 
-def archive_all(base, sid, kind, ids):
+def archive_all(client, kind, ids):
     """Archive /api/<kind>/<id> for every id; returns how many succeeded."""
     n = 0
     for i in ids:
-        st, _ = req(base, f"/api/{kind}/{i}", "PUT", {"archived": True},
-                    session=sid)
+        st, _ = client.put(f"/api/{kind}/{i}", {"archived": True})
         n += st in (200, 201)
     return n
 
@@ -6751,17 +6726,17 @@ def card_payloads(db_id, coll_id, field_ids, model_ids, colors):
     return {name: bind(payload, db_id, field_ids, model_ids) for name, payload in payloads.items()}
 
 
-def ensure_models(base, sid, db_id, coll_id, by_name):
+def ensure_models(client, db_id, coll_id, by_name):
     """Create/refresh the pre-defined report models in `coll_id`, and
     archive any retired (renamed-away) ones. An unchanged model is left
     in place. The models are content-free shims over the gold serving
     tables and views — no source data is baked in. Returns model name ->
     card id, or None on failure."""
-    saved = upsert_cards(base, sid, by_name, model_payloads(db_id, coll_id), "model")
+    saved = upsert_cards(client, by_name, model_payloads(db_id, coll_id), "model")
     if saved is None:
         return None
     ids, created, updated, skipped = saved
-    archived = archive_all(base, sid, "card",
+    archived = archive_all(client, "card",
                            [by_name[n]["id"] for n in RETIRED_MODEL_NAMES
                             if n in by_name])
     print(f"provision: report models ({_ccy_slash()}) — {created} created, "
@@ -6770,7 +6745,7 @@ def ensure_models(base, sid, db_id, coll_id, by_name):
     return ids
 
 
-def ensure_cards(base, sid, db_id, coll_id, by_name, field_ids, model_ids, colors=None):
+def ensure_cards(client, db_id, coll_id, by_name, field_ids, model_ids, colors=None):
     """Create/refresh the pre-defined questions, bound to the field ids
     `field_ids` and the models in `model_ids`, and archive any retired
     (renamed-away) ones. A card that draws a series per source takes
@@ -6778,11 +6753,11 @@ def ensure_cards(base, sid, db_id, coll_id, by_name, field_ids, model_ids, color
     dashboards' tile lookup) and card name -> its description, or None on
     failure."""
     payloads = card_payloads(db_id, coll_id, field_ids, model_ids, colors or {})
-    saved = upsert_cards(base, sid, by_name, payloads, "card")
+    saved = upsert_cards(client, by_name, payloads, "card")
     if saved is None:
         return None
     ids, created, updated, skipped = saved
-    archived = archive_all(base, sid, "card",
+    archived = archive_all(client, "card",
                            [by_name[n]["id"] for n in RETIRED_CARD_NAMES
                             if n in by_name])
     print(f"provision: questions — {created} created, {updated} updated, "
@@ -7025,7 +7000,7 @@ def dashboard_payloads(defs, model_ids, card_ids, dash_ids, titles, descs):
     return out
 
 
-def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, descs=None):
+def ensure_dashboards(client, coll_id, card_ids, model_ids, titles=None, descs=None):
     """Create/refresh the pre-defined dashboards (and their privacy twins)
     with their global filters (see dashboard_parameters) linked to every
     tile and, where there is a twin, a switch link to it on the top row,
@@ -7041,14 +7016,13 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     duplicate before customizing."""
     titles = titles or {}
     descs = descs or {}
-    st, items = req(base, f"/api/collection/{coll_id}/items?models=dashboard",
-                    session=sid)
-    if st != 200:
-        # Read as empty, a failed listing would create every dashboard twice.
-        print(f"provision: could not list dashboards ({st}): {items.get('message')}",
+    try:
+        listed = client.dashboards(coll_id)
+    except metabase.Error as e:
+        print(f"provision: could not list dashboards ({e.status}): {e.body.get('message')}",
               file=sys.stderr)
         return 1
-    existing = {d.get("name"): d.get("id") for d in (items.get("data") or [])}
+    existing = {d.get("name"): d.get("id") for d in listed}
 
     defs = dashboard_defs()
     n = {"created": 0, "updated": 0, "skipped": 0}
@@ -7058,9 +7032,8 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     for name, (desc, _mode, _sibling, _tiles) in defs.items():
         did = existing.get(name)
         if did is None:
-            st, body = req(base, "/api/dashboard", "POST",
-                           {"name": name, "description": desc,
-                            "collection_id": coll_id}, session=sid)
+            st, body = client.post("/api/dashboard", {"name": name, "description": desc,
+                                                      "collection_id": coll_id})
             if st not in (200, 201) or not body.get("id"):
                 print(f"provision: failed to create dashboard '{name}' ({st}): "
                       f"{body.get('message')}", file=sys.stderr)
@@ -7070,7 +7043,7 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
         dash_ids[name] = did
     # The dashboards listed before this run, read for the comparison. One
     # created above has no tiles yet, so it is sent without a read.
-    stored = _get_all(base, sid, {name: f"/api/dashboard/{existing[name]}"
+    stored = _get_all(client, {name: f"/api/dashboard/{existing[name]}"
                                   for name in defs if existing.get(name) is not None})
 
     payloads = dashboard_payloads(defs, model_ids, card_ids, dash_ids, titles, descs)
@@ -7084,14 +7057,14 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
         # A change to the pickers alone (a new picker default) is sent
         # alone, so the tiles keep their ids.
         if dashboard_unchanged(current, name, desc, (current or {}).get("parameters"), dashcards):
-            if not _put_parameters(base, sid, dash_ids[name], name, parameters,
+            if not _put_parameters(client, dash_ids[name], name, parameters,
                                    "update the filters of"):
                 return 1
             continue
-        st, body = req(base, f"/api/dashboard/{dash_ids[name]}", "PUT",
-                       {"name": name, "description": desc,
-                        "parameters": parameters,
-                        "dashcards": dashcards}, session=sid)
+        st, body = client.put(f"/api/dashboard/{dash_ids[name]}",
+                              {"name": name, "description": desc,
+                               "parameters": parameters,
+                               "dashcards": dashcards})
         if st not in (200, 201):
             print(f"provision: failed to lay out dashboard '{name}' ({st}): "
                   f"{body.get('message')}", file=sys.stderr)
@@ -7101,11 +7074,11 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
         # replacement above deletes every old tile, so an inline parameter
         # sent in the same PUT gets cleaned right back up. Re-assert the
         # parameter list now that the new tiles are in place.
-        if parameters and not _put_parameters(base, sid, dash_ids[name], name, parameters,
+        if parameters and not _put_parameters(client, dash_ids[name], name, parameters,
                                               "re-assert filters on"):
             return 1
 
-    archived = archive_all(base, sid, "dashboard",
+    archived = archive_all(client, "dashboard",
                            [existing[name] for name in RETIRED_DASHBOARD_NAMES
                             if existing.get(name) is not None])
     print(f"provision: dashboards — {n['created']} created, {n['updated']} updated, "
@@ -7113,11 +7086,10 @@ def ensure_dashboards(base, sid, coll_id, card_ids, model_ids, titles=None, desc
     return 0
 
 
-def _put_parameters(base, sid, did, name, parameters, what):
+def _put_parameters(client, did, name, parameters, what):
     """PUT dashboard `did`'s parameter list alone. False when the server
     refuses it, with "failed to `what` `name`" printed."""
-    st, body = req(base, f"/api/dashboard/{did}", "PUT",
-                   {"parameters": parameters}, session=sid)
+    st, body = client.put(f"/api/dashboard/{did}", {"parameters": parameters})
     if st in (200, 201):
         return True
     print(f"provision: failed to {what} '{name}' ({st}): {body.get('message')}",

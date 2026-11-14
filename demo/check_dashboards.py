@@ -67,13 +67,12 @@ import pathlib
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(1, str(HERE.parent / "web"))
 
+import metabase  # noqa: E402
 import provision  # noqa: E402
 from demohouse import config, spec  # noqa: E402
 
@@ -92,36 +91,24 @@ NO_NULL_DASHBOARDS = provision.INCOME_DASHBOARDS
 # SLOWER_FLOOR seconds more, which keeps a fast tile's noise out.
 FLOAT_REL, FLOAT_ABS = 1e-13, 1e-9
 SLOWER_RATIO, SLOWER_FLOOR = 1.5, 0.25
+# The seconds one API call may take, a card's query among them.
+TIMEOUT = 300
 
 
-def call(base, path, method="GET", body=None, headers=None):
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(base + path, data=data, method=method,
-                                 headers={"Content-Type": "application/json", **(headers or {})})
-    try:
-        with urllib.request.urlopen(req, timeout=300) as r:
-            raw = r.read()
-            return r.status, (json.loads(raw) if raw else None)
-    except urllib.error.HTTPError as e:
-        raw = e.read()
-        try:
-            return e.code, json.loads(raw)
-        except ValueError:
-            return e.code, {"error": raw.decode(errors="replace")[:300]}
-
-
-def mint_key(base, email, password):
-    st, sess = call(base, "/api/session", "POST", {"username": email, "password": password})
+def mint_key(client, email, password):
+    """(the admin's client, the id of a new API key, a client under that
+    key) for the Metabase of `client`, logged in as `email`."""
+    st, sess = client.post("/api/session", {"username": email, "password": password})
     if st != 200:
         raise SystemExit(f"login failed ({st}): {sess}")
-    auth = {"X-Metabase-Session": sess["id"]}
-    _, groups = call(base, "/api/permissions/group", headers=auth)
-    admin = next(g["id"] for g in groups if g["name"] == "Administrators")
+    admin = client.with_auth(session=sess["id"])
+    _, groups = admin.get("/api/permissions/group")
+    group = next(g["id"] for g in groups if g["name"] == "Administrators")
     name = f"dashboard-check-{dt.datetime.now(dt.timezone.utc):%Y%m%d%H%M%S}"
-    st, key = call(base, "/api/api-key", "POST", {"name": name, "group_id": admin}, auth)
+    st, key = admin.post("/api/api-key", {"name": name, "group_id": group})
     if st != 200:
         raise SystemExit(f"could not create an API key ({st}): {key}")
-    return auth, key["id"], {"X-API-Key": key["unmasked_key"]}
+    return admin, key["id"], client.with_auth(api_key=key["unmasked_key"])
 
 
 def combos(params, sources, currencies, first_year, today):
@@ -289,15 +276,15 @@ def slower_tiles(old, new):
             if b > a * SLOWER_RATIO and b - a > SLOWER_FLOOR]
 
 
-def run_card(base, auth, dash, dc, ptypes, values):
+def run_card(client, dash, dc, ptypes, values):
     mapped = {m["parameter_id"]: m for m in dc.get("parameter_mappings", [])}
     body = {"parameters": [{"id": pid, "type": ptypes[pid], "value": v, "target": mapped[pid]["target"]}
                            for pid, v in values.items() if pid in mapped]}
     # A response Metabase cuts off carries no error and no result: the
     # card is asked once more before it counts as failed.
     for _attempt in range(2):
-        st, res = call(base, f"/api/dashboard/{dash['id']}/dashcard/{dc['id']}/card/{dc['card_id']}/query",
-                       "POST", body, auth)
+        st, res = client.post(f"/api/dashboard/{dash['id']}/dashcard/{dc['id']}/card/{dc['card_id']}/query",
+                              body)
         ok = st in (200, 202) and isinstance(res, dict) and res.get("status") == "completed" and "error" not in res
         if ok or (isinstance(res, dict) and res.get("error")):
             break
@@ -316,7 +303,8 @@ def demo_root() -> pathlib.Path:
     return pathlib.Path(out.stdout.strip()).expanduser()
 
 
-def main(argv=None):
+def main(argv=None, client=None):
+    """Check the Metabase --base names, or `client`, the tests' stand-in."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", default=f"http://127.0.0.1:{config.WEB_PORT}")
     ap.add_argument("--email", default="admin@wealthdb.local")
@@ -330,17 +318,17 @@ def main(argv=None):
     saved = load_runs(a.compare) if a.compare else None
     password_file = pathlib.Path(a.password_file) if a.password_file else demo_root() / "web/admin-password.txt"
     password = password_file.read_text().strip()
-    admin_auth, key_id, auth = mint_key(a.base, a.email, password)
+    admin, key_id, keyed = mint_key(client or metabase.Client(a.base, timeout=TIMEOUT), a.email, password)
     today = dt.datetime.now(dt.timezone.utc).date()
     try:
-        _, cols = call(a.base, "/api/collection", headers=auth)
-        coll = next(c for c in cols if c.get("name") == provision.COLLECTION_NAME and not c.get("archived"))
-        _, items = call(a.base, f"/api/collection/{coll['id']}/items?models=dashboard", headers=auth)
-        dashboards = sorted(items["data"], key=lambda d: d["name"])
+        coll = keyed.collection(provision.COLLECTION_NAME)
+        if coll is None:
+            raise SystemExit(f"collection not found: {provision.COLLECTION_NAME}")
+        dashboards = sorted(keyed.dashboards(coll["id"]), key=lambda d: d["name"])
         failures, empties, figures, runs, freshness, dashes = [], set(), [], 0, None, {}
         records = []
         for d in dashboards:
-            _, dash = call(a.base, f"/api/dashboard/{d['id']}", headers=auth)
+            _, dash = keyed.get(f"/api/dashboard/{d['id']}")
             dashes[d["id"]] = dash
             ptypes = {p["id"]: p["type"] for p in dash.get("parameters", [])}
             def offered(slug, dash=dash, d=d):
@@ -348,7 +336,7 @@ def main(argv=None):
                 p = next((p for p in dash.get("parameters", []) if p["slug"] == slug), None)
                 if not p:
                     return []
-                _, vals = call(a.base, f"/api/dashboard/{d['id']}/params/{p['id']}/values", headers=auth)
+                _, vals = keyed.get(f"/api/dashboard/{d['id']}/params/{p['id']}/values")
                 return sorted(v[0] for v in (vals or {}).get("values", []))
 
             sources, currencies = offered("source"), offered("currency")
@@ -360,7 +348,7 @@ def main(argv=None):
                     jobs.append((dc, label, values))
             def run(job, dash=dash, ptypes=ptypes):
                 start = time.monotonic()
-                result = run_card(a.base, auth, dash, job[0], ptypes, job[2])
+                result = run_card(keyed, dash, job[0], ptypes, job[2])
                 return job, result, time.monotonic() - start
 
             with concurrent.futures.ThreadPoolExecutor(a.workers) as pool:
@@ -419,7 +407,7 @@ def main(argv=None):
                 print(f"  SLOWER {d} | {c} | {was}s -> {now}s")
         return 1 if failures or at_defaults or nulls or clicks or changed else 0
     finally:
-        call(a.base, f"/api/api-key/{key_id}", "DELETE", headers=admin_auth)
+        admin.delete(f"/api/api-key/{key_id}")
 
 
 if __name__ == "__main__":

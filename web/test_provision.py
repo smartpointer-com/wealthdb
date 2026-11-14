@@ -67,6 +67,26 @@ def check(desc, cond, detail=""):
     ok(desc) if cond else bad(desc, detail)
 
 
+class FakeClient(p.metabase.Client):
+    """A stand-in for the Metabase client: a subclass answers each call
+    in `call`, so no request leaves the test."""
+    base, session, api_key, timeout = "http://mb", "sid", None, 30
+
+    def __init__(self):
+        pass
+
+
+class Answering(FakeClient):
+    """A fake client that answers each call with answer(path, method,
+    data)."""
+
+    def __init__(self, answer):
+        self.answer = answer
+
+    def call(self, path, method="GET", data=None, timeout=None):
+        return self.answer(path, method, data)
+
+
 def resolve_field_ids():
     """Stand in for a synced Metabase: every column the cards' filters
     bind (filter_field_columns) gets a distinct field id, the way main()
@@ -125,21 +145,12 @@ check("the account filter binds account_label, never the external id",
 
 section("the wait for Metabase")
 _answers = iter([(503, {}), (0, {}), (200, {})])
-_real_req = p.req
-try:
-    p.req = lambda *_a, **_k: next(_answers)
-    _err = io.StringIO()
-    with contextlib.redirect_stderr(_err):
-        _up = p.wait_health("b", limit=5, delay=0)
-finally:
-    p.req = _real_req
+_err = io.StringIO()
+with contextlib.redirect_stderr(_err):
+    _up = p.wait_health(Answering(lambda *_a: next(_answers)), limit=5, delay=0)
 check("the wait polls until Metabase answers and says how long it took",
       _up is True and re.search(r"provision: timing: wait for Metabase [0-9.]+s", _err.getvalue()), _err.getvalue())
-try:
-    p.req = lambda *_a, **_k: (503, {})
-    _up = p.wait_health("b", limit=0.05, delay=0.01)
-finally:
-    p.req = _real_req
+_up = p.wait_health(Answering(lambda *_a: (503, {})), limit=0.05, delay=0.01)
 check("...and gives up after its limit", _up is False)
 
 # ---- parameter ids ----------------------------------------------------
@@ -571,8 +582,8 @@ for _what, _payload, _ids, _mids in (("field", _unbound, _no_category, MID),
 section("missing serving views abort the run")
 
 
-class FakeAPI:
-    """A stand-in for provision.req: answers the metadata and view
+class FakeAPI(FakeClient):
+    """A fake client: answers the metadata and view
     probes, and records every call so the test can assert what did NOT
     happen (a sync must not be attempted for a stale snapshot)."""
 
@@ -580,8 +591,7 @@ class FakeAPI:
         self.views, self.tables, self.calls = views, tables, []
         self.version = p.MIN_GOLD_SCHEMA if version is None else version
 
-    def __call__(self, base, path, method="GET", data=None, session=None,
-                 timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         self.calls.append((method, path))
         if path.endswith("/metadata"):
             return 200, {"tables": self.tables}
@@ -599,15 +609,14 @@ class FlakyMetadataAPI(FakeAPI):
     the transient failure ensure_synced must not read as "gold has no
     columns".'''
 
-    def __call__(self, base, path, method="GET", data=None, session=None,
-                 timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         if path.endswith("/metadata"):
             self.calls.append((method, path))
             if self.tables is None:
                 return 500, {}
             answered, self.tables = self.tables, None
             return 200, {"tables": answered}
-        return super().__call__(base, path, method, data, session, timeout)
+        return super().call(path, method, data, timeout)
 
 
 class FakeMetabase(FakeAPI):
@@ -615,8 +624,7 @@ class FakeMetabase(FakeAPI):
     check: health, an admin already set up, its login and the gold
     database."""
 
-    def __call__(self, base, path, method="GET", data=None, session=None,
-                 timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         if path == "/api/session/properties":
             self.calls.append((method, path))
             return 200, {"has-user-setup": True}
@@ -627,11 +635,11 @@ class FakeMetabase(FakeAPI):
             self.calls.append((method, path))
             return 200, {"data": [{"id": 1, "name": "gold", "engine": "duckdb",
                                    "details": {}}]}
-        return super().__call__(base, path, method, data, session, timeout)
+        return super().call(path, method, data, timeout)
 
 
-def run_main():
-    """main()'s exit status against the stand-in in p.req, with the
+def run_main(client):
+    """main()'s exit status against fake client `client`, with the
     arguments web/web passes; the globals main() sets are restored."""
     saved = (sys.argv, os.environ.get("WEALTHDB_WEB_ADMIN_PASSWORD"),
              p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
@@ -640,7 +648,7 @@ def run_main():
     os.environ["WEALTHDB_WEB_ADMIN_PASSWORD"] = "Synthetic-pw-1!"
     try:
         with quiet():
-            return p.main()
+            return p.main(client)
     finally:
         sys.argv, pw, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = saved
         if pw is None:
@@ -659,110 +667,104 @@ def tables_for(views):
 ALL_VIEWS = p.web_views_wanted()
 PRE_0043 = [v for v in ALL_VIEWS if v not in
             ("web_spending", "web_card_balances_history")]
-real_req = p.req
+api = FakeAPI(PRE_0043, tables_for(PRE_0043 + ["report_returns"]))
+check("a pre-0043 snapshot reports both spending views missing",
+      p.missing_web_views(api, 1) ==
+      ["web_card_balances_history", "web_spending"])
+api = FakeAPI(PRE_0043, tables_for(PRE_0043 + ["report_returns"]))
+with quiet():
+    aborted = p.ensure_synced(api, 1, tries=1, delay=0) is None
+check("ensure_synced aborts rather than half-provisioning", aborted)
+check("...without triggering a schema sync it cannot be fixed by",
+      not [c for c in api.calls if "sync_schema" in c[1]],
+      str(api.calls))
+
+api = FakeAPI(None, tables_for(PRE_0043 + ["report_returns"]))
+check("an unanswerable probe is read as 'missing everything'",
+      p.missing_web_views(api, 1) == ALL_VIEWS)
+
+api = FakeAPI(ALL_VIEWS + ["web_something_else"],
+              tables_for(ALL_VIEWS + ["report_returns"]))
+check("a fully migrated snapshot reports nothing missing",
+      p.missing_web_views(api, 1) == [])
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    proceeds = p.ensure_synced(api, 1, tries=1, delay=0) is not None
+check("...and provisioning proceeds", proceeds)
+check("...without a schema sync, which it says it skipped",
+      not [c for c in api.calls if "sync_schema" in c[1]]
+      and "provision: schema sync skipped" in buf.getvalue(), str(api.calls))
+
+# The probe must name the views, not count them: extra web_* views
+# in gold cannot stand in for a missing one.
+api = FakeAPI(PRE_0043 + ["web_extra_one", "web_extra_two"],
+              tables_for(PRE_0043 + ["report_returns"]))
+check("unrelated web_* views cannot pad the count",
+      p.missing_web_views(api, 1) ==
+      ["web_card_balances_history", "web_spending"])
+
+# A sync that has not landed when the budget runs out leaves columns
+# missing, and no card can be bound without their field ids. Same
+# outcome as the two guards above, so it ends the same way: abort.
+# Distinguished from the stale-snapshot abort by having actually
+# attempted the sync.
+api = FlakyMetadataAPI(ALL_VIEWS,
+                       tables_for(PRE_0043 + ["report_returns"]))
+real_sleep, p.time.sleep = p.time.sleep, lambda *_: None
 try:
-    p.req = FakeAPI(PRE_0043, tables_for(PRE_0043 + ["report_returns"]))
-    check("a pre-0043 snapshot reports both spending views missing",
-          p.missing_web_views("b", "s", 1) ==
-          ["web_card_balances_history", "web_spending"])
-    api = p.req = FakeAPI(PRE_0043, tables_for(PRE_0043 + ["report_returns"]))
     with quiet():
-        aborted = p.ensure_synced("b", "s", 1, tries=1, delay=0) is None
-    check("ensure_synced aborts rather than half-provisioning", aborted)
-    check("...without triggering a schema sync it cannot be fixed by",
-          not [c for c in api.calls if "sync_schema" in c[1]],
-          str(api.calls))
-
-    p.req = FakeAPI(None, tables_for(PRE_0043 + ["report_returns"]))
-    check("an unanswerable probe is read as 'missing everything'",
-          p.missing_web_views("b", "s", 1) == ALL_VIEWS)
-
-    p.req = FakeAPI(ALL_VIEWS + ["web_something_else"],
-                    tables_for(ALL_VIEWS + ["report_returns"]))
-    check("a fully migrated snapshot reports nothing missing",
-          p.missing_web_views("b", "s", 1) == [])
-    api = p.req
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        proceeds = p.ensure_synced("b", "s", 1, tries=1, delay=0) is not None
-    check("...and provisioning proceeds", proceeds)
-    check("...without a schema sync, which it says it skipped",
-          not [c for c in api.calls if "sync_schema" in c[1]]
-          and "provision: schema sync skipped" in buf.getvalue(), str(api.calls))
-
-    # The probe must name the views, not count them: extra web_* views
-    # in gold cannot stand in for a missing one.
-    p.req = FakeAPI(PRE_0043 + ["web_extra_one", "web_extra_two"],
-                    tables_for(PRE_0043 + ["report_returns"]))
-    check("unrelated web_* views cannot pad the count",
-          p.missing_web_views("b", "s", 1) ==
-          ["web_card_balances_history", "web_spending"])
-
-    # A sync that has not landed when the budget runs out leaves columns
-    # missing, and a card built from that resolves no field id for them —
-    # dropping every [[AND {{tag}}]] clause and PUTting the filter-less
-    # definition over one that works. Same outcome as the two guards above,
-    # so it ends the same way: abort. Distinguished from the stale-snapshot
-    # abort by having actually attempted the sync.
-    api = p.req = FlakyMetadataAPI(ALL_VIEWS,
-                                   tables_for(PRE_0043 + ["report_returns"]))
-    real_sleep, p.time.sleep = p.time.sleep, lambda *_: None
-    try:
-        with quiet():
-            exhausted = p.ensure_synced("b", "s", 1, tries=1, delay=0)
-    finally:
-        p.time.sleep = real_sleep
-    check("a sync still incomplete at the end of the budget aborts rather "
-          "than provisioning cards with no filters", exhausted is None)
-    check("...having actually tried the sync, unlike the stale-snapshot abort",
-          bool([c for c in api.calls if "sync_schema" in c[1]]),
-          str(api.calls))
-
-    # A snapshot older than the cards' columns carries every view by name,
-    # so the view probe passes it; only the schema version tells it apart.
-    # Provisioning onto it would rewrite every money card to read columns
-    # the snapshot lacks.
-    api = p.req = FakeAPI(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]),
-                          version=p.MIN_GOLD_SCHEMA - 1)
-    with quiet():
-        old_schema = p.check_gold_schema("b", "s", 1)
-    check("a snapshot older than the cards' schema fails with a status of its own",
-          old_schema == p.EXIT_STALE_SNAPSHOT, old_schema)
-    check("...which no other failure (1) or a usage error (2) exits with",
-          p.EXIT_STALE_SNAPSHOT not in (0, 1, 2), p.EXIT_STALE_SNAPSHOT)
-    check("...found before reading the metadata or attempting a sync",
-          [c for c in api.calls if c[1] == "/api/dataset"] == api.calls, str(api.calls))
-    p.req = FakeAPI(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]))
-    check("a snapshot at the cards' schema passes", p.check_gold_schema("b", "s", 1) == 0)
-    p.req.version = "unreadable"
-    with quiet():
-        unknown = p.check_gold_schema("b", "s", 1)
-    check("a schema version the probe cannot read is an ordinary failure",
-          unknown == 1, unknown)
-
-    # The invariant that abort protects: a metadata read that fails says
-    # nothing about the schema, and must never be coerced to an empty table
-    # list — that would resolve no field ids at all.
-    p.req = FakeAPI(ALL_VIEWS, None)
-    check("a failed metadata read is never coerced to an empty table list",
-          p.gold_metadata("b", "s", 1) is None)
-
-    # web/web reads main()'s exit status: the stale one names `wealthdb
-    # web refresh`, any other the browser wizard.
-    api = p.req = FakeMetabase(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]),
-                               version=p.MIN_GOLD_SCHEMA - 1)
-    check("provisioning onto an older snapshot exits with the stale status",
-          run_main() == p.EXIT_STALE_SNAPSHOT)
-    check("...having synced and written nothing",
-          not [c for c in api.calls
-               if "sync_schema" in c[1] or "/metadata" in c[1] or c[1].startswith("/api/card")
-               or c[1].startswith("/api/collection")], str(api.calls))
-    api = p.req = FakeMetabase(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]))
-    api.version = "unreadable"
-    check("...and onto one whose version cannot be read with 1, at the probe",
-          run_main() == 1 and ("POST", "/api/dataset") in api.calls, str(api.calls))
+        exhausted = p.ensure_synced(api, 1, tries=1, delay=0)
 finally:
-    p.req = real_req
+    p.time.sleep = real_sleep
+check("a sync still incomplete at the end of the budget aborts rather "
+      "than provisioning cards with no filters", exhausted is None)
+check("...having actually tried the sync, unlike the stale-snapshot abort",
+      bool([c for c in api.calls if "sync_schema" in c[1]]),
+      str(api.calls))
+
+# A snapshot older than the cards' columns carries every view by name,
+# so the view probe passes it; only the schema version tells it apart.
+# Provisioning onto it would rewrite every money card to read columns
+# the snapshot lacks.
+api = FakeAPI(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]),
+              version=p.MIN_GOLD_SCHEMA - 1)
+with quiet():
+    old_schema = p.check_gold_schema(api, 1)
+check("a snapshot older than the cards' schema fails with a status of its own",
+      old_schema == p.EXIT_STALE_SNAPSHOT, old_schema)
+check("...which no other failure (1) or a usage error (2) exits with",
+      p.EXIT_STALE_SNAPSHOT not in (0, 1, 2), p.EXIT_STALE_SNAPSHOT)
+check("...found before reading the metadata or attempting a sync",
+      [c for c in api.calls if c[1] == "/api/dataset"] == api.calls, str(api.calls))
+api = FakeAPI(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]))
+check("a snapshot at the cards' schema passes", p.check_gold_schema(api, 1) == 0)
+api.version = "unreadable"
+with quiet():
+    unknown = p.check_gold_schema(api, 1)
+check("a schema version the probe cannot read is an ordinary failure",
+      unknown == 1, unknown)
+
+# The invariant that abort protects: a metadata read that fails says
+# nothing about the schema, and must never be coerced to an empty table
+# list — that would resolve no field ids at all.
+api = FakeAPI(ALL_VIEWS, None)
+check("a failed metadata read is never coerced to an empty table list",
+      p.gold_metadata(api, 1) is None)
+
+# web/web reads main()'s exit status: the stale one names `wealthdb
+# web refresh`, any other the browser wizard.
+api = FakeMetabase(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]),
+                   version=p.MIN_GOLD_SCHEMA - 1)
+check("provisioning onto an older snapshot exits with the stale status",
+      run_main(api) == p.EXIT_STALE_SNAPSHOT)
+check("...having synced and written nothing",
+      not [c for c in api.calls
+           if "sync_schema" in c[1] or "/metadata" in c[1] or c[1].startswith("/api/card")
+           or c[1].startswith("/api/collection")], str(api.calls))
+api = FakeMetabase(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]))
+api.version = "unreadable"
+check("...and onto one whose version cannot be read with 1, at the probe",
+      run_main(api) == 1 and ("POST", "/api/dataset") in api.calls, str(api.calls))
 
 # ---- the (uncategorized) label is a cross-repo contract -----------------
 
@@ -963,12 +965,11 @@ check("...so no card over them fills it in again",
 section("dashboard layout payload")
 
 
-class FakeDashboardAPI:
+class FakeDashboardAPI(FakeClient):
     def __init__(self):
         self.puts, self.next_id = [], 100
 
-    def __call__(self, base, path, method="GET", data=None, session=None,
-                 timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         if method == "GET":
             return 200, {"data": []}
         if method == "POST" and path == "/api/dashboard":
@@ -980,23 +981,19 @@ class FakeDashboardAPI:
 
 
 card_ids = {name: 500 + i for i, name in enumerate(sorted(CARDS))}
-real_req = p.req
-try:
-    api = p.req = FakeDashboardAPI()
-    with quiet():
-        rc = p.ensure_dashboards("b", "s", 7, card_ids, MID, None, {n: c[1] for n, c in CARDS.items()})
-    check("ensure_dashboards lays out every dashboard", rc == 0)
-finally:
-    p.req = real_req
+laid = FakeDashboardAPI()
+with quiet():
+    rc = p.ensure_dashboards(laid, 7, card_ids, MID, None, {n: c[1] for n, c in CARDS.items()})
+check("ensure_dashboards lays out every dashboard", rc == 0)
 
 section("each provisioning pass prints its counts on one line")
 
 
-class FakeSaveAPI:
+class FakeSaveAPI(FakeClient):
     def __init__(self):
         self.next_id = 0
 
-    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         if method == "POST" and path in ("/api/card", "/api/dashboard"):
             self.next_id += 1
             return 200, {"id": self.next_id}
@@ -1004,18 +1001,14 @@ class FakeSaveAPI:
 
 
 buf = io.StringIO()
-real_req = p.req
-try:
-    p.req = FakeSaveAPI()
-    with contextlib.redirect_stdout(buf):
-        model_ids = p.ensure_models("b", "s", 1, 7, {})
-        check("models save", model_ids is not None)
-        saved = p.ensure_cards("b", "s", 1, 7, {}, FIELD_IDS, model_ids)
-        check("cards save", saved is not None)
-        rc = p.ensure_dashboards("b", "s", 7, saved[0], model_ids, None, saved[1])
-        check("dashboards save", rc == 0)
-finally:
-    p.req = real_req
+api = FakeSaveAPI()
+with contextlib.redirect_stdout(buf):
+    model_ids = p.ensure_models(api, 1, 7, {})
+    check("models save", model_ids is not None)
+    saved = p.ensure_cards(api, 1, 7, {}, FIELD_IDS, model_ids)
+    check("cards save", saved is not None)
+    rc = p.ensure_dashboards(api, 7, saved[0], model_ids, None, saved[1])
+    check("dashboards save", rc == 0)
 printed = buf.getvalue()
 n_cards = len(p.question_defs()) + len(p.privacy_card_defs())
 for want in (f"provision: report models ({p._ccy_slash()}) — {len(p.report_models())} created, "
@@ -1089,14 +1082,14 @@ retitled = dict(tile, visualization_settings={})
 check("a tile that drops a setting does not match", not p._dashcards_same([tile], [retitled]))
 
 
-class FetchCard:
+class FetchCard(FakeClient):
     """A card list in MBQL 5, and the legacy form only when asked for."""
 
     def __init__(self, body):
         self.body = body
         self.puts = 0
 
-    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         if method == "GET" and path == "/api/card/9?legacy-mbql=true":
             return 200, server_card(self.body)
         if method == "GET" and path == "/api/card/9":
@@ -1107,35 +1100,30 @@ class FetchCard:
         return 200, {}
 
 
-real_req = p.req
 listed = {"n": {"id": 9, "name": "n", "dataset_query": {"lib/type": "mbql/query"}}}
-try:
-    fetch = p.req = FetchCard(dict(payload))
-    with quiet():
-        saved = p.upsert_cards("b", "s", listed, {"n": payload}, "card")
-    check("a stored card read in the legacy form is not sent",
-          saved == ({"n": 9}, 0, 0, 1) and fetch.puts == 0, saved)
-    fetch.body["description"] = "other"
-    with quiet():
-        saved = p.upsert_cards("b", "s", listed, {"n": payload}, "card")
-    check("a changed card is sent", saved == ({"n": 9}, 0, 1, 0) and fetch.puts == 1, saved)
-    fetch.body["description"] = payload["description"]
-    for label, fail in (("an error status", lambda: (500, {"message": "down"})),
-                        ("a body that is no JSON", lambda: (_ for _ in ()).throw(ValueError("html")))):
-        fetch.puts = 0
+fetch = FetchCard(dict(payload))
+with quiet():
+    saved = p.upsert_cards(fetch, listed, {"n": payload}, "card")
+check("a stored card read in the legacy form is not sent",
+      saved == ({"n": 9}, 0, 0, 1) and fetch.puts == 0, saved)
+fetch.body["description"] = "other"
+with quiet():
+    saved = p.upsert_cards(fetch, listed, {"n": payload}, "card")
+check("a changed card is sent", saved == ({"n": 9}, 0, 1, 0) and fetch.puts == 1, saved)
+fetch.body["description"] = payload["description"]
+for label, fail in (("an error status", lambda: (500, {"message": "down"})),
+                    ("a body that is no JSON", lambda: (_ for _ in ()).throw(ValueError("html")))):
+    fetch.puts = 0
 
-        def failing(base, path, method="GET", data=None, session=None, timeout=30, fail=fail):
-            if method == "GET" and "legacy-mbql" in path:
-                return fail()
-            return fetch(base, path, method, data, session, timeout)
+    def failing(path, method="GET", data=None, fail=fail):
+        if method == "GET" and "legacy-mbql" in path:
+            return fail()
+        return fetch.call(path, method, data)
 
-        p.req = failing
-        with quiet():
-            saved = p.upsert_cards("b", "s", listed, {"n": payload}, "card")
-        check(f"a card read that fails with {label} is sent",
-              saved == ({"n": 9}, 0, 1, 0) and fetch.puts == 1, saved)
-finally:
-    p.req = real_req
+    with quiet():
+        saved = p.upsert_cards(Answering(failing), listed, {"n": payload}, "card")
+    check(f"a card read that fails with {label} is sent",
+          saved == ({"n": 9}, 0, 1, 0) and fetch.puts == 1, saved)
 
 section("an unchanged dashboard is not sent again")
 
@@ -1152,7 +1140,7 @@ def server_dashboard(data):
     return out
 
 
-class RememberDashboards:
+class RememberDashboards(FakeClient):
     """Keeps what each PUT laid out and answers a GET with it. A
     dashboard id in `failing` answers its GET with a 500, and one in
     `refused` its PUT. `puts` counts the PUTs and `put_ids` holds the
@@ -1167,7 +1155,7 @@ class RememberDashboards:
         self.failing = set()
         self.refused = set()
 
-    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         if method == "GET" and path.startswith("/api/collection/"):
             return 200, {"data": [{"name": n, "id": i} for n, i in self.names.items()]}
         if method == "GET" and path.startswith("/api/dashboard/"):
@@ -1193,118 +1181,110 @@ class RememberDashboards:
         return 200, {}
 
 
-real_req = p.req
 n_dash = len(p.dashboard_defs())
+remembered = RememberDashboards()
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    first = p.ensure_dashboards(remembered, 7, card_ids, MID)
+check("first dashboard pass lays them out", first == 0 and remembered.puts > 0)
+check("...counting each dashboard it made as created, not updated",
+      f"— {n_dash} created, 0 updated, 0 unchanged," in buf.getvalue(), buf.getvalue())
+remembered.puts = 0
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    second = p.ensure_dashboards(remembered, 7, card_ids, MID)
+check("an unchanged dashboard is not sent", second == 0 and remembered.puts == 0)
+check("...and the second run counts every dashboard unchanged",
+      f"— 0 created, 0 updated, {n_dash} unchanged," in buf.getvalue(), buf.getvalue())
+one = next(iter(remembered.layouts))
+remembered.layouts[one]["description"] = "edited"
+remembered.puts = 0
+with quiet():
+    third = p.ensure_dashboards(remembered, 7, card_ids, MID)
+check("a changed dashboard is sent", third == 0 and remembered.puts > 0)
+remembered.failing, remembered.put_ids = {one}, set()
+with quiet():
+    fourth = p.ensure_dashboards(remembered, 7, card_ids, MID)
+check("a dashboard whose read fails is sent, and only that one",
+      fourth == 0 and remembered.put_ids == {one}, remembered.put_ids)
+# A new picker default, here the As of day's, changes Allocation's
+# pickers alone: they go in one PUT of the parameters, and the tiles
+# stay.
+remembered.failing, remembered.put_ids, remembered.puts = set(), set(), 0
+_alloc = remembered.names["Allocation"]
+_tiles = remembered.layouts[_alloc]["dashcards"]
+_asof_default = p.ASOF_DEFAULT
 try:
-    remembered = p.req = RememberDashboards()
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        first = p.ensure_dashboards("b", "s", 7, card_ids, MID)
-    check("first dashboard pass lays them out", first == 0 and remembered.puts > 0)
-    check("...counting each dashboard it made as created, not updated",
-          f"— {n_dash} created, 0 updated, 0 unchanged," in buf.getvalue(), buf.getvalue())
-    remembered.puts = 0
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        second = p.ensure_dashboards("b", "s", 7, card_ids, MID)
-    check("an unchanged dashboard is not sent", second == 0 and remembered.puts == 0)
-    check("...and the second run counts every dashboard unchanged",
-          f"— 0 created, 0 updated, {n_dash} unchanged," in buf.getvalue(), buf.getvalue())
-    one = next(iter(remembered.layouts))
-    remembered.layouts[one]["description"] = "edited"
-    remembered.puts = 0
+    p.ASOF_DEFAULT = "2026-10-25"
     with quiet():
-        third = p.ensure_dashboards("b", "s", 7, card_ids, MID)
-    check("a changed dashboard is sent", third == 0 and remembered.puts > 0)
-    remembered.failing, remembered.put_ids = {one}, set()
-    with quiet():
-        fourth = p.ensure_dashboards("b", "s", 7, card_ids, MID)
-    check("a dashboard whose read fails is sent, and only that one",
-          fourth == 0 and remembered.put_ids == {one}, remembered.put_ids)
-    # A new picker default, here the As of day's, changes Allocation's
-    # pickers alone: they go in one PUT of the parameters, and the tiles
-    # stay.
-    remembered.failing, remembered.put_ids, remembered.puts = set(), set(), 0
-    _alloc = remembered.names["Allocation"]
-    _tiles = remembered.layouts[_alloc]["dashcards"]
-    _asof_default = p.ASOF_DEFAULT
-    try:
-        p.ASOF_DEFAULT = "2026-10-25"
-        with quiet():
-            fifth = p.ensure_dashboards("b", "s", 7, card_ids, MID)
-    finally:
-        p.ASOF_DEFAULT = _asof_default
-    check("a new As of day default is sent as the pickers alone, to the two Allocation dashboards",
-          fifth == 0 and remembered.puts == 2
-          and remembered.put_ids == {_alloc, remembered.names["Allocation (privacy)"]}
-          and remembered.layouts[_alloc]["dashcards"] is _tiles, (remembered.puts, remembered.put_ids))
-    # A refused pickers-only PUT stops the run.
-    remembered.refused = {_alloc}
-    _err = io.StringIO()
-    try:
-        p.ASOF_DEFAULT = "2026-10-24"
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(_err):
-            sixth = p.ensure_dashboards("b", "s", 7, card_ids, MID)
-    finally:
-        p.ASOF_DEFAULT = _asof_default
-    check("...and a refused one fails the run, naming the dashboard",
-          sixth == 1 and "failed to update the filters of 'Allocation' (500): refused" in _err.getvalue(),
-          (sixth, _err.getvalue()))
+        fifth = p.ensure_dashboards(remembered, 7, card_ids, MID)
 finally:
-    p.req = real_req
+    p.ASOF_DEFAULT = _asof_default
+check("a new As of day default is sent as the pickers alone, to the two Allocation dashboards",
+      fifth == 0 and remembered.puts == 2
+      and remembered.put_ids == {_alloc, remembered.names["Allocation (privacy)"]}
+      and remembered.layouts[_alloc]["dashcards"] is _tiles, (remembered.puts, remembered.put_ids))
+# A refused pickers-only PUT stops the run.
+remembered.refused = {_alloc}
+_err = io.StringIO()
+try:
+    p.ASOF_DEFAULT = "2026-10-24"
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(_err):
+        sixth = p.ensure_dashboards(remembered, 7, card_ids, MID)
+finally:
+    p.ASOF_DEFAULT = _asof_default
+check("...and a refused one fails the run, naming the dashboard",
+      sixth == 1 and "failed to update the filters of 'Allocation' (500): refused" in _err.getvalue(),
+      (sixth, _err.getvalue()))
 
-layouts = [d for _path, d in api.puts if d.get("dashcards")]
-api_puts_layout = [(path, d) for path, d in api.puts if d.get("dashcards")]
+layouts = [d for _path, d in laid.puts if d.get("dashcards")]
+api_puts_layout = [(path, d) for path, d in laid.puts if d.get("dashcards")]
 
 # Where the snapshot holds no withholding table, the Withholding tiles
 # read the tax booked alone, and their titles say so; a probe that does
 # not answer keeps the cards' names.
 
 
-class FakeProbeAPI:
+class FakeProbeAPI(FakeClient):
     def __init__(self, status, rows=None):
         self.status, self.rows, self.queries = status, rows, []
 
-    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         self.queries.append(data["native"]["query"])
         return self.status, {"data": {"rows": self.rows}}
 
 
-real_req = p.req
-try:
-    _probed = {}
-    for _label, _status, _rows in (("a rate", 202, [[True]]), ("no rate", 202, [[False]]),
-                                   ("no answer", 500, None)):
-        api = p.req = FakeProbeAPI(_status, _rows)
-        _probed[_label] = p.withholding_table("b", "s", 1)
-    check("the withholding probe reads whether the withholding table holds any rate",
-          _probed == {"a rate": True, "no rate": False, "no answer": None}
-          and api.queries == ["SELECT (SELECT count(*) FROM yield_withholding)"
-                              " + (SELECT count(*) FROM yield_withholding_accounts) > 0"], _probed)
-    _titles = p.tile_titles(False)
-    check("...and without a table the Withholding tiles' titles say they read what was received",
-          _titles == {"Withholding": "Received withholding — no withholding table",
-                      "Income after withholding": "Income after received withholding",
-                      "Withholding (privacy)": "Received withholding — no withholding table (privacy)",
-                      "Income after withholding (privacy)": "Income after received withholding (privacy)"}
-          and p.tile_titles(True) == {} and p.tile_titles(None) == {}, _titles)
-    api = p.req = FakeDashboardAPI()
-    with quiet():
-        p.ensure_dashboards("b", "s", 7, card_ids, MID, _titles)
-    _titled = {dc["card_id"]: dc["visualization_settings"].get("card.title")
-               for _path, d in api.puts if d.get("name") in ("Income", "Income (privacy)")
-               for dc in d.get("dashcards", []) if dc["visualization_settings"].get("card.title")}
-    # Called without descriptions, no tile carries a description of its
-    # own; every other dashboard is laid out as before.
-    _changed = {d.get("name") for k, d in enumerate(x for _path, x in api.puts if x.get("dashcards"))
-                if d != layouts[k]}
-    _noted = {d.get("name") for d in layouts
-              if any("card.description" in dc["visualization_settings"] for dc in d["dashcards"])}
-    check("...which the tiles show in place of the cards' names, and no other tile changes",
-          _titled == {card_ids[c]: t for c, t in _titles.items()}
-          and _changed == {"Income", "Income (privacy)"} | _noted, (_titled, _changed))
-finally:
-    p.req = real_req
+_probed = {}
+for _label, _status, _rows in (("a rate", 202, [[True]]), ("no rate", 202, [[False]]),
+                               ("no answer", 500, None)):
+    api = FakeProbeAPI(_status, _rows)
+    _probed[_label] = p.withholding_table(api, 1)
+check("the withholding probe reads whether the withholding table holds any rate",
+      _probed == {"a rate": True, "no rate": False, "no answer": None}
+      and api.queries == ["SELECT (SELECT count(*) FROM yield_withholding)"
+                          " + (SELECT count(*) FROM yield_withholding_accounts) > 0"], _probed)
+_titles = p.tile_titles(False)
+check("...and without a table the Withholding tiles' titles say they read what was received",
+      _titles == {"Withholding": "Received withholding — no withholding table",
+                  "Income after withholding": "Income after received withholding",
+                  "Withholding (privacy)": "Received withholding — no withholding table (privacy)",
+                  "Income after withholding (privacy)": "Income after received withholding (privacy)"}
+      and p.tile_titles(True) == {} and p.tile_titles(None) == {}, _titles)
+api = FakeDashboardAPI()
+with quiet():
+    p.ensure_dashboards(api, 7, card_ids, MID, _titles)
+_titled = {dc["card_id"]: dc["visualization_settings"].get("card.title")
+           for _path, d in api.puts if d.get("name") in ("Income", "Income (privacy)")
+           for dc in d.get("dashcards", []) if dc["visualization_settings"].get("card.title")}
+# Called without descriptions, no tile carries a description of its
+# own; every other dashboard is laid out as before.
+_changed = {d.get("name") for k, d in enumerate(x for _path, x in api.puts if x.get("dashcards"))
+            if d != layouts[k]}
+_noted = {d.get("name") for d in layouts
+          if any("card.description" in dc["visualization_settings"] for dc in d["dashcards"])}
+check("...which the tiles show in place of the cards' names, and no other tile changes",
+      _titled == {card_ids[c]: t for c, t in _titles.items()}
+      and _changed == {"Income", "Income (privacy)"} | _noted, (_titled, _changed))
 
 spending = [d for d in layouts if d.get("name") == "Spending"]
 check("the Spending dashboard was laid out", len(spending) == 1)
@@ -3735,16 +3715,15 @@ check("the sources reports carry valued_at", "AS valued_at" in _latest_definitio
 section("an API call that fails is never read as an empty answer")
 
 
-class FailingListAPI:
-    """A stand-in for provision.req whose GETs fail with `status` (0 is
+class FailingListAPI(FakeClient):
+    """A fake client whose GETs fail with `status` (0 is
     no HTTP answer at all) and whose writes succeed, recording every
     call so the test can assert that nothing was created."""
 
     def __init__(self, status, list_ok=False):
         self.status, self.list_ok, self.calls = status, list_ok, []
 
-    def __call__(self, base, path, method="GET", data=None, session=None,
-                 timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         self.calls.append((method, path))
         if method == "GET":
             if self.list_ok:
@@ -3755,48 +3734,125 @@ class FailingListAPI:
         return 200, {"id": 1}
 
 
-real_req = p.req
-try:
-    # Each of these lists what exists and creates what it did not find.
-    # Read as empty, a listing that failed would create a second
-    # collection, database, card set or dashboard set of the same name.
-    for _st in (0, 500):
-        api = p.req = FailingListAPI(_st)
-        with quiet():
-            _got = (p.ensure_collection("b", "s", p.COLLECTION_NAME),
-                    p.pre_defined_cards("b", "s", 7),
-                    p.ensure_database("b", "s", "gold", "/data/gold.duckdb"),
-                    p.ensure_dashboards("b", "s", 7, card_ids, MID))
-        check(f"a failed listing ({_st}) aborts the collection, cards, database "
-              "and dashboards", _got == (None, None, None, 1), _got)
-        check("...without creating anything",
-              not [c for c in api.calls if c[0] != "GET"], api.calls)
-    # A collection that cannot be created aborts the run. Falling back to
-    # the root collection would scope card matching to it, and update or
-    # archive any item there that shares a pre-defined name.
-    p.req = FailingListAPI(403, list_ok=True)
+# Each of these lists what exists and creates what it did not find.
+# Read as empty, a listing that failed would create a second
+# collection, database, card set or dashboard set of the same name.
+for _st in (0, 500):
+    api = FailingListAPI(_st)
     with quiet():
-        _coll = p.ensure_collection("b", "s", p.COLLECTION_NAME)
-    check("a collection that cannot be created aborts rather than using the root one",
-          _coll is None, _coll)
-finally:
-    p.req = real_req
+        _got = (p.ensure_collection(api, p.COLLECTION_NAME),
+                p.pre_defined_cards(api, 7),
+                p.ensure_database(api, "gold", "/data/gold.duckdb"),
+                p.ensure_dashboards(api, 7, card_ids, MID))
+    check(f"a failed listing ({_st}) aborts the collection, cards, database "
+          "and dashboards", _got == (None, None, None, 1), _got)
+    check("...without creating anything",
+          not [c for c in api.calls if c[0] != "GET"], api.calls)
+# A collection that cannot be created aborts the run. Falling back to
+# the root collection would scope card matching to it, and update or
+# archive any item there that shares a pre-defined name.
+api = FailingListAPI(403, list_ok=True)
+with quiet():
+    _coll = p.ensure_collection(api, p.COLLECTION_NAME)
+check("a collection that cannot be created aborts rather than using the root one",
+      _coll is None, _coll)
 
+section("the Metabase client")
+
+
+class _Reply:
+    """What urlopen answers: a status and a raw body."""
+
+    def __init__(self, status, raw):
+        self.status, self.raw = status, raw
+
+    def read(self):
+        return self.raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+
+def _over(answer, client, *call):
+    """(the reply of client.call(*call), the requests urlopen got) where
+    urlopen answers each request `r` with answer(r)."""
+    sent, real = [], p.metabase.urllib.request.urlopen
+
+    def urlopen(r, timeout):
+        sent.append({"url": r.full_url, "method": r.get_method(), "headers": dict(r.header_items()),
+                     "data": r.data, "timeout": timeout})
+        return answer(r)
+    p.metabase.urllib.request.urlopen = urlopen
+    try:
+        return client.call(*call), sent
+    finally:
+        p.metabase.urllib.request.urlopen = real
+
+
+def _raise(e):
+    def answer(_r):
+        raise e
+    return answer
+
+
+def _http_error(code, raw):
+    return _raise(p.metabase.urllib.error.HTTPError("http://mb/x", code, "err", {}, io.BytesIO(raw)))
+
+
+_mb = p.metabase.Client("http://mb", "sid")
 # A read timeout surfaces from urlopen as TimeoutError, not as URLError,
 # and must read as no answer like a refused connection does.
-_real_urlopen = p.urllib.request.urlopen
+check("a call that times out reads as no answer",
+      _over(_raise(TimeoutError("read timed out")), _mb, "/api/health")[0] == (0, {}))
+check("...and so does a refused connection",
+      _over(_raise(p.metabase.urllib.error.URLError("refused")), _mb, "/api/health")[0] == (0, {}))
+_ans, _sent = _over(lambda _r: _Reply(200, b'{"id": 4}'), _mb, "/api/card", "POST", {"name": "n"})
+check("a call sends its JSON body with the session, under the client's timeout, and decodes the answer",
+      _ans == (200, {"id": 4}) and _sent == [{"url": "http://mb/api/card", "method": "POST",
+                                              "headers": {"Content-type": "application/json",
+                                                          "X-metabase-session": "sid"},
+                                              "data": b'{"name": "n"}', "timeout": 30}], _sent)
+check("...an empty answer reads as {}, and a call can wait a time of its own",
+      _over(lambda _r: _Reply(204, b""), _mb, "/api/health", "GET", None, 5)
+      == ((204, {}), [{"url": "http://mb/api/health", "method": "GET",
+                       "headers": {"Content-type": "application/json", "X-metabase-session": "sid"},
+                       "data": None, "timeout": 5}]))
+check("an error status keeps its JSON body",
+      _over(_http_error(400, b'{"message": "bad"}'), _mb, "/api/card")[0] == (400, {"message": "bad"}))
+check("...and a body that is no JSON reads as its message",
+      _over(_http_error(502, b"<html>gateway</html>"), _mb, "/api/card")[0]
+      == (502, {"message": "<html>gateway</html>"}))
+_keyed = _mb.with_auth(api_key="mb_synthetic")
+_ans, _sent = _over(lambda _r: _Reply(200, b"[]"), _keyed, "/api/card")
+check("a client under an API key sends the key and no session, and the client it came from keeps its own",
+      _sent[0]["headers"] == {"Content-type": "application/json", "X-api-key": "mb_synthetic"}
+      and (_mb.session, _mb.api_key) == ("sid", None), _sent)
 
 
-def _timed_out(*_a, **_k):
-    raise TimeoutError("read timed out")
+def _listing(status, body):
+    return Answering(lambda path, *_a: (status, body))
 
 
-p.urllib.request.urlopen = _timed_out
-try:
-    _ans = p.req("http://b", "/api/health")
-finally:
-    p.urllib.request.urlopen = _real_urlopen
-check("a call that times out reads as no answer", _ans == (0, {}), _ans)
+check("collection() finds the collection of the name that is not archived",
+      _listing(200, [{"id": 4, "name": "c", "archived": True}, {"id": 5, "name": "c"}]).collection("c")
+      == {"id": 5, "name": "c"})
+check("...and None where there is none", _listing(200, [{"id": 4, "name": "d"}]).collection("c") is None)
+check("dashboards() lists the collection's dashboards",
+      _listing(200, {"data": [{"id": 1, "name": "D"}]}).dashboards(5) == [{"id": 1, "name": "D"}])
+for _what, _list, _st, _body in (("collections", "collection", 500, {"message": "down"}),
+                                 ("collections", "collection", 200, {"data": []}),
+                                 ("dashboards", "dashboards", 403, {"message": "no"})):
+    try:
+        getattr(_listing(_st, _body), _list)("c")
+        _err = None
+    except p.metabase.Error as e:
+        _err = e
+    check(f"a failed listing of {_what} ({_st}) raises, never reads as empty",
+          _err is not None and (_err.status, _err.body) == (_st, _body) and str(_err).startswith(
+              f"could not list {_what}"), _err)
 
 section("the gold's storage format is one the driver reads")
 
@@ -3814,14 +3870,14 @@ check("the engine writes the storage format of the DuckDB the driver bundles",
 section("Metabase never fingerprints a list column")
 
 
-class FieldAPI:
-    """A stand-in for provision.req that records each field write and
+class FieldAPI(FakeClient):
+    """A fake client that records each field write and
     answers it with `status`."""
 
     def __init__(self, status=200):
         self.status, self.puts = status, []
 
-    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         self.puts.append((method, path, data))
         return self.status, {"message": "refused"}
 
@@ -3832,27 +3888,23 @@ _tables = [{"name": "web_yield", "fields": [
     {"name": "report_yield_positions", "fields": [
         {"id": 3, "name": "tags", "database_type": "VARCHAR[]", "visibility_type": "sensitive"},
         {"id": 4, "name": "weights", "database_type": "DOUBLE[]"}]}]
-real_req = p.req
-try:
-    api = p.req = FieldAPI()
-    with quiet():
-        p.unfingerprint_lists("b", "s", _tables)
-    check("each list column not yet kept from fingerprinting is marked sensitive",
-          api.puts == [("PUT", "/api/field/1", {"visibility_type": "sensitive"}),
-                       ("PUT", "/api/field/4", {"visibility_type": "sensitive"})], api.puts)
-    # A marked field leaves the metadata a later run reads.
-    api = p.req = FieldAPI()
-    p.unfingerprint_lists("b", "s", [{"name": t["name"], "fields": [f for f in t["fields"] if f["id"] not in (1, 4)]}
-                                     for t in _tables])
-    check("...so a later run marks nothing", api.puts == [], api.puts)
-    api = p.req = FieldAPI(403)
-    _err = io.StringIO()
-    with quiet(), contextlib.redirect_stderr(_err):
-        p.unfingerprint_lists("b", "s", _tables)
-    check("...and a field that cannot be marked is named, and does not stop provisioning",
-          len(api.puts) == 2 and "web_yield.tags" in _err.getvalue(), (api.puts, _err.getvalue()))
-finally:
-    p.req = real_req
+api = FieldAPI()
+with quiet():
+    p.unfingerprint_lists(api, _tables)
+check("each list column not yet kept from fingerprinting is marked sensitive",
+      api.puts == [("PUT", "/api/field/1", {"visibility_type": "sensitive"}),
+                   ("PUT", "/api/field/4", {"visibility_type": "sensitive"})], api.puts)
+# A marked field leaves the metadata a later run reads.
+api = FieldAPI()
+p.unfingerprint_lists(api, [{"name": t["name"], "fields": [f for f in t["fields"] if f["id"] not in (1, 4)]}
+                                 for t in _tables])
+check("...so a later run marks nothing", api.puts == [], api.puts)
+api = FieldAPI(403)
+_err = io.StringIO()
+with quiet(), contextlib.redirect_stderr(_err):
+    p.unfingerprint_lists(api, _tables)
+check("...and a field that cannot be marked is named, and does not stop provisioning",
+      len(api.puts) == 2 and "web_yield.tags" in _err.getvalue(), (api.puts, _err.getvalue()))
 # The one card that reads a list column reads it in native SQL, which a
 # sensitive field leaves as it is: no picker and no model may bind one.
 _list_cols = {m.group(1) for text in list(_MIG_TEXT.values()) + [DERIVED_SQL]
@@ -5459,35 +5511,27 @@ with tempfile.TemporaryDirectory() as _tmpdir:
 
 
 def _probe_answer(answer):
-    """A stand-in for provision.req that answers every call with
-    `answer`, (status, body), and the list of paths it was called on."""
+    """A fake client that answers every call with `answer`, (status,
+    body), and the list of paths it was called on."""
     calls = []
 
-    def fake(_base, path, *_a, **_k):
+    def fake(path, *_a):
         calls.append(path)
         return answer
-    return fake, calls
+    return Answering(fake), calls
 
 
 def _colors_from(answer, path):
     """source_colors over a probe answering `answer`, and the paths
-    called; provision.req is restored after."""
+    called."""
     fake, calls = _probe_answer(answer)
-    real, p.req = p.req, fake
-    try:
-        return p.source_colors("b", "s", 1, path), calls
-    finally:
-        p.req = real
+    return p.source_colors(fake, 1, path), calls
 
 
 def _probe(answer):
-    """probe_rows over a stand-in answering `answer`."""
+    """probe_rows over a fake client answering `answer`."""
     fake, _calls = _probe_answer(answer)
-    real, p.req = p.req, fake
-    try:
-        return p.probe_rows("b", "s", 1, "SELECT 1")
-    finally:
-        p.req = real
+    return p.probe_rows(fake, 1, "SELECT 1")
 
 
 # Metabase answers a failed query with 202 too.
@@ -5556,7 +5600,7 @@ check("the '(all sources)' line every per-source card draws carries the fixed la
 _saved = {}
 
 
-def _record(_base, _sid, _by_name, payloads, _label):
+def _record(_client, _by_name, payloads, _label):
     _saved.update(payloads)
     return {n: i for i, n in enumerate(payloads, start=1)}, len(payloads), 0, 0
 
@@ -5564,7 +5608,7 @@ def _record(_base, _sid, _by_name, payloads, _label):
 _real_upsert, p.upsert_cards = p.upsert_cards, _record
 try:
     with quiet():
-        p.ensure_cards("b", "s", 1, 7, {}, FIELD_IDS, MID, _colors)
+        p.ensure_cards(FakeSaveAPI(), 1, 7, {}, FIELD_IDS, MID, _colors)
 finally:
     p.upsert_cards = _real_upsert
 _nw = _saved.get("Net worth over time", {}).get("visualization_settings", {}).get("series_settings", {})
@@ -5581,8 +5625,8 @@ check("...and any other card's settings as its definition gives them",
 section("the offline payload dump")
 
 
-class RecordingAPI:
-    """A stand-in for provision.req over an empty collection: answers the
+class RecordingAPI(FakeClient):
+    """A fake client over an empty collection: answers the
     sources and withholding probes, hands out ids the way a fresh
     Metabase does, and keeps every model, card and dashboard layout
     provisioning sends."""
@@ -5593,7 +5637,7 @@ class RecordingAPI:
         self.sent = {"models": {}, "cards": {}, "dashboards": {}}
         self.ids = {"models": {}, "cards": {}, "dashboards": {}}
 
-    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         if path == "/api/dataset":
             if "silver_sources" in data["native"]["query"]:
                 return 202, {"data": {"rows": [[s] for s in self.sources]}}
@@ -5621,19 +5665,15 @@ def _dump_text(dump):
 def _recorded(withholding, sources):
     """What a provision into an empty collection sends, in the dump's
     shape, driven through RecordingAPI."""
-    api, real = RecordingAPI(withholding, sources), p.req
-    p.req = api
-    try:
-        with quiet():
-            fids = p.offline_field_ids()
-            mids = p.ensure_models("b", "s", 1, 1, {})
-            api.phase = "cards"
-            colors = p.source_colors("b", "s", 1, "")
-            ids, descs = p.ensure_cards("b", "s", 1, 1, {}, fids, mids, colors)
-            rc = p.ensure_dashboards("b", "s", 1, ids, mids,
-                                     p.tile_titles(p.withholding_table("b", "s", 1)), descs)
-    finally:
-        p.req = real
+    api = RecordingAPI(withholding, sources)
+    with quiet():
+        fids = p.offline_field_ids()
+        mids = p.ensure_models(api, 1, 1, {})
+        api.phase = "cards"
+        colors = p.source_colors(api, 1, "")
+        ids, descs = p.ensure_cards(api, 1, 1, {}, fids, mids, colors)
+        rc = p.ensure_dashboards(api, 1, ids, mids,
+                                 p.tile_titles(p.withholding_table(api, 1)), descs)
     fields = {f"{t}.{c}": i for (t, c), i in fids.items()}
     return rc, {**api.sent, "ids": {**api.ids, "fields": fields}}
 
@@ -5683,20 +5723,20 @@ check("...and the id of every field a tag names",
 def _main_with(argv):
     """(exit status, stderr) of main() under `argv`, with any API call an
     error; main()'s globals are restored."""
-    saved = (sys.argv, p.req, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
+    saved = (sys.argv, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
 
-    def no_network(*_a, **_k):
+    def no_network(*_a):
         raise AssertionError("the dump called the API")
-    sys.argv, p.req = ["provision.py", *argv], no_network
+    sys.argv = ["provision.py", *argv]
     err = io.StringIO()
     try:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             try:
-                rc = p.main()
+                rc = p.main(Answering(no_network))
             except SystemExit as e:
                 rc = e.code
     finally:
-        sys.argv, p.req, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = saved
+        sys.argv, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = saved
     return rc, err.getvalue()
 
 
@@ -5728,24 +5768,20 @@ check("it runs the DuckDB release of the driver web/Dockerfile pins",
       _driver and tt.duckdb_release().split(".")[:2] == list(_driver.groups()), tt.duckdb_release())
 
 
-class DatabaseAPI:
-    """A stand-in for provision.req that keeps the details of the
+class DatabaseAPI(FakeClient):
+    """A fake client that keeps the details of the
     database ensure_database adds."""
 
-    def __call__(self, base, path, method="GET", data=None, session=None, timeout=30):
+    def call(self, path, method="GET", data=None, timeout=None):
         if method == "POST":
             self.details = data["details"]
             return 200, {"id": 1}
         return 200, {"data": []}
 
 
-_db_api, _real_req = DatabaseAPI(), p.req
-try:
-    p.req = _db_api
-    with quiet():
-        p.ensure_database("b", "s", "gold", "/gold/wealthdb.db")
-finally:
-    p.req = _real_req
+_db_api = DatabaseAPI()
+with quiet():
+    p.ensure_database(_db_api, "gold", "/gold/wealthdb.db")
 check("...with the memory limit and threads provisioning gives the gold database",
       (_db_api.details["memory_limit"], _db_api.details["threads"], _db_api.details["read_only"])
       == (tt.MEMORY_LIMIT, tt.THREADS, True), _db_api.details)

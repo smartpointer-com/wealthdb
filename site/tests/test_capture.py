@@ -107,23 +107,23 @@ class FindDashboards(unittest.TestCase):
     def fake(self, collections, dashboards):
         calls = []
 
-        def call(base, path, method="GET", body=None, session=None):
-            calls.append(path)
-            if path == "/api/collection":
-                return collections
-            if path.startswith("/api/collection/"):
-                return {"data": [{"name": n, "id": i} for i, n in enumerate(dashboards, 1)]}
-            return {"id": int(path.rsplit("/", 1)[1])}
+        class Fake(capture.metabase.Client):
+            def call(self, path, method="GET", data=None, timeout=None):
+                calls.append(path)
+                if path == "/api/collection":
+                    return 200, collections
+                if path.startswith("/api/collection/"):
+                    return 200, {"data": [{"name": n, "id": i} for i, n in enumerate(dashboards, 1)]}
+                return 200, {"id": int(path.rsplit("/", 1)[1])}
 
-        old, capture.call = capture.call, call
-        self.addCleanup(setattr, capture, "call", old)
+        self.client = Fake("http://mb", "s")
         return calls
 
     def test_finds_every_dashboard_in_the_live_collection(self):
         calls = self.fake([{"id": 4, "name": capture.provision.COLLECTION_NAME, "archived": True},
                            {"id": 5, "name": capture.provision.COLLECTION_NAME}],
                           [*capture.DASHBOARDS, "Something else"])
-        found = capture.find_dashboards("http://mb", "s")
+        found = capture.find_dashboards(self.client)
         self.assertEqual(sorted(found), sorted(capture.DASHBOARDS))
         self.assertIn("/api/collection/5/items?models=dashboard", calls)
         self.assertNotIn("/api/dashboard/9", calls)
@@ -131,13 +131,21 @@ class FindDashboards(unittest.TestCase):
     def test_a_missing_dashboard_stops(self):
         self.fake([{"id": 5, "name": capture.provision.COLLECTION_NAME}], list(capture.DASHBOARDS)[1:])
         with self.assertRaises(SystemExit) as e:
-            capture.find_dashboards("http://mb", "s")
+            capture.find_dashboards(self.client)
         self.assertIn(next(iter(capture.DASHBOARDS)), str(e.exception))
 
     def test_a_missing_collection_stops(self):
         self.fake([{"id": 4, "name": capture.provision.COLLECTION_NAME, "archived": True}], [])
         with self.assertRaises(SystemExit):
-            capture.find_dashboards("http://mb", "s")
+            capture.find_dashboards(self.client)
+
+
+class Answer(unittest.TestCase):
+    def test_a_failed_call_stops_the_capture(self):
+        self.assertEqual(capture.answer((204, {})), {})
+        with self.assertRaises(SystemExit) as e:
+            capture.answer((401, {"message": "no"}))
+        self.assertIn("401", str(e.exception))
 
 
 if __name__ == "__main__":

@@ -19,17 +19,16 @@ what it was afterwards, also when a shot fails.
 
 import argparse
 import datetime as dt
-import json
 import pathlib
 import re
 import sys
 import urllib.parse
-import urllib.request
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "demo"))
 sys.path.insert(1, str(REPO / "web"))
 from demohouse import config  # noqa: E402
+import metabase  # noqa: E402
 import provision  # noqa: E402
 
 # The dashboards the page shows, by their name in Metabase, and the file
@@ -123,42 +122,38 @@ def shot_name(dashboard, scheme):
     return f"{DASHBOARDS[dashboard]}{SCHEMES[scheme]}.png"
 
 
-def call(base, path, method="GET", body=None, session=None):
-    """One Metabase API call; returns the decoded JSON body, or None."""
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(base + path, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    if session:
-        req.add_header("X-Metabase-Session", session)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        raw = r.read()
-    return json.loads(raw) if raw else None
+def answer(reply):
+    """The body of a Metabase `reply`, (status, body). Any status but a
+    success stops the capture, so no shot is taken over a failed call."""
+    st, body = reply
+    if not 200 <= st < 300:
+        raise SystemExit(f"capture: Metabase answered {st}: {body}")
+    return body
 
 
-def find_dashboards(base, session):
+def find_dashboards(client):
     """{name: dashboard} for the page's dashboards in the pre-defined collection."""
-    cols = call(base, "/api/collection", session=session)
-    coll = next((c for c in cols if c.get("name") == provision.COLLECTION_NAME and not c.get("archived")), None)
+    coll = client.collection(provision.COLLECTION_NAME)
     if coll is None:
         raise SystemExit(f"capture: collection not found: {provision.COLLECTION_NAME}")
-    items = call(base, f"/api/collection/{coll['id']}/items?models=dashboard", session=session)
-    found = {d["name"]: d["id"] for d in items["data"] if d["name"] in DASHBOARDS}
+    found = {d["name"]: d["id"] for d in client.dashboards(coll["id"]) if d["name"] in DASHBOARDS}
     missing = sorted(set(DASHBOARDS) - set(found))
     if missing:
         raise SystemExit(f"capture: dashboards not found: {', '.join(missing)}")
-    return {name: call(base, f"/api/dashboard/{did}", session=session) for name, did in found.items()}
+    return {name: answer(client.get(f"/api/dashboard/{did}")) for name, did in found.items()}
 
 
-def capture(base, session, dashboards, out, as_of):
+def capture(client, dashboards, out, as_of):
     """Shoot every dashboard in both colour schemes into out."""
     from camoufox.sync_api import Camoufox
 
+    base, session = client.base, client.session
     host = urllib.parse.urlparse(base).hostname
-    previous = call(base, "/api/session/properties", session=session).get("color-scheme")
+    previous = answer(client.get("/api/session/properties")).get("color-scheme")
     try:
         with Camoufox(headless=True) as browser:
             for scheme in SCHEMES:
-                call(base, "/api/setting/color-scheme", "PUT", {"value": scheme}, session)
+                answer(client.put("/api/setting/color-scheme", {"value": scheme}))
                 ctx = browser.new_context(viewport=VIEWPORT, device_scale_factor=2)
                 ctx.add_cookies([{"name": "metabase.SESSION", "value": session, "domain": host, "path": "/"}])
                 page = ctx.new_page()
@@ -176,7 +171,7 @@ def capture(base, session, dashboards, out, as_of):
                     print(f"capture: {shot_name(name, scheme)}", flush=True)
                 ctx.close()
     finally:
-        call(base, "/api/setting/color-scheme", "PUT", {"value": previous or "auto"}, session)
+        answer(client.put("/api/setting/color-scheme", {"value": previous or "auto"}))
 
 
 def main(argv=None):
@@ -189,11 +184,13 @@ def main(argv=None):
     ap.add_argument("--password-file", required=True, type=pathlib.Path)
     a = ap.parse_args(argv)
     password = a.password_file.read_text().strip()
-    session = call(a.base, "/api/session", "POST", {"username": a.email, "password": password})["id"]
+    client = metabase.Client(a.base, timeout=60)
+    session = answer(client.post("/api/session", {"username": a.email, "password": password}))["id"]
+    client = client.with_auth(session=session)
     try:
-        capture(a.base, session, find_dashboards(a.base, session), a.out, a.as_of)
+        capture(client, find_dashboards(client), a.out, a.as_of)
     finally:
-        call(a.base, "/api/session", "DELETE", session=session)
+        answer(client.delete("/api/session"))
 
 
 if __name__ == "__main__":
