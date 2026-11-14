@@ -68,11 +68,12 @@ def check(desc, cond, detail=""):
 
 
 def resolve_field_ids():
-    """Stand in for a synced Metabase: every column in the registry gets
-    a distinct field id, the way main() resolves them post-sync."""
-    p.FIELD_IDS = {(t, c): 1000 + i * 10 + j
-                   for i, (t, cols) in enumerate(p.FILTER_FIELD_COLUMNS.items())
-                   for j, c in enumerate(cols)}
+    """Stand in for a synced Metabase: every column the cards' filters
+    bind (filter_field_columns) gets a distinct field id, the way main()
+    resolves them post-sync."""
+    return {(t, c): 1000 + i * 10 + j
+            for i, (t, cols) in enumerate(p.filter_field_columns().items())
+            for j, c in enumerate(cols)}
 
 
 def model_ids():
@@ -90,10 +91,10 @@ def cards_of(qdefs, pdefs):
     return cards
 
 
-def all_cards(db_id, mid):
+def all_cards():
     """Every card provisioning defines (cards_of), built afresh — which
     also rebuilds the picker registry, NATIVE_PARAM_TARGETS."""
-    return cards_of(p.question_defs(db_id, mid), p.privacy_card_defs(db_id, mid))
+    return cards_of(p.question_defs(), p.privacy_card_defs())
 
 
 def sql_of(query):
@@ -104,20 +105,21 @@ def sql_of(query):
 # ---- the filter-field registry ----------------------------------------
 
 section("filter-field registry (the two spending views)")
+REGISTRY = p.filter_field_columns()
 # The category field is the LABEL column: the Category picker is shared
 # with the money dashboard, whose model column of the same name holds the
 # label, so both sides of the filter must speak one vocabulary.
 check("web_spending columns: timestamp, source, account label, primary category",
-      set(p.FILTER_FIELD_COLUMNS.get("web_spending", ())) ==
+      set(REGISTRY.get("web_spending", ())) ==
       {"occurred_at", "silver_source_id", "account_label", "spend_primary_label"},
-      str(p.FILTER_FIELD_COLUMNS.get("web_spending")))
+      str(REGISTRY.get("web_spending")))
 check("web_card_balances_history columns: day, source, account label",
-      set(p.FILTER_FIELD_COLUMNS.get("web_card_balances_history", ())) ==
+      set(REGISTRY.get("web_card_balances_history", ())) ==
       {"as_of_day", "silver_source_id", "account_label"},
-      str(p.FILTER_FIELD_COLUMNS.get("web_card_balances_history")))
+      str(REGISTRY.get("web_card_balances_history")))
 check("the account filter binds account_label, never the external id",
       not any("account_external_id" in cols
-              for cols in p.FILTER_FIELD_COLUMNS.values()))
+              for cols in REGISTRY.values()))
 
 # ---- the wait for Metabase --------------------------------------------
 
@@ -165,7 +167,7 @@ check("timestamp columns are rendered with epoch_ms",
       "epoch_ms(" in _MODEL_SQL)
 
 
-resolve_field_ids()
+FIELD_IDS = resolve_field_ids()
 MID = model_ids()
 MODELS = p.report_models()
 
@@ -194,10 +196,10 @@ check("the privacy model scales by the latest net worth, per currency",
 # ---- the cards --------------------------------------------------------
 
 # Built once, which also fills the picker registry. A test that changes
-# DEFAULT_CURRENCY or FIELD_IDS rebuilds what it reads and restores the
-# registry after.
-_QDEFS = p.question_defs(1, MID)
-_PDEFS = p.privacy_card_defs(1, MID)
+# DEFAULT_CURRENCY rebuilds what it reads and restores the registry
+# after.
+_QDEFS = p.question_defs()
+_PDEFS = p.privacy_card_defs()
 CARDS = cards_of(_QDEFS, _PDEFS)
 VIZ = {n: tup[-1] for defs in (_QDEFS, _PDEFS) for n, tup in defs.items()}
 DEFS = p.dashboard_defs()
@@ -211,12 +213,11 @@ check("the retired names are distinct",
 # A privacy (_pct) model exists for the MBQL twin cards that run over it:
 # the privacy charts are native over the serving views, so a variant no
 # card reads is retired rather than kept for browsing.
-_CARD_SOURCES = {int(i) for i in re.findall(
-    r'"card__(\d+)"', json.dumps([q for _d, _desc, q in CARDS.values()]))}
+_CARD_SOURCES = {q["query"]["source-table"][1] for _d, _desc, q in CARDS.values() if q["type"] == "query"}
 _PCT_MODELS = sorted(n for n in MODELS if n.endswith("_pct"))
 check("every _pct model backs a card",
-      bool(_PCT_MODELS) and all(MID[n] in _CARD_SOURCES for n in _PCT_MODELS),
-      [n for n in _PCT_MODELS if MID[n] not in _CARD_SOURCES])
+      bool(_PCT_MODELS) and all(n in _CARD_SOURCES for n in _PCT_MODELS),
+      [n for n in _PCT_MODELS if n not in _CARD_SOURCES])
 
 section("spending cards")
 SPEND_TILES = [t[0] for t in DEFS["Spending"][3]]
@@ -232,7 +233,7 @@ check("the uncategorized-share card counts the '(uncategorized)' label",
 check("the uncategorized-share card runs over the _pct model "
       "(it is privacy-exempt, so its drill-through must be leak-free)",
       CARDS["Uncategorized share"][2]["query"]["source-table"]
-      == f"card__{MID['report_spending_pct']}")
+      == ("model", "report_spending_pct"))
 check("card balances come off web_card_balances_history",
       "FROM web_card_balances_history"
       in (sql_of(CARDS["Card balances over time"][2]) or ""))
@@ -405,12 +406,12 @@ check("the account picker draws display_name values",
 # classification travels too, and no tile may aggregate it.
 # The Category picker is shared by both dashboards: its dropdown comes
 # from the money model's `spend_primary`, and the privacy twin's native
-# cards field-filter web_spending through FILTER_FIELD_COLUMNS. If those
+# cards field-filter web_spending through filter_field_columns. If those
 # two named different vocabularies the picker would offer labels and the
 # native cards would match them against vendored values — every privacy
 # tile silently empty, with no error anywhere.
 check("both sides of the shared Category filter speak one vocabulary",
-      p.SPEND_FILTERS["category"][0] in p.FILTER_FIELD_COLUMNS["web_spending"] and
+      p.SPEND_FILTERS["category"][0] in REGISTRY["web_spending"] and
       p.SPEND_FILTERS["category"][0].endswith("_label"))
 _PRIV_SQL = "\n".join(sql_of(c[2]) or "" for n, c in CARDS.items()
                       if n.endswith(p.PRIVACY_SUFFIX) and len(c) > 2)
@@ -499,7 +500,7 @@ check("the twin's denominators are computed in-query",
                         ("Spend — monthly trend (privacy)", "peak"))))
 check("the twin's scalar is a scale-free ratio over the _pct model",
       CARDS["Net spend (privacy)"][2]["query"]["source-table"]
-      == f"card__{MID['report_spending_pct']}")
+      == ("model", "report_spending_pct"))
 
 # ---- native picker wiring ---------------------------------------------
 
@@ -537,18 +538,33 @@ check("a privacy chart maps its field filters as dimensions and the "
           (p.ASSET_PARAM_ID, ["dimension", ["template-tag", "asset_class"]])]),
       targets["Net worth over time (privacy)"])
 
-# An unsynced column drops its filter rather than emitting a {{tag}} the
-# query never declares.
-saved = dict(p.FIELD_IDS)
-p.FIELD_IDS = {k: v for k, v in saved.items() if k != ("web_spending", "spend_primary_label")}
-degraded = p.spending_privacy_defs(1, MID)
-check("an unsynced filter column leaves its clause out of the SQL",
-      "{{category}}" not in sql_of(degraded["Top 50 merchants (privacy)"][3]))
-check("...and leaves its picker unmapped",
-      p.CATEGORY_PARAM_ID not in
-      [pid for pid, _ in p.NATIVE_PARAM_TARGETS["Top 50 merchants (privacy)"]])
-p.FIELD_IDS = saved
-all_cards(1, MID)                           # restore the registry
+# ---- ids bound late ---------------------------------------------------
+
+section("a card's references bind to one Metabase's ids")
+_unbound = p.card_payload(7, "Top 50 merchants (privacy)", "question", *CARDS["Top 50 merchants (privacy)"], {})
+_bound = p.bind(_unbound, 3, FIELD_IDS, MID)
+_cat = _bound["dataset_query"]["native"]["template-tags"]["category"]
+check("a definition names its field, and the payload carries that field's id",
+      CARDS["Top 50 merchants (privacy)"][2]["native"]["template-tags"]["category"]["dimension"]
+      == ("field", "web_spending", "spend_primary_label")
+      and _cat["dimension"] == ["field", FIELD_IDS[("web_spending", "spend_primary_label")], None], _cat)
+check("...and the database, which the definition leaves out",
+      "database" not in _unbound["dataset_query"] and _bound["dataset_query"]["database"] == 3
+      and list(_bound["dataset_query"])[:2] == ["type", "database"], _bound["dataset_query"])
+_mbql_unbound = p.card_payload(7, "Uncategorized share", "question", *CARDS["Uncategorized share"], {})
+check("an MBQL card's model becomes its source table",
+      p.bind(_mbql_unbound, 3, FIELD_IDS, MID)["dataset_query"]["query"]["source-table"]
+      == f"card__{MID['report_spending_pct']}")
+_no_category = {k: v for k, v in FIELD_IDS.items() if k != ("web_spending", "spend_primary_label")}
+for _what, _payload, _ids, _mids in (("field", _unbound, _no_category, MID),
+                                     ("model", _mbql_unbound, FIELD_IDS, {})):
+    try:
+        p.bind(_payload, 3, _ids, _mids)
+        _raised = ""
+    except ValueError as e:
+        _raised = str(e)
+    check(f"a {_what} with no id is an error, not a card without it",
+          _raised.startswith(f"provision: no {_what} id"), _raised)
 
 # ---- a snapshot that predates migration 0043 --------------------------
 
@@ -618,7 +634,7 @@ def run_main():
     """main()'s exit status against the stand-in in p.req, with the
     arguments web/web passes; the globals main() sets are restored."""
     saved = (sys.argv, os.environ.get("WEALTHDB_WEB_ADMIN_PASSWORD"),
-             p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS)
+             p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
     sys.argv = ["provision.py", "--base", "http://127.0.0.1:3000",
                 "--email", "admin@wealthdb.local", "--gold-path", "/gold/wealthdb.db"]
     os.environ["WEALTHDB_WEB_ADMIN_PASSWORD"] = "Synthetic-pw-1!"
@@ -626,7 +642,7 @@ def run_main():
         with quiet():
             return p.main()
     finally:
-        sys.argv, pw, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS = saved
+        sys.argv, pw, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = saved
         if pw is None:
             os.environ.pop("WEALTHDB_WEB_ADMIN_PASSWORD", None)
         else:
@@ -637,7 +653,7 @@ def tables_for(views):
     """Synced metadata carrying every registry column of `views`."""
     return [{"name": t, "fields": [{"name": c, "id": 900 + i}
                                    for i, c in enumerate(cols)]}
-            for t, cols in p.FILTER_FIELD_COLUMNS.items() if t in views]
+            for t, cols in REGISTRY.items() if t in views]
 
 
 ALL_VIEWS = p.web_views_wanted()
@@ -896,12 +912,16 @@ _NEWEST = {o: _newest(o) for o in p.web_views_wanted() + _SERVED}
 check("the cards' minimum gold schema is no older than any view or table they read",
       bool(_SERVED) and all(n is not None and n <= p.MIN_GOLD_SCHEMA for n in _NEWEST.values()),
       {o: n for o, n in _NEWEST.items() if n is None or n > p.MIN_GOLD_SCHEMA})
-# The startup probe and that check read the registry, so a view a card
-# reads and the registry leaves out would go unprobed.
+# The startup probe and that check read the views the SQL reads after
+# FROM or JOIN, so a view a card names any other way would go unprobed.
 _READ_SQL = [sql_of(q) or "" for _d, _desc, q in CARDS.values()] + [sql for sql, _d in MODELS.values()]
-_READ_VIEWS = {v for q in _READ_SQL for v in re.findall(r"\b(?:FROM|JOIN) (web_\w+)\b", q)}
-check("the registry names exactly the web_* views the cards and models read",
-      _READ_VIEWS == set(p.web_views_wanted()), sorted(_READ_VIEWS ^ set(p.web_views_wanted())))
+_NAMED_VIEWS = {v for q in _READ_SQL for v in re.findall(r"\bweb_\w+", q)}
+check("the probe wants every web_* view a card or a model names",
+      _NAMED_VIEWS == set(p.web_views_wanted()), sorted(_NAMED_VIEWS ^ set(p.web_views_wanted())))
+check("...and every table a card's field filter binds, with its columns",
+      {(v, c) for _d, _desc, q in CARDS.values() for t in (q.get("native") or {}).get("template-tags", {}).values()
+       if t.get("type") == "dimension" for _f, v, c in [t["dimension"]]}
+      == {(t, c) for t, cs in REGISTRY.items() for c in cs})
 
 
 def _migration_objects(*ns):
@@ -990,14 +1010,14 @@ try:
     with contextlib.redirect_stdout(buf):
         model_ids = p.ensure_models("b", "s", 1, 7, {})
         check("models save", model_ids is not None)
-        saved = p.ensure_cards("b", "s", 1, 7, {}, model_ids)
+        saved = p.ensure_cards("b", "s", 1, 7, {}, FIELD_IDS, model_ids)
         check("cards save", saved is not None)
         rc = p.ensure_dashboards("b", "s", 7, saved[0], model_ids, None, saved[1])
         check("dashboards save", rc == 0)
 finally:
     p.req = real_req
 printed = buf.getvalue()
-n_cards = len(p.question_defs(1, model_ids)) + len(p.privacy_card_defs(1, model_ids))
+n_cards = len(p.question_defs()) + len(p.privacy_card_defs())
 for want in (f"provision: report models ({p._ccy_slash()}) — {len(p.report_models())} created, "
              f"0 updated, 0 unchanged, 0 retired",
              f"provision: questions — {n_cards} created, 0 updated, 0 unchanged, 0 retired",
@@ -1843,7 +1863,7 @@ section("every spending tile reads one currency")
 # the configured currency), or, on the merchant ranking, by carrying
 # each currency as its own column. Nothing on the dashboard may read the
 # model unguarded.
-SPEND_MODEL_CARD = f"card__{MID['report_spending']}"
+SPEND_MODEL_CARD = ("model", "report_spending")
 for _c, *_ in DEFS["Spending"][3]:
     _q = CARDS[_c][2]
     _sql = sql_of(_q)
@@ -2706,7 +2726,7 @@ for _name in _al_cards:
     _reads = "AND as_of_day = " + _history_day if "issuers" not in _name else "SELECT " + _history_day + " AS day"
     check(f"'{_name}' reads the last history day on or before the As of day",
           _reads in _q and _q.count("{{as_of_day}}") == _q.count("FROM web_history_calendar")
-          and _tag["dimension"][1] == p.FIELD_IDS[("web_history_calendar", "as_of_day")], _q)
+          and _tag["dimension"] == ("field", "web_history_calendar", "as_of_day"), _q)
 
 section("the Allocation dashboard's issuers card")
 
@@ -2822,7 +2842,7 @@ _y_sql = {n: sql_of(CARDS[n][2]) or "" for n in _y_all}
 # The Asset class picker binds web_yield and web_yield_curve. Its model
 # lists the classes of both, so it offers `unknown` where nothing
 # classes a holding; the asset class history may never hold it.
-_y_class_views = {{v: k for k, v in p.FIELD_IDS.items()}[t["dimension"][1]][0]
+_y_class_views = {t["dimension"][1]
                   for n in _y_all for name, t in CARDS[n][2]["native"]["template-tags"].items()
                   if name == "asset_class"}
 check("the Yield Asset class picker's values those of the yield views it binds, `unknown` among them",
@@ -3025,7 +3045,7 @@ check("...the received rows those of the days the Time range selects, the parts 
       [n for n, q in _in_sql.items() if (_KEPT_DAYS in q) == (n in _EXPECTED_ONLY)])
 _tr = [CARDS[n][2]["native"]["template-tags"].get("time_range") for n in _in_all if n not in _EXPECTED_ONLY]
 check("...through a Time range field filter on the days the income received covers",
-      bool(_tr) and all(t and t["dimension"][1] == p.FIELD_IDS[("web_income_days", "day")]
+      bool(_tr) and all(t and t["dimension"] == ("field", "web_income_days", "day")
                         and t["widget-type"] == "date/all-options" for t in _tr))
 check("every picker a card maps lands on a tag it declares and reads",
       not _picker_targets_resolve(_in_all), _picker_targets_resolve(_in_all))
@@ -3035,8 +3055,8 @@ check("every picker a card maps lands on a tag it declares and reads",
 _src = [CARDS[n][2]["native"]["template-tags"].get("source") for n in _in_all]
 _acc = [CARDS[n][2]["native"]["template-tags"].get("account") for n in _IN_PROJECTED]
 check("the Source and Account pickers reach every card through the views they list",
-      all(t and t["dimension"][1] == p.FIELD_IDS[("web_sources_latest", "silver_source_id")] for t in _src)
-      and all(t and t["dimension"][1] == p.FIELD_IDS[("web_income", "account_label")] for t in _acc)
+      all(t and t["dimension"] == ("field", "web_sources_latest", "silver_source_id") for t in _src)
+      and all(t and t["dimension"] == ("field", "web_income", "account_label") for t in _acc)
       and all(re.search(r"\[\[AND (p\.)?silver_source_id IN \(SELECT silver_source_id FROM web_sources_latest "
                         r"WHERE \{\{source\}\}\)\]\]", q) for q in _in_sql.values()))
 check("...and the twin carries no account tag",
@@ -3170,9 +3190,9 @@ for _n in [x for n in _in_cards for x in (n, n if n in p.PRIVACY_EXEMPT_CARDS el
         _in_off[_n] = sorted(_tg)
 check("every Income card carries the Tax wrapper tag, and every one but the withholding's two the Type",
       len(_in_cards) == 20 and not _in_off, _in_off)
-_in_tw = {n: CARDS[n][2]["native"]["template-tags"]["tax_wrapper"]["dimension"][1] for n in _in_all}
+_in_tw = {n: CARDS[n][2]["native"]["template-tags"]["tax_wrapper"]["dimension"] for n in _in_all}
 check("...the holdings' cards binding it, as the Source, to the view of every account's",
-      set(_in_tw.values()) == {p.FIELD_IDS[("web_sources_latest", "tax_wrapper")]}, _in_tw)
+      set(_in_tw.values()) == {("field", "web_sources_latest", "tax_wrapper")}, _in_tw)
 check("...and the tax booked reaching it through its account",
       all("(silver_source_id, account_external_id) IN (SELECT silver_source_id, account_external_id FROM accounts"
           " WHERE COALESCE(tax_wrapper, 'taxable_personal') IN (SELECT tax_wrapper FROM web_sources_latest"
@@ -3500,8 +3520,7 @@ for _c in ("Net worth", "Positions value", "Cash balance",
           and set(_q["native"]["template-tags"]) == {"currency", "source", "tax_wrapper", "asset_class"}
           and "{{time_range}}" not in sql_of(_q) and "whatever the Time range" in CARDS[_c][1])
 check("...and no field filter binds the snapshot",
-      ("web_sources_latest", "snapshot_at") not in p.FIELD_IDS
-      and "snapshot_at" not in p.FILTER_FIELD_COLUMNS["web_sources_latest"])
+      "snapshot_at" not in REGISTRY["web_sources_latest"])
 
 # ensure_cards archives every retired name it finds AFTER saving the live
 # cards, so a name on both lists would be saved and then archived — a
@@ -3626,7 +3645,7 @@ try:
     check("with a GBP default, every Currency picker opens on GBP",
           bool(_params) and all(x["default"] == ["GBP"] for x in _params),
           [x["default"] for x in _params])
-    _gbp_cards = all_cards(1, MID)
+    _gbp_cards = all_cards()
     _tags = [q["native"]["template-tags"]["currency"]
              for _d, _desc, q in _gbp_cards.values()
              if q.get("type") == "native" and "currency" in q["native"]["template-tags"]]
@@ -3640,7 +3659,7 @@ try:
           "ranked in GBP" in _gbp_cards["Top 50 merchants"][1])
 finally:
     p.DEFAULT_CURRENCY = _saved
-    all_cards(1, MID)               # rebuild the picker registry at the default
+    all_cards()               # rebuild the picker registry at the default
 
 section("a percent-styled column is a fraction, not a percentage")
 
@@ -3840,7 +3859,7 @@ _list_cols = {m.group(1) for text in list(_MIG_TEXT.values()) + [DERIVED_SQL]
               for m in re.finditer(r"^\s+(\w+)\s+\w+(?:\(\d+(?:,\s*\d+)?\))?\[\]", text, re.M)}
 check("the gold's list columns are found", "tags" in _list_cols, _list_cols)
 check("no picker binds a list column",
-      not _list_cols & {c for cs in p.FILTER_FIELD_COLUMNS.values() for c in cs}, _list_cols)
+      not _list_cols & {c for cs in REGISTRY.values() for c in cs}, _list_cols)
 check("no model reads a list column",
       not [m for m, (sql, _d) in p.report_models().items()
            if any(re.search(rf"\b{c}\b", sql) for c in _list_cols)], _list_cols)
@@ -3896,7 +3915,7 @@ if duckdb is not None:
     check("legend_last still comes first in a stack, by its NULL rank",
           ordered_series(*_latest, legend_last="low") == ["low", "nil-a", "nil-b", "tied-a", "tied-b", "Benchmark"])
 
-_FIELD = {v: k for k, v in p.FIELD_IDS.items()}
+_FIELD = {v: k for k, v in FIELD_IDS.items()}
 # The day a relative window counts from, fixed so the checks do not move
 # with the calendar.
 _RENDER_TODAY = dt.date(2026, 6, 30)
@@ -3910,7 +3929,7 @@ def _render(query, values):
     picked = {name: f"{v[0]}~{v[1]}"
               if tags.get(name, {}).get("widget-type", "").startswith("date") and isinstance(v, (list, tuple))
               else v for name, v in values.items()}
-    return tt.render(query, picked, _FIELD, _RENDER_TODAY)
+    return tt.render(p.bind(query, 1, FIELD_IDS, MID), picked, _FIELD, _RENDER_TODAY)
 
 
 def _month_start(m):
@@ -5545,7 +5564,7 @@ def _record(_base, _sid, _by_name, payloads, _label):
 _real_upsert, p.upsert_cards = p.upsert_cards, _record
 try:
     with quiet():
-        p.ensure_cards("b", "s", 1, 7, {}, MID, _colors)
+        p.ensure_cards("b", "s", 1, 7, {}, FIELD_IDS, MID, _colors)
 finally:
     p.upsert_cards = _real_upsert
 _nw = _saved.get("Net worth over time", {}).get("visualization_settings", {}).get("series_settings", {})
@@ -5606,20 +5625,20 @@ def _recorded(withholding, sources):
     p.req = api
     try:
         with quiet():
-            p.FIELD_IDS = p.offline_field_ids()
+            fids = p.offline_field_ids()
             mids = p.ensure_models("b", "s", 1, 1, {})
             api.phase = "cards"
             colors = p.source_colors("b", "s", 1, "")
-            ids, descs = p.ensure_cards("b", "s", 1, 1, {}, mids, colors)
+            ids, descs = p.ensure_cards("b", "s", 1, 1, {}, fids, mids, colors)
             rc = p.ensure_dashboards("b", "s", 1, ids, mids,
                                      p.tile_titles(p.withholding_table("b", "s", 1)), descs)
     finally:
         p.req = real
-    fields = {f"{t}.{c}": i for (t, c), i in p.FIELD_IDS.items()}
+    fields = {f"{t}.{c}": i for (t, c), i in fids.items()}
     return rc, {**api.sent, "ids": {**api.ids, "fields": fields}}
 
 
-_saved_globals = (p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS)
+_saved_globals = (p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
 _matrix_bad, _unstable, _texts = [], [], {}
 try:
     for _ccy in ("USD", "CHF"):
@@ -5636,8 +5655,8 @@ try:
                         _unstable.append(_key)
                     _texts[_key] = _first
 finally:
-    p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS = _saved_globals
-    all_cards(1, MID)                       # restore the registry
+    p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = _saved_globals
+    all_cards()                       # restore the registry
 check("over currency, missing basis, withholding and sources, the dump is what provisioning sends",
       not _matrix_bad, _matrix_bad)
 check("...and two dumps give the same bytes", not _unstable, _unstable)
@@ -5664,7 +5683,7 @@ check("...and the id of every field a tag names",
 def _main_with(argv):
     """(exit status, stderr) of main() under `argv`, with any API call an
     error; main()'s globals are restored."""
-    saved = (sys.argv, p.req, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS)
+    saved = (sys.argv, p.req, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
 
     def no_network(*_a, **_k):
         raise AssertionError("the dump called the API")
@@ -5677,7 +5696,7 @@ def _main_with(argv):
             except SystemExit as e:
                 rc = e.code
     finally:
-        sys.argv, p.req, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS = saved
+        sys.argv, p.req, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = saved
     return rc, err.getvalue()
 
 
@@ -5687,13 +5706,13 @@ with tempfile.TemporaryDirectory() as _d:
                          "--withholding", "no", "--sources", "src-a,src-b"])
     with open(_out, encoding="utf-8") as _f:
         _written = _f.read()
-    _saved_globals = (p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS)
+    _saved_globals = (p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
     try:
         p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = "CHF", "zero"
         _want = _dump_text(p.payload_dump(False, ["src-a", "src-b"]))
     finally:
-        p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS, p.FIELD_IDS = _saved_globals
-        all_cards(1, MID)                   # restore the registry
+        p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = _saved_globals
+        all_cards()                   # restore the registry
 check("--dump writes the payloads with no API call, its options read as provisioning reads them",
       _rc == 0 and _written == _want)
 _rc, _err = _main_with([])
