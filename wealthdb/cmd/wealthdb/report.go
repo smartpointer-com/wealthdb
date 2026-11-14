@@ -279,12 +279,30 @@ func writeReport(ctx context.Context, rep *report, out reportOutput, open func()
 	if err != nil {
 		return err
 	}
-	if out.filter == nil {
-		return writeFormatted(w, out.format, rows.table(nil, cols, out.privacy, out.format, nil))
+	// Under -p, pseudonyms number over every row: the default columns
+	// first, as the default output prints them, then every other column.
+	// So a typed value reads one name whatever -C shows and whatever rows
+	// -F keeps.
+	var names *pseudonyms
+	if out.privacy {
+		names = newPseudonyms()
+		if defaults, err := rep.pick("default"); err == nil {
+			rows.table(nil, defaults, true, output.FormatTable, names)
+		}
 	}
-	// Pseudonyms number over every row, as the server's do, so a
-	// filtered csv names a row as the unfiltered one.
-	rs := newResultSet(rep, rows, out.privacy)
+	if out.filter == nil {
+		if names != nil {
+			rows.table(nil, rep.allColumns(), true, output.FormatTable, names)
+		}
+		return writeFormatted(w, out.format, rows.table(nil, cols, out.privacy, out.format, names))
+	}
+	rs := newResultSet(rep, rows, false)
+	if names != nil {
+		// The conditions read the cells as printed, so they number the
+		// same way.
+		rs = &resultSet{rep: rep, rows: rows, privacy: true, names: names,
+			cells: rows.table(nil, rep.allColumns(), true, output.FormatTable, names).Rows}
+	}
 	all := rs.filter(nil, "")
 	idx, _ := keepRows(rs.cells, all, conds)
 	if err := writeFormatted(w, out.format, rows.table(idx, cols, out.privacy, out.format, rs.names)); err != nil {
