@@ -1641,7 +1641,8 @@ def allocation_cards(f):
                f"SELECT p.symbol, {twin_name('p.name')} AS name, p.asset_class, p.vehicle, z.size,\n"
                "       p.v / (SELECT CASE WHEN t <> 0 THEN t END FROM tot)"
                " * 100 AS value_pct\n"
-               "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY value_pct DESC\n LIMIT 100",
+               "  FROM p" + POSITION_SIZE_JOIN
+               + "\n ORDER BY value_pct DESC, p.symbol, p.name, p.asset_class, p.vehicle\n LIMIT 100",
                {}, tags=tags)
     else:
         f.card("Top 100 positions", "table",
@@ -1652,9 +1653,9 @@ def allocation_cards(f):
                "  SELECT symbol, name, asset_class, vehicle,\n"
                f"         sum({value})::DOUBLE AS value\n"
                "    FROM web_positions_history" + _asof_where(tags) +
-               "\n   GROUP BY 1, 2, 3, 4, line_key\n   ORDER BY 5 DESC\n   LIMIT 100)\n"
+               "\n   GROUP BY 1, 2, 3, 4, line_key\n   ORDER BY 5 DESC, 1, 2, 3, 4, line_key\n   LIMIT 100)\n"
                "SELECT p.symbol, p.name, p.asset_class, p.vehicle, z.size, p.value\n"
-               "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY p.value DESC",
+               "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY p.value DESC, p.symbol, p.name, p.asset_class, p.vehicle",
                {}, tags=tags)
     issuer_cards(f)
 
@@ -1852,12 +1853,12 @@ def spending_cards(f):
             spend(name, "pie", twin_what,
                 total_cte(f"{col} AS category,\n         ", "1") +
                 f"SELECT category, {share_of_total} AS spend_pct\n"
-                "  FROM r\n ORDER BY 2 DESC",
+                "  FROM r\n ORDER BY 2 DESC, 1",
                 _donut(threshold=threshold, total=False))
         else:
             spend(name, "pie", what,
                 f"SELECT {col} AS category,\n       {val} AS net_spend\n"
-                "  FROM web_spending" + where + "\n GROUP BY 1\n ORDER BY 2 DESC",
+                "  FROM web_spending" + where + "\n GROUP BY 1\n ORDER BY 2 DESC, 1",
                 _donut(threshold=threshold))
     # Ranks merchants only. A line resolved to a delta — a gift, a
     # bill on a card not itemised, cash out of an ATM — is not a
@@ -1926,7 +1927,7 @@ def spending_cards(f):
             total_cte("silver_source_id || ' / '\n             || COALESCE("
                       "account_kind, 'unknown') AS account_group,\n         ", "1") +
             f"SELECT account_group, {share_of_total} AS spend_pct\n"
-            "  FROM r\n ORDER BY 2 DESC",
+            "  FROM r\n ORDER BY 2 DESC, 1",
             {"graph.dimensions": ["account_group"],
              "graph.metrics": ["spend_pct"]})
     else:
@@ -1934,7 +1935,7 @@ def spending_cards(f):
             "Net spend by account over the window, each labelled with its "
             "name, source and kind.",
             f"SELECT account_label AS account,\n       {val} AS net_spend\n"
-            "  FROM web_spending" + where + "\n GROUP BY 1\n ORDER BY 2 DESC",
+            "  FROM web_spending" + where + "\n GROUP BY 1\n ORDER BY 2 DESC, 1",
             {})
     # Read the way an issuer states a card: what is OWED, as a
     # positive figure. Gold stores the same balance negative — a card
@@ -1993,7 +1994,8 @@ def spending_cards(f):
             "t AS (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END AS total FROM r)\n"
             "SELECT occurred_at, silver_source_id, spend_primary_label, spend_label,\n"
             "       v / (SELECT total FROM t) * 100 AS spend_pct\n"
-            "  FROM r\n ORDER BY v DESC\n LIMIT 50", {})
+            "  FROM r\n ORDER BY v DESC, occurred_at DESC, silver_source_id, spend_primary_label, spend_label\n LIMIT 50",
+            {})
     else:
         spend("Largest transactions", "table",
             "The fifty largest spending lines of the window, with merchant, "
@@ -2002,7 +2004,8 @@ def spending_cards(f):
             "       merchant_name,\n       spend_primary_label AS category,\n"
             "       spend_label AS subcategory,\n"
             f"       {_ccy_case('value', neg=True)} AS net_spend\n"
-            "  FROM web_spending" + where + "\n ORDER BY net_spend DESC\n LIMIT 50",
+            "  FROM web_spending" + where
+            + "\n ORDER BY net_spend DESC, occurred_at DESC, account, merchant_name, category, subcategory\n LIMIT 50",
             {})
     fee_cards(f)
 
@@ -2112,14 +2115,14 @@ def income_cards(f):
             f"  SELECT income_label AS type,\n         {val} AS v\n"
             "    FROM web_income" + where + "\n   GROUP BY 1),\n" + total_cte +
             "SELECT type, v / (SELECT total FROM t) * 100 AS income_pct\n"
-            "  FROM m\n ORDER BY 2 DESC",
+            "  FROM m\n ORDER BY 2 DESC, 1",
             _donut(threshold=0, total=False))
     else:
         income("Income by type", "pie",
             "Net income by type over the window, the total in the middle. "
             "A type whose reversals beat its receipts has no slice.",
             f"SELECT income_label AS type,\n       {val} AS net_income\n"
-            "  FROM web_income" + where + "\n GROUP BY 1\n ORDER BY 2 DESC",
+            "  FROM web_income" + where + "\n GROUP BY 1\n ORDER BY 2 DESC, 1",
             _donut(threshold=0, total=True))
     # The only payer ranking there is: the CLI carries none, as it
     # carries no merchant ranking. Payers with no name — the delta
@@ -2146,7 +2149,7 @@ def income_cards(f):
             "t AS (SELECT nullif(sum(v), 0) AS total FROM m)\n"
             "SELECT occurred_at, type,\n"
             "       v / (SELECT total FROM t) * 100 AS income_pct\n"
-            "  FROM m\n ORDER BY v DESC\n LIMIT 50",
+            "  FROM m\n ORDER BY v DESC, occurred_at DESC, type\n LIMIT 50",
             {})
     else:
         income("Top 50 payers", "table",
@@ -2154,14 +2157,14 @@ def income_cards(f):
             "Lines with no payer to name are left out.",
             f"SELECT payer_name,\n       {val} AS net_income\n"
             "  FROM web_income" + where +
-            "\n   AND payer_name IS NOT NULL\n GROUP BY 1\n ORDER BY 2 DESC\n LIMIT 50",
+            "\n   AND payer_name IS NOT NULL\n GROUP BY 1\n ORDER BY 2 DESC, 1\n LIMIT 50",
             {})
         income("Largest receipts", "table",
             "The fifty largest income lines of the window, with payer, account and type.",
             "SELECT occurred_at,\n       account_label AS account,\n"
             "       payer_name,\n       income_label AS type,\n"
             f"       {_ccy_case('value')} AS net_income\n"
-            "  FROM web_income" + where + "\n ORDER BY net_income DESC\n LIMIT 50",
+            "  FROM web_income" + where + "\n ORDER BY net_income DESC, occurred_at DESC, account, payer_name, type\n LIMIT 50",
             {})
     income_projected_cards(f)
 
@@ -2347,7 +2350,7 @@ def cashflow_cards(f):
             "         group_node AS \"group\",\n"
             f"         {_ccy_case('value')} AS v\n"
             "    FROM web_cashflow" + where + ")\n"
-            "SELECT row_number() OVER (ORDER BY abs(v) DESC) AS rank,\n"
+            "SELECT row_number() OVER (ORDER BY abs(v) DESC, occurred_at DESC, section, class, \"group\") AS rank,\n"
             "       section, class, \"group\",\n"
             "       v / (SELECT total FROM hub) * 100 AS share_pct\n"
             "  FROM m\n ORDER BY 1\n LIMIT 50",
@@ -2459,7 +2462,7 @@ def cashflow_cards(f):
         "       account_label AS account,\n"
         f"       {_ccy_case('value')} AS value\n"
         "  FROM web_cashflow" + where +
-        f"\n ORDER BY abs({_ccy_case('value')}) DESC\n LIMIT 50",
+        f"\n ORDER BY abs({_ccy_case('value')}) DESC, occurred_at DESC, section, class, \"group\", name, account\n LIMIT 50",
         {})
     cashflow_plan_cards(f)
     bridge_cards(f)
@@ -2702,7 +2705,7 @@ def gains_cards(f):
                       "       unrealized_end AS unrealized,\n"
                       "       unrealized_end / nullif(cost_basis, 0) AS unrealized_pct,\n"
                       "       cost_basis,\n       value,\n       account\n"
-                      f"  FROM e\n WHERE {pred}\n ORDER BY {order}\n LIMIT 10",
+                      f"  FROM e\n WHERE {pred}\n ORDER BY {order}, position, account\n LIMIT 10",
                       _percent_viz("unrealized_pct"))
 
     def realized_table(name, desc, pred, order):
@@ -2721,7 +2724,7 @@ def gains_cards(f):
                       "SELECT position, realized,\n"
                       "       realized / nullif(cost_basis, 0) AS realized_pct,\n"
                       "       proceeds, cost_basis, account\n"
-                      f"  FROM r\n WHERE {pred}\n ORDER BY {order}\n LIMIT 10",
+                      f"  FROM r\n WHERE {pred}\n ORDER BY {order}, position, account\n LIMIT 10",
                       _percent_viz("realized_pct"))
 
     def split_bars(name, desc, dim, label, metrics):
@@ -2734,7 +2737,7 @@ def gains_cards(f):
         native(name, "bar", desc,
                       f"SELECT {dim} AS {label},\n{cols}\n"
                       "  FROM web_gains" + where +
-                      f"\n GROUP BY 1\nHAVING {some}\n ORDER BY {total} DESC",
+                      f"\n GROUP BY 1\nHAVING {some}\n ORDER BY {total} DESC, 1",
                       {"graph.dimensions": [label],
                        "graph.metrics": [a for _, a in metrics],
                        "stackable.stack_type": "stacked"})
@@ -3634,7 +3637,7 @@ def yield_cards(f):
     if privacy:
         card("Cash against its benchmark", "table",
              cash_desc + " No account is named.",
-             cash_rows + f"SELECT row_number() OVER (ORDER BY {cash_order}) AS rank,\n"
+             cash_rows + f"SELECT row_number() OVER (ORDER BY {cash_order}, kind, holding_currency, stated_pct, benchmark_pct) AS rank,\n"
              "       kind, holding_currency AS currency, stated_pct AS rate_pct, benchmark_pct, gap_pct,\n"
              "       100 * value / NULLIF(sum(GREATEST(value, 0)) OVER (), 0) AS share_pct\n"
              "  FROM c\n ORDER BY 1",
@@ -4184,7 +4187,7 @@ def income_projected_cards(f):
     if privacy:
         card("Received and expected by account", "table",
              account_desc + " Ranked, no account named, each a share of every account's total.",
-             rows(every, acc) + "SELECT row_number() OVER (ORDER BY total DESC) AS rank,\n" +
+             rows(every, acc) + "SELECT row_number() OVER (ORDER BY total DESC, received DESC) AS rank,\n" +
              ",\n".join(f"       100 * {c} / NULLIF(sum(total) OVER (), 0) AS {c}_pct"
                         for c in ("received", "expected", "total")) +
              "\n  FROM acc\n ORDER BY 1",
@@ -4221,7 +4224,8 @@ def income_projected_cards(f):
                  "         coalesce(i.received, 0) AS received, coalesce(i.expected, 0) AS expected\n"
                  "    FROM hold h\n"
                  "    FULL JOIN inc i USING (silver_source_id, account_external_id, position_key))")
-    position_order = "\n  FROM r\n ORDER BY vehicle NULLS LAST, received + expected DESC, symbol, name"
+    position_order = ("\n  FROM r\n ORDER BY vehicle NULLS LAST, received + expected DESC, symbol, name,"
+                      " account_label, position_key")
     position_desc = ("Each position's income received and expected, by vehicle. A class row holds an "
                      "account's other lines and has no payments; click a holding's symbol or name to list its.")
     # A click on a position's symbol or name picks the position the
@@ -4280,13 +4284,14 @@ def income_projected_cards(f):
              f"SELECT {date}, symbol, {TWIN_POSITION_NAME} AS name, type, kind, basis,\n"
              "       100 * c.value / NULLIF(GREATEST(h.value, 0), 0) AS value_pct\n"
              "  FROM cal c\n  LEFT JOIN hold h USING (silver_source_id, account_external_id, position_key)\n"
-             " ORDER BY month_start, day IS NULL, day, symbol, name, kind",
+             " ORDER BY month_start, day IS NULL, day, symbol, name, kind, type, basis, account_external_id,"
+             " position_key",
              _share_viz("value_pct"), tags=calendar_tags)
     else:
         card("Expected payments", "table", cal_desc,
              cal + f"SELECT {date}, account_label AS account, symbol, COALESCE(name, position_key) AS name,\n"
              "       type, kind, basis, holding_currency AS currency, amount, value\n"
-             "  FROM cal\n ORDER BY month_start, day IS NULL, day, account, symbol, name, kind",
+             "  FROM cal\n ORDER BY month_start, day IS NULL, day, account, symbol, name, kind, type, basis, position_key",
              {}, tags=calendar_tags)
 
 
@@ -4544,7 +4549,8 @@ def fee_cards(f):
             "t AS (SELECT NULLIF(sum(fees), 0) AS total FROM e),\n"
             "n AS (\n  SELECT *, entity || ' (' || silver_source_id || ' ' || entity_kind || ')' AS entity_label,\n"
             "         silver_source_id || ' / ' || entity_kind || ' ' ||\n"
-            "         row_number() OVER (PARTITION BY silver_source_id, entity_kind ORDER BY fees DESC) AS entity_group\n"
+            "         row_number() OVER (PARTITION BY silver_source_id, entity_kind ORDER BY fees DESC, entity_key)"
+            " AS entity_group\n"
             "    FROM e)\n")
     # A name alone can repeat across sources, so the base names an
     # entity as the account tiles name an account: name (source kind).
@@ -4556,7 +4562,7 @@ def fee_cards(f):
     card("Fees by portfolio", "row",
          "What each portfolio, or account outside one, paid in fees, net of refunds, by group. Trading "
          "and fund costs are not fee lines.",
-         rows + f"SELECT {pick}, {groups}\n  FROM n\n ORDER BY fees DESC",
+         rows + f"SELECT {pick}, {groups}\n  FROM n\n ORDER BY fees DESC, entity_key",
          {"graph.dimensions": [label], "graph.metrics": group_cols, "stackable.stack_type": "stacked",
           "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
           "series_settings": {c: {"color": FEE_GROUP_COLORS[g], "title": FEE_GROUP_TITLES[g]}
@@ -4570,7 +4576,7 @@ def fee_cards(f):
          "The yearly fee rate on the value held, beside the return of the months ending in the window. "
          "Blank with no value or return.",
          rows + f"SELECT {pick}, {money},\n       {rate},\n       {twr}\n"
-         "  FROM n LEFT JOIN r USING (entity_key)\n ORDER BY fees DESC",
+         "  FROM n LEFT JOIN r USING (entity_key)\n ORDER BY fees DESC, entity_key",
          _share_viz("fees_pct", "fee_rate_pct", "twr_pct", decimals=2) if privacy
          else {"column_settings": {**_share_viz("fee_rate_pct", "twr_pct", decimals=2)["column_settings"],
                                    '["name","mean_value"]': {"decimals": 0}}})
@@ -4967,7 +4973,7 @@ def _cashflow_sankey_sql(where, sum_expr, share=False):
         "             abs(net), abs(cnet)\n"
         "        FROM att WHERE stays AND net <> 0)\n"
         f"SELECT e.stage, e.source, e.target, {value} AS value\n"
-        "  FROM e ORDER BY e.stage, e.kin DESC, e.value DESC")
+        "  FROM e ORDER BY e.stage, e.kin DESC, e.value DESC, e.source, e.target")
 
 
 def _field_clauses(tags, exclude=()):
@@ -5040,7 +5046,7 @@ def _breakdown_sql(view, dim, col, tags, share=False, benchmark=None):
                 "        FROM r)\n" + _beside(dim, "value_pct", benchmark))
     if not share:
         return (f"SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS value\n"
-                f"  FROM {view}" + where + "\n GROUP BY 1\n ORDER BY 2 DESC")
+                f"  FROM {view}" + where + "\n GROUP BY 1\n ORDER BY 2 DESC, 1")
     return ("WITH r AS (\n"
             f"  SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS v\n"
             f"    FROM {view}" + where + "\n"
@@ -5048,7 +5054,7 @@ def _breakdown_sql(view, dim, col, tags, share=False, benchmark=None):
             f"SELECT {dim},\n"
             "       v / (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END FROM r)"
             " * 100 AS value_pct\n"
-            "  FROM r\n ORDER BY 2 DESC")
+            "  FROM r\n ORDER BY 2 DESC, 1")
 
 
 # The peak-month denominator of the twins' charts over months: the

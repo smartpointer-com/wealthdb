@@ -4757,16 +4757,16 @@ if duckdb is not None:
     # share the command prints, and the bars sum to 100.
     with open(os.path.join(_REPO, "wealthdb", "internal", "gold", "testdata", "class_share_book.json"),
               encoding="utf-8") as _f:
-        _book = json.load(_f)
+        _share_book = json.load(_f)
     _cards = {"credit": (_credit, "credit"), "maturities": ("Debt by maturity", "maturity"),
               "coupons": ("Debt by coupon kind", "coupon"), "cycles": ("Public equity by cycle", "cycle")}
-    check("the class share book holds the four bucket views", set(_book) == set(_cards), sorted(_book))
-    for _view, _rows in _book.items():
+    check("the class share book holds the four bucket views", set(_share_book) == set(_cards), sorted(_share_book))
+    for _view, _rows in _share_book.items():
         for _row in _rows:
             _db.execute("INSERT INTO report_exposure_debt VALUES (0, 'USD', ?, 'src-9', NULL, ?, ?, FALSE, ?)",
                         [_today, _cards[_view][1], _row["bucket"], float(_row["value"])])
     for _view, (_name, _dim) in _cards.items():
-        _want = [(r["bucket"], r["class_share"]) for r in _book.get(_view, []) if r["bucket"] != "(none)"]
+        _want = [(r["bucket"], r["class_share"]) for r in _share_book.get(_view, []) if r["bucket"] != "(none)"]
         for _n in (_name, p.privacy_name(_name)):
             _bars = _run(_n, source=["src-9"])
             _got = [(r[0], f"{float(r[-1]):.2f}") for r in _bars]
@@ -5936,6 +5936,246 @@ check("a tile takes its dashboard's picker defaults, the time window included",
 check("...and with --wide no time window",
       all(v.get("time_range", None) is None for d, c, k, _q2, v in tt.queries(_one, wide=True)
           if d == "Spending" and k == "native"))
+
+if duckdb is not None:
+    section("tied rows come back in one order whatever order gold holds them in")
+
+    def _both_ways(ddl, rows, names, build=None, **values):
+        """card name -> its rows on a DuckDB of `ddl` with `rows` (table ->
+        tuples) inserted as listed, then on one with each table's rows
+        reversed, as a pair. `build` adds to each DuckDB first."""
+        out = {}
+        for flip in (False, True):
+            db = build() if build else duckdb.connect()
+            db.execute(ddl)
+            for table, rs in rows.items():
+                for r in (rs[::-1] if flip else rs):
+                    db.execute(f"INSERT INTO {table} VALUES ({', '.join('?' * len(r))})", list(r))
+            for n in names:
+                out.setdefault(n, []).append(db.execute(_render(CARDS[n][2], values)).fetchall())
+        return out
+
+    def _pinned(runs, pins):
+        """Check each card of `pins` reads the same rows both ways, and
+        the column `pins` names, by index, in the order it gives."""
+        for n, (col, want) in pins.items():
+            fwd, rev = runs[n]
+            got = [r[col] for r in fwd]
+            check(f"'{n}' sorts its tied rows one way", fwd == rev and got == want, (got, fwd == rev))
+
+    _CCY = "value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE"
+
+    def _ccy(v):
+        return (v, v, v, v)
+
+    # Two spending lines alike in all but their labels: their categories,
+    # subcategories, accounts and sources tie on net spend, so each card
+    # orders them by its labels.
+    _sp = _both_ways(
+        "CREATE TABLE web_spending (occurred_at TIMESTAMP, silver_source_id TEXT, account_label TEXT,"
+        f" account_kind TEXT, spend_primary_label TEXT, spend_label TEXT, merchant_name TEXT, {_CCY})",
+        {"web_spending": [("2026-10-01", "src-b", "Card B (src-b card)", "card", "Travel", "Rail", "Shop B",
+                           *_ccy(-50.0)),
+                          ("2026-10-01", "src-a", "Card A (src-a card)", "card", "Food", "Groceries", "Shop A",
+                           *_ccy(-50.0))]},
+        [n for c in ("Spending by category", "Spending by subcategory", "Spend by account", "Largest transactions")
+         for n in (c, p.privacy_name(c))])
+    _pinned(_sp, {"Spending by category": (0, ["Food", "Travel"]),
+                  "Spending by category (privacy)": (0, ["Food", "Travel"]),
+                  "Spending by subcategory": (0, ["Groceries", "Rail"]),
+                  "Spending by subcategory (privacy)": (0, ["Groceries", "Rail"]),
+                  "Spend by account": (0, ["Card A (src-a card)", "Card B (src-b card)"]),
+                  "Spend by account (privacy)": (0, ["src-a / card", "src-b / card"]),
+                  "Largest transactions": (1, ["Card A (src-a card)", "Card B (src-b card)"]),
+                  "Largest transactions (privacy)": (1, ["src-a", "src-b"])})
+
+    # Two income lines of one day and one amount.
+    _in = _both_ways(
+        "CREATE TABLE web_income (occurred_at TIMESTAMP, silver_source_id TEXT, account_label TEXT,"
+        f" tax_wrapper TEXT, income_label TEXT, payer_name TEXT, {_CCY})",
+        {"web_income": [("2026-10-01", "src-b", "Bank B (src-b deposit)", "taxable_personal", "Salary", "Payer B",
+                         *_ccy(100.0)),
+                        ("2026-10-01", "src-a", "Bank A (src-a deposit)", "taxable_personal", "Interest", "Payer A",
+                         *_ccy(100.0))]},
+        ["Income by type", "Income by type (privacy)", "Top 50 payers", "Largest receipts",
+         "Largest receipts (privacy)"])
+    _pinned(_in, {"Income by type": (0, ["Interest", "Salary"]),
+                  "Income by type (privacy)": (0, ["Interest", "Salary"]),
+                  "Top 50 payers": (0, ["Payer A", "Payer B"]),
+                  "Largest receipts": (1, ["Bank A (src-a deposit)", "Bank B (src-b deposit)"]),
+                  "Largest receipts (privacy)": (1, ["Interest", "Salary"])})
+
+    # Two vehicles, two tax wrappers and two management styles of one
+    # value each, and two positions of one value.
+    _hist = ("CREATE TABLE web_history_calendar (as_of_day DATE, history_day DATE);"
+             "CREATE TABLE web_vehicles_history (as_of_day DATE, silver_source_id TEXT, tax_wrapper TEXT,"
+             f" asset_class TEXT, vehicle TEXT, {_CCY});"
+             "CREATE TABLE web_accounts_history (as_of_day DATE, silver_source_id TEXT, tax_wrapper TEXT,"
+             f" asset_class TEXT, management_style TEXT, total_value_usd DOUBLE, total_value_chf DOUBLE,"
+             " total_value_eur DOUBLE, total_value_gbp DOUBLE);"
+             "CREATE TABLE web_positions_history (as_of_day DATE, silver_source_id TEXT, tax_wrapper TEXT,"
+             f" line_key TEXT, symbol TEXT, name TEXT, asset_class TEXT, vehicle TEXT, currency TEXT, {_CCY});"
+             "CREATE TABLE web_position_sizes (symbol TEXT, name TEXT, asset_class TEXT, vehicle TEXT, size TEXT)")
+    _al = _both_ways(_hist, {
+        "web_history_calendar": [("2026-10-21", "2026-10-21")],
+        "web_vehicles_history": [("2026-10-21", "src-1", "taxable_personal", "public_equity", v, *_ccy(100.0))
+                                 for v in ("stock", "etf")],
+        "web_accounts_history": [("2026-10-21", "src-1", w, "public_equity", m, *_ccy(100.0))
+                                 for w, m in (("taxable_personal", "self_directed"), ("ira", "advised"))],
+        "web_positions_history": [("2026-10-21", "src-1", "taxable_personal", k, s, s + " Example", "public_equity",
+                                   "stock", "USD", *_ccy(100.0)) for k, s in (("l-1", "QZZZ"), ("l-2", "QAAA"))]},
+        [n for c in ("Allocation by vehicle", "Value by tax wrapper", "Value by management style",
+                     "Top 100 positions") for n in (c, p.privacy_name(c))])
+    _pinned(_al, {**{n: (0, ["etf", "stock"]) for n in ("Allocation by vehicle", "Allocation by vehicle (privacy)")},
+                  **{n: (0, ["ira", "taxable_personal"]) for n in ("Value by tax wrapper", "Value by tax wrapper (privacy)")},
+                  **{n: (0, ["advised", "self_directed"])
+                     for n in ("Value by management style", "Value by management style (privacy)")},
+                  **{n: (0, ["QAAA", "QZZZ"]) for n in ("Top 100 positions", "Top 100 positions (privacy)")}})
+
+    # Two sources and two classes of one gain, and two positions of one
+    # unrealized and one realized gain, on two accounts.
+    _gn = _both_ways(
+        "CREATE TABLE web_gains (period TIMESTAMP, silver_source_id TEXT, account_external_id TEXT, account TEXT,"
+        " tax_wrapper TEXT, asset_class TEXT, currency TEXT, missing_basis TEXT, instrument_key TEXT, symbol TEXT,"
+        " name TEXT, at_end BOOLEAN, value DOUBLE, cost_basis DOUBLE, unrealized_end DOUBLE, realized DOUBLE,"
+        " proceeds DOUBLE, realized_cost_basis DOUBLE, realized_short DOUBLE, realized_long DOUBLE,"
+        " realized_other DOUBLE, sold_gain DOUBLE, held_change DOUBLE)",
+        {"web_gains": [("2026-09-01", s, a, a.upper(), w, c, "USD", "ignore", k, k.upper(), None, True,
+                        200.0, 100.0, 100.0, 50.0, 150.0, 100.0, 50.0, 0.0, 0.0, 50.0, 100.0)
+                       for s, a, w, c, k in (("src-b", "acct-b", "taxable_personal", "public_equity", "zz"),
+                                             ("src-a", "acct-a", "ira", "fixed_income", "aa"))]},
+        ["Gain by source", "Gain by asset class", "Realized gains by tax wrapper", "Largest unrealized gains",
+         "Best unrealized %", "Largest realized gains", "Best realized %", "Largest unrealized losses",
+         "Worst unrealized %", "Largest realized losses", "Worst realized %"])
+    _pinned(_gn, {"Gain by source": (0, ["src-a", "src-b"]),
+                  "Gain by asset class": (0, ["fixed_income", "public_equity"]),
+                  "Realized gains by tax wrapper": (0, ["ira", "taxable_personal"]),
+                  **{n: (0, ["AA", "ZZ"]) for n in ("Largest unrealized gains", "Best unrealized %",
+                                                     "Largest realized gains", "Best realized %")}})
+    _neg = _both_ways(
+        "CREATE TABLE web_gains (period TIMESTAMP, silver_source_id TEXT, account_external_id TEXT, account TEXT,"
+        " tax_wrapper TEXT, asset_class TEXT, currency TEXT, missing_basis TEXT, instrument_key TEXT, symbol TEXT,"
+        " name TEXT, at_end BOOLEAN, value DOUBLE, cost_basis DOUBLE, unrealized_end DOUBLE, realized DOUBLE,"
+        " proceeds DOUBLE, realized_cost_basis DOUBLE)",
+        {"web_gains": [("2026-09-01", "src-1", a, a.upper(), "ira", "public_equity", "USD", "ignore", "qq", "QQ",
+                        None, True, 50.0, 100.0, -50.0, -50.0, 50.0, 100.0) for a in ("acct-b", "acct-a")]},
+        ["Largest unrealized losses", "Worst unrealized %", "Largest realized losses", "Worst realized %"])
+    _pinned(_neg, {n: (5 if "unrealized" in n else 5, ["ACCT-A", "ACCT-B"])
+                   for n in ("Largest unrealized losses", "Worst unrealized %",
+                             "Largest realized losses", "Worst realized %")})
+
+    # Two cash flows of one day and one amount, as one class each with
+    # no leaf, so the diagram's two edges tie too.
+    _cf_ties = _both_ways(
+        "CREATE MACRO cashflow_class_label(c) AS c;"
+        "CREATE TABLE web_cashflow (occurred_at TIMESTAMP, silver_source_id TEXT, section TEXT, class_node TEXT,"
+        f" group_node TEXT, name TEXT, account_label TEXT, class TEXT, {_CCY})",
+        {"web_cashflow": [("2026-10-01", "src-1", "vehicles", c, c, "Line", acct, c, *_ccy(-100.0))
+                          for c, acct in (("Pool Z", "Account Z"), ("Pool A", "Account A"))]},
+        ["Cash flow", "Cash flow (privacy)", "Largest flows", "Largest flows (privacy)"])
+    _pinned(_cf_ties, {"Cash flow": (2, ["Household", "Pool A", "Pool Z"]),
+                       "Cash flow (privacy)": (2, ["Household", "Pool A", "Pool Z"]),
+                       "Largest flows": (2, ["Pool A", "Pool Z"]),
+                       "Largest flows (privacy)": (2, ["Pool A", "Pool Z"])})
+
+    # Lines of one size on two days: a top-N card keeps the newest first,
+    # whatever order gold holds them in.
+    _dated = _both_ways(
+        "CREATE TABLE web_spending (occurred_at TIMESTAMP, silver_source_id TEXT, account_label TEXT,"
+        f" account_kind TEXT, spend_primary_label TEXT, spend_label TEXT, merchant_name TEXT, {_CCY});"
+        "CREATE TABLE web_income (occurred_at TIMESTAMP, silver_source_id TEXT, account_label TEXT,"
+        f" tax_wrapper TEXT, income_label TEXT, payer_name TEXT, {_CCY});"
+        "CREATE TABLE web_cashflow (occurred_at TIMESTAMP, silver_source_id TEXT, section TEXT, class_node TEXT,"
+        f" group_node TEXT, name TEXT, account_label TEXT, class TEXT, {_CCY})",
+        {"web_spending": [(d, "src-a", "Card A (src-a card)", "card", "Food", "Groceries", "Shop A", *_ccy(-50.0))
+                          for d in ("2026-09-01", "2026-10-01")],
+         "web_income": [(d, "src-a", "Bank A (src-a deposit)", "taxable_personal", "Interest", "Payer A",
+                         *_ccy(100.0)) for d in ("2026-09-01", "2026-10-01")],
+         "web_cashflow": [(d, "src-1", "vehicles", "Pool A", "Pool A", "Line", "Account A", "Pool A", *_ccy(-100.0))
+                          for d in ("2026-09-01", "2026-10-01")]},
+        ["Largest transactions", "Largest transactions (privacy)", "Largest receipts", "Largest receipts (privacy)",
+         "Largest flows"])
+    _pinned(_dated, {n: (0, [dt.datetime(2026, 10, 1), dt.datetime(2026, 9, 1)])
+                     for n in ("Largest transactions", "Largest transactions (privacy)", "Largest receipts",
+                               "Largest receipts (privacy)", "Largest flows")})
+    _dated_twin = _both_ways(
+        "CREATE MACRO cashflow_class_label(c) AS c;"
+        "CREATE TABLE web_cashflow (occurred_at TIMESTAMP, silver_source_id TEXT, section TEXT, class_node TEXT,"
+        f" group_node TEXT, name TEXT, account_label TEXT, class TEXT, {_CCY})",
+        {"web_cashflow": [(d, "src-1", "vehicles", c, c, "Line", "Account A", c, *_ccy(v))
+                          for d, c, v in (("2026-09-01", "Pool A", -100.0), ("2026-10-01", "Pool B", -100.0),
+                                          ("2026-08-01", "Pool C", 300.0))]},
+        ["Largest flows (privacy)"])
+    _pinned(_dated_twin, {"Largest flows (privacy)": (2, ["Pool C", "Pool B", "Pool A"])})
+
+    # Two portfolios of one source and kind with one fee each, the same.
+    _fe = _both_ways(
+        "CREATE TABLE web_fees (day TIMESTAMP, line TEXT, silver_source_id TEXT, account_label TEXT,"
+        f" entity_key TEXT, entity_kind TEXT, entity TEXT, fee_group TEXT, currency TEXT, {_CCY}, twr DOUBLE)",
+        {"web_fees": [("2026-10-01", "fee", "src-1", "Account", k, "portfolio", e, "bank", "USD", *_ccy(10.0), None)
+                      for k, e in (("p-2", "Zeta"), ("p-1", "Alpha"))]},
+        ["Fees by portfolio", "Fees by portfolio (privacy)", "Fee rate by portfolio", "Fee rate by portfolio (privacy)"])
+    _pinned(_fe, {"Fees by portfolio": (0, ["Alpha (src-1 portfolio)", "Zeta (src-1 portfolio)"]),
+                  "Fee rate by portfolio": (0, ["Alpha (src-1 portfolio)", "Zeta (src-1 portfolio)"]),
+                  "Fees by portfolio (privacy)": (0, ["src-1 / portfolio 1", "src-1 / portfolio 2"]),
+                  "Fee rate by portfolio (privacy)": (0, ["src-1 / portfolio 1", "src-1 / portfolio 2"])})
+
+    # The book with a second account, acct-0, holding twice acct-1's bond
+    # (the same payments on twice the value) and, like acct-1's dollars,
+    # cash of 12,000 in euros and in pounds, which no benchmark rates.
+    # Each card reads it, then again with the tied rows moved behind the
+    # rows they tie with. The book is the one the cards above read: no
+    # check after this one reads it.
+    _bk = _db
+    _bk.execute("INSERT INTO accounts (silver_source_id, account_external_id, display_name, account_kind,"
+                " tax_wrapper) VALUES ('src-1', 'acct-0', 'Margin', 'brokerage', 'taxable_personal')")
+    for _table, _value in (("report_yield_positions", ", value * 2 AS value"), ("report_yield_parts", "")):
+        _bk.execute(f"INSERT INTO {_table} SELECT * REPLACE ('acct-0' AS account_external_id{_value})"
+                    f" FROM {_table} WHERE position_key = 'isin:XX01'")
+    for _ccy in ("EUR", "GBP"):
+        _bk.execute("INSERT INTO report_yield_positions SELECT * REPLACE ('acct-0' AS account_external_id,"
+                    f" 'cash:{_ccy}' AS position_key, '{_ccy}' AS holding_currency) FROM report_yield_positions"
+                    " WHERE position_key = 'cash:USD'")
+
+    def _bk_late():
+        """Move acct-1's bond rows and acct-0's euros behind the rows
+        tied with them."""
+        for table, key in (("report_yield_positions", "position_key = 'isin:XX01' AND account_external_id = 'acct-1'"),
+                           ("report_yield_parts", "position_key = 'isin:XX01' AND account_external_id = 'acct-1'"),
+                           ("report_yield_positions", "position_key = 'cash:EUR'")):
+            _bk.execute(f"CREATE TEMP TABLE moved AS SELECT * FROM {table} WHERE {key}")
+            _bk.execute(f"DELETE FROM {table} WHERE {key}")
+            _bk.execute(f"INSERT INTO {table} SELECT * FROM moved")
+            _bk.execute("DROP TABLE moved")
+
+    _BK_CARDS = {"Expected payments": {"horizon": "12"}, "Expected payments (privacy)": {"horizon": "12"},
+                 "Received and expected by position": {}, "Received and expected by position (privacy)": {},
+                 "Received and expected by account (privacy)": {}, "Cash against its benchmark (privacy)": {}}
+    _bk_early = {n: _bk.execute(_render(CARDS[n][2], v)).fetchall() for n, v in _BK_CARDS.items()}
+    _bk_late()
+    _bk_after = {n: _bk.execute(_render(CARDS[n][2], v)).fetchall() for n, v in _BK_CARDS.items()}
+
+    def _bk_rows(name, **_values):
+        return _bk_early[name], _bk_early[name] == _bk_after[name]
+
+    _pay = {n: _bk_rows(n, horizon="12") for n in ("Expected payments", "Expected payments (privacy)")}
+    _coupon = {n: [r for r in rows if r[0] == "2026-12-15"] for n, (rows, _same) in _pay.items()}
+    check("'Expected payments' sorts its tied rows one way",
+          _pay["Expected payments"][1] and [r[1] for r in _coupon["Expected payments"]]
+          == ["Brokerage (src-1 brokerage)", "Margin (src-1 brokerage)"], _coupon["Expected payments"])
+    # The twin names no account: acct-0's coupon, a smaller share of its
+    # larger value, comes first.
+    _twin_pct = [r[-1] for r in _coupon["Expected payments (privacy)"]]
+    check("'Expected payments (privacy)' sorts its tied rows one way",
+          _pay["Expected payments (privacy)"][1] and len(_twin_pct) == 2 and _twin_pct[0] < _twin_pct[1],
+          _coupon["Expected payments (privacy)"])
+    for _n in ("Received and expected by position", "Received and expected by position (privacy)",
+               "Received and expected by account (privacy)"):
+        _rows, _same = _bk_rows(_n)
+        check(f"'{_n}' sorts its tied rows one way", _same and len(_rows) > 1, _rows)
+    _cash, _same = _bk_rows("Cash against its benchmark (privacy)")
+    check("'Cash against its benchmark (privacy)' sorts its tied rows one way",
+          _same and [r[2] for r in _cash[:2]] == ["EUR", "GBP"], _cash)
 
 if duckdb is not None:
     with tempfile.TemporaryDirectory() as _d:
