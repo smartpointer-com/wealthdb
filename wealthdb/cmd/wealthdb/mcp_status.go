@@ -124,7 +124,7 @@ func sourceStatus(ctx context.Context, res gold.SourceStatusResult, src *config.
 	}
 	if silverSt, err := probeSilverStatus(ctx, src); err == nil {
 		r.newData = "no"
-		if silverSt.LatestChangeNumber > st.HighWatermark {
+		if silverAhead(st, silverSt) {
 			r.newData = "yes"
 		}
 	}

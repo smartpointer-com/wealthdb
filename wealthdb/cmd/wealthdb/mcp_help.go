@@ -356,7 +356,7 @@ func (s *mcpServer) glossary(ctx context.Context) (string, error) {
 			note("tax_wrapper", strOrEmpty(a.TaxWrapper))
 			note("management_style", strOrEmpty(a.ManagementStyle))
 		}
-		positions, err := gold.PositionsAsOf(ctx, db, asOf, cfg.DefaultCurrency, lots.MissingIgnore)
+		positions, err := gold.PositionsAsOf(ctx, db, asOf, cfg.DefaultCurrency, lots.MissingIgnore, false)
 		if err != nil {
 			return err
 		}

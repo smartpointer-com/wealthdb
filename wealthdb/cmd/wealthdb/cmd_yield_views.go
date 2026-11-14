@@ -223,23 +223,13 @@ var defaultYieldCoverageColumns = []string{"section", "reason", "value", "share"
 // coverage lists, once: its terms, its account's rate, its rating, its
 // dividend, a fund's factsheet figures. Each loads once filled in.
 func writeYieldSkeletons(ctx context.Context, open func() (*sql.DB, error), asOf int64, ccy string, w io.Writer) error {
-	db, err := open()
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	b, err := yieldBook(ctx, db, asOf, ccy)
-	if err != nil {
-		return err
-	}
-	out := newNDJSONWriter(w)
-	for _, r := range b.Coverage() {
-		if r.Skeleton == nil {
-			continue
-		}
-		if err := out.write(r.Skeleton); err != nil {
-			return err
-		}
-	}
-	return nil
+	return writeSkeletons(ctx, open, w,
+		func(ctx context.Context, db *sql.DB) ([]yield.CoverageRow, error) {
+			b, err := yieldBook(ctx, db, asOf, ccy)
+			if err != nil {
+				return nil, err
+			}
+			return b.Coverage(), nil
+		},
+		func(r yield.CoverageRow) *yield.Skeleton { return r.Skeleton })
 }

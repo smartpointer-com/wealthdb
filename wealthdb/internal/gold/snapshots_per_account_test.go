@@ -419,7 +419,7 @@ func TestAnInstantBetweenRunsKeepsEveryAccount(t *testing.T) {
 		global.MaxSnapshotAt != partial {
 		t.Errorf("global %+v %v", global, err)
 	}
-	positions, err := PositionsAsOf(ctx, db, noon, "USD", lots.MissingIgnore)
+	positions, err := PositionsAsOf(ctx, db, noon, "USD", lots.MissingIgnore, false)
 	if err != nil {
 		t.Fatal(err)
 	}

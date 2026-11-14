@@ -1181,6 +1181,72 @@ func IncomeReceived(ctx context.Context, db querier, in *yield.Inputs, from, to 
 	return out, nil
 }
 
+// ForwardParams are what a forward view projects: the book of At valued
+// in Ccy, over the window [From, To], under Assumptions.
+type ForwardParams struct {
+	At, From, To int64
+	Ccy          string
+	Assumptions  yield.Assumptions
+}
+
+// PastProjection refuses a forward window that ends after Last, the
+// projection's last day.
+type PastProjection struct{ Last time.Time }
+
+func (e PastProjection) Error() string {
+	return "the projection ends on " + e.Last.Format(time.DateOnly) + "; the window ends after it"
+}
+
+// forwardBook is the book of p.At and p's window, refused with
+// PastProjection where the window ends after the projection does: what
+// every forward view (income, cash flow) projects over.
+func forwardBook(ctx context.Context, db querier, p ForwardParams) (*yield.Book, yield.Window, error) {
+	in, err := YieldInputs(ctx, db, p.At, p.Ccy)
+	if err != nil {
+		return nil, yield.Window{}, err
+	}
+	b := yield.Compute(in)
+	w := yield.Window{From: time.Unix(p.From, 0).UTC(), To: time.Unix(p.To, 0).UTC()}
+	if w.To.After(b.Last()) {
+		return nil, yield.Window{}, PastProjection{Last: b.Last()}
+	}
+	return b, w, nil
+}
+
+// Forward is what every forward income view reads: the book of today,
+// the window and its amounts, the amounts of the same window a year
+// before, and those of the next twelve months.
+type Forward struct {
+	Book                      *yield.Book
+	Window                    yield.Window
+	Amounts, LastYear, Next12 []yield.Amount
+}
+
+// ForwardIncome is the Forward of p. What the window holds is received
+// up to p.At and expected after it. Last year's window counts only once
+// it is over: before, LastYear is nil.
+func ForwardIncome(ctx context.Context, db querier, p ForwardParams) (*Forward, error) {
+	b, w, err := forwardBook(ctx, db, p)
+	if err != nil {
+		return nil, err
+	}
+	received, err := IncomeReceived(ctx, db, b.In, w.From.Unix(), min(w.To.Unix(), p.At))
+	if err != nil {
+		return nil, err
+	}
+	f := &Forward{Book: b, Window: w, Amounts: b.Amounts(received, w, p.Assumptions)}
+	lw := yield.Window{From: w.From.AddDate(-1, 0, 0), To: w.To.AddDate(-1, 0, 0)}
+	if lw.To.Unix() <= p.At {
+		prior, err := IncomeReceived(ctx, db, b.In, lw.From.Unix(), min(lw.To.Unix(), p.At))
+		if err != nil {
+			return nil, err
+		}
+		f.LastYear = b.Amounts(prior, lw, p.Assumptions)
+	}
+	f.Next12 = b.Amounts(nil, b.NextMonths(12), p.Assumptions)
+	return f, nil
+}
+
 func readDeclaredDividends(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 SELECT silver_source_id, instrument_external_id, amount, frequency, COALESCE(currency, '')

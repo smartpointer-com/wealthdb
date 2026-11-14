@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"slices"
@@ -174,53 +175,24 @@ func parseForwardWindow(from, to string, now time.Time, horizon int) (int64, int
 	return parseDateRange([]string{from, to}, now)
 }
 
-// forwardIncome is what every forward view reads: the book of today, the
-// amounts of the window, of the same window a year before, and of the
-// next twelve months.
-type forwardIncome struct {
-	book                      *yield.Book
-	amounts, lastYear, next12 []yield.Amount
-	window                    yield.Window
+// forwardParams are the request's forward window, as gold reads it.
+func forwardParams(req request) gold.ForwardParams {
+	return gold.ForwardParams{At: req.asOf, From: req.from, To: req.to, Ccy: req.currency, Assumptions: req.assumptions}
 }
 
-// forwardBook is the book of today and the request's window, refused
-// where the window ends after the projection does: what every forward
-// view of cmd (income, cashflow) projects over.
-func forwardBook(ctx context.Context, db *sql.DB, req request, cmd string) (*yield.Book, yield.Window, error) {
-	b, err := yieldBook(ctx, db, req.asOf, req.currency)
-	if err != nil {
-		return nil, yield.Window{}, err
+// forwardErr is err as cmd says it: a window past the projection is a
+// usage error.
+func forwardErr(cmd string, err error) error {
+	var past gold.PastProjection
+	if errors.As(err, &past) {
+		return errs.Newf(errs.ExitUsage, "%s: %s", cmd, past.Error())
 	}
-	w := yield.Window{From: time.Unix(req.from, 0).UTC(), To: time.Unix(req.to, 0).UTC()}
-	if w.To.After(b.Last()) {
-		return nil, yield.Window{}, errs.Newf(errs.ExitUsage, "%s: the projection ends on %s; the window ends after it",
-			cmd, b.Last().Format(time.DateOnly))
-	}
-	return b, w, nil
+	return err
 }
 
-func loadForwardIncome(ctx context.Context, db *sql.DB, req request) (*forwardIncome, error) {
-	b, w, err := forwardBook(ctx, db, req, "income")
-	if err != nil {
-		return nil, err
-	}
-	received, err := gold.IncomeReceived(ctx, db, b.In, w.From.Unix(), min(w.To.Unix(), req.asOf))
-	if err != nil {
-		return nil, err
-	}
-	fi := &forwardIncome{book: b, window: w, amounts: b.Amounts(received, w, req.assumptions)}
-	// Last year's figure is the same window a year earlier, once it is
-	// over.
-	lw := yield.Window{From: w.From.AddDate(-1, 0, 0), To: w.To.AddDate(-1, 0, 0)}
-	if lw.To.Unix() <= req.asOf {
-		prior, err := gold.IncomeReceived(ctx, db, b.In, lw.From.Unix(), min(lw.To.Unix(), req.asOf))
-		if err != nil {
-			return nil, err
-		}
-		fi.lastYear = b.Amounts(prior, lw, req.assumptions)
-	}
-	fi.next12 = b.Amounts(nil, b.NextMonths(12), req.assumptions)
-	return fi, nil
+func loadForwardIncome(ctx context.Context, db *sql.DB, req request) (*gold.Forward, error) {
+	f, err := gold.ForwardIncome(ctx, db, forwardParams(req))
+	return f, forwardErr("income", err)
 }
 
 // incomeProjectionReport is the projection: per month, received and
@@ -233,7 +205,7 @@ func incomeProjectionReport(_ *config.Config, req request, _ *toolArgs) *report 
 			if err != nil {
 				return nil, err
 			}
-			return fi.book.ProjectionRows(fi.amounts, fi.window, months), nil
+			return fi.Book.ProjectionRows(fi.Amounts, fi.Window, months), nil
 		})
 }
 
@@ -247,7 +219,7 @@ func incomeCalendarReport(_ *config.Config, req request, _ *toolArgs) *report {
 			if err != nil {
 				return nil, err
 			}
-			return fi.book.Calendar(fi.amounts), nil
+			return fi.Book.Calendar(fi.Amounts), nil
 		}), loadKinds)
 }
 
@@ -263,7 +235,7 @@ func incomeEntityView(name string, grain yield.Grain) view {
 					if err != nil {
 						return nil, err
 					}
-					return fi.book.IncomeRows(grain, fi.amounts, fi.lastYear, fi.next12), nil
+					return fi.Book.IncomeRows(grain, fi.Amounts, fi.LastYear, fi.Next12), nil
 				}), loadKinds)
 		}}
 }

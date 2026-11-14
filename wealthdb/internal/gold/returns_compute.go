@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
@@ -174,7 +175,7 @@ func staleAt(snaps []int64, day int64, gap float64, ok bool) bool {
 func bucketRow(base ReturnRow, bs, be int64, period string, av func(int64) (float64, bool), flows []returns.Flow) ReturnRow {
 	r := base
 	r.StartDay, r.EndDay = bs, be
-	r.Period = periodLabel(be, period)
+	r.Period = PeriodLabel(returns.DayToTimeUTC(be-1), period) // a day inside the bucket
 	v0, ok0 := av(bs)
 	v1, ok1 := av(be)
 	r.StartValue = decStrOrNil(v0, ok0)
@@ -1280,6 +1281,10 @@ func hasExternalFlowBefore(a *accountData, day int64) bool {
 		(len(a.transferLike) > 0 && a.transferLike[0].Day < day)
 }
 
+// NoPortfolioLabel names the accounts of a source outside any
+// portfolio, wherever a report lists them as one.
+const NoPortfolioLabel = "(no portfolio)"
+
 func entityIdentity(level string, assets []*accountData) (id, label string) {
 	a := assets[0]
 	switch level {
@@ -1289,7 +1294,7 @@ func entityIdentity(level string, assets []*accountData) (id, label string) {
 		return a.src, a.src
 	case "portfolios":
 		if a.portfolio == "" {
-			return "", "(no portfolio)"
+			return "", NoPortfolioLabel
 		}
 		// EntityID stays the stable portfolio_external_id; the label prefers the
 		// resolved display name (falling back to the id when unresolved).
@@ -1506,9 +1511,14 @@ func hasObservedFlowIn(a *accountData, from, to int64) bool {
 // ReconcileStatedPeriods reads the engine's monthly rows by.
 const monthLabelLayout = "2006-01"
 
-func periodLabel(be int64, period string) string {
-	t := returns.DayToTimeUTC(be - 1) // a day inside the bucket
+// PeriodLabel is the calendar label of the period bucket t falls in:
+// a day or a week by its date (DuckDB truncates a week to its Monday,
+// so a week's first second names it), a month YYYY-MM, a year YYYY, a
+// quarter YYYY-Qn. Every report's period column reads it.
+func PeriodLabel(t time.Time, period string) string {
 	switch period {
+	case "daily", "weekly":
+		return t.Format("2006-01-02")
 	case "monthly":
 		return t.Format(monthLabelLayout)
 	case "annual":

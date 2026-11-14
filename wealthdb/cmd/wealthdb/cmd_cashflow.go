@@ -241,27 +241,11 @@ func checkPlanWindow(from, to int64, now time.Time) error {
 	return nil
 }
 
-// cashflowPlan is the projection view's rows: today's income projection
-// for the window's months, split by the pool (gold.PlanMonths), set
-// against the look-back's averages (gold.CashflowPlanLookback), the
-// mortgages that today's book holds continued to their maturity.
+// cashflowPlan is the projection view's rows (gold.CashflowPlanRows).
 func cashflowPlan(ctx context.Context, db *sql.DB, req request) ([]gold.PlanRow, error) {
-	b, w, err := forwardBook(ctx, db, req, "cashflow")
-	if err != nil {
-		return nil, err
-	}
-	pool, err := gold.CashflowPool(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	months := gold.PlanMonths(b, b.Amounts(nil, w, req.assumptions), w, pool)
-	from, to := gold.PlanWindow(time.Unix(req.asOf, 0), req.lookback)
-	lb, err := gold.CashflowPlanLookback(ctx, db, from, to, req.currency)
-	if err != nil {
-		return nil, err
-	}
-	return gold.CashflowPlan(lb, gold.PlanStanding(b), months, seriesPeriodMonths(req.period),
-		req.assumptions.Rule == yield.RuleRoll), nil
+	rows, err := gold.CashflowPlanRows(ctx, db, gold.PlanParams{ForwardParams: forwardParams(req),
+		Lookback: req.lookback, Period: seriesPeriodMonths(req.period)})
+	return rows, forwardErr("cashflow", err)
 }
 
 // ---- column registries ---------------------------------------------------

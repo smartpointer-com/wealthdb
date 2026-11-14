@@ -43,7 +43,7 @@ func TestReadersUnderBothReadingsOfAMissingBasis(t *testing.T) {
 		{lots.MissingIgnore, 0, 0, true, true},
 		{lots.MissingZero, 90, 110, false, true},
 	} {
-		rows, err := PositionsAsOf(ctx, db, 41*lotDay+86399, "USD", c.missing)
+		rows, err := PositionsAsOf(ctx, db, 41*lotDay+86399, "USD", c.missing, false)
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("%s: %v %v", c.missing, rows, err)
 		}

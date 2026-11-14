@@ -98,6 +98,39 @@ SELECT CAST($2 AS BIGINT) AS computed_at, benchmark, dimension, bucket, CAST(NUL
 UNION ALL
 SELECT CAST($2 AS BIGINT), benchmark, dimension, bucket, label, lei, value FROM named`
 
+// BenchmarkKey is the row's bucket in its view's dimension of
+// benchmark_exposure, as benchmarkExposureSQL writes it: a benchmark's
+// weight of the row is the share stored under this key. Each exposure
+// row type a benchmark compares with has one.
+func (r ExposureClassRow) BenchmarkKey() string { return r.AssetClass }
+
+// BenchmarkKey is the row's class_sector bucket.
+func (r ExposureSectorRow) BenchmarkKey() string { return r.AssetClass + "|" + r.Sector }
+
+// BenchmarkKey is the row's size bucket.
+func (r ExposureSizeRow) BenchmarkKey() string { return r.Size }
+
+// BenchmarkKey is the row's country bucket.
+func (r ExposureCountryRow) BenchmarkKey() string { return r.Country }
+
+// BenchmarkKey is the row's currency_kind bucket.
+func (r ExposureCurrencyRow) BenchmarkKey() string { return r.Currency + "|" + r.Kind }
+
+// BenchmarkKey is the row's bucket of its debt or equity dimension.
+func (r ExposureBucketRow) BenchmarkKey() string { return r.Bucket }
+
+// BenchmarkKey is the row's security bucket.
+func (r ExposureSecurityRow) BenchmarkKey() string { return r.Security }
+
+// BenchmarkKey is the row's issuer bucket: by its LEI where it has
+// one, else by its name.
+func (r ExposureIssuerRow) BenchmarkKey() string {
+	if r.LEI != nil {
+		return "lei:" + *r.LEI
+	}
+	return strings.ToUpper(r.Issuer)
+}
+
 // benchmarkFundCurrencySQL is each benchmark by the currency its funds
 // are priced in: Allocation's reading of a currency, which looks through
 // no fund. A fund with no composition counts in dollars, the currency

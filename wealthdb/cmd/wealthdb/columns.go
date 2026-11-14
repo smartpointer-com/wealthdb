@@ -367,7 +367,7 @@ func portfolioCol[T any](name string, kindOf func(string) string,
 	label := func(r T) string {
 		_, id, display := get(r)
 		if id == "" {
-			return "(no portfolio)"
+			return gold.NoPortfolioLabel
 		}
 		return accountLabel(display, id)
 	}

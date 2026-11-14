@@ -401,7 +401,7 @@ func TestGainsCoverageVerdicts(t *testing.T) {
 func TestPositionsCarryTheCostBasis(t *testing.T) {
 	t.Parallel()
 	db, ctx := openGainsFixture(t)
-	rows, err := PositionsAsOf(ctx, db, 250000, "CHF", lots.MissingIgnore)
+	rows, err := PositionsAsOf(ctx, db, 250000, "CHF", lots.MissingIgnore, false)
 	if err != nil {
 		t.Fatal(err)
 	}

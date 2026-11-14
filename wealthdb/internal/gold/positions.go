@@ -71,10 +71,53 @@ type PositionRow struct {
 // (silver_source_id, account_external_id, position_key). FX (and
 // everything else) is computed in SQL by the report_positions table
 // macro (derived/30_holdings.sql); this is just the scan. See docs/DESIGN.md
-// §10.1.
-func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, missing lots.MissingBasis) ([]PositionRow, error) {
-	return scanPositionRows(ctx, db, "PositionsAsOf",
+// §10.1. withCash adds the cash lines of CashAsOf, each in its place in
+// that order.
+func PositionsAsOf(ctx context.Context, db *sql.DB, asOf int64, outCcy string, missing lots.MissingBasis,
+	withCash bool) ([]PositionRow, error) {
+	rows, err := scanPositionRows(ctx, db, "PositionsAsOf",
 		`SELECT * FROM report_positions(?, ?, p_missing := ?)`, asOf, outCcy, string(missing))
+	if err != nil || !withCash {
+		return rows, err
+	}
+	cash, err := CashAsOf(ctx, db, asOf, outCcy)
+	if err != nil {
+		return nil, err
+	}
+	return mergeSorted(rows, cash), nil
+}
+
+// mergeSorted interleaves two already-(silver_source, account,
+// position_key)-sorted row slices in the same order, so the cash lines
+// slot in beside their account's positions without a sort of the whole.
+func mergeSorted(a, b []PositionRow) []PositionRow {
+	out := make([]PositionRow, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if positionLess(a[i], b[j]) {
+			out = append(out, a[i])
+			i++
+		} else {
+			out = append(out, b[j])
+			j++
+		}
+	}
+	out = append(out, a[i:]...)
+	out = append(out, b[j:]...)
+	return out
+}
+
+// positionLess is the (silver_source_id, account_external_id,
+// position_key) ordering shared with the report_positions /
+// report_cash macros' ORDER BY.
+func positionLess(x, y PositionRow) bool {
+	if x.SilverSourceID != y.SilverSourceID {
+		return x.SilverSourceID < y.SilverSourceID
+	}
+	if x.AccountExternalID != y.AccountExternalID {
+		return x.AccountExternalID < y.AccountExternalID
+	}
+	return x.PositionKey < y.PositionKey
 }
 
 // scanPositionRows runs a report_positions / report_cash macro query

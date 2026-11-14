@@ -161,37 +161,3 @@ unless a download dated the snapshot after marks it found unchanged.
 Default column set:
   ` + strings.Join(defaultColumns, ", ")
 }
-
-// mergeSorted interleaves two already-(silver_source, account,
-// position_key)-sorted row slices in the same order. Used by
-// --with-cash to slot synthetic cash rows alongside their account's
-// real positions without re-sorting the entire combined list.
-func mergeSorted(a, b []gold.PositionRow) []gold.PositionRow {
-	out := make([]gold.PositionRow, 0, len(a)+len(b))
-	i, j := 0, 0
-	for i < len(a) && j < len(b) {
-		if positionLess(a[i], b[j]) {
-			out = append(out, a[i])
-			i++
-		} else {
-			out = append(out, b[j])
-			j++
-		}
-	}
-	out = append(out, a[i:]...)
-	out = append(out, b[j:]...)
-	return out
-}
-
-// positionLess is the (silver_source_id, account_external_id,
-// position_key) ordering shared with the report_positions /
-// report_cash macros' ORDER BY.
-func positionLess(x, y gold.PositionRow) bool {
-	if x.SilverSourceID != y.SilverSourceID {
-		return x.SilverSourceID < y.SilverSourceID
-	}
-	if x.AccountExternalID != y.AccountExternalID {
-		return x.AccountExternalID < y.AccountExternalID
-	}
-	return x.PositionKey < y.PositionKey
-}

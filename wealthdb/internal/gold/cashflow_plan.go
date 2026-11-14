@@ -521,6 +521,36 @@ func planQuality(tags map[string]bool) string {
 	return strings.Join(out, " ")
 }
 
+// PlanParams are a cash flow projection's: the forward window, a
+// look-back of Lookback months, and rows of Period months (1, 3, 12).
+type PlanParams struct {
+	ForwardParams
+	Lookback, Period int
+}
+
+// CashflowPlanRows is the cash flow projection: the income projection of
+// p.At for the window's months, split by the pool (PlanMonths), set
+// against the look-back's averages (CashflowPlanLookback), the
+// mortgages the book holds continued to their maturity. A window past
+// the projection is refused with PastProjection.
+func CashflowPlanRows(ctx context.Context, db querier, p PlanParams) ([]PlanRow, error) {
+	b, w, err := forwardBook(ctx, db, p.ForwardParams)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := CashflowPool(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	months := PlanMonths(b, b.Amounts(nil, w, p.Assumptions), w, pool)
+	from, to := PlanWindow(time.Unix(p.At, 0), p.Lookback)
+	lb, err := CashflowPlanLookback(ctx, db, from, to, p.Ccy)
+	if err != nil {
+		return nil, err
+	}
+	return CashflowPlan(lb, PlanStanding(b), months, p.Period, p.Assumptions.Rule == yield.RuleRoll), nil
+}
+
 // PlanStanding are the mortgages a book holds, by source and account,
 // each with its maturity: the latest of its tranches' terms, nil where
 // one states none.

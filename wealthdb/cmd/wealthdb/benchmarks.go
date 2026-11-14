@@ -107,21 +107,21 @@ func (w benchmarkWeights) of(key string) *float64 {
 }
 
 // benchmarkView is seriesView with, under req.benchmark, the benchmark's
-// weight of each row's bucket and the row's share less it. key names the
-// row's bucket of the view's dimension of benchmark_exposure.
-func benchmarkView[T any](req request, dimension string, registry []columnSpec[T], defaults []string, key func(T) string,
-	share func(T) *float64, fetch func(context.Context, *sql.DB, int64) ([]T, error)) *report {
+// weight of each row's bucket (its BenchmarkKey in the view's dimension
+// of benchmark_exposure) and the row's share less it.
+func benchmarkView[T interface{ BenchmarkKey() string }](req request, dimension string, registry []columnSpec[T],
+	defaults []string, share func(T) *float64, fetch func(context.Context, *sql.DB, int64) ([]T, error)) *report {
 	if req.benchmark == "" {
 		return seriesView(req, registry, defaults, fetch)
 	}
 	weights := benchmarkWeights{}
-	weight := pctCol("benchmark", func(r T) *float64 { return weights.of(key(r)) })
+	weight := pctCol("benchmark", func(r T) *float64 { return weights.of(r.BenchmarkKey()) })
 	difference := pctCol("difference", func(r T) *float64 {
 		s := share(r)
 		if s == nil {
 			return nil
 		}
-		d := *s - *weights.of(key(r))
+		d := *s - *weights.of(r.BenchmarkKey())
 		return &d
 	})
 	cols := append(slices.Clone(registry), weight, difference)

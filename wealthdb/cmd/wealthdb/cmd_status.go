@@ -178,7 +178,7 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 
 	silverStatus, silverErr := probeSilverStatus(ctx, src)
 	advancedHint := ""
-	if silverErr == nil && silverStatus.LatestChangeNumber > st.HighWatermark {
+	if silverErr == nil && silverAhead(st, silverStatus) {
 		advancedHint = "  (silver has new data — run `wealthdb load " + id + "`)"
 	}
 
@@ -248,7 +248,7 @@ func printOneLineStatus(ctx context.Context, r gold.SourceStatusResult, src *con
 
 	advanced := ""
 	silverStatus, silverErr := probeSilverStatus(ctx, src)
-	if silverErr == nil && silverStatus.LatestChangeNumber > st.HighWatermark {
+	if silverErr == nil && silverAhead(st, silverStatus) {
 		advanced = " *"
 	}
 
@@ -281,6 +281,12 @@ func printOneLineStatus(ctx context.Context, r gold.SourceStatusResult, src *con
 	fmt.Fprintf(stdout, "%-20s [%s] %d pos, %d tx, observed=%s, watermark=%s%s%s\n",
 		src.ID, st.Kind, st.PositionsCount, st.TransactionsCount, formatOptionalDate(st.ObservedSnapshotsThrough),
 		formatWatermark(st.HighWatermark), advanced, driftHint)
+}
+
+// silverAhead says the silver holds data a load would bring: its latest
+// change is past the watermark gold loaded through.
+func silverAhead(st *gold.SourceStatus, silver canonical.Status) bool {
+	return silver.LatestChangeNumber > st.HighWatermark
 }
 
 // probeSilverStatus opens the silver via the adapter and calls

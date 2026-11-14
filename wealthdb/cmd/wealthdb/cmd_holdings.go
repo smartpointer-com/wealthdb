@@ -85,15 +85,7 @@ var holdingsFamily = &family{
 				kindOf, loadKinds := sourceKinds()
 				return withLoads(newReport(buildColumnRegistry(ccy, kindOf, req.categories), defaultColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.PositionRow, error) {
-						rows, err := gold.PositionsAsOf(ctx, db, asOf, ccy, missing)
-						if err != nil || !withCash {
-							return rows, err
-						}
-						cash, err := gold.CashAsOf(ctx, db, asOf, ccy)
-						if err != nil {
-							return nil, err
-						}
-						return mergeSorted(rows, cash), nil
+						return gold.PositionsAsOf(ctx, db, asOf, ccy, missing, withCash)
 					}), loadKinds)
 			},
 		},

@@ -47,7 +47,7 @@ func TestPositionsAsOfSingleSource(t *testing.T) {
 	})
 
 	// As-of 2500 → newest snapshot picked (2000) → 2 rows.
-	rows, err := PositionsAsOf(ctx, db, 2500, "USD", lots.MissingIgnore)
+	rows, err := PositionsAsOf(ctx, db, 2500, "USD", lots.MissingIgnore, false)
 	if err != nil {
 		t.Fatalf("PositionsAsOf: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestPositionsAsOfSingleSource(t *testing.T) {
 	}
 
 	// As-of 1500 → snapshot 1000 picked → 1 row.
-	rows, err = PositionsAsOf(ctx, db, 1500, "USD", lots.MissingIgnore)
+	rows, err = PositionsAsOf(ctx, db, 1500, "USD", lots.MissingIgnore, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestPositionsAsOfSingleSource(t *testing.T) {
 	}
 
 	// As-of 500 → no snapshots ≤ that → 0 rows.
-	rows, err = PositionsAsOf(ctx, db, 500, "USD", lots.MissingIgnore)
+	rows, err = PositionsAsOf(ctx, db, 500, "USD", lots.MissingIgnore, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestPositionsAsOfMultiSourceIndependentLatest(t *testing.T) {
 		})
 	})
 
-	rows, err := PositionsAsOf(ctx, db, 2700, "USD", lots.MissingIgnore)
+	rows, err := PositionsAsOf(ctx, db, 2700, "USD", lots.MissingIgnore, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestPositionsAsOfCarriesTheValuedDate(t *testing.T) {
 				Currency: "USD", MarketValue: &mv},
 		})
 	})
-	rows, err := PositionsAsOf(ctx, db, 2000, "USD", lots.MissingIgnore)
+	rows, err := PositionsAsOf(ctx, db, 2000, "USD", lots.MissingIgnore, false)
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("PositionsAsOf: %v %v", rows, err)
 	}

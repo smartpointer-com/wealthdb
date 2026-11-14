@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 )
 
 // The exposure report's readers: one per report_exposure_* macro.
@@ -218,14 +219,66 @@ type ExposureCoverageRow struct {
 	SharePct                   *float64
 	Detail                     *string
 	SilverSourceID, Instrument *string
+	// Skeleton is the declaration that fills the gap, on the first line
+	// of each holding an undeclared or situs line names; nil on every
+	// other line.
+	Skeleton *DeclarationSkeleton
 }
 
-// ExposureCoverage runs report_exposure_coverage.
+// DeclarationSkeleton is a record of the declarations ledger with its
+// holding named and its dimensions empty. An empty dimension is refused
+// at load, so a skeleton loads only once it is filled in or the
+// dimension is taken out.
+type DeclarationSkeleton struct {
+	SilverSourceID string          `json:"silver_source_id"`
+	Instrument     string          `json:"instrument"`
+	Country        json.RawMessage `json:"country,omitempty"`
+	Currency       json.RawMessage `json:"currency,omitempty"`
+	Sector         json.RawMessage `json:"sector,omitempty"`
+	Situs          json.RawMessage `json:"situs,omitempty"`
+	Note           string          `json:"note,omitempty"`
+}
+
+// ExposureCoverage runs report_exposure_coverage, and gives each
+// holding coverage lists as undeclared a skeleton with country,
+// currency and sector, and each of unknown situs one with situs alone.
+// Its note is the holding's name. A situs-only record leaves a
+// holding's other records as they are, so each skeleton loads beside
+// them. A holding with no instrument, or no value, takes no record.
 func ExposureCoverage(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureCoverageRow, error) {
-	return scanRows(ctx, db, "ExposureCoverage", `
+	rows, err := scanRows(ctx, db, "ExposureCoverage", `
 SELECT section, reason, items, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, detail, silver_source_id, instrument
   FROM report_exposure_coverage(?, ?)`, []any{asOf, ccy}, func(r *ExposureCoverageRow) []any {
 		return []any{&r.Section, &r.Reason, &r.Items, dec(&r.Value), flt(&r.SharePct), str(&r.Detail),
 			str(&r.SilverSourceID), str(&r.Instrument)}
 	})
+	if err != nil {
+		return nil, err
+	}
+	empty := json.RawMessage(`{}`)
+	type written struct{ section, src, iid string }
+	seen := map[written]bool{}
+	for i := range rows {
+		r := &rows[i]
+		if (r.Section != "undeclared" && r.Section != "situs") || r.SilverSourceID == nil || *r.SilverSourceID == "" ||
+			r.Instrument == nil || *r.Instrument == "" {
+			continue
+		}
+		k := written{r.Section, *r.SilverSourceID, *r.Instrument}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		s := &DeclarationSkeleton{SilverSourceID: k.src, Instrument: k.iid}
+		if r.Detail != nil {
+			s.Note = *r.Detail
+		}
+		if r.Section == "undeclared" {
+			s.Country, s.Currency, s.Sector = empty, empty, empty
+		} else {
+			s.Situs = empty
+		}
+		r.Skeleton = s
+	}
+	return rows, nil
 }

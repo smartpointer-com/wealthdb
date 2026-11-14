@@ -9,6 +9,8 @@ import (
 
 	dateparser "github.com/markusmobius/go-dateparser"
 	dpdate "github.com/markusmobius/go-dateparser/date"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // Shared CLI-side date parsing. Powered by
@@ -221,23 +223,12 @@ func parseTrailingYearWindow(args []string, now time.Time) (int64, int64, error)
 
 // periodLabel renders a bucket the way the returns family's
 // `period` column does: the calendar label of the bucket the epoch
-// second falls in (a SQL bucket passes its first second, an exposure
-// series point its last), and "total" for the single NULL bucket
-// --period total emits. Daily and weekly buckets label as their
-// opening date (DuckDB truncates a week to its Monday).
+// second falls in (gold.PeriodLabel; a SQL bucket passes its first
+// second, an exposure series point its last), and "total" for the
+// single NULL bucket --period total emits.
 func periodLabel(at *int64, period string) string {
 	if at == nil {
 		return "total"
 	}
-	t := time.Unix(*at, 0).UTC()
-	switch period {
-	case "daily", "weekly":
-		return t.Format("2006-01-02")
-	case "monthly":
-		return t.Format("2006-01")
-	case "annual":
-		return t.Format("2006")
-	default: // quarterly
-		return fmt.Sprintf("%d-Q%d", t.Year(), (int(t.Month())-1)/3+1)
-	}
+	return gold.PeriodLabel(time.Unix(*at, 0).UTC(), period)
 }

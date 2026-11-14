@@ -409,7 +409,7 @@ func bridgeLabel(endDay int64, period string) string {
 	if period == "total" {
 		return "total"
 	}
-	return periodLabel(endDay+1, period)
+	return PeriodLabel(returns.DayToTimeUTC(endDay), period)
 }
 
 // sumBridgeMonths adds a bucket's months. The start is the first month's,
