@@ -26,11 +26,9 @@ STATEMENT_SERIES = {"series_settings": {**{s: {"display": "bar"}
 def cashflow_cards(f):
     """The Cash Flow dashboard's cards, or on the twin their privacy
     variants. Every tile of the statement is native over web_cashflow,
-    for the reason the other two families' are — a row per (line,
-    reporting currency), and a required {{currency}} variable that picks
-    the column rather than filtering rows — plus one of its own:
-    {{investing}}, the display grain of the investing section. It is a
-    VARIABLE and not a field filter because it changes how rows are
+    and a required {{currency}} variable picks the value column. One
+    more variable is its own: {{investing}}, the display grain of the
+    investing section. It is a VARIABLE and not a field filter because it changes how rows are
     GROUPED rather than which rows are selected — `whole` nets the
     section into one Investments node, `class` opens it into one node
     per asset class — and a field filter can only narrow a population.
@@ -342,8 +340,7 @@ def _pool_join(a):
 
 def cashflow_plan_cards(f):
     """The Cash Flow dashboard's projection cards and the Wealth
-    Overview's projected net, or with `privacy` their privacy variants:
-    name -> (display, description, dataset_query, viz).
+    Overview's projected net, or on the twin their privacy variants.
     `wealthdb cashflow projection` month by month over the Horizon
     (docs/CASHFLOW.md §12): the income projection's investment income and
     the principal its maturities return, read from today's projection
@@ -452,8 +449,8 @@ BRIDGE_FILTERS = {"time_range": ("month_end", "date/all-options")}
 
 
 def bridge_cards(f):
-    """The Cash Flow dashboard's bridge tiles, or with `privacy` their
-    twins: name -> (display, description, dataset_query, viz). They read
+    """The Cash Flow dashboard's bridge tiles, or on the twin their
+    privacy variants. They read
     the months of `wealthdb returns bridge` (web_bridge), which sum to any
     window. A bridge exists for the whole household only, since returns do
     not add across grains, so the cards take the Currency and the Time

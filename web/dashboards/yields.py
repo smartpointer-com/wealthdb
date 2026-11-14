@@ -44,8 +44,8 @@ DURATION_KINDS = ("bond", "bill", "floating_note", "bond_fund", "multi_asset", "
 
 
 def yield_cards(f):
-    """The Yield dashboard's cards, or with `privacy` their privacy
-    variants: name -> (display, description, dataset_query, viz). Native
+    """The Yield dashboard's cards, or on the twin their privacy
+    variants. Native
     SQL over the yield report's figures per holding (web_yield), a row set
     per reporting currency and instant (today and the last second of each
     of the twelve months before), so {{currency}} is a row filter, as on

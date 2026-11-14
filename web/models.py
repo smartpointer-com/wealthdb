@@ -2,30 +2,32 @@
 and views, for the pickers' values and a reader's own questions. Part
 of provision.py."""
 
-from sqlkit import (_ccy_pick, _ccy_slash, _ccy_values, _ccy_words)
+from sqlkit import (_ccy_pick, _ccy_slash, _ccy_values, _ccy_words, OBSERVED_AT)
 
 
 def report_models():
     """model name -> (native SQL, description). The report_*_multi DuckDB
     macros (gold derived/30_holdings.sql) are the single source of truth.
+
     Each model wraps the serving table `web refresh` fills with a macro's
     output (gold servingTables), a macro computing its whole output on
-    every read, and renders epoch columns as TIMESTAMP (`epoch_ms` ->
-    zone-free UTC, not `to_timestamp`, which is TIMESTAMPTZ and renders
-    in the reading session's zone) for Metabase. The taxonomy, spending,
-    income and cashflow models instead wrap the web_* serving views (gold
-    derived/90_web.sql) that do that rendering, the cash fold-in and the
-    '(uncategorized)' labelling themselves, and the gains- and
-    yield-classes models list the classes of web_gains and of web_yield
-    and web_yield_curve. The macros already emit DECIMAL money/quantity
-    columns and one value column set per reporting currency
-    (REPORTING_CURRENCIES), so no value casting is needed here. The
-    `_latest` reports are as of each account's latest snapshot; the
-    `_history` reports carry value forward per day. No card reads a
-    model: every card is native SQL over gold (card_defs), and a model
-    backs a picker's values or a reader's own questions. The returns model wraps the materialized
-    report_returns TABLE (migration 0026) instead of a macro, with the
-    same epoch-to-TIMESTAMP rendering."""
+    every read. It renders epoch columns as TIMESTAMP for Metabase:
+    `epoch_ms` gives zone-free UTC, where `to_timestamp` gives
+    TIMESTAMPTZ, which renders in the reading session's zone. The macros
+    already emit DECIMAL money/quantity columns and one value column set
+    per reporting currency (REPORTING_CURRENCIES), so no value casting is
+    needed here. The `_latest` reports are as of each account's latest
+    snapshot; the `_history` reports carry value forward per day.
+
+    The taxonomy, spending, income and cashflow models wrap the web_*
+    serving views (gold derived/90_web.sql) instead, which do that
+    rendering, the cash fold-in and the '(uncategorized)' labelling
+    themselves. The gains- and yield-classes models list the classes of
+    web_gains and of web_yield and web_yield_curve.
+
+    No card reads a model: every card is native SQL over gold
+    (card_defs), and a model backs a picker's values or a reader's own
+    questions."""
     def wrap(from_expr, ts_cols=(), exclude=(), where=""):
         parts = [f"epoch_ms({c} * 1000) AS {c}" for c in ts_cols]
         excl = f" EXCLUDE ({', '.join(exclude)})" if exclude else ""
@@ -40,7 +42,7 @@ def report_models():
         return f"SELECT * FROM {view}"
 
     def spending():
-        """The spending models over the gold web_spending view, which
+        """The spending model over the gold web_spending view, which
         already renders occurred_at as TIMESTAMP and labels an
         unresolved category '(uncategorized)'.
 
@@ -55,8 +57,8 @@ def report_models():
 
         `provider_category` is the ISSUER's own classification of the line
         (migration 0057), kept for a reader who wants the card provider's
-        view. It is never summed with ours and no tile aggregates it — the
-        two disagree by design.
+        view. It is never summed with the resolved category and no tile
+        aggregates it — the two disagree by design.
 
         `display_name` carries the account LABEL (account_label) on the
         same reasoning the category columns carry theirs: an account's
@@ -70,10 +72,9 @@ def report_models():
         it.
 
         The wide value set is unpivoted to one row per (spending line,
-        reporting currency) — the long shape report_returns already has,
-        and the only shape an MBQL card can switch currency in: a dashboard
-        picker selects rows, so it can land on a `currency` DIMENSION but
-        can never choose which value COLUMN a card sums."""
+        reporting currency), the long shape report_returns has, so a
+        reader's own question picks a currency with a `currency`
+        filter."""
         cols = ("s.occurred_at, s.silver_source_id, s.account_external_id,\n"
                 "       s.account_label AS display_name, s.account_kind,\n"
                 "       s.merchant_name,\n"
@@ -94,8 +95,7 @@ def report_models():
         same reasoning behind every choice: the type columns carry the
         DISPLAY LABEL, with the vendored values beside them as `*_id`;
         `display_name` carries the account LABEL; and the wide value
-        set is unpivoted to one row per (line, reporting currency),
-        which is the only shape an MBQL card can switch currency in.
+        set is unpivoted to one row per (line, reporting currency).
 
         Every income tile is native (they all read the serving view
         directly). This model exists for the two dashboard PICKERS, which
@@ -125,11 +125,8 @@ def report_models():
         as `*_id`, and the wide value set is unpivoted to one row per
         (line, reporting currency).
 
-        Like the income model it exists for a dashboard PICKER — the
-        Section one, which needs a card-backed value list — rather than
-        for a card: every cashflow tile is native over the serving view,
-        because the diagram's sides depend on the sign of a net over the
-        filtered window and no MBQL card can express that.
+        Like the income model it backs a dashboard picker, the Section
+        one, which needs a card-backed value list.
 
         It projects no account label and no account id. The Cash Flow
         dashboard carries no account picker (docs/CASHFLOW.md §9), so a
@@ -147,13 +144,11 @@ def report_models():
                 f"       {_ccy_values()}")
 
     # Each source's newest snapshot, the latest mark it rides on
-    # (valued_at) and the instant a run last read it (gold's
-    # source_observed view): a quiet source is observed through its
-    # latest download although its latest mark is older. Unknown
-    # reads as the snapshot itself.
+    # (valued_at) and its last read (OBSERVED_AT): a quiet source is
+    # observed through its latest download although its latest mark is
+    # older.
     sources_latest = (
-        "(SELECT r.*, GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at),"
-        " r.snapshot_at) AS observed_at FROM serving_sources_latest r"
+        f"(SELECT r.*, {OBSERVED_AT} AS observed_at FROM serving_sources_latest r"
         " LEFT JOIN source_observed o USING (silver_source_id)) s")
     SOURCES_TS = ["snapshot_at", "valued_at", "observed_at"]
     return {
@@ -300,14 +295,14 @@ def report_models():
             "SELECT DISTINCT asset_class FROM web_gains",
             "The asset classes the gains rows carry, `unknown` where nothing classes a "
             "position. It backs the Gains dashboard's Asset class picker."),
-        # The classes web_yield and web_yield_curve carry, `unknown` among
-        # them where nothing classes a holding: the Yield dashboard's
-        # Asset class picker lists them, as the asset class history may
-        # never hold `unknown`. It backs that picker alone.
         "report_benchmarks": (
             "SELECT benchmark FROM web_benchmarks",
             "The benchmarks, built-in and configured, and None. It backs the "
             "Benchmark picker."),
+        # The classes web_yield and web_yield_curve carry, `unknown` among
+        # them where nothing classes a holding: the Yield dashboard's
+        # Asset class picker lists them, as the asset class history may
+        # never hold `unknown`. It backs that picker alone.
         "report_yield_classes": (
             "SELECT asset_class FROM web_yield\nUNION\nSELECT asset_class FROM web_yield_curve",
             "The asset classes the yield rows carry, `unknown` where nothing classes a "

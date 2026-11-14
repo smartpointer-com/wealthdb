@@ -11,11 +11,7 @@ from sqlkit import (HORIZONS, MATURING_RULES,
 
 BENCHMARK_PARAM_ID = "aa5df124"
 
-# The dashboard pickers' ids (PICKERS). They are arbitrary but must be
-# stable across runs so re-provisioning converges instead of
-# accumulating parameters, and they must be distinct — a reused id
-# would make two pickers one. The Returns dashboards carry a start-year
-# picker instead of a time filter — the periods are precomputed buckets.
+# The dashboard pickers' ids (PICKERS).
 TIME_PARAM_ID = "aa5df100"
 
 SOURCE_PARAM_ID = "aa5df101"
@@ -33,7 +29,7 @@ VEHICLE_PARAM_ID = "aa5df106"
 # The Spending dashboards' own three pickers, beside the time range
 # and the source. The currency picker is separate from the Returns one
 # (CURRENCY_PARAM_ID): it draws a static value list and lands on the
-# spending cards' own currency dimension / {{currency}} variable.
+# spending cards' {{currency}} variable.
 SPEND_CURRENCY_PARAM_ID = "aa5df107"
 
 ACCOUNT_PARAM_ID = "aa5df108"
@@ -158,10 +154,8 @@ _WEALTH = ("Wealth Overview", "Allocation")
 PICKERS = (
     # The required reporting-currency picker every filtered dashboard
     # carries, defaulting to the configured currency (DEFAULT_CURRENCY).
-    # A card running with the currency cleared would be wrong: a tile
-    # over a model with one row per (line, reporting currency) would sum
-    # every currency, and a native tile's {{currency}} variable needs a
-    # value. A static list: the product's own vocabulary, not the
+    # A card running with the currency cleared would be wrong: a native
+    # tile's {{currency}} variable needs a value. A static list: the product's own vocabulary, not the
     # data's, so a card-backed list would re-scan the whole population
     # for a few known strings. Required with a default, because a
     # required parameter resets to its default rather than clearing.
@@ -196,9 +190,11 @@ PICKERS = (
     # reads its last day; a day before it, or later than tomorrow,
     # nothing.
     Picker("as_of_day", None, ASOF_PARAM_ID, "As of day", "day", default=_asof_default),
-    # Start year: rescopes the summary scalars/table to the since-<year>
-    # window (window_from_year) and clips the charts to periods ending
-    # on/after that year. 0 = since inception. Required + default 0 so a
+    # Start year, the Returns dashboards' picker in place of a time
+    # filter, since their periods are precomputed buckets. It rescopes
+    # the summary scalars/table to the since-<year> window
+    # (window_from_year) and clips the charts to periods ending on/after
+    # that year. 0 = since inception. Required + default 0 so a
     # card never aggregates across windows; values come from the
     # materialized window_from_year set (auto-syncs to the data's span).
     Picker("start_year", None, START_YEAR_PARAM_ID, "Start year (0 = since inception)", "number",

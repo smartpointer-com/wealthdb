@@ -139,6 +139,15 @@ class FindDashboards(unittest.TestCase):
         with self.assertRaises(SystemExit):
             capture.find_dashboards(self.client)
 
+    def test_a_failed_listing_stops_with_its_status(self):
+        class Failing(capture.metabase.Client):
+            def call(self, path, method="GET", data=None, timeout=None):
+                return 500, {"message": "down"}
+
+        with self.assertRaises(SystemExit) as e:
+            capture.find_dashboards(Failing("http://mb", "s"))
+        self.assertEqual(str(e.exception), "capture: could not list collections (500): {'message': 'down'}")
+
 
 class Answer(unittest.TestCase):
     def test_a_failed_call_stops_the_capture(self):

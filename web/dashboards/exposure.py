@@ -12,8 +12,8 @@ EXPOSURE_BAR_COLORS = {"share_pct": "#7172AD", "class_share_pct": "#A989C5"}
 
 
 def exposure_cards(f):
-    """The Exposure dashboard's cards, or with `privacy` their privacy
-    variants: name -> (display, description, dataset_query, viz). Native
+    """The Exposure dashboard's cards, or on the twin their privacy
+    variants. Native
     SQL over web_exposure, the look-through at every month end and
     today, materialized per reporting currency, so {{currency}} is a row
     filter as on Gains, and per source and tax wrapper. The pickers

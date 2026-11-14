@@ -5,8 +5,7 @@ provision.py.
 Like the report models, every card and dashboard is a content-free
 definition — native SQL over the gold serving views, tables and macros;
 no source data is baked in. Provisioning converges these to spec on
-every start, so a user who wants to customize one should duplicate it
-into another collection first."""
+every start, so a customized copy belongs in another collection."""
 
 from sqlkit import (Family, privacy_name, PRIVACY_SUFFIX)
 from pickers import (picker_payload, PICKERS)
@@ -30,14 +29,12 @@ FAMILIES = (overview_cards, allocation_cards, spending_cards, income_cards, cash
 
 def card_defs():
     """card name -> Card for every card provisioning defines: each
-    family's base cards, then each one's twin cards. A tile that sums
-    money in the dashboard's chosen currency is native SQL over a gold
-    serving view: a picker selects rows and never a column, so the
-    required {{currency}} variable picks the value column with a CASE,
-    and the other pickers land as field filters. The returns charts are
-    native too, for their window functions and pseudo-source UNION; a
-    card over report_returns, which carries a row set per currency,
-    takes the Currency picker as a field filter on its rows.
+    family's base cards, then each one's twin cards. Every card is
+    native SQL over gold. A money card picks its value column with a
+    CASE on the required {{currency}} variable, since a picker selects
+    rows and never a column; the other pickers land as field filters. A
+    card over report_returns, a row set per currency, takes the Currency
+    picker as a field filter on its rows.
 
     Every dashboard but those in NO_PRIVACY_TWIN has a privacy twin whose
     cards show shares (%) instead of money, each recomputing its
@@ -381,31 +378,38 @@ NO_PRIVACY_TWIN = frozenset(d.name for d in DASHBOARDS if d.twin_desc is None)
 INCOME_DASHBOARDS = {"Income", "Income" + PRIVACY_SUFFIX}
 
 
+def _slugs(d, twin):
+    """The slugs of the pickers Dashboard `d` carries, on the twin with
+    `twin` its base's but the ones it drops, in their order."""
+    return tuple(s for s in d.pickers if not twin or s not in d.twin_drops)
+
+
 def dashboard_defs(cards):
     """dashboard name -> Layout of every dashboard of DASHBOARDS and its
     privacy twin, each base before its twin. A twin has its base's
-    layout with its cards swapped for their privacy variants, or the
-    card itself where it is exempt in `cards` (card_defs). The sibling
-    name links the two views — ensure_dashboards renders it as a switch
-    link at the top of each dashboard."""
+    layout, with each Twin row's twin rows in place of its base rows,
+    and each tile's card, or the card the tile names for the twin,
+    swapped for its privacy variant; an exempt card in `cards`
+    (card_defs) shows as it is. The sibling name links the two views —
+    ensure_dashboards renders it as a switch link at the top of each
+    dashboard."""
     out = {}
     for d in DASHBOARDS:
         pname = privacy_name(d.name) if d.twin_desc is not None else None
         tiles, headings = layout(d.rows)
-        out[d.name] = Layout(d.desc, d.pickers, pname, [t[:5] for t in tiles], headings, d.redacts)
+        out[d.name] = Layout(d.desc, _slugs(d, False), pname, [t[:5] for t in tiles], headings, d.redacts)
         if pname is None:
             continue
         tiles, headings = layout(d.rows, twin=True)
-        out[pname] = Layout(d.twin_desc, tuple(s for s in d.pickers if s not in d.twin_drops), d.name,
-                            [(c if cards[c].exempt else privacy_name(shown), *place)
-                             for c, *place, shown in tiles], headings, d.redacts)
+        out[pname] = Layout(d.twin_desc, _slugs(d, True), d.name,
+                            [(shown if shown in cards and cards[shown].exempt else privacy_name(shown), *place)
+                             for _c, *place, shown in tiles], headings, d.redacts)
     return out
 
 
 def dashboard_parameters(name):
-    """The pickers dashboard `name` carries, a twin's its base's but the
-    ones it drops, in their order (picker_of, picker_payload). A model a
-    picker lists the values of is unbound, as bind takes it."""
+    """The pickers dashboard `name` carries, in their order (_slugs,
+    picker_of, picker_payload). A model a picker lists the values of is
+    unbound, as bind takes it."""
     base = name.removesuffix(PRIVACY_SUFFIX)
-    d = DASHBOARDS_BY_NAME[base]
-    return [picker_payload(picker_of(base, s)) for s in d.pickers if name == base or s not in d.twin_drops]
+    return [picker_payload(picker_of(base, s)) for s in _slugs(DASHBOARDS_BY_NAME[base], name != base)]

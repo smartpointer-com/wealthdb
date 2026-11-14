@@ -4,7 +4,7 @@
 # required. Run via `make test-web` or directly. Sources web/web (which
 # only runs web_main when executed, not sourced) and exercises the
 # arg-building and snapshot logic, then hands off to
-# web/test_provision.py for provision.py's definition helpers, under
+# web/test_provision.py for the provisioning definitions, under
 # WEALTHDB_WEB_PYTHON, else python3: it needs the duckdb module, which
 # `make test-web` provides in web/.venv. bash 3.2 compatible (macOS).
 set -uo pipefail
@@ -611,16 +611,16 @@ check "help mentions snapshot" "read-only SNAPSHOT" "$hout"
 check "help lists refresh"     "refresh"            "$hout"
 check "help mentions serving"  "re-materialize the serving and report tables" "$(echo "$hout" | tr -s ' \n' ' ')"
 check "help says refresh copies a changed gold" "snapshot when gold changed" "$(echo "$hout" | tr -s ' \n' ' ')"
-# The banner names the dashboards by hand, so one added to or renamed in
-# provision.py must be named here too.
+# The banner names the dashboards by hand, so a dashboard added to or
+# renamed in DASHBOARDS (dashboards/__init__.py) must be named here too.
 prov_python="${WEALTHDB_WEB_PYTHON:-python3}"
-want="$("$prov_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import provision as p; print(" / ".join(d.name for d in p.DASHBOARDS))' "$HERE" 2>&1)"
+want="$("$prov_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import dashboards; print(" / ".join(d.name for d in dashboards.DASHBOARDS))' "$HERE" 2>&1)"
 bout="$(CONTAINER=c PORT=1 _start_banner 2>&1 | tr -s ' \n' ' ')"
-check_eq "the start banner names every base dashboard, in provision.py's order" "$want" \
+check_eq "the start banner names every base dashboard, in DASHBOARDS' order" "$want" \
     "$(printf '%s' "$bout" | sed -n 's/.*questions and the \(.*\) dashboards, most .*/\1/p')"
 
-# provision.py's definitions (models, cards, filters, dashboards) are
-# pure functions of module constants, so they assert statically. The
+# Everything provisioning builds before it talks to the API is a pure
+# function of its declarations, so it asserts statically. The
 # python script prints the same ok/FAIL lines and exits non-zero on
 # failure; its own summary line is dropped in favour of this file's.
 echo

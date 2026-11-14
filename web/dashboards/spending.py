@@ -11,19 +11,12 @@ def spending_cards(f):
     refunds positive), so every card charts its negation, `net_spend`,
     and a month's outflow reads as a positive bar.
 
-    The tiles read the serving view natively, for the Currency picker:
-    the long-format model carries a row per (line, reporting currency),
-    so an MBQL tile over it is right only while a row filter holds it to
-    one — which the dashboard supplies and nothing else does. Opened on
-    its own, such a tile would sum every currency, silently and
-    plausibly. A template VARIABLE is substituted by the picker rather
-    than ANDed with the tile's own filters, and {{currency}} defaults to
-    the configured default currency, so a native tile reads the
-    dashboard's choice on the dashboard and the default anywhere else.
-    What it costs is MBQL drill-through: a native result has no "see
-    these records". The card-balances chart reads web_card_balances_history,
-    card balances being a different grain (per account per day, carried
-    forward), with tags of its own.
+    The tiles read the serving view natively. The required {{currency}}
+    variable picks the value column and defaults to the configured
+    currency, so a tile reads the dashboard's choice there and the
+    default anywhere else. The card-balances chart reads
+    web_card_balances_history, a different grain (per account per day,
+    carried forward), with tags of its own.
 
     The twin's figures are shares and no card renders a counterparty.
     Two denominators, both recomputed in-query with the dashboard's
@@ -312,10 +305,8 @@ def spending_cards(f):
                 " GROUP BY 1, 2", "as_of_day", "account_label", "owed", "latest",
                 largest_first=True),
             {**_series_viz("as_of_day", "account_label", "owed"), **LINES_VIZ}, tags=bal_tags)
-    # The one tile that lists LINES rather than grouping them: over
-    # the long model it would get each line once per reporting
-    # currency, with no aggregation to fold them back. The twin drops
-    # both counterparty columns: what is left is when, from which
+    # The one tile that lists LINES rather than grouping them. The twin
+    # drops both counterparty columns: what is left is when, from which
     # source, and what it was categorised as — each as a share of the
     # window.
     if twin:
@@ -353,8 +344,8 @@ FEE_GROUP_TITLES = {"investment": "Investment", "bank": "Bank", "atm": "ATM", "o
 
 
 def fee_cards(f):
-    """The Spending dashboard's two fee tiles, or with `privacy` their
-    twins: name -> (display, description, dataset_query, viz). They read
+    """The Spending dashboard's two fee tiles, or on the twin their
+    privacy variants. They read
     `wealthdb spending fees` over web_fees: the
     spending lines of primary BANK_FEES, so a vehicle's fees show, and the
     daily values, each entity a portfolio, else an account outside any.
@@ -429,12 +420,10 @@ def fee_cards(f):
 # (fee_cards); neither has a category dimension. The privacy variants
 # below are what the twin's cards actually take. The account filter binds
 # account_label (PICKERS says why the readable column wins).
-# The category filter binds spend_primary_label, not spend_primary: a
-# field filter's widget is a dropdown of the values its column takes, and
-# the Category picker is SHARED with the money dashboard, whose model
-# column of the same name holds the display label. Binding the two to
-# different vocabularies would leave the picker offering labels and the
-# native cards matching them against vendored values — every tile empty.
+# The category filter binds spend_primary_label, not spend_primary: the
+# Category picker lists report_spending's spend_primary, which holds the
+# display label, so a filter bound to the vendored value would match
+# nothing the picker offers — every tile empty.
 SPEND_FILTERS = {**range_filters("occurred_at"),
                  "account": ("account_label", "string/="),
                  "category": ("spend_primary_label", "string/=")}

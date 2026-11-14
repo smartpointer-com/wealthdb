@@ -133,10 +133,13 @@ def answer(reply):
 
 def find_dashboards(client):
     """{name: dashboard} for the page's dashboards in the pre-defined collection."""
-    coll = client.collection(provision.COLLECTION_NAME)
-    if coll is None:
-        raise SystemExit(f"capture: collection not found: {provision.COLLECTION_NAME}")
-    found = {d["name"]: d["id"] for d in client.dashboards(coll["id"]) if d["name"] in DASHBOARDS}
+    try:
+        coll = client.collection(provision.COLLECTION_NAME)
+        if coll is None:
+            raise SystemExit(f"capture: collection not found: {provision.COLLECTION_NAME}")
+        found = {d["name"]: d["id"] for d in client.dashboards(coll["id"]) if d["name"] in DASHBOARDS}
+    except metabase.Error as e:
+        raise SystemExit(f"capture: {e}: {e.body}") from None
     missing = sorted(set(DASHBOARDS) - set(found))
     if missing:
         raise SystemExit(f"capture: dashboards not found: {', '.join(missing)}")

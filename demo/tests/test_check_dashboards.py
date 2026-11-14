@@ -17,6 +17,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import check_dashboards  # noqa: E402
 # check_dashboards puts web/ on the path.
 import metabase  # noqa: E402
+import pickers  # noqa: E402
 import provision  # noqa: E402
 
 DASH, DC = {"id": 1}, {"id": 2, "card_id": 3, "parameter_mappings": []}
@@ -70,8 +71,8 @@ class Combos(unittest.TestCase):
 
     def test_the_shift_runs_100_basis_points_lower(self):
         combos = self.combos()
-        self.assertEqual(combos["defaults"][provision.SHIFT_PARAM_ID], [0])
-        self.assertEqual(combos["shift [-100]"], {**combos["defaults"], provision.SHIFT_PARAM_ID: [-100]})
+        self.assertEqual(combos["defaults"][pickers.SHIFT_PARAM_ID], [0])
+        self.assertEqual(combos["shift [-100]"], {**combos["defaults"], pickers.SHIFT_PARAM_ID: [-100]})
 
     def test_the_time_range_and_source_variations(self):
         combos = self.combos()
@@ -229,6 +230,16 @@ class SavedRows(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             self.run_main({}, fake=FakeMetabase({}, listed=False))
         self.assertIn("collection not found", str(e.exception))
+
+    def test_a_failed_listing_stops_with_its_status(self):
+        class Failing(FakeMetabase):
+            def call(self, path, method="GET", data=None, timeout=None):
+                if path == "/api/collection":
+                    return 500, {"message": "down"}
+                return super().call(path, method, data, timeout)
+        with self.assertRaises(SystemExit) as e:
+            self.run_main({}, fake=Failing({}))
+        self.assertEqual(str(e.exception), "could not list collections (500): {'message': 'down'}")
 
 
 class CompareRuns(unittest.TestCase):

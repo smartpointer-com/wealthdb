@@ -114,8 +114,9 @@ data. They sit in a `wealthdb (pre-defined)` collection:
 - the `_latest` snapshot reports, and the all-time `report_transactions`;
 - the daily `_history` reports, for time-series charts;
 - the two taxonomy models over the `web_*` breakdown views;
-- cast-only shims over the materialized `report_returns` table (§8);
-- the spending models over `web_spending`;
+- the `report_returns` model, a cast-only shim over the materialized
+  `report_returns` table (§8);
+- the `report_spending` model over `web_spending`;
 - the income model over `web_income`;
 - the `report_cashflow` model over `web_cashflow`. It
   backs the Cash Flow dashboard's Section picker, not a card;
@@ -236,9 +237,10 @@ dashboards: its id, label, kind, values and default. A row laid out as
 `Row(height, tiles)`, `Stack(width, cards)` or `Heading(text)` gets
 its place on the grid from the rows above it, so no tile states its
 row or column. `Twin(base, twin)` gives the twin rows of its own.
-A dashboard that names a picker `PICKERS` has no row for, or drops
-from its twin a picker it does not carry, is an error at definition
-time.
+Two mistakes are errors at definition time:
+
+- a dashboard names a picker that has no row in `PICKERS`;
+- a dashboard drops from its twin a picker it does not carry.
 
 A picker reaches a native card where the card has a template tag of
 the picker's slug. The returns cards name their Source tag
@@ -811,8 +813,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
-- 0186: its gains, exposure, income and yield views predate the
-  `account_wrapper` and `account_style` macros their bodies call now;
+- 0187: its gains, exposure, income and yield views predate the
+  `account_wrapper` and `account_style` macros their bodies call;
 - 0179: its `web_fees` counts a portfolio's mortgages and cards in
   the value the fee rate divides by;
 - 0177: it lacks `web_bridge`, `web_fees` and `web_marks`, which the
@@ -1269,9 +1271,9 @@ snapshot's inode is restarted, and a failed copy keeps the old
 snapshot. Against a stubbed `provision.py`, it checks that a stale
 snapshot fails `web start` and `web refresh` without the browser hint.
 It then runs [`test_provision.py`](test_provision.py), which asserts
-everything `provision.py` builds *before* it talks to the API — the
-definitions are pure functions of module constants, so the filter
-registry, the model SQL, the card and dashboard defs, the parameter ids
+everything provisioning builds *before* it talks to the API. The
+definitions are pure functions of their declarations, so the filter
+columns, the model SQL, the card and dashboard defs, the parameter ids
 and the picker → template-tag wiring all check statically. Against a
 fake API it checks that an unchanged card or dashboard is not sent
 again and that a changed one is. Three behaviours are worth naming:

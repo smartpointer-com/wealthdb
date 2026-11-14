@@ -36,46 +36,10 @@ from models import (report_models)
 from pickers import (BENCHMARK_PARAM_ID, INLINE_PICKERS)
 from dashboards import (card_defs, dashboard_defs, dashboard_parameters, NO_PRIVACY_TWIN)
 
-# The names of the parts that demo/check_dashboards.py, site/capture.py,
-# web/test_web.sh and the tests read here. A run setting (sqlkit.DEFAULT_CURRENCY and
-# the like) is read and set in the module that owns it, never here.
-from sqlkit import (  # noqa: F401
-    ADDRESS_PATTERN, ALL_SOURCES_SERIES, BENCHMARK_COLOR, BENCHMARK_SERIES, _ccy_case, _ccy_lower,
-    _ccy_values, currency_tag, DECLARED_SOURCE, Family, HOLDING_KEY_PREFIX, MATURING_RULES, PART_INCOME,
-    PARTS_FROM, PORTFOLIO_SERIES, PRIVACY_DESC, PROJECTION_TAGS, RATE_PATHS, REPORTING_CURRENCIES,
-    _series_order, twin_name, UNCATEGORIZED)
-from colors import (  # noqa: F401
-    ALL_SOURCES_COLOR, assign_source_colors, SOURCE_PALETTE, SOURCE_SERIES_COLUMNS)
-from pickers import (  # noqa: F401
-    ACCOUNT_PARAM_ID, ASOF_PARAM_ID, ASSET_PARAM_ID, CASHFLOW_CURRENCY_PARAM_ID, CASHFLOW_INVESTING_PARAM_ID,
-    CASHFLOW_SECTION_PARAM_ID, CATEGORY_PARAM_ID, CURRENCY_PARAM_ID, EXPOSURE_ASSET_CLASS_PARAM_ID,
-    EXPOSURE_CURRENCY_PARAM_ID, EXPOSURE_TAX_WRAPPER_PARAM_ID, GAINS_ASSET_CLASS_PARAM_ID,
-    GAINS_CURRENCY_PARAM_ID, GAINS_MISSING_PARAM_ID, GAINS_TAX_WRAPPER_PARAM_ID, HORIZON_PARAM_ID,
-    INCOME_ACCOUNT_PARAM_ID, INCOME_CURRENCY_PARAM_ID, INCOME_TAX_WRAPPER_PARAM_ID, INCOME_TYPE_PARAM_ID,
-    MATURING_PARAM_ID, POSITION_PARAM_ID, RATES_PARAM_ID, SHIFT_PARAM_ID, SOURCE_PARAM_ID,
-    SPEND_CURRENCY_PARAM_ID, START_YEAR_PARAM_ID, TIME_PARAM_ID, VEHICLE_PARAM_ID, WEALTH_CURRENCY_PARAM_ID,
-    WEALTH_TAX_WRAPPER_PARAM_ID, YIELD_ASSET_CLASS_PARAM_ID, YIELD_CURRENCY_PARAM_ID,
-    YIELD_TAX_WRAPPER_PARAM_ID)
-from layout import (  # noqa: F401
-    Dashboard, Heading, layout, Row, Stack, Twin)
-from dashboards.cashflow import (  # noqa: F401
-    BRIDGE_FALL, BRIDGE_RISE, NET_CASH_FLOW, PLAN_INCOME_PARTS, PLAN_LOOKBACK_PARTS, PLAN_OUTFLOW_PARTS,
-    _pool_join, SECTION_DECLINED_DESC)
-from dashboards.exposure import (  # noqa: F401
-    COUPON_BUCKETS, CREDIT_BUCKETS, CYCLE_BUCKETS, EXPOSURE_BAR_COLORS, HIGH_YIELD, INVESTMENT_GRADE,
-    MATURITY_BUCKETS, SMALLEST_BAR_PCT)
-from dashboards.income import (  # noqa: F401
-    DIVIDEND_TYPES, INCOME_CLASS_BANDS, INCOME_CLASS_COLORS, INCOME_DETAILED_TYPES, INCOME_LINE_CLASSES,
-    INCOME_TYPE_COLORS, INTEREST_TYPES, OTHER_RECEIPTS, POSITION_TAG, PROJECTED_DETAILED, RUN_RATE_PARTS,
-    SHOWN_KEY_PREFIXES, _tint, TWIN_POSITION_NAME, UNCATEGORIZED_CLASS)
-from dashboards.returns import (  # noqa: F401
-    BENCHMARK_LINE, _months_compared)
-from dashboards.spending import (  # noqa: F401
-    FEE_GROUP_COLORS, FEE_GROUP_TITLES, SPEND_FILTERS)
-from dashboards.yields import (  # noqa: F401
-    CASH_KINDS, DURATION_KINDS, _rate)
-from dashboards import (  # noqa: F401
-    BENCHMARK_CARDS, check_dashboards, DASHBOARDS, INCOME_DASHBOARDS)
+# The names demo/check_dashboards.py reads here. A run setting
+# (sqlkit.DEFAULT_CURRENCY and the like) is read and set in the module
+# that owns it, never here.
+from dashboards import (BENCHMARK_CARDS, INCOME_DASHBOARDS)  # noqa: F401
 
 
 def wait_health(client, limit=270, delay=0.25):
@@ -238,8 +202,7 @@ def payload_dump(withholding, sources):
                     "fields": {f"{t}.{c}": i for (t, c), i in field_ids.items()}}}
 
 
-# Collection the pre-defined models live in (kept apart from anything the
-# user builds by hand).
+# The collection the pre-defined items live in, apart from hand-built ones.
 COLLECTION_NAME = "wealthdb (pre-defined)"
 
 EXCESS_CARDS = ("Excess return (TWR)", "Excess return (MWR)", "Excess annualized return (TWR)")
@@ -273,8 +236,8 @@ def dashboard_tile_titles(base, cards):
     Return tiles' window."""
     titles = {"Wealth Overview": {"Income expected": f"Income expected, {HORIZONS[0]} months",
                                   "Asset class mix over time": "Asset classes over time"},
-              "Returns": {**{c: f"{c}, same months" for c in EXCESS_CARDS},
-                          "Excess annualized return (TWR)": "Excess annualized (TWR), same months"}}.get(base, {})
+              "Returns": {**{c: f"{c}, same months" for c in EXCESS_CARDS[:2]},
+                          EXCESS_CARDS[2]: "Excess annualized (TWR), same months"}}.get(base, {})
     return {**titles, **{privacy_name(c): privacy_name(t) for c, t in titles.items()
                          if not cards[c].exempt}}
 
@@ -292,12 +255,6 @@ def gold_metadata(client, db_id, tries=3, delay=2):
     return None
 
 
-def card_queries():
-    """card name -> its dataset_query, for every question and privacy
-    card, its references unbound."""
-    return {name: c.query for name, c in card_defs().items()}
-
-
 def filter_field_columns():
     """table -> the columns of it the cards' field filters bind, for
     every table a card filters and every web_* serving view a card or a
@@ -305,7 +262,7 @@ def filter_field_columns():
     sorted. It is read off the definitions: the field-id resolution and
     the startup probe read it, so a view or a filter a card gains is
     resolved and probed as it is defined."""
-    native = [q["native"] for q in card_queries().values() if q["type"] == "native"]
+    native = [c.query["native"] for c in card_defs().values()]
     columns = {}
     for tag in (t for n in native for t in n["template-tags"].values()):
         if tag["type"] == "dimension":
@@ -351,7 +308,7 @@ def unfingerprint_lists(client, tables):
     and DuckDB has no substring() for a list, so the whole table's
     fingerprint fails, every hour. Metabase never fingerprints a field
     marked `sensitive`, and such a field leaves its table browser and
-    query builder. The native cards read the column as before; no model
+    query builder. The native cards still read the column; no model
     or picker binds one. A field that cannot be marked leaves only the
     warning, so it is reported, not fatal."""
     marked = 0
@@ -419,7 +376,7 @@ def missing_web_views(client, db_id):
 # The oldest gold schema the cards can read. A test holds it at or above
 # the newest schema version that defines a view or table a card reads.
 # DESIGN.md §6 says what each older snapshot lacks.
-MIN_GOLD_SCHEMA = 186
+MIN_GOLD_SCHEMA = 187
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only
@@ -621,7 +578,7 @@ def ensure_collection(client, name):
 
     There is no fallback to the root collection: card and dashboard
     matching is scoped to this collection, so provisioning into the root
-    one would update or archive any user item there that shares a
+    one would update or archive any hand-built item there that shares a
     pre-defined name. A listing that fails aborts too, since reading it
     as empty would create a second collection of the same name."""
     try:
@@ -644,7 +601,7 @@ def pre_defined_cards(client, coll_id):
     """name -> card, for the non-archived cards in the pre-defined
     collection, or None when the card list is unreadable — read as
     empty, it would create every card a second time. Scoped to that
-    collection so a user card that happens to share a name is never
+    collection so a hand-built card that shares a name is never
     touched."""
     st, cards = client.get("/api/card")
     if st != 200 or not isinstance(cards, list):
@@ -983,8 +940,8 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
         # The pickers of the filter bar: an inline picker renders on the
         # tiles it reaches instead (inline_parameters).
         bar = [x for x in parameters if x["id"] not in INLINE_PICKERS]
-        # Both returns dashboards show the same scale-free ratios, so
-        # their link says "redacted" where the others say "shares".
+        # A dashboard whose twin redacts (Dashboard.redacts) says
+        # "redacted" where the others say "shares".
         privacy = name.endswith(PRIVACY_SUFFIX)
         if d.redacts:
             label = ("Switch to the full view — money columns included"
@@ -1003,9 +960,7 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
 
         # The switch link occupies row 0, so the tiles and headings shift
         # down one row; a dashboard without a twin has no link and no
-        # shift. The vehicle filter renders on the Top-positions tile
-        # itself (inline_parameters) rather than in the dashboard's
-        # filter bar: it only applies to that one widget.
+        # shift.
         dashcards = [text_dashcard(-99, link)] if link else []
         shift = 1 if link else 0
         dashcards += [text_dashcard(-(100 + k), text, row + shift, display)
@@ -1039,8 +994,8 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
 
 def ensure_dashboards(client, coll_id, card_ids, model_ids, titles=None, descs=None):
     """Create/refresh the pre-defined dashboards (and their privacy twins)
-    with their global filters (see dashboard_parameters) linked to every
-    tile and, where there is a twin, a switch link to it on the top row,
+    with their pickers (dashboard_parameters) mapped onto the tiles
+    whose tags name them (tile_mappings) and, where there is a twin, a switch link to it on the top row,
     and archive any retired (renamed-away) ones. A card in `titles`
     (tile_titles) shows that title on its tiles. `descs`, card name ->
     description, lets a tile carry its card's description with the

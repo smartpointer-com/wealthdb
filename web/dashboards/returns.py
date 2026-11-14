@@ -14,21 +14,21 @@ BENCHMARK_LINE = {"series_settings": {BENCHMARK_SERIES: {
 
 RETURNS_PRIVACY_DESC = " Money columns are redacted."
 
-# The native returns charts carry three template tags — the currency and
-# source field filters and the start year variable. The Returns dashboard's
-# Currency / Start-year / Source pickers map onto them. Currency and start
-# year default so a card still runs standalone.
 START_YEAR_TAG = {"id": "year-tag", "name": "start_year",
                   "display-name": "Start year", "type": "number",
                   "default": "0", "required": True}
 
 
 def returns_tags(sql=None):
-    """Template tags for the native returns charts. Currency and Source are
-    field filters on report_returns (a dropdown, values from the column).
-    Start year is a plain number variable (it drives a `year(end_day) >= …`
-    range, which a field filter can't express). With `sql` the Source tag
-    only where that query reads it, so a tile it misses says so."""
+    """Template tags for the native returns charts, four: the currency
+    and source field filters on report_returns, the start year variable
+    and the benchmark, which Family.card keeps only on a card that reads
+    it. The Returns dashboard's pickers map onto them. Currency and Source
+    are field filters (a dropdown, values from the column); currency and
+    start year default so a card still runs standalone. Start year is a
+    plain number variable (it drives a `year(end_day) >= …` range, which
+    a field filter can't express). With `sql` the Source tag only where
+    that query reads it, so a tile it misses says so."""
     # A field-filter default is a LIST (string/= is multi-value-shaped),
     # unlike a plain text variable's bare-string default.
     tags = {"currency": {"id": "ccy-ff", "name": "currency", "display-name": "Currency",
@@ -166,8 +166,7 @@ def returns_growth_sql():
 def returns_by_source_sql(money):
     """The by-source returns table: each source's returns and quality
     flags, with `money` the absolute money columns (RETURNS_MONEY_COLUMNS)
-    too, and the picked benchmark as one more line over the same window.
-    Native, for that line: a question over a model has no union."""
+    too, and the picked benchmark as one more line over the same window."""
     cols = ("twr", "twr_annualized", "mwr", "mwr_annualized")
     money_cols = RETURNS_MONEY_COLUMNS if money else ()
     blanks = "".join(f", NULL AS {c}" for c in money_cols)

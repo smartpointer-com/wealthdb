@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Unit tests for web/provision.py's pure definition helpers — no
-Metabase and no Docker required. Run via `make test-web` (web/test_web.sh
-invokes this), or directly. The SQL of the projection cards and of the
-Exposure debt and cycle cards also runs on an invented book under
-DuckDB, which needs the duckdb Python module: `make test-web` runs this
-in web/.venv, which holds it, and without it those sections fail.
+"""Unit tests for provisioning (web/provision.py and its sibling
+modules), the Metabase client and the tile timings tool. No Metabase,
+no Docker. Run via `make test-web` (web/test_web.sh invokes this), or
+directly. The SQL of the projection cards and of the Exposure debt and
+cycle cards also runs on an invented book under DuckDB, which needs the
+duckdb Python module: `make test-web` runs this in web/.venv, which
+holds it, and without it those sections fail.
 
-Everything provision.py builds before it talks to the API is a pure
-function of module constants, so the card, filter and dashboard
+Everything provisioning builds before it talks to the API is a pure
+function of its declarations, so the card, filter and dashboard
 definitions can be asserted statically: names resolve, parameter ids stay
 unique, the privacy twin redacts what it promises to, and metadata that
 does not describe a fully migrated gold aborts the run. Where a constant
-here is one half of a contract gold's SQL states in the other, the
-migration files are read off disk and the two halves compared — no
-engine, no Docker. What cannot be checked here is whether Metabase
-accepts a payload — that needs a live instance.
+here is one half of a contract gold's SQL states in the other, gold's
+SQL files are read off disk and the two halves compared — no engine, no
+Docker. What cannot be checked here is whether Metabase accepts a
+payload — that needs a live instance.
 
 Prints the same "  ok / FAIL" lines web/test_web.sh does and exits with
 the number of failures.
@@ -33,9 +34,13 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import provision as p                                   # noqa: E402
+import colors                                            # noqa: E402
 import dashboards as dashboards_index                     # noqa: E402
+import layout                                            # noqa: E402
+import pickers                                           # noqa: E402
 import sqlkit                                            # noqa: E402
 import tile_timings as tt                                # noqa: E402
+from dashboards import (cashflow, exposure, income, returns, spending, yields)  # noqa: E402
 
 FAILS = 0
 
@@ -113,18 +118,21 @@ def all_cards():
     return cards_of(p.card_defs())
 
 
+# The reporting currencies as the value columns' suffixes.
+_CCY_LOWER = tuple(c.lower() for c in sqlkit.REPORTING_CURRENCIES)
+
+
 def sql_of(query):
-    """The native SQL of a card query, or None for an MBQL one."""
-    return query["native"]["query"] if query.get("type") == "native" else None
+    """The native SQL of a card query."""
+    return query["native"]["query"]
 
 
-# ---- the filter-field registry ----------------------------------------
+# ---- the filter columns ----------------------------------------------
 
-section("filter-field registry (the two spending views)")
+section("the spending views' filter columns")
 REGISTRY = p.filter_field_columns()
-# The category field is the LABEL column: the Category picker is shared
-# with the money dashboard, whose model column of the same name holds the
-# label, so both sides of the filter must speak one vocabulary.
+# The category field is the LABEL column: the Category picker's dropdown
+# lists the model's labels, so the cards must filter on the label too.
 check("web_spending columns: timestamp, source, account label, primary category",
       set(REGISTRY.get("web_spending", ())) ==
       {"occurred_at", "silver_source_id", "account_label", "spend_primary_label"},
@@ -152,10 +160,18 @@ check("...and gives up after its limit", _up is False)
 # ---- parameter ids ----------------------------------------------------
 
 section("dashboard parameter ids")
-PARAM_IDS = {n: v for n, v in vars(p).items() if n.endswith("_PARAM_ID")}
+PARAM_IDS = {n: v for n, v in vars(pickers).items() if n.endswith("_PARAM_ID")}
 check("every *_PARAM_ID constant is distinct",
       len(set(PARAM_IDS.values())) == len(PARAM_IDS),
       json.dumps(PARAM_IDS))
+_ID_SLUGS = {}
+for _x in pickers.PICKERS:
+    _ID_SLUGS.setdefault(_x.id, set()).add(_x.slug)
+check("...and each is the id of a picker", set(PARAM_IDS.values()) == set(_ID_SLUGS),
+      sorted(set(PARAM_IDS.values()) ^ set(_ID_SLUGS)))
+check("pickers share an id only where they share a slug",
+      all(len(slugs) == 1 for slugs in _ID_SLUGS.values()),
+      {i: sorted(s) for i, s in _ID_SLUGS.items() if len(s) > 1})
 
 # ---- the models -------------------------------------------------------
 
@@ -184,9 +200,9 @@ SPEND_SQL = MODELS["report_spending"][0]
 check("the model reads the web_spending serving view",
       "FROM web_spending s" in SPEND_SQL)
 check("one row per reporting currency (a currency picker filters rows)",
-      p._ccy_values() in SPEND_SQL and
+      sqlkit._ccy_values() in SPEND_SQL and
       "AS value" in SPEND_SQL)
-check("the money model keeps the merchant column",
+check("the spending model keeps the merchant column",
       "merchant_name" in SPEND_SQL)
 check("the model labels an account with its source and kind, not its "
       "bare name",
@@ -197,13 +213,7 @@ check("the model labels an account with its source and kind, not its "
 # Built once. A test that changes DEFAULT_CURRENCY rebuilds what it
 # reads.
 CARD_DEFS = p.card_defs()
-_QDEFS_CARDS = {n: c for n, c in CARD_DEFS.items() if not n.endswith(p.PRIVACY_SUFFIX)}
-# The base cards as (display, description, dataset_query, viz), the
-# twins' with their card type first.
-_QDEFS = {n: (c.display, c.desc, c.query, c.viz) for n, c in CARD_DEFS.items()
-          if not n.endswith(p.PRIVACY_SUFFIX)}
-_PDEFS = {n: ("question", c.display, c.desc, c.query, c.viz) for n, c in CARD_DEFS.items()
-          if n.endswith(p.PRIVACY_SUFFIX)}
+_BASE_CARDS = {n: c for n, c in CARD_DEFS.items() if not n.endswith(p.PRIVACY_SUFFIX)}
 CARDS = cards_of(CARD_DEFS)
 VIZ = {n: c.viz for n, c in CARD_DEFS.items()}
 EXEMPT = {n for n, c in CARD_DEFS.items() if c.exempt}
@@ -216,7 +226,7 @@ def params_of(name):
     """The pickers of dashboard `name`, bound to the test model ids."""
     return p.bind(p.dashboard_parameters(name), None, {}, MID)
 # Each Wealth Overview tile's home, by base card.
-HOMES = {n: c.home for n, c in _QDEFS_CARDS.items() if c.home}
+HOMES = {n: c.home for n, c in _BASE_CARDS.items() if c.home}
 DEFS = p.dashboard_defs(CARD_DEFS)
 
 section("retired models")
@@ -226,11 +236,9 @@ check("no retired model is still defined",
 check("the retired names are distinct",
       len(set(p.RETIRED_MODEL_NAMES)) == len(p.RETIRED_MODEL_NAMES))
 # Every card is native SQL over gold: no card reads a model, so none
-# opens one's rows, and no privacy model is left to back one.
+# opens one's rows.
 check("every card is native SQL", not [n for n, c in CARDS.items() if c[2]["type"] != "native"],
       [n for n, c in CARDS.items() if c[2]["type"] != "native"])
-check("no privacy model is defined", not [n for n in MODELS if n.endswith(("_pct", "_redacted"))],
-      [n for n in MODELS if n.endswith(("_pct", "_redacted"))])
 
 section("spending cards")
 SPEND_TILES = [t[0] for t in DEFS["Spending"][3]]
@@ -242,10 +250,10 @@ for want in ("Spend — monthly trend", "Net spend", "Uncategorized share",
     check(f"tile '{want}' is defined and pinned",
           want in CARDS and want in SPEND_TILES)
 check("the uncategorized-share card counts the '(uncategorized)' label",
-      p.UNCATEGORIZED in json.dumps(CARDS["Uncategorized share"][2]))
+      sqlkit.UNCATEGORIZED in json.dumps(CARDS["Uncategorized share"][2]))
 check("card balances come off web_card_balances_history",
       "FROM web_card_balances_history"
-      in (sql_of(CARDS["Card balances over time"][2]) or ""))
+      in sql_of(CARDS["Card balances over time"][2]))
 check("the money cards render merchant labels",
       all("merchant_name" in json.dumps(CARDS[c][2])
           for c in ("Top 50 merchants", "Largest transactions")))
@@ -258,18 +266,16 @@ check("the money cards render account labels",
 # "Other", and so is a real category here — and neither ring carries a
 # LIMIT: a limited ring renormalizes onto what it drew, so its printed
 # shares would disagree with its own values.
-_RINGS = {n: (_QDEFS[n][0], _QDEFS[n][3]) for n in ("Spending by category",
-                                                    "Spending by subcategory")}
-_RINGS.update({n: (_PDEFS[n][1], _PDEFS[n][4])
-               for n in ("Spending by category (privacy)",
-                         "Spending by subcategory (privacy)")})
+_RINGS = {n: (CARD_DEFS[n].display, CARD_DEFS[n].viz)
+          for n in ("Spending by category", "Spending by subcategory",
+                    "Spending by category (privacy)", "Spending by subcategory (privacy)")}
 for _name, (_display, _viz) in _RINGS.items():
     check(f"'{_name}' is a ring", _display == "pie", _display)
     check(f"'{_name}' shows its shares in the legend",
           _viz.get("pie.percent_visibility") == "legend")
     check(f"'{_name}' draws no LIMIT'd ring",
           "limit" not in json.dumps(CARDS[_name][2])
-          and "LIMIT" not in (sql_of(CARDS[_name][2]) or ""))
+          and "LIMIT" not in sql_of(CARDS[_name][2]))
 check("the primary ring folds nothing into an 'Other' wedge (a real "
       "category is called that)",
       all(_RINGS[n][1].get("pie.slice_threshold") == 0
@@ -300,11 +306,11 @@ check("a ring promising a total in the hole says whose total it is",
 # Card balances read the way an issuer states them: owed, positive. The
 # flip is in the projection only — gold stores the liability negative.
 for _name in ("Card balances over time", "Card balances over time (privacy)"):
-    _sql = sql_of(CARDS[_name][2]) or ""
+    _sql = sql_of(CARDS[_name][2])
     check(f"'{_name}' states what is owed as a positive figure",
-          all(f"-balance_{c}" in _sql for c in p._ccy_lower()), _sql)
+          all(f"-balance_{c}" in _sql for c in _CCY_LOWER), _sql)
 check("the money card-balances chart is split by the account label",
-      "account_label" in (sql_of(CARDS["Card balances over time"][2]) or ""))
+      "account_label" in sql_of(CARDS["Card balances over time"][2]))
 
 # A card called "by month" charts months. Metabase infers the x-axis
 # from cardinality, and there are more categories than months in any
@@ -313,15 +319,11 @@ check("the money card-balances chart is split by the account label",
 # the pin the card draws its own transpose.
 check("the monthly cards put the month on the x-axis, categories in the "
       "stack",
-      all(d[i]["graph.dimensions"] == ["month", "category"]
-          for d, i in ((_QDEFS["Spending by month"], 3),
-                       (_PDEFS["Spending by month (privacy)"], 4))))
+      all(CARD_DEFS[n].viz["graph.dimensions"] == ["month", "category"]
+          for n in ("Spending by month", "Spending by month (privacy)")))
 check("...as stacked bands over a continuous axis",
-      all(d == "area" and v.get("stackable.stack_type") == "stacked"
-          for d, v in ((_QDEFS["Spending by month"][0],
-                        _QDEFS["Spending by month"][3]),
-                       (_PDEFS["Spending by month (privacy)"][1],
-                        _PDEFS["Spending by month (privacy)"][4]))))
+      all(CARD_DEFS[n].display == "area" and CARD_DEFS[n].viz.get("stackable.stack_type") == "stacked"
+          for n in ("Spending by month", "Spending by month (privacy)")))
 
 # The merchant rankings rank merchants. A line resolved to a delta — a
 # gift, a card bill, cash out of an ATM — is not a merchant
@@ -346,7 +348,7 @@ check("the money merchant ranking keeps only named, non-delta lines",
 # Split on the CTE boundary with partition, which returns empties rather
 # than raising when the shape moved: a regression must read as one FAIL
 # line, not as a traceback that takes the rest of the file with it.
-RANK_SQL = sql_of(CARDS["Top 50 merchants (privacy)"][2]) or ""
+RANK_SQL = sql_of(CARDS["Top 50 merchants (privacy)"][2])
 R_BODY, CTE_BOUNDARY, REST = RANK_SQL.partition("),\nt AS (\n")
 T_BODY = REST.partition("\nSELECT row_number")[0]
 check("the privacy merchant ranking is r (ranked rows) then t (the total)",
@@ -368,7 +370,7 @@ check("exactly the two rankings filter on the merchant column",
        for c, *_ in DEFS[d][3] if filters_on_merchant(CARDS[c][2])}
       == MERCHANT_RANKINGS)
 check("the largest-lines card keeps blank merchants (a line is a line)",
-      "merchant_name IS NOT NULL" not in (sql_of(CARDS["Largest transactions"][2]) or ""))
+      "merchant_name IS NOT NULL" not in sql_of(CARDS["Largest transactions"][2]))
 check("every tile of every dashboard resolves to a defined card",
       not [(d, c) for d, (_, _, _, tiles, *_) in DEFS.items()
            for c, *_ in tiles if c not in CARDS],
@@ -378,8 +380,8 @@ check("every tile of every dashboard resolves to a defined card",
 # ---- the dashboard and its twin ---------------------------------------
 
 section("Spending dashboard + privacy twin")
-desc, pickers, sibling, tiles = DEFS["Spending"][:4]
-check("it takes the time range and the source", {"time_range", "source"} <= set(pickers))
+desc, slugs, sibling, tiles = DEFS["Spending"][:4]
+check("it takes the time range and the source", {"time_range", "source"} <= set(slugs))
 check("sibling is the privacy twin", sibling == "Spending (privacy)")
 check("the twin is derived tile for tile",
       [t[0] for t in DEFS["Spending (privacy)"][3]] ==
@@ -397,9 +399,9 @@ check("the range pair is still there",
 check("currency picker is required and defaults to USD",
       PARAMS["Currency"]["required"] is True and
       PARAMS["Currency"]["default"] == ["USD"] and
-      PARAMS["Currency"]["id"] == p.SPEND_CURRENCY_PARAM_ID)
+      PARAMS["Currency"]["id"] == pickers.SPEND_CURRENCY_PARAM_ID)
 check("currency offers every reporting currency",
-      PARAMS["Currency"]["values_source_config"]["values"] == list(p.REPORTING_CURRENCIES))
+      PARAMS["Currency"]["values_source_config"]["values"] == list(sqlkit.REPORTING_CURRENCIES))
 check("the account picker draws display_name values",
       PARAMS["Account"]["values_source_config"]["value_field"][1] == "display_name")
 # The spending model renders the taxonomy in words and keeps the values
@@ -407,17 +409,17 @@ check("the account picker draws display_name values",
 # filters by, so the label is what a reader sees and selects; the value
 # is there for a filter that must survive a rewording. The issuer's own
 # classification travels too, and no tile may aggregate it.
-# The Category picker is shared by both dashboards: its dropdown comes
-# from the money model's `spend_primary`, and the privacy twin's native
-# cards field-filter web_spending through filter_field_columns. If those
-# two named different vocabularies the picker would offer labels and the
-# native cards would match them against vendored values — every privacy
-# tile silently empty, with no error anywhere.
+# The Category picker's dropdown comes from the report_spending model's
+# `spend_primary`, and every spending card field-filters web_spending
+# through filter_field_columns. If those two named different
+# vocabularies, the picker would offer labels and the cards would match
+# them against vendored values: every tile silently empty, with no error
+# anywhere.
 check("both sides of the shared Category filter speak one vocabulary",
-      p.SPEND_FILTERS["category"][0] in REGISTRY["web_spending"] and
-      p.SPEND_FILTERS["category"][0].endswith("_label"))
-_PRIV_SQL = "\n".join(sql_of(c[2]) or "" for n, c in CARDS.items()
-                      if n.endswith(p.PRIVACY_SUFFIX) and len(c) > 2)
+      spending.SPEND_FILTERS["category"][0] in REGISTRY["web_spending"] and
+      spending.SPEND_FILTERS["category"][0].endswith("_label"))
+_PRIV_SQL = "\n".join(sql_of(c[2]) for n, c in CARDS.items()
+                      if n.endswith(p.PRIVACY_SUFFIX))
 check("...and the privacy cards project the same labels they filter on",
       "spend_primary_label" in _PRIV_SQL and "spend_primary," not in _PRIV_SQL)
 
@@ -437,8 +439,8 @@ TWIN_PARAMS = params_of("Spending (privacy)")
 check("the twin carries every picker but the account one — a picker's "
       "dropdown IS the list of account labels it would filter by",
       [x["id"] for x in TWIN_PARAMS] ==
-      [p.SPEND_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-       p.CATEGORY_PARAM_ID])
+      [pickers.SPEND_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID,
+       pickers.CATEGORY_PARAM_ID])
 check("no picker on the twin is bound to an account column",
       not [x for x in TWIN_PARAMS
            if "display_name" in json.dumps(x.get("values_source_config", {}))
@@ -447,13 +449,13 @@ check("no picker on the twin is bound to an account column",
 for _d in ("Wealth Overview", "Wealth Overview (privacy)"):
     check(f"'{_d}' carries the currency picker, the range pair, the tax wrapper and the asset class",
           [x["id"] for x in params_of(_d)]
-          == [p.WEALTH_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-              p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID])
+          == [pickers.WEALTH_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID,
+              pickers.WEALTH_TAX_WRAPPER_PARAM_ID, pickers.ASSET_PARAM_ID])
 for _d in ("Allocation", "Allocation (privacy)"):
     check(f"'{_d}' carries the currency picker, the as-of pickers, the tax wrapper and the asset class",
           [x["id"] for x in params_of(_d)]
-          == [p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID,
-              p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID, p.BENCHMARK_PARAM_ID])
+          == [pickers.WEALTH_CURRENCY_PARAM_ID, pickers.ASOF_PARAM_ID, pickers.SOURCE_PARAM_ID,
+              pickers.WEALTH_TAX_WRAPPER_PARAM_ID, pickers.ASSET_PARAM_ID, pickers.VEHICLE_PARAM_ID, p.BENCHMARK_PARAM_ID])
 # The class picker lists the asset class history's classes, cash among
 # them: a cash balance is the class `cash` in every holdings view.
 for _d in ("Wealth Overview", "Allocation", "Exposure"):
@@ -469,7 +471,7 @@ _wccy = params_of("Wealth Overview")[0]
 check("that currency picker is required, defaults to USD and offers every "
       "reporting currency",
       _wccy["required"] is True and _wccy["default"] == ["USD"]
-      and _wccy["values_source_config"]["values"] == list(p.REPORTING_CURRENCIES),
+      and _wccy["values_source_config"]["values"] == list(sqlkit.REPORTING_CURRENCIES),
       _wccy)
 
 # ---- the twin never renders a counterparty ----------------------------
@@ -477,18 +479,15 @@ check("that currency picker is required, defaults to USD and offers every "
 section("privacy twin: redaction")
 REDACTED = ("account_label", "display_name", "account_external_id")
 for card, *_ in DEFS["Spending (privacy)"][3]:
-    query = CARDS[card][2]
-    sql = sql_of(query)
-    blob = sql if sql is not None else json.dumps(query)
-    leaks = [c for c in REDACTED if c in blob]
+    sql = sql_of(CARDS[card][2])
+    leaks = [c for c in REDACTED if c in sql]
     check(f"'{card}' renders no account label", not leaks, ", ".join(leaks))
     # merchant_name may decide the ROWS (the merchant list groups by it,
     # and ranks only lines that carry one) but must never reach a
     # projection: strip the two sanctioned forms and nothing may remain,
     # wherever the line breaks happen to fall. A new use has to widen the
     # allowlist deliberately.
-    rest = re.sub(r"GROUP BY merchant_name\b|merchant_name IS NOT NULL",
-                  "", blob)
+    rest = re.sub(r"GROUP BY merchant_name\b|merchant_name IS NOT NULL", "", sql)
     i = rest.find("merchant_name")
     check(f"'{card}' renders no merchant name", i < 0,
           rest[max(0, i - 60):i + 60].strip() if i >= 0 else "")
@@ -520,36 +519,36 @@ def picks(card, dash):
 _t50 = picks("Top 50 merchants (privacy)", "Spending (privacy)")
 check("the currency picker reaches a native card as a VARIABLE "
       "(a template variable names a value, never a column)",
-      _t50.get(p.SPEND_CURRENCY_PARAM_ID) == ["variable", ["template-tag", "currency"]], _t50)
+      _t50.get(pickers.SPEND_CURRENCY_PARAM_ID) == ["variable", ["template-tag", "currency"]], _t50)
 check("the field filters reach it as dimensions",
       all(_t50.get(pid) == ["dimension", ["template-tag", tag]]
-          for pid, tag in ((p.TIME_PARAM_ID, "time_range"),
-                           (p.SOURCE_PARAM_ID, "source"),
-                           (p.CATEGORY_PARAM_ID, "category"))), _t50)
+          for pid, tag in ((pickers.TIME_PARAM_ID, "time_range"),
+                           (pickers.SOURCE_PARAM_ID, "source"),
+                           (pickers.CATEGORY_PARAM_ID, "category"))), _t50)
 _acc_twins = [n for n, (_d, _desc, q) in CARDS.items()
               if n.endswith(p.PRIVACY_SUFFIX) and "account" in (q.get("native") or {}).get("template-tags", {})]
 check("no privacy card declares an account field filter (its widget "
       "would list the labels the projections drop)", not _acc_twins, _acc_twins)
 check("the money card-balances card keeps its account filter",
-      p.ACCOUNT_PARAM_ID in picks("Card balances over time", "Spending"))
+      pickers.ACCOUNT_PARAM_ID in picks("Card balances over time", "Spending"))
 check("the card-balances tiles take no category picker (no such dimension)",
-      all(p.CATEGORY_PARAM_ID not in picks(c, d)
+      all(pickers.CATEGORY_PARAM_ID not in picks(c, d)
           for c, d in (("Card balances over time", "Spending"),
                        ("Card balances over time (privacy)", "Spending (privacy)"))))
 check("a privacy chart maps its field filters as dimensions and the "
       "currency as a variable, in the dashboard's order",
       list(picks("Net worth over time (privacy)", "Wealth Overview (privacy)").items()) == [
-          (p.WEALTH_CURRENCY_PARAM_ID, ["variable", ["template-tag", "currency"]]),
-          (p.TIME_PARAM_ID, ["dimension", ["template-tag", "time_range"]]),
-          (p.SOURCE_PARAM_ID, ["dimension", ["template-tag", "source"]]),
-          (p.WEALTH_TAX_WRAPPER_PARAM_ID, ["dimension", ["template-tag", "tax_wrapper"]]),
-          (p.ASSET_PARAM_ID, ["dimension", ["template-tag", "asset_class"]])],
+          (pickers.WEALTH_CURRENCY_PARAM_ID, ["variable", ["template-tag", "currency"]]),
+          (pickers.TIME_PARAM_ID, ["dimension", ["template-tag", "time_range"]]),
+          (pickers.SOURCE_PARAM_ID, ["dimension", ["template-tag", "source"]]),
+          (pickers.WEALTH_TAX_WRAPPER_PARAM_ID, ["dimension", ["template-tag", "tax_wrapper"]]),
+          (pickers.ASSET_PARAM_ID, ["dimension", ["template-tag", "asset_class"]])],
       picks("Net worth over time (privacy)", "Wealth Overview (privacy)"))
 _rt = picks("Monthly returns (TWR)", "Returns")
 check("the returns cards' Source field filter answers the Source picker",
-      _rt.get(p.SOURCE_PARAM_ID) == ["dimension", ["template-tag", "source_ff"]], _rt)
+      _rt.get(pickers.SOURCE_PARAM_ID) == ["dimension", ["template-tag", "source_ff"]], _rt)
 check("a card declines a picker by declaring no tag of its slug",
-      p.tile_mappings({"native": {"template-tags": {"currency": p.currency_tag()}}}, 1,
+      p.tile_mappings({"native": {"template-tags": {"currency": sqlkit.currency_tag()}}}, 1,
                       [{"id": "a", "slug": "time_range"}, {"id": "b", "slug": "currency"}])
       == [{"parameter_id": "b", "card_id": 1, "target": ["variable", ["template-tag", "currency"]]}])
 # A picker answers one tag of a card. Two tags of one slug, a tag and its
@@ -562,7 +561,7 @@ check("no card declares two template tags of one picker slug", not _slug_twice, 
 # ---- one card declaration ----------------------------------------------
 
 section("card declarations")
-_fam = p.Family(False, {}, tags={})
+_fam = sqlkit.Family(False, {}, tags={})
 _fam.card("A", "scalar", "d.", "SELECT 1", {})
 try:
     _fam.card("A", "scalar", "d.", "SELECT 2", {})
@@ -571,17 +570,16 @@ except ValueError as e:
     _twice = str(e)
 check("a card defined twice is an error where it is defined", _twice == "provision: card 'A' is defined twice",
       _twice)
-_twin = p.Family(True, {}, tags={}, tail=" t.")
+_twin = sqlkit.Family(True, {}, tags={}, tail=" t.")
 _twin.card("A", "scalar", "d.", "SELECT 1", {}, exempt=True)
 _twin.card("B", "scalar", "d.", "SELECT 1", {}, home="Spending")
 check("a twin defines no exempt card, and the others under their privacy names, its tail after",
       list(_twin.cards) == ["B (privacy)"] and _twin.cards["B (privacy)"].desc == "d. t."
       and _twin.cards["B (privacy)"].home == "Spending", _twin.cards)
 check("no exempt card has a privacy card",
-      not [n for n, c in _QDEFS_CARDS.items() if c.exempt and p.privacy_name(n) in CARD_DEFS])
-check("the cards that exist only beside a benchmark are those that hide empty, their twins too",
-      p.BENCHMARK_CARDS == {n for n, c in _QDEFS_CARDS.items() if c.hide_empty}
-      and all(CARD_DEFS[n].hide_empty for n in map(p.privacy_name, p.BENCHMARK_CARDS) if n in CARD_DEFS))
+      not [n for n, c in _BASE_CARDS.items() if c.exempt and p.privacy_name(n) in CARD_DEFS])
+check("the twins of the cards that exist only beside a benchmark hide empty too",
+      all(CARD_DEFS[n].hide_empty for n in map(p.privacy_name, dashboards_index.BENCHMARK_CARDS) if n in CARD_DEFS))
 
 # ---- ids bound late ---------------------------------------------------
 
@@ -827,8 +825,8 @@ check("the derived views really do render a label for an unresolved category",
       bool(COALESCED), "the COALESCE shape moved; this check went vacuous")
 check("gold's spending views render exactly the label the "
       "uncategorized-share card filters on",
-      COALESCED == {p.UNCATEGORIZED},
-      f"{COALESCED} != {{{p.UNCATEGORIZED!r}}}")
+      COALESCED == {sqlkit.UNCATEGORIZED},
+      f"{COALESCED} != {{{sqlkit.UNCATEGORIZED!r}}}")
 
 _CANONICAL = os.path.join(_REPO, "wealthdb", "internal", "canonical")
 
@@ -949,7 +947,7 @@ check("the cards' minimum gold schema is no older than any view or table they re
       {o: n for o, n in _NEWEST.items() if n is None or n > p.MIN_GOLD_SCHEMA})
 # The startup probe and that check read the views the SQL reads after
 # FROM or JOIN, so a view a card names any other way would go unprobed.
-_READ_SQL = [sql_of(q) or "" for _d, _desc, q in CARDS.values()] + [sql for sql, _d in MODELS.values()]
+_READ_SQL = [sql_of(q) for _d, _desc, q in CARDS.values()] + [sql for sql, _d in MODELS.values()]
 _NAMED_VIEWS = {v for q in _READ_SQL for v in re.findall(r"\bweb_\w+", q)}
 check("the probe wants every web_* view a card or a model names",
       _NAMED_VIEWS == set(p.web_views_wanted()), sorted(_NAMED_VIEWS ^ set(p.web_views_wanted())))
@@ -1047,7 +1045,7 @@ n_cards = len(p.card_defs())
 for want in (f"provision: report models ({p._ccy_slash()}) — {len(p.report_models())} created, "
              f"0 updated, 0 unchanged, 0 retired",
              f"provision: questions — {n_cards} created, 0 updated, 0 unchanged, 0 retired",
-             f"provision: dashboards — {len(p.dashboard_defs(CARD_DEFS))} created, 0 updated, "
+             f"provision: dashboards — {len(DEFS)} created, 0 updated, "
              "0 unchanged, 0 retired"):
     check(f"prints '{want.split(' — ')[0]}' with its counts", want in printed, printed)
 check("...and one line per pass", printed.count("provision: ") == 3, printed)
@@ -1225,7 +1223,7 @@ class RememberDashboards(FakeClient):
         return 200, {}
 
 
-n_dash = len(p.dashboard_defs(CARD_DEFS))
+n_dash = len(DEFS)
 remembered = RememberDashboards()
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
@@ -1330,25 +1328,25 @@ check("...which the tiles show in place of the cards' names, and no other tile c
       _titled == {card_ids[c]: t for c, t in _titles.items()}
       and _changed == {"Income", "Income (privacy)"} | _noted, (_titled, _changed))
 
-spending = [d for d in layouts if d.get("name") == "Spending"]
-check("the Spending dashboard was laid out", len(spending) == 1)
-if spending:
-    body = spending[0]
+spend_layouts = [d for d in layouts if d.get("name") == "Spending"]
+check("the Spending dashboard was laid out", len(spend_layouts) == 1)
+if spend_layouts:
+    body = spend_layouts[0]
     # A share of rows reads the same in every currency, so the Currency
     # picker does not reach it.
     ROW_SHARE_IDS = {card_ids["Uncategorized share"]}
     check("its five pickers are attached",
           [x["id"] for x in body["parameters"]] ==
-          [p.SPEND_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-           p.ACCOUNT_PARAM_ID, p.CATEGORY_PARAM_ID])
+          [pickers.SPEND_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID,
+           pickers.ACCOUNT_PARAM_ID, pickers.CATEGORY_PARAM_ID])
     tiles = [dc for dc in body["dashcards"] if dc["card_id"] is not None]
     check("every tile plus the switch link is present",
           len(tiles) == 12 and len(body["dashcards"]) == 13)
     FEE_IDS = {card_ids[c] for c in ("Fees by portfolio", "Fee rate by portfolio")}
     check("every picker lands on every tile",
           all({m["parameter_id"] for m in dc["parameter_mappings"]} ==
-              {p.SPEND_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-               p.ACCOUNT_PARAM_ID, p.CATEGORY_PARAM_ID}
+              {pickers.SPEND_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID,
+               pickers.ACCOUNT_PARAM_ID, pickers.CATEGORY_PARAM_ID}
               for dc in tiles
               if dc["card_id"] != card_ids["Card balances over time"]
               and dc["card_id"] not in FEE_IDS | ROW_SHARE_IDS),
@@ -1357,24 +1355,23 @@ if spending:
     for dc in (dc for dc in tiles if dc["card_id"] in FEE_IDS):
         check("a fee tile takes Currency, Time range, Source and Account, and declines Category",
               {m["parameter_id"] for m in dc["parameter_mappings"]} ==
-              {p.SPEND_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID, p.ACCOUNT_PARAM_ID})
+              {pickers.SPEND_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID, pickers.ACCOUNT_PARAM_ID})
     balances = [dc for dc in tiles
                 if dc["card_id"] == card_ids["Card balances over time"]][0]
     check("the card-balances tile takes every picker but the category one",
           {m["parameter_id"] for m in balances["parameter_mappings"]} ==
-          {p.SPEND_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-           p.ACCOUNT_PARAM_ID})
+          {pickers.SPEND_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID,
+           pickers.ACCOUNT_PARAM_ID})
 
 twin = [d for d in layouts if d.get("name") == "Spending (privacy)"]
 check("the Spending twin was laid out", len(twin) == 1)
 if twin:
     body = twin[0]
     check("the twin's filter bar carries no account picker",
-          p.ACCOUNT_PARAM_ID not in [x["id"] for x in body["parameters"]])
-    check("...and no tile maps one — including the privacy-exempt tile, "
-          "whose MBQL mapping would otherwise name a filter that is gone",
+          pickers.ACCOUNT_PARAM_ID not in [x["id"] for x in body["parameters"]])
+    check("...and no tile maps one, the privacy-exempt tile included",
           not [dc for dc in body["dashcards"]
-               if any(m["parameter_id"] == p.ACCOUNT_PARAM_ID
+               if any(m["parameter_id"] == pickers.ACCOUNT_PARAM_ID
                       for m in dc["parameter_mappings"])])
     check("every mapping on the twin names a picker it actually carries",
           all(m["parameter_id"] in {x["id"] for x in body["parameters"]}
@@ -1390,9 +1387,9 @@ _TOP = {card_ids[c] for c in ("Top 100 positions", "Top 100 positions (privacy)"
 _BORROWED = {card_ids[c] for t in ("Wealth Overview", "Wealth Overview" + p.PRIVACY_SUFFIX)
              for c, *_ in DEFS[t][3] if c.removesuffix(p.PRIVACY_SUFFIX) in HOMES
              and c.removesuffix(p.PRIVACY_SUFFIX) != "Asset class mix over time"}
-_SELECTION = {p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID}
+_SELECTION = {pickers.WEALTH_TAX_WRAPPER_PARAM_ID, pickers.ASSET_PARAM_ID}
 # The tiles that read the picked benchmark take its picker too.
-_BENCHMARKED = {card_ids[n] for n, c in CARDS.items() if "{{benchmark}}" in (sql_of(c[2]) or "")}
+_BENCHMARKED = {card_ids[n] for n, c in CARDS.items() if "{{benchmark}}" in sql_of(c[2])}
 # The debt view carries no asset class, the issuers view neither a source
 # nor a tax wrapper: those tiles take what their views can narrow by.
 _DEBT = {card_ids[c + s] for c in ("Debt by credit rating, share of debt and cash", "Debt by maturity",
@@ -1403,12 +1400,12 @@ _ISSUERS = {card_ids["Top 100 issuers" + s] for s in ("", p.PRIVACY_SUFFIX)}
 # whatever the time range.
 _LATEST = {card_ids[c + s] for c in ("Net worth", "Positions value", "Cash balance")
            for s in ("", p.PRIVACY_SUFFIX)}
-for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
-                                       p.TIME_PARAM_ID, p.SOURCE_PARAM_ID} | _SELECTION),
-                  ("Allocation", {p.WEALTH_CURRENCY_PARAM_ID,
-                                  p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID} | _SELECTION),
-                  ("Exposure", {p.EXPOSURE_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-                                p.EXPOSURE_TAX_WRAPPER_PARAM_ID, p.EXPOSURE_ASSET_CLASS_PARAM_ID})):
+for _d, _want in (("Wealth Overview", {pickers.WEALTH_CURRENCY_PARAM_ID,
+                                       pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID} | _SELECTION),
+                  ("Allocation", {pickers.WEALTH_CURRENCY_PARAM_ID,
+                                  pickers.ASOF_PARAM_ID, pickers.SOURCE_PARAM_ID} | _SELECTION),
+                  ("Exposure", {pickers.EXPOSURE_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID,
+                                pickers.EXPOSURE_TAX_WRAPPER_PARAM_ID, pickers.EXPOSURE_ASSET_CLASS_PARAM_ID})):
     for _name in (_d, _d + p.PRIVACY_SUFFIX):
         _body = [d for d in layouts if d.get("name") == _name][0]
         _tiles = [dc for dc in _body["dashcards"] if dc["card_id"] is not None and dc["card_id"] not in _BORROWED]
@@ -1417,20 +1414,20 @@ for _d, _want in (("Wealth Overview", {p.WEALTH_CURRENCY_PARAM_ID,
             if cid in _BENCHMARKED:
                 want = want | {p.BENCHMARK_PARAM_ID}
             if cid in _TOP:
-                return want | {p.VEHICLE_PARAM_ID}
+                return want | {pickers.VEHICLE_PARAM_ID}
             if cid in _DEBT:
-                return want - {p.EXPOSURE_ASSET_CLASS_PARAM_ID}
+                return want - {pickers.EXPOSURE_ASSET_CLASS_PARAM_ID}
             if cid in _ISSUERS:
-                return {p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID, p.BENCHMARK_PARAM_ID}
+                return {pickers.WEALTH_CURRENCY_PARAM_ID, pickers.ASOF_PARAM_ID, p.BENCHMARK_PARAM_ID}
             if cid in _LATEST:
-                return want - {p.TIME_PARAM_ID}
+                return want - {pickers.TIME_PARAM_ID}
             return want
         _off = [dc["card_id"] for dc in _tiles
                 if {m["parameter_id"] for m in dc["parameter_mappings"]} != _expected(dc["card_id"])]
         check(f"every '{_name}' tile answers the pickers its views can narrow by",
               bool(_tiles) and not _off, _off)
         check(f"on '{_name}', only the Top-positions tile carries a filter of its own, the vehicle",
-              all(dc.get("inline_parameters") == ([p.VEHICLE_PARAM_ID] if dc["card_id"] in _TOP else [])
+              all(dc.get("inline_parameters") == ([pickers.VEHICLE_PARAM_ID] if dc["card_id"] in _TOP else [])
                   for dc in _tiles),
               [(dc["card_id"], dc.get("inline_parameters")) for dc in _tiles if dc.get("inline_parameters")])
 
@@ -1440,7 +1437,7 @@ _WA = {n for d in ("Wealth Overview", "Allocation") for s in ("", p.PRIVACY_SUFF
        for n, *_ in DEFS[d + s][3] if card_ids[n] not in _BORROWED}
 # The issuers card covers the whole book: its view carries no source,
 # tax wrapper or asset class (above).
-_wa_sql = {n: sql_of(CARDS[n][2]) or "" for n in _WA if not n.startswith("Top 100 issuers")}
+_wa_sql = {n: sql_of(CARDS[n][2]) for n in _WA if not n.startswith("Top 100 issuers")}
 check("every Wealth Overview and Allocation holdings tile narrows to the tax wrapper and the asset class",
       all("[[AND {{tax_wrapper}}]]" in q and "[[AND {{asset_class}}]]" in q for q in _wa_sql.values()),
       [n for n, q in _wa_sql.items() if "{{tax_wrapper}}" not in q or "{{asset_class}}" not in q])
@@ -1492,7 +1489,7 @@ check("every Income tile is defined",
 # Every income tile reads the serving view and takes the currency
 # variable: a tile that summed every reporting currency would be
 # silently and plausibly wrong.
-_income_sql = {n: (sql_of(CARDS[n][2]) or "") for n in INCOME_CARD_NAMES if n in CARDS}
+_income_sql = {n: sql_of(CARDS[n][2]) for n in INCOME_CARD_NAMES if n in CARDS}
 check("every Income tile is native over web_income",
       all("web_income" in q for q in _income_sql.values()),
       [n for n, q in _income_sql.items() if "web_income" not in q])
@@ -1509,7 +1506,7 @@ check("the uncategorised-share tile declares no currency variable",
 # ...and none of them negates: gold stores a receipt positive, and the
 # negation is the spending family's alone.
 _negating = [n for n, q in _income_sql.items()
-             if any(f"-value_{c}" in q for c in p._ccy_lower())]
+             if any(f"-value_{c}" in q for c in _CCY_LOWER)]
 check("no Income tile negates the value", not _negating, _negating)
 
 # The payer ranking excludes the lines that have no payer rather than
@@ -1520,20 +1517,18 @@ check("Top 50 payers excludes lines with no payer",
 # The rings: the money one keeps its total in the hole, the share one
 # has none to keep.
 check("the Income ring shows its total",
-      _QDEFS["Income by type"][3].get("pie.show_total") is True,
-      _QDEFS["Income by type"][3])
+      CARD_DEFS["Income by type"].viz.get("pie.show_total") is True,
+      CARD_DEFS["Income by type"].viz)
 check("the Income share ring shows no total",
-      _PDEFS["Income by type (privacy)"][4].get("pie.show_total") is False,
-      _PDEFS["Income by type (privacy)"][4])
+      CARD_DEFS["Income by type (privacy)"].viz.get("pie.show_total") is False,
+      CARD_DEFS["Income by type (privacy)"].viz)
 
 # The twin redacts by dropping, not disguising.
 #
-# Every NATIVE twin card, not just the income ones: a twin's SQL is
-# where a column is dropped, and the check is the same question on both
-# dashboards. MBQL twins are excluded because they have no SQL to read —
-# they are redacted by running over a `_pct` model instead.
+# Every twin card, not just the income ones: a twin's SQL is where a
+# column is dropped, and the check is the same question on every
+# dashboard.
 _twin_sql = {n: sql_of(CARDS[n][2]) for n in CARDS if n.endswith(p.PRIVACY_SUFFIX)}
-_twin_sql = {n: q for n, q in _twin_sql.items() if q}
 # Redaction is about the OUTPUT: a name may be a GROUP BY key inside a
 # CTE — that is how the ranking keeps its shape — but no projection the
 # card renders may carry one.
@@ -1810,17 +1805,11 @@ check("the Income type picker binds to the detailed label",
        if q["slug"] == "type"][0]["values_source_config"]["value_field"][1]
       == "income_detailed")
 
-# Provisioning matches cards by name. ensure_cards merges the base and
-# the privacy definitions into one name-keyed payload map, so a name both
-# define leaves one card standing in for two — whichever was merged last
-# — and a dashboard renders the wrong chart. The models share the
-# collection's name map, so a card named like a model would overwrite it.
-_base_names = set(_QDEFS)
-_twin_names = set(_PDEFS)
-_clashes = sorted((_base_names & _twin_names)
-                  | ((_base_names | _twin_names) & set(MODELS)))
-check("no card name is defined twice, nor shared with a model",
-      bool(_base_names) and bool(_twin_names) and not _clashes, _clashes)
+# Provisioning matches cards by name, and the models share the
+# collection's name map, so a card named like a model would overwrite
+# it. A card defined twice stops at its definition (Family.card).
+_clashes = sorted(set(CARD_DEFS) & set(MODELS))
+check("no card name is shared with a model", not _clashes, _clashes)
 
 # No twin card may carry an account field filter. A native card's
 # template tags render as widgets wherever it is opened, so a tag is a
@@ -1835,7 +1824,7 @@ check("no card name is defined twice, nor shared with a model",
 # contain it, and a native exempt card carrying an `account` field
 # filter would reach a twin unseen.
 _privacy_tiles = {}
-for _dname, (_desc, _pickers, _sib, _tiles, *_) in p.dashboard_defs(CARD_DEFS).items():
+for _dname, (_desc, _pickers, _sib, _tiles, *_) in DEFS.items():
     if not _dname.endswith(p.PRIVACY_SUFFIX):
         continue
     for _c, *_ in _tiles:
@@ -1887,7 +1876,7 @@ check("every Cash Flow tile is defined",
       all(n in CARDS for n in CASHFLOW_CARD_NAMES),
       [n for n in CASHFLOW_CARD_NAMES if n not in CARDS])
 
-_cf_sql = {n: (sql_of(CARDS[n][2]) or "") for n in CASHFLOW_CARD_NAMES if n in CARDS}
+_cf_sql = {n: sql_of(CARDS[n][2]) for n in CASHFLOW_CARD_NAMES if n in CARDS}
 check("every Cash Flow tile is native over web_cashflow",
       all("web_cashflow" in q for q in _cf_sql.values()),
       [n for n, q in _cf_sql.items() if "web_cashflow" not in q])
@@ -1903,7 +1892,7 @@ for _n in ("Cash flow", "Investing by month"):
 
 # The diagram is what the dashboard is for, and a Sankey visualisation
 # reads three named columns.
-_sankey_viz = _QDEFS["Cash flow"][3]
+_sankey_viz = CARD_DEFS["Cash flow"].viz
 check("the diagram is wired as a Sankey over source/target/value",
       _sankey_viz.get("sankey.source") == "source"
       and _sankey_viz.get("sankey.target") == "target"
@@ -1913,7 +1902,7 @@ check("...and it computes the hub where the pickers apply",
 # Metabase lays a node out at the depth its INCOMING edge puts it at, so
 # a class with no leaves would sit on the middle level as a dead end
 # beside the classes that have them, and read as though it were one.
-_twin_sankey_viz = _PDEFS[p.privacy_name("Cash flow")][4]
+_twin_sankey_viz = CARD_DEFS[p.privacy_name("Cash flow")].viz
 for _n, _viz in (("Cash flow", _sankey_viz),
                  ("Cash flow (privacy)", _twin_sankey_viz)):
     check(f"'{_n}' draws every ending on the last level",
@@ -1947,7 +1936,7 @@ check("the Cash Flow twin has a card for every base tile",
 # instrument — so the twin needs normalisation rather than redaction;
 # the one card that DID name an account and a counterparty drops both
 # columns and ranks instead. This is the assertion that keeps it true.
-_cf_twin_sql = {p.privacy_name(n): (sql_of(CARDS[p.privacy_name(n)][2]) or "")
+_cf_twin_sql = {p.privacy_name(n): sql_of(CARDS[p.privacy_name(n)][2])
                 for n in CASHFLOW_CARD_NAMES if p.privacy_name(n) in CARDS}
 for _col in ("account_label", "display_name", "account_external_id", "name"):
     _leaking = [n for n, q in _cf_twin_sql.items()
@@ -1982,10 +1971,10 @@ for _n in ("Savings rate", "Savings rate (privacy)"):
 # "Operating out" prints a positive magnitude, so its share has to be
 # one too.
 check("'Operating out (privacy)' reports a positive magnitude, as its base tile does",
-      all(f"-value_{c}" in _cf_twin_sql["Operating out (privacy)"] for c in p._ccy_lower()),
+      all(f"-value_{c}" in _cf_twin_sql["Operating out (privacy)"] for c in _CCY_LOWER),
       _cf_twin_sql["Operating out (privacy)"][:240])
 check("'Operating in (privacy)' does not negate",
-      not any(f"-value_{c}" in _cf_twin_sql["Operating in (privacy)"] for c in p._ccy_lower()),
+      not any(f"-value_{c}" in _cf_twin_sql["Operating in (privacy)"] for c in _CCY_LOWER),
       _cf_twin_sql["Operating in (privacy)"][:240])
 # One hub. It is the sum of the positive nets AT THE LEVEL DRAWN, so a
 # class-level sum is a different number from the diagram's whenever a
@@ -2023,7 +2012,7 @@ for _n, _q in (("Cash flow", _cf_sql["Cash flow"]),
 # grains are `whole`/`class`, and a typo silently filters everything away.
 _LISTED = {"Currency", "Investing"}
 _seen_listed = 0
-for _dash, _def in p.dashboard_defs(CARD_DEFS).items():
+for _dash, _def in DEFS.items():
     for _param in params_of(_dash):
         if _param.get("name") in _LISTED:
             _seen_listed += 1
@@ -2066,7 +2055,7 @@ check("every Gains tile is defined",
       bool(_gains_tiles) and all(n in CARDS for n in _gains_tiles),
       [n for n in _gains_tiles if n not in CARDS])
 check("...and is placed once", len(set(_gains_tiles)) == len(_gains_tiles))
-_gn_sql = {n: (sql_of(CARDS[n][2]) or "") for n in _gains_tiles if n in CARDS}
+_gn_sql = {n: sql_of(CARDS[n][2]) for n in _gains_tiles if n in CARDS}
 check("every Gains tile is native over web_gains",
       all("FROM web_gains" in q for q in _gn_sql.values()),
       [n for n, q in _gn_sql.items() if "FROM web_gains" not in q])
@@ -2084,8 +2073,8 @@ check("...and to the picked reading of a missing cost basis",
        if q.count("FROM web_gains") != q.count("AND missing_basis = {{missing_basis}}")])
 check("every Gains tile takes the six pickers, the asset class among them",
       all(picks(n, "Gains").keys() ==
-          {p.GAINS_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-           p.GAINS_TAX_WRAPPER_PARAM_ID, p.GAINS_ASSET_CLASS_PARAM_ID, p.GAINS_MISSING_PARAM_ID}
+          {pickers.GAINS_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID,
+           pickers.GAINS_TAX_WRAPPER_PARAM_ID, pickers.GAINS_ASSET_CLASS_PARAM_ID, pickers.GAINS_MISSING_PARAM_ID}
           for n in _gains_tiles)
       and all("[[AND {{asset_class}}]]" in _gn_sql[n] for n in _gains_tiles),
       {n: list(picks(n, "Gains")) for n in _gains_tiles})
@@ -2141,11 +2130,11 @@ if _gbody:
 section("every dashboard's grid")
 
 # A heading spans the grid's width on its row, so it counts as a tile.
-_lay = p.layout((p.Row(3, (("A", 8), ("B", 16, "B2"))), p.Heading("h"),
-                  p.Twin((p.Row(2, (("C", 24),)),), (p.Row(4, (("D", 12),)),)),
-                  p.Row(8, (p.Stack(6, ("E", "F")), ("G", 18)))))
-_lay_twin = p.layout((p.Twin((p.Row(2, (("C", 24),)),), (p.Row(4, (("D", 12),)),)),
-                         p.Row(1, (("H", 24),))), twin=True)
+_lay = layout.layout((layout.Row(3, (("A", 8), ("B", 16, "B2"))), layout.Heading("h"),
+                  layout.Twin((layout.Row(2, (("C", 24),)),), (layout.Row(4, (("D", 12),)),)),
+                  layout.Row(8, (layout.Stack(6, ("E", "F")), ("G", 18)))))
+_lay_twin = layout.layout((layout.Twin((layout.Row(2, (("C", 24),)),), (layout.Row(4, (("D", 12),)),)),
+                         layout.Row(1, (("H", 24),))), twin=True)
 check("a layout's rows stack and its tiles sit side by side, a stack sharing its row's height",
       _lay == ([("A", 0, 0, 8, 3, "A"), ("B", 0, 8, 16, 3, "B2"), ("C", 4, 0, 24, 2, "C"),
                 ("E", 6, 0, 6, 4, "E"), ("F", 10, 0, 6, 4, "F"), ("G", 6, 6, 18, 8, "G")],
@@ -2154,12 +2143,12 @@ check("a layout's rows stack and its tiles sit side by side, a stack sharing its
 # a slug the picker table holds. One naming a picker no row holds for
 # it, a family's currency say, or dropping a picker it lacks from its
 # twin, stops at its definition, not at the send.
-_new = p.Dashboard("New", "d.", "twin d.", ("time_range", "source"), (), (p.Row(3, (("Net worth", 24),)),))
-p.check_dashboards([_new])
+_new = layout.Dashboard("New", "d.", "twin d.", ("time_range", "source"), (), (layout.Row(3, (("Net worth", 24),)),))
+dashboards_index.check_dashboards([_new])
 _errors = []
 for _bad in (_new._replace(pickers=("currency", "time_range")), _new._replace(twin_drops=("account",))):
     try:
-        p.check_dashboards([_bad])
+        dashboards_index.check_dashboards([_bad])
         _errors.append(None)
     except ValueError as e:
         _errors.append(str(e))
@@ -2177,7 +2166,20 @@ check("...and one that passes gets the pickers it names, no other dashboard's",
       _new_params == ["time_range", "source"], _new_params)
 check("...and a twin lays out its own rows in place of its base's",
       _lay_twin == ([("D", 0, 0, 12, 4, "D"), ("H", 4, 0, 24, 1, "H")], []), _lay_twin)
-for _d, _def in p.dashboard_defs(CARD_DEFS).items():
+# A twin tile shows the card it names, by that card's exemption, never
+# its base card's: an exempt base naming a money card shows the money
+# card's variant, a money base naming an exempt card the card itself.
+_exempt = {n: type("C", (), {"exempt": e})() for n, e in (("Days", True), ("Money", False), ("Ratio", True))}
+_shown = _new._replace(rows=(layout.Row(3, (("Days", 12, "Money"), ("Money", 12, "Ratio"))),))
+_saved_dashboards = dashboards_index.DASHBOARDS
+dashboards_index.DASHBOARDS = (_shown,)
+try:
+    _shown_tiles = [t[0] for t in dashboards_index.dashboard_defs(_exempt)[p.privacy_name("New")].tiles]
+finally:
+    dashboards_index.DASHBOARDS = _saved_dashboards
+check("...and a twin tile shows the card it names, its privacy variant unless that card is exempt",
+      _shown_tiles == [p.privacy_name("Money"), "Ratio"], _shown_tiles)
+for _d, _def in DEFS.items():
     _spec = _def.tiles + [(_text, _r, 0, 24, 1) for _r, _text, _disp in _def.headings]
     check(f"'{_d}' sits on the 24-column grid without overlaps",
           all(c + w <= 24 for _n, _r, c, w, _h in _spec) and not [
@@ -2299,12 +2301,12 @@ check("...on the twin, a figure opens its home's twin, and the gains, whose dash
       and p.overview_home(CARD_DEFS["Net worth (privacy)"], _OVT) is None)
 _ytd = _ov_tiles[_OV][card_ids["Return year to date (TWR)"]]["visualization_settings"]["click_behavior"]
 check("...a year-to-date return passing its year to the Returns Start year",
-      _ytd["parameterMapping"].get(p.START_YEAR_PARAM_ID, {}).get("source")
+      _ytd["parameterMapping"].get(pickers.START_YEAR_PARAM_ID, {}).get("source")
       == {"type": "column", "id": "start_year", "name": "start_year"}, _ytd)
 _mix = {n: _ov_tiles[n][card_ids["Asset class mix over time"]]["visualization_settings"]["click_behavior"]
         for n in (_OV, _OVT)}
 check("...the asset class mix passing the day clicked to Allocation's As of day, on the overview and its twin",
-      all(m["parameterMapping"].get(p.ASOF_PARAM_ID, {}).get("source")
+      all(m["parameterMapping"].get(pickers.ASOF_PARAM_ID, {}).get("source")
           == {"type": "column", "id": "as_of_day", "name": "as_of_day"} for m in _mix.values()), _mix)
 # The overview's tiles built for it alone, each from its home
 # dashboard's data: no other dashboard shows them.
@@ -2346,7 +2348,7 @@ section("stacked charts with a band per series")
 # the largest first. The Exposure charts over time rank with an
 # aggregate of their own (see over_time); the Exposure section checks
 # them.
-_stacked_bands = {n: sql_of(q) or "" for n, (d, _desc, q) in CARDS.items()
+_stacked_bands = {n: sql_of(q) for n, (d, _desc, q) in CARDS.items()
                   if d in ("area", "bar", "combo")
                   and VIZ[n].get("stackable.stack_type") == "stacked"
                   and len(VIZ[n].get("graph.dimensions", [])) == 2}
@@ -2369,7 +2371,7 @@ check("...the bars, flows each, by the band's total over the window",
 # no rows: a card whose series is a constant (Investing, whole grain)
 # meets one when a picker contradicts its own filter.
 check("a series rank is an aggregate joined back, never a window",
-      all("OVER" not in p._series_order("SELECT 1 AS m, 'k' AS s, 2 AS v", "m", "s", "v", by)
+      all("OVER" not in sqlkit._series_order("SELECT 1 AS m, 'k' AS s, 2 AS v", "m", "s", "v", by)
           for by in ("total", "latest")))
 check("...and lists its legend in the bands' own order",
       all(VIZ[n].get("legend.is_reversed") is False for n in _stacked_bands),
@@ -2386,12 +2388,12 @@ section("line charts list their legend top line first")
 _LINE_RANKED = ("Unrealized gain over time", "Card balances over time",
                 "Card balances over time (privacy)", "Cumulative return (TWR)")
 check("the ranked line charts order their rows largest series first",
-      all("series_rank DESC NULLS LAST" in (sql_of(CARDS[n][2]) or "") for n in _LINE_RANKED),
-      [n for n in _LINE_RANKED if "series_rank DESC" not in (sql_of(CARDS[n][2]) or "")])
+      all("series_rank DESC NULLS LAST" in sql_of(CARDS[n][2]) for n in _LINE_RANKED),
+      [n for n in _LINE_RANKED if "series_rank DESC" not in sql_of(CARDS[n][2])])
 check("...and keep the legend in that order",
       all(VIZ[n].get("legend.is_reversed") is False for n in _LINE_RANKED))
 check("Cumulative return (TWR) draws the benchmark's rows last",
-      f"ORDER BY q.source = '{p.BENCHMARK_SERIES}', series_rank DESC NULLS LAST, q.source, year"
+      f"ORDER BY q.source = '{sqlkit.BENCHMARK_SERIES}', series_rank DESC NULLS LAST, q.source, year"
       in sql_of(CARDS["Cumulative return (TWR)"][2]))
 
 section("a twin's name drops an address")
@@ -2437,13 +2439,13 @@ check("the cards a twin shows with a name in their output are these",
                               "Yield against duration (privacy)", "Received and expected by position (privacy)",
                               "Expected payments (privacy)"}, sorted(_named))
 check("...and each but the safe ones wraps it in twin_name",
-      all(p.ADDRESS_PATTERN in _twin_natives[n] for n in _named - _NAME_SAFE),
-      [n for n in _named - _NAME_SAFE if p.ADDRESS_PATTERN not in _twin_natives[n]])
+      all(sqlkit.ADDRESS_PATTERN in _twin_natives[n] for n in _named - _NAME_SAFE),
+      [n for n in _named - _NAME_SAFE if sqlkit.ADDRESS_PATTERN not in _twin_natives[n]])
 check("a base card keeps the name whole",
-      not any(p.ADDRESS_PATTERN in (sql_of(q) or "") for n, (_d, _desc, q) in CARDS.items()
+      not any(sqlkit.ADDRESS_PATTERN in sql_of(q) for n, (_d, _desc, q) in CARDS.items()
               if n not in _twin_natives))
 check("-p reads the pattern the twins read",
-      p.ADDRESS_PATTERN in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wealthdb", "cmd",
+      sqlkit.ADDRESS_PATTERN in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wealthdb", "cmd",
                                              "wealthdb", "columns.go"), encoding="utf-8").read())
 
 section("the Exposure dashboard")
@@ -2456,9 +2458,9 @@ check("every Exposure tile is defined",
 check("...and is placed once", len(set(_ex_tiles)) == len(_ex_tiles))
 # The description promises the coverage chart last.
 check("...the coverage chart last",
-      max((t for t in _ex_spec if t[0] not in p.BENCHMARK_CARDS), key=lambda t: t[1])[0]
+      max((t for t in _ex_spec if t[0] not in dashboards_index.BENCHMARK_CARDS), key=lambda t: t[1])[0]
       == "How the figures are classified")
-_ex_sql = {n: (sql_of(CARDS[n][2]) or "") for n in _ex_tiles if n in CARDS}
+_ex_sql = {n: sql_of(CARDS[n][2]) for n in _ex_tiles if n in CARDS}
 # The tiles over the look-through itself; the debt and securities tiles
 # read views of their own (checked below).
 _ex_look = {n: q for n, q in _ex_sql.items() if re.search(r"FROM web_exposure\b", q)}
@@ -2485,7 +2487,7 @@ check("every Exposure tile reads the source, the tax wrapper and the asset class
 check("the Exposure dashboard has a privacy twin",
       DEFS["Exposure"][2] == "Exposure" + p.PRIVACY_SUFFIX
       and "Exposure" + p.PRIVACY_SUFFIX in DEFS)
-_ex_twin = {n: sql_of(CARDS[n][2]) or "" for n, *_ in DEFS["Exposure" + p.PRIVACY_SUFFIX][3] if n in CARDS}
+_ex_twin = {n: sql_of(CARDS[n][2]) for n, *_ in DEFS["Exposure" + p.PRIVACY_SUFFIX][3] if n in CARDS}
 check("...whose every tile is a privacy card or an exempt one",
       list(_ex_twin) == [n if n in EXEMPT else p.privacy_name(n) for n in _ex_tiles],
       list(_ex_twin))
@@ -2645,7 +2647,7 @@ def _picker_targets_resolve(names):
 # A click passes a column of its card's rows on; Metabase states a card's
 # columns only once it has run, so the column is checked against its SQL.
 _col_off = {n: col for n, c in CARD_DEFS.items() for col, _to in c.links
-            if col not in _output_columns(sql_of(c.query) or "")}
+            if col not in _output_columns(sql_of(c.query))}
 check("each column a click passes is one its card's SQL returns", not _col_off, _col_off)
 _unc = {n: CARDS[n][2] for n in ("Uncategorized share", "Uncategorized share (privacy)")}
 check("the uncategorized-share card is a share of the window's lines, its twin's the same figure alone, "
@@ -2672,7 +2674,7 @@ _ex_debt_tiles = list(_ex_debt)
 check("the four are on the Exposure dashboard and its twin, above the coverage chart",
       all(n in _ex_tiles and p.privacy_name(n) in _ex_twin for n in _ex_debt_tiles)
       and all(_ex_at[n][1] < _ex_at["How the figures are classified"][1] for n in _ex_debt_tiles))
-_ex_debt_sql = {n + s: sql_of(CARDS[n + s][2]) or "" for n in _ex_debt_tiles for s in ("", p.PRIVACY_SUFFIX)}
+_ex_debt_sql = {n + s: sql_of(CARDS[n + s][2]) for n in _ex_debt_tiles for s in ("", p.PRIVACY_SUFFIX)}
 for _n, _dim in _ex_debt.items():
     for _name in (_n, p.privacy_name(_n)):
         _q = _ex_debt_sql[_name]
@@ -2721,7 +2723,7 @@ check("...and its twin shares in place of the values",
       _sec_cols[p.privacy_name(_sec)] == ["security", "name", "ticker", "asset_class", "sector", "country",
                                           "market_cap", "size", "direct_pct", "via_funds_pct", "funds", "share_pct",
                                           "benchmark_pct", "difference_pct"]
-      and f"LIKE '%{p.HOLDING_KEY_PREFIX}%'" in sql_of(CARDS[p.privacy_name(_sec)][2]), _sec_cols)
+      and f"LIKE '%{sqlkit.HOLDING_KEY_PREFIX}%'" in sql_of(CARDS[p.privacy_name(_sec)][2]), _sec_cols)
 
 
 def _aggregates(body):
@@ -2762,7 +2764,7 @@ _al_cards = [n for n, *_ in DEFS["Allocation"][3]] + [n for n, *_ in DEFS["Alloc
 _history_day = ("(SELECT max(history_day) FROM web_history_calendar WHERE TRUE\n"
                 "     [[AND {{as_of_day}}]])")
 for _name in _al_cards:
-    _q = sql_of(CARDS[_name][2]) or ""
+    _q = sql_of(CARDS[_name][2])
     _tag = CARDS[_name][2]["native"]["template-tags"]["as_of_day"]
     _reads = "AND as_of_day = " + _history_day if "issuers" not in _name else "SELECT " + _history_day + " AS day"
     check(f"'{_name}' reads the last history day on or before the As of day",
@@ -2782,7 +2784,7 @@ check("the issuers card sits below the top positions on Allocation and its twin,
       and _al_spec["Top 100 issuers"][3] == 24)
 check("...and is gone from Exposure and its twin",
       "Top 100 issuers" not in _ex_tiles and p.privacy_name("Top 100 issuers") not in _ex_twin)
-_iss_sql = {n: sql_of(CARDS[n][2]) or "" for n in ("Top 100 issuers", p.privacy_name("Top 100 issuers"))}
+_iss_sql = {n: sql_of(CARDS[n][2]) for n in ("Top 100 issuers", p.privacy_name("Top 100 issuers"))}
 for _name, _q in _iss_sql.items():
     check(f"'{_name}' lists the top hundred issuers at the latest instant on or before the as-of day",
           "FROM web_exposure_issuers" in _q and "currency = {{currency}}" in _q
@@ -2792,8 +2794,8 @@ for _name, _q in _iss_sql.items():
           and "lei" not in _output_columns(_q)
           and set(CARDS[_name][2]["native"]["template-tags"]) == {"currency", "as_of_day", "benchmark"}, _q[-300:])
 check("the issuers twin hides an issuer named by a holding's own key, gold's, and shows no value",
-      _holding_prefix is not None and p.HOLDING_KEY_PREFIX == _holding_prefix.group(1)
-      and f"LIKE '{p.HOLDING_KEY_PREFIX}%'" in _iss_sql[p.privacy_name("Top 100 issuers")]
+      _holding_prefix is not None and sqlkit.HOLDING_KEY_PREFIX == _holding_prefix.group(1)
+      and f"LIKE '{sqlkit.HOLDING_KEY_PREFIX}%'" in _iss_sql[p.privacy_name("Top 100 issuers")]
       and "value" not in _output_columns(_iss_sql[p.privacy_name("Top 100 issuers")]),
       _holding_prefix and _holding_prefix.group(1))
 _credit = "Debt by credit rating, share of debt and cash"
@@ -2810,10 +2812,10 @@ for _n in _ex_debt:
               and "c AS (SELECT sum(value) AS total FROM e WHERE bucket <> '(none)')" in _q
               and "100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c) AS class_share_pct" in _q
               and "share_pct AS share_pct" not in _q and "OVER" not in _q.split("UNION ALL BY NAME")[0], _q[-500:])
-        check(f"...its label held to two decimals, a bucket under {p.SMALLEST_BAR_PCT}% left out of the bars",
+        check(f"...its label held to two decimals, a bucket under {exposure.SMALLEST_BAR_PCT}% left out of the bars",
               VIZ[_name]["column_settings"]['["name","class_share_pct"]'] == {"suffix": "%", "decimals": 2}
               and ("HAVING coalesce(abs(100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c))"
-                   f" >= {p.SMALLEST_BAR_PCT}, TRUE)") in _q)
+                   f" >= {exposure.SMALLEST_BAR_PCT}, TRUE)") in _q)
 # Each description starts by saying what its card counts, which
 # Metabase shows behind the info icon. The maturity card's title names
 # the debt alone, so its description names the cash it counts too.
@@ -2831,8 +2833,8 @@ check("every picker these tiles map lands on a tag they declare and read",
 # read from its macro's newest definition.
 _orders = {b: [re.findall(r"'([^']+)'", m) for m in re.findall(
                r"list_position\(\[([^\]]*)\]", _latest_definition(f"report_exposure_{macro}"), re.S)]
-           for b, macro in ((p.CREDIT_BUCKETS, "credit"), (p.MATURITY_BUCKETS, "maturities"),
-                            (p.COUPON_BUCKETS, "coupons"), (p.CYCLE_BUCKETS, "cycles"))}
+           for b, macro in ((exposure.CREDIT_BUCKETS, "credit"), (exposure.MATURITY_BUCKETS, "maturities"),
+                            (exposure.COUPON_BUCKETS, "coupons"), (exposure.CYCLE_BUCKETS, "cycles"))}
 check("each card's buckets are the engine's, in its order, (none) apart",
       all(orders and all(o == [*b, "(none)"] for o in orders) for b, orders in _orders.items()), _orders)
 # The grades split canonical's rating buckets, and the credit view grades
@@ -2840,9 +2842,9 @@ check("each card's buckets are the engine's, in its order, (none) apart",
 _canonical_go = _go_package("canonical")
 _ratings = _go_list(_canonical_go, "ratingBuckets", "RatingBucket")
 check("the grades split canonical's rating buckets, best first, as the credit view grades them",
-      [*p.INVESTMENT_GRADE, *p.HIGH_YIELD] == _ratings
-      and (f"WHEN bucket IN ({p._sql_list(p.INVESTMENT_GRADE)}) THEN 'IG' "
-           f"WHEN bucket IN ({p._sql_list(p.HIGH_YIELD)}) THEN 'HY'") in _latest_definition("report_exposure_credit"),
+      [*exposure.INVESTMENT_GRADE, *exposure.HIGH_YIELD] == _ratings
+      and (f"WHEN bucket IN ({p._sql_list(exposure.INVESTMENT_GRADE)}) THEN 'IG' "
+           f"WHEN bucket IN ({p._sql_list(exposure.HIGH_YIELD)}) THEN 'HY'") in _latest_definition("report_exposure_credit"),
       _ratings)
 check("their descriptions say they cover the last twelve months",
       all("last twelve months" in CARDS[n][1] for n in _ex_debt_sql))
@@ -2879,7 +2881,7 @@ check("...the projection's pickers required, defaulting to the CLI's assumptions
       and _y_params["maturing"]["values_source_config"]["values"] == ["cash", "idle", "roll"],
       _y_params)
 _y_all = [n for t in _y_tiles for n in {t, p.privacy_name(t)} if n in CARDS]
-_y_sql = {n: sql_of(CARDS[n][2]) or "" for n in _y_all}
+_y_sql = {n: sql_of(CARDS[n][2]) for n in _y_all}
 # The Asset class picker binds web_yield and web_yield_curve. Its model
 # lists the classes of both, so it offers `unknown` where nothing
 # classes a holding; the asset class history may never hold it.
@@ -2927,23 +2929,23 @@ for _n in _y_all:
         check(f"'{_n}' reads the window's last day and takes no projection picker",
               "time_range" in _tags and not _tags & {"rates", "maturing", "shift", "horizon"}, sorted(_tags))
 check("a part's income is yield.Part.Income's, each floating rate floored at zero",
-      all(s in p.PART_INCOME for s in ("p.fixed", "p.roll_forward", "p.roll_constant",
+      all(s in sqlkit.PART_INCOME for s in ("p.fixed", "p.roll_forward", "p.roll_constant",
                                        "p.principal * GREATEST(0, COALESCE(rt.rate_pct, 0) + p.spread"
                                        " + ({{shift}}) / 100.0) / 1200",
                                        "WHEN p.roll_principal = 0 THEN",
                                        "ELSE p.roll_principal * GREATEST(0, ("))
-      and "rt.path = {{rates}}" in p.PARTS_FROM, p.PART_INCOME)
+      and "rt.path = {{rates}}" in sqlkit.PARTS_FROM, sqlkit.PART_INCOME)
 check("a rate weighs the assets, else every row, as yield.summarize does",
-      "CASE WHEN bool_or(weighs) THEN sum(value * x) FILTER (WHERE weighs AND x IS NOT NULL)" in p._rate("x")
-      and "ELSE sum(value * x) FILTER (WHERE x IS NOT NULL)" in p._rate("x"))
+      "CASE WHEN bool_or(weighs) THEN sum(value * x) FILTER (WHERE weighs AND x IS NOT NULL)" in yields._rate("x")
+      and "ELSE sum(value * x) FILTER (WHERE x IS NOT NULL)" in yields._rate("x"))
 check("the cash card lists the worst paid first, the debit balances last",
       "ORDER BY value < 0, gap_pct NULLS FIRST" in _y_sql["Cash against its benchmark"])
 # A kind respelt in the engine would empty a tile with no error.
 _kinds = set(re.findall(r'Kind\w+\s+Kind = "(\w+)"', _yield_go))
 check("the cash, duration and dividend cards select the yield report's kinds",
-      {*p.CASH_KINDS, *p.DURATION_KINDS, "stock"} <= _kinds and "multi_asset" in p.DURATION_KINDS
-      and f"kind IN ({p._sql_list(p.CASH_KINDS)})" in _y_sql["Cash against its benchmark"]
-      and f"kind IN ({p._sql_list(p.DURATION_KINDS)})" in _y_sql["Yield against duration"]
+      {*yields.CASH_KINDS, *yields.DURATION_KINDS, "stock"} <= _kinds and "multi_asset" in yields.DURATION_KINDS
+      and f"kind IN ({p._sql_list(yields.CASH_KINDS)})" in _y_sql["Cash against its benchmark"]
+      and f"kind IN ({p._sql_list(yields.DURATION_KINDS)})" in _y_sql["Yield against duration"]
       and "WHERE kind = 'stock'" in _y_sql["Dividend yield against payout"], sorted(_kinds))
 check("the DV01 twin is a share of the day's net worth per basis point",
       "nw AS (SELECT sum(value) AS nw FROM w" in _y_sql["DV01 along the curve (privacy)"]
@@ -2979,10 +2981,10 @@ for _d in ("Yield", "Yield (privacy)"):
 _horizons = {k: int(v) for k, v in re.findall(r"(Default|Max)HorizonMonths\s*=\s*(\d+)",
                                               _canonical_go + _go_package("config"))}
 check("the Yield and the projection's pickers are the engine's rate paths, maturing rules and horizons",
-      _go_list(_yield_go, "Paths", "Path") == list(p.RATE_PATHS)
-      and _go_list(_yield_go, "Rules", "Rule") == list(p.MATURING_RULES)
+      _go_list(_yield_go, "Paths", "Path") == list(sqlkit.RATE_PATHS)
+      and _go_list(_yield_go, "Rules", "Rule") == list(sqlkit.MATURING_RULES)
       and int(p.HORIZONS[0]) == _horizons.get("Default") and int(p.HORIZONS[-1]) == _horizons.get("Max"),
-      (p.RATE_PATHS, p.MATURING_RULES, p.HORIZONS, _horizons))
+      (sqlkit.RATE_PATHS, sqlkit.MATURING_RULES, p.HORIZONS, _horizons))
 
 section("the Income dashboard's cards of the holdings' income")
 
@@ -3046,7 +3048,7 @@ check("the income lines' cards by month and by account are not defined, and thei
           for n in _SUPERSEDED for s in ("", p.PRIVACY_SUFFIX))
       and not [t for d in DEFS.values() for t in d[3] if t[0].removesuffix(p.PRIVACY_SUFFIX) in _SUPERSEDED])
 _in_all = [x for n in _IN_PROJECTED for x in (n, _twin(n))]
-_in_sql = {n: sql_of(CARDS[n][2]) or "" for n in _in_all}
+_in_sql = {n: sql_of(CARDS[n][2]) for n in _in_all}
 # What was received depends on no assumption, so those tiles read the
 # income received alone and take no projection picker; what is expected
 # reads the parts alone, but on the twin, whose share is of both.
@@ -3116,14 +3118,14 @@ for _n in _in_all:
           _tags == _want, sorted(_tags))
 # A twin ends by saying its figures are shares.
 check("an Income twin's description ends in the privacy note",
-      all(CARDS[n][1].endswith(p.PRIVACY_DESC) for n in _in_all if n.endswith(p.PRIVACY_SUFFIX)),
-      [n for n in _in_all if n.endswith(p.PRIVACY_SUFFIX) and not CARDS[n][1].endswith(p.PRIVACY_DESC)])
+      all(CARDS[n][1].endswith(sqlkit.PRIVACY_DESC) for n in _in_all if n.endswith(p.PRIVACY_SUFFIX)),
+      [n for n in _in_all if n.endswith(p.PRIVACY_SUFFIX) and not CARDS[n][1].endswith(sqlkit.PRIVACY_DESC)])
 check("...where no shift is the Shift variable's default",
-      p.PROJECTION_TAGS["shift"]["default"] == "0", p.PROJECTION_TAGS["shift"])
+      sqlkit.PROJECTION_TAGS["shift"]["default"] == "0", sqlkit.PROJECTION_TAGS["shift"])
 check("only the calendar takes the Position picker, and it is optional",
       [n for n in _in_all if "position" in CARDS[n][2]["native"]["template-tags"]]
       == ["Expected payments", "Expected payments (privacy)"]
-      and p.POSITION_TAG["required"] is False)
+      and income.POSITION_TAG["required"] is False)
 _in_params = [q["slug"] for q in params_of("Income (privacy)")]
 check("the Income twin carries the same pickers, but the account",
       _in_params == ["currency", "time_range", "horizon", "source", "type", "tax_wrapper", "position",
@@ -3166,30 +3168,30 @@ _month_viz = VIZ["Received and expected by month"]
 check("the by-month chart stacks a series per type and status, and per class of the other lines, "
       "the expected one lighter",
       _month_viz["graph.dimensions"] == ["month", "series"]
-      and set(_month_viz["series_settings"]) == {f"{t} ({s})" for t in p.INCOME_TYPE_COLORS
+      and set(_month_viz["series_settings"]) == {f"{t} ({s})" for t in income.INCOME_TYPE_COLORS
                                                 for s in ("received", "expected")}
-      | {f"{p.INCOME_CLASS_BANDS[c]} ({s})" for c in p.INCOME_CLASS_COLORS
+      | {f"{income.INCOME_CLASS_BANDS[c]} ({s})" for c in income.INCOME_CLASS_COLORS
          for s in ("received", "expected, run-rate")}
-      and set(p.INCOME_CLASS_COLORS) == set(p.INCOME_CLASS_BANDS)
-      and all(_month_viz["series_settings"][f"{p.INCOME_CLASS_BANDS[c]} (expected, run-rate)"]["color"]
-              == p._tint(v) for c, v in p.INCOME_CLASS_COLORS.items())
-      and all(_month_viz["series_settings"][f"{t} (expected)"]["color"] == p._tint(c) != c
+      and set(income.INCOME_CLASS_COLORS) == set(income.INCOME_CLASS_BANDS)
+      and all(_month_viz["series_settings"][f"{income.INCOME_CLASS_BANDS[c]} (expected, run-rate)"]["color"]
+              == income._tint(v) for c, v in income.INCOME_CLASS_COLORS.items())
+      and all(_month_viz["series_settings"][f"{t} (expected)"]["color"] == income._tint(c) != c
               and _month_viz["series_settings"][f"{t} (received)"]["color"] == c
-              for t, c in p.INCOME_TYPE_COLORS.items()))
-check("...whose types are the projection's", set(p.INCOME_TYPE_COLORS) == set(
-    re.findall(r'Type\w+\s+IncomeType = "(\w+)"', _yield_go)), sorted(p.INCOME_TYPE_COLORS))
+              for t, c in income.INCOME_TYPE_COLORS.items()))
+check("...whose types are the projection's", set(income.INCOME_TYPE_COLORS) == set(
+    re.findall(r'Type\w+\s+IncomeType = "(\w+)"', _yield_go)), sorted(income.INCOME_TYPE_COLORS))
 check("...and the headline figures' interest and dividends are among them",
-      {*p.INTEREST_TYPES, *p.DIVIDEND_TYPES} <= set(p.INCOME_TYPE_COLORS))
-check("a lighter shade is the colour mixed toward white", p._tint("#000000", 0.5) == "#808080")
+      {*income.INTEREST_TYPES, *income.DIVIDEND_TYPES} <= set(income.INCOME_TYPE_COLORS))
+check("a lighter shade is the colour mixed toward white", income._tint("#000000", 0.5) == "#808080")
 _in_layout, _in_body = _tile_layout("Income")
 _pos_dc = [dc for dc in _in_body["dashcards"] if dc["card_id"] == card_ids["Received and expected by position"]][0]
 _clicks = _pos_dc["visualization_settings"].get("column_settings", {})
 check("a click on a position's symbol or name sets the Position picker the calendar reads",
       set(_clicks) == {'["name","symbol"]', '["name","name"]'}
       and all(c["click_behavior"]["type"] == "crossfilter"
-              and c["click_behavior"]["parameterMapping"][p.POSITION_PARAM_ID]["target"]
-              == {"type": "parameter", "id": p.POSITION_PARAM_ID} for c in _clicks.values())
-      and p.POSITION_PARAM_ID in {q["id"] for q in _in_body["parameters"]}, _clicks)
+              and c["click_behavior"]["parameterMapping"][pickers.POSITION_PARAM_ID]["target"]
+              == {"type": "parameter", "id": pickers.POSITION_PARAM_ID} for c in _clicks.values())
+      and pickers.POSITION_PARAM_ID in {q["id"] for q in _in_body["parameters"]}, _clicks)
 check("...and no other tile carries settings of its own but the pickers that miss it",
       all(set(dc["visualization_settings"]) <= {"card.description"} for dc in _in_body["dashcards"]
           if dc["card_id"] not in (None, card_ids["Received and expected by position"])))
@@ -3200,8 +3202,8 @@ _tw_pos = [dc for dc in _tw_body["dashcards"]
            if dc["card_id"] == card_ids["Received and expected by position (privacy)"]][0]
 check("...and on the twin the same, its calendar matching the name the twin shows",
       set(_tw_pos["visualization_settings"].get("column_settings", {})) == set(_clicks)
-      and f"position_key, {p.TWIN_POSITION_NAME})]]" in _in_sql["Expected payments (privacy)"]
-      and p.TWIN_POSITION_NAME not in _in_sql["Expected payments"], _tw_pos["visualization_settings"])
+      and f"position_key, {income.TWIN_POSITION_NAME})]]" in _in_sql["Expected payments (privacy)"]
+      and income.TWIN_POSITION_NAME not in _in_sql["Expected payments"], _tw_pos["visualization_settings"])
 check("...as each card's description says",
       all("click" in CARDS[n][1].lower()
           for n in ("Received and expected by position", "Expected payments",
@@ -3213,7 +3215,7 @@ for _d in ("Income", "Income (privacy)"):
 # which the engine builds from these prefixes.
 _key_go = _gold_go + _yield_go
 check("the keys the positions twin shows are the ones the engine builds",
-      all(f'"{k}" +' in _key_go for k in p.SHOWN_KEY_PREFIXES), p.SHOWN_KEY_PREFIXES)
+      all(f'"{k}" +' in _key_go for k in income.SHOWN_KEY_PREFIXES), income.SHOWN_KEY_PREFIXES)
 
 section("the Income pickers reach every card")
 
@@ -3226,8 +3228,8 @@ for _n in [x for n in _in_cards for x in (n, n if n in EXEMPT else _twin(n))]:
     _tg = set(CARDS[_n][2]["native"]["template-tags"])
     _reg = set(picks(_n, "Income" + (p.PRIVACY_SUFFIX if _n.endswith(p.PRIVACY_SUFFIX) else "")))
     _typed = _n not in _EVERY_LINE
-    if not ("tax_wrapper" in _tg and p.INCOME_TAX_WRAPPER_PARAM_ID in _reg
-            and ("type" in _tg) == _typed and (p.INCOME_TYPE_PARAM_ID in _reg) == _typed):
+    if not ("tax_wrapper" in _tg and pickers.INCOME_TAX_WRAPPER_PARAM_ID in _reg
+            and ("type" in _tg) == _typed and (pickers.INCOME_TYPE_PARAM_ID in _reg) == _typed):
         _in_off[_n] = sorted(_tg)
 check("every Income card carries the Tax wrapper tag, and every one but the withholding's two the Type",
       len(_in_cards) == 20 and not _in_off, _in_off)
@@ -3236,7 +3238,7 @@ check("...the holdings' cards binding it, as the Source, to the view of every ac
       set(_in_tw.values()) == {("field", "web_sources_latest", "tax_wrapper")}, _in_tw)
 check("...and the tax booked reaching it through its account",
       all("(silver_source_id, account_external_id) IN (SELECT silver_source_id, account_external_id FROM accounts"
-          " WHERE COALESCE(tax_wrapper, 'taxable_personal') IN (SELECT tax_wrapper FROM web_sources_latest"
+          " WHERE account_wrapper(tax_wrapper) IN (SELECT tax_wrapper FROM web_sources_latest"
           " WHERE {{tax_wrapper}}))" in _in_sql[n]
           for n in _EVERY_LINE))
 # The Type picker lists the lines' labels; a holdings' card keeps a row
@@ -3248,14 +3250,14 @@ _go_map = {}
 for _d, _i in re.findall(r"income_detailed = '(\w+)'.*?THEN '%\[(\d)\]s'", _type_sql.group(1), re.S):
     _go_map.setdefault(_d, set()).add(_args[int(_i) - 1].lower())
 _py_map = {}
-for _t, _ds in p.INCOME_DETAILED_TYPES.items():
+for _t, _ds in income.INCOME_DETAILED_TYPES.items():
     for _d in _ds:
         _py_map.setdefault(_d, set()).add(_t)
 check("the label-to-type map is the engine's incomeTypeSQL",
       _py_map == _go_map, (_py_map, _go_map))
 check("...each of the six types reached by a label, and only those the cash flow projection projects",
-      set(p.INCOME_DETAILED_TYPES) == set(p.INCOME_TYPE_COLORS)
-      and all(p.INCOME_DETAILED_TYPES.values())
+      set(income.INCOME_DETAILED_TYPES) == set(income.INCOME_TYPE_COLORS)
+      and all(income.INCOME_DETAILED_TYPES.values())
       and set(_py_map) == set(re.findall(r'"(INCOME_\w+)"', re.search(
           r"var projectedIncomeDetailed = \[\]string\{(.*?)\}", open(os.path.join(
               _REPO, "wealthdb", "internal", "gold", "cashflow_plan.go"), encoding="utf-8").read(), re.S).group(1))),
@@ -3274,12 +3276,12 @@ _sql_classes = {}
 for _ds, _c in re.findall(r"WHEN p\.verdict IN \(([^)]*)\)\s*(?:--[^\n]*\n\s*)*THEN '(\w+)'", _in_case):
     for _d in re.findall(r"'(\w+)'", _ds):
         _sql_classes[_d] = _c
-_py_classes = {d: c for c, ds in p.INCOME_LINE_CLASSES.items() for d in ds}
+_py_classes = {d: c for c, ds in income.INCOME_LINE_CLASSES.items() for d in ds}
 check("the other lines' classes are the statement's operating-in classes, the projected types aside",
-      _py_classes == {d: c for d, c in _sql_classes.items() if d not in p.PROJECTED_DETAILED}
-      and set(p.PROJECTED_DETAILED) <= set(_sql_classes)
-      and f"ELSE '{p.OTHER_RECEIPTS}'" in _in_case and f"THEN '{p.UNCATEGORIZED_CLASS}'" in _in_case
-      and set(p.INCOME_CLASS_BANDS) == {*p.INCOME_LINE_CLASSES, p.OTHER_RECEIPTS, p.UNCATEGORIZED_CLASS},
+      _py_classes == {d: c for d, c in _sql_classes.items() if d not in income.PROJECTED_DETAILED}
+      and set(income.PROJECTED_DETAILED) <= set(_sql_classes)
+      and f"ELSE '{income.OTHER_RECEIPTS}'" in _in_case and f"THEN '{income.UNCATEGORIZED_CLASS}'" in _in_case
+      and set(income.INCOME_CLASS_BANDS) == {*income.INCOME_LINE_CLASSES, income.OTHER_RECEIPTS, income.UNCATEGORIZED_CLASS},
       (_py_classes, _sql_classes))
 
 section("every tile names the pickers that miss it")
@@ -3288,7 +3290,7 @@ section("every tile names the pickers that miss it")
 # pickers its mappings leave out, on every dashboard, and a tile every
 # one reaches keeps its card's own.
 _bar_names = {d.get("name"): {x["id"]: x["name"] for x in d["parameters"]
-                              if x["id"] != p.VEHICLE_PARAM_ID} for d in layouts}
+                              if x["id"] != pickers.VEHICLE_PARAM_ID} for d in layouts}
 _note_off = []
 for _d in layouts:
     for _dc in _d["dashcards"]:
@@ -3318,7 +3320,7 @@ check("...the debt cards the Asset class, their class being fixed",
                     "Debt by coupon kind", "Public equity by cycle")))
 check("...the Cash Flow figures and diagram the Section, saying why",
       all(" The Section, " in _note(d, c + s)
-          and p.SECTION_DECLINED_DESC in CARDS[c + s][1]
+          and cashflow.SECTION_DECLINED_DESC in CARDS[c + s][1]
           for d, s in (("Cash Flow", ""), ("Cash Flow (privacy)", p.PRIVACY_SUFFIX))
           for c in ("Operating in", "Operating out", "Net cash flow", "Savings rate", "Yield share", "Cash flow")))
 check("...the withholding the Type",
@@ -3355,10 +3357,10 @@ for _n in ("Cash flow statement by month", p.privacy_name("Cash flow statement b
     check(f"'{_n}' draws every section as a bar and the net as a line",
           {k: v["display"] for k, v in _ss.items()}
           == {"operating": "bar", "investing": "bar", "financing": "bar", "vehicles": "bar",
-              p.NET_CASH_FLOW: "line"}, _ss)
+              cashflow.NET_CASH_FLOW: "line"}, _ss)
     check("...and its SQL holds the net series, unranked, so the legend ends with it",
-          f"'{p.NET_CASH_FLOW}'" in sql_of(CARDS[_n][2])
-          and f"CASE WHEN statement_section <> '{p.NET_CASH_FLOW}' THEN sum(" in sql_of(CARDS[_n][2]))
+          f"'{cashflow.NET_CASH_FLOW}'" in sql_of(CARDS[_n][2])
+          and f"CASE WHEN statement_section <> '{cashflow.NET_CASH_FLOW}' THEN sum(" in sql_of(CARDS[_n][2]))
 
 section("the net worth bridge, the fee tiles and mark age")
 
@@ -3380,7 +3382,7 @@ check("...and tracking changes only when it is not zero", "WHERE tracked <> 0" i
 _wviz = VIZ["Why net worth moved"]
 check("...a rise green, a fall red, the total grey, each step's value printed",
       (_wviz["waterfall.increase_color"], _wviz["waterfall.decrease_color"], _wviz["waterfall.total_color"])
-      == (p.BRIDGE_RISE, p.BRIDGE_FALL, p.BENCHMARK_COLOR)
+      == (cashflow.BRIDGE_RISE, cashflow.BRIDGE_FALL, sqlkit.BENCHMARK_COLOR)
       and _wviz["waterfall.show_total"] is True and _wviz["graph.show_values"] is True)
 check("the figures beside it are scalars that never compact",
       all(CARDS[n][0] == "scalar" and VIZ[n]["scalar.compact_primary_number"] == "never"
@@ -3413,8 +3415,8 @@ check("...beside the monthly returns chained in the picked currency",
 # stop summing to the fees.
 _fee_groups = set(re.findall(r"(?:THEN|ELSE) '(\w+)'", _latest_definition("fee_group")))
 check("the fee tiles' groups are the values of gold's fee_group",
-      bool(_fee_groups) and set(p.FEE_GROUP_COLORS) == _fee_groups, (sorted(p.FEE_GROUP_COLORS), sorted(_fee_groups)))
-check("...each with a title", list(p.FEE_GROUP_TITLES) == list(p.FEE_GROUP_COLORS))
+      bool(_fee_groups) and set(spending.FEE_GROUP_COLORS) == _fee_groups, (sorted(spending.FEE_GROUP_COLORS), sorted(_fee_groups)))
+check("...each with a title", list(spending.FEE_GROUP_TITLES) == list(spending.FEE_GROUP_COLORS))
 
 _mark = next(t for t in DEFS["Data Freshness"][3] if t[0] == "Mark age")
 check("Mark age is on Data Freshness, and its twin shows the same card",
@@ -3442,19 +3444,19 @@ check("the bridge follows the statement and the projection the bridge, its twin'
       _cf_spec[_cf_at + 1:_cf_at + 7] == _BRIDGE + _PLAN
       and [t[0] for t in DEFS["Cash Flow (privacy)"][3]][_cf_at + 1:_cf_at + 7]
       == [p.privacy_name(n) for n in _BRIDGE + _PLAN], _cf_spec)
-_plan_sql = {n: sql_of(CARDS[n][2]) or "" for n in _plan_all}
+_plan_sql = {n: sql_of(CARDS[n][2]) for n in _plan_all}
 # The investment income is the Income cards' expected income, part by
 # part, over the months after this one; the principal is the events' of
 # the rule; the rest is the look-back's, in the picked currency.
 check("every projection card sums the income projection's parts under the pickers, months 1 to the Horizon",
-      all(f"sum(({p.PART_INCOME}) * " + p._ccy_case("p.fx") + ")" in q and p.PARTS_FROM in q
+      all(f"sum(({sqlkit.PART_INCOME}) * " + sqlkit._ccy_case("p.fx") + ")" in q and sqlkit.PARTS_FROM in q
           and "p.rule = {{maturing}}\n     AND p.month BETWEEN 1 AND CAST({{horizon}} AS INTEGER)" in q
-          for q in _plan_sql.values()), [n for n, q in _plan_sql.items() if p.PARTS_FROM not in q])
+          for q in _plan_sql.values()), [n for n, q in _plan_sql.items() if sqlkit.PARTS_FROM not in q])
 check("...the principal maturities return under the rule, in the picked currency",
       all("FROM web_yield_events e" in q and "WHERE e.rule = {{maturing}}\n     AND e.month BETWEEN 1 AND" in q
-          and "sum(e.amount * " + p._ccy_case("e.fx") + ")" in q for q in _plan_sql.values()))
+          and "sum(e.amount * " + sqlkit._ccy_case("e.fx") + ")" in q for q in _plan_sql.values()))
 check("...both split by the cash pool's accounts, the rest the vehicles' income",
-      all(p._pool_join("p") in q and p._pool_join("e") in q and "GROUP BY 1, 2" in q
+      all(cashflow._pool_join("p") in q and cashflow._pool_join("e") in q and "GROUP BY 1, 2" in q
           and "coalesce(xv.v, 0) + coalesce(rv.v, 0) AS vehicles_income" in q for q in _plan_sql.values()))
 _net_of = {n: re.search(r"SELECT \*, (.*?) AS net\n", q, re.S) for n, q in _plan_sql.items()}
 check("...and the net is the pool's: it leaves the vehicles' income out",
@@ -3462,7 +3464,7 @@ check("...and the net is the pool's: it leaves the vehicles' income out",
           for m in _net_of.values()), {n: m and m[1] for n, m in _net_of.items()})
 check("...and the look-back's parts, held to the picked currency",
       all("FROM web_cashflow_plan\n   WHERE currency = {{currency}}" in q
-          and all(f"part = '{x}'" in q for x in p.PLAN_LOOKBACK_PARTS) for q in _plan_sql.values()))
+          and all(f"part = '{x}'" in q for x in cashflow.PLAN_LOOKBACK_PARTS) for q in _plan_sql.values()))
 # The projection cards take the currency and the projection's four, and none
 # of the dashboard's own pickers: the look-back is fixed at the refresh.
 for _n in _plan_all:
@@ -3475,14 +3477,14 @@ for _n in _plan_all:
           else "look-back averages ignore window, source, section and grain" in CARDS[_n][1], CARDS[_n][1])
 check("every picker a projection card maps lands on a tag it declares and reads",
       not _picker_targets_resolve(_plan_all), _picker_targets_resolve(_plan_all))
-_PROJ_IDS = {p.RATES_PARAM_ID, p.MATURING_PARAM_ID, p.SHIFT_PARAM_ID, p.HORIZON_PARAM_ID}
+_PROJ_IDS = {pickers.RATES_PARAM_ID, pickers.MATURING_PARAM_ID, pickers.SHIFT_PARAM_ID, pickers.HORIZON_PARAM_ID}
 for _name in ("Cash Flow", "Cash Flow (privacy)"):
     _body = [d for d in layouts if d.get("name") == _name][0]
     _maps = {dc["card_id"]: {m["parameter_id"] for m in dc["parameter_mappings"]}
              for dc in _body["dashcards"] if dc["card_id"] is not None}
     _plan_ids = {card_ids[n] for n in _plan_all if n.endswith(p.PRIVACY_SUFFIX) == _name.endswith(p.PRIVACY_SUFFIX)}
     check(f"on '{_name}', the projection tiles answer the currency and the projection's four alone",
-          len(_plan_ids) == 2 and all(_maps.get(c) == {p.CASHFLOW_CURRENCY_PARAM_ID} | _PROJ_IDS for c in _plan_ids),
+          len(_plan_ids) == 2 and all(_maps.get(c) == {pickers.CASHFLOW_CURRENCY_PARAM_ID} | _PROJ_IDS for c in _plan_ids),
           {c: _maps.get(c) for c in _plan_ids})
     check("...and no other tile answers a projection picker",
           not [c for c, m in _maps.items() if c not in _plan_ids and m & _PROJ_IDS],
@@ -3496,8 +3498,8 @@ for _n in _PLAN:
         _cols = _output_columns(_plan_sql[_name])
         _sfx = "_pct" if _name.endswith(p.PRIVACY_SUFFIX) else ""
         _want = ["month", *(c + _sfx for c in (
-            [*p.PLAN_INCOME_PARTS, *p.PLAN_OUTFLOW_PARTS, "net", "vehicles_income"] if _n == _PLAN[0] else
-            ["investment_income", "principal_returned", "vehicles_income", *p.PLAN_LOOKBACK_PARTS, "net"]))]
+            [*cashflow.PLAN_INCOME_PARTS, *cashflow.PLAN_OUTFLOW_PARTS, "net", "vehicles_income"] if _n == _PLAN[0] else
+            ["investment_income", "principal_returned", "vehicles_income", *cashflow.PLAN_LOOKBACK_PARTS, "net"]))]
         check(f"'{_name}' carries the CLI's parts and the net, by month",
               _cols == _want + ([] if _n == _PLAN[0] else ["quality"]), _cols)
 for _name in (_PLAN[0], p.privacy_name(_PLAN[0])):
@@ -3509,7 +3511,7 @@ for _name in (_PLAN[0], p.privacy_name(_PLAN[0])):
           and [_viz["series_settings"][m]["display"] for m in _metrics] == ["bar"] * (len(_metrics) - 2) + ["line"] * 2
           and _metrics[-2].startswith("net") and _metrics[-1].startswith("vehicles_income"), _viz)
 check("...the outflows below the axis, the principal where it counts",
-      all(f"-{x} AS {x}" in _plan_sql[_PLAN[0]] for x in p.PLAN_OUTFLOW_PARTS)
+      all(f"-{x} AS {x}" in _plan_sql[_PLAN[0]] for x in cashflow.PLAN_OUTFLOW_PARTS)
       and "principal_counted AS principal_returned" in _plan_sql[_PLAN[0]])
 # The twin shows each part as a share of all the income the projection
 # expects over the horizon, on every account. It is blank where the
@@ -3543,14 +3545,14 @@ for _d in _WEALTH_DASHES:
             if _sql is None:
                 continue
             check(f"'{_c}' declares the currency variable",
-                  _q["native"]["template-tags"].get("currency") == p.currency_tag())
+                  _q["native"]["template-tags"].get("currency") == sqlkit.currency_tag())
             check("...and reads it", "{{currency}}" in _sql, _sql[:200])
             _rest = _CCY_CASE.sub("", _sql)
-            _fixed = re.findall(r"\b\w+_(?:" + "|".join(p._ccy_lower()) + r")\b", _rest)
+            _fixed = re.findall(r"\b\w+_(?:" + "|".join(_CCY_LOWER) + r")\b", _rest)
             check("...and fixes no reporting currency outside the CASE",
                   not _fixed, _fixed)
             check(f"'{_c}' carries no currency marker in its name",
-                  not re.search(r"\((?:" + "|".join(p.REPORTING_CURRENCIES) + r")\)", _c))
+                  not re.search(r"\((?:" + "|".join(sqlkit.REPORTING_CURRENCIES) + r")\)", _c))
 
 # The headline figures stay on the latest holdings, the figure
 # `wealthdb holdings sources` prints, whatever the time range; the three
@@ -3560,7 +3562,7 @@ for _c in ("Net worth", "Positions value", "Cash balance",
            "Cash balance (privacy)"):
     _q = CARDS[_c][2]
     check(f"'{_c}' reads the latest holdings, with no time tag",
-          "FROM web_sources_latest" in (sql_of(_q) or "")
+          "FROM web_sources_latest" in sql_of(_q)
           and set(_q["native"]["template-tags"]) == {"currency", "source", "tax_wrapper", "asset_class"}
           and "{{time_range}}" not in sql_of(_q) and "whatever the Time range" in CARDS[_c][1])
 check("...and no field filter binds the snapshot",
@@ -3585,7 +3587,7 @@ section("the reporting currencies")
 # the three are read off disk and compared.
 _go_ccys = _go_list(_gold_go, "materializeCurrencies")
 check("the returns materializer writes exactly the reporting currencies",
-      _go_ccys == list(p.REPORTING_CURRENCIES), _go_ccys)
+      _go_ccys == list(sqlkit.REPORTING_CURRENCIES), _go_ccys)
 # The readings of a missing cost basis are one contract too: the Go
 # vocabulary (lots.MissingBasisReadings) and the Gains picker here.
 _go_readings = _go_list(_go_package("lots"), "MissingBasisReadings", "MissingBasis")
@@ -3602,7 +3604,7 @@ check("the Gains picker offers exactly the engine's readings of a missing cost b
 _LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers", "web_exposure_securities",
                "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan", "web_bridge"}
 _FX_TABLES = {"web_yield_parts": "report_yield_parts", "web_yield_events": "report_yield_events"}
-_missing = {v: [c for c in p.REPORTING_CURRENCIES
+_missing = {v: [c for c in sqlkit.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
             for v in p.web_views_wanted()
             if v not in _LONG_VIEWS | set(_FX_TABLES) | {"web_yield_rates", "web_income_days", "web_cashflow_pool",
@@ -3612,7 +3614,7 @@ check("every wide serving view carries a value column per reporting currency",
       not any(_missing.values()), {v: m for v, m in _missing.items() if m})
 _ym = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "yield_materialize.go"),
            encoding="utf-8").read()
-_fx_missing = {v: [c for c in p.REPORTING_CURRENCIES if not re.search(
+_fx_missing = {v: [c for c in sqlkit.REPORTING_CURRENCIES if not re.search(
     rf"CREATE TABLE IF NOT EXISTS {t} \([^;]*\bfx_{c}\b", _MIG_TEXT.get(138, ""))]
     for v, t in _FX_TABLES.items()}
 check("the projection's parts and principals carry a rate to every reporting currency",
@@ -3624,11 +3626,11 @@ check("the projection's parts and principals carry a rate to every reporting cur
 _cfp = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "cashflow_plan.go"), encoding="utf-8").read()
 _plan_parts = _go_list(_cfp, "PlanParts")
 check("the projection cards read the look-back parts the engine writes, in its order",
-      _plan_parts == list(p.PLAN_LOOKBACK_PARTS), _plan_parts)
+      _plan_parts == list(cashflow.PLAN_LOOKBACK_PARTS), _plan_parts)
 _income_parts = [m.group(1) if m else None for m in (
     re.search(rf'\b{c}\s*=\s*"([^"]*)"', _cfp) for c in ("PlanPoolPart", "PlanOutsidePart"))]
 check("the Income run-rate reads the engine's income-line parts",
-      _income_parts == list(p.RUN_RATE_PARTS), _income_parts)
+      _income_parts == list(income.RUN_RATE_PARTS), _income_parts)
 _projected = re.search(r'\bPlanProjected\s*=\s*"([^"]*)"', _cfp)
 check("...and re-add the tag it strips from the quality",
       _projected is not None and re.search(r"TrimPrefix\(r\.Quality, PlanProjected\)", _ym) is not None
@@ -3652,7 +3654,7 @@ check("the gains materializer writes the same currency list",
 # writes it, web_gains carries it, and the tiles that add up to the
 # total gain read it.
 _wg = _latest_definition("web_gains")
-_split_sql = {n: sql_of(CARDS[n][2]) or "" for n in
+_split_sql = {n: sql_of(CARDS[n][2]) for n in
               ("Gain on positions sold", "Gain on positions held", "Gains by month")}
 check("the Gains split is materialized, served and read",
       "held_change_x, sold_gain_x" in _gm
@@ -3663,16 +3665,16 @@ check("the Gains split is materialized, served and read",
       _split_sql)
 _fxv = _latest_definition("fx_reporting_value")
 check("the conversion helper names every reporting currency",
-      all(f"'{c}'" in _fxv for c in p.REPORTING_CURRENCIES), _fxv[:200])
+      all(f"'{c}'" in _fxv for c in sqlkit.REPORTING_CURRENCIES), _fxv[:200])
 
 # A currency the CASE does not name must render blank, not as another
 # currency's figures: an arm per currency, and no ELSE to fall into.
-_case = p._ccy_case("value")
+_case = sqlkit._ccy_case("value")
 check("the currency CASE has an arm per reporting currency and no ELSE",
-      all(f"WHEN '{c}' THEN value_{c.lower()}" in _case for c in p.REPORTING_CURRENCIES)
+      all(f"WHEN '{c}' THEN value_{c.lower()}" in _case for c in sqlkit.REPORTING_CURRENCIES)
       and "ELSE" not in _case, _case)
 check("the long models unpivot every reporting currency",
-      all(f"WHEN '{c}' THEN s.value_{c.lower()}" in SPEND_SQL for c in p.REPORTING_CURRENCIES)
+      all(f"WHEN '{c}' THEN s.value_{c.lower()}" in SPEND_SQL for c in sqlkit.REPORTING_CURRENCIES)
       and "ELSE" not in SPEND_SQL.split("AS value")[0].rsplit("CASE", 1)[-1], SPEND_SQL[-400:])
 
 # The configured default currency is what every dashboard opens on.
@@ -3684,15 +3686,14 @@ check("any other currency falls back to USD", _fallback == "USD")
 _saved = sqlkit.DEFAULT_CURRENCY
 sqlkit.DEFAULT_CURRENCY = "GBP"
 try:
-    _params = [x for d in p.dashboard_defs(CARD_DEFS)
+    _params = [x for d in DEFS
                for x in params_of(d) if x["slug"] == "currency"]
     check("with a GBP default, every Currency picker opens on GBP",
           bool(_params) and all(x["default"] == ["GBP"] for x in _params),
           [x["default"] for x in _params])
     _gbp_cards = all_cards()
     _tags = [q["native"]["template-tags"]["currency"]
-             for _d, _desc, q in _gbp_cards.values()
-             if q.get("type") == "native" and "currency" in q["native"]["template-tags"]]
+             for _d, _desc, q in _gbp_cards.values() if "currency" in q["native"]["template-tags"]]
     check("...and every native card's currency variable defaults to it",
           bool(_tags) and all(t["default"] in ("GBP", ["GBP"]) for t in _tags),
           sorted({str(t["default"]) for t in _tags}))
@@ -3700,7 +3701,6 @@ try:
           "in the picked currency" in _gbp_cards["Top 50 merchants"][1])
 finally:
     sqlkit.DEFAULT_CURRENCY = _saved
-    all_cards()               # rebuild the picker registry at the default
 
 section("a percent-styled column is a fraction, not a percentage")
 
@@ -3709,16 +3709,10 @@ section("a percent-styled column is a fraction, not a percentage")
 # 5.1k%, and no shape test would see it — the column exists, the viz
 # setting is attached, and only the figure is wrong.
 _PCT_CARDS = {}
-for _defs in (_QDEFS, _PDEFS):
-    for _name, _tup in _defs.items():
-        _query, _viz = _tup[-2], _tup[-1]
-        _sql = sql_of(_query)
-        if not _sql or not isinstance(_viz, dict):
-            continue
-        for _key, _setting in (_viz.get("column_settings") or {}).items():
-            if _setting.get("number_style") == "percent":
-                _PCT_CARDS.setdefault(_name, (_sql, []))[1].append(
-                    json.loads(_key)[1])
+for _name, _c in CARD_DEFS.items():
+    for _key, _setting in (_c.viz.get("column_settings") or {}).items():
+        if _setting.get("number_style") == "percent":
+            _PCT_CARDS.setdefault(_name, (sql_of(_c.query), []))[1].append(json.loads(_key)[1])
 
 check("some card declares a percent column", bool(_PCT_CARDS), list(_PCT_CARDS))
 for _name, (_sql, _cols) in sorted(_PCT_CARDS.items()):
@@ -3738,13 +3732,12 @@ for _name, (_sql, _cols) in sorted(_PCT_CARDS.items()):
 _types_go = open(os.path.join(_REPO, "wealthdb", "internal", "canonical", "types.go"),
                 encoding="utf-8").read()
 check("DECLARED_SOURCE matches canonical.DeclaredSourceID",
-      f'const DeclaredSourceID = "{p.DECLARED_SOURCE}"' in _types_go)
-_FRESH = {**{n: _QDEFS[n] for n in ("Stalest source (days)", "Source freshness")},
-          "Source freshness (privacy)": _PDEFS["Source freshness (privacy)"]}
-for _name, _tup in _FRESH.items():
-    _q = _tup[-2]
+      f'const DeclaredSourceID = "{sqlkit.DECLARED_SOURCE}"' in _types_go)
+_FRESH = {n: CARD_DEFS[n].query for n in ("Stalest source (days)", "Source freshness",
+                                          "Source freshness (privacy)")}
+for _name, _q in _FRESH.items():
     check(f"'{_name}' leaves the declared source out",
-          f"silver_source_id <> '{p.DECLARED_SOURCE}'" in sql_of(_q), sql_of(_q))
+          f"silver_source_id <> '{sqlkit.DECLARED_SOURCE}'" in sql_of(_q), sql_of(_q))
 
 # Freshness is the last read, not the latest snapshot: a source that
 # marks quarterly and was read today is current. The sources model and
@@ -3753,16 +3746,15 @@ for _name, _tup in _FRESH.items():
 check("the sources model carries when a run last read each source",
       "source_observed" in MODELS["report_sources_latest"][0] and "observed_at" in MODELS["report_sources_latest"][0],
       MODELS["report_sources_latest"][0][:120])
-for _name, _tup in _FRESH.items():
-    _q = _tup[-2]
+for _name, _q in _FRESH.items():
     check(f"'{_name}' counts its days from the last read",
           "LEFT JOIN source_observed o USING (silver_source_id)" in sql_of(_q)
           and "CAST(observed_at AS DATE), CAST(now() AS DATE)) AS days_stale" in sql_of(_q), sql_of(_q))
-_fresh_sql = sql_of(_QDEFS["Source freshness"][-2])
+_fresh_sql = sql_of(_FRESH["Source freshness"])
 check("'Source freshness' shows the read, the latest mark and the days quiet",
       _output_columns(_fresh_sql) == ["silver_source_id", "observed_at", "days_stale", "valued_at", "days_quiet",
                                       f"total_value_{sqlkit.DEFAULT_CURRENCY.lower()}"], _fresh_sql)
-_fresh_twin = sql_of(_PDEFS["Source freshness (privacy)"][-2])
+_fresh_twin = sql_of(_FRESH["Source freshness (privacy)"])
 check("the freshness twin shows the base's columns, the value a share of the latest net worth, no account",
       _output_columns(_fresh_twin) == _output_columns(_fresh_sql) and "/ nw.nw * 100" in _fresh_twin
       and "account" not in _fresh_twin, _fresh_twin)
@@ -4000,7 +3992,7 @@ if duckdb is not None:
     def ordered_rows(*args, **kwargs):
         """The (series, t) rows of a _series_order query."""
         return duckdb.connect().execute(
-            f"SELECT s, t FROM (\n{p._series_order(*args, **kwargs)}\n)").fetchall()
+            f"SELECT s, t FROM (\n{sqlkit._series_order(*args, **kwargs)}\n)").fetchall()
 
     def ordered_series(*args, **kwargs):
         """The series in the order their rows first appear."""
@@ -4189,7 +4181,7 @@ def _book():
         {"occurred_at": dt.datetime(day.year, day.month, day.day, 9), "silver_source_id": src,
          "account_external_id": acct, "account_label": label[src], "tax_wrapper": wrapper[src],
          "income_detailed": detailed[typ][0], "income_label": detailed[typ][1],
-         **{f"value_{c.lower()}": v * per_usd.get(c, 1.0) for c in p.REPORTING_CURRENCIES}}
+         **{f"value_{c.lower()}": v * per_usd.get(c, 1.0) for c in sqlkit.REPORTING_CURRENCIES}}
         for src, acct, _key, day, typ, v, _w in
         [*received, ("src-1", "acct-1", None, dt.date(2026, 9, 25), "salary", 1000.0, None)]])
     # The run-rate of the pool's income lines: 200 a month of
@@ -4209,7 +4201,7 @@ def _book():
         return int(dt.datetime(day.year, day.month, day.day, 9, tzinfo=dt.timezone.utc).timestamp())
     insert("serving_transactions", [
         {"silver_source_id": "src-1", "account_external_id": "acct-1", "occurred_at": at(day), "kind": kind,
-         "net_amount": v, **{f"value_{c.lower()}": v * per_usd.get(c, 1.0) for c in p.REPORTING_CURRENCIES}}
+         "net_amount": v, **{f"value_{c.lower()}": v * per_usd.get(c, 1.0) for c in sqlkit.REPORTING_CURRENCIES}}
         for day, kind, v in ((dt.date(2024, 3, 15), "tax", -12.0), (dt.date(2025, 6, 15), "tax", -45.0),
                              (dt.date(2026, 7, 15), "tax", -25.0),
                              (dt.date(2026, 8, 1), "tax", 5.0), (dt.date(2026, 8, 1), "fee", -7.0))])
@@ -4307,7 +4299,7 @@ if duckdb is not None:
     def _part(rates, shift, **fields):
         cols = {"fixed": 0, "principal": 0, "spread": 0, "roll_constant": 0, "roll_forward": 0,
                 "roll_principal": 0, **fields}
-        sql = p.PART_INCOME.replace("{{rates}}", f"'{rates}'").replace("{{shift}}", str(shift))
+        sql = sqlkit.PART_INCOME.replace("{{rates}}", f"'{rates}'").replace("{{shift}}", str(shift))
         return _db.execute("SELECT " + sql + " FROM (SELECT " +
                            ", ".join(f"{v}::DOUBLE AS {k}" for k, v in cols.items()) +
                            ") p, (SELECT 0.5::DOUBLE AS rate_pct) rt").fetchone()[0]
@@ -4501,10 +4493,10 @@ if duckdb is not None:
           ("(unnamed)", "Sample Lot") in [tuple(r[:2]) for r in _tables["Top securities (privacy)"]]
           and "holding:" not in str(_tables), _tables["Top securities (privacy)"])
     check("the engine's example drops to its product",
-          _names.execute(f"SELECT {p.twin_name('?')}", [ADDRESS_NAME]).fetchone()[0] == "Sample Loan"
-          and _names.execute(f"SELECT {p.twin_name('?')}", ["Sample Fund, 1234 Nowhere"]).fetchone()[0]
+          _names.execute(f"SELECT {sqlkit.twin_name('?')}", [ADDRESS_NAME]).fetchone()[0] == "Sample Loan"
+          and _names.execute(f"SELECT {sqlkit.twin_name('?')}", ["Sample Fund, 1234 Nowhere"]).fetchone()[0]
           == "Sample Fund, 1234 Nowhere"
-          and _names.execute(f"SELECT {p.twin_name('NULL')}").fetchone()[0] is None)
+          and _names.execute(f"SELECT {sqlkit.twin_name('NULL')}").fetchone()[0] is None)
     # A wage line older than every day the received figures cover, and
     # tax booked on an account with no income line: with no Time range
     # the one counts as Net income counts it, and a tax wrapper reaches
@@ -4701,7 +4693,7 @@ if duckdb is not None:
     _shares = {r[0]: r[-1] for r in _credit_rows}
     check("the credit bars are each bucket's share of the debt and cash, summing to 100",
           list(_shares) == ["AAA", "BBB", "unrated", "cash"]
-          and _near(_shares["BBB"], 100 * 2000 / 3800) and abs(sum(_shares.values()) - 100) < p.SMALLEST_BAR_PCT
+          and _near(_shares["BBB"], 100 * 2000 / 3800) and abs(sum(_shares.values()) - 100) < exposure.SMALLEST_BAR_PCT
           and [r[-1] for r in _run(p.privacy_name(_credit))] == list(_shares.values()), _credit_rows)
     check("...and a source's own, whose one bucket is the whole of its class",
           [(r[0], r[-1]) for r in _run(_credit, source=["src-2"])] == [("B", 100.0)],
@@ -5229,7 +5221,7 @@ if duckdb is not None:
             CARDS["Monthly returns (TWR)"][2], {"benchmark": "Mix", "start_year": 0, "currency": ["USD"]})).fetchall()]
     _tied = _period_rows(_ties)
     check("a period tile sorts tied rows by source, whatever order they come in, the benchmark last",
-          [s for s, _ in _tied] == ["(all sources)", "src-a", "src-b", "src-a", "src-b", p.BENCHMARK_SERIES]
+          [s for s, _ in _tied] == ["(all sources)", "src-a", "src-b", "src-a", "src-b", sqlkit.BENCHMARK_SERIES]
           and _tied == _period_rows(_ties[::-1]), _tied)
     _db.execute("DELETE FROM report_returns WHERE twr = 0 AND window_from_year = 2024")
     _db.execute("INSERT INTO benchmark_mwr VALUES ('Mix', 'USD', 2024, 'portfolio', 0, 200, NULL, ''),"
@@ -5291,7 +5283,7 @@ if duckdb is not None:
                 for r in _cf.execute(_render(CARDS[name][2], values)).fetchall()}
 
     def _net(rows):
-        return {m: v for (m, s), v in rows.items() if s == p.NET_CASH_FLOW}
+        return {m: v for (m, s), v in rows.items() if s == cashflow.NET_CASH_FLOW}
 
     _st, _st_inv = _statement("Cash flow statement by month"), _statement("Cash flow statement by month",
                                                                           section=["investing"])
@@ -5300,7 +5292,7 @@ if duckdb is not None:
           and _st[("2026-01", "operating")] == 400 and _st[("2026-02", "financing")] == -100, _st)
     check("...and a picked Section narrows the bars, never the net",
           _net(_st_inv) == _net(_st)
-          and {k: v for k, v in _st_inv.items() if k[1] != p.NET_CASH_FLOW}
+          and {k: v for k, v in _st_inv.items() if k[1] != cashflow.NET_CASH_FLOW}
           == {("2026-01", "investing"): -300, ("2026-02", "investing"): 200}, _st_inv)
     _tw = "Cash flow statement by month (privacy)"
     _tw_all, _tw_inv = _statement(_tw), _statement(_tw, section=["investing"])
@@ -5396,18 +5388,18 @@ section("the benchmarks")
 # The small return tiles draw no legend: the benchmark's look is all that
 # tells it from the sources. A series_settings key only ever matches a
 # series' label, so the rows and the setting must agree on it.
-_b_lines = {n for n, c in CARDS.items() if f"'{p.BENCHMARK_SERIES}'" in (sql_of(c[2]) or "") and c[0] == "line"}
+_b_lines = {n for n, c in CARDS.items() if f"'{sqlkit.BENCHMARK_SERIES}'" in sql_of(c[2]) and c[0] == "line"}
 check("every line a benchmark joins carries the one label, the small tiles among them",
       _b_lines >= {"Cumulative return (TWR)", "Monthly returns (TWR)", "Quarterly returns (TWR)",
                    "Annual returns (TWR)", "Money-weighted return over time", "Value against the benchmark",
                    "Value against the benchmark (privacy)"}, sorted(_b_lines))
 check("...the rows themselves carry it, not only the sort",
-      all(f"SELECT '{p.BENCHMARK_SERIES}', currency, end_day" in sql_of(CARDS[n][2])
+      all(f"SELECT '{sqlkit.BENCHMARK_SERIES}', currency, end_day" in sql_of(CARDS[n][2])
           for n in ("Monthly returns (TWR)", "Quarterly returns (TWR)", "Annual returns (TWR)"))
-      and f"SELECT '{p.BENCHMARK_SERIES}', make_date" in sql_of(CARDS["Cumulative return (TWR)"][2]))
+      and f"SELECT '{sqlkit.BENCHMARK_SERIES}', make_date" in sql_of(CARDS["Cumulative return (TWR)"][2]))
 check("...and draws in the one style, whichever benchmark is picked",
-      all(VIZ[n].get("series_settings") == p.BENCHMARK_LINE["series_settings"] for n in _b_lines), sorted(_b_lines))
-_b_style = p.BENCHMARK_LINE["series_settings"][p.BENCHMARK_SERIES]
+      all(VIZ[n].get("series_settings") == returns.BENCHMARK_LINE["series_settings"] for n in _b_lines), sorted(_b_lines))
+_b_style = returns.BENCHMARK_LINE["series_settings"][sqlkit.BENCHMARK_SERIES]
 check("...a style that needs no colour vision to tell it from a source's line",
       _b_style["line.style"] == "dashed" and _b_style["line.size"] == "L", _b_style)
 
@@ -5425,7 +5417,7 @@ for _d in ("Wealth Overview", "Spending", "Income", "Cash Flow", "Gains"):
 check("the picker's model reads web_benchmarks", "web_benchmarks" in MODELS["report_benchmarks"][0])
 check("every card that exists only beside a benchmark is on a dashboard, hidden when empty",
       all(any(c.removesuffix(p.PRIVACY_SUFFIX) == n for d in _b_dashes for c, *_ in DEFS[d][3])
-          for n in p.BENCHMARK_CARDS))
+          for n in dashboards_index.BENCHMARK_CARDS))
 _b_layouts = {d["name"]: d for d in layouts if d.get("name")}
 _id_name = {v: k for k, v in card_ids.items()}
 for _d in _b_dashes:
@@ -5433,7 +5425,7 @@ for _d in _b_dashes:
         _tiles = [dc for dc in _b_layouts[_name]["dashcards"] if dc["card_id"] is not None]
         _off = [_id_name[dc["card_id"]] for dc in _tiles
                 if bool(dc["visualization_settings"].get("card.hide_empty"))
-                != (_id_name[dc["card_id"]].removesuffix(p.PRIVACY_SUFFIX) in p.BENCHMARK_CARDS)]
+                != (_id_name[dc["card_id"]].removesuffix(p.PRIVACY_SUFFIX) in dashboards_index.BENCHMARK_CARDS)]
         check(f"on '{_name}' only the benchmark's own tiles hide when empty", not _off, _off)
 _b_grid = {t[0]: t[1:5] for t in DEFS["Returns"][3]}
 _b_top = ("Return (TWR)", "Return (MWR)", "Annualized return (TWR)")
@@ -5449,7 +5441,7 @@ for _names in (("Benchmark return (TWR)", "Benchmark return (MWR)", "Benchmark a
           and [_b_grid[n][1:] for n in _names] == [_b_grid[n][1:] for n in _b_top], [_b_grid[n] for n in _names])
 check("...directly under it, the charts below them",
       {_b_grid[n][0] for n in _b_top} == {0}
-      and sorted({_b_grid[n][0] for n in p.BENCHMARK_CARDS if n in _b_grid and n.endswith(("(TWR)", "(MWR)"))
+      and sorted({_b_grid[n][0] for n in dashboards_index.BENCHMARK_CARDS if n in _b_grid and n.endswith(("(TWR)", "(MWR)"))
                   and n != "Money-weighted return over time"}) == [3, 6]
       and _b_grid["Cumulative return (TWR)"][0] == 9, _b_grid)
 for _name in ("Returns", "Returns" + p.PRIVACY_SUFFIX):
@@ -5460,17 +5452,17 @@ for _name in ("Returns", "Returns" + p.PRIVACY_SUFFIX):
                                                   "Excess return (MWR), same months",
                                                   "Excess annualized (TWR), same months"],
           [_shown.get(n) for n in p.EXCESS_CARDS])
-for _n in sorted(p.BENCHMARK_CARDS):
-    _q = sql_of(CARDS[_n][2]) or ""
+for _n in sorted(dashboards_index.BENCHMARK_CARDS):
+    _q = sql_of(CARDS[_n][2])
     check(f"'{_n}' reads no row under None",
           "{{benchmark}} <> 'None'" in _q or "benchmark = {{benchmark}}" in _q, _q[:200])
     _uses_p = "FROM p" in _q
     check("...not even the household's", not _uses_p or "WHERE {{benchmark}} <> 'None'" in _q, _q[-400:])
 # A twin of a card that shows money shows none; a twin that reuses its
 # base card takes it only where the card names no amount.
-for _n in sorted(p.BENCHMARK_CARDS):
+for _n in sorted(dashboards_index.BENCHMARK_CARDS):
     _twin = _n if _n in EXEMPT else p.privacy_name(_n)
-    _q = sql_of(CARDS[_twin][2]) or ""
+    _q = sql_of(CARDS[_twin][2])
     check(f"the twin of '{_n}' shows no amount",
           "value" not in _output_columns(_q), _output_columns(_q))
 check("the twin's value chart indexes each side to 100 at the window's start",
@@ -5484,12 +5476,12 @@ for _n, _metric in _b_bars.items():
     for _name in (_n, p.privacy_name(_n)):
         _q = sql_of(CARDS[_name][2])
         check(f"'{_name}' sets the benchmark's bars beside the household's, whatever benchmark is picked",
-              "benchmark_exposure" in _q and f"'{p.BENCHMARK_SERIES}' AS series" in _q
-              and f"'{p.PORTFOLIO_SERIES}' AS series" in _q and "{{benchmark}} AS series" not in _q, _q[:200])
+              "benchmark_exposure" in _q and f"'{sqlkit.BENCHMARK_SERIES}' AS series" in _q
+              and f"'{sqlkit.PORTFOLIO_SERIES}' AS series" in _q and "{{benchmark}} AS series" not in _q, _q[:200])
         check("...and keeps one colour per side, the household's the colour of its bars with no benchmark",
               VIZ[_name]["graph.dimensions"][1:] == ["series"]
-              and VIZ[_name]["series_settings"] == {p.PORTFOLIO_SERIES: {"color": p.EXPOSURE_BAR_COLORS[_metric]},
-                                                    p.BENCHMARK_SERIES: {"color": p.BENCHMARK_COLOR}},
+              and VIZ[_name]["series_settings"] == {sqlkit.PORTFOLIO_SERIES: {"color": exposure.EXPOSURE_BAR_COLORS[_metric]},
+                                                    sqlkit.BENCHMARK_SERIES: {"color": sqlkit.BENCHMARK_COLOR}},
               VIZ[_name].get("series_settings"))
 for _n in ("Allocation by asset class", "Allocation by currency"):
     for _name in (_n, p.privacy_name(_n)):
@@ -5515,9 +5507,9 @@ _b_figures = {"Benchmark return (TWR)": "benchmark_return", "Benchmark return (M
               "Benchmark annualized return (TWR)": "benchmark_annualized", "Excess return (TWR)": "excess_return",
               "Excess return (MWR)": "excess_mwr", "Excess annualized return (TWR)": "excess_annualized"}
 check("a figure is a number, as the top row's are; Returns by source names the months",
-      all(CARDS[n][0] == "scalar" and VIZ[n]["scalar.field"] == c and p._months_compared() not in sql_of(CARDS[n][2])
+      all(CARDS[n][0] == "scalar" and VIZ[n]["scalar.field"] == c and returns._months_compared() not in sql_of(CARDS[n][2])
           for n, c in _b_figures.items())
-      and p._months_compared() in sql_of(CARDS["Returns by source"][2]))
+      and returns._months_compared() in sql_of(CARDS["Returns by source"][2]))
 check("...a return in percent, an excess in percentage points",
       all((VIZ[n]["column_settings"][f'["name","{c}"]'].get("suffix") == " pp") == n.startswith("Excess")
           for n, c in _b_figures.items()), {n: VIZ[n]["column_settings"] for n in _b_figures})
@@ -5529,9 +5521,9 @@ check("a card over a family's tags takes the Benchmark tag only where it reads i
 
 
 section("a source keeps its colour")
-_pal = p.SOURCE_PALETTE
+_pal = colors.SOURCE_PALETTE
 check("the palette holds 24 distinct colours, none the fixed ones",
-      len(set(_pal)) == len(_pal) == 24 and p.ALL_SOURCES_COLOR not in _pal and p.BENCHMARK_COLOR not in _pal)
+      len(set(_pal)) == len(_pal) == 24 and colors.ALL_SOURCES_COLOR not in _pal and sqlkit.BENCHMARK_COLOR not in _pal)
 
 
 def _contrast(a, b):
@@ -5545,20 +5537,20 @@ def _contrast(a, b):
 
 
 check("every slot and the '(all sources)' colour read at 3:1 on a light and on a dark surface",
-      all(_contrast(c, bg) >= 3 for c in _pal + (p.ALL_SOURCES_COLOR,) for bg in ("#fcfcfb", "#1a1a19")),
+      all(_contrast(c, bg) >= 3 for c in _pal + (colors.ALL_SOURCES_COLOR,) for bg in ("#fcfcfb", "#1a1a19")),
       [c for c in _pal if min(_contrast(c, "#fcfcfb"), _contrast(c, "#1a1a19")) < 3])
-_first = p.assign_source_colors({}, ["src-b", "src-a", "src-c"])
+_first = colors.assign_source_colors({}, ["src-b", "src-a", "src-c"])
 check("first come, first served: the slots go in the order the sources come",
       [_first[s] for s in ("src-b", "src-a", "src-c")] == list(_pal[:3]), _first)
-_more = p.assign_source_colors(_first, ["src-a", "src-new", "src-b", "src-c"])
+_more = colors.assign_source_colors(_first, ["src-a", "src-new", "src-b", "src-c"])
 check("adding a source recolours none, and the new one takes the next slot",
       all(_more[s] == _first[s] for s in _first) and _more["src-new"] == _pal[3], _more)
 check("a load in another order gives the same colours",
-      p.assign_source_colors(_more, ["src-c", "src-new", "src-a", "src-b"]) == _more)
-_gone = p.assign_source_colors({"src-gone": _pal[0]}, ["src-x"])
+      colors.assign_source_colors(_more, ["src-c", "src-new", "src-a", "src-b"]) == _more)
+_gone = colors.assign_source_colors({"src-gone": _pal[0]}, ["src-x"])
 check("a source gone from gold keeps its slot, so a new one does not take it",
       _gone == {"src-gone": _pal[0], "src-x": _pal[1]}, _gone)
-_many = p.assign_source_colors({}, [f"src-{i:02d}" for i in range(26)])
+_many = colors.assign_source_colors({}, [f"src-{i:02d}" for i in range(26)])
 check("24 sources take 24 distinct colours",
       len({_many[f"src-{i:02d}"] for i in range(24)}) == 24, _many)
 check("...and the 25th shares the least-held slot, the first of those",
@@ -5566,9 +5558,9 @@ check("...and the 25th shares the least-held slot, the first of those",
 _held = {f"src-{i:02d}": _pal[i] for i in range(24)}
 _held["extra"] = _pal[0]
 check("...which is the slot the fewest hold, not always the first",
-      p.assign_source_colors(_held, ["late"])["late"] == _pal[1])
+      colors.assign_source_colors(_held, ["late"])["late"] == _pal[1])
 check("a kept colour outside the palette is assigned anew",
-      p.assign_source_colors({"src-a": "#000000"}, ["src-a"]) == {"src-a": _pal[0]})
+      colors.assign_source_colors({"src-a": "#000000"}, ["src-a"]) == {"src-a": _pal[0]})
 
 with tempfile.TemporaryDirectory() as _tmpdir:
     _path = os.path.join(_tmpdir, "source-colors.json")
@@ -5625,7 +5617,7 @@ with tempfile.TemporaryDirectory() as _tmpdir:
     _path = os.path.join(_tmpdir, "source-colors.json")
     _got, _calls = _colors_from((202, {"data": {"rows": [["src-b"], ["src-a"], [None]]}}), _path)
     check("the probe's sources take the slots in the order it lists them, declared last",
-          _got == {"src-b": _pal[0], "src-a": _pal[1], p.DECLARED_SOURCE: _pal[2]}
+          _got == {"src-b": _pal[0], "src-a": _pal[1], sqlkit.DECLARED_SOURCE: _pal[2]}
           and _calls == ["/api/dataset"], (_got, _calls))
     check("...and the assignment is kept in the file", p.load_source_colors(_path) == _got)
     os.utime(_path, (1, 1))
@@ -5642,12 +5634,12 @@ with tempfile.TemporaryDirectory() as _tmpdir:
           _none == {} and not os.path.exists(_fresh), _none)
     _unkept, _ = _colors_from((202, {"data": {"rows": [["src-a"]]}}), "")
     check("with no file named, the colours are assigned and nothing is written",
-          _unkept == {"src-a": _pal[0], p.DECLARED_SOURCE: _pal[1]} and os.listdir(_tmpdir) == ["source-colors.json"],
+          _unkept == {"src-a": _pal[0], sqlkit.DECLARED_SOURCE: _pal[1]} and os.listdir(_tmpdir) == ["source-colors.json"],
           (_unkept, os.listdir(_tmpdir)))
 
 _colors = {"src-a": _pal[0], "src-b": _pal[1]}
 _by_source = {n: v for n, v in VIZ.items()
-              if len(v.get("graph.dimensions") or []) == 2 and v["graph.dimensions"][1] in p.SOURCE_SERIES_COLUMNS}
+              if len(v.get("graph.dimensions") or []) == 2 and v["graph.dimensions"][1] in colors.SOURCE_SERIES_COLUMNS}
 # DESIGN.md §6 lists them.
 check("the cards that draw a series per source are the ones expected",
       set(_by_source) == {"Cumulative return (TWR)", "Monthly returns (TWR)", "Quarterly returns (TWR)",
@@ -5656,22 +5648,22 @@ check("the cards that draw a series per source are the ones expected",
 _colored = {n: p.with_source_colors(v, _colors) for n, v in _by_source.items()}
 check("each takes every source's colour and the fixed '(all sources)' colour",
       all(c["series_settings"]["src-a"]["color"] == _pal[0] and c["series_settings"]["src-b"]["color"] == _pal[1]
-          and c["series_settings"][p.ALL_SOURCES_SERIES]["color"] == p.ALL_SOURCES_COLOR
+          and c["series_settings"][sqlkit.ALL_SOURCES_SERIES]["color"] == colors.ALL_SOURCES_COLOR
           for c in _colored.values()))
 check("...so the same source has the same colour on every such card",
       len({json.dumps(c["series_settings"]["src-a"]) for c in _colored.values()}) == 1)
 check("...and the benchmark keeps its own grey, dashed line",
-      all(c["series_settings"][p.BENCHMARK_SERIES] == p.BENCHMARK_LINE["series_settings"][p.BENCHMARK_SERIES]
-          for n, c in _colored.items() if p.BENCHMARK_SERIES in (_by_source[n].get("series_settings") or {})))
+      all(c["series_settings"][sqlkit.BENCHMARK_SERIES] == returns.BENCHMARK_LINE["series_settings"][sqlkit.BENCHMARK_SERIES]
+          for n, c in _colored.items() if sqlkit.BENCHMARK_SERIES in (_by_source[n].get("series_settings") or {})))
 check("...without changing the shared benchmark style",
-      set(p.BENCHMARK_LINE["series_settings"]) == {p.BENCHMARK_SERIES})
+      set(returns.BENCHMARK_LINE["series_settings"]) == {sqlkit.BENCHMARK_SERIES})
 check("...and the rest of a card's settings as they were",
       all({k: v for k, v in c.items() if k != "series_settings"}
           == {k: v for k, v in _by_source[n].items() if k != "series_settings"} for n, c in _colored.items()))
 check("a card with no source breakout is left alone",
       all(p.with_source_colors(v, _colors) is v for n, v in VIZ.items() if n not in _by_source))
 check("the '(all sources)' line every per-source card draws carries the fixed label",
-      all(p.ALL_SOURCES_SERIES in sql_of(CARDS[n][2]) for n in _by_source
+      all(sqlkit.ALL_SOURCES_SERIES in sql_of(CARDS[n][2]) for n in _by_source
           if n.startswith(("Cumulative", "Monthly", "Quarterly", "Annual", "Unrealized"))))
 
 # The colours reach the payloads ensure_cards saves.
@@ -5791,7 +5783,7 @@ check("the dump holds every model, card and dashboard, each with its id",
       set(_one) == {"models", "cards", "dashboards", "ids"}
       and len(_one["models"]) == len(p.report_models()) == len(_one["ids"]["models"])
       and len(_one["cards"]) == len(CARDS) == len(_one["ids"]["cards"])
-      and len(_one["dashboards"]) == len(p.dashboard_defs(CARD_DEFS)) == len(_one["ids"]["dashboards"]))
+      and len(_one["dashboards"]) == len(DEFS) == len(_one["ids"]["dashboards"]))
 check("...and the id of every field a tag names",
       {t["dimension"][1] for c in _one["cards"].values() if c["dataset_query"]["type"] == "native"
        for t in c["dataset_query"]["native"]["template-tags"].values() if t.get("dimension")}

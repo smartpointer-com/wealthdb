@@ -45,10 +45,6 @@ def _ccy_slash():
     return "/".join(REPORTING_CURRENCIES)
 
 
-def _ccy_lower():
-    return tuple(c.lower() for c in REPORTING_CURRENCIES)
-
-
 def _sql_list(values):
     """`values` as a list of SQL string literals."""
     return ", ".join(f"'{v}'" for v in values)
@@ -95,6 +91,11 @@ UNCATEGORIZED = "(uncategorized)"
 # (canonical.DeclaredSourceID in the engine).
 DECLARED_SOURCE = "declared"
 
+# A source's last read over serving_sources_latest `r` and gold's
+# source_observed `o`: the instant a run last read it, unknown reading
+# as its newest snapshot, and never before that snapshot.
+OBSERVED_AT = "GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at), r.snapshot_at)"
+
 # The Benchmark picker's value for no benchmark, and the name of the
 # household's side on a card that sets the two beside each other. Gold
 # holds the first too (canonical.NoBenchmark).
@@ -111,8 +112,15 @@ BENCHMARK_SERIES = "Benchmark"
 # A mid-tone in no palette: it has to read on a light and on a dark theme.
 BENCHMARK_COLOR = "#8A99A8"
 
-BENCHMARK_TAG = {"id": "benchmark-tag", "name": "benchmark", "display-name": "Benchmark",
-                 "type": "text", "default": NO_BENCHMARK, "required": True}
+
+def _text_tag(name, label, default):
+    """A required text template variable with a default, so a card still
+    runs opened on its own."""
+    return {"id": f"{name}-tag", "name": name, "display-name": label,
+            "type": "text", "default": default, "required": True}
+
+
+BENCHMARK_TAG = _text_tag("benchmark", "Benchmark", NO_BENCHMARK)
 
 # The global line beside the sources, solid where the benchmark is dashed.
 ALL_SOURCES_SERIES = "(all sources)"
@@ -125,7 +133,7 @@ PRIVACY_DESC = " Absolute amounts never show."
 # The suffix that marks a privacy variant — of a card, and of the
 # dashboard it sits on. One home, because it is also how a dashboard
 # tells itself apart from its twin (dashboard_parameters,
-# ensure_dashboards).
+# dashboard_payloads, overview_home).
 PRIVACY_SUFFIX = " (privacy)"
 
 # A postal address closing a label: a comma, a street and a house number,
@@ -510,13 +518,6 @@ RATE_PATHS = ("constant", "forward")
 MATURING_RULES = ("cash", "idle", "roll")
 
 HORIZONS = ("12", "24", "36")
-
-
-def _text_tag(name, label, default):
-    """A required text template variable with a default, so a card still
-    runs opened on its own."""
-    return {"id": f"{name}-tag", "name": name, "display-name": label,
-            "type": "text", "default": default, "required": True}
 
 
 # The four variables every card with an expected figure reads. The shift

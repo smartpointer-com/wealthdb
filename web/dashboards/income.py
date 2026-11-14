@@ -22,14 +22,12 @@ IN_UNCATEGORIZED_SQL = (
 
 def income_cards(f):
     """The Income dashboard's cards, or on the twin their privacy
-    variants. Every income line's tile is native over web_income, for
-    the reason the spending ones are: the serving view carries a row per
-    (line, reporting currency), and a required {{currency}} variable
-    picks the column rather than filtering rows. Two tiles the Spending
-    dashboard has are deliberately absent — there is no second ring, the
-    income taxonomy having one vendored primary and so no subcategory
-    level worth one, and no balance-history chart, nothing on the income
-    side being a liability. `neg` is False: gold stores a receipt
+    variants. Every income line's tile is native over web_income: a
+    required {{currency}} variable picks the value column. Two tiles the
+    Spending dashboard has are deliberately absent — there is no second
+    ring, the income taxonomy having one vendored primary and so no
+    subcategory level worth one, and no balance-history chart, nothing on
+    the income side being a liability. `neg` is False: gold stores a receipt
     positive. The cards of received and expected income follow
     (income_projected_cards).
 
@@ -249,8 +247,7 @@ def _tint(color, share=0.55):
 
 def income_projected_cards(f):
     """The Income dashboard's cards of received and expected income, or
-    with `privacy` their privacy variants: name -> (display, description,
-    dataset_query, viz). Native SQL over four sources, each a row set per
+    on the twin their privacy variants. Native SQL over four sources, each a row set per
     reporting currency or a rate to it:
 
     - the six types the holdings receive (web_yield_received), each under
@@ -304,7 +301,7 @@ def income_projected_cards(f):
             if by_account and k == "tax_wrapper":
                 out.append(f"({alias}silver_source_id, {alias}account_external_id) IN"
                            " (SELECT silver_source_id, account_external_id FROM accounts"
-                           f" WHERE COALESCE(tax_wrapper, 'taxable_personal') IN ({pick}))")
+                           f" WHERE account_wrapper(tax_wrapper) IN ({pick}))")
             else:
                 out.append(f"{alias}{col} IN ({pick})")
         if typed:

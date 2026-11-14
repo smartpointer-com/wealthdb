@@ -321,10 +321,13 @@ def main(argv=None, client=None):
     admin, key_id, keyed = mint_key(client or metabase.Client(a.base, timeout=TIMEOUT), a.email, password)
     today = dt.datetime.now(dt.timezone.utc).date()
     try:
-        coll = keyed.collection(provision.COLLECTION_NAME)
-        if coll is None:
-            raise SystemExit(f"collection not found: {provision.COLLECTION_NAME}")
-        dashboards = sorted(keyed.dashboards(coll["id"]), key=lambda d: d["name"])
+        try:
+            coll = keyed.collection(provision.COLLECTION_NAME)
+            if coll is None:
+                raise SystemExit(f"collection not found: {provision.COLLECTION_NAME}")
+            dashboards = sorted(keyed.dashboards(coll["id"]), key=lambda d: d["name"])
+        except metabase.Error as e:
+            raise SystemExit(f"{e}: {e.body}") from None
         failures, empties, figures, runs, freshness, dashes = [], set(), [], 0, None, {}
         records = []
         for d in dashboards:

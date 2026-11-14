@@ -105,9 +105,8 @@ def allocation_cards(f):
 
 
 def issuer_cards(f):
-    """The Allocation dashboard's issuers card, or with `privacy` its
-    privacy variant: name -> (display, description, dataset_query, viz).
-    Native SQL over web_exposure_issuers: the largest issuers of the
+    """The Allocation dashboard's issuers card, or on the twin its
+    privacy variant. Native SQL over web_exposure_issuers: the largest issuers of the
     whole book, per reporting currency, today and at the twelve month
     ends before. The dashboard's as-of day reaches it through
     web_history_calendar (_history_day), and the card reads the latest

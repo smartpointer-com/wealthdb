@@ -99,7 +99,7 @@ web/
 ├── tile_timings.py  # times each tile's query on the DuckDB the driver bundles
 ├── Dockerfile     # Metabase (from JAR, glibc base) + pinned DuckDB driver → /plugins
 ├── test_web.sh    # unit tests: lifecycle script, then provision.py (make test-web)
-├── test_provision.py  # unit tests for provision.py's definitions (no Metabase)
+├── test_provision.py  # unit tests: provisioning definitions, client, tile timings (no Metabase)
 ├── requirements-test.txt  # their duckdb module, in the web/.venv make test-web builds
 ├── README.md      # this file
 ├── DESIGN.md      # rationale: snapshot, glibc base, version pin, provisioning
