@@ -112,8 +112,7 @@ def cards_of(qdefs, pdefs):
 
 
 def all_cards():
-    """Every card provisioning defines (cards_of), built afresh — which
-    also rebuilds the picker registry, NATIVE_PARAM_TARGETS."""
+    """Every card provisioning defines (cards_of), built afresh."""
     return cards_of(p.question_defs(), p.privacy_card_defs())
 
 
@@ -206,9 +205,8 @@ check("the privacy model scales by the latest net worth, per currency",
 
 # ---- the cards --------------------------------------------------------
 
-# Built once, which also fills the picker registry. A test that changes
-# DEFAULT_CURRENCY rebuilds what it reads and restores the registry
-# after.
+# Built once. A test that changes DEFAULT_CURRENCY rebuilds what it
+# reads.
 _QDEFS = p.question_defs()
 _PDEFS = p.privacy_card_defs()
 CARDS = cards_of(_QDEFS, _PDEFS)
@@ -516,38 +514,50 @@ check("the twin's scalar is a scale-free ratio over the _pct model",
 # ---- native picker wiring ---------------------------------------------
 
 section("native card picker wiring")
-targets = p.NATIVE_PARAM_TARGETS
+
+
+def picks(card, dash):
+    """parameter id -> target of each picker of dashboard `dash` that
+    reaches native card `card` (tile_mappings)."""
+    params = p.dashboard_parameters(MID, DEFS[dash][1], dash)
+    return {m["parameter_id"]: m["target"] for m in p.tile_mappings(CARDS[card][2], 1, params)}
+
+
+_t50 = picks("Top 50 merchants (privacy)", "Spending (privacy)")
 check("the currency picker reaches a native card as a VARIABLE "
       "(a template variable names a value, never a column)",
-      (p.SPEND_CURRENCY_PARAM_ID, ["variable", ["template-tag", "currency"]])
-      in targets["Top 50 merchants (privacy)"])
+      _t50.get(p.SPEND_CURRENCY_PARAM_ID) == ["variable", ["template-tag", "currency"]], _t50)
 check("the field filters reach it as dimensions",
-      all((pid, ["dimension", ["template-tag", tag]])
-          in targets["Top 50 merchants (privacy)"]
+      all(_t50.get(pid) == ["dimension", ["template-tag", tag]]
           for pid, tag in ((p.TIME_PARAM_ID, "time_range"),
                            (p.SOURCE_PARAM_ID, "source"),
-                           (p.CATEGORY_PARAM_ID, "category"))))
+                           (p.CATEGORY_PARAM_ID, "category"))), _t50)
+_acc_twins = [n for n, (_d, _desc, q) in CARDS.items()
+              if n.endswith(p.PRIVACY_SUFFIX) and "account" in (q.get("native") or {}).get("template-tags", {})]
 check("no privacy card declares an account field filter (its widget "
-      "would list the labels the projections drop)",
-      not [c for c, ts in targets.items() if c.endswith(p.PRIVACY_SUFFIX)
-           and p.ACCOUNT_PARAM_ID in [pid for pid, _ in ts]],
-      str([c for c, ts in targets.items() if c.endswith(p.PRIVACY_SUFFIX)
-           and p.ACCOUNT_PARAM_ID in [pid for pid, _ in ts]]))
+      "would list the labels the projections drop)", not _acc_twins, _acc_twins)
 check("the money card-balances card keeps its account filter",
-      p.ACCOUNT_PARAM_ID in [pid for pid, _ in targets["Card balances over time"]])
+      p.ACCOUNT_PARAM_ID in picks("Card balances over time", "Spending"))
 check("the card-balances tiles take no category picker (no such dimension)",
-      all(p.CATEGORY_PARAM_ID not in [pid for pid, _ in targets[c]]
-          for c in ("Card balances over time",
-                    "Card balances over time (privacy)")))
+      all(p.CATEGORY_PARAM_ID not in picks(c, d)
+          for c, d in (("Card balances over time", "Spending"),
+                       ("Card balances over time (privacy)", "Spending (privacy)"))))
 check("a privacy chart maps its field filters as dimensions and the "
-      "currency as a variable",
-      sorted(targets["Net worth over time (privacy)"]) == sorted([
+      "currency as a variable, in the dashboard's order",
+      list(picks("Net worth over time (privacy)", "Wealth Overview (privacy)").items()) == [
           (p.WEALTH_CURRENCY_PARAM_ID, ["variable", ["template-tag", "currency"]]),
           (p.TIME_PARAM_ID, ["dimension", ["template-tag", "time_range"]]),
           (p.SOURCE_PARAM_ID, ["dimension", ["template-tag", "source"]]),
           (p.WEALTH_TAX_WRAPPER_PARAM_ID, ["dimension", ["template-tag", "tax_wrapper"]]),
-          (p.ASSET_PARAM_ID, ["dimension", ["template-tag", "asset_class"]])]),
-      targets["Net worth over time (privacy)"])
+          (p.ASSET_PARAM_ID, ["dimension", ["template-tag", "asset_class"]])],
+      picks("Net worth over time (privacy)", "Wealth Overview (privacy)"))
+_rt = picks("Monthly returns (TWR)", "Returns")
+check("the returns cards' Source field filter answers the Source picker",
+      _rt.get(p.SOURCE_PARAM_ID) == ["dimension", ["template-tag", "source_ff"]], _rt)
+check("a card declines a picker by declaring no tag of its slug",
+      p.tile_mappings({"native": {"template-tags": {"currency": p.currency_tag()}}}, 1,
+                      [{"id": "a", "slug": "time_range"}, {"id": "b", "slug": "currency"}])
+      == [{"parameter_id": "b", "card_id": 1, "target": ["variable", ["template-tag", "currency"]]}])
 
 # ---- ids bound late ---------------------------------------------------
 
@@ -1075,6 +1085,17 @@ server_tile = dict(tile, id=9, entity_id="server-only", series=None, inline_para
 check("a server-shaped tile matches", p._dashcards_same([server_tile], [tile]))
 moved = dict(tile, row=1)
 check("a moved tile does not match", not p._dashcards_same([tile], [moved]))
+# Metabase gives the order of a tile's mappings no meaning, so a tile
+# stored with them in another order is not sent again.
+_two = [{"parameter_id": "a", "card_id": 1, "target": ["variable", ["template-tag", "x"]]},
+        {"parameter_id": "b", "card_id": 1, "target": ["dimension", ["template-tag", "y"]]}]
+check("a tile whose mappings differ only in their order matches",
+      p._dashcards_same([dict(tile, id=9, parameter_mappings=_two[::-1])], [dict(tile, parameter_mappings=_two)]))
+check("...and one that lacks a mapping does not",
+      not p._dashcards_same([dict(tile, id=9, parameter_mappings=_two[:1])], [dict(tile, parameter_mappings=_two)]))
+check("...nor one that maps another picker",
+      not p._dashcards_same([dict(tile, id=9, parameter_mappings=[_two[0], dict(_two[1], parameter_id="c")])],
+                            [dict(tile, parameter_mappings=_two)]))
 beside = dict(tile, col=6, card_id=2)
 check("tiles listed in another order match",
       p._dashcards_same([dict(beside, id=10), dict(tile, id=9)], [tile, beside]))
@@ -2069,13 +2090,12 @@ check("...and to the picked reading of a missing cost basis",
       [n for n, q in _gn_sql.items()
        if q.count("FROM web_gains") != q.count("AND missing_basis = {{missing_basis}}")])
 check("every Gains tile takes the six pickers, the asset class among them",
-      all(dict(p.NATIVE_PARAM_TARGETS[n]).keys() ==
+      all(picks(n, "Gains").keys() ==
           {p.GAINS_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
            p.GAINS_TAX_WRAPPER_PARAM_ID, p.GAINS_ASSET_CLASS_PARAM_ID, p.GAINS_MISSING_PARAM_ID}
           for n in _gains_tiles)
       and all("[[AND {{asset_class}}]]" in _gn_sql[n] for n in _gains_tiles),
-      {n: [pid for pid, _t in p.NATIVE_PARAM_TARGETS.get(n, [])]
-       for n in _gains_tiles})
+      {n: list(picks(n, "Gains")) for n in _gains_tiles})
 # The '(all sources)' line is the whole the Source picker narrows away
 # from, so its arm of the union carries every filter but that one.
 _over_time = _gn_sql["Unrealized gain over time"]
@@ -2562,30 +2582,36 @@ def _tile_layout(name):
 
 def _tiles_off_their_pickers(dash, names):
     """The tiles of dashboard `dash` among `names`, by their base names,
-    that answer other pickers than their card registers, or that register
-    a picker `dash` lacks. A twin's tile is the privacy card, or the base
-    card where that is exempt."""
-    layout, _ = _tile_layout(dash)
-    params = {q["id"] for q in p.dashboard_parameters(MID, "range", dash)}
+    that are sent a picker `dash` lacks, a picker onto a tag their card
+    does not declare, or no picker that one of its tags names. A twin's
+    tile is the privacy card, or the base card where that is exempt."""
+    _layout, body = _tile_layout(dash)
+    params = {q["slug"]: q["id"] for q in p.dashboard_parameters(MID, "range", dash)}
+    sent = {dc["card_id"]: dc["parameter_mappings"] for dc in body["dashcards"] if dc["card_id"] is not None}
     twin = dash.endswith(p.PRIVACY_SUFFIX)
     off = []
     shown = p.TWIN_CARDS.get(dash.removesuffix(p.PRIVACY_SUFFIX), {})
     for n in names:
         card = p.privacy_name(shown.get(n, n)) if twin and n not in p.PRIVACY_EXEMPT_CARDS else n
-        want = {pid for pid, _t in p.NATIVE_PARAM_TARGETS[card]}
-        if layout[card_ids[card]] != want or not want <= params:
+        tags = CARDS[card][2]["native"]["template-tags"]
+        mapped = {m["parameter_id"]: m["target"][1][1] for m in sent[card_ids[card]]}
+        named = {params[p.TAG_SLUGS.get(t, t)] for t in tags if p.TAG_SLUGS.get(t, t) in params}
+        if not set(mapped) <= set(params.values()) or not set(mapped.values()) <= set(tags) \
+                or set(mapped) != named:
             off.append(card)
     return off
 
 
 def _picker_targets_resolve(names):
-    """The cards among `names` whose pickers map onto a tag the card does
-    not declare, or whose declared tag its SQL never reads."""
+    """The cards among `names` one of whose tiles is sent a picker onto a
+    tag the card does not declare, or that declare a tag their SQL never
+    reads."""
     off = []
     for n in names:
         q = CARDS[n][2]
         tags = q["native"]["template-tags"]
-        mapped = {t[1][1] for _pid, t in p.NATIVE_PARAM_TARGETS.get(n, [])}
+        mapped = {m["target"][1][1] for d in layouts for dc in d["dashcards"]
+                  if dc["card_id"] == card_ids[n] for m in dc["parameter_mappings"]}
         if not mapped <= set(tags) or any("{{" + t + "}}" not in sql_of(q) for t in tags):
             off.append(n)
     return off
@@ -3163,7 +3189,7 @@ _in_cards = sorted({c for c, *_r in DEFS["Income"][3]})
 _in_off = {}
 for _n in [x for n in _in_cards for x in (n, n if n in p.PRIVACY_EXEMPT_CARDS else _twin(n))]:
     _tg = set(CARDS[_n][2]["native"]["template-tags"])
-    _reg = {pid for pid, _t in p.NATIVE_PARAM_TARGETS[_n]}
+    _reg = set(picks(_n, "Income" + (p.PRIVACY_SUFFIX if _n.endswith(p.PRIVACY_SUFFIX) else "")))
     _typed = _n not in _EVERY_LINE
     if not ("tax_wrapper" in _tg and p.INCOME_TAX_WRAPPER_PARAM_ID in _reg
             and ("type" in _tg) == _typed and (p.INCOME_TYPE_PARAM_ID in _reg) == _typed):
@@ -3411,7 +3437,7 @@ for _n in _plan_all:
           else "look-back averages ignore window, source, section and grain" in CARDS[_n][1], CARDS[_n][1])
 check("every picker a projection card maps lands on a tag it declares and reads",
       not _picker_targets_resolve(_plan_all), _picker_targets_resolve(_plan_all))
-_PROJ_IDS = {pid for pid, _t in p.PROJECTION_PICKERS}
+_PROJ_IDS = {p.RATES_PARAM_ID, p.MATURING_PARAM_ID, p.SHIFT_PARAM_ID, p.HORIZON_PARAM_ID}
 for _name in ("Cash Flow", "Cash Flow (privacy)"):
     _body = [d for d in layouts if d.get("name") == _name][0]
     _maps = {dc["card_id"]: {m["parameter_id"] for m in dc["parameter_mappings"]}

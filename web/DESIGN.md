@@ -215,6 +215,12 @@ ten dashboards. Their pickers:
 
 All of them are definitions only (MBQL or SQL), with no data baked in.
 
+A picker reaches a native card where the card has a template tag of
+the picker's slug. The returns cards name their Source tag
+`source_ff`, which answers the Source picker. A card declines a picker
+by declaring no tag of its slug, and the tile is mapped in the order
+of the dashboard's pickers.
+
 A tile that a picker of its dashboard does not reach says so. Its
 description ends with one sentence that names those pickers, for
 example "The Section picker does not reach it."
@@ -725,10 +731,10 @@ Each borrowed figure is the card its own dashboard shows. Four are
 built for the overview alone, from their dashboard's data: the asset
 classes over time (Allocation), the two returns year to date (Returns)
 and the projected net cash flow (Cash Flow). The overview's pickers
-land on a figure by slug: a picker reaches the card where the card has
-a template tag of that name, or, for an MBQL card, where its home
-dashboard maps a picker of that slug. Any other tag of the card runs
-at its default. So the flows take the currency, the time range and the
+land on a figure by slug. A native card takes a picker where it has a
+template tag of that name, as on every dashboard. An MBQL card takes
+one where its home dashboard maps a picker of that slug. Any other tag
+of the card runs at its default. So the flows take the currency, the time range and the
 source, the income the tax wrapper too, the gains the tax wrapper and
 the asset class too, and the returns and the projection the currency
 alone. As on every dashboard, a tile's description ends with the

@@ -59,10 +59,11 @@ port-forward; auth is Metabase's own login.
   survive. Duplicate a pre-defined card into another collection
   before customizing it. User content elsewhere is never touched. Card
   and dashboard matching is scoped to the pre-defined collection.
-- Adding a serving view? Register it in `FILTER_FIELD_COLUMNS`. That is
-  the single registry both the field-id resolution and the startup probe
-  read, and the probe aborts the run rather than converging every card
-  to a degraded shape when a view the cards need is missing.
+- A serving view needs no registry entry. The field-id resolution and
+  the startup probe read the views and filter columns off the card and
+  model definitions (`filter_field_columns`). The probe aborts the run
+  when a view the cards need is missing, and a filter column without a
+  field id stops it before any card is sent.
 - The `web_*` views live in `wealthdb/internal/gold/derived/90_web.sql`,
   beside every other macro and view of gold. A view is added or changed
   there, never in a migration.
