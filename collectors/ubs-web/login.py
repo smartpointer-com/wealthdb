@@ -42,7 +42,7 @@ log = logging.getLogger("ubs-web.login")
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/158.0.0.0 Safari/537.36"
+    "Chrome/159.0.0.0 Safari/537.36"
 )
 
 # Playwright timeouts (milliseconds). Generous defaults — WAN
