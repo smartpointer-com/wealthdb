@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import time
+from typing import NamedTuple
 
 import metabase
 
@@ -178,10 +179,10 @@ def payload_dump(withholding, sources):
     model_ids = {name: i for i, name in enumerate(models, start=1)}
     cards = card_payloads(1, 1, field_ids, model_ids, account_source_colors({}, sources))
     card_ids = {name: i for i, name in enumerate(cards, start=len(models) + 1)}
-    defs = dashboard_defs()
+    defs = dashboard_defs(card_defs())
     dash_ids = {name: i for i, name in enumerate(defs, start=1)}
     descs = {name: body["description"] for name, body in cards.items()}
-    payloads = dashboard_payloads(defs, model_ids, card_ids, dash_ids,
+    payloads = dashboard_payloads(defs, card_defs(), model_ids, card_ids, dash_ids,
                                   tile_titles(withholding), descs)
     dashboards = {name: {"name": name, "description": desc, "parameters": parameters,
                          "dashcards": dashcards}
@@ -318,7 +319,7 @@ def report_models():
     absolute-value columns dropped) — every other privacy chart is
     native SQL over the gold web_* serving views, recomputing its
     denominator per query so the dashboard pickers rescale it (see
-    privacy_card_defs). The returns models wrap the materialized
+    card_defs). The returns models wrap the materialized
     report_returns TABLE (migration 0026) instead of a macro, with the
     same epoch-to-TIMESTAMP rendering."""
     def wrap(from_expr, ts_cols=(), exclude=(), where=""):
@@ -331,7 +332,7 @@ def report_models():
     # shared normalization constant of the privacy (_pct) models. A fixed
     # constant keeps every aggregate's shape; the privacy dashboards'
     # charts recompute a selection-aware denominator per query instead
-    # (privacy_card_defs), so this constant only backs the twins' MBQL
+    # (card_defs), so this constant only backs the twins' MBQL
     # cards and their drill-through. Guarded to NULL when the latest
     # total is zero or negative (empty or under-water gold): dividing
     # would render inf/NaN resp. sign-flipped percentages, where NULL
@@ -596,7 +597,7 @@ def report_models():
         # report_spending_pct, under the spending tiles that are MBQL. An
         # MBQL card and its drill-through read a model, so these two stay;
         # every other privacy card is native SQL over the web_* serving
-        # views (privacy_card_defs), whose denominators follow the pickers.
+        # views (card_defs), whose denominators follow the pickers.
         "report_sources_latest_pct": (
             pct_wrap(sources_latest, V3, SOURCES_TS, BASE3),
             "Privacy variant of report_sources_latest: totals as % of the "
@@ -825,54 +826,6 @@ RETIRED_DASHBOARD_NAMES = ["Net Worth"]
 # (canonical.DeclaredSourceID in the engine).
 DECLARED_SOURCE = "declared"
 
-# The Wealth Overview's returns of the current year: (card, method, column).
-RETURN_YTD_CARDS = (("Return year to date (TWR)", "time-weighted", "twr"),
-                    ("Return year to date (MWR)", "money-weighted", "mwr"))
-
-# Overview tiles whose click passes a column of the cell clicked to the
-# home picker of the same slug: card -> that column. A year-to-date
-# return opens the Returns at its start year, and the mix a viewer
-# clicks opens as of the day clicked.
-COLUMN_CLICKS = {**{c: "start_year" for c, _m, _col in RETURN_YTD_CARDS},
-                 "Asset class mix over time": "as_of_day"}
-
-# Every dashboard but those in NO_PRIVACY_TWIN has a privacy twin whose
-# cards show shares (%) instead of money (each names its own denominator
-# — see PRIVACY_DESC). Cards listed here show no monetary values
-# (percentages, indices, source names), so the twin reuses them as-is. The returns scalars and charts
-# are all percentage/index-only; only the by-source table carries money.
-PRIVACY_EXEMPT_CARDS = {"Stalest source (days)", "Returns age (days)", "Mark age", "Asset class mix over time",
-                        *(c for c, _m, _col in RETURN_YTD_CARDS),
-                        "Return (TWR)", "Return (MWR)", "Annualized return (TWR)",
-                        "Cumulative return (TWR)", "Monthly returns (TWR)",
-                        "Quarterly returns (TWR)", "Annual returns (TWR)",
-                        # A share of rows, not of money — and it already
-                        # runs over the _pct model, so its drill-through
-                        # is leak-free too.
-                        #
-                        # The income twin of the same tile is NOT here.
-                        # That card is native, so it carries its own
-                        # field-filter template tags, and one of them is
-                        # an `account` filter — which Metabase renders as
-                        # a dropdown of account labels wherever the card
-                        # is opened on its own. A percentage is safe to
-                        # reuse; a widget listing the accounts is not, so
-                        # the twin builds its own from
-                        # PRIVACY_INCOME_FILTERS.
-                        "Uncategorized share",
-                        # The Exposure charts over time, the currencies chart
-                        # aside: each month end's shares of the selection,
-                        # with no value column.
-                        "Asset classes over time", "Regions over time",
-                        "Held directly or through funds",
-                        "How the figures are classified",
-                        # The Yield cards of rates, years and securities
-                        # alone: the selection's yields, a stock's
-                        # dividend yield and payout, and their history.
-                        "Income yield", "Implied yield", "Realized yield",
-                        "Dividend yield against payout", "Yields over time",
-                        "Duration over time"}
-
 # The Benchmark picker's value for no benchmark, and the name of the
 # household's side on a card that sets the two beside each other. Gold
 # holds the first too (canonical.NoBenchmark).
@@ -896,17 +849,6 @@ BENCHMARK_TAG = {"id": "benchmark-tag", "name": "benchmark", "display-name": "Be
                  "type": "text", "default": NO_BENCHMARK, "required": True}
 
 EXCESS_CARDS = ("Excess return (TWR)", "Excess return (MWR)", "Excess annualized return (TWR)")
-# The cards that exist only beside a benchmark. Each reads no row under
-# None, and its tile hides then (card.hide_empty), so a dashboard with no
-# benchmark picked reads as it does without them: Metabase closes the gap
-# a hidden tile leaves, wherever the tile sits.
-BENCHMARK_CARDS = {"Benchmark return (TWR)", "Benchmark return (MWR)", "Benchmark annualized return (TWR)",
-                   *EXCESS_CARDS,
-                   "Money-weighted return over time", "Value against the benchmark",
-                   "Largest country deviations"}
-# Those of them a twin reuses as they are: shares and returns, no amount.
-# The others have a privacy card of their own.
-PRIVACY_EXEMPT_CARDS |= BENCHMARK_CARDS - {"Value against the benchmark"}
 
 
 # A source's colour. Metabase colours a series by its place, and changes
@@ -1476,212 +1418,134 @@ DAYS_QUIET = ["datetime-diff", _f("valued_at", "type/DateTime"),
 FED_SOURCES = ["!=", _f("silver_source_id", "type/Text"), DECLARED_SOURCE]
 
 
-def source_freshness_card(model):
-    """The Data Freshness table over sources model `model`: (display,
-    description, dataset_query, viz). The twin runs it over the _pct
-    model under a description of its own."""
-    return ("table",
-            "Each source's last read and latest mark, the days since each, "
-            f"and the value it holds in {DEFAULT_CURRENCY}.",
-            _mbql(model,
-                  {"expressions": {"days_stale": DAYS_STALE, "days_quiet": DAYS_QUIET},
-                   "filter": FED_SOURCES,
-                   "fields": [_f("silver_source_id", "type/Text"),
-                              _f("observed_at", "type/DateTime"),
-                              ["expression", "days_stale"],
-                              _f("valued_at", "type/DateTime"),
-                              ["expression", "days_quiet"],
-                              _dec(f"total_value_{DEFAULT_CURRENCY.lower()}")],
-                   "order-by": [["desc", ["expression", "days_stale"]]]}),
-            {})
+def overview_cards(f):
+    """The Wealth Overview's own cards, or on the twin their privacy
+    variants. Its other tiles are other dashboards' cards, each with
+    that dashboard as its home. The cards read the serving views
+    natively, for the reason the spending ones do: the Currency picker
+    has to choose a value COLUMN, which only a template variable can.
+    Each reads the view at the grain it charts. The year-to-date returns
+    read report_returns, a row set per currency, where {{currency}}
+    filters rows.
 
-
-def question_defs():
-    """question name -> (display, description, dataset_query, viz
-    settings). A tile that sums money in the dashboard's chosen currency
-    is native SQL over a gold serving view: a picker selects rows and
-    never a column, so the required {{currency}} variable picks the
-    value column with a CASE, and the other pickers land as field
-    filters. The returns charts are native too, for their window
-    functions and pseudo-source UNION. The rest are MBQL over the
-    models: the returns scalars and table (report_returns carries a row
-    set per currency, so there the Currency picker is a row filter), the
-    freshness cards, and the spending tiles that need no currency
-    variable."""
-    def returns_native(desc, sql, viz):
-        """A native returns chart: Currency and Source are field filters,
-        Start year a variable."""
-        tags = returns_tags(sql)
-        return ("line", desc, _native(sql, tags), viz)
-
-    def returns_figure(desc, sql, label, excess=False):
-        """A figure beside the returns scalars, a benchmark's: a percent,
-        or with `excess` a difference in percentage points."""
-        tags = returns_tags(sql)
-        viz = ({"column_settings": {f'["name","{label}"]': {"suffix": " pp", "decimals": 2}}} if excess
-               else _percent_viz(label))
-        return ("scalar", desc, _native(sql, tags), {**viz, "scalar.field": label})
-
-    def returns_table(desc, money):
-        tags = returns_tags()
-        return ("table", desc, _native(returns_by_source_sql(money), tags),
-                _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized"))
-
-    # Spending cards: `value` carries gold's canonical sign (spend
-    # negative, refunds positive), so every card charts its negation,
-    # `net_spend`, and a month's outflow reads as a positive bar.
-
-    def ccy_spend(ccy):
-        """Net spend in ONE reporting currency, as a named column.
-
-        The long model carries a row per (line, currency), so a card that
-        wants them all at once cannot take the Currency picker — a row
-        filter would empty every column it does not select. Each
-        column instead carries its own currency predicate, which makes
-        the card right on the dashboard and right opened standalone,
-        where no picker reaches it."""
-        return ["aggregation-options",
-                ["sum-where", ["*", _dec("value"), -1],
-                 ["=", _f("currency", "type/Text"), ccy]],
-                {"name": ccy, "display-name": ccy}]
-    bal_tags = native_tags("web_card_balances_history", CARD_BALANCE_FILTERS)
-
-    # The spending tiles read the serving view natively, the way the
-    # privacy twin's do. The reason is the Currency picker: the
-    # long-format model carries a row per (line, reporting currency), so
-    # an MBQL tile over it is right only while a row filter holds it to
-    # one — which the dashboard supplies and nothing else does. Opened on
-    # its own, such a tile would sum every currency, silently and
-    # plausibly. A template VARIABLE is substituted by the picker rather
-    # than ANDed with the tile's own filters, and {{currency}} defaults
-    # to the configured default currency, so a native tile reads the
-    # dashboard's choice on the dashboard and the default anywhere else.
-    #
-    # What it costs is MBQL drill-through: a native result has no "see
-    # these records". The merchant ranking keeps its by staying MBQL: it
-    # aggregates, so a per-currency column collapses its duplicate rows
-    # (ccy_spend).
-    sp_where, sp_val, spend_native = _family_native_kit(
-        "web_spending", SPEND_FILTERS, True)
-
-    # The income tiles are the same kit over the other serving view.
-    # `neg` is the whole of the sign difference: gold stores an outflow
-    # negative and a receipt positive, and both families report a
-    # positive magnitude.
-    in_where, in_val, income_native = _family_native_kit(
-        "web_income", INCOME_FILTERS, False)
-
-    # The cashflow tiles are the same kit over the third serving view
-    # (_cashflow_kit), plus one template variable of its own:
-    # {{investing}}, the display grain of the investing section. It is a
-    # VARIABLE and not a field filter because it changes how rows are
-    # GROUPED rather than which rows are selected — `whole` nets the
-    # section into one Investments node, `class` opens it into one node
-    # per asset class — and a field filter can only narrow a population.
-    #
-    # THE SECTION PICKER REACHES ONLY THE CARDS IT MEANS SOMETHING ON.
-    # A card that does not declare the {{section}} tag cannot be bound
-    # to the picker, so the scope is expressed once, in the kit, rather
-    # than as a rule a later card has to remember. The headline figures and
-    # the diagram decline it: a statement whose sections have been
-    # narrowed to one is not a statement, its savings rate and yield
-    # share have lost a leg of their own ratio, and a one-section
-    # diagram draws a Cash node that absorbs the whole section rather
-    # than the residual it names (docs/CASHFLOW.md §9).
-    cf_where, cf_where_nosec, cf_val, cashflow_native = _cashflow_kit(
-        CASHFLOW_FILTERS)
-
-    # The uncategorised-share tile's tags: every filter but the
-    # currency variable, which a share of rows has no use for.
-    in_share_tags = view_tags("web_income", INCOME_FILTERS)
-
-    # The Wealth Overview and Allocation tiles read the serving views
-    # natively, for the reason the spending tiles do: the Currency picker
-    # has to choose a value COLUMN, which only a template variable can.
-    # Each card reads the view at the grain it charts. The year-to-date
-    # returns read report_returns, a row set per currency, where
-    # {{currency}} filters rows.
+    On the twin, a ratio of sums is scale-free, and both legs see the
+    dashboard's filters, so each headline figure reads as a share of the
+    selected sources' latest total. The > 0 guard blanks an empty or
+    under-water selection rather than rendering inf or a sign-flipped
+    share. The holdings time series read as % of the total at the END of
+    the selected window — the last charted day, which is today whenever
+    the window is open-ended. The nw CTE re-applies both pickers: the
+    time filter picks the anchor day, the source filter makes a subset
+    rescale to its own anchor total — so the envelope ends at 100 at the
+    window's last day and tops 100 wherever it previously peaked higher.
+    The anchor day is the latest day of the view the Time range keeps,
+    not of the selection; the other pickers then filter that day's rows.
+    The > 0 guard blanks a selection whose anchor total is zero or
+    negative — dividing would render inf/NaN resp. sign-flipped bands."""
     lat_tags = native_tags("web_sources_latest", HOLDINGS_FILTERS)
     hist_tags = native_tags("web_sources_history", HISTORY_FILTERS)
-    pos_tags = asof_tags("web_positions_history", POSITION_FILTERS)
     cls_tags = native_tags("web_asset_classes_history", HISTORY_FILTERS)
-    ccy_tags = {"currency": currency_tag()}
+    f = f.using(tail=PRIVACY_DESC if f.privacy else "")
 
-    def overview_native(tags, display, desc, sql, viz):
-        return (display, desc, _native(sql, tags), viz)
-
-    def latest_scalar(col, desc):
+    def latest_scalar(name, col, desc):
         """A headline figure: one value column summed over the selected
-        sources' latest holdings."""
-        return overview_native(lat_tags, "scalar", desc,
-            f"SELECT sum({_ccy_case(col)})::DOUBLE AS {col}\n"
-            "  FROM web_sources_latest" + _native_where(lat_tags), {})
+        sources' latest holdings, on the twin its share of their total."""
+        f.card(name, "scalar", desc,
+               f"SELECT sum({_ccy_case(col)})::DOUBLE\n"
+               f"       / CASE WHEN sum({_ccy_case('total_value')}) > 0\n"
+               f"              THEN sum({_ccy_case('total_value')})::DOUBLE END"
+               " * 100 AS share_pct\n"
+               "  FROM web_sources_latest" + _native_where(lat_tags) if f.privacy else
+               f"SELECT sum({_ccy_case(col)})::DOUBLE AS {col}\n"
+               "  FROM web_sources_latest" + _native_where(lat_tags), {}, tags=lat_tags)
 
-    def breakdown(view, dim, col, display, desc, viz=None, benchmark=None):
-        """An Allocation breakdown: `col` summed by `dim` over the as-of
-        day's rows of serving view `view`, largest first, and with
-        `benchmark` that dimension of the picked benchmark beside it."""
-        tags = asof_tags(view, HOLDINGS_FILTERS)
-        if benchmark:
-            tags["benchmark"] = BENCHMARK_TAG
-        return (display, desc,
-                _native(_breakdown_sql(view, dim, col, tags, benchmark=benchmark), tags),
-                viz if viz is not None else
-                {"graph.dimensions": [dim], "graph.metrics": ["value"],
-                 **(_beside_viz(dim) if benchmark else {})})
-
-
-    twr = _f("twr", "type/Float")
-    return {
-        # Net worth = positions + cash by construction, so the three
-        # headline figures reconcile exactly. They read the latest
-        # holdings, like `wealthdb holdings sources`; the charts below read
-        # the daily history, which agrees with them on each day.
-        "Net worth": latest_scalar("total_value",
-            "Cash plus positions across the selected sources." + LATEST_DESC),
-        "Positions value": latest_scalar("positions_value",
-            "Market value of all positions." + LATEST_DESC),
-        "Cash balance": latest_scalar("cash_balance",
-            "Total cash balance." + LATEST_DESC),
-        "Net worth — monthly trend": overview_native(
-            hist_tags, "smartscalar",
-            "Average daily net worth of the latest month, with the change "
-            "from the month before.",
-            "SELECT CAST(date_trunc('month', as_of_day) AS TIMESTAMP) AS month,\n"
-            f"       sum({_ccy_case('total_value')})::DOUBLE"
-            " / count(DISTINCT as_of_day) AS net_worth\n"
-            "  FROM web_sources_history" + _native_where(hist_tags) +
-            "\n GROUP BY 1\n ORDER BY 1",
-            {}),
-        "Net worth over time": overview_native(
-            hist_tags, "area",
-            "Daily net worth since the first snapshot, stacked by source. "
-            "Values carry forward between snapshots.",
-            _series_order("SELECT as_of_day, silver_source_id,\n"
-                     f"       sum({_ccy_case('total_value')})::DOUBLE AS net_worth\n"
-                     "  FROM web_sources_history" + _native_where(hist_tags) +
-                     "\n GROUP BY 1, 2", "as_of_day", "silver_source_id", "net_worth", "latest"),
-            {**_series_viz("as_of_day", "silver_source_id", "net_worth"), **STACKED_VIZ}),
-        # Shares, not money, so the twin shows the card as it is.
-        "Asset class mix over time": overview_native(
-            cls_tags, "area",
-            "Each day's net worth by asset class, as shares that stack to "
-            "100. A class in net debt reads below zero.",
-            _series_order(
-                "WITH v AS (\n"
-                f"  SELECT as_of_day, asset_class, sum({_ccy_case('value')})::DOUBLE AS value\n"
-                "    FROM web_asset_classes_history" + _native_where(cls_tags) + "\n"
-                "   GROUP BY 1, 2),\n"
-                "t AS (SELECT as_of_day, sum(value) AS total FROM v GROUP BY 1)\n"
-                "SELECT v.as_of_day, v.asset_class, v.value / t.total * 100 AS share_pct\n"
-                "  FROM v JOIN t ON t.as_of_day = v.as_of_day\n"
-                " WHERE t.total > 1e-9", "as_of_day", "asset_class", "share_pct", "latest"),
-            # Stacked, not normalized: Metabase pins a normalized stack's
-            # axis to 0..100%, which drops a negative band and clips the
-            # bands above it. The shares already sum to 100.
-            {**_series_viz("as_of_day", "asset_class", "share_pct"), **STACKED_VIZ,
-             **_share_viz("share_pct")}),
-        **{name: overview_native(ccy_tags, "scalar",
+    # Net worth = positions + cash by construction, so the three
+    # headline figures reconcile exactly. They read the latest
+    # holdings, like `wealthdb holdings sources`; the charts below read
+    # the daily history, which agrees with them on each day.
+    latest_scalar("Net worth", "total_value",
+                  "Always 100, the anchor of every other share." + LATEST_DESC if f.privacy else
+                  "Cash plus positions across the selected sources." + LATEST_DESC)
+    latest_scalar("Positions value", "positions_value",
+                  "Positions as a share of net worth." + LATEST_DESC if f.privacy else
+                  "Market value of all positions." + LATEST_DESC)
+    latest_scalar("Cash balance", "cash_balance",
+                  "Cash as a share of net worth." + LATEST_DESC if f.privacy else
+                  "Total cash balance." + LATEST_DESC)
+    total = _ccy_case("total_value")
+    nw_cte = (
+        "WITH nw AS (\n"
+        f"  SELECT CASE WHEN sum({total}) > 0\n"
+        f"              THEN sum({total})::DOUBLE END AS denom\n"
+        "    FROM web_sources_history\n"
+        "   WHERE as_of_day = (SELECT max(as_of_day) FROM web_sources_history\n"
+        "                       WHERE TRUE" + _cl("time_range") + ")"
+        + _field_clauses(hist_tags, exclude=("time_range",)) + ")\n")
+    if f.privacy:
+        sh_where = _native_where(hist_tags, " ")
+        f.card("Net worth — monthly trend", "smartscalar",
+               "Average daily net worth per month as a share of net worth at the "
+               "window's end.",
+               nw_cte +
+               "SELECT CAST(date_trunc('month', as_of_day) AS TIMESTAMP) AS month,\n"
+               f"       sum({total})::DOUBLE / count(DISTINCT as_of_day)\n"
+               "           / (SELECT denom FROM nw) * 100 AS avg_pct\n"
+               "  FROM web_sources_history" + sh_where + "\n"
+               " GROUP BY 1\n ORDER BY 1", {}, tags=hist_tags)
+        f.card("Net worth over time", "area",
+               "Daily net worth by source, as a share of the total at the window's "
+               "end.",
+               _series_order(nw_cte +
+                             "SELECT as_of_day, silver_source_id,\n"
+                             f"       sum({total})::DOUBLE / (SELECT denom FROM nw)"
+                             " * 100 AS total_value_pct\n"
+                             "  FROM web_sources_history" + sh_where + "\n"
+                             " GROUP BY 1, 2", "as_of_day", "silver_source_id", "total_value_pct", "latest"),
+               {**_series_viz("as_of_day", "silver_source_id", "total_value_pct"), **STACKED_VIZ},
+               tags=hist_tags)
+    else:
+        f.card("Net worth — monthly trend", "smartscalar",
+               "Average daily net worth of the latest month, with the change "
+               "from the month before.",
+               "SELECT CAST(date_trunc('month', as_of_day) AS TIMESTAMP) AS month,\n"
+               f"       sum({_ccy_case('total_value')})::DOUBLE"
+               " / count(DISTINCT as_of_day) AS net_worth\n"
+               "  FROM web_sources_history" + _native_where(hist_tags) +
+               "\n GROUP BY 1\n ORDER BY 1",
+               {}, tags=hist_tags)
+        f.card("Net worth over time", "area",
+               "Daily net worth since the first snapshot, stacked by source. "
+               "Values carry forward between snapshots.",
+               _series_order("SELECT as_of_day, silver_source_id,\n"
+                             f"       sum({_ccy_case('total_value')})::DOUBLE AS net_worth\n"
+                             "  FROM web_sources_history" + _native_where(hist_tags) +
+                             "\n GROUP BY 1, 2", "as_of_day", "silver_source_id", "net_worth", "latest"),
+               {**_series_viz("as_of_day", "silver_source_id", "net_worth"), **STACKED_VIZ}, tags=hist_tags)
+    # Shares, not money, so the twin shows the card as it is. A click
+    # opens Allocation as of the day clicked.
+    f.card("Asset class mix over time", "area",
+           "Each day's net worth by asset class, as shares that stack to "
+           "100. A class in net debt reads below zero.",
+           _series_order(
+               "WITH v AS (\n"
+               f"  SELECT as_of_day, asset_class, sum({_ccy_case('value')})::DOUBLE AS value\n"
+               "    FROM web_asset_classes_history" + _native_where(cls_tags) + "\n"
+               "   GROUP BY 1, 2),\n"
+               "t AS (SELECT as_of_day, sum(value) AS total FROM v GROUP BY 1)\n"
+               "SELECT v.as_of_day, v.asset_class, v.value / t.total * 100 AS share_pct\n"
+               "  FROM v JOIN t ON t.as_of_day = v.as_of_day\n"
+               " WHERE t.total > 1e-9", "as_of_day", "asset_class", "share_pct", "latest"),
+           # Stacked, not normalized: Metabase pins a normalized stack's
+           # axis to 0..100%, which drops a negative band and clips the
+           # bands above it. The shares already sum to 100.
+           {**_series_viz("as_of_day", "asset_class", "share_pct"), **STACKED_VIZ,
+            **_share_viz("share_pct")},
+           tags=cls_tags, exempt=True, home="Allocation", cell_clicks=(Link("as_of_day", "as_of_day"),))
+    # The returns of the current year. A click opens the Returns at the
+    # start year of the figure.
+    for name, method, col in (("Return year to date (TWR)", "time-weighted", "twr"),
+                              ("Return year to date (MWR)", "money-weighted", "mwr")):
+        f.card(name, "scalar",
                f"Whole-portfolio {method} return since 1 January of the latest year "
                "the returns cover.",
                "WITH g AS (\n"
@@ -1692,157 +1556,353 @@ def question_defs():
                f"SELECT {col}, window_from_year AS start_year\n"
                "  FROM g\n"
                " WHERE window_from_year = (SELECT max(window_from_year) FROM g)",
-               {**_percent_viz(col), "scalar.field": col})
-           for name, method, col in RETURN_YTD_CARDS},
-        # The Allocation tiles read the daily-history views so the
-        # dashboard can show holdings as of any chosen day, the history's
-        # last day for a later one. The dashboard supplies the required
-        # as-of day.
-        "Allocation by asset class": breakdown(
-            "web_asset_classes_history", "asset_class", "value", "row",
-            "Value by asset class, cash included, as of the chosen day. The "
-            "bars sum to net worth, debts below zero. A benchmark's bar is the same "
-            "total in its mix.", benchmark="asset_class"),
-        "Allocation by vehicle": breakdown(
-            "web_vehicles_history", "vehicle", "value", "row",
-            "Value by vehicle (stock, etf, fund, bond and others) as of the "
-            "chosen day. Cash shows as demand_deposit."),
-        "Allocation by currency": breakdown(
-            "web_currencies_history", "currency", "value", "row",
-            "Value by native currency, cash included, as of the chosen day. "
-            "A forward counts at its mark; Exposure shows its legs. The "
-            "Currency picker only sets the valuation currency. A benchmark's bar "
-            "is its funds' currencies.", benchmark="fund_currency"),
-        "Value by tax wrapper": breakdown(
-            "web_accounts_history", "tax_wrapper", "total_value", "pie",
-            "Account value, cash included, by tax wrapper as of the chosen day.",
-            {"pie.dimension": "tax_wrapper", "pie.metric": "value"}),
-        "Value by management style": breakdown(
-            "web_accounts_history", "management_style", "total_value", "row",
-            "Account value, cash included, by management style as of the "
-            "chosen day."),
-        # A fixed hundred: the inline vehicle filter and the dashboard's
-        # pickers narrow the list rather than a K picker sizing it.
-        "Top 100 positions": ("table",
-            "The hundred largest positions by value as of the chosen day, "
-            "across accounts. Each account's cash in a currency is a position "
-            "of its own." + POSITION_SIZE_NOTE,
-            _native(
-                "WITH p AS (\n"
-                "  SELECT symbol, name, asset_class, vehicle,\n"
-                f"         sum({_ccy_case('value')})::DOUBLE AS value\n"
-                "    FROM web_positions_history" + _asof_where(pos_tags) +
-                "\n   GROUP BY 1, 2, 3, 4, line_key\n   ORDER BY 5 DESC\n   LIMIT 100)\n"
-                "SELECT p.symbol, p.name, p.asset_class, p.vehicle, z.size, p.value\n"
-                "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY p.value DESC",
-                pos_tags),
-            {}),
-        # The spending tiles are native over web_spending (spend_native)
-        # but for two MBQL ones: the uncategorized share, a share of rows
-        # over the _pct model, and the merchant ranking, which carries
-        # every currency as its own column (SPEND_ALL_CURRENCY_CARDS).
-        # The card-balances chart reads web_card_balances_history, card
-        # balances being a different grain (per account per day, carried
-        # forward), with tags of its own (bal_tags).
-        "Spend — monthly trend": spend_native("Spend — monthly trend",
+               {**_percent_viz(col), "scalar.field": col},
+               tags={"currency": currency_tag()}, exempt=True, home="Returns",
+               cell_clicks=(Link("start_year", "start_year"),))
+
+
+def allocation_cards(f):
+    """The Allocation dashboard's cards, or on the twin their privacy
+    variants. They read the daily-history views so the dashboard can
+    show holdings as of any chosen day, the history's last day for a
+    later one; the dashboard supplies the required as-of day. On the
+    twin each breakdown's bucket is a % of the summed total over the
+    same filtered rows, so the buckets total 100 across the selected
+    sources as of the chosen day (liability buckets read negative; the
+    sum <> 0 guard blanks a degenerate zero day)."""
+    f = f.using(tail=PRIVACY_DESC if f.privacy else "")
+    metric = "value_pct" if f.privacy else "value"
+
+    def breakdown(name, view, dim, col, display, desc, viz=None, benchmark=None):
+        """`col` summed by `dim` over the as-of day's rows of serving view
+        `view`, largest first, and with `benchmark` that dimension of the
+        picked benchmark beside it."""
+        tags = asof_tags(view, HOLDINGS_FILTERS)
+        if benchmark:
+            tags["benchmark"] = BENCHMARK_TAG
+        f.card(name, display, desc,
+               _breakdown_sql(view, dim, col, tags, share=f.privacy, benchmark=benchmark),
+               viz if viz is not None else
+               {"graph.dimensions": [dim], "graph.metrics": [metric],
+                **(_beside_viz(dim) if benchmark else {})}, tags=tags)
+
+    twin = f.privacy
+    breakdown("Allocation by asset class", "web_asset_classes_history", "asset_class", "value", "row",
+              "Asset-class shares (%) of net worth as of the chosen day, cash "
+              "included. Debts read negative." if twin else
+              "Value by asset class, cash included, as of the chosen day. The "
+              "bars sum to net worth, debts below zero. A benchmark's bar is the same "
+              "total in its mix.", benchmark="asset_class")
+    breakdown("Allocation by vehicle", "web_vehicles_history", "vehicle", "value", "row",
+              "Vehicle shares (%) of net worth as of the chosen day. Cash shows "
+              "as demand_deposit." if twin else
+              "Value by vehicle (stock, etf, fund, bond and others) as of the "
+              "chosen day. Cash shows as demand_deposit.")
+    breakdown("Allocation by currency", "web_currencies_history", "currency", "value", "row",
+              "Native-currency shares (%) of net worth as of the chosen day, "
+              "cash included. A forward counts at its mark; Exposure shows its "
+              "legs." if twin else
+              "Value by native currency, cash included, as of the chosen day. "
+              "A forward counts at its mark; Exposure shows its legs. The "
+              "Currency picker only sets the valuation currency. A benchmark's bar "
+              "is its funds' currencies.", benchmark="fund_currency")
+    breakdown("Value by tax wrapper", "web_accounts_history", "tax_wrapper", "total_value", "pie",
+              "Tax-wrapper shares (%) of account value, cash included, as of the "
+              "chosen day." if twin else
+              "Account value, cash included, by tax wrapper as of the chosen day.",
+              {"pie.dimension": "tax_wrapper", "pie.metric": metric})
+    breakdown("Value by management style", "web_accounts_history", "management_style", "total_value", "row",
+              "Management-style shares (%) of account value, cash included, as of "
+              "the chosen day." if twin else
+              "Account value, cash included, by management style as of the "
+              "chosen day.")
+    # A fixed hundred: the inline vehicle filter and the dashboard's
+    # pickers narrow the list rather than a K picker sizing it.
+    tags = asof_tags("web_positions_history", POSITION_FILTERS)
+    value = _ccy_case("value")
+    if twin:
+        # Each position's share of the selection's TOTAL value at the
+        # day, cash included: the selected sources, tax wrappers and
+        # asset classes. The inline vehicle picker narrows the list but
+        # not the denominator, so a position's share reads the same
+        # however the list is narrowed.
+        f.card("Top 100 positions", "table",
+               "The hundred largest positions, as shares of the day's value. Each "
+               "account's cash in a currency is a row." + POSITION_SIZE_NOTE,
+               "WITH tot AS (\n"
+               f"  SELECT sum({value})::DOUBLE AS t\n"
+               "    FROM web_positions_history"
+               + _asof_where(tags, exclude=("vehicle",)) + "),\n"
+               "p AS (\n"
+               "  SELECT symbol, name, asset_class, vehicle,"
+               f" sum({value})::DOUBLE AS v\n"
+               "    FROM web_positions_history" + _asof_where(tags) + "\n"
+               "   GROUP BY 1, 2, 3, 4, line_key)\n"
+               f"SELECT p.symbol, {twin_name('p.name')} AS name, p.asset_class, p.vehicle, z.size,\n"
+               "       p.v / (SELECT CASE WHEN t <> 0 THEN t END FROM tot)"
+               " * 100 AS value_pct\n"
+               "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY value_pct DESC\n LIMIT 100",
+               {}, tags=tags)
+    else:
+        f.card("Top 100 positions", "table",
+               "The hundred largest positions by value as of the chosen day, "
+               "across accounts. Each account's cash in a currency is a position "
+               "of its own." + POSITION_SIZE_NOTE,
+               "WITH p AS (\n"
+               "  SELECT symbol, name, asset_class, vehicle,\n"
+               f"         sum({value})::DOUBLE AS value\n"
+               "    FROM web_positions_history" + _asof_where(tags) +
+               "\n   GROUP BY 1, 2, 3, 4, line_key\n   ORDER BY 5 DESC\n   LIMIT 100)\n"
+               "SELECT p.symbol, p.name, p.asset_class, p.vehicle, z.size, p.value\n"
+               "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY p.value DESC",
+               {}, tags=tags)
+    issuer_cards(f)
+
+
+def spending_cards(f):
+    """The Spending dashboard's cards, or on the twin their privacy
+    variants. `value` carries gold's canonical sign (spend negative,
+    refunds positive), so every card charts its negation, `net_spend`,
+    and a month's outflow reads as a positive bar.
+
+    The tiles read the serving view natively, for the Currency picker:
+    the long-format model carries a row per (line, reporting currency),
+    so an MBQL tile over it is right only while a row filter holds it to
+    one — which the dashboard supplies and nothing else does. Opened on
+    its own, such a tile would sum every currency, silently and
+    plausibly. A template VARIABLE is substituted by the picker rather
+    than ANDed with the tile's own filters, and {{currency}} defaults to
+    the configured default currency, so a native tile reads the
+    dashboard's choice on the dashboard and the default anywhere else.
+    What it costs is MBQL drill-through: a native result has no "see
+    these records". Two tiles stay MBQL: the uncategorized share, a
+    share of rows over the _pct model, and the merchant ranking, which
+    aggregates, so a per-currency column collapses its duplicate rows
+    (ccy_spend). The card-balances chart reads web_card_balances_history,
+    card balances being a different grain (per account per day, carried
+    forward), with tags of its own.
+
+    The twin's figures are shares and no card renders a counterparty.
+    Two denominators, both recomputed in-query with the dashboard's
+    pickers applied, so a narrowed selection rescales to itself. The
+    breakdowns, the merchant and account lists and the largest lines
+    divide by the window's own total net spend (they sum to 100); the
+    trend and the monthly bands divide by the window's peak month (the
+    peak reads 100). The card-balances chart takes the same shape with
+    the window's deepest total owed, so its peak reads 100. Guards blank
+    a degenerate window (no positive month, or a total of zero) rather
+    than render inf / sign-flipped shares.
+
+    REDACTION on top of normalization, the way the Returns twin does it:
+    the fix for a leaking column is to drop it, not to disguise it. No
+    twin card projects `merchant_name`, `display_name` or
+    `account_external_id` — the merchant list keeps its shape by ranking
+    instead, so `merchant_name` appears only as a GROUP BY key and in
+    the ranking's fixed WHERE predicate, never in a projection. Nor does
+    any twin card FILTER on an account: a field filter renders as a
+    dropdown of its column's values, so an account filter would print
+    the labels the projections just dropped (PRIVACY_SPEND_FILTERS).
+    `merchant_name` is safe as a GROUP BY key and as a fixed predicate
+    because neither shows anything; a filter widget does."""
+    twin = f.privacy
+    tags = native_tags("web_spending", PRIVACY_SPEND_FILTERS if twin else SPEND_FILTERS)
+    where = _native_where(tags)
+    val = f"sum({_ccy_case('value', neg=True)})::DOUBLE"
+    f = f.using(tags=tags, tail=PRIVACY_DESC if twin else "")
+    spend = f.card
+
+    def month_cte(extra=""):
+        return _month_cte("web_spending", where, val, extra)
+
+    # The window-total denominator of a twin card: every bucket over the
+    # summed total of the same filtered rows, so the buckets total 100.
+    # Signed, so a net-refunded bucket reads negative — and the <> 0
+    # guard blanks a window whose spend and refunds cancel exactly.
+    def total_cte(select, group):
+        """The `r` CTE: one row per bucket, with the value the shares
+        divide by."""
+        return ("WITH r AS (\n"
+                f"  SELECT {select}{val} AS v\n"
+                "    FROM web_spending" + where
+                + f"\n   GROUP BY {group})\n")
+    share_of_total = ("v / (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END"
+                      " FROM r) * 100")
+
+    if twin:
+        spend("Spend — monthly trend", "smartscalar",
+            "Net spend per month as a share of the biggest month, with the "
+            "change from the month before.",
+            month_cte() + "   GROUP BY 1),\n" + PEAK_CTE +
+            f"SELECT month, {PEAK_DIV} AS spend_pct\n  FROM m\n ORDER BY 1", {}, home="Spending")
+        # Always 100 — the window total the other percentages are
+        # relative to. A ratio of sums over the _pct model, so it is
+        # scale-free, follows every picker, and its "see these records"
+        # drill-through opens a model with no merchant column.
+        net_spend = {"net_spend": ["*", _dec("value"), -1]}
+        total = ["sum", ["expression", "net_spend"]]
+        spend("Net spend", "scalar",
+            "Always 100, the anchor of every other share.",
+            _mbql("report_spending_pct",
+                  {"expressions": net_spend,
+                   "aggregation": [["*", ["/", total, total], 100]]}),
+            {}, home="Spending")
+    else:
+        spend("Spend — monthly trend",
             "smartscalar",
             "Net spend in the window's latest month, with the change from the "
             "month before.",
-            f"SELECT {OCCURRED_MONTH},\n       {sp_val} AS net_spend\n"
-            "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 1",
-            {}),
-        "Net spend": spend_native("Net spend", "scalar",
+            f"SELECT {OCCURRED_MONTH},\n       {val} AS net_spend\n"
+            "  FROM web_spending" + where + "\n GROUP BY 1\n ORDER BY 1",
+            {}, home="Spending")
+        spend("Net spend", "scalar",
             "Purchases minus refunds over the window, across the selected "
             "accounts and categories.",
-            f"SELECT {sp_val} AS net_spend\n"
-            "  FROM web_spending" + sp_where,
-            {}),
-        # Shows a percentage, so the privacy twin reuses it as-is
-        # (PRIVACY_EXEMPT_CARDS). A scalar's "see these records"
-        # drill-through opens the underlying model, so it runs over the
-        # _pct model — the one without the merchant column — even though
-        # the figure itself is a scale-free row count.
-        "Uncategorized share": ("scalar",
-            f"Share of the window's spending lines labelled '{UNCATEGORIZED}', "
-            "the backlog `wealthdb categorize` works through.",
-            _mbql("report_spending_pct",
-                  {"aggregation": [["share",
-                       ["=", _f("spend_primary", "type/Text"), UNCATEGORIZED]]]}),
-            _percent_viz("share")),
-        # The axes are PINNED, and this is the card that most needs it.
-        # Left to infer them, Metabase puts the dimension with the most
-        # distinct values on the x-axis — and there are more categories
-        # than months in any window worth charting, so the card drew its
-        # own transpose: a bar per CATEGORY stacked by month, under a
-        # band of rotated category names deep enough to leave the bars a
-        # sliver. A card called "by month" charts months. Only the
-        # dimensions are pinned; the metric is left to default, since
-        # naming it would be guessing at what Metabase calls an
-        # aggregation column.
-        #
-        # Stacked areas rather than bars: months are a continuous axis,
-        # so the categories read as bands whose thickness moves across
-        # the window, and the envelope is the window's own shape. A
-        # month whose refunds beat its purchases dips its band below the
-        # line.
-        "Spending by month": spend_native("Spending by month", "area",
+            f"SELECT {val} AS net_spend\n"
+            "  FROM web_spending" + where,
+            {}, home="Spending")
+    # Shows a percentage, so the twin shows it as it is. A scalar's
+    # "see these records" drill-through opens the underlying model, so
+    # it runs over the _pct model — the one without the merchant column
+    # — even though the figure itself is a scale-free row count.
+    spend("Uncategorized share", "scalar",
+        f"Share of the window's spending lines labelled '{UNCATEGORIZED}', "
+        "the backlog `wealthdb categorize` works through.",
+        _mbql("report_spending_pct",
+              {"aggregation": [["share",
+                   ["=", _f("spend_primary", "type/Text"), UNCATEGORIZED]]]}),
+        _percent_viz("share"), exempt=True)
+    # The axes are PINNED, and this is the card that most needs it.
+    # Left to infer them, Metabase puts the dimension with the most
+    # distinct values on the x-axis — and there are more categories
+    # than months in any window worth charting, so the card drew its
+    # own transpose: a bar per CATEGORY stacked by month, under a
+    # band of rotated category names deep enough to leave the bars a
+    # sliver. A card called "by month" charts months. On the base card
+    # only the dimensions are pinned; the metric is left to default,
+    # since naming it would be guessing at what Metabase calls an
+    # aggregation column.
+    #
+    # Stacked areas rather than bars: months are a continuous axis,
+    # so the categories read as bands whose thickness moves across
+    # the window, and the envelope is the window's own shape. A
+    # month whose refunds beat its purchases dips its band below the
+    # line.
+    if twin:
+        spend("Spending by month", "area",
+            "Net spend per month by primary category, as a share of the window's "
+            "biggest month.",
+            _series_order(month_cte("spend_primary_label AS category,\n         ")
+                     + "   GROUP BY 1, 2),\n" + PEAK_CTE +
+                     f"SELECT month, category, {PEAK_DIV} AS spend_pct\n"
+                     "  FROM m", "month", "category", "spend_pct", "total"),
+            {"graph.dimensions": ["month", "category"],
+             "graph.metrics": ["spend_pct"], **STACKED_VIZ})
+    else:
+        spend("Spending by month", "area",
             "Net spend per month, stacked by primary category.",
             _series_order(f"SELECT {OCCURRED_MONTH},\n       spend_primary_label AS category,\n"
-                     f"       {sp_val} AS net_spend\n"
-                     "  FROM web_spending" + sp_where + "\n GROUP BY 1, 2",
+                     f"       {val} AS net_spend\n"
+                     "  FROM web_spending" + where + "\n GROUP BY 1, 2",
                      "month", "category", "net_spend", "total"),
-            {"graph.dimensions": ["month", "category"], **STACKED_VIZ}),
-        # The two breakdowns are donuts: the question they answer is how
-        # the window DIVIDES, and a ring reads that as one shape where a
-        # bar chart reads it as a ranking. The ring's hole carries the
-        # window's own total, so the tile answers "how much" and "of
-        # what" at once, and the legend carries each slice's share.
-        #
-        # `_donut` is where the two settings that make that work live:
-        # every slice drawn (Metabase would otherwise fold the small
-        # ones into a wedge it calls "Other", which is also the name of
-        # a real category here), and the shares shown in the legend
-        # rather than crowded onto the ring.
-        #
-        # A category can go net-negative over a window whose refunds
-        # beat its purchases; a ring has no way to draw that, so
-        # Metabase leaves such a slice out. The figure is in the
-        # transaction list either way. The hole sums what was drawn,
-        # so it carries the drawn categories rather than the window —
-        # the two differ by the net-negative ones, and the
-        # description says which figure it is.
-        "Spending by category": spend_native("Spending by category", "pie",
-            "Net spend by primary category. A category whose refunds beat "
-            "its purchases has no slice and is not in the total.",
-            f"SELECT spend_primary_label AS category,\n       {sp_val} AS net_spend\n"
-            "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
-            _donut()),
-        "Spending by subcategory": spend_native("Spending by subcategory",
-            "pie",
-            "Net spend by detailed category, the long tail in one slice. A "
-            "net-refunded category is not in the total.",
-            f"SELECT spend_label AS category,\n       {sp_val} AS net_spend\n"
-            "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
-            _donut(threshold=1.5)),
-        # Ranks merchants only. A line resolved to a delta — a gift, a
-        # bill on a card not itemised, cash out of an ATM — is not a
-        # merchant transaction, and one kind of delta line carries a
-        # name: a card bill labelled with the issuer it was paid to.
-        # A blank merchant therefore does not mark a delta, so the
-        # ranking excludes the delta CATEGORIES outright — a delta is
-        # primary-level, so `spend_primary <> spend_detailed` reads the
-        # dimension's own marker rather than restating a list of values
-        # — and still needs a name to rank by. A line nothing resolved
-        # is kept out by its two category columns being equal at
-        # '(uncategorized)'. A line the merchant store never named shows
-        # its own signature, so the rows are at the signature's grain —
-        # a chain appears once per branch signature, and a fold that is
-        # only the bank's own booking tag ranks under that tag, since
-        # the gates that keep such a fold from the model fence the
-        # merchant store and not this column. Only the ranking filters:
-        # the transaction list below keeps every line, since a line is a
-        # line.
-        "Top 50 merchants": ("table",
+            {"graph.dimensions": ["month", "category"], **STACKED_VIZ})
+    # The two breakdowns are donuts: the question they answer is how
+    # the window DIVIDES, and a ring reads that as one shape where a
+    # bar chart reads it as a ranking. The ring's hole carries the
+    # window's own total, so the tile answers "how much" and "of
+    # what" at once, and the legend carries each slice's share.
+    #
+    # `_donut` is where the two settings that make that work live:
+    # every slice drawn (Metabase would otherwise fold the small
+    # ones into a wedge it calls "Other", which is also the name of
+    # a real category here), and the shares shown in the legend
+    # rather than crowded onto the ring.
+    #
+    # A category can go net-negative over a window whose refunds
+    # beat its purchases; a ring has no way to draw that, so
+    # Metabase leaves such a slice out. The figure is in the
+    # transaction list either way. The hole sums what was drawn,
+    # so it carries the drawn categories rather than the window —
+    # the two differ by the net-negative ones, and the
+    # description says which figure it is.
+    #
+    # The twin's rings suit a share even better than an amount, since
+    # the slices are already the percentages the ring would compute.
+    # Neither carries a LIMIT: a limited ring renormalizes onto what it
+    # drew and would print shares disagreeing with its own values, where
+    # the threshold folds the tail into a wedge and keeps the whole
+    # window on the ring. No figure in their hole. The shares are of a
+    # SIGNED total, so a category whose refunds beat its purchases
+    # carries a negative one and a ring cannot draw it — leaving the
+    # hole to sum the rest and read just over 100. The values are right
+    # and total exactly 100; it is the hole that cannot represent them,
+    # and a hole reading ~100 on a breakdown already expressed as shares
+    # says nothing the description does not.
+    for name, col, threshold, what, twin_what in (
+            ("Spending by category", "spend_primary_label", 0,
+             "Net spend by primary category. A category whose refunds beat "
+             "its purchases has no slice and is not in the total.",
+             "Primary-category shares (%) of net spend. A category whose "
+             "refunds beat its purchases has no slice."),
+            ("Spending by subcategory", "spend_label", 1.5,
+             "Net spend by detailed category, the long tail in one slice. A "
+             "net-refunded category is not in the total.",
+             "Detailed-category shares (%) of net spend, the long tail in one "
+             "slice. Net-refunded categories have no slice.")):
+        if twin:
+            spend(name, "pie", twin_what,
+                total_cte(f"{col} AS category,\n         ", "1") +
+                f"SELECT category, {share_of_total} AS spend_pct\n"
+                "  FROM r\n ORDER BY 2 DESC",
+                _donut(threshold=threshold, total=False))
+        else:
+            spend(name, "pie", what,
+                f"SELECT {col} AS category,\n       {val} AS net_spend\n"
+                "  FROM web_spending" + where + "\n GROUP BY 1\n ORDER BY 2 DESC",
+                _donut(threshold=threshold))
+    # Ranks merchants only. A line resolved to a delta — a gift, a
+    # bill on a card not itemised, cash out of an ATM — is not a
+    # merchant transaction, and one kind of delta line carries a
+    # name: a card bill labelled with the issuer it was paid to.
+    # A blank merchant therefore does not mark a delta, so the
+    # ranking excludes the delta CATEGORIES outright — a delta is
+    # primary-level, so `spend_primary <> spend_detailed` reads the
+    # dimension's own marker rather than restating a list of values
+    # — and still needs a name to rank by. A line nothing resolved
+    # is kept out by its two category columns being equal at
+    # '(uncategorized)'. A line the merchant store never named shows
+    # its own signature, so the rows are at the signature's grain —
+    # a chain appears once per branch signature, and a fold that is
+    # only the bank's own booking tag ranks under that tag, since
+    # the gates that keep such a fold from the model fence the
+    # merchant store and not this column. Only the ranking filters:
+    # the transaction list below keeps every line, since a line is a
+    # line.
+    #
+    # The twin's merchants are ranked and unnamed: merchant_name is a
+    # GROUP BY key and a WHERE predicate only, so the counterparty
+    # decides the rows without ever reaching a column. The list still
+    # answers the question the money tile answers — how concentrated
+    # the spending is. Its shares are of the window's whole net spend,
+    # the anchor the twin's scalar reads as 100, so the total is summed
+    # apart from the ranked rows.
+    if twin:
+        spend("Top 50 merchants", "table",
+            "Top fifty merchants, unnamed, as shares of net spend. A card "
+            "issuer's bill is outside the ranking.",
+            "WITH r AS (\n"
+            f"  SELECT {val} AS v\n"
+            "    FROM web_spending" + where + "\n"
+            "     AND merchant_name IS NOT NULL\n"
+            "     AND spend_primary_label <> spend_label\n"
+            "   GROUP BY merchant_name),\n"
+            "t AS (\n"
+            f"  SELECT CASE WHEN {val} <> 0 THEN {val} END AS total\n"
+            "    FROM web_spending" + where + ")\n"
+            "SELECT row_number() OVER (ORDER BY v DESC) AS merchant_rank,\n"
+            "       v / (SELECT total FROM t) * 100 AS spend_pct\n"
+            "  FROM r\n ORDER BY 1\n LIMIT 50", {})
+    else:
+        spend("Top 50 merchants", "table",
             f"Top fifty merchants by net spend, ranked in {DEFAULT_CURRENCY}. Delta lines, a card "
             "issuer's bill among them, and lines nothing resolved are outside the ranking.",
             _mbql("report_spending",
@@ -1855,370 +1915,735 @@ def question_defs():
                    "order-by": [["desc", ["aggregation",
                                  REPORTING_CURRENCIES.index(DEFAULT_CURRENCY)]]],
                    "limit": 50}),
-            {}),
-        "Spend by account": spend_native("Spend by account", "row",
+            {})
+    if twin:
+        # The label is dropped, and the rows regroup onto the two
+        # dimensions the privacy dashboards already show — the source and
+        # the account kind — concatenated into one bar label.
+        spend("Spend by account", "row",
+            "Net spend shares (%) by source and account kind, with account labels "
+            "redacted.",
+            total_cte("silver_source_id || ' / '\n             || COALESCE("
+                      "account_kind, 'unknown') AS account_group,\n         ", "1") +
+            f"SELECT account_group, {share_of_total} AS spend_pct\n"
+            "  FROM r\n ORDER BY 2 DESC",
+            {"graph.dimensions": ["account_group"],
+             "graph.metrics": ["spend_pct"]})
+    else:
+        spend("Spend by account", "row",
             "Net spend by account over the window, each labelled with its "
             "name, source and kind.",
-            f"SELECT account_label AS account,\n       {sp_val} AS net_spend\n"
-            "  FROM web_spending" + sp_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
-            {}),
-        # Read the way an issuer states a card: what is OWED, as a
-        # positive figure. Gold stores the same balance negative — a card
-        # is a liability, the margin-debit precedent — and keeps doing so
-        # everywhere else, the CLI included; the sign is flipped in this
-        # projection and nowhere else, so the chart matches the statement
-        # a reader compares it against.
-        "Card balances over time": ("line",
+            f"SELECT account_label AS account,\n       {val} AS net_spend\n"
+            "  FROM web_spending" + where + "\n GROUP BY 1\n ORDER BY 2 DESC",
+            {})
+    # Read the way an issuer states a card: what is OWED, as a
+    # positive figure. Gold stores the same balance negative — a card
+    # is a liability, the margin-debit precedent — and keeps doing so
+    # everywhere else, the CLI included; the sign is flipped in this
+    # projection and nowhere else, so the chart matches the statement
+    # a reader compares it against. The twin's has no category
+    # dimension and a denominator of its own — the deepest total owed
+    # within the window, so the peak reads 100 and a paid-off card
+    # returns to 0 — and splits by source rather than by account.
+    bal_tags = native_tags("web_card_balances_history",
+                           PRIVACY_CARD_BALANCE_FILTERS if twin else CARD_BALANCE_FILTERS)
+    if twin:
+        spend("Card balances over time", "line",
+            "What the cards owed each day by source, as a share of the window's "
+            "deepest total owed.",
+            _series_order(
+                "WITH d AS (\n"
+                "  SELECT as_of_day, silver_source_id,\n"
+                f"         sum({_ccy_case('balance', neg=True)})::DOUBLE AS v\n"
+                "    FROM web_card_balances_history" + _native_where(bal_tags) + "\n"
+                "   GROUP BY 1, 2),\n"
+                "p AS (SELECT CASE WHEN max(abs(t)) > 0 THEN max(abs(t)) END AS peak\n"
+                "        FROM (SELECT sum(v) AS t FROM d GROUP BY as_of_day))\n"
+                "SELECT as_of_day, silver_source_id,\n"
+                "       v / (SELECT peak FROM p) * 100 AS balance_pct\n"
+                "  FROM d", "as_of_day", "silver_source_id", "balance_pct", "latest",
+                largest_first=True),
+            {**_series_viz("as_of_day", "silver_source_id", "balance_pct"), **LINES_VIZ}, tags=bal_tags)
+    else:
+        spend("Card balances over time", "line",
             "What each credit card owed on every day of the window, carried "
             "forward between statements. A paid-off card returns to zero.",
-            _native(_series_order(
+            _series_order(
                 "SELECT as_of_day, account_label,\n"
                 f"       sum({_ccy_case('balance', neg=True)}) AS owed\n"
                 "  FROM web_card_balances_history"
                 + _native_where(bal_tags, " ") + "\n"
                 " GROUP BY 1, 2", "as_of_day", "account_label", "owed", "latest",
-                largest_first=True), bal_tags),
-            {**_series_viz("as_of_day", "account_label", "owed"), **LINES_VIZ}),
-        # The one tile that lists LINES rather than grouping them: over
-        # the long model it would get each line once per reporting
-        # currency, with no aggregation to fold them back.
-        "Largest transactions": spend_native("Largest transactions", "table",
+                largest_first=True),
+            {**_series_viz("as_of_day", "account_label", "owed"), **LINES_VIZ}, tags=bal_tags)
+    # The one tile that lists LINES rather than grouping them: over
+    # the long model it would get each line once per reporting
+    # currency, with no aggregation to fold them back. The twin drops
+    # both counterparty columns: what is left is when, from which
+    # source, and what it was categorised as — each as a share of the
+    # window.
+    if twin:
+        spend("Largest transactions", "table",
+            "The fifty largest spending lines as shares of net spend, with "
+            "merchant and account redacted.",
+            "WITH r AS (\n"
+            "  SELECT occurred_at, silver_source_id, spend_primary_label, spend_label,\n"
+            f"         ({_ccy_case('value', neg=True)})::DOUBLE AS v\n"
+            "    FROM web_spending" + where + "),\n"
+            "t AS (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END AS total FROM r)\n"
+            "SELECT occurred_at, silver_source_id, spend_primary_label, spend_label,\n"
+            "       v / (SELECT total FROM t) * 100 AS spend_pct\n"
+            "  FROM r\n ORDER BY v DESC\n LIMIT 50", {})
+    else:
+        spend("Largest transactions", "table",
             "The fifty largest spending lines of the window, with merchant, "
             "account and categories. A refund sorts last.",
             "SELECT occurred_at,\n       account_label AS account,\n"
             "       merchant_name,\n       spend_primary_label AS category,\n"
             "       spend_label AS subcategory,\n"
             f"       {_ccy_case('value', neg=True)} AS net_spend\n"
-            "  FROM web_spending" + sp_where + "\n ORDER BY net_spend DESC\n LIMIT 50",
-            {}),
-        # ---- Income -------------------------------------------------
-        # Every income tile is native over web_income, for the reason
-        # the spending ones are: the serving view carries a row per
-        # (line, reporting currency), and a required {{currency}}
-        # variable picks the column rather than filtering rows. Two
-        # tiles the Spending dashboard has are deliberately absent —
-        # there is no second ring, the income taxonomy having one
-        # vendored primary and so no subcategory level worth one, and no
-        # balance-history chart, nothing on the income side being a
-        # liability.
-        "Income — monthly trend": income_native("Income — monthly trend",
+            "  FROM web_spending" + where + "\n ORDER BY net_spend DESC\n LIMIT 50",
+            {})
+    fee_cards(f)
+
+
+def ccy_spend(ccy):
+    """Net spend in ONE reporting currency, as a named column.
+
+    The long model carries a row per (line, currency), so a card that
+    wants them all at once cannot take the Currency picker — a row
+    filter would empty every column it does not select. Each column
+    instead carries its own currency predicate, which makes the card
+    right on the dashboard and right opened standalone, where no picker
+    reaches it."""
+    return ["aggregation-options",
+            ["sum-where", ["*", _dec("value"), -1],
+             ["=", _f("currency", "type/Text"), ccy]],
+            {"name": ccy, "display-name": ccy}]
+
+
+def income_cards(f):
+    """The Income dashboard's cards, or on the twin their privacy
+    variants. Every income line's tile is native over web_income, for
+    the reason the spending ones are: the serving view carries a row per
+    (line, reporting currency), and a required {{currency}} variable
+    picks the column rather than filtering rows. Two tiles the Spending
+    dashboard has are deliberately absent — there is no second ring, the
+    income taxonomy having one vendored primary and so no subcategory
+    level worth one, and no balance-history chart, nothing on the income
+    side being a liability. `neg` is False: gold stores a receipt
+    positive. The cards of received and expected income follow
+    (income_projected_cards).
+
+    The twin's figures are shares, and no card renders a payer or an
+    account. The denominators mirror the spending twin's, and for the
+    same reason: the breakdowns and the lists divide by the window's own
+    net income (they sum to 100), the trend by the window's peak month
+    (the peak reads 100). A window with no positive month, or a total of
+    zero, blanks rather than rendering inf or a sign-flipped share.
+    REDACTION on top of normalization, as everywhere else in the twin:
+    the fix for a leaking column is to drop it. No twin card projects
+    `payer_name`, `display_name` or `account_external_id` — the payer
+    list keeps its shape by RANKING instead, so `payer_name` is a GROUP
+    BY key and never a projection. Nor does any twin card filter on an
+    account, a field filter being a dropdown of its column's values
+    (PRIVACY_INCOME_FILTERS)."""
+    twin = f.privacy
+    filters = PRIVACY_INCOME_FILTERS if twin else INCOME_FILTERS
+    tags = native_tags("web_income", filters)
+    where = _native_where(tags)
+    val = f"sum({_ccy_case('value')})::DOUBLE"
+    income = f.using(tags=tags, tail=PRIVACY_DESC if twin else "").card
+    total_cte = ("t AS (SELECT nullif(sum(v), 0) AS total FROM m)\n")
+
+    if twin:
+        income("Income — monthly trend", "smartscalar",
+            "The latest month's net income as a share of the window's biggest month, with the change.",
+            _month_cte("web_income", where, val) + "   GROUP BY 1),\n" + PEAK_CTE +
+            f"SELECT month, {PEAK_DIV} AS income_pct\n  FROM m\n ORDER BY 1", {})
+        # The anchor every other percentage here is relative to. Native
+        # like the rest of this twin — there is no income _pct model,
+        # because no income tile is MBQL and none needs a drill-through
+        # target.
+        income("Net income", "scalar",
+            "Always 100, the window's net income as a share of itself.",
+            "WITH m AS (\n"
+            f"  SELECT {val} AS v FROM web_income" + where + ")\n"
+            "SELECT v / nullif(v, 0) * 100 AS income_pct FROM m",
+            {})
+    else:
+        income("Income — monthly trend",
             "smartscalar",
             "Net income in the window's latest month, with the change from the month before.",
-            f"SELECT {OCCURRED_MONTH},\n       {in_val} AS net_income\n"
-            "  FROM web_income" + in_where + "\n GROUP BY 1\n ORDER BY 1",
-            {}),
-        "Net income": income_native("Net income", "scalar",
+            f"SELECT {OCCURRED_MONTH},\n       {val} AS net_income\n"
+            "  FROM web_income" + where + "\n GROUP BY 1\n ORDER BY 1",
+            {})
+        income("Net income", "scalar",
             "Every income line over the window, receipts less reversals, gross as booked.",
-            f"SELECT {in_val} AS net_income\n"
-            "  FROM web_income" + in_where,
-            {}),
-        # The data-quality canary. A percentage, so the FIGURE needs no
-        # twin — but this is a native card, and a native card carries its
-        # own field-filter tags wherever it is opened, one of which is an
-        # `account` filter. So the twin builds its own over
-        # PRIVACY_INCOME_FILTERS (income_privacy_defs) and this one is
-        # NOT in PRIVACY_EXEMPT_CARDS.
-        # The one income tile that does NOT read {{currency}}: it is a
-        # share of ROWS, scale-free, and the same in every currency. It
-        # therefore gets tags without the currency variable rather than
-        # declaring a required one it never interpolates.
-        "Uncategorized income share": ("scalar",
-            IN_UNCATEGORIZED_DESC,
-            _native(IN_UNCATEGORIZED_SQL + _native_where(in_share_tags), in_share_tags),
-            _percent_viz("uncategorized_share")),
-        # No slice threshold: the income vocabulary is small enough to
-        # name in full, unlike the spending one, so nothing is folded
-        # into an "other" wedge a reader cannot open. The ring rule
-        # still applies — a net-negative type has no slice.
-        "Income by type": income_native("Income by type", "pie",
+            f"SELECT {val} AS net_income\n"
+            "  FROM web_income" + where,
+            {})
+    # The data-quality canary. A percentage, so the FIGURE needs no
+    # twin — but this is a native card, and a native card carries its
+    # own field-filter tags wherever it is opened, one of which is an
+    # `account` filter, which renders as a dropdown of account labels.
+    # So the twin builds its own over PRIVACY_INCOME_FILTERS like every
+    # other card on its dashboard, and the card is not exempt.
+    # The one income tile that does NOT read {{currency}}: it is a
+    # share of ROWS, scale-free, and the same in every currency. It
+    # therefore gets tags without the currency variable rather than
+    # declaring a required one it never interpolates.
+    share_tags = view_tags("web_income", filters)
+    income("Uncategorized income share", "scalar",
+        IN_UNCATEGORIZED_DESC,
+        IN_UNCATEGORIZED_SQL + _native_where(share_tags),
+        _percent_viz("uncategorized_share"), tags=share_tags)
+    # No slice threshold: the income vocabulary is small enough to
+    # name in full, unlike the spending one, so nothing is folded
+    # into an "other" wedge a reader cannot open. The ring rule
+    # still applies — a net-negative type has no slice. The twin's ring
+    # carries no figure in its hole: a total of shares is 100 by
+    # construction and says nothing, and the hole is where the base
+    # ring puts the money the twin exists not to show.
+    if twin:
+        income("Income by type", "pie",
+            "The window's net income by type, each as a share of it.",
+            "WITH m AS (\n"
+            f"  SELECT income_label AS type,\n         {val} AS v\n"
+            "    FROM web_income" + where + "\n   GROUP BY 1),\n" + total_cte +
+            "SELECT type, v / (SELECT total FROM t) * 100 AS income_pct\n"
+            "  FROM m\n ORDER BY 2 DESC",
+            _donut(threshold=0, total=False))
+    else:
+        income("Income by type", "pie",
             "Net income by type over the window, the total in the middle. "
             "A type whose reversals beat its receipts has no slice.",
-            f"SELECT income_label AS type,\n       {in_val} AS net_income\n"
-            "  FROM web_income" + in_where + "\n GROUP BY 1\n ORDER BY 2 DESC",
-            _donut(threshold=0, total=True)),
-        # The only payer ranking there is: the CLI carries none, as it
-        # carries no merchant ranking. Payers with no name — the delta
-        # lines — are excluded rather than grouped into a blank slice.
-        "Top 50 payers": income_native("Top 50 payers", "table",
+            f"SELECT income_label AS type,\n       {val} AS net_income\n"
+            "  FROM web_income" + where + "\n GROUP BY 1\n ORDER BY 2 DESC",
+            _donut(threshold=0, total=True))
+    # The only payer ranking there is: the CLI carries none, as it
+    # carries no merchant ranking. Payers with no name — the delta
+    # lines — are excluded rather than grouped into a blank slice. The
+    # twin's are ranked and unnamed: the shape of "how concentrated is
+    # this household's income" without naming anyone it comes from.
+    if twin:
+        income("Top 50 payers", "table",
+            "The fifty payers the most income came from, ranked and unnamed, as shares of net income.",
+            "WITH m AS (\n"
+            f"  SELECT payer_name, {val} AS v\n"
+            "    FROM web_income" + where +
+            "\n     AND payer_name IS NOT NULL\n   GROUP BY 1),\n" + total_cte +
+            "SELECT row_number() OVER (ORDER BY v DESC) AS rank,\n"
+            "       v / (SELECT total FROM t) * 100 AS income_pct\n"
+            "  FROM m\n ORDER BY 1\n LIMIT 50",
+            {})
+        income("Largest receipts", "table",
+            "The fifty largest income lines as shares of net income, with the type but no payer or account.",
+            "WITH m AS (\n"
+            "  SELECT occurred_at, income_label AS type,\n"
+            f"         {_ccy_case('value')} AS v\n"
+            "    FROM web_income" + where + "),\n"
+            "t AS (SELECT nullif(sum(v), 0) AS total FROM m)\n"
+            "SELECT occurred_at, type,\n"
+            "       v / (SELECT total FROM t) * 100 AS income_pct\n"
+            "  FROM m\n ORDER BY v DESC\n LIMIT 50",
+            {})
+    else:
+        income("Top 50 payers", "table",
             "The fifty payers the most income came from over the window. "
             "Lines with no payer to name are left out.",
-            f"SELECT payer_name,\n       {in_val} AS net_income\n"
-            "  FROM web_income" + in_where +
+            f"SELECT payer_name,\n       {val} AS net_income\n"
+            "  FROM web_income" + where +
             "\n   AND payer_name IS NOT NULL\n GROUP BY 1\n ORDER BY 2 DESC\n LIMIT 50",
-            {}),
-        "Largest receipts": income_native("Largest receipts", "table",
+            {})
+        income("Largest receipts", "table",
             "The fifty largest income lines of the window, with payer, account and type.",
             "SELECT occurred_at,\n       account_label AS account,\n"
             "       payer_name,\n       income_label AS type,\n"
             f"       {_ccy_case('value')} AS net_income\n"
-            "  FROM web_income" + in_where + "\n ORDER BY net_income DESC\n LIMIT 50",
-            {}),
-        # ---- Cash Flow ----------------------------------------------
-        # Every cashflow tile is native over web_cashflow, for the
-        # reason the other two families' are — a row per (line,
-        # reporting currency), and a required {{currency}} variable that
-        # picks the column rather than filtering rows — plus one of its
-        # own: {{investing}}, which changes how the investing section is
-        # GROUPED and which no field filter could express.
-        #
-        # There is no account tile and no account picker. The household
-        # boundary is what separates the household's cash flow from its
-        # vehicles', and a per-account view would ask a question this
-        # statement does not answer: a wire between two of the
-        # household's own accounts is invisible here by construction.
-        "Net cash flow": cashflow_native("Net cash flow", "scalar",
-            "The cash pool's net change over the window, the diagram's Cash "
-            "node negated.",
-            f"SELECT {cf_val} AS net_cash_flow\n  FROM web_cashflow" + cf_where_nosec,
-            {}, section=False),
-        # Named for the SECTION, not for "cash": the residual section
-        # is also called cash and is a different number, and the CLI's
-        # columns behind these two tiles are operating_in / operating_out.
-        "Operating in": cashflow_native("Operating in", "scalar",
-            "Every receipt over the window. It differs from `wealthdb income` "
-            "(docs/CASHFLOW.md §8).",
-            f"SELECT {cf_val} AS operating_in\n  FROM web_cashflow" + cf_where_nosec +
-            "\n   AND section = 'operating_in'",
-            {}, section=False),
-        "Operating out": cashflow_native("Operating out", "scalar",
-            "Consumption, fees, taxes and giving over the window, buying and "
-            "selling excluded.",
-            f"SELECT -({cf_val}) AS operating_out\n  FROM web_cashflow" + cf_where_nosec +
-            "\n   AND section = 'operating_out'",
-            {}, section=False),
-        "Savings rate": cashflow_native("Savings rate", "scalar",
-            "Operating cash flow as a share of receipts. Blank where nothing "
-            "came in.",
-            _savings_rate_sql(cf_where_nosec, "savings_rate"),
-            _percent_viz("savings_rate"), section=False),
-        "Yield share": cashflow_native("Yield share", "scalar",
-            "The share of receipts from assets, such as dividends, interest "
-            "and rent.",
-            _yield_share_sql(cf_where_nosec, "yield_share"),
-            _percent_viz("yield_share"), section=False),
-        # The diagram, and the centre of the dashboard. A native query in
-        # the three columns the BI layer's Sankey visualisation reads,
-        # over the LINE-grain serving view: a node's side is the sign of
-        # its net over the filtered window, so the nets and the sides
-        # have to be computed where the pickers apply.
-        "Cash flow": cashflow_native("Cash flow", "sankey",
-            "Where the window's cash came from (left) and went (right).",
-            _cashflow_sankey_sql(cf_where_nosec, cf_val),
-            {"sankey.source": "source", "sankey.target": "target",
-             "sankey.value": "value",
-             # Metabase defaults this to "left", which lays a node out
-             # at the depth its INCOMING edge puts it at. A class with
-             # no leaves then sits on the middle level as a dead end
-             # beside the classes that do have leaves, and the diagram
-             # reads as though it were one. "justify" is left alignment
-             # with one change: a node with no outgoing edge moves to
-             # the last level, where every other ending sits.
-             "sankey.node_align": "justify"}, section=False),
-        # The Section picker narrows the bars. The net is the
-        # household's whatever it picks, as the Net cash flow tile is.
-        "Cash flow statement by month": cashflow_native(
-            "Cash flow statement by month", "combo",
-            "Operating, investing, financing and vehicles per month as signed "
-            "bars, with net cash flow as a line.",
-            _series_order(f"SELECT {OCCURRED_MONTH},\n"
-                     "       CASE WHEN section IN ('operating_in', 'operating_out')\n"
-                     "            THEN 'operating' ELSE section END AS statement_section,\n"
-                     f"       {cf_val} AS value\n"
-                     "  FROM web_cashflow" + cf_where + "\n GROUP BY 1, 2\n"
-                     f"UNION ALL\nSELECT {OCCURRED_MONTH},\n       '{NET_CASH_FLOW}',\n"
-                     f"       {cf_val}\n"
-                     "  FROM web_cashflow" + cf_where_nosec + "\n GROUP BY 1",
-                     "month", "statement_section", "value", "total", legend_last=NET_CASH_FLOW),
+            "  FROM web_income" + where + "\n ORDER BY net_income DESC\n LIMIT 50",
+            {})
+    income_projected_cards(f)
+
+
+def cashflow_cards(f):
+    """The Cash Flow dashboard's cards, or on the twin their privacy
+    variants. Every tile of the statement is native over web_cashflow,
+    for the reason the other two families' are — a row per (line,
+    reporting currency), and a required {{currency}} variable that picks
+    the column rather than filtering rows — plus one of its own:
+    {{investing}}, the display grain of the investing section. It is a
+    VARIABLE and not a field filter because it changes how rows are
+    GROUPED rather than which rows are selected — `whole` nets the
+    section into one Investments node, `class` opens it into one node
+    per asset class — and a field filter can only narrow a population.
+
+    There is no account tile and no account picker. The household
+    boundary is what separates the household's cash flow from its
+    vehicles', and a per-account view would ask a question this
+    statement does not answer: a wire between two of the household's
+    own accounts is invisible here by construction.
+
+    THE SECTION PICKER REACHES ONLY THE CARDS IT MEANS SOMETHING ON. A
+    card that does not declare the {{section}} tag cannot be bound to
+    the picker, so the scope is expressed once, by the maker a card is
+    made with (`whole`), rather than as a rule a later card has to
+    remember; its SQL uses `where_nosec`, since a tag a card does not
+    declare cannot appear in its SQL. The headline figures and the
+    diagram decline it: a statement whose sections have been narrowed
+    to one is not a statement, its savings rate and yield share have
+    lost a leg of their own ratio, and a one-section diagram draws a
+    Cash node that absorbs the whole section rather than the residual it
+    names (docs/CASHFLOW.md §9). The twin's tiles answer the same
+    pickers card for card: a twin tile stands in for a base tile, or a
+    reader comparing the two would find one narrowed and the other not.
+
+    The twin is NORMALISATION ALONE, almost. The diagram's nodes are
+    vocabulary — no node is ever a merchant, a payer, an account or an
+    instrument — so with the hub at 100 there is nothing left to hide in
+    it, and the twin's Sankey is the same edge list divided through.
+    That is the property §5 of docs/CASHFLOW.md exists to guarantee, and
+    the assertion in web/test_provision.py is what holds it. ONE card
+    does redact, and for the reason every twin card redacts: the fix for
+    a leaking column is to drop it. `Largest flows` names the account a
+    line moved through and, on an operating line, the payer or merchant
+    behind it. The twin's version ranks instead and projects neither.
+    THE HUB, not a total, is the denominator, and it is recomputed
+    in-query so a narrowed selection rescales to itself. It is the sum of
+    the positive nets at the level drawn — which equals the sum of the
+    negative ones, because the statement sums to zero once cash is a
+    node — so it moves with the Investing picker exactly as the base
+    dashboard's diagram does.
+
+    The projection's cards and the bridge's follow
+    (cashflow_plan_cards, bridge_cards)."""
+    twin = f.privacy
+    tags = {**native_tags("web_cashflow", CASHFLOW_FILTERS), "investing": INVESTING_TAG}
+    tags_nosec = {k: v for k, v in tags.items() if k != "section"}
+    where, where_nosec = _native_where(tags), _native_where(tags_nosec)
+    val = f"sum({_ccy_case('value')})::DOUBLE"
+    tail = PRIVACY_DESC if twin else ""
+    flow = f.using(tags=tags, tail=tail).card
+    whole = f.using(tags=tags_nosec, tail=SECTION_DECLINED_DESC + tail).card
+    sankey_viz = {"sankey.source": "source", "sankey.target": "target",
+                  "sankey.value": "value",
+                  # Metabase defaults this to "left", which lays a node out
+                  # at the depth its INCOMING edge puts it at. A class with
+                  # no leaves then sits on the middle level as a dead end
+                  # beside the classes that do have leaves, and the diagram
+                  # reads as though it were one. "justify" is left alignment
+                  # with one change: a node with no outgoing edge moves to
+                  # the last level, where every other ending sits.
+                  "sankey.node_align": "justify"}
+
+    if twin:
+        # The hub, built by the same helper the diagram uses, so a scalar
+        # and the diagram beside it cannot divide by two different
+        # numbers. A tile that declines the Section picker divides by a
+        # hub that declines it too, or the numerator and the denominator
+        # would answer different filters.
+        hub_cte = _cashflow_atoms_cte(where, val) + "\n"
+        hub_cte_nosec = _cashflow_atoms_cte(where_nosec, val) + "\n"
+
+        # The statement's bars are signed both ways, so a month's size is
+        # its gross movement rather than PEAK_CTE's positive sum.
+        def gross_peak(rows="m"):
+            return ("p AS (SELECT max(t) AS peak FROM"
+                    f" (SELECT sum(abs(v)) AS t FROM {rows} GROUP BY month))\n")
+
+        def month_cte(extra="", filt="", sign=""):
+            # `sign` is built in rather than applied to the finished SQL:
+            # a post-hoc string replacement would depend on this
+            # function's own indentation, and a reflow here would silently
+            # turn a card's bars negative with every shape test still
+            # green.
+            v = f"{sign}({val})" if sign else val
+            return _month_cte("web_cashflow", where + filt, v, extra)
+
+        # `neg` is what keeps each twin scalar reading the same way round
+        # as the base tile it stands in for: gold stores an outflow
+        # negative and the base "Operating out" prints it as a positive
+        # magnitude, so its share has to be one too.
+        for name, section, neg, label in (
+                ("Net cash flow", None, False, "was kept"),
+                ("Operating in", "operating_in", False, "came in"),
+                ("Operating out", "operating_out", True, "went out")):
+            filt = "" if section is None else f"\n   AND section = '{section}'"
+            expr = f"sum({_ccy_case('value', neg=neg)})::DOUBLE"
+            whole(name, "scalar",
+                f"What {label}, as a share of the hub.",
+                hub_cte_nosec +
+                f"SELECT (SELECT {expr} FROM web_cashflow" + where_nosec + filt + ")\n"
+                "       / (SELECT total FROM hub) AS share_pct",
+                _percent_viz("share_pct"), home="Cash Flow" if name == "Net cash flow" else None)
+        # A rate is a proportion already: the twin shows it as it is,
+        # the way the returns percentages survive their own twin.
+        for name, rate_sql in (("Savings rate", _savings_rate_sql),
+                               ("Yield share", _yield_share_sql)):
+            whole(name, "scalar",
+                f"The {name.lower()}, shown as it is.",
+                rate_sql(where_nosec, "share_pct"),
+                _percent_viz("share_pct"), home="Cash Flow" if name == "Savings rate" else None)
+        # The diagram, with the hub at 100: the same edges divided through.
+        whole("Cash flow", "sankey",
+            "The diagram, each edge a share of the hub.",
+            _cashflow_sankey_sql(where_nosec, val, share=True), sankey_viz)
+        # The Section picker narrows the bars, `m`. The net and the
+        # biggest month read every section, `a`, so the net is the
+        # household's whatever is picked, and the twin is the base card
+        # scaled by one number.
+        statement_section = ("CASE WHEN section IN ('operating_in', 'operating_out')\n"
+                             "              THEN 'operating' ELSE section END"
+                             " AS statement_section,\n         ")
+        flow("Cash flow statement by month", "combo",
+            "The statement per month, each section and the net a share of the "
+            "biggest month's gross movement.",
+            _series_order(
+                month_cte(statement_section) + "   GROUP BY 1, 2),\n"
+                f"a AS (\n  SELECT {OCCURRED_MONTH},\n         {statement_section}{val} AS v\n"
+                "    FROM web_cashflow" + where_nosec + "\n   GROUP BY 1, 2),\n" + gross_peak("a") +
+                f"SELECT month, statement_section,\n       {PEAK_DIV} AS share_pct\n"
+                f"  FROM m\nUNION ALL\nSELECT month, '{NET_CASH_FLOW}',\n       sum(v) / {PEAK} * 100\n"
+                "  FROM a\n GROUP BY 1", "month", "statement_section", "share_pct", "total",
+                legend_last=NET_CASH_FLOW),
             {"graph.dimensions": ["month", "statement_section"],
-             "graph.metrics": ["value"], **STACKED_VIZ, **STATEMENT_SERIES}),
-        "Inflows by class by month": cashflow_native(
-            "Inflows by class by month", "area",
-            "Receipts per month by class, such as earnings, yield, pensions "
-            "and benefits, and the uncategorized backlog.",
-            _series_order(f"SELECT {OCCURRED_MONTH},\n       class_node AS class,\n"
-                     f"       {cf_val} AS value\n"
-                     "  FROM web_cashflow" + cf_where +
-                     "\n   AND section = 'operating_in'\n GROUP BY 1, 2",
-                     "month", "class", "value", "total"),
-            {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["value"], **STACKED_VIZ}),
-        "Outflows by class by month": cashflow_native(
-            "Outflows by class by month", "area",
-            "Outflows per month by class, such as consumption, fees, taxes, "
-            "giving, and the uncategorized backlog.",
-            _series_order(f"SELECT {OCCURRED_MONTH},\n       class_node AS class,\n"
-                     f"       -({cf_val}) AS value\n"
-                     "  FROM web_cashflow" + cf_where +
-                     "\n   AND section = 'operating_out'\n GROUP BY 1, 2",
-                     "month", "class", "value", "total"),
-            {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["value"], **STACKED_VIZ}),
-        "Investing by month": cashflow_native("Investing by month", "bar",
-            "Investing per month, signed. Above the axis the portfolio fed "
-            "the household, below it the reverse.",
-            _series_order(f"SELECT {OCCURRED_MONTH},\n"
-                     "       CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
-                     "            ELSE class_node END AS class,\n"
-                     f"       {cf_val} AS value\n"
-                     "  FROM web_cashflow" + cf_where +
-                     "\n   AND section = 'investing'\n GROUP BY 1, 2",
-                     "month", "class", "value", "total"),
-            {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["value"], **STACKED_VIZ}),
-        "Financing and vehicles by month": cashflow_native(
-            "Financing and vehicles by month", "bar",
-            "Debt serviced or drawn, and earmarked pools funded or drawn on, "
-            "per month and signed.",
-            _series_order(f"SELECT {OCCURRED_MONTH},\n       class_node AS class,\n"
-                     f"       {cf_val} AS value\n"
-                     "  FROM web_cashflow" + cf_where +
-                     "\n   AND section IN ('financing', 'vehicles')\n GROUP BY 1, 2",
-                     "month", "class", "value", "total"),
-            {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["value"], **STACKED_VIZ}),
-        "Largest flows": cashflow_native("Largest flows", "table",
-            "The fifty largest lines of the window, with their node, account "
-            "and instrument, payer or merchant.",
-            "SELECT occurred_at,\n       section,\n       class_node AS class,\n"
-            "       group_node AS \"group\",\n       name,\n"
-            "       account_label AS account,\n"
-            f"       {_ccy_case('value')} AS value\n"
-            "  FROM web_cashflow" + cf_where +
-            f"\n ORDER BY abs({_ccy_case('value')}) DESC\n LIMIT 50",
-            {}),
-        # The returns cards run over the materialized report_returns table.
-        # The three scalars and the by-source table are MBQL (grain 'global' /
-        # 'sources', granularity 'total'); the Returns dashboard's Currency and
-        # Start-year pickers land on their currency / window_from_year
-        # dimensions — window_from_year selects the since-inception (0) or
-        # since-<year> summary, so the picker rescopes the whole figure exactly
-        # (the since-inception TWR is often null around the degenerate first
-        # months). twr/mwr are ratios rendered as percent ("max" is the name
-        # Metabase gives the aggregate). Opened standalone the cards aggregate
-        # across currencies / windows, so set Currency and Start year first.
-        # The scalars run over the REDACTED model: they are privacy-exempt
-        # (reused as-is on the privacy dashboard), and a scalar's "see these
-        # records" drill-through opens the underlying model, which therefore
-        # must not carry the absolute money columns.
-        "Return (TWR)": ("scalar",
-            "Whole-portfolio time-weighted return over the chosen window, with "
-            "the timing and size of external flows stripped out.",
-            _mbql("report_returns_redacted",
-                  {"filter": _returns_part("global", "total"),
-                   "aggregation": [["max", twr]]}),
-            _percent_viz("max")),
-        "Return (MWR)": ("scalar",
-            "Whole-portfolio money-weighted return (XIRR) over the chosen "
-            "window, external flows included.",
-            _mbql("report_returns_redacted",
-                  {"filter": _returns_part("global", "total"),
-                   "aggregation": [["max", _f("mwr", "type/Float")]]}),
-            _percent_viz("max")),
-        "Annualized return (TWR)": ("scalar",
-            "The window's time-weighted return as a constant yearly rate, n/a "
-            "for windows under a year.",
-            _mbql("report_returns_redacted",
-                  {"filter": _returns_part("global", "total"),
-                   "aggregation": [["max", _f("twr_annualized", "type/Float")]]}),
-            _percent_viz("max")),
-        # Native cumulative + per-period charts. All split by source with the
-        # global grain unioned in as a toggleable '(all sources)' line; the
-        # Currency / Start-year / Source pickers map onto their {{currency}}
-        # / {{start_year}} / {{source_ff}} tags.
-        "Cumulative return (TWR)": returns_native(
-            "Time-weighted return compounded year by year from the start year, "
-            "per source and for '(all sources)'.",
-            _series_order(returns_growth_sql(), "year", "source", "cumulative_return", "latest",
-                          largest_first=True, rows_last=BENCHMARK_SERIES),
-            {**_series_viz("year", "source", "cumulative_return", percent=True), **LINES_VIZ, **BENCHMARK_LINE}),
-        "Monthly returns (TWR)": returns_native(
-            "Time-weighted return per month, one line per source plus an "
-            "'(all sources)' line.",
-            returns_period_sql("monthly"),
-            {**_series_viz("period", "source", "twr", percent=True), **BENCHMARK_LINE}),
-        "Quarterly returns (TWR)": returns_native(
-            "Time-weighted return per quarter, one line per source plus an "
-            "'(all sources)' line.",
-            returns_period_sql("quarterly"),
-            {**_series_viz("period", "source", "twr", percent=True), **BENCHMARK_LINE}),
-        "Annual returns (TWR)": returns_native(
-            "Time-weighted return per calendar year, one line per source plus "
-            "an '(all sources)' line.",
-            returns_period_sql("annual"),
-            {**_series_viz("period", "source", "twr", percent=True), **BENCHMARK_LINE}),
-        "Returns by source": returns_table(
-            "TWR and MWR per source over the chosen window, with values, net "
-            "external flow and the flags behind each n/a. A benchmark adds a line "
-            "over the months it covers.", True),
-        "Benchmark return (TWR)": returns_figure(
-            "The picked benchmark's time-weighted return over the months it covers of "
-            "the chosen window, which Returns by source names.",
-            benchmark_scalar_sql("twr", "benchmark_return"), "benchmark_return"),
-        "Benchmark return (MWR)": returns_figure(
-            "What the household's own flows would have earned in the benchmark: the "
-            "same money on the same days, over the months it covers.",
-            benchmark_scalar_sql("mwr", "benchmark_mwr"), "benchmark_mwr"),
-        "Benchmark annualized return (TWR)": returns_figure(
-            "The benchmark's return over its months as a constant yearly rate, n/a under a year.",
-            benchmark_scalar_sql("twr_annualized", "benchmark_annualized"), "benchmark_annualized"),
-        "Excess return (TWR)": returns_figure(
-            "The portfolio's time-weighted return less the benchmark's, in percentage "
-            "points, over the same months.",
-            benchmark_scalar_sql("100 * excess", "excess_return"), "excess_return", excess=True),
-        "Excess return (MWR)": returns_figure(
-            "The portfolio's money-weighted return less the same money's in the benchmark, "
-            "in percentage points, over the same months.",
-            benchmark_scalar_sql("100 * (portfolio_mwr - mwr)", "excess_mwr"), "excess_mwr", excess=True),
-        "Excess annualized return (TWR)": returns_figure(
-            "The portfolio's yearly rate less the benchmark's, in percentage points.",
-            benchmark_scalar_sql("100 * excess_annualized", "excess_annualized"), "excess_annualized", excess=True),
-        "Money-weighted return over time": returns_native(
-            "The money-weighted return from the window's start to each month end, for the "
-            "portfolio and for the same money in the benchmark.",
-            benchmark_line_sql("mwr"),
-            # Ordinal, or the days between month ends read as missing too.
-            {**_series_viz("day", "series", "mwr", percent=True), **LINES_VIZ, **BENCHMARK_LINE, "line.missing": "none",
-             "graph.x_axis.scale": "ordinal"}),
-        "Value against the benchmark": returns_native(
-            "The portfolio's value, and what the same start value and flows would be "
-            "worth in the benchmark.",
-            benchmark_line_sql("value"),
-            {**_series_viz("day", "series", "value"), **LINES_VIZ, **BENCHMARK_LINE}),
-        "Stalest source (days)": ("scalar",
-            "Days since the source read longest ago was last read. A source "
-            "that marks quarterly counts from its latest read.",
-            _mbql("report_sources_latest",
-                  {"expressions": {"days_stale": DAYS_STALE},
-                   "filter": FED_SOURCES,
-                   "aggregation": [["max", ["expression", "days_stale"]]]}),
-            {}),
-        "Returns age (days)": ("scalar",
-            "Days since a `web refresh` last computed the returns.",
-            # Every row of a run shares one computed_at, so max(age) is
-            # the run's age. Runs over the REDACTED model although the
-            # card itself shows no values: it is privacy-exempt (shared
-            # by the Data Freshness twin), and a scalar's "see these
-            # records" drill-through opens the underlying model — which
-            # must therefore not carry absolute money columns.
-            _mbql("report_returns_redacted",
-                  {"expressions": {"age_days": ["datetime-diff",
-                       _f("computed_at", "type/DateTime"), ["now"], "day"]},
-                   "aggregation": [["max", ["expression", "age_days"]]]}),
-            {}),
-        "Source freshness": source_freshness_card("report_sources_latest"),
-        **gains_question_defs(),
-        **exposure_cards(privacy=False),
-        **issuer_cards(privacy=False),
-        **yield_cards(privacy=False),
-        **income_projected_cards(privacy=False),
-        **cashflow_plan_cards(privacy=False),
-        **bridge_cards(privacy=False),
-        **fee_cards(privacy=False),
-        **mark_cards(),
-    }
+             "graph.metrics": ["share_pct"], **STACKED_VIZ, **STATEMENT_SERIES})
+        # The grouping expression and the display ride in the tuple
+        # rather than being inferred from the name or the filter text:
+        # the investing row is the one that folds its classes under the
+        # Investing picker, and a substring test against the filter
+        # would break the day another row's filter names a section list
+        # containing it.
+        investing_grp = ("CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
+                         "              ELSE class_node END")
+        for name, display, filt, neg, grp, blurb in (
+                ("Inflows by class by month", "area", "\n   AND section = 'operating_in'", False,
+                 "class_node", "What came in each month by class"),
+                ("Outflows by class by month", "area", "\n   AND section = 'operating_out'", True,
+                 "class_node", "What went out each month by class"),
+                ("Investing by month", "bar", "\n   AND section = 'investing'", False,
+                 investing_grp, "Investing per month, signed"),
+                ("Financing and vehicles by month", "bar",
+                 "\n   AND section IN ('financing', 'vehicles')", False,
+                 "class_node", "Debt and the earmarked pools per month, signed")):
+            sql = (month_cte(f"{grp} AS class,\n         ", filt, sign="-" if neg else "")
+                   + "   GROUP BY 1, 2),\n" + gross_peak() +
+                   f"SELECT month, class,\n       {PEAK_DIV} AS share_pct\n  FROM m")
+            flow(name, display,
+                f"{blurb}, as shares of the biggest month's gross movement.",
+                _series_order(sql, "month", "class", "share_pct", "total"),
+                {"graph.dimensions": ["month", "class"],
+                 "graph.metrics": ["share_pct"], **STACKED_VIZ})
+        # The one card that redacts rather than normalising: the base
+        # version names the account a line moved through and the payer
+        # or merchant behind it, and the fix for a leaking column is to
+        # drop it. Ranked, so the shape of "how concentrated was this
+        # window" survives without naming anyone.
+        flow("Largest flows", "table",
+            "The fifty largest lines, ranked, each a share (%) of the hub, with "
+            "no name or account.",
+            hub_cte + ", m AS (\n"
+            "  SELECT occurred_at, section, class_node AS class,\n"
+            "         group_node AS \"group\",\n"
+            f"         {_ccy_case('value')} AS v\n"
+            "    FROM web_cashflow" + where + ")\n"
+            "SELECT row_number() OVER (ORDER BY abs(v) DESC) AS rank,\n"
+            "       section, class, \"group\",\n"
+            "       v / (SELECT total FROM hub) * 100 AS share_pct\n"
+            "  FROM m\n ORDER BY 1\n LIMIT 50",
+            {})
+        cashflow_plan_cards(f)
+        bridge_cards(f)
+        return
+    whole("Net cash flow", "scalar",
+        "The cash pool's net change over the window, the diagram's Cash "
+        "node negated.",
+        f"SELECT {val} AS net_cash_flow\n  FROM web_cashflow" + where_nosec,
+        {}, home="Cash Flow")
+    # Named for the SECTION, not for "cash": the residual section
+    # is also called cash and is a different number, and the CLI's
+    # columns behind these two tiles are operating_in / operating_out.
+    whole("Operating in", "scalar",
+        "Every receipt over the window. It differs from `wealthdb income` "
+        "(docs/CASHFLOW.md §8).",
+        f"SELECT {val} AS operating_in\n  FROM web_cashflow" + where_nosec +
+        "\n   AND section = 'operating_in'",
+        {})
+    whole("Operating out", "scalar",
+        "Consumption, fees, taxes and giving over the window, buying and "
+        "selling excluded.",
+        f"SELECT -({val}) AS operating_out\n  FROM web_cashflow" + where_nosec +
+        "\n   AND section = 'operating_out'",
+        {})
+    whole("Savings rate", "scalar",
+        "Operating cash flow as a share of receipts. Blank where nothing "
+        "came in.",
+        _savings_rate_sql(where_nosec, "savings_rate"),
+        _percent_viz("savings_rate"), home="Cash Flow")
+    whole("Yield share", "scalar",
+        "The share of receipts from assets, such as dividends, interest "
+        "and rent.",
+        _yield_share_sql(where_nosec, "yield_share"),
+        _percent_viz("yield_share"))
+    # The diagram, and the centre of the dashboard. A native query in
+    # the three columns the BI layer's Sankey visualisation reads,
+    # over the LINE-grain serving view: a node's side is the sign of
+    # its net over the filtered window, so the nets and the sides
+    # have to be computed where the pickers apply.
+    whole("Cash flow", "sankey",
+        "Where the window's cash came from (left) and went (right).",
+        _cashflow_sankey_sql(where_nosec, val), sankey_viz)
+    # The Section picker narrows the bars. The net is the
+    # household's whatever it picks, as the Net cash flow tile is.
+    flow("Cash flow statement by month", "combo",
+        "Operating, investing, financing and vehicles per month as signed "
+        "bars, with net cash flow as a line.",
+        _series_order(f"SELECT {OCCURRED_MONTH},\n"
+                 "       CASE WHEN section IN ('operating_in', 'operating_out')\n"
+                 "            THEN 'operating' ELSE section END AS statement_section,\n"
+                 f"       {val} AS value\n"
+                 "  FROM web_cashflow" + where + "\n GROUP BY 1, 2\n"
+                 f"UNION ALL\nSELECT {OCCURRED_MONTH},\n       '{NET_CASH_FLOW}',\n"
+                 f"       {val}\n"
+                 "  FROM web_cashflow" + where_nosec + "\n GROUP BY 1",
+                 "month", "statement_section", "value", "total", legend_last=NET_CASH_FLOW),
+        {"graph.dimensions": ["month", "statement_section"],
+         "graph.metrics": ["value"], **STACKED_VIZ, **STATEMENT_SERIES})
+    flow("Inflows by class by month", "area",
+        "Receipts per month by class, such as earnings, yield, pensions "
+        "and benefits, and the uncategorized backlog.",
+        _series_order(f"SELECT {OCCURRED_MONTH},\n       class_node AS class,\n"
+                 f"       {val} AS value\n"
+                 "  FROM web_cashflow" + where +
+                 "\n   AND section = 'operating_in'\n GROUP BY 1, 2",
+                 "month", "class", "value", "total"),
+        {"graph.dimensions": ["month", "class"],
+         "graph.metrics": ["value"], **STACKED_VIZ})
+    flow("Outflows by class by month", "area",
+        "Outflows per month by class, such as consumption, fees, taxes, "
+        "giving, and the uncategorized backlog.",
+        _series_order(f"SELECT {OCCURRED_MONTH},\n       class_node AS class,\n"
+                 f"       -({val}) AS value\n"
+                 "  FROM web_cashflow" + where +
+                 "\n   AND section = 'operating_out'\n GROUP BY 1, 2",
+                 "month", "class", "value", "total"),
+        {"graph.dimensions": ["month", "class"],
+         "graph.metrics": ["value"], **STACKED_VIZ})
+    flow("Investing by month", "bar",
+        "Investing per month, signed. Above the axis the portfolio fed "
+        "the household, below it the reverse.",
+        _series_order(f"SELECT {OCCURRED_MONTH},\n"
+                 "       CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
+                 "            ELSE class_node END AS class,\n"
+                 f"       {val} AS value\n"
+                 "  FROM web_cashflow" + where +
+                 "\n   AND section = 'investing'\n GROUP BY 1, 2",
+                 "month", "class", "value", "total"),
+        {"graph.dimensions": ["month", "class"],
+         "graph.metrics": ["value"], **STACKED_VIZ})
+    flow("Financing and vehicles by month", "bar",
+        "Debt serviced or drawn, and earmarked pools funded or drawn on, "
+        "per month and signed.",
+        _series_order(f"SELECT {OCCURRED_MONTH},\n       class_node AS class,\n"
+                 f"       {val} AS value\n"
+                 "  FROM web_cashflow" + where +
+                 "\n   AND section IN ('financing', 'vehicles')\n GROUP BY 1, 2",
+                 "month", "class", "value", "total"),
+        {"graph.dimensions": ["month", "class"],
+         "graph.metrics": ["value"], **STACKED_VIZ})
+    flow("Largest flows", "table",
+        "The fifty largest lines of the window, with their node, account "
+        "and instrument, payer or merchant.",
+        "SELECT occurred_at,\n       section,\n       class_node AS class,\n"
+        "       group_node AS \"group\",\n       name,\n"
+        "       account_label AS account,\n"
+        f"       {_ccy_case('value')} AS value\n"
+        "  FROM web_cashflow" + where +
+        f"\n ORDER BY abs({_ccy_case('value')}) DESC\n LIMIT 50",
+        {})
+    cashflow_plan_cards(f)
+    bridge_cards(f)
 
 
-def gains_question_defs(privacy=False):
+def returns_cards(f):
+    """The Returns dashboard's cards, or on the twin its privacy cards,
+    over the materialized report_returns table. The three scalars are
+    MBQL over the REDACTED model (grain 'global', granularity 'total'):
+    the Currency and Start-year pickers land on their currency /
+    window_from_year dimensions, and window_from_year selects the
+    since-inception (0) or since-<year> summary, so the picker rescopes
+    the whole figure exactly (the since-inception TWR is often null
+    around the degenerate first months). twr/mwr are ratios rendered as
+    percent ("max" is the name Metabase gives the aggregate). Opened
+    standalone the scalars aggregate across currencies / windows, so set
+    Currency and Start year first. They are privacy-exempt, and a
+    scalar's "see these records" drill-through opens the underlying
+    model, which therefore must not carry the absolute money columns.
+
+    The charts and the by-source table are native: every chart splits
+    by source with the global grain unioned in as a toggleable '(all
+    sources)' line, and the Currency / Start-year / Source pickers map
+    onto their {{currency}} / {{start_year}} / {{source_ff}} tags. Every
+    figure is a ratio but the by-source table's money columns and the
+    value against the benchmark, so those two alone have a privacy card:
+    the table without the money columns, the value indexed to 100."""
+    f = f.using(tail=RETURNS_PRIVACY_DESC if f.privacy else "")
+
+    def chart(name, desc, sql, viz, **kw):
+        f.card(name, "line", desc, sql, viz, tags=returns_tags(sql), **kw)
+
+    def figure(name, desc, sql, label, excess=False):
+        """A figure beside the returns scalars, a benchmark's: a percent,
+        or with `excess` a difference in percentage points."""
+        viz = ({"column_settings": {f'["name","{label}"]': {"suffix": " pp", "decimals": 2}}} if excess
+               else _percent_viz(label))
+        f.card(name, "scalar", desc, sql, {**viz, "scalar.field": label}, tags=returns_tags(sql),
+               exempt=True, hide_empty=True)
+
+    def scalar(name, desc, col):
+        f.card(name, "scalar", desc,
+               _mbql("report_returns_redacted",
+                     {"filter": _returns_part("global", "total"),
+                      "aggregation": [["max", _f(col, "type/Float")]]}),
+               _percent_viz("max"), exempt=True)
+
+    scalar("Return (TWR)",
+           "Whole-portfolio time-weighted return over the chosen window, with "
+           "the timing and size of external flows stripped out.", "twr")
+    scalar("Return (MWR)",
+           "Whole-portfolio money-weighted return (XIRR) over the chosen "
+           "window, external flows included.", "mwr")
+    scalar("Annualized return (TWR)",
+           "The window's time-weighted return as a constant yearly rate, n/a "
+           "for windows under a year.", "twr_annualized")
+    chart("Cumulative return (TWR)",
+          "Time-weighted return compounded year by year from the start year, "
+          "per source and for '(all sources)'.",
+          _series_order(returns_growth_sql(), "year", "source", "cumulative_return", "latest",
+                        largest_first=True, rows_last=BENCHMARK_SERIES),
+          {**_series_viz("year", "source", "cumulative_return", percent=True), **LINES_VIZ, **BENCHMARK_LINE},
+          exempt=True)
+    for name, granularity, period in (("Monthly returns (TWR)", "monthly", "month"),
+                                      ("Quarterly returns (TWR)", "quarterly", "quarter"),
+                                      ("Annual returns (TWR)", "annual", "calendar year")):
+        chart(name,
+              f"Time-weighted return per {period}, one line per source plus an '(all sources)' line.",
+              returns_period_sql(granularity),
+              {**_series_viz("period", "source", "twr", percent=True), **BENCHMARK_LINE}, exempt=True)
+    sql = returns_by_source_sql(not f.privacy)
+    f.card("Returns by source", "table",
+           "TWR and MWR per source over the chosen window, with the flags "
+           "behind each n/a. A benchmark adds a line over the months it covers."
+           if f.privacy else
+           "TWR and MWR per source over the chosen window, with values, net "
+           "external flow and the flags behind each n/a. A benchmark adds a line "
+           "over the months it covers.",
+           sql, _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized"), tags=returns_tags(sql))
+    figure("Benchmark return (TWR)",
+           "The picked benchmark's time-weighted return over the months it covers of "
+           "the chosen window, which Returns by source names.",
+           benchmark_scalar_sql("twr", "benchmark_return"), "benchmark_return")
+    figure("Benchmark return (MWR)",
+           "What the household's own flows would have earned in the benchmark: the "
+           "same money on the same days, over the months it covers.",
+           benchmark_scalar_sql("mwr", "benchmark_mwr"), "benchmark_mwr")
+    figure("Benchmark annualized return (TWR)",
+           "The benchmark's return over its months as a constant yearly rate, n/a under a year.",
+           benchmark_scalar_sql("twr_annualized", "benchmark_annualized"), "benchmark_annualized")
+    figure("Excess return (TWR)",
+           "The portfolio's time-weighted return less the benchmark's, in percentage "
+           "points, over the same months.",
+           benchmark_scalar_sql("100 * excess", "excess_return"), "excess_return", excess=True)
+    figure("Excess return (MWR)",
+           "The portfolio's money-weighted return less the same money's in the benchmark, "
+           "in percentage points, over the same months.",
+           benchmark_scalar_sql("100 * (portfolio_mwr - mwr)", "excess_mwr"), "excess_mwr", excess=True)
+    figure("Excess annualized return (TWR)",
+           "The portfolio's yearly rate less the benchmark's, in percentage points.",
+           benchmark_scalar_sql("100 * excess_annualized", "excess_annualized"), "excess_annualized", excess=True)
+    chart("Money-weighted return over time",
+          "The money-weighted return from the window's start to each month end, for the "
+          "portfolio and for the same money in the benchmark.",
+          benchmark_line_sql("mwr"),
+          # Ordinal, or the days between month ends read as missing too.
+          {**_series_viz("day", "series", "mwr", percent=True), **LINES_VIZ, **BENCHMARK_LINE, "line.missing": "none",
+           "graph.x_axis.scale": "ordinal"}, exempt=True, hide_empty=True)
+    if f.privacy:
+        chart("Value against the benchmark",
+              "The portfolio's value and the same money in the benchmark, each at 100 at "
+              "the window's start.",
+              benchmark_line_sql("value", index=True),
+              {**_series_viz("day", "series", "indexed_value"), **LINES_VIZ, **BENCHMARK_LINE}, hide_empty=True)
+    else:
+        chart("Value against the benchmark",
+              "The portfolio's value, and what the same start value and flows would be "
+              "worth in the benchmark.",
+              benchmark_line_sql("value"),
+              {**_series_viz("day", "series", "value"), **LINES_VIZ, **BENCHMARK_LINE}, hide_empty=True)
+
+
+def freshness_cards(f):
+    """The Data Freshness dashboard's cards, or on the twin its one
+    privacy card. The dashboard takes no picker. Its scalars and its Mark
+    age, which reads `wealthdb status --marks` (web_marks), show days and
+    shares, so the twin shows them as they are. The freshness table's
+    twin runs it over the _pct sources model: the dashboard is unfiltered
+    by design, so the model's fixed %-of-latest scale IS the
+    selected-sources scale, and the source rows total 100. It has a
+    description of its own: the base card's promises a money column,
+    which there holds shares."""
+    f = f.using(tail=PRIVACY_DESC if f.privacy else "")
+    f.card("Stalest source (days)", "scalar",
+           "Days since the source read longest ago was last read. A source "
+           "that marks quarterly counts from its latest read.",
+           _mbql("report_sources_latest",
+                 {"expressions": {"days_stale": DAYS_STALE},
+                  "filter": FED_SOURCES,
+                  "aggregation": [["max", ["expression", "days_stale"]]]}),
+           {}, exempt=True, home="Data Freshness")
+    f.card("Returns age (days)", "scalar",
+           "Days since a `web refresh` last computed the returns.",
+           # Every row of a run shares one computed_at, so max(age) is
+           # the run's age. Runs over the REDACTED model although the
+           # card itself shows no values: it is privacy-exempt (shared
+           # by the Data Freshness twin), and a scalar's "see these
+           # records" drill-through opens the underlying model — which
+           # must therefore not carry absolute money columns.
+           _mbql("report_returns_redacted",
+                 {"expressions": {"age_days": ["datetime-diff",
+                      _f("computed_at", "type/DateTime"), ["now"], "day"]},
+                  "aggregation": [["max", ["expression", "age_days"]]]}),
+           {}, exempt=True)
+    f.card("Source freshness", "table",
+           "Each source's last read and latest mark, the days since each, and its share of the latest total."
+           if f.privacy else
+           "Each source's last read and latest mark, the days since each, "
+           f"and the value it holds in {DEFAULT_CURRENCY}.",
+           _mbql("report_sources_latest_pct" if f.privacy else "report_sources_latest",
+                 {"expressions": {"days_stale": DAYS_STALE, "days_quiet": DAYS_QUIET},
+                  "filter": FED_SOURCES,
+                  "fields": [_f("silver_source_id", "type/Text"),
+                             _f("observed_at", "type/DateTime"),
+                             ["expression", "days_stale"],
+                             _f("valued_at", "type/DateTime"),
+                             ["expression", "days_quiet"],
+                             _dec(f"total_value_{DEFAULT_CURRENCY.lower()}")],
+                  "order-by": [["desc", ["expression", "days_stale"]]]}),
+           {})
+    f.card("Mark age", "bar",
+           "The share of value marked within five days of each month end: how far that month's return can "
+           "be trusted. Liabilities and cash are out.",
+           "SELECT CAST(date_trunc('month', month_end) AS TIMESTAMP) AS month, marked_pct\n"
+           "  FROM web_marks\n ORDER BY month",
+           {"graph.dimensions": ["month"], "graph.metrics": ["marked_pct"],
+            "graph.y_axis.auto_range": False, "graph.y_axis.min": 0, "graph.y_axis.max": 100,
+            "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
+            "series_settings": {"marked_pct": {"color": BENCHMARK_COLOR}},
+            **_share_viz("marked_pct")},
+           tags={}, exempt=True)
+
+
+def gains_cards(f):
     """The Gains dashboard's cards: native SQL over web_gains, the
     monthly gains rows materialized per reporting currency. The view
     carries a row set per currency, so {{currency}} is a row filter
@@ -2229,11 +2654,11 @@ def gains_question_defs(privacy=False):
     of a missing cost basis too, and {{missing_basis}} picks one the same
     way (docs/GAINS.md §8).
 
-    With `privacy`, the privacy variants of the two headline gains the
+    On a twin, the privacy variants of the two headline gains the
     Wealth Overview's twin shows: each gain as a ratio of the cost basis
     it is a gain on. Gains has no twin of its own (NO_PRIVACY_TWIN)."""
     tags = {**native_tags("web_gains", GAINS_FILTERS), "missing_basis": missing_basis_tag()}
-    note = PRIVACY_DESC if privacy else ""
+    native = f.using(tags=tags, tail=PRIVACY_DESC if f.privacy else "").card
     ccy = "\n     AND currency = {{currency}}\n     AND missing_basis = {{missing_basis}}"
     where = _native_where(tags) + ccy
     # The whole-portfolio line answers every picker but Source, so
@@ -2251,32 +2676,28 @@ def gains_question_defs(privacy=False):
     gain = " + ".join(f"coalesce(sum({c}), 0)" for c, _ in gain_split)
     position = "coalesce(symbol, name, instrument_key)"
 
-    def native(name, display, desc, sql, viz):
-        return (display, desc + note, _native(sql, tags), viz)
-
-    if privacy:
-        return {
-            "Realized gain (privacy)": native("Realized gain (privacy)", "scalar",
-                "The gain or loss on sales over the window, as a percent of the "
-                "cost basis sold.",
-                "SELECT sum(realized) FILTER (WHERE realized_cost_basis > 0)\n"
-                "       / nullif(sum(realized_cost_basis) FILTER (WHERE realized IS NOT NULL\n"
-                "                                                 AND realized_cost_basis > 0), 0)"
-                " AS realized_pct\n"
-                "  FROM web_gains" + where, _percent_viz("realized_pct")),
-            "Unrealized gain (privacy)": native("Unrealized gain (privacy)", "scalar",
-                "The gain or loss held at the window's end, as a percent of the "
-                "cost basis held.",
-                end + "SELECT sum(unrealized_end) FILTER (WHERE cost_basis > 0)\n"
-                "       / nullif(sum(cost_basis) FILTER (WHERE unrealized_end IS NOT NULL\n"
-                "                                        AND cost_basis > 0), 0) AS unrealized_pct\n"
-                "  FROM e", _percent_viz("unrealized_pct")),
-        }
+    if f.privacy:
+        native("Realized gain", "scalar",
+            "The gain or loss on sales over the window, as a percent of the "
+            "cost basis sold.",
+            "SELECT sum(realized) FILTER (WHERE realized_cost_basis > 0)\n"
+            "       / nullif(sum(realized_cost_basis) FILTER (WHERE realized IS NOT NULL\n"
+            "                                                 AND realized_cost_basis > 0), 0)"
+            " AS realized_pct\n"
+            "  FROM web_gains" + where, _percent_viz("realized_pct"), home="Gains")
+        native("Unrealized gain", "scalar",
+            "The gain or loss held at the window's end, as a percent of the "
+            "cost basis held.",
+            end + "SELECT sum(unrealized_end) FILTER (WHERE cost_basis > 0)\n"
+            "       / nullif(sum(cost_basis) FILTER (WHERE unrealized_end IS NOT NULL\n"
+            "                                        AND cost_basis > 0), 0) AS unrealized_pct\n"
+            "  FROM e", _percent_viz("unrealized_pct"), home="Gains")
+        return
 
     def unrealized_table(name, desc, pred, order):
         """Ten positions held at the window's end, by unrealized gain or
         by its percent of the cost basis."""
-        return native(name, "table", desc,
+        native(name, "table", desc,
                       end + f"SELECT {position} AS position,\n"
                       "       unrealized_end AS unrealized,\n"
                       "       unrealized_end / nullif(cost_basis, 0) AS unrealized_pct,\n"
@@ -2287,7 +2708,7 @@ def gains_question_defs(privacy=False):
     def realized_table(name, desc, pred, order):
         """Ten positions by what their sales over the window realized,
         or by its percent of the cost basis sold."""
-        return native(name, "table", desc,
+        native(name, "table", desc,
                       "WITH r AS (\n"
                       f"  SELECT any_value({position}) AS position,\n"
                       "         any_value(account) AS account,\n"
@@ -2310,7 +2731,7 @@ def gains_question_defs(privacy=False):
         cols = ",\n".join(f"       sum({c}) AS {a}" for c, a in metrics)
         total = " + ".join(f"coalesce(sum({c}), 0)" for c, _ in metrics)
         some = " OR ".join(f"count({c}) > 0" for c, _ in metrics)
-        return native(name, "bar", desc,
+        native(name, "bar", desc,
                       f"SELECT {dim} AS {label},\n{cols}\n"
                       "  FROM web_gains" + where +
                       f"\n GROUP BY 1\nHAVING {some}\n ORDER BY {total} DESC",
@@ -2321,183 +2742,181 @@ def gains_question_defs(privacy=False):
     term_split = [("realized_short", "short_term"),
                   ("realized_long", "long_term"),
                   ("realized_other", "term_unstated")]
-    return {
-        "Realized gain": native("Realized gain", "scalar",
-            "The gain or loss on what was sold over the window. The coverage "
-            "table counts the sales it leaves out.",
-            "SELECT sum(realized) AS realized\n  FROM web_gains" + where, {}),
-        "Unrealized gain": native("Unrealized gain", "scalar",
-            "The gain or loss on what is held at the window's end, over the "
-            "holdings with a cost basis.",
-            end + "SELECT sum(unrealized_end) AS unrealized\n  FROM e", {}),
-        "Gain on positions sold": native("Gain on positions sold", "scalar",
-            "What the positions sold over the window gained in their month of "
-            "sale, from the month's start or their purchase.",
-            "SELECT sum(sold_gain) AS sold\n  FROM web_gains" + where, {}),
-        "Gain on positions held": native("Gain on positions held", "scalar",
-            "How far the unrealized gain of the positions kept moved over the "
-            "window, exchange-rate moves included.",
-            "SELECT sum(held_change) AS held\n  FROM web_gains" + where, {}),
-        "Total gain": native("Total gain", "scalar",
-            "The gain on positions sold plus the gain on positions held. "
-            "Income, fees and taxes are not in it.",
-            f"SELECT {gain} AS gain\n  FROM web_gains" + where, {}),
-        "Cost basis coverage": native("Cost basis coverage", "scalar",
-            "Share of the value held at the window's end that carries a cost "
-            "basis. Unrealized figures leave out the rest.",
-            end + "SELECT sum(abs(value)) FILTER (WHERE NOT end_without_basis)\n"
-            "       / nullif(sum(abs(value)), 0) AS basis_coverage\n"
-            "  FROM e\n WHERE end_applies",
-            _percent_viz("basis_coverage")),
-        "Gains by month": native("Gains by month", "combo",
-            "Each month's gain on positions sold and held as stacked bars, "
-            "with their sum as a line.",
-            "SELECT period AS month,\n" + ",\n".join(
-                f"       sum({c}) AS {a}" for c, a in gain_split) +
-            f",\n       {gain} AS gain\n"
-            "  FROM web_gains" + where + "\n GROUP BY 1\n ORDER BY 1",
-            {"graph.dimensions": ["month"],
-             "graph.metrics": [a for _, a in gain_split] + ["gain"],
-             "series_settings": {**{a: {"display": "bar"} for _, a in gain_split},
-                                 "gain": {"display": "line"}},
-             "stackable.stack_type": "stacked"}),
-        "Realized gains by month, short vs long term": native(
-            "Realized gains by month, short vs long term", "bar",
-            "Each month's realized gain as short term, long term, or with no "
-            "term stated.",
-            "SELECT period AS month,\n" + ",\n".join(
-                f"       sum({c}) AS {a}" for c, a in term_split) +
-            "\n  FROM web_gains" + where + "\n     AND realized IS NOT NULL"
-            "\n GROUP BY 1\n ORDER BY 1",
-            {"graph.dimensions": ["month"],
-             "graph.metrics": [a for _, a in term_split],
-             "stackable.stack_type": "stacked"}),
-        "Unrealized gain over time": native("Unrealized gain over time", "line",
-            "The unrealized gain at each month's end, per source and for "
-            "'(all sources)', which the Source picker does not narrow.",
-            _series_order(
-                "SELECT period AS month, silver_source_id AS source,\n"
-                "       sum(unrealized_end) AS unrealized\n"
-                "  FROM web_gains" + where + "\n     AND at_end\n GROUP BY 1, 2\n"
-                "UNION ALL\n"
-                f"SELECT period, '{ALL_SOURCES_SERIES}', sum(unrealized_end)\n"
-                "  FROM web_gains" + where_all + "\n     AND at_end\n GROUP BY 1",
-                "month", "source", "unrealized", "latest", largest_first=True),
-            {**_series_viz("month", "source", "unrealized"), **LINES_VIZ}),
-        "Largest unrealized gains": unrealized_table("Largest unrealized gains",
-            "The ten positions held at the window's end with the largest "
-            "unrealized gain.",
-            "unrealized_end > 0", "unrealized DESC"),
-        "Largest unrealized losses": unrealized_table("Largest unrealized losses",
-            "The ten positions held at the window's end with the largest "
-            "unrealized loss.",
-            "unrealized_end < 0", "unrealized"),
-        "Best unrealized %": unrealized_table("Best unrealized %",
-            "The ten positions held at the window's end with the largest "
-            "unrealized gain as a share of their cost basis.",
-            "unrealized_end > 0 AND cost_basis > 0", "unrealized_pct DESC"),
-        "Worst unrealized %": unrealized_table("Worst unrealized %",
-            "The ten positions held at the window's end with the largest "
-            "unrealized loss as a share of their cost basis.",
-            "unrealized_end < 0 AND cost_basis > 0", "unrealized_pct"),
-        "Largest realized gains": realized_table("Largest realized gains",
-            "The ten positions whose sales over the window realized the "
-            "largest gain. The cost basis is that of the lots sold.",
-            "realized > 0", "realized DESC"),
-        "Largest realized losses": realized_table("Largest realized losses",
-            "The ten positions whose sales over the window realized the "
-            "largest loss. The cost basis is that of the lots sold.",
-            "realized < 0", "realized"),
-        "Best realized %": realized_table("Best realized %",
-            "The ten positions whose sales over the window realized the "
-            "largest gain as a share of the cost basis sold.",
-            "realized > 0 AND cost_basis > 0", "realized_pct DESC"),
-        "Worst realized %": realized_table("Worst realized %",
-            "The ten positions whose sales over the window realized the "
-            "largest loss as a share of the cost basis sold.",
-            "realized < 0 AND cost_basis > 0", "realized_pct"),
-        "Gain by source": split_bars("Gain by source",
-            "Each source's gain on positions sold and held over the window, "
-            "stacked.",
-            "silver_source_id", "source", gain_split),
-        "Gain by asset class": split_bars("Gain by asset class",
-            "Each asset class's gain on positions sold and held over the "
-            "window, stacked. 'unknown' holds sales no snapshot classes.",
-            "asset_class", "asset_class", gain_split),
-        "Realized gains by tax wrapper": split_bars(
-            "Realized gains by tax wrapper",
-            "Realized gain over the window per tax wrapper, by holding "
-            "period.",
-            "tax_wrapper", "tax_wrapper", term_split),
-        "Realized gains by tax year": native("Realized gains by tax year", "table",
-            "Per calendar year, realized gain by holding period, wash sales, "
-            "proceeds, cost basis sold and uncovered sells. Not a tax return.",
-            "SELECT CAST(year(period) AS VARCHAR) AS tax_year,\n"
-            "       sum(realized) AS realized,\n" + ",\n".join(
-                f"       sum({c}) AS {a}" for c, a in term_split) + ",\n"
-            "       sum(wash_disallowed) AS wash_disallowed,\n"
-            "       sum(proceeds) AS proceeds,\n"
-            "       sum(realized_cost_basis) AS cost_basis,\n"
-            "       sum(realized_lots) AS realized_lots,\n"
-            "       sum(sells_without_documents) AS sells_without_documents\n"
-            "  FROM web_gains" + where + "\n GROUP BY 1\n ORDER BY 1 DESC",
-            {}),
-        "Unrealized gain vs. percent": native("Unrealized gain vs. percent",
-            "scatter",
-            "Each position held at the window's end, its unrealized gain "
-            "against its percent of cost basis, sized by value.",
-            end + f"SELECT {position} AS position,\n"
-            "       asset_class,\n"
-            "       unrealized_end / cost_basis AS unrealized_pct,\n"
-            "       unrealized_end AS unrealized,\n"
-            "       abs(value) AS value\n"
-            "  FROM e\n WHERE unrealized_end IS NOT NULL AND cost_basis > 0",
-            # The second dimension splits the dots into one series, and
-            # so one colour, per asset class.
-            {"graph.dimensions": ["unrealized_pct", "asset_class"],
-             "graph.metrics": ["unrealized"],
-             "scatter.bubble": "value",
-             **_percent_viz("unrealized_pct")}),
-        "Positions in the green": native("Positions in the green", "scalar",
-            "Positions held at the window's end with an unrealized gain.",
-            end + "SELECT count(*) AS positions\n  FROM e\n WHERE unrealized_end > 0",
-            {}),
-        "Positions in the red": native("Positions in the red", "scalar",
-            "Positions held at the window's end with an unrealized loss.",
-            end + "SELECT count(*) AS positions\n  FROM e\n WHERE unrealized_end < 0",
-            {}),
-        "Coverage by source": native("Coverage by source", "table",
-            "Per source, the value held at the window's end, the part with a "
-            "cost basis, and counts of gains missing or misplaced.",
-            end + ", t AS (\n"
-            "  SELECT silver_source_id,\n"
-            "         sum(sells) AS sells,\n"
-            "         sum(sells_without_documents) AS sells_without_documents,\n"
-            "         sum(sells_rebuilt) AS sells_rebuilt,\n"
-            "         sum(realized_lots) AS realized_lots,\n"
-            "         sum(lots_without_gain) AS lots_without_gain,\n"
-            "         sum(in_kind_moves) AS in_kind_moves,\n"
-            "         sum(corporate_actions) AS corporate_actions,\n"
-            "         count(*) FILTER (WHERE basis_changed) AS basis_changed,\n"
-            "         sum(seed_lots) AS seed_lots,\n"
-            "         sum(basis_assumed_zero) AS basis_assumed_zero,\n"
-            "         sum(fx_missing) AS fx_missing\n"
-            "    FROM w GROUP BY 1),\n"
-            "v AS (\n"
-            "  SELECT silver_source_id,\n"
-            "         sum(value) AS value,\n"
-            "         sum(value) FILTER (WHERE NOT end_without_basis) AS value_with_basis,\n"
-            "         sum(abs(value)) FILTER (WHERE NOT end_without_basis)\n"
-            "             / nullif(sum(abs(value)), 0) AS basis_coverage\n"
-            "    FROM e WHERE end_applies GROUP BY 1)\n"
-            "SELECT silver_source_id AS source, v.value, v.value_with_basis,\n"
-            "       v.basis_coverage, t.sells, t.sells_without_documents,\n"
-            "       t.sells_rebuilt, t.realized_lots, t.lots_without_gain,\n"
-            "       t.in_kind_moves, t.corporate_actions, t.basis_changed,\n"
-            "       t.seed_lots, t.basis_assumed_zero, t.fx_missing\n"
-            "  FROM t FULL JOIN v USING (silver_source_id)\n ORDER BY 1",
-            _percent_viz("basis_coverage")),
-    }
+    native("Realized gain", "scalar",
+        "The gain or loss on what was sold over the window. The coverage "
+        "table counts the sales it leaves out.",
+        "SELECT sum(realized) AS realized\n  FROM web_gains" + where, {}, home="Gains")
+    native("Unrealized gain", "scalar",
+        "The gain or loss on what is held at the window's end, over the "
+        "holdings with a cost basis.",
+        end + "SELECT sum(unrealized_end) AS unrealized\n  FROM e", {}, home="Gains")
+    native("Gain on positions sold", "scalar",
+        "What the positions sold over the window gained in their month of "
+        "sale, from the month's start or their purchase.",
+        "SELECT sum(sold_gain) AS sold\n  FROM web_gains" + where, {})
+    native("Gain on positions held", "scalar",
+        "How far the unrealized gain of the positions kept moved over the "
+        "window, exchange-rate moves included.",
+        "SELECT sum(held_change) AS held\n  FROM web_gains" + where, {})
+    native("Total gain", "scalar",
+        "The gain on positions sold plus the gain on positions held. "
+        "Income, fees and taxes are not in it.",
+        f"SELECT {gain} AS gain\n  FROM web_gains" + where, {})
+    native("Cost basis coverage", "scalar",
+        "Share of the value held at the window's end that carries a cost "
+        "basis. Unrealized figures leave out the rest.",
+        end + "SELECT sum(abs(value)) FILTER (WHERE NOT end_without_basis)\n"
+        "       / nullif(sum(abs(value)), 0) AS basis_coverage\n"
+        "  FROM e\n WHERE end_applies",
+        _percent_viz("basis_coverage"))
+    native("Gains by month", "combo",
+        "Each month's gain on positions sold and held as stacked bars, "
+        "with their sum as a line.",
+        "SELECT period AS month,\n" + ",\n".join(
+            f"       sum({c}) AS {a}" for c, a in gain_split) +
+        f",\n       {gain} AS gain\n"
+        "  FROM web_gains" + where + "\n GROUP BY 1\n ORDER BY 1",
+        {"graph.dimensions": ["month"],
+         "graph.metrics": [a for _, a in gain_split] + ["gain"],
+         "series_settings": {**{a: {"display": "bar"} for _, a in gain_split},
+                             "gain": {"display": "line"}},
+         "stackable.stack_type": "stacked"})
+    native(
+        "Realized gains by month, short vs long term", "bar",
+        "Each month's realized gain as short term, long term, or with no "
+        "term stated.",
+        "SELECT period AS month,\n" + ",\n".join(
+            f"       sum({c}) AS {a}" for c, a in term_split) +
+        "\n  FROM web_gains" + where + "\n     AND realized IS NOT NULL"
+        "\n GROUP BY 1\n ORDER BY 1",
+        {"graph.dimensions": ["month"],
+         "graph.metrics": [a for _, a in term_split],
+         "stackable.stack_type": "stacked"})
+    native("Unrealized gain over time", "line",
+        "The unrealized gain at each month's end, per source and for "
+        "'(all sources)', which the Source picker does not narrow.",
+        _series_order(
+            "SELECT period AS month, silver_source_id AS source,\n"
+            "       sum(unrealized_end) AS unrealized\n"
+            "  FROM web_gains" + where + "\n     AND at_end\n GROUP BY 1, 2\n"
+            "UNION ALL\n"
+            f"SELECT period, '{ALL_SOURCES_SERIES}', sum(unrealized_end)\n"
+            "  FROM web_gains" + where_all + "\n     AND at_end\n GROUP BY 1",
+            "month", "source", "unrealized", "latest", largest_first=True),
+        {**_series_viz("month", "source", "unrealized"), **LINES_VIZ})
+    unrealized_table("Largest unrealized gains",
+        "The ten positions held at the window's end with the largest "
+        "unrealized gain.",
+        "unrealized_end > 0", "unrealized DESC")
+    unrealized_table("Largest unrealized losses",
+        "The ten positions held at the window's end with the largest "
+        "unrealized loss.",
+        "unrealized_end < 0", "unrealized")
+    unrealized_table("Best unrealized %",
+        "The ten positions held at the window's end with the largest "
+        "unrealized gain as a share of their cost basis.",
+        "unrealized_end > 0 AND cost_basis > 0", "unrealized_pct DESC")
+    unrealized_table("Worst unrealized %",
+        "The ten positions held at the window's end with the largest "
+        "unrealized loss as a share of their cost basis.",
+        "unrealized_end < 0 AND cost_basis > 0", "unrealized_pct")
+    realized_table("Largest realized gains",
+        "The ten positions whose sales over the window realized the "
+        "largest gain. The cost basis is that of the lots sold.",
+        "realized > 0", "realized DESC")
+    realized_table("Largest realized losses",
+        "The ten positions whose sales over the window realized the "
+        "largest loss. The cost basis is that of the lots sold.",
+        "realized < 0", "realized")
+    realized_table("Best realized %",
+        "The ten positions whose sales over the window realized the "
+        "largest gain as a share of the cost basis sold.",
+        "realized > 0 AND cost_basis > 0", "realized_pct DESC")
+    realized_table("Worst realized %",
+        "The ten positions whose sales over the window realized the "
+        "largest loss as a share of the cost basis sold.",
+        "realized < 0 AND cost_basis > 0", "realized_pct")
+    split_bars("Gain by source",
+        "Each source's gain on positions sold and held over the window, "
+        "stacked.",
+        "silver_source_id", "source", gain_split)
+    split_bars("Gain by asset class",
+        "Each asset class's gain on positions sold and held over the "
+        "window, stacked. 'unknown' holds sales no snapshot classes.",
+        "asset_class", "asset_class", gain_split)
+    split_bars(
+        "Realized gains by tax wrapper",
+        "Realized gain over the window per tax wrapper, by holding "
+        "period.",
+        "tax_wrapper", "tax_wrapper", term_split)
+    native("Realized gains by tax year", "table",
+        "Per calendar year, realized gain by holding period, wash sales, "
+        "proceeds, cost basis sold and uncovered sells. Not a tax return.",
+        "SELECT CAST(year(period) AS VARCHAR) AS tax_year,\n"
+        "       sum(realized) AS realized,\n" + ",\n".join(
+            f"       sum({c}) AS {a}" for c, a in term_split) + ",\n"
+        "       sum(wash_disallowed) AS wash_disallowed,\n"
+        "       sum(proceeds) AS proceeds,\n"
+        "       sum(realized_cost_basis) AS cost_basis,\n"
+        "       sum(realized_lots) AS realized_lots,\n"
+        "       sum(sells_without_documents) AS sells_without_documents\n"
+        "  FROM web_gains" + where + "\n GROUP BY 1\n ORDER BY 1 DESC",
+        {})
+    native("Unrealized gain vs. percent",
+        "scatter",
+        "Each position held at the window's end, its unrealized gain "
+        "against its percent of cost basis, sized by value.",
+        end + f"SELECT {position} AS position,\n"
+        "       asset_class,\n"
+        "       unrealized_end / cost_basis AS unrealized_pct,\n"
+        "       unrealized_end AS unrealized,\n"
+        "       abs(value) AS value\n"
+        "  FROM e\n WHERE unrealized_end IS NOT NULL AND cost_basis > 0",
+        # The second dimension splits the dots into one series, and
+        # so one colour, per asset class.
+        {"graph.dimensions": ["unrealized_pct", "asset_class"],
+         "graph.metrics": ["unrealized"],
+         "scatter.bubble": "value",
+         **_percent_viz("unrealized_pct")})
+    native("Positions in the green", "scalar",
+        "Positions held at the window's end with an unrealized gain.",
+        end + "SELECT count(*) AS positions\n  FROM e\n WHERE unrealized_end > 0",
+        {})
+    native("Positions in the red", "scalar",
+        "Positions held at the window's end with an unrealized loss.",
+        end + "SELECT count(*) AS positions\n  FROM e\n WHERE unrealized_end < 0",
+        {})
+    native("Coverage by source", "table",
+        "Per source, the value held at the window's end, the part with a "
+        "cost basis, and counts of gains missing or misplaced.",
+        end + ", t AS (\n"
+        "  SELECT silver_source_id,\n"
+        "         sum(sells) AS sells,\n"
+        "         sum(sells_without_documents) AS sells_without_documents,\n"
+        "         sum(sells_rebuilt) AS sells_rebuilt,\n"
+        "         sum(realized_lots) AS realized_lots,\n"
+        "         sum(lots_without_gain) AS lots_without_gain,\n"
+        "         sum(in_kind_moves) AS in_kind_moves,\n"
+        "         sum(corporate_actions) AS corporate_actions,\n"
+        "         count(*) FILTER (WHERE basis_changed) AS basis_changed,\n"
+        "         sum(seed_lots) AS seed_lots,\n"
+        "         sum(basis_assumed_zero) AS basis_assumed_zero,\n"
+        "         sum(fx_missing) AS fx_missing\n"
+        "    FROM w GROUP BY 1),\n"
+        "v AS (\n"
+        "  SELECT silver_source_id,\n"
+        "         sum(value) AS value,\n"
+        "         sum(value) FILTER (WHERE NOT end_without_basis) AS value_with_basis,\n"
+        "         sum(abs(value)) FILTER (WHERE NOT end_without_basis)\n"
+        "             / nullif(sum(abs(value)), 0) AS basis_coverage\n"
+        "    FROM e WHERE end_applies GROUP BY 1)\n"
+        "SELECT silver_source_id AS source, v.value, v.value_with_basis,\n"
+        "       v.basis_coverage, t.sells, t.sells_without_documents,\n"
+        "       t.sells_rebuilt, t.realized_lots, t.lots_without_gain,\n"
+        "       t.in_kind_moves, t.corporate_actions, t.basis_changed,\n"
+        "       t.seed_lots, t.basis_assumed_zero, t.fx_missing\n"
+        "  FROM t FULL JOIN v USING (silver_source_id)\n ORDER BY 1",
+        _percent_viz("basis_coverage"))
 
 
 # Dashboard filters: a required currency picker (default: the configured
@@ -2573,15 +2992,6 @@ EXPOSURE_DASHBOARDS = {"Exposure", "Exposure" + PRIVACY_SUFFIX}
 # and the four the projection's cards take.
 YIELD_DASHBOARDS = {"Yield", "Yield" + PRIVACY_SUFFIX}
 
-# Tiles whose cells set a dashboard picker when clicked, Metabase's
-# crossfilter click behaviour: card -> (its columns, the picker's id).
-# A position's row in the positions table picks the position the
-# calendar below it lists, by the value its cell shows; the twin's
-# calendar also matches the name the twin shows (TWIN_POSITION_NAME).
-CROSSFILTER_TILES = {name: (("symbol", "name"), POSITION_PARAM_ID)
-                     for name in ("Received and expected by position",
-                                  "Received and expected by position" + PRIVACY_SUFFIX)}
-
 # The vehicle filter is linked only to these tiles, the Top-positions
 # widgets, which list individual holdings, and renders on them: the
 # breakdowns each group by a taxonomy dimension, so filtering them by
@@ -2599,29 +3009,6 @@ SPEND_ALL_CURRENCY_CARDS = {"Top 50 merchants"}
 # The Wealth Overview and its twin: the dashboards that borrow the
 # figures of the others.
 OVERVIEW_DASHBOARDS = {"Wealth Overview", "Wealth Overview" + PRIVACY_SUFFIX}
-
-# The dashboard each Wealth Overview tile restates, by its card on the
-# base dashboard: a card borrowed from it, or one built for the overview
-# from its data (OVERVIEW_BUILT_CARDS). A click on the tile opens that
-# dashboard, or on the twin that dashboard's twin; a dashboard with no
-# twin (Gains) opens from the base alone, so a click never leads from the
-# privacy view to money. An MBQL tile takes the pickers its home
-# dashboard gives it. The net worth tiles have no home and open nothing.
-OVERVIEW_TILE_HOMES = {
-    "Stalest source (days)": "Data Freshness",
-    "Asset class mix over time": "Allocation",
-    "Income received": "Income", "Income expected": "Income",
-    "Net spend": "Spending", "Spend — monthly trend": "Spending",
-    "Net cash flow": "Cash Flow", "Savings rate": "Cash Flow", "Projected net cash flow": "Cash Flow",
-    "Realized gain": "Gains", "Unrealized gain": "Gains",
-    "Return year to date (TWR)": "Returns", "Return year to date (MWR)": "Returns",
-    "Income yield": "Yield",
-}
-
-# The overview's tiles built for it alone, each from its home dashboard's
-# data: no other dashboard shows them.
-OVERVIEW_BUILT_CARDS = {"Asset class mix over time", "Projected net cash flow",
-                        *(c for c, _m, _col in RETURN_YTD_CARDS)}
 
 # Full-width headings over a dashboard's rows, by base dashboard (the
 # twin takes its base's): (row, text, display), a section's heading or a
@@ -2656,15 +3043,10 @@ TWIN_TILES = {"Wealth Overview": {
 TWIN_CARDS = {"Income": {"Income in the window": "Holdings' income yield"}}
 
 
-def base_card(name):
-    """A card's base name: a twin's card less its suffix."""
-    return name.removesuffix(PRIVACY_SUFFIX)
-
-
-def dashboard_tile_titles(base):
+def dashboard_tile_titles(base, cards):
     """card name -> the title its tiles show on base dashboard `base` and
-    its twin. The twin's title takes the privacy form, unless the twin
-    shows the card itself (PRIVACY_EXEMPT_CARDS). A title is set for three
+    its twin, of `cards` (card_defs). The twin's title takes the privacy
+    form, unless the twin shows the card itself (an exempt card). A title is set for three
     kinds of card: a borrowed card whose name leans on its home
     dashboard's pickers, a card whose title is another card's name, and
     an Excess figure, which reads the benchmark's months and not the
@@ -2674,7 +3056,7 @@ def dashboard_tile_titles(base):
               "Returns": {**{c: f"{c}, same months" for c in EXCESS_CARDS},
                           "Excess annualized return (TWR)": "Excess annualized (TWR), same months"}}.get(base, {})
     return {**titles, **{privacy_name(c): privacy_name(t) for c, t in titles.items()
-                         if c not in PRIVACY_EXEMPT_CARDS}}
+                         if not cards[c].exempt}}
 
 
 # The sentence every pre-defined dashboard's blurb ends with.
@@ -2763,7 +3145,7 @@ def base_dashboards():
             ("Return (TWR)", 0, 0, 8, 3, None),
             ("Return (MWR)", 0, 8, 8, 3, None),
             ("Annualized return (TWR)", 0, 16, 8, 3, None),
-            # Beside a benchmark alone (BENCHMARK_CARDS), the figures above them
+            # Beside a benchmark alone (Card.hide_empty), the figures above them
             # again in their order.
             ("Benchmark return (TWR)", 3, 0, 8, 3, None),
             ("Benchmark return (MWR)", 3, 8, 8, 3, None),
@@ -2941,7 +3323,7 @@ def base_dashboards():
             ("Public equity by cycle", 76, 12, 12, 7, "as_of_day"),
             ("Top securities", 83, 0, 24, 9, "as_of_day"),
             ("How the figures are classified", 92, 0, 24, 7, "as_of_day"),
-            # Beside a benchmark alone (BENCHMARK_CARDS), and the map's
+            # Beside a benchmark alone (Card.hide_empty), and the map's
             # comparison is a table.
             ("Largest country deviations", 99, 0, 24, 8, "as_of_day"),
         ]),
@@ -2982,23 +3364,68 @@ def base_dashboards():
     }
 
 
-def _card_maker(out, privacy, tags, tail):
-    """The `card` function of one family of native cards. It stores a
-    tile's card in `out` as name -> (display, description, dataset_query,
-    viz): its description ends in `tail`, and it takes the template tags
-    `tags` unless the tile names its own. With `privacy` it builds the
-    twin's card under its privacy name, and none for a privacy-exempt
-    tile."""
-    def card(name, display, desc, sql, viz, card_tags=tags, tail=tail):
-        if privacy and name in PRIVACY_EXEMPT_CARDS:
+class Card(NamedTuple):
+    """One pre-defined card: what is sent (name, display, description,
+    dataset_query, viz) and how its tiles treat it. `exempt`: it shows no
+    money, so a twin shows it as it is. `hide_empty`: it reads a row
+    only beside a picked benchmark, and its tile hides with none.
+    A dashboard with no benchmark picked then reads as it does without
+    such cards: Metabase closes the gap a hidden tile leaves, wherever
+    the tile sits. `links`: what a click on a cell does (Link). `home`:
+    the dashboard a Wealth Overview tile of it opens."""
+    name: str
+    display: str
+    desc: str
+    query: dict
+    viz: dict
+    exempt: bool = False
+    hide_empty: bool = False
+    links: tuple = ()
+    home: str = None
+
+
+class Link(NamedTuple):
+    """A click on a cell of column `column` sets the picker of slug `to`
+    to the value clicked. On a tile that opens its card's home, the
+    picker is the home dashboard's; on any other tile, its own
+    dashboard's (Metabase's crossfilter)."""
+    column: str
+    to: str
+
+
+class Family:
+    """The cards one dashboard defines, its base's or with `privacy` its
+    twin's, into `cards`. `tags` and `tail` are what a card takes unless
+    it names its own: its template tags and the words its description
+    ends in."""
+
+    def __init__(self, privacy, cards, tags=None, tail=""):
+        self.privacy, self.cards, self.tags, self.tail = privacy, cards, tags, tail
+
+    def using(self, tags=None, tail=None):
+        """The same family whose cards take `tags` and `tail` instead."""
+        return Family(self.privacy, self.cards, self.tags if tags is None else tags,
+                      self.tail if tail is None else tail)
+
+    def card(self, name, display, desc, sql, viz, *, tags=None, exempt=False, hide_empty=False,
+             cell_clicks=(), home=None):
+        """Define card `name`, or on a twin its privacy variant, none for
+        an `exempt` card, which the twin shows as it is. `sql` is native
+        SQL over `tags` (the family's unless given), or an MBQL card's
+        dataset_query. A family's tags are all its cards', but the
+        Benchmark lands only on a card that reads it."""
+        if self.privacy and exempt:
             return
-        name = privacy_name(name) if privacy else name
-        # A family's tags are all its cards', but a picker lands only on
-        # a card that reads it.
-        if "{{benchmark}}" not in sql:
-            card_tags = {k: v for k, v in card_tags.items() if k != "benchmark"}
-        out[name] = (display, desc + tail, _native(sql, card_tags), viz)
-    return card
+        if isinstance(sql, str):
+            tags = self.tags if tags is None else tags
+            if "{{benchmark}}" not in sql:
+                tags = {k: v for k, v in tags.items() if k != "benchmark"}
+            sql = _native(sql, tags)
+        name = privacy_name(name) if self.privacy else name
+        if name in self.cards:
+            raise ValueError(f"provision: card {name!r} is defined twice")
+        self.cards[name] = Card(name, display, desc + self.tail, sql, viz, exempt, hide_empty,
+                                tuple(cell_clicks), home)
 
 
 def _window_end(view, tags, share=False, where=""):
@@ -3066,7 +3493,7 @@ def _columns_with_benchmark(sql, order, *cols):
             f"  FROM (\n{sql}\n)\n ORDER BY {order}")
 
 
-def exposure_cards(privacy):
+def exposure_cards(f):
     """The Exposure dashboard's cards, or with `privacy` their privacy
     variants: name -> (display, description, dataset_query, viz). Native
     SQL over web_exposure, the look-through at every month end and
@@ -3094,6 +3521,7 @@ def exposure_cards(privacy):
     the selection (_beside): today's look-through of its funds, which no
     picker but the Benchmark narrows. A chart type is fixed, so those
     breakouts are bars whatever is picked, and the map has a table."""
+    privacy = f.privacy
     tags = {**native_tags("web_exposure", EXPOSURE_FILTERS), "benchmark": BENCHMARK_TAG}
     tail = PRIVACY_DESC if privacy else ""
     # The selection, each row's share of its day's selected total, and
@@ -3102,8 +3530,7 @@ def exposure_cards(privacy):
     end = last + "\n"
     money = "" if privacy else ",\n       sum(value) AS value"
     amount = () if privacy else ("value",)
-    out = {}
-    card = _card_maker(out, privacy, tags, tail)
+    card = f.using(tags=tags, tail=tail).card
 
     def bars(label, metric, tooltip=(), decimals=None, beside=False):
         """The viz of a breakdown's bars: the share, its figure on each
@@ -3156,7 +3583,7 @@ def exposure_cards(privacy):
              f"  FROM w\n  LEFT JOIN r ON r.k = w.{dim}\n GROUP BY 1, 2\n"
              f" ORDER BY max({rank}), {'2, ' if fold else ''}1",
              {"graph.dimensions": ["as_of_day", label], "graph.metrics": [metric], **STACKED_VIZ,
-              **({} if metric == "value" else _share_viz(metric))})
+              **({} if metric == "value" else _share_viz(metric))}, exempt=not amounts)
 
     at_end("Exposure by asset class", "bar",
            "Net worth by asset class after look-through, at the window's end.",
@@ -3189,7 +3616,7 @@ def exposure_cards(privacy):
          "  FROM p FULL JOIN b ON b.country = p.country\n"
          " WHERE {{benchmark}} <> '" + NO_BENCHMARK + "'\n"
          " ORDER BY abs(difference_pct) DESC, 1\n LIMIT 20",
-         _share_viz("share_pct", "benchmark_pct", "difference_pct"))
+         _share_viz("share_pct", "benchmark_pct", "difference_pct"), exempt=True, hide_empty=True)
     card("Exposure by country", "map",
          "Net worth by country of risk at the window's end. Metals, coins "
          "and unknowns are not mapped.",
@@ -3297,11 +3724,11 @@ def exposure_cards(privacy):
                  + _beside(label, "class_share_pct", dimension, (*tooltip, *amount),
                            weight="100 * share_pct / sum(share_pct) OVER ()", where="\n   AND bucket <> '(none)'",
                            order=f"list_position([{_sql_list(buckets)}], {label})", keep_series=True),
-                 bars(label, "class_share_pct", tooltip, decimals=2, beside=True), dtags)
+                 bars(label, "class_share_pct", tooltip, decimals=2, beside=True), tags=dtags)
             return
         card(name, "bar", desc + whole_class,
              head + "\n" + select + f"\n ORDER BY list_position([{_sql_list(buckets)}], bucket)",
-             bars(label, "class_share_pct", tooltip, decimals=2), dtags)
+             bars(label, "class_share_pct", tooltip, decimals=2), tags=dtags)
 
     grade = (f"CASE WHEN bucket IN ({_sql_list(INVESTMENT_GRADE)}) THEN 'IG'"
              f" WHEN bucket IN ({_sql_list(HIGH_YIELD)}) THEN 'HY' END AS grade")
@@ -3367,11 +3794,10 @@ def exposure_cards(privacy):
           **_table_columns("security", "name", "ticker", "asset_class", "sector", "country", "market_cap", "size",
                            *(("direct_pct", "via_funds_pct") if privacy else
                              ("value", "direct_value", "via_funds_value")),
-                           "funds", "share_pct", "benchmark_pct", "difference_pct")}, stags)
-    return out
+                           "funds", "share_pct", "benchmark_pct", "difference_pct")}, tags=stags)
 
 
-def issuer_cards(privacy):
+def issuer_cards(f):
     """The Allocation dashboard's issuers card, or with `privacy` its
     privacy variant: name -> (display, description, dataset_query, viz).
     Native SQL over web_exposure_issuers: the largest issuers of the
@@ -3383,10 +3809,10 @@ def issuer_cards(privacy):
     A security no source names reads its key, which the privacy card
     hides where it is a holding's own; the privacy card also
     drops the value."""
+    privacy = f.privacy
     tags = {"currency": currency_tag(), "benchmark": BENCHMARK_TAG, **_calendar_tags()}
     tail = PRIVACY_DESC if privacy else ""
-    out = {}
-    card = _card_maker(out, privacy, tags, tail)
+    card = f.using(tags=tags, tail=tail).card
     weight = ("(SELECT max(b.share_pct) FROM benchmark_exposure b\n"
               f"         WHERE b.{PICKED_BENCHMARK} AND b.dimension = 'issuer'\n"
               "           AND (b.bucket = 'lei:' || e.lei OR upper(b.label) = upper(e.issuer)))")
@@ -3413,7 +3839,6 @@ def issuer_cards(privacy):
           **_table_columns("rank", "issuer", *(() if privacy else ("value",)), "share_pct",
                            "benchmark_pct", "difference_pct",
                            "cumulative_share_pct", "equity_pct", "debt_pct", "cash_pct")})
-    return out
 
 
 # The key gold gives a holding no security key names
@@ -3492,7 +3917,7 @@ CASH_KINDS = ("deposit", "term_deposit", "money_market")
 DURATION_KINDS = ("bond", "bill", "floating_note", "bond_fund", "multi_asset", "money_market")
 
 
-def yield_cards(privacy):
+def yield_cards(f):
     """The Yield dashboard's cards, or with `privacy` their privacy
     variants: name -> (display, description, dataset_query, viz). Native
     SQL over the yield report's figures per holding (web_yield), a row set
@@ -3514,13 +3939,13 @@ def yield_cards(privacy):
     reaches it. A card of rates, years and securities alone is
     privacy-exempt, the twin showing it unchanged. docs/YIELD.md defines
     every figure."""
+    privacy = f.privacy
     tags = {**native_tags("web_yield", YIELD_FILTERS), "benchmark": BENCHMARK_TAG}
     # Today's selected holdings, whatever the window.
     held_tags = native_tags("web_yield", {k: v for k, v in YIELD_FILTERS.items() if k != "time_range"})
     note = PRIVACY_DESC if privacy else ""
     proj_note = " It reads today's projection." + note
-    out = {}
-    card = _card_maker(out, privacy, tags, note)
+    card = f.using(tags=tags, tail=note).card
     w, end = _window_end("web_yield", tags)
     money = "" if privacy else ",\n       sum(value) AS value"
     # A group's share of the value that earns, so a liability's group
@@ -3529,10 +3954,11 @@ def yield_cards(privacy):
 
     def scalar(name, rate, alias, desc):
         """The selection's `rate` at the window's end, as `alias`."""
-        card(name, "scalar", desc, end + f"\nSELECT {rate} AS {alias}\n  FROM e", _share_viz(alias))
+        card(name, "scalar", desc, end + f"\nSELECT {rate} AS {alias}\n  FROM e", _share_viz(alias), exempt=True)
 
     # ---- the projection: today's holdings and their parts
     proj_tags = {**held_tags, **PROJECTION_TAGS}
+    proj = f.using(tags=proj_tags, tail=proj_note).card
     held = ("WITH h AS (\n"
             "  SELECT silver_source_id, account_external_id, position_key, holding_currency, value, weighs\n"
             "    FROM web_yield" + _native_where(held_tags) +
@@ -3544,23 +3970,23 @@ def yield_cards(privacy):
     horizon_yield = ("SELECT 100 * (SELECT sum(income) FROM x) * 12 / " + HORIZON_MONTHS +
                      f"\n       / NULLIF((SELECT {EARNING_VALUE} FROM h), 0) AS income_yield_pct")
 
-    card("Income yield", "scalar",
+    proj("Income yield", "scalar",
          "Today's holdings' expected yearly income over the horizon, over the value that "
          "earns it.",
-         horizon + horizon_yield, _share_viz("income_yield_pct"), proj_tags, proj_note)
+         horizon + horizon_yield, _share_viz("income_yield_pct"), exempt=True, home="Yield")
     if privacy:
         # As a yield it would be the Income yield beside it, so it shows
         # how evenly the horizon pays instead.
-        card("Projected income", "scalar",
+        proj("Projected income", "scalar",
              "Expected monthly income as a share of its biggest month.",
              horizon.rstrip("\n") + ",\n" + _peak_cte("x", "income") +
              "SELECT 100 * (SELECT sum(income) FROM x) / " + HORIZON_MONTHS
              + f"\n       / {PEAK} AS monthly_average_pct",
-             _share_viz("monthly_average_pct"), proj_tags, proj_note)
+             _share_viz("monthly_average_pct"))
     else:
-        card("Projected income", "scalar",
+        proj("Projected income", "scalar",
              "What today's holdings are expected to pay over the horizon after this month.",
-             horizon + "SELECT sum(income) AS projected_income\n  FROM x", {}, proj_tags, proj_note)
+             horizon + "SELECT sum(income) AS projected_income\n  FROM x", {})
     scalar("Implied yield", _rate("implied_pct"), "implied_yield_pct",
            "The yield the prices imply at the window's end, weighted by value over the "
            "holdings that have one.")
@@ -3655,7 +4081,7 @@ def yield_cards(privacy):
              "What one basis point more at each tenor takes off the holdings' value, per "
              "curve currency. A liability's is negative.",
              _window_end("web_yield_curve", ctags)[1] + grid.format(dv01="g.dv01 AS dv01"),
-             {**grouped, "graph.metrics": ["dv01"]}, ctags)
+             {**grouped, "graph.metrics": ["dv01"]}, tags=ctags)
 
     # The change in the horizon's income for rates one percent higher than
     # the picked path and shift: each part's income there less its income
@@ -3666,7 +4092,7 @@ def yield_cards(privacy):
             f"  SELECT p.holding_currency, (({up}) - ({PART_INCOME})) * {_ccy_case('p.fx')} AS v\n" + PARTS_FROM +
             "\n" + HELD_JOIN + PARTS_AHEAD + ")")
     if privacy:
-        card("Income sensitivity to rates", "bar",
+        proj("Income sensitivity to rates", "bar",
              "The yield change at rates one percent higher, per currency, in percentage points.",
              sens + ",\nv AS (SELECT holding_currency, " + EARNING_VALUE + " AS earning FROM h GROUP BY 1)\n"
              "SELECT s.holding_currency,\n"
@@ -3674,15 +4100,15 @@ def yield_cards(privacy):
              "  FROM s\n  LEFT JOIN v ON v.holding_currency = s.holding_currency\n"
              " GROUP BY 1\n ORDER BY 2 DESC NULLS LAST, 1",
              {"graph.dimensions": ["holding_currency"], "graph.metrics": ["yield_change_pct"],
-              "graph.show_values": True, **_share_viz("yield_change_pct")}, proj_tags, proj_note)
+              "graph.show_values": True, **_share_viz("yield_change_pct")})
     else:
-        card("Income sensitivity to rates", "bar",
+        proj("Income sensitivity to rates", "bar",
              "How much more today's holdings would pay over the horizon at rates one percent "
              "higher, per currency.",
              sens + "\nSELECT holding_currency, sum(v) AS income_change\n"
              "  FROM s\n GROUP BY 1\n ORDER BY 2 DESC NULLS LAST, 1",
              {"graph.dimensions": ["holding_currency"], "graph.metrics": ["income_change"],
-              "graph.show_values": True}, proj_tags, proj_note)
+              "graph.show_values": True})
 
     card("Dividend yield against payout", "scatter",
          "Each stock's payout ratio against its dividend yield at the window's end. A payout "
@@ -3691,7 +4117,7 @@ def yield_cards(privacy):
          " WHERE kind = 'stock'\n   AND payout_pct IS NOT NULL AND dividend_yield_pct IS NOT NULL\n"
          " ORDER BY dividend_yield_pct DESC, symbol",
          {"graph.dimensions": ["payout_pct"], "graph.metrics": ["dividend_yield_pct"],
-          "graph.tooltip_columns": ["symbol", "name"], **_share_viz("payout_pct", "dividend_yield_pct")})
+          "graph.tooltip_columns": ["symbol", "name"], **_share_viz("payout_pct", "dividend_yield_pct")}, exempt=True)
 
     # Two charts, not one: a yield and a duration differ in unit, and one
     # chart would need an axis for each.
@@ -3714,7 +4140,7 @@ def yield_cards(privacy):
              "  FROM w\n" + picked + " GROUP BY 1",
              "sort_rank", "benchmark_yield_pct"),
          {"graph.dimensions": ["as_of_day"], **LINES_VIZ, **_share_viz(*yields, "benchmark_yield_pct"),
-          "series_settings": {"benchmark_yield_pct": {"axis": "left"}}})
+          "series_settings": {"benchmark_yield_pct": {"axis": "left"}}}, exempt=True)
     card("Duration over time", "line",
          "The holdings' value-weighted modified duration in years, at each month end in the "
          "window and today. A benchmark adds its funds' duration.",
@@ -3724,7 +4150,7 @@ def yield_cards(privacy):
              "       as_of_day AS sort_rank\n"
              "  FROM w\n" + picked + " GROUP BY 1",
              "sort_rank", "benchmark_duration"),
-         {"graph.dimensions": ["as_of_day"], "series_settings": {"benchmark_duration": {"axis": "left"}}})
+         {"graph.dimensions": ["as_of_day"], "series_settings": {"benchmark_duration": {"axis": "left"}}}, exempt=True)
     # A holding carries every tag that describes a figure of it, so the
     # shares overlap; each is of the gross value, a liability counted
     # whole (docs/YIELD.md §7).
@@ -3738,7 +4164,6 @@ def yield_cards(privacy):
          "\n  FROM t\n GROUP BY 1\n ORDER BY share_pct DESC, 1",
          {"graph.dimensions": ["tag"], "graph.metrics": ["share_pct"], "graph.show_values": True,
           **({} if privacy else {"graph.tooltip_columns": ["value", "holdings"]}), **_share_viz("share_pct")})
-    return out
 
 
 # The projection's income types (yield.IncomeTypes), each with its colour
@@ -3817,7 +4242,7 @@ def _tint(color, share=0.55):
     return "#" + "".join(f"{round(c + (255 - c) * share):02x}" for c in rgb)
 
 
-def income_projected_cards(privacy):
+def income_projected_cards(f):
     """The Income dashboard's cards of received and expected income, or
     with `privacy` their privacy variants: name -> (display, description,
     dataset_query, viz). Native SQL over four sources, each a row set per
@@ -3846,6 +4271,7 @@ def income_projected_cards(privacy):
     yield over the value it is earned on; and what the withholding takes
     as a share. No account label, amount, quantity or price reaches it,
     and it has no account picker."""
+    privacy = f.privacy
     selection = {k: v for k, v in INCOME_PROJECTED_SELECTION.items()
                  if not (privacy and k == "account")}
     sel_tags = view_tags("web_income", {"type": ("income_label", "string/=")})
@@ -3892,9 +4318,7 @@ def income_projected_cards(privacy):
     untyped_tags = {k: v for k, v in both_tags.items() if k != "type"}
     calendar_tags = {**expected_tags, "position": POSITION_TAG}
 
-    out = {}
-    card = _card_maker(out, privacy, both_tags,
-                       PRIVACY_DESC if privacy else "")
+    card = f.using(tags=both_tags, tail=PRIVACY_DESC if privacy else "").card
 
     # The days the Time range selects, every day web_income_days lists
     # with none.
@@ -4022,7 +4446,7 @@ def income_projected_cards(privacy):
     peak = _peak_cte("a", "value", "month_start").rstrip()
 
     # ---- the headline figures
-    def tile(name, col, cond, desc, half=None):
+    def tile(name, col, cond, desc, half=None, home=None):
         """The income of the rows `cond` selects: what was received over
         the Time range with `half` 'received', what is expected over the
         Horizon with 'expected', both without one. On the privacy card,
@@ -4034,11 +4458,11 @@ def income_projected_cards(privacy):
                                else (every, both_tags, "the income received and expected"))
             card(name, "scalar", desc + f" A share of {of}.",
                  rows(parts) + f"SELECT coalesce(100 * coalesce(sum(value){pick}, 0) / NULLIF(sum(value), 0), 0)"
-                 f" AS {col}_pct\n  FROM a", _share_viz(f"{col}_pct"), tags)
+                 f" AS {col}_pct\n  FROM a", _share_viz(f"{col}_pct"), tags=tags, home=home)
         else:
             tags = {"received": received_tags, "expected": expected_tags, None: both_tags}[half]
             card(name, "scalar", desc, rows(parts) + f"SELECT coalesce(sum(value){pick}, 0) AS {col}\n  FROM a",
-                 {}, tags)
+                 {}, tags=tags, home=home)
 
     interest, dividends = (f"type IN ({_sql_list(t)})" for t in (INTEREST_TYPES, DIVIDEND_TYPES))
     expect = "status = 'expected'"
@@ -4063,14 +4487,15 @@ def income_projected_cards(privacy):
              "The income in the window over the months the Time range and the Horizon cover.",
              rows(every, months) + "SELECT coalesce(sum(value), 0) / (SELECT received + expected FROM mo)"
              " AS monthly_average\n  FROM a", {})
-    tile("Income received", "received", "", "Every income line received over the Time range.", "received")
+    tile("Income received", "received", "", "Every income line received over the Time range.", "received",
+         home="Income")
     tile("Holdings' interest received", "received_interest", interest,
          "The interest and coupons the holdings received over the Time range.", "received")
     tile("Holdings' dividends received", "received_dividends", dividends,
          "The dividends and fund distributions the holdings received over the Time range.", "received")
     tile("Income expected", "expected", expect,
          "What the holdings are expected to pay over the Horizon, and the other income's run-rate.",
-         "expected")
+         "expected", home="Income")
     tile("Holdings' interest expected", "expected_interest", f"{expect} AND {interest}",
          "The interest and coupons the holdings are expected to pay over the Horizon.", "expected")
     tile("Holdings' dividends expected", "expected_dividends", f"{expect} AND {dividends}",
@@ -4095,15 +4520,15 @@ def income_projected_cards(privacy):
     if privacy:
         card("Withholding", "scalar", withheld_desc + " A share of the income.",
              untyped + f"SELECT coalesce(100 * ({withheld}) / NULLIF({income}, 0), 0) AS withheld_pct"
-             "\n  FROM a", _share_viz("withheld_pct"), untyped_tags)
+             "\n  FROM a", _share_viz("withheld_pct"), tags=untyped_tags)
         card("Income after withholding", "scalar", net_desc + " A share of the income.",
              untyped + f"SELECT coalesce(100 * ({income} - ({withheld})) / NULLIF({income}, 0), 0)"
-             " AS net_pct\n  FROM a", _share_viz("net_pct"), untyped_tags)
+             " AS net_pct\n  FROM a", _share_viz("net_pct"), tags=untyped_tags)
     else:
         card("Withholding", "scalar", withheld_desc,
-             untyped + f"SELECT {withheld} AS withheld\n  FROM a", {}, untyped_tags)
+             untyped + f"SELECT {withheld} AS withheld\n  FROM a", {}, tags=untyped_tags)
         card("Income after withholding", "scalar", net_desc,
-             untyped + f"SELECT {income} - ({withheld}) AS net\n  FROM a", {}, untyped_tags)
+             untyped + f"SELECT {income} - ({withheld}) AS net\n  FROM a", {}, tags=untyped_tags)
 
     # ---- received and expected by month, on one axis: a band per
     # holding's type and status, and per class of the other lines, the
@@ -4181,6 +4606,10 @@ def income_projected_cards(privacy):
     position_order = "\n  FROM r\n ORDER BY vehicle NULLS LAST, received + expected DESC, symbol, name"
     position_desc = ("Each position's income received and expected, by vehicle. A class row holds an "
                      "account's other lines and has no payments; click a holding's symbol or name to list its.")
+    # A click on a position's symbol or name picks the position the
+    # calendar below lists, by the value its cell shows; the twin's
+    # calendar also matches the name the twin shows (TWIN_POSITION_NAME).
+    clicks = (Link("symbol", "position"), Link("name", "position"))
     # A position's income over the value it is earned on: none for a
     # position no longer held, or of no positive value.
     on_value = "NULLIF(GREATEST(value, 0), 0)"
@@ -4195,12 +4624,12 @@ def income_projected_cards(privacy):
              "       100 * value / NULLIF(sum(GREATEST(value, 0)) OVER (), 0) AS share_pct,\n" +
              ",\n".join(f"       100 * {figure[c]} * 12 / NULLIF({per_year[c]}, 0) / {on_value} AS {c}_pct"
                         for c in figure) + position_order,
-             _share_viz("share_pct", "received_pct", "expected_pct", "total_pct"))
+             _share_viz("share_pct", "received_pct", "expected_pct", "total_pct"), cell_clicks=clicks)
     else:
         card("Received and expected by position", "table", position_desc,
              rows(every, hold, inc, positions) +
              "SELECT vehicle, account_label AS account, symbol, COALESCE(name, position_key) AS name,\n"
-             "       quantity, price, value, received, expected, received + expected AS total" + position_order, {})
+             "       quantity, price, value, received, expected, received + expected AS total" + position_order, {}, cell_clicks=clicks)
 
     # Each payment the holdings are expected to pay over the Horizon, a
     # dated one on its day, an accrual or an estimated day in its month
@@ -4234,14 +4663,13 @@ def income_projected_cards(privacy):
              "       100 * c.value / NULLIF(GREATEST(h.value, 0), 0) AS value_pct\n"
              "  FROM cal c\n  LEFT JOIN hold h USING (silver_source_id, account_external_id, position_key)\n"
              " ORDER BY month_start, day IS NULL, day, symbol, name, kind",
-             _share_viz("value_pct"), calendar_tags)
+             _share_viz("value_pct"), tags=calendar_tags)
     else:
         card("Expected payments", "table", cal_desc,
              cal + f"SELECT {date}, account_label AS account, symbol, COALESCE(name, position_key) AS name,\n"
              "       type, kind, basis, holding_currency AS currency, amount, value\n"
              "  FROM cal\n ORDER BY month_start, day IS NULL, day, account, symbol, name, kind",
-             {}, calendar_tags)
-    return out
+             {}, tags=calendar_tags)
 
 
 # The parts of web_cashflow_plan the Income cards' run-rate reads: the
@@ -4266,7 +4694,7 @@ def _pool_join(a):
             " AND pl.account_external_id = " + a + ".account_external_id")
 
 
-def cashflow_plan_cards(privacy):
+def cashflow_plan_cards(f):
     """The Cash Flow dashboard's projection cards and the Wealth
     Overview's projected net, or with `privacy` their privacy variants:
     name -> (display, description, dataset_query, viz).
@@ -4288,11 +4716,11 @@ def cashflow_plan_cards(privacy):
     A privacy card shows each part as a share of all the income the
     projection expects over the Horizon, on every account; blank where it
     expects none."""
+    privacy = f.privacy
     tags = {"currency": currency_tag(), **PROJECTION_TAGS}
     tail = (" Each part is a share of what the holdings are expected to pay." if privacy
             else " Its look-back averages ignore window, source, section and grain.")
-    out = {}
-    card = _card_maker(out, privacy, tags, tail)
+    card = f.using(tags=tags, tail=tail).card
 
     # Each month of the horizon: the projection's income and principal,
     # on the pool's accounts and on the others, and the look-back's
@@ -4363,8 +4791,7 @@ def cashflow_plan_cards(privacy):
     card("Projected net cash flow", "scalar",
          "The Horizon's net addition to the cash pool.",
          plan + "SELECT " + col("sum(net)", "net") + "\n  FROM proj",
-         _share_viz(name_of("net")) if privacy else {})
-    return out
+         _share_viz(name_of("net")) if privacy else {}, home="Cash Flow")
 
 
 # The net worth bridge's colours: a rise green, a fall red, a total grey
@@ -4376,7 +4803,7 @@ BRIDGE_MONTH_SERIES = {"net_saved": ("Net saved", "#2A78D6"), "tracking_changes"
 BRIDGE_FILTERS = {"time_range": ("month_end", "date/all-options")}
 
 
-def bridge_cards(privacy):
+def bridge_cards(f):
     """The Cash Flow dashboard's bridge tiles, or with `privacy` their
     twins: name -> (display, description, dataset_query, viz). They read
     the months of `wealthdb returns bridge` (web_bridge), which sum to any
@@ -4390,10 +4817,10 @@ def bridge_cards(privacy):
 
     A twin card shows the same as shares of the starting net worth: the
     window's, or by month that month's."""
+    privacy = f.privacy
     tags = native_tags("web_bridge", BRIDGE_FILTERS)
     tail = " It covers the whole household." + (" Shares of the start." if privacy else "")
-    out = {}
-    card = _card_maker(out, privacy, tags, tail)
+    card = f.using(tags=tags, tail=tail).card
     window = ("WITH w AS (\n  SELECT * FROM web_bridge" + _native_where(tags)
               + "\n     AND currency = {{currency}})")
     start = "arg_min(start_net_worth, end_day)::DOUBLE"
@@ -4454,7 +4881,6 @@ def bridge_cards(privacy):
          {"graph.dimensions": ["month"], "graph.metrics": list(names.values()), **STACKED_VIZ,
           "graph.x_axis.title_text": "", "graph.y_axis.title_text": "", "series_settings": series,
           **(_share_viz(*names.values()) if privacy else {})})
-    return out
 
 
 # The fee tiles' detailed groups, in stacking order (gold's fee_group),
@@ -4463,7 +4889,7 @@ FEE_GROUP_COLORS = {"investment": "#2A78D6", "bank": "#EB6834", "atm": "#1BAF7A"
 FEE_GROUP_TITLES = {"investment": "Investment", "bank": "Bank", "atm": "ATM", "other": "Other"}
 
 
-def fee_cards(privacy):
+def fee_cards(f):
     """The Spending dashboard's two fee tiles, or with `privacy` their
     twins: name -> (display, description, dataset_query, viz). They read
     `wealthdb spending fees` over web_fees: the
@@ -4479,10 +4905,10 @@ def fee_cards(privacy):
     On a twin the rates and returns stay, the fees read as shares of the
     window's fees, and an entity is its source, its kind and its rank, as
     the Spend by account twin names a group, with no name of its own."""
+    privacy = f.privacy
     tags = native_tags("web_fees", PRIVACY_FEE_FILTERS if privacy else FEE_FILTERS)
     tail = " Fees are one category." + (PRIVACY_DESC if privacy else "")
-    out = {}
-    card = _card_maker(out, privacy, tags, tail)
+    card = f.using(tags=tags, tail=tail).card
     val = _ccy_case("value")
     rows = ("WITH f AS (\n  SELECT * FROM web_fees" + _native_where(tags) + "),\n"
             "e AS (\n  SELECT entity_key, any_value(silver_source_id) AS silver_source_id,\n"
@@ -4530,26 +4956,6 @@ def fee_cards(privacy):
          _share_viz("fees_pct", "fee_rate_pct", "twr_pct", decimals=2) if privacy
          else {"column_settings": {**_share_viz("fee_rate_pct", "twr_pct", decimals=2)["column_settings"],
                                    '["name","mean_value"]': {"decimals": 0}}})
-    return out
-
-
-def mark_cards():
-    """The Data Freshness dashboard's Mark age tile: name -> (display,
-    description, dataset_query, viz). It reads `wealthdb status --marks`
-    (web_marks) and takes no picker, like that
-    dashboard's other tiles. Its figures are shares, so the twin shows the
-    card as it is."""
-    return {"Mark age": (
-        "bar",
-        "The share of value marked within five days of each month end: how far that month's return can "
-        "be trusted. Liabilities and cash are out.",
-        _native("SELECT CAST(date_trunc('month', month_end) AS TIMESTAMP) AS month, marked_pct\n"
-                "  FROM web_marks\n ORDER BY month", {}),
-        {"graph.dimensions": ["month"], "graph.metrics": ["marked_pct"],
-         "graph.y_axis.auto_range": False, "graph.y_axis.min": 0, "graph.y_axis.max": 100,
-         "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
-         "series_settings": {"marked_pct": {"color": BENCHMARK_COLOR}},
-         **_share_viz("marked_pct")})}
 
 
 def view_tags(table, spec):
@@ -4657,14 +5063,12 @@ CASHFLOW_SECTION_PARAM_ID = "aa5df10f"
 # asks "what did investing do" without leaving the dashboard. It is NOT
 # a picker the design asked for (docs/CASHFLOW.md §9), and it reaches
 # only the cards it means something on — the by-month charts and the
-# line list. `_cashflow_kit` draws that line, by withholding the tag
-# from the cards that decline it.
+# line list. cashflow_cards draws that line, by withholding the tag
+# from the cards that decline it. The twin's filters are the same: none
+# of the three renders a dropdown of anything that identifies an
+# account, which is the reason the other two twins drop theirs.
 CASHFLOW_FILTERS = {**range_filters("occurred_at"),
                     "section": ("section", "string/=")}
-# The twin's filters are the same: none of the three renders a dropdown
-# of anything that identifies an account, which is the reason the other
-# two twins drop theirs.
-PRIVACY_CASHFLOW_FILTERS = dict(CASHFLOW_FILTERS)
 # What a card that declines the Section picker says of it.
 SECTION_DECLINED_DESC = " It needs every section, so it takes no Section."
 
@@ -4948,53 +5352,6 @@ def _cashflow_sankey_sql(where, sum_expr, share=False):
         "  FROM e ORDER BY e.stage, e.kin DESC, e.value DESC")
 
 
-def _family_native_kit(view, filters, neg, note="", privacy=False):
-    """One family's native-card kit: the WHERE clause its serving
-    view's template tags imply, the summed value expression in the
-    picked currency, and a builder of its cards. The tags stay inside —
-    every card that needs them goes through the builder.
-
-    Shared because the families and their twins differ only in what this
-    takes — the view, the filter specs, the SIGN and
-    the note a card's description ends with — and a second copy of this
-    would be those few constants and a drift risk. `neg` flips
-    the sum so an outflow, which gold stores negative, reads as a
-    positive magnitude; income is already positive and passes False.
-    With `privacy` the builder returns a twin card's shape, the card
-    type first (privacy_card_defs).
-    """
-    tags = native_tags(view, filters)
-    where = _native_where(tags)
-    val = f"sum({_ccy_case('value', neg=neg)})::DOUBLE"
-
-    def native(name, display, desc, sql, viz):
-        card = (display, desc + note, _native(sql, tags), viz)
-        return ("question", *card) if privacy else card
-
-    return where, val, native
-
-
-def _cashflow_kit(filters, note="", privacy=False):
-    """The Cash Flow cards' kit: _family_native_kit's over web_cashflow,
-    plus the {{investing}} variable and a second WHERE clause without the
-    Section filter. Returns (where, where_nosec, val, native).
-    `native(..., section=False)` builds a card that declines the Section
-    picker; its SQL must use `where_nosec`, since a tag a card does not
-    declare cannot appear in its SQL. The dashboard and its twin share
-    it, so their tiles answer the same pickers card for card."""
-    tags = {**native_tags("web_cashflow", filters), "investing": INVESTING_TAG}
-    tags_nosec = {k: v for k, v in tags.items() if k != "section"}
-
-    def native(name, display, desc, sql, viz, section=True):
-        card_tags = tags if section else tags_nosec
-        card = (display, desc + ("" if section else SECTION_DECLINED_DESC) + note,
-                _native(sql, card_tags), viz)
-        return ("question", *card) if privacy else card
-
-    return (_native_where(tags), _native_where(tags_nosec),
-            f"sum({_ccy_case('value')})::DOUBLE", native)
-
-
 def _field_clauses(tags, exclude=()):
     """One optional [[AND {{tag}}]] clause per FIELD FILTER on the card,
     but those named in `exclude`.
@@ -5102,648 +5459,51 @@ def _month_cte(view, where, value, extra=""):
             f"    FROM {view}" + where + "\n")
 
 
-def privacy_card_defs():
-    """name -> (card type, display, description, dataset_query, viz
-    settings) for the privacy variants of every card the base dashboards
-    show. Every card here that shares out money is native SQL over the
-    gold web_* serving views, reads the dashboard's currency through the
-    {{currency}} variable, and recomputes its normalization denominator
-    in-query with the same filters applied: the Wealth Overview's
-    figures divide by the selected sources' latest total (net worth
-    itself always 100), its holdings charts by that total at the
-    window's end, the flow charts by their own peak month within the
-    selected window and sources (the tallest bar always reads 100). The
-    returns twin redacts instead — returns are already scale-free
-    ratios. The Spending twin both normalizes and redacts: its cards are
-    shares of their own window's total (or of its peak month) and never
-    render a merchant or account label — see spending_privacy_defs.
-    Exposure's shares are scale-free already, so its twin only drops
-    the value columns — see exposure_cards. The Yield twin and the Income
-    twin's cards of the holdings' income show rates as they are and
-    income as a yield — see yield_cards and income_projected_cards."""
-    out = {}
-
-    # -- Wealth Overview scalars: a ratio of sums is scale-free, and both
-    # legs see the dashboard's filters, so each reads as a share of the
-    # selected sources' latest total. The > 0 guard blanks an empty or
-    # under-water selection rather than rendering inf or a sign-flipped
-    # share.
-    lat_tags = native_tags("web_sources_latest", HOLDINGS_FILTERS)
-
-    def share(name, num_col, desc):
-        out[name] = ("question", "scalar", desc + PRIVACY_DESC,
-            _native(
-                f"SELECT sum({_ccy_case(num_col)})::DOUBLE\n"
-                f"       / CASE WHEN sum({_ccy_case('total_value')}) > 0\n"
-                f"              THEN sum({_ccy_case('total_value')})::DOUBLE END"
-                " * 100 AS share_pct\n"
-                "  FROM web_sources_latest" + _native_where(lat_tags), lat_tags),
-            {})
-
-    share("Net worth (privacy)", "total_value",
-        "Always 100, the anchor of every other share." + LATEST_DESC)
-    share("Positions value (privacy)", "positions_value",
-        "Positions as a share of net worth." + LATEST_DESC)
-    share("Cash balance (privacy)", "cash_balance",
-        "Cash as a share of net worth." + LATEST_DESC)
-
-    # -- The holdings time series: % of the total at the END of the
-    # selected window — the last charted day, which is today whenever
-    # the window is open-ended. The nw CTE re-applies both pickers: the
-    # time filter picks the anchor day, the source filter makes a subset
-    # rescale to its own anchor total — so the envelope ends at 100 at
-    # the window's last day and tops 100 wherever it previously peaked
-    # higher. The anchor day is the latest day of the view the Time
-    # range keeps, not of the selection; the other pickers then filter
-    # that day's rows. The > 0 guard blanks a selection whose anchor
-    # total is zero or negative — dividing would render inf/NaN resp.
-    # sign-flipped bands.
-    sh_tags = native_tags("web_sources_history", HISTORY_FILTERS)
-    total = _ccy_case("total_value")
-    nw_cte = (
-        "WITH nw AS (\n"
-        f"  SELECT CASE WHEN sum({total}) > 0\n"
-        f"              THEN sum({total})::DOUBLE END AS denom\n"
-        "    FROM web_sources_history\n"
-        "   WHERE as_of_day = (SELECT max(as_of_day) FROM web_sources_history\n"
-        "                       WHERE TRUE" + _cl("time_range") + ")"
-        + _field_clauses(sh_tags, exclude=("time_range",)) + ")\n")
-    sh_where = _native_where(sh_tags, " ")
-    out["Net worth — monthly trend (privacy)"] = ("question", "smartscalar",
-        "Average daily net worth per month as a share of net worth at the "
-        "window's end." + PRIVACY_DESC,
-        _native(nw_cte +
-            "SELECT CAST(date_trunc('month', as_of_day) AS TIMESTAMP) AS month,\n"
-            f"       sum({total})::DOUBLE / count(DISTINCT as_of_day)\n"
-            "           / (SELECT denom FROM nw) * 100 AS avg_pct\n"
-            "  FROM web_sources_history" + sh_where + "\n"
-            " GROUP BY 1\n ORDER BY 1", sh_tags),
-        {})
-    out["Net worth over time (privacy)"] = ("question", "area",
-        "Daily net worth by source, as a share of the total at the window's "
-        "end." + PRIVACY_DESC,
-        _native(_series_order(nw_cte +
-            "SELECT as_of_day, silver_source_id,\n"
-            f"       sum({total})::DOUBLE / (SELECT denom FROM nw)"
-            " * 100 AS total_value_pct\n"
-            "  FROM web_sources_history" + sh_where + "\n"
-            " GROUP BY 1, 2", "as_of_day", "silver_source_id", "total_value_pct", "latest"), sh_tags),
-        {**_series_viz("as_of_day", "silver_source_id", "total_value_pct"), **STACKED_VIZ})
-
-    # -- The Allocation breakdowns: each bucket as % of the summed total
-    # over the same filtered rows, so the buckets total 100 across the
-    # selected sources as of the chosen day (liability buckets read
-    # negative; the sum <> 0 guard blanks a degenerate zero day).
-
-    def breakdown(name, view, dim, col, display, desc, viz=None, benchmark=None):
-        tags = asof_tags(view, HOLDINGS_FILTERS)
-        if benchmark:
-            tags["benchmark"] = BENCHMARK_TAG
-        out[name] = ("question", display, desc + PRIVACY_DESC,
-                     _native(_breakdown_sql(view, dim, col, tags, share=True, benchmark=benchmark), tags),
-                     viz if viz is not None else
-                     {"graph.dimensions": [dim], "graph.metrics": ["value_pct"],
-                      **(_beside_viz(dim) if benchmark else {})})
-
-    breakdown("Allocation by asset class (privacy)",
-              "web_asset_classes_history", "asset_class", "value", "row",
-              "Asset-class shares (%) of net worth as of the chosen day, cash "
-              "included. Debts read negative.", benchmark="asset_class")
-    breakdown("Allocation by vehicle (privacy)",
-              "web_vehicles_history", "vehicle", "value", "row",
-              "Vehicle shares (%) of net worth as of the chosen day. Cash shows "
-              "as demand_deposit.")
-    breakdown("Allocation by currency (privacy)",
-              "web_currencies_history", "currency", "value", "row",
-              "Native-currency shares (%) of net worth as of the chosen day, "
-              "cash included. A forward counts at its mark; Exposure shows its "
-              "legs.", benchmark="fund_currency")
-    breakdown("Value by tax wrapper (privacy)",
-              "web_accounts_history", "tax_wrapper", "total_value", "pie",
-              "Tax-wrapper shares (%) of account value, cash included, as of the "
-              "chosen day.",
-              viz={"pie.dimension": "tax_wrapper", "pie.metric": "value_pct"})
-    breakdown("Value by management style (privacy)",
-              "web_accounts_history", "management_style", "total_value",
-              "row",
-              "Management-style shares (%) of account value, cash included, as of "
-              "the chosen day.")
-
-    # -- Top positions: each position's share of the selection's TOTAL
-    # value at the day, cash included: the selected sources, tax wrappers
-    # and asset classes. The inline vehicle picker narrows the list but not
-    # the denominator, so a position's share reads the same however the
-    # list is narrowed.
-    top_tags = asof_tags("web_positions_history", POSITION_FILTERS)
-    value = _ccy_case("value")
-    out["Top 100 positions (privacy)"] = ("question", "table",
-        "The hundred largest positions, as shares of the day's value. Each "
-        "account's cash in a currency is a row." + POSITION_SIZE_NOTE + PRIVACY_DESC,
-        _native(
-            "WITH tot AS (\n"
-            f"  SELECT sum({value})::DOUBLE AS t\n"
-            "    FROM web_positions_history"
-            + _asof_where(top_tags, exclude=("vehicle",)) + "),\n"
-            "p AS (\n"
-            "  SELECT symbol, name, asset_class, vehicle,"
-            f" sum({value})::DOUBLE AS v\n"
-            "    FROM web_positions_history" + _asof_where(top_tags) + "\n"
-            "   GROUP BY 1, 2, 3, 4, line_key)\n"
-            f"SELECT p.symbol, {twin_name('p.name')} AS name, p.asset_class, p.vehicle, z.size,\n"
-            "       p.v / (SELECT CASE WHEN t <> 0 THEN t END FROM tot)"
-            " * 100 AS value_pct\n"
-            "  FROM p" + POSITION_SIZE_JOIN + "\n ORDER BY value_pct DESC\n LIMIT 100", top_tags),
-        {})
-
-    # -- Data Freshness twin: the freshness table re-run over the _pct
-    # sources model. The dashboard is unfiltered by design, so the
-    # model's fixed %-of-latest scale IS the selected-sources scale, and
-    # the source rows total 100. Own description: the base card's
-    # promises a money column, which here holds shares.
-    display, _desc, query, viz = source_freshness_card("report_sources_latest_pct")
-    out["Source freshness (privacy)"] = ("question", display,
-        "Each source's last read and latest mark, the days since each, and "
-        "its share of the latest total." + PRIVACY_DESC, query, viz)
-
-    # -- Returns twin: report_returns_redacted drops the money columns,
-    # so the by-source table's privacy variant lists its fields without
-    # them (a reference to a dropped column would error against it) and
-    # gets a description that doesn't promise them.
-    tags = returns_tags()
-    out["Returns by source (privacy)"] = ("question", "table",
-        "TWR and MWR per source over the chosen window, with the flags "
-        "behind each n/a. A benchmark adds a line over the months it covers."
-        + RETURNS_PRIVACY_DESC,
-        _native(returns_by_source_sql(False), tags),
-        _percent_viz("twr", "twr_annualized", "mwr", "mwr_annualized"))
-    sql = benchmark_line_sql("value", index=True)
-    tags = returns_tags(sql)
-    out["Value against the benchmark (privacy)"] = ("question", "line",
-        "The portfolio's value and the same money in the benchmark, each at 100 at "
-        "the window's start." + RETURNS_PRIVACY_DESC,
-        _native(sql, tags),
-        {**_series_viz("day", "series", "indexed_value"), **LINES_VIZ, **BENCHMARK_LINE})
-
-    out.update(spending_privacy_defs())
-    out.update(income_privacy_defs())
-    out.update(cashflow_privacy_defs())
-    for cards in (exposure_cards, issuer_cards, yield_cards, income_projected_cards, cashflow_plan_cards,
-                  bridge_cards, fee_cards,
-                  gains_question_defs):
-        out.update({name: ("question", *card) for name, card in cards(privacy=True).items()})
-    return out
+# Every family of cards, in the order their cards are saved.
+FAMILIES = (overview_cards, allocation_cards, spending_cards, income_cards, cashflow_cards, returns_cards,
+            freshness_cards, gains_cards, exposure_cards, yield_cards)
 
 
-def cashflow_privacy_defs():
-    """The Cash Flow twin's cards: the same tiles with the hub at 100.
+def card_defs():
+    """card name -> Card for every card provisioning defines: each
+    family's base cards, then each one's twin cards. A tile that sums
+    money in the dashboard's chosen currency is native SQL over a gold
+    serving view: a picker selects rows and never a column, so the
+    required {{currency}} variable picks the value column with a CASE,
+    and the other pickers land as field filters. The returns charts are
+    native too, for their window functions and pseudo-source UNION. The
+    rest are MBQL over the models: the returns scalars (report_returns
+    carries a row set per currency, so there the Currency picker is a
+    row filter), the freshness cards, and the spending tiles that need no
+    currency variable.
 
-    NORMALISATION ALONE, almost. The diagram's nodes are vocabulary —
-    no node is ever a merchant, a payer, an account or an instrument —
-    so with the hub at 100 there is nothing left to hide in it, and the
-    twin's Sankey is the same edge list divided through. That is the
-    property §5 of docs/CASHFLOW.md exists to guarantee, and the
-    assertion in web/test_provision.py is what holds it.
-
-    ONE card does redact, and for the reason every twin card redacts:
-    the fix for a leaking column is to drop it. `Largest flows` names
-    the account a line moved through and, on an operating line, the
-    payer or merchant behind it. The twin's version ranks instead and
-    projects neither.
-
-    THE HUB, not a total, is the denominator, and it is recomputed
-    in-query so a narrowed selection rescales to itself. It is the sum
-    of the positive nets at the level drawn — which equals the sum of
-    the negative ones, because the statement sums to zero once cash is a
-    node — so it moves with the Investing picker exactly as the base
-    dashboard's diagram does."""
-    # The Section picker's scope is the base dashboard's, card for card:
-    # a twin tile stands in for a base tile and has to answer the same
-    # pickers, or a reader comparing the two would find one narrowed and
-    # the other not.
-    where, where_nosec, val, native = _cashflow_kit(
-        PRIVACY_CASHFLOW_FILTERS, PRIVACY_DESC, privacy=True)
-    out = {}
-
-    def cashflow_card(name, display, desc, sql, viz, section=True):
-        out[name] = native(name, display, desc, sql, viz, section)
-
-    # The hub, built by the same helper the diagram uses, so a scalar
-    # and the diagram beside it cannot divide by two different numbers.
-    hub_cte = _cashflow_atoms_cte(where, val) + "\n"
-    # A tile that declines the Section picker must divide by a hub that
-    # declines it too, or the numerator and the denominator would answer
-    # different filters.
-    hub_cte_nosec = _cashflow_atoms_cte(where_nosec, val) + "\n"
-    # The statement's bars are signed both ways, so a month's size is its
-    # gross movement rather than PEAK_CTE's positive sum.
-    def gross_peak(rows="m"):
-        return ("p AS (SELECT max(t) AS peak FROM"
-                f" (SELECT sum(abs(v)) AS t FROM {rows} GROUP BY month))\n")
-
-    peak_cte = gross_peak()
-
-    def month_cte(extra="", filt="", sign=""):
-        # `sign` is built in rather than applied to the finished SQL: a
-        # post-hoc string replacement would depend on this function's own
-        # indentation, and a reflow here would silently turn a card's
-        # bars negative with every shape test still green.
-        v = f"{sign}({val})" if sign else val
-        return _month_cte("web_cashflow", where + filt, v, extra)
-
-    # `neg` is what keeps each twin scalar reading the same way round as
-    # the base tile it stands in for: gold stores an outflow negative
-    # and the base "Operating out" prints it as a positive magnitude, so
-    # its share has to be one too.
-    for name, section, neg, label in (
-            ("Operating in", "operating_in", False, "came in"),
-            ("Operating out", "operating_out", True, "went out"),
-            ("Net cash flow", None, False, "was kept")):
-        filt = "" if section is None else f"\n   AND section = '{section}'"
-        expr = f"sum({_ccy_case('value', neg=neg)})::DOUBLE"
-        cashflow_card(privacy_name(name), "scalar",
-            f"What {label}, as a share of the hub.",
-            hub_cte_nosec +
-            f"SELECT (SELECT {expr} FROM web_cashflow" + where_nosec + filt + ")\n"
-            "       / (SELECT total FROM hub) AS share_pct",
-            _percent_viz("share_pct"), section=False)
-
-    # The diagram, with the hub at 100: the same edges divided through.
-    cashflow_card(privacy_name("Cash flow"), "sankey",
-        "The diagram, each edge a share of the hub.",
-        _cashflow_sankey_sql(where_nosec, val, share=True),
-        {"sankey.source": "source", "sankey.target": "target",
-         "sankey.value": "value", "sankey.node_align": "justify"}, section=False)
-
-    # The Section picker narrows the bars, `m`. The net and the biggest
-    # month read every section, `a`, so the net is the household's
-    # whatever is picked, and the twin is the base card scaled by one
-    # number.
-    statement_section = ("CASE WHEN section IN ('operating_in', 'operating_out')\n"
-                         "              THEN 'operating' ELSE section END"
-                         " AS statement_section,\n         ")
-    cashflow_card(privacy_name("Cash flow statement by month"), "combo",
-        "The statement per month, each section and the net a share of the "
-        "biggest month's gross movement.",
-        _series_order(
-            month_cte(statement_section) + "   GROUP BY 1, 2),\n"
-            f"a AS (\n  SELECT {OCCURRED_MONTH},\n         {statement_section}{val} AS v\n"
-            "    FROM web_cashflow" + where_nosec + "\n   GROUP BY 1, 2),\n" + gross_peak("a") +
-            f"SELECT month, statement_section,\n       {PEAK_DIV} AS share_pct\n"
-            f"  FROM m\nUNION ALL\nSELECT month, '{NET_CASH_FLOW}',\n       sum(v) / {PEAK} * 100\n"
-            "  FROM a\n GROUP BY 1", "month", "statement_section", "share_pct", "total",
-            legend_last=NET_CASH_FLOW),
-        {"graph.dimensions": ["month", "statement_section"],
-         "graph.metrics": ["share_pct"], **STACKED_VIZ, **STATEMENT_SERIES})
-
-    # The grouping expression rides in the tuple rather than being
-    # inferred from the filter text: the investing row is the one that
-    # folds its classes under the Investing picker, and a substring test
-    # against the filter would break the day another row's filter names
-    # a section list containing it.
-    investing_grp = ("CASE WHEN {{investing}} = 'whole' THEN 'Investments'\n"
-                     "              ELSE class_node END")
-    for name, filt, neg, grp, blurb in (
-            ("Inflows by class by month", "\n   AND section = 'operating_in'", False,
-             "class_node", "What came in each month by class"),
-            ("Outflows by class by month", "\n   AND section = 'operating_out'", True,
-             "class_node", "What went out each month by class"),
-            ("Investing by month", "\n   AND section = 'investing'", False,
-             investing_grp, "Investing per month, signed"),
-            ("Financing and vehicles by month",
-             "\n   AND section IN ('financing', 'vehicles')", False,
-             "class_node", "Debt and the earmarked pools per month, signed")):
-        sql = (month_cte(f"{grp} AS class,\n         ", filt, sign="-" if neg else "")
-               + "   GROUP BY 1, 2),\n" + peak_cte +
-               f"SELECT month, class,\n       {PEAK_DIV} AS share_pct\n  FROM m")
-        cashflow_card(privacy_name(name), "area" if "class by month" in name else "bar",
-            f"{blurb}, as shares of the biggest month's gross movement.",
-            _series_order(sql, "month", "class", "share_pct", "total"),
-            {"graph.dimensions": ["month", "class"],
-             "graph.metrics": ["share_pct"], **STACKED_VIZ})
-
-    # The one card that redacts rather than normalising: the base
-    # version names the account a line moved through and the payer or
-    # merchant behind it, and the fix for a leaking column is to drop
-    # it. Ranked, so the shape of "how concentrated was this window"
-    # survives without naming anyone.
-    cashflow_card(privacy_name("Largest flows"), "table",
-        "The fifty largest lines, ranked, each a share (%) of the hub, with "
-        "no name or account.",
-        hub_cte + ", m AS (\n"
-        "  SELECT occurred_at, section, class_node AS class,\n"
-        "         group_node AS \"group\",\n"
-        f"         {_ccy_case('value')} AS v\n"
-        "    FROM web_cashflow" + where + ")\n"
-        "SELECT row_number() OVER (ORDER BY abs(v) DESC) AS rank,\n"
-        "       section, class, \"group\",\n"
-        "       v / (SELECT total FROM hub) * 100 AS share_pct\n"
-        "  FROM m\n ORDER BY 1\n LIMIT 50",
-        {})
-
-    for name, rate_sql in (("Savings rate", _savings_rate_sql),
-                           ("Yield share", _yield_share_sql)):
-        # A rate is a proportion already: the twin shows it as it is,
-        # the way the returns percentages survive their own twin.
-        cashflow_card(privacy_name(name), "scalar",
-            f"The {name.lower()}, shown as it is.",
-            rate_sql(where_nosec, "share_pct"),
-            _percent_viz("share_pct"), section=False)
-    return out
+    Every dashboard but those in NO_PRIVACY_TWIN has a privacy twin whose
+    cards show shares (%) instead of money, each recomputing its
+    denominator in-query with the dashboard's filters applied and naming
+    it (PRIVACY_DESC), or redact the money columns where the figures are
+    ratios already (Returns). A card that shows no monetary value
+    (percentages, indices, days, source names) is exempt: the twin shows
+    it as it is."""
+    cards = {}
+    for privacy in (False, True):
+        for family in FAMILIES:
+            family(Family(privacy, cards))
+    return cards
 
 
-def income_privacy_defs():
-    """The Income twin's cards: the same tiles, every figure a share,
-    and no card rendering a payer or an account.
-
-    The denominators mirror the spending twin's, and for the same
-    reason: the breakdowns and the lists divide by the window's own net
-    income (they sum to 100), the trend by the window's peak month (the
-    peak reads 100). A window with no positive month, or a total of
-    zero, blanks rather than rendering inf or a sign-flipped share.
-
-    REDACTION on top of normalization, as everywhere else in the twin:
-    the fix for a leaking column is to drop it. No card here projects
-    `payer_name`, `display_name` or `account_external_id` — the payer
-    list keeps its shape by RANKING instead, so `payer_name` is a GROUP
-    BY key and never a projection. Nor does any card filter on an
-    account, a field filter being a dropdown of its column's values
-    (PRIVACY_INCOME_FILTERS)."""
-    where, val, native = _family_native_kit(
-        "web_income", PRIVACY_INCOME_FILTERS, False,
-        PRIVACY_DESC, privacy=True)
-    out = {}
-
-    def income_card(name, display, desc, sql, viz):
-        out[name] = native(name, display, desc, sql, viz)
-
-    total_cte = ("t AS (SELECT nullif(sum(v), 0) AS total FROM m)\n")
-
-    income_card("Income — monthly trend (privacy)", "smartscalar",
-        "The latest month's net income as a share of the window's biggest month, with the change.",
-        _month_cte("web_income", where, val) + "   GROUP BY 1),\n" + PEAK_CTE +
-        f"SELECT month, {PEAK_DIV} AS income_pct\n  FROM m\n ORDER BY 1", {})
-    # The share ring carries no figure in its hole: a total of shares is
-    # 100 by construction and says nothing, and the hole is where the
-    # base ring puts the money this one exists not to show.
-    income_card("Income by type (privacy)", "pie",
-        "The window's net income by type, each as a share of it.",
-        "WITH m AS (\n"
-        f"  SELECT income_label AS type,\n         {val} AS v\n"
-        "    FROM web_income" + where + "\n   GROUP BY 1),\n" + total_cte +
-        "SELECT type, v / (SELECT total FROM t) * 100 AS income_pct\n"
-        "  FROM m\n ORDER BY 2 DESC",
-        _donut(threshold=0, total=False))
-    # Ranked, unnamed: the shape of "how concentrated is this
-    # household's income" without naming anyone it comes from.
-    income_card("Top 50 payers (privacy)", "table",
-        "The fifty payers the most income came from, ranked and unnamed, as shares of net income.",
-        "WITH m AS (\n"
-        f"  SELECT payer_name, {val} AS v\n"
-        "    FROM web_income" + where +
-        "\n     AND payer_name IS NOT NULL\n   GROUP BY 1),\n" + total_cte +
-        "SELECT row_number() OVER (ORDER BY v DESC) AS rank,\n"
-        "       v / (SELECT total FROM t) * 100 AS income_pct\n"
-        "  FROM m\n ORDER BY 1\n LIMIT 50",
-        {})
-    # The anchor every other percentage here is relative to. Native
-    # like the rest of this twin — there is no income _pct model,
-    # because no income tile is MBQL and none needs a drill-through
-    # target.
-    income_card("Net income (privacy)", "scalar",
-        "Always 100, the window's net income as a share of itself.",
-        "WITH m AS (\n"
-        f"  SELECT {val} AS v FROM web_income" + where + ")\n"
-        "SELECT v / nullif(v, 0) * 100 AS income_pct FROM m",
-        {})
-    # The data-quality canary, rebuilt rather than reused. The base
-    # card is a share of ROWS, so its FIGURE is already safe for the
-    # twin — but it is a native card, and a native card carries its own
-    # field-filter template tags wherever it is opened. One of the base
-    # card's is an `account` filter, which renders as a dropdown of
-    # account labels: the widget this twin exists not to show. So it is
-    # built here over PRIVACY_INCOME_FILTERS like every other card on
-    # this dashboard, and left out of PRIVACY_EXEMPT_CARDS.
-    #
-    # It is the one card here that does not read {{currency}} — a share
-    # of rows is the same in every currency — so it takes plain
-    # view_tags rather than the native_tags the rest share.
-    share_tags = view_tags("web_income", PRIVACY_INCOME_FILTERS)
-    out["Uncategorized income share (privacy)"] = ("question", "scalar",
-        IN_UNCATEGORIZED_DESC + PRIVACY_DESC,
-        _native(IN_UNCATEGORIZED_SQL + _native_where(share_tags),
-                share_tags),
-        _percent_viz("uncategorized_share"))
-    income_card("Largest receipts (privacy)", "table",
-        "The fifty largest income lines as shares of net income, with the type but no payer or account.",
-        "WITH m AS (\n"
-        "  SELECT occurred_at, income_label AS type,\n"
-        f"         {_ccy_case('value')} AS v\n"
-        "    FROM web_income" + where + "),\n"
-        "t AS (SELECT nullif(sum(v), 0) AS total FROM m)\n"
-        "SELECT occurred_at, type,\n"
-        "       v / (SELECT total FROM t) * 100 AS income_pct\n"
-        "  FROM m\n ORDER BY v DESC\n LIMIT 50",
-        {})
-    return out
+# The cards that exist only beside a benchmark (Card.hide_empty), by
+# base name: demo/check_dashboards.py expects them empty at the defaults.
+BENCHMARK_CARDS = frozenset(n for n, c in card_defs().items() if c.hide_empty and not n.endswith(PRIVACY_SUFFIX))
 
 
-def spending_privacy_defs():
-    """The Spending twin's cards: same tiles, but every figure is a share
-    and no card renders a counterparty.
-
-    Two denominators, both recomputed in-query with the dashboard's
-    pickers applied, so a narrowed selection rescales to itself. The
-    breakdowns, the merchant and account lists and the largest lines
-    divide by the window's own total net spend (they sum to 100); the
-    trend and the monthly bands divide by the window's peak month (the
-    peak reads 100). The card-balances chart takes the same shape
-    with the window's deepest total owed, so its peak reads 100.
-    Guards blank a degenerate window (no positive month, or a total of
-    zero) rather than render inf / sign-flipped shares.
-
-    REDACTION on top of normalization, the way the Returns twin does it:
-    the fix for a leaking column is to drop it, not to disguise it. No
-    card here projects `merchant_name`, `display_name` or
-    `account_external_id` — the merchant list keeps its shape by ranking
-    instead, so `merchant_name` appears only as a GROUP BY key and in
-    the ranking's fixed WHERE predicate, never in a projection. Nor does
-    any card here FILTER on an account: a
-    field filter renders as a dropdown of its column's values, so an
-    account filter would print the labels the projections just dropped
-    (PRIVACY_SPEND_FILTERS). `merchant_name` is safe as a GROUP BY key
-    and as a fixed predicate because neither shows anything; a filter
-    widget does."""
-    where, val, native = _family_native_kit(
-        "web_spending", PRIVACY_SPEND_FILTERS, True,
-        PRIVACY_DESC, privacy=True)
-    out = {}
-
-    def spend_card(name, display, desc, sql, viz):
-        out[name] = native(name, display, desc, sql, viz)
-
-    def month_cte(extra=""):
-        return _month_cte("web_spending", where, val, extra)
-
-    spend_card("Spend — monthly trend (privacy)", "smartscalar",
-        "Net spend per month as a share of the biggest month, with the "
-        "change from the month before.",
-        month_cte() + "   GROUP BY 1),\n" + PEAK_CTE +
-        f"SELECT month, {PEAK_DIV} AS spend_pct\n  FROM m\n ORDER BY 1", {})
-    spend_card("Spending by month (privacy)", "area",
-        "Net spend per month by primary category, as a share of the window's "
-        "biggest month.",
-        _series_order(month_cte("spend_primary_label AS category,\n         ")
-                 + "   GROUP BY 1, 2),\n" + PEAK_CTE +
-                 f"SELECT month, category, {PEAK_DIV} AS spend_pct\n"
-                 "  FROM m", "month", "category", "spend_pct", "total"),
-        {"graph.dimensions": ["month", "category"],
-         "graph.metrics": ["spend_pct"], **STACKED_VIZ})
-
-    # The window-total denominator: every bucket over the summed total of
-    # the same filtered rows, so the buckets total 100. Signed, so a
-    # net-refunded bucket reads negative — and the <> 0 guard blanks a
-    # window whose spend and refunds cancel exactly.
-    def total_cte(select, group):
-        """The `r` CTE: one row per bucket, with the value the shares
-        divide by."""
-        return ("WITH r AS (\n"
-                f"  SELECT {select}{val} AS v\n"
-                "    FROM web_spending" + where
-                + f"\n   GROUP BY {group})\n")
-    share_of_total = ("v / (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END"
-                      " FROM r) * 100")
-
-    # Rings, like the money tiles they twin — and the shape suits a
-    # share even better than an amount, since the slices are already the
-    # percentages the ring would compute. Neither ring carries a LIMIT:
-    # a limited ring renormalizes onto what it drew and would print
-    # shares disagreeing with its own values, where the threshold folds
-    # the tail into a wedge and keeps the whole window on the ring.
-    #
-    # No figure in the hole. The shares are of a SIGNED total, so a
-    # category whose refunds beat its purchases carries a negative one
-    # and a ring cannot draw it — leaving the hole to sum the rest and
-    # read just over 100. The values are right and total exactly 100;
-    # it is the hole that cannot represent them, and a hole reading
-    # ~100 on a breakdown already expressed as shares says nothing the
-    # description does not.
-    for name, col, threshold, what in (
-            ("Spending by category (privacy)", "spend_primary_label", 0,
-             "Primary-category shares (%) of net spend. A category whose "
-             "refunds beat its purchases has no slice."),
-            ("Spending by subcategory (privacy)", "spend_label", 1.5,
-             "Detailed-category shares (%) of net spend, the long tail in one "
-             "slice. Net-refunded categories have no slice.")):
-        spend_card(name, "pie", what,
-            total_cte(f"{col} AS category,\n         ", "1") +
-            f"SELECT category, {share_of_total} AS spend_pct\n"
-            "  FROM r\n ORDER BY 2 DESC",
-            _donut(threshold=threshold, total=False))
-
-    # Merchants, ranked and unnamed: merchant_name is a GROUP BY key and
-    # a WHERE predicate only, so the counterparty decides the rows
-    # without ever reaching a column. The list still answers the
-    # question the money tile answers — how concentrated the spending
-    # is. As on the money tile, a delta line is not a merchant
-    # transaction and is outside the ranking — including a card bill,
-    # which names the issuer it was paid to rather than a merchant
-    # — but not outside the denominator: the shares are of the window's
-    # whole net spend, the anchor the twin's scalar reads as 100, so the
-    # total is summed apart from the ranked rows. A line the merchant
-    # store never named carries its own signature, so the ranking covers
-    # every non-delta line carrying a signature, at the signature's
-    # grain.
-    spend_card("Top 50 merchants (privacy)", "table",
-        "Top fifty merchants, unnamed, as shares of net spend. A card "
-        "issuer's bill is outside the ranking.",
-        "WITH r AS (\n"
-        f"  SELECT {val} AS v\n"
-        "    FROM web_spending" + where + "\n"
-        "     AND merchant_name IS NOT NULL\n"
-        "     AND spend_primary_label <> spend_label\n"
-        "   GROUP BY merchant_name),\n"
-        "t AS (\n"
-        f"  SELECT CASE WHEN {val} <> 0 THEN {val} END AS total\n"
-        "    FROM web_spending" + where + ")\n"
-        "SELECT row_number() OVER (ORDER BY v DESC) AS merchant_rank,\n"
-        "       v / (SELECT total FROM t) * 100 AS spend_pct\n"
-        "  FROM r\n ORDER BY 1\n LIMIT 50", {})
-
-    # Accounts: the label is dropped, and the rows regroup onto the two
-    # dimensions the privacy dashboards already show — the source and the
-    # account kind — concatenated into one bar label.
-    spend_card("Spend by account (privacy)", "row",
-        "Net spend shares (%) by source and account kind, with account labels "
-        "redacted.",
-        total_cte("silver_source_id || ' / '\n             || COALESCE("
-                  "account_kind, 'unknown') AS account_group,\n         ", "1") +
-        f"SELECT account_group, {share_of_total} AS spend_pct\n"
-        "  FROM r\n ORDER BY 2 DESC",
-        {"graph.dimensions": ["account_group"],
-         "graph.metrics": ["spend_pct"]})
-
-    # Card balances: its own view, its own picker set (no category
-    # dimension), and a denominator of its own — the deepest total owed
-    # within the window, so the peak reads 100 and a paid-off card
-    # returns to 0. Split by source rather than by account. The sign is
-    # flipped as on the money tile: what is owed reads positive.
-    bal_tags = native_tags("web_card_balances_history",
-                          PRIVACY_CARD_BALANCE_FILTERS)
-    bal_name = "Card balances over time (privacy)"
-    out[bal_name] = ("question", "line",
-        "What the cards owed each day by source, as a share of the window's "
-        "deepest total owed." + PRIVACY_DESC,
-        _native(_series_order(
-            "WITH d AS (\n"
-            "  SELECT as_of_day, silver_source_id,\n"
-            f"         sum({_ccy_case('balance', neg=True)})::DOUBLE AS v\n"
-            "    FROM web_card_balances_history" + _native_where(bal_tags) + "\n"
-            "   GROUP BY 1, 2),\n"
-            "p AS (SELECT CASE WHEN max(abs(t)) > 0 THEN max(abs(t)) END AS peak\n"
-            "        FROM (SELECT sum(v) AS t FROM d GROUP BY as_of_day))\n"
-            "SELECT as_of_day, silver_source_id,\n"
-            "       v / (SELECT peak FROM p) * 100 AS balance_pct\n"
-            "  FROM d", "as_of_day", "silver_source_id", "balance_pct", "latest",
-            largest_first=True), bal_tags),
-        {**_series_viz("as_of_day", "silver_source_id", "balance_pct"), **LINES_VIZ})
-
-    # The largest lines, with both counterparty columns dropped: what is
-    # left is when, from which source, and what it was categorised as —
-    # each as a share of the window.
-    spend_card("Largest transactions (privacy)", "table",
-        "The fifty largest spending lines as shares of net spend, with "
-        "merchant and account redacted.",
-        "WITH r AS (\n"
-        "  SELECT occurred_at, silver_source_id, spend_primary_label, spend_label,\n"
-        f"         ({_ccy_case('value', neg=True)})::DOUBLE AS v\n"
-        "    FROM web_spending" + where + "),\n"
-        "t AS (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END AS total FROM r)\n"
-        "SELECT occurred_at, silver_source_id, spend_primary_label, spend_label,\n"
-        "       v / (SELECT total FROM t) * 100 AS spend_pct\n"
-        "  FROM r\n ORDER BY v DESC\n LIMIT 50", {})
-
-    # The scalar twin: a ratio of sums over the _pct model, so it is
-    # scale-free, follows every picker, and its "see these records"
-    # drill-through opens a model with no merchant column. Always 100 —
-    # the window total the other percentages are relative to.
-    net_spend = {"net_spend": ["*", _dec("value"), -1]}
-    total = ["sum", ["expression", "net_spend"]]
-    out["Net spend (privacy)"] = ("question", "scalar",
-        "Always 100, the anchor of every other share." + PRIVACY_DESC,
-        _mbql("report_spending_pct",
-              {"expressions": net_spend,
-               "aggregation": [["*", ["/", total, total], 100]]}),
-        {})
-    return out
-
-
-def dashboard_defs():
+def dashboard_defs(cards):
     """dashboard name -> (description, filter mode, sibling dashboard
     name, tiles). Every base dashboard but those in NO_PRIVACY_TWIN gets
     a privacy twin: same layout and filters, cards swapped for their
     share-normalized '(privacy)' variants. The sibling name links the
     two views — ensure_dashboards renders it as a switch link at the top
-    of each dashboard. A dashboard without a twin has None there."""
+    of each dashboard. A dashboard without a twin has None there.
+    `cards` is card_defs, which says the cards a twin shows as they are."""
     # A twin's blurb names what its figures are shares of, in place of
     # its base's: by mode, or for every 'range' dashboard with a twin in
     # its own words (own_pdesc). Absolute amounts never show on any.
@@ -5794,7 +5554,7 @@ def dashboard_defs():
         pname = f"{name}{PRIVACY_SUFFIX}"
         out[name] = (desc, mode, pname, tiles)
         placed = TWIN_TILES.get(name, {})
-        ptiles = [(c if c in PRIVACY_EXEMPT_CARDS else privacy_name(TWIN_CARDS.get(name, {}).get(c, c)),
+        ptiles = [(c if cards[c].exempt else privacy_name(TWIN_CARDS.get(name, {}).get(c, c)),
                    *placed.get(c, (r, col, sx, sy)), t)
                   for c, r, col, sx, sy, t in tiles if placed.get(c, ()) is not None]
         out[pname] = ((own_pdesc[name] if name in own_pdesc else pdesc[mode]) + PREDEFINED_NOTE,
@@ -6026,7 +5786,7 @@ def dashboard_parameters(model_ids, mode, name=""):
         # names no account, so the twin carries it too.
         pickers.append(tax_wrapper_picker(INCOME_TAX_WRAPPER_PARAM_ID))
         # The position the calendar lists, a text box the positions
-        # table's cells also fill (CROSSFILTER_TILES), then the
+        # table's cells also fill (its card's Link), then the
         # projection's three assumptions.
         position = {"id": POSITION_PARAM_ID, "name": "Position", "slug": "position",
                     "type": "string/=", "sectionId": "string", "isMultiSelect": False}
@@ -6056,7 +5816,7 @@ def dashboard_parameters(model_ids, mode, name=""):
     # back to its masked last four digits), or the external id. Rebinding to a column that identifies no
     # account would make it a different filter wearing the same name, so
     # the twin drops it, the way its cards drop the columns they cannot
-    # show (spending_privacy_defs). The Source picker still narrows by
+    # show (spending_cards). The Source picker still narrows by
     # institution, and the account breakdown there regroups onto source ×
     # account kind.
     pickers = [currency, time_range, source]
@@ -6084,8 +5844,7 @@ def gold_metadata(client, db_id, tries=3, delay=2):
 def card_queries():
     """card name -> its dataset_query, for every question and privacy
     card, its references unbound."""
-    return {**{name: q for name, (_display, _desc, q, _viz) in question_defs().items()},
-            **{name: q for name, (_ctype, _display, _desc, q, _viz) in privacy_card_defs().items()}}
+    return {name: c.query for name, c in card_defs().items()}
 
 
 def filter_field_columns():
@@ -6617,14 +6376,9 @@ def card_payloads(db_id, coll_id, field_ids, model_ids, colors):
     bound to database `db_id`, the field ids `field_ids` and the models
     in `model_ids`, a card that draws a series per source with `colors`
     (source id -> colour). Sends nothing."""
-    payloads = {}
-    for name, (display, desc, query, viz) in question_defs().items():
-        payloads[name] = card_payload(coll_id, name, "question", display,
-                                      desc, query, with_source_colors(viz, colors))
-    for name, (ctype, display, desc, query, viz) in privacy_card_defs().items():
-        payloads[name] = card_payload(coll_id, name, ctype, display,
-                                      desc, query, with_source_colors(viz, colors))
-    return {name: bind(payload, db_id, field_ids, model_ids) for name, payload in payloads.items()}
+    return {name: bind(card_payload(coll_id, name, "question", c.display, c.desc, c.query,
+                                    with_source_colors(c.viz, colors)), db_id, field_ids, model_ids)
+            for name, c in card_defs().items()}
 
 
 def ensure_models(client, db_id, coll_id, by_name):
@@ -6751,20 +6505,21 @@ def card_mappings(card, tcol, mode, name, card_ids):
 
 
 def overview_home(card, dash):
-    """The dashboard tile `card` of overview dashboard `dash` comes from
-    (OVERVIEW_TILE_HOMES): on the twin, that dashboard's twin. None for
-    the overview's own tiles and for a twin tile whose home has no twin."""
-    twin = dash.endswith(PRIVACY_SUFFIX)
-    for base, home in OVERVIEW_TILE_HOMES.items():
-        if card == (privacy_name(base) if twin and base not in PRIVACY_EXEMPT_CARDS else base):
-            if not twin:
-                return home
-            return None if home in NO_PRIVACY_TWIN else home + PRIVACY_SUFFIX
-    return None
+    """The dashboard Card `card`'s tile on overview dashboard `dash`
+    restates, its home: a dashboard it is borrowed from, or one whose
+    data the overview's own card shows. A click on the tile opens it,
+    on the twin that dashboard's twin; a dashboard with no twin (Gains)
+    opens from the base alone, so a click never leads from the privacy
+    view to money. An MBQL tile takes the pickers its home dashboard
+    gives it. None for the net worth tiles, which open nothing, and for
+    a twin tile whose home has no twin."""
+    if card.home is None or not dash.endswith(PRIVACY_SUFFIX):
+        return card.home
+    return None if card.home in NO_PRIVACY_TWIN else card.home + PRIVACY_SUFFIX
 
 
 def overview_mappings(card, dash, defs, params, card_ids):
-    """The picker mappings of MBQL card `card`'s tile on overview
+    """The picker mappings of MBQL Card `card`'s tile on overview
     dashboard `dash`: each mapping the card has on its home dashboard,
     moved onto the overview's picker of the same slug. A mapping with no
     such picker here drops."""
@@ -6773,31 +6528,27 @@ def overview_mappings(card, dash, defs, params, card_ids):
     if home is None:
         return []
     _desc, mode, _sibling, tiles = defs[home]
-    tcol = next(t for c, *_r, t in tiles if c == card)
+    tcol = next(t for c, *_r, t in tiles if c == card.name)
     home_slug = {x["id"]: x["slug"] for x in params[home]}
     return [{**m, "parameter_id": slug_pid[home_slug[m["parameter_id"]]]}
-            for m in card_mappings(card, tcol, mode, home, card_ids)
+            for m in card_mappings(card.name, tcol, mode, home, card_ids)
             if home_slug.get(m["parameter_id"]) in slug_pid]
 
 
-def overview_click(card, dash, params, dash_ids):
-    """The click behaviour of `card`'s tile on overview dashboard `dash`:
-    open its home dashboard (overview_home), passing each overview
-    picker that dashboard carries by slug, and a COLUMN_CLICKS card's
-    column to the home picker of that slug. Empty for a tile with no
-    home."""
-    home = overview_home(card, dash)
-    if home is None:
-        return {}
+def overview_click(home, dash, params, dash_ids, links):
+    """The click behaviour of a tile on overview dashboard `dash` that
+    opens dashboard `home` (overview_home): pass each overview picker
+    that dashboard carries by slug, and the column of each Link in
+    `links` to the home picker it names."""
     target = {x["slug"]: x["id"] for x in params[home]}
 
     def link(tid, source):
         return {"id": tid, "source": source, "target": {"type": "parameter", "id": tid}}
     mapping = {target[x["slug"]]: link(target[x["slug"]], {"type": "parameter", "id": x["id"], "name": x["name"]})
                for x in params[dash] if x["slug"] in target}
-    col = COLUMN_CLICKS.get(card)
-    if col in target:
-        mapping[target[col]] = link(target[col], {"type": "column", "id": col, "name": col})
+    for col, to in links:
+        if to in target:
+            mapping[target[to]] = link(target[to], {"type": "column", "id": col, "name": col})
     return {"click_behavior": {"type": "link", "linkType": "dashboard",
                                "targetId": dash_ids[home], "parameterMapping": mapping}}
 
@@ -6819,31 +6570,28 @@ def unreached_note(mapped, params):
             f" do{'' if len(names) > 1 else 'es'} not reach it.")
 
 
-def crossfilter_viz(card, param_ids):
-    """A tile's own viz settings: for a CROSSFILTER_TILES card on a
-    dashboard carrying its picker, the click behaviour that sets the
-    picker to the value of the cell clicked in each of its columns. Empty
-    for any other tile."""
-    cols, pid = CROSSFILTER_TILES.get(card, ((), None))
-    if pid not in param_ids:
-        return {}
-    return {"column_settings": {
-        f'["name","{c}"]': {"click_behavior": {
-            "type": "crossfilter",
-            "parameterMapping": {pid: {"id": pid, "source": {"type": "column", "id": c, "name": c},
-                                       "target": {"type": "parameter", "id": pid}}}}}
-        for c in cols}}
+def crossfilter_viz(links, parameters):
+    """A tile's own viz settings: for each Link in `links` whose picker
+    the dashboard carries (`parameters`), the click behaviour that sets
+    that picker to the value of the cell clicked in its column. Empty
+    for a tile with none."""
+    slug_pid = {x["slug"]: x["id"] for x in parameters}
+    settings = {f'["name","{c}"]': {"click_behavior": {
+                    "type": "crossfilter",
+                    "parameterMapping": {pid: {"id": pid, "source": {"type": "column", "id": c, "name": c},
+                                               "target": {"type": "parameter", "id": pid}}}}}
+                for c, to in links if (pid := slug_pid.get(to)) is not None}
+    return {"column_settings": settings} if settings else {}
 
 
-def dashboard_payloads(defs, model_ids, card_ids, dash_ids, titles, descs):
+def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs):
     """name -> (description, parameters, tiles) of each dashboard in
-    `defs` (dashboard_defs), in its order: the payload ensure_dashboards
-    sends. Its parameters are dashboard_parameters over `model_ids`,
+    `defs` (dashboard_defs), in its order, of the Cards `cards`: the
+    payload ensure_dashboards sends. Its parameters are dashboard_parameters over `model_ids`,
     `dash_ids` is name -> its id, and `titles` and `descs` are as
     ensure_dashboards takes them. Sends nothing."""
     params = {name: dashboard_parameters(model_ids, mode, name)
               for name, (_desc, mode, _sibling, _tiles) in defs.items()}
-    queries = card_queries()
     out = {}
     for name, (desc, mode, sibling, tiles) in defs.items():
         parameters = params[name]
@@ -6867,7 +6615,7 @@ def dashboard_payloads(defs, model_ids, card_ids, dash_ids, titles, descs):
                 if sibling else None)
         base_name = sibling if privacy else name
         overview = name in OVERVIEW_DASHBOARDS
-        tile_titles_here = {**titles, **dashboard_tile_titles(base_name)}
+        tile_titles_here = {**titles, **dashboard_tile_titles(base_name, cards)}
 
         # The switch link occupies row 0, so the tiles and headings shift
         # down one row; a dashboard without a twin has no link and no
@@ -6887,24 +6635,25 @@ def dashboard_payloads(defs, model_ids, card_ids, dash_ids, titles, descs):
             # parameter not on the dashboard is a target with no filter
             # behind it. On a Wealth Overview an MBQL tile takes the
             # overview's pickers by slug (overview_mappings).
-            query = queries[card]
-            if query["type"] == "native":
-                maps = tile_mappings(query, card_ids[card], parameters)
+            c = cards[card]
+            home = overview_home(c, name) if overview else None
+            if c.query["type"] == "native":
+                maps = tile_mappings(c.query, card_ids[card], parameters)
             else:
-                maps = [m for m in (overview_mappings(card, name, defs, params, card_ids) if overview
+                maps = [m for m in (overview_mappings(c, name, defs, params, card_ids) if overview
                                     else card_mappings(card, tcol, mode, name, card_ids))
                         if m["parameter_id"] in param_ids]
-            viz = {**crossfilter_viz(card, param_ids),
+            viz = {**(crossfilter_viz(c.links, parameters) if home is None else {}),
                    **({"card.title": tile_titles_here[card]} if card in tile_titles_here else {}),
-                   **({"card.hide_empty": True} if base_card(card) in BENCHMARK_CARDS else {})}
+                   **({"card.hide_empty": True} if c.hide_empty else {})}
             # A tile's description names the pickers of the bar that do
             # not reach it, read off the mappings it is sent with, and a
             # Wealth Overview tile opens its home dashboard.
             note = unreached_note({m["parameter_id"] for m in maps}, bar)
             if note and card in descs:
                 viz["card.description"] = descs[card] + note
-            if overview:
-                viz.update(overview_click(card, name, params, dash_ids))
+            if home is not None:
+                viz.update(overview_click(home, name, params, dash_ids, c.links))
             dashcards.append({"id": -(i + 1), "card_id": card_ids[card], "row": row + shift,
                               "col": col, "size_x": sx, "size_y": sy, "series": [],
                               "visualization_settings": viz,
@@ -6940,7 +6689,8 @@ def ensure_dashboards(client, coll_id, card_ids, model_ids, titles=None, descs=N
         return 1
     existing = {d.get("name"): d.get("id") for d in listed}
 
-    defs = dashboard_defs()
+    cards = card_defs()
+    defs = dashboard_defs(cards)
     n = {"created": 0, "updated": 0, "skipped": 0}
     # First pass: make sure every dashboard exists, so the switch links
     # can point at the sibling's id.
@@ -6962,7 +6712,7 @@ def ensure_dashboards(client, coll_id, card_ids, model_ids, titles=None, descs=N
     stored = _get_all(client, {name: f"/api/dashboard/{existing[name]}"
                                   for name in defs if existing.get(name) is not None})
 
-    payloads = dashboard_payloads(defs, model_ids, card_ids, dash_ids, titles, descs)
+    payloads = dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs)
     for name, (desc, parameters, dashcards) in payloads.items():
         current = stored.get(name)
         if dashboard_unchanged(current, name, desc, parameters, dashcards):

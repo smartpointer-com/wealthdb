@@ -215,6 +215,18 @@ ten dashboards. Their pickers:
 
 All of them are definitions only (MBQL or SQL), with no data baked in.
 
+Each dashboard declares its cards in one function, `<name>_cards`. It
+runs once for the dashboard and once for its privacy twin, so a twin
+card sits beside its base card. One call declares a card with what its
+tiles need to know of it:
+
+- `exempt`: the card shows no money, so the twin shows it as it is;
+- `hide_empty`: the card reads a row only beside a picked benchmark;
+- `home`: the dashboard a Wealth Overview tile of it opens;
+- `cell_clicks`: the picker a click on a cell sets (`Link`).
+
+A name declared twice is an error at definition time.
+
 A picker reaches a native card where the card has a template tag of
 the picker's slug. The returns cards name their Source tag
 `source_ff`, which answers the Source picker. A card declines a picker
@@ -1204,7 +1216,7 @@ legend entry on Exposure's bars:
   (`_columns_with_benchmark`).
   `table.columns` names them, as a table otherwise shows only a saved
   question's columns.
-- A tile that exists only beside a benchmark (`BENCHMARK_CARDS`) reads no
+- A tile that exists only beside a benchmark (`hide_empty`) reads no
   row under None and hides (`card.hide_empty`). Metabase closes the gap
   a hidden tile leaves, so such a tile can sit anywhere on the grid.
 

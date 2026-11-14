@@ -100,20 +100,15 @@ def model_ids():
     return {name: i for i, name in enumerate(p.report_models(), start=1)}
 
 
-def cards_of(qdefs, pdefs):
-    """name -> (display, description, dataset_query) for the base and
-    privacy definitions `qdefs` and `pdefs`, in the shape ensure_cards
-    assembles them."""
-    cards = {name: (display, desc, query)
-             for name, (display, desc, query, _viz) in qdefs.items()}
-    cards.update({name: (display, desc, query)
-                  for name, (_t, display, desc, query, _viz) in pdefs.items()})
-    return cards
+def cards_of(defs):
+    """name -> (display, description, dataset_query) of each Card in
+    `defs` (card_defs)."""
+    return {name: (c.display, c.desc, c.query) for name, c in defs.items()}
 
 
 def all_cards():
     """Every card provisioning defines (cards_of), built afresh."""
-    return cards_of(p.question_defs(), p.privacy_card_defs())
+    return cards_of(p.card_defs())
 
 
 def sql_of(query):
@@ -207,11 +202,20 @@ check("the privacy model scales by the latest net worth, per currency",
 
 # Built once. A test that changes DEFAULT_CURRENCY rebuilds what it
 # reads.
-_QDEFS = p.question_defs()
-_PDEFS = p.privacy_card_defs()
-CARDS = cards_of(_QDEFS, _PDEFS)
-VIZ = {n: tup[-1] for defs in (_QDEFS, _PDEFS) for n, tup in defs.items()}
-DEFS = p.dashboard_defs()
+CARD_DEFS = p.card_defs()
+_QDEFS_CARDS = {n: c for n, c in CARD_DEFS.items() if not n.endswith(p.PRIVACY_SUFFIX)}
+# The base cards as (display, description, dataset_query, viz), the
+# twins' with their card type first.
+_QDEFS = {n: (c.display, c.desc, c.query, c.viz) for n, c in CARD_DEFS.items()
+          if not n.endswith(p.PRIVACY_SUFFIX)}
+_PDEFS = {n: ("question", c.display, c.desc, c.query, c.viz) for n, c in CARD_DEFS.items()
+          if n.endswith(p.PRIVACY_SUFFIX)}
+CARDS = cards_of(CARD_DEFS)
+VIZ = {n: c.viz for n, c in CARD_DEFS.items()}
+EXEMPT = {n for n, c in CARD_DEFS.items() if c.exempt}
+# Each Wealth Overview tile's home, by base card.
+HOMES = {n: c.home for n, c in _QDEFS_CARDS.items() if c.home}
+DEFS = p.dashboard_defs(CARD_DEFS)
 
 section("retired models")
 check("no retired model is still defined",
@@ -389,7 +393,7 @@ check("filter mode is the range pair", mode == "range")
 check("sibling is the privacy twin", sibling == "Spending (privacy)")
 check("the twin is derived tile for tile",
       [t[0] for t in DEFS["Spending (privacy)"][3]] ==
-      [c if c in p.PRIVACY_EXEMPT_CARDS else p.privacy_name(c)
+      [c if c in EXEMPT else p.privacy_name(c)
        for c, *_ in tiles])
 check("the twin's blurb names its own denominators, not the holdings one",
       "biggest month" in DEFS["Spending (privacy)"][0] and
@@ -558,6 +562,36 @@ check("a card declines a picker by declaring no tag of its slug",
       p.tile_mappings({"native": {"template-tags": {"currency": p.currency_tag()}}}, 1,
                       [{"id": "a", "slug": "time_range"}, {"id": "b", "slug": "currency"}])
       == [{"parameter_id": "b", "card_id": 1, "target": ["variable", ["template-tag", "currency"]]}])
+# A picker answers one tag of a card. Two tags of one slug, a tag and its
+# alias, would leave tile_mappings one of them, silently.
+_slug_twice = {n: tags for n, c in CARDS.items() if c[2]["type"] == "native"
+               for tags in [[p.TAG_SLUGS.get(t, t) for t in c[2]["native"]["template-tags"]]]
+               if len(tags) != len(set(tags))}
+check("no card declares two template tags of one picker slug", not _slug_twice, _slug_twice)
+
+# ---- one card declaration ----------------------------------------------
+
+section("card declarations")
+_fam = p.Family(False, {}, tags={})
+_fam.card("A", "scalar", "d.", "SELECT 1", {})
+try:
+    _fam.card("A", "scalar", "d.", "SELECT 2", {})
+    _twice = None
+except ValueError as e:
+    _twice = str(e)
+check("a card defined twice is an error where it is defined", _twice == "provision: card 'A' is defined twice",
+      _twice)
+_twin = p.Family(True, {}, tags={}, tail=" t.")
+_twin.card("A", "scalar", "d.", "SELECT 1", {}, exempt=True)
+_twin.card("B", "scalar", "d.", "SELECT 1", {}, home="Spending")
+check("a twin defines no exempt card, and the others under their privacy names, its tail after",
+      list(_twin.cards) == ["B (privacy)"] and _twin.cards["B (privacy)"].desc == "d. t."
+      and _twin.cards["B (privacy)"].home == "Spending", _twin.cards)
+check("no exempt card has a privacy card",
+      not [n for n, c in _QDEFS_CARDS.items() if c.exempt and p.privacy_name(n) in CARD_DEFS])
+check("the cards that exist only beside a benchmark are those that hide empty, their twins too",
+      p.BENCHMARK_CARDS == {n for n, c in _QDEFS_CARDS.items() if c.hide_empty}
+      and all(CARD_DEFS[n].hide_empty for n in map(p.privacy_name, p.BENCHMARK_CARDS) if n in CARD_DEFS))
 
 # ---- ids bound late ---------------------------------------------------
 
@@ -1020,11 +1054,11 @@ with contextlib.redirect_stdout(buf):
     rc = p.ensure_dashboards(api, 7, saved[0], model_ids, None, saved[1])
     check("dashboards save", rc == 0)
 printed = buf.getvalue()
-n_cards = len(p.question_defs()) + len(p.privacy_card_defs())
+n_cards = len(p.card_defs())
 for want in (f"provision: report models ({p._ccy_slash()}) — {len(p.report_models())} created, "
              f"0 updated, 0 unchanged, 0 retired",
              f"provision: questions — {n_cards} created, 0 updated, 0 unchanged, 0 retired",
-             f"provision: dashboards — {len(p.dashboard_defs())} created, 0 updated, "
+             f"provision: dashboards — {len(p.dashboard_defs(CARD_DEFS))} created, 0 updated, "
              "0 unchanged, 0 retired"):
     check(f"prints '{want.split(' — ')[0]}' with its counts", want in printed, printed)
 check("...and one line per pass", printed.count("provision: ") == 3, printed)
@@ -1202,7 +1236,7 @@ class RememberDashboards(FakeClient):
         return 200, {}
 
 
-n_dash = len(p.dashboard_defs())
+n_dash = len(p.dashboard_defs(CARD_DEFS))
 remembered = RememberDashboards()
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
@@ -1371,7 +1405,7 @@ if twin:
 # Top-positions tiles take the vehicle as well.
 _TOP = {card_ids[c] for c in p.POSITION_FILTERED_CARDS}
 _BORROWED = {card_ids[c] for t in ("Wealth Overview", "Wealth Overview" + p.PRIVACY_SUFFIX)
-             for c, *_ in DEFS[t][3] if c.removesuffix(p.PRIVACY_SUFFIX) in p.OVERVIEW_TILE_HOMES
+             for c, *_ in DEFS[t][3] if c.removesuffix(p.PRIVACY_SUFFIX) in HOMES
              and c.removesuffix(p.PRIVACY_SUFFIX) != "Asset class mix over time"}
 _SELECTION = {p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID}
 # The tiles that read the picked benchmark take its picker too.
@@ -1731,9 +1765,9 @@ check("...and arithmetic is not mistaken for one",
       _projections("SELECT v / t * 100 AS pct FROM m"))
 check("the Income twin has a card for every base tile",
       all(p.privacy_name(n) in CARDS for n in INCOME_CARD_NAMES
-          if n not in p.PRIVACY_EXEMPT_CARDS),
+          if n not in EXEMPT),
       [n for n in INCOME_CARD_NAMES
-       if n not in p.PRIVACY_EXEMPT_CARDS and p.privacy_name(n) not in CARDS])
+       if n not in EXEMPT and p.privacy_name(n) not in CARDS])
 
 # The dashboards and their pickers.
 check("the Income dashboard and its twin are laid out",
@@ -1818,7 +1852,7 @@ check("no card name is defined twice, nor shared with a model",
 # contain it, and a native exempt card carrying an `account` field
 # filter would reach a twin unseen.
 _privacy_tiles = {}
-for _dname, (_desc, _mode, _sib, _tiles) in p.dashboard_defs().items():
+for _dname, (_desc, _mode, _sib, _tiles) in p.dashboard_defs(CARD_DEFS).items():
     if not _dname.endswith(p.PRIVACY_SUFFIX):
         continue
     for _c, *_ in _tiles:
@@ -1835,7 +1869,7 @@ check("no card on a privacy dashboard declares an account template tag",
 # ...and the population really does include the exempt cards, or the
 # check above is back to reading only the suffixed ones.
 check("the privacy tile population includes the exempt cards",
-      any(c in p.PRIVACY_EXEMPT_CARDS for c in _privacy_tiles),
+      any(c in EXEMPT for c in _privacy_tiles),
       sorted(_privacy_tiles))
 
 section("the merchant ranking carries every currency")
@@ -2030,7 +2064,7 @@ for _n, _q in (("Cash flow", _cf_sql["Cash flow"]),
 # grains are `whole`/`class`, and a typo silently filters everything away.
 _LISTED = {"Currency", "Investing"}
 _seen_listed = 0
-for _dash, _def in p.dashboard_defs().items():
+for _dash, _def in p.dashboard_defs(CARD_DEFS).items():
     for _param in p.dashboard_parameters(MID, _def[1], _dash):
         if _param.get("name") in _LISTED:
             _seen_listed += 1
@@ -2150,7 +2184,7 @@ section("every dashboard's grid")
 # A heading spans the grid's width on its row, so it counts as a tile.
 # A twin carries its base's headings, and TWIN_TILES places some of its
 # tiles anew.
-for _d, (_desc, _mode, _sibling, _spec) in p.dashboard_defs().items():
+for _d, (_desc, _mode, _sibling, _spec) in p.dashboard_defs(CARD_DEFS).items():
     _base = _sibling if _d.endswith(p.PRIVACY_SUFFIX) else _d
     _spec = _spec + [(_text, _r, 0, 24, 1, None) for _r, _text, _disp in p.DASHBOARD_HEADINGS.get(_base, [])]
     check(f"'{_d}' sits on the 24-column grid without overlaps",
@@ -2217,7 +2251,7 @@ check("...and its other four figures of the time range sit two to a row",
       == {"Spend — monthly trend (privacy)": (21, 0, 12), "Net cash flow (privacy)": (21, 12, 12),
           "Savings rate (privacy)": (24, 0, 12), "Realized gain (privacy)": (24, 12, 12)}, _ovt_place)
 _params_all = {d.get("name"): d["parameters"] for d in layouts}
-_mbql = p.overview_mappings("Net spend (privacy)", _OVT, DEFS, _params_all, card_ids)
+_mbql = p.overview_mappings(CARD_DEFS["Net spend (privacy)"], _OVT, DEFS, _params_all, card_ids)
 check("an MBQL card takes the pickers its home dashboard maps, the twin's net spend among them",
       {_ov_params[_OVT][m["parameter_id"]] for m in _mbql} == _FLOW, _mbql)
 check("...and both show the asset class mix, the same card, under the title of its kind",
@@ -2254,7 +2288,7 @@ _click_off = []
 for _n in (_OV, _OVT):
     for _cid, _dc in _ov_tiles[_n].items():
         _c = _by_id[_cid]
-        _home = p.overview_home(_c, _n)
+        _home = p.overview_home(CARD_DEFS[_c], _n)
         _cb = _dc["visualization_settings"].get("click_behavior")
         if _home is None:
             if _cb is not None:
@@ -2271,10 +2305,10 @@ for _n in (_OV, _OVT):
 check("each figure from another dashboard opens it, passing the pickers both carry",
       not _click_off, _click_off)
 check("...on the twin, a figure opens its home's twin, and the gains, whose dashboard has none, nothing",
-      p.overview_home("Net cash flow (privacy)", _OVT) == "Cash Flow (privacy)"
-      and p.overview_home("Stalest source (days)", _OVT) == "Data Freshness (privacy)"
-      and p.overview_home("Realized gain (privacy)", _OVT) is None
-      and p.overview_home("Net worth (privacy)", _OVT) is None)
+      p.overview_home(CARD_DEFS["Net cash flow (privacy)"], _OVT) == "Cash Flow (privacy)"
+      and p.overview_home(CARD_DEFS["Stalest source (days)"], _OVT) == "Data Freshness (privacy)"
+      and p.overview_home(CARD_DEFS["Realized gain (privacy)"], _OVT) is None
+      and p.overview_home(CARD_DEFS["Net worth (privacy)"], _OVT) is None)
 _ytd = _ov_tiles[_OV][card_ids["Return year to date (TWR)"]]["visualization_settings"]["click_behavior"]
 check("...a year-to-date return passing its year to the Returns Start year",
       _ytd["parameterMapping"].get(p.START_YEAR_PARAM_ID, {}).get("source")
@@ -2284,12 +2318,15 @@ _mix = {n: _ov_tiles[n][card_ids["Asset class mix over time"]]["visualization_se
 check("...the asset class mix passing the day clicked to Allocation's As of day, on the overview and its twin",
       all(m["parameterMapping"].get(p.ASOF_PARAM_ID, {}).get("source")
           == {"type": "column", "id": "as_of_day", "name": "as_of_day"} for m in _mix.values()), _mix)
+# The overview's tiles built for it alone, each from its home
+# dashboard's data: no other dashboard shows them.
+_OV_BUILT = {"Asset class mix over time", "Projected net cash flow",
+             "Return year to date (TWR)", "Return year to date (MWR)"}
+_ov_cards = {t[0] for t in DEFS[_OV][3]}
 check("...every borrowed figure's home holds its card, and the ones built for the overview sit nowhere else",
-      all((c in {t[0] for t in DEFS[h][3]}) != (c in p.OVERVIEW_BUILT_CARDS)
-          for c, h in p.OVERVIEW_TILE_HOMES.items())
-      and p.OVERVIEW_BUILT_CARDS <= set(p.OVERVIEW_TILE_HOMES),
-      [c for c, h in p.OVERVIEW_TILE_HOMES.items()
-       if (c in {t[0] for t in DEFS[h][3]}) == (c in p.OVERVIEW_BUILT_CARDS)])
+      all((c in {t[0] for t in DEFS[h][3]}) != (c in _OV_BUILT) for c, h in HOMES.items())
+      and _OV_BUILT <= set(HOMES) and set(HOMES) <= _ov_cards,
+      [c for c, h in HOMES.items() if (c in {t[0] for t in DEFS[h][3]}) == (c in _OV_BUILT)])
 
 # The two headings sit below the switch link's shift, full width.
 _heads = {n: sorted((dc["row"], dc["visualization_settings"]["text"]) for dc in b["dashcards"]
@@ -2405,7 +2442,7 @@ def output_columns(sql):
 
 
 _twin_natives = {n: sql_of(q) for n, (_d, _desc, q) in CARDS.items()
-                 if (n.endswith(p.PRIVACY_SUFFIX) or n in p.PRIVACY_EXEMPT_CARDS) and sql_of(q)}
+                 if (n.endswith(p.PRIVACY_SUFFIX) or n in EXEMPT) and sql_of(q)}
 _named = {n for n, q in _twin_natives.items() if any(re.search(r"\bname\b", x) for x in output_columns(q))}
 check("the cards a twin shows with a name in their output are these",
       _named == _NAME_SAFE | {"Top 100 positions (privacy)", "Top securities (privacy)",
@@ -2462,7 +2499,7 @@ check("the Exposure dashboard has a privacy twin",
       and "Exposure" + p.PRIVACY_SUFFIX in DEFS)
 _ex_twin = {n: sql_of(CARDS[n][2]) or "" for n, *_ in DEFS["Exposure" + p.PRIVACY_SUFFIX][3] if n in CARDS}
 check("...whose every tile is a privacy card or an exempt one",
-      list(_ex_twin) == [n if n in p.PRIVACY_EXEMPT_CARDS else p.privacy_name(n) for n in _ex_tiles],
+      list(_ex_twin) == [n if n in EXEMPT else p.privacy_name(n) for n in _ex_tiles],
       list(_ex_twin))
 check("...that never shows a value, only shares of the selection",
       all(not re.search(r"\bAS value\b", q) and "share_pct" in q for q in _ex_twin.values()),
@@ -2479,7 +2516,7 @@ check("...but the currencies over time plot the value alone, their twin the shar
       and "share_pct AS share_pct" not in _ex_look["Currencies over time"]
       and VIZ["Currencies over time"].get("graph.metrics") == ["value"]
       and VIZ[p.privacy_name("Currencies over time")].get("graph.metrics") == ["share_pct"]
-      and "Currencies over time" not in p.PRIVACY_EXEMPT_CARDS
+      and "Currencies over time" not in EXEMPT
       and p.privacy_name("Currencies over time") not in p.RETIRED_CARD_NAMES)
 # A reader wants the shares first: every bar plots a share, with its
 # figure on the bar and a percent sign; the base card keeps the value for
@@ -2592,7 +2629,7 @@ def _tiles_off_their_pickers(dash, names):
     off = []
     shown = p.TWIN_CARDS.get(dash.removesuffix(p.PRIVACY_SUFFIX), {})
     for n in names:
-        card = p.privacy_name(shown.get(n, n)) if twin and n not in p.PRIVACY_EXEMPT_CARDS else n
+        card = p.privacy_name(shown.get(n, n)) if twin and n not in EXEMPT else n
         tags = CARDS[card][2]["native"]["template-tags"]
         mapped = {m["parameter_id"]: m["target"][1][1] for m in sent[card_ids[card]]}
         named = {params[p.TAG_SLUGS.get(t, t)] for t in tags if p.TAG_SLUGS.get(t, t) in params}
@@ -2619,7 +2656,8 @@ def _picker_targets_resolve(names):
 
 # A click passes a column of its card's rows on; Metabase states a card's
 # columns only once it has run, so the column is checked against its SQL.
-_col_off = {c: col for c, col in p.COLUMN_CLICKS.items() if col not in _output_columns(sql_of(CARDS[c][2]) or "")}
+_col_off = {n: col for n, c in CARD_DEFS.items() for col, _to in c.links
+            if col not in _output_columns(sql_of(c.query) or "")}
 check("each column a click passes is one its card's SQL returns", not _col_off, _col_off)
 
 
@@ -2827,7 +2865,7 @@ check("the Yield dashboard lays out its thirteen tiles once each",
 check("...and has a privacy twin of the same layout",
       DEFS["Yield"][2] == "Yield (privacy)"
       and [t[0] for t in DEFS["Yield (privacy)"][3]] ==
-      [n if n in p.PRIVACY_EXEMPT_CARDS else p.privacy_name(n) for n in _y_tiles])
+      [n if n in EXEMPT else p.privacy_name(n) for n in _y_tiles])
 _y_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Yield")]
 check("the Yield dashboard carries Exposure's five pickers and the projection's four",
       _y_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class", "benchmark",
@@ -2929,8 +2967,8 @@ check("the column reader reads a card's columns, through a CTE's star",
       ["rank", "kind", "currency", "rate_pct", "benchmark_pct", "gap_pct", "share_pct"]
       and _output_columns("WITH q AS (SELECT a, b AS c_pct FROM t)\nSELECT q.* FROM q") == ["a", "c_pct"],
       _output_columns(_y_sql["Cash against its benchmark (privacy)"]))
-_y_exempt = [n for n in _y_tiles if n in p.PRIVACY_EXEMPT_CARDS]
-_y_priv = [p.privacy_name(n) for n in _y_tiles if n not in p.PRIVACY_EXEMPT_CARDS] + _y_exempt
+_y_exempt = [n for n in _y_tiles if n in EXEMPT]
+_y_priv = [p.privacy_name(n) for n in _y_tiles if n not in EXEMPT] + _y_exempt
 _LABELS = {*_LABELS, "benchmark_duration"}
 _y_money = {n: [c for c in _output_columns(_y_sql[n]) if not c.endswith("_pct") and c not in _LABELS]
             for n in _y_priv}
@@ -2994,7 +3032,7 @@ def _twin(n):
 
 check("...and the twin mirrors the order",
       [(t[0], t[1], t[2], t[3], t[4]) for t in DEFS["Income (privacy)"][3]]
-      == [(n if n in p.PRIVACY_EXEMPT_CARDS else _twin(n), r, c, w, h) for n, r, c, w, h, _t in _in_spec])
+      == [(n if n in EXEMPT else _twin(n), r, c, w, h) for n, r, c, w, h, _t in _in_spec])
 _IN_PROJECTED = [t[0] for t in _in_spec if t[0] not in INCOME_CARD_NAMES]
 _YIELD_TWIN = _twin("Income in the window")
 check("...each card of received and expected income with a privacy twin, the income in the window's "
@@ -3187,7 +3225,7 @@ section("the Income pickers reach every card")
 # Type, on the base and the twin.
 _in_cards = sorted({c for c, *_r in DEFS["Income"][3]})
 _in_off = {}
-for _n in [x for n in _in_cards for x in (n, n if n in p.PRIVACY_EXEMPT_CARDS else _twin(n))]:
+for _n in [x for n in _in_cards for x in (n, n if n in EXEMPT else _twin(n))]:
     _tg = set(CARDS[_n][2]["native"]["template-tags"])
     _reg = set(picks(_n, "Income" + (p.PRIVACY_SUFFIX if _n.endswith(p.PRIVACY_SUFFIX) else "")))
     _typed = _n not in _EVERY_LINE
@@ -3383,7 +3421,7 @@ check("...each with a title", list(p.FEE_GROUP_TITLES) == list(p.FEE_GROUP_COLOR
 
 _mark = next(t for t in p.base_dashboards()["Data Freshness"][2] if t[0] == "Mark age")
 check("Mark age is on Data Freshness, and its twin shows the same card",
-      "Mark age" in p.PRIVACY_EXEMPT_CARDS
+      "Mark age" in EXEMPT
       and "Mark age" in [t[0] for t in DEFS["Data Freshness (privacy)"][3]])
 check("...it takes no picker", not CARDS["Mark age"][2]["native"]["template-tags"] and _mark[5] is None)
 check("...its bars run from 0 to 100", (VIZ["Mark age"]["graph.y_axis.min"],
@@ -3535,7 +3573,7 @@ _retired_live = sorted(set(p.RETIRED_CARD_NAMES) & set(CARDS))
 check("no retired card name is still defined", not _retired_live, _retired_live)
 # A privacy-exempt card is shown as it is on the twin, so it is a card
 # with no privacy variant beside it.
-_exempt_off = sorted(n for n in p.PRIVACY_EXEMPT_CARDS if n not in CARDS or p.privacy_name(n) in CARDS)
+_exempt_off = sorted(n for n in EXEMPT if n not in CARDS or p.privacy_name(n) in CARDS)
 check("every privacy-exempt card is provisioned, with no privacy variant", not _exempt_off, _exempt_off)
 
 section("the reporting currencies")
@@ -3646,7 +3684,7 @@ check("any other currency falls back to USD", _fallback == "USD")
 _saved = p.DEFAULT_CURRENCY
 p.DEFAULT_CURRENCY = "GBP"
 try:
-    _params = [x for d, df in p.dashboard_defs().items()
+    _params = [x for d, df in p.dashboard_defs(CARD_DEFS).items()
                for x in p.dashboard_parameters(MID, df[1], d) if x["slug"] == "currency"]
     check("with a GBP default, every Currency picker opens on GBP",
           bool(_params) and all(x["default"] == ["GBP"] for x in _params),
@@ -5417,7 +5455,7 @@ for _n in sorted(p.BENCHMARK_CARDS):
 # A twin of a card that shows money shows none; a twin that reuses its
 # base card takes it only where the card names no amount.
 for _n in sorted(p.BENCHMARK_CARDS):
-    _twin = _n if _n in p.PRIVACY_EXEMPT_CARDS else p.privacy_name(_n)
+    _twin = _n if _n in EXEMPT else p.privacy_name(_n)
     _q = sql_of(CARDS[_twin][2]) or ""
     check(f"the twin of '{_n}' shows no amount",
           "value" not in _output_columns(_q), _output_columns(_q))
@@ -5446,7 +5484,7 @@ for _n in ("Allocation by asset class", "Allocation by currency"):
               "c <> 'series' OR {{benchmark}} <> 'None'" in _q and "benchmark_exposure" in _q
               and VIZ[_name]["graph.dimensions"][1:] == ["series"], _q[:200])
 for _n in ("Top securities", "Top 100 issuers", "Yields over time", "Duration over time"):
-    for _name in {_n, _n if _n in p.PRIVACY_EXEMPT_CARDS else p.privacy_name(_n)}:
+    for _name in {_n, _n if _n in EXEMPT else p.privacy_name(_n)}:
         _q = sql_of(CARDS[_name][2])
         check(f"'{_name}' adds the benchmark's columns only with one picked",
               _q.startswith("SELECT COLUMNS(lambda c: c <> 'sort_rank' AND (c NOT IN (")
@@ -5739,7 +5777,7 @@ check("the dump holds every model, card and dashboard, each with its id",
       set(_one) == {"models", "cards", "dashboards", "ids"}
       and len(_one["models"]) == len(p.report_models()) == len(_one["ids"]["models"])
       and len(_one["cards"]) == len(CARDS) == len(_one["ids"]["cards"])
-      and len(_one["dashboards"]) == len(p.dashboard_defs()) == len(_one["ids"]["dashboards"]))
+      and len(_one["dashboards"]) == len(p.dashboard_defs(CARD_DEFS)) == len(_one["ids"]["dashboards"]))
 check("...and the id of every field a tag names",
       {t["dimension"][1] for c in _one["cards"].values() if c["dataset_query"]["type"] == "native"
        for t in c["dataset_query"]["native"]["template-tags"].values() if t.get("dimension")}
