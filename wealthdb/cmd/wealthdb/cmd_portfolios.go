@@ -29,15 +29,10 @@ func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []c
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.RelationshipID) }},
 		nicknameCol("portfolio_nickname", func(r gold.PortfolioRow) *string { return r.Nickname }),
-		// Portfolio-level taxonomy rollups. Strict semantics in
-		// the gold layer: tax_wrapper non-nil only when every
-		// component account agrees AND none is unclassified;
-		// management_style non-nil only when every non-overlay
-		// component agrees (and none is unclassified). Blank
-		// cells genuinely mean "ambiguous / mixed / unknown" —
-		// not the same as the accounts table's render-time
-		// default fallback, where blank would silently show
-		// taxable_personal / self_directed.
+		// Portfolio-level taxonomy rollups, agree-or-NULL in gold
+		// over the non-overlay component accounts, each read with
+		// the default where it states none. A blank cell means the
+		// accounts differ.
 		textCol("tax_wrapper", func(r gold.PortfolioRow) *string { return r.TaxWrapper }),
 		textCol("management_style", func(r gold.PortfolioRow) *string { return r.ManagementStyle }),
 

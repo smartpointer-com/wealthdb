@@ -109,6 +109,26 @@ func TestFundLines(t *testing.T) {
 // force; the payments a holding and an account received; the
 // daily amounts over the year; reported figures by their periods' ends,
 // a restated one as restated. The book is invented.
+// An account with no stated wrapper reads taxable_personal, marked as the
+// default, so the withholding by wrapper passes it by.
+func TestYieldAccountsReadTheDefaultWrapper(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	execEach(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, tax_wrapper,
+	    first_seen_at, last_seen_at) VALUES ('src', 'R', 'brokerage', 'roth_ira', 0, 0),
+	    ('src', 'U', 'brokerage', NULL, 0, 0)`)
+	in := &yield.Inputs{Accounts: map[yield.AccountKey]yield.Account{}}
+	if err := readYieldAccounts(ctx, db, in); err != nil {
+		t.Fatal(err)
+	}
+	if a := in.Accounts[yield.AccountKey{Source: "src", Account: "R"}]; a.TaxWrapper != "roth_ira" || a.DefaultWrapper {
+		t.Errorf("R = %+v, want its stated roth_ira", a)
+	}
+	if a := in.Accounts[yield.AccountKey{Source: "src", Account: "U"}]; a.TaxWrapper != "taxable_personal" || !a.DefaultWrapper {
+		t.Errorf("U = %+v, want the default taxable_personal", a)
+	}
+}
+
 func TestYieldInputsReadsGold(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

@@ -267,6 +267,10 @@ func TestGainsPortfolioAndAccountRows(t *testing.T) {
 	if r := got["BRK1"]; r.TaxWrapper == nil || *r.TaxWrapper != "taxable_personal" || !near(num(t, r.Gain), 365) {
 		t.Errorf("BRK1 = %+v", r)
 	}
+	// BRK2 states no wrapper and reads the default, as every report reads it.
+	if r := got["BRK2"]; r.TaxWrapper == nil || *r.TaxWrapper != "taxable_personal" {
+		t.Errorf("BRK2 tax_wrapper = %v, want taxable_personal", r.TaxWrapper)
+	}
 	if r := got["CASH1"]; r.Sells != 1 || r.Positions != 0 || r.Quality != "" {
 		t.Errorf("CASH1 = %+v", r)
 	}
@@ -378,6 +382,10 @@ func TestGainsCoverageVerdicts(t *testing.T) {
 	got := map[string]string{}
 	for _, r := range rows {
 		got[r.AccountExternalID] = r.Verdict
+		// BRK2 and CASH1 state no wrapper and read the default.
+		if r.TaxWrapper == nil || *r.TaxWrapper != "taxable_personal" {
+			t.Errorf("%s tax_wrapper = %v, want taxable_personal", r.AccountExternalID, r.TaxWrapper)
+		}
 	}
 	want := map[string]string{"BRK1": "ok", "BRK2": "no_basis", "CASH1": "ok"}
 	if _, ok := got["DEP1"]; ok {

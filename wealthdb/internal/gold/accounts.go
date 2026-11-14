@@ -31,10 +31,9 @@ type AccountRow struct {
 	Nickname            *string
 	AccountCategory     *string
 	PortfolioExternalID *string
-	// TaxWrapper / ManagementStyle: nil when neither adapter nor a
-	// config override supplied a value. Downstream readers treat nil
-	// tax_wrapper as 'taxable_personal' and nil management_style as
-	// 'self_directed' for default-aware display.
+	// TaxWrapper / ManagementStyle are account_dim's: an account
+	// neither its adapter nor a config override classified reads
+	// 'taxable_personal' and 'self_directed'.
 	TaxWrapper      *string
 	ManagementStyle *string
 	// SnapshotAt is the account's own active snapshot: the latest

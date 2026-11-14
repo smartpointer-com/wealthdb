@@ -26,24 +26,8 @@ func buildAccountColumnRegistry(outCcy string, kindOf func(string) string, categ
 		accountIDCol("account_id", kindOf, ref),
 		{Name: "account_kind", Align: output.AlignLeft,
 			Extract: func(a gold.AccountRow) string { return a.AccountKind }},
-		// Defaults applied at render time, so the cell is never blank
-		// when neither the adapter nor an override classified the
-		// account. The column itself stays NULL, so gold still tells
-		// "unknown" from "explicitly the default".
-		{Name: "tax_wrapper", Align: output.AlignLeft,
-			Extract: func(a gold.AccountRow) string {
-				if a.TaxWrapper != nil {
-					return *a.TaxWrapper
-				}
-				return "taxable_personal"
-			}},
-		{Name: "management_style", Align: output.AlignLeft,
-			Extract: func(a gold.AccountRow) string {
-				if a.ManagementStyle != nil {
-					return *a.ManagementStyle
-				}
-				return "self_directed"
-			}},
+		textCol("tax_wrapper", func(a gold.AccountRow) *string { return a.TaxWrapper }),
+		textCol("management_style", func(a gold.AccountRow) *string { return a.ManagementStyle }),
 		textCol("base_currency", func(a gold.AccountRow) *string { return a.BaseCurrency }),
 		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
 			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.RelationshipID) }},

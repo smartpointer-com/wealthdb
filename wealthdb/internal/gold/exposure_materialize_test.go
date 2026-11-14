@@ -206,18 +206,14 @@ func checkMaterializedWrappers(t *testing.T, ctx context.Context, db *sql.DB, at
 		t.Fatal(err)
 	}
 	want := map[string]float64{}
-	unwrapped := false
 	for _, a := range accounts {
-		if a.TotalValueOutCcy == nil {
-			continue
+		if a.TotalValueOutCcy != nil {
+			want[*a.TaxWrapper] += parse(t, a.TotalValueOutCcy)
 		}
-		w := "taxable_personal"
-		if a.TaxWrapper != nil {
-			w = *a.TaxWrapper
-		} else {
-			unwrapped = true
-		}
-		want[w] += parse(t, a.TotalValueOutCcy)
+	}
+	var unwrapped bool
+	if err := db.QueryRowContext(ctx, `SELECT bool_or(tax_wrapper IS NULL) FROM accounts`).Scan(&unwrapped); err != nil {
+		t.Fatal(err)
 	}
 	if want["roth_ira"] == 0 || !unwrapped {
 		t.Fatalf("at %d: accounts by wrapper %v; the test needs a wrapped and an unwrapped one", at, want)

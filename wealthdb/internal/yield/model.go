@@ -155,10 +155,14 @@ func (h Holding) FX() float64 {
 	return h.Value / h.Amount
 }
 
-// Account is what the grains name an account by.
+// Account is what the grains name an account by. TaxWrapper is the
+// wrapper the views show: taxable_personal where gold states none, and
+// then DefaultWrapper is true. The withholding by wrapper reads a stated
+// wrapper only, so such an account takes its country's default rate.
 type Account struct {
 	Name, Kind, TaxWrapper, Nickname string
 	Portfolio, PortfolioName         string
+	DefaultWrapper                   bool
 }
 
 // Terms are a holding's instrument_terms row.

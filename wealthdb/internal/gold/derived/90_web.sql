@@ -1,38 +1,4 @@
--- Presentation: the labels and the web_* views the dashboards read.
-
--- An account label that says whose account it is, and what kind.
---
--- An account's own name is what the institution calls it and nothing
--- more — a product nickname, a masked card number, an IBAN. Read on a
--- chart, a bar labelled by it alone does not say which institution it
--- belongs to, nor whether the money left a deposit account or a credit
--- card; and product nicknames are generic, so two institutions'
--- accounts can wear the same one. An account with no name would
--- collapse with the other unnamed ones into one "null" bar.
---
--- Two scalar macros, so the rule has ONE home rather than a copy in
--- each view:
---
---   * account_display_name is the fallback: an account with no name of
---     its own is labelled by its id, the way the CLI's `account` column
---     does it.
---   * account_label annotates that with the source and the kind, as
---     `<name> (<source> <kind>)`.
---
--- Name FIRST. A row chart truncates a long label from the end, so
--- putting the identity in front means what gets clipped in a narrow
--- tile is the annotation, not the thing being labelled.
---
--- Both views keep `display_name` and `account_external_id` beside the
--- label, so a consumer that wants the institution's own name, or the
--- id, still reads it off its own column and nothing has to parse the
--- label back apart.
-CREATE MACRO account_display_name(nm, ext_id) AS
-    COALESCE(NULLIF(TRIM(nm), ''), ext_id);
-
-CREATE MACRO account_label(nm, ext_id, src, kind) AS
-    account_display_name(nm, ext_id)
-        || ' (' || src || ' ' || COALESCE(kind, 'unknown') || ')';
+-- Presentation: the web_* views the dashboards read.
 
 -- holdings_lines_latest: the same lines as of each source's latest
 -- snapshot, the snapshot report_sources_multi dates the source by.
@@ -574,12 +540,10 @@ CREATE VIEW web_marks AS
 -- The entity is the account's portfolio, else the account.
 CREATE VIEW web_fees AS
     WITH acct AS (
-        SELECT a.silver_source_id, a.account_external_id, a.account_kind,
-               account_label(a.display_name, a.account_external_id,
-                             a.silver_source_id, a.account_kind) AS account_label,
+        SELECT a.silver_source_id, a.account_external_id, a.account_kind, a.label AS account_label,
                account_display_name(a.display_name, a.account_external_id) AS display_name,
                NULLIF(a.portfolio_external_id, '') AS portfolio
-          FROM accounts a),
+          FROM account_dim a),
     entity AS (
         SELECT c.*,
                to_json([c.silver_source_id, COALESCE(c.portfolio, c.account_external_id)])::VARCHAR AS entity_key,

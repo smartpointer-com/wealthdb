@@ -142,8 +142,14 @@ func (m *yieldMaterializer) positions(b *yield.Book, at int64, ccy string) error
 		if p.MaturityDate != nil {
 			maturity = p.MaturityDate.Format(time.DateOnly)
 		}
+		// The table keeps the wrapper gold states, NULL where none is:
+		// the web views read that NULL as the default.
+		wrapper := p.Account.TaxWrapper
+		if p.Account.DefaultWrapper {
+			wrapper = ""
+		}
 		args = append(args, m.computedAt, at, ccy, p.Source, p.HoldingKey.Account, p.PositionKey,
-			nullableEnumValue(p.Account.TaxWrapper), nullableEnumValue(p.Symbol), nullableEnumValue(p.Name),
+			nullableEnumValue(wrapper), nullableEnumValue(p.Symbol), nullableEnumValue(p.Name),
 			nullableEnumValue(p.AssetClass), nullableEnumValue(p.Vehicle), string(p.Kind), nullableEnumValue(p.Currency),
 			p.Quantity, p.Value, number(p.Price), p.Coupon, maturity, nullableEnumValue(p.Rating))
 		received, mean := p.RealizedParts()

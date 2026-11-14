@@ -1,5 +1,61 @@
--- Holdings: the account buckets, the lines held at an instant or on
--- each day, valued, and the holdings reports over them.
+-- Holdings: the account dimension and buckets, the lines held at an
+-- instant or on each day, valued, and the holdings reports over them.
+
+-- ===========================================================================
+-- ACCOUNTS: the label and the account dimension
+-- ===========================================================================
+
+-- An account label that says whose account it is, and what kind.
+--
+-- An account's own name is what the institution calls it and nothing
+-- more — a product nickname, a masked card number, an IBAN. Read on a
+-- chart, a bar labelled by it alone does not say which institution it
+-- belongs to, nor whether the money left a deposit account or a credit
+-- card; and product nicknames are generic, so two institutions'
+-- accounts can wear the same one. An account with no name would
+-- collapse with the other unnamed ones into one "null" bar.
+--
+-- Two scalar macros, so the rule has ONE home rather than a copy in
+-- each view:
+--
+--   * account_display_name is the fallback: an account with no name of
+--     its own is labelled by its id, the way the CLI's `account` column
+--     does it.
+--   * account_label annotates that with the source and the kind, as
+--     `<name> (<source> <kind>)`.
+--
+-- Name FIRST. A row chart truncates a long label from the end, so
+-- putting the identity in front means what gets clipped in a narrow
+-- tile is the annotation, not the thing being labelled.
+--
+-- A view that shows the label keeps `display_name` and
+-- `account_external_id` beside it, so a consumer that wants the
+-- institution's own name, or the id, still reads it off its own column
+-- and nothing has to parse the label back apart.
+CREATE MACRO account_display_name(nm, ext_id) AS
+    COALESCE(NULLIF(TRIM(nm), ''), ext_id);
+
+CREATE MACRO account_label(nm, ext_id, src, kind) AS
+    account_display_name(nm, ext_id)
+        || ' (' || src || ' ' || COALESCE(kind, 'unknown') || ')';
+
+-- account_dim: every account with its label, and its wrapper and style
+-- with the defaults applied.
+--
+--   * `accounts` keeps NULL where no adapter and no override classified
+--     an account, so gold still tells it from one stated as the default.
+--   * `wrapper` reads that NULL as taxable_personal, `style` as
+--     self_directed.
+--
+-- A view over one table, which the engine expands in place. It has no
+-- row for a line whose account gold does not hold, so a statement that
+-- reads its lines LEFT JOIN `accounts` states the default itself.
+CREATE VIEW account_dim AS
+    SELECT a.*,
+           COALESCE(a.tax_wrapper, 'taxable_personal') AS wrapper,
+           COALESCE(a.management_style, 'self_directed') AS style,
+           account_label(a.display_name, a.account_external_id, a.silver_source_id, a.account_kind) AS label
+      FROM accounts a;
 
 -- ===========================================================================
 -- PORTFOLIOS: shared buckets/taxonomy + line base + single + multi
@@ -27,16 +83,16 @@ CREATE MACRO portfolio_buckets() AS TABLE (
     WITH taxo AS (
         SELECT a.silver_source_id AS src, m.pid,
             CASE WHEN COUNT(*) FILTER (WHERE a.account_kind != 'overlay') > 0
-                  AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN COALESCE(a.tax_wrapper, 'taxable_personal') END) = 1
-                 THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN COALESCE(a.tax_wrapper, 'taxable_personal') END) END AS tax_wrapper,
+                  AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN a.wrapper END) = 1
+                 THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN a.wrapper END) END AS tax_wrapper,
             CASE WHEN COUNT(*) FILTER (WHERE a.account_kind != 'overlay') > 0
-                  AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN COALESCE(a.management_style, 'self_directed') END) = 1
-                 THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN COALESCE(a.management_style, 'self_directed') END) END AS management_style,
+                  AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN a.style END) = 1
+                 THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN a.style END) END AS management_style,
             CASE WHEN COUNT(*) FILTER (WHERE a.account_kind != 'overlay') > 0
                   AND COUNT(*) FILTER (WHERE a.account_kind != 'overlay' AND a.base_currency IS NULL) = 0
                   AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN a.base_currency END) = 1
                  THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN a.base_currency END) END AS rolled_base
-          FROM accounts a JOIN portfolio_acct_map() m ON m.src = a.silver_source_id AND m.acct = a.account_external_id
+          FROM account_dim a JOIN portfolio_acct_map() m ON m.src = a.silver_source_id AND m.acct = a.account_external_id
          GROUP BY 1, 2),
     buckets AS (
         SELECT silver_source_id AS src, portfolio_external_id AS pid, display_name, relationship_id, nickname, base_currency
@@ -74,16 +130,16 @@ CREATE MACRO portfolio_buckets() AS TABLE (
 CREATE MACRO source_buckets() AS TABLE (
     SELECT a.silver_source_id AS src,
         CASE WHEN COUNT(*) FILTER (WHERE a.account_kind != 'overlay') > 0
-              AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN COALESCE(a.tax_wrapper, 'taxable_personal') END) = 1
-             THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN COALESCE(a.tax_wrapper, 'taxable_personal') END) END AS tax_wrapper,
+              AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN a.wrapper END) = 1
+             THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN a.wrapper END) END AS tax_wrapper,
         CASE WHEN COUNT(*) FILTER (WHERE a.account_kind != 'overlay') > 0
-              AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN COALESCE(a.management_style, 'self_directed') END) = 1
-             THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN COALESCE(a.management_style, 'self_directed') END) END AS management_style,
+              AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN a.style END) = 1
+             THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN a.style END) END AS management_style,
         CASE WHEN COUNT(*) FILTER (WHERE a.account_kind != 'overlay') > 0
               AND COUNT(*) FILTER (WHERE a.account_kind != 'overlay' AND a.base_currency IS NULL) = 0
               AND COUNT(DISTINCT CASE WHEN a.account_kind != 'overlay' THEN a.base_currency END) = 1
              THEN MAX(CASE WHEN a.account_kind != 'overlay' THEN a.base_currency END) END AS base_currency
-      FROM accounts a GROUP BY 1
+      FROM account_dim a GROUP BY 1
 );
 
 -- ---- shared line base, zero balances kept ----------------------------
@@ -209,9 +265,7 @@ CREATE MACRO report_accounts_history_multi() AS TABLE (
         SELECT g.day, a.silver_source_id, a.account_external_id, a.account_kind, a.display_name,
                a.base_currency, a.relationship_id, a.nickname, a.account_category,
                a.portfolio_external_id,
-               -- account-level display defaults (see report_accounts_multi).
-               COALESCE(a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
-               COALESCE(a.management_style, 'self_directed') AS management_style,
+               a.wrapper AS tax_wrapper, a.style AS management_style,
                CAST(CASE WHEN a.base_currency IS NULL THEN NULL WHEN g.n_pos=0 THEN 0 WHEN g.n_pb=0 THEN NULL ELSE g.pos_b END AS DECIMAL(28,4)) AS pvb,
                CAST(CASE WHEN a.base_currency IS NULL THEN NULL WHEN g.n_cash=0 THEN 0 WHEN g.n_cb=0 THEN NULL ELSE g.cash_b END AS DECIMAL(28,4)) AS cvb,
                CAST(CASE WHEN g.n_pos=0 THEN 0 WHEN g.n_po_u=0 THEN NULL ELSE g.pos_u END AS DECIMAL(28,4)) AS pvu,
@@ -222,7 +276,7 @@ CREATE MACRO report_accounts_history_multi() AS TABLE (
                CAST(CASE WHEN g.n_cash=0 THEN 0 WHEN g.n_co_e=0 THEN NULL ELSE g.cash_e END AS DECIMAL(28,4)) AS cve,
                CAST(CASE WHEN g.n_pos=0 THEN 0 WHEN g.n_po_g=0 THEN NULL ELSE g.pos_g END AS DECIMAL(28,4)) AS pvg,
                CAST(CASE WHEN g.n_cash=0 THEN 0 WHEN g.n_co_g=0 THEN NULL ELSE g.cash_g END AS DECIMAL(28,4)) AS cvg
-          FROM agg g JOIN accounts a ON a.silver_source_id = g.src AND a.account_external_id = g.acct)
+          FROM agg g JOIN account_dim a ON a.silver_source_id = g.src AND a.account_external_id = g.acct)
     SELECT day * 86400 AS as_of_day, silver_source_id, account_external_id, account_kind, display_name,
            base_currency, relationship_id, nickname, account_category, portfolio_external_id,
            tax_wrapper, management_style,
@@ -756,13 +810,13 @@ CREATE MACRO report_accounts(p_asof, p_ccy) AS TABLE (
     vals AS (
         SELECT a.silver_source_id, a.account_external_id, a.account_kind, a.display_name,
                a.base_currency, a.relationship_id, a.nickname, a.account_category,
-               a.portfolio_external_id, a.tax_wrapper, a.management_style,
+               a.portfolio_external_id, a.wrapper AS tax_wrapper, a.style AS management_style,
                COALESCE(g.max_snap, ss.s, 0) AS snapshot_at,
                CAST(CASE WHEN a.base_currency IS NULL THEN NULL WHEN COALESCE(g.n_pos,0)=0 THEN 0 WHEN g.n_pb=0 THEN NULL ELSE g.pos_b END AS DECIMAL(28,4)) AS pvb,
                CAST(CASE WHEN a.base_currency IS NULL THEN NULL WHEN COALESCE(g.n_cash,0)=0 THEN 0 WHEN g.n_cb=0 THEN NULL ELSE g.cash_b END AS DECIMAL(28,4)) AS cvb,
                CAST(CASE WHEN COALESCE(g.n_pos,0)=0 THEN 0 WHEN g.n_po=0 THEN NULL ELSE g.pos_o END AS DECIMAL(28,4)) AS pvo,
                CAST(CASE WHEN COALESCE(g.n_cash,0)=0 THEN 0 WHEN g.n_co=0 THEN NULL ELSE g.cash_o END AS DECIMAL(28,4)) AS cvo
-          FROM accounts a
+          FROM account_dim a
           LEFT JOIN agg g ON a.silver_source_id = g.src AND a.account_external_id = g.acct
           LEFT JOIN ssnap ss ON a.silver_source_id = ss.src)
     SELECT silver_source_id, account_external_id, account_kind, display_name, base_currency,
@@ -818,10 +872,7 @@ CREATE MACRO report_accounts_multi(p_asof) AS TABLE (
         SELECT a.silver_source_id, a.account_external_id, a.account_kind, a.display_name,
                a.base_currency, a.relationship_id, a.nickname, a.account_category,
                a.portfolio_external_id,
-               -- account-level display defaults (every account is non-NULL, matching
-               -- the `wealthdb holdings accounts` CLI render); the raw accounts table keeps NULL.
-               COALESCE(a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
-               COALESCE(a.management_style, 'self_directed') AS management_style,
+               a.wrapper AS tax_wrapper, a.style AS management_style,
                COALESCE(g.max_snap, ss.s, 0) AS snapshot_at,
                CAST(CASE WHEN a.base_currency IS NULL THEN NULL WHEN COALESCE(g.n_pos,0)=0 THEN 0 WHEN g.n_pb=0 THEN NULL ELSE g.pos_b END AS DECIMAL(28,4)) AS pvb,
                CAST(CASE WHEN a.base_currency IS NULL THEN NULL WHEN COALESCE(g.n_cash,0)=0 THEN 0 WHEN g.n_cb=0 THEN NULL ELSE g.cash_b END AS DECIMAL(28,4)) AS cvb,
@@ -833,7 +884,7 @@ CREATE MACRO report_accounts_multi(p_asof) AS TABLE (
                CAST(CASE WHEN COALESCE(g.n_cash,0)=0 THEN 0 WHEN g.n_co_e=0 THEN NULL ELSE g.cash_e END AS DECIMAL(28,4)) AS cve,
                CAST(CASE WHEN COALESCE(g.n_pos,0)=0 THEN 0 WHEN g.n_po_g=0 THEN NULL ELSE g.pos_g END AS DECIMAL(28,4)) AS pvg,
                CAST(CASE WHEN COALESCE(g.n_cash,0)=0 THEN 0 WHEN g.n_co_g=0 THEN NULL ELSE g.cash_g END AS DECIMAL(28,4)) AS cvg
-          FROM accounts a
+          FROM account_dim a
           LEFT JOIN agg g ON a.silver_source_id = g.src AND a.account_external_id = g.acct
           LEFT JOIN ssnap ss ON a.silver_source_id = ss.src)
     SELECT silver_source_id, account_external_id, account_kind, display_name, base_currency,
@@ -1219,16 +1270,14 @@ CREATE MACRO report_cash_history_multi() AS TABLE (
           ASOF LEFT JOIN fx_reporting_bridges fxb ON fxb.day <= (l.snap // 86400))
     SELECT ac.day * 86400 AS as_of_day, a.silver_source_id, a.account_external_id,
            a.base_currency,
-           -- account-level display defaults (see report_accounts_multi).
-           COALESCE(a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
-           COALESCE(a.management_style, 'self_directed') AS management_style,
+           a.wrapper AS tax_wrapper, a.style AS management_style,
            c.ccy AS currency, c.amt AS balance, c.base_val AS balance_base,
            c.out_usd AS balance_usd, c.out_chf AS balance_chf,
            c.out_eur AS balance_eur, c.out_gbp AS balance_gbp
       FROM conv c
       JOIN hist_active_cash() ac
         ON ac.src = c.src AND ac.acct = c.acct AND ac.ccy = c.ccy AND ac.snap = c.snap
-      JOIN accounts a ON a.silver_source_id = c.src AND a.account_external_id = c.acct
+      JOIN account_dim a ON a.silver_source_id = c.src AND a.account_external_id = c.acct
      ORDER BY as_of_day, silver_source_id, account_external_id, currency
 );
 

@@ -19,10 +19,10 @@ type SourceRow struct {
 	SilverSourceID string
 
 	// BaseCurrency / TaxWrapper / ManagementStyle are rolled up
-	// from the source's non-overlay accounts (agree-or-NULL, NULL
-	// base treated as default for the taxonomy check). Non-nil only
-	// when all qualifying accounts agree — blank genuinely means
-	// "mixed / unknown", not a render-time default.
+	// from the source's non-overlay accounts (agree-or-NULL; an
+	// account that states no wrapper or style reads the default,
+	// one with no base currency leaves the base NULL). Non-nil only
+	// when all qualifying accounts agree: blank means they differ.
 	BaseCurrency    *string
 	TaxWrapper      *string
 	ManagementStyle *string

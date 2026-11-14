@@ -528,6 +528,29 @@ func TestWithholdingByWrapper(t *testing.T) {
 	}
 }
 
+// An account gold states no wrapper for shows taxable_personal, and is
+// withheld at its country's default: the taxable_personal rate is for
+// accounts that state that wrapper.
+func TestADefaultWrapperWithholdsAtTheDefault(t *testing.T) {
+	t.Parallel()
+	in := inputs()
+	a, u := bondHolding("broker", "A", "QA", 1000, 1000), bondHolding("broker", "U", "QU", 1000, 1000)
+	in.Holdings = []Holding{a, u}
+	in.Accounts[AccountKey{"broker", "A"}] = Account{TaxWrapper: personal}
+	in.Accounts[AccountKey{"broker", "U"}] = Account{TaxWrapper: personal, DefaultWrapper: true}
+	in.Situs[a.HoldingKey], in.Situs[u.HoldingKey] = "US", "US"
+	in.Withholding["US"] = map[string]float64{canonical.WithholdingDefault: 30, personal: 15}
+	b := Compute(in)
+	if w := b.Projection.Withholding; w[a.HoldingKey] != 15 || w[u.HoldingKey] != 30 {
+		t.Errorf("withholding %v", w)
+	}
+	for _, p := range b.Positions {
+		if p.Account.TaxWrapper != personal {
+			t.Errorf("%s shows tax_wrapper %q, want %s", p.HoldingKey.Account, p.Account.TaxWrapper, personal)
+		}
+	}
+}
+
 // An account's own rate wins over its wrapper's and the default: of two
 // accounts of one wrapper, only the one the block names moves. An
 // account's rate also stands where its country names no wrapper.

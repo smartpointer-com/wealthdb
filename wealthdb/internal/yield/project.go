@@ -326,8 +326,10 @@ func (pj *projector) withholding(situs string, acct AccountKey) (float64, bool) 
 		return r, true
 	}
 	rates := pj.in.Withholding[situs]
-	if r, ok := rates[pj.in.Accounts[acct].TaxWrapper]; ok {
-		return r, true
+	if a := pj.in.Accounts[acct]; !a.DefaultWrapper {
+		if r, ok := rates[a.TaxWrapper]; ok {
+			return r, true
+		}
 	}
 	r, ok := rates[canonical.WithholdingDefault]
 	return r, ok

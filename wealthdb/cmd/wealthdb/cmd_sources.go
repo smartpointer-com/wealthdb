@@ -25,10 +25,9 @@ func buildSourceColumnRegistry(outCcy string) []columnSpec[gold.SourceRow] {
 		// later than snapshot_date where a run found nothing new.
 		dateCol("observed_date", func(r gold.SourceRow) int64 { return r.ObservedAt }),
 		textCol("base_currency", func(r gold.SourceRow) *string { return r.BaseCurrency }),
-		// Source-level taxonomy rollups. Strict agree-or-NULL
-		// semantics in the gold layer (every non-overlay account
-		// agrees, none unclassified); a blank cell means
-		// "mixed / unknown", not a render-time default.
+		// Source-level taxonomy rollups, agree-or-NULL in gold over
+		// the non-overlay accounts, each read with the default where
+		// it states none. A blank cell means the accounts differ.
 		textCol("tax_wrapper", func(r gold.SourceRow) *string { return r.TaxWrapper }),
 		textCol("management_style", func(r gold.SourceRow) *string { return r.ManagementStyle }),
 
