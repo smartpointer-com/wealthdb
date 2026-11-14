@@ -33,6 +33,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import provision as p                                   # noqa: E402
+import dashboards as dashboards_index                     # noqa: E402
+import sqlkit                                            # noqa: E402
 import tile_timings as tt                                # noqa: E402
 
 FAILS = 0
@@ -673,7 +675,7 @@ def run_main(client):
     """main()'s exit status against fake client `client`, with the
     arguments web/web passes; the globals main() sets are restored."""
     saved = (sys.argv, os.environ.get("WEALTHDB_WEB_ADMIN_PASSWORD"),
-             p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
+             sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS)
     sys.argv = ["provision.py", "--base", "http://127.0.0.1:3000",
                 "--email", "admin@wealthdb.local", "--gold-path", "/gold/wealthdb.db"]
     os.environ["WEALTHDB_WEB_ADMIN_PASSWORD"] = "Synthetic-pw-1!"
@@ -681,7 +683,7 @@ def run_main(client):
         with quiet():
             return p.main(client)
     finally:
-        sys.argv, pw, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = saved
+        sys.argv, pw, sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS = saved
         if pw is None:
             os.environ.pop("WEALTHDB_WEB_ADMIN_PASSWORD", None)
         else:
@@ -1255,13 +1257,13 @@ check("a dashboard whose read fails is sent, and only that one",
 remembered.failing, remembered.put_ids, remembered.puts = set(), set(), 0
 _alloc = remembered.names["Allocation"]
 _tiles = remembered.layouts[_alloc]["dashcards"]
-_asof_default = p.ASOF_DEFAULT
+_asof_default = sqlkit.ASOF_DEFAULT
 try:
-    p.ASOF_DEFAULT = "2026-10-25"
+    sqlkit.ASOF_DEFAULT = "2026-10-25"
     with quiet():
         fifth = p.ensure_dashboards(remembered, 7, card_ids, MID)
 finally:
-    p.ASOF_DEFAULT = _asof_default
+    sqlkit.ASOF_DEFAULT = _asof_default
 check("a new As of day default is sent as the pickers alone, to the two Allocation dashboards",
       fifth == 0 and remembered.puts == 2
       and remembered.put_ids == {_alloc, remembered.names["Allocation (privacy)"]}
@@ -1270,11 +1272,11 @@ check("a new As of day default is sent as the pickers alone, to the two Allocati
 remembered.refused = {_alloc}
 _err = io.StringIO()
 try:
-    p.ASOF_DEFAULT = "2026-10-24"
+    sqlkit.ASOF_DEFAULT = "2026-10-24"
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(_err):
         sixth = p.ensure_dashboards(remembered, 7, card_ids, MID)
 finally:
-    p.ASOF_DEFAULT = _asof_default
+    sqlkit.ASOF_DEFAULT = _asof_default
 check("...and a refused one fails the run, naming the dashboard",
       sixth == 1 and "failed to update the filters of 'Allocation' (500): refused" in _err.getvalue(),
       (sixth, _err.getvalue()))
@@ -2165,12 +2167,12 @@ check("a dashboard naming a picker the table lacks, or dropping one it lacks, is
       _errors == ["provision: dashboard 'New' names picker 'currency', which PICKERS has no row for",
                   "provision: dashboard 'New' drops 'account' from its twin, a picker it does not carry"],
       _errors)
-_saved_dashboards = p.DASHBOARDS_BY_NAME
-p.DASHBOARDS_BY_NAME = {**_saved_dashboards, "New": _new}
+_saved_dashboards = dashboards_index.DASHBOARDS_BY_NAME
+dashboards_index.DASHBOARDS_BY_NAME = {**_saved_dashboards, "New": _new}
 try:
     _new_params = [x["slug"] for x in p.dashboard_parameters("New")]
 finally:
-    p.DASHBOARDS_BY_NAME = _saved_dashboards
+    dashboards_index.DASHBOARDS_BY_NAME = _saved_dashboards
 check("...and one that passes gets the pickers it names, no other dashboard's",
       _new_params == ["time_range", "source"], _new_params)
 check("...and a twin lays out its own rows in place of its base's",
@@ -3679,8 +3681,8 @@ check("a reporting currency is taken as the default as configured",
 with quiet():
     _fallback = p.default_currency("JPY")
 check("any other currency falls back to USD", _fallback == "USD")
-_saved = p.DEFAULT_CURRENCY
-p.DEFAULT_CURRENCY = "GBP"
+_saved = sqlkit.DEFAULT_CURRENCY
+sqlkit.DEFAULT_CURRENCY = "GBP"
 try:
     _params = [x for d in p.dashboard_defs(CARD_DEFS)
                for x in params_of(d) if x["slug"] == "currency"]
@@ -3697,7 +3699,7 @@ try:
     check("...and the merchant ranking's description says it ranks in the picked currency",
           "in the picked currency" in _gbp_cards["Top 50 merchants"][1])
 finally:
-    p.DEFAULT_CURRENCY = _saved
+    sqlkit.DEFAULT_CURRENCY = _saved
     all_cards()               # rebuild the picker registry at the default
 
 section("a percent-styled column is a fraction, not a percentage")
@@ -3759,7 +3761,7 @@ for _name, _tup in _FRESH.items():
 _fresh_sql = sql_of(_QDEFS["Source freshness"][-2])
 check("'Source freshness' shows the read, the latest mark and the days quiet",
       _output_columns(_fresh_sql) == ["silver_source_id", "observed_at", "days_stale", "valued_at", "days_quiet",
-                                      f"total_value_{p.DEFAULT_CURRENCY.lower()}"], _fresh_sql)
+                                      f"total_value_{sqlkit.DEFAULT_CURRENCY.lower()}"], _fresh_sql)
 _fresh_twin = sql_of(_PDEFS["Source freshness (privacy)"][-2])
 check("the freshness twin shows the base's columns, the value a share of the latest net worth, no account",
       _output_columns(_fresh_twin) == _output_columns(_fresh_sql) and "/ nw.nw * 100" in _fresh_twin
@@ -5753,14 +5755,14 @@ def _recorded(withholding, sources):
     return rc, {**api.sent, "ids": {**api.ids, "fields": fields}}
 
 
-_saved_globals = (p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
+_saved_globals = (sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS)
 _matrix_bad, _unstable, _texts = [], [], {}
 try:
     for _ccy in ("USD", "CHF"):
         for _mb in p.MISSING_BASIS_READINGS:
             for _wh in p.DUMP_WITHHOLDING:
                 for _srcs in ([], ["src-a", "src-b"]):
-                    p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = _ccy, _mb
+                    sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS = _ccy, _mb
                     _key = (_ccy, _mb, _wh, len(_srcs))
                     _first = _dump_text(p.payload_dump(p.DUMP_WITHHOLDING[_wh], _srcs))
                     _rc, _rec = _recorded(p.DUMP_WITHHOLDING[_wh], _srcs)
@@ -5770,7 +5772,7 @@ try:
                         _unstable.append(_key)
                     _texts[_key] = _first
 finally:
-    p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = _saved_globals
+    sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS = _saved_globals
     all_cards()                       # restore the registry
 check("over currency, missing basis, withholding and sources, the dump is what provisioning sends",
       not _matrix_bad, _matrix_bad)
@@ -5798,7 +5800,7 @@ check("...and the id of every field a tag names",
 def _main_with(argv):
     """(exit status, stderr) of main() under `argv`, with any API call an
     error; main()'s globals are restored."""
-    saved = (sys.argv, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
+    saved = (sys.argv, sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS)
 
     def no_network(*_a):
         raise AssertionError("the dump called the API")
@@ -5811,7 +5813,7 @@ def _main_with(argv):
             except SystemExit as e:
                 rc = e.code
     finally:
-        sys.argv, p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = saved
+        sys.argv, sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS = saved
     return rc, err.getvalue()
 
 
@@ -5821,12 +5823,12 @@ with tempfile.TemporaryDirectory() as _d:
                          "--withholding", "no", "--sources", "src-a,src-b"])
     with open(_out, encoding="utf-8") as _f:
         _written = _f.read()
-    _saved_globals = (p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS)
+    _saved_globals = (sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS)
     try:
-        p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = "CHF", "zero"
+        sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS = "CHF", "zero"
         _want = _dump_text(p.payload_dump(False, ["src-a", "src-b"]))
     finally:
-        p.DEFAULT_CURRENCY, p.DEFAULT_MISSING_BASIS = _saved_globals
+        sqlkit.DEFAULT_CURRENCY, sqlkit.DEFAULT_MISSING_BASIS = _saved_globals
         all_cards()                   # restore the registry
 check("--dump writes the payloads with no API call, its options read as provisioning reads them",
       _rc == 0 and _written == _want)

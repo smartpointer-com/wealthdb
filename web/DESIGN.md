@@ -98,7 +98,8 @@ A private loopback service should not require the "tell us about your
 company" wizard. Metabase's declarative config file
 (`MB_CONFIG_FILE_PATH`) can create users/databases — but that is a
 Pro/EE feature, a silent no-op on OSS. So `web start` provisions over
-the OSS **setup API** ([`provision.py`](provision.py), stdlib only):
+the OSS **setup API** ([`provision.py`](provision.py) and its sibling
+modules, stdlib only):
 create the admin (`POST /api/setup`, which also finishes the wizard),
 pre-add the gold DuckDB database (`POST /api/database`, `read_only`),
 and create the pre-defined report models (`POST /api/card`, `type:
@@ -214,7 +215,8 @@ ten dashboards. Their pickers:
 
 All of them are definitions only (SQL), with no data baked in.
 
-Each dashboard declares its cards in one function, `<name>_cards`. It
+Each dashboard declares its cards in one function, `<name>_cards`, in
+`dashboards/<name>.py`. It
 runs once for the dashboard and once for its privacy twin, so a twin
 card sits beside its base card. One call declares a card with what its
 tiles need to know of it:
@@ -226,9 +228,10 @@ tiles need to know of it:
 
 A name declared twice is an error at definition time.
 
-Each dashboard is one `Dashboard` record in `DASHBOARDS`: its blurb,
+Each dashboard is one `Dashboard` record in `DASHBOARDS`
+(`dashboards/__init__.py`): its blurb,
 its twin's blurb, the slugs of its pickers, the pickers its twin drops,
-and its rows. `PICKERS` holds one row per picker slug and family of
+and its rows. `PICKERS` (`pickers.py`) holds one row per picker slug and family of
 dashboards: its id, label, kind, values and default. A row laid out as
 `Row(height, tiles)`, `Stack(width, cards)` or `Heading(text)` gets
 its place on the grid from the rows above it, so no tile states its

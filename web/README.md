@@ -88,6 +88,14 @@ wealthdb load -a && wealthdb web refresh
 web/
 ├── web            # host lifecycle script (start/stop/status/refresh/logs/build)
 ├── provision.py   # idempotent Metabase setup: admin, gold DB, models, cards, dashboards (stdlib)
+├── metabase.py    # the Metabase API client provisioning and the checks share
+├── sqlkit.py      # the vocabulary of the card SQL: currencies, tags, viz, the card maker
+├── models.py      # the report models
+├── pickers.py     # every dashboard picker
+├── layout.py      # a dashboard's declaration and its grid
+├── colors.py      # each source's colour
+├── retired.py     # the retired model, card and dashboard names
+├── dashboards/    # one file per dashboard's cards; __init__.py declares the dashboards
 ├── tile_timings.py  # times each tile's query on the DuckDB the driver bundles
 ├── Dockerfile     # Metabase (from JAR, glibc base) + pinned DuckDB driver → /plugins
 ├── test_web.sh    # unit tests: lifecycle script, then provision.py (make test-web)
