@@ -470,9 +470,10 @@ func TestTypedHoldingNameColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	tx := []gold.TransactionRow{
-		{SilverSourceID: "hand", InstrumentExternalID: strp("example-flat"), Name: strp("Example Flat")},
-		{SilverSourceID: "hand", InstrumentExternalID: strp("example-flat"), Description: strp("SAMPLE PAYEE REF")},
-		{SilverSourceID: "bank", Description: strp("SAMPLE PAYEE REF")},
+		{TxnLine: gold.TxnLine{SilverSourceID: "hand"}, InstrumentExternalID: strp("example-flat"), Name: strp("Example Flat")},
+		{TxnLine: gold.TxnLine{SilverSourceID: "hand"}, InstrumentExternalID: strp("example-flat"),
+			TxnValue: gold.TxnValue{Description: strp("SAMPLE PAYEE REF")}},
+		{TxnLine: gold.TxnLine{SilverSourceID: "bank"}, TxnValue: gold.TxnValue{Description: strp("SAMPLE PAYEE REF")}},
 	}
 	table := rowsToTable(tx, txCols, true, output.FormatCSV, nil)
 	if got, want := cell(table.Columns, table.Rows, "name"), []string{"Example Flat", "***", "***"}; !slices.Equal(got, want) {
@@ -483,9 +484,9 @@ func TestTypedHoldingNameColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	cf := []gold.CashflowTransactionRow{
-		{SilverSourceID: "hand", Name: strp("Example Flat")},
-		{SilverSourceID: "bank", Name: strp("Sample Payer")},
-		{SilverSourceID: "hand"},
+		{TxnLine: gold.TxnLine{SilverSourceID: "hand"}, Name: strp("Example Flat")},
+		{TxnLine: gold.TxnLine{SilverSourceID: "bank"}, Name: strp("Sample Payer")},
+		{TxnLine: gold.TxnLine{SilverSourceID: "hand"}},
 	}
 	table = rowsToTable(cf, cfCols, true, output.FormatCSV, nil)
 	if got, want := cell(table.Columns, table.Rows, "name"), []string{"Example Flat", "***", ""}; !slices.Equal(got, want) {
@@ -1306,8 +1307,8 @@ func TestTypedHoldingNamesMaskTheirIDs(t *testing.T) {
 			issuers[strings.ToUpper(c.name)] = true
 		}
 		issuerRows = append(issuerRows, gold.ExposureIssuerRow{Issuer: c.name})
-		flows = append(flows, gold.CashflowTransactionRow{SilverSourceID: c.source, Name: &c.name})
-		lines = append(lines, gold.TransactionRow{SilverSourceID: c.source, Name: &c.name})
+		flows = append(flows, gold.CashflowTransactionRow{TxnLine: gold.TxnLine{SilverSourceID: c.source}, Name: &c.name})
+		lines = append(lines, gold.TransactionRow{TxnLine: gold.TxnLine{SilverSourceID: c.source}, Name: &c.name})
 	}
 	pick := func(t *testing.T, name string, cols []string) int {
 		t.Helper()

@@ -169,23 +169,12 @@ var defaultSpendCategoryColumns = []string{
 
 func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 	categories typedCategories) []columnSpec[gold.SpendTransactionRow] {
-	ref := func(r gold.SpendTransactionRow) accountRef {
-		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
-	}
+	line := txnLineCols(outCcy, kindOf, categories,
+		func(r gold.SpendTransactionRow) gold.TxnLine { return r.TxnLine },
+		func(r gold.SpendTransactionRow) gold.TxnValue { return r.TxnValue })
 	return []columnSpec[gold.SpendTransactionRow]{
-		strCol("silver_source", func(r gold.SpendTransactionRow) string { return r.SilverSourceID }),
-		asDate(strCol("date", func(r gold.SpendTransactionRow) string { return formatDate(r.OccurredAt) })),
-		asDate(strCol("datetime", func(r gold.SpendTransactionRow) string { return formatDateTime(r.OccurredAt) })),
-		// A card's display name is "<product> ****1234" on most
-		// issuers, so the account columns carry an account number and
-		// redact as one — the same class the account label takes
-		// everywhere else in the CLI.
-		accountCol(kindOf, ref),
-		accountIDCol("account_id", kindOf, ref),
-		textCol("account_kind", func(r gold.SpendTransactionRow) *string { return r.AccountKind }),
-		nicknameCol("account_nickname", func(r gold.SpendTransactionRow) *string { return r.Nickname }),
-		accountCategoryCol(categories, func(r gold.SpendTransactionRow) *string { return r.AccountCategory }),
-		strCol("kind", func(r gold.SpendTransactionRow) string { return r.Kind }),
+		line("silver_source"), line("date"), line("datetime"), line("account"), line("account_id"),
+		line("account_kind"), line("account_nickname"), line("account_category"), line("kind"),
 		// merchant_name redacts as free text, like the narrative it
 		// was named from. The fence (spending.RowTransferShaped) gates
 		// candidacy for the merchant STORE, not this column: a wire,
@@ -235,22 +224,9 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 		// two scopes meet, which is the only place the store's verdict
 		// is distinguishable from the backlog.
 		textCol("provenance", func(r gold.SpendTransactionRow) *string { return r.Provenance }),
-		// The counterparty is the adapter's merchant field, published
-		// unfiltered: on a card row it is a shop, on a transfer it is
-		// a person. Nothing upstream separates the two, so it takes
-		// the free-text class, which masks the cell whole — a wire or
-		// P2P narrative is multi-word, and any shape-based rule would
-		// wave exactly those through.
-		privateCol("counterparty", PrivacyFreeText, func(r gold.SpendTransactionRow) string { return strOrEmpty(r.Counterparty) }),
-		// The statement narrative the signature was folded from —
-		// same exposure as the counterparty, same class.
-		privateCol("description", PrivacyFreeText, func(r gold.SpendTransactionRow) string { return strOrEmpty(r.Description) }),
-		strCol("currency", func(r gold.SpendTransactionRow) string { return r.Currency }),
-		moneyCol("net_amount", func(r gold.SpendTransactionRow) *string { return r.NetAmount }),
-		outCcyCol("value", outCcy, func(r gold.SpendTransactionRow) *string { return r.ValueOutCcy }),
-		typedIDCol("tx_id", kindOf, func(r gold.SpendTransactionRow) (string, string) {
-			return r.SilverSourceID, r.TransactionExternalID
-		}),
+		// The description is the statement narrative the signature was
+		// folded from.
+		line("counterparty"), line("description"), line("currency"), line("net_amount"), line("value"), line("tx_id"),
 	}
 }
 

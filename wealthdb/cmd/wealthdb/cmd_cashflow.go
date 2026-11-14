@@ -476,19 +476,12 @@ func buildCashflowCoverageColumnRegistry(period string,
 
 func buildCashflowTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 	categories typedCategories) []columnSpec[gold.CashflowTransactionRow] {
-	ref := func(r gold.CashflowTransactionRow) accountRef {
-		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
-	}
+	line := txnLineCols(outCcy, kindOf, categories,
+		func(r gold.CashflowTransactionRow) gold.TxnLine { return r.TxnLine },
+		func(r gold.CashflowTransactionRow) gold.TxnValue { return r.TxnValue })
 	return []columnSpec[gold.CashflowTransactionRow]{
-		strCol("silver_source", func(r gold.CashflowTransactionRow) string { return r.SilverSourceID }),
-		asDate(strCol("date", func(r gold.CashflowTransactionRow) string { return formatDate(r.OccurredAt) })),
-		asDate(strCol("datetime", func(r gold.CashflowTransactionRow) string { return formatDateTime(r.OccurredAt) })),
-		accountCol(kindOf, ref),
-		accountIDCol("account_id", kindOf, ref),
-		textCol("account_kind", func(r gold.CashflowTransactionRow) *string { return r.AccountKind }),
-		nicknameCol("account_nickname", func(r gold.CashflowTransactionRow) *string { return r.Nickname }),
-		accountCategoryCol(categories, func(r gold.CashflowTransactionRow) *string { return r.AccountCategory }),
-		strCol("kind", func(r gold.CashflowTransactionRow) string { return r.Kind }),
+		line("silver_source"), line("date"), line("datetime"), line("account"), line("account_id"),
+		line("account_kind"), line("account_nickname"), line("account_category"), line("kind"),
 		strCol("section", func(r gold.CashflowTransactionRow) string { return r.Section }),
 		strCol("class", func(r gold.CashflowTransactionRow) string { return r.ClassLabel }),
 		strCol("group", func(r gold.CashflowTransactionRow) string { return r.GroupLabel }),
@@ -513,14 +506,7 @@ func buildCashflowTransactionColumnRegistry(outCcy string, kindOf func(string) s
 		textCol("spend_detailed", func(r gold.CashflowTransactionRow) *string { return r.SpendDetailed }),
 		textCol("income_detailed", func(r gold.CashflowTransactionRow) *string { return r.IncomeDetailed }),
 		textCol("provenance", func(r gold.CashflowTransactionRow) *string { return r.Provenance }),
-		strCol("currency", func(r gold.CashflowTransactionRow) string { return r.Currency }),
-		moneyCol("net_amount", func(r gold.CashflowTransactionRow) *string { return r.NetAmount }),
-		outCcyCol("value", outCcy, func(r gold.CashflowTransactionRow) *string { return r.ValueOutCcy }),
-		privateCol("counterparty", PrivacyFreeText, func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Counterparty) }),
-		privateCol("description", PrivacyFreeText, func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Description) }),
-		typedIDCol("tx_id", kindOf, func(r gold.CashflowTransactionRow) (string, string) {
-			return r.SilverSourceID, r.TransactionExternalID
-		}),
+		line("currency"), line("net_amount"), line("value"), line("counterparty"), line("description"), line("tx_id"),
 	}
 }
 

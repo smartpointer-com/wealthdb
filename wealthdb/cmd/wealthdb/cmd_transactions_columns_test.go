@@ -109,8 +109,8 @@ func TestTransactionNamePrivacyFollowsFallback(t *testing.T) {
 	instrument := "Example Total Market Index ETF"
 	narrative := "PAYMENT SAMPLE PAYEE ZZ EXAMPLETOWN REF 000000"
 
-	joined := gold.TransactionRow{Name: &instrument, Description: &narrative}
-	fallback := gold.TransactionRow{Description: &narrative}
+	joined := gold.TransactionRow{Name: &instrument, TxnValue: gold.TxnValue{Description: &narrative}}
+	fallback := gold.TransactionRow{TxnValue: gold.TxnValue{Description: &narrative}}
 
 	on := rowsToTable([]gold.TransactionRow{joined, fallback}, cols, true, output.FormatTable, nil)
 	if on.Rows[0][0] != instrument {

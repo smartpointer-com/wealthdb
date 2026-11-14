@@ -158,19 +158,12 @@ var defaultIncomeTypeColumns = []string{
 
 func buildIncomeTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 	categories typedCategories) []columnSpec[gold.IncomeTransactionRow] {
-	ref := func(r gold.IncomeTransactionRow) accountRef {
-		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
-	}
+	line := txnLineCols(outCcy, kindOf, categories,
+		func(r gold.IncomeTransactionRow) gold.TxnLine { return r.TxnLine },
+		func(r gold.IncomeTransactionRow) gold.TxnValue { return r.TxnValue })
 	return []columnSpec[gold.IncomeTransactionRow]{
-		strCol("silver_source", func(r gold.IncomeTransactionRow) string { return r.SilverSourceID }),
-		asDate(strCol("date", func(r gold.IncomeTransactionRow) string { return formatDate(r.OccurredAt) })),
-		asDate(strCol("datetime", func(r gold.IncomeTransactionRow) string { return formatDateTime(r.OccurredAt) })),
-		accountCol(kindOf, ref),
-		accountIDCol("account_id", kindOf, ref),
-		textCol("account_kind", func(r gold.IncomeTransactionRow) *string { return r.AccountKind }),
-		nicknameCol("account_nickname", func(r gold.IncomeTransactionRow) *string { return r.Nickname }),
-		accountCategoryCol(categories, func(r gold.IncomeTransactionRow) *string { return r.AccountCategory }),
-		strCol("kind", func(r gold.IncomeTransactionRow) string { return r.Kind }),
+		line("silver_source"), line("date"), line("datetime"), line("account"), line("account_id"),
+		line("account_kind"), line("account_nickname"), line("account_category"), line("kind"),
 		// The payer takes the FREE-TEXT class, and that most of the
 		// base fills it with an instrument name does not change it: a
 		// column takes the class of the worst thing it can hold. On a
@@ -188,22 +181,17 @@ func buildIncomeTransactionColumnRegistry(outCcy string, kindOf func(string) str
 		// it.
 		textCol("provider_income_type", func(r gold.IncomeTransactionRow) *string { return r.ProviderIncomeLabel }),
 		textCol("provider_income_type_id", func(r gold.IncomeTransactionRow) *string { return r.ProviderIncomeDetailed }),
-		strCol("currency", func(r gold.IncomeTransactionRow) string { return r.Currency }),
-		moneyCol("net_amount", func(r gold.IncomeTransactionRow) *string { return r.NetAmount }),
-		outCcyCol("value", outCcy, func(r gold.IncomeTransactionRow) *string { return r.ValueOutCcy }),
+		line("currency"), line("net_amount"), line("value"),
 		// The raw narrative the signature was folded from. Free text on
 		// both counts: it is what a bank printed, and on a deposit that
 		// is whoever sent the money.
-		privateCol("counterparty", PrivacyFreeText, func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.Counterparty) }),
-		privateCol("description", PrivacyFreeText, func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.Description) }),
+		line("counterparty"), line("description"),
 		// The source's own id for the line. INCOME.md §8 sends a reader
 		// to `wealthdb transactions` to see both families on one row,
 		// and without this there is no key to join the two listings on.
 		// Spending's transactions view and `wealthdb transactions` both
 		// offer it.
-		typedIDCol("tx_id", kindOf, func(r gold.IncomeTransactionRow) (string, string) {
-			return r.SilverSourceID, r.TransactionExternalID
-		}),
+		line("tx_id"),
 	}
 }
 

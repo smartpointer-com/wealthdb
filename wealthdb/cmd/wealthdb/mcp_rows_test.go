@@ -96,14 +96,17 @@ func TestNearMiss(t *testing.T) {
 func testSpendLines(t *testing.T, privacy bool) *resultSet {
 	t.Helper()
 	rows := []gold.SpendTransactionRow{
-		{SilverSourceID: "bank", MerchantName: strp("Corner Market"), SpendLabel: strp("Groceries"),
-			SpendDetailed: strp("FOOD_AND_DRINK_GROCERIES"), ValueOutCcy: strp("-42.10"), DisplayName: strp("Everyday")},
-		{SilverSourceID: "card", MerchantName: strp("Heron Air"), SpendLabel: strp("Flights"),
-			SpendDetailed: strp("TRAVEL_FLIGHTS"), ValueOutCcy: strp("-900.00"), DisplayName: strp("Rewards card")},
-		{SilverSourceID: "card", MerchantName: strp("Corner Market"), SpendLabel: strp("Groceries"),
-			SpendDetailed: strp("FOOD_AND_DRINK_GROCERIES"), ValueOutCcy: strp("15.00"), DisplayName: strp("Rewards card")},
-		{SilverSourceID: "bank", MerchantName: strp("Paper | Ink"), SpendLabel: strp("Office supplies"),
-			SpendDetailed: strp("GENERAL_MERCHANDISE_OFFICE_SUPPLIES"), DisplayName: strp("Everyday")},
+		{TxnLine: gold.TxnLine{SilverSourceID: "bank", DisplayName: strp("Everyday")}, MerchantName: strp("Corner Market"),
+			SpendLabel: strp("Groceries"), SpendDetailed: strp("FOOD_AND_DRINK_GROCERIES"),
+			TxnValue: gold.TxnValue{ValueOutCcy: strp("-42.10")}},
+		{TxnLine: gold.TxnLine{SilverSourceID: "card", DisplayName: strp("Rewards card")}, MerchantName: strp("Heron Air"),
+			SpendLabel: strp("Flights"), SpendDetailed: strp("TRAVEL_FLIGHTS"),
+			TxnValue: gold.TxnValue{ValueOutCcy: strp("-900.00")}},
+		{TxnLine: gold.TxnLine{SilverSourceID: "card", DisplayName: strp("Rewards card")}, MerchantName: strp("Corner Market"),
+			SpendLabel: strp("Groceries"), SpendDetailed: strp("FOOD_AND_DRINK_GROCERIES"),
+			TxnValue: gold.TxnValue{ValueOutCcy: strp("15.00")}},
+		{TxnLine: gold.TxnLine{SilverSourceID: "bank", DisplayName: strp("Everyday")}, MerchantName: strp("Paper | Ink"),
+			SpendLabel: strp("Office supplies"), SpendDetailed: strp("GENERAL_MERCHANDISE_OFFICE_SUPPLIES")},
 	}
 	rep := newReport(buildSpendTransactionColumnRegistry("USD", noKinds, nil), defaultSpendTransactionColumns,
 		func(context.Context, *sql.DB) ([]gold.SpendTransactionRow, error) { return rows, nil })
@@ -161,8 +164,9 @@ func TestPseudonymFiltersMatchWholeCells(t *testing.T) {
 	t.Parallel()
 	var rows []gold.SpendTransactionRow
 	for i := range 12 {
-		rows = append(rows, gold.SpendTransactionRow{SilverSourceID: "bank", Nickname: strp(fmt.Sprintf("Sleeve %d", i)),
-			Description: strp(fmt.Sprintf("nickname-%d", i+1))})
+		rows = append(rows, gold.SpendTransactionRow{
+			TxnLine:  gold.TxnLine{SilverSourceID: "bank", Nickname: strp(fmt.Sprintf("Sleeve %d", i))},
+			TxnValue: gold.TxnValue{Description: strp(fmt.Sprintf("nickname-%d", i+1))}})
 	}
 	rep := newReport(buildSpendTransactionColumnRegistry("USD", noKinds, nil), defaultSpendTransactionColumns,
 		func(context.Context, *sql.DB) ([]gold.SpendTransactionRow, error) { return rows, nil })

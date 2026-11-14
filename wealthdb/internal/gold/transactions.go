@@ -5,36 +5,72 @@ import (
 	"database/sql"
 )
 
-// TransactionRow is one row of the gold transactions readout.
-// Decimal columns come back as canonical strings (DuckDB CAST to
-// VARCHAR with trailing-zero trim, matching PositionRow). The
-// joined account / instrument fields are nullable and the consumer
-// chooses fallbacks for display.
-//
-// The field ORDER is load-bearing: TransactionsBetween scans
-// report_transactions positionally, so this struct, the scan targets
-// there, and the macro's projection must be edited together.
-type TransactionRow struct {
+// TxnLine is what every transaction-grain readout leads with: the
+// line's key, when it happened, the account it sits on and its kind.
+// The account fields are nullable and the consumer chooses fallbacks
+// for display.
+type TxnLine struct {
 	SilverSourceID        string
 	TransactionExternalID string
 	OccurredAt            int64
 	AccountExternalID     string
 	AccountKind           *string // accounts.account_kind
 	DisplayName           *string // accounts.display_name
-	RelationshipID        *string
 	Nickname              *string
 	AccountCategory       *string
-	InstrumentExternalID  *string
-	Symbol                *string // instruments.symbol
-	Name                  *string // instruments.name
-	AssetClass            *string // instruments.asset_class
 	Kind                  string
-	Currency              string
-	GrossAmount           *string
-	NetAmount             *string
-	Quantity              *string
-	Price                 *string
-	Description           *string // transactions.description; free-text label
+}
+
+// TxnValue is what a transaction-grain readout ends with: the line's
+// amount in its own currency, its narrative, its counterparty and its
+// value in the output currency.
+type TxnValue struct {
+	Currency     string
+	NetAmount    *string
+	Description  *string // transactions.description; free-text label
+	Counterparty *string
+	// ValueOutCcy is NetAmount converted to the requested output
+	// currency at occurred_at by the macro. Nil when no FX path
+	// resolves.
+	ValueOutCcy *string
+}
+
+// scanHead is the scan targets of a TxnLine, in the order the family
+// macros lead with it.
+func (l *TxnLine) scanHead() []any {
+	return []any{
+		&l.SilverSourceID, &l.TransactionExternalID, &l.OccurredAt,
+		&l.AccountExternalID, str(&l.AccountKind), str(&l.DisplayName), str(&l.Nickname), str(&l.AccountCategory),
+		&l.Kind,
+	}
+}
+
+// scanTail is the scan targets of a TxnValue, in the order the family
+// macros end with it.
+func (v *TxnValue) scanTail() []any {
+	return []any{&v.Currency, dec(&v.NetAmount), str(&v.Description), str(&v.Counterparty), dec(&v.ValueOutCcy)}
+}
+
+// TransactionRow is one row of the gold transactions readout.
+// Decimal columns come back as canonical strings (DuckDB CAST to
+// VARCHAR with trailing-zero trim, matching PositionRow). The
+// joined instrument fields are nullable like the account's.
+//
+// The readout carries no counterparty: TxnValue.Counterparty stays
+// nil. Its columns interleave the line's with its own, so
+// TransactionsBetween lists every scan target itself, in the macro's
+// order.
+type TransactionRow struct {
+	TxnLine
+	TxnValue
+	RelationshipID       *string
+	InstrumentExternalID *string
+	Symbol               *string // instruments.symbol
+	Name                 *string // instruments.name
+	AssetClass           *string // instruments.asset_class
+	GrossAmount          *string
+	Quantity             *string
+	Price                *string
 	// MerchantName, SpendPrimary and SpendDetailed come from the
 	// spending overlay (spend_txn_categories): the
 	// merchant the row's signature resolved to and the category the
@@ -85,10 +121,6 @@ type TransactionRow struct {
 	CashflowSection *string
 	CashflowClass   *string
 	CashflowGroup   *string
-	// ValueOutCcy is NetAmount converted to the requested output
-	// currency at occurred_at by the report_transactions macro (flat
-	// nearest-rate FX in SQL). Nil when no FX path resolves.
-	ValueOutCcy *string
 }
 
 // SortOrder controls the row ordering for TransactionsBetween.
@@ -110,8 +142,8 @@ const (
 // emits ascending, so the descending case re-sorts here.
 //
 // `SELECT *` with a positional Scan: any column added to the macro
-// must be added to TransactionRow and to the scan list below in the
-// same position, in the same change as the macro.
+// must be added to TransactionRow and to the scan list below, in the
+// same position and in the same change as the macro.
 func TransactionsBetween(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy string, order SortOrder) ([]TransactionRow, error) {
 	q := `SELECT * FROM report_transactions(?, ?, ?)`
 	if order == SortDescending {

@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"slices"
 )
 
 // The read side of the spending reports (derived/40_flows.sql). Three
@@ -65,20 +66,15 @@ type SpendCategoryRow struct {
 // MerchantSignature and Description beside it, and all three can carry
 // a person. The CLI gives every one of them the free-text privacy
 // class for that reason.
+//
+// ValueOutCcy is canonically signed, spend negative, unlike the
+// aggregate reports' sign-split magnitudes.
 type SpendTransactionRow struct {
-	SilverSourceID        string
-	TransactionExternalID string
-	OccurredAt            int64
-	AccountExternalID     string
-	AccountKind           *string
-	DisplayName           *string
-	Nickname              *string
-	AccountCategory       *string
-	Kind                  string
-	MerchantSignature     *string
-	MerchantName          *string
-	SpendPrimary          *string
-	SpendDetailed         *string
+	TxnLine
+	MerchantSignature *string
+	MerchantName      *string
+	SpendPrimary      *string
+	SpendDetailed     *string
 	// SpendLabel and SpendPrimaryLabel are what the two above read as
 	// (migration 0058) — presentation only, never a key.
 	SpendLabel        *string
@@ -91,15 +87,7 @@ type SpendTransactionRow struct {
 	// with SpendDetailed: the two disagree by design.
 	ProviderSpendDetailed *string
 	ProviderSpendLabel    *string
-	Currency              string
-	NetAmount             *string
-	Description           *string
-	Counterparty          *string
-	// ValueOutCcy is NetAmount converted to the requested output
-	// currency at occurred_at by the macro. Nil when no FX path
-	// resolves. Canonically signed — spend negative — unlike the
-	// aggregate reports' sign-split magnitudes.
-	ValueOutCcy *string
+	TxnValue
 }
 
 // SpendingSummary returns one row per period bucket over
@@ -136,13 +124,10 @@ func SpendingCategories(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int6
 func SpendingTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy string) ([]SpendTransactionRow, error) {
 	return scanRows(ctx, db, "SpendingTransactions", `SELECT * FROM report_spending_transactions(?, ?, ?)`,
 		[]any{fromEpoch, toEpoch, outCcy}, func(r *SpendTransactionRow) []any {
-			return []any{
-				&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
-				&r.AccountExternalID, str(&r.AccountKind), str(&r.DisplayName), str(&r.Nickname), str(&r.AccountCategory),
-				&r.Kind, str(&r.MerchantSignature), str(&r.MerchantName), str(&r.SpendPrimary), str(&r.SpendDetailed),
+			return slices.Concat(r.scanHead(), []any{
+				str(&r.MerchantSignature), str(&r.MerchantName), str(&r.SpendPrimary), str(&r.SpendDetailed),
 				str(&r.SpendLabel), str(&r.SpendPrimaryLabel),
-				str(&r.Provenance), str(&r.ProviderSpendDetailed), str(&r.ProviderSpendLabel), &r.Currency, dec(&r.NetAmount),
-				str(&r.Description), str(&r.Counterparty), dec(&r.ValueOutCcy),
-			}
+				str(&r.Provenance), str(&r.ProviderSpendDetailed), str(&r.ProviderSpendLabel),
+			}, r.scanTail())
 		})
 }

@@ -52,21 +52,71 @@ func transactionsReport(req request) *report {
 
 // ---- column registry -----------------------------------------------------
 
+// txnLineCols are the columns of a gold.TxnLine and a gold.TxnValue,
+// which every transaction-grain view shares, by name: each registry
+// lists them in its own order. line and value read the two off a row.
+// A name the two do not hold panics: the registry misspells it.
+func txnLineCols[T any](outCcy string, kindOf func(string) string, categories typedCategories,
+	line func(T) gold.TxnLine, value func(T) gold.TxnValue) func(name string) columnSpec[T] {
+	ref := func(r T) accountRef {
+		l := line(r)
+		return accountRef{source: l.SilverSourceID, name: l.DisplayName, nickname: l.Nickname, id: l.AccountExternalID}
+	}
+	specs := []columnSpec[T]{
+		strCol("silver_source", func(r T) string { return line(r).SilverSourceID }),
+		asDate(strCol("date", func(r T) string { return formatDate(line(r).OccurredAt) })),
+		asDate(strCol("datetime", func(r T) string { return formatDateTime(line(r).OccurredAt) })),
+		// A card's display name is "<product> ****1234" on most
+		// issuers, so the account columns carry an account number and
+		// redact as one — the same class the account label takes
+		// everywhere else in the CLI.
+		accountCol(kindOf, ref),
+		accountIDCol("account_id", kindOf, ref),
+		textCol("account_kind", func(r T) *string { return line(r).AccountKind }),
+		nicknameCol("account_nickname", func(r T) *string { return line(r).Nickname }),
+		accountCategoryCol(categories, func(r T) *string { return line(r).AccountCategory }),
+		strCol("kind", func(r T) string { return line(r).Kind }),
+		strCol("currency", func(r T) string { return value(r).Currency }),
+		moneyCol("net_amount", func(r T) *string { return value(r).NetAmount }),
+		outCcyCol("value", outCcy, func(r T) *string { return value(r).ValueOutCcy }),
+		// The counterparty is the adapter's merchant field, published
+		// unfiltered: on a card row it is a shop, on a transfer it is
+		// a person. Nothing upstream separates the two, so it takes
+		// the free-text class, which masks the cell whole — a wire or
+		// P2P narrative is multi-word, and any shape-based rule would
+		// wave exactly those through.
+		privateCol("counterparty", PrivacyFreeText, func(r T) string { return strOrEmpty(value(r).Counterparty) }),
+		// The statement narrative, verbatim: a bank line carries a
+		// counterparty's name, address and reference text, and gold
+		// appends the payer's memo behind the separator. Same exposure
+		// as the counterparty, same class: the cell masks whole,
+		// because there is no safe slice of a narrative to expose.
+		privateCol("description", PrivacyFreeText, func(r T) string { return strOrEmpty(value(r).Description) }),
+		typedIDCol("tx_id", kindOf, func(r T) (string, string) {
+			l := line(r)
+			return l.SilverSourceID, l.TransactionExternalID
+		}),
+	}
+	return func(name string) columnSpec[T] {
+		for _, c := range specs {
+			if c.Name == name {
+				return c
+			}
+		}
+		panic("txnLineCols: no column " + name)
+	}
+}
+
 func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 	categories typedCategories) []columnSpec[gold.TransactionRow] {
-	ref := func(r gold.TransactionRow) accountRef {
-		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
-	}
+	line := txnLineCols(outCcy, kindOf, categories,
+		func(r gold.TransactionRow) gold.TxnLine { return r.TxnLine },
+		func(r gold.TransactionRow) gold.TxnValue { return r.TxnValue })
 	holding := func(r gold.TransactionRow) (string, string) {
 		return r.SilverSourceID, strOrEmpty(r.InstrumentExternalID)
 	}
 	return []columnSpec[gold.TransactionRow]{
-		strCol("silver_source", func(r gold.TransactionRow) string { return r.SilverSourceID }),
-		asDate(strCol("date", func(r gold.TransactionRow) string { return formatDate(r.OccurredAt) })),
-		asDate(strCol("datetime", func(r gold.TransactionRow) string { return formatDateTime(r.OccurredAt) })),
-		accountCol(kindOf, ref),
-		accountIDCol("account_id", kindOf, ref),
-		strCol("kind", func(r gold.TransactionRow) string { return r.Kind }),
+		line("silver_source"), line("date"), line("datetime"), line("account"), line("account_id"), line("kind"),
 		textCol("symbol", func(r gold.TransactionRow) *string { return r.Symbol }),
 		holdingNameCol(columnSpec[gold.TransactionRow]{Name: "name",
 			Extract: func(r gold.TransactionRow) string {
@@ -100,13 +150,7 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		// and this is the value such an entry is keyed by.
 		holdingIDCol(textCol("instrument_hint", func(r gold.TransactionRow) *string { return r.InstrumentHint }),
 			kindOf, func(r gold.TransactionRow) (string, string) { return r.SilverSourceID, strOrEmpty(r.InstrumentHint) }),
-		// The statement narrative, verbatim: a bank line carries a
-		// counterparty's name, address and reference text, and gold
-		// appends the payer's memo behind the separator. Free-text
-		// class, matching the same column on the spending view — the
-		// cell masks whole, because there is no safe slice of a
-		// narrative to expose.
-		privateCol("description", PrivacyFreeText, func(r gold.TransactionRow) string { return strOrEmpty(r.Description) }),
+		line("description"),
 		// The spending overlay's verdict on the row (spend_txn_categories).
 		// Empty for everything the enrichment pass does not reach:
 		// investment rows, and anything outside the spending account
@@ -153,19 +197,14 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		textCol("cashflow_class", func(r gold.TransactionRow) *string { return r.CashflowClass }),
 		textCol("cashflow_group", func(r gold.TransactionRow) *string { return r.CashflowGroup }),
 		textCol("asset_class", func(r gold.TransactionRow) *string { return r.AssetClass }),
-		strCol("currency", func(r gold.TransactionRow) string { return r.Currency }),
+		line("currency"),
 		moneyCol("gross_amount", func(r gold.TransactionRow) *string { return r.GrossAmount }),
-		moneyCol("net_amount", func(r gold.TransactionRow) *string { return r.NetAmount }),
+		line("net_amount"),
 		quantityCol("quantity", func(r gold.TransactionRow) *string { return r.Quantity }),
 		kindCol("price", MoneyColumn, func(r gold.TransactionRow) string { return strOrEmpty(r.Price) }),
-		outCcyCol("value", outCcy, func(r gold.TransactionRow) *string { return r.ValueOutCcy }),
-		typedIDCol("tx_id", kindOf, func(r gold.TransactionRow) (string, string) {
-			return r.SilverSourceID, r.TransactionExternalID
-		}),
+		line("value"), line("tx_id"),
 		privateCol("relationship_id", PrivacyAccountID, func(r gold.TransactionRow) string { return strOrEmpty(r.RelationshipID) }),
-		nicknameCol("account_nickname", func(r gold.TransactionRow) *string { return r.Nickname }),
-		accountCategoryCol(categories, func(r gold.TransactionRow) *string { return r.AccountCategory }),
-		textCol("account_kind", func(r gold.TransactionRow) *string { return r.AccountKind }),
+		line("account_nickname"), line("account_category"), line("account_kind"),
 	}
 }
 

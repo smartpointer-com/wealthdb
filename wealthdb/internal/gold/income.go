@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"slices"
 )
 
 // The income readers: spending.go in the other direction.
@@ -69,20 +70,15 @@ type IncomeTypeRow struct {
 // fold as often as a written name, like PayerSignature and Description
 // beside it, and all three can carry a person: the CLI gives every one
 // of them the free-text privacy class for that reason.
+//
+// ValueOutCcy is canonically signed, a receipt positive and a reversal
+// negative, unlike the aggregate reports' sign-split magnitudes.
 type IncomeTransactionRow struct {
-	SilverSourceID        string
-	TransactionExternalID string
-	OccurredAt            int64
-	AccountExternalID     string
-	AccountKind           *string
-	DisplayName           *string
-	Nickname              *string
-	AccountCategory       *string
-	Kind                  string
-	PayerSignature        *string
-	PayerName             *string
-	IncomePrimary         *string
-	IncomeDetailed        *string
+	TxnLine
+	PayerSignature *string
+	PayerName      *string
+	IncomePrimary  *string
+	IncomeDetailed *string
 	// IncomeLabel and IncomePrimaryLabel are what the two above read
 	// as — presentation only, never a key.
 	IncomeLabel        *string
@@ -95,15 +91,7 @@ type IncomeTransactionRow struct {
 	// disagree by design.
 	ProviderIncomeDetailed *string
 	ProviderIncomeLabel    *string
-	Currency               string
-	NetAmount              *string
-	Description            *string
-	Counterparty           *string
-	// ValueOutCcy is NetAmount converted to the requested output
-	// currency at occurred_at by the macro. Nil when no FX path
-	// resolves. Canonically signed — a receipt positive, a reversal
-	// negative — unlike the aggregate reports' sign-split magnitudes.
-	ValueOutCcy *string
+	TxnValue
 }
 
 // IncomeSummary returns one row per period bucket over
@@ -134,13 +122,10 @@ func IncomeTypes(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outC
 func IncomeTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy string) ([]IncomeTransactionRow, error) {
 	return scanRows(ctx, db, "IncomeTransactions", `SELECT * FROM report_income_transactions(?, ?, ?)`,
 		[]any{fromEpoch, toEpoch, outCcy}, func(r *IncomeTransactionRow) []any {
-			return []any{
-				&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
-				&r.AccountExternalID, str(&r.AccountKind), str(&r.DisplayName), str(&r.Nickname), str(&r.AccountCategory),
-				&r.Kind, str(&r.PayerSignature), str(&r.PayerName), str(&r.IncomePrimary), str(&r.IncomeDetailed),
+			return slices.Concat(r.scanHead(), []any{
+				str(&r.PayerSignature), str(&r.PayerName), str(&r.IncomePrimary), str(&r.IncomeDetailed),
 				str(&r.IncomeLabel), str(&r.IncomePrimaryLabel),
-				str(&r.Provenance), str(&r.ProviderIncomeDetailed), str(&r.ProviderIncomeLabel), &r.Currency, dec(&r.NetAmount),
-				str(&r.Description), str(&r.Counterparty), dec(&r.ValueOutCcy),
-			}
+				str(&r.Provenance), str(&r.ProviderIncomeDetailed), str(&r.ProviderIncomeLabel),
+			}, r.scanTail())
 		})
 }

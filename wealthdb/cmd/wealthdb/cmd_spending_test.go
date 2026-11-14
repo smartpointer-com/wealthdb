@@ -236,12 +236,10 @@ func TestSpendingPrivacyRedacts(t *testing.T) {
 	description := "ZELLE PAYMENT TO " + spendTestCounterparty
 	value := "42.5"
 	row := gold.SpendTransactionRow{
-		AccountExternalID: "CARD0001234",
+		TxnLine:           gold.TxnLine{AccountExternalID: "CARD0001234"},
 		MerchantName:      &merchant,
 		MerchantSignature: &signature,
-		Counterparty:      &counterparty,
-		Description:       &description,
-		ValueOutCcy:       &value,
+		TxnValue:          gold.TxnValue{Counterparty: &counterparty, Description: &description, ValueOutCcy: &value},
 	}
 
 	off := rowsToTable([]gold.SpendTransactionRow{row}, cols, false, output.FormatTable, nil)

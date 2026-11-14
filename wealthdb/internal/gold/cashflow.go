@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"slices"
 )
 
 // The cashflow readers: spending.go and income.go with five grains
@@ -144,21 +145,13 @@ type CashflowSankeyRow struct {
 // carry a person, which is why the CLI gives it the free-text privacy
 // class.
 type CashflowTransactionRow struct {
-	SilverSourceID        string
-	TransactionExternalID string
-	OccurredAt            int64
-	AccountExternalID     string
-	AccountKind           *string
-	DisplayName           *string
-	Nickname              *string
-	AccountCategory       *string
-	Kind                  string
-	Section               string
-	Class                 string
-	ClassLabel            string
-	Group                 string
-	GroupLabel            string
-	Name                  *string
+	TxnLine
+	Section    string
+	Class      string
+	ClassLabel string
+	Group      string
+	GroupLabel string
+	Name       *string
 	// Verdict is the family value the node was resolved from, and
 	// SpendDetailed / IncomeDetailed are the two overlays' own. A row
 	// can carry both: a deposit the matcher paired is
@@ -167,14 +160,7 @@ type CashflowTransactionRow struct {
 	SpendDetailed  *string
 	IncomeDetailed *string
 	Provenance     *string
-	Currency       string
-	NetAmount      *string
-	Description    *string
-	Counterparty   *string
-	// ValueOutCcy is NetAmount converted to the requested output
-	// currency at occurred_at by the macro. Nil when no FX path
-	// resolves.
-	ValueOutCcy *string
+	TxnValue
 }
 
 // CashflowSummary returns one row per period bucket over
@@ -222,13 +208,10 @@ func CashflowSankey(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, o
 func CashflowTransactions(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy string) ([]CashflowTransactionRow, error) {
 	return scanRows(ctx, db, "CashflowTransactions", `SELECT * FROM report_cashflow_transactions(?, ?, ?)`,
 		[]any{fromEpoch, toEpoch, outCcy}, func(r *CashflowTransactionRow) []any {
-			return []any{
-				&r.SilverSourceID, &r.TransactionExternalID, &r.OccurredAt,
-				&r.AccountExternalID, str(&r.AccountKind), str(&r.DisplayName), str(&r.Nickname), str(&r.AccountCategory),
-				&r.Kind, &r.Section, &r.Class, &r.ClassLabel, &r.Group, &r.GroupLabel,
+			return slices.Concat(r.scanHead(), []any{
+				&r.Section, &r.Class, &r.ClassLabel, &r.Group, &r.GroupLabel,
 				str(&r.Name), str(&r.Verdict), str(&r.SpendDetailed), str(&r.IncomeDetailed), str(&r.Provenance),
-				&r.Currency, dec(&r.NetAmount), str(&r.Description), str(&r.Counterparty), dec(&r.ValueOutCcy),
-			}
+			}, r.scanTail())
 		})
 }
 
