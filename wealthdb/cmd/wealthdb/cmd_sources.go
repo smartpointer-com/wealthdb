@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // ---- column registry -----------------------------------------------------
@@ -15,8 +14,7 @@ import (
 // total_value_<CCY> is the same at every grain.
 func buildSourceColumnRegistry(outCcy string) []columnSpec[gold.SourceRow] {
 	return []columnSpec[gold.SourceRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.SourceRow) string { return r.SilverSourceID }},
+		strCol("silver_source", func(r gold.SourceRow) string { return r.SilverSourceID }),
 		dateCol("snapshot_date", func(r gold.SourceRow) int64 { return r.SnapshotAt }),
 		// The date of the latest mark the snapshot rides on: earlier than
 		// snapshot_date where a read dated the snapshot after the marks.
@@ -31,9 +29,9 @@ func buildSourceColumnRegistry(outCcy string) []columnSpec[gold.SourceRow] {
 		textCol("tax_wrapper", func(r gold.SourceRow) *string { return r.TaxWrapper }),
 		textCol("management_style", func(r gold.SourceRow) *string { return r.ManagementStyle }),
 
-		moneyCol("positions_value", "", func(r gold.SourceRow) *string { return r.PositionsValueBase }),
-		moneyCol("cash_balance", "", func(r gold.SourceRow) *string { return r.CashBalanceBase }),
-		moneyCol("total_value", "", func(r gold.SourceRow) *string { return r.TotalValueBase }),
+		moneyCol("positions_value", func(r gold.SourceRow) *string { return r.PositionsValueBase }),
+		moneyCol("cash_balance", func(r gold.SourceRow) *string { return r.CashBalanceBase }),
+		moneyCol("total_value", func(r gold.SourceRow) *string { return r.TotalValueBase }),
 
 		outCcyTwin("positions_value", outCcy, func(r gold.SourceRow) *string { return r.PositionsValueOutCcy }),
 		outCcyTwin("cash_balance", outCcy, func(r gold.SourceRow) *string { return r.CashBalanceOutCcy }),

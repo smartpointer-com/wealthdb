@@ -13,7 +13,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -296,7 +295,7 @@ func positionField(p *yield.Position, get func(*yield.Position) string) string {
 func buildProjectionColumns(outCcy, period string) []columnSpec[yield.ProjectionRow] {
 	type row = yield.ProjectionRow
 	cols := []columnSpec[row]{
-		{Name: "period", Align: output.AlignLeft, Date: true, Extract: func(r row) string {
+		asDate(strCol("period", func(r row) string {
 			switch {
 			case r.Total:
 				return "total"
@@ -305,7 +304,7 @@ func buildProjectionColumns(outCcy, period string) []columnSpec[yield.Projection
 			}
 			at := r.Period.Unix()
 			return periodLabel(&at, period)
-		}},
+		})),
 		floatValCol("received", outCcy, func(r row) float64 { return r.Received }),
 		floatValCol("expected", outCcy, func(r row) float64 { return r.Expected }),
 		floatValCol("total", outCcy, func(r row) float64 { return r.Received + r.Expected }),
@@ -359,8 +358,7 @@ func buildCalendarColumns(outCcy string, kindOf func(string) string) []columnSpe
 			return "income"
 		}),
 		strCol("currency", func(r row) string { return r.Currency }),
-		{Name: "amount", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r row) string { return fmt.Sprintf("%.2f", r.Own) }},
+		kindCol("amount", MoneyColumn, func(r row) string { return fmt.Sprintf("%.2f", r.Own) }),
 		floatValCol("value", outCcy, func(r row) float64 { return r.Value }),
 		floatMoneyCol("withheld", outCcy, func(r row) *float64 { return r.Withheld }),
 		strCol("basis", func(r row) string { return string(r.Basis) }),
@@ -402,13 +400,12 @@ func buildIncomeEntityColumns(outCcy string, grain yield.Grain, kindOf func(stri
 			name,
 			strCol("vehicle", incomePos(func(p *yield.Position) string { return p.Vehicle })),
 			strCol("currency", incomePos(func(p *yield.Position) string { return p.Currency })),
-			col{Name: "quantity", Align: output.AlignRight, Privacy: PrivacyQuantity,
-				Extract: incomePos(func(p *yield.Position) string {
-					if p.Quantity == nil {
-						return ""
-					}
-					return strconv.FormatFloat(*p.Quantity, 'f', -1, 64)
-				})},
+			kindCol("quantity", QuantityColumn, incomePos(func(p *yield.Position) string {
+				if p.Quantity == nil {
+					return ""
+				}
+				return strconv.FormatFloat(*p.Quantity, 'f', -1, 64)
+			})),
 			priceCol(func(r row) *float64 {
 				if r.Position == nil {
 					return nil

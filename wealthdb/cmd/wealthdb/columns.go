@@ -21,15 +21,22 @@ import (
 type columnSpec[T any] struct {
 	Name   string
 	Header string // empty ⇒ same as Name (use for dynamic headers like value_<CCY>)
-	Align  output.Alignment
-	// Date marks a column whose cells are dates or periods: a filter
-	// condition reads its value through the date grammar.
-	Date    bool
+	// Kind is what the cells are. It sets the alignment, the kind a
+	// filter condition reads, the order of a sort and the default
+	// privacy class.
+	Kind ColumnKind
+	// Unit is the currency of a money column's figures: the holding's
+	// own, or the output currency, whose header ends in _<CCY>.
+	Unit MoneyUnit
+	// Twin names the column in the holding's own currency that this
+	// output-currency column converts; MCP sorts read the twin
+	// (columnLookup.resolve).
+	Twin    string
 	Extract func(T) string
 	// Privacy controls how the cell is redacted when the
 	// caller runs in privacy mode (`-p` / `--privacy` on the
 	// readout subcommands). PrivacyNone leaves the cell
-	// unchanged.
+	// unchanged, unless the column's kind hides it (class).
 	Privacy PrivacyClass
 	// PrivacyFunc, when non-nil, replaces Privacy for per-row
 	// decisions. Used where the right class depends on row
@@ -51,6 +58,51 @@ type columnSpec[T any] struct {
 	// source, or what the value is ("category", "nickname") and no
 	// source. Nil reads as the column's name and no source.
 	Pseudonym func(T) (prefix, source string)
+}
+
+// ColumnKind is what a column's cells are.
+type ColumnKind int
+
+const (
+	TextColumn ColumnKind = iota
+	CountColumn
+	NumberColumn   // a legible figure: years, a ratio such as P/E
+	PercentColumn  // a figure in percent, its header ending in _pct
+	MoneyColumn    // an amount of money, redacted as money
+	QuantityColumn // a share count, redacted as a quantity
+	DateColumn     // a date or a period, read through the date grammar
+)
+
+// align is how a column of the kind pads: text and dates to the left,
+// figures to the right.
+func (k ColumnKind) align() output.Alignment {
+	if k == TextColumn || k == DateColumn {
+		return output.AlignLeft
+	}
+	return output.AlignRight
+}
+
+// MoneyUnit is the currency of a money column's figures.
+type MoneyUnit int
+
+const (
+	OwnCurrency    MoneyUnit = iota // the holding's own
+	OutputCurrency                  // the report's output currency
+)
+
+// class is the column's privacy class: Privacy where it is set, else
+// the class of its kind. Money and a quantity are hidden; any other
+// kind is legible.
+func (c columnSpec[T]) class() PrivacyClass {
+	switch {
+	case c.Privacy != PrivacyNone:
+		return c.Privacy
+	case c.Kind == MoneyColumn:
+		return PrivacyMoney
+	case c.Kind == QuantityColumn:
+		return PrivacyQuantity
+	}
+	return PrivacyNone
 }
 
 // PrivacyClass tags a column with the redaction shape applied
@@ -298,7 +350,7 @@ func accountCol[T any](kindOf func(string) string, get func(T) accountRef) colum
 // accountIDCol is a report's account-id column, named name: the
 // account's external id, redacted as idClass says under -p.
 func accountIDCol[T any](name string, kindOf func(string) string, get func(T) accountRef) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Privacy: PrivacyAccountID,
+	return columnSpec[T]{Name: name, Privacy: PrivacyAccountID,
 		Extract:     func(r T) string { return get(r).id },
 		PrivacyFunc: func(r T) PrivacyClass { return get(r).idClass(kindOf) },
 		Pseudonym:   func(r T) (string, string) { return typedPseudonym(kindOf, get(r).source) }}
@@ -319,7 +371,7 @@ func portfolioCol[T any](name string, kindOf func(string) string,
 		}
 		return accountLabel(display, id)
 	}
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Privacy: PrivacyAccountID,
+	return columnSpec[T]{Name: name, Privacy: PrivacyAccountID,
 		Extract: label,
 		PrivacyFunc: func(r T) PrivacyClass {
 			source, id, _ := get(r)
@@ -424,7 +476,7 @@ func eitherCol[T any](name string, first func(T) bool, a, b columnSpec[T]) colum
 		}
 		return b
 	}
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Privacy: PrivacyAccountID,
+	return columnSpec[T]{Name: name, Privacy: PrivacyAccountID,
 		Extract:     func(r T) string { return pick(r).Extract(r) },
 		PrivacyFunc: func(r T) PrivacyClass { return pick(r).PrivacyFunc(r) },
 		PrivacyExtract: func(r T) string {
@@ -465,7 +517,7 @@ func typedHolding(kindOf func(string) string, source string) bool {
 // masks. get gives the row's source and key; every other row keeps
 // col's own rule. A holding's name takes holdingNameCol instead.
 func holdingIDCol[T any](col columnSpec[T], kindOf func(string) string, get func(T) (source, key string)) columnSpec[T] {
-	class, classOf := col.Privacy, col.PrivacyFunc
+	class, classOf := col.class(), col.PrivacyFunc
 	col.PrivacyFunc = func(r T) PrivacyClass {
 		if source, key := get(r); key != "" && typedHolding(kindOf, source) {
 			return PrivacyAccountID
@@ -495,7 +547,7 @@ func holdingNameCol[T any](col columnSpec[T], kindOf func(string) string, get fu
 // typedNameCol is col with the rows typed reports masked by their id
 // runs under -p (holdingNameCol); every other row keeps col's own rule.
 func typedNameCol[T any](col columnSpec[T], typed func(T) bool) columnSpec[T] {
-	class, classOf := col.Privacy, col.PrivacyFunc
+	class, classOf := col.class(), col.PrivacyFunc
 	shown := col.Extract
 	if col.PrivacyExtract != nil {
 		shown = col.PrivacyExtract
@@ -547,7 +599,7 @@ func holdingKeyCol[T any](name string, kindOf func(string) string, get func(T) s
 		}
 		return strings.TrimSuffix(key, id), id, true
 	}
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: get,
+	return columnSpec[T]{Name: name, Extract: get,
 		PrivacyFunc: func(r T) PrivacyClass {
 			_, _, holding := holdingKeyParts(get(r))
 			if _, _, typed := typedID(r); holding && !typed {
@@ -658,30 +710,50 @@ func typedAccountLabel(kindOf func(string) string, source string) bool {
 	return source == canonical.DeclaredSourceID || typedLabelKinds[kindOf(source)]
 }
 
-// moneyCol is a money column: two decimals, blank for nil, redacted as
-// money. header "" prints the name.
-func moneyCol[T any](name, header string, get func(T) *string) columnSpec[T] {
-	return columnSpec[T]{Name: name, Header: header, Align: output.AlignRight, Privacy: PrivacyMoney,
-		Extract: func(r T) string { return formatCents(get(r)) }}
+// moneyCol is a money column in the holding's own currency: two
+// decimals, blank for nil, redacted as money.
+func moneyCol[T any](name string, get func(T) *string) columnSpec[T] {
+	return kindCol(name, MoneyColumn, func(r T) string { return formatCents(get(r)) })
 }
 
 // outCcyTwin is the output-currency twin of a money column in the
 // holding's own currency: named <name>_outccy, printed <name>_<CCY>.
 // MCP sorts read the twin (columnLookup.resolve).
 func outCcyTwin[T any](name, outCcy string, get func(T) *string) columnSpec[T] {
-	return moneyCol(name+"_outccy", name+"_"+outCcy, get)
+	c := outCcyCol(name, outCcy, get)
+	c.Name, c.Twin = name+"_outccy", name
+	return c
 }
 
 // outCcyCol is a money figure only the output currency carries: its own
 // name, printed <name>_<CCY>.
 func outCcyCol[T any](name, outCcy string, get func(T) *string) columnSpec[T] {
-	return moneyCol(name, name+"_"+outCcy, get)
+	return inOutCcy(moneyCol(name, get), outCcy)
+}
+
+// valueCol is a holding's value in the output currency, named value:
+// market_value's twin.
+func valueCol[T any](outCcy string, get func(T) *string) columnSpec[T] {
+	c := outCcyCol("value", outCcy, get)
+	c.Twin = "market_value"
+	return c
+}
+
+// inOutCcy is the money column c in the output currency: printed
+// <name>_<CCY>.
+func inOutCcy[T any](c columnSpec[T], outCcy string) columnSpec[T] {
+	c.Header, c.Unit = c.Name+"_"+outCcy, OutputCurrency
+	return c
+}
+
+// kindCol is a column of kind whose cells get prints as they are.
+func kindCol[T any](name string, kind ColumnKind, get func(T) string) columnSpec[T] {
+	return columnSpec[T]{Name: name, Kind: kind, Extract: get}
 }
 
 // quantityCol is a quantity column, redacted as a quantity.
 func quantityCol[T any](name string, get func(T) *string) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignRight, Privacy: PrivacyQuantity,
-		Extract: func(r T) string { return strOrEmpty(get(r)) }}
+	return kindCol(name, QuantityColumn, func(r T) string { return strOrEmpty(get(r)) })
 }
 
 // textCol is a legible text column, blank for nil.
@@ -692,19 +764,26 @@ func textCol[T any](name string, get func(T) *string) columnSpec[T] {
 // nicknameCol is a nickname column, blank for nil. A nickname is the
 // customer's own words by definition, so -p prints it as a pseudonym.
 func nicknameCol[T any](name string, get func(T) *string) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Privacy: PrivacyPseudonym,
+	return columnSpec[T]{Name: name, Privacy: PrivacyPseudonym,
 		Extract:   func(r T) string { return strOrEmpty(get(r)) },
 		Pseudonym: func(T) (string, string) { return "nickname", "" }}
 }
 
 // strCol is a legible text column.
 func strCol[T any](name string, get func(T) string) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: get}
+	return kindCol(name, TextColumn, get)
+}
+
+// privateCol is a text column -p redacts as class.
+func privateCol[T any](name string, class PrivacyClass, get func(T) string) columnSpec[T] {
+	c := strCol(name, get)
+	c.Privacy = class
+	return c
 }
 
 // asDate marks c as a date column: its cells are dates or periods.
 func asDate[T any](c columnSpec[T]) columnSpec[T] {
-	c.Date = true
+	c.Kind = DateColumn
 	return c
 }
 
@@ -714,8 +793,7 @@ func qualityCol[T any](get func(T) string) columnSpec[T] { return strCol("qualit
 // floatMoneyCol is a money figure in the output currency, named name and
 // printed name_<CCY>, two decimals, blank for nil, redacted as money.
 func floatMoneyCol[T any](name, outCcy string, get func(T) *float64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Header: name + "_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
-		Extract: func(r T) string { return fixedOrBlank(get(r), 2) }}
+	return inOutCcy(kindCol(name, MoneyColumn, func(r T) string { return fixedOrBlank(get(r), 2) }), outCcy)
 }
 
 // floatValCol is floatMoneyCol of a figure every row has.
@@ -726,14 +804,13 @@ func floatValCol[T any](name, outCcy string, get func(T) float64) columnSpec[T] 
 // priceCol is a price per unit, or per 100 of a bond's face, four
 // decimals, redacted as money.
 func priceCol[T any](get func(T) *float64) columnSpec[T] {
-	return columnSpec[T]{Name: "price", Align: output.AlignRight, Privacy: PrivacyMoney,
-		Extract: func(r T) string { return fixedOrBlank(get(r), 4) }}
+	return kindCol("price", MoneyColumn, func(r T) string { return fixedOrBlank(get(r), 4) })
 }
 
 // decimalCol is a legible figure with two decimals, blank for nil: years,
 // a ratio such as P/E.
 func decimalCol[T any](name string, get func(T) *float64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string { return fixedOrBlank(get(r), 2) }}
+	return kindCol(name, NumberColumn, func(r T) string { return fixedOrBlank(get(r), 2) })
 }
 
 // tagNote is a tag a column prints and what it means: a quality tag, a
@@ -787,22 +864,22 @@ func strOrEmpty(p *string) string {
 // dateCol is a date column, blank where the epoch is 0: a source that
 // has produced no observations at all.
 func dateCol[T any](name string, get func(T) int64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Date: true, Extract: func(r T) string {
+	return asDate(strCol(name, func(r T) string {
 		if epoch := get(r); epoch != 0 {
 			return formatDate(epoch)
 		}
 		return ""
-	}}
+	}))
 }
 
 // datePtrCol is a date column, blank for nil.
 func datePtrCol[T any](name string, get func(T) *int64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Date: true, Extract: func(r T) string {
+	return asDate(strCol(name, func(r T) string {
 		if epoch := get(r); epoch != nil {
 			return formatDate(*epoch)
 		}
 		return ""
-	}}
+	}))
 }
 
 // formatDate is an epoch second's UTC date.
@@ -818,24 +895,29 @@ func formatEpochDay(day int64) string {
 // pctCol is a figure already in percent, named name and printed
 // name_pct. A percentage is a proportion, not an amount: -p leaves it.
 func pctCol[T any](name string, get func(T) *float64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Header: name + "_pct", Align: output.AlignRight,
-		Extract: func(r T) string { return formatPercent(get(r)) }}
+	return percentCol(name, name+"_pct", func(r T) string { return formatPercent(get(r)) })
+}
+
+// percentCol is a percent column whose cells get prints; header ""
+// prints the name, which then ends in _pct.
+func percentCol[T any](name, header string, get func(T) string) columnSpec[T] {
+	c := kindCol(name, PercentColumn, get)
+	c.Header = header
+	return c
 }
 
 // ratioCol is a ratio, named name and printed name_pct in percent, n/a
 // for nil. A ratio is a proportion, not an amount: it survives -p,
 // which keeps the privacy twin of a report readable.
 func ratioCol[T any](name string, get func(T) *float64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Header: name + "_pct", Align: output.AlignRight,
-		Extract: func(r T) string { return formatPct(get(r)) }}
+	return percentCol(name, name+"_pct", func(r T) string { return formatPct(get(r)) })
 }
 
 // ratioOrBlankCol is a ratio in percent, blank for nil, whose name
 // already says it is one: header "" prints the name. Like ratioCol it
 // survives -p.
 func ratioOrBlankCol[T any](name, header string, get func(T) *float64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Header: header, Align: output.AlignRight,
-		Extract: func(r T) string { return formatPctOrBlank(get(r)) }}
+	return percentCol(name, header, func(r T) string { return formatPctOrBlank(get(r)) })
 }
 
 // formatPercent is a figure already in percent with two decimals, blank
@@ -844,12 +926,12 @@ func formatPercent(p *float64) string { return fixedOrBlank(p, 2) }
 
 // countCol is a legible count.
 func countCol[T any](name string, get func(T) int64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string { return fmt.Sprintf("%d", get(r)) }}
+	return kindCol(name, CountColumn, func(r T) string { return fmt.Sprintf("%d", get(r)) })
 }
 
 // intPtrCol is a legible count, blank for nil.
 func intPtrCol[T any](name string, get func(T) *int64) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignRight, Extract: func(r T) string { return intOrEmpty(get(r)) }}
+	return kindCol(name, CountColumn, func(r T) string { return intOrEmpty(get(r)) })
 }
 
 // intOrEmpty is a nullable count, blank for nil.
@@ -862,7 +944,7 @@ func intOrEmpty(p *int64) string {
 
 // yesNoCol is a stated flag, blank where the source states nothing.
 func yesNoCol[T any](name string, get func(T) *bool) columnSpec[T] {
-	return columnSpec[T]{Name: name, Align: output.AlignLeft, Extract: func(r T) string { return yesNo(get(r)) }}
+	return strCol(name, func(r T) string { return yesNo(get(r)) })
 }
 
 // yesNo renders a stated flag, empty where the source states nothing.
@@ -913,7 +995,8 @@ func columnNames[T any](registry []columnSpec[T]) []string {
 // `privacy` is false ⇒ no redaction regardless of format. Under privacy
 // a column's PrivacyExtract, where set, gives the cell in place of its
 // Extract, and a PrivacyPseudonym cell takes its name from names, the
-// run's pseudonyms; nil gives the table a set of its own.
+// run's pseudonyms; nil gives the table a set of its own. A figure that
+// rounds to zero prints unsigned (unsignedZero) in every format.
 func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format output.Format, names *pseudonyms) output.Table {
 	if names == nil {
 		names = newPseudonyms()
@@ -921,7 +1004,7 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 	if privacy && format == output.FormatJSON {
 		kept := make([]columnSpec[T], 0, len(cols))
 		for _, c := range cols {
-			if c.Privacy == PrivacyMoney || c.Privacy == PrivacyQuantity {
+			if class := c.class(); class == PrivacyMoney || class == PrivacyQuantity {
 				continue
 			}
 			kept = append(kept, c)
@@ -935,10 +1018,13 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 	extract := make([]func(T) string, len(cols))
 	for i, c := range cols {
 		t.Columns[i] = c.header()
-		t.Aligns[i] = c.Align
+		t.Aligns[i] = c.Kind.align()
 		extract[i] = c.Extract
 		if privacy && c.PrivacyExtract != nil {
 			extract[i] = c.PrivacyExtract
+		}
+		if figure := extract[i]; c.Kind.align() == output.AlignRight {
+			extract[i] = func(r T) string { return unsignedZero(figure(r)) }
 		}
 	}
 	for _, r := range rows {
@@ -946,7 +1032,7 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 		for i, c := range cols {
 			cell := extract[i](r)
 			if privacy {
-				class := c.Privacy
+				class := c.class()
 				if c.PrivacyFunc != nil {
 					class = c.PrivacyFunc(r)
 				}
@@ -973,6 +1059,16 @@ func rowsToTable[T any](rows []T, cols []columnSpec[T], privacy bool, format out
 		t.Rows = append(t.Rows, cells)
 	}
 	return t
+}
+
+// unsignedZero is a figure's cell without the sign of a zero: a tiny
+// negative that rounds to zero prints as 0.00, never as -0.00.
+func unsignedZero(cell string) string {
+	digits, negative := strings.CutPrefix(cell, "-")
+	if !negative || digits == "" || digits[0] < '0' || digits[0] > '9' || strings.Trim(digits, "0.") != "" {
+		return cell
+	}
+	return digits
 }
 
 // applyPrivacy is the dispatcher for the per-column redaction

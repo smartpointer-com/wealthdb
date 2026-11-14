@@ -80,9 +80,9 @@ type resolutionRow struct {
 // it takes the free-text class the narrative takes everywhere else.
 func resolutionColumns() []columnSpec[resolutionRow] {
 	return []columnSpec[resolutionRow]{
-		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.Source }},
-		{Name: "lookup_kind", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.LookupKind }},
-		{Name: "lookup_value", Align: output.AlignLeft, Privacy: PrivacyFreeText,
+		strCol("silver_source", func(r resolutionRow) string { return r.Source }),
+		strCol("lookup_kind", func(r resolutionRow) string { return r.LookupKind }),
+		{Name: "lookup_value", Privacy: PrivacyFreeText,
 			PrivacyFunc: func(r resolutionRow) PrivacyClass {
 				if r.LookupKind == "name" {
 					return PrivacyFreeText
@@ -90,9 +90,9 @@ func resolutionColumns() []columnSpec[resolutionRow] {
 				return PrivacyNone
 			},
 			Extract: func(r resolutionRow) string { return r.LookupValue }},
-		{Name: "symbol", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.Symbol }},
-		{Name: "resolved_at", Align: output.AlignLeft, Date: true, Extract: func(r resolutionRow) string { return formatDate(r.ResolvedAt) }},
-		{Name: "model_name", Align: output.AlignLeft, Extract: func(r resolutionRow) string { return r.ModelName }},
+		strCol("symbol", func(r resolutionRow) string { return r.Symbol }),
+		asDate(strCol("resolved_at", func(r resolutionRow) string { return formatDate(r.ResolvedAt) })),
+		strCol("model_name", func(r resolutionRow) string { return r.ModelName }),
 	}
 }
 

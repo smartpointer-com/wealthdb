@@ -12,7 +12,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
@@ -134,8 +133,7 @@ func marksReport(req request) *report {
 func buildMarkColumnRegistry(outCcy string) []columnSpec[gold.MarkRow] {
 	return []columnSpec[gold.MarkRow]{
 		asDate(strCol("month_end", func(r gold.MarkRow) string { return formatDate(r.MonthEnd) })),
-		{Name: "marked_pct", Align: output.AlignRight,
-			Extract: func(r gold.MarkRow) string { return formatPercent(r.MarkedPct) }},
+		percentCol("marked_pct", "", func(r gold.MarkRow) string { return formatPercent(r.MarkedPct) }),
 		outCcyCol("value_marked", outCcy, func(r gold.MarkRow) *string { return r.ValueMarked }),
 		outCcyCol("value_total", outCcy, func(r gold.MarkRow) *string { return r.ValueTotal }),
 		qualityCol(func(r gold.MarkRow) string { return r.Quality }),

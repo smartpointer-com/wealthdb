@@ -9,7 +9,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 func init() {
@@ -284,10 +283,8 @@ func parseReturnsWindow(args []string, now time.Time) (int64, int64, error) {
 // Elsewhere it is a source, or the whole.
 func buildReturnColumnRegistry(outCcy, level string, kindOf func(string) string,
 	nicknames accountNicknames) []columnSpec[gold.ReturnRow] {
-	entity := columnSpec[gold.ReturnRow]{Name: "entity", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-		Extract: func(r gold.ReturnRow) string { return r.EntityLabel }}
-	entityID := columnSpec[gold.ReturnRow]{Name: "entity_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-		Extract: func(r gold.ReturnRow) string { return r.EntityID }}
+	entity := privateCol("entity", PrivacyAccountID, func(r gold.ReturnRow) string { return r.EntityLabel })
+	entityID := privateCol("entity_id", PrivacyAccountID, func(r gold.ReturnRow) string { return r.EntityID })
 	account, portfolio := entityCols(kindOf, nicknames, func(r gold.ReturnRow) (string, string, string) {
 		return r.SilverSourceID, r.EntityID, r.EntityLabel
 	})
@@ -298,53 +295,46 @@ func buildReturnColumnRegistry(outCcy, level string, kindOf func(string) string,
 		entity, entityID = portfolio[0], portfolio[1]
 	}
 	return []columnSpec[gold.ReturnRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.ReturnRow) string { return r.SilverSourceID }},
+		strCol("silver_source", func(r gold.ReturnRow) string { return r.SilverSourceID }),
 		entity,
 		entityID,
-		{Name: "period", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.ReturnRow) string { return r.Period }},
-		{Name: "start_date", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.ReturnRow) string { return formatEpochDay(r.StartDay) }},
-		{Name: "end_date", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.ReturnRow) string { return formatEpochDay(r.EndDay) }},
-		{Name: "start_value", Header: "start_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+		asDate(strCol("period", func(r gold.ReturnRow) string { return r.Period })),
+		asDate(strCol("start_date", func(r gold.ReturnRow) string { return formatEpochDay(r.StartDay) })),
+		asDate(strCol("end_date", func(r gold.ReturnRow) string { return formatEpochDay(r.EndDay) })),
+		{Name: "start_value", Header: "start_" + outCcy, Kind: MoneyColumn, Unit: OutputCurrency,
 			Extract: func(r gold.ReturnRow) string { return formatCents(r.StartValue) }},
-		{Name: "end_value", Header: "end_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+		{Name: "end_value", Header: "end_" + outCcy, Kind: MoneyColumn, Unit: OutputCurrency,
 			Extract: func(r gold.ReturnRow) string { return formatCents(r.EndValue) }},
 		outCcyCol("net_flow", outCcy, func(r gold.ReturnRow) *string { return r.NetFlow }),
-		{Name: "gain", Header: "gain_" + outCcy, Align: output.AlignRight, Privacy: PrivacyMoney,
+		{Name: "gain", Header: "gain_" + outCcy, Kind: MoneyColumn, Unit: OutputCurrency,
 			Extract: func(r gold.ReturnRow) string { return formatCents(r.Gain()) }},
-		{Name: "twr", Header: "twr_pct", Align: output.AlignRight,
+		{Name: "twr", Header: "twr_pct", Kind: PercentColumn,
 			Extract: func(r gold.ReturnRow) string { return formatPct(r.TWR) }},
-		{Name: "twr_annualized", Header: "twr_ann_pct", Align: output.AlignRight,
+		{Name: "twr_annualized", Header: "twr_ann_pct", Kind: PercentColumn,
 			Extract: func(r gold.ReturnRow) string { return formatPct(r.TWRAnnualized) }},
-		{Name: "mwr", Header: "mwr_pct", Align: output.AlignRight,
+		{Name: "mwr", Header: "mwr_pct", Kind: PercentColumn,
 			Extract: func(r gold.ReturnRow) string { return formatPct(r.MWR) }},
-		{Name: "mwr_annualized", Header: "mwr_ann_pct", Align: output.AlignRight,
+		{Name: "mwr_annualized", Header: "mwr_ann_pct", Kind: PercentColumn,
 			Extract: func(r gold.ReturnRow) string { return formatPct(r.MWRAnnualized) }},
-		{Name: "benchmark_twr", Header: "benchmark_twr_pct", Align: output.AlignRight,
+		{Name: "benchmark_twr", Header: "benchmark_twr_pct", Kind: PercentColumn,
 			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.TWR })},
-		{Name: "compared_twr", Header: "compared_twr_pct", Align: output.AlignRight,
+		{Name: "compared_twr", Header: "compared_twr_pct", Kind: PercentColumn,
 			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.PortfolioTWR })},
-		{Name: "excess", Header: "excess_pct", Align: output.AlignRight,
+		{Name: "excess", Header: "excess_pct", Kind: PercentColumn,
 			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.Excess })},
-		{Name: "benchmark_mwr", Header: "benchmark_mwr_pct", Align: output.AlignRight,
+		{Name: "benchmark_mwr", Header: "benchmark_mwr_pct", Kind: PercentColumn,
 			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.MWR })},
-		{Name: "compared_mwr", Header: "compared_mwr_pct", Align: output.AlignRight,
+		{Name: "compared_mwr", Header: "compared_mwr_pct", Kind: PercentColumn,
 			Extract: benchmarkFigure(func(b *gold.BenchmarkRow) *float64 { return b.PortfolioMWR })},
-		{Name: "compared_from", Align: output.AlignLeft, Date: true,
-			Extract: benchmarkDay(func(b *gold.BenchmarkRow) int64 { return b.StartDay })},
-		{Name: "compared_to", Align: output.AlignLeft, Date: true,
-			Extract: benchmarkDay(func(b *gold.BenchmarkRow) int64 { return b.EndDay })},
-		{Name: "benchmark_quality", Align: output.AlignLeft, Extract: func(r gold.ReturnRow) string {
+		asDate(strCol("compared_from", benchmarkDay(func(b *gold.BenchmarkRow) int64 { return b.StartDay }))),
+		asDate(strCol("compared_to", benchmarkDay(func(b *gold.BenchmarkRow) int64 { return b.EndDay }))),
+		strCol("benchmark_quality", func(r gold.ReturnRow) string {
 			if r.Benchmark == nil {
 				return ""
 			}
 			return strings.Join(r.Benchmark.Quality, ";")
-		}},
-		{Name: "quality", Align: output.AlignLeft,
-			Extract: func(r gold.ReturnRow) string { return strings.Join(r.Quality, ";") }},
+		}),
+		strCol("quality", func(r gold.ReturnRow) string { return strings.Join(r.Quality, ";") }),
 	}
 }
 

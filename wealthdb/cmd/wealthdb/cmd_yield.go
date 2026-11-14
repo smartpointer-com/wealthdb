@@ -9,7 +9,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -170,12 +169,12 @@ func buildYieldRowColumns(outCcy string, grain yield.Grain, kindOf func(string) 
 	type col = columnSpec[row]
 	var ids []col
 	if grain != yield.GrainAll {
-		ids = append(ids, col{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string {
+		ids = append(ids, strCol("silver_source", func(r row) string {
 			if r.Total {
 				return "total"
 			}
 			return r.Source
-		}})
+		}))
 	}
 	switch grain {
 	case yield.GrainPortfolios:
@@ -204,12 +203,12 @@ func buildYieldRowColumns(outCcy string, grain yield.Grain, kindOf func(string) 
 		ids = append(ids,
 			accountCol(kindOf, ref),
 			accountIDCol("account_id", kindOf, ref),
-			col{Name: "account_kind", Align: output.AlignLeft, Extract: func(r row) string { return r.Account.Kind }},
-			col{Name: "tax_wrapper", Align: output.AlignLeft, Extract: func(r row) string { return r.Account.TaxWrapper }},
+			strCol("account_kind", func(r row) string { return r.Account.Kind }),
+			strCol("tax_wrapper", func(r row) string { return r.Account.TaxWrapper }),
 			nicknameCol("account_nickname", func(r row) *string { return &r.Account.Nickname }))
 	}
 	ids = append(ids,
-		col{Name: "currency", Align: output.AlignLeft, Extract: func(r row) string {
+		strCol("currency", func(r row) string {
 			switch {
 			case r.Total && grain == yield.GrainAll:
 				return "total"
@@ -217,7 +216,7 @@ func buildYieldRowColumns(outCcy string, grain yield.Grain, kindOf func(string) 
 				return "(all)"
 			}
 			return r.Currency
-		}},
+		}),
 		floatValCol("value", outCcy, func(r row) float64 { return r.Value }))
 	ids = append(ids, yieldRateCols(outCcy, rowFigures)...)
 	return append(ids, qualityCol(func(r row) string { return r.Quality }))
@@ -249,7 +248,7 @@ func buildYieldPositionColumns(outCcy string, kindOf func(string) string) []colu
 	key, name := holdingCols(kindOf, func(r row) string { return r.Source },
 		func(r row) string { return r.PositionKey }, func(r row) string { return r.Name })
 	ids := []col{
-		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.Source }},
+		strCol("silver_source", func(r row) string { return r.Source }),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
 		strCol("tax_wrapper", func(r row) string { return r.Account.TaxWrapper }),

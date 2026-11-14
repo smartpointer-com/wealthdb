@@ -12,7 +12,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -273,7 +272,7 @@ func cashflowPlan(ctx context.Context, db *sql.DB, req request) ([]gold.PlanRow,
 func buildCashflowPlanColumns(outCcy, period string) []columnSpec[gold.PlanRow] {
 	type row = gold.PlanRow
 	cols := []columnSpec[row]{
-		{Name: "period", Align: output.AlignLeft, Date: true, Extract: func(r row) string {
+		asDate(strCol("period", func(r row) string {
 			switch {
 			case r.Total:
 				return "total"
@@ -282,7 +281,7 @@ func buildCashflowPlanColumns(outCcy, period string) []columnSpec[gold.PlanRow] 
 			}
 			at := r.Period.Unix()
 			return periodLabel(&at, period)
-		}},
+		})),
 		floatValCol("investment_income", outCcy, func(r row) float64 { return r.InvestmentIncome }),
 		floatValCol("principal_returned", outCcy, func(r row) float64 { return r.PrincipalReturned }),
 		floatValCol("vehicles_income", outCcy, func(r row) float64 { return r.VehiclesIncome }),
@@ -328,10 +327,8 @@ func planClassColumns() string {
 
 func buildCashflowSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.CashflowSummaryRow] {
 	return []columnSpec[gold.CashflowSummaryRow]{
-		{Name: "period", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.CashflowSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.CashflowSummaryRow) string { return periodStart(r.PeriodStart) }},
+		asDate(strCol("period", func(r gold.CashflowSummaryRow) string { return periodLabel(r.PeriodStart, period) })),
+		asDate(strCol("period_start", func(r gold.CashflowSummaryRow) string { return periodStart(r.PeriodStart) })),
 		countCol("txn_count", func(r gold.CashflowSummaryRow) int64 { return r.TxnCount }),
 		// The two halves of operating. NOT named `income` and
 		// `spending`: those are two other reports whose numbers differ
@@ -375,24 +372,18 @@ var defaultCashflowSummaryColumns = []string{
 
 func buildCashflowFlowColumnRegistry(outCcy, period string) []columnSpec[gold.CashflowFlowRow] {
 	return []columnSpec[gold.CashflowFlowRow]{
-		{Name: "period", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.CashflowFlowRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.CashflowFlowRow) string { return periodStart(r.PeriodStart) }},
-		{Name: "section", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowFlowRow) string { return r.Section }},
+		asDate(strCol("period", func(r gold.CashflowFlowRow) string { return periodLabel(r.PeriodStart, period) })),
+		asDate(strCol("period_start", func(r gold.CashflowFlowRow) string { return periodStart(r.PeriodStart) })),
+		strCol("section", func(r gold.CashflowFlowRow) string { return r.Section }),
 		// `class` and `group` are what a reader sees; the _id columns
 		// are the keys behind them, and they carry the whole node key
 		// rather than the leaf alone — a gift given and a gift received
 		// are two nodes, and only the full key tells them apart.
 		textCol("class", func(r gold.CashflowFlowRow) *string { return r.ClassLabel }),
 		textCol("group", func(r gold.CashflowFlowRow) *string { return r.GroupLabel }),
-		{Name: "section_id", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowFlowRow) string { return r.Section }},
-		{Name: "class_id", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowFlowRow) string { return nodeKey(r.Section, r.Class, nil) }},
-		{Name: "group_id", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowFlowRow) string { return nodeKey(r.Section, r.Class, r.Group) }},
+		strCol("section_id", func(r gold.CashflowFlowRow) string { return r.Section }),
+		strCol("class_id", func(r gold.CashflowFlowRow) string { return nodeKey(r.Section, r.Class, nil) }),
+		strCol("group_id", func(r gold.CashflowFlowRow) string { return nodeKey(r.Section, r.Class, r.Group) }),
 		countCol("txn_count", func(r gold.CashflowFlowRow) int64 { return r.TxnCount }),
 		outCcyCol("inflow", outCcy, func(r gold.CashflowFlowRow) *string { return r.Inflow }),
 		outCcyCol("outflow", outCcy, func(r gold.CashflowFlowRow) *string { return r.Outflow }),
@@ -428,14 +419,10 @@ func buildCashflowSankeyColumnRegistry(outCcy string) []columnSpec[gold.Cashflow
 		// Node names are vocabulary, never a merchant, a payer, an
 		// account or an instrument — which is why the privacy twin of
 		// this view needs normalisation alone and no redaction.
-		{Name: "source", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowSankeyRow) string { return r.Source }},
-		{Name: "target", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowSankeyRow) string { return r.Target }},
-		{Name: "source_id", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowSankeyRow) string { return r.SourceID }},
-		{Name: "target_id", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowSankeyRow) string { return r.TargetID }},
+		strCol("source", func(r gold.CashflowSankeyRow) string { return r.Source }),
+		strCol("target", func(r gold.CashflowSankeyRow) string { return r.Target }),
+		strCol("source_id", func(r gold.CashflowSankeyRow) string { return r.SourceID }),
+		strCol("target_id", func(r gold.CashflowSankeyRow) string { return r.TargetID }),
 		textCol("section", func(r gold.CashflowSankeyRow) *string { return r.Section }),
 		outCcyCol("value", outCcy, func(r gold.CashflowSankeyRow) *string { return r.Value }),
 		ratioCol("share", func(r gold.CashflowSankeyRow) *float64 { return r.Share }),
@@ -459,13 +446,10 @@ func buildCashflowCoverageColumnRegistry(period string,
 	kindOf func(string) string) []columnSpec[gold.CashflowCoverageRow] {
 	nickname := func(r gold.CashflowCoverageRow) bool { return r.Nickname != nil && r.Account == *r.Nickname }
 	return []columnSpec[gold.CashflowCoverageRow]{
-		{Name: "period", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.CashflowCoverageRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.CashflowCoverageRow) string { return periodStart(r.PeriodStart) }},
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowCoverageRow) string { return r.SourceID }},
-		{Name: "account", Align: output.AlignLeft, Privacy: PrivacyAccountID,
+		asDate(strCol("period", func(r gold.CashflowCoverageRow) string { return periodLabel(r.PeriodStart, period) })),
+		asDate(strCol("period_start", func(r gold.CashflowCoverageRow) string { return periodStart(r.PeriodStart) })),
+		strCol("silver_source", func(r gold.CashflowCoverageRow) string { return r.SourceID }),
+		{Name: "account", Privacy: PrivacyAccountID,
 			PrivacyFunc: func(r gold.CashflowCoverageRow) PrivacyClass {
 				if typedAccountLabel(kindOf, r.SourceID) || typedAccountID(kindOf, r.SourceID) || nickname(r) {
 					return PrivacyPseudonym
@@ -479,21 +463,14 @@ func buildCashflowCoverageColumnRegistry(period string,
 				return typedPseudonym(kindOf, r.SourceID)
 			},
 			Extract: func(r gold.CashflowCoverageRow) string { return r.Account }},
-		{Name: "account_kind", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowCoverageRow) string { return r.AccountKind }},
-		{Name: "currency", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowCoverageRow) string { return r.Currency }},
+		strCol("account_kind", func(r gold.CashflowCoverageRow) string { return r.AccountKind }),
+		strCol("currency", func(r gold.CashflowCoverageRow) string { return r.Currency }),
 		countCol("txn_count", func(r gold.CashflowCoverageRow) int64 { return r.TxnCount }),
-		{Name: "ledger", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Ledger) }},
-		{Name: "unsigned", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.UnsignedVolume) }},
-		{Name: "measured", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Measured) }},
-		{Name: "gap", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Gap) }},
-		{Name: "status", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowCoverageRow) string { return r.Status }},
+		kindCol("ledger", MoneyColumn, func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Ledger) }),
+		kindCol("unsigned", MoneyColumn, func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.UnsignedVolume) }),
+		kindCol("measured", MoneyColumn, func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Measured) }),
+		kindCol("gap", MoneyColumn, func(r gold.CashflowCoverageRow) string { return strOrEmpty(r.Gap) }),
+		strCol("status", func(r gold.CashflowCoverageRow) string { return r.Status }),
 	}
 }
 
@@ -503,31 +480,22 @@ func buildCashflowTransactionColumnRegistry(outCcy string, kindOf func(string) s
 		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []columnSpec[gold.CashflowTransactionRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return r.SilverSourceID }},
-		{Name: "date", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.CashflowTransactionRow) string { return formatDate(r.OccurredAt) }},
-		{Name: "datetime", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.CashflowTransactionRow) string { return formatDateTime(r.OccurredAt) }},
+		strCol("silver_source", func(r gold.CashflowTransactionRow) string { return r.SilverSourceID }),
+		asDate(strCol("date", func(r gold.CashflowTransactionRow) string { return formatDate(r.OccurredAt) })),
+		asDate(strCol("datetime", func(r gold.CashflowTransactionRow) string { return formatDateTime(r.OccurredAt) })),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
 		textCol("account_kind", func(r gold.CashflowTransactionRow) *string { return r.AccountKind }),
 		nicknameCol("account_nickname", func(r gold.CashflowTransactionRow) *string { return r.Nickname }),
 		accountCategoryCol(categories, func(r gold.CashflowTransactionRow) *string { return r.AccountCategory }),
-		{Name: "kind", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return r.Kind }},
-		{Name: "section", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return r.Section }},
-		{Name: "class", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return r.ClassLabel }},
-		{Name: "group", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return r.GroupLabel }},
-		{Name: "class_id", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return r.Section + "." + r.Class }},
-		{Name: "group_id", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string {
-				return r.Section + "." + r.Class + "." + r.Group
-			}},
+		strCol("kind", func(r gold.CashflowTransactionRow) string { return r.Kind }),
+		strCol("section", func(r gold.CashflowTransactionRow) string { return r.Section }),
+		strCol("class", func(r gold.CashflowTransactionRow) string { return r.ClassLabel }),
+		strCol("group", func(r gold.CashflowTransactionRow) string { return r.GroupLabel }),
+		strCol("class_id", func(r gold.CashflowTransactionRow) string { return r.Section + "." + r.Class }),
+		strCol("group_id", func(r gold.CashflowTransactionRow) string {
+			return r.Section + "." + r.Class + "." + r.Group
+		}),
 		// The instrument on an investing line, the payer or merchant on
 		// an operating one. It takes the FREE-TEXT class for the reason
 		// the families' payer column does: a column takes the class of
@@ -535,7 +503,7 @@ func buildCashflowTransactionColumnRegistry(outCcy string, kindOf func(string) s
 		// person. A typed holding's line names the holding, whose ids
 		// -p masks as the holding's own name column does
 		// (holdingNameCol).
-		holdingNameCol(columnSpec[gold.CashflowTransactionRow]{Name: "name", Align: output.AlignLeft,
+		holdingNameCol(columnSpec[gold.CashflowTransactionRow]{Name: "name",
 			Extract:     func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Name) },
 			PrivacyFunc: func(gold.CashflowTransactionRow) PrivacyClass { return PrivacyFreeText }},
 			kindOf, func(r gold.CashflowTransactionRow) (string, string) { return r.SilverSourceID, strOrEmpty(r.Name) }),
@@ -545,14 +513,11 @@ func buildCashflowTransactionColumnRegistry(outCcy string, kindOf func(string) s
 		textCol("spend_detailed", func(r gold.CashflowTransactionRow) *string { return r.SpendDetailed }),
 		textCol("income_detailed", func(r gold.CashflowTransactionRow) *string { return r.IncomeDetailed }),
 		textCol("provenance", func(r gold.CashflowTransactionRow) *string { return r.Provenance }),
-		{Name: "currency", Align: output.AlignLeft,
-			Extract: func(r gold.CashflowTransactionRow) string { return r.Currency }},
-		moneyCol("net_amount", "", func(r gold.CashflowTransactionRow) *string { return r.NetAmount }),
+		strCol("currency", func(r gold.CashflowTransactionRow) string { return r.Currency }),
+		moneyCol("net_amount", func(r gold.CashflowTransactionRow) *string { return r.NetAmount }),
 		outCcyCol("value", outCcy, func(r gold.CashflowTransactionRow) *string { return r.ValueOutCcy }),
-		{Name: "counterparty", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Counterparty) }},
-		{Name: "description", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Description) }},
+		privateCol("counterparty", PrivacyFreeText, func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Counterparty) }),
+		privateCol("description", PrivacyFreeText, func(r gold.CashflowTransactionRow) string { return strOrEmpty(r.Description) }),
 		typedIDCol("tx_id", kindOf, func(r gold.CashflowTransactionRow) (string, string) {
 			return r.SilverSourceID, r.TransactionExternalID
 		}),

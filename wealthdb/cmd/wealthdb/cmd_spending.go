@@ -7,7 +7,6 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 func init() {
@@ -130,10 +129,8 @@ func periodStart(periodStart *int64) string {
 // same way the money headers follow -x/--currency.
 func buildSpendSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.SpendSummaryRow] {
 	return []columnSpec[gold.SpendSummaryRow]{
-		{Name: "period", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.SpendSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.SpendSummaryRow) string { return periodStart(r.PeriodStart) }},
+		asDate(strCol("period", func(r gold.SpendSummaryRow) string { return periodLabel(r.PeriodStart, period) })),
+		asDate(strCol("period_start", func(r gold.SpendSummaryRow) string { return periodStart(r.PeriodStart) })),
 		countCol("txn_count", func(r gold.SpendSummaryRow) int64 { return r.TxnCount }),
 		outCcyCol("spend", outCcy, func(r gold.SpendSummaryRow) *string { return r.Spend }),
 		outCcyCol("refunds", outCcy, func(r gold.SpendSummaryRow) *string { return r.Refunds }),
@@ -147,10 +144,8 @@ var defaultSpendSummaryColumns = []string{
 
 func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.SpendCategoryRow] {
 	return []columnSpec[gold.SpendCategoryRow]{
-		{Name: "period", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.SpendCategoryRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.SpendCategoryRow) string { return periodStart(r.PeriodStart) }},
+		asDate(strCol("period", func(r gold.SpendCategoryRow) string { return periodLabel(r.PeriodStart, period) })),
+		asDate(strCol("period_start", func(r gold.SpendCategoryRow) string { return periodStart(r.PeriodStart) })),
 		// The category is taxonomy — a vocabulary value, not an
 		// identifier — and stays legible under -p, like asset_class
 		// and the other taxonomy labels. Two spellings of the same
@@ -158,10 +153,8 @@ func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.S
 		// the value it groups on. The label is the default because it
 		// is what a person reads; the id is there for a caller
 		// scripting against a stable key.
-		{Name: "category", Align: output.AlignLeft,
-			Extract: func(r gold.SpendCategoryRow) string { return r.CategoryLabel }},
-		{Name: "category_id", Align: output.AlignLeft,
-			Extract: func(r gold.SpendCategoryRow) string { return r.Category }},
+		strCol("category", func(r gold.SpendCategoryRow) string { return r.CategoryLabel }),
+		strCol("category_id", func(r gold.SpendCategoryRow) string { return r.Category }),
 		countCol("txn_count", func(r gold.SpendCategoryRow) int64 { return r.TxnCount }),
 		outCcyCol("spend", outCcy, func(r gold.SpendCategoryRow) *string { return r.Spend }),
 		outCcyCol("refunds", outCcy, func(r gold.SpendCategoryRow) *string { return r.Refunds }),
@@ -180,12 +173,9 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []columnSpec[gold.SpendTransactionRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return r.SilverSourceID }},
-		{Name: "date", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.SpendTransactionRow) string { return formatDate(r.OccurredAt) }},
-		{Name: "datetime", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.SpendTransactionRow) string { return formatDateTime(r.OccurredAt) }},
+		strCol("silver_source", func(r gold.SpendTransactionRow) string { return r.SilverSourceID }),
+		asDate(strCol("date", func(r gold.SpendTransactionRow) string { return formatDate(r.OccurredAt) })),
+		asDate(strCol("datetime", func(r gold.SpendTransactionRow) string { return formatDateTime(r.OccurredAt) })),
 		// A card's display name is "<product> ****1234" on most
 		// issuers, so the account columns carry an account number and
 		// redact as one — the same class the account label takes
@@ -195,8 +185,7 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 		textCol("account_kind", func(r gold.SpendTransactionRow) *string { return r.AccountKind }),
 		nicknameCol("account_nickname", func(r gold.SpendTransactionRow) *string { return r.Nickname }),
 		accountCategoryCol(categories, func(r gold.SpendTransactionRow) *string { return r.AccountCategory }),
-		{Name: "kind", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return r.Kind }},
+		strCol("kind", func(r gold.SpendTransactionRow) string { return r.Kind }),
 		// merchant_name redacts as free text, like the narrative it
 		// was named from. The fence (spending.RowTransferShaped) gates
 		// candidacy for the merchant STORE, not this column: a wire,
@@ -212,14 +201,12 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 		// wrote it from the narrative it was shown. Either way the
 		// column carries no guarantee about what is in it, and -p
 		// treats it as what it is: a name taken off a statement line.
-		{Name: "merchant", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.MerchantName) }},
+		privateCol("merchant", PrivacyFreeText, func(r gold.SpendTransactionRow) string { return strOrEmpty(r.MerchantName) }),
 		// The signature is the opposite case: it is computed for
 		// EVERY enriched row, fenced or not, as a fold of the raw
 		// narrative — so it carries whatever the narrative carried.
 		// Same class as counterparty.
-		{Name: "merchant_signature", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.MerchantSignature) }},
+		privateCol("merchant_signature", PrivacyFreeText, func(r gold.SpendTransactionRow) string { return strOrEmpty(r.MerchantSignature) }),
 		textCol("spend_primary", func(r gold.SpendTransactionRow) *string { return r.SpendPrimary }),
 		textCol("spend_detailed", func(r gold.SpendTransactionRow) *string { return r.SpendDetailed }),
 		// The same two values as they read (migration 0058).
@@ -254,15 +241,12 @@ func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) stri
 		// the free-text class, which masks the cell whole — a wire or
 		// P2P narrative is multi-word, and any shape-based rule would
 		// wave exactly those through.
-		{Name: "counterparty", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.Counterparty) }},
+		privateCol("counterparty", PrivacyFreeText, func(r gold.SpendTransactionRow) string { return strOrEmpty(r.Counterparty) }),
 		// The statement narrative the signature was folded from —
 		// same exposure as the counterparty, same class.
-		{Name: "description", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.SpendTransactionRow) string { return strOrEmpty(r.Description) }},
-		{Name: "currency", Align: output.AlignLeft,
-			Extract: func(r gold.SpendTransactionRow) string { return r.Currency }},
-		moneyCol("net_amount", "", func(r gold.SpendTransactionRow) *string { return r.NetAmount }),
+		privateCol("description", PrivacyFreeText, func(r gold.SpendTransactionRow) string { return strOrEmpty(r.Description) }),
+		strCol("currency", func(r gold.SpendTransactionRow) string { return r.Currency }),
+		moneyCol("net_amount", func(r gold.SpendTransactionRow) *string { return r.NetAmount }),
 		outCcyCol("value", outCcy, func(r gold.SpendTransactionRow) *string { return r.ValueOutCcy }),
 		typedIDCol("tx_id", kindOf, func(r gold.SpendTransactionRow) (string, string) {
 			return r.SilverSourceID, r.TransactionExternalID

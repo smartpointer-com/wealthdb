@@ -39,8 +39,9 @@ type report struct {
 type reportColumn struct {
 	name    string
 	header  string
-	align   output.Alignment
-	date    bool
+	kind    ColumnKind
+	unit    MoneyUnit
+	twin    string
 	privacy PrivacyClass
 }
 
@@ -92,7 +93,7 @@ func newReport[T any](registry []columnSpec[T], defaults []string, fetch func(co
 	cols := make([]reportColumn, len(registry))
 	index := make(map[string]int, len(registry))
 	for i, c := range registry {
-		cols[i] = reportColumn{name: c.Name, header: c.header(), align: c.Align, date: c.Date, privacy: c.Privacy}
+		cols[i] = reportColumn{name: c.Name, header: c.header(), kind: c.Kind, unit: c.Unit, twin: c.Twin, privacy: c.class()}
 		index[c.Name] = i
 	}
 	return &report{

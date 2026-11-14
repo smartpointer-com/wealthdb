@@ -11,7 +11,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // `wealthdb gains <view>` — what was gained or lost, realized and
@@ -231,8 +230,7 @@ func buildGainsBucketColumnRegistry(outCcy, period string, grain gold.GainsGrain
 	type col = columnSpec[row]
 	var ids []col
 	if grain != gold.GainsAll {
-		ids = append(ids, col{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r row) string { return strOrEmpty(r.SilverSourceID) }})
+		ids = append(ids, strCol("silver_source", func(r row) string { return strOrEmpty(r.SilverSourceID) }))
 	}
 	switch grain {
 	case gold.GainsPortfolios:
@@ -255,14 +253,11 @@ func buildGainsBucketColumnRegistry(outCcy, period string, grain gold.GainsGrain
 			textCol("tax_wrapper", func(r row) *string { return r.TaxWrapper }),
 			nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
 			accountCategoryCol(categories, func(r row) *string { return r.AccountCategory }),
-			col{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-				Extract: func(r row) string { return strOrEmpty(r.RelationshipID) }})
+			privateCol("relationship_id", PrivacyAccountID, func(r row) string { return strOrEmpty(r.RelationshipID) }))
 	}
 	return append(ids,
-		col{Name: "period", Align: output.AlignLeft, Date: true,
-			Extract: func(r row) string { return periodLabel(r.PeriodStart, period) }},
-		col{Name: "period_start", Align: output.AlignLeft, Date: true,
-			Extract: func(r row) string { return periodStart(r.PeriodStart) }},
+		asDate(strCol("period", func(r row) string { return periodLabel(r.PeriodStart, period) })),
+		asDate(strCol("period_start", func(r row) string { return periodStart(r.PeriodStart) })),
 		outCcyCol("realized", outCcy, func(r row) *string { return r.Realized }),
 		outCcyCol("realized_short", outCcy, func(r row) *string { return r.RealizedShort }),
 		outCcyCol("realized_long", outCcy, func(r row) *string { return r.RealizedLong }),
@@ -278,7 +273,7 @@ func buildGainsBucketColumnRegistry(outCcy, period string, grain gold.GainsGrain
 		countCol("positions", func(r row) int64 { return r.Positions }),
 		countCol("positions_without_basis", func(r row) int64 { return r.PositionsWithoutBasis }),
 		ratioOrBlankCol("basis_coverage", "basis_coverage_pct", func(r row) *float64 { return r.BasisCoverage }),
-		col{Name: "quality", Align: output.AlignLeft, Extract: func(r row) string { return r.Quality }},
+		strCol("quality", func(r row) string { return r.Quality }),
 	)
 }
 
@@ -312,7 +307,7 @@ func buildGainsPositionColumnRegistry(outCcy string, kindOf func(string) string)
 	keyCol, nameCol := holdingCols(kindOf, func(r row) string { return r.SilverSourceID }, key,
 		func(r row) string { return strOrEmpty(r.Name) })
 	return []col{
-		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
+		strCol("silver_source", func(r row) string { return r.SilverSourceID }),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
 		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
@@ -324,10 +319,10 @@ func buildGainsPositionColumnRegistry(outCcy string, kindOf func(string) string)
 		textCol("currency", func(r row) *string { return r.Currency }),
 		quantityCol("quantity_start", func(r row) *string { return r.QuantityStart }),
 		quantityCol("quantity_end", func(r row) *string { return r.QuantityEnd }),
-		moneyCol("cost_basis", "", func(r row) *string { return r.BookValue }),
+		moneyCol("cost_basis", func(r row) *string { return r.BookValue }),
 		outCcyTwin("cost_basis", outCcy, func(r row) *string { return r.BookValueOutCcy }),
-		moneyCol("market_value", "", func(r row) *string { return r.MarketValue }),
-		outCcyCol("value", outCcy, func(r row) *string { return r.ValueOutCcy }),
+		moneyCol("market_value", func(r row) *string { return r.MarketValue }),
+		valueCol(outCcy, func(r row) *string { return r.ValueOutCcy }),
 		outCcyCol("unrealized_start", outCcy, func(r row) *string { return r.UnrealizedStart }),
 		outCcyCol("unrealized_end", outCcy, func(r row) *string { return r.UnrealizedEnd }),
 		outCcyCol("unrealized_change", outCcy, func(r row) *string { return r.UnrealizedChange }),
@@ -337,7 +332,7 @@ func buildGainsPositionColumnRegistry(outCcy string, kindOf func(string) string)
 		textCol("basis_stamp", func(r row) *string { return r.BasisStamp }),
 		asDate(textCol("acquisition_date", func(r row) *string { return r.AcquisitionDate })),
 		countCol("lots", func(r row) int64 { return r.OpenLots }),
-		{Name: "quality", Align: output.AlignLeft, Extract: func(r row) string { return r.Quality }},
+		strCol("quality", func(r row) string { return r.Quality }),
 	}
 }
 
@@ -354,8 +349,8 @@ func buildRealizedLotColumnRegistry(outCcy string, kindOf func(string) string) [
 	}
 	holding := func(r row) (string, string) { return r.SilverSourceID, strOrEmpty(r.InstrumentExternalID) }
 	return []col{
-		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
-		{Name: "date", Align: output.AlignLeft, Date: true, Extract: func(r row) string { return r.EffectiveDate }},
+		strCol("silver_source", func(r row) string { return r.SilverSourceID }),
+		asDate(strCol("date", func(r row) string { return r.EffectiveDate })),
 		// The date is the tax year's last day when the document states
 		// no disposal or settlement date.
 		yesNoCol("undated", func(r row) *bool { return &r.Undated }),
@@ -368,38 +363,36 @@ func buildRealizedLotColumnRegistry(outCcy string, kindOf func(string) string) [
 		textCol("description", func(r row) *string { return r.Description }),
 		holdingIDCol(textCol("instrument_id", func(r row) *string { return r.InstrumentExternalID }), kindOf, holding),
 		quantityCol("quantity", func(r row) *string { return r.Quantity }),
-		{Name: "acquired", Align: output.AlignLeft,
-			Extract: func(r row) string {
-				if r.AcquiredVarious {
-					return "various"
-				}
-				return strOrEmpty(r.AcquisitionDate)
-			}},
+		strCol("acquired", func(r row) string {
+			if r.AcquiredVarious {
+				return "various"
+			}
+			return strOrEmpty(r.AcquisitionDate)
+		}),
 		textCol("term", func(r row) *string { return r.Term }),
 		yesNoCol("covered", func(r row) *bool { return r.Covered }),
 		textCol("form_8949_box", func(r row) *string { return r.Form8949Box }),
 		intPtrCol("held_days", func(r row) *int64 { return r.HeldDays }),
-		moneyCol("proceeds", "", func(r row) *string { return r.Proceeds }),
-		moneyCol("cost_basis", "", func(r row) *string { return r.BookValue }),
-		moneyCol("gain", "", func(r row) *string { return r.Gain }),
-		moneyCol("wash_disallowed", "", func(r row) *string { return r.WashDisallowed }),
-		moneyCol("accrued_market_discount", "", func(r row) *string { return r.AccruedMarketDiscount }),
-		{Name: "gain_origin", Align: output.AlignLeft, Extract: func(r row) string { return r.GainOrigin }},
+		moneyCol("proceeds", func(r row) *string { return r.Proceeds }),
+		moneyCol("cost_basis", func(r row) *string { return r.BookValue }),
+		moneyCol("gain", func(r row) *string { return r.Gain }),
+		moneyCol("wash_disallowed", func(r row) *string { return r.WashDisallowed }),
+		moneyCol("accrued_market_discount", func(r row) *string { return r.AccruedMarketDiscount }),
+		strCol("gain_origin", func(r row) string { return r.GainOrigin }),
 		// What the lot realized: a sale, or a fee, spend, tender, cash
 		// in lieu or expiry, which a filter can set apart.
-		{Name: "disposal", Align: output.AlignLeft, Extract: func(r row) string { return r.Disposal }},
-		{Name: "currency", Align: output.AlignLeft, Extract: func(r row) string { return r.Currency }},
+		strCol("disposal", func(r row) string { return r.Disposal }),
+		strCol("currency", func(r row) string { return r.Currency }),
 		outCcyTwin("proceeds", outCcy, func(r row) *string { return r.ProceedsOutCcy }),
 		outCcyTwin("cost_basis", outCcy, func(r row) *string { return r.BookValueOutCcy }),
 		outCcyTwin("gain", outCcy, func(r row) *string { return r.GainOutCcy }),
-		{Name: "document", Align: output.AlignLeft, Extract: func(r row) string { return r.DocumentKind }},
-		{Name: "tax_year", Align: output.AlignLeft, Extract: func(r row) string { return fmt.Sprintf("%d", r.TaxYear) }},
+		strCol("document", func(r row) string { return r.DocumentKind }),
+		strCol("tax_year", func(r row) string { return fmt.Sprintf("%d", r.TaxYear) }),
 		yesNoCol("primary", func(r row) *bool { return &r.IsPrimary }),
 		textCol("basis_stamp", func(r row) *string { return r.BasisStamp }),
 		// The lot engine names a lot it realizes by the line that sold it.
 		typedIDCol("lot_id", kindOf, func(r row) (string, string) { return r.SilverSourceID, r.RealizedLotExternalID }),
-		{Name: "source_document", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return strOrEmpty(r.SourceDocument) }},
+		privateCol("source_document", PrivacyAccountID, func(r row) string { return strOrEmpty(r.SourceDocument) }),
 	}
 }
 
@@ -417,8 +410,8 @@ func buildOpenLotColumnRegistry(outCcy string, kindOf func(string) string) []col
 	key, name := holdingCols(kindOf, func(r row) string { return r.SilverSourceID },
 		func(r row) string { return r.PositionKey }, func(r row) string { return strOrEmpty(r.Name) })
 	return []col{
-		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
-		{Name: "snapshot_date", Align: output.AlignLeft, Date: true, Extract: func(r row) string { return formatDate(r.SnapshotAt) }},
+		strCol("silver_source", func(r row) string { return r.SilverSourceID }),
+		asDate(strCol("snapshot_date", func(r row) string { return formatDate(r.SnapshotAt) })),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
 		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
@@ -431,18 +424,17 @@ func buildOpenLotColumnRegistry(outCcy string, kindOf func(string) string) []col
 		textCol("term", func(r row) *string { return r.Term }),
 		yesNoCol("covered", func(r row) *bool { return r.Covered }),
 		quantityCol("quantity", func(r row) *string { return r.Quantity }),
-		moneyCol("cost_basis", "", func(r row) *string { return r.BookValue }),
-		moneyCol("market_value", "", func(r row) *string { return r.MarketValue }),
+		moneyCol("cost_basis", func(r row) *string { return r.BookValue }),
+		moneyCol("market_value", func(r row) *string { return r.MarketValue }),
 		textCol("value_origin", func(r row) *string { return r.ValueOrigin }),
-		moneyCol("unrealized_gain", "", func(r row) *string { return r.UnrealizedGain }),
+		moneyCol("unrealized_gain", func(r row) *string { return r.UnrealizedGain }),
 		ratioOrBlankCol("unrealized_pct", "", func(r row) *float64 { return r.UnrealizedRatio }),
-		{Name: "currency", Align: output.AlignLeft, Extract: func(r row) string { return r.Currency }},
+		strCol("currency", func(r row) string { return r.Currency }),
 		outCcyTwin("cost_basis", outCcy, func(r row) *string { return r.BookValueOutCcy }),
-		outCcyCol("value", outCcy, func(r row) *string { return r.ValueOutCcy }),
+		valueCol(outCcy, func(r row) *string { return r.ValueOutCcy }),
 		outCcyTwin("unrealized_gain", outCcy, func(r row) *string { return r.UnrealizedOutCcy }),
 		textCol("basis_origin", func(r row) *string { return r.BasisOrigin }),
-		{Name: "source_document", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r row) string { return strOrEmpty(r.SourceDocument) }},
+		privateCol("source_document", PrivacyAccountID, func(r row) string { return strOrEmpty(r.SourceDocument) }),
 	}
 }
 
@@ -458,7 +450,7 @@ func buildGainsCoverageColumnRegistry(outCcy string, kindOf func(string) string)
 		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []col{
-		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
+		strCol("silver_source", func(r row) string { return r.SilverSourceID }),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
 		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),
@@ -471,7 +463,7 @@ func buildGainsCoverageColumnRegistry(outCcy string, kindOf func(string) string)
 		countCol("sells", func(r row) int64 { return r.Sells }),
 		countCol("realized_lots", func(r row) int64 { return r.RealizedLots }),
 		textCol("documents", func(r row) *string { return r.Documents }),
-		{Name: "verdict", Align: output.AlignLeft, Extract: func(r row) string { return r.Verdict }},
+		strCol("verdict", func(r row) string { return r.Verdict }),
 		countCol("sells_rebuilt", func(r row) int64 { return r.SellsRebuilt }),
 		countCol("positions_rebuilt", func(r row) int64 { return r.PositionsRebuilt }),
 		countCol("seed_lots", func(r row) int64 { return r.SeedLots }),
@@ -492,8 +484,8 @@ func buildGainsCheckColumnRegistry(outCcy string, kindOf func(string) string) []
 		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []col{
-		{Name: "check", Align: output.AlignLeft, Extract: func(r row) string { return r.Check }},
-		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r row) string { return r.SilverSourceID }},
+		strCol("check", func(r row) string { return r.Check }),
+		strCol("silver_source", func(r row) string { return r.SilverSourceID }),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
 		nicknameCol("account_nickname", func(r row) *string { return r.Nickname }),

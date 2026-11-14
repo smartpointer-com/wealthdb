@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"testing"
 	"time"
-
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // bondRow is a synthetic row for the condition tests: a text, a money,
@@ -34,7 +32,7 @@ func testBonds(t *testing.T, privacy bool) *resultSet {
 		{name: "Paper Cash", category: "cash", period: "2026-Q2"},
 	}
 	reg := []columnSpec[bondRow]{
-		{Name: "period", Align: output.AlignLeft, Date: true, Extract: func(r bondRow) string { return r.period }},
+		asDate(strCol("period", func(r bondRow) string { return r.period })),
 		strCol("name", func(r bondRow) string { return r.name }),
 		strCol("asset_class", func(r bondRow) string { return r.category }),
 		strCol("country", func(r bondRow) string { return r.country }),

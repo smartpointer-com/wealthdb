@@ -228,8 +228,8 @@ type sortKey struct {
 // largest amount.
 func (rs *resultSet) sortRows(idx []int, col int, desc bool) {
 	c := rs.rep.columns[col]
-	numeric := c.align == output.AlignRight
-	money := c.privacy == PrivacyMoney
+	numeric := c.numeric()
+	money := c.kind == MoneyColumn
 	keys := make(map[int]sortKey, len(idx))
 	for _, i := range idx {
 		cell := strings.TrimSpace(rs.cells[i][col])
@@ -291,19 +291,21 @@ func (l columnLookup) resolve(name string, preferOutCcy bool) (int, string, erro
 	if err != nil || !preferOutCcy {
 		return i, note, err
 	}
-	if twin := l.byName(outCcyTwinName(l.cols[i].name)); twin >= 0 {
+	if twin := l.twinOf(i); twin >= 0 {
 		return twin, l.note(name, twin, true), nil
 	}
 	return i, note, nil
 }
 
-// outCcyTwinName is the name of a money column's output-currency twin:
-// <name>_outccy, and value for market_value, as on holdings.
-func outCcyTwinName(name string) string {
-	if name == "market_value" {
-		return "value"
+// twinOf is the index of column i's output-currency twin (Twin), -1 for
+// none.
+func (l columnLookup) twinOf(i int) int {
+	for j, c := range l.cols {
+		if c.twin == l.cols[i].name {
+			return j
+		}
 	}
-	return name + "_outccy"
+	return -1
 }
 
 // currencySuffixed splits a name that ends in a currency code.
@@ -324,7 +326,7 @@ func (l columnLookup) find(name string) (int, string, error) {
 	if m := currencySuffixed.FindStringSubmatch(want); m != nil && m[2] != "pct" && ccy != "" {
 		var converted []string
 		for _, c := range l.cols {
-			if strings.HasSuffix(strings.ToLower(c.header), "_"+ccy) {
+			if c.converted() {
 				converted = append(converted, l.stem(c))
 			}
 		}
@@ -334,7 +336,7 @@ func (l columnLookup) find(name string) (int, string, error) {
 		}
 		if ok {
 			for i, c := range l.cols {
-				if strings.ToLower(c.header) == stem+"_"+ccy {
+				if c.converted() && l.stem(c) == stem {
 					note := l.note(name, i, true)
 					if m[2] != ccy {
 						note += fmt.Sprintf(" (amounts are in %s; pass currency=%s for %s)",
@@ -360,7 +362,7 @@ func (l columnLookup) find(name string) (int, string, error) {
 	pct := strings.HasSuffix(want, "_pct")
 	candidates := make([]string, 0, 2*len(l.cols))
 	for _, c := range l.cols {
-		if !pct || strings.HasSuffix(strings.ToLower(c.header), "_pct") {
+		if !pct || c.kind == PercentColumn {
 			candidates = append(candidates, c.name, l.stem(c))
 		}
 	}
@@ -411,7 +413,11 @@ func (l columnLookup) byName(name string) int {
 // stem is a column's header without its currency suffix, lower case:
 // what a model writes when it means the column.
 func (l columnLookup) stem(c reportColumn) string {
-	return strings.TrimSuffix(strings.ToLower(c.header), "_"+strings.ToLower(l.currency))
+	h := strings.ToLower(c.header)
+	if !c.converted() {
+		return h
+	}
+	return strings.TrimSuffix(h, "_"+strings.ToLower(l.currency))
 }
 
 func (l columnLookup) note(asked string, i int, always bool) string {

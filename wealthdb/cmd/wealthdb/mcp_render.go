@@ -90,7 +90,7 @@ func totals(rs *resultSet, idx, cols []int, currency string, rule totalRule) []c
 	var out []columnTotal
 	for _, col := range cols {
 		c := rs.rep.columns[col]
-		if c.privacy != PrivacyMoney || !strings.HasSuffix(c.header, "_"+currency) {
+		if !c.converted() {
 			continue
 		}
 		var cents int64

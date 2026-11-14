@@ -7,7 +7,6 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // statedRefusedFlags are the returns flags that have no meaning on the
@@ -47,22 +46,21 @@ func buildStatedColumnRegistry(kindOf func(string) string, nicknames accountNick
 		asDate(strCol("start_date", func(r gold.StatedPeriodRow) string { return formatEpochDay(r.StartDay) })),
 		asDate(strCol("end_date", func(r gold.StatedPeriodRow) string { return formatEpochDay(r.EndDay) })),
 		strCol("currency", func(r gold.StatedPeriodRow) string { return r.Currency }),
-		moneyCol("stated_beginning", "", func(r gold.StatedPeriodRow) *string { return r.StatedBeginning }),
-		moneyCol("stated_ending", "", func(r gold.StatedPeriodRow) *string { return r.StatedEnding }),
-		moneyCol("stated_accrual", "", func(r gold.StatedPeriodRow) *string { return r.StatedAccrual }),
-		moneyCol("stated_net_additions", "", func(r gold.StatedPeriodRow) *string { return r.StatedNetAdditions }),
-		moneyCol("stated_net_gain", "", func(r gold.StatedPeriodRow) *string { return r.StatedNetGain }),
-		moneyCol("stated_income", "", func(r gold.StatedPeriodRow) *string { return r.StatedIncome }),
-		moneyCol("stated_fees", "", func(r gold.StatedPeriodRow) *string { return r.StatedFees }),
-		moneyCol("start_value", "", func(r gold.StatedPeriodRow) *string { return r.StartValue }),
-		moneyCol("end_value", "", func(r gold.StatedPeriodRow) *string { return r.EndValue }),
-		moneyCol("net_flow", "", func(r gold.StatedPeriodRow) *string { return r.NetFlow }),
-		moneyCol("flow_gap", "", func(r gold.StatedPeriodRow) *string { return r.FlowGap }),
-		moneyCol("value_gap", "", func(r gold.StatedPeriodRow) *string { return r.ValueGap }),
+		moneyCol("stated_beginning", func(r gold.StatedPeriodRow) *string { return r.StatedBeginning }),
+		moneyCol("stated_ending", func(r gold.StatedPeriodRow) *string { return r.StatedEnding }),
+		moneyCol("stated_accrual", func(r gold.StatedPeriodRow) *string { return r.StatedAccrual }),
+		moneyCol("stated_net_additions", func(r gold.StatedPeriodRow) *string { return r.StatedNetAdditions }),
+		moneyCol("stated_net_gain", func(r gold.StatedPeriodRow) *string { return r.StatedNetGain }),
+		moneyCol("stated_income", func(r gold.StatedPeriodRow) *string { return r.StatedIncome }),
+		moneyCol("stated_fees", func(r gold.StatedPeriodRow) *string { return r.StatedFees }),
+		moneyCol("start_value", func(r gold.StatedPeriodRow) *string { return r.StartValue }),
+		moneyCol("end_value", func(r gold.StatedPeriodRow) *string { return r.EndValue }),
+		moneyCol("net_flow", func(r gold.StatedPeriodRow) *string { return r.NetFlow }),
+		moneyCol("flow_gap", func(r gold.StatedPeriodRow) *string { return r.FlowGap }),
+		moneyCol("value_gap", func(r gold.StatedPeriodRow) *string { return r.ValueGap }),
 		// The stating document's sha256 names no person, but it is the
 		// handle on a private file, so -p redacts it like an id.
-		{Name: "document", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.StatedPeriodRow) string { return r.SourceSHA256 }},
+		privateCol("document", PrivacyAccountID, func(r gold.StatedPeriodRow) string { return r.SourceSHA256 }),
 		qualityCol(func(r gold.StatedPeriodRow) string { return strings.Join(r.Quality, ";") }),
 	}
 }

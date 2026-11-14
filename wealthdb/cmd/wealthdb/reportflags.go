@@ -59,7 +59,7 @@ func registerReportFlags(fs *flag.FlagSet, withColumns bool) *reportFlags {
 // view does not take. The check it returns, run after fs.Parse, refuses
 // the first one set by name, so the error says the view takes no such
 // flag rather than calling it unknown. The MCP tool refuses the same
-// names (refuseArgs).
+// names (refuseOptions).
 func refuseFlags(fs *flag.FlagSet, cmd, view string, names []string) (check func() error) {
 	for _, name := range names {
 		fs.String(name, "", "refused: "+view+" has no such choice")

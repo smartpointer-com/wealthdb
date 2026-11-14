@@ -357,8 +357,8 @@ func TestIncomeTransactionPrivacyClasses(t *testing.T) {
 	for _, c := range all {
 		if wantClass, ok := want[c.Name]; ok {
 			seen[c.Name] = true
-			if c.Privacy != wantClass {
-				t.Errorf("%s: privacy = %v, want %v", c.Name, c.Privacy, wantClass)
+			if c.class() != wantClass {
+				t.Errorf("%s: privacy = %v, want %v", c.Name, c.class(), wantClass)
 			}
 		}
 	}

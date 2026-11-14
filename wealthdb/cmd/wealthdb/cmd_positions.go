@@ -44,29 +44,23 @@ func buildColumnRegistry(outCcy string, kindOf func(string) string, categories t
 	key, name := holdingCols(kindOf, func(r gold.PositionRow) string { return r.SilverSourceID },
 		func(r gold.PositionRow) string { return r.PositionKey }, func(r gold.PositionRow) string { return strOrEmpty(r.Name) })
 	return []columnSpec[gold.PositionRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return r.SilverSourceID }},
-		{Name: "snapshot_date", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.PositionRow) string { return formatDate(r.SnapshotAt) }},
+		strCol("silver_source", func(r gold.PositionRow) string { return r.SilverSourceID }),
+		asDate(strCol("snapshot_date", func(r gold.PositionRow) string { return formatDate(r.SnapshotAt) })),
 		// The date the mark is from: the snapshot date, unless a read
 		// dated the snapshot after the marks it found unchanged.
-		{Name: "valued_date", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.PositionRow) string { return formatDate(r.ValuedAt) }},
+		asDate(strCol("valued_date", func(r gold.PositionRow) string { return formatDate(r.ValuedAt) })),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
 		key,
 		textCol("symbol", func(r gold.PositionRow) *string { return r.Symbol }),
 		name,
 		// asset_class is the 2-D exposure; vehicle the wrapper.
-		{Name: "asset_class", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return r.AssetClass }},
-		{Name: "vehicle", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return r.Vehicle }},
-		{Name: "currency", Align: output.AlignLeft,
-			Extract: func(r gold.PositionRow) string { return r.Currency }},
+		strCol("asset_class", func(r gold.PositionRow) string { return r.AssetClass }),
+		strCol("vehicle", func(r gold.PositionRow) string { return r.Vehicle }),
+		strCol("currency", func(r gold.PositionRow) string { return r.Currency }),
 		quantityCol("quantity", func(r gold.PositionRow) *string { return r.Quantity }),
-		moneyCol("market_value", "", func(r gold.PositionRow) *string { return r.MarketValue }),
-		outCcyCol("value", outCcy, func(r gold.PositionRow) *string { return r.ValueOutCcy }),
+		moneyCol("market_value", func(r gold.PositionRow) *string { return r.MarketValue }),
+		valueCol(outCcy, func(r gold.PositionRow) *string { return r.ValueOutCcy }),
 		// The cost basis (gold's book_value) the source states, else the
 		// one the lot engine rebuilt, and what follows from it, defined
 		// in docs/GAINS.md. Blank on a cash row and wherever no basis is
@@ -74,18 +68,17 @@ func buildColumnRegistry(outCcy string, kindOf func(string) string, categories t
 		// 0; the unrealized gain is blank too on a line no cost basis
 		// describes, such as a mortgage. basis_stamp says which notion of
 		// basis the figure is.
-		moneyCol("cost_basis", "", func(r gold.PositionRow) *string { return r.BookValue }),
+		moneyCol("cost_basis", func(r gold.PositionRow) *string { return r.BookValue }),
 		outCcyTwin("cost_basis", outCcy, func(r gold.PositionRow) *string { return r.BookValueOutCcy }),
-		moneyCol("unrealized_gain", "", func(r gold.PositionRow) *string { return r.UnrealizedGain }),
+		moneyCol("unrealized_gain", func(r gold.PositionRow) *string { return r.UnrealizedGain }),
 		outCcyTwin("unrealized_gain", outCcy, func(r gold.PositionRow) *string { return r.UnrealizedOutCcy }),
 		ratioOrBlankCol("unrealized_pct", "", func(r gold.PositionRow) *float64 { return r.UnrealizedRatio }),
 		textCol("basis_stamp", func(r gold.PositionRow) *string { return r.BasisStamp }),
 		quantityCol("quantity_without_basis", func(r gold.PositionRow) *string { return r.QuantityWithoutBasis }),
 		asDate(textCol("acquisition_date", func(r gold.PositionRow) *string { return r.AcquisitionDate })),
-		moneyCol("accrued_interest", "", func(r gold.PositionRow) *string { return r.AccruedInterest }),
-		moneyCol("clean_value", "", func(r gold.PositionRow) *string { return r.CleanValue }),
-		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.PositionRow) string { return strOrEmpty(r.RelationshipID) }},
+		moneyCol("accrued_interest", func(r gold.PositionRow) *string { return r.AccruedInterest }),
+		moneyCol("clean_value", func(r gold.PositionRow) *string { return r.CleanValue }),
+		privateCol("relationship_id", PrivacyAccountID, func(r gold.PositionRow) string { return strOrEmpty(r.RelationshipID) }),
 		nicknameCol("account_nickname", func(r gold.PositionRow) *string { return r.Nickname }),
 		accountCategoryCol(categories, func(r gold.PositionRow) *string { return r.AccountCategory }),
 	}

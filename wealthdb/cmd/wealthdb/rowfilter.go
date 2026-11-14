@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // Row conditions: the rows a call or a command keeps, by the printed
@@ -49,19 +48,27 @@ var kindWords = map[colKind]struct{ one, many, bare, example string }{
 	kindDate:   {"a date", "dates", "date", "2027"},
 }
 
-// kind is the column's kind: a date by the registry's mark, money by
-// its privacy class, a number by its alignment, else text.
-func (c reportColumn) kind() colKind {
-	switch {
-	case c.date:
+// filterKind is the kind of value a condition on the column reads, by
+// the column's kind: text, a date, money, or a number for every other
+// figure.
+func (c reportColumn) filterKind() colKind {
+	switch c.kind {
+	case TextColumn:
+		return kindText
+	case DateColumn:
 		return kindDate
-	case c.privacy == PrivacyMoney:
+	case MoneyColumn:
 		return kindMoney
-	case c.align == output.AlignRight:
-		return kindNumber
 	}
-	return kindText
+	return kindNumber
 }
+
+// numeric reports whether the column's cells are figures.
+func (c reportColumn) numeric() bool { return c.kind != TextColumn && c.kind != DateColumn }
+
+// converted reports whether the column holds money in the output
+// currency, its header ending in _<CCY>.
+func (c reportColumn) converted() bool { return c.kind == MoneyColumn && c.unit == OutputCurrency }
 
 // argShape is what follows an operator.
 type argShape int
@@ -951,7 +958,7 @@ func (t filterTarget) bindOne(r rawCond) (condition, error) {
 		return condition{}, t.unknownColumn(r)
 	}
 	col := t.lookup.cols[i]
-	c := condition{col: i, header: col.header, op: r.op, kind: col.kind(), note: note}
+	c := condition{col: i, header: col.header, op: r.op, kind: col.filterKind(), note: note}
 	if t.privacy && redactedClass(col.privacy) {
 		return c, t.redacted(col)
 	}
@@ -981,7 +988,7 @@ func (t filterTarget) bindOne(r rawCond) (condition, error) {
 			if other, ok := t.columnNamed(v); ok {
 				return c, t.twoColumns(r, col, other)
 			}
-			n, plain, err := parseNumberValue(v, strings.HasSuffix(col.header, "_pct"))
+			n, plain, err := parseNumberValue(v, col.kind == PercentColumn)
 			if err != nil {
 				return c, valueError(r, col, v, err)
 			}
@@ -1156,7 +1163,7 @@ func (t filterTarget) fittingColumns(r rawCond) []string {
 	}
 	out := []string{word}
 	for _, c := range t.lookup.cols {
-		if slices.Contains(want, c.kind()) && !(t.privacy && redactedClass(c.privacy)) {
+		if slices.Contains(want, c.filterKind()) && !(t.privacy && redactedClass(c.privacy)) {
 			out = append(out, c.header)
 		}
 	}
@@ -1212,13 +1219,13 @@ func valueError(r rawCond, col reportColumn, v string, err error) error {
 	if e, ok := err.(fixableValue); ok {
 		fe = e
 	}
-	msg := fmt.Sprintf("%q is not %s, which %s takes", v, kindWords[col.kind()].one, col.header)
+	msg := fmt.Sprintf("%q is not %s, which %s takes", v, kindWords[col.filterKind()].one, col.header)
 	if fe.why != "" {
-		msg = fmt.Sprintf("%q is not %s: %s", v, kindWords[col.kind()].one, fe.why)
+		msg = fmt.Sprintf("%q is not %s: %s", v, kindWords[col.filterKind()].one, fe.why)
 	}
 	switch len(fe.fixes) {
 	case 0:
-		if col.kind() == kindDate {
+		if col.filterKind() == kindDate {
 			msg += "; dates are " + valueDateForms
 		} else {
 			msg += "; write a plain number, such as 1000 or -42.5"
@@ -1240,17 +1247,17 @@ func valueError(r rawCond, col reportColumn, v string, err error) error {
 // as the comparison asked. A date compares with a date.
 func (t filterTarget) twoColumns(r rawCond, col, other reportColumn) error {
 	msg := fmt.Sprintf("a condition compares a column with a constant, and %s is a column", other.header)
-	if col.kind() == kindDate {
+	if col.filterKind() == kindDate {
 		return condSyntaxError{fmt.Sprintf("%s; compare with a date, such as %q", msg, col.header+" "+r.op.name+" 2027")}
 	}
 	var diffs, shares []string
 	for _, c := range t.lookup.cols {
 		h := strings.ToLower(c.header)
 		switch {
-		case c.header == col.header || c.header == other.header || c.kind() == kindText || c.kind() == kindDate:
+		case c.header == col.header || c.header == other.header || !c.numeric():
 		case strings.Contains(h, "gain") || strings.Contains(h, "change") || strings.Contains(h, "gap") || strings.Contains(h, "delta"):
 			diffs = append(diffs, c.header)
-		case strings.HasSuffix(h, "_pct"):
+		case c.kind == PercentColumn:
 			shares = append(shares, c.header)
 		}
 	}
@@ -1274,7 +1281,7 @@ func (t filterTarget) redacted(col reportColumn) error {
 	msg := fmt.Sprintf("%s is redacted %s, so it cannot select rows", col.header, where)
 	var shares []string
 	for _, c := range t.lookup.cols {
-		if strings.HasSuffix(c.header, "_pct") && !redactedClass(c.privacy) {
+		if c.kind == PercentColumn && !redactedClass(c.privacy) {
 			shares = append(shares, c.header)
 		}
 	}

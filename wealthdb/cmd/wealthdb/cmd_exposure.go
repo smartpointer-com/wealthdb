@@ -16,7 +16,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // `wealthdb exposure <view>` — what is really owned, every fund looked
@@ -368,7 +367,7 @@ func shareCols[T any](get func(T) gold.ExposureShares) []columnSpec[T] {
 func buildExposureClassColumns(ccy string) []columnSpec[gold.ExposureClassRow] {
 	type row = gold.ExposureClassRow
 	cols := []columnSpec[row]{
-		{Name: "asset_class", Align: output.AlignLeft, Extract: func(r row) string { return r.AssetClass }},
+		strCol("asset_class", func(r row) string { return r.AssetClass }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 	}
 	cols = append(cols, shareCols(func(r row) gold.ExposureShares { return r.ExposureShares })...)
@@ -380,8 +379,8 @@ var defaultExposureClassColumns = []string{"asset_class", "value", "share", "dir
 func buildExposureSectorColumns(ccy string) []columnSpec[gold.ExposureSectorRow] {
 	type row = gold.ExposureSectorRow
 	cols := []columnSpec[row]{
-		{Name: "asset_class", Align: output.AlignLeft, Extract: func(r row) string { return r.AssetClass }},
-		{Name: "sector", Align: output.AlignLeft, Extract: func(r row) string { return r.Sector }},
+		strCol("asset_class", func(r row) string { return r.AssetClass }),
+		strCol("sector", func(r row) string { return r.Sector }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 	}
 	cols = append(cols, shareCols(func(r row) gold.ExposureShares { return r.ExposureShares })...)
@@ -395,8 +394,8 @@ var defaultExposureSectorColumns = []string{"asset_class", "sector", "value", "s
 func buildExposureSizeColumns(ccy string) []columnSpec[gold.ExposureSizeRow] {
 	type row = gold.ExposureSizeRow
 	cols := []columnSpec[row]{
-		{Name: "asset_class", Align: output.AlignLeft, Extract: func(r row) string { return r.AssetClass }},
-		{Name: "size", Align: output.AlignLeft, Extract: func(r row) string { return r.Size }},
+		strCol("asset_class", func(r row) string { return r.AssetClass }),
+		strCol("size", func(r row) string { return r.Size }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 	}
 	cols = append(cols, shareCols(func(r row) gold.ExposureShares { return r.ExposureShares })...)
@@ -412,8 +411,7 @@ var defaultExposureSizeColumns = []string{"asset_class", "size", "value", "share
 // of what the dimension describes, and the quality.
 func buildExposureBucketColumns(ccy, view, column string) []columnSpec[gold.ExposureBucketRow] {
 	type row = gold.ExposureBucketRow
-	cols := []columnSpec[row]{{Name: column, Align: output.AlignLeft,
-		Extract: func(r row) string { return r.Bucket }}}
+	cols := []columnSpec[row]{strCol(column, func(r row) string { return r.Bucket })}
 	if view == "credit" {
 		cols = append(cols, textCol("grade", func(r row) *string { return r.Grade }))
 	}
@@ -490,7 +488,7 @@ var defaultExposureIssuerColumns = []string{"issuer", "value", "share", "cumulat
 func buildExposureCountryColumns(ccy string) []columnSpec[gold.ExposureCountryRow] {
 	type row = gold.ExposureCountryRow
 	cols := []columnSpec[row]{
-		{Name: "country", Align: output.AlignLeft, Extract: func(r row) string { return r.Country }},
+		strCol("country", func(r row) string { return r.Country }),
 		textCol("country_name", func(r row) *string { return r.CountryName }),
 		textCol("region", func(r row) *string { return r.Region }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
@@ -505,8 +503,8 @@ var defaultExposureCountryColumns = []string{"country", "country_name", "region"
 func buildExposureCurrencyColumns(ccy string) []columnSpec[gold.ExposureCurrencyRow] {
 	type row = gold.ExposureCurrencyRow
 	cols := []columnSpec[row]{
-		{Name: "currency", Align: output.AlignLeft, Extract: func(r row) string { return r.Currency }},
-		{Name: "kind", Align: output.AlignLeft, Extract: func(r row) string { return r.Kind }},
+		strCol("currency", func(r row) string { return r.Currency }),
+		strCol("kind", func(r row) string { return r.Kind }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
 	}
 	cols = append(cols, shareCols(func(r row) gold.ExposureShares { return r.ExposureShares })...)
@@ -520,7 +518,7 @@ var defaultExposureCurrencyColumns = []string{"currency", "kind", "value", "shar
 func buildExposureSitusColumns(ccy string) []columnSpec[gold.ExposureSitusRow] {
 	type row = gold.ExposureSitusRow
 	return []columnSpec[row]{
-		{Name: "situs", Align: output.AlignLeft, Extract: func(r row) string { return r.Situs }},
+		strCol("situs", func(r row) string { return r.Situs }),
 		textCol("country_name", func(r row) *string { return r.CountryName }),
 		textCol("region", func(r row) *string { return r.Region }),
 		outCcyCol("value", ccy, func(r row) *string { return r.Value }),
@@ -571,12 +569,12 @@ func buildExposureFundColumns(ccy string, kindOf func(string) string) []columnSp
 		pctCol("share", func(r row) *float64 { return r.SharePct }),
 		textCol("via", func(r row) *string { return r.Via }),
 		textCol("proxy", func(r row) *string { return r.Proxy }),
-		{Name: "leverage", Align: output.AlignRight, Extract: func(r row) string {
+		kindCol("leverage", NumberColumn, func(r row) string {
 			if r.Leverage == nil {
 				return ""
 			}
 			return fmt.Sprintf("%g", *r.Leverage)
-		}},
+		}),
 		textCol("provider", func(r row) *string { return r.Provider }),
 		textCol("basis", func(r row) *string { return r.Basis }),
 		datePtrCol("composition_date", func(r row) *int64 { return r.CompositionAsOf }),
@@ -602,7 +600,7 @@ func buildExposureCoverageColumns(ccy string, kindOf func(string) string) []colu
 	type row = gold.ExposureCoverageRow
 	holding := func(r row) (string, string) { return strOrEmpty(r.SilverSourceID), strOrEmpty(r.Instrument) }
 	return []columnSpec[row]{
-		{Name: "section", Align: output.AlignLeft, Extract: func(r row) string { return r.Section }},
+		strCol("section", func(r row) string { return r.Section }),
 		// An unmatched holding no key names reads as its instrument id.
 		holdingKeyCol("reason", kindOf, func(r row) string { return r.Reason }),
 		countCol("items", func(r row) int64 { return r.Items }),
@@ -615,8 +613,7 @@ func buildExposureCoverageColumns(ccy string, kindOf func(string) string) []colu
 		// What a declaration names; -p hides the instrument id whole, and
 		// redacts a typed holding's as an id.
 		textCol("silver_source_id", func(r row) *string { return r.SilverSourceID }),
-		holdingIDCol(columnSpec[row]{Name: "instrument", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r row) string { return strOrEmpty(r.Instrument) }}, kindOf, holding),
+		holdingIDCol(privateCol("instrument", PrivacyFreeText, func(r row) string { return strOrEmpty(r.Instrument) }), kindOf, holding),
 	}
 }
 

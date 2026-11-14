@@ -89,8 +89,8 @@ func TestTransactionPrivacyClasses(t *testing.T) {
 			t.Errorf("column %q is not registered", name)
 			continue
 		}
-		if c.Privacy != class {
-			t.Errorf("column %q privacy = %v, want %v", name, c.Privacy, class)
+		if c.class() != class {
+			t.Errorf("column %q privacy = %v, want %v", name, c.class(), class)
 		}
 	}
 }
@@ -149,8 +149,8 @@ func TestTransactionsCarriesTheIncomeTrio(t *testing.T) {
 	for _, c := range all {
 		if class, ok := want[c.Name]; ok {
 			seen[c.Name] = true
-			if c.Privacy != class {
-				t.Errorf("%s: privacy = %v, want %v", c.Name, c.Privacy, class)
+			if c.class() != class {
+				t.Errorf("%s: privacy = %v, want %v", c.Name, c.class(), class)
 			}
 		}
 	}
@@ -203,11 +203,11 @@ func TestTransactionCheckNumberColumn(t *testing.T) {
 	if spec == nil {
 		t.Fatal("check_no did not resolve")
 	}
-	if spec.Privacy != PrivacyAccountID {
-		t.Errorf("check_no privacy = %v, want PrivacyAccountID", spec.Privacy)
+	if spec.class() != PrivacyAccountID {
+		t.Errorf("check_no privacy = %v, want PrivacyAccountID", spec.class())
 	}
-	if spec.Align != output.AlignLeft {
-		t.Errorf("check_no align = %v, want AlignLeft — it is an identifier, not a number", spec.Align)
+	if spec.Kind != TextColumn {
+		t.Errorf("check_no kind = %v, want text — it is an identifier, not a number", spec.Kind)
 	}
 
 	number := "9042"

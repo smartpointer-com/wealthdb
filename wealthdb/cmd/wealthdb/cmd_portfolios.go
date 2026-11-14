@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // ---- column registry -----------------------------------------------------
@@ -14,8 +13,7 @@ import (
 // not group, so that Σ total_value_<CCY> equals the accounts view's.
 func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []columnSpec[gold.PortfolioRow] {
 	return []columnSpec[gold.PortfolioRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.PortfolioRow) string { return r.SilverSourceID }},
+		strCol("silver_source", func(r gold.PortfolioRow) string { return r.SilverSourceID }),
 		dateCol("snapshot_date", func(r gold.PortfolioRow) int64 { return r.SnapshotAt }),
 		// Sentinel rows render as "(no portfolio)" so they stand out
 		// at a glance.
@@ -26,8 +24,7 @@ func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []c
 			return r.SilverSourceID, r.PortfolioExternalID
 		}),
 		textCol("base_currency", func(r gold.PortfolioRow) *string { return r.BaseCurrency }),
-		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.PortfolioRow) string { return strOrEmpty(r.RelationshipID) }},
+		privateCol("relationship_id", PrivacyAccountID, func(r gold.PortfolioRow) string { return strOrEmpty(r.RelationshipID) }),
 		nicknameCol("portfolio_nickname", func(r gold.PortfolioRow) *string { return r.Nickname }),
 		// Portfolio-level taxonomy rollups, agree-or-NULL in gold
 		// over the non-overlay component accounts, each read with
@@ -36,9 +33,9 @@ func buildPortfolioColumnRegistry(outCcy string, kindOf func(string) string) []c
 		textCol("tax_wrapper", func(r gold.PortfolioRow) *string { return r.TaxWrapper }),
 		textCol("management_style", func(r gold.PortfolioRow) *string { return r.ManagementStyle }),
 
-		moneyCol("positions_value", "", func(r gold.PortfolioRow) *string { return r.PositionsValueBase }),
-		moneyCol("cash_balance", "", func(r gold.PortfolioRow) *string { return r.CashBalanceBase }),
-		moneyCol("total_value", "", func(r gold.PortfolioRow) *string { return r.TotalValueBase }),
+		moneyCol("positions_value", func(r gold.PortfolioRow) *string { return r.PositionsValueBase }),
+		moneyCol("cash_balance", func(r gold.PortfolioRow) *string { return r.CashBalanceBase }),
+		moneyCol("total_value", func(r gold.PortfolioRow) *string { return r.TotalValueBase }),
 
 		outCcyTwin("positions_value", outCcy, func(r gold.PortfolioRow) *string { return r.PositionsValueOutCcy }),
 		outCcyTwin("cash_balance", outCcy, func(r gold.PortfolioRow) *string { return r.CashBalanceOutCcy }),

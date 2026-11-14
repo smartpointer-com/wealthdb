@@ -83,7 +83,7 @@ func checkDateMarks(t *testing.T, srv *mcpServer, tool toolSpec, v, period strin
 				col = &rep.columns[i]
 			}
 		}
-		if col == nil || col.align != 0 {
+		if col == nil || col.numeric() {
 			continue
 		}
 		cells, dates := 0, 0
@@ -97,9 +97,9 @@ func checkDateMarks(t *testing.T, srv *mcpServer, tool toolSpec, v, period strin
 			}
 		}
 		switch {
-		case col.date && dates < cells:
+		case col.kind == DateColumn && dates < cells:
 			t.Errorf("%s %s %s: %s is marked a date, but prints %d cells that are none", tool.name, v, period, h, cells-dates)
-		case !col.date && cells > 0 && dates == cells:
+		case col.kind != DateColumn && cells > 0 && dates == cells:
 			t.Errorf("%s %s %s: %s prints dates only, but is not marked a date", tool.name, v, period, h)
 		}
 	}
@@ -128,7 +128,7 @@ func TestDateNamedColumnsAreMarked(t *testing.T) {
 					req.series = []seriesPoint{{}}
 				}
 				for _, c := range tool.family.build(nil, req, &toolArgs{values: map[string]any{}}).columns {
-					if dateNamed(c.name) && !c.date {
+					if dateNamed(c.name) && c.kind != DateColumn {
 						t.Errorf("%s %s: %s is named as a date, but is not marked one", tool.name, v, c.name)
 					}
 				}

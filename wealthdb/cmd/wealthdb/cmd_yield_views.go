@@ -8,7 +8,6 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -161,8 +160,7 @@ func buildYieldCashColumns(outCcy string, kindOf func(string) string) []columnSp
 		floatValCol("value", outCcy, func(r row) float64 { return r.Value }),
 		pctCol("rate", func(r row) *float64 { return r.Stated }),
 		countCol("tiers", func(r row) int64 { return int64(r.Tiers) }),
-		{Name: "tier_up_to", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r row) string { return fixedOrBlank(r.UpTo, 2) }},
+		kindCol("tier_up_to", MoneyColumn, func(r row) string { return fixedOrBlank(r.UpTo, 2) }),
 		asDate(strCol("valid_from", func(r row) string { return dateOrBlank(r.ValidFrom) })),
 		asDate(strCol("term_end", func(r row) string { return dateOrBlank(r.TermEnd) })),
 		pctCol("realized_yield", func(r row) *float64 { return r.Realized }),
@@ -203,15 +201,14 @@ func buildYieldCoverageColumns(outCcy string, kindOf func(string) string) []colu
 		pctCol("share", func(r row) *float64 { return r.SharePct }),
 		countCol("holdings", func(r row) int64 { return int64(r.Holdings) }),
 		// Only a record_day line counts payments: blank on the others.
-		{Name: "payments", Align: output.AlignRight, Extract: func(r row) string {
+		kindCol("payments", CountColumn, func(r row) string {
 			if r.Payments == 0 {
 				return ""
 			}
 			return strconv.Itoa(r.Payments)
-		}},
+		}),
 		strCol("silver_source", func(r row) string { return r.Source }),
-		holdingIDCol(columnSpec[row]{Name: "instrument", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r row) string { return r.Instrument }}, kindOf, holding),
+		holdingIDCol(privateCol("instrument", PrivacyFreeText, func(r row) string { return r.Instrument }), kindOf, holding),
 		// A holding's line names its account by id alone.
 		accountIDCol("account", kindOf, func(r row) accountRef { return accountRef{source: r.Source, id: r.Account} }),
 		// -p masks an id typed into a typed holding's name.

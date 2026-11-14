@@ -7,7 +7,6 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 func init() {
@@ -62,18 +61,14 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		return r.SilverSourceID, strOrEmpty(r.InstrumentExternalID)
 	}
 	return []columnSpec[gold.TransactionRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.TransactionRow) string { return r.SilverSourceID }},
-		{Name: "date", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.TransactionRow) string { return formatDate(r.OccurredAt) }},
-		{Name: "datetime", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.TransactionRow) string { return formatDateTime(r.OccurredAt) }},
+		strCol("silver_source", func(r gold.TransactionRow) string { return r.SilverSourceID }),
+		asDate(strCol("date", func(r gold.TransactionRow) string { return formatDate(r.OccurredAt) })),
+		asDate(strCol("datetime", func(r gold.TransactionRow) string { return formatDateTime(r.OccurredAt) })),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
-		{Name: "kind", Align: output.AlignLeft,
-			Extract: func(r gold.TransactionRow) string { return r.Kind }},
+		strCol("kind", func(r gold.TransactionRow) string { return r.Kind }),
 		textCol("symbol", func(r gold.TransactionRow) *string { return r.Symbol }),
-		holdingNameCol(columnSpec[gold.TransactionRow]{Name: "name", Align: output.AlignLeft,
+		holdingNameCol(columnSpec[gold.TransactionRow]{Name: "name",
 			Extract: func(r gold.TransactionRow) string {
 				// Prefer the joined instruments.name; fall back to the
 				// adapter-supplied transactions.description (Schwab
@@ -111,8 +106,7 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		// class, matching the same column on the spending view — the
 		// cell masks whole, because there is no safe slice of a
 		// narrative to expose.
-		{Name: "description", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Description) }},
+		privateCol("description", PrivacyFreeText, func(r gold.TransactionRow) string { return strOrEmpty(r.Description) }),
 		// The spending overlay's verdict on the row (spend_txn_categories).
 		// Empty for everything the enrichment pass does not reach:
 		// investment rows, and anything outside the spending account
@@ -126,8 +120,7 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		// prints, so a narrative the fence refused surfaces here as
 		// its own fold. The spend_* categories and asset_class stay
 		// legible as taxonomy.
-		{Name: "merchant", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.MerchantName) }},
+		privateCol("merchant", PrivacyFreeText, func(r gold.TransactionRow) string { return strOrEmpty(r.MerchantName) }),
 		textCol("spend_primary", func(r gold.TransactionRow) *string { return r.SpendPrimary }),
 		textCol("spend_detailed", func(r gold.TransactionRow) *string { return r.SpendDetailed }),
 		// The INCOME overlay's verdict on the same row
@@ -139,8 +132,7 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		// it is the store's name for the signature or the fold of the
 		// narrative itself, and a column takes the class of the worst
 		// thing it can hold.
-		{Name: "payer", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.PayerName) }},
+		privateCol("payer", PrivacyFreeText, func(r gold.TransactionRow) string { return strOrEmpty(r.PayerName) }),
 		textCol("income_primary", func(r gold.TransactionRow) *string { return r.IncomePrimary }),
 		textCol("income_detailed", func(r gold.TransactionRow) *string { return r.IncomeDetailed }),
 		// The cheque number of an outgoing paper cheque, for matching a
@@ -148,8 +140,7 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		// party, so it is not free text — but it is an identifier tied
 		// to the holder's own account, which is what PrivacyAccountID
 		// covers.
-		{Name: "check_no", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.CheckNumber) }},
+		privateCol("check_no", PrivacyAccountID, func(r gold.TransactionRow) string { return strOrEmpty(r.CheckNumber) }),
 		// The node the cash flow statement resolved the row to
 		// (cashflow_txn_nodes), beside the two families' trios: which
 		// section of the statement, which inner node, which leaf. The
@@ -162,19 +153,16 @@ func buildTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 		textCol("cashflow_class", func(r gold.TransactionRow) *string { return r.CashflowClass }),
 		textCol("cashflow_group", func(r gold.TransactionRow) *string { return r.CashflowGroup }),
 		textCol("asset_class", func(r gold.TransactionRow) *string { return r.AssetClass }),
-		{Name: "currency", Align: output.AlignLeft,
-			Extract: func(r gold.TransactionRow) string { return r.Currency }},
-		moneyCol("gross_amount", "", func(r gold.TransactionRow) *string { return r.GrossAmount }),
-		moneyCol("net_amount", "", func(r gold.TransactionRow) *string { return r.NetAmount }),
+		strCol("currency", func(r gold.TransactionRow) string { return r.Currency }),
+		moneyCol("gross_amount", func(r gold.TransactionRow) *string { return r.GrossAmount }),
+		moneyCol("net_amount", func(r gold.TransactionRow) *string { return r.NetAmount }),
 		quantityCol("quantity", func(r gold.TransactionRow) *string { return r.Quantity }),
-		{Name: "price", Align: output.AlignRight, Privacy: PrivacyMoney,
-			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.Price) }},
+		kindCol("price", MoneyColumn, func(r gold.TransactionRow) string { return strOrEmpty(r.Price) }),
 		outCcyCol("value", outCcy, func(r gold.TransactionRow) *string { return r.ValueOutCcy }),
 		typedIDCol("tx_id", kindOf, func(r gold.TransactionRow) (string, string) {
 			return r.SilverSourceID, r.TransactionExternalID
 		}),
-		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(r gold.TransactionRow) string { return strOrEmpty(r.RelationshipID) }},
+		privateCol("relationship_id", PrivacyAccountID, func(r gold.TransactionRow) string { return strOrEmpty(r.RelationshipID) }),
 		nicknameCol("account_nickname", func(r gold.TransactionRow) *string { return r.Nickname }),
 		accountCategoryCol(categories, func(r gold.TransactionRow) *string { return r.AccountCategory }),
 		textCol("account_kind", func(r gold.TransactionRow) *string { return r.AccountKind }),

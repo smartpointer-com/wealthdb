@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // ---- column registry -----------------------------------------------------
@@ -17,20 +16,17 @@ func buildAccountColumnRegistry(outCcy string, kindOf func(string) string, categ
 		return accountRef{source: a.SilverSourceID, name: a.DisplayName, nickname: a.Nickname, id: a.AccountExternalID}
 	}
 	return []columnSpec[gold.AccountRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(a gold.AccountRow) string { return a.SilverSourceID }},
+		strCol("silver_source", func(a gold.AccountRow) string { return a.SilverSourceID }),
 		// SnapshotAt is 0 only when the silver source has produced no
 		// observations at all, which shows as a blank.
 		dateCol("snapshot_date", func(a gold.AccountRow) int64 { return a.SnapshotAt }),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
-		{Name: "account_kind", Align: output.AlignLeft,
-			Extract: func(a gold.AccountRow) string { return a.AccountKind }},
+		strCol("account_kind", func(a gold.AccountRow) string { return a.AccountKind }),
 		textCol("tax_wrapper", func(a gold.AccountRow) *string { return a.TaxWrapper }),
 		textCol("management_style", func(a gold.AccountRow) *string { return a.ManagementStyle }),
 		textCol("base_currency", func(a gold.AccountRow) *string { return a.BaseCurrency }),
-		{Name: "relationship_id", Align: output.AlignLeft, Privacy: PrivacyAccountID,
-			Extract: func(a gold.AccountRow) string { return strOrEmpty(a.RelationshipID) }},
+		privateCol("relationship_id", PrivacyAccountID, func(a gold.AccountRow) string { return strOrEmpty(a.RelationshipID) }),
 		nicknameCol("account_nickname", func(a gold.AccountRow) *string { return a.Nickname }),
 		accountCategoryCol(categories, func(a gold.AccountRow) *string { return a.AccountCategory }),
 		typedIDCol("portfolio_external_id", kindOf, func(a gold.AccountRow) (string, string) {
@@ -41,9 +37,9 @@ func buildAccountColumnRegistry(outCcy string, kindOf func(string) string, categ
 		// because each row's value is in its OWN base_currency: there
 		// is no single column-wide currency to advertise. Blank when
 		// the account's base_currency is nil.
-		moneyCol("positions_value", "", func(a gold.AccountRow) *string { return a.PositionsValueBase }),
-		moneyCol("cash_balance", "", func(a gold.AccountRow) *string { return a.CashBalanceBase }),
-		moneyCol("total_value", "", func(a gold.AccountRow) *string { return a.TotalValueBase }),
+		moneyCol("positions_value", func(a gold.AccountRow) *string { return a.PositionsValueBase }),
+		moneyCol("cash_balance", func(a gold.AccountRow) *string { return a.CashBalanceBase }),
+		moneyCol("total_value", func(a gold.AccountRow) *string { return a.TotalValueBase }),
 
 		// Output-currency aggregates, one column-wide currency (the
 		// -x/--currency choice), so the header carries the suffix.

@@ -53,13 +53,13 @@ func TestPositionCostBasisColumns(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"cost_basis", "cost_basis_outccy", "unrealized_gain", "unrealized_gain_outccy", "accrued_interest", "clean_value"} {
-		if byName[name].Privacy != PrivacyMoney {
-			t.Errorf("%s privacy = %v, want money", name, byName[name].Privacy)
+		if byName[name].class() != PrivacyMoney {
+			t.Errorf("%s privacy = %v, want money", name, byName[name].class())
 		}
 	}
 	for _, name := range []string{"unrealized_pct", "basis_stamp", "acquisition_date"} {
-		if byName[name].Privacy != PrivacyNone {
-			t.Errorf("%s privacy = %v, want legible", name, byName[name].Privacy)
+		if byName[name].class() != PrivacyNone {
+			t.Errorf("%s privacy = %v, want legible", name, byName[name].class())
 		}
 	}
 }
@@ -78,8 +78,8 @@ func TestReturnsGainColumn(t *testing.T) {
 			gain = c
 		}
 	}
-	if gain.header() != "gain_USD" || gain.Privacy != PrivacyMoney {
-		t.Errorf("gain header %q privacy %v", gain.header(), gain.Privacy)
+	if gain.header() != "gain_USD" || gain.class() != PrivacyMoney {
+		t.Errorf("gain header %q privacy %v", gain.header(), gain.class())
 	}
 	s := func(v string) *string { return &v }
 	if got := gain.Extract(gold.ReturnRow{StartValue: s("1000.00"), EndValue: s("1500.00"), NetFlow: s("300.00")}); got != "200.00" {

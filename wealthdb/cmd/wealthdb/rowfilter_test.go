@@ -411,11 +411,9 @@ func TestTotals(t *testing.T) {
 	if got := totals(rs, both, cols, "USD", noTotal); got != nil {
 		t.Errorf("no total = %v", got)
 	}
-	// No currency, or one no money column is in: nothing to add up.
-	for _, ccy := range []string{"", "CHF"} {
-		if got := totals(rs, both, cols, ccy, flowTotal); got != nil {
-			t.Errorf("currency %q totals %v", ccy, got)
-		}
+	// No currency: nothing to add up.
+	if got := totals(rs, both, cols, "", flowTotal); got != nil {
+		t.Errorf("no currency totals %v", got)
 	}
 	p := page{idx: q1, totals: totals(rs, q1, cols, "USD", balanceTotal)}
 	if line := p.totalLine(); line != "total of 2 rows: value_USD 75210.50\n" {

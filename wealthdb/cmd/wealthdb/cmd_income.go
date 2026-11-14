@@ -9,7 +9,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -118,10 +117,8 @@ var incomeFamily = &family{
 
 func buildIncomeSummaryColumnRegistry(outCcy, period string) []columnSpec[gold.IncomeSummaryRow] {
 	return []columnSpec[gold.IncomeSummaryRow]{
-		{Name: "period", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.IncomeSummaryRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.IncomeSummaryRow) string { return periodStart(r.PeriodStart) }},
+		asDate(strCol("period", func(r gold.IncomeSummaryRow) string { return periodLabel(r.PeriodStart, period) })),
+		asDate(strCol("period_start", func(r gold.IncomeSummaryRow) string { return periodStart(r.PeriodStart) })),
 		countCol("txn_count", func(r gold.IncomeSummaryRow) int64 { return r.TxnCount }),
 		outCcyCol("income", outCcy, func(r gold.IncomeSummaryRow) *string { return r.Income }),
 		outCcyCol("reversals", outCcy, func(r gold.IncomeSummaryRow) *string { return r.Reversals }),
@@ -140,17 +137,13 @@ var defaultIncomeSummaryColumns = []string{
 
 func buildIncomeTypeColumnRegistry(outCcy, period string) []columnSpec[gold.IncomeTypeRow] {
 	return []columnSpec[gold.IncomeTypeRow]{
-		{Name: "period", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.IncomeTypeRow) string { return periodLabel(r.PeriodStart, period) }},
-		{Name: "period_start", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.IncomeTypeRow) string { return periodStart(r.PeriodStart) }},
+		asDate(strCol("period", func(r gold.IncomeTypeRow) string { return periodLabel(r.PeriodStart, period) })),
+		asDate(strCol("period_start", func(r gold.IncomeTypeRow) string { return periodStart(r.PeriodStart) })),
 		// `type` is what a reader sees and `type_id` is the key they
 		// would group or join on — the same split the spending
 		// categories view makes between its label and its value.
-		{Name: "type", Align: output.AlignLeft,
-			Extract: func(r gold.IncomeTypeRow) string { return r.TypeLabel }},
-		{Name: "type_id", Align: output.AlignLeft,
-			Extract: func(r gold.IncomeTypeRow) string { return r.Type }},
+		strCol("type", func(r gold.IncomeTypeRow) string { return r.TypeLabel }),
+		strCol("type_id", func(r gold.IncomeTypeRow) string { return r.Type }),
 		countCol("txn_count", func(r gold.IncomeTypeRow) int64 { return r.TxnCount }),
 		outCcyCol("income", outCcy, func(r gold.IncomeTypeRow) *string { return r.Income }),
 		outCcyCol("reversals", outCcy, func(r gold.IncomeTypeRow) *string { return r.Reversals }),
@@ -169,29 +162,23 @@ func buildIncomeTransactionColumnRegistry(outCcy string, kindOf func(string) str
 		return accountRef{source: r.SilverSourceID, name: r.DisplayName, nickname: r.Nickname, id: r.AccountExternalID}
 	}
 	return []columnSpec[gold.IncomeTransactionRow]{
-		{Name: "silver_source", Align: output.AlignLeft,
-			Extract: func(r gold.IncomeTransactionRow) string { return r.SilverSourceID }},
-		{Name: "date", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.IncomeTransactionRow) string { return formatDate(r.OccurredAt) }},
-		{Name: "datetime", Align: output.AlignLeft, Date: true,
-			Extract: func(r gold.IncomeTransactionRow) string { return formatDateTime(r.OccurredAt) }},
+		strCol("silver_source", func(r gold.IncomeTransactionRow) string { return r.SilverSourceID }),
+		asDate(strCol("date", func(r gold.IncomeTransactionRow) string { return formatDate(r.OccurredAt) })),
+		asDate(strCol("datetime", func(r gold.IncomeTransactionRow) string { return formatDateTime(r.OccurredAt) })),
 		accountCol(kindOf, ref),
 		accountIDCol("account_id", kindOf, ref),
 		textCol("account_kind", func(r gold.IncomeTransactionRow) *string { return r.AccountKind }),
 		nicknameCol("account_nickname", func(r gold.IncomeTransactionRow) *string { return r.Nickname }),
 		accountCategoryCol(categories, func(r gold.IncomeTransactionRow) *string { return r.AccountCategory }),
-		{Name: "kind", Align: output.AlignLeft,
-			Extract: func(r gold.IncomeTransactionRow) string { return r.Kind }},
+		strCol("kind", func(r gold.IncomeTransactionRow) string { return r.Kind }),
 		// The payer takes the FREE-TEXT class, and that most of the
 		// base fills it with an instrument name does not change it: a
 		// column takes the class of the worst thing it can hold. On a
 		// deposit the column is the payer store's name for the
 		// signature or, where the store has none, the fold of the
 		// narrative itself — which on an inbound wire is a person.
-		{Name: "payer", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.PayerName) }},
-		{Name: "payer_signature", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.PayerSignature) }},
+		privateCol("payer", PrivacyFreeText, func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.PayerName) }),
+		privateCol("payer_signature", PrivacyFreeText, func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.PayerSignature) }),
 		textCol("income_type", func(r gold.IncomeTransactionRow) *string { return r.IncomeLabel }),
 		textCol("income_type_id", func(r gold.IncomeTransactionRow) *string { return r.IncomeDetailed }),
 		textCol("income_primary", func(r gold.IncomeTransactionRow) *string { return r.IncomePrimaryLabel }),
@@ -201,17 +188,14 @@ func buildIncomeTransactionColumnRegistry(outCcy string, kindOf func(string) str
 		// it.
 		textCol("provider_income_type", func(r gold.IncomeTransactionRow) *string { return r.ProviderIncomeLabel }),
 		textCol("provider_income_type_id", func(r gold.IncomeTransactionRow) *string { return r.ProviderIncomeDetailed }),
-		{Name: "currency", Align: output.AlignLeft,
-			Extract: func(r gold.IncomeTransactionRow) string { return r.Currency }},
-		moneyCol("net_amount", "", func(r gold.IncomeTransactionRow) *string { return r.NetAmount }),
+		strCol("currency", func(r gold.IncomeTransactionRow) string { return r.Currency }),
+		moneyCol("net_amount", func(r gold.IncomeTransactionRow) *string { return r.NetAmount }),
 		outCcyCol("value", outCcy, func(r gold.IncomeTransactionRow) *string { return r.ValueOutCcy }),
 		// The raw narrative the signature was folded from. Free text on
 		// both counts: it is what a bank printed, and on a deposit that
 		// is whoever sent the money.
-		{Name: "counterparty", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.Counterparty) }},
-		{Name: "description", Align: output.AlignLeft, Privacy: PrivacyFreeText,
-			Extract: func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.Description) }},
+		privateCol("counterparty", PrivacyFreeText, func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.Counterparty) }),
+		privateCol("description", PrivacyFreeText, func(r gold.IncomeTransactionRow) string { return strOrEmpty(r.Description) }),
 		// The source's own id for the line. INCOME.md §8 sends a reader
 		// to `wealthdb transactions` to see both families on one row,
 		// and without this there is no key to join the two listings on.

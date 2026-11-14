@@ -10,7 +10,6 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 // A series is a view repeated at the end of every period of a window:
@@ -47,10 +46,9 @@ type seriesRow[T any] struct {
 // holds is skipped: nothing was held then.
 func seriesReport[T any](registry []columnSpec[T], defaults []string, points []seriesPoint,
 	fetch func(context.Context, *sql.DB, int64) ([]T, error)) *report {
-	reg := []columnSpec[seriesRow[T]]{{Name: "period", Align: output.AlignLeft, Date: true,
-		Extract: func(r seriesRow[T]) string { return r.period }}}
+	reg := []columnSpec[seriesRow[T]]{asDate(strCol("period", func(r seriesRow[T]) string { return r.period }))}
 	for _, c := range registry {
-		col := columnSpec[seriesRow[T]]{Name: c.Name, Header: c.Header, Align: c.Align, Date: c.Date, Privacy: c.Privacy,
+		col := columnSpec[seriesRow[T]]{Name: c.Name, Header: c.Header, Kind: c.Kind, Unit: c.Unit, Twin: c.Twin, Privacy: c.Privacy,
 			Extract: func(r seriesRow[T]) string { return c.Extract(r.row) }}
 		if c.PrivacyFunc != nil {
 			col.PrivacyFunc = func(r seriesRow[T]) PrivacyClass { return c.PrivacyFunc(r.row) }

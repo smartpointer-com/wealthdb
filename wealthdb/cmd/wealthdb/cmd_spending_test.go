@@ -198,8 +198,8 @@ func TestSpendingTransactionPrivacyClasses(t *testing.T) {
 			t.Errorf("column %q is not registered", name)
 			continue
 		}
-		if c.Privacy != class {
-			t.Errorf("column %q privacy = %v, want %v", name, c.Privacy, class)
+		if c.class() != class {
+			t.Errorf("column %q privacy = %v, want %v", name, c.class(), class)
 		}
 	}
 }

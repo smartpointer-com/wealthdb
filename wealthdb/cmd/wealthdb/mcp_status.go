@@ -43,9 +43,9 @@ func statusColumns() []columnSpec[statusRow] {
 		}
 	}
 	return []columnSpec[statusRow]{
-		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r statusRow) string { return r.source }},
-		{Name: "kind", Align: output.AlignLeft, Extract: func(r statusRow) string { return r.kind }},
-		{Name: "state", Align: output.AlignLeft, Extract: func(r statusRow) string {
+		strCol("silver_source", func(r statusRow) string { return r.source }),
+		strCol("kind", func(r statusRow) string { return r.kind }),
+		strCol("state", func(r statusRow) string {
 			switch {
 			case r.failed:
 				return "error"
@@ -53,30 +53,30 @@ func statusColumns() []columnSpec[statusRow] {
 				return "not loaded"
 			}
 			return "loaded"
-		}},
-		{Name: "positions", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.PositionsCount })},
-		{Name: "transactions", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.TransactionsCount })},
-		{Name: "first_snapshot", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.OldestSnapshotAt })},
-		{Name: "latest_snapshot", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.LatestSnapshotAt })},
-		{Name: "latest_transaction", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.LatestTransactionAt })},
+		}),
+		kindCol("positions", CountColumn, count(func(s *gold.SourceStatus) int { return s.PositionsCount })),
+		kindCol("transactions", CountColumn, count(func(s *gold.SourceStatus) int { return s.TransactionsCount })),
+		asDate(strCol("first_snapshot", date(func(s *gold.SourceStatus) int64 { return s.OldestSnapshotAt }))),
+		asDate(strCol("latest_snapshot", date(func(s *gold.SourceStatus) int64 { return s.LatestSnapshotAt }))),
+		asDate(strCol("latest_transaction", date(func(s *gold.SourceStatus) int64 { return s.LatestTransactionAt }))),
 		// When a run last read the source, whether or not anything had
 		// changed: a source that marks quarterly is current through its
 		// latest download, not its latest snapshot.
-		{Name: "observed_holdings", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.ObservedSnapshotsThrough })},
-		{Name: "observed_ledger", Align: output.AlignLeft, Date: true, Extract: date(func(s *gold.SourceStatus) int64 { return s.ObservedTransactionsThrough })},
-		{Name: "last_loaded", Align: output.AlignLeft, Date: true, Extract: func(r statusRow) string {
+		asDate(strCol("observed_holdings", date(func(s *gold.SourceStatus) int64 { return s.ObservedSnapshotsThrough }))),
+		asDate(strCol("observed_ledger", date(func(s *gold.SourceStatus) int64 { return s.ObservedTransactionsThrough }))),
+		asDate(strCol("last_loaded", func(r statusRow) string {
 			if r.st == nil {
 				return ""
 			}
 			return formatDateTime(r.st.LastLoadedAt)
-		}},
-		{Name: "new_data", Align: output.AlignLeft, Extract: func(r statusRow) string { return r.newData }},
-		{Name: "uncategorized_spending", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.UncategorizedSpendCount })},
-		{Name: "uncategorized_income", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.UncategorizedIncomeCount })},
-		{Name: "other_kind", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.OtherTxKindCount })},
-		{Name: "guessed_kind", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.GuessedTxKindCount })},
-		{Name: "other_asset_class", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.OtherAssetClassCount })},
-		{Name: "no_vehicle", Align: output.AlignRight, Extract: count(func(s *gold.SourceStatus) int { return s.MissingVehicleCount })},
+		})),
+		strCol("new_data", func(r statusRow) string { return r.newData }),
+		kindCol("uncategorized_spending", CountColumn, count(func(s *gold.SourceStatus) int { return s.UncategorizedSpendCount })),
+		kindCol("uncategorized_income", CountColumn, count(func(s *gold.SourceStatus) int { return s.UncategorizedIncomeCount })),
+		kindCol("other_kind", CountColumn, count(func(s *gold.SourceStatus) int { return s.OtherTxKindCount })),
+		kindCol("guessed_kind", CountColumn, count(func(s *gold.SourceStatus) int { return s.GuessedTxKindCount })),
+		kindCol("other_asset_class", CountColumn, count(func(s *gold.SourceStatus) int { return s.OtherAssetClassCount })),
+		kindCol("no_vehicle", CountColumn, count(func(s *gold.SourceStatus) int { return s.MissingVehicleCount })),
 	}
 }
 
@@ -203,8 +203,8 @@ func statusDetail(ctx context.Context, db *sql.DB, cfg *config.Config, id string
 
 func snapshotColumns() []columnSpec[snapshotRow] {
 	return []columnSpec[snapshotRow]{
-		{Name: "silver_source", Align: output.AlignLeft, Extract: func(r snapshotRow) string { return r.source }},
-		{Name: "date", Align: output.AlignLeft, Date: true, Extract: func(r snapshotRow) string { return r.date }},
+		strCol("silver_source", func(r snapshotRow) string { return r.source }),
+		asDate(strCol("date", func(r snapshotRow) string { return r.date })),
 		countCol("snapshots", func(r snapshotRow) int64 { return int64(r.count) }),
 	}
 }
