@@ -618,45 +618,6 @@ var exposureSitusBases = []tagNote{
 	{"unknown", "none of these: a coin, cash at a custodian with no country, or a holding to declare"},
 }
 
-// wrapWords breaks s at spaces into lines of at most width bytes; a
-// longer word stands alone on its line.
-func wrapWords(s string, width int) []string {
-	var lines []string
-	line := ""
-	for _, w := range strings.Fields(s) {
-		switch {
-		case line == "":
-			line = w
-		case len(line)+1+len(w) > width:
-			lines = append(lines, line)
-			line = w
-		default:
-			line += " " + w
-		}
-	}
-	return append(lines, line)
-}
-
-// andList joins words as prose: "a, b and c".
-func andList(words []string) string { return joinProse(words, "and") }
-
-// orList joins words as prose: "a, b or c".
-func orList(words []string) string { return joinProse(words, "or") }
-
-// joinProse joins words as prose, the last two by conj.
-func joinProse(words []string, conj string) string {
-	if len(words) < 2 {
-		return strings.Join(words, "")
-	}
-	return strings.Join(words[:len(words)-1], ", ") + " " + conj + " " + words[len(words)-1]
-}
-
-// flagDescription wraps a flag's description to the usage's description
-// column.
-func flagDescription(s string) string {
-	return strings.Join(wrapWords(s, 52), "\n"+strings.Repeat(" ", 21))
-}
-
 func exposureUsage() string {
 	available, defaults := columnSets(exposureFamily, 12, exposureFamily.names(), request{currency: "CCY"}, nil)
 	return `usage: wealthdb exposure <view> [-d DATE] [--country risk|domicile] [--benchmark NAME]

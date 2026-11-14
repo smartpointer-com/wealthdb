@@ -533,13 +533,6 @@ var categorizationsFamily = &family{
 	narrow: "family, category or search",
 }
 
-func orDefault(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
-}
-
 // ---- the call pipeline ---------------------------------------------------
 
 // runFamily is every report tool's call: read the conditions, settle
@@ -1020,13 +1013,6 @@ func finerViews(fam *family, view string, named []string) []string {
 		after = after || v == view
 	}
 	return out
-}
-
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }
 
 // toolSchema is a tool's JSON input schema: an object of optional

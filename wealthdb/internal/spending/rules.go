@@ -680,7 +680,7 @@ type RuleRow struct {
 	Description  string
 	// ProviderCategory is the issuer's own filing of the row, verbatim.
 	// A rule may match it like any other field; it never decides on its
-	// own (see the provider tier in enrich.go, which records it and
+	// own (see the provider tier in lattice.go, which records it and
 	// declines a catch-all).
 	ProviderCategory string
 	Source           string

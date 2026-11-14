@@ -1,30 +1,10 @@
 package main
 
 import (
-	"fmt"
-	"io"
 	"strings"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
-
-// writeFormatted dispatches to the right output.Write* function
-// for the chosen format.
-func writeFormatted(w io.Writer, f output.Format, t output.Table) error {
-	switch f {
-	case output.FormatTable:
-		return output.WriteTable(w, t)
-	case output.FormatCSV:
-		return output.WriteCSV(w, t)
-	case output.FormatCSVPlain:
-		return output.WriteCSVPlain(w, t)
-	case output.FormatJSON:
-		return output.WriteJSON(w, t)
-	}
-	return fmt.Errorf("unsupported output format %q", f)
-}
 
 // ---- column registry -----------------------------------------------------
 
@@ -82,21 +62,6 @@ func buildColumnRegistry(outCcy string, kindOf func(string) string, categories t
 		nicknameCol("account_nickname", func(r gold.PositionRow) *string { return r.Nickname }),
 		accountCategoryCol(categories, func(r gold.PositionRow) *string { return r.AccountCategory }),
 	}
-}
-
-// formatCents renders a decimal-string-as-pointer with exactly two
-// fractional digits — the canonical convention for money columns.
-// Returns "" for nil so empty cells stay empty (not "0.00"). On parse
-// failure falls back to the raw string rather than erroring.
-func formatCents(p *string) string {
-	if p == nil {
-		return ""
-	}
-	d, err := canonical.NewDecimalFromString(*p)
-	if err != nil {
-		return *p
-	}
-	return d.StringFixed(2)
 }
 
 // defaultColumns is what `wealthdb holdings positions` shows when --columns

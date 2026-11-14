@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
@@ -322,12 +321,6 @@ func formatOptionalDate(epoch int64) string {
 		return "(none)"
 	}
 	return formatDate(epoch)
-}
-
-// formatDateTime is the human-readable form for second-grain
-// audit/registration timestamps.
-func formatDateTime(epoch int64) string {
-	return time.Unix(epoch, 0).UTC().Format("2006-01-02 15:04:05Z")
 }
 
 // printStatusVerbose is `status -v`'s extra block: the taxonomy drift

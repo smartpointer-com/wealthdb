@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"flag"
 	"fmt"
 	"slices"
 	"strconv"
@@ -116,32 +115,6 @@ func checkSeriesPeriod(cmd, takes, period string, flag func(string) string) erro
 		return errs.Newf(errs.ExitUsage, "%s: %s %s %s", cmd, takes, flag("period"), strings.Join(seriesPeriods, " | "))
 	}
 	return nil
-}
-
-// windowParser reads a forward view's FROM and TO ("" where absent) at
-// now, horizon months its default span: parseForwardWindow,
-// parsePlanWindow.
-type windowParser func(from, to string, now time.Time, horizon int) (int64, int64, error)
-
-// reportWindow is a report's positional window: the trailing year where
-// forward is nil, else forward's reading of FROM [TO]. A refusal prints
-// fs's usage and is cmd's usage error.
-func reportWindow(fs *flag.FlagSet, cmd string, now time.Time, horizon int, forward windowParser) (int64, int64, error) {
-	var from, to int64
-	var err error
-	switch {
-	case forward == nil:
-		from, to, err = parseTrailingYearWindow(fs.Args(), now)
-	case fs.NArg() > 2:
-		err = fmt.Errorf("a window is FROM [TO]")
-	default:
-		from, to, err = forward(fs.Arg(0), fs.Arg(1), now, horizon)
-	}
-	if err != nil {
-		fs.Usage()
-		return 0, 0, errs.Newf(errs.ExitUsage, "%s: %s", cmd, err.Error())
-	}
-	return from, to, nil
 }
 
 // assumptionsHeader names the assumptions in an MCP result's header, the

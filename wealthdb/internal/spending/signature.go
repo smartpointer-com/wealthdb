@@ -2,7 +2,7 @@
 // categorised income.
 //
 // Two families, one engine. What runs is one enrichment pass over each
-// family's population (enrich.go), driven by a family descriptor
+// family's population (pass.go), driven by a family descriptor
 // (family.go) that carries the names — which macro, which store, which
 // taxonomy column — where the two differ, with a hook only where the
 // BEHAVIOUR differs.

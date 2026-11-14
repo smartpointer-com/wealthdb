@@ -95,32 +95,9 @@ var spendingFamily = &family{
 	},
 }
 
-// reportPeriods maps the CLI's bucket vocabulary onto the date_trunc
-// parts the report macros bucket by. The names are the returns
-// family's, extended down to daily / weekly: a spending or income
-// report is read at a finer grain than a return, where a quarter is
-// the coarsest interesting bucket.
-var reportPeriods = map[string]string{
-	"daily": "day", "weekly": "week", "monthly": "month",
-	"quarterly": "quarter", "annual": "year", "total": "total",
-}
-
-// reportPeriodNames is reportPeriods' key set in display order,
-// for usage text and error messages.
-var reportPeriodNames = []string{"daily", "weekly", "monthly", "quarterly", "annual", "total"}
-
 // categoryLevels are the `--level` vocabularies of spending's and
 // income's categories: the broad groups or the detailed values.
 var categoryLevels = []string{"primary", "detailed"}
-
-// periodStart renders the bucket's opening date, empty for the
-// `total` bucket, which has no start beyond the window's own.
-func periodStart(periodStart *int64) string {
-	if periodStart == nil {
-		return ""
-	}
-	return formatDate(*periodStart)
-}
 
 // ---- column registries ---------------------------------------------------
 

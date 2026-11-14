@@ -387,26 +387,6 @@ func benchmarkReturnColumnsFor(method string) []string {
 	return append(out, "compared_from", "compared_to", "benchmark_quality", "quality")
 }
 
-// formatPct renders a return ratio as a percentage with two decimals, or "n/a"
-// when the figure is undefined (the reason is in the quality column).
-func formatPct(p *float64) string {
-	if p == nil {
-		return "n/a"
-	}
-	return formatPctOrBlank(p)
-}
-
-// formatPctOrBlank is formatPct for a ratio whose absence needs no
-// reason, such as an unrealized gain on a holding with no cost basis:
-// the cell stays empty.
-func formatPctOrBlank(p *float64) string {
-	if p == nil {
-		return ""
-	}
-	pct := *p * 100
-	return formatPercent(&pct)
-}
-
 func returnsUsage() string {
 	registry := buildReturnColumnRegistry("CCY", "", nil, nil)
 	return `usage: wealthdb returns <view> [FROM [TO]] [--method M] [--period P] [--annualize MODE]
