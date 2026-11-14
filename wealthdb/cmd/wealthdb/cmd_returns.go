@@ -19,12 +19,96 @@ func init() {
 	register("returns", cmdReturns)
 }
 
-// returnsViews are the views `wealthdb returns <view>` supports: the
+// returnsFamily are the views `wealthdb returns <view>` supports: the
 // four reconciling grains, coarsest first, then two side views, which
 // are no grain of them: `stated`, the documents' stated periods beside
 // the accounts' figures, and `bridge`, why net worth moved. Per-position
 // gains are the gains report's.
-var returnsViews = []string{"global", "sources", "portfolios", "accounts", "stated", "bridge"}
+var returnsFamily = &family{
+	name: "returns",
+	views: []view{
+		// global's silver_source is the whole portfolio's, not one source.
+		{name: "global", build: buildReturns, principal: returnsPrincipal, header: returnsHeader,
+			excludes: []string{"source"}},
+		{name: "sources", build: buildReturns, principal: returnsPrincipal, header: returnsHeader},
+		{name: "portfolios", build: buildReturns, principal: returnsPrincipal, header: returnsHeader},
+		// On accounts the entity is the account.
+		{name: "accounts", build: buildReturns, principal: returnsPrincipal, header: returnsHeader,
+			keyAlias: map[string]string{"account": "entity"}},
+		// The stated view carries no return: "value" is the engine's
+		// ending value.
+		{name: "stated", side: true, principal: fixedColumn("end_value"),
+			ownCurrency: "each period in the currency its document states",
+			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+				return returnsStatedReport(req, cfg)
+			}},
+		// On the bridge, "value" is the net worth it ends on.
+		{name: "bridge", side: true, principal: fixedColumn("end_net_worth"),
+			header: func(req request) []string { return []string{"period=" + req.period} },
+			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+				return returnsBridgeReport(req, cfg)
+			}},
+	},
+	window:   sinceInception,
+	currency: true,
+	narrow:   "from/to or a filter",
+	prepare: func(_ *family, a *toolArgs, req *request, _ *[]string) error {
+		if req.view == "stated" {
+			// The document fixes the periods and the currency.
+			return refuseArgs(a, "returns", "stated", append([]string{"currency"}, statedRefusedFlags...),
+				" — the periods and the currency are the document's")
+		}
+		if req.view == "bridge" {
+			if err := refuseArgs(a, "returns", "bridge", bridgeRefusedFlags, ""); err != nil {
+				return err
+			}
+			req.period = orDefault(a.str("period"), "total")
+			return checkBridgeWindow(req.from, req.to, req.asOf)
+		}
+		req.method = orDefault(a.str("method"), "both")
+		req.period = orDefault(a.str("period"), "total")
+		req.annualize = orDefault(a.str("annualize"), "auto")
+		req.inception = orDefault(a.str("inception"), "full")
+		req.netting = a.flag("netting", true)
+		req.benchmark = a.str("benchmark")
+		return checkReturnsBenchmark(req.view, req.benchmark)
+	},
+}
+
+// returnsViews are the returns views' names, the grains first.
+var returnsViews = returnsFamily.names()
+
+// buildReturns is a grain's report (returnsReport).
+func buildReturns(cfg *config.Config, req request, _ *toolArgs) *report {
+	return returnsReport(req, cfg)
+}
+
+// returnsPrincipal is a grain's main column: on returns, "value" means
+// the return itself.
+func returnsPrincipal(req request) string {
+	if req.method == "mwr" {
+		return "mwr"
+	}
+	return "twr"
+}
+
+// returnsHeader names a grain's options in force.
+func returnsHeader(req request) []string {
+	h := []string{"method=" + req.method, "period=" + req.period}
+	if req.annualize != "auto" {
+		h = append(h, "annualize="+req.annualize)
+	}
+	if !req.netting {
+		h = append(h, "netting off")
+	}
+	if req.inception != "full" {
+		h = append(h, "inception="+req.inception)
+	}
+	if req.benchmark != "" {
+		h = append(h, "benchmark="+req.benchmark)
+	}
+	return h
+}
 
 // The choices of the returns options the CLI and the MCP tool share.
 var (
@@ -36,7 +120,7 @@ var (
 
 // cmdReturns routes `wealthdb returns <view> ...` to the view's run.
 func cmdReturns(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("returns", subargs, returnsViews, returnsUsage, stderr)
+	view, rest, err := routeView("returns", subargs, returnsFamily.names(), returnsUsage, stderr)
 	if err != nil {
 		return err
 	}

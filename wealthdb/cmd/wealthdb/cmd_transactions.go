@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -44,6 +45,26 @@ func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.
 	rep := transactionsReport(req)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, rf.output(fmtChoice, "transactions", transactionsFamily, req, cfg, g.clock()), open, stdout)
+}
+
+// transactionsFamily is the ledger, a tool of one shape.
+var transactionsFamily = &family{
+	name: "transactions",
+	views: []view{{total: flowTotal, principal: fixedColumn("value"),
+		build: func(_ *config.Config, req request, _ *toolArgs) *report { return transactionsReport(req) }}},
+	window:   pastMonth,
+	currency: true,
+	narrow:   "from/to or a filter",
+	prepare: func(_ *family, a *toolArgs, req *request, _ *[]string) error {
+		req.newestFirst = a.flag("newest_first", false)
+		return nil
+	},
+	header: func(req request) []string {
+		if req.newestFirst {
+			return []string{"newest first"}
+		}
+		return nil
+	},
 }
 
 // transactionsReport is the ledger over a window, the runner the CLI

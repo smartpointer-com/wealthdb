@@ -46,9 +46,121 @@ func init() {
 	register("cashflow", cmdCashflow)
 }
 
-// cashflowViews are the grains `wealthdb cashflow <view>` supports: the
-// statement's, coarsest first, then the cash flow projection.
-var cashflowViews = []string{"summary", "flows", "sankey", "transactions", "coverage", "projection"}
+// cashflowFamily are the grains `wealthdb cashflow <view>` supports:
+// the statement's, coarsest first, then the cash flow projection. A flow
+// node nets the nodes under it, and coverage measures gaps: neither
+// adds up over its rows.
+var cashflowFamily = &family{
+	name: "cashflow",
+	views: []view{
+		{name: "summary", total: flowTotal, principal: fixedColumn("net_cash_flow"), header: periodHeader,
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				part := reportPeriods[req.period]
+				return newReport(buildCashflowSummaryColumnRegistry(req.currency, req.period), defaultCashflowSummaryColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.CashflowSummaryRow, error) {
+						return gold.CashflowSummary(ctx, db, req.from, req.to, req.currency, part)
+					})
+			}},
+		{name: "flows", principal: fixedColumn("net"),
+			header: func(req request) []string {
+				return append([]string{"period=" + req.period, "level=" + req.level}, investingHeader(req)...)
+			},
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				part := reportPeriods[req.period]
+				return newReport(buildCashflowFlowColumnRegistry(req.currency, req.period), defaultCashflowFlowColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.CashflowFlowRow, error) {
+						return gold.CashflowFlows(ctx, db, req.from, req.to, req.currency, part, req.level, req.investing)
+					})
+			}},
+		{name: "sankey", principal: fixedColumn("value"),
+			header: func(req request) []string {
+				return append([]string{"level=" + req.level}, investingHeader(req)...)
+			},
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				return newReport(buildCashflowSankeyColumnRegistry(req.currency), defaultCashflowSankeyColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.CashflowSankeyRow, error) {
+						return gold.CashflowSankey(ctx, db, req.from, req.to, req.currency, req.level, req.investing)
+					})
+			}},
+		{name: "transactions", total: flowTotal, principal: fixedColumn("value"),
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildCashflowTransactionColumnRegistry(req.currency, kindOf, req.categories),
+					defaultCashflowTransactionColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.CashflowTransactionRow, error) {
+						return gold.CashflowTransactions(ctx, db, req.from, req.to, req.currency)
+					}), loadKinds)
+			}},
+		{name: "coverage", principal: fixedColumn("gap"), header: periodHeader,
+			ownCurrency: "each account in its own currency",
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				part := reportPeriods[req.period]
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildCashflowCoverageColumnRegistry(req.period, kindOf),
+					defaultCashflowCoverageColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.CashflowCoverageRow, error) {
+						return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
+					}), loadKinds)
+			}},
+		{name: "projection", forward: true, total: flowTotal, principal: fixedColumn("net"),
+			header: func(req request) []string {
+				return append([]string{"period=" + req.period}, assumptionsHeader(req.assumptions)...)
+			},
+			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+				req.lookback = cfg.CashflowLookback()
+				return newReport(buildCashflowPlanColumns(req.currency, req.period), defaultCashflowPlanColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.PlanRow, error) { return cashflowPlan(ctx, db, req) })
+			}},
+	},
+	window:   trailingYear,
+	currency: true,
+	narrow:   "from/to or a filter",
+	prepare: func(_ *family, a *toolArgs, req *request, _ *[]string) error {
+		// The CLI's three refusals, for the CLI's reasons: each would
+		// answer a question the caller did not ask.
+		switch req.view {
+		case "sankey":
+			if a.has("period") {
+				return fmt.Errorf("cashflow: sankey takes no period — a diagram is a window, not a series; call it once per year instead")
+			}
+			if a.str("level") == "section" {
+				return fmt.Errorf("cashflow: sankey at level=section would draw no inner column; use class or group")
+			}
+		case "coverage":
+			if a.has("currency") {
+				return fmt.Errorf("cashflow: coverage takes no currency — each account is measured against its own balances, in its own currency")
+			}
+		}
+		req.period = orDefault(a.str("period"), "total")
+		req.level = orDefault(a.str("level"), "group")
+		req.investing = orDefault(a.str("investing"), "whole")
+		if req.view == "projection" {
+			req.period = orDefault(a.str("period"), "monthly")
+		}
+		if err := checkCashflowPlanOptions(req.view, req.period, a.has, func(name string) string { return name }); err != nil {
+			return err
+		}
+		if req.view != "projection" {
+			return nil
+		}
+		if err := checkPlanWindow(req.from, req.to, time.Unix(req.asOf, 0)); err != nil {
+			return fmt.Errorf("cashflow: %w; dates are %s", err, dateDoc)
+		}
+		req.assumptions = assumptionArgs(a)
+		return nil
+	},
+}
+
+// cashflowViews are the cash flow views' names.
+var cashflowViews = cashflowFamily.names()
+
+// investingHeader names the investing grain where it is not the whole.
+func investingHeader(req request) []string {
+	if req.investing != "whole" {
+		return []string{"investing=" + req.investing}
+	}
+	return nil
+}
 
 // cashflowInvestingGrains is the `--investing` vocabulary: net the
 // section as one movement, or per asset class.
@@ -59,7 +171,7 @@ var cashflowLevels = []string{"section", "class", "group"}
 
 // cmdCashflow routes `wealthdb cashflow <view> ...` to the view's run.
 func cmdCashflow(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("cashflow", subargs, cashflowViews, cashflowUsage, stderr)
+	view, rest, err := routeView("cashflow", subargs, cashflowFamily.names(), cashflowUsage, stderr)
 	if err != nil {
 		return err
 	}
@@ -133,50 +245,9 @@ func runCashflowView(ctx context.Context, g globalFlags, view string, args []str
 	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
 		period: *period, level: *level, investing: *investing, categories: overrideCategories(cfg),
 		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), lookback: cfg.CashflowLookback()}
-	rep := cashflowReport(req)
+	rep := cashflowFamily.build(cfg, req, nil)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, rf.output(fmtChoice, "cashflow", cashflowFamily, req, cfg, now), open, stdout)
-}
-
-// cashflowReport is one view of the cash flow family, the runner the
-// CLI and the MCP server share. The refusals are the front-ends' to
-// make before they get here.
-func cashflowReport(req request) *report {
-	part := reportPeriods[req.period]
-	switch req.view {
-	case "projection":
-		return newReport(buildCashflowPlanColumns(req.currency, req.period), defaultCashflowPlanColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.PlanRow, error) { return cashflowPlan(ctx, db, req) })
-	case "summary":
-		return newReport(buildCashflowSummaryColumnRegistry(req.currency, req.period), defaultCashflowSummaryColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.CashflowSummaryRow, error) {
-				return gold.CashflowSummary(ctx, db, req.from, req.to, req.currency, part)
-			})
-	case "flows":
-		return newReport(buildCashflowFlowColumnRegistry(req.currency, req.period), defaultCashflowFlowColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.CashflowFlowRow, error) {
-				return gold.CashflowFlows(ctx, db, req.from, req.to, req.currency, part, req.level, req.investing)
-			})
-	case "sankey":
-		return newReport(buildCashflowSankeyColumnRegistry(req.currency), defaultCashflowSankeyColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.CashflowSankeyRow, error) {
-				return gold.CashflowSankey(ctx, db, req.from, req.to, req.currency, req.level, req.investing)
-			})
-	case "coverage":
-		kindOf, loadKinds := sourceKinds()
-		return withLoads(newReport(buildCashflowCoverageColumnRegistry(req.period, kindOf),
-			defaultCashflowCoverageColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.CashflowCoverageRow, error) {
-				return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
-			}), loadKinds)
-	default:
-		kindOf, loadKinds := sourceKinds()
-		return withLoads(newReport(buildCashflowTransactionColumnRegistry(req.currency, kindOf, req.categories),
-			defaultCashflowTransactionColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.CashflowTransactionRow, error) {
-				return gold.CashflowTransactions(ctx, db, req.from, req.to, req.currency)
-			}), loadKinds)
-	}
 }
 
 // checkCashflowPlanOptions refuses the options a view does not take, the
@@ -547,6 +618,7 @@ var defaultCashflowTransactionColumns = []string{
 }
 
 func cashflowUsage() string {
+	available, defaults := columnSets(cashflowFamily, 13, cashflowFamily.names(), request{currency: "CCY", period: "monthly"}, nil)
 	return "usage: wealthdb cashflow <view> [FROM [TO]] [--period P] [--level L] [--investing G]\n" +
 		"                            [--rates R] [--maturing M] [--shift BP] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]\n" +
 		`
@@ -673,23 +745,11 @@ Notes
   -C ` + planClassColumns() + ` splits
   operating_out by class. quality lists what a row rests on:` + tagNotes(cashflowPlanTags) + `
 
-Available columns (per view):
-  summary       ` + joinColumnNames(buildCashflowSummaryColumnRegistry("CCY", "monthly")) + `
-  flows         ` + joinColumnNames(buildCashflowFlowColumnRegistry("CCY", "monthly")) + `
-  sankey        ` + joinColumnNames(buildCashflowSankeyColumnRegistry("CCY")) + `
-  transactions  ` + joinColumnNames(buildCashflowTransactionColumnRegistry("CCY", nil, nil)) + `
-  coverage      ` + joinColumnNames(buildCashflowCoverageColumnRegistry("monthly", nil)) + `
-  projection    ` + joinColumnNames(buildCashflowPlanColumns("CCY", "monthly")) + `
+Available columns (per view):` + available + `
 
   (The money columns render as operating_in_<CCY> / net_<CCY> /
    value_<CCY>, reflecting your -x/--currency choice. Coverage's do
    not: every one of its amounts is in the account's own currency.)
 
-Default column sets:
-  summary       ` + strings.Join(defaultCashflowSummaryColumns, ", ") + `
-  flows         ` + strings.Join(defaultCashflowFlowColumns, ", ") + `
-  sankey        ` + strings.Join(defaultCashflowSankeyColumns, ", ") + `
-  transactions  ` + strings.Join(defaultCashflowTransactionColumns, ", ") + `
-  coverage      ` + strings.Join(defaultCashflowCoverageColumns, ", ") + `
-  projection    ` + strings.Join(defaultCashflowPlanColumns, ", ")
+Default column sets:` + defaults
 }

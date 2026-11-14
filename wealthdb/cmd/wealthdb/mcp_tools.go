@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -25,8 +24,12 @@ type toolSpec struct {
 	title       string
 	description string
 	params      []param
+	// notes are the tool's conventions its columns do not say, with a
+	// second example call, for describe.
+	notes string
 	// family is set for the tools that run a report through the row
-	// layer; run is set for the one that answers otherwise (describe).
+	// layer, and names the tool; run is set for the one that answers
+	// otherwise (describe).
 	family *family
 	// alt are the tool's other shapes, by the boolean parameter that
 	// asks for one: status's marks. A call with that parameter true
@@ -46,60 +49,6 @@ func (t toolSpec) familyFor(a *toolArgs) *family {
 	return t.family
 }
 
-// windowRule is how a family reads its dates: a window over from/to
-// with its CLI default, an as-of date, or none.
-type windowRule int
-
-const (
-	noWindow windowRule = iota
-	asOfDate
-	trailingYear   // spending, income, cashflow: the last twelve months
-	sinceInception // returns: since the first snapshot
-	pastMonth      // transactions: the past 30 days
-)
-
-// family is how a report tool turns a call's arguments into a report.
-type family struct {
-	// views are the tool's views, coarse to fine; nil for a tool with
-	// one shape.
-	views []string
-	// side marks the views that are no grain of the others but a table
-	// of their own (returns' stated): the coarse-to-fine walks of
-	// escalate, finerViews and the help skip them.
-	side map[string]bool
-	// excludes are the named filters a view prints the key column of
-	// but does not carry, because the column means something else
-	// there; keyAlias names a view's key column where it prints the
-	// filter's under another name. Both by view ("" for a tool with one
-	// shape); carries derives the rest.
-	excludes map[string][]string
-	keyAlias map[string]map[string]string
-	derive   sync.Once
-	carried  map[string][]string
-	// adds says how a view's money adds up over its rows, for the
-	// total line of a filtered result; nil for a family whose views
-	// never add up.
-	adds func(view string) totalRule
-	// principal is the main column of the request's view: what
-	// "value", "amount" and the family's own word mean in a sort.
-	principal func(req request) string
-	window    windowRule
-	// forward says a view of a trailingYear family looks forward: its
-	// window defaults to the horizon after the current month and may
-	// reach into the future (parseForwardWindow). nil where none does.
-	forward func(view string) bool
-	// currency says the tool takes a currency parameter.
-	currency bool
-	// narrow is the paging line's advice for cutting a long result.
-	narrow string
-	// prepare fills the family's options into req once the view is
-	// settled, refuses what the CLI refuses, and notes what it chose.
-	prepare func(a *toolArgs, req *request, notes *[]string) error
-	build   func(cfg *config.Config, req request, a *toolArgs) *report
-	// header names the options in force, for the result header.
-	header func(req request) []string
-}
-
 const dateDoc = `YYYY, YYYY-MM, YYYY-MM-DD, today, yesterday, last month, last year`
 
 func stringParam(name, doc string, enum ...string) param {
@@ -109,7 +58,7 @@ func stringParam(name, doc string, enum ...string) param {
 // rowParams are a report tool's parameters: the window, the tool's own
 // (extra), the currency, and the shape of the result. The order is the
 // order a model reads them in.
-func (s *mcpServer) rowParams(window bool, extra ...param) []param {
+func rowParams(window bool, extra ...param) []param {
 	var ps []param
 	if window {
 		ps = append(ps,
@@ -118,17 +67,21 @@ func (s *mcpServer) rowParams(window bool, extra ...param) []param {
 	}
 	ps = append(ps, extra...)
 	ps = append(ps, stringParam("currency", "Output currency, e.g. USD or CHF. Default: the configured one."))
-	return append(ps, s.shapeParams()...)
+	return append(ps, shapeParams()...)
 }
 
+// maxCharsDoc is the max_chars parameter's doc, the server's character
+// budget filled in at registration (mcpServer.tools).
+const maxCharsDoc = "Most characters the result may take (default %d); the page ends at a row boundary and the last line says how to get the rest."
+
 // shapeParams pick, order and page the rows of any table result.
-func (s *mcpServer) shapeParams() []param {
+func shapeParams() []param {
 	return []param{
 		{name: "filter", kind: paramStrings, doc: filterDoc()},
 		stringParam("search", "Keep rows with this text in any cell."),
 		stringParam("columns", `"default", "all", names, or "+add,-remove"; describe(topic=<tool>) lists them.`),
 		stringParam("sort", `Column to sort by; "-" for descending. "-value": the main money column, largest first whatever the sign.`),
-		{name: "max_chars", kind: paramInteger, doc: fmt.Sprintf("Most characters the result may take (default %d); the page ends at a row boundary and the last line says how to get the rest.", s.chars)},
+		{name: "max_chars", kind: paramInteger, doc: maxCharsDoc},
 		{name: "limit", kind: paramInteger, doc: "Most rows to return (default: as many as fit)."},
 		{name: "offset", kind: paramInteger, doc: "Rows to skip (default 0)."},
 		stringParam("format", "Result format (default table).", resultFormats...),
@@ -139,7 +92,7 @@ func (s *mcpServer) shapeParams() []param {
 // that carry the filter (family.carries) where not every view does.
 func scopedParam(fam *family, name, doc string) param {
 	var views []string
-	for _, v := range fam.views {
+	for _, v := range fam.names() {
 		if slices.Contains(fam.carries()[v], name) {
 			views = append(views, v)
 		}
@@ -160,297 +113,286 @@ var (
 	accountParam = stringParam("account", "Keep rows whose account name, id or nickname contains this (case-insensitive).")
 )
 
-// tools are the server's fourteen tools, in the order describe lists them.
-func (s *mcpServer) tools() []toolSpec {
-	return []toolSpec{
-		{
-			name: "holdings", title: "Holdings",
-			description: "What is held and what it is worth, as of a date (default today): every account, plus the property, loans and private holdings recorded by hand (a loan is negative). " +
-				"view=global: one row with cash_balance, positions_value and total_value (net worth); it has no per-account columns, so a filter needs another view. " +
-				"sources: per institution. portfolios: per portfolio. accounts: per account with kind, tax wrapper and value. positions: every holding with symbol, quantity and value. " +
-				`Example: {view: "accounts", as_of: "2025-12-31"}.`,
-			params: s.rowParams(false,
-				stringParam("view", "Which rows to return (default global).", holdingsFamily.views...),
-				stringParam("as_of", "As-of date. Default today."),
-				param{name: "with_cash", kind: paramBoolean, doc: "positions only: also list cash as one row per account and currency."},
-				sourceParam, accountParam,
-				scopedParam(holdingsFamily, "symbol", "keep only holdings whose symbol or name contains this text."),
-				scopedParam(holdingsFamily, "asset_class", "keep only this asset class (e.g. public_equity, fixed_income, cash, real_estate, crypto)."),
-				scopedParam(holdingsFamily, "tax_wrapper", "keep only this tax wrapper (e.g. roth_ira, 401k, 529, taxable_joint)."),
-				missingBasisParam("positions only: ", ""),
-			),
-			family: holdingsFamily,
-		},
-		{
-			name: "returns", title: "Returns",
-			description: "How investments performed over a window (default: since the first snapshot), as twr and mwr %, after fees and taxes. " +
-				"view=global: the whole portfolio. sources, portfolios: per entity, best-effort. accounts: per account, exact. " +
-				"stated: a document's stated periods beside the engine's figures; it takes no " + orList(append(slices.Clone(statedRefusedFlags), "currency")) + ". " +
-				"bridge: why net worth moved, for the whole household: end_net_worth = start_net_worth + net_saved + onboarded + gain; whole months; it takes no " +
-				orList(append(slices.Clone(bridgeRefusedFlags), "source", "account")) + ". " +
-				"One row per entity for the whole window unless period adds buckets. quality names the reason for every n/a. " +
-				`Example: {view: "accounts", from: "2025", to: "2025"}.`,
-			params: s.rowParams(true,
-				stringParam("view", "Grain (default global); stated and bridge are side views.", returnsFamily.views...),
-				stringParam("method", "twr, mwr or both (default both).", returnsMethods...),
-				stringParam("period", "Bucket size (default total: one row per entity for the whole window).", returnsPeriods...),
-				stringParam("annualize", "auto (default; only spans of a year or more), always, never.", returnsAnnualize...),
-				param{name: "netting", kind: paramBoolean, doc: "Net internal transfers at coarse grains (default true)."},
-				stringParam("inception", "full (default) or strict.", returnsInception...),
-				stringParam("benchmark", benchmarkParamDoc("view=global only: the benchmark beside each row, over the days both sides have.")),
-				sourceParam, accountParam,
-			),
-			family: returnsFamily,
-		},
-		{
-			name: "gains", title: "Gains",
-			description: "What was gained or lost, realized and unrealized, over a window (default: the last twelve months). " +
-				"view=summary: one row: realized, unrealized at the start and end, change, gain = realized + change, share of value with a cost basis. " +
-				"sources, portfolios, accounts: the same per entity; they add up to the summary. positions: per account and holding. " +
-				"realized: each lot sold, as the tax document or statement states it or the lot engine rebuilt it. lots: the open lots at the window's end. " +
-				"coverage: per account, where the figures are blind. check: the lot engine against the stated lots and cost bases. quality names every gap. " +
-				`Example: {view: "realized", from: "2025", to: "2025"}.`,
-			params: s.rowParams(true,
-				stringParam("view", "Which rows to return (default summary).", gainsFamily.views...),
-				stringParam("period", "Bucket size on summary, sources, portfolios, accounts (default total: one row for the whole window).", reportPeriodNames...),
-				stringParam("documents", "realized only: each sale once (primary, default) or every document's copy (all).", gainsDocuments...),
-				param{name: "newest_first", kind: paramBoolean, doc: "realized only: newest first (default false: oldest first)."},
-				sourceParam, accountParam,
-				scopedParam(gainsFamily, "symbol", "keep only rows whose symbol or name contains this text."),
-				scopedParam(gainsFamily, "asset_class", "keep only this asset class (e.g. public_equity, fixed_income, private_equity)."),
-				scopedParam(gainsFamily, "term", "short or long."),
-				scopedParam(gainsFamily, "tax_wrapper", "keep only this tax wrapper (e.g. taxable_joint, roth_ira)."),
-				missingBasisParam("Not on coverage and check: ", "; quality then says basis_assumed_zero=N"),
-			),
-			family: gainsFamily,
-		},
-		{
-			name: "exposure", title: "Exposure",
-			description: "What is really owned once every fund is looked through to what it holds, as of a date (default today). " +
-				"Views: classes; sectors (by class and sector); sizes (large, mid, small caps); countries (with region); currencies (the fiat currency, metal or coin a value moves with); " +
-				"credit (debt by rating bucket, IG or HY); maturities (debt and cash by time to maturity); coupons (fixed, floating, inflation_linked, zero); cycles (equity by cyclical, sensitive, defensive); " +
-				"situs (the country whose law each holding sits under; no fund looked through, so not exposure); securities (each security, direct and through funds); " +
-				"issuers (stock, bonds and deposits together, largest first, with the running share); funds (each fund held, what describes it and how old that is); coverage (what the figures rest on and what nothing describes). " +
-				"Every view sums to net worth: share_pct is of it; class_share_pct is within the row's dimension (its class on sectors and sizes; every row but (none) on credit, maturities, coupons, cycles), so those sum to 100. " +
-				"Read quality and coverage before trusting a figure. " +
-				"period with from/to: the view at the end of every month, quarter or year, in one call. " +
-				`Example: {view: "countries", as_of: "2025-12-31"}; quarter by quarter: {view: "countries", period: "quarterly", from: "2025", to: "2025", filter: ["country = US"]}.`,
-			params: s.rowParams(false, append([]param{
-				stringParam("view", "Which breakdown (default classes).", exposureFamily.views...),
-				stringParam("as_of", "As-of date. Default today."),
-				stringParam("country", "countries and securities: the country a security counts in, risk (default) or domicile.",
-					exposureCountryBases...),
-				stringParam("benchmark", benchmarkParamDoc("the benchmark's weight of each row and the row's share less it; not on situs, funds or coverage, and no period.")),
-			}, seriesParams(exposureSeriesViews)...)...),
-			family: exposureFamily,
-		},
-		{
-			name: "yield", title: "Yield",
-			description: "What the holdings earn and how they move with interest rates, as of a date (default today). A rate belongs to a currency: an aggregate row is one entity in one currency, plus a value-weighted total (quality mixed). " +
-				"Views: global (per currency and a total, with duration and dv01: the whole portfolio's rate risk); sources, portfolios, accounts; positions (per holding; columns=+coupon,maturity_date,price on request); " +
-				"securities (each security, direct and through funds: a bond's coupon, maturity, price, implied yield and rating (columns=+rating), a stock's earnings yield, P/E, dividend yield, payout and growth); " +
-				"funds (each fund: what its lines imply, its page's yields and duration, as of when); cash (each balance, term deposit and money-market fund with rate, benchmark and gap, worst paid first); " +
-				"curve (DV01 per currency and tenor: " + strings.Join(canonical.RiskTenors, ", ") + "); coverage (what the figures rest on, what is missing, where each dividend's record day comes from). " +
-				"income_yield: the next twelve months' projected income over value; implied_yield: what the price implies; dv01: the value's fall per basis point. Read quality. " +
-				`Example: {view: "cash"}.`,
-			params: s.rowParams(false, append(append([]param{
-				stringParam("view", "Which rows to return (default global).", yieldFamily.views...),
-				stringParam("as_of", "As-of date. Default today."),
-			}, seriesParams(yieldSeriesViews)...),
-				param{name: "converted", kind: paramBoolean, doc: andList(yieldAggregateViews) + ": one row per entity in the output currency (default false)."},
-				scopedParam(yieldFamily, "symbol", "keep only rows whose symbol contains this text."),
-			)...),
-			family: yieldFamily,
-		},
-		{
-			name: "transactions", title: "Transactions",
-			description: "Every booked line over a window (default: the past 30 days): trades, dividends, interest, fees, deposits, withdrawals, transfers, with date, account, kind, symbol, amount and value. " +
-				"Oldest first unless newest_first. " +
-				`Example: {from: "2026-03", to: "2026-03", sort: "-value", limit: 10}.`,
-			params: s.rowParams(true,
-				param{name: "newest_first", kind: paramBoolean, doc: "Newest first (default false: oldest first)."},
-				sourceParam, accountParam,
-				stringParam("kind", "Keep one transaction kind (e.g. buy, sell, dividend, interest, fee, deposit, withdrawal, purchase)."),
-				stringParam("symbol", "Keep only rows whose symbol or instrument contains this text."),
-			),
-			family: transactionsFamily,
-		},
-		{
-			name: "spending", title: "Spending",
-			description: "What was spent over a window (default: the last twelve months). " +
-				"view=summary: per period. categories: per period and category, with its share. transactions: the lines with merchant and category. " +
-				"fees: what each portfolio, or account outside one, paid in fees, net of refunds, beside its mean value, annualized fee rate and return; a trust's or a plan's fees count. " +
-				"spend and refunds are positive; net_spend = spend - refunds. Card payments, transfers and mortgage payments are never spending: they are in cashflow. " +
-				`Example: {view: "categories", from: "2025", to: "2025"}.`,
-			params: s.rowParams(true,
-				stringParam("view", "Which rows to return (default summary).", spendingFamily.views...),
-				stringParam("period", "Bucket size (default total: one row per category for the whole window).", reportPeriodNames...),
-				stringParam("level", "Category vocabulary of the categories view: primary (default, broad groups) or detailed.", categoryLevels...),
-				sourceParam, accountParam,
-				stringParam("category", `Keep categories whose label or id contains this (e.g. "groceries"); implies level=detailed.`),
-				scopedParam(spendingFamily, "merchant", "keep only rows whose merchant contains this text."),
-			),
-			family: spendingFamily,
-		},
-		{
-			name: "income", title: "Income",
-			description: "What was received over a window (default: the last twelve months): salary, dividends, interest, rent, refunds, rewards; and what the holdings are expected to pay. " +
-				"view=summary: per period. types: per period and type, with its share. transactions: the lines with payer and type. Gross as booked; net_income = income - reversals. " +
-				"The forward views take a window that may reach into the future (default: the months after this one; a lone from is its own span): " +
-				"projection (per month: received, expected, each type, withheld, and basis, what the expected part rests on; the view for how much is expected in a month or a year); " +
-				"calendar (each expected payment and each principal a maturity returns, dated); " +
-				"sources, portfolios, accounts, positions (received, expected, total, last_year and next_12m per entity; positions lists every holding). " +
-				"rates, maturing and shift set what the expected income assumes. " +
-				`Example: {view: "projection", from: "2026", to: "2026"}.`,
-			params: s.rowParams(true,
-				stringParam("view", "Which rows to return (default summary).", incomeFamily.views...),
-				stringParam("period", "Bucket size (default total; monthly on the forward views).", reportPeriodNames...),
-				stringParam("level", "Type vocabulary of the types view: detailed (default) or primary.", categoryLevels...),
-				stringParam("rates", "Forward views: constant (today's rates) or forward (floating rates along the forward curve). Default "+string(yield.DefaultAssumptions.Path)+".", pathNames()...),
-				stringParam("maturing", "Forward views: what a maturing principal earns: cash (its account's rate), idle (nothing) or roll (the same holding again). Default "+string(yield.DefaultAssumptions.Rule)+".", ruleNames()...),
-				param{name: "shift", kind: paramInteger, doc: "Forward views: parallel shift of the floating rates in basis points (default 0)."},
-				sourceParam, accountParam,
-				stringParam("type", `Keep income types whose label or id contains this (e.g. "dividend", "salary").`),
-				scopedParam(incomeFamily, "payer", "keep only rows whose payer contains this text."),
-				scopedParam(incomeFamily, "symbol", "keep only rows whose symbol contains this text."),
-				scopedParam(incomeFamily, "kind", "income or principal."),
-			),
-			family: incomeFamily,
-		},
-		{
-			name: "cashflow", title: "Cash flow",
-			description: "Where the household's cash came from and went over a window (default: the last twelve months), as a cash flow statement; positive is cash arriving. " +
-				"view=summary: per period: operating_in, operating_out, investing, financing, vehicles (all retirement, education and health plans together), net_cash_flow. " +
-				"flows: per period and node (section, class, group); one plan or the mortgage is flows with a class filter (Mortgage sits under financing). " +
-				"sankey: the diagram's edges. transactions: the lines. coverage: per account and period, how far the statement can be trusted (read status first). " +
-				"projection: one row per month ahead (default: the horizon after this month; period monthly, quarterly or annual): investment_income, principal_returned and vehicles_income as the income projection expects them, " +
-				"other_income, operating_out and vehicles as trailing monthly averages, debt_service (each mortgage to its maturity), net and quality. " +
-				`Example: {view: "flows", from: "2025", to: "2025", level: "class"}.`,
-			params: s.rowParams(true,
-				stringParam("view", "Which rows to return (default summary).", cashflowFamily.views...),
-				stringParam("period", "Bucket size (default total; monthly on projection, which takes no total). Not for sankey.", reportPeriodNames...),
-				stringParam("level", "Node grain of flows and sankey: section, class or group (default group).", cashflowLevels...),
-				stringParam("investing", "whole (default): investing as one node; class: one node per asset class.", cashflowInvestingGrains...),
-				stringParam("rates", "projection: constant or forward floating rates. Default "+string(yield.DefaultAssumptions.Path)+".", pathNames()...),
-				stringParam("maturing", "projection: what a maturing principal earns: cash, idle or roll (net then leaves principal_returned out). Default "+string(yield.DefaultAssumptions.Rule)+".", ruleNames()...),
-				param{name: "shift", kind: paramInteger, doc: "projection: parallel shift of the floating rates in basis points (default 0)."},
-				sourceParam, accountParam,
-				stringParam("section", "Keep one section: operating_in, operating_out, investing, financing, vehicles, cash."),
-				stringParam("class", `Keep classes whose label contains this (e.g. "Mortgage", "Retirement").`),
-				stringParam("group", "Keep only groups whose label contains this text."),
-			),
-			family: cashflowFamily,
-		},
-		{
-			name: "status", title: "Status",
-			description: "Is the data current, and what does each source hold: per source its kind, row counts, latest snapshot, latest transaction and whether newer data is waiting to be loaded. " +
-				"source narrows to one source and adds detail. " +
-				"marks: how far a monthly return can be trusted instead: per month end, marked_pct, the share of value marked within five days, weighted by USD value in every currency. Example: {}.",
-			params: append([]param{
-				stringParam("source", "One source id, for its detail and recent loads."),
-				{name: "verbose", kind: paramBoolean, doc: "Add the counts of rows no category, type or asset class could be found for."},
-				{name: "marks", kind: paramBoolean, doc: "Month ends instead of sources. Takes from, to and currency; no source or verbose."},
-				stringParam("from", "marks only: window start. Default: the first month end."),
-				stringParam("to", "marks only: window end. Default today."),
-				stringParam("currency", "marks only: the output currency of value_marked and value_total."),
-			}, s.shapeParams()...),
-			family: statusFamily,
-			alt:    map[string]*family{"marks": marksFamily},
-		},
-		{
-			name: "snapshots", title: "Snapshots",
-			description: "Which dates gold has data for, per source, oldest first. Use it to confirm a date exists before concluding a balance is zero. " +
-				`Example: {source: "schwab"}.`,
-			params: append([]param{
-				stringParam("source", "One source id, or a comma list. Default: every source."),
-				{name: "latest_only", kind: paramBoolean, doc: "Only the newest date per source."},
-			}, s.shapeParams()...),
-			family: snapshotsFamily,
-		},
-		{
-			name: "resolutions", title: "Ticker resolutions",
-			description: "Diagnostic: the resolved instrument ticker symbols (model-derived and manual overrides) the reports fall back on where a source carried no ticker.",
-			params:      append([]param{sourceParam}, s.shapeParams()...),
-			family:      resolutionsFamily,
-		},
-		{
-			name: "categorizations", title: "Stored categorizations",
-			description: "Diagnostic: the stored merchant and payer category verdicts the spending and income reports apply.",
-			params: append([]param{
-				stringParam("family", "spending or income (default both).", "spending", "income"),
-				stringParam("category", "Keep only verdicts whose category id contains this text."),
-			}, s.shapeParams()...),
-			family: categorizationsFamily,
-		},
-		{
-			name: "describe", title: "Describe",
-			description: "Help. Without topic: what this server is, the configured sources and their latest data dates, the default currency, the character budget, and which tool answers which question. " +
-				"topic=<tool name>: that tool's views, every column it can show, its filters and conventions. topic=" + orList(describeTopics) + ": the conventions.",
-			params: []param{stringParam("topic", "A tool name, or "+strings.Join(describeTopics, ", ")+". Default: the overview.")},
-			run:    s.describe,
-		},
+// toolSpecs are the server's tools but describe, in the order describe
+// lists them. A tool with a family takes its name from it.
+var toolSpecs = namedTools([]toolSpec{
+	{
+		title: "Holdings",
+		description: "What is held and what it is worth, as of a date (default today): every account, plus the property, loans and private holdings recorded by hand (a loan is negative). " +
+			"view=global: one row with cash_balance, positions_value and total_value (net worth); it has no per-account columns, so a filter needs another view. " +
+			"sources: per institution. portfolios: per portfolio. accounts: per account with kind, tax wrapper and value. positions: every holding with symbol, quantity and value. " +
+			`Example: {view: "accounts", as_of: "2025-12-31"}.`,
+		params: rowParams(false,
+			stringParam("view", "Which rows to return (default global).", holdingsFamily.names()...),
+			stringParam("as_of", "As-of date. Default today."),
+			param{name: "with_cash", kind: paramBoolean, doc: "positions only: also list cash as one row per account and currency."},
+			sourceParam, accountParam,
+			scopedParam(holdingsFamily, "symbol", "keep only holdings whose symbol or name contains this text."),
+			scopedParam(holdingsFamily, "asset_class", "keep only this asset class (e.g. public_equity, fixed_income, cash, real_estate, crypto)."),
+			scopedParam(holdingsFamily, "tax_wrapper", "keep only this tax wrapper (e.g. roth_ira, 401k, 529, taxable_joint)."),
+			missingBasisParam("positions only: ", ""),
+		),
+		notes: `Totals reconcile: global = sum of sources = sum of portfolios = sum of accounts = positions with with_cash. A loan or a card balance is negative. positions_value, cash_balance and total_value are in each account's own currency; the columns with a currency suffix are converted.
+Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
+		family: holdingsFamily,
+	},
+	{
+		title: "Returns",
+		description: "How investments performed over a window (default: since the first snapshot), as twr and mwr %, after fees and taxes. " +
+			"view=global: the whole portfolio. sources, portfolios: per entity, best-effort. accounts: per account, exact. " +
+			"stated: a document's stated periods beside the engine's figures; it takes no " + orList(append(slices.Clone(statedRefusedFlags), "currency")) + ". " +
+			"bridge: why net worth moved, for the whole household: end_net_worth = start_net_worth + net_saved + onboarded + gain; whole months; it takes no " +
+			orList(append(slices.Clone(bridgeRefusedFlags), "source", "account")) + ". " +
+			"One row per entity for the whole window unless period adds buckets. quality names the reason for every n/a. " +
+			`Example: {view: "accounts", from: "2025", to: "2025"}.`,
+		params: rowParams(true,
+			stringParam("view", "Grain (default global); stated and bridge are side views.", returnsFamily.names()...),
+			stringParam("method", "twr, mwr or both (default both).", returnsMethods...),
+			stringParam("period", "Bucket size (default total: one row per entity for the whole window).", returnsPeriods...),
+			stringParam("annualize", "auto (default; only spans of a year or more), always, never.", returnsAnnualize...),
+			param{name: "netting", kind: paramBoolean, doc: "Net internal transfers at coarse grains (default true)."},
+			stringParam("inception", "full (default) or strict.", returnsInception...),
+			stringParam("benchmark", benchmarkParamDoc("view=global only: the benchmark beside each row, over the days both sides have.")),
+			sourceParam, accountParam,
+		),
+		notes: `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences. bridge explains net worth: end_net_worth = start_net_worth + net_saved + onboarded + gain. net_saved = net_flow + debt_repaid, onboarded is value that entered or left tracking, gain is the residual, returns' gain plus the FX move on debt. It reads whole months for the whole household.
+Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
+		family: returnsFamily,
+	},
+	{
+		title: "Gains",
+		description: "What was gained or lost, realized and unrealized, over a window (default: the last twelve months). " +
+			"view=summary: one row: realized, unrealized at the start and end, change, gain = realized + change, share of value with a cost basis. " +
+			"sources, portfolios, accounts: the same per entity; they add up to the summary. positions: per account and holding. " +
+			"realized: each lot sold, as the tax document or statement states it or the lot engine rebuilt it. lots: the open lots at the window's end. " +
+			"coverage: per account, where the figures are blind. check: the lot engine against the stated lots and cost bases. quality names every gap. " +
+			`Example: {view: "realized", from: "2025", to: "2025"}.`,
+		params: rowParams(true,
+			stringParam("view", "Which rows to return (default summary).", gainsFamily.names()...),
+			stringParam("period", "Bucket size on summary, sources, portfolios, accounts (default total: one row for the whole window).", reportPeriodNames...),
+			stringParam("documents", "realized only: each sale once (primary, default) or every document's copy (all).", gainsDocuments...),
+			param{name: "newest_first", kind: paramBoolean, doc: "realized only: newest first (default false: oldest first)."},
+			sourceParam, accountParam,
+			scopedParam(gainsFamily, "symbol", "keep only rows whose symbol or name contains this text."),
+			scopedParam(gainsFamily, "asset_class", "keep only this asset class (e.g. public_equity, fixed_income, private_equity)."),
+			scopedParam(gainsFamily, "term", "short or long."),
+			scopedParam(gainsFamily, "tax_wrapper", "keep only this tax wrapper (e.g. taxable_joint, roth_ira)."),
+			missingBasisParam("Not on coverage and check: ", "; quality then says basis_assumed_zero=N"),
+		),
+		notes: `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state, else what the lot engine rebuilt from the trades; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind, and the check view compares the lot engine with the stated lots.
+Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,
+		family: gainsFamily,
+	},
+	{
+		title: "Exposure",
+		description: "What is really owned once every fund is looked through to what it holds, as of a date (default today). " +
+			"Views: classes; sectors (by class and sector); sizes (large, mid, small caps); countries (with region); currencies (the fiat currency, metal or coin a value moves with); " +
+			"credit (debt by rating bucket, IG or HY); maturities (debt and cash by time to maturity); coupons (fixed, floating, inflation_linked, zero); cycles (equity by cyclical, sensitive, defensive); " +
+			"situs (the country whose law each holding sits under; no fund looked through, so not exposure); securities (each security, direct and through funds); " +
+			"issuers (stock, bonds and deposits together, largest first, with the running share); funds (each fund held, what describes it and how old that is); coverage (what the figures rest on and what nothing describes). " +
+			"Every view sums to net worth: share_pct is of it; class_share_pct is within the row's dimension (its class on sectors and sizes; every row but (none) on credit, maturities, coupons, cycles), so those sum to 100. " +
+			"Read quality and coverage before trusting a figure. " +
+			"period with from/to: the view at the end of every month, quarter or year, in one call. " +
+			`Example: {view: "countries", as_of: "2025-12-31"}; quarter by quarter: {view: "countries", period: "quarterly", from: "2025", to: "2025", filter: ["country = US"]}.`,
+		params: rowParams(false, append([]param{
+			stringParam("view", "Which breakdown (default classes).", exposureFamily.names()...),
+			stringParam("as_of", "As-of date. Default today."),
+			stringParam("country", "countries and securities: the country a security counts in, risk (default) or domicile.",
+				exposureCountryBases...),
+			stringParam("benchmark", benchmarkParamDoc("the benchmark's weight of each row and the row's share less it; not on situs, funds or coverage, and no period.")),
+		}, seriesParams(exposureFamily.seriesViews())...)...),
+		notes: `Every view sums to net worth, as holdings view=global gives it: what a fund's composition does not explain is a remainder row, and a holding nothing describes is unknown, never dropped. A fund's composition is the one nearest the as-of day (the funds view says which, and how old); quality flags such as proxy, aged or partial carry the share of the row they touch (describe topic=quality). view=situs reads every holding whole, at its legal situs: it looks through no fund, and its quality says what each situs rests on; coverage's situs section lists the holdings whose situs is unknown. The view sums are in the output currency; the shares need none.
+Example: {view: "sectors", as_of: "2025-12-31", currency: "CHF"}.`,
+		family: exposureFamily,
+	},
+	{
+		title: "Yield",
+		description: "What the holdings earn and how they move with interest rates, as of a date (default today). A rate belongs to a currency: an aggregate row is one entity in one currency, plus a value-weighted total (quality mixed). " +
+			"Views: global (per currency and a total, with duration and dv01: the whole portfolio's rate risk); sources, portfolios, accounts; positions (per holding; columns=+coupon,maturity_date,price on request); " +
+			"securities (each security, direct and through funds: a bond's coupon, maturity, price, implied yield and rating (columns=+rating), a stock's earnings yield, P/E, dividend yield, payout and growth); " +
+			"funds (each fund: what its lines imply, its page's yields and duration, as of when); cash (each balance, term deposit and money-market fund with rate, benchmark and gap, worst paid first); " +
+			"curve (DV01 per currency and tenor: " + strings.Join(canonical.RiskTenors, ", ") + "); coverage (what the figures rest on, what is missing, where each dividend's record day comes from). " +
+			"income_yield: the next twelve months' projected income over value; implied_yield: what the price implies; dv01: the value's fall per basis point. Read quality. " +
+			`Example: {view: "cash"}.`,
+		params: rowParams(false, append(append([]param{
+			stringParam("view", "Which rows to return (default global).", yieldFamily.names()...),
+			stringParam("as_of", "As-of date. Default today."),
+		}, seriesParams(yieldFamily.seriesViews())...),
+			param{name: "converted", kind: paramBoolean, doc: andList(yieldFamily.taking("converted")) + ": one row per entity in the output currency (default false)."},
+			scopedParam(yieldFamily, "symbol", "keep only rows whose symbol contains this text."),
+		)...),
+		notes: `A rate belongs to a currency: an aggregate row is one entity in one currency, and the total row weighs the currencies by value (quality mixed); converted gives one row per entity. dv01 is the value lost for a rise of one basis point; a liability's is negative and nets. The quality column says what each figure rests on (describe topic=quality); view=coverage lists what is missing, and counts where the dividends' record days come from: the dividend calendar, an ex day, the issuer's learned gap, the market's lag, or none.
+Example: {view: "curve", currency: "CHF"}.`,
+		family: yieldFamily,
+	},
+	{
+		title: "Transactions",
+		description: "Every booked line over a window (default: the past 30 days): trades, dividends, interest, fees, deposits, withdrawals, transfers, with date, account, kind, symbol, amount and value. " +
+			"Oldest first unless newest_first. " +
+			`Example: {from: "2026-03", to: "2026-03", sort: "-value", limit: 10}.`,
+		params: rowParams(true,
+			param{name: "newest_first", kind: paramBoolean, doc: "Newest first (default false: oldest first)."},
+			sourceParam, accountParam,
+			stringParam("kind", "Keep one transaction kind (e.g. buy, sell, dividend, interest, fee, deposit, withdrawal, purchase)."),
+			stringParam("symbol", "Keep only rows whose symbol or instrument contains this text."),
+		),
+		notes: `Money leaving an account is negative. kind is the booked kind: buy, sell, dividend, interest, fee, tax, deposit, withdrawal, purchase, refund, card_payment and others.
+Example: {from: "last month", to: "last month", kind: "dividend"}.`,
+		family: transactionsFamily,
+	},
+	{
+		title: "Spending",
+		description: "What was spent over a window (default: the last twelve months). " +
+			"view=summary: per period. categories: per period and category, with its share. transactions: the lines with merchant and category. " +
+			"fees: what each portfolio, or account outside one, paid in fees, net of refunds, beside its mean value, annualized fee rate and return; a trust's or a plan's fees count. " +
+			"spend and refunds are positive; net_spend = spend - refunds. Card payments, transfers and mortgage payments are never spending: they are in cashflow. " +
+			`Example: {view: "categories", from: "2025", to: "2025"}.`,
+		params: rowParams(true,
+			stringParam("view", "Which rows to return (default summary).", spendingFamily.names()...),
+			stringParam("period", "Bucket size (default total: one row per category for the whole window).", reportPeriodNames...),
+			stringParam("level", "Category vocabulary of the categories view: primary (default, broad groups) or detailed.", categoryLevels...),
+			sourceParam, accountParam,
+			stringParam("category", `Keep categories whose label or id contains this (e.g. "groceries"); implies level=detailed.`),
+			scopedParam(spendingFamily, "merchant", "keep only rows whose merchant contains this text."),
+		),
+		notes: `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there. fees is per portfolio, else per account outside one: fees are the primary BANK_FEES lines net of refunds, trading costs and fund costs are not in them, fee_rate_pct is fees over mean_value annualized and blank where the mean value is not above zero, and twr_pct is the entity's monthly returns chained over the months that end in the window, blank where returns has none. Returns stay net of fees.
+Example: {view: "transactions", from: "2025-03", to: "2025-03", sort: "-value", limit: 10}.`,
+		family: spendingFamily,
+	},
+	{
+		title: "Income",
+		description: "What was received over a window (default: the last twelve months): salary, dividends, interest, rent, refunds, rewards; and what the holdings are expected to pay. " +
+			"view=summary: per period. types: per period and type, with its share. transactions: the lines with payer and type. Gross as booked; net_income = income - reversals. " +
+			"The forward views take a window that may reach into the future (default: the months after this one; a lone from is its own span): " +
+			"projection (per month: received, expected, each type, withheld, and basis, what the expected part rests on; the view for how much is expected in a month or a year); " +
+			"calendar (each expected payment and each principal a maturity returns, dated); " +
+			"sources, portfolios, accounts, positions (received, expected, total, last_year and next_12m per entity; positions lists every holding). " +
+			"rates, maturing and shift set what the expected income assumes. " +
+			`Example: {view: "projection", from: "2026", to: "2026"}.`,
+		params: rowParams(true,
+			stringParam("view", "Which rows to return (default summary).", incomeFamily.names()...),
+			stringParam("period", "Bucket size (default total; monthly on the forward views).", reportPeriodNames...),
+			stringParam("level", "Type vocabulary of the types view: detailed (default) or primary.", categoryLevels...),
+			stringParam("rates", "Forward views: constant (today's rates) or forward (floating rates along the forward curve). Default "+string(yield.DefaultAssumptions.Path)+".", pathNames()...),
+			stringParam("maturing", "Forward views: what a maturing principal earns: cash (its account's rate), idle (nothing) or roll (the same holding again). Default "+string(yield.DefaultAssumptions.Rule)+".", ruleNames()...),
+			param{name: "shift", kind: paramInteger, doc: "Forward views: parallel shift of the floating rates in basis points (default 0)."},
+			sourceParam, accountParam,
+			stringParam("type", `Keep income types whose label or id contains this (e.g. "dividend", "salary").`),
+			scopedParam(incomeFamily, "payer", "keep only rows whose payer contains this text."),
+			scopedParam(incomeFamily, "symbol", "keep only rows whose symbol contains this text."),
+			scopedParam(incomeFamily, "kind", "income or principal."),
+		),
+		notes: `income and reversals are positive; net_income = income - reversals. The type rows of a period sum to its summary row. projection, calendar and the entity views put what was received beside what the holdings are expected to pay; their window may lie in the future, and basis says what the expected part rests on.
+Example: {view: "transactions", from: "2025", to: "2025", type: "dividend", sort: "-value"}.`,
+		family: incomeFamily,
+	},
+	{
+		title: "Cash flow",
+		description: "Where the household's cash came from and went over a window (default: the last twelve months), as a cash flow statement; positive is cash arriving. " +
+			"view=summary: per period: operating_in, operating_out, investing, financing, vehicles (all retirement, education and health plans together), net_cash_flow. " +
+			"flows: per period and node (section, class, group); one plan or the mortgage is flows with a class filter (Mortgage sits under financing). " +
+			"sankey: the diagram's edges. transactions: the lines. coverage: per account and period, how far the statement can be trusted (read status first). " +
+			"projection: one row per month ahead (default: the horizon after this month; period monthly, quarterly or annual): investment_income, principal_returned and vehicles_income as the income projection expects them, " +
+			"other_income, operating_out and vehicles as trailing monthly averages, debt_service (each mortgage to its maturity), net and quality. " +
+			`Example: {view: "flows", from: "2025", to: "2025", level: "class"}.`,
+		params: rowParams(true,
+			stringParam("view", "Which rows to return (default summary).", cashflowFamily.names()...),
+			stringParam("period", "Bucket size (default total; monthly on projection, which takes no total). Not for sankey.", reportPeriodNames...),
+			stringParam("level", "Node grain of flows and sankey: section, class or group (default group).", cashflowLevels...),
+			stringParam("investing", "whole (default): investing as one node; class: one node per asset class.", cashflowInvestingGrains...),
+			stringParam("rates", "projection: constant or forward floating rates. Default "+string(yield.DefaultAssumptions.Path)+".", pathNames()...),
+			stringParam("maturing", "projection: what a maturing principal earns: cash, idle or roll (net then leaves principal_returned out). Default "+string(yield.DefaultAssumptions.Rule)+".", ruleNames()...),
+			param{name: "shift", kind: paramInteger, doc: "projection: parallel shift of the floating rates in basis points (default 0)."},
+			sourceParam, accountParam,
+			stringParam("section", "Keep one section: operating_in, operating_out, investing, financing, vehicles, cash."),
+			stringParam("class", `Keep classes whose label contains this (e.g. "Mortgage", "Retirement").`),
+			stringParam("group", "Keep only groups whose label contains this text."),
+		),
+		notes: `The four sections sum to net_cash_flow. vehicles is every plan together; for one plan read view=flows at level=class. The mortgage is under financing. A node is a net: inflow and outflow beside it are the gross lines under it. view=projection is the plan: investment_income is income projection's expected income on the pool's accounts and vehicles_income its income and principal on every other account, which net leaves out; other_income, operating_out and vehicles are monthly averages of the trailing months, and quality says what each part rests on; net = investment_income + other_income - operating_out - debt_service + vehicles, plus principal_returned unless maturing=roll.
+Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.`,
+		family: cashflowFamily,
+	},
+	{
+		title: "Status",
+		description: "Is the data current, and what does each source hold: per source its kind, row counts, latest snapshot, latest transaction and whether newer data is waiting to be loaded. " +
+			"source narrows to one source and adds detail. " +
+			"marks: how far a monthly return can be trusted instead: per month end, marked_pct, the share of value marked within five days, weighted by USD value in every currency. Example: {}.",
+		params: append([]param{
+			stringParam("source", "One source id, for its detail and recent loads."),
+			{name: "verbose", kind: paramBoolean, doc: "Add the counts of rows no category, type or asset class could be found for."},
+			{name: "marks", kind: paramBoolean, doc: "Month ends instead of sources. Takes from, to and currency; no source or verbose."},
+			stringParam("from", "marks only: window start. Default: the first month end."),
+			stringParam("to", "marks only: window end. Default today."),
+			stringParam("currency", "marks only: the output currency of value_marked and value_total."),
+		}, shapeParams()...),
+		notes:  `new_data=yes means a load would bring newer data in. state "not loaded" means gold holds nothing from the source yet. marks reads month ends: a low marked_pct says a month's return rests on old marks. A month end with no position has no marked_pct; currency moves value_marked and value_total, never marked_pct.`,
+		family: statusFamily,
+		alt:    map[string]*family{"marks": marksFamily},
+	},
+	{
+		title: "Snapshots",
+		description: "Which dates gold has data for, per source, oldest first. Use it to confirm a date exists before concluding a balance is zero. " +
+			`Example: {source: "schwab"}.`,
+		params: append([]param{
+			stringParam("source", "One source id, or a comma list. Default: every source."),
+			{name: "latest_only", kind: paramBoolean, doc: "Only the newest date per source."},
+		}, shapeParams()...),
+		notes:  `One row per day with data; snapshots counts the snapshots taken that day.`,
+		family: snapshotsFamily,
+	},
+	{
+		title:       "Ticker resolutions",
+		description: "Diagnostic: the resolved instrument ticker symbols (model-derived and manual overrides) the reports fall back on where a source carried no ticker.",
+		params:      append([]param{sourceParam}, shapeParams()...),
+		notes:       `model_name manual-override marks a ticker set in the config; any other name is the model that answered.`,
+		family:      resolutionsFamily,
+	},
+	{
+		title:       "Stored categorizations",
+		description: "Diagnostic: the stored merchant and payer category verdicts the spending and income reports apply.",
+		params: append([]param{
+			stringParam("family", "spending or income (default both).", "spending", "income"),
+			stringParam("category", "Keep only verdicts whose category id contains this text."),
+		}, shapeParams()...),
+		notes:  `A verdict applies to every transaction whose signature matches, at any account. The signature and name columns are text taken off statements.`,
+		family: categorizationsFamily,
+	},
+})
+
+// namedTools names each tool with a family after it.
+func namedTools(specs []toolSpec) []toolSpec {
+	for i := range specs {
+		if specs[i].family != nil {
+			specs[i].name = specs[i].family.name
+		}
 	}
+	return specs
 }
 
-// ---- families ------------------------------------------------------------
-
-// reportFamilies are the report tools and commands by name, in describe's
-// order: where a column a view lacks is printed instead, and the family
-// a CLI condition binds with.
-var reportFamilies = []struct {
-	name string
-	fam  *family
-}{
-	{"holdings", holdingsFamily}, {"returns", returnsFamily}, {"gains", gainsFamily}, {"exposure", exposureFamily},
-	{"yield", yieldFamily}, {"transactions", transactionsFamily}, {"spending", spendingFamily}, {"income", incomeFamily},
-	{"cashflow", cashflowFamily},
+// tools are the server's fourteen tools, in the order describe lists
+// them: toolSpecs with this server's character budget in the max_chars
+// doc, then describe, which answers from the server.
+func (s *mcpServer) tools() []toolSpec {
+	out := make([]toolSpec, 0, len(toolSpecs)+1)
+	for _, t := range toolSpecs {
+		t.params = slices.Clone(t.params)
+		for i, p := range t.params {
+			if p.name == "max_chars" {
+				t.params[i].doc = fmt.Sprintf(maxCharsDoc, s.chars)
+			}
+		}
+		out = append(out, t)
+	}
+	return append(out, toolSpec{
+		name: "describe", title: "Describe",
+		description: "Help. Without topic: what this server is, the configured sources and their latest data dates, the default currency, the character budget, and which tool answers which question. " +
+			"topic=<tool name>: that tool's views, every column it can show, its filters and conventions. topic=" + orList(describeTopics) + ": the conventions.",
+		params: []param{stringParam("topic", "A tool name, or "+strings.Join(describeTopics, ", ")+". Default: the overview.")},
+		run:    s.describe,
+	})
 }
 
-var holdingsFamily = &family{
-	views: holdingsViews,
-	// A source's or a portfolio's tax_wrapper is its accounts' common
-	// one, blank where they differ: a filter there would drop the rest.
-	excludes: map[string][]string{"sources": {"tax_wrapper"}, "portfolios": {"tax_wrapper"}},
-	adds:     func(string) totalRule { return balanceTotal },
-	principal: byView(map[string]string{
-		"global": "total_value_outccy", "sources": "total_value_outccy", "portfolios": "total_value_outccy",
-		"accounts": "total_value_outccy", "positions": "value",
-	}),
-	window:   asOfDate,
-	currency: true,
-	narrow:   "a filter",
-	prepare: func(a *toolArgs, req *request, notes *[]string) error {
-		if req.view != "positions" && a.has("missing_basis") {
-			return fmt.Errorf("holdings: missing_basis belongs to view=positions")
-		}
-		var err error
-		if req.missing, err = missingBasisArg(a); err != nil {
-			return fmt.Errorf("holdings: %w", err)
-		}
-		req.withCash = req.view == "positions" && a.flag("with_cash", false)
-		// Cash is a position only when asked for; a filter for the cash
-		// class has asked.
-		if req.view == "positions" && !req.withCash && normalizeCell(a.str("asset_class")) == "cash" {
-			req.withCash = true
-			*notes = append(*notes, "with_cash on for the cash filter")
-		}
-		return nil
-	},
-	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
-		req.missing = missingOr(req.missing, cfg)
-		return holdingsReport(req)
-	},
-	header: func(req request) []string {
-		var h []string
-		if req.withCash {
-			h = append(h, "with cash")
-		}
-		if req.missing == lots.MissingZero {
-			h = append(h, "missing_basis=zero")
-		}
-		return h
-	},
-}
+// ---- options ------------------------------------------------------------
 
 // missingBasisParam is the missing_basis argument of the tools that
 // read a cost basis; scope opens its doc (the views it belongs to), and
@@ -473,7 +415,7 @@ func seriesParams(views []string) []param {
 
 // seriesArg reads a call's period, from and to into req.series with the
 // CLI's checks (checkSeriesOptions) and window (seriesWindow); without a
-// period, from and to are refused.
+// period, from and to are refused. views are the views a series takes.
 func seriesArg(tool string, views []string, a *toolArgs, req *request, notes *[]string) error {
 	if !a.has("period") {
 		if a.has("from") || a.has("to") {
@@ -522,393 +464,30 @@ func missingBasisArg(a *toolArgs) (lots.MissingBasis, error) {
 	return m, nil
 }
 
-var returnsFamily = &family{
-	views: returnsViews,
-	side:  map[string]bool{"stated": true, "bridge": true},
-	// global's silver_source is the whole portfolio's, not one source;
-	// on accounts the entity is the account.
-	excludes: map[string][]string{"global": {"source"}},
-	keyAlias: map[string]map[string]string{"accounts": {"account": "entity"}},
-	// On returns, "value" means the return itself; on the stated view,
-	// which carries no return, the engine's ending value; on the bridge,
-	// the net worth it ends on.
-	principal: func(req request) string {
-		switch {
-		case req.view == "stated":
-			return "end_value"
-		case req.view == "bridge":
-			return "end_net_worth"
-		case req.method == "mwr":
-			return "mwr"
-		}
-		return "twr"
-	},
-	window:   sinceInception,
-	currency: true,
-	narrow:   "from/to or a filter",
-	prepare: func(a *toolArgs, req *request, _ *[]string) error {
-		if req.view == "stated" {
-			// The document fixes the periods and the currency.
-			return refuseArgs(a, "returns", "stated", append([]string{"currency"}, statedRefusedFlags...),
-				" — the periods and the currency are the document's")
-		}
-		if req.view == "bridge" {
-			if err := refuseArgs(a, "returns", "bridge", bridgeRefusedFlags, ""); err != nil {
-				return err
-			}
-			req.period = orDefault(a.str("period"), "total")
-			return checkBridgeWindow(req.from, req.to, req.asOf)
-		}
-		req.method = orDefault(a.str("method"), "both")
-		req.period = orDefault(a.str("period"), "total")
-		req.annualize = orDefault(a.str("annualize"), "auto")
-		req.inception = orDefault(a.str("inception"), "full")
-		req.netting = a.flag("netting", true)
-		req.benchmark = a.str("benchmark")
-		return checkReturnsBenchmark(req.view, req.benchmark)
-	},
-	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
-		switch req.view {
-		case "stated":
-			return returnsStatedReport(req, cfg)
-		case "bridge":
-			return returnsBridgeReport(req, cfg)
-		}
-		return returnsReport(req, cfg)
-	},
-	header: func(req request) []string {
-		switch req.view {
-		case "stated":
-			return nil
-		case "bridge":
-			return []string{"period=" + req.period}
-		}
-		h := []string{"method=" + req.method, "period=" + req.period}
-		if req.annualize != "auto" {
-			h = append(h, "annualize="+req.annualize)
-		}
-		if !req.netting {
-			h = append(h, "netting off")
-		}
-		if req.inception != "full" {
-			h = append(h, "inception="+req.inception)
-		}
-		if req.benchmark != "" {
-			h = append(h, "benchmark="+req.benchmark)
-		}
-		return h
-	},
-}
+// periodHeader is the header of a view whose bucket is an option.
+func periodHeader(req request) []string { return []string{"period=" + req.period} }
 
-var exposureFamily = &family{
-	views:     exposureViews,
-	adds:      byRule(map[string]totalRule{"coverage": noTotal}, balanceTotal),
-	principal: func(request) string { return "value" },
-	window:    asOfDate,
-	currency:  true,
-	narrow:    "a coarser view",
-	prepare: func(a *toolArgs, req *request, notes *[]string) error {
-		req.country = exposureCountryBases[0]
-		if a.has("country") {
-			if !slices.Contains(exposureCountryViews, req.view) {
-				return errCountryView("country")
-			}
-			req.country = a.str("country") // the enum admits exposureCountryBases alone
-		}
-		if err := seriesArg("exposure", exposureSeriesViews, a, req, notes); err != nil {
-			return err
-		}
-		req.benchmark = a.str("benchmark")
-		return checkExposureBenchmark(req.view, req.benchmark, req.country, req.series)
-	},
-	build: func(_ *config.Config, req request, _ *toolArgs) *report { return exposureReport(req) },
-	header: func(req request) []string {
-		var h []string
-		if req.country == "domicile" {
-			h = append(h, "country by domicile")
-		}
-		if req.benchmark != "" {
-			h = append(h, "benchmark="+req.benchmark)
-		}
-		return h
-	},
-}
-
-var gainsFamily = &family{
-	views: gainsViews,
-	adds:  byRule(map[string]totalRule{"lots": balanceTotal, "coverage": noTotal, "check": noTotal}, flowTotal),
-	principal: byView(map[string]string{
-		"summary": "gain", "sources": "gain", "portfolios": "gain", "accounts": "gain",
-		"positions": "gain", "realized": "gain_outccy", "lots": "unrealized_gain_outccy", "coverage": "value",
-		"check": "cost_delta",
-	}),
-	window:   trailingYear,
-	currency: true,
-	narrow:   "from/to or a filter",
-	prepare: func(a *toolArgs, req *request, _ *[]string) error {
-		// The CLI's refusal: on another view the two would ask a
-		// question it cannot answer.
-		if req.view != "realized" && (a.has("documents") || a.has("newest_first")) {
-			return fmt.Errorf("gains: documents and newest_first belong to view=realized")
-		}
-		if !gainsReadsBasis(req.view) && a.has("missing_basis") {
-			return fmt.Errorf("gains: missing_basis does not apply to view=%s", req.view)
-		}
-		req.period = orDefault(a.str("period"), "total")
-		req.allDocuments = a.str("documents") == "all"
-		req.newestFirst = a.flag("newest_first", false)
-		var err error
-		if req.missing, err = missingBasisArg(a); err != nil {
-			return fmt.Errorf("gains: %w", err)
-		}
-		return nil
-	},
-	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
-		req.missing = missingOr(req.missing, cfg)
-		return gainsReport(req)
-	},
-	header: func(req request) []string {
-		var h []string
-		if req.missing == lots.MissingZero {
-			h = append(h, "missing_basis=zero")
-		}
-		if _, ok := gainsGrains[req.view]; ok {
-			return append(h, "period="+req.period)
-		}
-		if req.allDocuments {
-			h = append(h, "documents=all")
-		}
-		if req.newestFirst {
-			h = append(h, "newest first")
-		}
-		return h
-	},
-}
-
-var transactionsFamily = &family{
-	adds:      func(string) totalRule { return flowTotal },
-	principal: byView(map[string]string{"": "value"}),
-	window:    pastMonth,
-	currency:  true,
-	narrow:    "from/to or a filter",
-	prepare: func(a *toolArgs, req *request, _ *[]string) error {
-		req.newestFirst = a.flag("newest_first", false)
-		return nil
-	},
-	build: func(_ *config.Config, req request, _ *toolArgs) *report { return transactionsReport(req) },
-	header: func(req request) []string {
-		if req.newestFirst {
-			return []string{"newest first"}
-		}
-		return nil
-	},
-}
-
-var spendingFamily = &family{
-	views: spendingViews,
-	side:  map[string]bool{"fees": true},
-	// On fees the entity is the portfolio or the account.
-	keyAlias: map[string]map[string]string{"fees": {"account": "entity"}},
-	// A mean value and a rate do not add up over entities.
-	adds:      byRule(map[string]totalRule{"fees": noTotal}, flowTotal),
-	principal: byView(map[string]string{"summary": "net_spend", "categories": "net_spend", "transactions": "value", "fees": "fees"}),
-	window:    trailingYear,
-	currency:  true,
-	narrow:    "from/to or a filter",
-	prepare: func(a *toolArgs, req *request, notes *[]string) error {
-		req.period = orDefault(a.str("period"), "total")
-		if req.view == "fees" {
-			if err := refuseArgs(a, "spending", "fees", feesRefusedFlags, ""); err != nil {
-				return err
-			}
-			return checkChoice("spending", "period", req.period, feePeriods...)
-		}
-		req.level = a.str("level")
-		if req.level == "" {
-			req.level = "primary"
-			// A category filter is a name search, and names live in
-			// the detailed vocabulary: "groceries" is a detailed
-			// category under "Food and drink".
-			if req.view == "categories" && a.has("category") {
-				req.level = "detailed"
-				*notes = append(*notes, "level detailed for the category filter")
-			}
-		}
-		return nil
-	},
-	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
-		if req.view == "fees" {
-			return spendingFeesReport(req, cfg)
-		}
-		return spendingReport(req)
-	},
-	header: func(req request) []string {
-		if req.view == "fees" {
-			return []string{"period=" + req.period}
-		}
-		return bucketHeader(req)
-	},
-}
-
-var incomeFamily = &family{
-	views: incomeViews,
-	// kind is income or principal on the calendar; on transactions the
-	// column is the booked kind.
-	excludes: map[string][]string{"transactions": {"kind"}},
-	adds:     func(string) totalRule { return flowTotal },
-	principal: byView(map[string]string{"summary": "net_income", "types": "net_income", "transactions": "value",
-		"projection": "total", "calendar": "value", "sources": "total", "portfolios": "total", "accounts": "total",
-		"positions": "total"}),
-	window:   trailingYear,
-	forward:  isForwardView,
-	currency: true,
-	narrow:   "from/to or a filter",
-	prepare: func(a *toolArgs, req *request, _ *[]string) error {
-		req.period = orDefault(a.str("period"), "total")
-		req.level = orDefault(a.str("level"), "detailed")
-		forward := isForwardView(req.view)
-		if forward {
-			req.period = orDefault(a.str("period"), "monthly")
-		}
-		if err := checkForwardOptions(req.view, req.period, a.has, func(name string) string { return name }); err != nil {
-			return err
-		}
-		if forward {
-			req.assumptions = assumptionArgs(a)
-		}
-		return nil
-	},
-	build: func(_ *config.Config, req request, _ *toolArgs) *report { return incomeReport(req) },
-	header: func(req request) []string {
-		if !isForwardView(req.view) {
-			return bucketHeader(req)
-		}
-		var h []string
-		if req.view == "projection" {
-			h = append(h, "period="+req.period)
-		}
-		return append(h, assumptionsHeader(req.assumptions)...)
-	},
-}
-
-var yieldFamily = &family{
-	views: yieldViews,
-	// The aggregate views carry a total row of their own.
-	adds: byRule(map[string]totalRule{"positions": balanceTotal, "securities": balanceTotal, "funds": balanceTotal,
-		"cash": balanceTotal}, noTotal),
-	principal: func(req request) string {
-		if req.view == "curve" {
-			return "dv01"
-		}
-		return "value"
-	},
-	window:   asOfDate,
-	currency: true,
-	narrow:   "a coarser view",
-	prepare: func(a *toolArgs, req *request, notes *[]string) error {
-		req.converted = a.flag("converted", false)
-		if _, ok := yieldGrains[req.view]; !ok && req.converted {
-			return errConverted("converted")
-		}
-		return seriesArg("yield", yieldSeriesViews, a, req, notes)
-	},
-	build: func(_ *config.Config, req request, _ *toolArgs) *report { return yieldReport(req) },
-	header: func(req request) []string {
-		if req.converted {
-			return []string{"converted"}
-		}
-		return nil
-	},
-}
-
-var cashflowFamily = &family{
-	views: cashflowViews,
-	// A flow node nets the nodes under it, and coverage measures gaps.
-	adds: byRule(map[string]totalRule{"flows": noTotal, "sankey": noTotal, "coverage": noTotal}, flowTotal),
-	principal: byView(map[string]string{
-		"summary": "net_cash_flow", "flows": "net", "sankey": "value", "transactions": "value", "coverage": "gap",
-		"projection": "net",
-	}),
-	window:   trailingYear,
-	forward:  func(view string) bool { return view == "projection" },
-	currency: true,
-	narrow:   "from/to or a filter",
-	prepare: func(a *toolArgs, req *request, _ *[]string) error {
-		// The CLI's three refusals, for the CLI's reasons: each would
-		// answer a question the caller did not ask.
-		switch req.view {
-		case "sankey":
-			if a.has("period") {
-				return fmt.Errorf("cashflow: sankey takes no period — a diagram is a window, not a series; call it once per year instead")
-			}
-			if a.str("level") == "section" {
-				return fmt.Errorf("cashflow: sankey at level=section would draw no inner column; use class or group")
-			}
-		case "coverage":
-			if a.has("currency") {
-				return fmt.Errorf("cashflow: coverage takes no currency — each account is measured against its own balances, in its own currency")
-			}
-		}
-		req.period = orDefault(a.str("period"), "total")
-		req.level = orDefault(a.str("level"), "group")
-		req.investing = orDefault(a.str("investing"), "whole")
-		if req.view == "projection" {
-			req.period = orDefault(a.str("period"), "monthly")
-		}
-		if err := checkCashflowPlanOptions(req.view, req.period, a.has, func(name string) string { return name }); err != nil {
-			return err
-		}
-		if req.view != "projection" {
-			return nil
-		}
-		if err := checkPlanWindow(req.from, req.to, time.Unix(req.asOf, 0)); err != nil {
-			return fmt.Errorf("cashflow: %w; dates are %s", err, dateDoc)
-		}
-		req.assumptions = assumptionArgs(a)
-		return nil
-	},
-	build: func(cfg *config.Config, req request, _ *toolArgs) *report {
-		req.lookback = cfg.CashflowLookback()
-		return cashflowReport(req)
-	},
-	header: func(req request) []string {
-		var h []string
-		switch req.view {
-		case "summary", "coverage":
-			h = append(h, "period="+req.period)
-		case "flows":
-			h = append(h, "period="+req.period, "level="+req.level)
-		case "sankey":
-			h = append(h, "level="+req.level)
-		case "projection":
-			h = append(append(h, "period="+req.period), assumptionsHeader(req.assumptions)...)
-		}
-		if req.investing != "whole" && (req.view == "flows" || req.view == "sankey") {
-			h = append(h, "investing="+req.investing)
-		}
-		return h
-	},
-}
-
-// bucketHeader is the spending and income header: the bucket on the
-// aggregating views, the level where it changes the vocabulary.
-func bucketHeader(req request) []string {
-	switch req.view {
-	case "summary":
-		return []string{"period=" + req.period}
-	case "transactions":
-		return nil
-	}
+// periodLevelHeader is the header of a view whose bucket and level are
+// options: spending's categories, income's types.
+func periodLevelHeader(req request) []string {
 	return []string{"period=" + req.period, "level=" + req.level}
 }
+
+// ---- the diagnostics -----------------------------------------------------
 
 // status's source parameter is not a row filter: it asks for the
 // source's detail block instead of the table.
 var statusFamily = &family{
-	// source asks for one source's detail block; kind is the source's.
-	excludes: map[string][]string{"": {"source", "kind"}},
-	narrow:   "search",
-	prepare: func(a *toolArgs, _ *request, _ *[]string) error {
+	name: "status",
+	views: []view{{
+		// source asks for one source's detail block; kind is the source's.
+		excludes: []string{"source", "kind"},
+		build: func(cfg *config.Config, _ request, a *toolArgs) *report {
+			return statusReport(cfg, a.flag("verbose", false))
+		},
+	}},
+	narrow: "search",
+	prepare: func(_ *family, a *toolArgs, _ *request, _ *[]string) error {
 		for _, name := range []string{"from", "to", "currency"} {
 			if a.has(name) {
 				return fmt.Errorf("status: %s belongs to marks", name)
@@ -916,21 +495,22 @@ var statusFamily = &family{
 		}
 		return nil
 	},
-	build: func(cfg *config.Config, _ request, a *toolArgs) *report {
-		return statusReport(cfg, a.flag("verbose", false))
-	},
 }
 
 // marksFamily is the status tool's `marks` shape: month ends, not sources.
 var marksFamily = &family{
-	// The money words name value_total, as the sort parameter says a
-	// "-value" sort reads the main money column; marked_pct goes by its
-	// own name.
-	principal: func(request) string { return "value_total" },
-	window:    sinceInception,
-	currency:  true,
-	narrow:    "from/to",
-	prepare: func(a *toolArgs, _ *request, _ *[]string) error {
+	name: "status",
+	views: []view{{
+		// The money words name value_total, as the sort parameter says a
+		// "-value" sort reads the main money column; marked_pct goes by its
+		// own name.
+		principal: fixedColumn("value_total"),
+		build:     func(_ *config.Config, req request, _ *toolArgs) *report { return marksReport(req) },
+	}},
+	window:   sinceInception,
+	currency: true,
+	narrow:   "from/to",
+	prepare: func(_ *family, a *toolArgs, _ *request, _ *[]string) error {
 		for _, name := range []string{"source", "verbose"} {
 			if a.has(name) {
 				return fmt.Errorf("status: marks takes no %s", name)
@@ -938,36 +518,38 @@ var marksFamily = &family{
 		}
 		return nil
 	},
-	build:  func(_ *config.Config, req request, _ *toolArgs) *report { return marksReport(req) },
 	header: func(request) []string { return []string{"marks"} },
 }
 
 var snapshotsFamily = &family{
+	name: "snapshots",
+	views: []view{{build: func(_ *config.Config, _ request, a *toolArgs) *report {
+		return snapshotsReport(a.flag("latest_only", false))
+	}}},
 	narrow:  "source or latest_only",
 	prepare: noOptions,
-	build: func(_ *config.Config, _ request, a *toolArgs) *report {
-		return snapshotsReport(a.flag("latest_only", false))
-	},
 }
 
 var resolutionsFamily = &family{
+	name:    "resolutions",
+	views:   []view{{build: func(*config.Config, request, *toolArgs) *report { return resolutionsReport("") }}},
 	narrow:  "source or search",
 	prepare: noOptions,
-	build:   func(*config.Config, request, *toolArgs) *report { return resolutionsReport("") },
 }
 
 var categorizationsFamily = &family{
-	narrow:  "family, category or search",
-	prepare: noOptions,
-	build: func(_ *config.Config, _ request, a *toolArgs) *report {
+	name: "categorizations",
+	views: []view{{build: func(_ *config.Config, _ request, a *toolArgs) *report {
 		// The parameter's enum has already admitted only a family
 		// name, or nothing for both.
 		families, _ := resolveCategorizeFamilies(a.str("family"))
 		return categorizationsReport(families, "")
-	},
+	}}},
+	narrow:  "family, category or search",
+	prepare: noOptions,
 }
 
-func noOptions(*toolArgs, *request, *[]string) error { return nil }
+func noOptions(*family, *toolArgs, *request, *[]string) error { return nil }
 
 // refuseArgs refuses a call that sets one of names: the options of the
 // tool's other views that view does not take, as the CLI refuses them
@@ -979,29 +561,6 @@ func refuseArgs(a *toolArgs, tool, view string, names []string, why string) erro
 		}
 	}
 	return nil
-}
-
-// byRule is a total rule per view, def for the views it does not name.
-func byRule(m map[string]totalRule, def totalRule) func(string) totalRule {
-	return func(view string) totalRule {
-		if r, ok := m[view]; ok {
-			return r
-		}
-		return def
-	}
-}
-
-// totalRule is the family's rule for view.
-func (fam *family) totalRule(view string) totalRule {
-	if fam.adds == nil {
-		return noTotal
-	}
-	return fam.adds(view)
-}
-
-// byView is a principal column per view.
-func byView(m map[string]string) func(request) string {
-	return func(req request) string { return m[req.view] }
 }
 
 func orDefault(v, def string) string {
@@ -1036,9 +595,9 @@ func (s *mcpServer) runFamily(ctx context.Context, spec toolSpec, a *toolArgs) (
 	}
 
 	var named []string
-	for _, f := range filterOrder {
-		if a.has(f) {
-			named = append(named, f)
+	for _, f := range namedFilters {
+		if a.has(f.name) {
+			named = append(named, f.name)
 		}
 	}
 	front := filterFront{prefix: tool + ":"}
@@ -1090,7 +649,7 @@ func (s *mcpServer) runFamily(ctx context.Context, spec toolSpec, a *toolArgs) (
 	case len(idx) == 0:
 		p.empty = emptyNote(rs, fam, req.view, named, a, before, conds)
 	case !s.privacy && (len(named) > 0 || len(conds) > 0 || a.has("search")):
-		p.totals = totals(rs, idx, sh.cols, req.currency, fam.totalRule(req.view))
+		p.totals = totals(rs, idx, sh.cols, req.currency, fam.view(req.view).total)
 	}
 	return render(rs, p, sh.cols, orDefault(a.str("format"), formatTable), head, meta), nil
 }
@@ -1129,31 +688,10 @@ func (t toolSpec) carriedParams(view string) []string {
 // lookup resolves the names a call sends for rep's columns.
 func (fam *family) lookup(rep *report, req request) columnLookup {
 	l := columnLookup{cols: rep.columns, currency: req.currency}
-	if fam.principal != nil {
-		l.principal = fam.principal(req)
+	if v := fam.view(req.view); v.principal != nil {
+		l.principal = v.principal(req)
 	}
 	return l
-}
-
-// ladder is the family's views without its side views: the coarse to
-// fine order the walks follow.
-func (fam *family) ladder() []string {
-	var out []string
-	for _, v := range fam.views {
-		if !fam.side[v] {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-// walk is the views escalate may settle view on: the ladder, or a side
-// view alone, which no filter moves off.
-func (fam *family) walk(view string) []string {
-	if fam.side[view] {
-		return []string{view}
-	}
-	return fam.ladder()
 }
 
 // settle turns a call's arguments into the report request: the view
@@ -1164,9 +702,9 @@ func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *tool
 	var notes []string
 	moved := "" // the note of a move off the requested view
 	view := a.str("view")
-	if fam.views != nil {
+	if views := fam.names(); views != nil {
 		if view == "" {
-			view = fam.views[0]
+			view = views[0]
 		}
 		carries := fam.carries()
 		takesNamed := func(v string) bool { return carriesAll(carries, v, named) }
@@ -1199,7 +737,7 @@ func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *tool
 	if err := resolveDates(fam, a, s.now(), cfg.YieldHorizon(), &req); err != nil {
 		return request{}, nil, fmt.Errorf("%s: %v", tool, err)
 	}
-	if err := fam.prepare(a, &req, &notes); err != nil {
+	if err := fam.prepare(fam, a, &req, &notes); err != nil {
 		if moved != "" {
 			// Say what moved the call, or the refusal names a view
 			// that was never asked for.
@@ -1291,7 +829,7 @@ func (s *mcpServer) shape(tool string, rep *report, lookup columnLookup, a *tool
 func (s *mcpServer) header(tool string, fam *family, rep *report, req request, rows int, sh resultShape, filters, notes []string) (resultHeader, resultMeta) {
 	head := resultHeader{}
 	meta := resultMeta{tool: tool, view: req.view, currency: req.currency}
-	if fam.views != nil {
+	if !fam.oneShape() {
 		head.add("%s %s", tool, req.view)
 	} else {
 		head.add("%s", tool)
@@ -1314,19 +852,14 @@ func (s *mcpServer) header(tool string, fam *family, rep *report, req request, r
 		meta.from, meta.to = windowStart(req.from), formatDate(req.to)
 		head.add("window %s → %s", meta.from, meta.to)
 	}
-	switch {
-	case tool == "cashflow" && req.view == "coverage":
+	switch own := fam.view(req.view).ownCurrency; {
+	case own != "":
 		meta.currency = ""
-		head.add("each account in its own currency")
-	case tool == "returns" && req.view == "stated":
-		meta.currency = ""
-		head.add("each period in the currency its document states")
+		head.add("%s", own)
 	case req.currency != "":
 		head.add("%s", req.currency)
 	}
-	if fam.header != nil {
-		head.parts = append(head.parts, fam.header(req)...)
-	}
+	head.parts = append(head.parts, fam.headerFor(req)...)
 	head.parts = append(head.parts, filters...)
 	head.add("%s %s", thousands(rows), plural(rows, "row", "rows"))
 	if sh.sortCol >= 0 {
@@ -1378,10 +911,10 @@ func resolveDates(fam *family, a *toolArgs, now time.Time, horizon int, req *req
 		}
 		return nil
 	case trailingYear:
-		// The forward views (family.forward) compute today's holdings,
+		// The forward views (view.forward) compute today's holdings,
 		// over a window that may reach into the future.
 		req.asOf = anchorToDay(now.UTC(), true).Unix()
-		if fam.forward != nil && fam.forward(req.view) {
+		if fam.view(req.view).forward {
 			req.from, req.to, err = parseForwardWindow(from, to, now, horizon)
 		} else {
 			req.from, req.to, err = parseTrailingYearWindow(args, now)
@@ -1450,7 +983,7 @@ func filterViewError(tool string, fam *family, view string, named []string) erro
 	var where []string
 	for _, f := range named {
 		var vs []string
-		for _, v := range fam.views {
+		for _, v := range fam.names() {
 			if slices.Contains(fam.carries()[v], f) {
 				vs = append(vs, v)
 			}

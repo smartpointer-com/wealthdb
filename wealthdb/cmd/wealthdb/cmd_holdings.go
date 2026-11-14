@@ -7,33 +7,136 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
 func init() {
 	register("holdings", cmdHoldings)
 }
 
-// holdingsViews are the point-in-time portfolio views, coarsest first,
-// grouped under `wealthdb holdings`. They share one flag idiom (-d / -f
-// / -x / -p, plus -C and -F on all but global) and their totals
+// holdingsFamily are the point-in-time portfolio views, coarsest
+// first, grouped under `wealthdb holdings`. They share one flag idiom
+// (-d / -f / -x / -p, plus -C and -F on all but global) and their totals
 // reconcile: global == Σ sources == Σ portfolios == Σ accounts ==
-// positions --with-cash.
-var holdingsViews = []string{"global", "sources", "portfolios", "accounts", "positions"}
-
-// holdingsViewUsage is each view's own -h text.
-var holdingsViewUsage = map[string]func() string{
-	"global":     globalCmdUsage,
-	"sources":    sourcesUsage,
-	"portfolios": portfoliosUsage,
-	"accounts":   accountsUsage,
-	"positions":  positionsUsage,
+// positions --with-cash. Each view has its own -h text.
+var holdingsFamily = &family{
+	name: "holdings",
+	views: []view{
+		{
+			name: "global", usage: globalCmdUsage, total: balanceTotal, principal: fixedColumn("total_value_outccy"),
+			// The global rollup is one fixed row, so its default column
+			// set is its whole registry.
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				ccy, asOf := req.currency, req.asOf
+				registry := buildGlobalColumnRegistry(ccy)
+				return newReport(registry, columnNames(registry), func(ctx context.Context, db *sql.DB) ([]gold.GlobalRow, error) {
+					row, err := gold.GlobalAsOf(ctx, db, asOf, ccy)
+					if err != nil {
+						return nil, err
+					}
+					return []gold.GlobalRow{row}, nil
+				})
+			},
+		},
+		{
+			name: "sources", usage: sourcesUsage, total: balanceTotal, principal: fixedColumn("total_value_outccy"),
+			// A source's or a portfolio's tax_wrapper is its accounts'
+			// common one, blank where they differ: a filter there would
+			// drop the rest.
+			excludes: []string{"tax_wrapper"},
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				ccy, asOf := req.currency, req.asOf
+				return newReport(buildSourceColumnRegistry(ccy), defaultSourceColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.SourceRow, error) {
+						return gold.SourcesAsOf(ctx, db, asOf, ccy)
+					})
+			},
+		},
+		{
+			name: "portfolios", usage: portfoliosUsage, total: balanceTotal, principal: fixedColumn("total_value_outccy"),
+			excludes: []string{"tax_wrapper"},
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				ccy, asOf := req.currency, req.asOf
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildPortfolioColumnRegistry(ccy, kindOf), defaultPortfolioColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.PortfolioRow, error) {
+						return gold.PortfoliosAsOf(ctx, db, asOf, ccy)
+					}), loadKinds)
+			},
+		},
+		{
+			name: "accounts", usage: accountsUsage, total: balanceTotal, principal: fixedColumn("total_value_outccy"),
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				ccy, asOf := req.currency, req.asOf
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildAccountColumnRegistry(ccy, kindOf, req.categories), defaultAccountColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.AccountRow, error) {
+						return gold.AccountsAsOf(ctx, db, asOf, ccy)
+					}), loadKinds)
+			},
+		},
+		{
+			name: "positions", usage: positionsUsage, total: balanceTotal, principal: fixedColumn("value"),
+			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+				ccy, asOf := req.currency, req.asOf
+				missing, withCash := missingOr(req.missing, cfg), req.withCash
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildColumnRegistry(ccy, kindOf, req.categories), defaultColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.PositionRow, error) {
+						rows, err := gold.PositionsAsOf(ctx, db, asOf, ccy, missing)
+						if err != nil || !withCash {
+							return rows, err
+						}
+						cash, err := gold.CashAsOf(ctx, db, asOf, ccy)
+						if err != nil {
+							return nil, err
+						}
+						return mergeSorted(rows, cash), nil
+					}), loadKinds)
+			},
+		},
+	},
+	window:   asOfDate,
+	currency: true,
+	narrow:   "a filter",
+	prepare: func(_ *family, a *toolArgs, req *request, notes *[]string) error {
+		if req.view != "positions" && a.has("missing_basis") {
+			return fmt.Errorf("holdings: missing_basis belongs to view=positions")
+		}
+		var err error
+		if req.missing, err = missingBasisArg(a); err != nil {
+			return fmt.Errorf("holdings: %w", err)
+		}
+		req.withCash = req.view == "positions" && a.flag("with_cash", false)
+		// Cash is a position only when asked for; a filter for the cash
+		// class has asked.
+		if req.view == "positions" && !req.withCash && normalizeCell(a.str("asset_class")) == "cash" {
+			req.withCash = true
+			*notes = append(*notes, "with_cash on for the cash filter")
+		}
+		return nil
+	},
+	header: func(req request) []string {
+		var h []string
+		if req.withCash {
+			h = append(h, "with cash")
+		}
+		if req.missing == lots.MissingZero {
+			h = append(h, "missing_basis=zero")
+		}
+		return h
+	},
 }
+
+// holdingsViews are the holdings views' names, coarsest first.
+var holdingsViews = holdingsFamily.names()
 
 // cmdHoldings routes `wealthdb holdings <view> ...` to the view's run.
 func cmdHoldings(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("holdings", subargs, holdingsViews, func() string { return holdingsUsage }, stderr)
+	view, rest, err := routeView("holdings", subargs, holdingsFamily.names(), func() string { return holdingsUsage }, stderr)
 	if err != nil {
 		return err
 	}
@@ -47,13 +150,14 @@ func runHoldingsView(ctx context.Context, g globalFlags, view string, args []str
 	fs.SetOutput(stderr)
 	asOf := registerAsOf(fs)
 	rf := registerReportFlags(fs, view != "global")
+	v := holdingsFamily.view(view)
 	var withCash *bool
 	var missing *string
 	if view == "positions" {
 		withCash = fs.Bool("with-cash", false, "also emit one row per account and currency with non-zero cash")
 		missing = registerMissingBasisFlag(fs)
 	}
-	fs.Usage = func() { fmt.Fprintln(stderr, holdingsViewUsage[view]()) }
+	fs.Usage = func() { fmt.Fprintln(stderr, v.usage()) }
 	if err := parseFlags(fs, args, view); err != nil {
 		return err
 	}
@@ -80,55 +184,7 @@ func runHoldingsView(ctx context.Context, g globalFlags, view string, args []str
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	out := rf.output(fmtChoice, "holdings", holdingsFamily, req, cfg, g.clock())
 	out.prefix = view // a column error names the view alone
-	return writeReport(ctx, holdingsReport(req), out, open, stdout)
-}
-
-// holdingsReport is one holdings view as of req.asOf, the runner the
-// CLI views and the MCP server share. The global rollup is one fixed
-// row, so its default column set is its whole registry.
-func holdingsReport(req request) *report {
-	ccy, asOf := req.currency, req.asOf
-	kindOf, loadKinds := sourceKinds()
-	switch req.view {
-	case "global":
-		registry := buildGlobalColumnRegistry(ccy)
-		return newReport(registry, columnNames(registry), func(ctx context.Context, db *sql.DB) ([]gold.GlobalRow, error) {
-			row, err := gold.GlobalAsOf(ctx, db, asOf, ccy)
-			if err != nil {
-				return nil, err
-			}
-			return []gold.GlobalRow{row}, nil
-		})
-	case "sources":
-		return newReport(buildSourceColumnRegistry(ccy), defaultSourceColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.SourceRow, error) {
-				return gold.SourcesAsOf(ctx, db, asOf, ccy)
-			})
-	case "portfolios":
-		return withLoads(newReport(buildPortfolioColumnRegistry(ccy, kindOf), defaultPortfolioColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.PortfolioRow, error) {
-				return gold.PortfoliosAsOf(ctx, db, asOf, ccy)
-			}), loadKinds)
-	case "accounts":
-		return withLoads(newReport(buildAccountColumnRegistry(ccy, kindOf, req.categories), defaultAccountColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.AccountRow, error) {
-				return gold.AccountsAsOf(ctx, db, asOf, ccy)
-			}), loadKinds)
-	default:
-		withCash := req.withCash
-		return withLoads(newReport(buildColumnRegistry(ccy, kindOf, req.categories), defaultColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.PositionRow, error) {
-				rows, err := gold.PositionsAsOf(ctx, db, asOf, ccy, req.missing)
-				if err != nil || !withCash {
-					return rows, err
-				}
-				cash, err := gold.CashAsOf(ctx, db, asOf, ccy)
-				if err != nil {
-					return nil, err
-				}
-				return mergeSorted(rows, cash), nil
-			}), loadKinds)
-	}
+	return writeReport(ctx, v.build(cfg, req, nil), out, open, stdout)
 }
 
 const holdingsUsage = `wealthdb holdings — what is held, where, and what it is worth, as of a date

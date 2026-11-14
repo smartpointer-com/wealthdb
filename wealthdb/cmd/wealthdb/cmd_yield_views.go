@@ -6,48 +6,54 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
-// yieldDetailReport is one of the list views: securities, funds, cash,
-// curve and coverage.
-func yieldDetailReport(req request) *report {
+// The list views' reports: securities, funds, cash, curve and coverage.
+
+func yieldSecuritiesReport(_ *config.Config, req request, _ *toolArgs) *report {
+	kindOf, loadKinds := sourceKinds()
+	return withLoads(bookView(req, buildYieldSecurityColumns(req.currency, kindOf), defaultYieldSecurityColumns,
+		gold.YieldSecurities), loadKinds)
+}
+
+func yieldFundsReport(_ *config.Config, req request, _ *toolArgs) *report {
+	kindOf, loadKinds := sourceKinds()
+	return withLoads(bookView(req, buildYieldFundColumns(req.currency, kindOf), defaultYieldFundColumns,
+		func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.FundRow, error) {
+			return b.Funds(), nil
+		}), loadKinds)
+}
+
+func yieldCashReport(_ *config.Config, req request, _ *toolArgs) *report {
+	kindOf, loadKinds := sourceKinds()
+	return withLoads(bookView(req, buildYieldCashColumns(req.currency, kindOf), defaultYieldCashColumns,
+		func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CashRow, error) {
+			return b.Cash(), nil
+		}), loadKinds)
+}
+
+func yieldCurveReport(_ *config.Config, req request, _ *toolArgs) *report {
 	ccy := req.currency
-	switch req.view {
-	case "securities":
-		kindOf, loadKinds := sourceKinds()
-		return withLoads(bookView(req, buildYieldSecurityColumns(ccy, kindOf), defaultYieldSecurityColumns,
-			gold.YieldSecurities), loadKinds)
-	case "funds":
-		kindOf, loadKinds := sourceKinds()
-		return withLoads(bookView(req, buildYieldFundColumns(ccy, kindOf), defaultYieldFundColumns,
-			func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.FundRow, error) {
-				return b.Funds(), nil
-			}), loadKinds)
-	case "cash":
-		kindOf, loadKinds := sourceKinds()
-		return withLoads(bookView(req, buildYieldCashColumns(ccy, kindOf), defaultYieldCashColumns,
-			func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CashRow, error) {
-				return b.Cash(), nil
-			}), loadKinds)
-	case "curve":
-		return seriesView(req, buildYieldCurveColumns(ccy), defaultYieldCurveColumns,
-			func(ctx context.Context, db *sql.DB, at int64) ([]yield.CurveRow, error) {
-				b, err := yieldBook(ctx, db, at, ccy)
-				if err != nil {
-					return nil, err
-				}
-				return b.Curve(), nil
-			})
-	default: // coverage
-		kindOf, loadKinds := sourceKinds()
-		return withLoads(bookView(req, buildYieldCoverageColumns(ccy, kindOf), defaultYieldCoverageColumns,
-			func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CoverageRow, error) {
-				return b.Coverage(), nil
-			}), loadKinds)
-	}
+	return seriesView(req, buildYieldCurveColumns(ccy), defaultYieldCurveColumns,
+		func(ctx context.Context, db *sql.DB, at int64) ([]yield.CurveRow, error) {
+			b, err := yieldBook(ctx, db, at, ccy)
+			if err != nil {
+				return nil, err
+			}
+			return b.Curve(), nil
+		})
+}
+
+func yieldCoverageReport(_ *config.Config, req request, _ *toolArgs) *report {
+	kindOf, loadKinds := sourceKinds()
+	return withLoads(bookView(req, buildYieldCoverageColumns(req.currency, kindOf), defaultYieldCoverageColumns,
+		func(_ context.Context, _ *sql.DB, b *yield.Book) ([]yield.CoverageRow, error) {
+			return b.Coverage(), nil
+		}), loadKinds)
 }
 
 // bookView is a view whose rows the book of req.asOf in req.currency

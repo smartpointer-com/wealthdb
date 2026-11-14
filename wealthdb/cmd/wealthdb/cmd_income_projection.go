@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -22,11 +23,6 @@ import (
 // computed from today's holdings, and the received half the income
 // lines'. A day up to today shows what was received, a day after it what
 // is expected.
-
-// forwardViews are the views that look forward.
-var forwardViews = []string{"projection", "calendar", "sources", "portfolios", "accounts", "positions"}
-
-func isForwardView(view string) bool { return slices.Contains(forwardViews, view) }
 
 // incomeBasisTags are the bases an expected amount rests on and what
 // each means (docs/INCOME.md §12), in the order of yield.Bases: the CLI
@@ -55,10 +51,6 @@ var incomeRungTags = []tagNote{
 	{string(yield.RungRollCash), "a roll into cash, where the holding has no yield at all"},
 }
 
-// forwardGrains maps the entity views to their grain.
-var forwardGrains = map[string]yield.Grain{"sources": yield.GrainSources, "portfolios": yield.GrainPortfolios,
-	"accounts": yield.GrainAccounts, "positions": yield.GrainPositions}
-
 // forwardFlags are the assumptions the expected income rests on.
 type forwardFlags struct {
 	rates, maturing *string
@@ -83,7 +75,7 @@ func registerForwardFlags(fs *flag.FlagSet) *forwardFlags {
 // check refuses what checkForwardOptions refuses, and a value outside
 // each flag's choices.
 func (f *forwardFlags) check(fs *flag.FlagSet, view, period string) error {
-	if err := checkForwardOptions(view, period, func(name string) bool { return isSet(fs, name) },
+	if err := checkForwardOptions(incomeFamily, view, period, func(name string) bool { return isSet(fs, name) },
 		func(name string) string { return "--" + name }); err != nil {
 		return err
 	}
@@ -103,9 +95,10 @@ func (f *forwardFlags) checkChoices(cmd string) error {
 // them the type level, a period off projection, and a period that is
 // none of seriesPeriods. has says an option is given; flag spells an
 // option's name as the front-end does.
-func checkForwardOptions(view, period string, has func(string) bool, flag func(string) string) error {
-	if !isForwardView(view) {
-		return refuseAssumptions("income", "the "+andList(forwardViews)+" views", has, flag)
+func checkForwardOptions(fam *family, view, period string, has func(string) bool, flag func(string) string) error {
+	if !fam.view(view).forward {
+		return refuseAssumptions("income", "the "+andList(fam.forwardViews())+" views",
+			has, flag)
 	}
 	switch {
 	case has("level"):
@@ -254,41 +247,54 @@ func loadForwardIncome(ctx context.Context, db *sql.DB, req request) (*forwardIn
 	return fi, nil
 }
 
-// incomeForwardReport is one forward view.
-func incomeForwardReport(req request) *report {
-	ccy := req.currency
-	kindOf, loadKinds := sourceKinds()
-	switch req.view {
-	case "projection":
-		months := seriesPeriodMonths(req.period)
-		return newReport(buildProjectionColumns(ccy, req.period), defaultProjectionColumns,
-			func(ctx context.Context, db *sql.DB) ([]yield.ProjectionRow, error) {
-				fi, err := loadForwardIncome(ctx, db, req)
-				if err != nil {
-					return nil, err
-				}
-				return fi.book.ProjectionRows(fi.amounts, fi.window, months), nil
-			})
-	case "calendar":
-		return withLoads(newReport(buildCalendarColumns(ccy, kindOf), defaultCalendarColumns,
-			func(ctx context.Context, db *sql.DB) ([]yield.CalendarRow, error) {
-				fi, err := loadForwardIncome(ctx, db, req)
-				if err != nil {
-					return nil, err
-				}
-				return fi.book.Calendar(fi.amounts), nil
-			}), loadKinds)
-	}
-	grain := forwardGrains[req.view]
-	return withLoads(newReport(buildIncomeEntityColumns(ccy, grain, kindOf), incomeEntityDefaults[grain],
-		func(ctx context.Context, db *sql.DB) ([]yield.IncomeRow, error) {
+// incomeProjectionReport is the projection: per month, received and
+// expected.
+func incomeProjectionReport(_ *config.Config, req request, _ *toolArgs) *report {
+	months := seriesPeriodMonths(req.period)
+	return newReport(buildProjectionColumns(req.currency, req.period), defaultProjectionColumns,
+		func(ctx context.Context, db *sql.DB) ([]yield.ProjectionRow, error) {
 			fi, err := loadForwardIncome(ctx, db, req)
 			if err != nil {
 				return nil, err
 			}
-			return fi.book.IncomeRows(grain, fi.amounts, fi.lastYear, fi.next12), nil
+			return fi.book.ProjectionRows(fi.amounts, fi.window, months), nil
+		})
+}
+
+// incomeCalendarReport is the calendar: each expected payment and each
+// principal a maturity returns.
+func incomeCalendarReport(_ *config.Config, req request, _ *toolArgs) *report {
+	kindOf, loadKinds := sourceKinds()
+	return withLoads(newReport(buildCalendarColumns(req.currency, kindOf), defaultCalendarColumns,
+		func(ctx context.Context, db *sql.DB) ([]yield.CalendarRow, error) {
+			fi, err := loadForwardIncome(ctx, db, req)
+			if err != nil {
+				return nil, err
+			}
+			return fi.book.Calendar(fi.amounts), nil
 		}), loadKinds)
 }
+
+// incomeEntityView is a forward view per entity at grain: received,
+// expected and total, last year's and the next twelve months'.
+func incomeEntityView(name string, grain yield.Grain) view {
+	return view{name: name, forward: true, total: flowTotal, principal: fixedColumn("total"), header: forwardHeader,
+		build: func(_ *config.Config, req request, _ *toolArgs) *report {
+			kindOf, loadKinds := sourceKinds()
+			return withLoads(newReport(buildIncomeEntityColumns(req.currency, grain, kindOf), incomeEntityDefaults[grain],
+				func(ctx context.Context, db *sql.DB) ([]yield.IncomeRow, error) {
+					fi, err := loadForwardIncome(ctx, db, req)
+					if err != nil {
+						return nil, err
+					}
+					return fi.book.IncomeRows(grain, fi.amounts, fi.lastYear, fi.next12), nil
+				}), loadKinds)
+		}}
+}
+
+// forwardHeader is the header of a forward view whose period is no
+// option: the assumptions.
+func forwardHeader(req request) []string { return assumptionsHeader(req.assumptions) }
 
 // ---- column registries ---------------------------------------------------
 

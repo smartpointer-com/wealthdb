@@ -135,7 +135,7 @@ func TestGainsViewsResolveTheirDefaults(t *testing.T) {
 	t.Parallel()
 	usage := gainsUsage()
 	for _, view := range gainsViews {
-		rep := gainsReport(request{view: view, currency: "USD", period: "monthly"})
+		rep := gainsFamily.build(nil, request{view: view, currency: "USD", period: "monthly"}, nil)
 		if _, err := rep.pick("default"); err != nil {
 			t.Errorf("%s defaults: %v", view, err)
 		}
@@ -161,8 +161,8 @@ func TestReportHeadersAreIdentifiers(t *testing.T) {
 		}
 	}
 	// A series adds its period column ahead of the view's own.
-	reports["exposure classes series"] = exposureReport(request{view: "classes", currency: "USD",
-		series: []seriesPoint{{label: "2026-06", at: 1}}})
+	reports["exposure classes series"] = exposureFamily.build(nil, request{view: "classes", currency: "USD",
+		series: []seriesPoint{{label: "2026-06", at: 1}}}, nil)
 	for name, rep := range reports {
 		for _, c := range rep.columns {
 			if !ident.MatchString(c.name) || !ident.MatchString(c.header) {

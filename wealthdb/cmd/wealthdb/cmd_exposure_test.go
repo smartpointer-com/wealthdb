@@ -93,7 +93,7 @@ func TestExposureViewsResolveTheirDefaults(t *testing.T) {
 	t.Parallel()
 	usage := exposureUsage()
 	for _, view := range exposureViews {
-		if _, err := exposureReport(request{view: view, currency: "USD"}).pick("default"); err != nil {
+		if _, err := exposureFamily.build(nil, request{view: view, currency: "USD"}, nil).pick("default"); err != nil {
 			t.Errorf("%s defaults: %v", view, err)
 		}
 		if !strings.Contains(usage, "\n  "+view+" ") {
@@ -110,7 +110,7 @@ func TestExposureUsageNamesTheFlagsViews(t *testing.T) {
 	flat := strings.Join(strings.Fields(usage), " ")
 	for _, want := range []string{
 		"--period P " + strings.Join(seriesPeriods, " | ") + ":",
-		"a period column first; on " + andList(exposureSeriesViews),
+		"a period column first; on " + andList(exposureFamily.seriesViews()),
 		"--country C risk (default) | domicile:",
 		"counts in, on countries and securities",
 	} {
@@ -423,7 +423,7 @@ func TestExposureBucketAndIssuerViews(t *testing.T) {
 		"credit": "bucket,share_pct,class_share_pct\ncash,20.00,100.00\n(none),80.00,\n",
 		"cycles": "cycle,share_pct,class_share_pct\nsensitive,80.00,100.00\n(none),20.00,\n",
 	} {
-		col := exposureBucketViews[view].column
+		col, _, _ := strings.Cut(want, ",")
 		out, errb, code := runExposure(t, cfg, view, "-d", "2026-06-30", "-f", "csv", "-p", "-C", col+",share,class_share")
 		if code != 0 || out != want {
 			t.Errorf("%s -C %s,share,class_share: %d %s\n%s", view, col, code, errb, out)

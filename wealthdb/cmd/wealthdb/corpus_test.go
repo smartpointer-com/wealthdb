@@ -260,10 +260,10 @@ func (c *corpus) help(tools []toolSpec) {
 		}
 	}
 	for _, tool := range tools {
-		if tool.family == nil || tool.family.views == nil {
+		if tool.family == nil || tool.family.names() == nil {
 			continue
 		}
-		for _, v := range tool.family.views {
+		for _, v := range tool.family.names() {
 			c.helpCase("cli/help/view/"+segment(tool.name)+"_"+segment(v), tool.name, v, "-h")
 		}
 	}

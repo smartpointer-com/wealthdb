@@ -317,7 +317,7 @@ func TestYieldUsageListsEveryView(t *testing.T) {
 	_, columns, _ := strings.Cut(usage, "Available columns (per view):")
 	_, defaults, _ := strings.Cut(columns, "Default column sets:")
 	for _, view := range yieldViews {
-		if _, err := yieldReport(request{view: view, currency: "USD"}).pick("default"); err != nil {
+		if _, err := yieldFamily.build(nil, request{view: view, currency: "USD"}, nil).pick("default"); err != nil {
 			t.Errorf("%s defaults: %v", view, err)
 		}
 		for what, text := range map[string]string{"views": usage, "columns": columns, "defaults": defaults} {
@@ -327,8 +327,8 @@ func TestYieldUsageListsEveryView(t *testing.T) {
 		}
 	}
 	flat := strings.Join(strings.Fields(usage), " ")
-	for _, want := range []string{"a period column first; on " + andList(yieldSeriesViews),
-		"currencies; on " + andList(yieldAggregateViews)} {
+	for _, want := range []string{"a period column first; on " + andList(yieldFamily.seriesViews()),
+		"currencies; on " + andList(yieldFamily.taking("converted"))} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("usage does not say %q", want)
 		}

@@ -21,39 +21,51 @@ import (
 // the CLI computes them, so a filtered categories result still shows
 // each category's share of the whole bucket.
 
-// filterColumns maps each named row filter to the registry columns it
-// reads: the label spelling and the id spelling of the same thing, so
-// "Cash withdrawal" and "cash_withdrawal" both match. A filter reads
-// the listed columns its view's registry has.
-var filterColumns = map[string][]string{
-	"source":      {"silver_source"},
-	"account":     {"account", "account_id", "account_nickname", "entity", "entity_id"},
-	"symbol":      {"symbol", "instrument_id", "position_key", "name", "description"},
-	"category":    {"category", "category_id", "category_primary", "spend_detailed", "spend_primary", "detailed"},
-	"type":        {"type", "type_id", "income_type", "income_type_id", "income_primary", "income_primary_id"},
-	"kind":        {"kind"},
-	"merchant":    {"merchant", "merchant_signature", "counterparty"},
-	"payer":       {"payer", "payer_signature", "counterparty"},
-	"section":     {"section", "section_id"},
-	"class":       {"class", "class_id"},
-	"group":       {"group", "group_id"},
-	"asset_class": {"asset_class"},
-	"tax_wrapper": {"tax_wrapper"},
-	"term":        {"term"},
+// namedFilter is one named row filter. columns are the registry columns
+// it reads: the label spelling and the id spelling of the same thing, so
+// "Cash withdrawal" and "cash_withdrawal" both match; a filter reads the
+// listed columns its view's registry has. keys are the columns that make
+// a view carry it: a view carries it exactly when it prints one of them
+// (family.carries). exact filters match whole cells.
+type namedFilter struct {
+	name          string
+	columns, keys []string
+	exact         bool
 }
 
-// filterKeys are the columns that make a view carry a named filter: a
-// view carries it exactly when it prints one of them (family.carries).
-var filterKeys = map[string][]string{
-	"source": {"silver_source"}, "account": {"account"}, "symbol": {"symbol"}, "category": {"category", "detailed"},
-	"type": {"type", "income_type"}, "kind": {"kind"}, "merchant": {"merchant"}, "payer": {"payer"},
-	"section": {"section"}, "class": {"class"}, "group": {"group"}, "asset_class": {"asset_class"},
-	"tax_wrapper": {"tax_wrapper"}, "term": {"term"},
+// namedFilters are the named filters, in the order they are applied and
+// reported in.
+var namedFilters = []namedFilter{
+	{name: "source", columns: []string{"silver_source"}, keys: []string{"silver_source"}, exact: true},
+	{name: "account", columns: []string{"account", "account_id", "account_nickname", "entity", "entity_id"},
+		keys: []string{"account"}},
+	{name: "symbol", columns: []string{"symbol", "instrument_id", "position_key", "name", "description"},
+		keys: []string{"symbol"}},
+	{name: "category", columns: []string{"category", "category_id", "category_primary", "spend_detailed", "spend_primary",
+		"detailed"}, keys: []string{"category", "detailed"}},
+	{name: "type", columns: []string{"type", "type_id", "income_type", "income_type_id", "income_primary",
+		"income_primary_id"}, keys: []string{"type", "income_type"}},
+	{name: "kind", columns: []string{"kind"}, keys: []string{"kind"}},
+	{name: "merchant", columns: []string{"merchant", "merchant_signature", "counterparty"}, keys: []string{"merchant"}},
+	{name: "payer", columns: []string{"payer", "payer_signature", "counterparty"}, keys: []string{"payer"}},
+	{name: "section", columns: []string{"section", "section_id"}, keys: []string{"section"}},
+	{name: "class", columns: []string{"class", "class_id"}, keys: []string{"class"}},
+	{name: "group", columns: []string{"group", "group_id"}, keys: []string{"group"}},
+	{name: "asset_class", columns: []string{"asset_class"}, keys: []string{"asset_class"}},
+	{name: "tax_wrapper", columns: []string{"tax_wrapper"}, keys: []string{"tax_wrapper"}},
+	{name: "term", columns: []string{"term"}, keys: []string{"term"}},
 }
 
-// filterOrder is the order filters are applied and reported in.
-var filterOrder = []string{"source", "account", "symbol", "category", "type", "kind",
-	"merchant", "payer", "section", "class", "group", "asset_class", "tax_wrapper", "term"}
+// namedFilterOf is the named filter of that name; the zero filter, which
+// reads no column, for none.
+func namedFilterOf(name string) namedFilter {
+	for _, f := range namedFilters {
+		if f.name == name {
+			return f
+		}
+	}
+	return namedFilter{name: name}
+}
 
 // genericMoneyWords name a view's principal column when no column of
 // the view carries the word itself: "-value" on spending categories is
@@ -87,9 +99,10 @@ func newResultSet(rep *report, rows reportRows, privacy bool) *resultSet {
 }
 
 // rowFilter is one named filter of a call: its needles (a comma list
-// keeps a row matching any) and the registry columns it reads. source
-// matches whole cells; every other filter matches substrings, but for a
-// pseudonym on the privacy endpoint (resultSet.needle).
+// keeps a row matching any) and the registry columns it reads. An exact
+// filter (source) matches whole cells; every other filter matches
+// substrings, but for a pseudonym on the privacy endpoint
+// (resultSet.needle).
 type rowFilter struct {
 	name    string
 	needles []string
@@ -99,13 +112,14 @@ type rowFilter struct {
 
 // newRowFilter resolves a filter's columns against a report.
 func newRowFilter(rep *report, name, value string) rowFilter {
-	f := rowFilter{name: name, exact: name == "source"}
+	nf := namedFilterOf(name)
+	f := rowFilter{name: name, exact: nf.exact}
 	for _, n := range strings.Split(value, ",") {
 		if n = normalizeCell(n); n != "" {
 			f.needles = append(f.needles, n)
 		}
 	}
-	for _, want := range filterColumns[name] {
+	for _, want := range nf.columns {
 		for i, c := range rep.columns {
 			if c.name == want {
 				f.cols = append(f.cols, i)
@@ -485,39 +499,31 @@ func (l columnLookup) pick(expr string, defaults []string) ([]int, []string, err
 }
 
 // carries are the named filters each view takes, by view ("" for a
-// tool of one shape): those whose key column (filterKeys, or the
-// family's keyAlias) the view prints, but its excludes. Derived once
-// from the registries, so a column a view gains brings its filter.
+// tool of one shape): those whose key column (the filter's keys, or the
+// view's keyAlias) the view prints, but its excludes. Derived once from
+// the registries, so a column a view gains brings its filter.
 func (fam *family) carries() map[string][]string {
 	fam.derive.Do(func() {
 		fam.carried = map[string][]string{}
 		cfg := &config.Config{DefaultCurrency: "USD"}
-		for _, v := range fam.viewsOrOne() {
+		for i := range fam.views {
+			v := &fam.views[i]
 			printed := map[string]bool{}
-			for _, c := range fam.defaultLookup(cfg, v, false).cols {
+			for _, c := range fam.defaultLookup(cfg, v.name, false).cols {
 				printed[c.name] = true
 			}
-			for _, f := range filterOrder {
-				keys := filterKeys[f]
-				if alias := fam.keyAlias[v][f]; alias != "" {
+			for _, f := range namedFilters {
+				keys := f.keys
+				if alias := v.keyAlias[f.name]; alias != "" {
 					keys = append(slices.Clone(keys), alias)
 				}
-				if slices.ContainsFunc(keys, func(k string) bool { return printed[k] }) && !slices.Contains(fam.excludes[v], f) {
-					fam.carried[v] = append(fam.carried[v], f)
+				if slices.ContainsFunc(keys, func(k string) bool { return printed[k] }) && !slices.Contains(v.excludes, f.name) {
+					fam.carried[v.name] = append(fam.carried[v.name], f.name)
 				}
 			}
 		}
 	})
 	return fam.carried
-}
-
-// viewsOrOne is the family's views, or the one shape ("") of a tool
-// that has none.
-func (fam *family) viewsOrOne() []string {
-	if fam.views == nil {
-		return []string{""}
-	}
-	return fam.views
 }
 
 // buildDefault builds req's report with no call arguments: a view's

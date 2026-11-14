@@ -716,16 +716,3 @@ func TestSpendingTransactionsCarriesBothClassifications(t *testing.T) {
 		}
 	}
 }
-
-// TestSpendingReportRefusesAnUnroutedView: spendingReport serves its own
-// three views and no other, so a view sent to it unrouted fails rather
-// than serving the transactions.
-func TestSpendingReportRefusesAnUnroutedView(t *testing.T) {
-	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Error("spendingReport served view fees")
-		}
-	}()
-	spendingReport(request{view: "fees", currency: "USD", period: "total"})
-}

@@ -85,7 +85,7 @@ func TestMCPMatchesCLI(t *testing.T) {
 		setup func(*testing.T) string
 		cases []goldenCase
 	}{
-		{"spending", func(t *testing.T) string { return withFeeLine(t, setupSpendingGold(t)) }, append(familyCases("spending", spendingFamily.views, "2026-05-01", "2026-06-30"),
+		{"spending", func(t *testing.T) string { return withFeeLine(t, setupSpendingGold(t)) }, append(familyCases("spending", spendingFamily.names(), "2026-05-01", "2026-06-30"),
 			goldenCase{"spending transactions filtered", []string{"spending", "transactions", "2026-05-01", "2026-06-30",
 				"-F", "date >= 2026-05-06", "-F", "category != Restaurant"}, "spending",
 				map[string]any{"view": "transactions", "from": "2026-05-01", "to": "2026-06-30",
@@ -278,7 +278,7 @@ func cashflowCases() []goldenCase {
 
 func returnsCases() []goldenCase {
 	var out []goldenCase
-	for _, v := range returnsFamily.views {
+	for _, v := range returnsFamily.names() {
 		if v == "stated" {
 			// The document fixes the period: no --method, no --period.
 			out = append(out, goldenCase{"returns stated", []string{"returns", "stated"}, "returns",
@@ -312,7 +312,7 @@ func returnsCases() []goldenCase {
 
 func exposureCases() []goldenCase {
 	var out []goldenCase
-	for _, v := range exposureFamily.views {
+	for _, v := range exposureFamily.names() {
 		out = append(out, goldenCase{"exposure " + v, []string{"exposure", v, "-d", "2026-06-30"}, "exposure",
 			map[string]any{"view": v, "as_of": "2026-06-30"}})
 	}
@@ -329,7 +329,7 @@ func exposureCases() []goldenCase {
 
 func holdingsCases() []goldenCase {
 	var out []goldenCase
-	for _, v := range holdingsFamily.views {
+	for _, v := range holdingsFamily.names() {
 		out = append(out, goldenCase{"holdings " + v, []string{"holdings", v}, "holdings", map[string]any{"view": v}})
 	}
 	return append(out,
@@ -366,7 +366,7 @@ func forwardIncomeCases() []goldenCase {
 	next := strconv.Itoa(now.Year() + 1)
 	nextMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0).Format(time.DateOnly)
 	var out []goldenCase
-	for _, v := range forwardViews {
+	for _, v := range incomeFamily.forwardViews() {
 		out = append(out, goldenCase{"income " + v, []string{"income", v, from, to, "--rates", "forward",
 			"--maturing", "roll", "--shift", "-50"}, "income",
 			map[string]any{"view": v, "from": from, "to": to, "rates": "forward", "maturing": "roll", "shift": -50}})

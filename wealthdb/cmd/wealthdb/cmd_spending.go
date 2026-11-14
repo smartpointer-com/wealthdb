@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -17,11 +18,74 @@ func init() {
 	register("spending", cmdSpending)
 }
 
-// spendingViews are the views of `wealthdb spending <view>`: the three
-// grains the report_spending_* macros define over the spending population,
-// coarsest first, then `fees`, what each portfolio paid against what it
-// held.
-var spendingViews = []string{"summary", "categories", "transactions", "fees"}
+// spendingFamily are the views of `wealthdb spending <view>`: the three
+// grains the report_spending_* macros define over the spending
+// population, coarsest first, then `fees`, what each portfolio paid
+// against what it held, a side view.
+var spendingFamily = &family{
+	name: "spending",
+	views: []view{
+		{name: "summary", total: flowTotal, principal: fixedColumn("net_spend"), header: periodHeader,
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				part := reportPeriods[req.period]
+				return newReport(buildSpendSummaryColumnRegistry(req.currency, req.period), defaultSpendSummaryColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.SpendSummaryRow, error) {
+						return gold.SpendingSummary(ctx, db, req.from, req.to, req.currency, part)
+					})
+			}},
+		{name: "categories", total: flowTotal, principal: fixedColumn("net_spend"), header: periodLevelHeader,
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				part := reportPeriods[req.period]
+				return newReport(buildSpendCategoryColumnRegistry(req.currency, req.period), defaultSpendCategoryColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.SpendCategoryRow, error) {
+						return gold.SpendingCategories(ctx, db, req.from, req.to, req.currency, part, req.level)
+					})
+			}},
+		{name: "transactions", total: flowTotal, principal: fixedColumn("value"),
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildSpendTransactionColumnRegistry(req.currency, kindOf, req.categories),
+					defaultSpendTransactionColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.SpendTransactionRow, error) {
+						return gold.SpendingTransactions(ctx, db, req.from, req.to, req.currency)
+					}), loadKinds)
+			}},
+		// On fees the entity is the portfolio or the account. A mean
+		// value and a rate do not add up over entities.
+		{name: "fees", side: true, principal: fixedColumn("fees"), header: periodHeader,
+			keyAlias: map[string]string{"account": "entity"},
+			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+				return spendingFeesReport(req, cfg)
+			}},
+	},
+	window:   trailingYear,
+	currency: true,
+	narrow:   "from/to or a filter",
+	prepare: func(_ *family, a *toolArgs, req *request, notes *[]string) error {
+		req.period = orDefault(a.str("period"), "total")
+		if req.view == "fees" {
+			if err := refuseArgs(a, "spending", "fees", feesRefusedFlags, ""); err != nil {
+				return err
+			}
+			return checkChoice("spending", "period", req.period, feePeriods...)
+		}
+		req.level = a.str("level")
+		if req.level == "" {
+			req.level = "primary"
+			// A category filter is a name search, and names live in
+			// the detailed vocabulary: "groceries" is a detailed
+			// category under "Food and drink".
+			if req.view == "categories" && a.has("category") {
+				req.level = "detailed"
+				*notes = append(*notes, "level detailed for the category filter")
+			}
+		}
+		return nil
+	},
+}
+
+// spendingViews are the spending views' names.
+var spendingViews = spendingFamily.names()
 
 // reportPeriods maps the CLI's bucket vocabulary onto the date_trunc
 // parts the report macros bucket by. The names are the returns
@@ -43,7 +107,7 @@ var categoryLevels = []string{"primary", "detailed"}
 
 // cmdSpending routes `wealthdb spending <view> ...` to the view's run.
 func cmdSpending(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("spending", subargs, spendingViews, spendingUsage, stderr)
+	view, rest, err := routeView("spending", subargs, spendingFamily.names(), spendingUsage, stderr)
 	if err != nil {
 		return err
 	}
@@ -83,37 +147,9 @@ func runSpendingView(ctx context.Context, g globalFlags, view string, args []str
 
 	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
 		categories: overrideCategories(cfg)}
-	rep := spendingReport(req)
+	rep := spendingFamily.build(cfg, req, nil)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, rf.output(fmtChoice, "spending", spendingFamily, req, cfg, g.clock()), open, stdout)
-}
-
-// spendingReport is one view of the spending family but fees, the
-// runner the CLI and the MCP server share.
-func spendingReport(req request) *report {
-	part := reportPeriods[req.period]
-	switch req.view {
-	case "summary":
-		return newReport(buildSpendSummaryColumnRegistry(req.currency, req.period), defaultSpendSummaryColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.SpendSummaryRow, error) {
-				return gold.SpendingSummary(ctx, db, req.from, req.to, req.currency, part)
-			})
-	case "categories":
-		return newReport(buildSpendCategoryColumnRegistry(req.currency, req.period), defaultSpendCategoryColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.SpendCategoryRow, error) {
-				return gold.SpendingCategories(ctx, db, req.from, req.to, req.currency, part, req.level)
-			})
-	case "transactions":
-		kindOf, loadKinds := sourceKinds()
-		return withLoads(newReport(buildSpendTransactionColumnRegistry(req.currency, kindOf, req.categories),
-			defaultSpendTransactionColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.SpendTransactionRow, error) {
-				return gold.SpendingTransactions(ctx, db, req.from, req.to, req.currency)
-			}), loadKinds)
-	}
-	// fees has a runner of its own (spendingFeesReport); a view that
-	// reaches here unrouted is a wiring fault, never the transactions.
-	panic(fmt.Sprintf("spending: no report for view %q", req.view))
 }
 
 // periodStart renders the bucket's opening date, empty for the
@@ -278,6 +314,8 @@ var defaultSpendTransactionColumns = []string{
 }
 
 func spendingUsage() string {
+	// fees, the side view, has a usage text of its own.
+	available, defaults := columnSets(spendingFamily, 13, spendingFamily.ladder(), request{currency: "CCY", period: "monthly"}, nil)
 	return `usage: wealthdb spending <view> [FROM [TO]] [--period P] [--level L]
                          [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
 
@@ -334,16 +372,10 @@ bucket sum to that bucket's summary row.
 A category of '(uncategorized)' is the backlog — rows no rule, matcher,
 provider or model could place. 'wealthdb categorize' works it down.
 
-Available columns (per view):
-  summary       ` + joinColumnNames(buildSpendSummaryColumnRegistry("CCY", "monthly")) + `
-  categories    ` + joinColumnNames(buildSpendCategoryColumnRegistry("CCY", "monthly")) + `
-  transactions  ` + joinColumnNames(buildSpendTransactionColumnRegistry("CCY", nil, nil)) + `
+Available columns (per view):` + available + `
 
   (The money columns render as spend_<CCY> / net_spend_<CCY> /
    value_<CCY>, reflecting your -x/--currency choice.)
 
-Default column sets:
-  summary       ` + strings.Join(defaultSpendSummaryColumns, ", ") + `
-  categories    ` + strings.Join(defaultSpendCategoryColumns, ", ") + `
-  transactions  ` + strings.Join(defaultSpendTransactionColumns, ", ")
+Default column sets:` + defaults
 }

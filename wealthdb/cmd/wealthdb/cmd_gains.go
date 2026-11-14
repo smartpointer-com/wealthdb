@@ -33,21 +33,132 @@ func init() {
 	register("gains", cmdGains)
 }
 
-// gainsViews are the views, coarse to fine.
-var gainsViews = []string{"summary", "sources", "portfolios", "accounts", "positions", "realized", "lots", "coverage", "check"}
+// gainsFamily are the views, coarse to fine: the four aggregate views,
+// then the holdings, the lots, and the diagnostics.
+var gainsFamily = &family{
+	name: "gains",
+	views: []view{
+		gainsBucketView("summary", gold.GainsAll),
+		gainsBucketView("sources", gold.GainsSources),
+		gainsBucketView("portfolios", gold.GainsPortfolios),
+		gainsBucketView("accounts", gold.GainsAccounts),
+		{name: "positions", total: flowTotal, principal: fixedColumn("gain"), header: gainsLineHeader,
+			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+				ccy, missing := req.currency, missingOr(req.missing, cfg)
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildGainsPositionColumnRegistry(ccy, kindOf), defaultGainsPositionColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.GainsPositionRow, error) {
+						return gold.GainsPositions(ctx, db, req.from, req.to, ccy, missing)
+					}), loadKinds)
+			}},
+		{name: "realized", total: flowTotal, principal: fixedColumn("gain_outccy"), header: gainsLineHeader,
+			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+				ccy, missing := req.currency, missingOr(req.missing, cfg)
+				kindOf, loadKinds := sourceKinds()
+				order := gold.SortAscending
+				if req.newestFirst {
+					order = gold.SortDescending
+				}
+				return withLoads(newReport(buildRealizedLotColumnRegistry(ccy, kindOf), defaultRealizedLotColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.RealizedLotRow, error) {
+						return gold.RealizedLotsBetween(ctx, db, req.from, req.to, ccy, req.allDocuments, order, missing)
+					}), loadKinds)
+			}},
+		{name: "lots", total: balanceTotal, principal: fixedColumn("unrealized_gain_outccy"), header: gainsLineHeader,
+			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+				ccy, missing := req.currency, missingOr(req.missing, cfg)
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildOpenLotColumnRegistry(ccy, kindOf), defaultOpenLotColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.OpenLotRow, error) {
+						return gold.OpenLotsAsOf(ctx, db, req.to, ccy, missing)
+					}), loadKinds)
+			}},
+		{name: "coverage", principal: fixedColumn("value"), header: gainsLineHeader,
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				ccy := req.currency
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildGainsCoverageColumnRegistry(ccy, kindOf), defaultGainsCoverageColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.GainsCoverageRow, error) {
+						return gold.GainsCoverage(ctx, db, req.from, req.to, ccy)
+					}), loadKinds)
+			}},
+		{name: "check", principal: fixedColumn("cost_delta"), header: gainsLineHeader,
+			build: func(_ *config.Config, req request, _ *toolArgs) *report {
+				ccy := req.currency
+				kindOf, loadKinds := sourceKinds()
+				return withLoads(newReport(buildGainsCheckColumnRegistry(ccy, kindOf), defaultGainsCheckColumns,
+					func(ctx context.Context, db *sql.DB) ([]gold.GainsCheckRow, error) {
+						return gold.GainsCheck(ctx, db, req.from, req.to, ccy)
+					}), loadKinds)
+			}},
+	},
+	window:   trailingYear,
+	currency: true,
+	narrow:   "from/to or a filter",
+	prepare: func(_ *family, a *toolArgs, req *request, _ *[]string) error {
+		// The CLI's refusal: on another view the two would ask a
+		// question it cannot answer.
+		if req.view != "realized" && (a.has("documents") || a.has("newest_first")) {
+			return fmt.Errorf("gains: documents and newest_first belong to view=realized")
+		}
+		if !gainsReadsBasis(req.view) && a.has("missing_basis") {
+			return fmt.Errorf("gains: missing_basis does not apply to view=%s", req.view)
+		}
+		req.period = orDefault(a.str("period"), "total")
+		req.allDocuments = a.str("documents") == "all"
+		req.newestFirst = a.flag("newest_first", false)
+		var err error
+		if req.missing, err = missingBasisArg(a); err != nil {
+			return fmt.Errorf("gains: %w", err)
+		}
+		return nil
+	},
+	header: func(req request) []string {
+		if req.missing == lots.MissingZero {
+			return []string{"missing_basis=zero"}
+		}
+		return nil
+	},
+}
+
+// gainsViews are the gains views' names, coarse to fine.
+var gainsViews = gainsFamily.names()
+
+// gainsBucketView is an aggregate view at its grain: its figures add up
+// over a window, and its main column is gain.
+func gainsBucketView(name string, grain gold.GainsGrain) view {
+	return view{name: name, total: flowTotal, principal: fixedColumn("gain"),
+		header: func(req request) []string { return []string{"period=" + req.period} },
+		build: func(cfg *config.Config, req request, _ *toolArgs) *report {
+			ccy, missing := req.currency, missingOr(req.missing, cfg)
+			kindOf, loadKinds := sourceKinds()
+			return withLoads(newReport(buildGainsBucketColumnRegistry(ccy, req.period, grain, kindOf, req.categories),
+				gainsBucketDefaults[grain],
+				func(ctx context.Context, db *sql.DB) ([]gold.GainsBucketRow, error) {
+					return gold.GainsBuckets(ctx, db, req.from, req.to, ccy, reportPeriods[req.period], grain, missing)
+				}), loadKinds)
+		}}
+}
+
+// gainsLineHeader names the options of the views that are no aggregate:
+// realized's documents and order.
+func gainsLineHeader(req request) []string {
+	var h []string
+	if req.allDocuments {
+		h = append(h, "documents=all")
+	}
+	if req.newestFirst {
+		h = append(h, "newest first")
+	}
+	return h
+}
 
 // gainsDocuments are the `--documents` choices of the realized view:
 // each sale once, or every document's copy of it.
 var gainsDocuments = []string{"primary", "all"}
 
-// gainsGrains maps the four aggregate views to their grain.
-var gainsGrains = map[string]gold.GainsGrain{
-	"summary": gold.GainsAll, "sources": gold.GainsSources,
-	"portfolios": gold.GainsPortfolios, "accounts": gold.GainsAccounts,
-}
-
 func cmdGains(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("gains", subargs, gainsViews, gainsUsage, stderr)
+	view, rest, err := routeView("gains", subargs, gainsFamily.names(), gainsUsage, stderr)
 	if err != nil {
 		return err
 	}
@@ -96,54 +207,9 @@ func runGainsView(ctx context.Context, g globalFlags, view string, args []string
 	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
 		period: *period, allDocuments: *documents == "all", newestFirst: *reverse, missing: missingBasis,
 		categories: overrideCategories(cfg)}
-	rep := gainsReport(req)
+	rep := gainsFamily.build(cfg, req, nil)
 	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
 	return writeReport(ctx, rep, rf.output(fmtChoice, "gains", gainsFamily, req, cfg, g.clock()), open, stdout)
-}
-
-// gainsReport is one view of the gains family, the runner the CLI and
-// the MCP server share.
-func gainsReport(req request) *report {
-	ccy := req.currency
-	kindOf, loadKinds := sourceKinds()
-	if grain, ok := gainsGrains[req.view]; ok {
-		return withLoads(newReport(buildGainsBucketColumnRegistry(ccy, req.period, grain, kindOf, req.categories),
-			gainsBucketDefaults[grain],
-			func(ctx context.Context, db *sql.DB) ([]gold.GainsBucketRow, error) {
-				return gold.GainsBuckets(ctx, db, req.from, req.to, ccy, reportPeriods[req.period], grain, req.missing)
-			}), loadKinds)
-	}
-	switch req.view {
-	case "positions":
-		return withLoads(newReport(buildGainsPositionColumnRegistry(ccy, kindOf), defaultGainsPositionColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.GainsPositionRow, error) {
-				return gold.GainsPositions(ctx, db, req.from, req.to, ccy, req.missing)
-			}), loadKinds)
-	case "realized":
-		order := gold.SortAscending
-		if req.newestFirst {
-			order = gold.SortDescending
-		}
-		return withLoads(newReport(buildRealizedLotColumnRegistry(ccy, kindOf), defaultRealizedLotColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.RealizedLotRow, error) {
-				return gold.RealizedLotsBetween(ctx, db, req.from, req.to, ccy, req.allDocuments, order, req.missing)
-			}), loadKinds)
-	case "lots":
-		return withLoads(newReport(buildOpenLotColumnRegistry(ccy, kindOf), defaultOpenLotColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.OpenLotRow, error) {
-				return gold.OpenLotsAsOf(ctx, db, req.to, ccy, req.missing)
-			}), loadKinds)
-	case "check":
-		return withLoads(newReport(buildGainsCheckColumnRegistry(ccy, kindOf), defaultGainsCheckColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.GainsCheckRow, error) {
-				return gold.GainsCheck(ctx, db, req.from, req.to, ccy)
-			}), loadKinds)
-	default: // coverage
-		return withLoads(newReport(buildGainsCoverageColumnRegistry(ccy, kindOf), defaultGainsCoverageColumns,
-			func(ctx context.Context, db *sql.DB) ([]gold.GainsCoverageRow, error) {
-				return gold.GainsCoverage(ctx, db, req.from, req.to, ccy)
-			}), loadKinds)
-	}
 }
 
 // registerMissingBasisFlag declares --missing-basis on a command that
@@ -475,9 +541,9 @@ var defaultGainsCheckColumns = []string{
 }
 
 func gainsUsage() string {
-	cols := func(grain gold.GainsGrain) string {
-		return joinColumnNames(buildGainsBucketColumnRegistry("CCY", "monthly", grain, nil, nil))
-	}
+	available, defaults := columnSets(gainsFamily, 13, gainsFamily.names(), request{currency: "CCY", period: "monthly"},
+		map[string]string{"sources": "silver_source, then summary's",
+			"portfolios": "silver_source, portfolio, portfolio_id, then summary's"})
 	return "usage: wealthdb gains <view> [FROM [TO]] [--period P] [--documents D] [-r]\n" +
 		"                         [--missing-basis M] [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]\n" +
 		`
@@ -557,30 +623,12 @@ Notes
   basis_assumed_zero=N, fx_missing=N. docs/GAINS.md §6 says what each
   means.
 
-Available columns (per view):
-  summary       ` + cols(gold.GainsAll) + `
-  sources       silver_source, then summary's
-  portfolios    silver_source, portfolio, portfolio_id, then summary's
-  accounts      ` + cols(gold.GainsAccounts) + `
-  positions     ` + joinColumnNames(buildGainsPositionColumnRegistry("CCY", nil)) + `
-  realized      ` + joinColumnNames(buildRealizedLotColumnRegistry("CCY", nil)) + `
-  lots          ` + joinColumnNames(buildOpenLotColumnRegistry("CCY", nil)) + `
-  coverage      ` + joinColumnNames(buildGainsCoverageColumnRegistry("CCY", nil)) + `
-  check         ` + joinColumnNames(buildGainsCheckColumnRegistry("CCY", nil)) + `
+Available columns (per view):` + available + `
 
   A money column in the holding's own currency has a twin in the output
   currency, <name>_outccy, which prints as <name>_<CCY> (value is
   market_value's twin). The window's figures exist only in the output
   currency and print as <name>_<CCY>.
 
-Default column sets:
-  summary       ` + strings.Join(gainsBucketDefaults[gold.GainsAll], ", ") + `
-  sources       ` + strings.Join(gainsBucketDefaults[gold.GainsSources], ", ") + `
-  portfolios    ` + strings.Join(gainsBucketDefaults[gold.GainsPortfolios], ", ") + `
-  accounts      ` + strings.Join(gainsBucketDefaults[gold.GainsAccounts], ", ") + `
-  positions     ` + strings.Join(defaultGainsPositionColumns, ", ") + `
-  realized      ` + strings.Join(defaultRealizedLotColumns, ", ") + `
-  lots          ` + strings.Join(defaultOpenLotColumns, ", ") + `
-  coverage      ` + strings.Join(defaultGainsCoverageColumns, ", ") + `
-  check         ` + strings.Join(defaultGainsCheckColumns, ", ")
+Default column sets:` + defaults
 }

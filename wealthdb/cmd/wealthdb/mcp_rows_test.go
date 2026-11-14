@@ -265,11 +265,11 @@ func TestSortMoneyByMagnitude(t *testing.T) {
 // TestColumnLookup pins the names a model may use for a column.
 func TestColumnLookup(t *testing.T) {
 	t.Parallel()
-	accounts := holdingsReport(request{view: "accounts", currency: "USD"})
+	accounts := holdingsFamily.build(nil, request{view: "accounts", currency: "USD"}, nil)
 	returns := returnsReport(request{currency: "USD", method: "both"}, nil)
-	spending := spendingReport(request{view: "categories", currency: "USD", period: "total"})
-	gainsBuckets := gainsReport(request{view: "summary", currency: "USD", period: "total"})
-	gainsLots := gainsReport(request{view: "lots", currency: "USD"})
+	spending := spendingFamily.build(nil, request{view: "categories", currency: "USD", period: "total"}, nil)
+	gainsBuckets := gainsFamily.build(nil, request{view: "summary", currency: "USD", period: "total"}, nil)
+	gainsLots := gainsFamily.build(nil, request{view: "lots", currency: "USD"}, nil)
 	cases := []struct {
 		rep       *report
 		principal string
@@ -315,7 +315,7 @@ func TestColumnLookup(t *testing.T) {
 	}
 	// A currency suffix means the converted column, whichever currency
 	// it names; the note says what the result is in.
-	chf := holdingsReport(request{view: "accounts", currency: "CHF"})
+	chf := holdingsFamily.build(nil, request{view: "accounts", currency: "CHF"}, nil)
 	l := columnLookup{cols: chf.columns, currency: "CHF", principal: "total_value_outccy"}
 	for _, c := range []struct {
 		name string
@@ -340,7 +340,7 @@ func TestColumnLookup(t *testing.T) {
 // TestColumnsParameter covers default, all, a list and a delta.
 func TestColumnsParameter(t *testing.T) {
 	t.Parallel()
-	rep := spendingReport(request{view: "categories", currency: "USD", period: "total"})
+	rep := spendingFamily.build(nil, request{view: "categories", currency: "USD", period: "total"}, nil)
 	l := columnLookup{cols: rep.columns, currency: "USD"}
 	headers := func(expr string) string {
 		idx, _, err := l.pick(expr, rep.defaults)
@@ -385,7 +385,7 @@ func TestEscalate(t *testing.T) {
 		{"positions", []string{"tax_wrapper"}, "positions", false},
 		{"global", []string{"symbol", "tax_wrapper"}, "global", false},
 	} {
-		got, ok := escalate(f.views, func(v string) bool { return carriesAll(f.carries(), v, c.filters) }, c.view)
+		got, ok := escalate(f.names(), func(v string) bool { return carriesAll(f.carries(), v, c.filters) }, c.view)
 		if got != c.want || ok != c.ok {
 			t.Errorf("escalate(%s, %v) = %s %v, want %s %v", c.view, c.filters, got, ok, c.want, c.ok)
 		}
@@ -429,49 +429,10 @@ func TestDerivedCarries(t *testing.T) {
 	}
 }
 
-// TestReportFamiliesAreTheReportTools holds reportFamilies to tools():
-// every tool with a family but the four dumps, in describe's order. A
-// report tool missing there gets no CLI -F binding and is never named
-// where a column is printed.
-func TestReportFamiliesAreTheReportTools(t *testing.T) {
-	t.Parallel()
-	dumps := []string{"status", "snapshots", "resolutions", "categorizations"}
-	var want, got []string
-	for _, tool := range newTestMCP("", false).tools() {
-		if tool.family != nil && !slices.Contains(dumps, tool.name) {
-			want = append(want, tool.name)
-		}
-	}
-	for _, rf := range reportFamilies {
-		got = append(got, rf.name)
-	}
-	if !slices.Equal(got, want) {
-		t.Errorf("reportFamilies = %v, want %v", got, want)
-	}
-	for _, tool := range newTestMCP("", false).tools() {
-		for _, rf := range reportFamilies {
-			if rf.name == tool.name && rf.fam != tool.family {
-				t.Errorf("%s: reportFamilies holds another family than the tool", rf.name)
-			}
-		}
-	}
-}
-
 // TestEveryCarriedFilterHasAColumn holds the derived carries against
-// the named filters' columns and the tools' parameters: a filter a view
-// carries must read a column the view has, or it would match nothing.
+// the named filters' columns: a filter a view carries must read a column
+// the view has, or it would match nothing.
 func TestEveryCarriedFilterHasAColumn(t *testing.T) {
-	// The named filters a view carries that its tool offers no
-	// parameter for: a condition on the column does their job.
-	toolLacks := map[string][]string{
-		"exposure":     {"source", "account", "asset_class", "kind", "section", "symbol"},
-		"yield":        {"source", "account", "kind", "asset_class", "tax_wrapper", "section"},
-		"transactions": {"merchant", "payer", "asset_class"},
-		"spending":     {"kind"},
-		"income":       {"tax_wrapper"},
-		"cashflow":     {"category", "kind"},
-		"resolutions":  {"symbol"},
-	}
 	t.Parallel()
 	s := newTestMCP("", false)
 	for _, tool := range s.tools() {
@@ -479,23 +440,12 @@ func TestEveryCarriedFilterHasAColumn(t *testing.T) {
 		if fam == nil {
 			continue
 		}
-		views := fam.views
-		if views == nil {
-			views = []string{""}
-		}
-		for _, v := range views {
+		for _, v := range fam.viewsOrOne() {
 			req := request{view: v, currency: "USD", period: "total", level: "primary", method: "both", investing: "whole"}
 			rep := fam.build(nil, req, &toolArgs{values: map[string]any{}})
 			for _, f := range fam.carries()[v] {
 				if len(newRowFilter(rep, f, "x").cols) == 0 {
-					t.Errorf("%s %s carries %s, but has none of its columns %v", tool.name, v, f, filterColumns[f])
-				}
-				found := false
-				for _, p := range tool.params {
-					found = found || p.name == f
-				}
-				if !found && !slices.Contains(toolLacks[tool.name], f) {
-					t.Errorf("%s %s carries %s, which is not one of the tool's parameters", tool.name, v, f)
+					t.Errorf("%s %s carries %s, but has none of its columns %v", tool.name, v, f, namedFilterOf(f).columns)
 				}
 			}
 		}
@@ -511,18 +461,17 @@ func TestEveryViewsPrincipalIsAColumn(t *testing.T) {
 	s := newTestMCP("", false)
 	for _, tool := range s.tools() {
 		fam := tool.family
-		if fam == nil || fam.principal == nil {
+		if fam == nil {
 			continue
 		}
-		views := fam.views
-		if views == nil {
-			views = []string{""}
-		}
-		for _, v := range views {
+		for _, v := range fam.viewsOrOne() {
+			if fam.view(v).principal == nil {
+				continue
+			}
 			for _, method := range []string{"both", "twr", "mwr"} {
 				req := request{view: v, currency: "USD", period: "total", level: "primary", method: method,
 					annualize: "auto", inception: "full", netting: true, investing: "whole"}
-				principal := fam.principal(req)
+				principal := fam.view(v).principal(req)
 				if principal == "" {
 					continue
 				}

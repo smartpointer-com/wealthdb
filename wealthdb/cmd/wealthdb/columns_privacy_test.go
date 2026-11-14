@@ -978,11 +978,7 @@ func typedLabelCalls(s *mcpServer, today time.Time) []typedLabelCall {
 		if fam == nil {
 			continue
 		}
-		views := fam.views
-		if views == nil {
-			views = []string{""}
-		}
-		for _, view := range views {
+		for _, view := range fam.viewsOrOne() {
 			c := typedLabelCall{name: strings.TrimSpace(spec.name + " " + view),
 				args: map[string]any{"format": "csv", "columns": "all", "max_chars": maxIntegerParam}, cli: []string{spec.name}}
 			if view != "" {
@@ -990,7 +986,7 @@ func typedLabelCalls(s *mcpServer, today time.Time) []typedLabelCall {
 				c.cli = append(c.cli, view)
 			}
 			window := [2]string{"2026-04-01", "2026-06-30"}
-			if fam.forward != nil && fam.forward(view) {
+			if fam.view(view).forward {
 				window = fwd
 			}
 			if spec.name == "cashflow" && view == "projection" {

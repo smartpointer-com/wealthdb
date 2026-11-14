@@ -90,10 +90,14 @@ func TestMCPToolList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	notes := map[string]string{}
+	for _, spec := range toolSpecs {
+		notes[spec.name] = spec.notes
+	}
 	var names []string
 	for _, tool := range res.Tools {
 		names = append(names, tool.Name)
-		if tool.Name != "describe" && toolNotes[tool.Name] == "" {
+		if tool.Name != "describe" && notes[tool.Name] == "" {
 			t.Errorf("%s has no note for describe", tool.Name)
 		}
 		a := tool.Annotations
@@ -126,38 +130,18 @@ func TestMCPToolList(t *testing.T) {
 	}
 }
 
-// TestMCPCoversEveryCLIView holds the tools against the CLI's view
-// tables, the way TestUsageListsEverySubcommand holds the listing
-// against dispatch: a view the CLI gains cannot ship without its tool
-// counterpart.
+// TestMCPCoversEveryCLIView holds the tools against the CLI's reports,
+// the way TestUsageListsEverySubcommand holds the listing against
+// dispatch: a report the CLI gains cannot ship without its tool. A
+// tool's views are its family's, which the CLI routes by.
 func TestMCPCoversEveryCLIView(t *testing.T) {
 	t.Parallel()
-	cli := map[string][]string{
-		"holdings": sorted(holdingsViews), "returns": sorted(returnsViews), "spending": sorted(spendingViews),
-		"income": sorted(incomeViews), "cashflow": sorted(cashflowViews), "gains": sorted(gainsViews),
-		"exposure": sorted(exposureViews), "yield": sorted(yieldViews),
+	served := map[string]bool{}
+	for _, tool := range newTestMCP("", false).tools() {
+		served[tool.name] = true
 	}
-	s := newTestMCP("", false)
-	seen := map[string]bool{}
-	for _, tool := range s.tools() {
-		want, ok := cli[tool.name]
-		if !ok {
-			continue
-		}
-		seen[tool.name] = true
-		got := append([]string{}, tool.family.views...)
-		sort.Strings(got)
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Errorf("%s views = %v, the CLI has %v", tool.name, got, want)
-		}
-		for _, p := range tool.params {
-			if p.name == "view" && strings.Join(p.enum, ",") != strings.Join(tool.family.views, ",") {
-				t.Errorf("%s: the view parameter offers %v, the family runs %v", tool.name, p.enum, tool.family.views)
-			}
-		}
-	}
-	for name := range cli {
-		if !seen[name] {
+	for _, name := range []string{"holdings", "returns", "spending", "income", "cashflow", "gains", "exposure", "yield"} {
+		if !served[name] {
 			t.Errorf("no tool serves the CLI's %s", name)
 		}
 	}
@@ -167,12 +151,6 @@ func TestMCPCoversEveryCLIView(t *testing.T) {
 			t.Errorf("the CLI has no %s, yet the server serves it", name)
 		}
 	}
-}
-
-func sorted(views []string) []string {
-	out := append([]string{}, views...)
-	sort.Strings(out)
-	return out
 }
 
 // TestMCPCallShapes: a call answers with text and the header line; a
@@ -229,7 +207,7 @@ func TestMCPExposureRefusals(t *testing.T) {
 		{map[string]any{"view": "countries", "period": "monthly", "from": "2099"}, "the window starts after today"},
 		{map[string]any{"view": "countries", "period": "monthly", "from": "2026-06", "to": "2026-01"}, `exposure: from "2026-06" is after to "2026-01"`},
 		{map[string]any{"view": "classes", "period": "quarterly", "filter": "issuer contains a"},
-			"period belongs to the " + andList(exposureSeriesViews) + " views (view issuers chosen for the issuer condition)"},
+			"period belongs to the " + andList(exposureFamily.seriesViews()) + " views (view issuers chosen for the issuer condition)"},
 		{map[string]any{"view": "classes", "filter": "period >= 2026-05"}, "period is a series' column: give period=quarterly with from and to"},
 	} {
 		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "exposure", Arguments: c.args})
@@ -676,20 +654,6 @@ func TestMCPPrivacyHidesConfigErrors(t *testing.T) {
 	if full == nil || priv == nil || !strings.Contains(full.Error(), "PF0012345678") ||
 		strings.Contains(priv.Error(), "PF0012345678") {
 		t.Errorf("full: %v\nprivacy: %v", full, priv)
-	}
-}
-
-// TestFilterOrderNamesEveryFilter: a filter missing from filterOrder is
-// parsed and then never applied.
-func TestFilterOrderNamesEveryFilter(t *testing.T) {
-	t.Parallel()
-	if len(filterOrder) != len(filterColumns) {
-		t.Fatalf("filterOrder has %d filters, filterColumns %d", len(filterOrder), len(filterColumns))
-	}
-	for _, f := range filterOrder {
-		if _, ok := filterColumns[f]; !ok {
-			t.Errorf("%s is in filterOrder but not filterColumns", f)
-		}
 	}
 }
 

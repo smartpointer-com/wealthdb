@@ -188,7 +188,7 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 	for _, name := range slices.Sorted(maps.Keys(t.alt)) {
 		b.WriteString("  " + name + "=true: " + columns(t.alt[name], "") + "\n")
 	}
-	if fam.views != nil {
+	if !fam.oneShape() {
 		b.WriteString("\nFilters each view takes (a filter the view lacks moves the call to the first finer view that has it):\n")
 		filters := func(v string) string {
 			if fs := t.carriedParams(v); len(fs) > 0 {
@@ -199,53 +199,20 @@ func (s *mcpServer) toolHelp(t toolSpec) (string, error) {
 		for _, v := range fam.ladder() {
 			fmt.Fprintf(&b, "  %s: %s\n", v, filters(v))
 		}
-		var side []string
-		for _, v := range fam.views {
-			if fam.side[v] {
-				side = append(side, v)
-			}
-		}
-		if len(side) > 0 {
+		if side := fam.namesWhere(func(v *view) bool { return v.side }); len(side) > 0 {
 			b.WriteString("Outside that order (a view of its own, which no filter moves a call to or from):\n")
 			for _, v := range side {
 				fmt.Fprintf(&b, "  %s: %s\n", v, filters(v))
 			}
 		}
 	}
-	if note := toolNotes[t.name]; note != "" {
-		b.WriteString("\n" + note + "\n")
+	if t.notes != "" {
+		b.WriteString("\n" + t.notes + "\n")
 	}
 	if s.privacy {
 		b.WriteString("\n" + privacyNotice + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n"), nil
-}
-
-// toolNotes are the conventions of each tool that its columns do not
-// say, with a second example call.
-var toolNotes = map[string]string{
-	"holdings": `Totals reconcile: global = sum of sources = sum of portfolios = sum of accounts = positions with with_cash. A loan or a card balance is negative. positions_value, cash_balance and total_value are in each account's own currency; the columns with a currency suffix are converted.
-Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
-	"returns": `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences. bridge explains net worth: end_net_worth = start_net_worth + net_saved + onboarded + gain. net_saved = net_flow + debt_repaid, onboarded is value that entered or left tracking, gain is the residual, returns' gain plus the FX move on debt. It reads whole months for the whole household.
-Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
-	"gains": `gain = realized + unrealized_change, the price gain on what is held; income, fees and taxes are in returns. Realized is what the sale's documents state, else what the lot engine rebuilt from the trades; unrealized is the clean value (market value less accrued interest) less the cost basis. basis_stamp says which notion of cost basis a figure is. summary, sources, portfolios and accounts add up. The quality column names every gap (describe topic=quality); the coverage view says per account where the figures are blind, and the check view compares the lot engine with the stated lots.
-Example: {view: "accounts", from: "2025", to: "2025", tax_wrapper: "taxable_joint"}.`,
-	"exposure": `Every view sums to net worth, as holdings view=global gives it: what a fund's composition does not explain is a remainder row, and a holding nothing describes is unknown, never dropped. A fund's composition is the one nearest the as-of day (the funds view says which, and how old); quality flags such as proxy, aged or partial carry the share of the row they touch (describe topic=quality). view=situs reads every holding whole, at its legal situs: it looks through no fund, and its quality says what each situs rests on; coverage's situs section lists the holdings whose situs is unknown. The view sums are in the output currency; the shares need none.
-Example: {view: "sectors", as_of: "2025-12-31", currency: "CHF"}.`,
-	"transactions": `Money leaving an account is negative. kind is the booked kind: buy, sell, dividend, interest, fee, tax, deposit, withdrawal, purchase, refund, card_payment and others.
-Example: {from: "last month", to: "last month", kind: "dividend"}.`,
-	"spending": `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there. fees is per portfolio, else per account outside one: fees are the primary BANK_FEES lines net of refunds, trading costs and fund costs are not in them, fee_rate_pct is fees over mean_value annualized and blank where the mean value is not above zero, and twr_pct is the entity's monthly returns chained over the months that end in the window, blank where returns has none. Returns stay net of fees.
-Example: {view: "transactions", from: "2025-03", to: "2025-03", sort: "-value", limit: 10}.`,
-	"income": `income and reversals are positive; net_income = income - reversals. The type rows of a period sum to its summary row. projection, calendar and the entity views put what was received beside what the holdings are expected to pay; their window may lie in the future, and basis says what the expected part rests on.
-Example: {view: "transactions", from: "2025", to: "2025", type: "dividend", sort: "-value"}.`,
-	"yield": `A rate belongs to a currency: an aggregate row is one entity in one currency, and the total row weighs the currencies by value (quality mixed); converted gives one row per entity. dv01 is the value lost for a rise of one basis point; a liability's is negative and nets. The quality column says what each figure rests on (describe topic=quality); view=coverage lists what is missing, and counts where the dividends' record days come from: the dividend calendar, an ex day, the issuer's learned gap, the market's lag, or none.
-Example: {view: "curve", currency: "CHF"}.`,
-	"cashflow": `The four sections sum to net_cash_flow. vehicles is every plan together; for one plan read view=flows at level=class. The mortgage is under financing. A node is a net: inflow and outflow beside it are the gross lines under it. view=projection is the plan: investment_income is income projection's expected income on the pool's accounts and vehicles_income its income and principal on every other account, which net leaves out; other_income, operating_out and vehicles are monthly averages of the trailing months, and quality says what each part rests on; net = investment_income + other_income - operating_out - debt_service + vehicles, plus principal_returned unless maturing=roll.
-Example: {view: "flows", from: "2025", to: "2025", class: "Retirement"}.`,
-	"status":          `new_data=yes means a load would bring newer data in. state "not loaded" means gold holds nothing from the source yet. marks reads month ends: a low marked_pct says a month's return rests on old marks. A month end with no position has no marked_pct; currency moves value_marked and value_total, never marked_pct.`,
-	"snapshots":       `One row per day with data; snapshots counts the snapshots taken that day.`,
-	"resolutions":     `model_name manual-override marks a ticker set in the config; any other name is the model that answered.`,
-	"categorizations": `A verdict applies to every transaction whose signature matches, at any account. The signature and name columns are text taken off statements.`,
 }
 
 const datesHelp = `Dates: "2025" is that year, "2025-06" that month, "2025-06-15" that day; "today", "yesterday", "last month", "last year" and "3 months ago" also work (English, UTC).
