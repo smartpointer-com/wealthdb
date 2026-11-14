@@ -124,10 +124,9 @@ data. They sit in a `wealthdb (pre-defined)` collection:
   `web_yield_curve` carry. It backs the Yield Asset
   class picker alone;
 - the `report_benchmarks` model of `web_benchmarks`. It
-  backs the Benchmark picker alone;
-- two `_pct` privacy variants, `report_sources_latest_pct` and
-  `report_spending_pct`. They back the privacy twins' MBQL cards and
-  their drill-through.
+  backs the Benchmark picker alone.
+
+No card reads a model. Every card is native SQL over gold.
 
 On top of the models, provisioning creates pre-defined questions and
 ten dashboards. Their pickers:
@@ -213,7 +212,7 @@ ten dashboards. Their pickers:
   through the `report_yield_classes` model.
 - **Data Freshness**: no pickers.
 
-All of them are definitions only (MBQL or SQL), with no data baked in.
+All of them are definitions only (SQL), with no data baked in.
 
 Each dashboard declares its cards in one function, `<name>_cards`. It
 runs once for the dashboard and once for its privacy twin, so a twin
@@ -265,8 +264,7 @@ Exposure tiles `{{currency}}` filters rows as well.
 Every Currency picker, and every card opened on its own, defaults to
 `default_currency` from wealthdb.cfg when that is a reporting currency,
 and to USD otherwise. A native card opened on its own runs at its
-template variables' defaults, an MBQL card over every row of its model.
-Its description does not say so. `web/web` passes it to
+template variables' defaults. Its description does not say so. `web/web` passes it to
 `provision.py` from `wealthdb config-env web`. The
 Wealth Overview's three headline figures read `web_sources_latest`
 (`derived/90_web.sql`), each account at its latest active
@@ -328,10 +326,8 @@ twin, read as a percent of the cost basis they are gains on. The
 twin redacts money columns: its shares are of the window's own net spend
 (the breakdowns, merchant and account lists) or of its biggest month
 (the trend and the monthly bands), and no card renders a merchant or
-account label — the merchant list ranks unnamed rows, the account
-breakdown regroups onto source × account kind, and `report_spending_pct`
-drops the merchant column so a scalar's drill-through cannot surface a
-counterparty either. The **Income** dashboard's cards of the income
+account label — the merchant list ranks unnamed rows, and the account
+breakdown regroups onto source × account kind. The **Income** dashboard's cards of the income
 lines are Spending read in the other direction, over the `web_income`
 serving view: the same pickers and the same native-over-the-view
 construction, for the same reason (the view carries a row per reporting
@@ -755,8 +751,7 @@ built for the overview alone, from their dashboard's data: the asset
 classes over time (Allocation), the two returns year to date (Returns)
 and the projected net cash flow (Cash Flow). The overview's pickers
 land on a figure by slug. A native card takes a picker where it has a
-template tag of that name, as on every dashboard. An MBQL card takes
-one where its home dashboard maps a picker of that slug. Any other tag
+template tag of that name, as on every dashboard. Any other tag
 of the card runs at its default. So the flows take the currency, the time range and the
 source, the income the tax wrapper too, the gains the tax wrapper and
 the asset class too, and the returns and the projection the currency
@@ -1011,8 +1006,8 @@ currency and year in the data's span, a *since-that-year* total summary
 Jan 1 Y` (the verbatim equivalent of `wealthdb returns <grain>
 <Y>-01-01 - -x <CCY>`). Only the since-X summary depends on the window,
 so windowed rows are `is_summary` totals only; the per-period buckets
-exist once at `window_from_year = 0`. The picker (`window_from_year` on
-the MBQL scalars/table) then rescopes the whole figure exactly, so a
+exist once at `window_from_year = 0`. The picker (`{{start_year}}` on
+the scalars and the table) then rescopes the whole figure exactly, so a
 later start makes the null a real number.
 
 The dashboard reads this as: rescopable **scalars** (TWR / MWR /

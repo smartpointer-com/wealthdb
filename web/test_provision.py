@@ -178,9 +178,7 @@ MODELS = p.report_models()
 
 section("spending models")
 check("report_spending defined", "report_spending" in MODELS)
-check("report_spending_pct defined", "report_spending_pct" in MODELS)
 SPEND_SQL = MODELS["report_spending"][0]
-PCT_SQL = MODELS["report_spending_pct"][0]
 check("the model reads the web_spending serving view",
       "FROM web_spending s" in SPEND_SQL)
 check("one row per reporting currency (a currency picker filters rows)",
@@ -188,15 +186,9 @@ check("one row per reporting currency (a currency picker filters rows)",
       "AS value" in SPEND_SQL)
 check("the money model keeps the merchant column",
       "merchant_name" in SPEND_SQL)
-check("the privacy model drops the merchant column",
-      "merchant_name" not in PCT_SQL)
-check("the privacy model keeps display_name (the Account picker needs it)",
-      "display_name" in PCT_SQL)
-check("both models label an account with its source and kind, not its "
+check("the model labels an account with its source and kind, not its "
       "bare name",
-      all("s.account_label AS display_name" in q for q in (SPEND_SQL, PCT_SQL)))
-check("the privacy model scales by the latest net worth, per currency",
-      all(f"nw.nw_{c}" in PCT_SQL for c in p._ccy_lower()))
+      "s.account_label AS display_name" in SPEND_SQL)
 
 # ---- the cards --------------------------------------------------------
 
@@ -231,14 +223,12 @@ check("no retired model is still defined",
       sorted(set(p.RETIRED_MODEL_NAMES) & set(MODELS)))
 check("the retired names are distinct",
       len(set(p.RETIRED_MODEL_NAMES)) == len(p.RETIRED_MODEL_NAMES))
-# A privacy (_pct) model exists for the MBQL twin cards that run over it:
-# the privacy charts are native over the serving views, so a variant no
-# card reads is retired rather than kept for browsing.
-_CARD_SOURCES = {q["query"]["source-table"][1] for _d, _desc, q in CARDS.values() if q["type"] == "query"}
-_PCT_MODELS = sorted(n for n in MODELS if n.endswith("_pct"))
-check("every _pct model backs a card",
-      bool(_PCT_MODELS) and all(n in _CARD_SOURCES for n in _PCT_MODELS),
-      [n for n in _PCT_MODELS if n not in _CARD_SOURCES])
+# Every card is native SQL over gold: no card reads a model, so none
+# opens one's rows, and no privacy model is left to back one.
+check("every card is native SQL", not [n for n, c in CARDS.items() if c[2]["type"] != "native"],
+      [n for n, c in CARDS.items() if c[2]["type"] != "native"])
+check("no privacy model is defined", not [n for n in MODELS if n.endswith(("_pct", "_redacted"))],
+      [n for n in MODELS if n.endswith(("_pct", "_redacted"))])
 
 section("spending cards")
 SPEND_TILES = [t[0] for t in DEFS["Spending"][3]]
@@ -251,10 +241,6 @@ for want in ("Spend — monthly trend", "Net spend", "Uncategorized share",
           want in CARDS and want in SPEND_TILES)
 check("the uncategorized-share card counts the '(uncategorized)' label",
       p.UNCATEGORIZED in json.dumps(CARDS["Uncategorized share"][2]))
-check("the uncategorized-share card runs over the _pct model "
-      "(it is privacy-exempt, so its drill-through must be leak-free)",
-      CARDS["Uncategorized share"][2]["query"]["source-table"]
-      == ("model", "report_spending_pct"))
 check("card balances come off web_card_balances_history",
       "FROM web_card_balances_history"
       in (sql_of(CARDS["Card balances over time"][2]) or ""))
@@ -347,20 +333,14 @@ MERCHANT_RANKINGS = {"Top 50 merchants", "Top 50 merchants (privacy)"}
 
 
 def filters_on_merchant(query):
-    """Whether a card keeps only lines with a merchant: a native WHERE
-    predicate on the column, or an MBQL filter clause naming it."""
-    sql = sql_of(query)
-    if sql is not None:
-        return "merchant_name IS NOT NULL" in sql
-    return "merchant_name" in json.dumps(query["query"].get("filter", []))
+    """Whether a card keeps only lines with a merchant: a WHERE
+    predicate on the column."""
+    return "merchant_name IS NOT NULL" in sql_of(query)
 
 
 check("the money merchant ranking keeps only named, non-delta lines",
-      CARDS["Top 50 merchants"][2]["query"].get("filter")
-      == ["and",
-          ["not-null", ["field", "merchant_name", {"base-type": "type/Text"}]],
-          ["!=", ["field", "spend_primary", {"base-type": "type/Text"}],
-                 ["field", "spend_detailed", {"base-type": "type/Text"}]]])
+      "AND merchant_name IS NOT NULL\n   AND spend_primary_label <> spend_label"
+      in sql_of(CARDS["Top 50 merchants"][2]), sql_of(CARDS["Top 50 merchants"][2]))
 # Split on the CTE boundary with partition, which returns empties rather
 # than raising when the shape moved: a regression must read as one FAIL
 # line, not as a traceback that takes the rest of the file with it.
@@ -447,9 +427,6 @@ check("...and keeps the vendored values beside them",
       "AS spend_detailed_id" in SPEND_SQL)
 check("...and carries the issuer's own view",
       "AS provider_category" in SPEND_SQL)
-check("the privacy twin keeps the same category columns",
-      "spend_primary_label AS spend_primary" in PCT_SQL and
-      "AS provider_category" in PCT_SQL)
 
 check("the category picker is a multi-select on spend_primary",
       PARAMS["Category"]["isMultiSelect"] is True and
@@ -519,9 +496,12 @@ check("the twin's denominators are computed in-query",
           for c, kw in (("Spending by category (privacy)", "SELECT CASE WHEN sum(v)"),
                         ("Spending by month (privacy)", "peak"),
                         ("Spend — monthly trend (privacy)", "peak"))))
-check("the twin's scalar is a scale-free ratio over the _pct model",
-      CARDS["Net spend (privacy)"][2]["query"]["source-table"]
-      == ("model", "report_spending_pct"))
+_ns_twin = CARDS["Net spend (privacy)"][2]
+check("the twin's scalar is the window's net spend over itself, a share and no figure else, with no account filter",
+      sql_of(_ns_twin).endswith("SELECT v / nullif(v, 0) * 100 AS spend_pct FROM m")
+      and "account" not in _ns_twin["native"]["template-tags"]
+      and set(_ns_twin["native"]["template-tags"]) == {"currency", "time_range", "source", "category"},
+      sql_of(_ns_twin))
 
 # ---- native picker wiring ---------------------------------------------
 
@@ -614,13 +594,12 @@ check("a definition names its field, and the payload carries that field's id",
 check("...and the database, which the definition leaves out",
       "database" not in _unbound["dataset_query"] and _bound["dataset_query"]["database"] == 3
       and list(_bound["dataset_query"])[:2] == ["type", "database"], _bound["dataset_query"])
-_mbql_unbound = p.card_payload(7, "Uncategorized share", "question", *CARDS["Uncategorized share"], {})
-check("an MBQL card's model becomes its source table",
-      p.bind(_mbql_unbound, 3, FIELD_IDS, MID)["dataset_query"]["query"]["source-table"]
-      == f"card__{MID['report_spending_pct']}")
+check("a picker's model becomes that model's card id",
+      p.bind({"values_source_config": {"card_id": ("model_id", "report_spending")}}, 3, FIELD_IDS, MID)
+      == {"values_source_config": {"card_id": MID["report_spending"]}})
 _no_category = {k: v for k, v in FIELD_IDS.items() if k != ("web_spending", "spend_primary_label")}
 for _what, _payload, _ids, _mids in (("field", _unbound, _no_category, MID),
-                                     ("model", _mbql_unbound, FIELD_IDS, {})):
+                                     ("model", {"card_id": ("model_id", "report_spending")}, FIELD_IDS, {})):
     try:
         p.bind(_payload, 3, _ids, _mids)
         _raised = ""
@@ -1353,6 +1332,9 @@ spending = [d for d in layouts if d.get("name") == "Spending"]
 check("the Spending dashboard was laid out", len(spending) == 1)
 if spending:
     body = spending[0]
+    # A share of rows reads the same in every currency, so the Currency
+    # picker does not reach it.
+    ROW_SHARE_IDS = {card_ids["Uncategorized share"]}
     check("its five pickers are attached",
           [x["id"] for x in body["parameters"]] ==
           [p.SPEND_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
@@ -1360,7 +1342,6 @@ if spending:
     tiles = [dc for dc in body["dashcards"] if dc["card_id"] is not None]
     check("every tile plus the switch link is present",
           len(tiles) == 12 and len(body["dashcards"]) == 13)
-    ALL_CCY_IDS = {card_ids[c] for c in p.SPEND_ALL_CURRENCY_CARDS}
     FEE_IDS = {card_ids[c] for c in ("Fees by portfolio", "Fee rate by portfolio")}
     check("every picker lands on every tile",
           all({m["parameter_id"] for m in dc["parameter_mappings"]} ==
@@ -1368,17 +1349,9 @@ if spending:
                p.ACCOUNT_PARAM_ID, p.CATEGORY_PARAM_ID}
               for dc in tiles
               if dc["card_id"] != card_ids["Card balances over time"]
-              and dc["card_id"] not in ALL_CCY_IDS | FEE_IDS),
+              and dc["card_id"] not in FEE_IDS | ROW_SHARE_IDS),
           json.dumps([[m["parameter_id"] for m in dc["parameter_mappings"]]
                       for dc in tiles]))
-    # A tile carrying every currency as its own column is the exception:
-    # the Currency picker is a row filter on the long model, so wiring it
-    # would empty every column but the one the picker selects.
-    for dc in (dc for dc in tiles if dc["card_id"] in ALL_CCY_IDS):
-        check("an all-currency tile takes every picker but Currency",
-              {m["parameter_id"] for m in dc["parameter_mappings"]} ==
-              {p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
-               p.ACCOUNT_PARAM_ID, p.CATEGORY_PARAM_ID})
     for dc in (dc for dc in tiles if dc["card_id"] in FEE_IDS):
         check("a fee tile takes Currency, Time range, Source and Account, and declines Category",
               {m["parameter_id"] for m in dc["parameter_mappings"]} ==
@@ -1880,47 +1853,23 @@ check("the privacy tile population includes the exempt cards",
       any(c in EXEMPT for c in _privacy_tiles),
       sorted(_privacy_tiles))
 
-section("the merchant ranking carries every currency")
-MERCH = CARDS["Top 50 merchants"][2]["query"]
-AGGS = MERCH.get("aggregation", [])
-check("it sums one column per reporting currency",
-      [a[2].get("display-name") for a in AGGS if a[0] == "aggregation-options"]
-      == list(p.REPORTING_CURRENCIES))
-check("each column carries its own currency predicate, so no row filter is needed",
-      all(a[1][0] == "sum-where"
-          and a[1][2] == ["=", ["field", "currency", {"base-type": "type/Text"}], ccy]
-          for a, ccy in zip(AGGS, p.REPORTING_CURRENCIES, strict=True)))
-check("the ranking is by the default currency's column (USD, aggregation 0)",
-      MERCH.get("order-by") == [["desc", ["aggregation", 0]]]
-      and AGGS[0][2]["display-name"] == "USD")
-check("the Currency picker is not wired to it — a row filter would empty "
-      "every column but the one it selects",
-      "Top 50 merchants" in p.SPEND_ALL_CURRENCY_CARDS)
+section("the merchant ranking reads the picked currency")
+_merch = sql_of(CARDS["Top 50 merchants"][2])
+check("it ranks fifty merchants by net spend in the picked currency, as the payer ranking does",
+      "{{currency}}" in _merch and _merch.startswith("SELECT merchant_name,\n       sum(") and " AS net_spend\n" in _merch
+      and _merch.endswith("GROUP BY 1\n ORDER BY 2 DESC, 1\n LIMIT 50")
+      and "currency" in CARDS["Top 50 merchants"][2]["native"]["template-tags"], _merch)
 
 section("every spending tile reads one currency")
-# The long-format model is right only under a row filter on `currency`,
-# which the dashboard supplies and nothing else does — so a tile over it
-# would sum every currency whenever it was opened on its own. Every
-# money spending tile settles that for itself: natively through the
-# {{currency}} variable the picker substitutes (and which defaults to
-# the configured currency), or, on the merchant ranking, by carrying
-# each currency as its own column. Nothing on the dashboard may read the
-# model unguarded.
-SPEND_MODEL_CARD = ("model", "report_spending")
+# The serving view carries each reporting currency as a column: every
+# money tile names its currency through the {{currency}} variable the
+# picker substitutes (and which defaults to the configured currency), so
+# a tile opened on its own reads one currency too. A share of rows is
+# the same in every currency.
 for _c, *_ in DEFS["Spending"][3]:
-    _q = CARDS[_c][2]
-    _sql = sql_of(_q)
-    if _sql is not None:
-        check(f"'{_c}' names its currency through the variable",
-              "{{currency}}" in _sql,
-              _sql[:160])
-        continue
-    if _q.get("query", {}).get("source-table") != SPEND_MODEL_CARD:
-        continue          # the _pct model's share is a row count: invariant
-    check(f"'{_c}' carries a currency column per reporting currency",
-          _c in p.SPEND_ALL_CURRENCY_CARDS
-          and [a[2].get("display-name")
-               for a in _q["query"]["aggregation"]] == list(p.REPORTING_CURRENCIES))
+    _sql = sql_of(CARDS[_c][2])
+    check(f"'{_c}' names its currency through the variable, or is a share of rows",
+          "{{currency}}" in _sql or _sql.startswith("SELECT count(*) FILTER"), _sql[:160])
 
 # ---- the Cash Flow dashboard ------------------------------------------
 
@@ -2288,9 +2237,6 @@ check("...and its other four figures of the time range sit two to a row",
       == {"Spend — monthly trend (privacy)": (21, 0, 12), "Net cash flow (privacy)": (21, 12, 12),
           "Savings rate (privacy)": (24, 0, 12), "Realized gain (privacy)": (24, 12, 12)}, _ovt_place)
 _params_all = {d.get("name"): d["parameters"] for d in layouts}
-_mbql = p.overview_mappings(CARD_DEFS["Net spend (privacy)"], _OVT, _params_all, card_ids)
-check("an MBQL card takes the pickers its home dashboard maps, the twin's net spend among them",
-      {_ov_params[_OVT][m["parameter_id"]] for m in _mbql} == _FLOW, _mbql)
 check("...and both show the asset class mix, the same card, under the title of its kind",
       card_ids["Asset class mix over time"] in _ov_tiles[_OV] and card_ids["Asset class mix over time"] in _ov_tiles[_OVT]
       and all(_ov_tiles[n][card_ids["Asset class mix over time"]]["visualization_settings"].get("card.title")
@@ -2306,6 +2252,9 @@ _ov_desc = {_by_id[cid]: dc["visualization_settings"].get("card.description")
 check("a figure no picker reaches says so",
       _ov_desc["Stalest source (days)"].endswith(" No picker reaches it."),
       _ov_desc["Stalest source (days)"])
+check("the stalest source is one figure, the most days since any fed source's last read",
+      sql_of(CARDS["Stalest source (days)"][2]).endswith("\nSELECT max(days_stale) AS max FROM s")
+      and not CARDS["Stalest source (days)"][2]["native"]["template-tags"], sql_of(CARDS["Stalest source (days)"][2]))
 check("...one the time range misses names that picker",
       _ov_desc["Net worth"] == CARDS["Net worth"][1]
       + " The Time range picker does not reach it."
@@ -2696,6 +2645,15 @@ def _picker_targets_resolve(names):
 _col_off = {n: col for n, c in CARD_DEFS.items() for col, _to in c.links
             if col not in _output_columns(sql_of(c.query) or "")}
 check("each column a click passes is one its card's SQL returns", not _col_off, _col_off)
+_unc = {n: CARDS[n][2] for n in ("Uncategorized share", "Uncategorized share (privacy)")}
+check("the uncategorized-share card is a share of the window's lines, its twin's the same figure alone, "
+      "and no account filter",
+      all(sql_of(q).startswith("SELECT count(*) FILTER (WHERE spend_primary_label = '(uncategorized)')")
+          and _output_columns(sql_of(q)) == ["share"] and "currency" not in q["native"]["template-tags"]
+          for q in _unc.values())
+      and "account" in _unc["Uncategorized share"]["native"]["template-tags"]
+      and "account" not in _unc["Uncategorized share (privacy)"]["native"]["template-tags"],
+      {n: sql_of(q)[:120] for n, q in _unc.items()})
 
 
 # A privacy card's columns are shares and rates, `_pct`, or labels and
@@ -3461,6 +3419,9 @@ check("Mark age is on Data Freshness, and its twin shows the same card",
       "Mark age" in EXEMPT
       and "Mark age" in [t[0] for t in DEFS["Data Freshness (privacy)"][3]])
 check("...it takes no picker", not CARDS["Mark age"][2]["native"]["template-tags"])
+check("the returns age is one figure, the days since the run that computed them, and takes no picker",
+      sql_of(CARDS["Returns age (days)"][2]).startswith("SELECT max(datesub('day', CAST(epoch_ms(computed_at * 1000)")
+      and not CARDS["Returns age (days)"][2]["native"]["template-tags"], sql_of(CARDS["Returns age (days)"][2]))
 check("...its bars run from 0 to 100", (VIZ["Mark age"]["graph.y_axis.min"],
                                         VIZ["Mark age"]["graph.y_axis.max"]) == (0, 100))
 
@@ -3733,11 +3694,8 @@ try:
     check("...and every native card's currency variable defaults to it",
           bool(_tags) and all(t["default"] in ("GBP", ["GBP"]) for t in _tags),
           sorted({str(t["default"]) for t in _tags}))
-    _m = _gbp_cards["Top 50 merchants"][2]["query"]
-    check("...and the merchant ranking orders by the GBP column",
-          _m["order-by"] == [["desc", ["aggregation", p.REPORTING_CURRENCIES.index("GBP")]]])
-    check("...and the merchant ranking's description names it",
-          "ranked in GBP" in _gbp_cards["Top 50 merchants"][1])
+    check("...and the merchant ranking's description says it ranks in the picked currency",
+          "in the picked currency" in _gbp_cards["Top 50 merchants"][1])
 finally:
     p.DEFAULT_CURRENCY = _saved
     all_cards()               # rebuild the picker registry at the default
@@ -3779,37 +3737,38 @@ _types_go = open(os.path.join(_REPO, "wealthdb", "internal", "canonical", "types
                 encoding="utf-8").read()
 check("DECLARED_SOURCE matches canonical.DeclaredSourceID",
       f'const DeclaredSourceID = "{p.DECLARED_SOURCE}"' in _types_go)
-_declared_out = ["!=", ["field", "silver_source_id", {"base-type": "type/Text"}], p.DECLARED_SOURCE]
 _FRESH = {**{n: _QDEFS[n] for n in ("Stalest source (days)", "Source freshness")},
           "Source freshness (privacy)": _PDEFS["Source freshness (privacy)"]}
 for _name, _tup in _FRESH.items():
-    _q = _tup[-2]["query"]
-    check(f"'{_name}' leaves the declared source out", _q.get("filter") == _declared_out, _q.get("filter"))
+    _q = _tup[-2]
+    check(f"'{_name}' leaves the declared source out",
+          f"silver_source_id <> '{p.DECLARED_SOURCE}'" in sql_of(_q), sql_of(_q))
 
 # Freshness is the last read, not the latest snapshot: a source that
-# marks quarterly and was read today is current. Both sources models
-# carry the read (gold source_observed), and every freshness card
+# marks quarterly and was read today is current. The sources model and
+# every freshness card read it (gold source_observed), and each card
 # counts its days from it.
-check("both sources models carry when a run last read each source",
-      all("source_observed" in MODELS[m][0] and "observed_at" in MODELS[m][0]
-          for m in ("report_sources_latest", "report_sources_latest_pct")),
-      [MODELS[m][0][:120] for m in ("report_sources_latest", "report_sources_latest_pct")])
-_observed = ["field", "observed_at", {"base-type": "type/DateTime"}]
+check("the sources model carries when a run last read each source",
+      "source_observed" in MODELS["report_sources_latest"][0] and "observed_at" in MODELS["report_sources_latest"][0],
+      MODELS["report_sources_latest"][0][:120])
 for _name, _tup in _FRESH.items():
-    _q = _tup[-2]["query"]
+    _q = _tup[-2]
     check(f"'{_name}' counts its days from the last read",
-          _q["expressions"]["days_stale"][1] == _observed, _q["expressions"].get("days_stale"))
-_valued = ["field", "valued_at", {"base-type": "type/DateTime"}]
-_fields = _QDEFS["Source freshness"][-2]["query"]["fields"]
+          "LEFT JOIN source_observed o USING (silver_source_id)" in sql_of(_q)
+          and "CAST(observed_at AS DATE), CAST(now() AS DATE)) AS days_stale" in sql_of(_q), sql_of(_q))
+_fresh_sql = sql_of(_QDEFS["Source freshness"][-2])
 check("'Source freshness' shows the read, the latest mark and the days quiet",
-      _observed in _fields and _valued in _fields and ["expression", "days_quiet"] in _fields, _fields)
-_quiet = _QDEFS["Source freshness"][-2]["query"]["expressions"]["days_quiet"]
+      _output_columns(_fresh_sql) == ["silver_source_id", "observed_at", "days_stale", "valued_at", "days_quiet",
+                                      f"total_value_{p.DEFAULT_CURRENCY.lower()}"], _fresh_sql)
+_fresh_twin = sql_of(_PDEFS["Source freshness (privacy)"][-2])
+check("the freshness twin shows the base's columns, the value a share of the latest net worth, no account",
+      _output_columns(_fresh_twin) == _output_columns(_fresh_sql) and "/ nw.nw * 100" in _fresh_twin
+      and "account" not in _fresh_twin, _fresh_twin)
 check("the days quiet run from the latest mark, not the snapshot a read dated",
-      _quiet[1] == _valued and _quiet[2] == _observed, _quiet)
-check("both sources models render valued_at as a timestamp",
-      all("epoch_ms(valued_at * 1000) AS valued_at" in MODELS[m][0]
-          for m in ("report_sources_latest", "report_sources_latest_pct")),
-      [MODELS[m][0][:200] for m in ("report_sources_latest", "report_sources_latest_pct")])
+      "datesub('day', CAST(valued_at AS DATE), CAST(observed_at AS DATE)) AS days_quiet" in _fresh_sql, _fresh_sql)
+check("the sources model renders valued_at as a timestamp",
+      "epoch_ms(valued_at * 1000) AS valued_at" in MODELS["report_sources_latest"][0],
+      MODELS["report_sources_latest"][0][:200])
 check("source_observed is a gold view", _latest_definition("source_observed").startswith("CREATE OR REPLACE VIEW"))
 check("the sources reports carry valued_at", "AS valued_at" in _latest_definition("report_sources_multi"))
 
@@ -5205,9 +5164,21 @@ if duckdb is not None:
           _run("Return year to date (TWR)") == [(0.05, _year)] and _run("Return year to date (MWR)") == [(0.04, _year)]
           and _run("Return year to date (TWR)", currency="CHF") == [(0.03, _year)],
           (_run("Return year to date (TWR)"), _run("Return year to date (MWR)")))
+    check("'Return (MWR)' reads the global summary of the start year in the picked currency, and that figure alone",
+          _run("Return (MWR)", start_year=_year, currency=["CHF"]) == [(0.02,)]
+          and _run("Return (MWR)", start_year=_year - 1, currency=["USD"]) == [(0.10,)]
+          and _output_columns(sql_of(CARDS["Return (MWR)"][2])) == ["max"]
+          and "source_ff" not in CARDS["Return (MWR)"][2]["native"]["template-tags"],
+          _run("Return (MWR)", start_year=_year, currency=["CHF"]))
     _db.execute("DELETE FROM report_returns WHERE window_from_year = ? AND currency = 'USD'", [_year])
     check("...and last year's where no refresh has read this one yet",
           _run("Return year to date (TWR)") == [(0.20, _year - 1)], _run("Return year to date (TWR)"))
+    check("'Return (TWR)' reads the global summary of the start year in the picked currency, and that figure alone",
+          _run("Return (TWR)", start_year=_year - 1, currency=["USD"]) == [(0.20,)]
+          and _run("Return (TWR)", start_year=_year, currency=["CHF"]) == [(0.03,)]
+          and _output_columns(sql_of(CARDS["Return (TWR)"][2])) == ["max"]
+          and "source_ff" not in CARDS["Return (TWR)"][2]["native"]["template-tags"],
+          _run("Return (TWR)", start_year=_year - 1, currency=["USD"]))
 
     # A benchmark's figures: its window of the start year, in the picked
     # currency. Under None, no row.
@@ -5463,6 +5434,11 @@ for _d in _b_dashes:
         check(f"on '{_name}' only the benchmark's own tiles hide when empty", not _off, _off)
 _b_grid = {t[0]: t[1:5] for t in DEFS["Returns"][3]}
 _b_top = ("Return (TWR)", "Return (MWR)", "Annualized return (TWR)")
+_ann = sql_of(CARDS["Annualized return (TWR)"][2])
+check("'Annualized return (TWR)' reads the global summary of the start year, and that figure alone",
+      "max(twr_annualized) AS max" in _ann and "grain = 'global' AND granularity = 'total'" in _ann
+      and "window_from_year = {{start_year}}" in _ann and _output_columns(_ann) == ["max"]
+      and set(CARDS["Annualized return (TWR)"][2]["native"]["template-tags"]) == {"currency", "start_year"}, _ann)
 for _names in (("Benchmark return (TWR)", "Benchmark return (MWR)", "Benchmark annualized return (TWR)"),
                ("Excess return (TWR)", "Excess return (MWR)", "Excess annualized return (TWR)")):
     check(f"'{_names[0]}' and its row stand in the top row's columns, in its order",
@@ -5925,9 +5901,8 @@ _tiles = [(d, names) for d, db in sorted(_one["dashboards"].items())
 check("one query per tile of every dashboard, in layout order, then one per model",
       [(d, _one["ids"]["cards"][c]) for d, c, kind, _q2, _v in _tq if kind != "model"] == _tiles
       and [c for d, c, kind, _q2, _v in _tq if kind == "model"] == sorted(_one["models"]))
-check("...an MBQL tile among them, and every native tile renders with no tag left",
-      any(k == "mbql" for _d, _c, k, _q2, _v in _tq)
-      and not [c for _d, c, k, q2, v in _tq if k != "mbql"
+check("...and every native tile renders with no tag left",
+      not [c for _d, c, k, q2, v in _tq if k != "mbql"
                and re.search(r"\{\{|\[\[", tt.render(q2, v, {i: tuple(f.split(".", 1)) for f, i in
                                                              _one["ids"]["fields"].items()}, _today))])
 _spend = [v for d, c, k, _q2, v in _tq if d == "Spending" and k == "native" and "time_range" in v]

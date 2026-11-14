@@ -253,12 +253,10 @@ def _ccy_switch(selector, leg):
     return f"CASE {selector}{arms} END"
 
 
-def _ccy_pick(alias, col, pct=False):
+def _ccy_pick(alias, col):
     """`<alias>.<col>_<ccy>` for the row's own reporting currency `c.currency`
-    — the unpivot of a wide value set into the long model shape. pct=True
-    divides each leg by that currency's latest net worth."""
-    return _ccy_switch("c.currency", lambda c: f"{alias}.{col}_{c}"
-                       + (f" / nw.nw_{c}" if pct else ""))
+    — the unpivot of a wide value set into the long model shape."""
+    return _ccy_switch("c.currency", lambda c: f"{alias}.{col}_{c}")
 
 
 def _ccy_case(col, neg=False):
@@ -290,10 +288,13 @@ RETIRED_MODEL_NAMES = [
                        # web_* serving views.
                        "report_sources_history_pct", "report_accounts_history_pct",
                        "report_positions_history_pct", "report_transactions_pct",
-                       "report_asset_classes_history_pct", "report_vehicles_history_pct"]
+                       "report_asset_classes_history_pct", "report_vehicles_history_pct",
+                       # The privacy models of the MBQL cards: every card
+                       # is native SQL over gold.
+                       "report_returns_redacted", "report_sources_latest_pct", "report_spending_pct"]
 
-# report_returns' absolute money columns: the redacted model drops them,
-# and only the base by-source table lists them.
+# report_returns' absolute money columns: only the base by-source table
+# lists them.
 RETURNS_MONEY_COLUMNS = ("start_value", "end_value", "net_flow")
 
 
@@ -313,13 +314,9 @@ def report_models():
     columns and one value column set per reporting currency
     (REPORTING_CURRENCIES), so no value casting is needed here. The
     `_latest` reports are as of each account's latest snapshot; the
-    `_history` reports carry value forward per day;
-    the two `_pct` models are the privacy variants the privacy twins'
-    MBQL cards run over (values as % of the latest global net worth,
-    absolute-value columns dropped) — every other privacy chart is
-    native SQL over the gold web_* serving views, recomputing its
-    denominator per query so the dashboard pickers rescale it (see
-    card_defs). The returns models wrap the materialized
+    `_history` reports carry value forward per day. No card reads a
+    model: every card is native SQL over gold (card_defs), and a model
+    backs a picker's values or a reader's own questions. The returns model wraps the materialized
     report_returns TABLE (migration 0026) instead of a macro, with the
     same epoch-to-TIMESTAMP rendering."""
     def wrap(from_expr, ts_cols=(), exclude=(), where=""):
@@ -328,33 +325,6 @@ def report_models():
         cond = f" WHERE {where}" if where else ""
         return f"SELECT *{excl} REPLACE ({', '.join(parts)}) FROM {from_expr}{cond}"
 
-    # Scalar subquery with the latest global net worth per currency — the
-    # shared normalization constant of the privacy (_pct) models. A fixed
-    # constant keeps every aggregate's shape; the privacy dashboards'
-    # charts recompute a selection-aware denominator per query instead
-    # (card_defs), so this constant only backs the twins' MBQL
-    # cards and their drill-through. Guarded to NULL when the latest
-    # total is zero or negative (empty or under-water gold): dividing
-    # would render inf/NaN resp. sign-flipped percentages, where NULL
-    # just blanks the values.
-    NW_LATEST = ("(SELECT " + ", ".join(
-        f"CASE WHEN total_value_{c} > 0 THEN total_value_{c} END AS nw_{c}"
-        for c in _ccy_lower()) +
-        " FROM serving_global_latest) AS nw")
-    NW_COLS = [f"nw_{c}" for c in _ccy_lower()]
-
-    def pct_wrap(from_expr, value_cols, ts_cols=(), exclude=()):
-        """Privacy wrapper: every monetary column becomes % of the latest
-        global net worth in its currency (one constant scale per
-        currency, so every aggregate keeps its shape), and columns that
-        would leak absolute values are dropped."""
-        repl = [f"epoch_ms({c} * 1000) AS {c}" for c in ts_cols]
-        repl += [f"{c} / nw.nw_{c.rsplit('_', 1)[1]} * 100 AS {c}"
-                 for c in value_cols]
-        excl = ", ".join([*NW_COLS, *exclude])
-        return (f"SELECT * EXCLUDE ({excl}) REPLACE ({', '.join(repl)}) "
-                f"FROM {from_expr}, {NW_LATEST}")
-
     def taxonomy_history(view):
         """Breakdown-by-taxonomy models over the gold web_* serving views
         (derived/90_web.sql), which already render as_of_day as TIMESTAMP and
@@ -362,7 +332,7 @@ def report_models():
         the rows sum exactly to net worth."""
         return f"SELECT * FROM {view}"
 
-    def spending(pct=False):
+    def spending():
         """The spending models over the gold web_spending view, which
         already renders occurred_at as TIMESTAMP and labels an
         unresolved category '(uncategorized)'.
@@ -396,33 +366,19 @@ def report_models():
         reporting currency) — the long shape report_returns already has,
         and the only shape an MBQL card can switch currency in: a dashboard
         picker selects rows, so it can land on a `currency` DIMENSION but
-        can never choose which value COLUMN a card sums.
-
-        pct=True is the privacy variant: `value` becomes % of the latest
-        global net worth in the row's own currency (one constant scale per
-        currency, so every aggregate keeps its shape), and merchant_name —
-        the counterparty a drill-through must never surface — is dropped.
-        The account's own display_name stays because the BASE dashboard's
-        Account picker lands on this model too (its privacy-exempt tile
-        runs over it); the privacy dashboard carries no account picker at
-        all, since a picker's dropdown IS the list of labels it filters
-        by (PICKERS). The label is what stays, not the bare
-        name: it is the only column either dashboard shows an account
-        by."""
+        can never choose which value COLUMN a card sums."""
         cols = ("s.occurred_at, s.silver_source_id, s.account_external_id,\n"
                 "       s.account_label AS display_name, s.account_kind,\n"
-                + ("" if pct else "       s.merchant_name,\n") +
+                "       s.merchant_name,\n"
                 "       s.spend_primary_label AS spend_primary,\n"
                 "       s.spend_label         AS spend_detailed,\n"
                 "       s.spend_primary AS spend_primary_id,\n"
                 "       s.spend_detailed AS spend_detailed_id,\n"
                 "       s.provider_spend_label AS provider_category, c.currency")
-        val = _ccy_pick("s", "value", pct) + (" * 100" if pct else "")
         return (f"SELECT {cols},\n"
-                f"       {val} AS value\n"
+                f"       {_ccy_pick('s', 'value')} AS value\n"
                 "  FROM web_spending s,\n"
-                f"       {_ccy_values()}"
-                + (f",\n       {NW_LATEST}" if pct else ""))
+                f"       {_ccy_values()}")
 
     def income():
         """The income model over gold's web_income view.
@@ -434,12 +390,9 @@ def report_models():
         set is unpivoted to one row per (line, reporting currency),
         which is the only shape an MBQL card can switch currency in.
 
-        There is no `pct=True` variant. Every income tile is native
-        (they all read the serving view directly), so the privacy twin
-        has no MBQL card that would need a redacted model to drill
-        through to — unlike the spending twin, whose privacy-exempt
-        scalar runs over one. This model exists for the two dashboard
-        PICKERS, which need a card-backed value list.
+        Every income tile is native (they all read the serving view
+        directly). This model exists for the two dashboard PICKERS, which
+        need a card-backed value list.
 
         `value` keeps the canonical sign: a receipt positive, a reversal
         negative. The cards sum it as it stands, which is the one place
@@ -485,10 +438,6 @@ def report_models():
                 f"       {_ccy_pick('f', 'value')} AS value\n"
                 "  FROM web_cashflow f,\n"
                 f"       {_ccy_values()}")
-
-    V3 = [f"{p}_{c}" for p in ("positions_value", "cash_balance", "total_value")
-          for c in _ccy_lower()]
-    BASE3 = ("positions_value_base", "cash_balance_base", "total_value_base")
 
     # Each source's newest snapshot, the latest mark it rides on
     # (valued_at) and the instant a run last read it (gold's
@@ -568,12 +517,8 @@ def report_models():
             f"Per-position value for every day (carried forward), in {_ccy_words()}. "
             "Large (days x held positions) — filter to a position / account / date range "
             "before charting."),
-        # Returns models wrap the materialized report_returns TABLE (written
-        # by the engine on `web refresh`) rather than a macro. The redacted
-        # variant backs the privacy dashboards: twr/mwr are scale-free
-        # ratios, so privacy = redaction (drop the absolute money columns
-        # and the account/portfolio grains, whose labels would leak) rather
-        # than share normalization.
+        # The returns model wraps the materialized report_returns TABLE
+        # (written by the engine on `web refresh`) rather than a macro.
         "report_returns": (
             wrap("report_returns", ["computed_at", "start_day", "end_day"]),
             "Materialized TWR/MWR returns, refreshed on every `wealthdb web "
@@ -582,27 +527,6 @@ def report_models():
             "both -x <currency>`. twr/mwr are ratios (0.07 = 7%); NULL means not "
             "computable, with the reason in quality. Bucket rows carry TWR only; "
             "MWR lives on the is_summary (since-inception) rows."),
-        "report_returns_redacted": (
-            wrap("report_returns", ["computed_at", "start_day", "end_day"],
-                 exclude=RETURNS_MONEY_COLUMNS,
-                 where="grain IN ('sources', 'global')"),
-            "Privacy variant of report_returns: returns are scale-free ratios, "
-            "so privacy is redaction rather than normalization — the absolute "
-            "money columns are dropped and only the sources and global grains "
-            "are kept (no account / portfolio labels)."),
-        # The privacy (_pct) variant the twins' freshness table runs over:
-        # same columns and grain, but monetary values are % of the latest
-        # global net worth (per currency) and the base-currency totals,
-        # which would leak absolute values, are dropped. The other is
-        # report_spending_pct, under the spending tiles that are MBQL. An
-        # MBQL card and its drill-through read a model, so these two stay;
-        # every other privacy card is native SQL over the web_* serving
-        # views (card_defs), whose denominators follow the pickers.
-        "report_sources_latest_pct": (
-            pct_wrap(sources_latest, V3, SOURCES_TS, BASE3),
-            "Privacy variant of report_sources_latest: totals as % of the "
-            "latest global net worth (per currency); base-currency columns "
-            "dropped."),
         # Asset classes incl. cash, so the asset-class widget sums exactly
         # to net worth: positions grouped by class, with each source's
         # cash balance folded in as a 'cash' class (money-market-fund
@@ -681,18 +605,13 @@ def report_models():
             "SELECT asset_class FROM web_yield\nUNION\nSELECT asset_class FROM web_yield_curve",
             "The asset classes the yield rows carry, `unknown` where nothing classes a "
             "holding. It backs the Yield dashboard's Asset class picker."),
-        "report_spending_pct": (
-            spending(pct=True),
-            "Privacy variant of report_spending: values as % of the latest "
-            "global net worth (per currency), and the merchant column "
-            "dropped so a drill-through cannot surface a counterparty."),
     }
 
 
 # ---- pre-defined questions and dashboards ----------------------------
 # Like the report models, everything below is a content-free definition —
-# MBQL over the models (referenced by card id) or native SQL over the gold
-# serving views and macros; no source data is baked in. Provisioning
+# native SQL over the gold serving views, tables and macros; no source
+# data is baked in. Provisioning
 # converges these to spec on every start, so a user who wants to customize
 # one should duplicate it into another collection first.
 
@@ -975,10 +894,6 @@ IN_UNCATEGORIZED_SQL = (
     f"'{UNCATEGORIZED}')::DOUBLE\n       / nullif(count(*), 0) AS uncategorized_share\n"
     "  FROM web_income")
 
-# The whole-portfolio scalars — global grain, so the Source picker doesn't
-# apply (their silver_source_id is '').
-RETURNS_GLOBAL_SCALARS = {"Return (TWR)", "Return (MWR)", "Annualized return (TWR)"}
-
 RETURNS_PRIVACY_DESC = " Money columns are redacted."
 
 
@@ -1009,27 +924,6 @@ def privacy_name(name):
     return f"{name}{PRIVACY_SUFFIX}"
 
 
-def _f(col, btype, unit=None):
-    """Legacy-MBQL field reference by column name (native-query models
-    expose no field ids)."""
-    opts = {"base-type": btype}
-    if unit:
-        opts["temporal-unit"] = unit
-    return ["field", col, opts]
-
-
-def _dec(col):
-    return _f(col, "type/Decimal")
-
-
-def _mbql(model, clauses):
-    """An MBQL dataset_query over pre-defined model `model`, its source
-    table a reference bind resolves."""
-    q = {"source-table": ("model", model)}
-    q.update(clauses)
-    return {"type": "query", "query": q}
-
-
 def _percent_viz(*cols):
     """Viz settings rendering ratio columns (0.07 -> 7%) as percent.
     column_settings keys are matched literally against what Metabase's
@@ -1049,9 +943,8 @@ def _share_viz(*cols, decimals=None):
 
 # The native returns charts carry three template tags — the currency and
 # source field filters and the start year variable. The Returns dashboard's
-# Currency / Start-year / Source pickers map onto them; the same pickers map
-# onto the MBQL cards' currency / window_from_year / silver_source_id
-# dimensions. Currency and start year default so a card still runs standalone.
+# Currency / Start-year / Source pickers map onto them. Currency and start
+# year default so a card still runs standalone.
 START_YEAR_TAG = {"id": "year-tag", "name": "start_year",
                   "display-name": "Start year", "type": "number",
                   "default": "0", "required": True}
@@ -1235,14 +1128,6 @@ def returns_growth_sql():
         "  FROM b, o")
 
 
-def _returns_part(grain, granularity):
-    """Filter to one (grain, granularity) partition of report_returns
-    (the returns scalars/table use the summary 'total' partition; the
-    Start-year picker then selects the window_from_year within it)."""
-    return ["and", ["=", _f("grain", "type/Text"), grain],
-            ["=", _f("granularity", "type/Text"), granularity]]
-
-
 def returns_by_source_sql(money):
     """The by-source returns table: each source's returns and quality
     flags, with `money` the absolute money columns (RETURNS_MONEY_COLUMNS)
@@ -1403,19 +1288,6 @@ def _donut(threshold=0, total=True):
 # x-axis of every by-month flow chart.
 OCCURRED_MONTH = "CAST(date_trunc('month', occurred_at) AS TIMESTAMP) AS month"
 
-# A source is as stale as its last read, not its latest mark: a portal
-# that marks quarterly and was read today is current, and the days since
-# its latest mark are days it has been quiet. The mark, not the snapshot:
-# a read that found a holding gone dates a snapshot at the read while
-# the marks keep their dates.
-DAYS_STALE = ["datetime-diff", _f("observed_at", "type/DateTime"), ["now"], "day"]
-DAYS_QUIET = ["datetime-diff", _f("valued_at", "type/DateTime"),
-              _f("observed_at", "type/DateTime"), "day"]
-# The declared accounts (config `declared_accounts`) sit under their own
-# reserved source, which has no feed and so no snapshot: its latest
-# snapshot reads as the epoch, and counted here it would be the stalest
-# source every day. Freshness is about feeds, so it is left out.
-FED_SOURCES = ["!=", _f("silver_source_id", "type/Text"), DECLARED_SOURCE]
 
 
 def overview_cards(f):
@@ -1676,10 +1548,7 @@ def spending_cards(f):
     the configured default currency, so a native tile reads the
     dashboard's choice on the dashboard and the default anywhere else.
     What it costs is MBQL drill-through: a native result has no "see
-    these records". Two tiles stay MBQL: the uncategorized share, a
-    share of rows over the _pct model, and the merchant ranking, which
-    aggregates, so a per-currency column collapses its duplicate rows
-    (ccy_spend). The card-balances chart reads web_card_balances_history,
+    these records". The card-balances chart reads web_card_balances_history,
     card balances being a different grain (per account per day, carried
     forward), with tags of its own.
 
@@ -1736,16 +1605,12 @@ def spending_cards(f):
             month_cte() + "   GROUP BY 1),\n" + PEAK_CTE +
             f"SELECT month, {PEAK_DIV} AS spend_pct\n  FROM m\n ORDER BY 1", {}, home="Spending")
         # Always 100 — the window total the other percentages are
-        # relative to. A ratio of sums over the _pct model, so it is
-        # scale-free, follows every picker, and its "see these records"
-        # drill-through opens a model with no merchant column.
-        net_spend = {"net_spend": ["*", _dec("value"), -1]}
-        total = ["sum", ["expression", "net_spend"]]
+        # relative to, blank where the window nets to nothing.
         spend("Net spend", "scalar",
             "Always 100, the anchor of every other share.",
-            _mbql("report_spending_pct",
-                  {"expressions": net_spend,
-                   "aggregation": [["*", ["/", total, total], 100]]}),
+            "WITH m AS (\n"
+            f"  SELECT {val} AS v FROM web_spending" + where + ")\n"
+            "SELECT v / nullif(v, 0) * 100 AS spend_pct FROM m",
             {}, home="Spending")
     else:
         spend("Spend — monthly trend",
@@ -1761,17 +1626,20 @@ def spending_cards(f):
             f"SELECT {val} AS net_spend\n"
             "  FROM web_spending" + where,
             {}, home="Spending")
-    # Shows a percentage, so the twin shows it as it is. A scalar's
-    # "see these records" drill-through opens the underlying model, so
-    # it runs over the _pct model — the one without the merchant column
-    # — even though the figure itself is a scale-free row count.
+    # The data-quality canary, a share of ROWS: scale-free and the same in
+    # every currency, so it reads no {{currency}}. The figure needs no
+    # twin, but a native card carries its own field-filter tags wherever
+    # it is opened, and the base card's `account` filter renders as a
+    # dropdown of account labels. So the twin's is its own, over
+    # PRIVACY_SPEND_FILTERS, as the income share's is.
+    share_tags = view_tags("web_spending", PRIVACY_SPEND_FILTERS if twin else SPEND_FILTERS)
     spend("Uncategorized share", "scalar",
         f"Share of the window's spending lines labelled '{UNCATEGORIZED}', "
         "the backlog `wealthdb categorize` works through.",
-        _mbql("report_spending_pct",
-              {"aggregation": [["share",
-                   ["=", _f("spend_primary", "type/Text"), UNCATEGORIZED]]]}),
-        _percent_viz("share"), exempt=True)
+        "SELECT count(*) FILTER (WHERE spend_primary_label = "
+        f"'{UNCATEGORIZED}')::DOUBLE\n       / nullif(count(*), 0) AS share\n"
+        "  FROM web_spending" + _native_where(share_tags),
+        _percent_viz("share"), tags=share_tags)
     # The axes are PINNED, and this is the card that most needs it.
     # Left to infer them, Metabase puts the dimension with the most
     # distinct values on the x-axis — and there are more categories
@@ -1904,18 +1772,12 @@ def spending_cards(f):
             "  FROM r\n ORDER BY 1\n LIMIT 50", {})
     else:
         spend("Top 50 merchants", "table",
-            f"Top fifty merchants by net spend, ranked in {DEFAULT_CURRENCY}. Delta lines, a card "
+            "Top fifty merchants by net spend in the picked currency. Delta lines, a card "
             "issuer's bill among them, and lines nothing resolved are outside the ranking.",
-            _mbql("report_spending",
-                  {"aggregation": [ccy_spend(c) for c in REPORTING_CURRENCIES],
-                   "filter": ["and",
-                              ["not-null", _f("merchant_name", "type/Text")],
-                              ["!=", _f("spend_primary", "type/Text"),
-                                     _f("spend_detailed", "type/Text")]],
-                   "breakout": [_f("merchant_name", "type/Text")],
-                   "order-by": [["desc", ["aggregation",
-                                 REPORTING_CURRENCIES.index(DEFAULT_CURRENCY)]]],
-                   "limit": 50}),
+            f"SELECT merchant_name,\n       {val} AS net_spend\n"
+            "  FROM web_spending" + where +
+            "\n   AND merchant_name IS NOT NULL\n   AND spend_primary_label <> spend_label"
+            "\n GROUP BY 1\n ORDER BY 2 DESC, 1\n LIMIT 50",
             {})
     if twin:
         # The label is dropped, and the rows regroup onto the two
@@ -2010,21 +1872,6 @@ def spending_cards(f):
     fee_cards(f)
 
 
-def ccy_spend(ccy):
-    """Net spend in ONE reporting currency, as a named column.
-
-    The long model carries a row per (line, currency), so a card that
-    wants them all at once cannot take the Currency picker — a row
-    filter would empty every column it does not select. Each column
-    instead carries its own currency predicate, which makes the card
-    right on the dashboard and right opened standalone, where no picker
-    reaches it."""
-    return ["aggregation-options",
-            ["sum-where", ["*", _dec("value"), -1],
-             ["=", _f("currency", "type/Text"), ccy]],
-            {"name": ccy, "display-name": ccy}]
-
-
 def income_cards(f):
     """The Income dashboard's cards, or on the twin their privacy
     variants. Every income line's tile is native over web_income, for
@@ -2064,10 +1911,7 @@ def income_cards(f):
             "The latest month's net income as a share of the window's biggest month, with the change.",
             _month_cte("web_income", where, val) + "   GROUP BY 1),\n" + PEAK_CTE +
             f"SELECT month, {PEAK_DIV} AS income_pct\n  FROM m\n ORDER BY 1", {})
-        # The anchor every other percentage here is relative to. Native
-        # like the rest of this twin — there is no income _pct model,
-        # because no income tile is MBQL and none needs a drill-through
-        # target.
+        # The anchor every other percentage here is relative to.
         income("Net income", "scalar",
             "Always 100, the window's net income as a share of itself.",
             "WITH m AS (\n"
@@ -2470,20 +2314,16 @@ def cashflow_cards(f):
 
 def returns_cards(f):
     """The Returns dashboard's cards, or on the twin its privacy cards,
-    over the materialized report_returns table. The three scalars are
-    MBQL over the REDACTED model (grain 'global', granularity 'total'):
-    the Currency and Start-year pickers land on their currency /
-    window_from_year dimensions, and window_from_year selects the
-    since-inception (0) or since-<year> summary, so the picker rescopes
-    the whole figure exactly (the since-inception TWR is often null
-    around the degenerate first months). twr/mwr are ratios rendered as
-    percent ("max" is the name Metabase gives the aggregate). Opened
-    standalone the scalars aggregate across currencies / windows, so set
-    Currency and Start year first. They are privacy-exempt, and a
-    scalar's "see these records" drill-through opens the underlying
-    model, which therefore must not carry the absolute money columns.
+    over the materialized report_returns table. The three scalars read
+    the global grain's summary (granularity 'total') of the window the
+    Start year picks: 0 the since-inception one, else the since-<year>
+    one, so the picker rescopes the whole figure exactly (the
+    since-inception TWR is often null around the degenerate first
+    months). twr/mwr are ratios rendered as percent. Opened standalone
+    a scalar reads the default currency and start year. They show
+    ratios alone, so the twin shows them as they are.
 
-    The charts and the by-source table are native: every chart splits
+    Every chart splits
     by source with the global grain unioned in as a toggleable '(all
     sources)' line, and the Currency / Start-year / Source pickers map
     onto their {{currency}} / {{start_year}} / {{source_ff}} tags. Every
@@ -2503,22 +2343,33 @@ def returns_cards(f):
         f.card(name, "scalar", desc, sql, {**viz, "scalar.field": label}, tags=returns_tags(sql),
                exempt=True, hide_empty=True)
 
-    def scalar(name, desc, col):
-        f.card(name, "scalar", desc,
-               _mbql("report_returns_redacted",
-                     {"filter": _returns_part("global", "total"),
-                      "aggregation": [["max", _f(col, "type/Float")]]}),
-               _percent_viz("max"), exempt=True)
-
-    scalar("Return (TWR)",
+    # A whole-portfolio figure: the global grain's summary of the start
+    # year's window, so the Source picker does not reach it.
+    sql = ("SELECT max(twr) AS max\n  FROM report_returns\n"
+           " WHERE grain = 'global' AND granularity = 'total'\n"
+           "   AND window_from_year = {{start_year}}" + RETURNS_CCY_CLAUSE)
+    f.card("Return (TWR)", "scalar",
            "Whole-portfolio time-weighted return over the chosen window, with "
-           "the timing and size of external flows stripped out.", "twr")
-    scalar("Return (MWR)",
+           "the timing and size of external flows stripped out.",
+           sql, _percent_viz("max"), tags=returns_tags(sql), exempt=True)
+    # The global grain's summary of the start year's window, which the
+    # Source picker does not reach.
+    mwr_sql = ("SELECT max(mwr) AS max\n  FROM report_returns\n"
+               " WHERE grain = 'global' AND granularity = 'total'\n"
+               "   AND window_from_year = {{start_year}}" + RETURNS_CCY_CLAUSE)
+    f.card("Return (MWR)", "scalar",
            "Whole-portfolio money-weighted return (XIRR) over the chosen "
-           "window, external flows included.", "mwr")
-    scalar("Annualized return (TWR)",
+           "window, external flows included.",
+           mwr_sql, _percent_viz("max"), tags=returns_tags(mwr_sql), exempt=True)
+    # The global grain's summary of the start year's window, which the
+    # Source picker does not reach.
+    annualized_sql = ("SELECT max(twr_annualized) AS max\n  FROM report_returns\n"
+                      " WHERE grain = 'global' AND granularity = 'total'\n"
+                      "   AND window_from_year = {{start_year}}" + RETURNS_CCY_CLAUSE)
+    f.card("Annualized return (TWR)", "scalar",
            "The window's time-weighted return as a constant yearly rate, n/a "
-           "for windows under a year.", "twr_annualized")
+           "for windows under a year.",
+           annualized_sql, _percent_viz("max"), tags=returns_tags(annualized_sql), exempt=True)
     chart("Cumulative return (TWR)",
           "Time-weighted return compounded year by year from the start year, "
           "per source and for '(all sources)'.",
@@ -2589,50 +2440,92 @@ def freshness_cards(f):
     """The Data Freshness dashboard's cards, or on the twin its one
     privacy card. The dashboard takes no picker. Its scalars and its Mark
     age, which reads `wealthdb status --marks` (web_marks), show days and
-    shares, so the twin shows them as they are. The freshness table's
-    twin runs it over the _pct sources model: the dashboard is unfiltered
-    by design, so the model's fixed %-of-latest scale IS the
-    selected-sources scale, and the source rows total 100. It has a
-    description of its own: the base card's promises a money column,
-    which there holds shares."""
+    shares, so the twin shows them as they are. A source is as stale as
+    its last read, not its latest mark: a portal that marks quarterly
+    and was read today is current, and the days since its latest mark
+    are days it has been quiet. The mark, not the snapshot: a read that
+    found a holding gone dates a snapshot at the read while the marks
+    keep their dates. The declared accounts (config `declared_accounts`)
+    sit under their own reserved source, which has no feed and so no
+    snapshot: counted, it would be the stalest source every day, so it is
+    left out. The freshness table's twin shows each value as a share of
+    the latest net worth: the dashboard is unfiltered by design, so that
+    scale IS the selected-sources scale, and the source rows total 100.
+    It has a description of its own: the base card's promises a money
+    column, which there holds shares."""
     f = f.using(tail=PRIVACY_DESC if f.privacy else "")
+    # Each source's last read (gold's source_observed), unknown reading
+    # as its newest snapshot, as report_sources_latest carries it, and
+    # the days since, counted in calendar days as Metabase's
+    # datetime-diff counts them.
     f.card("Stalest source (days)", "scalar",
            "Days since the source read longest ago was last read. A source "
            "that marks quarterly counts from its latest read.",
-           _mbql("report_sources_latest",
-                 {"expressions": {"days_stale": DAYS_STALE},
-                  "filter": FED_SOURCES,
-                  "aggregation": [["max", ["expression", "days_stale"]]]}),
-           {}, exempt=True, home="Data Freshness")
+           "WITH s AS (\n"
+           "  SELECT datesub('day', CAST(observed_at AS DATE), CAST(now() AS DATE)) AS days_stale\n"
+           "    FROM (SELECT r.silver_source_id,\n"
+           "                 epoch_ms(GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at),"
+           " r.snapshot_at) * 1000) AS observed_at\n"
+           "            FROM serving_sources_latest r\n"
+           "            LEFT JOIN source_observed o USING (silver_source_id))\n"
+           f"   WHERE silver_source_id <> '{DECLARED_SOURCE}')\n"
+           "SELECT max(days_stale) AS max FROM s",
+           {}, tags={}, exempt=True, home="Data Freshness")
     f.card("Returns age (days)", "scalar",
            "Days since a `web refresh` last computed the returns.",
            # Every row of a run shares one computed_at, so max(age) is
-           # the run's age. Runs over the REDACTED model although the
-           # card itself shows no values: it is privacy-exempt (shared
-           # by the Data Freshness twin), and a scalar's "see these
-           # records" drill-through opens the underlying model — which
-           # must therefore not carry absolute money columns.
-           _mbql("report_returns_redacted",
-                 {"expressions": {"age_days": ["datetime-diff",
-                      _f("computed_at", "type/DateTime"), ["now"], "day"]},
-                  "aggregation": [["max", ["expression", "age_days"]]]}),
-           {}, exempt=True)
-    f.card("Source freshness", "table",
-           "Each source's last read and latest mark, the days since each, and its share of the latest total."
-           if f.privacy else
-           "Each source's last read and latest mark, the days since each, "
-           f"and the value it holds in {DEFAULT_CURRENCY}.",
-           _mbql("report_sources_latest_pct" if f.privacy else "report_sources_latest",
-                 {"expressions": {"days_stale": DAYS_STALE, "days_quiet": DAYS_QUIET},
-                  "filter": FED_SOURCES,
-                  "fields": [_f("silver_source_id", "type/Text"),
-                             _f("observed_at", "type/DateTime"),
-                             ["expression", "days_stale"],
-                             _f("valued_at", "type/DateTime"),
-                             ["expression", "days_quiet"],
-                             _dec(f"total_value_{DEFAULT_CURRENCY.lower()}")],
-                  "order-by": [["desc", ["expression", "days_stale"]]]}),
-           {})
+           # the run's age, in calendar days as Metabase's datetime-diff
+           # counts them, over the sources and global grains.
+           "SELECT max(datesub('day', CAST(epoch_ms(computed_at * 1000) AS DATE), CAST(now() AS DATE)))"
+           " AS max\n  FROM report_returns\n WHERE grain IN ('sources', 'global')",
+           {}, tags={}, exempt=True)
+    if f.privacy:
+        # The value as a share of the latest whole-portfolio net worth in
+        # its currency, blank where that is zero or below: the dashboard
+        # takes no picker, so the source rows total 100.
+        share = f"total_value_{DEFAULT_CURRENCY.lower()}"
+        f.card("Source freshness", "table",
+               "Each source's last read and latest mark, the days since each, and its share of the latest total.",
+               "WITH s AS (\n"
+               "  SELECT r.silver_source_id,\n"
+               "         epoch_ms(GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at),"
+               " r.snapshot_at) * 1000) AS observed_at,\n"
+               f"         epoch_ms(r.valued_at * 1000) AS valued_at, r.{share} / nw.nw * 100 AS {share}\n"
+               "    FROM serving_sources_latest r\n"
+               "    LEFT JOIN source_observed o USING (silver_source_id),\n"
+               f"         (SELECT CASE WHEN {share} > 0 THEN {share} END AS nw FROM serving_global_latest) nw\n"
+               f"   WHERE r.silver_source_id <> '{DECLARED_SOURCE}')\n"
+               "SELECT silver_source_id, observed_at,\n"
+               "       datesub('day', CAST(observed_at AS DATE), CAST(now() AS DATE)) AS days_stale,\n"
+               "       valued_at,\n"
+               "       datesub('day', CAST(valued_at AS DATE), CAST(observed_at AS DATE)) AS days_quiet,\n"
+               f"       {share}\n"
+               "  FROM s\n ORDER BY days_stale DESC, silver_source_id",
+               {}, tags={})
+    else:
+        # Each fed source's last read (gold's source_observed), unknown
+        # reading as its newest snapshot, its latest mark, the days since
+        # each in calendar days as Metabase's datetime-diff counts them,
+        # and the value it holds, stalest first.
+        value = f"total_value_{DEFAULT_CURRENCY.lower()}"
+        f.card("Source freshness", "table",
+               "Each source's last read and latest mark, the days since each, "
+               f"and the value it holds in {DEFAULT_CURRENCY}.",
+               "WITH s AS (\n"
+               "  SELECT r.silver_source_id,\n"
+               "         epoch_ms(GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at),"
+               " r.snapshot_at) * 1000) AS observed_at,\n"
+               f"         epoch_ms(r.valued_at * 1000) AS valued_at, r.{value}\n"
+               "    FROM serving_sources_latest r\n"
+               "    LEFT JOIN source_observed o USING (silver_source_id)\n"
+               f"   WHERE r.silver_source_id <> '{DECLARED_SOURCE}')\n"
+               "SELECT silver_source_id, observed_at,\n"
+               "       datesub('day', CAST(observed_at AS DATE), CAST(now() AS DATE)) AS days_stale,\n"
+               "       valued_at,\n"
+               "       datesub('day', CAST(valued_at AS DATE), CAST(observed_at AS DATE)) AS days_quiet,\n"
+               f"       {value}\n"
+               "  FROM s\n ORDER BY days_stale DESC, silver_source_id",
+               {}, tags={})
     f.card("Mark age", "bar",
            "The share of value marked within five days of each month end: how far that month's return can "
            "be trusted. Liabilities and cash are out.",
@@ -2962,13 +2855,6 @@ HORIZON_PARAM_ID = "aa5df11f"
 # The position the Income dashboards' calendar lists.
 POSITION_PARAM_ID = "aa5df121"
 
-# Spending cards that carry every reporting currency as its own column,
-# and so must NOT be wired to the Currency picker: the long model has a
-# row per (line, currency), so a row filter on `currency` would empty
-# every column but the one the picker selects. Such a card also reads the
-# same opened standalone, where no picker reaches it.
-SPEND_ALL_CURRENCY_CARDS = {"Top 50 merchants"}
-
 def dashboard_tile_titles(base, cards):
     """card name -> the title its tiles show on base dashboard `base` and
     its twin, of `cards` (card_defs). The twin's title takes the privacy
@@ -3032,20 +2918,18 @@ class Family:
              cell_clicks=(), home=None):
         """Define card `name`, or on a twin its privacy variant, none for
         an `exempt` card, which the twin shows as it is. `sql` is native
-        SQL over `tags` (the family's unless given), or an MBQL card's
-        dataset_query. A family's tags are all its cards', but the
-        Benchmark lands only on a card that reads it."""
+        SQL over `tags` (the family's unless given). A family's tags are
+        all its cards', but the Benchmark lands only on a card that reads
+        it."""
         if self.privacy and exempt:
             return
-        if isinstance(sql, str):
-            tags = self.tags if tags is None else tags
-            if "{{benchmark}}" not in sql:
-                tags = {k: v for k, v in tags.items() if k != "benchmark"}
-            sql = _native(sql, tags)
+        tags = self.tags if tags is None else tags
+        if "{{benchmark}}" not in sql:
+            tags = {k: v for k, v in tags.items() if k != "benchmark"}
         name = privacy_name(name) if self.privacy else name
         if name in self.cards:
             raise ValueError(f"provision: card {name!r} is defined twice")
-        self.cards[name] = Card(name, display, desc + self.tail, sql, viz, exempt, hide_empty,
+        self.cards[name] = Card(name, display, desc + self.tail, _native(sql, tags), viz, exempt, hide_empty,
                                 tuple(cell_clicks), home)
 
 
@@ -5095,11 +4979,9 @@ def card_defs():
     serving view: a picker selects rows and never a column, so the
     required {{currency}} variable picks the value column with a CASE,
     and the other pickers land as field filters. The returns charts are
-    native too, for their window functions and pseudo-source UNION. The
-    rest are MBQL over the models: the returns scalars (report_returns
-    carries a row set per currency, so there the Currency picker is a
-    row filter), the freshness cards, and the spending tiles that need no
-    currency variable.
+    native too, for their window functions and pseudo-source UNION; a
+    card over report_returns, which carries a row set per currency,
+    takes the Currency picker as a field filter on its rows.
 
     Every dashboard but those in NO_PRIVACY_TWIN has a privacy twin whose
     cards show shares (%) instead of money, each recomputing its
@@ -5440,8 +5322,7 @@ def layout(rows, twin=False):
 PREDEFINED_NOTE = "Pre-defined; duplicate it before customizing."
 
 # Every pre-defined dashboard, in the order they are sent. A tile's card
-# takes each picker its template tags name (tile_mappings); an MBQL
-# card's mappings are card_mappings'. Data Freshness is deliberately
+# takes each picker its template tags name (tile_mappings). Data Freshness is deliberately
 # unfiltered — its job is to show every source, especially the stale
 # ones a time filter would hide.
 DASHBOARDS = (
@@ -5532,8 +5413,7 @@ DASHBOARDS = (
         ("currency", "time_range", "source", "account", "category"), ("account",), (
             # The three headline figures, then the shape of the window
             # (months x category), then the two breakdown levels side by
-            # side — the primary tile drills through to the lines behind
-            # a bar, the detailed tile holds the same window one level
+            # side, the detailed tile holding the same window one level
             # down. Merchants and accounts answer "to whom" and "from
             # where", the fee tiles what each portfolio paid (web_fees);
             # the card-balances chart reads web_card_balances_history,
@@ -6280,9 +6160,8 @@ def bind(payload, db_id, field_ids, model_ids):
     """Card `payload` with its references bound to one Metabase's ids:
     its dataset_query takes the database `db_id`, a ("field", table,
     column) becomes the field reference of that column's id in
-    `field_ids`, and an MBQL source table ("model", name) the model's
-    card, "card__<id>" by `model_ids`, and a ("model_id", name) the
-    model's card id. A reference with no id raises
+    `field_ids`, and a ("model_id", name) the card id of that model by
+    `model_ids`. A reference with no id raises
     ValueError. ensure_synced stops the run before any card is built when
     a column filter_field_columns names has no id, so a missing one is a
     definition out of step."""
@@ -6294,8 +6173,6 @@ def bind(payload, db_id, field_ids, model_ids):
     def walk(v, key=None):
         if isinstance(v, tuple) and v[:1] == ("field",):
             return ["field", ref("field", v[1:], field_ids), None]
-        if isinstance(v, tuple) and v[:1] == ("model",):
-            return f"card__{ref('model', v[1], model_ids)}"
         if isinstance(v, tuple) and v[:1] == ("model_id",):
             return ref("model", v[1], model_ids)
         if isinstance(v, dict):
@@ -6441,79 +6318,17 @@ def tile_mappings(query, card_id, parameters):
             for x in parameters if (t := by_slug.get(x["slug"])) is not None]
 
 
-def card_mappings(card, dash, card_ids):
-    """The picker mappings of MBQL card `card`'s tile on dashboard `dash`
-    or its twin, before they are kept to the pickers the dashboard
-    carries: dimensions of its model. Only Returns and Spending have
-    MBQL tiles that take a picker."""
-    dash = dash.removesuffix(PRIVACY_SUFFIX)
-    if dash == "Returns":
-        # The MBQL returns scalars + table take Currency + Start-year as
-        # dimensions: currency,
-        # and window_from_year to pick the since-<year> summary. The
-        # Source picker lands on the by-source table but NOT the global
-        # scalars, whose silver_source_id is '' — a source filter would
-        # blank them.
-        maps = [
-            {"parameter_id": CURRENCY_PARAM_ID, "card_id": card_ids[card],
-             "target": ["dimension", _f("currency", "type/Text")]},
-            {"parameter_id": START_YEAR_PARAM_ID, "card_id": card_ids[card],
-             "target": ["dimension", _f("window_from_year", "type/Integer")]},
-        ]
-        if card not in RETURNS_GLOBAL_SCALARS:
-            maps.append(
-                {"parameter_id": SOURCE_PARAM_ID, "card_id": card_ids[card],
-                 "target": ["dimension", _f("silver_source_id", "type/Text")]})
-        return maps
-    if dash != "Spending":
-        return []
-    # The Spending pickers land on the spending models' dimensions, the
-    # Time range on a line's occurred_at. Currency is a row filter here
-    # (the model carries one row per reporting currency) where a native
-    # spending card takes it as a {{currency}} variable — the same split
-    # the returns tiles already make.
-    return [{"parameter_id": TIME_PARAM_ID, "card_id": card_ids[card],
-             "target": ["dimension", _f("occurred_at", "type/DateTime")]},
-            {"parameter_id": SOURCE_PARAM_ID, "card_id": card_ids[card],
-             "target": ["dimension",
-                        _f("silver_source_id", "type/Text")]},
-            *({"parameter_id": pid, "card_id": card_ids[card],
-               "target": ["dimension", _f(col, "type/Text")]}
-              for pid, col in (
-                  (SPEND_CURRENCY_PARAM_ID, "currency"),
-                  (ACCOUNT_PARAM_ID, "display_name"),
-                  (CATEGORY_PARAM_ID, "spend_primary"))
-              if not (pid == SPEND_CURRENCY_PARAM_ID
-                      and card in SPEND_ALL_CURRENCY_CARDS))]
-
-
 def overview_home(card, dash):
     """The dashboard Card `card`'s tile on overview dashboard `dash`
     restates, its home: a dashboard it is borrowed from, or one whose
     data the overview's own card shows. A click on the tile opens it,
     on the twin that dashboard's twin; a dashboard with no twin (Gains)
     opens from the base alone, so a click never leads from the privacy
-    view to money. An MBQL tile takes the pickers its home dashboard
-    gives it. None for the net worth tiles, which open nothing, and for
+    view to money. None for the net worth tiles, which open nothing, and for
     a twin tile whose home has no twin."""
     if card.home is None or not dash.endswith(PRIVACY_SUFFIX):
         return card.home
     return None if card.home in NO_PRIVACY_TWIN else card.home + PRIVACY_SUFFIX
-
-
-def overview_mappings(card, dash, params, card_ids):
-    """The picker mappings of MBQL Card `card`'s tile on overview
-    dashboard `dash`: each mapping the card has on its home dashboard,
-    moved onto the overview's picker of the same slug. A mapping with no
-    such picker here drops."""
-    slug_pid = {x["slug"]: x["id"] for x in params[dash]}
-    home = overview_home(card, dash)
-    if home is None:
-        return []
-    home_slug = {x["id"]: x["slug"] for x in params[home]}
-    return [{**m, "parameter_id": slug_pid[home_slug[m["parameter_id"]]]}
-            for m in card_mappings(card.name, home, card_ids)
-            if home_slug.get(m["parameter_id"]) in slug_pid]
 
 
 def overview_click(home, dash, params, dash_ids, links):
@@ -6577,7 +6392,6 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
     for name, d in defs.items():
         desc, sibling = d.desc, d.sibling
         parameters = params[name]
-        param_ids = {x["id"] for x in parameters}
         # The pickers of the filter bar: an inline picker renders on the
         # tiles it reaches instead (inline_parameters).
         bar = [x for x in parameters if x["id"] not in INLINE_PICKERS]
@@ -6609,22 +6423,11 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
         dashcards += [text_dashcard(-(100 + k), text, row + shift, display)
                       for k, (row, text, display) in enumerate(d.headings)]
         for i, (card, row, col, sx, sy) in enumerate(d.tiles):
-            # The pickers a tile answers to. A native card takes each
-            # picker of the dashboard its tags name (tile_mappings). An
-            # MBQL card's mappings are kept to the pickers the dashboard
-            # carries: the Spending twin has no Account picker
-            # (Dashboard.twin_drops), and a mapping naming a
-            # parameter not on the dashboard is a target with no filter
-            # behind it. On a Wealth Overview an MBQL tile takes the
-            # overview's pickers by slug (overview_mappings).
+            # The pickers a tile answers to: each picker of the
+            # dashboard its card's tags name (tile_mappings).
             c = cards[card]
             home = overview_home(c, name) if overview else None
-            if c.query["type"] == "native":
-                maps = tile_mappings(c.query, card_ids[card], parameters)
-            else:
-                maps = [m for m in (overview_mappings(c, name, params, card_ids) if overview
-                                    else card_mappings(card, name, card_ids))
-                        if m["parameter_id"] in param_ids]
+            maps = tile_mappings(c.query, card_ids[card], parameters)
             viz = {**(crossfilter_viz(c.links, parameters) if home is None else {}),
                    **({"card.title": tile_titles_here[card]} if card in tile_titles_here else {}),
                    **({"card.hide_empty": True} if c.hide_empty else {})}

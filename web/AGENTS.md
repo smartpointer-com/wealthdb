@@ -48,8 +48,8 @@ port-forward; auth is Metabase's own login.
   repo. Keeping the image content-free also keeps source data out of git.
 - The **one allowed exception** is what `provision.py` creates at
   runtime over the API, in a dedicated `wealthdb (pre-defined)`
-  collection. All of it is content-free *definitions* — MBQL and SQL
-  only, never source data — and what it builds is described in
+  collection. All of it is content-free *definitions* — SQL only,
+  never source data — and what it builds is described in
   [DESIGN.md §6](DESIGN.md): the models, the dashboards, their privacy
   twins and how each twin normalises. Read that before changing a card;
   it is not repeated here.
