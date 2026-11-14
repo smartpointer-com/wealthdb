@@ -319,7 +319,7 @@ kind, not its sign:
   `distribution`, and `interest` when it is positive.
 
 The spending provider tier translates it by identity
-(`internal/spending/providermap.go`):
+(`internal/spending/vocab_synthetic.go`):
 
 - The spending map holds every spending value of
   `canonical.SpendCategories`, each mapped to itself.

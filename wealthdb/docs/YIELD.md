@@ -1051,7 +1051,10 @@ The `yield` block of `wealthdb.cfg` holds what no source states
 - `withholding` maps a situs country to the tax it withholds at source,
   in percent, per tax wrapper. The situs is the holding's legal situs
   (EXPOSURE.md §13), the wrapper its account's. A country's `default`
-  stands for every wrapper it names no rate for. With the block above:
+  stands for every wrapper it names no rate for. An account with no
+  stated wrapper prints as `taxable_personal` but takes the country's
+  `default`, since only a wrapper that a source or the config states
+  selects a row. With the block above:
 
   | holding | account's wrapper | withheld from a dividend of 100 |
   |---|---|---|

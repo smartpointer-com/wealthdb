@@ -1157,7 +1157,8 @@ into gold verbatim as `transactions.provider_category`: a card issuer's
 spend category, or a bank's booking type. The translation maps are per
 **product** rather than per source, because the vocabulary belongs to
 the provider's product (`providerVocabularies` in
-`internal/spending/providermap.go`):
+`internal/spending/providermap.go`; each kind's tables in
+`vocab_<kind>.go`):
 
 - a map's key is a silver kind, optionally narrowed to one account kind
   (`ubs/card` before `ubs`);

@@ -12,8 +12,10 @@ to use it; [AGENTS.md](AGENTS.md) holds the rules for changing it.
 | Lifecycle | `mcp/mcp` | `docker run` geometry, token, status, the stdio launcher |
 
 The server is a second front-end over the reports the CLI runs. Each
-report family has one runner, a `report` (`report.go`): its column
-registry, its default columns, and how to fetch its rows. The CLI picks
+report family is one declaration (`families.go`): its views, its
+options and its window. A view's `build` gives a `report`
+(`report.go`): its column registry, its default columns, and how to
+fetch its rows. The CLI picks
 columns with `-C` and writes a format; the server reads every column to
 filter and sort, then renders a page. Both take their cells from
 `rowsToTable`, so the same rows print the same strings.
@@ -143,8 +145,8 @@ Fourteen tools: nine report families, `status`, `snapshots`, the two
 enrichment dumps, and `describe`. The design rules:
 
 1. One tool per CLI family; `view` is an enum whose default is the
-   coarsest view. `TestMCPCoversEveryCLIView` holds the views against
-   the CLI's tables.
+   coarsest view. The enum and the CLI's views come from the same
+   family declaration.
 2. Nothing required. Every parameter's description states its default.
 3. Enums wherever the CLI has a vocabulary, matched in any case; a
    number sent for a string, or a word for a boolean, reads as meant.
@@ -169,7 +171,7 @@ enrichment dumps, and `describe`. The design rules:
    two front-ends agree on every row and every message.
 5. A view carries a named filter (`account`, `symbol`, `kind`, …)
    exactly when it prints the filter's key column: the carries are
-   derived from the registries. A family excludes a view where the
+   derived from the registries. A view excludes a filter where the
    column means something else, such as a source's `tax_wrapper`,
    which is its accounts' common one. The header echoes each named
    filter (`symbol=ABC`), before the conditions.

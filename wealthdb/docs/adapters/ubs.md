@@ -467,7 +467,7 @@ tier translates the types whose meaning is clear in every spelling:
 fees and charges, ATM cash, FX between own currency accounts, and card
 bills. It treats every other type as a payment rail that says nothing
 about what was bought ([../SPENDING.md](../SPENDING.md) §3,
-`internal/spending/providermap.go`). The web eras' FX types are `fx`
+`internal/spending/vocab_ubs.go`). The web eras' FX types are `fx`
 kinds, which the spending population excludes by kind. Of the FX codes,
 only an MT940 `NFEX` reversal, which the type-code floor does not read
 (§6), reaches that tier.
@@ -665,9 +665,8 @@ gold and the export's text folds onto it.
 ### The accounts the feed does not speak for
 
 The MT940 feed is delivered per account, and a relationship's delivery
-need not reach every account. A current account is typically in scope.
-The cash accounts behind a managed portfolio, one per currency, often
-are not. `psnCashCoverage` records, per account, the first value day
+need not reach every account, and an account outside it receives no
+statements. `psnCashCoverage` records, per account, the first value day
 the feed carried a movement. Three decisions read it.
 
 **The hard cut is per account** (`psnCut`). The cut gives a web row to
@@ -1362,7 +1361,8 @@ this source's booking types are payment rails where a miss is the normal
 case. Both belong to the same `ubs` silver kind, so the spending
 provider map is keyed by **product**: `ubs/card` for the MCC
 descriptions, `ubs` for the booking types
-(`internal/spending/providermap.go`, SPENDING.md §3). One entry is
+(`internal/spending/vocab_ubs.go`, keyed in `providermap.go`, SPENDING.md
+§3). One entry is
 deliberately left untranslated — the bank's own catch-all for a card row
 that moved money rather than bought something names no line of business,
 and placing it would file person-to-person transfers as shopping.

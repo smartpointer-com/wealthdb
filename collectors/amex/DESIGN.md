@@ -351,7 +351,7 @@ collection time and stores both code and label, so a category Amex adds
 later resolves on its own rather than becoming an unmapped code. One
 capture cannot enumerate the full vocabulary — the map only lists the
 categories present in the rows it returns — so the gold-side
-`providermap.go` table is built from the labels silver has accumulated,
+`amexCardCategories` table (`internal/spending/vocab_amex.go`) lists every known label,
 and an unmapped label is counted drift and falls through to the model tier
 (never guessed into a neighbour).
 

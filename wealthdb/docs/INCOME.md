@@ -440,9 +440,9 @@ be wrong. So income reads the floor over the store, and the model
 decides only the kind with no floor: `deposit`.
 
 The shape this protects against is one payer with two kinds. A
-signature is shared by every row that folds to it. Take an employer
-whose shares the household also holds. Without the re-order, the salary
-deposit's `INCOME_SALARY` verdict would re-type that employer's
+signature is shared by every row that folds to it. Take a payer that
+sends both a salary and a dividend. Without the re-order, the salary
+deposit's `INCOME_SALARY` verdict would re-type that payer's
 dividends. With it, the dividend keeps `INCOME_DIVIDENDS` with
 provenance `kind`, and the deposit keeps the store's verdict with
 provenance `model`.
@@ -1045,7 +1045,8 @@ shift is given, `shift=-50bp` follows.
 
 `withheld` is what the `yield.withholding` table withholds at each
 holding's situs and account wrapper ([YIELD.md](YIELD.md) §8). A
-country's `default` row stands for any other wrapper. It reads the same
+country's `default` row stands for any other wrapper, and for an
+account with no stated wrapper, as YIELD.md §8 says. It reads the same
 for received and expected income. It is a model, not the tax rows a
 source booked, and it is blank where the table names no rate. The
 booked tax is `income summary -C +withheld` (§5).

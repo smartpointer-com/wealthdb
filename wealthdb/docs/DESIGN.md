@@ -288,9 +288,12 @@ pseudonym is a prefix and a number. The prefix is the kind of the
 source the value comes from, such as `manual` or `cointracking`, and
 `declared` for a declared account (§5.1). A category prints as
 `category-1` and a nickname as `nickname-1`. The numbers count values
-in the order they first appear in one CLI run or one MCP call, and each
-run counts afresh. So a source's value reads the same in every row and
-column of a run, and rows stay apart. The same text of two sources
+over every row of the view, in the order of the default output, and
+then over the columns it leaves out. Each CLI run and each MCP call
+counts afresh. So a source's value reads the same in every row and
+column of a run, and rows stay apart. A value also reads the same name
+whatever `-C` shows, whatever `-F` keeps and whatever page a call
+returns. The same text of two sources
 reads as two pseudonyms; a category or a nickname reads as one. Public
 names stay as they are: a bank's product label, a security's name. A
 merchant or payer taken off a statement keeps `***`. The
@@ -1000,7 +1003,7 @@ Example config file:
 | `exposure` | object | Optional. What the exposure report needs that no source knows: `proxies` (a fund whose composition stands in for another, with `always` and `leverage`), `reference_funds`, `size_funds`, `declarations` (the path to the declarations ledger, NDJSON; expanded as above), `custody` and `max_gap_days` (default 400). Validated at config-load time. docs/EXPOSURE.md §9 defines each key, its bounds and the ledger's records; §7.6 says how a load stores them. Deployment-specific: lives in the config, never in the repository. |
 | `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper, and `accounts` for an account whose rate is not its wrapper's), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12), `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive) and `settlement_cycles` (a market's settlement cycles, each in business days from a day on; a market named replaces its built-in cycles). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the config, never in the repository. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains, exposure and yield reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the config, never in the repository. |
-| `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole crypto portfolio inside an IRA / trust / Stiftung wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / account_kind / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
+| `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole portfolio held inside a retirement or trust wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / account_kind / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
 | `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name does not give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. The class pass leaves a pinned instrument alone. See §13.8. |
 | `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.8. |
 | `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, lots, cash balances, transactions and stated periods dated on or AFTER the date (a stated period by its last day), and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.9) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.8. |
@@ -2996,7 +2999,7 @@ macros of `derived/30_holdings.sql` factor that shared work out so it runs once.
   column equals it for that currency by construction (same base, same
   conversion order; see the helper below). They are Metabase-only, so they
   emit **DECIMAL** money directly (no CLI VARCHAR-trim round-trip); the
-  `web/provision.py` wrapper then only casts epoch columns to TIMESTAMP.
+  Metabase models (`web/models.py`) then only cast epoch columns to TIMESTAMP.
 - **Serving tables.** The dashboards do not call these macros.
   `web-materialize` copies each one's rows into a `serving_*` table
   ([web/DESIGN.md](../../web/DESIGN.md) §8). The `web_*`
@@ -3014,7 +3017,7 @@ macros of `derived/30_holdings.sql` factor that shared work out so it runs once.
   keep their order, so the values are the same to the bit. The reporting set
   lives in the two views, the scalar macro and each macro's column list.
   Adding a currency edits them in the derived files and takes a new derived
-  version, plus the returns materializer's list and `web/provision.py`'s
+  version, plus the returns materializer's list and `web/sqlkit.py`'s
   `REPORTING_CURRENCIES`.
   `web/test_provision.py` checks that the three agree.
 - **`account_kind` on the transaction macros.** `report_transactions` and
@@ -3073,15 +3076,17 @@ macros of `derived/30_holdings.sql` factor that shared work out so it runs once.
   NULL` is exactly the set a `transaction_instruments` entry can still close,
   and `wealthdb transactions -C +instrument_hint` is how that set is read. `wealthdb resolve-symbols` does not put such a row to its
   model: the token is config's to close. See §13.8.
-- **Account display defaults.** `report_accounts_multi` and
-  `report_accounts_history_multi` apply the conventional
-  `tax_wrapper='taxable_personal'` / `management_style='self_directed'` defaults,
-  so the account-level Metabase reports are **never NULL** — matching the
-  `wealthdb holdings accounts` render (§4). The single macros and the raw `accounts`
-  table keep NULL, preserving gold's "unknown vs. explicitly default"
-  distinction (the defaults are a display concern). Portfolio rollups keep their
-  strict NULL-on-mixed semantics (faithful to `wealthdb holdings portfolios`, which shows
-  blank for ambiguous buckets).
+- **Account defaults.** `accounts` keeps NULL where no adapter and no
+  override set a wrapper or a style, so gold can tell an unknown from a
+  stated default. Every report reads the two through the scalar macros
+  `account_wrapper` and `account_style` (`derived/30_holdings.sql`). They
+  read NULL as `taxable_personal` and `self_directed`. So every CLI view,
+  MCP tool and dashboard shows the same default at the account level.
+  - Portfolio and source rollups keep their NULL-on-mixed rule. A bucket
+    whose accounts disagree shows blank, as `wealthdb holdings portfolios`
+    does. The gains buckets read the default at the accounts grain only.
+  - The withholding model reads a stated wrapper only
+    ([YIELD.md §8](YIELD.md#8-config)).
 
 ### 10.9 Returns — TWR / MWR (`wealthdb returns`)
 
@@ -3279,9 +3284,8 @@ The third reading of the same engine. Its statement is mostly SQL
   `ProjectionRows` by the pool's accounts (`gold.CashflowPool`).
   `gold.CashflowPlan` sets the look-back against them.
   `gold.PlanStanding` gives the mortgages the book holds and their
-  maturities. `cashflowPlan` in
-  `cmd/wealthdb/cmd_cashflow.go` joins them for the CLI and the MCP
-  `cashflow` tool. A web refresh stores the look-back's parts in
+  maturities. `gold.CashflowPlanRows` joins them for the CLI and the
+  MCP `cashflow` tool. A web refresh stores the look-back's parts in
   `report_cashflow_plan` (migrations 0149 and 0169), the other income by
   class and account, and `gold.CashflowPlanIncome`'s income lines as
   two parts of their own: outside the pool and in it;
@@ -3550,9 +3554,12 @@ book:
   views' rows, so the views reconcile by construction;
 - `gold.IncomeReceived`: the received half, each income line named by
   the holding it belongs to;
+- `gold.ForwardIncome`: the book, the window and its amounts, the
+  same window a year before and the next twelve months. A window past
+  the projection is refused (`gold.PastProjection`);
 - `Config.YieldHorizon`: the default window, `yield.horizon_months`;
-- `cmd/wealthdb/cmd_income_projection.go`: the forward views' window,
-  flags and columns, shared by the CLI and the MCP `income` tool.
+- `cmd/wealthdb/cmd_income_projection.go`: the forward views' flags and
+  columns, shared by the CLI and the MCP `income` tool.
 
 The Metabase Yield dashboard, the Income dashboard's cards of the
 holdings' income and the Cash Flow dashboard's projection read tables
@@ -3600,7 +3607,10 @@ wealthdb/
 │   ├── DESIGN.md · RETURNS-NOTES.md · GAINS.md · EXPOSURE.md · LOTS.md · SPENDING.md · INCOME.md · CASHFLOW.md · TAXONOMY.md
 │   └── adapters/                   — per-source adapter design (amex, carta, chase, cointracking, plaid, refdata, schwab, swissquote, synthetic, ubs)
 ├── cmd/
-│   └── wealthdb/                   — CLI entry point + one cmd_<subcommand>.go per subcommand
+│   └── wealthdb/                   — CLI entry point: one cmd_<subcommand>.go per subcommand
+│                                     (a report family's views are declared there), the shared
+│                                     report layer (families.go, report.go, columns.go, filter_*.go)
+│                                     and the MCP server (mcp_*.go)
 ├── internal/
 │   ├── canonical/                  — change types + enums (asset_class, vehicle, …); zero deps
 │   ├── silver/                     — adapter interface + registry, one package per source:
@@ -4114,7 +4124,8 @@ plus the free-text descriptors:
   both exchange and self-custody, because wallet names do not
   reliably tell them apart.
 - **`tax_wrapper`** — the tax / regulatory registration.
-  Nullable; defaults to `taxable_personal` at render time.
+  Nullable. Every report reads NULL as `taxable_personal`
+  (`account_wrapper`, §10.8 Account defaults).
   Values cover US (`traditional_ira`, `roth_ira`, `sep_ira`,
   `simple_ira`, `401k`, `403b`, `457b`, `529`, `coverdell_esa`,
   `hsa`, `charitable`, `custodial_utma`, `custodial_ugma`,
@@ -4123,8 +4134,9 @@ plus the free-text descriptors:
   Freizügigkeitskonto, `pillar_3a`), plus generic
   `taxable_personal`, `taxable_joint`, `foundation`, `other`.
   `charitable` pairs with the `donor_advised_fund` kind.
-- **`management_style`** — who places trades. Nullable;
-  defaults to `self_directed` at render time. Values:
+- **`management_style`** — who places trades. Nullable. Every
+  report reads NULL as `self_directed` (`account_style`, §10.8 Account
+  defaults). Values:
   `self_directed`, `advisory`, `discretionary`, `automated`.
 - **`account_category`** — free-text bank-supplied descriptor,
   supplementary to the enums. It keeps verbatim strings the

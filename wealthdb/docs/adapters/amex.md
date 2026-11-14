@@ -180,7 +180,7 @@ building it:
 
 1. **The modern era files its rows under the provider's own spend
    category**, which the provider tier translates without the model
-   (`internal/spending/providermap.go`, `amexCardCategories`). Two
+   (`internal/spending/vocab_amex.go`, `amexCardCategories`). Two
    rows it will not place, and neither is a gap: the monthly bill,
    which Amex leaves uncategorised — the tell §5's kind rule turns on —
    and Amex's own residual bucket, listed as `untranslatable`:

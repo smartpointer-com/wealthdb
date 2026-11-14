@@ -42,25 +42,32 @@ The server exists to read. Never:
 
 ## 4. One implementation per report
 
-The CLI and the server share each family's `report` runner. Add a view
-to the runner and both front-ends have it; `TestMCPCoversEveryCLIView`
-fails until the tool's view enum names it, and `TestMCPMatchesCLI`
-fails if the two front-ends disagree on a cell. Give the new view a case
-in `TestMCPMatchesCLI`; it carries the named filters whose key columns
-it prints.
+Each report family is one declaration (`family` in `families.go`,
+declared in `cmd_<family>.go`), and each view is one `view` row in it.
+The CLI and the server both read it, so a new row gives both
+front-ends the view. Its `build` is the report both run.
+`TestMCPMatchesCLI` fails if the two front-ends disagree on a cell.
+Give the new view a case there; it carries the named filters whose key
+columns the view prints.
 
-A new named filter needs a parameter, its columns in `filterColumns`,
-its key columns in `filterKeys` and its place in `filterOrder`. The
+A new named filter needs a parameter and a row in `namedFilters`
+(`mcp_rows.go`): its columns, its key columns, and whether it matches
+whole cells. Its place in the list is the order filters apply in. The
 views that carry it are derived: those that print a key column. Where
-the column means something else on a view, add the view to the
-family's `excludes`; where a view prints it under another name, to its
-`keyAlias`. `TestDerivedCarries` pins the result, and
+the column means something else on a view, list the filter in that
+view's `excludes`. Where a view prints it under another name, put it in
+the view's `keyAlias`. `TestDerivedCarries` pins the result, and
 `TestEveryCarriedFilterHasAColumn` checks it against the columns and
 the parameters.
 
 A condition (`filter`, CLI `-F`) needs nothing per view: it reads any
-column the view prints. A new date column is marked `Date` (`dateCol`,
-`asDate`); `TestDateMarksMatchTheCells` finds one that is not.
+column the view prints. Every column declares its `Kind`. The kind sets
+its alignment, the kind a condition reads, its sort and its default
+privacy class. A money column also declares its `Unit` and, where it
+converts another column, its `Twin`. A date column is `DateColumn`
+(`dateCol`, `asDate`). `TestDateMarksMatchTheCells` finds a date column
+that is not marked, and `TestColumnKindsMatchHeaders` finds a kind that
+does not match its header.
 
 ## 5. What the model reads
 
