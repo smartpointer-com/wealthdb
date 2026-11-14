@@ -213,6 +213,14 @@ _PDEFS = {n: ("question", c.display, c.desc, c.query, c.viz) for n, c in CARD_DE
 CARDS = cards_of(CARD_DEFS)
 VIZ = {n: c.viz for n, c in CARD_DEFS.items()}
 EXEMPT = {n for n, c in CARD_DEFS.items() if c.exempt}
+# The card a twin's tile shows in place of its base's, by base
+# dashboard, where it is not the base card's privacy variant.
+TWIN_SHOWN = {"Income": {"Income in the window": "Holdings' income yield"}}
+
+
+def params_of(name):
+    """The pickers of dashboard `name`, bound to the test model ids."""
+    return p.bind(p.dashboard_parameters(name), None, {}, MID)
 # Each Wealth Overview tile's home, by base card.
 HOMES = {n: c.home for n, c in _QDEFS_CARDS.items() if c.home}
 DEFS = p.dashboard_defs(CARD_DEFS)
@@ -380,16 +388,16 @@ check("exactly the two rankings filter on the merchant column",
 check("the largest-lines card keeps blank merchants (a line is a line)",
       "merchant_name IS NOT NULL" not in (sql_of(CARDS["Largest transactions"][2]) or ""))
 check("every tile of every dashboard resolves to a defined card",
-      not [(d, c) for d, (_, _, _, tiles) in DEFS.items()
+      not [(d, c) for d, (_, _, _, tiles, *_) in DEFS.items()
            for c, *_ in tiles if c not in CARDS],
-      str([(d, c) for d, (_, _, _, tiles) in DEFS.items()
+      str([(d, c) for d, (_, _, _, tiles, *_) in DEFS.items()
            for c, *_ in tiles if c not in CARDS]))
 
 # ---- the dashboard and its twin ---------------------------------------
 
 section("Spending dashboard + privacy twin")
-desc, mode, sibling, tiles = DEFS["Spending"]
-check("filter mode is the range pair", mode == "range")
+desc, pickers, sibling, tiles = DEFS["Spending"][:4]
+check("it takes the time range and the source", {"time_range", "source"} <= set(pickers))
 check("sibling is the privacy twin", sibling == "Spending (privacy)")
 check("the twin is derived tile for tile",
       [t[0] for t in DEFS["Spending (privacy)"][3]] ==
@@ -401,7 +409,7 @@ check("the twin's blurb names its own denominators, not the holdings one",
 check("the twin keeps the layout", [t[1:] for t in DEFS["Spending (privacy)"][3]]
       == [t[1:] for t in tiles])
 
-PARAMS = {x["name"]: x for x in p.dashboard_parameters(MID, "range", "Spending")}
+PARAMS = {x["name"]: x for x in params_of("Spending")}
 check("the range pair is still there",
       {"Time range", "Source"} <= set(PARAMS))
 check("currency picker is required and defaults to USD",
@@ -446,7 +454,7 @@ check("the privacy twin keeps the same category columns",
 check("the category picker is a multi-select on spend_primary",
       PARAMS["Category"]["isMultiSelect"] is True and
       PARAMS["Category"]["values_source_config"]["value_field"][1] == "spend_primary")
-TWIN_PARAMS = p.dashboard_parameters(MID, "range", "Spending (privacy)")
+TWIN_PARAMS = params_of("Spending (privacy)")
 check("the twin carries every picker but the account one — a picker's "
       "dropdown IS the list of account labels it would filter by",
       [x["id"] for x in TWIN_PARAMS] ==
@@ -459,26 +467,26 @@ check("no picker on the twin is bound to an account column",
       json.dumps(TWIN_PARAMS))
 for _d in ("Wealth Overview", "Wealth Overview (privacy)"):
     check(f"'{_d}' carries the currency picker, the range pair, the tax wrapper and the asset class",
-          [x["id"] for x in p.dashboard_parameters(MID, "range", _d)]
+          [x["id"] for x in params_of(_d)]
           == [p.WEALTH_CURRENCY_PARAM_ID, p.TIME_PARAM_ID, p.SOURCE_PARAM_ID,
               p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID])
 for _d in ("Allocation", "Allocation (privacy)"):
     check(f"'{_d}' carries the currency picker, the as-of pickers, the tax wrapper and the asset class",
-          [x["id"] for x in p.dashboard_parameters(MID, "asof", _d)]
+          [x["id"] for x in params_of(_d)]
           == [p.WEALTH_CURRENCY_PARAM_ID, p.ASOF_PARAM_ID, p.SOURCE_PARAM_ID,
               p.WEALTH_TAX_WRAPPER_PARAM_ID, p.ASSET_PARAM_ID, p.VEHICLE_PARAM_ID, p.BENCHMARK_PARAM_ID])
 # The class picker lists the asset class history's classes, cash among
 # them: a cash balance is the class `cash` in every holdings view.
-for _mode, _d in (("range", "Wealth Overview"), ("asof", "Allocation"), ("range", "Exposure")):
-    _ac = [x for x in p.dashboard_parameters(MID, _mode, _d) if x["slug"] == "asset_class"][0]
+for _d in ("Wealth Overview", "Allocation", "Exposure"):
+    _ac = [x for x in params_of(_d) if x["slug"] == "asset_class"][0]
     check(f"'{_d}' lists its asset classes off the asset class history",
           _ac["values_source_config"]["card_id"] == MID["report_asset_classes_history"], _ac)
 # The As of day defaults to today. A card reads the last history day on
 # or before it, so the default is the same whatever the snapshot.
-_asof = [x for x in p.dashboard_parameters(MID, "asof", "Allocation") if x["slug"] == "as_of_day"][0]
+_asof = [x for x in params_of("Allocation") if x["slug"] == "as_of_day"][0]
 check("Allocation's As of day is required and defaults to today",
       _asof["required"] is True and _asof["default"] == "thisday", _asof)
-_wccy = p.dashboard_parameters(MID, "range", "Wealth Overview")[0]
+_wccy = params_of("Wealth Overview")[0]
 check("that currency picker is required, defaults to USD and offers every "
       "reporting currency",
       _wccy["required"] is True and _wccy["default"] == ["USD"]
@@ -523,7 +531,7 @@ section("native card picker wiring")
 def picks(card, dash):
     """parameter id -> target of each picker of dashboard `dash` that
     reaches native card `card` (tile_mappings)."""
-    params = p.dashboard_parameters(MID, DEFS[dash][1], dash)
+    params = params_of(dash)
     return {m["parameter_id"]: m["target"] for m in p.tile_mappings(CARDS[card][2], 1, params)}
 
 
@@ -1403,7 +1411,7 @@ if twin:
 # Overview's tiles borrowed from the other dashboards take the pickers
 # their cards have (the Wealth Overview section below); the
 # Top-positions tiles take the vehicle as well.
-_TOP = {card_ids[c] for c in p.POSITION_FILTERED_CARDS}
+_TOP = {card_ids[c] for c in ("Top 100 positions", "Top 100 positions (privacy)")}
 _BORROWED = {card_ids[c] for t in ("Wealth Overview", "Wealth Overview" + p.PRIVACY_SUFFIX)
              for c, *_ in DEFS[t][3] if c.removesuffix(p.PRIVACY_SUFFIX) in HOMES
              and c.removesuffix(p.PRIVACY_SUFFIX) != "Asset class mix over time"}
@@ -1772,7 +1780,7 @@ check("the Income twin has a card for every base tile",
 # The dashboards and their pickers.
 check("the Income dashboard and its twin are laid out",
       "Income" in DEFS and "Income (privacy)" in DEFS)
-_income_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Income")]
+_income_pickers = [q["slug"] for q in params_of("Income")]
 # One past control and one future control: the Time range sets every
 # received figure, the Horizon every expected one.
 check("the Income dashboard carries the currency, the time range and the horizon, then its "
@@ -1780,7 +1788,7 @@ check("the Income dashboard carries the currency, the time range and the horizon
       _income_pickers == ["currency", "time_range", "horizon", "source", "account", "type",
                           "tax_wrapper", "position", "rates", "maturing", "shift"],
       _income_pickers)
-_twin_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Income (privacy)")]
+_twin_pickers = [q["slug"] for q in params_of("Income (privacy)")]
 check("the Income twin carries no account picker",
       "account" not in _twin_pickers, _twin_pickers)
 # The type picker binds to the DETAILED label: the income taxonomy has
@@ -1815,7 +1823,7 @@ def _model_columns(model):
 
 for _model, _slug, _dash_name in (("report_income", "type", "Income"),
                                   ("report_spending", "category", "Spending")):
-    _picker = [q for q in p.dashboard_parameters(MID, "range", _dash_name)
+    _picker = [q for q in params_of(_dash_name)
                if q["slug"] == _slug][0]
     _field = _picker["values_source_config"]["value_field"][1]
     check(f"the {_dash_name} {_slug} picker binds to a column {_model} projects",
@@ -1823,7 +1831,7 @@ for _model, _slug, _dash_name in (("report_income", "type", "Income"),
           (_field, _model_columns(_model)))
 
 check("the Income type picker binds to the detailed label",
-      [q for q in p.dashboard_parameters(MID, "range", "Income")
+      [q for q in params_of("Income")
        if q["slug"] == "type"][0]["values_source_config"]["value_field"][1]
       == "income_detailed")
 
@@ -1852,7 +1860,7 @@ check("no card name is defined twice, nor shared with a model",
 # contain it, and a native exempt card carrying an `account` field
 # filter would reach a twin unseen.
 _privacy_tiles = {}
-for _dname, (_desc, _mode, _sib, _tiles) in p.dashboard_defs(CARD_DEFS).items():
+for _dname, (_desc, _pickers, _sib, _tiles, *_) in p.dashboard_defs(CARD_DEFS).items():
     if not _dname.endswith(p.PRIVACY_SUFFIX):
         continue
     for _c, *_ in _tiles:
@@ -1964,15 +1972,15 @@ for _n, _viz in (("Cash flow", _sankey_viz),
 # boundary is what separates the household's cash flow from its
 # vehicles', and a picker that moved accounts in and out of the pool
 # would turn every crossing it split into an unexplained disappearance.
-_cf_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Cash Flow")]
+_cf_pickers = [q["slug"] for q in params_of("Cash Flow")]
 check("the Cash Flow dashboard carries its five pickers, the projection's four and no account one",
       _cf_pickers == ["currency", "investing", "time_range", "source", "section",
                       "horizon", "rates", "maturing", "shift"],
       _cf_pickers)
 check("the Cash Flow twin carries the same nine",
-      [q["slug"] for q in p.dashboard_parameters(MID, "range", "Cash Flow (privacy)")]
+      [q["slug"] for q in params_of("Cash Flow (privacy)")]
       == _cf_pickers)
-_cf_picker = [q for q in p.dashboard_parameters(MID, "range", "Cash Flow")
+_cf_picker = [q for q in params_of("Cash Flow")
               if q["slug"] == "section"][0]
 check("the Section picker binds to a column report_cashflow projects",
       _cf_picker["values_source_config"]["value_field"][1] in _model_columns("report_cashflow"),
@@ -2065,7 +2073,7 @@ for _n, _q in (("Cash flow", _cf_sql["Cash flow"]),
 _LISTED = {"Currency", "Investing"}
 _seen_listed = 0
 for _dash, _def in p.dashboard_defs(CARD_DEFS).items():
-    for _param in p.dashboard_parameters(MID, _def[1], _dash):
+    for _param in params_of(_dash):
         if _param.get("name") in _LISTED:
             _seen_listed += 1
             check(f"'{_dash}' offers its {_param['name']} values as a list",
@@ -2102,7 +2110,7 @@ for _name, _q in list(_cf_sql.items()) + list(_cf_twin_sql.items()):
 
 section("the Gains dashboard")
 
-_gains_tiles = [t[0] for t in p.base_dashboards()["Gains"][2]]
+_gains_tiles = [t[0] for t in DEFS["Gains"][3]]
 check("every Gains tile is defined",
       bool(_gains_tiles) and all(n in CARDS for n in _gains_tiles),
       [n for n in _gains_tiles if n not in CARDS])
@@ -2147,14 +2155,14 @@ check("the Gains dashboard has no privacy twin",
       and "Gains" + p.PRIVACY_SUFFIX not in DEFS)
 check("...and no card has a privacy variant but the two the Wealth Overview's twin shows",
       {n for n in _gains_tiles if p.privacy_name(n) in CARDS} == {"Realized gain", "Unrealized gain"})
-_gn_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Gains")]
+_gn_pickers = [q["slug"] for q in params_of("Gains")]
 check("the Gains dashboard carries six pickers",
       _gn_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class", "missing_basis"],
       _gn_pickers)
 # The Asset class picker lists the classes the gains rows carry, so it
 # offers `unknown` where a snapshot holds a position nothing classes;
 # the asset class history the other dashboards list may never hold it.
-_gn_class = [q for q in p.dashboard_parameters(MID, "range", "Gains") if q["slug"] == "asset_class"][0]
+_gn_class = [q for q in params_of("Gains") if q["slug"] == "asset_class"][0]
 check("...the Asset class picker's values those of the gains rows, `unknown` among them",
       _gn_class["values_source_config"]["card_id"] == MID["report_gains_classes"]
       and _gn_class["values_source_config"]["value_field"][1] == "asset_class"
@@ -2162,9 +2170,9 @@ check("...the Asset class picker's values those of the gains rows, `unknown` amo
       and "COALESCE(g.asset_class, 'unknown') AS asset_class" in _latest_definition("web_gains")
       and all(q["values_source_config"]["card_id"] == MID["report_asset_classes_history"]
               for d in ("Wealth Overview", "Exposure")
-              for q in p.dashboard_parameters(MID, "range", d) if q["slug"] == "asset_class"),
+              for q in params_of(d) if q["slug"] == "asset_class"),
       _gn_class["values_source_config"])
-_gn_missing = [q for q in p.dashboard_parameters(MID, "range", "Gains") if q["slug"] == "missing_basis"]
+_gn_missing = [q for q in params_of("Gains") if q["slug"] == "missing_basis"]
 check("...Missing cost basis is required, defaulting to ignore, and offers both readings",
       _gn_missing and _gn_missing[0]["required"] and _gn_missing[0]["default"] == ["ignore"]
       and _gn_missing[0]["values_source_config"]["values"] == ["ignore", "zero"], _gn_missing)
@@ -2182,19 +2190,48 @@ if _gbody:
 section("every dashboard's grid")
 
 # A heading spans the grid's width on its row, so it counts as a tile.
-# A twin carries its base's headings, and TWIN_TILES places some of its
-# tiles anew.
-for _d, (_desc, _mode, _sibling, _spec) in p.dashboard_defs(CARD_DEFS).items():
-    _base = _sibling if _d.endswith(p.PRIVACY_SUFFIX) else _d
-    _spec = _spec + [(_text, _r, 0, 24, 1, None) for _r, _text, _disp in p.DASHBOARD_HEADINGS.get(_base, [])]
+_lay = p.layout((p.Row(3, (("A", 8), ("B", 16, "B2"))), p.Heading("h"),
+                  p.Twin((p.Row(2, (("C", 24),)),), (p.Row(4, (("D", 12),)),)),
+                  p.Row(8, (p.Stack(6, ("E", "F")), ("G", 18)))))
+_lay_twin = p.layout((p.Twin((p.Row(2, (("C", 24),)),), (p.Row(4, (("D", 12),)),)),
+                         p.Row(1, (("H", 24),))), twin=True)
+check("a layout's rows stack and its tiles sit side by side, a stack sharing its row's height",
+      _lay == ([("A", 0, 0, 8, 3, "A"), ("B", 0, 8, 16, 3, "B2"), ("C", 4, 0, 24, 2, "C"),
+                ("E", 6, 0, 6, 4, "E"), ("F", 10, 0, 6, 4, "F"), ("G", 6, 6, 18, 8, "G")],
+               [(3, "h", "heading")]), _lay)
+# A new dashboard is one declaration: a twin is a blurb, and each picker
+# a slug the picker table holds. One naming a picker no row holds for
+# it, a family's currency say, or dropping a picker it lacks from its
+# twin, stops at its definition, not at the send.
+_new = p.Dashboard("New", "d.", "twin d.", ("time_range", "source"), (), (p.Row(3, (("Net worth", 24),)),))
+p.check_dashboards([_new])
+_errors = []
+for _bad in (_new._replace(pickers=("currency", "time_range")), _new._replace(twin_drops=("account",))):
+    try:
+        p.check_dashboards([_bad])
+        _errors.append(None)
+    except ValueError as e:
+        _errors.append(str(e))
+check("a dashboard naming a picker the table lacks, or dropping one it lacks, is an error at its definition",
+      _errors == ["provision: dashboard 'New' names picker 'currency', which PICKERS has no row for",
+                  "provision: dashboard 'New' drops 'account' from its twin, a picker it does not carry"],
+      _errors)
+_saved_dashboards = p.DASHBOARDS_BY_NAME
+p.DASHBOARDS_BY_NAME = {**_saved_dashboards, "New": _new}
+try:
+    _new_params = [x["slug"] for x in p.dashboard_parameters("New")]
+finally:
+    p.DASHBOARDS_BY_NAME = _saved_dashboards
+check("...and one that passes gets the pickers it names, no other dashboard's",
+      _new_params == ["time_range", "source"], _new_params)
+check("...and a twin lays out its own rows in place of its base's",
+      _lay_twin == ([("D", 0, 0, 12, 4, "D"), ("H", 4, 0, 24, 1, "H")], []), _lay_twin)
+for _d, _def in p.dashboard_defs(CARD_DEFS).items():
+    _spec = _def.tiles + [(_text, _r, 0, 24, 1) for _r, _text, _disp in _def.headings]
     check(f"'{_d}' sits on the 24-column grid without overlaps",
-          all(c + w <= 24 for _n, _r, c, w, _h, _t in _spec) and not [
+          all(c + w <= 24 for _n, _r, c, w, _h in _spec) and not [
               (a[0], b[0]) for i, a in enumerate(_spec) for b in _spec[i + 1:]
               if a[2] < b[2] + b[3] and b[2] < a[2] + a[3] and a[1] < b[1] + b[4] and b[1] < a[1] + a[4]])
-
-check("every TWIN_TILES card is a tile of its base",
-      all(set(_t) <= {c for c, *_ in p.base_dashboards()[_d][2]} for _d, _t in p.TWIN_TILES.items()),
-      {_d: sorted(set(_t) - {c for c, *_ in p.base_dashboards()[_d][2]}) for _d, _t in p.TWIN_TILES.items()})
 
 section("the Wealth Overview")
 
@@ -2251,7 +2288,7 @@ check("...and its other four figures of the time range sit two to a row",
       == {"Spend — monthly trend (privacy)": (21, 0, 12), "Net cash flow (privacy)": (21, 12, 12),
           "Savings rate (privacy)": (24, 0, 12), "Realized gain (privacy)": (24, 12, 12)}, _ovt_place)
 _params_all = {d.get("name"): d["parameters"] for d in layouts}
-_mbql = p.overview_mappings(CARD_DEFS["Net spend (privacy)"], _OVT, DEFS, _params_all, card_ids)
+_mbql = p.overview_mappings(CARD_DEFS["Net spend (privacy)"], _OVT, _params_all, card_ids)
 check("an MBQL card takes the pickers its home dashboard maps, the twin's net spend among them",
       {_ov_params[_OVT][m["parameter_id"]] for m in _mbql} == _FLOW, _mbql)
 check("...and both show the asset class mix, the same card, under the title of its kind",
@@ -2333,7 +2370,7 @@ _heads = {n: sorted((dc["row"], dc["visualization_settings"]["text"]) for dc in 
                     if dc["card_id"] is None and dc["visualization_settings"]["virtual_card"]["display"] == "heading")
           for n, b in _ov_body.items()}
 check("the overview and its twin carry the two row headings",
-      _heads[_OV] == _heads[_OVT] == [(r + 1, t) for r, t, _d in p.DASHBOARD_HEADINGS[_OV]], _heads)
+      _heads[_OV] == _heads[_OVT] == [(r + 1, t) for r, t, _d in DEFS[_OV].headings], _heads)
 _exp = [dc["visualization_settings"].get("card.title") for n in (_OV, _OVT) for cid, dc in _ov_tiles[n].items()
         if _by_id[cid].startswith("Income expected")]
 check("the expected income tile names its twelve months, on the twin in the privacy form",
@@ -2460,7 +2497,7 @@ check("-p reads the pattern the twins read",
 
 section("the Exposure dashboard")
 
-_ex_spec = p.base_dashboards()["Exposure"][2]
+_ex_spec = DEFS["Exposure"][3]
 _ex_tiles = [t[0] for t in _ex_spec]
 check("every Exposure tile is defined",
       bool(_ex_tiles) and all(n in CARDS for n in _ex_tiles),
@@ -2482,7 +2519,7 @@ check("every Exposure tile is native over an exposure view",
 check("...and every read of one is held to the picked currency",
       all(len(_EX_VIEW.findall(q)) == q.count("AND currency = {{currency}}")
           for q in _ex_sql.values()))
-_ex_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Exposure")]
+_ex_pickers = [q["slug"] for q in params_of("Exposure")]
 check("the Exposure dashboard carries the currency, the time range, the source, the tax wrapper "
       "and the asset class",
       _ex_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class", "benchmark"], _ex_pickers)
@@ -2623,11 +2660,11 @@ def _tiles_off_their_pickers(dash, names):
     does not declare, or no picker that one of its tags names. A twin's
     tile is the privacy card, or the base card where that is exempt."""
     _layout, body = _tile_layout(dash)
-    params = {q["slug"]: q["id"] for q in p.dashboard_parameters(MID, "range", dash)}
+    params = {q["slug"]: q["id"] for q in params_of(dash)}
     sent = {dc["card_id"]: dc["parameter_mappings"] for dc in body["dashcards"] if dc["card_id"] is not None}
     twin = dash.endswith(p.PRIVACY_SUFFIX)
     off = []
-    shown = p.TWIN_CARDS.get(dash.removesuffix(p.PRIVACY_SUFFIX), {})
+    shown = TWIN_SHOWN.get(dash.removesuffix(p.PRIVACY_SUFFIX), {})
     for n in names:
         card = p.privacy_name(shown.get(n, n)) if twin and n not in EXEMPT else n
         tags = CARDS[card][2]["native"]["template-tags"]
@@ -2854,7 +2891,7 @@ section("the Yield dashboard")
 
 _yield_go = _go_package("yield")
 
-_y_spec = p.base_dashboards()["Yield"][2]
+_y_spec = DEFS["Yield"][3]
 _y_tiles = [t[0] for t in _y_spec]
 _Y_TILES = ["Income yield", "Projected income", "Implied yield", "Realized yield", "Yield by currency",
             "Income sensitivity to rates", "Cash against its benchmark", "Yield against duration",
@@ -2866,13 +2903,13 @@ check("...and has a privacy twin of the same layout",
       DEFS["Yield"][2] == "Yield (privacy)"
       and [t[0] for t in DEFS["Yield (privacy)"][3]] ==
       [n if n in EXEMPT else p.privacy_name(n) for n in _y_tiles])
-_y_pickers = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Yield")]
+_y_pickers = [q["slug"] for q in params_of("Yield")]
 check("the Yield dashboard carries Exposure's five pickers and the projection's four",
       _y_pickers == ["currency", "time_range", "source", "tax_wrapper", "asset_class", "benchmark",
                      "rates", "maturing", "shift", "horizon"]
-      and [q["slug"] for q in p.dashboard_parameters(MID, "range", "Yield (privacy)")] == _y_pickers,
+      and [q["slug"] for q in params_of("Yield (privacy)")] == _y_pickers,
       _y_pickers)
-_y_params = {q["slug"]: q for q in p.dashboard_parameters(MID, "range", "Yield")}
+_y_params = {q["slug"]: q for q in params_of("Yield")}
 check("...the projection's pickers required, defaulting to the CLI's assumptions",
       all(_y_params[k]["required"] for k in ("rates", "maturing", "shift", "horizon"))
       and _y_params["rates"]["default"] == ["constant"] and _y_params["maturing"]["default"] == ["cash"]
@@ -2897,7 +2934,7 @@ check("the Yield Asset class picker's values those of the yield views it binds, 
       == "SELECT asset_class FROM web_yield\nUNION\nSELECT asset_class FROM web_yield_curve"
       and all("COALESCE(p.asset_class, 'unknown') AS asset_class" in _latest_definition(v)
               for v in _y_class_views)
-      and {q["values_source_config"]["card_id"] for q in p.dashboard_parameters(MID, "range", "Yield (privacy)")
+      and {q["values_source_config"]["card_id"] for q in params_of("Yield (privacy)")
            if q["slug"] == "asset_class"} == {MID["report_yield_classes"]},
       (_y_params["asset_class"]["values_source_config"], _y_class_views))
 check("every Yield tile and twin is native over the yield views",
@@ -2989,7 +3026,7 @@ check("the Yield and the projection's pickers are the engine's rate paths, matur
 
 section("the Income dashboard's cards of the holdings' income")
 
-_in_spec = p.base_dashboards()["Income"][2]
+_in_spec = DEFS["Income"][3]
 # The small tiles first, the charts after, the tables last, each with its
 # width.
 _IN_ORDER = [[("Income in the window", 4), ("Income received", 4), ("Income expected", 4),
@@ -3005,7 +3042,7 @@ _IN_ORDER = [[("Income in the window", 4), ("Income received", 4), ("Income expe
              [("Largest receipts", 24)]]
 _in_at = {t[0]: t for t in _in_spec}
 # A row of text sits between two rows of tiles: the chart's subtitle.
-_in_text = {r for r, _t, _d in p.DASHBOARD_HEADINGS["Income"]}
+_in_text = {r for r, _t, _d in DEFS["Income"].headings}
 
 
 def _next_row(name):
@@ -3020,19 +3057,19 @@ check("the Income tiles read small tiles first, then the charts, then the tables
               for k in range(1, len(_IN_ORDER))),
       [(t[0], t[1], t[3]) for t in _in_spec])
 check("...the chart by month under a subtitle naming its run-rate bands",
-      p.DASHBOARD_HEADINGS["Income"] == [(_in_at["Received and expected by month"][1] - 1,
-                                          p.DASHBOARD_HEADINGS["Income"][0][1], "text")]
-      and "run-rate" in p.DASHBOARD_HEADINGS["Income"][0][1], p.DASHBOARD_HEADINGS["Income"])
+      DEFS["Income"].headings == [(_in_at["Received and expected by month"][1] - 1,
+                                          DEFS["Income"].headings[0][1], "text")]
+      and "run-rate" in DEFS["Income"].headings[0][1], DEFS["Income"].headings)
 
 
 def _twin(n):
     """The card the Income twin shows in place of base card `n`."""
-    return p.privacy_name(p.TWIN_CARDS["Income"].get(n, n))
+    return p.privacy_name(TWIN_SHOWN["Income"].get(n, n))
 
 
 check("...and the twin mirrors the order",
       [(t[0], t[1], t[2], t[3], t[4]) for t in DEFS["Income (privacy)"][3]]
-      == [(n if n in EXEMPT else _twin(n), r, c, w, h) for n, r, c, w, h, _t in _in_spec])
+      == [(n if n in EXEMPT else _twin(n), r, c, w, h) for n, r, c, w, h in _in_spec])
 _IN_PROJECTED = [t[0] for t in _in_spec if t[0] not in INCOME_CARD_NAMES]
 _YIELD_TWIN = _twin("Income in the window")
 check("...each card of received and expected income with a privacy twin, the income in the window's "
@@ -3127,7 +3164,7 @@ check("only the calendar takes the Position picker, and it is optional",
       [n for n in _in_all if "position" in CARDS[n][2]["native"]["template-tags"]]
       == ["Expected payments", "Expected payments (privacy)"]
       and p.POSITION_TAG["required"] is False)
-_in_params = [q["slug"] for q in p.dashboard_parameters(MID, "range", "Income (privacy)")]
+_in_params = [q["slug"] for q in params_of("Income (privacy)")]
 check("the Income twin carries the same pickers, but the account",
       _in_params == ["currency", "time_range", "horizon", "source", "type", "tax_wrapper", "position",
                      "rates", "maturing", "shift"], _in_params)
@@ -3419,11 +3456,11 @@ check("the fee tiles' groups are the values of gold's fee_group",
       bool(_fee_groups) and set(p.FEE_GROUP_COLORS) == _fee_groups, (sorted(p.FEE_GROUP_COLORS), sorted(_fee_groups)))
 check("...each with a title", list(p.FEE_GROUP_TITLES) == list(p.FEE_GROUP_COLORS))
 
-_mark = next(t for t in p.base_dashboards()["Data Freshness"][2] if t[0] == "Mark age")
+_mark = next(t for t in DEFS["Data Freshness"][3] if t[0] == "Mark age")
 check("Mark age is on Data Freshness, and its twin shows the same card",
       "Mark age" in EXEMPT
       and "Mark age" in [t[0] for t in DEFS["Data Freshness (privacy)"][3]])
-check("...it takes no picker", not CARDS["Mark age"][2]["native"]["template-tags"] and _mark[5] is None)
+check("...it takes no picker", not CARDS["Mark age"][2]["native"]["template-tags"])
 check("...its bars run from 0 to 100", (VIZ["Mark age"]["graph.y_axis.min"],
                                         VIZ["Mark age"]["graph.y_axis.max"]) == (0, 100))
 
@@ -3435,7 +3472,7 @@ check("the projection cards and their twins are defined",
       all(n in CARDS for n in _plan_all), [n for n in _plan_all if n not in CARDS])
 # The projection sits right below the statement, full width, on the base and
 # the twin alike.
-_cf_spec = [t[0] for t in p.base_dashboards()["Cash Flow"][2]]
+_cf_spec = [t[0] for t in DEFS["Cash Flow"][3]]
 _cf_at = _cf_spec.index("Cash flow statement by month")
 _BRIDGE = ["Net worth at start", "Net worth at end", "Why net worth moved", "Saved and gained by month"]
 check("the bridge follows the statement and the projection the bridge, its twin's on the twin",
@@ -3684,8 +3721,8 @@ check("any other currency falls back to USD", _fallback == "USD")
 _saved = p.DEFAULT_CURRENCY
 p.DEFAULT_CURRENCY = "GBP"
 try:
-    _params = [x for d, df in p.dashboard_defs(CARD_DEFS).items()
-               for x in p.dashboard_parameters(MID, df[1], d) if x["slug"] == "currency"]
+    _params = [x for d in p.dashboard_defs(CARD_DEFS)
+               for x in params_of(d) if x["slug"] == "currency"]
     check("with a GBP default, every Currency picker opens on GBP",
           bool(_params) and all(x["default"] == ["GBP"] for x in _params),
           [x["default"] for x in _params])
@@ -5403,16 +5440,14 @@ check("...a style that needs no colour vision to tell it from a source's line",
 _b_dashes = ("Returns", "Allocation", "Exposure", "Yield")
 for _d in _b_dashes:
     for _name in (_d, _d + p.PRIVACY_SUFFIX):
-        _mode = {"Returns": "returns", "Allocation": "asof"}.get(_d, "range")
-        _bp = [x for x in p.dashboard_parameters(MID, _mode, _name) if x["slug"] == "benchmark"]
+        _bp = [x for x in params_of(_name) if x["slug"] == "benchmark"]
         check(f"'{_name}' carries a required Benchmark picker that defaults to None and lists the model",
               len(_bp) == 1 and _bp[0]["required"] and _bp[0]["default"] == ["None"]
               and _bp[0]["id"] == p.BENCHMARK_PARAM_ID
               and _bp[0]["values_source_config"]["card_id"] == MID["report_benchmarks"], _bp)
-for _d, _mode in (("Wealth Overview", "range"), ("Spending", "range"), ("Income", "range"), ("Cash Flow", "range"),
-                  ("Gains", "range")):
+for _d in ("Wealth Overview", "Spending", "Income", "Cash Flow", "Gains"):
     check(f"'{_d}' has no Benchmark picker",
-          not [x for x in p.dashboard_parameters(MID, _mode, _d) if x["slug"] == "benchmark"])
+          not [x for x in params_of(_d) if x["slug"] == "benchmark"])
 check("the picker's model reads web_benchmarks", "web_benchmarks" in MODELS["report_benchmarks"][0])
 check("every card that exists only beside a benchmark is on a dashboard, hidden when empty",
       all(any(c.removesuffix(p.PRIVACY_SUFFIX) == n for d in _b_dashes for c, *_ in DEFS[d][3])

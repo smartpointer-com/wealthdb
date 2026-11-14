@@ -47,8 +47,7 @@ class Combos(unittest.TestCase):
     provisioning gives it."""
 
     def params(self, dashboard):
-        models = {name: i for i, name in enumerate(provision.report_models(), start=1)}
-        return provision.dashboard_parameters(models, "range", dashboard)
+        return provision.dashboard_parameters(dashboard)
 
     def combos(self, dashboard="Income"):
         return dict(check_dashboards.combos(self.params(dashboard), ["src-1"], ["USD", "CHF"], 2024,

@@ -227,6 +227,17 @@ tiles need to know of it:
 
 A name declared twice is an error at definition time.
 
+Each dashboard is one `Dashboard` record in `DASHBOARDS`: its blurb,
+its twin's blurb, the slugs of its pickers, the pickers its twin drops,
+and its rows. `PICKERS` holds one row per picker slug and family of
+dashboards: its id, label, kind, values and default. A row laid out as
+`Row(height, tiles)`, `Stack(width, cards)` or `Heading(text)` gets
+its place on the grid from the rows above it, so no tile states its
+row or column. `Twin(base, twin)` gives the twin rows of its own.
+A dashboard that names a picker `PICKERS` has no row for, or drops
+from its twin a picker it does not carry, is an error at definition
+time.
+
 A picker reaches a native card where the card has a template tag of
 the picker's slug. The returns cards name their Source tag
 `source_ff`, which answers the Source picker. A card declines a picker
@@ -650,7 +661,7 @@ biggest month; what was received is a share of what was received. The
 holdings' income, and each position's, becomes a yield: per year, over
 the value it is earned on. A wage is no yield on a holding, so the
 twin's yield card reads the six types alone. A tile of the twin can
-show a card of another name than its base's (`TWIN_CARDS`). The
+show a card of another name than its base's. The
 withholding becomes the share it takes of the income it is set
 against, and the income after it the rest. A share
 or a yield of nothing reads 0. A position with no name reads

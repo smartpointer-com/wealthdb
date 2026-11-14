@@ -614,7 +614,7 @@ check "help says refresh copies a changed gold" "snapshot when gold changed" "$(
 # The banner names the dashboards by hand, so one added to or renamed in
 # provision.py must be named here too.
 prov_python="${WEALTHDB_WEB_PYTHON:-python3}"
-want="$("$prov_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import provision as p; print(" / ".join(p.base_dashboards()))' "$HERE" 2>&1)"
+want="$("$prov_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import provision as p; print(" / ".join(d.name for d in p.DASHBOARDS))' "$HERE" 2>&1)"
 bout="$(CONTAINER=c PORT=1 _start_banner 2>&1 | tr -s ' \n' ' ')"
 check_eq "the start banner names every base dashboard, in provision.py's order" "$want" \
     "$(printf '%s' "$bout" | sed -n 's/.*questions and the \(.*\) dashboards, most .*/\1/p')"

@@ -406,7 +406,7 @@ def report_models():
         Account picker lands on this model too (its privacy-exempt tile
         runs over it); the privacy dashboard carries no account picker at
         all, since a picker's dropdown IS the list of labels it filters
-        by (dashboard_parameters). The label is what stays, not the bare
+        by (PICKERS). The label is what stays, not the bare
         name: it is the only column either dashboard shows an account
         by."""
         cols = ("s.occurred_at, s.silver_source_id, s.account_external_id,\n"
@@ -2919,19 +2919,11 @@ def gains_cards(f):
         _percent_viz("basis_coverage"))
 
 
-# Dashboard filters: a required currency picker (default: the configured
-# default currency) and a silver-source picker (default: all values) plus
-# either a time range over flows/history (default: past 12 months) or a
-# single as-of day over point-in-time holdings (default: today,
-# ASOF_DEFAULT), each linked to every tile, plus a tax wrapper and an
-# asset class picker on the Wealth Overview and Allocation and a vehicle
-# picker that renders inline on the Top-positions tiles only. The
-# Returns dashboards carry a start-year picker instead of a time filter
-# — the periods are precomputed buckets; Spending, Income, Cash Flow,
-# Gains and Exposure carry pickers of their own (dashboard_parameters).
-# The parameter ids are arbitrary but must be stable across runs so
-# re-provisioning converges instead of accumulating parameters, and they
-# must be distinct — a reused id would make two pickers one.
+# The dashboard pickers' ids (PICKERS). They are arbitrary but must be
+# stable across runs so re-provisioning converges instead of
+# accumulating parameters, and they must be distinct — a reused id
+# would make two pickers one. The Returns dashboards carry a start-year
+# picker instead of a time filter — the periods are precomputed buckets.
 TIME_PARAM_ID = "aa5df100"
 SOURCE_PARAM_ID = "aa5df101"
 ASOF_PARAM_ID = "aa5df102"
@@ -2939,8 +2931,8 @@ ASSET_PARAM_ID = "aa5df103"
 CURRENCY_PARAM_ID = "aa5df104"
 START_YEAR_PARAM_ID = "aa5df105"
 VEHICLE_PARAM_ID = "aa5df106"
-# The Spending dashboards' own three pickers, on top of the 'range'
-# pair. The currency picker is separate from the Returns one
+# The Spending dashboards' own three pickers, beside the time range
+# and the source. The currency picker is separate from the Returns one
 # (CURRENCY_PARAM_ID): it draws a static value list and lands on the
 # spending cards' own currency dimension / {{currency}} variable.
 SPEND_CURRENCY_PARAM_ID = "aa5df107"
@@ -2967,81 +2959,12 @@ HORIZON_PARAM_ID = "aa5df11f"
 # The position the Income dashboards' calendar lists.
 POSITION_PARAM_ID = "aa5df121"
 
-# The dashboards carrying the spending pickers (the base view and its
-# privacy twin). Named rather than modelled as a filter mode of their
-# own: the mode is 'range' like Wealth Overview — a time window plus a
-# source picker — and these three pickers are additions to it.
-SPENDING_DASHBOARDS = {"Spending", "Spending" + PRIVACY_SUFFIX}
-# The same for the Income dashboards.
-INCOME_DASHBOARDS = {"Income", "Income" + PRIVACY_SUFFIX}
-
-# The same for the Cash Flow dashboards.
-CASHFLOW_DASHBOARDS = {"Cash Flow", "Cash Flow" + PRIVACY_SUFFIX}
-
-# The Gains dashboard, which has no privacy twin. Its tiles are gains on
-# named positions; a twin would normalise the money, and what would
-# remain is the percent columns the tables carry already.
-GAINS_DASHBOARDS = {"Gains"}
-NO_PRIVACY_TWIN = GAINS_DASHBOARDS
-
-# The Exposure dashboards: the range pair with a currency, a tax wrapper
-# and an asset class picker of their own.
-EXPOSURE_DASHBOARDS = {"Exposure", "Exposure" + PRIVACY_SUFFIX}
-
-# The Yield dashboards: Exposure's five pickers, with ids of their own,
-# and the four the projection's cards take.
-YIELD_DASHBOARDS = {"Yield", "Yield" + PRIVACY_SUFFIX}
-
-# The vehicle filter is linked only to these tiles, the Top-positions
-# widgets, which list individual holdings, and renders on them: the
-# breakdowns each group by a taxonomy dimension, so filtering them by
-# the vehicle would mostly self-select. The asset class is a dashboard
-# picker, on every tile.
-POSITION_FILTERED_CARDS = {"Top 100 positions", "Top 100 positions (privacy)"}
-
 # Spending cards that carry every reporting currency as its own column,
 # and so must NOT be wired to the Currency picker: the long model has a
 # row per (line, currency), so a row filter on `currency` would empty
 # every column but the one the picker selects. Such a card also reads the
 # same opened standalone, where no picker reaches it.
 SPEND_ALL_CURRENCY_CARDS = {"Top 50 merchants"}
-
-# The Wealth Overview and its twin: the dashboards that borrow the
-# figures of the others.
-OVERVIEW_DASHBOARDS = {"Wealth Overview", "Wealth Overview" + PRIVACY_SUFFIX}
-
-# Full-width headings over a dashboard's rows, by base dashboard (the
-# twin takes its base's): (row, text, display), a section's heading or a
-# chart's subtitle in plain text. The overview's say what sets each row
-# of figures. Income's says which bands of the chart below it are a
-# run-rate rather than a payment.
-DASHBOARD_HEADINGS = {"Wealth Overview": [
-    (19, "Over the time range", "heading"),
-    (26, "At the range's end, today and ahead", "heading"),
-], "Income": [
-    (6, "Every income line. A band marked run-rate is an account's average of past months; this "
-        "month it expects only what has not arrived.", "text"),
-]}
-
-# A twin's own placing of its base's tiles, by base dashboard: card ->
-# (row, col, size_x, size_y), or None for a tile the twin leaves out. On
-# the overview's twin, received income and net spend read 100 by
-# construction: each is the total its own twin divides by. The twin
-# leaves them out, and the other four figures of their rows sit two to a
-# row.
-TWIN_TILES = {"Wealth Overview": {
-    "Income received": None, "Net spend": None,
-    "Spend — monthly trend": (20, 0, 12, 3), "Net cash flow": (20, 12, 12, 3),
-    "Savings rate": (23, 0, 12, 3), "Realized gain": (23, 12, 12, 3),
-}}
-
-
-# A twin's tile that shows a card of another name than its base's, by
-# base dashboard: base card -> the twin card's base name. On Income the
-# income in the window has no share worth showing, so the twin shows the
-# holdings' income as a yield on their value, and names it so.
-TWIN_CARDS = {"Income": {"Income in the window": "Holdings' income yield"}}
-
 
 def dashboard_tile_titles(base, cards):
     """card name -> the title its tiles show on base dashboard `base` and
@@ -3057,311 +2980,6 @@ def dashboard_tile_titles(base, cards):
                           "Excess annualized return (TWR)": "Excess annualized (TWR), same months"}}.get(base, {})
     return {**titles, **{privacy_name(c): privacy_name(t) for c, t in titles.items()
                          if not cards[c].exempt}}
-
-
-# The sentence every pre-defined dashboard's blurb ends with.
-PREDEFINED_NOTE = "Pre-defined; duplicate it before customizing."
-
-
-def base_dashboards():
-    """dashboard name -> (description, filter mode, tiles). A tile is
-    (card name, row, col, size_x, size_y, time column) on Metabase's
-    24-column grid. The filter mode picks the global filters (see
-    dashboard_parameters): 'range' for flows/history dashboards, 'asof'
-    for point-in-time holdings dashboards, 'returns' for the returns
-    dashboards (a start-year picker and no time filter — the periods are
-    precomputed buckets, and the summary rows ignore windows by
-    construction), None for no filters. Every filtered mode carries a
-    required currency picker. The time filter lands on each card's time
-    column (as_of_day for history cards, occurred_at for transactions):
-    a native card's own tag, or the tile's time column below for an MBQL
-    one. A native tile ignores that column, and only the Spending
-    dashboards carry MBQL tiles that take a time filter. A Wealth
-    Overview tile's time column is unread: its mappings come from its
-    card's tags or its home tile (overview_mappings). The source filter
-    lands on silver_source_id — in 'returns' mode on every tile but the
-    whole-portfolio scalars (RETURNS_GLOBAL_SCALARS), whose
-    silver_source_id is ''. Data Freshness is deliberately unfiltered —
-    its job is to show every source, especially the stale ones a time
-    filter would hide."""
-    return {
-        "Wealth Overview": (
-            "Net worth and its asset classes over time, then key figures from "
-            "the other dashboards. Each figure opens the dashboard it comes from. "
-            + PREDEFINED_NOTE, "range", [
-            # Net worth = positions + cash by construction — the first
-            # three tiles reconcile exactly; the trend tile is a monthly
-            # AVERAGE, so it intentionally differs from today's value.
-            # The stalest source sits beside them: the warning to read
-            # before trusting any figure.
-            ("Net worth", 0, 0, 4, 3, None),
-            ("Positions value", 0, 4, 5, 3, None),
-            ("Cash balance", 0, 9, 5, 3, None),
-            ("Net worth — monthly trend", 0, 14, 5, 3, "as_of_day"),
-            ("Stalest source (days)", 0, 19, 5, 3, None),
-            # The net worth chart, then its mix by asset class.
-            ("Net worth over time", 3, 0, 24, 8, "as_of_day"),
-            ("Asset class mix over time", 11, 0, 24, 8, "as_of_day"),
-            # Under DASHBOARD_HEADINGS' two headings: the figures over
-            # the time range, then those at its end, today and ahead,
-            # three to a row so each title reads whole. Their time column
-            # is unread (overview_mappings).
-            ("Income received", 20, 0, 8, 3, None),
-            ("Net spend", 20, 8, 8, 3, None),
-            ("Spend — monthly trend", 20, 16, 8, 3, None),
-            ("Net cash flow", 23, 0, 8, 3, None),
-            ("Savings rate", 23, 8, 8, 3, None),
-            ("Realized gain", 23, 16, 8, 3, None),
-            ("Unrealized gain", 27, 0, 8, 3, None),
-            ("Return year to date (TWR)", 27, 8, 8, 3, None),
-            ("Return year to date (MWR)", 27, 16, 8, 3, None),
-            ("Income yield", 30, 0, 8, 3, None),
-            ("Income expected", 30, 8, 8, 3, None),
-            ("Projected net cash flow", 30, 16, 8, 3, None),
-        ]),
-        "Allocation": (
-            "Where the value sits as of the chosen day, by asset class, vehicle, "
-            "currency, tax wrapper, management style, position and issuer. Cash "
-            "is a position in every breakdown. "
-            + PREDEFINED_NOTE, "asof", [
-            # The two taxonomy dimensions side by side on the top row.
-            ("Allocation by asset class", 0, 0, 12, 8, "as_of_day"),
-            ("Allocation by vehicle", 0, 12, 12, 8, "as_of_day"),
-            ("Allocation by currency", 8, 0, 12, 8, "as_of_day"),
-            ("Value by tax wrapper", 8, 12, 12, 8, "as_of_day"),
-            ("Value by management style", 16, 0, 24, 6, "as_of_day"),
-            ("Top 100 positions", 22, 0, 24, 8, "as_of_day"),
-            ("Top 100 issuers", 30, 0, 24, 9, "as_of_day"),
-        ]),
-        "Returns": (
-            "Time-weighted (TWR) and money-weighted (MWR) returns, per period "
-            "and per source. Start year 0 means since inception, where TWR is "
-            "often n/a. " + PREDEFINED_NOTE,
-            "returns", [
-            # Scalars rescope to the since-<start year> window; charts split
-            # by source with the global grain as a toggleable '(all sources)'
-            # line. MWR is a summary figure only (the per-period buckets
-            # carry TWR); that is engine behavior the scalars mirror.
-            ("Return (TWR)", 0, 0, 8, 3, None),
-            ("Return (MWR)", 0, 8, 8, 3, None),
-            ("Annualized return (TWR)", 0, 16, 8, 3, None),
-            # Beside a benchmark alone (Card.hide_empty), the figures above them
-            # again in their order.
-            ("Benchmark return (TWR)", 3, 0, 8, 3, None),
-            ("Benchmark return (MWR)", 3, 8, 8, 3, None),
-            ("Benchmark annualized return (TWR)", 3, 16, 8, 3, None),
-            ("Excess return (TWR)", 6, 0, 8, 3, None),
-            ("Excess return (MWR)", 6, 8, 8, 3, None),
-            ("Excess annualized return (TWR)", 6, 16, 8, 3, None),
-            ("Cumulative return (TWR)", 9, 0, 24, 8, None),
-            ("Monthly returns (TWR)", 17, 0, 8, 6, None),
-            ("Quarterly returns (TWR)", 17, 8, 8, 6, None),
-            ("Annual returns (TWR)", 17, 16, 8, 6, None),
-            ("Returns by source", 23, 0, 24, 8, None),
-            ("Money-weighted return over time", 31, 0, 24, 8, None),
-            ("Value against the benchmark", 39, 0, 24, 8, None),
-        ]),
-        "Spending": (
-            "Where the money goes over the window, by month, category, merchant "
-            "and account, what each portfolio paid in fees, and what the cards "
-            "owe. Own-account moves are not spend. " + PREDEFINED_NOTE,
-            "range", [
-            # The three headline figures, then the shape of the window
-            # (months x category), then the two breakdown levels side by
-            # side — the primary tile drills through to the lines behind
-            # a bar, the detailed tile holds the same window one level
-            # down. Merchants and accounts answer "to whom" and "from
-            # where", the fee tiles what each portfolio paid (web_fees);
-            # the card-balances chart reads web_card_balances_history,
-            # and the transaction list is the bottom of the drill-down.
-            ("Spend — monthly trend", 0, 0, 8, 3, "occurred_at"),
-            ("Net spend", 0, 8, 8, 3, "occurred_at"),
-            ("Uncategorized share", 0, 16, 8, 3, "occurred_at"),
-            ("Spending by month", 3, 0, 24, 9, "occurred_at"),
-            ("Spending by category", 12, 0, 12, 8, "occurred_at"),
-            ("Spending by subcategory", 12, 12, 12, 8, "occurred_at"),
-            ("Top 50 merchants", 20, 0, 12, 8, "occurred_at"),
-            ("Spend by account", 20, 12, 12, 8, "occurred_at"),
-            ("Fees by portfolio", 28, 0, 10, 8, None),
-            ("Fee rate by portfolio", 28, 10, 14, 8, None),
-            ("Card balances over time", 36, 0, 24, 6, "as_of_day"),
-            ("Largest transactions", 42, 0, 24, 8, "occurred_at"),
-        ]),
-        "Income": (
-            "Every income line received, wages included, and the income expected, the "
-            "holdings' payments with a run-rate of the rest. " + PREDEFINED_NOTE,
-            "range", [
-            # The headline figures first, then the charts, then the
-            # tables: what was received and is expected, beside the
-            # income lines' net income and backlog; the trend and the
-            # withholding; both halves by month, then their interest and
-            # dividends; the types beside the payers; then by account
-            # and by position, the calendar a position's row picks, and
-            # the largest receipts.
-            ("Income in the window", 0, 0, 4, 3, None),
-            ("Income received", 0, 4, 4, 3, None),
-            ("Income expected", 0, 8, 4, 3, None),
-            ("Net income", 0, 12, 4, 3, "occurred_at"),
-            ("Monthly average income", 0, 16, 4, 3, None),
-            ("Uncategorized income share", 0, 20, 4, 3, "occurred_at"),
-            ("Income — monthly trend", 3, 0, 8, 3, "occurred_at"),
-            ("Withholding", 3, 8, 8, 3, None),
-            ("Income after withholding", 3, 16, 8, 3, None),
-            ("Received and expected by month", 7, 0, 24, 9, None),
-            ("Holdings' interest received", 16, 0, 6, 3, None),
-            ("Holdings' dividends received", 16, 6, 6, 3, None),
-            ("Holdings' interest expected", 16, 12, 6, 3, None),
-            ("Holdings' dividends expected", 16, 18, 6, 3, None),
-            ("Income by type", 19, 0, 12, 8, "occurred_at"),
-            ("Top 50 payers", 19, 12, 12, 8, "occurred_at"),
-            ("Received and expected by account", 27, 0, 24, 7, None),
-            ("Received and expected by position", 34, 0, 24, 10, None),
-            ("Expected payments", 44, 0, 24, 8, None),
-            ("Largest receipts", 52, 0, 24, 8, "occurred_at"),
-        ]),
-        "Cash Flow": (
-            "Where the household's cash came from and went, as a statement and "
-            "a Sankey, and why net worth moved. Buying and selling shows net. "
-            "The projection sets expected income against average past outflows. "
-            + PREDEFINED_NOTE,
-            "range", [
-            # Five headline figures, then the diagram at the centre, then
-            # the shape of the window, why net worth moved, and the
-            # projection of the months ahead, then the two sides of
-            # operating, then the swing sections, then the lines.
-            ("Operating in", 0, 0, 5, 3, "occurred_at"),
-            ("Operating out", 0, 5, 5, 3, "occurred_at"),
-            ("Net cash flow", 0, 10, 5, 3, "occurred_at"),
-            ("Savings rate", 0, 15, 4, 3, "occurred_at"),
-            ("Yield share", 0, 19, 5, 3, "occurred_at"),
-            # Full width and tall: the diagram is the dashboard.
-            ("Cash flow", 3, 0, 24, 12, "occurred_at"),
-            ("Cash flow statement by month", 15, 0, 24, 8, "occurred_at"),
-            # The net worth the walk leads from and to, in a column
-            # beside the walk.
-            ("Net worth at start", 23, 0, 6, 4, None),
-            ("Net worth at end", 27, 0, 6, 4, None),
-            ("Why net worth moved", 23, 6, 18, 8, None),
-            ("Saved and gained by month", 31, 0, 24, 8, None),
-            ("Cash flow projection by month", 39, 0, 24, 8, None),
-            ("Cash flow projection", 47, 0, 24, 9, None),
-            ("Inflows by class by month", 56, 0, 12, 7, "occurred_at"),
-            ("Outflows by class by month", 56, 12, 12, 7, "occurred_at"),
-            ("Investing by month", 63, 0, 12, 7, "occurred_at"),
-            ("Financing and vehicles by month", 63, 12, 12, 7, "occurred_at"),
-            ("Largest flows", 70, 0, 24, 8, "occurred_at"),
-        ]),
-        "Gains": (
-            "Realized and unrealized gains over the window, by month, source, "
-            "class and position, with what the figures miss. " + PREDEFINED_NOTE,
-            "range", [
-            # Coarse to fine, so scrolling down reveals detail: the
-            # totals, the tax years, the months, where the gains came
-            # from, the monthly splits, then the positions, and last
-            # what the figures miss.
-            # The held total and the taxable realized gain first; then
-            # the gains on positions sold and held side by side, which
-            # add up to the total gain beside them.
-            ("Unrealized gain", 0, 0, 4, 3, "period"),
-            ("Realized gain", 0, 4, 4, 3, "period"),
-            ("Gain on positions sold", 0, 8, 4, 3, "period"),
-            ("Gain on positions held", 0, 12, 4, 3, "period"),
-            ("Total gain", 0, 16, 4, 3, "period"),
-            ("Cost basis coverage", 0, 20, 4, 3, "period"),
-            ("Realized gains by tax year", 3, 0, 24, 6, "period"),
-            ("Gains by month", 9, 0, 24, 8, "period"),
-            ("Gain by source", 17, 0, 8, 8, "period"),
-            ("Gain by asset class", 17, 8, 8, 8, "period"),
-            ("Realized gains by tax wrapper", 17, 16, 8, 8, "period"),
-            ("Realized gains by month, short vs long term", 25, 0, 12, 6, "period"),
-            ("Unrealized gain over time", 25, 12, 12, 6, "period"),
-            ("Unrealized gain vs. percent", 31, 0, 16, 8, "period"),
-            ("Positions in the green", 31, 16, 8, 4, "period"),
-            ("Positions in the red", 35, 16, 8, 4, "period"),
-            # The winners and losers two to a row: a table narrower
-            # than half the grid cannot show one name in full.
-            ("Largest unrealized gains", 39, 0, 12, 8, "period"),
-            ("Largest unrealized losses", 39, 12, 12, 8, "period"),
-            ("Best unrealized %", 47, 0, 12, 8, "period"),
-            ("Worst unrealized %", 47, 12, 12, 8, "period"),
-            ("Largest realized gains", 55, 0, 12, 8, "period"),
-            ("Largest realized losses", 55, 12, 12, 8, "period"),
-            ("Best realized %", 63, 0, 12, 8, "period"),
-            ("Worst realized %", 63, 12, 12, 8, "period"),
-            ("Coverage by source", 71, 0, 24, 8, "period"),
-        ]),
-        "Exposure": (
-            "What is really owned, funds looked through, by class, sector, size, "
-            "region, country, currency and legal situs. The credit, maturity, "
-            "coupon and cycle charts fix their class and take no Asset class. "
-            + PREDEFINED_NOTE,
-            "range", [
-            # The allocation first, the ring beside the sectors and the
-            # classes over time full width; then where it sits: the map
-            # full width, the regions beside every region's countries, the
-            # regions over time, and where it legally sits, full width;
-            # then what it moves with, the currency ring beside its
-            # history; then public equity by size beside what funds hold;
-            # then the debt by credit beside its maturities, its coupons
-            # beside the equity's cycles, and the largest securities, full
-            # width; last, how much the figures cover.
-            ("Exposure by asset class", 0, 0, 12, 9, "as_of_day"),
-            ("Exposure by sector", 0, 12, 12, 9, "as_of_day"),
-            ("Asset classes over time", 9, 0, 24, 8, "as_of_day"),
-            ("Exposure by country", 17, 0, 24, 10, "as_of_day"),
-            ("Exposure by region", 27, 0, 11, 9, "as_of_day"),
-            ("Exposure by region and country", 27, 11, 13, 9, "as_of_day"),
-            ("Regions over time", 36, 0, 24, 8, "as_of_day"),
-            ("Exposure by legal situs", 44, 0, 24, 8, "as_of_day"),
-            ("Exposure by currency", 52, 0, 12, 9, "as_of_day"),
-            ("Currencies over time", 52, 12, 12, 9, "as_of_day"),
-            ("Public equity by size", 61, 0, 12, 7, "as_of_day"),
-            ("Held directly or through funds", 61, 12, 12, 7, "as_of_day"),
-            ("Debt by credit rating, share of debt and cash", 68, 0, 12, 8, "as_of_day"),
-            ("Debt by maturity", 68, 12, 12, 8, "as_of_day"),
-            ("Debt by coupon kind", 76, 0, 12, 7, "as_of_day"),
-            ("Public equity by cycle", 76, 12, 12, 7, "as_of_day"),
-            ("Top securities", 83, 0, 24, 9, "as_of_day"),
-            ("How the figures are classified", 92, 0, 24, 7, "as_of_day"),
-            # Beside a benchmark alone (Card.hide_empty), and the map's
-            # comparison is a table.
-            ("Largest country deviations", 99, 0, 24, 8, "as_of_day"),
-        ]),
-        "Yield": (
-            "What the holdings earn and how their value moves with rates, over "
-            "the last twelve months. Projected figures follow the Rate path, "
-            "Maturing, Shift and Horizon pickers. " + PREDEFINED_NOTE,
-            "range", [
-            # The four headline yields, then each currency's beside what a
-            # move in rates does to its income; cash against its
-            # benchmark; the debt's yield against its duration beside its
-            # DV01 along the curve; the stocks' dividends beside what the
-            # figures rest on; last, the yields and the duration over
-            # time.
-            ("Income yield", 0, 0, 6, 3, "as_of_day"),
-            ("Projected income", 0, 6, 6, 3, "as_of_day"),
-            ("Implied yield", 0, 12, 6, 3, "as_of_day"),
-            ("Realized yield", 0, 18, 6, 3, "as_of_day"),
-            ("Yield by currency", 3, 0, 12, 8, "as_of_day"),
-            ("Income sensitivity to rates", 3, 12, 12, 8, "as_of_day"),
-            ("Cash against its benchmark", 11, 0, 24, 8, "as_of_day"),
-            ("Yield against duration", 19, 0, 12, 9, "as_of_day"),
-            ("DV01 along the curve", 19, 12, 12, 9, "as_of_day"),
-            ("Dividend yield against payout", 28, 0, 12, 8, "as_of_day"),
-            ("What the yields rest on", 28, 12, 12, 8, "as_of_day"),
-            ("Yields over time", 36, 0, 12, 7, "as_of_day"),
-            ("Duration over time", 36, 12, 12, 7, "as_of_day"),
-        ]),
-        "Data Freshness": (
-            "How long ago each source was last read, and how much of the value "
-            "each month end rests on recent marks. It takes no pickers, so every "
-            "stale source shows. " + PREDEFINED_NOTE, None, [
-            ("Stalest source (days)", 0, 0, 8, 3, None),
-            ("Returns age (days)", 0, 8, 8, 3, None),
-            ("Source freshness", 3, 0, 24, 10, None),
-            ("Mark age", 13, 0, 24, 8, None),
-        ]),
-    }
 
 
 class Card(NamedTuple):
@@ -4991,7 +4609,7 @@ def range_filters(col):
 # carry-forward of card balances, and web_fees the fee tiles' lines
 # (fee_cards); neither has a category dimension. The privacy variants
 # below are what the twin's cards actually take. The account filter binds
-# account_label (dashboard_parameters says why the readable column wins).
+# account_label (PICKERS says why the readable column wins).
 # The category filter binds spend_primary_label, not spend_primary: a
 # field filter's widget is a dropdown of the values its column takes, and
 # the Category picker is SHARED with the money dashboard, whose model
@@ -5010,8 +4628,8 @@ FEE_FILTERS = {**range_filters("day"), "account": ("account_label", "string/=")}
 # the one thing the twin exists not to show. It is dropped rather than
 # rebound: no column identifies an account without naming it, so a
 # picker over some other column would be a different filter wearing the
-# Account name (see dashboard_parameters, which drops the twin's Account
-# picker for the same reason).
+# Account name (see PICKERS: the twin drops its Account picker for the
+# same reason).
 PRIVACY_SPEND_FILTERS = {k: v for k, v in SPEND_FILTERS.items()
                          if k != "account"}
 PRIVACY_CARD_BALANCE_FILTERS = {k: v for k, v in CARD_BALANCE_FILTERS.items()
@@ -5496,336 +5114,695 @@ def card_defs():
 BENCHMARK_CARDS = frozenset(n for n, c in card_defs().items() if c.hide_empty and not n.endswith(PRIVACY_SUFFIX))
 
 
-def dashboard_defs(cards):
-    """dashboard name -> (description, filter mode, sibling dashboard
-    name, tiles). Every base dashboard but those in NO_PRIVACY_TWIN gets
-    a privacy twin: same layout and filters, cards swapped for their
-    share-normalized '(privacy)' variants. The sibling name links the
-    two views — ensure_dashboards renders it as a switch link at the top
-    of each dashboard. A dashboard without a twin has None there.
-    `cards` is card_defs, which says the cards a twin shows as they are."""
-    # A twin's blurb names what its figures are shares of, in place of
-    # its base's: by mode, or for every 'range' dashboard with a twin in
-    # its own words (own_pdesc). Absolute amounts never show on any.
-    pdesc = {
-        "returns": (
-            "Returns are scale-free and show as they are. The money columns "
-            "and the account and portfolio grains are redacted. "),
-        "asof": (
-            "Every breakdown is a share (%) of the selected sources' total "
-            "on the chosen day, summing to 100. Absolute amounts never show. "),
-        None: (
-            "Values are shares (%) of the latest total across all sources. "
-            "Absolute amounts never show. "),
-    }
-    # Spending, Income and Cash Flow are 'range' dashboards whose
-    # denominators are their own window rather than a holdings total, and
-    # the Spending and Income twins also redact; Exposure's shares are of
-    # each month end's net worth or of a chart's class and need no
-    # normalising, and Yield's are rates. The Wealth Overview shows the
-    # others' figures beside its own holdings shares. So each names what
-    # it does in a blurb of its own.
-    own_pdesc = {"Wealth Overview": (
-        "Net worth figures are shares (%) of the selected sources' total at "
-        "the window's end. Other figures are their dashboard's privacy "
-        "figures, gains a percent of cost basis. "),
-        "Spending": (
-        "Values are shares (%) of the window's net spend, of its biggest "
-        "month or of its fees. Merchant and account labels are redacted. "),
-        "Income": (
-        "Income as shares of the window's income, the holdings' income as a yield on their "
-        "value. No payer or account is named. "),
-        "Exposure": (
-        "Every figure is a share (%) of the selection's net worth, or of the "
-        "class a chart counts, at its month end. Value columns are dropped. "),
-        "Yield": (
-        "Rates and shares show as they are. DV01 is a share of net worth per "
-        "basis point, expected income a yield on its value. Account labels "
-        "are redacted. "),
-        "Cash Flow": (
-        "Values are shares (%) of the diagram's hub or of the biggest month. "
-        "The bridge shows shares of the starting net worth. The projection "
-        "shows shares of what the holdings are expected to pay. ")}
-    out = {}
-    for name, (desc, mode, tiles) in base_dashboards().items():
-        if name in NO_PRIVACY_TWIN:
-            out[name] = (desc, mode, None, tiles)
-            continue
-        pname = f"{name}{PRIVACY_SUFFIX}"
-        out[name] = (desc, mode, pname, tiles)
-        placed = TWIN_TILES.get(name, {})
-        ptiles = [(c if cards[c].exempt else privacy_name(TWIN_CARDS.get(name, {}).get(c, c)),
-                   *placed.get(c, (r, col, sx, sy)), t)
-                  for c, r, col, sx, sy, t in tiles if placed.get(c, ()) is not None]
-        out[pname] = ((own_pdesc[name] if name in own_pdesc else pdesc[mode]) + PREDEFINED_NOTE,
-                      mode, name, ptiles)
-    return out
+# ---- dashboards ---------------------------------------------------------
+
+class Column(NamedTuple):
+    """A picker's dropdown source: the values `field` takes on
+    pre-defined model `model`."""
+    model: str
+    field: str
 
 
-def dashboard_parameters(model_ids, mode, name=""):
-    """The global filters a pre-defined dashboard carries, by mode:
-    'range' pairs the source picker with a time range (flows / history
-    dashboards), 'asof' pairs it with a single as-of day (point-in-time
-    holdings dashboards), 'returns' pairs it with a start-year picker
-    (the returns dashboards), None means no filters. Every mode but None
-    adds a required currency picker. The source picker draws its
-    dropdown values from the sources model. The Exposure, Yield, Gains,
-    Spending, Income and Cash Flow dashboards are 'range' with pickers of
-    their own, so they are matched by NAME rather than by mode: Exposure
-    first (a tax wrapper and an asset class beside the source), then
-    Yield, Gains, Cash Flow, Income and Spending, with the Wealth Overview as
-    the plain 'range' case, which adds a tax wrapper and an asset class
-    as Allocation does. Spending and Income each carry one more picker than
-    their twin, which has no account picker; Cash Flow's twin carries
-    the same set, having no account picker to drop. Yield is Exposure's
-    set plus the projection's four pickers, which Income takes too,
-    beside a position of its own, and Cash Flow for its projection cards."""
-    if mode is None:
-        return []
+class Picker(NamedTuple):
+    """One dashboard picker, the payload dashboard_parameters builds from
+    it. `dashboards` are the base dashboards whose picker of `slug` it
+    is, None for any dashboard no other row names. `kind`: `list`, a
+    multi-select text picker over a Column, no default = all values;
+    `choice`, a required single value over a fixed tuple of values or a
+    Column; `number`, a required number, its values from a Column if one
+    is given; `day` and `range`, a date and a date range; `text`, a free
+    text box. `default` is a value, or a function for one the
+    configuration sets. `inline`: the picker renders on the tiles it
+    reaches, not in the filter bar."""
+    slug: str
+    dashboards: tuple
+    id: str
+    label: str
+    kind: str
+    source: object = None
+    default: object = None
+    inline: bool = False
 
-    def card_picker(pid, label, slug, model, field):
-        """A multi-select text picker (no default = all values) whose
-        dropdown lists the values `field` takes on pre-defined model
-        `model` — the shape every non-currency picker here has."""
-        return {"id": pid, "name": label, "slug": slug, "type": "string/=",
-                "sectionId": "string", "isMultiSelect": True,
-                "values_source_type": "card",
-                "values_source_config": {
-                    "card_id": model_ids[model],
-                    "value_field": ["field", field,
-                                    {"base-type": "type/Text"}]}}
 
-    def static_picker(pid, name, slug, default, values):
-        """A required single-value picker over a fixed list: the
-        product's own vocabulary, not the data's, so a card-backed list
-        would re-scan the whole population for a few known strings.
-        Required with a default, because a required parameter resets to
-        its default rather than clearing. `values_query_type` is what
-        makes Metabase render a dropdown instead of a free-text box."""
-        return {"id": pid, "name": name, "slug": slug,
-                "type": "string/=", "sectionId": "string",
-                "isMultiSelect": False, "default": [default],
-                "required": True,
-                "values_query_type": "list",
-                "values_source_type": "static-list",
-                "values_source_config": {"values": list(values)}}
+def _configured_currency():
+    return DEFAULT_CURRENCY
 
-    def currency_picker(pid):
-        """The required reporting-currency picker every filtered
-        dashboard carries, defaulting to the configured currency
-        (DEFAULT_CURRENCY). A card running with the currency cleared
-        would be wrong: a tile over a model with one row per (line,
-        reporting currency) would sum every currency, and a native
-        tile's {{currency}} variable needs a value."""
-        return static_picker(pid, "Currency", "currency", DEFAULT_CURRENCY, REPORTING_CURRENCIES)
 
-    def tax_wrapper_picker(pid):
-        """A tax wrapper picker. Its values come off the accounts model:
-        every view reads a line's tax wrapper off its account."""
-        return card_picker(pid, "Tax wrapper", "tax_wrapper",
-                           "report_accounts_latest", "tax_wrapper")
+def _configured_missing_basis():
+    return DEFAULT_MISSING_BASIS
 
-    def asset_class_picker(pid, model="report_asset_classes_history"):
-        """An asset class picker. Its values come off the asset class
-        history by default, which reads cash as the class `cash`, the
-        way every holdings view does. That taxonomy is also the one every
-        exposure leaf's class is one of. Gains and Yield list their own
-        rows' classes (report_gains_classes, report_yield_classes),
-        `unknown` among them."""
-        return card_picker(pid, "Asset class", "asset_class", model, "asset_class")
 
-    source = card_picker(SOURCE_PARAM_ID, "Source", "source",
-                         "report_sources_latest", "silver_source_id")
-    # Required with None as its default: every card then reads one
-    # benchmark or none, and the list comes off the config by the model.
-    benchmark = {**static_picker(BENCHMARK_PARAM_ID, "Benchmark", "benchmark", NO_BENCHMARK, ()),
-                 "values_source_type": "card",
-                 "values_source_config": {
-                     "card_id": model_ids["report_benchmarks"],
-                     "value_field": ["field", "benchmark", {"base-type": "type/Text"}]}}
-    if mode == "returns":
-        # report_returns carries one row set per currency, so a card
-        # running with the currency cleared would show every period once
-        # per currency. The values come off the materialized table's own
-        # currency column, like the start-year list below.
-        currency = {**currency_picker(CURRENCY_PARAM_ID),
-                    "values_source_type": "card",
-                    "values_source_config": {
-                        "card_id": model_ids["report_returns"],
-                        "value_field": ["field", "currency",
-                                        {"base-type": "type/Text"}]}}
-        # Start year: rescopes the summary scalars/table to the since-<year>
-        # window (window_from_year) and clips the charts to periods ending
-        # on/after that year. 0 = since inception. Required + default 0 so a
-        # card never aggregates across windows; values come from the
-        # materialized window_from_year set (auto-syncs to the data's span).
-        start_year = {"id": START_YEAR_PARAM_ID,
-                      "name": "Start year (0 = since inception)",
-                      "slug": "start_year", "type": "number/=",
-                      "sectionId": "number", "isMultiSelect": False,
-                      "default": [0], "required": True,
-                      "values_source_type": "card",
-                      "values_source_config": {
-                          "card_id": model_ids["report_returns"],
-                          "value_field": ["field", "window_from_year",
-                                          {"base-type": "type/Integer"}]}}
-        # The source picker narrows the by-source table and the charts (the
-        # global scalars are whole-portfolio, so it doesn't touch them). Not
-        # required / no default = all sources; the charts keep the global
-        # '(all sources)' reference line regardless.
-        return [currency, start_year, source, benchmark]
-    if mode == "asof":
-        # Required, with today as the default (ASOF_DEFAULT): a required
-        # parameter resets to its default instead of clearing, so a card
-        # always reads the day picked. It reads the last history day on
-        # or before it (_history_day): a day after the history, up to
-        # tomorrow, reads its last day; a day before it, or later than
-        # tomorrow, nothing. The vehicle picker draws its values from the
-        # positions model and is linked only to POSITION_FILTERED_CARDS.
-        return [currency_picker(WEALTH_CURRENCY_PARAM_ID),
-                {"id": ASOF_PARAM_ID, "name": "As of day", "slug": "as_of_day",
-                 "type": "date/single", "sectionId": "date",
-                 "default": ASOF_DEFAULT, "required": True},
-                source, tax_wrapper_picker(WEALTH_TAX_WRAPPER_PARAM_ID),
-                asset_class_picker(ASSET_PARAM_ID),
-                card_picker(VEHICLE_PARAM_ID, "Vehicle", "vehicle",
-                            "report_positions_history", "vehicle"),
-                benchmark]
+def _asof_default():
+    return ASOF_DEFAULT
+
+
+_WEALTH = ("Wealth Overview", "Allocation")
+
+# Every picker, one row per (dashboards, slug). The ids are arbitrary
+# but must be stable across runs so re-provisioning converges instead of
+# accumulating parameters, and they must be distinct — a reused id would
+# make two pickers one. A slug's id is per family of dashboards where
+# the families' pickers differ (their values or the views they land on),
+# shared where they do not.
+PICKERS = (
+    # The required reporting-currency picker every filtered dashboard
+    # carries, defaulting to the configured currency (DEFAULT_CURRENCY).
+    # A card running with the currency cleared would be wrong: a tile
+    # over a model with one row per (line, reporting currency) would sum
+    # every currency, and a native tile's {{currency}} variable needs a
+    # value. A static list: the product's own vocabulary, not the
+    # data's, so a card-backed list would re-scan the whole population
+    # for a few known strings. Required with a default, because a
+    # required parameter resets to its default rather than clearing.
+    Picker("currency", _WEALTH, WEALTH_CURRENCY_PARAM_ID, "Currency", "choice",
+           REPORTING_CURRENCIES, _configured_currency),
+    # report_returns carries one row set per currency, so a card running
+    # with the currency cleared would show every period once per
+    # currency. The values come off the materialized table's own
+    # currency column, like the start-year list.
+    Picker("currency", ("Returns",), CURRENCY_PARAM_ID, "Currency", "choice",
+           Column("report_returns", "currency"), _configured_currency),
+    Picker("currency", ("Spending",), SPEND_CURRENCY_PARAM_ID, "Currency", "choice",
+           REPORTING_CURRENCIES, _configured_currency),
+    Picker("currency", ("Income",), INCOME_CURRENCY_PARAM_ID, "Currency", "choice",
+           REPORTING_CURRENCIES, _configured_currency),
+    Picker("currency", ("Cash Flow",), CASHFLOW_CURRENCY_PARAM_ID, "Currency", "choice",
+           REPORTING_CURRENCIES, _configured_currency),
+    Picker("currency", ("Gains",), GAINS_CURRENCY_PARAM_ID, "Currency", "choice",
+           REPORTING_CURRENCIES, _configured_currency),
+    Picker("currency", ("Exposure",), EXPOSURE_CURRENCY_PARAM_ID, "Currency", "choice",
+           REPORTING_CURRENCIES, _configured_currency),
+    Picker("currency", ("Yield",), YIELD_CURRENCY_PARAM_ID, "Currency", "choice",
+           REPORTING_CURRENCIES, _configured_currency),
     # "past12months~": the trailing ~ means "include this month".
     # Without it Metabase takes the previous 12 COMPLETE months, which
     # silently drops every row of the current partial month.
-    time_range = {"id": TIME_PARAM_ID, "name": "Time range",
-                  "slug": "time_range", "type": "date/all-options",
-                  "sectionId": "date", "default": "past12months~"}
+    Picker("time_range", None, TIME_PARAM_ID, "Time range", "range", default="past12months~"),
+    # Required, with today as the default (ASOF_DEFAULT): a required
+    # parameter resets to its default instead of clearing, so a card
+    # always reads the day picked. It reads the last history day on or
+    # before it (_history_day): a day after the history, up to tomorrow,
+    # reads its last day; a day before it, or later than tomorrow,
+    # nothing.
+    Picker("as_of_day", None, ASOF_PARAM_ID, "As of day", "day", default=_asof_default),
+    # Start year: rescopes the summary scalars/table to the since-<year>
+    # window (window_from_year) and clips the charts to periods ending
+    # on/after that year. 0 = since inception. Required + default 0 so a
+    # card never aggregates across windows; values come from the
+    # materialized window_from_year set (auto-syncs to the data's span).
+    Picker("start_year", None, START_YEAR_PARAM_ID, "Start year (0 = since inception)", "number",
+           Column("report_returns", "window_from_year"), 0),
+    # Not required / no default = all sources. On Returns it narrows the
+    # by-source table and the charts, which keep the global '(all
+    # sources)' reference line regardless.
+    Picker("source", None, SOURCE_PARAM_ID, "Source", "list",
+           Column("report_sources_latest", "silver_source_id")),
+    # Required with None as its default: every card then reads one
+    # benchmark or none, and the list comes off the config by the model.
+    Picker("benchmark", None, BENCHMARK_PARAM_ID, "Benchmark", "choice",
+           Column("report_benchmarks", "benchmark"), NO_BENCHMARK),
+    # A tax wrapper picker. Its values come off the accounts model: every
+    # view reads a line's tax wrapper off its account. Multi-select, and
+    # a wrapper names no account, so a twin carries it too.
+    *(Picker("tax_wrapper", dashboards, pid, "Tax wrapper", "list",
+             Column("report_accounts_latest", "tax_wrapper"))
+      for dashboards, pid in ((_WEALTH, WEALTH_TAX_WRAPPER_PARAM_ID),
+                              (("Income",), INCOME_TAX_WRAPPER_PARAM_ID),
+                              (("Gains",), GAINS_TAX_WRAPPER_PARAM_ID),
+                              (("Exposure",), EXPOSURE_TAX_WRAPPER_PARAM_ID),
+                              (("Yield",), YIELD_TAX_WRAPPER_PARAM_ID))),
+    # An asset class picker. Its values come off the asset class history
+    # by default, which reads cash as the class `cash`, the way every
+    # holdings view does. That taxonomy is also the one every exposure
+    # leaf's class is one of. Gains and Yield list their own rows'
+    # classes (report_gains_classes, report_yield_classes), `unknown`
+    # among them.
+    *(Picker("asset_class", dashboards, pid, "Asset class", "list", Column(model, "asset_class"))
+      for dashboards, pid, model in (
+          (_WEALTH, ASSET_PARAM_ID, "report_asset_classes_history"),
+          (("Gains",), GAINS_ASSET_CLASS_PARAM_ID, "report_gains_classes"),
+          (("Exposure",), EXPOSURE_ASSET_CLASS_PARAM_ID, "report_asset_classes_history"),
+          (("Yield",), YIELD_ASSET_CLASS_PARAM_ID, "report_yield_classes"))),
+    # The vehicle filter reaches only the Top-positions tiles, which list
+    # individual holdings, and renders on them: the breakdowns each group
+    # by a taxonomy dimension, so filtering them by the vehicle would
+    # mostly self-select. Its values are the positions' vehicles.
+    Picker("vehicle", None, VEHICLE_PARAM_ID, "Vehicle", "list",
+           Column("report_positions_history", "vehicle"), inline=True),
+    # The account picker targets `display_name` — the model's name for
+    # the account LABEL (account_label) — and NOT `account_external_id`:
+    # a picker lists the raw values of the column it is bound to and
+    # there is no field-remapping machinery here, so binding it to the id
+    # would offer a list of opaque identifiers. The label carries the
+    # source and the kind, so two accounts wearing the same generic
+    # product name at two institutions are two distinct entries rather
+    # than one indistinguishable pair; two named alike WITHIN one source
+    # still select together, accepted on the same reasoning, and the
+    # money tiles group by the same column.
+    #
+    # THE PRIVACY TWIN CARRIES NO ACCOUNT PICKER (twin_drops). A picker
+    # cannot redact what it offers: its dropdown IS the list of values
+    # the bound column takes, and every column that identifies an
+    # account is a label — the account label, the display name it is
+    # built from (a card's falls back to its masked last four digits),
+    # or the external id. Rebinding to a column that identifies no
+    # account would make it a different filter wearing the same name, so
+    # the twin drops it, the way its cards drop the columns they cannot
+    # show (spending_cards). The Source picker still narrows by
+    # institution, and the account breakdown there regroups onto source
+    # × account kind.
+    Picker("account", ("Spending",), ACCOUNT_PARAM_ID, "Account", "list",
+           Column("report_spending", "display_name")),
+    Picker("account", ("Income",), INCOME_ACCOUNT_PARAM_ID, "Account", "list",
+           Column("report_income", "display_name")),
+    Picker("category", ("Spending",), CATEGORY_PARAM_ID, "Category", "list",
+           Column("report_spending", "spend_primary")),
+    # Bound to the DETAILED label: the income taxonomy has one vendored
+    # primary, so a primary-level picker would offer a handful of values
+    # and hide every distinction worth filtering by.
+    #
+    # `income_detailed` is the MODEL'S ALIAS for that label
+    # (report_income projects `i.income_label AS income_detailed`), not
+    # the view column of the same name. A picker's dropdown is the values
+    # its value_field takes on the model, so naming a column the model
+    # does not project leaves the dropdown empty — and the tiles then
+    # match a filter nobody could set. The matching field filter is bound
+    # to the VIEW's income_label (INCOME_FILTERS), so picker and
+    # predicate offer the same vocabulary, which is the contract the
+    # spending pair states.
+    Picker("type", ("Income",), INCOME_TYPE_PARAM_ID, "Type", "list",
+           Column("report_income", "income_detailed")),
+    # The position the calendar lists, a text box the positions table's
+    # cells also fill (its card's Link).
+    Picker("position", ("Income",), POSITION_PARAM_ID, "Position", "text"),
+    # The Investing grain: net the section as one movement — the question
+    # a reader opens with, "did the portfolio feed the household this
+    # year or the household feed the portfolio" — or per asset class,
+    # which is the step in. Required with a `whole` default so a card
+    # never runs with it cleared, and a static list because the two
+    # grains are the feature's, not the data's.
+    Picker("investing", ("Cash Flow",), CASHFLOW_INVESTING_PARAM_ID, "Investing", "choice",
+           ("whole", "class"), "whole"),
+    # A section picker offers the feature's own vocabulary, the sections
+    # the serving view carries, so the twin carries it too. It binds only
+    # to the cards that declare its tag; the headline figures and the
+    # diagram decline it, identically on the base and the twin.
+    Picker("section", ("Cash Flow",), CASHFLOW_SECTION_PARAM_ID, "Section", "list",
+           Column("report_cashflow", "section")),
+    # Missing cost basis is required, like the currency: report_gains
+    # holds a row set per reading, and a tile with the picker cleared
+    # would sum both.
+    Picker("missing_basis", ("Gains",), GAINS_MISSING_PARAM_ID, "Missing cost basis", "choice",
+           MISSING_BASIS_READINGS, _configured_missing_basis),
     # The projection's four: required, as each card reads one rate path,
     # one maturing rule and one horizon of the parts, with the CLI's
     # defaults. The shift is a number of basis points.
-    projection = [static_picker(RATES_PARAM_ID, "Rate path", "rates", RATE_PATHS[0], RATE_PATHS),
-                  static_picker(MATURING_PARAM_ID, "Maturing", "maturing", MATURING_RULES[0],
-                                MATURING_RULES),
-                  {"id": SHIFT_PARAM_ID, "name": "Shift (bp)", "slug": "shift", "type": "number/=",
-                   "sectionId": "number", "isMultiSelect": False, "default": [0], "required": True},
-                  static_picker(HORIZON_PARAM_ID, "Horizon (months)", "horizon", HORIZONS[0], HORIZONS)]
-    if name in EXPOSURE_DASHBOARDS:
-        # The currency is required, as report_exposure holds a row set
-        # per currency; the source, the tax wrapper and the asset class
-        # narrow the look-through to a selection, whose shares the cards
-        # compute.
-        return [currency_picker(EXPOSURE_CURRENCY_PARAM_ID), time_range, source,
-                tax_wrapper_picker(EXPOSURE_TAX_WRAPPER_PARAM_ID),
-                asset_class_picker(EXPOSURE_ASSET_CLASS_PARAM_ID), benchmark]
-    if name in YIELD_DASHBOARDS:
-        # Exposure's five, report_yield_positions holding a row set per
-        # currency too, and the projection's four.
-        return [currency_picker(YIELD_CURRENCY_PARAM_ID), time_range, source,
-                tax_wrapper_picker(YIELD_TAX_WRAPPER_PARAM_ID),
-                asset_class_picker(YIELD_ASSET_CLASS_PARAM_ID, "report_yield_classes"), benchmark, *projection]
-    if name in GAINS_DASHBOARDS:
-        # Missing cost basis is required, like the currency:
-        # report_gains holds a row set per reading, and a tile with the
-        # picker cleared would sum both.
-        missing = static_picker(GAINS_MISSING_PARAM_ID, "Missing cost basis", "missing_basis",
-                                DEFAULT_MISSING_BASIS, MISSING_BASIS_READINGS)
-        return [currency_picker(GAINS_CURRENCY_PARAM_ID), time_range, source,
-                tax_wrapper_picker(GAINS_TAX_WRAPPER_PARAM_ID),
-                asset_class_picker(GAINS_ASSET_CLASS_PARAM_ID, "report_gains_classes"), missing]
-    if name in CASHFLOW_DASHBOARDS:
-        # The Investing grain: net the section as one movement — the
-        # question a reader opens with, "did the portfolio feed the
-        # household this year or the household feed the portfolio" — or
-        # per asset class, which is the step in. Required with a `whole`
-        # default so a card never runs with it cleared, and a static list
-        # because the two grains are the feature's, not the data's.
-        investing = static_picker(CASHFLOW_INVESTING_PARAM_ID, "Investing", "investing",
-                                  "whole", ("whole", "class"))
+    Picker("rates", None, RATES_PARAM_ID, "Rate path", "choice", RATE_PATHS, RATE_PATHS[0]),
+    Picker("maturing", None, MATURING_PARAM_ID, "Maturing", "choice", MATURING_RULES, MATURING_RULES[0]),
+    Picker("shift", None, SHIFT_PARAM_ID, "Shift (bp)", "number", default=0),
+    Picker("horizon", None, HORIZON_PARAM_ID, "Horizon (months)", "choice", HORIZONS, HORIZONS[0]),
+)
+
+
+def picker_payload(x):
+    """The parameter of a dashboard Picker `x`, a Column's model unbound
+    (("model_id", name), which bind resolves). `values_query_type` is
+    what makes Metabase render a choice's dropdown instead of a
+    free-text box."""
+    out = {"id": x.id, "name": x.label, "slug": x.slug}
+    default = x.default() if callable(x.default) else x.default
+    if x.kind == "range":
+        out.update({"type": "date/all-options", "sectionId": "date", "default": default})
+    elif x.kind == "day":
+        out.update({"type": "date/single", "sectionId": "date", "default": default, "required": True})
+    elif x.kind == "number":
+        out.update({"type": "number/=", "sectionId": "number", "isMultiSelect": False,
+                    "default": [default], "required": True})
+    else:
+        out.update({"type": "string/=", "sectionId": "string", "isMultiSelect": x.kind == "list"})
+        if x.kind == "choice":
+            out.update({"default": [default], "required": True, "values_query_type": "list"})
+    if isinstance(x.source, Column):
+        btype = "type/Integer" if x.kind == "number" else "type/Text"
+        out.update({"values_source_type": "card",
+                    "values_source_config": {"card_id": ("model_id", x.source.model),
+                                             "value_field": ["field", x.source.field, {"base-type": btype}]}})
+    elif x.source is not None:
+        out.update({"values_source_type": "static-list", "values_source_config": {"values": list(x.source)}})
+    return out
+
+
+class Heading(NamedTuple):
+    """A full-width row of text, one high: a section's heading, or with
+    `display` "text" a chart's subtitle."""
+    text: str
+    display: str = "heading"
+
+
+class Stack(NamedTuple):
+    """A column `width` wide of `cards` one above the other, sharing the
+    height of the row it stands in."""
+    width: int
+    cards: tuple
+
+
+class Row(NamedTuple):
+    """Tiles side by side, `height` high, from the left: each a (card,
+    width) pair, with a third element the card the twin shows there in
+    its place, or a Stack."""
+    height: int
+    tiles: tuple
+
+
+class Twin(NamedTuple):
+    """Rows the base dashboard lays out, `base`, and the twin lays out in
+    their place, `twin`."""
+    base: tuple
+    twin: tuple
+
+
+class Dashboard(NamedTuple):
+    """One pre-defined dashboard and its privacy twin. `twin_desc` is the
+    twin's blurb, naming what its figures are shares of; None for a
+    dashboard with no twin. `pickers` are the slugs of its pickers in
+    their order (PICKERS), `twin_drops` those the twin leaves out.
+    `rows` lay its tiles out (layout). `redacts`: the twin redacts money
+    columns where the others show shares, and the switch link of both
+    says so."""
+    name: str
+    desc: str
+    twin_desc: str
+    pickers: tuple
+    twin_drops: tuple
+    rows: tuple
+    redacts: bool = False
+
+
+def layout(rows, twin=False):
+    """The tiles and headings of `rows` on Metabase's 24-column grid, on
+    the twin with `twin`: (tiles, headings), a tile (card, row, col,
+    size_x, size_y, twin card), a heading (row, text, display). Each row
+    starts below the one before it, each tile right of the one before."""
+    tiles, headings, top = [], [], 0
+    for item in rows:
+        if isinstance(item, Twin):
+            sub_tiles, sub_headings = layout(item.twin if twin else item.base, twin)
+            tiles += [(c, r + top, col, w, h, t) for c, r, col, w, h, t in sub_tiles]
+            headings += [(r + top, text, d) for r, text, d in sub_headings]
+            top += max([r + h for _c, r, _col, _w, h, _t in sub_tiles] +
+                       [r + 1 for r, _text, _d in sub_headings], default=0)
+            continue
+        if isinstance(item, Heading):
+            headings.append((top, item.text, item.display))
+            top += 1
+            continue
+        col = 0
+        for tile in item.tiles:
+            if isinstance(tile, Stack):
+                h = item.height // len(tile.cards)
+                tiles += [(c, top + k * h, col, tile.width, h, c) for k, c in enumerate(tile.cards)]
+                col += tile.width
+            else:
+                card, width, *shown = tile
+                tiles.append((card, top, col, width, item.height, shown[0] if shown else card))
+                col += width
+        top += item.height
+    return tiles, headings
+
+
+# The sentence every pre-defined dashboard's blurb ends with.
+PREDEFINED_NOTE = "Pre-defined; duplicate it before customizing."
+
+# Every pre-defined dashboard, in the order they are sent. A tile's card
+# takes each picker its template tags name (tile_mappings); an MBQL
+# card's mappings are card_mappings'. Data Freshness is deliberately
+# unfiltered — its job is to show every source, especially the stale
+# ones a time filter would hide.
+DASHBOARDS = (
+    Dashboard(
+        "Wealth Overview",
+        "Net worth and its asset classes over time, then key figures from "
+        "the other dashboards. Each figure opens the dashboard it comes from. "
+        + PREDEFINED_NOTE,
+        "Net worth figures are shares (%) of the selected sources' total at "
+        "the window's end. Other figures are their dashboard's privacy "
+        "figures, gains a percent of cost basis. " + PREDEFINED_NOTE,
+        ("currency", "time_range", "source", "tax_wrapper", "asset_class"), (), (
+            # Net worth = positions + cash by construction — the first
+            # three tiles reconcile exactly; the trend tile is a monthly
+            # AVERAGE, so it intentionally differs from today's value.
+            # The stalest source sits beside them: the warning to read
+            # before trusting any figure.
+            Row(3, (("Net worth", 4), ("Positions value", 5), ("Cash balance", 5),
+                    ("Net worth — monthly trend", 5), ("Stalest source (days)", 5))),
+            # The net worth chart, then its mix by asset class.
+            Row(8, (("Net worth over time", 24),)),
+            Row(8, (("Asset class mix over time", 24),)),
+            # Under two headings that say what sets each row of figures:
+            # the figures over the time range, then those at its end,
+            # today and ahead, three to a row so each title reads whole.
+            Heading("Over the time range"),
+            # On the twin, received income and net spend read 100 by
+            # construction: each is the total its own twin divides by.
+            # The twin leaves them out, and the other four figures of
+            # their rows sit two to a row.
+            Twin((Row(3, (("Income received", 8), ("Net spend", 8), ("Spend — monthly trend", 8))),
+                  Row(3, (("Net cash flow", 8), ("Savings rate", 8), ("Realized gain", 8)))),
+                 (Row(3, (("Spend — monthly trend", 12), ("Net cash flow", 12))),
+                  Row(3, (("Savings rate", 12), ("Realized gain", 12))))),
+            Heading("At the range's end, today and ahead"),
+            Row(3, (("Unrealized gain", 8), ("Return year to date (TWR)", 8),
+                    ("Return year to date (MWR)", 8))),
+            Row(3, (("Income yield", 8), ("Income expected", 8), ("Projected net cash flow", 8))),
+        )),
+    Dashboard(
+        "Allocation",
+        "Where the value sits as of the chosen day, by asset class, vehicle, "
+        "currency, tax wrapper, management style, position and issuer. Cash "
+        "is a position in every breakdown. " + PREDEFINED_NOTE,
+        "Every breakdown is a share (%) of the selected sources' total "
+        "on the chosen day, summing to 100. Absolute amounts never show. " + PREDEFINED_NOTE,
+        ("currency", "as_of_day", "source", "tax_wrapper", "asset_class", "vehicle", "benchmark"), (), (
+            # The two taxonomy dimensions side by side on the top row.
+            Row(8, (("Allocation by asset class", 12), ("Allocation by vehicle", 12))),
+            Row(8, (("Allocation by currency", 12), ("Value by tax wrapper", 12))),
+            Row(6, (("Value by management style", 24),)),
+            Row(8, (("Top 100 positions", 24),)),
+            Row(9, (("Top 100 issuers", 24),)),
+        )),
+    Dashboard(
+        "Returns",
+        "Time-weighted (TWR) and money-weighted (MWR) returns, per period "
+        "and per source. Start year 0 means since inception, where TWR is "
+        "often n/a. " + PREDEFINED_NOTE,
+        "Returns are scale-free and show as they are. The money columns "
+        "and the account and portfolio grains are redacted. " + PREDEFINED_NOTE,
+        ("currency", "start_year", "source", "benchmark"), (), (
+            # Scalars rescope to the since-<start year> window; charts split
+            # by source with the global grain as a toggleable '(all sources)'
+            # line. MWR is a summary figure only (the per-period buckets
+            # carry TWR); that is engine behavior the scalars mirror.
+            Row(3, (("Return (TWR)", 8), ("Return (MWR)", 8), ("Annualized return (TWR)", 8))),
+            # Beside a benchmark alone (Card.hide_empty), the figures above them
+            # again in their order.
+            Row(3, (("Benchmark return (TWR)", 8), ("Benchmark return (MWR)", 8),
+                    ("Benchmark annualized return (TWR)", 8))),
+            Row(3, (("Excess return (TWR)", 8), ("Excess return (MWR)", 8),
+                    ("Excess annualized return (TWR)", 8))),
+            Row(8, (("Cumulative return (TWR)", 24),)),
+            Row(6, (("Monthly returns (TWR)", 8), ("Quarterly returns (TWR)", 8),
+                    ("Annual returns (TWR)", 8))),
+            Row(8, (("Returns by source", 24),)),
+            Row(8, (("Money-weighted return over time", 24),)),
+            Row(8, (("Value against the benchmark", 24),)),
+        ), redacts=True),
+    Dashboard(
+        "Spending",
+        "Where the money goes over the window, by month, category, merchant "
+        "and account, what each portfolio paid in fees, and what the cards "
+        "owe. Own-account moves are not spend. " + PREDEFINED_NOTE,
+        "Values are shares (%) of the window's net spend, of its biggest "
+        "month or of its fees. Merchant and account labels are redacted. " + PREDEFINED_NOTE,
+        ("currency", "time_range", "source", "account", "category"), ("account",), (
+            # The three headline figures, then the shape of the window
+            # (months x category), then the two breakdown levels side by
+            # side — the primary tile drills through to the lines behind
+            # a bar, the detailed tile holds the same window one level
+            # down. Merchants and accounts answer "to whom" and "from
+            # where", the fee tiles what each portfolio paid (web_fees);
+            # the card-balances chart reads web_card_balances_history,
+            # and the transaction list is the bottom of the drill-down.
+            Row(3, (("Spend — monthly trend", 8), ("Net spend", 8), ("Uncategorized share", 8))),
+            Row(9, (("Spending by month", 24),)),
+            Row(8, (("Spending by category", 12), ("Spending by subcategory", 12))),
+            Row(8, (("Top 50 merchants", 12), ("Spend by account", 12))),
+            Row(8, (("Fees by portfolio", 10), ("Fee rate by portfolio", 14))),
+            Row(6, (("Card balances over time", 24),)),
+            Row(8, (("Largest transactions", 24),)),
+        )),
+    Dashboard(
+        "Income",
+        "Every income line received, wages included, and the income expected, the "
+        "holdings' payments with a run-rate of the rest. " + PREDEFINED_NOTE,
+        "Income as shares of the window's income, the holdings' income as a yield on their "
+        "value. No payer or account is named. " + PREDEFINED_NOTE,
+        # The Horizon sits beside the Time range: the one sets every
+        # expected figure as the other sets every received one.
+        ("currency", "time_range", "horizon", "source", "account", "type", "tax_wrapper", "position",
+         "rates", "maturing", "shift"), ("account",), (
+            # The headline figures first, then the charts, then the
+            # tables: what was received and is expected, beside the
+            # income lines' net income and backlog; the trend and the
+            # withholding; both halves by month, then their interest and
+            # dividends; the types beside the payers; then by account
+            # and by position, the calendar a position's row picks, and
+            # the largest receipts. The income in the window has no share
+            # worth showing, so the twin shows the holdings' income as a
+            # yield on their value there, and names it so.
+            Row(3, (("Income in the window", 4, "Holdings' income yield"), ("Income received", 4),
+                    ("Income expected", 4), ("Net income", 4), ("Monthly average income", 4),
+                    ("Uncategorized income share", 4))),
+            Row(3, (("Income — monthly trend", 8), ("Withholding", 8), ("Income after withholding", 8))),
+            # Which bands of the chart below are a run-rate rather than a
+            # payment.
+            Heading("Every income line. A band marked run-rate is an account's average of past months; this "
+                    "month it expects only what has not arrived.", "text"),
+            Row(9, (("Received and expected by month", 24),)),
+            Row(3, (("Holdings' interest received", 6), ("Holdings' dividends received", 6),
+                    ("Holdings' interest expected", 6), ("Holdings' dividends expected", 6))),
+            Row(8, (("Income by type", 12), ("Top 50 payers", 12))),
+            Row(7, (("Received and expected by account", 24),)),
+            Row(10, (("Received and expected by position", 24),)),
+            Row(8, (("Expected payments", 24),)),
+            Row(8, (("Largest receipts", 24),)),
+        )),
+    Dashboard(
+        "Cash Flow",
+        "Where the household's cash came from and went, as a statement and "
+        "a Sankey, and why net worth moved. Buying and selling shows net. "
+        "The projection sets expected income against average past outflows. "
+        + PREDEFINED_NOTE,
+        "Values are shares (%) of the diagram's hub or of the biggest month. "
+        "The bridge shows shares of the starting net worth. The projection "
+        "shows shares of what the holdings are expected to pay. " + PREDEFINED_NOTE,
         # BOTH dashboards carry the same pickers: unlike the spending and
         # income pairs, the twin drops nothing, because none of these
         # pickers renders a dropdown of anything that identifies an
         # account. There is no account picker to drop — docs/CASHFLOW.md
-        # §9 — and a section picker offers the feature's own vocabulary,
-        # the sections the serving view carries. The Section picker is
-        # declared here for both dashboards but BINDS only to the cards
-        # that declare its tag; the headline figures and the diagram
-        # decline it, identically on the base and the twin. The
-        # projection's four follow, the Horizon first as on Income; they
-        # bind only to the projection cards (cashflow_plan_cards), which
-        # take none of the others but the currency.
-        rates, maturing, shift, horizon = projection
-        return [currency_picker(CASHFLOW_CURRENCY_PARAM_ID), investing,
-                time_range, source,
-                card_picker(CASHFLOW_SECTION_PARAM_ID, "Section", "section",
-                            "report_cashflow", "section"),
-                horizon, rates, maturing, shift]
-    if name in INCOME_DASHBOARDS:
-        # The income pickers, in the shape the spending ones take and
-        # for the same reasons — including no account picker on the
-        # twin, a picker being unable to redact what its own dropdown
-        # offers. The Horizon sits beside the Time range: the one sets
-        # every expected figure as the other sets every received one.
-        rates, maturing, shift, horizon = projection
-        pickers = [currency_picker(INCOME_CURRENCY_PARAM_ID), time_range, horizon, source]
-        if not name.endswith(PRIVACY_SUFFIX):
-            pickers.append(card_picker(INCOME_ACCOUNT_PARAM_ID, "Account",
-                                       "account", "report_income", "display_name"))
-        # Bound to the DETAILED label: the income taxonomy has one
-        # vendored primary, so a primary-level picker would offer a
-        # handful of values and hide every distinction worth filtering by.
-        #
-        # `income_detailed` is the MODEL'S ALIAS for that label
-        # (report_income projects `i.income_label AS income_detailed`),
-        # not the view column of the same name. A picker's dropdown is
-        # the values its value_field takes on the model, so naming a
-        # column the model does not project leaves the dropdown empty —
-        # and the tiles then match a filter nobody could set. The
-        # matching field filter is bound to the VIEW's income_label
-        # (INCOME_FILTERS), so picker and predicate offer the same
-        # vocabulary, which is the contract the spending pair states.
-        pickers.append(card_picker(INCOME_TYPE_PARAM_ID, "Type", "type",
-                                   "report_income", "income_detailed"))
-        # The tax wrapper, multi-select as on Yield and Gains: a wrapper
-        # names no account, so the twin carries it too.
-        pickers.append(tax_wrapper_picker(INCOME_TAX_WRAPPER_PARAM_ID))
-        # The position the calendar lists, a text box the positions
-        # table's cells also fill (its card's Link), then the
-        # projection's three assumptions.
-        position = {"id": POSITION_PARAM_ID, "name": "Position", "slug": "position",
-                    "type": "string/=", "sectionId": "string", "isMultiSelect": False}
-        return [*pickers, position, rates, maturing, shift]
-    if name not in SPENDING_DASHBOARDS:
-        # The Wealth Overview: the tax wrapper and the asset class, as
-        # Allocation.
-        return [currency_picker(WEALTH_CURRENCY_PARAM_ID), time_range, source,
-                tax_wrapper_picker(WEALTH_TAX_WRAPPER_PARAM_ID),
-                asset_class_picker(ASSET_PARAM_ID)]
-    currency = currency_picker(SPEND_CURRENCY_PARAM_ID)
-    # The account picker targets `display_name` — the model's name for
-    # the account LABEL (account_label) — and NOT
-    # `account_external_id`: a picker lists the raw values of the column
-    # it is bound to and there is no field-remapping machinery here, so
-    # binding it to the id would offer a list of opaque identifiers. The
-    # label carries the source and the kind, so two accounts wearing the
-    # same generic product name at two institutions are two distinct
-    # entries rather than one indistinguishable pair; two named alike
-    # WITHIN one source still select together, accepted on the same
-    # reasoning, and the money tiles group by the same column.
-    #
-    # THE PRIVACY TWIN CARRIES NO ACCOUNT PICKER. A picker cannot redact
-    # what it offers: its dropdown IS the list of values the bound column
-    # takes, and every column that identifies an account is a label — the
-    # account label, the display name it is built from (a card's falls
-    # back to its masked last four digits), or the external id. Rebinding to a column that identifies no
-    # account would make it a different filter wearing the same name, so
-    # the twin drops it, the way its cards drop the columns they cannot
-    # show (spending_cards). The Source picker still narrows by
-    # institution, and the account breakdown there regroups onto source ×
-    # account kind.
-    pickers = [currency, time_range, source]
-    if not name.endswith(PRIVACY_SUFFIX):
-        pickers.append(card_picker(ACCOUNT_PARAM_ID, "Account", "account",
-                                   "report_spending", "display_name"))
-    pickers.append(card_picker(CATEGORY_PARAM_ID, "Category", "category",
-                               "report_spending", "spend_primary"))
-    return pickers
+        # §9. The projection's four follow, the Horizon first as on
+        # Income; they bind only to the projection cards
+        # (cashflow_plan_cards), which take none of the others but the
+        # currency.
+        ("currency", "investing", "time_range", "source", "section", "horizon", "rates", "maturing",
+         "shift"), (), (
+            # Five headline figures, then the diagram at the centre, then
+            # the shape of the window, why net worth moved, and the
+            # projection of the months ahead, then the two sides of
+            # operating, then the swing sections, then the lines.
+            Row(3, (("Operating in", 5), ("Operating out", 5), ("Net cash flow", 5), ("Savings rate", 4),
+                    ("Yield share", 5))),
+            # Full width and tall: the diagram is the dashboard.
+            Row(12, (("Cash flow", 24),)),
+            Row(8, (("Cash flow statement by month", 24),)),
+            # The net worth the walk leads from and to, in a column
+            # beside the walk.
+            Row(8, (Stack(6, ("Net worth at start", "Net worth at end")), ("Why net worth moved", 18))),
+            Row(8, (("Saved and gained by month", 24),)),
+            Row(8, (("Cash flow projection by month", 24),)),
+            Row(9, (("Cash flow projection", 24),)),
+            Row(7, (("Inflows by class by month", 12), ("Outflows by class by month", 12))),
+            Row(7, (("Investing by month", 12), ("Financing and vehicles by month", 12))),
+            Row(8, (("Largest flows", 24),)),
+        )),
+    # No privacy twin. Its tiles are gains on named positions; a twin
+    # would normalise the money, and what would remain is the percent
+    # columns the tables carry already.
+    Dashboard(
+        "Gains",
+        "Realized and unrealized gains over the window, by month, source, "
+        "class and position, with what the figures miss. " + PREDEFINED_NOTE, None,
+        ("currency", "time_range", "source", "tax_wrapper", "asset_class", "missing_basis"), (), (
+            # Coarse to fine, so scrolling down reveals detail: the
+            # totals, the tax years, the months, where the gains came
+            # from, the monthly splits, then the positions, and last
+            # what the figures miss.
+            # The held total and the taxable realized gain first; then
+            # the gains on positions sold and held side by side, which
+            # add up to the total gain beside them.
+            Row(3, (("Unrealized gain", 4), ("Realized gain", 4), ("Gain on positions sold", 4),
+                    ("Gain on positions held", 4), ("Total gain", 4), ("Cost basis coverage", 4))),
+            Row(6, (("Realized gains by tax year", 24),)),
+            Row(8, (("Gains by month", 24),)),
+            Row(8, (("Gain by source", 8), ("Gain by asset class", 8), ("Realized gains by tax wrapper", 8))),
+            Row(6, (("Realized gains by month, short vs long term", 12), ("Unrealized gain over time", 12))),
+            Row(8, (("Unrealized gain vs. percent", 16), Stack(8, ("Positions in the green", "Positions in the red")))),
+            # The winners and losers two to a row: a table narrower
+            # than half the grid cannot show one name in full.
+            Row(8, (("Largest unrealized gains", 12), ("Largest unrealized losses", 12))),
+            Row(8, (("Best unrealized %", 12), ("Worst unrealized %", 12))),
+            Row(8, (("Largest realized gains", 12), ("Largest realized losses", 12))),
+            Row(8, (("Best realized %", 12), ("Worst realized %", 12))),
+            Row(8, (("Coverage by source", 24),)),
+        )),
+    Dashboard(
+        "Exposure",
+        "What is really owned, funds looked through, by class, sector, size, "
+        "region, country, currency and legal situs. The credit, maturity, "
+        "coupon and cycle charts fix their class and take no Asset class. "
+        + PREDEFINED_NOTE,
+        "Every figure is a share (%) of the selection's net worth, or of the "
+        "class a chart counts, at its month end. Value columns are dropped. " + PREDEFINED_NOTE,
+        # The currency is required, as report_exposure holds a row set
+        # per currency; the source, the tax wrapper and the asset class
+        # narrow the look-through to a selection, whose shares the cards
+        # compute.
+        ("currency", "time_range", "source", "tax_wrapper", "asset_class", "benchmark"), (), (
+            # The allocation first, the ring beside the sectors and the
+            # classes over time full width; then where it sits: the map
+            # full width, the regions beside every region's countries, the
+            # regions over time, and where it legally sits, full width;
+            # then what it moves with, the currency ring beside its
+            # history; then public equity by size beside what funds hold;
+            # then the debt by credit beside its maturities, its coupons
+            # beside the equity's cycles, and the largest securities, full
+            # width; last, how much the figures cover.
+            Row(9, (("Exposure by asset class", 12), ("Exposure by sector", 12))),
+            Row(8, (("Asset classes over time", 24),)),
+            Row(10, (("Exposure by country", 24),)),
+            Row(9, (("Exposure by region", 11), ("Exposure by region and country", 13))),
+            Row(8, (("Regions over time", 24),)),
+            Row(8, (("Exposure by legal situs", 24),)),
+            Row(9, (("Exposure by currency", 12), ("Currencies over time", 12))),
+            Row(7, (("Public equity by size", 12), ("Held directly or through funds", 12))),
+            Row(8, (("Debt by credit rating, share of debt and cash", 12), ("Debt by maturity", 12))),
+            Row(7, (("Debt by coupon kind", 12), ("Public equity by cycle", 12))),
+            Row(9, (("Top securities", 24),)),
+            Row(7, (("How the figures are classified", 24),)),
+            # Beside a benchmark alone (Card.hide_empty), and the map's
+            # comparison is a table.
+            Row(8, (("Largest country deviations", 24),)),
+        )),
+    Dashboard(
+        "Yield",
+        "What the holdings earn and how their value moves with rates, over "
+        "the last twelve months. Projected figures follow the Rate path, "
+        "Maturing, Shift and Horizon pickers. " + PREDEFINED_NOTE,
+        "Rates and shares show as they are. DV01 is a share of net worth per "
+        "basis point, expected income a yield on its value. Account labels "
+        "are redacted. " + PREDEFINED_NOTE,
+        # Exposure's five, report_yield_positions holding a row set per
+        # currency too, and the projection's four.
+        ("currency", "time_range", "source", "tax_wrapper", "asset_class", "benchmark", "rates", "maturing",
+         "shift", "horizon"), (), (
+            # The four headline yields, then each currency's beside what a
+            # move in rates does to its income; cash against its
+            # benchmark; the debt's yield against its duration beside its
+            # DV01 along the curve; the stocks' dividends beside what the
+            # figures rest on; last, the yields and the duration over
+            # time.
+            Row(3, (("Income yield", 6), ("Projected income", 6), ("Implied yield", 6), ("Realized yield", 6))),
+            Row(8, (("Yield by currency", 12), ("Income sensitivity to rates", 12))),
+            Row(8, (("Cash against its benchmark", 24),)),
+            Row(9, (("Yield against duration", 12), ("DV01 along the curve", 12))),
+            Row(8, (("Dividend yield against payout", 12), ("What the yields rest on", 12))),
+            Row(7, (("Yields over time", 12), ("Duration over time", 12))),
+        )),
+    Dashboard(
+        "Data Freshness",
+        "How long ago each source was last read, and how much of the value "
+        "each month end rests on recent marks. It takes no pickers, so every "
+        "stale source shows. " + PREDEFINED_NOTE,
+        "Values are shares (%) of the latest total across all sources. "
+        "Absolute amounts never show. " + PREDEFINED_NOTE,
+        (), (), (
+            Row(3, (("Stalest source (days)", 8), ("Returns age (days)", 8))),
+            Row(10, (("Source freshness", 24),)),
+            Row(8, (("Mark age", 24),)),
+        )),
+)
+DASHBOARDS_BY_NAME = {d.name: d for d in DASHBOARDS}
+
+
+def picker_of(dashboard, slug):
+    """The PICKERS row of `slug` for base dashboard `dashboard`: its
+    own, else the slug's shared one. A slug with neither is a
+    definition out of step: ValueError."""
+    own = [x for x in PICKERS if x.slug == slug and x.dashboards and dashboard in x.dashboards]
+    shared = [x for x in PICKERS if x.slug == slug and x.dashboards is None]
+    if not own and not shared:
+        raise ValueError(f"provision: dashboard {dashboard!r} names picker {slug!r}, "
+                         "which PICKERS has no row for")
+    return (own or shared)[0]
+
+
+def check_dashboards(dashboards):
+    """Raise ValueError on the first of `dashboards` that names a picker
+    PICKERS has no row for, or drops one from its twin it does not
+    carry. Run on DASHBOARDS as they are defined, so a dashboard out of
+    step stops provisioning before anything is sent."""
+    for d in dashboards:
+        for slug in d.pickers:
+            picker_of(d.name, slug)
+        extra = [s for s in d.twin_drops if s not in d.pickers]
+        if extra:
+            raise ValueError(f"provision: dashboard {d.name!r} drops {extra[0]!r} from its twin, "
+                             "a picker it does not carry")
+
+
+check_dashboards(DASHBOARDS)
+
+# The dashboards with no privacy twin.
+NO_PRIVACY_TWIN = frozenset(d.name for d in DASHBOARDS if d.twin_desc is None)
+# The Income dashboards: demo/check_dashboards.py reads them.
+INCOME_DASHBOARDS = {"Income", "Income" + PRIVACY_SUFFIX}
+
+
+class Layout(NamedTuple):
+    """One dashboard as dashboard_defs lays it out: its blurb, the slugs
+    of its pickers, the name of its twin or base (None for a dashboard
+    with no twin), its tiles (card, row, col, size_x, size_y) and its
+    headings (row, text, display), and whether its twin redacts
+    (Dashboard.redacts)."""
+    desc: str
+    pickers: tuple
+    sibling: str
+    tiles: list
+    headings: list
+    redacts: bool
+
+
+def dashboard_defs(cards):
+    """dashboard name -> Layout of every dashboard of DASHBOARDS and its
+    privacy twin, each base before its twin. A twin has its base's
+    layout with its cards swapped for their privacy variants, or the
+    card itself where it is exempt in `cards` (card_defs). The sibling
+    name links the two views — ensure_dashboards renders it as a switch
+    link at the top of each dashboard."""
+    out = {}
+    for d in DASHBOARDS:
+        pname = privacy_name(d.name) if d.twin_desc is not None else None
+        tiles, headings = layout(d.rows)
+        out[d.name] = Layout(d.desc, d.pickers, pname, [t[:5] for t in tiles], headings, d.redacts)
+        if pname is None:
+            continue
+        tiles, headings = layout(d.rows, twin=True)
+        out[pname] = Layout(d.twin_desc, tuple(s for s in d.pickers if s not in d.twin_drops), d.name,
+                            [(c if cards[c].exempt else privacy_name(shown), *place)
+                             for c, *place, shown in tiles], headings, d.redacts)
+    return out
+
+
+def dashboard_parameters(name):
+    """The pickers dashboard `name` carries, a twin's its base's but the
+    ones it drops, in their order (picker_of, picker_payload). A model a
+    picker lists the values of is unbound, as bind takes it."""
+    base = name.removesuffix(PRIVACY_SUFFIX)
+    d = DASHBOARDS_BY_NAME[base]
+    return [picker_payload(picker_of(base, s)) for s in d.pickers if name == base or s not in d.twin_drops]
+
+
+# The pickers that render on the tiles they reach rather than in the bar.
+INLINE_PICKERS = frozenset(x.id for x in PICKERS if x.inline)
 
 
 def gold_metadata(client, db_id, tries=3, delay=2):
@@ -6298,7 +6275,8 @@ def bind(payload, db_id, field_ids, model_ids):
     its dataset_query takes the database `db_id`, a ("field", table,
     column) becomes the field reference of that column's id in
     `field_ids`, and an MBQL source table ("model", name) the model's
-    card, "card__<id>" by `model_ids`. A reference with no id raises
+    card, "card__<id>" by `model_ids`, and a ("model_id", name) the
+    model's card id. A reference with no id raises
     ValueError. ensure_synced stops the run before any card is built when
     a column filter_field_columns names has no id, so a missing one is a
     definition out of step."""
@@ -6312,6 +6290,8 @@ def bind(payload, db_id, field_ids, model_ids):
             return ["field", ref("field", v[1:], field_ids), None]
         if isinstance(v, tuple) and v[:1] == ("model",):
             return f"card__{ref('model', v[1], model_ids)}"
+        if isinstance(v, tuple) and v[:1] == ("model_id",):
+            return ref("model", v[1], model_ids)
         if isinstance(v, dict):
             out = {k: walk(x, k) for k, x in v.items()}
             return {"type": out["type"], "database": db_id, **out} if key == "dataset_query" else out
@@ -6455,14 +6435,13 @@ def tile_mappings(query, card_id, parameters):
             for x in parameters if (t := by_slug.get(x["slug"])) is not None]
 
 
-def card_mappings(card, tcol, mode, name, card_ids):
-    """The picker mappings of MBQL card `card`'s tile on dashboard `name`
-    (filter mode `mode`), before they are kept to the pickers the
-    dashboard carries: dimensions of its model, the time picker on the
-    tile's time column `tcol`."""
-    if not mode:
-        return []
-    if mode == "returns":
+def card_mappings(card, dash, card_ids):
+    """The picker mappings of MBQL card `card`'s tile on dashboard `dash`
+    or its twin, before they are kept to the pickers the dashboard
+    carries: dimensions of its model. Only Returns and Spending have
+    MBQL tiles that take a picker."""
+    dash = dash.removesuffix(PRIVACY_SUFFIX)
+    if dash == "Returns":
         # The MBQL returns scalars + table take Currency + Start-year as
         # dimensions: currency,
         # and window_from_year to pick the since-<year> summary. The
@@ -6480,28 +6459,26 @@ def card_mappings(card, tcol, mode, name, card_ids):
                 {"parameter_id": SOURCE_PARAM_ID, "card_id": card_ids[card],
                  "target": ["dimension", _f("silver_source_id", "type/Text")]})
         return maps
-    # The MBQL tiles that take a time filter sit on 'range' dashboards
-    # (base_dashboards), so it is the range picker.
-    maps = [{"parameter_id": TIME_PARAM_ID, "card_id": card_ids[card],
-             "target": ["dimension", _f(tcol, "type/DateTime")]},
+    if dash != "Spending":
+        return []
+    # The Spending pickers land on the spending models' dimensions, the
+    # Time range on a line's occurred_at. Currency is a row filter here
+    # (the model carries one row per reporting currency) where a native
+    # spending card takes it as a {{currency}} variable — the same split
+    # the returns tiles already make.
+    return [{"parameter_id": TIME_PARAM_ID, "card_id": card_ids[card],
+             "target": ["dimension", _f("occurred_at", "type/DateTime")]},
             {"parameter_id": SOURCE_PARAM_ID, "card_id": card_ids[card],
              "target": ["dimension",
-                        _f("silver_source_id", "type/Text")]}]
-    if name in SPENDING_DASHBOARDS:
-        # The Spending pickers land on the spending models' dimensions.
-        # Currency is a row filter here (the model carries one row per
-        # reporting currency) where a native spending card takes it as a
-        # {{currency}} variable — the same split the returns tiles
-        # already make.
-        maps += [{"parameter_id": pid, "card_id": card_ids[card],
-                  "target": ["dimension", _f(col, "type/Text")]}
-                 for pid, col in (
-                     (SPEND_CURRENCY_PARAM_ID, "currency"),
-                     (ACCOUNT_PARAM_ID, "display_name"),
-                     (CATEGORY_PARAM_ID, "spend_primary"))
-                 if not (pid == SPEND_CURRENCY_PARAM_ID
-                         and card in SPEND_ALL_CURRENCY_CARDS)]
-    return maps
+                        _f("silver_source_id", "type/Text")]},
+            *({"parameter_id": pid, "card_id": card_ids[card],
+               "target": ["dimension", _f(col, "type/Text")]}
+              for pid, col in (
+                  (SPEND_CURRENCY_PARAM_ID, "currency"),
+                  (ACCOUNT_PARAM_ID, "display_name"),
+                  (CATEGORY_PARAM_ID, "spend_primary"))
+              if not (pid == SPEND_CURRENCY_PARAM_ID
+                      and card in SPEND_ALL_CURRENCY_CARDS))]
 
 
 def overview_home(card, dash):
@@ -6518,7 +6495,7 @@ def overview_home(card, dash):
     return None if card.home in NO_PRIVACY_TWIN else card.home + PRIVACY_SUFFIX
 
 
-def overview_mappings(card, dash, defs, params, card_ids):
+def overview_mappings(card, dash, params, card_ids):
     """The picker mappings of MBQL Card `card`'s tile on overview
     dashboard `dash`: each mapping the card has on its home dashboard,
     moved onto the overview's picker of the same slug. A mapping with no
@@ -6527,11 +6504,9 @@ def overview_mappings(card, dash, defs, params, card_ids):
     home = overview_home(card, dash)
     if home is None:
         return []
-    _desc, mode, _sibling, tiles = defs[home]
-    tcol = next(t for c, *_r, t in tiles if c == card.name)
     home_slug = {x["id"]: x["slug"] for x in params[home]}
     return [{**m, "parameter_id": slug_pid[home_slug[m["parameter_id"]]]}
-            for m in card_mappings(card.name, tcol, mode, home, card_ids)
+            for m in card_mappings(card.name, home, card_ids)
             if home_slug.get(m["parameter_id"]) in slug_pid]
 
 
@@ -6587,22 +6562,23 @@ def crossfilter_viz(links, parameters):
 def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs):
     """name -> (description, parameters, tiles) of each dashboard in
     `defs` (dashboard_defs), in its order, of the Cards `cards`: the
-    payload ensure_dashboards sends. Its parameters are dashboard_parameters over `model_ids`,
-    `dash_ids` is name -> its id, and `titles` and `descs` are as
-    ensure_dashboards takes them. Sends nothing."""
-    params = {name: dashboard_parameters(model_ids, mode, name)
-              for name, (_desc, mode, _sibling, _tiles) in defs.items()}
+    payload ensure_dashboards sends. Its parameters are
+    dashboard_parameters bound to the models in `model_ids`, `dash_ids`
+    is name -> its id, and `titles` and `descs` are as ensure_dashboards
+    takes them. Sends nothing."""
+    params = {name: bind(dashboard_parameters(name), None, {}, model_ids) for name in defs}
     out = {}
-    for name, (desc, mode, sibling, tiles) in defs.items():
+    for name, d in defs.items():
+        desc, sibling = d.desc, d.sibling
         parameters = params[name]
         param_ids = {x["id"] for x in parameters}
-        # The pickers of the filter bar: the Vehicle picker renders on
-        # its one tile instead (inline_parameters).
-        bar = [x for x in parameters if not (mode == "asof" and x["id"] == VEHICLE_PARAM_ID)]
-        # Both returns twins show the same scale-free ratios, so their
-        # link says "redacted" where the others say "shares".
+        # The pickers of the filter bar: an inline picker renders on the
+        # tiles it reaches instead (inline_parameters).
+        bar = [x for x in parameters if x["id"] not in INLINE_PICKERS]
+        # Both returns dashboards show the same scale-free ratios, so
+        # their link says "redacted" where the others say "shares".
         privacy = name.endswith(PRIVACY_SUFFIX)
-        if mode == "returns":
+        if d.redacts:
             label = ("Switch to the full view — money columns included"
                      if privacy else
                      "Switch to the privacy view — money columns redacted")
@@ -6614,7 +6590,7 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
         link = (f"{icon} [{label}](/dashboard/{dash_ids[sibling]})"
                 if sibling else None)
         base_name = sibling if privacy else name
-        overview = name in OVERVIEW_DASHBOARDS
+        overview = base_name == "Wealth Overview"
         tile_titles_here = {**titles, **dashboard_tile_titles(base_name, cards)}
 
         # The switch link occupies row 0, so the tiles and headings shift
@@ -6625,13 +6601,13 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
         dashcards = [text_dashcard(-99, link)] if link else []
         shift = 1 if link else 0
         dashcards += [text_dashcard(-(100 + k), text, row + shift, display)
-                      for k, (row, text, display) in enumerate(DASHBOARD_HEADINGS.get(base_name, []))]
-        for i, (card, row, col, sx, sy, tcol) in enumerate(tiles):
+                      for k, (row, text, display) in enumerate(d.headings)]
+        for i, (card, row, col, sx, sy) in enumerate(d.tiles):
             # The pickers a tile answers to. A native card takes each
             # picker of the dashboard its tags name (tile_mappings). An
             # MBQL card's mappings are kept to the pickers the dashboard
             # carries: the Spending twin has no Account picker
-            # (dashboard_parameters drops it), and a mapping naming a
+            # (Dashboard.twin_drops), and a mapping naming a
             # parameter not on the dashboard is a target with no filter
             # behind it. On a Wealth Overview an MBQL tile takes the
             # overview's pickers by slug (overview_mappings).
@@ -6640,8 +6616,8 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
             if c.query["type"] == "native":
                 maps = tile_mappings(c.query, card_ids[card], parameters)
             else:
-                maps = [m for m in (overview_mappings(c, name, defs, params, card_ids) if overview
-                                    else card_mappings(card, tcol, mode, name, card_ids))
+                maps = [m for m in (overview_mappings(c, name, params, card_ids) if overview
+                                    else card_mappings(card, name, card_ids))
                         if m["parameter_id"] in param_ids]
             viz = {**(crossfilter_viz(c.links, parameters) if home is None else {}),
                    **({"card.title": tile_titles_here[card]} if card in tile_titles_here else {}),
@@ -6657,9 +6633,8 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
             dashcards.append({"id": -(i + 1), "card_id": card_ids[card], "row": row + shift,
                               "col": col, "size_x": sx, "size_y": sy, "series": [],
                               "visualization_settings": viz,
-                              "inline_parameters":
-                                  [VEHICLE_PARAM_ID] if mode == "asof"
-                                  and card in POSITION_FILTERED_CARDS else [],
+                              "inline_parameters": [m["parameter_id"] for m in maps
+                                                    if m["parameter_id"] in INLINE_PICKERS],
                               "parameter_mappings": maps})
         out[name] = (desc, parameters, dashcards)
     return out
@@ -6672,9 +6647,9 @@ def ensure_dashboards(client, coll_id, card_ids, model_ids, titles=None, descs=N
     and archive any retired (renamed-away) ones. A card in `titles`
     (tile_titles) shows that title on its tiles. `descs`, card name ->
     description, lets a tile carry its card's description with the
-    pickers of its dashboard that do not reach it named. A dashboard in
-    DASHBOARD_HEADINGS gets its full-width rows of text, and a Wealth Overview
-    tile opens its home dashboard (overview_click). An unchanged dashboard
+    pickers of its dashboard that do not reach it named. A dashboard's
+    headings are full-width rows of text, and a Wealth Overview tile
+    opens its home dashboard (overview_click). An unchanged dashboard
     is left in place. One that differs has its parameter list and its
     tiles replaced wholesale, so the layout converges to spec and a tile
     added by hand does not survive. The dashboard description says to
@@ -6695,10 +6670,10 @@ def ensure_dashboards(client, coll_id, card_ids, model_ids, titles=None, descs=N
     # First pass: make sure every dashboard exists, so the switch links
     # can point at the sibling's id.
     dash_ids = {}
-    for name, (desc, _mode, _sibling, _tiles) in defs.items():
+    for name, d in defs.items():
         did = existing.get(name)
         if did is None:
-            st, body = client.post("/api/dashboard", {"name": name, "description": desc,
+            st, body = client.post("/api/dashboard", {"name": name, "description": d.desc,
                                                       "collection_id": coll_id})
             if st not in (200, 201) or not body.get("id"):
                 print(f"provision: failed to create dashboard '{name}' ({st}): "
