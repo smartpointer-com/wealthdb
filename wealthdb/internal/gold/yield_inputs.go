@@ -206,9 +206,9 @@ SELECT h.src, h.acct, h.position_key, COALESCE(h.iid, ''), COALESCE(h.asset_clas
 func readYieldAccounts(ctx context.Context, db querier, in *yield.Inputs) error {
 	return scanAll(ctx, db, `
 SELECT a.silver_source_id, a.account_external_id, COALESCE(a.display_name, ''), COALESCE(a.account_kind, ''),
-       a.wrapper, a.tax_wrapper IS NULL, COALESCE(a.nickname, ''), COALESCE(a.portfolio_external_id, ''),
-       COALESCE(p.display_name, '')
-  FROM account_dim a
+       account_wrapper(a.tax_wrapper), a.tax_wrapper IS NULL, COALESCE(a.nickname, ''),
+       COALESCE(a.portfolio_external_id, ''), COALESCE(p.display_name, '')
+  FROM accounts a
   LEFT JOIN portfolios p ON p.silver_source_id = a.silver_source_id
        AND p.portfolio_external_id = a.portfolio_external_id`, func(rows *sql.Rows) error {
 		var k yield.AccountKey

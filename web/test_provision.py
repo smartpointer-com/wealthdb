@@ -983,9 +983,9 @@ def _view_body(view):
 # as it stands and the Tax wrapper picker offers one value for it.
 _FILLED = ("web_gains", "web_exposure")
 check("the gains and exposure views fill a missing tax wrapper in",
-      all(re.search(r"COALESCE\(\w+\.tax_wrapper, 'taxable_personal'\) AS tax_wrapper",
-                    _view_body(v)) for v in _FILLED),
-      [v for v in _FILLED if "taxable_personal" not in _view_body(v)])
+      all(re.search(r"account_wrapper\(\w+\.tax_wrapper\) AS tax_wrapper", _view_body(v))
+          for v in _FILLED),
+      [v for v in _FILLED if "account_wrapper(" not in _view_body(v)])
 _over_filled = {n: sql_of(q) for n, (_d, _desc, q) in CARDS.items()
                 if sql_of(q) and any(f"FROM {v}" in sql_of(q) for v in _FILLED)}
 check("...so no card over them fills it in again",
@@ -4101,6 +4101,7 @@ def _book():
                "CREATE TABLE serving_transactions (silver_source_id TEXT, account_external_id TEXT,"
                " occurred_at BIGINT, kind TEXT, net_amount DECIMAL(28,4), value_usd DECIMAL(28,4),"
                " value_chf DECIMAL(28,4), value_eur DECIMAL(28,4), value_gbp DECIMAL(28,4));"
+               + _latest_definition("account_wrapper") + _latest_definition("account_style")
                + _latest_definition("account_display_name") + _latest_definition("account_label")
                + _latest_definition("income_scoped_accounts") +
                "CREATE TABLE web_sources_latest (silver_source_id TEXT, tax_wrapper TEXT);"

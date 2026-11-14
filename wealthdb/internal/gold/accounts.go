@@ -31,9 +31,9 @@ type AccountRow struct {
 	Nickname            *string
 	AccountCategory     *string
 	PortfolioExternalID *string
-	// TaxWrapper / ManagementStyle are account_dim's: an account
-	// neither its adapter nor a config override classified reads
-	// 'taxable_personal' and 'self_directed'.
+	// TaxWrapper / ManagementStyle read account_wrapper and
+	// account_style: an account neither its adapter nor a config
+	// override classified reads 'taxable_personal' and 'self_directed'.
 	TaxWrapper      *string
 	ManagementStyle *string
 	// SnapshotAt is the account's own active snapshot: the latest

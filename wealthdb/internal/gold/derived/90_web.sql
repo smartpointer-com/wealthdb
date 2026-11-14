@@ -1,11 +1,45 @@
--- Presentation: the web_* views the dashboards read.
+-- Presentation: the labels and the web_* views the dashboards read.
+
+-- An account label that says whose account it is, and what kind.
+--
+-- An account's own name is what the institution calls it and nothing
+-- more — a product nickname, a masked card number, an IBAN. Read on a
+-- chart, a bar labelled by it alone does not say which institution it
+-- belongs to, nor whether the money left a deposit account or a credit
+-- card; and product nicknames are generic, so two institutions'
+-- accounts can wear the same one. An account with no name would
+-- collapse with the other unnamed ones into one "null" bar.
+--
+-- Two scalar macros, so the rule has ONE home rather than a copy in
+-- each view:
+--
+--   * account_display_name is the fallback: an account with no name of
+--     its own is labelled by its id, the way the CLI's `account` column
+--     does it.
+--   * account_label annotates that with the source and the kind, as
+--     `<name> (<source> <kind>)`.
+--
+-- Name FIRST. A row chart truncates a long label from the end, so
+-- putting the identity in front means what gets clipped in a narrow
+-- tile is the annotation, not the thing being labelled.
+--
+-- Both views keep `display_name` and `account_external_id` beside the
+-- label, so a consumer that wants the institution's own name, or the
+-- id, still reads it off its own column and nothing has to parse the
+-- label back apart.
+CREATE MACRO account_display_name(nm, ext_id) AS
+    COALESCE(NULLIF(TRIM(nm), ''), ext_id);
+
+CREATE MACRO account_label(nm, ext_id, src, kind) AS
+    account_display_name(nm, ext_id)
+        || ' (' || src || ' ' || COALESCE(kind, 'unknown') || ')';
 
 -- holdings_lines_latest: the same lines as of each source's latest
 -- snapshot, the snapshot report_sources_multi dates the source by.
 CREATE VIEW holdings_lines_latest AS
     WITH l AS (
         SELECT p.silver_source_id,
-               COALESCE(a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
+               account_wrapper(a.tax_wrapper) AS tax_wrapper,
                'position' AS line_kind, p.asset_class,
                p.value_usd, p.value_chf, p.value_eur, p.value_gbp
           FROM serving_positions_latest p
@@ -55,7 +89,7 @@ CREATE VIEW web_income AS
            account_label(i.display_name, i.account_external_id,
                          i.silver_source_id, i.account_kind) AS account_label,
            i.account_kind,
-           COALESCE(a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
+           account_wrapper(a.tax_wrapper) AS tax_wrapper,
            i.payer_name,
            COALESCE(i.income_primary,  '(uncategorized)') AS income_primary,
            COALESCE(i.income_detailed, '(uncategorized)') AS income_detailed,
@@ -117,7 +151,7 @@ CREATE VIEW web_exposure AS
 SELECT CAST(epoch_ms(r.as_of * 1000) AS DATE) AS as_of_day,
        r.currency,
        r.silver_source_id,
-       COALESCE(r.tax_wrapper, 'taxable_personal') AS tax_wrapper,
+       account_wrapper(r.tax_wrapper) AS tax_wrapper,
        r.asset_class,
        COALESCE(r.sector, 'unknown') AS sector,
        CASE WHEN r.country IS NOT NULL THEN r.country
@@ -147,7 +181,7 @@ SELECT CAST(epoch_ms(p.as_of * 1000) AS DATE) AS as_of_day, p.as_of = (SELECT ma
            AS today,
        p.currency, p.silver_source_id, p.account_external_id, p.position_key,
        account_label(a.display_name, p.account_external_id, p.silver_source_id, a.account_kind) AS account_label,
-       COALESCE(p.tax_wrapper, 'taxable_personal') AS tax_wrapper,
+       account_wrapper(p.tax_wrapper) AS tax_wrapper,
        COALESCE(p.asset_class, 'unknown') AS asset_class, p.vehicle, p.kind, p.symbol, p.name, p.holding_currency,
        p.quantity, p.price, p.value, p.coupon_pct, p.maturity_date, p.rating, p.stated_pct, p.current_yield_pct,
        p.implied_pct, p.implied_annual_pct, p.realized_pct, p.received_12m, p.mean_value, p.earnings_yield_pct,
@@ -158,7 +192,7 @@ SELECT CAST(epoch_ms(p.as_of * 1000) AS DATE) AS as_of_day, p.as_of = (SELECT ma
 
 CREATE VIEW web_yield_curve AS
 SELECT CAST(epoch_ms(b.as_of * 1000) AS DATE) AS as_of_day, b.currency, b.silver_source_id,
-       COALESCE(p.tax_wrapper, 'taxable_personal') AS tax_wrapper, COALESCE(p.asset_class, 'unknown') AS asset_class,
+       account_wrapper(p.tax_wrapper) AS tax_wrapper, COALESCE(p.asset_class, 'unknown') AS asset_class,
        b.curve_currency, b.tenor, b.tenor_order,
        -- 'funds', 'bonds', 'cash' or 'liabilities'
        b.held_in, b.dv01
@@ -172,7 +206,7 @@ SELECT CAST(epoch_ms(b.as_of * 1000) AS DATE) AS as_of_day, b.currency, b.silver
 CREATE VIEW web_yield_holdings AS
 SELECT p.silver_source_id, p.account_external_id, p.position_key,
        account_label(a.display_name, p.account_external_id, p.silver_source_id, a.account_kind) AS account_label,
-       COALESCE(p.tax_wrapper, 'taxable_personal') AS tax_wrapper,
+       account_wrapper(p.tax_wrapper) AS tax_wrapper,
        COALESCE(p.asset_class, 'unknown') AS asset_class, p.vehicle, p.kind, p.symbol, p.name, p.quantity, p.price
   FROM report_yield_positions p
   LEFT JOIN accounts a ON a.silver_source_id = p.silver_source_id AND a.account_external_id = p.account_external_id
@@ -184,7 +218,7 @@ CREATE VIEW web_yield_parts AS
 SELECT x.*, COALESCE(h.account_label,
                      account_label(a.display_name, x.account_external_id, x.silver_source_id, a.account_kind))
            AS account_label,
-       COALESCE(h.tax_wrapper, a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
+       account_wrapper(COALESCE(h.tax_wrapper, a.tax_wrapper)) AS tax_wrapper,
        COALESCE(h.asset_class, 'income') AS asset_class, h.vehicle, h.kind, h.symbol, h.name
   FROM report_yield_parts x
   LEFT JOIN web_yield_holdings h ON h.silver_source_id = x.silver_source_id
@@ -192,7 +226,7 @@ SELECT x.*, COALESCE(h.account_label,
   LEFT JOIN accounts a ON a.silver_source_id = x.silver_source_id AND a.account_external_id = x.account_external_id;
 
 CREATE VIEW web_yield_events AS
-SELECT x.*, h.account_label, COALESCE(h.tax_wrapper, 'taxable_personal') AS tax_wrapper,
+SELECT x.*, h.account_label, account_wrapper(h.tax_wrapper) AS tax_wrapper,
        COALESCE(h.asset_class, 'unknown') AS asset_class, h.vehicle, h.symbol, h.name
   FROM report_yield_events x
   LEFT JOIN web_yield_holdings h ON h.silver_source_id = x.silver_source_id
@@ -205,7 +239,7 @@ SELECT x.currency, x.silver_source_id, x.account_external_id, x.position_key, x.
        COALESCE(h.account_label,
                 account_label(a.display_name, x.account_external_id, x.silver_source_id, a.account_kind))
            AS account_label,
-       COALESCE(h.tax_wrapper, a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
+       account_wrapper(COALESCE(h.tax_wrapper, a.tax_wrapper)) AS tax_wrapper,
        COALESCE(h.asset_class, CASE WHEN starts_with(x.position_key, 'income:') THEN 'income' ELSE 'unknown' END)
            AS asset_class, h.vehicle, h.symbol, h.name
   FROM report_yield_received x
@@ -215,7 +249,7 @@ SELECT x.currency, x.silver_source_id, x.account_external_id, x.position_key, x.
 
 CREATE VIEW web_exposure_debt AS
 SELECT CAST(epoch_ms(as_of * 1000) AS DATE) AS as_of_day, currency, silver_source_id,
-       COALESCE(tax_wrapper, 'taxable_personal') AS tax_wrapper, dimension, bucket, unknown, value
+       account_wrapper(tax_wrapper) AS tax_wrapper, dimension, bucket, unknown, value
   FROM report_exposure_debt;
 
 CREATE VIEW web_exposure_issuers AS
@@ -309,7 +343,7 @@ CREATE VIEW web_position_sizes AS
 
 CREATE VIEW web_exposure_securities AS
 SELECT CAST(epoch_ms(as_of * 1000) AS DATE) AS as_of_day, currency, silver_source_id,
-       COALESCE(tax_wrapper, 'taxable_personal') AS tax_wrapper, asset_class, security, name, ticker,
+       account_wrapper(tax_wrapper) AS tax_wrapper, asset_class, security, name, ticker,
        sector, country, class_weight, sector_weight, country_weight, market_cap, size,
        value, direct_value, via_funds_value, funds
   FROM report_exposure_security_slices;
@@ -370,7 +404,7 @@ CREATE VIEW web_gains AS
            g.silver_source_id, g.account_external_id,
            account_label(a.display_name, g.account_external_id,
                          g.silver_source_id, a.account_kind) AS account,
-           a.account_kind, COALESCE(a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
+           a.account_kind, account_wrapper(a.tax_wrapper) AS tax_wrapper,
            g.k AS instrument_key, g.symbol, g.name, COALESCE(g.asset_class, 'unknown') AS asset_class, g.vehicle,
            g.book_x AS cost_basis, g.value_x AS value,
            g.unrealized_start_x AS unrealized_start, g.unrealized_end_x AS unrealized_end,
@@ -397,8 +431,8 @@ CREATE VIEW web_gains AS
 -- the serving histories, the cash arm per currency.
 CREATE VIEW holdings_lines_history AS
     SELECT p.as_of_day, p.silver_source_id, p.account_external_id,
-           COALESCE(a.tax_wrapper, 'taxable_personal') AS tax_wrapper,
-           COALESCE(a.management_style, 'self_directed') AS management_style,
+           account_wrapper(a.tax_wrapper) AS tax_wrapper,
+           account_style(a.management_style) AS management_style,
            'position' AS line_kind, p.asset_class, p.vehicle, p.currency, p.symbol, p.name,
            p.value_usd, p.value_chf, p.value_eur, p.value_gbp
       FROM serving_positions_history p
@@ -540,10 +574,12 @@ CREATE VIEW web_marks AS
 -- The entity is the account's portfolio, else the account.
 CREATE VIEW web_fees AS
     WITH acct AS (
-        SELECT a.silver_source_id, a.account_external_id, a.account_kind, a.label AS account_label,
+        SELECT a.silver_source_id, a.account_external_id, a.account_kind,
+               account_label(a.display_name, a.account_external_id,
+                             a.silver_source_id, a.account_kind) AS account_label,
                account_display_name(a.display_name, a.account_external_id) AS display_name,
                NULLIF(a.portfolio_external_id, '') AS portfolio
-          FROM account_dim a),
+          FROM accounts a),
     entity AS (
         SELECT c.*,
                to_json([c.silver_source_id, COALESCE(c.portfolio, c.account_external_id)])::VARCHAR AS entity_key,

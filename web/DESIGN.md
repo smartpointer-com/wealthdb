@@ -811,6 +811,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0186: its gains, exposure, income and yield views predate the
+  `account_wrapper` and `account_style` macros their bodies call now;
 - 0179: its `web_fees` counts a portfolio's mortgages and cards in
   the value the fee rate divides by;
 - 0177: it lacks `web_bridge`, `web_fees` and `web_marks`, which the

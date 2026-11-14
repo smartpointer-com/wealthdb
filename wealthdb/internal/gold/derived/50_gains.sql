@@ -304,7 +304,7 @@ CREATE MACRO report_gains_coverage(p_from, p_to, p_ccy) AS TABLE (
         UNION SELECT silver_source_id, account_external_id FROM sells
         UNION SELECT silver_source_id, account_external_id FROM sold),
     m AS (
-        SELECT k.silver_source_id, k.account_external_id, a.display_name, a.nickname, a.wrapper AS tax_wrapper,
+        SELECT k.silver_source_id, k.account_external_id, a.display_name, a.nickname, account_wrapper(a.tax_wrapper) AS tax_wrapper,
                COALESCE(p.n_positions, 0) AS n_positions, p.n_with_basis, p.value_x, p.value_with_basis_x,
                p.coverage, p.stamps, COALESCE(p.open_lots, 0) AS open_lots,
                COALESCE(s.n_sells, 0) AS sells, COALESCE(s.n_undocumented, 0) AS n_undocumented,
@@ -321,7 +321,7 @@ CREATE MACRO report_gains_coverage(p_from, p_to, p_ccy) AS TABLE (
           LEFT JOIN docs d USING (silver_source_id, account_external_id)
           LEFT JOIN seeds sd USING (silver_source_id, account_external_id)
           LEFT JOIN lot_sources() ls USING (silver_source_id)
-          LEFT JOIN account_dim a USING (silver_source_id, account_external_id))
+          LEFT JOIN accounts a USING (silver_source_id, account_external_id))
     SELECT silver_source_id, account_external_id, display_name, nickname, tax_wrapper,
            CAST(value_x::DECIMAL(28,4) AS VARCHAR) AS value,
            CAST(value_with_basis_x::DECIMAL(28,4) AS VARCHAR) AS value_with_basis,
@@ -981,7 +981,7 @@ CREATE MACRO report_gains_buckets(p_from, p_to, p_ccy, p_period, p_grain, p_miss
            CASE WHEN p_grain = 'portfolios' THEN m.g_pid END AS portfolio_external_id,
            pb.display_name AS portfolio_display_name,
            NULLIF(m.g_acct, '') AS account_external_id,
-           a.display_name, a.nickname, a.account_kind, a.wrapper AS tax_wrapper, a.account_category, a.relationship_id,
+           a.display_name, a.nickname, a.account_kind, account_wrapper(a.tax_wrapper) AS tax_wrapper, a.account_category, a.relationship_id,
            CAST(m.realized_x::DECIMAL(28,4) AS VARCHAR) AS realized,
            CAST(m.realized_short_x::DECIMAL(28,4) AS VARCHAR) AS realized_short,
            CAST(m.realized_long_x::DECIMAL(28,4) AS VARCHAR) AS realized_long,
@@ -1001,7 +1001,7 @@ CREATE MACRO report_gains_buckets(p_from, p_to, p_ccy, p_period, p_grain, p_miss
                          m.n_fee_unvalued, m.n_assumed_zero, m.n_fx_missing) AS quality
       FROM m
       LEFT JOIN portfolio_buckets() pb ON p_grain = 'portfolios' AND pb.src = m.g_src AND pb.pid = m.g_pid
-      LEFT JOIN account_dim a ON p_grain = 'accounts' AND a.silver_source_id = m.g_src AND a.account_external_id = m.g_acct
+      LEFT JOIN accounts a ON p_grain = 'accounts' AND a.silver_source_id = m.g_src AND a.account_external_id = m.g_acct
      ORDER BY m.b_from, m.g_src, m.g_pid, m.g_acct
 );
 
