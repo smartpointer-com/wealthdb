@@ -316,7 +316,7 @@ func TestYieldUsageListsEveryView(t *testing.T) {
 	usage := yieldUsage()
 	_, columns, _ := strings.Cut(usage, "Available columns (per view):")
 	_, defaults, _ := strings.Cut(columns, "Default column sets:")
-	for _, view := range yieldViews {
+	for _, view := range yieldFamily.names() {
 		if _, err := yieldFamily.build(nil, request{view: view, currency: "USD"}, nil).pick("default"); err != nil {
 			t.Errorf("%s defaults: %v", view, err)
 		}

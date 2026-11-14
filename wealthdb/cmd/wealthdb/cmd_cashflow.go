@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -43,7 +41,9 @@ import (
 // views do: a list of lines means the same thing however it is
 // bucketed.
 func init() {
-	register("cashflow", cmdCashflow)
+	// The usage lists the family's columns, so it joins the family here.
+	cashflowFamily.usage = cashflowUsage
+	register("cashflow", routeReport(cashflowFamily))
 }
 
 // cashflowFamily are the grains `wealthdb cashflow <view>` supports:
@@ -102,7 +102,7 @@ var cashflowFamily = &family{
 						return gold.CashflowCoverage(ctx, db, req.from, req.to, part)
 					}), loadKinds)
 			}},
-		{name: "projection", forward: true, total: flowTotal, principal: fixedColumn("net"),
+		{name: "projection", forward: true, window: parsePlanWindow, total: flowTotal, principal: fixedColumn("net"),
 			header: func(req request) []string {
 				return append([]string{"period=" + req.period}, assumptionsHeader(req.assumptions)...)
 			},
@@ -112,47 +112,75 @@ var cashflowFamily = &family{
 					func(ctx context.Context, db *sql.DB) ([]gold.PlanRow, error) { return cashflowPlan(ctx, db, req) })
 			}},
 	},
-	window:   trailingYear,
-	currency: true,
-	narrow:   "from/to or a filter",
-	prepare: func(_ *family, a *toolArgs, req *request, _ *[]string) error {
-		// The CLI's three refusals, for the CLI's reasons: each would
-		// answer a question the caller did not ask.
+	options: append([]option{
+		{name: "period", cli: []string{"period"}, choices: reportPeriodNames, def: [2]string{"monthly", "total"}},
+		{name: "level", cli: []string{"level"}, choices: cashflowLevels, def: [2]string{"group", "group"}},
+		{name: "investing", cli: []string{"investing"}, choices: cashflowInvestingGrains,
+			def: [2]string{"whole", "whole"}},
+	}, forwardOptions...),
+	window:      trailingYear,
+	currency:    true,
+	narrow:      "from/to or a filter",
+	configFirst: true,
+	settle: func(_ *family, in optionSource, req *request, _ *[]string) error {
+		// The three refusals (the head of this file) come before the
+		// values are checked: each is refused for what it means, not for
+		// being misspelled.
 		switch req.view {
-		case "sankey":
-			if a.has("period") {
-				return fmt.Errorf("cashflow: sankey takes no period — a diagram is a window, not a series; call it once per year instead")
-			}
-			if a.str("level") == "section" {
-				return fmt.Errorf("cashflow: sankey at level=section would draw no inner column; use class or group")
-			}
 		case "coverage":
-			if a.has("currency") {
+			if in.has("currency") {
+				if in.cli() {
+					return errs.Newf(errs.ExitUsage, "cashflow: coverage takes no -x/--currency — "+
+						"each account is measured against its own balances, in its own currency")
+				}
 				return fmt.Errorf("cashflow: coverage takes no currency — each account is measured against its own balances, in its own currency")
 			}
+		case "sankey":
+			if in.has("period") {
+				if in.cli() {
+					return errs.Newf(errs.ExitUsage, "cashflow: sankey takes no --period — a diagram is a window, not a series; "+
+						"loop over the years instead")
+				}
+				return fmt.Errorf("cashflow: sankey takes no period — a diagram is a window, not a series; call it once per year instead")
+			}
+			if in.str("level") == "section" {
+				if in.cli() {
+					return errs.Newf(errs.ExitUsage, "cashflow: sankey --level section would draw no inner column (want class | group)")
+				}
+				return fmt.Errorf("cashflow: sankey at level=section would draw no inner column; use class or group")
+			}
 		}
-		req.period = orDefault(a.str("period"), "total")
-		req.level = orDefault(a.str("level"), "group")
-		req.investing = orDefault(a.str("investing"), "whole")
-		if req.view == "projection" {
-			req.period = orDefault(a.str("period"), "monthly")
+		period := in.str("period")
+		if req.view == "projection" && !in.has("period") {
+			period = "monthly"
 		}
-		if err := checkCashflowPlanOptions(req.view, req.period, a.has, func(name string) string { return name }); err != nil {
+		if err := checkCashflowPlanOptions(req.view, period, in.has, in.spell); err != nil {
 			return err
 		}
+		as, err := forwardAssumptions(in, "cashflow")
+		if err != nil {
+			return err
+		}
+		for _, name := range []string{"period", "level", "investing"} {
+			if _, err := choose(in, "cashflow", name); err != nil {
+				return err
+			}
+		}
+		req.period, req.level, req.investing = period, in.str("level"), in.str("investing")
 		if req.view != "projection" {
 			return nil
 		}
-		if err := checkPlanWindow(req.from, req.to, time.Unix(req.asOf, 0)); err != nil {
-			return fmt.Errorf("cashflow: %w; dates are %s", err, dateDoc)
+		// The CLI checks the plan's window as it reads it
+		// (parsePlanWindow).
+		if !in.cli() {
+			if err := checkPlanWindow(req.from, req.to, time.Unix(req.asOf, 0)); err != nil {
+				return fmt.Errorf("cashflow: %w; dates are %s", err, dateDoc)
+			}
 		}
-		req.assumptions = assumptionArgs(a)
+		req.assumptions = as
 		return nil
 	},
 }
-
-// cashflowViews are the cash flow views' names.
-var cashflowViews = cashflowFamily.names()
 
 // investingHeader names the investing grain where it is not the whole.
 func investingHeader(req request) []string {
@@ -168,87 +196,6 @@ var cashflowInvestingGrains = []string{"whole", "class"}
 
 // cashflowLevels are the `--level` node grains, coarsest first.
 var cashflowLevels = []string{"section", "class", "group"}
-
-// cmdCashflow routes `wealthdb cashflow <view> ...` to the view's run.
-func cmdCashflow(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("cashflow", subargs, cashflowFamily.names(), cashflowUsage, stderr)
-	if err != nil {
-		return err
-	}
-	return runCashflowView(ctx, g, view, rest, stdout, stderr)
-}
-
-func runCashflowView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb cashflow "+view, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
-	level := fs.String("level", "group", "section | class | group — the grain a node is netted at (flows, sankey)")
-	investing := fs.String("investing", "whole", strings.Join(cashflowInvestingGrains, " | ")+" — net investing as one node or per asset class")
-	ff := registerForwardFlags(fs)
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, cashflowUsage()) }
-	if err := parseFlags(fs, args, "cashflow"); err != nil {
-		return err
-	}
-	// The refusals have to be asked before the values are validated:
-	// `coverage -x` is refused for the same reason the report has no
-	// output currency: a per-account gap belongs in the account's own
-	// money, and converting it would add a rate error to the very
-	// number the report exists to make trustworthy.
-	if view == "coverage" && isSet(fs, "x", "currency") {
-		return errs.Newf(errs.ExitUsage, "cashflow: coverage takes no -x/--currency — "+
-			"each account is measured against its own balances, in its own currency")
-	}
-	// `sankey --period annual` is refused for what it means, not for
-	// being misspelled.
-	if view == "sankey" {
-		if isSet(fs, "period") {
-			return errs.Newf(errs.ExitUsage, "cashflow: sankey takes no --period — a diagram is a window, not a series; "+
-				"loop over the years instead")
-		}
-		if *level == "section" {
-			return errs.Newf(errs.ExitUsage, "cashflow: sankey --level section would draw no inner column (want class | group)")
-		}
-	}
-
-	if err := checkCashflowPlanOptions(view, *period, func(name string) bool { return isSet(fs, name) },
-		func(name string) string { return "--" + name }); err != nil {
-		return err
-	}
-	if err := ff.checkChoices("cashflow"); err != nil {
-		return err
-	}
-	if err := checkChoice("cashflow", "period", *period, reportPeriodNames...); err != nil {
-		return err
-	}
-	if err := checkChoice("cashflow", "level", *level, cashflowLevels...); err != nil {
-		return err
-	}
-	if err := checkChoice("cashflow", "investing", *investing, cashflowInvestingGrains...); err != nil {
-		return err
-	}
-
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "cashflow")
-	if err != nil {
-		return err
-	}
-	now := g.clock()
-	var window windowParser
-	if view == "projection" {
-		window = parsePlanWindow
-	}
-	fromEpoch, toEpoch, err := reportWindow(fs, "cashflow", now, cfg.YieldHorizon(), window)
-	if err != nil {
-		return err
-	}
-
-	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
-		period: *period, level: *level, investing: *investing, categories: overrideCategories(cfg),
-		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), lookback: cfg.CashflowLookback()}
-	rep := cashflowFamily.build(cfg, req, nil)
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "cashflow", cashflowFamily, req, cfg, now), open, stdout)
-}
 
 // checkCashflowPlanOptions refuses the options a view does not take, the
 // CLI and the MCP server alike: the projection's assumptions off it; on

@@ -69,24 +69,24 @@ var helpGroups = []struct{ key, title string }{
 // the suite rather than going quietly unlisted.
 var commandHelps = []commandHelp{
 	{name: "holdings", args: "<view>", group: "report",
-		short: "what is held and what it is worth, as of a date: " + strings.Join(holdingsViews, ", ")},
+		short: "what is held and what it is worth, as of a date: " + strings.Join(holdingsFamily.names(), ", ")},
 	{name: "returns", args: "<view>", group: "report",
-		short: "how it performed over a window, as TWR / MWR %: " + strings.Join(returnsViews, ", ")},
+		short: "how it performed over a window, as TWR / MWR %: " + strings.Join(returnsFamily.names(), ", ")},
 	{name: "gains", args: "<view>", group: "report",
-		short: "what was gained or lost (P&L), realized and unrealized, over a window: " + strings.Join(gainsViews, ", ")},
+		short: "what was gained or lost (P&L), realized and unrealized, over a window: " + strings.Join(gainsFamily.names(), ", ")},
 	{name: "exposure", args: "<view>", group: "report",
-		short: "what is really owned, every fund looked through, as of a date: " + strings.Join(exposureViews, ", ")},
+		short: "what is really owned, every fund looked through, as of a date: " + strings.Join(exposureFamily.names(), ", ")},
 	{name: "yield", args: "<view>", group: "report",
-		short: "what the holdings earn and how they move with rates, as of a date: " + strings.Join(yieldViews, ", ")},
+		short: "what the holdings earn and how they move with rates, as of a date: " + strings.Join(yieldFamily.names(), ", ")},
 	{name: "transactions", args: "[FROM [TO]]", group: "report",
 		short: "the individual booked lines over a window; totals by kind are the three reports below"},
 	{name: "spending", args: "<view>", group: "report",
-		short: "what was spent, on what, as totals by category: " + strings.Join(spendingViews, ", ")},
+		short: "what was spent, on what, as totals by category: " + strings.Join(spendingFamily.names(), ", ")},
 	{name: "income", args: "<view>", group: "report",
-		short: "what was received (salary, dividends, interest, rent) and what is expected: " + strings.Join(incomeViews, ", ")},
+		short: "what was received (salary, dividends, interest, rent) and what is expected: " + strings.Join(incomeFamily.names(), ", ")},
 	{name: "cashflow", args: "<view>", group: "report",
 		short: "where the cash came from and went, mortgage and plan contributions included, and the months ahead projected: " +
-			strings.Join(cashflowViews, ", ")},
+			strings.Join(cashflowFamily.names(), ", ")},
 	{name: "status", args: "[<id>] [-v] | --marks", group: "report",
 		short: "is the data current, what each source holds, and how fresh the marks are"},
 	{name: "snapshots", args: "<id> | -a", group: "report",
@@ -159,8 +159,8 @@ func cmdHelp(ctx context.Context, g globalFlags, subargs []string, stdin io.Read
 	}
 	// A holdings view is addressed as `wealthdb holdings <view>`; its
 	// help is the view's own, reached the way the command reaches it.
-	if slices.Contains(holdingsViews, name) {
-		return cmdHoldings(ctx, g, []string{name, "-h"}, stdin, stdout, stderr)
+	if slices.Contains(holdingsFamily.names(), name) {
+		return routeReport(holdingsFamily)(ctx, g, []string{name, "-h"}, stdin, stdout, stderr)
 	}
 	for _, c := range commandHelps {
 		if c.name != name {

@@ -92,7 +92,7 @@ func TestExposureClassesAndSectors(t *testing.T) {
 func TestExposureViewsResolveTheirDefaults(t *testing.T) {
 	t.Parallel()
 	usage := exposureUsage()
-	for _, view := range exposureViews {
+	for _, view := range exposureFamily.names() {
 		if _, err := exposureFamily.build(nil, request{view: view, currency: "USD"}, nil).pick("default"); err != nil {
 			t.Errorf("%s defaults: %v", view, err)
 		}
@@ -176,7 +176,7 @@ func TestExposurePrivacyHidesAmounts(t *testing.T) {
 		"funds":      {"symbol:IDXF", "57.14"},
 		"coverage":   {"looked_through", "undeclared", "brk"},
 	}
-	for _, v := range exposureViews {
+	for _, v := range exposureFamily.names() {
 		out, errb, code := runExposure(t, cfg, v, "-d", "2026-06-30", "-p", "-f", "csv", "-C", "all")
 		if code != 0 {
 			t.Fatalf("%s: exit %d: %s", v, code, errb)

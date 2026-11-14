@@ -3,48 +3,15 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
-	"fmt"
-	"io"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 func init() {
-	register("transactions", cmdTransactions)
-}
-
-func cmdTransactions(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb transactions", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	reverse := fs.Bool("r", false, "reverse-time order (newest first); default is oldest first")
-	fs.BoolVar(reverse, "reverse", false, "reverse-time order (newest first); default is oldest first")
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, transactionsUsage()) }
-	if err := parseFlags(fs, subargs, "transactions"); err != nil {
-		return err
-	}
-
-	fromEpoch, toEpoch, err := parseDateRange(fs.Args(), g.clock())
-	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "transactions: %s", err.Error())
-	}
-
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "transactions")
-	if err != nil {
-		return err
-	}
-
-	req := request{currency: outCcy, from: fromEpoch, to: toEpoch, newestFirst: *reverse,
-		categories: overrideCategories(cfg)}
-	rep := transactionsReport(req)
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "transactions", transactionsFamily, req, cfg, g.clock()), open, stdout)
+	register("transactions", routeReport(transactionsFamily))
 }
 
 // transactionsFamily is the ledger, a tool of one shape.
@@ -52,11 +19,13 @@ var transactionsFamily = &family{
 	name: "transactions",
 	views: []view{{total: flowTotal, principal: fixedColumn("value"),
 		build: func(_ *config.Config, req request, _ *toolArgs) *report { return transactionsReport(req) }}},
+	options:  []option{{name: "newest_first", cli: []string{"r", "reverse"}, kind: optFlag}},
 	window:   pastMonth,
 	currency: true,
 	narrow:   "from/to or a filter",
-	prepare: func(_ *family, a *toolArgs, req *request, _ *[]string) error {
-		req.newestFirst = a.flag("newest_first", false)
+	usage:    transactionsUsage,
+	settle: func(_ *family, in optionSource, req *request, _ *[]string) error {
+		req.newestFirst = in.on("newest_first")
 		return nil
 	},
 	header: func(req request) []string {

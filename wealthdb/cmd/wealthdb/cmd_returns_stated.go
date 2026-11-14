@@ -3,13 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
-	"fmt"
-	"io"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
@@ -18,43 +14,6 @@ import (
 // stated view: the document fixes the periods, and the view computes no
 // return of its own. -x is refused beside them.
 var statedRefusedFlags = []string{"method", "period", "annualize", "netting", "inception", "benchmark"}
-
-// `wealthdb returns stated`: each period a document states for an account
-// (stated_periods) beside what the returns engine computes for that
-// account over the same months, in the stated currency. Its window and
-// output flags are the other views'. The return flags
-// (statedRefusedFlags) and -x do not apply, since the period and the
-// currency are the document's, and are refused by name.
-func runReturnsStated(ctx context.Context, g globalFlags, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb returns stated", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	refused := refuseFlags(fs, "returns", "stated", statedRefusedFlags)
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, returnsStatedUsage()) }
-	if err := parseFlags(fs, args, "returns"); err != nil {
-		return err
-	}
-	if err := refused(); err != nil {
-		return err
-	}
-	if isSet(fs, "x", "currency") {
-		return errs.Newf(errs.ExitUsage, "returns: stated takes no -x/--currency — "+
-			"every amount is in the currency the document states")
-	}
-	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), g.clock())
-	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "returns: %s", err.Error())
-	}
-	fmtChoice, cfg, _, err := rf.resolve(g, "returns")
-	if err != nil {
-		return err
-	}
-	req := request{view: "stated", from: fromEpoch, to: toEpoch}
-	rep := returnsStatedReport(req, cfg)
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", returnsFamily, req, cfg, g.clock()), open, stdout)
-}
 
 // returnsStatedReport runs the reconciliation with the config's returns
 // settings, so its engine figures are the ones `returns accounts` prints.

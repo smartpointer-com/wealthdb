@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -533,22 +534,15 @@ func (fam *family) buildDefault(cfg *config.Config, req request) *report {
 }
 
 // defaultLookup is the column lookup of view at every option's default
-// (defaultRequest), in the configured currency. series reads the view
-// as a series, which prints its period column ahead of the view's own.
+// (family.defaultRequest), in the configured currency. series reads the
+// view as a series, which prints its period column ahead of the view's
+// own.
 func (fam *family) defaultLookup(cfg *config.Config, view string, series bool) columnLookup {
-	req := defaultRequest(view, cfg.DefaultCurrency)
+	req := fam.defaultRequest(view, cfg.DefaultCurrency, time.Now(), cfg.YieldHorizon())
 	if series {
 		req.series = []seriesPoint{{}}
 	}
 	return fam.lookup(fam.buildDefault(cfg, req), req)
-}
-
-// defaultRequest is a request for view with every option at its
-// default: what describe lists a view's columns from, and what the
-// view walk and the derived carries read a view's columns from.
-func defaultRequest(view, currency string) request {
-	return request{view: view, currency: currency, period: "total", method: "both", annualize: "auto",
-		inception: "full", netting: true, investing: "whole", level: "primary"}
 }
 
 // escalate picks the view a call's filters need. A small model starts

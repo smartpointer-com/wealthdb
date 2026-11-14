@@ -3,9 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
-	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -16,7 +13,7 @@ import (
 )
 
 func init() {
-	register("returns", cmdReturns)
+	register("returns", routeReport(returnsFamily))
 }
 
 // returnsFamily are the views `wealthdb returns <view>` supports: the
@@ -37,46 +34,82 @@ var returnsFamily = &family{
 			keyAlias: map[string]string{"account": "entity"}},
 		// The stated view carries no return: "value" is the engine's
 		// ending value.
-		{name: "stated", side: true, principal: fixedColumn("end_value"),
+		{name: "stated", side: true, principal: fixedColumn("end_value"), usage: returnsStatedUsage,
+			refuses:     statedRefusedFlags,
 			ownCurrency: "each period in the currency its document states",
 			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
 				return returnsStatedReport(req, cfg)
 			}},
 		// On the bridge, "value" is the net worth it ends on.
-		{name: "bridge", side: true, principal: fixedColumn("end_net_worth"),
+		{name: "bridge", side: true, principal: fixedColumn("end_net_worth"), usage: returnsBridgeUsage,
+			refuses: bridgeRefusedFlags, checkWindow: checkBridgeWindow,
 			header: func(req request) []string { return []string{"period=" + req.period} },
 			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
 				return returnsBridgeReport(req, cfg)
 			}},
 	},
+	options: []option{
+		{name: "method", cli: []string{"method"}, choices: returnsMethods, def: [2]string{"twr", "both"}},
+		{name: "period", cli: []string{"period"}, choices: returnsPeriods, def: [2]string{"quarterly", "total"}},
+		{name: "annualize", cli: []string{"annualize"}, choices: returnsAnnualize, def: [2]string{"auto", "auto"}},
+		{name: "netting", cli: []string{"netting"}, kind: optOnOff, choices: []string{"on", "off"},
+			def: [2]string{"on", "true"}},
+		{name: "inception", cli: []string{"inception"}, choices: returnsInception, def: [2]string{"full", "full"}},
+		{name: "benchmark", cli: []string{"benchmark"}},
+	},
 	window:   sinceInception,
 	currency: true,
 	narrow:   "from/to or a filter",
-	prepare: func(_ *family, a *toolArgs, req *request, _ *[]string) error {
-		if req.view == "stated" {
-			// The document fixes the periods and the currency.
-			return refuseArgs(a, "returns", "stated", append([]string{"currency"}, statedRefusedFlags...),
-				" — the periods and the currency are the document's")
-		}
-		if req.view == "bridge" {
-			if err := refuseArgs(a, "returns", "bridge", bridgeRefusedFlags, ""); err != nil {
+	usage:    returnsUsage,
+	settle: func(_ *family, in optionSource, req *request, _ *[]string) error {
+		switch req.view {
+		case "stated":
+			// The document fixes the periods and the currency. The CLI
+			// refuses the return flags as it parses them, then -x.
+			if !in.cli() {
+				return refuseOptions(in, "returns", "stated", append([]string{"currency"}, statedRefusedFlags...),
+					" — the periods and the currency are the document's")
+			}
+			if in.has("currency") {
+				return errs.Newf(errs.ExitUsage, "returns: stated takes no -x/--currency — "+
+					"every amount is in the currency the document states")
+			}
+			return nil
+		case "bridge":
+			if !in.cli() {
+				if err := refuseOptions(in, "returns", "bridge", bridgeRefusedFlags, ""); err != nil {
+					return err
+				}
+			}
+			var err error
+			if req.period, err = choose(in, "returns", "period"); err != nil {
 				return err
 			}
-			req.period = orDefault(a.str("period"), "total")
-			return checkBridgeWindow(req.from, req.to, req.asOf)
+			// The CLI checks the months as it reads the window
+			// (view.checkWindow).
+			if !in.cli() {
+				return checkBridgeWindow(req.from, req.to, req.asOf)
+			}
+			return nil
 		}
-		req.method = orDefault(a.str("method"), "both")
-		req.period = orDefault(a.str("period"), "total")
-		req.annualize = orDefault(a.str("annualize"), "auto")
-		req.inception = orDefault(a.str("inception"), "full")
-		req.netting = a.flag("netting", true)
-		req.benchmark = a.str("benchmark")
+		for _, o := range []struct {
+			name string
+			to   *string
+		}{{"method", &req.method}, {"period", &req.period}, {"annualize", &req.annualize},
+			{"netting", nil}, {"inception", &req.inception}} {
+			v, err := choose(in, "returns", o.name)
+			if err != nil {
+				return err
+			}
+			if o.to != nil {
+				*o.to = v
+			}
+		}
+		req.netting = in.on("netting")
+		req.benchmark = in.str("benchmark")
 		return checkReturnsBenchmark(req.view, req.benchmark)
 	},
 }
-
-// returnsViews are the returns views' names, the grains first.
-var returnsViews = returnsFamily.names()
 
 // buildReturns is a grain's report (returnsReport).
 func buildReturns(cfg *config.Config, req request, _ *toolArgs) *report {
@@ -117,71 +150,6 @@ var (
 	returnsAnnualize = []string{"auto", "always", "never"}
 	returnsInception = []string{"full", "strict"}
 )
-
-// cmdReturns routes `wealthdb returns <view> ...` to the view's run.
-func cmdReturns(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("returns", subargs, returnsFamily.names(), returnsUsage, stderr)
-	if err != nil {
-		return err
-	}
-	switch view {
-	case "stated":
-		return runReturnsStated(ctx, g, rest, stdout, stderr)
-	case "bridge":
-		return runReturnsBridge(ctx, g, rest, stdout, stderr)
-	}
-	return runReturnsView(ctx, g, view, rest, stdout, stderr)
-}
-
-func runReturnsView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb returns "+view, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	method := fs.String("method", "twr", "twr | mwr | both")
-	period := fs.String("period", "quarterly", "monthly | quarterly | annual | total")
-	annualize := fs.String("annualize", "auto", "auto | always | never")
-	netting := fs.String("netting", "on", "on | off — net internal transfers at coarse grains (incl. cross-source matched pairs)")
-	inception := fs.String("inception", "full", "full | strict — aggregate since-inception handling")
-	benchmark := fs.String("benchmark", "", "a benchmark's name, beside the global view's rows ('wealthdb help benchmarks')")
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, returnsUsage()) }
-	if err := parseFlags(fs, args, "returns"); err != nil {
-		return err
-	}
-	for _, c := range []struct {
-		flag, value string
-		allowed     []string
-	}{
-		{"method", *method, returnsMethods},
-		{"period", *period, returnsPeriods},
-		{"annualize", *annualize, returnsAnnualize},
-		{"netting", *netting, []string{"on", "off"}},
-		{"inception", *inception, returnsInception},
-	} {
-		if err := checkChoice("returns", c.flag, c.value, c.allowed...); err != nil {
-			return err
-		}
-	}
-	if err := checkReturnsBenchmark(view, *benchmark); err != nil {
-		return err
-	}
-	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), g.clock())
-	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "returns: %s", err.Error())
-	}
-
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "returns")
-	if err != nil {
-		return err
-	}
-
-	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
-		method: *method, period: *period, annualize: *annualize, netting: *netting == "on", inception: *inception,
-		benchmark: *benchmark}
-	rep := returnsReport(req, cfg)
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", returnsFamily, req, cfg, g.clock()), open, stdout)
-}
 
 // returnsReport is one view of the returns family, the runner the CLI
 // and the MCP server share: RunReturns with the config's overrides, so

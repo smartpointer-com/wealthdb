@@ -57,7 +57,7 @@ func checkDateMarks(t *testing.T, srv *mcpServer, tool toolSpec, v, period strin
 	if v != "" {
 		args["view"] = v
 	}
-	req := defaultRequest(v, "USD")
+	req := tool.family.defaultRequest(v, "USD", fixtureToday, 12)
 	if period != "" {
 		args["period"] = period
 		req.period = period
@@ -123,7 +123,7 @@ func TestDateNamedColumnsAreMarked(t *testing.T) {
 		}
 		for _, v := range tool.family.viewsOrOne() {
 			for _, series := range []bool{false, true} {
-				req := defaultRequest(v, "USD")
+				req := tool.family.defaultRequest(v, "USD", fixtureToday, 12)
 				if series {
 					req.series = []seriesPoint{{}}
 				}

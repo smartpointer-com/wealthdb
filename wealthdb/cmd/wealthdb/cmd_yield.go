@@ -3,9 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
-	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -28,7 +25,9 @@ import (
 // the aggregate views to one row per entity in the output currency. -f
 // ndjson is coverage's alone: the ledger's records still to write.
 func init() {
-	register("yield", cmdYield)
+	// The usage lists the family's columns, so it joins the family here.
+	yieldFamily.usage = yieldUsage
+	register("yield", routeReport(yieldFamily))
 }
 
 // yieldFamily are the views: the grains coarse to fine, the lists, then
@@ -55,15 +54,21 @@ var yieldFamily = &family{
 		{name: "curve", series: true, principal: fixedColumn("dv01"), build: yieldCurveReport},
 		{name: "coverage", principal: fixedColumn("value"), build: yieldCoverageReport},
 	},
-	window:   asOfDate,
-	currency: true,
-	narrow:   "a coarser view",
-	prepare: func(fam *family, a *toolArgs, req *request, notes *[]string) error {
-		req.converted = a.flag("converted", false)
+	options: []option{
+		{name: "as_of", cli: []string{"d", "as-of"}},
+		{name: "period", cli: []string{"period"}},
+		{name: "converted", cli: []string{"converted"}, kind: optFlag},
+	},
+	window:    asOfDate,
+	currency:  true,
+	narrow:    "a coarser view",
+	skeletons: writeYieldSkeletons,
+	settle: func(fam *family, in optionSource, req *request, notes *[]string) error {
+		req.converted = in.on("converted")
 		if !fam.view(req.view).takesOption("converted") && req.converted {
-			return errConverted(fam, "converted")
+			return errConverted(fam, in.spell("converted"))
 		}
-		return seriesArg("yield", fam.seriesViews(), a, req, notes)
+		return in.series("yield", fam.seriesViews(), req, notes)
 	},
 	header: func(req request) []string {
 		if req.converted {
@@ -72,9 +77,6 @@ var yieldFamily = &family{
 		return nil
 	},
 }
-
-// yieldViews are the yield views' names.
-var yieldViews = yieldFamily.names()
 
 // yieldAggregateView is an aggregate view at its grain: a series takes
 // it, and so does --converted. It carries a total row of its own.
@@ -98,53 +100,6 @@ func yieldAggregateView(name string, grain yield.Grain) view {
 // off the aggregate views of fam.
 func errConverted(fam *family, name string) error {
 	return errs.Newf(errs.ExitUsage, "yield: %s belongs to the %s views", name, andList(fam.taking("converted")))
-}
-
-func cmdYield(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("yield", subargs, yieldFamily.names(), yieldUsage, stderr)
-	if err != nil {
-		return err
-	}
-	fs := flag.NewFlagSet("wealthdb yield "+view, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	asOf := registerAsOf(fs)
-	period := fs.String("period", "", strings.Join(seriesPeriods, " | ")+" — a series over a window")
-	converted := fs.Bool("converted", false, "one row per entity in the output currency, rates across currencies")
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, yieldUsage()) }
-	if err := parseFlags(fs, rest, "yield"); err != nil {
-		return err
-	}
-	skeletons := *rf.format == skeletonFormat
-	if skeletons {
-		if err := checkSkeletonFlags("yield", fs, view, *period, *rf.privacy); err != nil {
-			return err
-		}
-		*rf.format = string(output.FormatTable)
-	}
-	if !yieldFamily.view(view).takesOption("converted") && *converted {
-		return errConverted(yieldFamily, "--converted")
-	}
-	now := g.clock()
-	series, err := parseSeries("yield", fs, view, *period, yieldFamily.seriesViews(), now)
-	if err != nil {
-		return err
-	}
-	asOfEpoch, err := parseAsOf(*asOf, now)
-	if err != nil {
-		return errs.Newf(errs.ExitUsage, "yield: %s", err.Error())
-	}
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "yield")
-	if err != nil {
-		return err
-	}
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	if skeletons {
-		return writeYieldSkeletons(ctx, open, asOfEpoch, outCcy, stdout)
-	}
-	req := request{view: view, currency: outCcy, asOf: asOfEpoch, series: series, converted: *converted}
-	rep := yieldFamily.build(cfg, req, nil)
-	return writeReport(ctx, rep, rf.output(fmtChoice, "yield", yieldFamily, req, cfg, now), open, stdout)
 }
 
 // yieldBook computes the book of one instant.

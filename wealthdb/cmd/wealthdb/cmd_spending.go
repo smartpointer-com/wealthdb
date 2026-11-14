@@ -3,19 +3,17 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
-	"fmt"
-	"io"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
 
 func init() {
-	register("spending", cmdSpending)
+	// The usage lists the family's columns, so it joins the family here.
+	spendingFamily.usage = spendingUsage
+	register("spending", routeReport(spendingFamily))
 }
 
 // spendingFamily are the views of `wealthdb spending <view>`: the three
@@ -52,40 +50,51 @@ var spendingFamily = &family{
 			}},
 		// On fees the entity is the portfolio or the account. A mean
 		// value and a rate do not add up over entities.
-		{name: "fees", side: true, principal: fixedColumn("fees"), header: periodHeader,
+		{name: "fees", side: true, principal: fixedColumn("fees"), header: periodHeader, usage: spendingFeesUsage,
+			options: []option{{name: "period", cli: []string{"period"}, choices: feePeriods,
+				def: [2]string{"total", "total"}}},
+			refuses:  feesRefusedFlags,
 			keyAlias: map[string]string{"account": "entity"},
 			build: func(cfg *config.Config, req request, _ *toolArgs) *report {
 				return spendingFeesReport(req, cfg)
 			}},
 	},
+	options: []option{
+		{name: "period", cli: []string{"period"}, choices: reportPeriodNames, def: [2]string{"monthly", "total"}},
+		{name: "level", cli: []string{"level"}, choices: categoryLevels, def: [2]string{"primary", "primary"}},
+	},
 	window:   trailingYear,
 	currency: true,
 	narrow:   "from/to or a filter",
-	prepare: func(_ *family, a *toolArgs, req *request, notes *[]string) error {
-		req.period = orDefault(a.str("period"), "total")
+	settle: func(_ *family, in optionSource, req *request, notes *[]string) error {
 		if req.view == "fees" {
-			if err := refuseArgs(a, "spending", "fees", feesRefusedFlags, ""); err != nil {
-				return err
+			// The CLI refuses the level as it parses it.
+			if !in.cli() {
+				if err := refuseOptions(in, "spending", "fees", feesRefusedFlags, ""); err != nil {
+					return err
+				}
 			}
-			return checkChoice("spending", "period", req.period, feePeriods...)
+			var err error
+			req.period, err = choose(in, "spending", "period")
+			return err
 		}
-		req.level = a.str("level")
-		if req.level == "" {
-			req.level = "primary"
-			// A category filter is a name search, and names live in
-			// the detailed vocabulary: "groceries" is a detailed
-			// category under "Food and drink".
-			if req.view == "categories" && a.has("category") {
-				req.level = "detailed"
-				*notes = append(*notes, "level detailed for the category filter")
-			}
+		var err error
+		if req.period, err = choose(in, "spending", "period"); err != nil {
+			return err
+		}
+		if req.level, err = choose(in, "spending", "level"); err != nil {
+			return err
+		}
+		// A category filter is a name search, and names live in the
+		// detailed vocabulary: "groceries" is a detailed category under
+		// "Food and drink".
+		if req.view == "categories" && !in.has("level") && in.has("category") {
+			req.level = "detailed"
+			*notes = append(*notes, "level detailed for the category filter")
 		}
 		return nil
 	},
 }
-
-// spendingViews are the spending views' names.
-var spendingViews = spendingFamily.names()
 
 // reportPeriods maps the CLI's bucket vocabulary onto the date_trunc
 // parts the report macros bucket by. The names are the returns
@@ -104,53 +113,6 @@ var reportPeriodNames = []string{"daily", "weekly", "monthly", "quarterly", "ann
 // categoryLevels are the `--level` vocabularies of spending's and
 // income's categories: the broad groups or the detailed values.
 var categoryLevels = []string{"primary", "detailed"}
-
-// cmdSpending routes `wealthdb spending <view> ...` to the view's run.
-func cmdSpending(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("spending", subargs, spendingFamily.names(), spendingUsage, stderr)
-	if err != nil {
-		return err
-	}
-	if view == "fees" {
-		return runSpendingFees(ctx, g, rest, stdout, stderr)
-	}
-	return runSpendingView(ctx, g, view, rest, stdout, stderr)
-}
-
-func runSpendingView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb spending "+view, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
-	level := fs.String("level", "primary", "primary | detailed — the category vocabulary (categories view)")
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, spendingUsage()) }
-	if err := parseFlags(fs, args, "spending"); err != nil {
-		return err
-	}
-	if err := checkChoice("spending", "period", *period, reportPeriodNames...); err != nil {
-		return err
-	}
-	if err := checkChoice("spending", "level", *level, categoryLevels...); err != nil {
-		return err
-	}
-
-	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), g.clock())
-	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "spending: %s", err.Error())
-	}
-
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "spending")
-	if err != nil {
-		return err
-	}
-
-	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
-		categories: overrideCategories(cfg)}
-	rep := spendingFamily.build(cfg, req, nil)
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "spending", spendingFamily, req, cfg, g.clock()), open, stdout)
-}
 
 // periodStart renders the bucket's opening date, empty for the
 // `total` bucket, which has no start beyond the window's own.

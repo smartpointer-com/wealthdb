@@ -34,7 +34,9 @@ import (
 // situs reads every holding whole, at its legal situs: it looks through
 // no fund.
 func init() {
-	register("exposure", cmdExposure)
+	// The usage lists the family's columns, so it joins the family here.
+	exposureFamily.usage = exposureUsage
+	register("exposure", routeReport(exposureFamily))
 }
 
 // exposureFamily are the views: the breakdowns coarse to fine, the
@@ -45,86 +47,86 @@ func init() {
 var exposureFamily = &family{
 	name: "exposure",
 	views: []view{
-		exposureView("classes", true, func(req request) *report {
-			return benchmarkView(req, buildExposureClassColumns(req.currency), defaultExposureClassColumns,
+		exposureView("classes", gold.BenchmarkDimClass, true, func(req request, dimension string) *report {
+			return benchmarkView(req, dimension, buildExposureClassColumns(req.currency), defaultExposureClassColumns,
 				func(r gold.ExposureClassRow) string { return r.AssetClass },
 				func(r gold.ExposureClassRow) *float64 { return r.SharePct },
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureClassRow, error) {
 					return gold.ExposureClasses(ctx, db, at, req.currency)
 				})
 		}),
-		exposureView("sectors", true, func(req request) *report {
-			return benchmarkView(req, buildExposureSectorColumns(req.currency), defaultExposureSectorColumns,
+		exposureView("sectors", gold.BenchmarkDimClassSector, true, func(req request, dimension string) *report {
+			return benchmarkView(req, dimension, buildExposureSectorColumns(req.currency), defaultExposureSectorColumns,
 				func(r gold.ExposureSectorRow) string { return r.AssetClass + "|" + r.Sector },
 				func(r gold.ExposureSectorRow) *float64 { return r.SharePct },
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSectorRow, error) {
 					return gold.ExposureSectors(ctx, db, at, req.currency)
 				})
 		}),
-		exposureView("sizes", true, func(req request) *report {
-			return benchmarkView(req, buildExposureSizeColumns(req.currency), defaultExposureSizeColumns,
+		exposureView("sizes", gold.BenchmarkDimSize, true, func(req request, dimension string) *report {
+			return benchmarkView(req, dimension, buildExposureSizeColumns(req.currency), defaultExposureSizeColumns,
 				func(r gold.ExposureSizeRow) string { return r.Size },
 				func(r gold.ExposureSizeRow) *float64 { return r.SharePct },
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSizeRow, error) {
 					return gold.ExposureSizes(ctx, db, at, req.currency)
 				})
 		}),
-		withTakes(exposureView("countries", true, func(req request) *report {
-			return benchmarkView(req, buildExposureCountryColumns(req.currency), defaultExposureCountryColumns,
+		withTakes(exposureView("countries", gold.BenchmarkDimCountry, true, func(req request, dimension string) *report {
+			return benchmarkView(req, dimension, buildExposureCountryColumns(req.currency), defaultExposureCountryColumns,
 				func(r gold.ExposureCountryRow) string { return r.Country },
 				func(r gold.ExposureCountryRow) *float64 { return r.SharePct },
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCountryRow, error) {
 					return gold.ExposureCountries(ctx, db, at, req.currency, req.country)
 				})
 		}), "country"),
-		exposureView("currencies", true, func(req request) *report {
-			return benchmarkView(req, buildExposureCurrencyColumns(req.currency), defaultExposureCurrencyColumns,
+		exposureView("currencies", gold.BenchmarkDimCurrencyKind, true, func(req request, dimension string) *report {
+			return benchmarkView(req, dimension, buildExposureCurrencyColumns(req.currency), defaultExposureCurrencyColumns,
 				func(r gold.ExposureCurrencyRow) string { return r.Currency + "|" + r.Kind },
 				func(r gold.ExposureCurrencyRow) *float64 { return r.SharePct },
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCurrencyRow, error) {
 					return gold.ExposureCurrencies(ctx, db, at, req.currency)
 				})
 		}),
-		exposureBucketView("credit", "bucket", gold.ExposureCredit,
+		exposureBucketView("credit", "credit", "bucket", gold.ExposureCredit,
 			[]string{"bucket", "grade", "value", "share", "class_share", "direct", "via_funds", "quality"}),
-		exposureBucketView("maturities", "bucket", gold.ExposureMaturities,
+		exposureBucketView("maturities", "maturity", "bucket", gold.ExposureMaturities,
 			[]string{"bucket", "value", "share", "class_share", "direct", "via_funds", "quality"}),
-		exposureBucketView("coupons", "coupon_kind", gold.ExposureCoupons,
+		exposureBucketView("coupons", "coupon", "coupon_kind", gold.ExposureCoupons,
 			[]string{"coupon_kind", "value", "share", "class_share", "direct", "via_funds", "quality"}),
-		exposureBucketView("cycles", "cycle", gold.ExposureCycles,
+		exposureBucketView("cycles", "cycle", "cycle", gold.ExposureCycles,
 			[]string{"cycle", "value", "share", "class_share", "direct", "via_funds", "quality"}),
-		exposureView("situs", true, func(req request) *report {
+		exposureView("situs", "", true, func(req request, dimension string) *report {
 			return seriesView(req, buildExposureSitusColumns(req.currency), defaultExposureSitusColumns,
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSitusRow, error) {
 					return gold.ExposureSitus(ctx, db, at, req.currency)
 				})
 		}),
-		withTakes(exposureView("securities", false, func(req request) *report {
+		withTakes(exposureView("securities", gold.BenchmarkDimSecurity, false, func(req request, dimension string) *report {
 			kindOf, loadKinds := sourceKinds()
-			return withLoads(benchmarkView(req, buildExposureSecurityColumns(req.currency, kindOf), defaultExposureSecurityColumns,
+			return withLoads(benchmarkView(req, dimension, buildExposureSecurityColumns(req.currency, kindOf), defaultExposureSecurityColumns,
 				func(r gold.ExposureSecurityRow) string { return r.Security },
 				func(r gold.ExposureSecurityRow) *float64 { return r.SharePct },
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureSecurityRow, error) {
 					return gold.ExposureSecurities(ctx, db, at, req.currency, req.country)
 				}), loadKinds)
 		}), "country"),
-		exposureView("issuers", false, func(req request) *report {
+		exposureView("issuers", gold.BenchmarkDimIssuer, false, func(req request, dimension string) *report {
 			kindOf, loadKinds := sourceKinds()
 			issuers := typedIssuers{}
-			return withLoads(benchmarkView(req, buildExposureIssuerColumns(req.currency, kindOf, issuers), defaultExposureIssuerColumns,
+			return withLoads(benchmarkView(req, dimension, buildExposureIssuerColumns(req.currency, kindOf, issuers), defaultExposureIssuerColumns,
 				issuerBenchmarkKey, func(r gold.ExposureIssuerRow) *float64 { return r.SharePct },
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureIssuerRow, error) {
 					return gold.ExposureIssuers(ctx, db, at, req.currency)
 				}), loadKinds, issuers.load)
 		}),
-		exposureView("funds", false, func(req request) *report {
+		exposureView("funds", "", false, func(req request, dimension string) *report {
 			kindOf, loadKinds := sourceKinds()
 			return withLoads(seriesView(req, buildExposureFundColumns(req.currency, kindOf), defaultExposureFundColumns,
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureFundRow, error) {
 					return gold.ExposureFunds(ctx, db, at, req.currency)
 				}), loadKinds)
 		}),
-		withTotal(exposureView("coverage", true, func(req request) *report {
+		withTotal(exposureView("coverage", "", true, func(req request, dimension string) *report {
 			kindOf, loadKinds := sourceKinds()
 			return withLoads(seriesView(req, buildExposureCoverageColumns(req.currency, kindOf), defaultExposureCoverageColumns,
 				func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureCoverageRow, error) {
@@ -132,22 +134,47 @@ var exposureFamily = &family{
 				}), loadKinds)
 		}), noTotal),
 	},
-	window:   asOfDate,
-	currency: true,
-	narrow:   "a coarser view",
-	prepare: func(fam *family, a *toolArgs, req *request, notes *[]string) error {
-		req.country = exposureCountryBases[0]
-		if a.has("country") {
-			if !fam.view(req.view).takesOption("country") {
-				return errCountryView(fam, "country")
+	options: []option{
+		{name: "as_of", cli: []string{"d", "as-of"}},
+		{name: "period", cli: []string{"period"}},
+		{name: "country", cli: []string{"country"}, choices: exposureCountryBases,
+			def: [2]string{exposureCountryBases[0], exposureCountryBases[0]}},
+		{name: "benchmark", cli: []string{"benchmark"}},
+	},
+	window:    asOfDate,
+	currency:  true,
+	narrow:    "a coarser view",
+	skeletons: writeDeclarationSkeletons,
+	settle: func(fam *family, in optionSource, req *request, notes *[]string) error {
+		req.country, req.benchmark = in.str("country"), in.str("benchmark")
+		country := func() error {
+			if !fam.view(req.view).takesOption("country") && in.has("country") {
+				return errCountryView(fam, in.spell("country"))
 			}
-			req.country = a.str("country") // the enum admits exposureCountryBases alone
+			return nil
 		}
-		if err := seriesArg("exposure", fam.seriesViews(), a, req, notes); err != nil {
+		// The CLI reads the series first and checks the country last;
+		// MCP checks the country first.
+		if in.cli() {
+			if err := in.series("exposure", fam.seriesViews(), req, notes); err != nil {
+				return err
+			}
+			if err := checkExposureBenchmark(fam, req.view, req.benchmark, req.country, req.series); err != nil {
+				return err
+			}
+			if err := country(); err != nil {
+				return err
+			}
+			_, err := choose(in, "exposure", "country")
 			return err
 		}
-		req.benchmark = a.str("benchmark")
-		return checkExposureBenchmark(req.view, req.benchmark, req.country, req.series)
+		if err := country(); err != nil {
+			return err
+		}
+		if err := in.series("exposure", fam.seriesViews(), req, notes); err != nil {
+			return err
+		}
+		return checkExposureBenchmark(fam, req.view, req.benchmark, req.country, req.series)
 	},
 	header: func(req request) []string {
 		var h []string
@@ -161,24 +188,22 @@ var exposureFamily = &family{
 	},
 }
 
-// exposureViews are the exposure views' names.
-var exposureViews = exposureFamily.names()
-
 // exposureView is an exposure view: at one instant, or, with req.series,
 // at the end of every period of a window, one row set per period. Its
-// rows add up as a balance and its main column is value; series says a
+// rows add up as a balance and its main column is value; benchmark is
+// the dimension of benchmark_exposure its rows read, and series says a
 // series takes it.
-func exposureView(name string, series bool, build func(request) *report) view {
-	return view{name: name, series: series, total: balanceTotal, principal: fixedColumn("value"),
-		build: func(_ *config.Config, req request, _ *toolArgs) *report { return build(req) }}
+func exposureView(name, benchmark string, series bool, build func(req request, benchmark string) *report) view {
+	return view{name: name, series: series, benchmark: benchmark, total: balanceTotal, principal: fixedColumn("value"),
+		build: func(_ *config.Config, req request, _ *toolArgs) *report { return build(req, benchmark) }}
 }
 
-// exposureBucketView is a bucket view: the name of its first column, its
-// reader and its default columns.
-func exposureBucketView(name, column string, read func(context.Context, *sql.DB, int64, string) ([]gold.ExposureBucketRow, error),
-	defaults []string) view {
-	return exposureView(name, true, func(req request) *report {
-		return benchmarkView(req, buildExposureBucketColumns(req.currency, name, column), defaults,
+// exposureBucketView is a bucket view: its benchmark dimension, the name
+// of its first column, its reader and its default columns.
+func exposureBucketView(name, benchmark, column string,
+	read func(context.Context, *sql.DB, int64, string) ([]gold.ExposureBucketRow, error), defaults []string) view {
+	return exposureView(name, benchmark, true, func(req request, dimension string) *report {
+		return benchmarkView(req, dimension, buildExposureBucketColumns(req.currency, name, column), defaults,
 			func(r gold.ExposureBucketRow) string { return r.Bucket },
 			func(r gold.ExposureBucketRow) *float64 { return r.SharePct },
 			func(ctx context.Context, db *sql.DB, at int64) ([]gold.ExposureBucketRow, error) {
@@ -207,63 +232,6 @@ var exposureCountryBases = []string{"risk", "domicile"}
 // gives it, on a view of fam that places no security in a country.
 func errCountryView(fam *family, name string) error {
 	return errs.Newf(errs.ExitUsage, "exposure: %s belongs to the %s views", name, strings.Join(fam.taking("country"), " and "))
-}
-
-func cmdExposure(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("exposure", subargs, exposureFamily.names(), exposureUsage, stderr)
-	if err != nil {
-		return err
-	}
-	fs := flag.NewFlagSet("wealthdb exposure "+view, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	asOf := registerAsOf(fs)
-	period := fs.String("period", "", strings.Join(seriesPeriods, " | ")+" — a series over a window")
-	country := fs.String("country", exposureCountryBases[0],
-		strings.Join(exposureCountryBases, " | ")+" — which country a security counts in")
-	benchmark := fs.String("benchmark", "", "a benchmark's name, its weights beside the rows ('wealthdb help benchmarks')")
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, exposureUsage()) }
-	if err := parseFlags(fs, rest, "exposure"); err != nil {
-		return err
-	}
-	skeletons := *rf.format == skeletonFormat
-	if skeletons {
-		if err := checkSkeletonFlags("exposure", fs, view, *period, *rf.privacy); err != nil {
-			return err
-		}
-		// The shared parser knows the table formats only; the skeletons
-		// are written below.
-		*rf.format = string(output.FormatTable)
-	}
-	now := g.clock()
-	series, err := parseSeries("exposure", fs, view, *period, exposureFamily.seriesViews(), now)
-	if err != nil {
-		return err
-	}
-	if err := checkExposureBenchmark(view, *benchmark, *country, series); err != nil {
-		return err
-	}
-	if !exposureFamily.view(view).takesOption("country") && isSet(fs, "country") {
-		return errCountryView(exposureFamily, "--country")
-	}
-	if err := checkChoice("exposure", "country", *country, exposureCountryBases...); err != nil {
-		return err
-	}
-	asOfEpoch, err := parseAsOf(*asOf, now)
-	if err != nil {
-		return errs.Newf(errs.ExitUsage, "exposure: %s", err.Error())
-	}
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "exposure")
-	if err != nil {
-		return err
-	}
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	if skeletons {
-		return writeDeclarationSkeletons(ctx, open, asOfEpoch, outCcy, stdout)
-	}
-	req := request{view: view, currency: outCcy, asOf: asOfEpoch, country: *country, series: series, benchmark: *benchmark}
-	rep := exposureFamily.build(cfg, req, nil)
-	return writeReport(ctx, rep, rf.output(fmtChoice, "exposure", exposureFamily, req, cfg, now), open, stdout)
 }
 
 // skeletonFormat is the -f value that turns coverage into declaration

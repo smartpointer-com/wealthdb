@@ -52,8 +52,8 @@ func TestUsageListsEverySubcommand(t *testing.T) {
 func TestUsageListsEveryReportsViews(t *testing.T) {
 	t.Parallel()
 	families := map[string][]string{
-		"holdings": holdingsViews, "returns": returnsViews, "gains": gainsViews, "exposure": exposureViews,
-		"yield": yieldViews, "spending": spendingViews, "income": incomeViews, "cashflow": cashflowViews,
+		"holdings": holdingsFamily.names(), "returns": returnsFamily.names(), "gains": gainsFamily.names(), "exposure": exposureFamily.names(),
+		"yield": yieldFamily.names(), "spending": spendingFamily.names(), "income": incomeFamily.names(), "cashflow": cashflowFamily.names(),
 	}
 	for _, c := range commandHelps {
 		views, ok := families[c.name]
@@ -94,7 +94,7 @@ func TestEveryListedCommandSaysWhatItDoes(t *testing.T) {
 // as unknown.
 func TestHelpForAViewIsTheViewsOwnHelp(t *testing.T) {
 	t.Parallel()
-	for _, view := range holdingsViews {
+	for _, view := range holdingsFamily.names() {
 		got := runUsage(t, "help", view)
 		want := runUsage(t, "holdings", view, "-h")
 		if got != want {

@@ -3,9 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
-	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -17,43 +14,6 @@ import (
 // bridgeRefusedFlags are the returns flags that have no meaning on the
 // bridge: it has no return to compute, and one set of flows to read.
 var bridgeRefusedFlags = []string{"method", "annualize", "netting", "inception", "benchmark"}
-
-// `wealthdb returns bridge`: why net worth moved over each bucket. The
-// flags of the other views that do not apply are refused by name
-// (refuseFlags).
-func runReturnsBridge(ctx context.Context, g globalFlags, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb returns bridge", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	period := fs.String("period", "quarterly", "monthly | quarterly | annual | total")
-	refused := refuseFlags(fs, "returns", "bridge", bridgeRefusedFlags)
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, returnsBridgeUsage()) }
-	if err := parseFlags(fs, args, "returns"); err != nil {
-		return err
-	}
-	if err := refused(); err != nil {
-		return err
-	}
-	if err := checkChoice("returns", "period", *period, returnsPeriods...); err != nil {
-		return err
-	}
-	fromEpoch, toEpoch, err := parseReturnsWindow(fs.Args(), g.clock())
-	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "returns: %s", err.Error())
-	}
-	if err := checkBridgeWindow(fromEpoch, toEpoch, anchorToDay(g.clock().UTC(), true).Unix()); err != nil {
-		return err
-	}
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "returns")
-	if err != nil {
-		return err
-	}
-	req := request{view: "bridge", currency: outCcy, from: fromEpoch, to: toEpoch, period: *period}
-	rep := returnsBridgeReport(req, cfg)
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "returns", returnsFamily, req, cfg, g.clock()), open, stdout)
-}
 
 // checkBridgeWindow refuses a window the bridge's months cannot cut: its
 // start must be a month's first day and its end a month's last, or today

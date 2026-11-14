@@ -51,10 +51,14 @@ var incomeRungTags = []tagNote{
 	{string(yield.RungRollCash), "a roll into cash, where the holding has no yield at all"},
 }
 
-// forwardFlags are the assumptions the expected income rests on.
-type forwardFlags struct {
-	rates, maturing *string
-	shift           *int
+// forwardOptions are the assumptions the expected income rests on: the
+// forward views' --rates, --maturing and --shift.
+var forwardOptions = []option{
+	{name: "rates", cli: []string{"rates"}, choices: pathNames(),
+		def: [2]string{string(yield.DefaultAssumptions.Path), string(yield.DefaultAssumptions.Path)}},
+	{name: "maturing", cli: []string{"maturing"}, choices: ruleNames(),
+		def: [2]string{string(yield.DefaultAssumptions.Rule), string(yield.DefaultAssumptions.Rule)}},
+	{name: "shift", cli: []string{"shift"}, kind: optInt, def: [2]string{"0", ""}},
 }
 
 // pathNames and ruleNames are the choices of --rates and --maturing.
@@ -62,32 +66,18 @@ func pathNames() []string { return stringsOf(yield.Paths) }
 
 func ruleNames() []string { return stringsOf(yield.Rules) }
 
-func registerForwardFlags(fs *flag.FlagSet) *forwardFlags {
-	return &forwardFlags{
-		rates: fs.String("rates", string(yield.DefaultAssumptions.Path),
-			strings.Join(pathNames(), " | ")+" — how floating rates move (forward views)"),
-		maturing: fs.String("maturing", string(yield.DefaultAssumptions.Rule),
-			strings.Join(ruleNames(), " | ")+" — what a maturing principal earns (forward views)"),
-		shift: fs.Int("shift", 0, "a parallel shift of the floating rates, in basis points (forward views)"),
+// forwardAssumptions are the assumptions in asks for, --rates and
+// --maturing refused outside their choices, in that order.
+func forwardAssumptions(in optionSource, cmd string) (yield.Assumptions, error) {
+	rates, err := choose(in, cmd, "rates")
+	if err != nil {
+		return yield.Assumptions{}, err
 	}
-}
-
-// check refuses what checkForwardOptions refuses, and a value outside
-// each flag's choices.
-func (f *forwardFlags) check(fs *flag.FlagSet, view, period string) error {
-	if err := checkForwardOptions(incomeFamily, view, period, func(name string) bool { return isSet(fs, name) },
-		func(name string) string { return "--" + name }); err != nil {
-		return err
+	maturing, err := choose(in, cmd, "maturing")
+	if err != nil {
+		return yield.Assumptions{}, err
 	}
-	return f.checkChoices("income")
-}
-
-// checkChoices refuses a --rates or --maturing outside its choices.
-func (f *forwardFlags) checkChoices(cmd string) error {
-	if err := checkChoice(cmd, "rates", *f.rates, pathNames()...); err != nil {
-		return err
-	}
-	return checkChoice(cmd, "maturing", *f.maturing, ruleNames()...)
+	return yield.Assumptions{Path: yield.Path(rates), Rule: yield.Rule(maturing), ShiftBP: float64(in.num("shift"))}, nil
 }
 
 // checkForwardOptions refuses the options a view does not take, the CLI
@@ -152,19 +142,6 @@ func reportWindow(fs *flag.FlagSet, cmd string, now time.Time, horizon int, forw
 		return 0, 0, errs.Newf(errs.ExitUsage, "%s: %s", cmd, err.Error())
 	}
 	return from, to, nil
-}
-
-func (f *forwardFlags) assumptions() yield.Assumptions {
-	return yield.Assumptions{Path: yield.Path(*f.rates), Rule: yield.Rule(*f.maturing), ShiftBP: float64(*f.shift)}
-}
-
-// assumptionArgs are forwardFlags.assumptions for an MCP call: rates,
-// maturing and shift, each absent one yield.DefaultAssumptions'.
-func assumptionArgs(a *toolArgs) yield.Assumptions {
-	shift, _ := a.integer("shift")
-	def := yield.DefaultAssumptions
-	return yield.Assumptions{Path: yield.Path(orDefault(a.str("rates"), string(def.Path))),
-		Rule: yield.Rule(orDefault(a.str("maturing"), string(def.Rule))), ShiftBP: float64(shift)}
 }
 
 // assumptionsHeader names the assumptions in an MCP result's header, the
@@ -278,7 +255,7 @@ func incomeCalendarReport(_ *config.Config, req request, _ *toolArgs) *report {
 // incomeEntityView is a forward view per entity at grain: received,
 // expected and total, last year's and the next twelve months'.
 func incomeEntityView(name string, grain yield.Grain) view {
-	return view{name: name, forward: true, total: flowTotal, principal: fixedColumn("total"), header: forwardHeader,
+	return view{name: name, forward: true, window: parseForwardWindow, total: flowTotal, principal: fixedColumn("total"), header: forwardHeader,
 		build: func(_ *config.Config, req request, _ *toolArgs) *report {
 			kindOf, loadKinds := sourceKinds()
 			return withLoads(newReport(buildIncomeEntityColumns(req.currency, grain, kindOf), incomeEntityDefaults[grain],

@@ -451,19 +451,6 @@ func stringsOf[T ~string](vs []T) []string {
 	return out
 }
 
-// missingBasisArg is the missing_basis argument, "" when absent: build
-// then takes the config's default (missingOr).
-func missingBasisArg(a *toolArgs) (lots.MissingBasis, error) {
-	if !a.has("missing_basis") {
-		return "", nil
-	}
-	m, err := lots.ParseMissingBasis(a.str("missing_basis"))
-	if err != nil {
-		return "", fmt.Errorf("missing_basis: %w", err)
-	}
-	return m, nil
-}
-
 // periodHeader is the header of a view whose bucket is an option.
 func periodHeader(req request) []string { return []string{"period=" + req.period} }
 
@@ -487,9 +474,9 @@ var statusFamily = &family{
 		},
 	}},
 	narrow: "search",
-	prepare: func(_ *family, a *toolArgs, _ *request, _ *[]string) error {
+	settle: func(_ *family, in optionSource, _ *request, _ *[]string) error {
 		for _, name := range []string{"from", "to", "currency"} {
-			if a.has(name) {
+			if in.has(name) {
 				return fmt.Errorf("status: %s belongs to marks", name)
 			}
 		}
@@ -510,9 +497,9 @@ var marksFamily = &family{
 	window:   sinceInception,
 	currency: true,
 	narrow:   "from/to",
-	prepare: func(_ *family, a *toolArgs, _ *request, _ *[]string) error {
+	settle: func(_ *family, in optionSource, _ *request, _ *[]string) error {
 		for _, name := range []string{"source", "verbose"} {
-			if a.has(name) {
+			if in.has(name) {
 				return fmt.Errorf("status: marks takes no %s", name)
 			}
 		}
@@ -526,15 +513,13 @@ var snapshotsFamily = &family{
 	views: []view{{build: func(_ *config.Config, _ request, a *toolArgs) *report {
 		return snapshotsReport(a.flag("latest_only", false))
 	}}},
-	narrow:  "source or latest_only",
-	prepare: noOptions,
+	narrow: "source or latest_only",
 }
 
 var resolutionsFamily = &family{
-	name:    "resolutions",
-	views:   []view{{build: func(*config.Config, request, *toolArgs) *report { return resolutionsReport("") }}},
-	narrow:  "source or search",
-	prepare: noOptions,
+	name:   "resolutions",
+	views:  []view{{build: func(*config.Config, request, *toolArgs) *report { return resolutionsReport("") }}},
+	narrow: "source or search",
 }
 
 var categorizationsFamily = &family{
@@ -545,22 +530,7 @@ var categorizationsFamily = &family{
 		families, _ := resolveCategorizeFamilies(a.str("family"))
 		return categorizationsReport(families, "")
 	}}},
-	narrow:  "family, category or search",
-	prepare: noOptions,
-}
-
-func noOptions(*family, *toolArgs, *request, *[]string) error { return nil }
-
-// refuseArgs refuses a call that sets one of names: the options of the
-// tool's other views that view does not take, as the CLI refuses them
-// (refuseFlags). why follows the refusal.
-func refuseArgs(a *toolArgs, tool, view string, names []string, why string) error {
-	for _, name := range names {
-		if a.has(name) {
-			return fmt.Errorf("%s: %s takes no %s%s", tool, view, name, why)
-		}
-	}
-	return nil
+	narrow: "family, category or search",
 }
 
 func orDefault(v, def string) string {
@@ -737,7 +707,7 @@ func (s *mcpServer) settle(tool string, fam *family, cfg *config.Config, a *tool
 	if err := resolveDates(fam, a, s.now(), cfg.YieldHorizon(), &req); err != nil {
 		return request{}, nil, fmt.Errorf("%s: %v", tool, err)
 	}
-	if err := fam.prepare(fam, a, &req, &notes); err != nil {
+	if err := fam.settleMCP(a, &req, &notes); err != nil {
 		if moved != "" {
 			// Say what moved the call, or the refusal names a view
 			// that was never asked for.

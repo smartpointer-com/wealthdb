@@ -47,31 +47,19 @@ func benchmarkParamDoc(doc string) string {
 	return doc + " One of " + strings.Join(names, ", ") + ", or a name from the config's benchmarks block."
 }
 
-// exposureBenchmarkViews are the views --benchmark applies to, each with
-// the dimension of benchmark_exposure its rows read.
-var exposureBenchmarkViews = map[string]string{
-	"classes": gold.BenchmarkDimClass, "sectors": gold.BenchmarkDimClassSector, "sizes": gold.BenchmarkDimSize,
-	"countries": gold.BenchmarkDimCountry, "currencies": gold.BenchmarkDimCurrencyKind,
-	"credit": "credit", "maturities": "maturity", "coupons": "coupon", "cycles": "cycle",
-	"securities": gold.BenchmarkDimSecurity, "issuers": gold.BenchmarkDimIssuer,
-}
-
 // checkExposureBenchmark refuses --benchmark where it describes nothing:
 // a view with no such dimension, or a series, since a benchmark's
 // look-through is today's alone. A benchmark places a security in its
 // country of risk, so the domicile basis has nothing to compare with.
-func checkExposureBenchmark(view, benchmark, country string, series []seriesPoint) error {
+func checkExposureBenchmark(fam *family, name, benchmark, country string, series []seriesPoint) error {
 	if benchmark == "" {
 		return nil
 	}
 	if country != exposureCountryBases[0] {
 		return errs.Newf(errs.ExitUsage, "exposure: a benchmark reads the country of risk; --benchmark takes no --country %s", country)
 	}
-	if _, ok := exposureBenchmarkViews[view]; !ok {
-		names := make([]string, 0, len(exposureBenchmarkViews))
-		for v := range exposureBenchmarkViews {
-			names = append(names, v)
-		}
+	if fam.view(name).benchmark == "" {
+		names := fam.namesWhere(func(v *view) bool { return v.benchmark != "" })
 		slices.Sort(names)
 		return errs.Newf(errs.ExitUsage, "exposure: --benchmark belongs to the %s views", strings.Join(names, ", "))
 	}
@@ -120,8 +108,8 @@ func (w benchmarkWeights) of(key string) *float64 {
 
 // benchmarkView is seriesView with, under req.benchmark, the benchmark's
 // weight of each row's bucket and the row's share less it. key names the
-// row's bucket of the view's dimension.
-func benchmarkView[T any](req request, registry []columnSpec[T], defaults []string, key func(T) string,
+// row's bucket of the view's dimension of benchmark_exposure.
+func benchmarkView[T any](req request, dimension string, registry []columnSpec[T], defaults []string, key func(T) string,
 	share func(T) *float64, fetch func(context.Context, *sql.DB, int64) ([]T, error)) *report {
 	if req.benchmark == "" {
 		return seriesView(req, registry, defaults, fetch)
@@ -144,5 +132,5 @@ func benchmarkView[T any](req request, registry []columnSpec[T], defaults []stri
 	}
 	shown = slices.Insert(shown, at, "benchmark", "difference")
 	return withLoads(seriesView(req, cols, shown, fetch),
-		weights.load(req.benchmark, exposureBenchmarkViews[req.view]))
+		weights.load(req.benchmark, dimension))
 }

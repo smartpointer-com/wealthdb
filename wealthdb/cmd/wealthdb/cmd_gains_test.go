@@ -75,7 +75,7 @@ func setupGainsGold(t *testing.T) string {
 // front-ends, plus the realized view's own options.
 func gainsCases() []goldenCase {
 	var out []goldenCase
-	for _, v := range gainsViews {
+	for _, v := range gainsFamily.names() {
 		out = append(out, goldenCase{"gains " + v, []string{"gains", v, "1970", "--period", "total"}, "gains",
 			map[string]any{"view": v, "from": "1970", "to": "1970"}})
 	}
@@ -92,7 +92,7 @@ func TestGainsCLIEndToEnd(t *testing.T) {
 	t.Parallel()
 	cfg := setupGainsGold(t)
 
-	for _, view := range gainsViews {
+	for _, view := range gainsFamily.names() {
 		so, se, code := run(t, "-c", cfg, "gains", view, "-", "today", "-x", "CHF")
 		if code != 0 {
 			t.Errorf("gains %s: exit=%d stderr=%s", view, code, se)
@@ -134,7 +134,7 @@ func TestGainsCLIEndToEnd(t *testing.T) {
 func TestGainsViewsResolveTheirDefaults(t *testing.T) {
 	t.Parallel()
 	usage := gainsUsage()
-	for _, view := range gainsViews {
+	for _, view := range gainsFamily.names() {
 		rep := gainsFamily.build(nil, request{view: view, currency: "USD", period: "monthly"}, nil)
 		if _, err := rep.pick("default"); err != nil {
 			t.Errorf("%s defaults: %v", view, err)
@@ -157,7 +157,7 @@ func TestReportHeadersAreIdentifiers(t *testing.T) {
 	reports := map[string]*report{"status marks": marksReport(request{view: "marks", currency: "USD"})}
 	for _, rf := range reportFamilies {
 		for _, v := range rf.fam.viewsOrOne() {
-			reports[strings.TrimSpace(rf.name+" "+v)] = rf.fam.buildDefault(cfg, defaultRequest(v, "USD"))
+			reports[strings.TrimSpace(rf.name+" "+v)] = rf.fam.buildDefault(cfg, rf.fam.defaultRequest(v, "USD", fixtureToday, 12))
 		}
 	}
 	// A series adds its period column ahead of the view's own.

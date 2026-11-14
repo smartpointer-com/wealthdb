@@ -4,9 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
-	"flag"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
@@ -30,7 +28,9 @@ import (
 // question it cannot answer. So is --missing-basis on `coverage` and
 // `check`, which count a missing cost rather than read it.
 func init() {
-	register("gains", cmdGains)
+	// The usage lists the family's columns, so it joins the family here.
+	gainsFamily.usage = gainsUsage
+	register("gains", routeReport(gainsFamily))
 }
 
 // gainsFamily are the views, coarse to fine: the four aggregate views,
@@ -92,26 +92,45 @@ var gainsFamily = &family{
 					}), loadKinds)
 			}},
 	},
+	options: []option{
+		{name: "period", cli: []string{"period"}, choices: reportPeriodNames, def: [2]string{"monthly", "total"}},
+		{name: "documents", cli: []string{"documents"}, choices: gainsDocuments, def: [2]string{"primary", "primary"}},
+		{name: "missing_basis", cli: []string{"missing-basis"}},
+		{name: "newest_first", cli: []string{"r", "reverse"}, kind: optFlag},
+	},
 	window:   trailingYear,
 	currency: true,
 	narrow:   "from/to or a filter",
-	prepare: func(_ *family, a *toolArgs, req *request, _ *[]string) error {
-		// The CLI's refusal: on another view the two would ask a
-		// question it cannot answer.
-		if req.view != "realized" && (a.has("documents") || a.has("newest_first")) {
+	settle: func(_ *family, in optionSource, req *request, _ *[]string) error {
+		// On another view the two would ask a question it cannot answer.
+		if req.view != "realized" && (in.has("documents") || in.has("newest_first")) {
+			if in.cli() {
+				return errs.Newf(errs.ExitUsage, "gains: --documents and -r belong to the realized view")
+			}
 			return fmt.Errorf("gains: documents and newest_first belong to view=realized")
 		}
-		if !gainsReadsBasis(req.view) && a.has("missing_basis") {
+		if !gainsReadsBasis(req.view) && in.has("missing_basis") {
+			if in.cli() {
+				return errs.Newf(errs.ExitUsage, "gains: --missing-basis does not apply to the %s view", req.view)
+			}
 			return fmt.Errorf("gains: missing_basis does not apply to view=%s", req.view)
 		}
-		req.period = orDefault(a.str("period"), "total")
-		req.allDocuments = a.str("documents") == "all"
-		req.newestFirst = a.flag("newest_first", false)
 		var err error
-		if req.missing, err = missingBasisArg(a); err != nil {
-			return fmt.Errorf("gains: %w", err)
+		if req.period, err = choose(in, "gains", "period"); err != nil {
+			return err
 		}
+		documents, err := choose(in, "gains", "documents")
+		if err != nil {
+			return err
+		}
+		req.allDocuments = documents == "all"
+		req.newestFirst = in.on("newest_first")
 		return nil
+	},
+	after: func(in optionSource, cfg *config.Config, req *request) error {
+		var err error
+		req.missing, err = missingBasisOption(in, cfg, "gains")
+		return err
 	},
 	header: func(req request) []string {
 		if req.missing == lots.MissingZero {
@@ -120,9 +139,6 @@ var gainsFamily = &family{
 		return nil
 	},
 }
-
-// gainsViews are the gains views' names, coarse to fine.
-var gainsViews = gainsFamily.names()
 
 // gainsBucketView is an aggregate view at its grain: its figures add up
 // over a window, and its main column is gain.
@@ -157,65 +173,22 @@ func gainsLineHeader(req request) []string {
 // each sale once, or every document's copy of it.
 var gainsDocuments = []string{"primary", "all"}
 
-func cmdGains(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("gains", subargs, gainsFamily.names(), gainsUsage, stderr)
+// missingBasisOption reads how a missing cost basis counts for cmd. On
+// the CLI it is the reading asked for, else the config's
+// (resolveMissingBasis); on MCP the reading asked for, "" when none,
+// which the view's build takes the config's default for (missingOr).
+func missingBasisOption(in optionSource, cfg *config.Config, cmd string) (lots.MissingBasis, error) {
+	if in.cli() {
+		return resolveMissingBasis(in.str("missing_basis"), cfg, cmd)
+	}
+	if !in.has("missing_basis") {
+		return "", nil
+	}
+	m, err := lots.ParseMissingBasis(in.str("missing_basis"))
 	if err != nil {
-		return err
+		return "", fmt.Errorf("%s: missing_basis: %w", cmd, err)
 	}
-	return runGainsView(ctx, g, view, rest, stdout, stderr)
-}
-
-func runGainsView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb gains "+view, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
-	documents := fs.String("documents", "primary", "primary | all — which copies of a sale the realized view lists")
-	missing := registerMissingBasisFlag(fs)
-	reverse := fs.Bool("r", false, "realized only: newest first")
-	fs.BoolVar(reverse, "reverse", false, "realized only: newest first")
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, gainsUsage()) }
-	if err := parseFlags(fs, args, "gains"); err != nil {
-		return err
-	}
-	if view != "realized" && isSet(fs, "documents", "r", "reverse") {
-		return errs.Newf(errs.ExitUsage, "gains: --documents and -r belong to the realized view")
-	}
-	if !gainsReadsBasis(view) && isSet(fs, "missing-basis") {
-		return errs.Newf(errs.ExitUsage, "gains: --missing-basis does not apply to the %s view", view)
-	}
-	if err := checkChoice("gains", "period", *period, reportPeriodNames...); err != nil {
-		return err
-	}
-	if err := checkChoice("gains", "documents", *documents, gainsDocuments...); err != nil {
-		return err
-	}
-	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), g.clock())
-	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "gains: %s", err.Error())
-	}
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "gains")
-	if err != nil {
-		return err
-	}
-	missingBasis, err := resolveMissingBasis(*missing, cfg, "gains")
-	if err != nil {
-		return err
-	}
-
-	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch,
-		period: *period, allDocuments: *documents == "all", newestFirst: *reverse, missing: missingBasis,
-		categories: overrideCategories(cfg)}
-	rep := gainsFamily.build(cfg, req, nil)
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "gains", gainsFamily, req, cfg, g.clock()), open, stdout)
-}
-
-// registerMissingBasisFlag declares --missing-basis on a command that
-// reads a cost basis.
-func registerMissingBasisFlag(fs *flag.FlagSet) *string {
-	return fs.String("missing-basis", "", "ignore | zero — how a missing cost basis counts (default: config lots.missing_basis, else ignore)")
+	return m, nil
 }
 
 // resolveMissingBasis settles --missing-basis for cmd: the reading

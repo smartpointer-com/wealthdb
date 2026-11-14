@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -34,7 +32,9 @@ import (
 // earned or yielded, against what was given — but it is not the one a
 // reader opens the report for.
 func init() {
-	register("income", cmdIncome)
+	// The usage lists the family's columns, so it joins the family here.
+	incomeFamily.usage = incomeUsage
+	register("income", routeReport(incomeFamily))
 }
 
 // incomeFamily are the grains `wealthdb income <view>` supports: what
@@ -70,90 +70,48 @@ var incomeFamily = &family{
 						return gold.IncomeTransactions(ctx, db, req.from, req.to, req.currency)
 					}), loadKinds)
 			}},
-		{name: "projection", forward: true, total: flowTotal, principal: fixedColumn("total"),
+		{name: "projection", forward: true, window: parseForwardWindow, total: flowTotal, principal: fixedColumn("total"),
 			header: func(req request) []string {
 				return append([]string{"period=" + req.period}, assumptionsHeader(req.assumptions)...)
 			},
 			build: incomeProjectionReport},
-		{name: "calendar", forward: true, total: flowTotal, principal: fixedColumn("value"),
+		{name: "calendar", forward: true, window: parseForwardWindow, total: flowTotal, principal: fixedColumn("value"),
 			header: forwardHeader, build: incomeCalendarReport},
 		incomeEntityView("sources", yield.GrainSources),
 		incomeEntityView("portfolios", yield.GrainPortfolios),
 		incomeEntityView("accounts", yield.GrainAccounts),
 		incomeEntityView("positions", yield.GrainPositions),
 	},
-	window:   trailingYear,
-	currency: true,
-	narrow:   "from/to or a filter",
-	prepare: func(fam *family, a *toolArgs, req *request, _ *[]string) error {
-		req.period = orDefault(a.str("period"), "total")
-		req.level = orDefault(a.str("level"), "detailed")
-		forward := fam.view(req.view).forward
-		if forward {
-			req.period = orDefault(a.str("period"), "monthly")
-		}
-		if err := checkForwardOptions(fam, req.view, req.period, a.has, func(name string) string { return name }); err != nil {
+	options: append([]option{
+		{name: "period", cli: []string{"period"}, choices: reportPeriodNames, def: [2]string{"monthly", "total"}},
+		{name: "level", cli: []string{"level"}, choices: categoryLevels, def: [2]string{"detailed", "detailed"}},
+	}, forwardOptions...),
+	window:      trailingYear,
+	currency:    true,
+	narrow:      "from/to or a filter",
+	configFirst: true,
+	settle: func(fam *family, in optionSource, req *request, _ *[]string) error {
+		period, err := choose(in, "income", "period")
+		if err != nil {
 			return err
 		}
-		if forward {
-			req.assumptions = assumptionArgs(a)
+		if req.level, err = choose(in, "income", "level"); err != nil {
+			return err
 		}
-		return nil
+		forward := fam.view(req.view).forward
+		if forward && !in.has("period") {
+			period = "monthly"
+		}
+		req.period = period
+		if err := checkForwardOptions(fam, req.view, period, in.has, in.spell); err != nil {
+			return err
+		}
+		as, err := forwardAssumptions(in, "income")
+		if forward {
+			req.assumptions = as
+		}
+		return err
 	},
-}
-
-// incomeViews are the income views' names.
-var incomeViews = incomeFamily.names()
-
-// cmdIncome routes `wealthdb income <view> ...` to the view's run.
-func cmdIncome(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, stdout, stderr io.Writer) error {
-	view, rest, err := routeView("income", subargs, incomeFamily.names(), incomeUsage, stderr)
-	if err != nil {
-		return err
-	}
-	return runIncomeView(ctx, g, view, rest, stdout, stderr)
-}
-
-func runIncomeView(ctx context.Context, g globalFlags, view string, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb income "+view, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	period := fs.String("period", "monthly", strings.Join(reportPeriodNames, " | "))
-	level := fs.String("level", "detailed", "primary | detailed — the type vocabulary (types view)")
-	ff := registerForwardFlags(fs)
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, incomeUsage()) }
-	if err := parseFlags(fs, args, "income"); err != nil {
-		return err
-	}
-	if err := checkChoice("income", "period", *period, reportPeriodNames...); err != nil {
-		return err
-	}
-	if err := checkChoice("income", "level", *level, categoryLevels...); err != nil {
-		return err
-	}
-	if err := ff.check(fs, view, *period); err != nil {
-		return err
-	}
-
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "income")
-	if err != nil {
-		return err
-	}
-	now := g.clock()
-	var window windowParser
-	if incomeFamily.view(view).forward {
-		window = parseForwardWindow
-	}
-	fromEpoch, toEpoch, err := reportWindow(fs, "income", now, cfg.YieldHorizon(), window)
-	if err != nil {
-		return err
-	}
-
-	req := request{view: view, currency: outCcy, from: fromEpoch, to: toEpoch, period: *period, level: *level,
-		asOf: anchorToDay(now.UTC(), true).Unix(), assumptions: ff.assumptions(), categories: overrideCategories(cfg)}
-	rep := incomeFamily.build(cfg, req, nil)
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "income", incomeFamily, req, cfg, now), open, stdout)
 }
 
 // ---- column registries ---------------------------------------------------

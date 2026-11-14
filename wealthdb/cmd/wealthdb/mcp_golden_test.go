@@ -341,7 +341,7 @@ func holdingsCases() []goldenCase {
 // series.
 func yieldCases() []goldenCase {
 	var out []goldenCase
-	for _, v := range yieldViews {
+	for _, v := range yieldFamily.names() {
 		out = append(out, goldenCase{"yield " + v, []string{"yield", v, "-d", "2026-06-30"}, "yield",
 			map[string]any{"view": v, "as_of": "2026-06-30"}})
 	}

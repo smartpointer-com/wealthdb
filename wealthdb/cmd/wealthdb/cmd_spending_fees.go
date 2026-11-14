@@ -3,13 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
-	"fmt"
-	"io"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
@@ -21,40 +17,6 @@ var feePeriods = returnsPeriods
 // fee view: its rows are entities, not categories. A category filter is
 // refused as every view's filters are (filterViewError).
 var feesRefusedFlags = []string{"level"}
-
-// `wealthdb spending fees`: what each portfolio cost, in money and as a
-// share of the value it held, beside its return. It reads the spending
-// lines, so a vehicle's fees count.
-func runSpendingFees(ctx context.Context, g globalFlags, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("wealthdb spending fees", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	period := fs.String("period", "total", strings.Join(feePeriods, " | "))
-	refused := refuseFlags(fs, "spending", "fees", feesRefusedFlags)
-	rf := registerReportFlags(fs, true)
-	fs.Usage = func() { fmt.Fprintln(stderr, spendingFeesUsage()) }
-	if err := parseFlags(fs, args, "spending"); err != nil {
-		return err
-	}
-	if err := refused(); err != nil {
-		return err
-	}
-	if err := checkChoice("spending", "period", *period, feePeriods...); err != nil {
-		return err
-	}
-	fromEpoch, toEpoch, err := parseTrailingYearWindow(fs.Args(), g.clock())
-	if err != nil {
-		fs.Usage()
-		return errs.Newf(errs.ExitUsage, "spending: %s", err.Error())
-	}
-	fmtChoice, cfg, outCcy, err := rf.resolve(g, "spending")
-	if err != nil {
-		return err
-	}
-	req := request{view: "fees", currency: outCcy, from: fromEpoch, to: toEpoch, period: *period}
-	rep := spendingFeesReport(req, cfg)
-	open := func() (*sql.DB, error) { return openGoldForRead(g, cfg) }
-	return writeReport(ctx, rep, rf.output(fmtChoice, "spending", spendingFamily, req, cfg, g.clock()), open, stdout)
-}
 
 // spendingFeesReport is the fee view, the runner the CLI and the MCP
 // server share.

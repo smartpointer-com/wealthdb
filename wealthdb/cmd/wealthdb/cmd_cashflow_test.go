@@ -381,7 +381,7 @@ func TestCashflowUsageNamesEveryView(t *testing.T) {
 			t.Errorf("the usage text does not mention %q", want)
 		}
 	}
-	for _, view := range cashflowViews {
+	for _, view := range cashflowFamily.names() {
 		if !strings.Contains(usage, view) {
 			t.Errorf("the usage text does not name the %q view", view)
 		}
@@ -417,7 +417,7 @@ func TestCashflowHelpEntryNamesEveryView(t *testing.T) {
 	if entry.name == "" {
 		t.Fatal("no cashflow entry in commandHelps")
 	}
-	for _, view := range cashflowViews {
+	for _, view := range cashflowFamily.names() {
 		if !strings.Contains(entry.detail(), view) {
 			t.Errorf("`wealthdb help cashflow` does not name the %q view", view)
 		}
