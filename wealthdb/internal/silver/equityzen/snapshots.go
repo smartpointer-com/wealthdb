@@ -16,18 +16,18 @@ import (
 const accountKey = "equityzen"
 
 // Snapshots forward-fills the per-day portfolio from the silver's
-// event-sourced `positions` table. The collector already replays each deal's
-// timeline and computes its mark (silver migrations 0001/0002); this adapter
-// does no valuation logic — for every event date it emits a COMPLETE snapshot
-// (each deal's latest event on/before that date, keeping only the is_open
-// ones), which is what gold's as-of query reads (each account's latest
-// snapshot, all its positions). An exited deal drops out exactly at its exit
-// date; a deal the portal stopped listing drops out at the first dump that
-// omitted it (removals), a snapshot time where the roster is emitted
-// without it and every other deal keeps its own mark date (ValuedAt). When
-// the LAST deal leaves, that date gets the exit-day zero snapshot instead
-// (silver.ClosureMarkerBatch) — dropping to an empty batch would leave the
-// pre-exit marks carried forward as phantom value.
+// event-sourced `positions` table (silver.Book). The collector already
+// replays each deal's timeline and computes its mark (silver migrations
+// 0001/0002); this adapter does no valuation logic. Every event date
+// gets a COMPLETE snapshot: each deal's latest event on or before that
+// date, keeping only the is_open ones, which is what gold's as-of query
+// reads (each account's latest snapshot, all its positions). An exited
+// deal drops out exactly at its exit date; a deal the portal stopped
+// listing drops out at the first dump that omitted it (removals), a
+// snapshot time where the roster is emitted without it and every other
+// deal keeps its own mark date (ValuedAt). When the LAST deal leaves,
+// that date gets the exit-day zero snapshot instead
+// (silver.ClosureMarkerBatch).
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -36,35 +36,26 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	times, err := c.snapshotTimesInWindow(ctx, w, removals.Times())
+	states, err := c.states(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// The held→empty transition is tracked within the walked window, so the
-	// closure marker depends on ChangeWindow spanning the full content history
-	// (it does — see status.go): a window starting between the last held date
-	// and the exit date would miss the transition and re-emit nothing.
-	batches := make([]canonical.SnapshotBatch, 0, len(times))
-	var lastHeld canonical.SnapshotBatch
-	prevHeld := false
-	for _, t := range times {
-		batch, err := c.buildBatch(ctx, t, removals)
-		if err != nil {
-			return nil, err
-		}
-		held := len(batch.Positions) > 0
-		switch {
-		case held:
-			lastHeld = batch
-		case prevHeld:
-			// The book just emptied: emit the exit-day zero snapshot so the
-			// value spine and the as-of holdings register the closure ON the
-			// exit date instead of carrying the last marks forward (an empty
-			// batch is invisible to gold's queries).
-			batch = silver.ClosureMarkerBatch(lastHeld, t, custodyAccount(t))
-		}
-		prevHeld = held
-		batches = append(batches, batch)
+	// The closure marker depends on ChangeWindow spanning the full content
+	// history (it does — see status.go): a window starting between the last
+	// held date and the exit date would miss the transition and re-emit
+	// nothing.
+	batches, err := silver.Book{
+		States:   states,
+		Removals: removals,
+		Account:  custodyAccount,
+		Emit: func(t int64, held []silver.Holding) (canonical.SnapshotBatch, error) {
+			return emit(t, held), nil
+		},
+		StampValuedAt: true,
+		Closure:       true,
+	}.Batches(w)
+	if err != nil {
+		return nil, err
 	}
 	return silver.NewSnapshotStream(batches), nil
 }
@@ -105,32 +96,24 @@ SELECT o.deal_external_id, (SELECT MIN(t) FROM complete WHERE t > o.last_seen_at
 	return silver.QueryRemovals(ctx, c.db, "equityzen", q)
 }
 
-// snapshotTimesInWindow are the distinct position event dates in the window
-// (positions.as_of_date as unix seconds; the download time in dump_runs is
-// provenance, not a holding event, so it is excluded) and the extra times
-// in it on which the roster changes without an event: a dump that stopped
-// listing a deal (removals).
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
-	return silver.SnapshotTimes(ctx, c.db, w, extra, `
-SELECT DISTINCT CAST(strftime('%s', as_of_date) AS INTEGER) AS t
-  FROM positions
- WHERE as_of_date IS NOT NULL
-   AND CAST(strftime('%s', as_of_date) AS INTEGER) BETWEEN ? AND ?
- ORDER BY t`,
-		w.Start, w.End)
+// state is one positions row with what the deal's batch reads from it
+// (silver.Holding.Row).
+type state struct {
+	currency, kind, company, symbol, payload string
+	shares, cost, paidIn, bought, fee        sql.NullFloat64
+	market                                   *canonical.Decimal
+	acquired                                 sql.NullInt64
 }
 
-// buildBatch materialises the full portfolio as of event date t: each deal's
-// latest event on/before t (by event_seq, which increases with as_of_date),
-// keeping only is_open=1 — a deal whose latest event ≤ t is its exit
-// (is_open=0) is dropped, a deal with no event ≤ t (not yet invested) is
-// absent, and so is a deal the portal had stopped listing by t (removals).
-// Emits one position + one instrument per held deal, each position valued
-// at its event's date, plus the single EquityZen account.
-func (c *Connection) buildBatch(ctx context.Context, t int64, removals silver.Removals) (canonical.SnapshotBatch, error) {
-	var batch canonical.SnapshotBatch
+// states are every deal's dated events in event_seq order (silver.Book):
+// a deal's latest event on or before a date is the one with the highest
+// event_seq. An event is held while it is is_open=1 and its offering is
+// known; an exit is is_open=0, and a deal with no event by a date is not
+// yet invested. An event with no date is no state.
+func (c *Connection) states(ctx context.Context) ([]silver.Holding, error) {
 	const q = `
 SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
+       COALESCE(p.is_open = 1 AND o.deal_external_id IS NOT NULL, 0),
        COALESCE(o.currency, 'USD'),
        p.shares_held, p.cost_basis_remaining, p.market_value,
        COALESCE(o.kind, ''), COALESCE(o.company_name, ''), COALESCE(o.ticker_symbol, ''),
@@ -142,50 +125,49 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
        (SELECT SUM(cf.execution_fee) FROM cash_flows cf
          WHERE cf.deal_external_id = p.deal_external_id AND cf.kind = 'purchase')
   FROM positions p
-  JOIN offerings o ON o.deal_external_id = p.deal_external_id
- WHERE p.is_open = 1
-   AND p.event_seq = (
-       SELECT MAX(s2.event_seq) FROM positions s2
-        WHERE s2.deal_external_id = p.deal_external_id
-          AND s2.as_of_date IS NOT NULL
-          AND CAST(strftime('%s', s2.as_of_date) AS INTEGER) <= ?)
- ORDER BY p.deal_external_id`
-
-	held := false
-	if err := silver.ScanRows(ctx, c.db, "buildBatch", q, func(rows *sql.Rows) error {
+  LEFT JOIN offerings o ON o.deal_external_id = p.deal_external_id
+ WHERE CAST(strftime('%s', p.as_of_date) AS INTEGER) IS NOT NULL
+ ORDER BY p.deal_external_id, p.event_seq`
+	return silver.Query(ctx, c.db, "states", q, func(rows *sql.Rows) (silver.Holding, error) {
 		var (
-			deal, currency, kind, company, symbol, payl string
-			asOf                                        int64
-			shares, cost, paidIn, bought, fee           sql.NullFloat64
-			market                                      *canonical.Decimal
-			acqUnix                                     sql.NullInt64
+			h silver.Holding
+			s state
 		)
-		if err := rows.Scan(&deal, &asOf, &currency, &shares, &cost, silver.Dec(&market, silver.DecFloat),
-			&kind, &company, &symbol, &acqUnix, &payl, &paidIn, &bought, &fee); err != nil {
-			return err
-		}
-		if removals.Removed(deal, t) {
-			return nil
-		}
-		held = true
-		acNew, vehicle := taxonomyForKind(kind)
-		instKey := deal
+		err := rows.Scan(&h.Key, &h.At, &h.Open, &s.currency, &s.shares, &s.cost,
+			silver.Dec(&s.market, silver.DecFloat), &s.kind, &s.company, &s.symbol, &s.acquired,
+			&s.payload, &s.paidIn, &s.bought, &s.fee)
+		h.Row = s
+		return h, err
+	})
+}
+
+// emit is the batch at t of the deals held then: one position and one
+// instrument per held deal, each position valued at its event's date.
+// The book carries the single EquityZen account.
+func emit(t int64, held []silver.Holding) canonical.SnapshotBatch {
+	var batch canonical.SnapshotBatch
+	for _, h := range held {
+		s := h.Row.(state)
+		acNew, vehicle := taxonomyForKind(s.kind)
+		instKey := h.Key
 
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
-			ValuedAt:             asOf,
 			AccountExternalID:    accountKey,
-			PositionKey:          deal,
+			PositionKey:          h.Key,
 			InstrumentExternalID: &instKey,
 			AssetClass:           acNew,
 			Vehicle:              vehicle,
-			Currency:             currency,
-			MarketValue:          market,
-			AcquisitionDate:      silver.DatePtrFromNullUnix(acqUnix),
+			Currency:             s.currency,
+			AcquisitionDate:      silver.DatePtrFromNullUnix(s.acquired),
+		}
+		if s.market != nil {
+			market := *s.market // each batch holds its own value
+			change.MarketValue = &market
 		}
 		spv := vehicle == canonical.VehicleSPV
-		book, basis, feeShare := bookValue(stake{spv: spv, cost: cost, paidIn: paidIn,
-			held: shares, bought: bought, fee: fee})
+		book, basis, feeShare := bookValue(stake{spv: spv, cost: s.cost, paidIn: s.paidIn,
+			held: s.shares, bought: s.bought, fee: s.fee})
 		change.SetBookValue(book, basis)
 		if feeShare != nil {
 			change.Payload = silver.PayloadWith("{}", map[string]any{
@@ -194,7 +176,7 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
 		// quantity is a share count only for SPVs; a multi-company fund's
 		// LP interest has no meaningful unit count.
 		if spv {
-			change.Quantity = silver.DecimalPtrFromNullFloat(shares)
+			change.Quantity = silver.DecimalPtrFromNullFloat(s.shares)
 		}
 		batch.Positions = append(batch.Positions, change)
 
@@ -205,29 +187,24 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
 		}
-		if company != "" {
+		if s.company != "" {
+			company := s.company
 			inst.Name = &company
 		}
 		// EquityZen assigns single-company SPVs a per-company symbol (an
 		// EZ-internal ticker, not a public listing); funds have none.
 		// Surfacing it lets `wealthdb holdings positions` show a symbol
 		// like public equities.
-		if symbol != "" {
+		if s.symbol != "" {
+			symbol := s.symbol
 			inst.Symbol = &symbol
 		}
-		if payl != "" {
-			inst.Payload = json.RawMessage(payl)
+		if s.payload != "" {
+			inst.Payload = json.RawMessage(s.payload)
 		}
 		batch.Instruments = append(batch.Instruments, inst)
-		return nil
-	}, t); err != nil {
-		return batch, err
 	}
-	if !held {
-		return batch, nil // nothing held at t
-	}
-	batch.Accounts = append(batch.Accounts, custodyAccount(t))
-	return batch, nil
+	return batch
 }
 
 // custodyAccount is the single EquityZen account's change record as of t.

@@ -19,10 +19,10 @@ var ClosureMarkerPayload = json.RawMessage(`{"closure_marker": true}`)
 // instrument rows, re-emitted so a windowed load satisfies the positions→
 // instruments FK, and the custody account, so its seen-range extends to t).
 //
-// Callers emit it only on the held→empty transition — never before the first
-// holding (a pre-inception zero would fabricate an earlier, zero-base
-// inception) and never repeated across consecutive empty dates (the
-// carry-forward spine holds the zero).
+// Callers (Book among them) emit it only on the held→empty transition —
+// never before the first holding (a pre-inception zero would fabricate an
+// earlier, zero-base inception) and never repeated across consecutive empty
+// dates (the carry-forward spine holds the zero).
 func ClosureMarkerBatch(prev canonical.SnapshotBatch, t int64, account canonical.AccountChange) canonical.SnapshotBatch {
 	batch := canonical.SnapshotBatch{Accounts: []canonical.AccountChange{account}}
 	for _, p := range prev.Positions {

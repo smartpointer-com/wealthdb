@@ -16,101 +16,133 @@ import (
 const defaultAccountKey = "manual"
 
 // Snapshots reconstructs the per-date portfolio from the silver's positions +
-// valuations. The silver stores a position once (with acquired_at / closed_at)
-// and a valuation per (position, as_of_date); gold's as-of query, by contrast,
-// takes each account's latest snapshot and reads ALL its positions. So for
-// every event date — any date a position is acquired, re-valued, or closed —
-// the stream carries a COMPLETE forward-filled snapshot: every position live at that date
-// (acquired_at ≤ date < closed_at), each marked at its latest valuation
-// on/before the date. A closed position drops out exactly at its closed_at;
-// a complete portfolio exists at every date so historical as-of queries work.
+// valuations (silver.Book). The silver stores a position once (with
+// acquired_at / closed_at) and a valuation per (position, as_of_date); gold's
+// as-of query, by contrast, takes each account's latest snapshot and reads
+// ALL its positions. So for every event date — any date a position is
+// acquired, re-valued, or closed — the stream carries a COMPLETE
+// forward-filled snapshot: every position live at that date (acquired_at ≤
+// date < closed_at), each marked at its latest valuation on/before the date.
+// A closed position drops out exactly at its closed_at; a complete portfolio
+// exists at every date so historical as-of queries work. A position carries
+// no ValuedAt, and a book that empties emits an empty batch.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	times, err := c.snapshotTimesInWindow(ctx, w)
+	states, err := c.states(ctx)
 	if err != nil {
 		return nil, err
 	}
-	batches := make([]canonical.SnapshotBatch, 0, len(times))
-	for _, t := range times {
-		batch, err := c.buildBatch(ctx, t)
-		if err != nil {
-			return nil, err
-		}
-		batches = append(batches, batch)
+	declared, err := c.declaredAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	batches, err := silver.Book{
+		States: states,
+		Emit: func(t int64, held []silver.Holding) (canonical.SnapshotBatch, error) {
+			return emit(t, held, declared), nil
+		},
+	}.Batches(w)
+	if err != nil {
+		return nil, err
 	}
 	return silver.NewSnapshotStream(batches), nil
 }
 
-// snapshotTimesInWindow are the distinct holding event dates in the window
-// (eventDates; silver ISO TEXT → unix seconds). load_runs.load_at is the load
-// time, not a holding event, so it is excluded.
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
-	return silver.SnapshotTimes(ctx, c.db, w, nil, `
-SELECT DISTINCT t FROM (`+c.eventDates()+`)
-WHERE t BETWEEN ? AND ?
-ORDER BY t`,
-		w.Start, w.End)
+// state is a position as of one of its event dates (silver.Holding.Row).
+type state struct {
+	account, kind, vehicle, currency, displayName, payload string
+	acquired                                               sql.NullInt64
+	marketValue, bookValue                                 sql.NullString
+	paidIn                                                 bool
 }
 
-// buildBatch materialises the full portfolio as of event date t: every
-// position live at t, marked at its latest valuation on/before t, with its
-// cost basis (bookValueSQL). Emits one position + one instrument per live
-// position, plus one account per account those positions are held in.
+// states are every position as of each of its own event dates
+// (positionEvents), oldest first (silver.Book). A position is held at a
+// date while it is live (acquired_at ≤ date < closed_at), marked at its
+// latest valuation on/before the date, with its cost basis
+// (bookValueSQL). Every figure reads only the position's own events, so
+// the state at its latest event date stands for every later date up to
+// its next event. A valuation or cost basis entry whose position the book
+// does not hold is a date with no position live.
+func (c *Connection) states(ctx context.Context) ([]silver.Holding, error) {
+	q := `
+SELECT e.position_id, e.t,
+       COALESCE(CAST(strftime('%s', p.acquired_at) AS INTEGER) <= e.t
+                AND (p.closed_at IS NULL
+                     OR CAST(strftime('%s', p.closed_at) AS INTEGER) > e.t), 0),
+       COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
+       COALESCE(p.kind, ''), COALESCE(p.vehicle, '') AS vehicle, COALESCE(p.currency, ''),
+       COALESCE(p.display_name, ''),
+       CAST(strftime('%s', p.acquired_at) AS INTEGER) AS acq_unix,
+       COALESCE(p.payload, ''),
+       (SELECT v.value FROM valuations v
+         WHERE v.position_id = p.id
+           AND CAST(strftime('%s', v.as_of_date) AS INTEGER) <= e.t
+         ORDER BY CAST(strftime('%s', v.as_of_date) AS INTEGER) DESC
+         LIMIT 1) AS market_value,
+       ` + c.bookValueSQL("e.t") + ` AS book_value,
+       ` + c.paidInSQL() + ` AS paid_in
+  FROM (SELECT DISTINCT position_id, t FROM (` + c.positionEvents() + `) WHERE t IS NOT NULL) e
+  LEFT JOIN positions p ON p.id = e.position_id
+ ORDER BY e.position_id, e.t`
+	return silver.Query(ctx, c.db, "states", q, func(rows *sql.Rows) (silver.Holding, error) {
+		var (
+			h      silver.Holding
+			s      state
+			paidIn sql.NullBool
+		)
+		err := rows.Scan(&h.Key, &h.At, &h.Open, &s.account, &s.kind, &s.vehicle, &s.currency,
+			&s.displayName, &s.acquired, &s.payload, &s.marketValue, &s.bookValue, &paidIn)
+		s.paidIn = paidIn.Bool
+		h.Row = s
+		return h, err
+	})
+}
+
+// positionEvents is the SQL that lists every holding event date of each
+// position, as unix seconds in column t beside position_id: the dates
+// eventDates lists.
+func (c *Connection) positionEvents() string {
+	q := `
+    SELECT id AS position_id, CAST(strftime('%s', acquired_at) AS INTEGER) AS t FROM positions
+    UNION ALL SELECT id, CAST(strftime('%s', closed_at) AS INTEGER) FROM positions WHERE closed_at IS NOT NULL
+    UNION ALL SELECT position_id, CAST(strftime('%s', as_of_date) AS INTEGER) FROM valuations`
+	if c.schema.costBasis {
+		q += `
+    UNION ALL SELECT position_id, CAST(strftime('%s', as_of_date) AS INTEGER) FROM cost_basis`
+	}
+	return q
+}
+
+// emit is the batch at t of the positions held then: one position + one
+// instrument per live position, plus one account per account those
+// positions are held in.
 //
 // Only accounts holding something at t are emitted. Gold reads a snapshot as
 // the complete state of the source at that date, so an account with nothing
 // live in it has nothing to say — and emitting it would assert a container
 // that held no value on a date it may not have existed.
-func (c *Connection) buildBatch(ctx context.Context, t int64) (canonical.SnapshotBatch, error) {
+func emit(t int64, held []silver.Holding, declared map[string]declaredAccount) canonical.SnapshotBatch {
 	var batch canonical.SnapshotBatch
-	q := `
-SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
-       p.kind, COALESCE(p.vehicle, '') AS vehicle, p.currency, COALESCE(p.display_name, ''),
-       CAST(strftime('%s', p.acquired_at) AS INTEGER) AS acq_unix,
-       p.payload,
-       (SELECT v.value FROM valuations v
-         WHERE v.position_id = p.id
-           AND CAST(strftime('%s', v.as_of_date) AS INTEGER) <= ?1
-         ORDER BY CAST(strftime('%s', v.as_of_date) AS INTEGER) DESC
-         LIMIT 1) AS market_value,
-       ` + c.bookValueSQL() + ` AS book_value,
-       ` + c.paidInSQL() + ` AS paid_in
-  FROM positions p
- WHERE CAST(strftime('%s', p.acquired_at) AS INTEGER) <= ?1
-   AND (p.closed_at IS NULL
-        OR CAST(strftime('%s', p.closed_at) AS INTEGER) > ?1)
- ORDER BY p.id`
-
-	live := false
-	held := map[string]bool{}
-	if err := silver.ScanRows(ctx, c.db, "buildBatch", q, func(rows *sql.Rows) error {
-		var (
-			id, acctID, kind, vehicle, currency, displayName, payload string
-			acqUnix                                                   int64
-			marketValue, bookValue                                    sql.NullString
-			paidIn                                                    bool
-		)
-		if err := rows.Scan(&id, &acctID, &kind, &vehicle, &currency, &displayName,
-			&acqUnix, &payload, &marketValue, &bookValue, &paidIn); err != nil {
-			return err
-		}
-		live = true
-		held[acctID] = true
-		acNew, veh := taxonomyFor(kind, vehicle)
-		instKey := id
+	accounts := map[string]bool{}
+	for _, h := range held {
+		s := h.Row.(state)
+		accounts[s.account] = true
+		acNew, veh := taxonomyFor(s.kind, s.vehicle)
+		instKey := h.Key
 
 		pos := canonical.PositionChange{
 			SnapshotAt:           t,
-			AccountExternalID:    acctID,
-			PositionKey:          id,
+			AccountExternalID:    s.account,
+			PositionKey:          h.Key,
 			InstrumentExternalID: &instKey,
 			AssetClass:           acNew,
 			Vehicle:              veh,
-			Currency:             currency,
-			AcquisitionDate:      silver.DatePtrFromNullUnix(sql.NullInt64{Int64: acqUnix, Valid: true}),
-			Payload:              json.RawMessage(payload),
+			Currency:             s.currency,
+			AcquisitionDate:      silver.DatePtrFromNullUnix(s.acquired),
+			Payload:              json.RawMessage(s.payload),
 			// Quantity stays nil: manual holdings are valued by amount, not a
 			// unit count (real estate, a loan, a whole-company stake, an LP
 			// interest — none is unit-denominated).
@@ -121,15 +153,15 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 		// kind" — so both are negated here, matching the gold convention
 		// that liability positions carry a negative market_value and net
 		// against assets in rollups.
-		neg := kind == "mortgage"
-		if marketValue.Valid {
-			if mv, err := canonical.NewDecimalFromString(signed(marketValue.String, neg)); err == nil {
+		neg := s.kind == "mortgage"
+		if s.marketValue.Valid {
+			if mv, err := canonical.NewDecimalFromString(signed(s.marketValue.String, neg)); err == nil {
 				pos.MarketValue = &mv
 			}
 		}
-		if bookValue.Valid {
-			if bv, err := canonical.NewDecimalFromString(signed(bookValue.String, neg)); err == nil {
-				pos.SetBookValue(&bv, manualBasis(paidIn))
+		if s.bookValue.Valid {
+			if bv, err := canonical.NewDecimalFromString(signed(s.bookValue.String, neg)); err == nil {
+				pos.SetBookValue(&bv, manualBasis(s.paidIn))
 			}
 		}
 		batch.Positions = append(batch.Positions, pos)
@@ -140,41 +172,30 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 			Vehicle:              veh,
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
-			Payload:              json.RawMessage(payload),
+			Payload:              json.RawMessage(s.payload),
 		}
-		if displayName != "" {
-			n := displayName
+		if s.displayName != "" {
+			n := s.displayName
 			inst.Name = &n
 		}
-		if currency != "" {
-			ccy := currency
+		if s.currency != "" {
+			ccy := s.currency
 			inst.Currency = &ccy
 		}
 		batch.Instruments = append(batch.Instruments, inst)
-		return nil
-	}, t); err != nil {
-		return batch, err
 	}
-	if !live {
-		return batch, nil // nothing held at t
-	}
-
-	accounts, err := c.accountsFor(ctx, held, t)
-	if err != nil {
-		return batch, err
-	}
-	batch.Accounts = accounts
-	return batch, nil
+	batch.Accounts = accountsFor(declared, accounts, t)
+	return batch
 }
 
-// bookValueSQL is the SQL for a position's cost basis at t, inside buildBatch's
-// query over positions p. A position the cost_basis series covers takes its
+// bookValueSQL is the SQL for a position's cost basis at t, inside the
+// states query over positions p. A position the cost_basis series covers takes its
 // latest entry on or before t: the capital paid in so far, which for a
 // commitment paid in over time is less than the commitment. It has none
 // before its first entry. Any other position takes the valuation dated at its
 // acquired_at, held constant while the market moves: the price of a bought
-// asset. It reads t from the query's ?1.
-func (c *Connection) bookValueSQL() string {
+// asset. It reads t from the SQL expression at.
+func (c *Connection) bookValueSQL(at string) string {
 	atAcquisition := `(SELECT v.value FROM valuations v
          WHERE v.position_id = p.id
            AND CAST(strftime('%s', v.as_of_date) AS INTEGER)
@@ -186,7 +207,7 @@ func (c *Connection) bookValueSQL() string {
 	return `CASE WHEN ` + seriesCovers + `
          THEN (SELECT cb.amount FROM cost_basis cb
                 WHERE cb.position_id = p.id
-                  AND CAST(strftime('%s', cb.as_of_date) AS INTEGER) <= ?1
+                  AND CAST(strftime('%s', cb.as_of_date) AS INTEGER) <= ` + at + `
                 ORDER BY cb.as_of_date DESC LIMIT 1)
          ELSE ` + atAcquisition + ` END`
 }
@@ -216,35 +237,43 @@ func manualBasis(paidIn bool) canonical.Basis {
 	return canonical.Basis{Origin: canonical.BasisStated, Method: m, Fees: canonical.BasisFeesUnknown}
 }
 
-// accountsFor is one AccountChange per account holding something at t.
-//
-// The declared taxonomy wins over accountChange's defaults. No base_currency on any of them: a manual book's
-// positions may span currencies, and the account is a sleeve rather than a
-// denominated container.
-func (c *Connection) accountsFor(ctx context.Context, held map[string]bool, t int64) ([]canonical.AccountChange, error) {
-	if len(held) == 0 {
-		return nil, nil
-	}
+// declaredAccount is one row of the accounts table.
+type declaredAccount struct{ name, kind, wrapper, style string }
 
-	declared := map[string]canonical.AccountChange{}
-	if err := silver.ScanRows(ctx, c.db, "accountsFor", `
+// declaredAccounts are the accounts the book declares, by id.
+func (c *Connection) declaredAccounts(ctx context.Context) (map[string]declaredAccount, error) {
+	declared := map[string]declaredAccount{}
+	if err := silver.ScanRows(ctx, c.db, "declaredAccounts", `
 SELECT id, COALESCE(display_name, ''), COALESCE(account_kind, ''),
        COALESCE(tax_wrapper, ''), COALESCE(management_style, '')
   FROM accounts ORDER BY id`, func(rows *sql.Rows) error {
-		var id, name, kind, wrapper, style string
-		if err := rows.Scan(&id, &name, &kind, &wrapper, &style); err != nil {
+		var id string
+		var a declaredAccount
+		if err := rows.Scan(&id, &a.name, &a.kind, &a.wrapper, &a.style); err != nil {
 			return err
 		}
-		declared[id] = accountChange(id, name, kind, wrapper, style, t)
+		declared[id] = a
 		return nil
 	}); err != nil {
 		return nil, err
 	}
+	return declared, nil
+}
 
+// accountsFor is one AccountChange per account holding something at t,
+// by id.
+//
+// The declared taxonomy wins over accountChange's defaults. No base_currency on any of them: a manual book's
+// positions may span currencies, and the account is a sleeve rather than a
+// denominated container.
+func accountsFor(declared map[string]declaredAccount, held map[string]bool, t int64) []canonical.AccountChange {
+	if len(held) == 0 {
+		return nil
+	}
 	out := make([]canonical.AccountChange, 0, len(held))
 	for id := range held {
-		if ac, ok := declared[id]; ok {
-			out = append(out, ac)
+		if a, ok := declared[id]; ok {
+			out = append(out, accountChange(id, a.name, a.kind, a.wrapper, a.style, t))
 			continue
 		}
 		// A position naming an account the book does not declare. load.py
@@ -256,7 +285,7 @@ SELECT id, COALESCE(display_name, ''), COALESCE(account_kind, ''),
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].AccountExternalID < out[j].AccountExternalID
 	})
-	return out, nil
+	return out
 }
 
 // accountChange builds one account, filling each empty or unknown field with

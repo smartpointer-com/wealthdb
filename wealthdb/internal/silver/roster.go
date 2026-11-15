@@ -13,7 +13,7 @@ import (
 // A silver keyed by event date records nothing when a portal drops a
 // holding whose marks are unchanged, so the holding would persist in
 // gold until the next data date. The roster a dump lists is negative
-// data about every holding it leaves out: the adapter adds the dump
+// data about every holding it leaves out: the book (Book) adds the dump
 // time to its snapshot times and emits the roster without the removed
 // holdings there, each remaining position at its own mark
 // (canonical.PositionChange.ValuedAt). Gold then ends the holding at

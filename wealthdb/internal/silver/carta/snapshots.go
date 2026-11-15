@@ -14,19 +14,18 @@ import (
 )
 
 // Snapshots reconstructs the per-day portfolio from the silver's per-lot change
-// deltas (DESIGN.md §5.1 in the collector). The silver stores a row for a
-// security lot only on a day its state changes; gold's as-of query, by
-// contrast, takes each account's latest snapshot and reads ALL its positions.
-// So every event date gets a COMPLETE forward-filled snapshot: each
-// lot's latest delta on/before that date, keep only the `held` ones, then
-// aggregate them per company into a single position. An exited holding drops
-// out exactly at its disposition date; a full portfolio exists at every date.
-// A company the portal stopped listing drops out at the first dump that
-// omitted it (removals), a snapshot time where the roster is emitted without
-// it and every other position keeps its own mark date (ValuedAt). When the
-// LAST holding leaves, that date gets the exit-day zero snapshot instead
-// (silver.ClosureMarkerBatch) — dropping to an empty batch would leave the
-// pre-exit marks carried forward as phantom value.
+// deltas (DESIGN.md §5.1 in the collector) and the funds' capital-account
+// deltas (silver.Book). The silver stores a row for a security lot only on a
+// day its state changes; gold's as-of query, by contrast, takes each
+// account's latest snapshot and reads ALL its positions. So every event date
+// gets a COMPLETE forward-filled snapshot: each lot's latest delta on/before
+// that date, keep only the `held` ones, then aggregate them per company into
+// a single position. An exited holding drops out exactly at its disposition
+// date; a full portfolio exists at every date. A company the portal stopped
+// listing drops out at the first dump that omitted it (removals), a snapshot
+// time where the roster is emitted without it and every other position keeps
+// its own mark date (ValuedAt). When the LAST holding leaves, that date gets
+// the exit-day zero snapshot instead (silver.ClosureMarkerBatch).
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -43,8 +42,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	extra := append(ledger.carryDates(), inKind.PeriodEnds()...)
-	times, err := c.snapshotTimesInWindow(ctx, w, append(extra, removals.Times()...))
+	states, err := c.states(ctx)
+	if err != nil {
+		return nil, err
+	}
+	entityDates, err := silver.SnapshotTimesOf(ctx, c.db, w, nil, "entities")
 	if err != nil {
 		return nil, err
 	}
@@ -56,31 +58,22 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	// The held→empty transition is tracked within the walked window, so the
-	// closure marker depends on ChangeWindow spanning the full content history
-	// (it does — see status.go): a window starting between the last held date
-	// and the exit date would miss the transition and re-emit nothing.
-	batches := make([]canonical.SnapshotBatch, 0, len(times))
-	var lastHeld canonical.SnapshotBatch
-	prevHeld := false
-	for _, t := range times {
-		batch, err := c.buildBatch(ctx, t, meta, acct, ledger, inKind, removals)
-		if err != nil {
-			return nil, err
-		}
-		held := len(batch.Positions) > 0
-		switch {
-		case held:
-			lastHeld = batch
-		case prevHeld:
-			// The portfolio just emptied: emit the exit-day zero snapshot so
-			// the value spine and the as-of holdings register the closure ON
-			// the disposition date instead of carrying the last marks forward
-			// (an empty batch is invisible to gold's queries).
-			batch = silver.ClosureMarkerBatch(lastHeld, t, custodyAccount(acct, t))
-		}
-		prevHeld = held
-		batches = append(batches, batch)
+	// The closure marker depends on ChangeWindow spanning the full content
+	// history (it does — see status.go): a window starting between the last
+	// held date and the exit date would miss the transition and re-emit
+	// nothing.
+	batches, err := silver.Book{
+		States:   states,
+		Extra:    append(append(ledger.carryDates(), inKind.PeriodEnds()...), entityDates...),
+		Removals: removals,
+		Account:  func(t int64) canonical.AccountChange { return custodyAccount(acct, t) },
+		Emit: func(t int64, held []silver.Holding) (canonical.SnapshotBatch, error) {
+			return emit(t, held, meta, acct, ledger, inKind, removals)
+		},
+		Closure: true,
+	}.Batches(w)
+	if err != nil {
+		return nil, err
 	}
 	inKind.LogClamped(kindName)
 	return silver.NewSnapshotStream(batches), nil
@@ -184,15 +177,80 @@ SELECT CAST(l.eid AS TEXT),
 	return out, nil
 }
 
-// snapshotTimesInWindow are the event dates on which any position changes —
-// the union of the position-bearing content tables and the extra days a
-// position's value, book value or presence changes: a fund's carried value,
-// a K-1's in-kind distribution, a dump that stopped listing a company
-// (dump_runs is otherwise the download time, not a holding event, so it is
-// excluded).
-func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Window, extra []int64) ([]int64, error) {
-	return silver.SnapshotTimesOf(ctx, c.db, w, extra,
-		"entities", "securities", "fund_metrics")
+// lotState is one securities delta (silver.Holding.Row).
+type lotState struct {
+	entityID, secID, rowid int64
+	at                     int64
+	secType, ccy, label    string
+	issueDate, acquired    string
+	quantity, cost, mv     sql.NullFloat64
+	strike, exFMV          sql.NullFloat64
+	exType, exDate         sql.NullString
+}
+
+// fundState is one fund_metrics delta (silver.Holding.Row).
+type fundState struct {
+	entityID, rowid, at   int64
+	ccy, nav, contributed string
+	payload               string
+}
+
+// states are every security lot's deltas and every fund's capital-account
+// deltas, each holding oldest first (silver.Book). A lot is held while its
+// latest delta is `held`; a fund's latest delta is its position. Both are
+// part of their company's position (positionKey).
+func (c *Connection) states(ctx context.Context) ([]silver.Holding, error) {
+	exercise := `NULL, NULL, NULL`
+	if c.schema.exercise {
+		exercise = `exercise_type, exercise_date, exercise_fmv`
+	}
+	q := `
+SELECT entity_external_id, security_type, security_external_id, snapshot_at,
+       COALESCE(position_status = 'held', 0), rowid,
+       COALESCE(currency, 'USD'), quantity, cost, market_value,
+       COALESCE(label, ''), COALESCE(issue_date, ''), exercise_price,
+       COALESCE(json_extract(payload, '$.original_acquisition_date'), ''),
+       ` + exercise + `
+  FROM securities
+ ORDER BY entity_external_id, security_type, security_external_id, snapshot_at`
+	states, err := silver.Query(ctx, c.db, "lotStates", q, func(rows *sql.Rows) (silver.Holding, error) {
+		var (
+			h silver.Holding
+			l lotState
+		)
+		err := rows.Scan(&l.entityID, &l.secType, &l.secID, &h.At, &h.Open, &l.rowid, &l.ccy,
+			&l.quantity, &l.cost, &l.mv, &l.label, &l.issueDate, &l.strike, &l.acquired,
+			&l.exType, &l.exDate, &l.exFMV)
+		l.at = h.At
+		h.Key = "lot:" + strconv.FormatInt(l.entityID, 10) + ":" + l.secType + ":" + strconv.FormatInt(l.secID, 10)
+		h.Position = positionKey(l.entityID)
+		h.Row = l
+		return h, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	funds, err := silver.Query(ctx, c.db, "fundStates", `
+SELECT entity_external_id, snapshot_at, rowid, COALESCE(currency, 'USD'),
+       COALESCE(net_asset_value, ''), COALESCE(capital_contributed, ''), payload
+  FROM fund_metrics
+ ORDER BY entity_external_id, snapshot_at`, func(rows *sql.Rows) (silver.Holding, error) {
+		var (
+			h silver.Holding
+			f fundState
+		)
+		err := rows.Scan(&f.entityID, &h.At, &f.rowid, &f.ccy, &f.nav, &f.contributed, &f.payload)
+		f.at = h.At
+		h.Key = "fund:" + strconv.FormatInt(f.entityID, 10)
+		h.Position = positionKey(f.entityID)
+		h.Open = true
+		h.Row = f
+		return h, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append(states, funds...), nil
 }
 
 // entInfo is the stable per-entity metadata (name + fund flag + raw payload)
@@ -227,28 +285,51 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
 	return out, nil
 }
 
-// buildBatch materialises the full portfolio as of date t: one position per
-// held company (cap-table lots aggregated, or the fund's capital account, or
-// before the fund's first NAV its called capital),
-// plus the single Carta account and one instrument per held company (so gold's
-// FK from positions is satisfied and the account's seen-range merges across
-// batches). A fund's book value is its capital paid in less the basis its
-// K-1s say left in kind by t (inKind). A company the portal had stopped
-// listing by t (removals) is left out with its lots. Each position is
-// valued at the date of the latest delta or NAV it is built from; a fund
-// carried at its called capital is valued at t.
-func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]entInfo, acct string, ledger fundLedger, inKind *silver.InKind, removals silver.Removals) (canonical.SnapshotBatch, error) {
+// emit is the batch at t of the companies held then: one position per held
+// company (cap-table lots aggregated, or the fund's capital account, or
+// before the fund's first NAV its called capital), plus one instrument per
+// held company (so gold's FK from positions is satisfied and the
+// instrument's seen-range merges across batches). The book carries the
+// single Carta account. A fund's book value is its capital paid in less the
+// basis its K-1s say left in kind by t (inKind). A company the portal had
+// stopped listing by t (removals) holds no lot and no fund delta here, and
+// its carried value is dropped (dropRemoved). Each position is valued at the
+// date of the latest delta or NAV it is built from; a fund carried at its
+// called capital is valued at t.
+func emit(t int64, held []silver.Holding, meta map[int64]entInfo, acct string, ledger fundLedger, inKind *silver.InKind, removals silver.Removals) (canonical.SnapshotBatch, error) {
 	var batch canonical.SnapshotBatch
 	active := make(map[int64]string)                   // entity id -> holdings currency
 	classesNew := make(map[int64]canonical.AssetClass) // entity id -> exposure (asset_class)
 	vehicles := make(map[int64]canonical.Vehicle)      // entity id -> vehicle
 
-	if err := c.appendCapTableAt(ctx, t, acct, &batch, active, classesNew, vehicles); err != nil {
+	var lots []lotState
+	var funds []fundState
+	for _, h := range held {
+		switch r := h.Row.(type) {
+		case lotState:
+			lots = append(lots, r)
+		case fundState:
+			funds = append(funds, r)
+		}
+	}
+	// The lots aggregate by company in security id order, and the funds
+	// follow in table order, as each was read in.
+	sort.Slice(lots, func(i, j int) bool {
+		a, b := lots[i], lots[j]
+		if a.entityID != b.entityID {
+			return a.entityID < b.entityID
+		}
+		if a.secID != b.secID {
+			return a.secID < b.secID
+		}
+		return a.rowid < b.rowid
+	})
+	sort.Slice(funds, func(i, j int) bool { return funds[i].rowid < funds[j].rowid })
+
+	if err := appendCapTableAt(t, acct, lots, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
-	if err := c.appendFundAt(ctx, t, acct, ledger, inKind, &batch, active, classesNew, vehicles); err != nil {
-		return batch, err
-	}
+	appendFundAt(t, acct, ledger, inKind, funds, &batch, active, classesNew, vehicles)
 	if err := appendFundCarryAt(t, acct, ledger, inKind, &batch, active, classesNew, vehicles); err != nil {
 		return batch, err
 	}
@@ -262,8 +343,6 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-
-	batch.Accounts = append(batch.Accounts, custodyAccount(acct, t))
 
 	for _, eid := range ids {
 		info := meta[eid]
@@ -284,9 +363,11 @@ func (c *Connection) buildBatch(ctx context.Context, t int64, meta map[int64]ent
 	return batch, nil
 }
 
-// dropRemoved takes the companies the portal had stopped listing by t out of
-// the batch: their positions, their lots and their place among the active
-// entities, so no instrument is emitted for them either.
+// dropRemoved takes the funds carried for companies the portal had stopped
+// listing by t out of the batch: their positions and their place among the
+// active entities, so no instrument is emitted for them either. A carried
+// fund has no state for the book to leave out, and it is built before this
+// check, as every other position is.
 func dropRemoved(t int64, batch *canonical.SnapshotBatch, active map[int64]string, removals silver.Removals) {
 	if len(removals) == 0 {
 		return
@@ -303,13 +384,6 @@ func dropRemoved(t int64, batch *canonical.SnapshotBatch, active map[int64]strin
 		}
 	}
 	batch.Positions = kept
-	keptLots := batch.PositionLots[:0]
-	for _, l := range batch.PositionLots {
-		if !removals.Removed(l.PositionKey, t) {
-			keptLots = append(keptLots, l)
-		}
-	}
-	batch.PositionLots = keptLots
 }
 
 // lot is one cap-table security line inside a company position's payload — a
@@ -387,9 +461,8 @@ func exerciseValue(quantity, fmv sql.NullFloat64) (decimal.Decimal, bool) {
 	return decimal.NewFromFloat(quantity.Float64).Mul(decimal.NewFromFloat(fmv.Float64)), true
 }
 
-// appendCapTableAt forward-fills the cap-table holdings as of t and aggregates
-// them into ONE position per company: each security lot's latest delta
-// on/before t, keeping only `held` lots, summed. Quantity is the share count
+// appendCapTableAt aggregates the lots held at t into ONE position per
+// company: each held lot's latest delta on/before t, summed. Quantity is the share count
 // (share-type lots only — an unexercised option is a different unit and would
 // also double-count the certificates it became, so it stays a 0-value lot in
 // the payload). MarketValue sums every held lot's per-date FMV valuation
@@ -402,26 +475,7 @@ func exerciseValue(quantity, fmv sql.NullFloat64) (decimal.Decimal, bool) {
 // sums: exerciseValueBasis where a value at exercise is in it, else its
 // lots' cost where every costed line is a share certificate (shareBasis),
 // else the cash paid (cashPaidBasis).
-func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
-	exercise := `NULL, NULL, NULL`
-	if c.schema.exercise {
-		exercise = `exercise_type, exercise_date, exercise_fmv`
-	}
-	q := `
-SELECT entity_external_id, security_type, security_external_id, snapshot_at,
-       COALESCE(currency, 'USD'), quantity, cost, market_value,
-       COALESCE(label, ''), COALESCE(issue_date, ''), exercise_price,
-       COALESCE(json_extract(payload, '$.original_acquisition_date'), ''),
-       ` + exercise + `
-  FROM securities s
- WHERE position_status = 'held'
-   AND snapshot_at = (SELECT MAX(snapshot_at) FROM securities s2
-                       WHERE s2.entity_external_id   = s.entity_external_id
-                         AND s2.security_type        = s.security_type
-                         AND s2.security_external_id = s.security_external_id
-                         AND s2.snapshot_at <= ?)
- ORDER BY entity_external_id, security_external_id`
-
+func appendCapTableAt(t int64, acct string, held []lotState, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	// The sums are decimal so that a position's quantity and book value are
 	// exactly the sums of its share lots'.
 	type agg struct {
@@ -440,83 +494,68 @@ SELECT entity_external_id, security_type, security_external_id, snapshot_at,
 	}
 	aggs := make(map[int64]*agg)
 	var order []int64
-	if err := silver.ScanRows(ctx, c.db, "appendCapTableAt", q, func(rows *sql.Rows) error {
-		var (
-			entityID, secID, deltaAt          int64
-			secType, ccy, label, isDt, acqStr string
-			quantity, cost, mv, strike        sql.NullFloat64
-			exType, exDate                    sql.NullString
-			exFMV                             sql.NullFloat64
-		)
-		if err := rows.Scan(&entityID, &secType, &secID, &deltaAt, &ccy,
-			&quantity, &cost, &mv, &label, &isDt, &strike, &acqStr,
-			&exType, &exDate, &exFMV); err != nil {
-			return err
-		}
-		a := aggs[entityID]
+	for _, r := range held {
+		a := aggs[r.entityID]
 		if a == nil {
-			a = &agg{ccy: normCcy(ccy)}
-			aggs[entityID] = a
-			order = append(order, entityID)
+			a = &agg{ccy: normCcy(r.ccy)}
+			aggs[r.entityID] = a
+			order = append(order, r.entityID)
 		}
-		a.valuedAt = max(a.valuedAt, deltaAt)
-		if secType != "convertible" {
+		a.valuedAt = max(a.valuedAt, r.at)
+		if r.secType != "convertible" {
 			a.hasEquity = true // a SAFE/note is a convertible_note only until real equity appears
 		}
-		if isStockVehicleType(secType) {
+		if isStockVehicleType(r.secType) {
 			a.hasStockLike = true // share-settled ownership → stock vehicle (vs option/warrant/sar)
 		}
-		if secType == "share" {
-			if quantity.Valid {
-				a.shareQty = a.shareQty.Add(decimal.NewFromFloat(quantity.Float64))
+		if r.secType == "share" {
+			if r.quantity.Valid {
+				a.shareQty = a.shareQty.Add(decimal.NewFromFloat(r.quantity.Float64))
 				a.hasShareQty = true
 			}
-			a.shareLots = append(a.shareLots, shareLot(secID, quantity, cost, mv, acqStr, exType, exDate, exFMV))
+			a.shareLots = append(a.shareLots, shareLot(r.secID, r.quantity, r.cost, r.mv, r.acquired, r.exType, r.exDate, r.exFMV))
 		}
-		if mv.Valid {
-			a.mv = a.mv.Add(decimal.NewFromFloat(mv.Float64))
+		if r.mv.Valid {
+			a.mv = a.mv.Add(decimal.NewFromFloat(r.mv.Float64))
 			a.hasMV = true
 		}
-		if v, ok := exerciseValue(quantity, exFMV); ok && secType == "share" {
+		if v, ok := exerciseValue(r.quantity, r.exFMV); ok && r.secType == "share" {
 			a.book, a.hasBook, a.atExercise = a.book.Add(v), true, true
-		} else if cost.Valid {
-			a.book, a.hasBook = a.book.Add(decimal.NewFromFloat(cost.Float64)), true
-			a.costsOther = a.costsOther || secType != "share"
+		} else if r.cost.Valid {
+			a.book, a.hasBook = a.book.Add(decimal.NewFromFloat(r.cost.Float64)), true
+			a.costsOther = a.costsOther || r.secType != "share"
 		}
-		l := lot{SecurityType: secType, SecurityID: secID, Label: label,
-			IssueDate: isDt, AcquiredOn: acqStr}
+		l := lot{SecurityType: r.secType, SecurityID: r.secID, Label: r.label,
+			IssueDate: r.issueDate, AcquiredOn: r.acquired}
 		// A holding without a dated share lot is acquired on the EARLIEST
 		// date its other held lines carry. A convertible is not re-issued
 		// on a split or transfer the way a certificate is, so where Carta
 		// states no acquisition date its issue date is the day it was
 		// bought.
-		acquired := acqStr
-		if acquired == "" && secType == "convertible" {
-			acquired = isDt
+		acquired := r.acquired
+		if acquired == "" && r.secType == "convertible" {
+			acquired = r.issueDate
 		}
-		if acq, ok := flowDateUnix(acquired); ok && secType != "share" && (!a.hasAcquired || acq < a.acquiredUnix) {
+		if acq, ok := flowDateUnix(acquired); ok && r.secType != "share" && (!a.hasAcquired || acq < a.acquiredUnix) {
 			a.acquiredUnix, a.hasAcquired = acq, true
 		}
-		if quantity.Valid {
-			v := quantity.Float64
+		if r.quantity.Valid {
+			v := r.quantity.Float64
 			l.Quantity = &v
 		}
-		if cost.Valid {
-			v := cost.Float64
+		if r.cost.Valid {
+			v := r.cost.Float64
 			l.Cost = &v
 		}
-		if mv.Valid {
-			v := mv.Float64
+		if r.mv.Valid {
+			v := r.mv.Float64
 			l.MarketValue = &v
 		}
-		if strike.Valid {
-			v := strike.Float64
+		if r.strike.Valid {
+			v := r.strike.Float64
 			l.ExercisePrice = &v
 		}
 		a.lots = append(a.lots, l)
-		return nil
-	}, t); err != nil {
-		return err
 	}
 
 	for _, eid := range order {
@@ -577,60 +616,41 @@ SELECT entity_external_id, security_type, security_external_id, snapshot_at,
 	return nil
 }
 
-// appendFundAt forward-fills the fund LP positions as of t: each fund's latest
-// capital-account delta on/before t (one position per fund). MarketValue =
+// appendFundAt emits the fund LP positions held at t: each fund's latest
+// capital-account delta on/before t (one position per fund), in table order. MarketValue =
 // net_asset_value (the NAV at that quarter), BookValue = capital_contributed
 // less the basis distributed in kind by t (inKind), AcquisitionDate = the
 // fund's first capital call. Money arrives as decimal strings, parsed exactly.
-func (c *Connection) appendFundAt(ctx context.Context, t int64, acct string, ledger fundLedger, inKind *silver.InKind, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
-	const q = `
-SELECT entity_external_id, snapshot_at, COALESCE(currency, 'USD'),
-       COALESCE(net_asset_value, ''), COALESCE(capital_contributed, ''), payload
-  FROM fund_metrics fm
- WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM fund_metrics fm2
-                       WHERE fm2.entity_external_id = fm.entity_external_id
-                         AND fm2.snapshot_at <= ?)`
-	if err := silver.ScanRows(ctx, c.db, "appendFundAt", q, func(rows *sql.Rows) error {
-		var (
-			entityID, navAt       int64
-			ccy, nav, contributed string
-			payload               string
-		)
-		if err := rows.Scan(&entityID, &navAt, &ccy, &nav, &contributed, &payload); err != nil {
-			return err
-		}
-		ccy = normCcy(ccy)
-		instKey := instrumentID(entityID)
+func appendFundAt(t int64, acct string, ledger fundLedger, inKind *silver.InKind, held []fundState, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) {
+	for _, f := range held {
+		ccy := normCcy(f.ccy)
+		instKey := instrumentID(f.entityID)
 		// 2-D taxonomy: a fund LP interest is private_equity exposure held via
 		// the fund vehicle (TAXONOMY.md: a Carta fund investment is read as a
 		// venture/PE feeder).
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
-			ValuedAt:             navAt,
+			ValuedAt:             f.at,
 			AccountExternalID:    acct,
-			PositionKey:          positionKey(entityID),
+			PositionKey:          positionKey(f.entityID),
 			InstrumentExternalID: &instKey,
 			AssetClass:           canonical.AssetClassPrivateEquity,
 			Vehicle:              canonical.VehicleFund,
 			Currency:             ccy,
-			AcquisitionDate:      ledger.acquisitionDate(entityID),
-			Payload:              json.RawMessage(payload),
+			AcquisitionDate:      ledger.acquisitionDate(f.entityID),
+			Payload:              json.RawMessage(f.payload),
 		}
-		if mv, err := canonical.NewDecimalFromString(nav); err == nil && nav != "" {
+		if mv, err := canonical.NewDecimalFromString(f.nav); err == nil && f.nav != "" {
 			change.MarketValue = &mv
 		}
-		if bv, err := canonical.NewDecimalFromString(contributed); err == nil && contributed != "" {
+		if bv, err := canonical.NewDecimalFromString(f.contributed); err == nil && f.contributed != "" {
 			book, basis, extra := inKind.BookValue(change.PositionKey, t, &bv, fundBasis)
 			change.SetBookValue(book, basis)
-			change.Payload = silver.PayloadWith(payload, extra)
+			change.Payload = silver.PayloadWith(f.payload, extra)
 		}
 		batch.Positions = append(batch.Positions, change)
-		active[entityID] = ccy
-		classesNew[entityID] = canonical.AssetClassPrivateEquity
-		vehicles[entityID] = canonical.VehicleFund
-		return nil
-	}, t); err != nil {
-		return err
+		active[f.entityID] = ccy
+		classesNew[f.entityID] = canonical.AssetClassPrivateEquity
+		vehicles[f.entityID] = canonical.VehicleFund
 	}
-	return nil
 }
