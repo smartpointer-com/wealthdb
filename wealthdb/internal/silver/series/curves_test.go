@@ -1,9 +1,8 @@
-package curves
+package series
 
 import (
 	"context"
 	"database/sql"
-	_ "embed"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -11,21 +10,27 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
-//go:embed testdata/silver_schema.sql
-var silverSchemaSQL string
+// curvesSchemaSQL is the curves fixture schema. It lives in curves/testdata, where
+// the collector's schema test (collectors/curves/tests/test_schema.py)
+// compares it with the collector's migrations.
+var curvesSchemaSQL = mustRead("../curves/testdata/silver_schema.sql")
 
-func newFixtureSilver(t *testing.T) (string, *sql.DB) {
+func newCurvesSilver(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	return silvertest.NewDB(t, silverSchemaSQL)
+	return silvertest.NewDB(t, curvesSchemaSQL)
 }
 
-func openAdapter(t *testing.T, path string) silver.Connection {
+func openCurves(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	return silvertest.Open(t, &Adapter{}, path)
+	return silvertest.Open(t, &Adapter{kind: "curves"}, path)
 }
 
-func TestKindIsCurves(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "curves" {
+// The kind is registered under its name, and its adapter says so.
+func TestCurvesKind(t *testing.T) {
+	if _, err := silver.Get("curves"); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Adapter{kind: "curves"}).Kind(); got != "curves" {
 		t.Fatalf("Kind() = %q, want curves", got)
 	}
 }
@@ -40,7 +45,7 @@ const (
 	eurMeans  = `{"currency":"EUR","tenor":"10Y","basis":"spot","compounding":"continuous"}`
 )
 
-func seed(t *testing.T, db *sql.DB) {
+func seedCurves(t *testing.T, db *sql.DB) {
 	t.Helper()
 	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (?, 1, '/x/1')`, run)
 	silvertest.Exec(t, db, `INSERT INTO rates (as_of, series_id, value, payload) VALUES
@@ -49,14 +54,14 @@ func seed(t *testing.T, db *sql.DB) {
 		d1, eurSeries, eurMeans, d2, eurSeries, eurMeans, d2, chfSeries)
 }
 
-func TestEmptyStatus(t *testing.T) {
-	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
+func TestCurvesEmptyStatus(t *testing.T) {
+	silvertest.AssertEmptyStatus(t, &Adapter{kind: "curves"}, curvesSchemaSQL)
 }
 
-func TestStatus(t *testing.T) {
-	path, db := newFixtureSilver(t)
-	seed(t, db)
-	st, err := openAdapter(t, path).Status(context.Background())
+func TestCurvesStatus(t *testing.T) {
+	path, db := newCurvesSilver(t)
+	seedCurves(t, db)
+	st, err := openCurves(t, path).Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,10 +77,10 @@ func TestStatus(t *testing.T) {
 }
 
 // A new fetch run re-emits every rate, its payload as silver states it.
-func TestChangeWindowAndSnapshots(t *testing.T) {
-	path, db := newFixtureSilver(t)
-	seed(t, db)
-	conn := openAdapter(t, path)
+func TestCurvesChangeWindowAndSnapshots(t *testing.T) {
+	path, db := newCurvesSilver(t)
+	seedCurves(t, db)
+	conn := openCurves(t, path)
 	w, err := conn.ChangeWindow(context.Background(), -1)
 	if err != nil {
 		t.Fatal(err)
@@ -104,10 +109,10 @@ func TestChangeWindowAndSnapshots(t *testing.T) {
 
 // No new fetch since the watermark => no changes (an idle reload is a
 // no-op).
-func TestChangeWindowNoNewLoad(t *testing.T) {
-	path, db := newFixtureSilver(t)
-	seed(t, db)
-	w, err := openAdapter(t, path).ChangeWindow(context.Background(), run)
+func TestCurvesChangeWindowNoNewLoad(t *testing.T) {
+	path, db := newCurvesSilver(t)
+	seedCurves(t, db)
+	w, err := openCurves(t, path).ChangeWindow(context.Background(), run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,9 +121,9 @@ func TestChangeWindowNoNewLoad(t *testing.T) {
 	}
 }
 
-func TestTransactionsEmpty(t *testing.T) {
-	path, _ := newFixtureSilver(t)
-	stream, err := openAdapter(t, path).Transactions(context.Background(), canonical.Window{})
+func TestCurvesTransactionsEmpty(t *testing.T) {
+	path, _ := newCurvesSilver(t)
+	stream, err := openCurves(t, path).Transactions(context.Background(), canonical.Window{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,4 +135,12 @@ func TestTransactionsEmpty(t *testing.T) {
 	if len(b.Transactions) != 0 {
 		t.Errorf("curves emits no transactions, got %d", len(b.Transactions))
 	}
+}
+
+// TestCurvesCanonicalGolden holds every record the adapter yields over the
+// shared seedCurves fixture to curves/testdata/canonical.jsonl.
+func TestCurvesCanonicalGolden(t *testing.T) {
+	path, db := newCurvesSilver(t)
+	seedCurves(t, db)
+	silvertest.Golden(t, openCurves(t, path), "../curves/testdata/canonical.jsonl")
 }

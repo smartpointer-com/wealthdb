@@ -1,10 +1,10 @@
-package fred
+package series
 
 import (
 	"context"
 	"database/sql"
-	_ "embed"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -13,28 +13,34 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
-//go:embed testdata/silver_schema.sql
-var silverSchemaSQL string
+// fredSchemaSQL is the fred fixture schema. It lives in fred/testdata, where
+// the collector's schema test (collectors/fred/tests/test_schema.py)
+// compares it with the collector's migrations.
+var fredSchemaSQL = mustRead("../fred/testdata/silver_schema.sql")
 
-func newFixtureSilver(t *testing.T) (string, *sql.DB) {
+func newFredSilver(t *testing.T) (string, *sql.DB) {
 	t.Helper()
-	return silvertest.NewDB(t, silverSchemaSQL)
+	return silvertest.NewDB(t, fredSchemaSQL)
 }
 
-func openAdapter(t *testing.T, path string) silver.Connection {
+func openFred(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	return silvertest.Open(t, &Adapter{}, path)
+	return silvertest.Open(t, &Adapter{kind: "fred"}, path)
 }
 
-func TestKindIsFred(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "fred" {
+// The kind is registered under its name, and its adapter says so.
+func TestFredKind(t *testing.T) {
+	if _, err := silver.Get("fred"); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&Adapter{kind: "fred"}).Kind(); got != "fred" {
 		t.Fatalf("Kind() = %q, want fred", got)
 	}
 }
 
 // Two observation dates (2020-01-02/03) loaded by a fetch run at
 // 1_700_000_000. Mixed quote directions, like the real series.
-func seed(t *testing.T, db *sql.DB) {
+func seedFred(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := db.Exec(`
         INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir)
@@ -48,10 +54,10 @@ func seed(t *testing.T, db *sql.DB) {
 	}
 }
 
-func TestStatus(t *testing.T) {
-	path, db := newFixtureSilver(t)
-	seed(t, db)
-	st, err := openAdapter(t, path).Status(context.Background())
+func TestFredStatus(t *testing.T) {
+	path, db := newFredSilver(t)
+	seedFred(t, db)
+	st, err := openFred(t, path).Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,10 +73,10 @@ func TestStatus(t *testing.T) {
 	}
 }
 
-func TestChangeWindowAndSnapshots(t *testing.T) {
-	path, db := newFixtureSilver(t)
-	seed(t, db)
-	conn := openAdapter(t, path)
+func TestFredChangeWindowAndSnapshots(t *testing.T) {
+	path, db := newFredSilver(t)
+	seedFred(t, db)
+	conn := openFred(t, path)
 
 	w, err := conn.ChangeWindow(context.Background(), -1)
 	if err != nil {
@@ -102,10 +108,10 @@ func TestChangeWindowAndSnapshots(t *testing.T) {
 }
 
 // No new fetch since the watermark => no changes (idle reload is a no-op).
-func TestChangeWindowNoNewLoad(t *testing.T) {
-	path, db := newFixtureSilver(t)
-	seed(t, db)
-	w, err := openAdapter(t, path).ChangeWindow(context.Background(), 1700000000)
+func TestFredChangeWindowNoNewLoad(t *testing.T) {
+	path, db := newFredSilver(t)
+	seedFred(t, db)
+	w, err := openFred(t, path).ChangeWindow(context.Background(), 1700000000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,9 +120,9 @@ func TestChangeWindowNoNewLoad(t *testing.T) {
 	}
 }
 
-func TestTransactionsEmpty(t *testing.T) {
-	path, _ := newFixtureSilver(t)
-	stream, err := openAdapter(t, path).Transactions(context.Background(), canonical.Window{})
+func TestFredTransactionsEmpty(t *testing.T) {
+	path, _ := newFredSilver(t)
+	stream, err := openFred(t, path).Transactions(context.Background(), canonical.Window{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +144,7 @@ const (
 	d2020 = int64(1_577_923_200) // 2020-01-02
 )
 
-func seedRates(t *testing.T, db *sql.DB) {
+func seedFredRates(t *testing.T, db *sql.DB) {
 	t.Helper()
 	silvertest.Exec(t, db, `INSERT INTO rates (as_of, series_id, value, payload) VALUES
 	    (?, 'DGS10', '4.06', '{"currency":"USD","tenor":"10Y","basis":"constant_maturity"}'),
@@ -148,11 +154,11 @@ func seedRates(t *testing.T, db *sql.DB) {
 
 // The rates rows ride the stream beside the FX rates, and the status and
 // the change window span both tables.
-func TestRatesInTheWindow(t *testing.T) {
-	path, db := newFixtureSilver(t)
-	seed(t, db)
-	seedRates(t, db)
-	conn := openAdapter(t, path)
+func TestFredRatesInTheWindow(t *testing.T) {
+	path, db := newFredSilver(t)
+	seedFred(t, db)
+	seedFredRates(t, db)
+	conn := openFred(t, path)
 
 	st, err := conn.Status(context.Background())
 	if err != nil {
@@ -190,18 +196,18 @@ func TestRatesInTheWindow(t *testing.T) {
 
 // The rates come a page at a time, and the keyset cursor neither skips
 // nor repeats a row: the pages end inside a day.
-func TestRatesPage(t *testing.T) {
+func TestFredRatesPage(t *testing.T) {
 	lowered := silver.RateBatchSize
 	silver.RateBatchSize = 2
 	t.Cleanup(func() { silver.RateBatchSize = lowered })
-	path, db := newFixtureSilver(t)
-	seed(t, db)
+	path, db := newFredSilver(t)
+	seedFred(t, db)
 	for d := int64(0); d < 3; d++ {
 		for _, series := range []string{"DGS1", "DGS10", "DTB3"} {
 			silvertest.Exec(t, db, `INSERT INTO rates (as_of, series_id, value) VALUES (?, ?, '4')`, d2020+d*86400, series)
 		}
 	}
-	conn := openAdapter(t, path)
+	conn := openFred(t, path)
 	stream, err := conn.Snapshots(context.Background(), canonical.Window{Start: d2020, End: d2020 + 2*86400, HasChanges: true})
 	if err != nil {
 		t.Fatal(err)
@@ -235,11 +241,11 @@ func TestRatesPage(t *testing.T) {
 
 // A rate value that is no decimal fails the load with an error that names
 // the row.
-func TestRateValueFailsTheLoad(t *testing.T) {
-	path, db := newFixtureSilver(t)
-	seed(t, db)
+func TestFredRateValueFailsTheLoad(t *testing.T) {
+	path, db := newFredSilver(t)
+	seedFred(t, db)
 	silvertest.Exec(t, db, `INSERT INTO rates (as_of, series_id, value) VALUES (?, 'DGS10', '.')`, d2020)
-	stream, err := openAdapter(t, path).Snapshots(context.Background(),
+	stream, err := openFred(t, path).Snapshots(context.Background(),
 		canonical.Window{Start: d2020, End: d2020, HasChanges: true})
 	if err != nil {
 		t.Fatal(err)
@@ -261,11 +267,11 @@ func TestRateValueFailsTheLoad(t *testing.T) {
 
 // A silver its collector last loaded before migration 0002 has no rates
 // table. It loads as before: FX alone, with the status and window theirs.
-func TestV1SilverWithoutRates(t *testing.T) {
-	path, db := newFixtureSilver(t)
+func TestFredV1SilverWithoutRates(t *testing.T) {
+	path, db := newFredSilver(t)
 	silvertest.Exec(t, db, `DROP TABLE rates`)
-	seed(t, db)
-	conn := openAdapter(t, path)
+	seedFred(t, db)
+	conn := openFred(t, path)
 	st, err := conn.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -285,5 +291,67 @@ func TestV1SilverWithoutRates(t *testing.T) {
 	}
 	if rates := silvertest.Merged(t, conn, w).RateObservations; len(rates) != 0 {
 		t.Errorf("rates = %+v, want none", rates)
+	}
+}
+
+// TestFredCanonicalGolden holds every record the adapter yields over the
+// shared seedFred fixture to fred/testdata/canonical.jsonl.
+func TestFredCanonicalGolden(t *testing.T) {
+	path, db := newFredSilver(t)
+	seedFred(t, db)
+	seedFredRates(t, db)
+	silvertest.Golden(t, openFred(t, path), "../fred/testdata/canonical.jsonl")
+}
+
+// mustRead is a fixture file's text.
+func mustRead(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// The FX rates come a page at a time, in (day, base, quote) order, and
+// the keyset cursor neither skips nor repeats a row: the pages end
+// inside a day.
+func TestFredFxPage(t *testing.T) {
+	lowered := silver.FxBatchSize
+	silver.FxBatchSize = 2
+	t.Cleanup(func() { silver.FxBatchSize = lowered })
+	path, db := newFredSilver(t)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1700000000, 1, '/x/1')`)
+	for d := int64(0); d < 3; d++ {
+		for _, pair := range [][2]string{{"USD", "EUR"}, {"CHF", "USD"}, {"CHF", "EUR"}} {
+			silvertest.Exec(t, db, `INSERT INTO fx_rates VALUES (?, ?, ?, '1', '{}')`, d2020+d*86400, pair[0], pair[1])
+		}
+	}
+	stream, err := openFred(t, path).Snapshots(context.Background(),
+		canonical.Window{Start: d2020, End: d2020 + 2*86400, HasChanges: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var got []string
+	pages := 0
+	for {
+		b, more, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b.FxRates) > 0 {
+			pages++
+		}
+		for _, r := range b.FxRates {
+			got = append(got, fmt.Sprintf("%d|%s|%s", r.SnapshotAt-d2020, r.BaseCurrency, r.QuoteCurrency))
+		}
+		if !more {
+			break
+		}
+	}
+	want := []string{"0|CHF|EUR", "0|CHF|USD", "0|USD|EUR", "86400|CHF|EUR", "86400|CHF|USD",
+		"86400|USD|EUR", "172800|CHF|EUR", "172800|CHF|USD", "172800|USD|EUR"}
+	if strings.Join(got, " ") != strings.Join(want, " ") || pages != 5 {
+		t.Errorf("fx = %v in %d pages, want %v in 5", got, pages, want)
 	}
 }

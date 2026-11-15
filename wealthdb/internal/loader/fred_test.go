@@ -9,7 +9,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/loader"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/fred"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/series"
 )
 
 // A fred silver's rate series load into rate_observations beside its FX

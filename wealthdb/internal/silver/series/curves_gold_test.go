@@ -1,8 +1,8 @@
-package curves_test
+package series_test
 
 import (
 	"context"
-	_ "embed"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -10,20 +10,21 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/loader"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/curves"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/series"
 )
-
-//go:embed testdata/silver_schema.sql
-var schemaSQL string
 
 // A curves silver loads into gold's rate_observations: gold admits the
 // kind, a value with more decimals than the column keeps is rounded to
 // it, the payload is kept, and a later fetch run that revises a day
 // replaces it. The values are invented.
-func TestLoadIntoGold(t *testing.T) {
+func TestCurvesLoadIntoGold(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	path, s := silvertest.NewDB(t, schemaSQL)
+	schemaSQL, err := os.ReadFile("../curves/testdata/silver_schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, s := silvertest.NewDB(t, string(schemaSQL))
 	const (
 		run1, run2 = 1_790_000_000, 1_790_100_000
 		d1, d2     = 1_767_312_000, 1_767_571_200 // 2026-01-02, 2026-01-05

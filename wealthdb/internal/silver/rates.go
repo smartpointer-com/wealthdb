@@ -3,6 +3,7 @@ package silver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 
@@ -78,4 +79,76 @@ func scanRate(rows *sql.Rows) (canonical.RateObservationChange, []any, error) {
 		SeriesID: series, AsOf: asOf, Value: v,
 		Payload: JSONOrNil(payload),
 	}, []any{asOf, series}, nil
+}
+
+// The fx_rates table: the fred collector's daily FX reference rates
+// (collectors/fred/migrations/0001_initial.sql). One row per
+// observation day and currency pair, already in the canonical
+// convention: (base, quote, mid) means "1 quote = mid base".
+// NewFxRateStream reads it into FxRateChange records.
+
+// FxRatesTable is the fx_rates table's name.
+const FxRatesTable = "fx_rates"
+
+// FxBatchSize bounds the FX rates one batch carries, so a full-history
+// re-emit (decades of a few pairs) builds no giant batch. A batch may
+// span several days. It is a variable so a test can lower it.
+var FxBatchSize = 2000
+
+// fxStream emits the FX rates of a window in (snapshot_at, base, quote)
+// order, a page at a time.
+type fxStream struct {
+	db   *sql.DB
+	w    canonical.Window
+	what string
+	page keyset
+}
+
+// NewFxRateStream streams the fx_rates rows whose snapshot_at lies in w.
+// Nothing is read for a window without changes. what prefixes the
+// stream's errors. A mid that is no decimal fails the load.
+func NewFxRateStream(db *sql.DB, w canonical.Window, what string) SnapshotStream {
+	if !w.HasChanges {
+		return NewSnapshotStream(nil)
+	}
+	return &fxStream{db: db, w: w, what: what, page: keyset{after: []any{int64(math.MinInt64), "", ""}}}
+}
+
+func (s *fxStream) Close() error { return nil }
+
+func (s *fxStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
+	var b canonical.SnapshotBatch
+	if s.page.done {
+		return b, false, nil
+	}
+	var err error
+	b.FxRates, err = readPage(ctx, s.db, canonical.Span{Start: s.w.Start, End: s.w.End}, FxBatchSize, s.what+" Snapshots", `
+SELECT snapshot_at, base_currency_iso, quote_currency_iso, mid, payload
+  FROM `+FxRatesTable+`
+ WHERE snapshot_at BETWEEN ? AND ?
+   AND (snapshot_at, base_currency_iso, quote_currency_iso) > (?, ?, ?)
+ ORDER BY snapshot_at, base_currency_iso, quote_currency_iso LIMIT ?`, &s.page, s.scan)
+	return b, !s.page.done, err
+}
+
+// scan reads one fx_rates row into its record and its key.
+func (s *fxStream) scan(rows *sql.Rows) (canonical.FxRateChange, []any, error) {
+	var (
+		snap                      int64
+		base, quote, mid, payload string
+	)
+	if err := rows.Scan(&snap, &base, &quote, &mid, &payload); err != nil {
+		return canonical.FxRateChange{}, nil, fmt.Errorf("%s Snapshots scan: %w", s.what, err)
+	}
+	rate, err := canonical.NewDecimalFromString(mid)
+	if err != nil {
+		return canonical.FxRateChange{}, nil, fmt.Errorf("%s fx_rates mid %q (snap=%d): %w", s.what, mid, snap, err)
+	}
+	return canonical.FxRateChange{
+		SnapshotAt:    snap,
+		BaseCurrency:  base,
+		QuoteCurrency: quote,
+		MidRate:       rate,
+		Payload:       json.RawMessage(payload),
+	}, []any{snap, base, quote}, nil
 }
