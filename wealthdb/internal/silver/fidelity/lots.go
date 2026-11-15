@@ -218,41 +218,12 @@ func (lc *lotCarry) logSkipped() {
 }
 
 // describes reports whether the fetch's lots still add up to a
-// position of quantity qty and cost basis total cost: the quantities
-// within a millionth of the quantity (at least 1e-6), and the costs
-// within a cent per lot where the total and every lot's cost are
-// stated. A position with no quantity has nothing to check against.
+// position of quantity qty and cost basis total cost
+// (canonical.LotsAddUp): their quantities summed as magnitudes, and
+// their costs.
 func (f *lotFetch) describes(qty, cost *canonical.Decimal) bool {
-	if qty == nil || len(f.lots) == 0 {
-		return false
-	}
-	var sumQty, sumCost canonical.Decimal
-	costsStated := cost != nil
-	for _, l := range f.lots {
-		if l.quantity == nil {
-			return false
-		}
-		sumQty = sumQty.Add(l.quantity.Abs())
-		if l.costBasis == nil {
-			costsStated = false
-		} else {
-			sumCost = sumCost.Add(*l.costBasis)
-		}
-	}
-	scale := qty.Abs()
-	if one := canonical.NewDecimalFromInt(1); scale.LessThan(one) {
-		scale = one
-	}
-	if sumQty.Sub(qty.Abs()).Abs().GreaterThan(canonical.NewDecimalFromFloat(1e-6).Mul(scale)) {
-		return false
-	}
-	if costsStated {
-		perLot := canonical.NewDecimalFromFloat(0.01).Mul(canonical.NewDecimalFromInt(int64(len(f.lots))))
-		if sumCost.Sub(*cost).Abs().GreaterThan(perLot) {
-			return false
-		}
-	}
-	return true
+	return canonical.LotsAddUp(qty, cost, f.lots,
+		func(l openLot) (*canonical.Decimal, *canonical.Decimal) { return l.quantity, l.costBasis }, true)
 }
 
 // change maps one lot of the fetch at fetchedAt onto position p. Its

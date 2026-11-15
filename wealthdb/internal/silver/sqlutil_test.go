@@ -268,7 +268,7 @@ func TestScanRows(t *testing.T) {
 	}
 	collect := func(stopAt int64) ([]int64, error) {
 		var seen []int64
-		err := ScanRows(ctx, db, `SELECT x FROM a WHERE x >= ? ORDER BY x`, func(rows *sql.Rows) error {
+		err := ScanRows(ctx, db, "", `SELECT x FROM a WHERE x >= ? ORDER BY x`, func(rows *sql.Rows) error {
 			var x int64
 			if err := rows.Scan(&x); err != nil {
 				return err
@@ -287,11 +287,83 @@ func TestScanRows(t *testing.T) {
 	if seen, err := collect(2); err != errStop || !slices.Equal(seen, []int64{1, 2}) {
 		t.Errorf("stop at 2: %v (%v), want [1 2] and the scan's error", seen, err)
 	}
-	if err := ScanRows(ctx, db, `SELECT nope FROM a`, func(*sql.Rows) error { return nil }); err == nil {
+	if err := ScanRows(ctx, db, "", `SELECT nope FROM a`, func(*sql.Rows) error { return nil }); err == nil {
 		t.Error("a query that does not run returned no error")
 	}
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM a`).Scan(&n); err != nil || n != 3 {
 		t.Errorf("after the scans: %d rows (%v), want the connection free", n, err)
+	}
+}
+
+// TestQueryCollectsAndLabels pins Query: the records in the query's order,
+// a label on the errors of the query but not on a scan's own error.
+func TestQueryCollectsAndLabels(t *testing.T) {
+	ctx := context.Background()
+	db := openScratch(t, `CREATE TABLE a (x INTEGER); INSERT INTO a VALUES (3), (1), (2);`)
+	scan := func(rows *sql.Rows) (int64, error) {
+		var x int64
+		err := rows.Scan(&x)
+		return x, err
+	}
+	got, err := Query(ctx, db, "a read", `SELECT x FROM a ORDER BY x`, scan)
+	if err != nil || !slices.Equal(got, []int64{1, 2, 3}) {
+		t.Errorf("Query = %v (%v), want [1 2 3]", got, err)
+	}
+	if _, err := Query(ctx, db, "a read", `SELECT nope FROM a`, scan); err == nil ||
+		!strings.HasPrefix(err.Error(), "a read: ") {
+		t.Errorf("a failing query = %v, want it labelled", err)
+	}
+	errScan := errors.New("bad row")
+	_, err = Query(ctx, db, "a read", `SELECT x FROM a`, func(*sql.Rows) (int64, error) { return 0, errScan })
+	if err != errScan {
+		t.Errorf("a failing scan = %v, want its error as it is", err)
+	}
+}
+
+// TestDecKeepsEachPath pins the decimal scan target: NULL is nil on both
+// paths, the text path parses the text and reads blank text as nil, and
+// the float path converts the float.
+func TestDecKeepsEachPath(t *testing.T) {
+	db := openScratch(t, `CREATE TABLE m (v REAL, s TEXT); INSERT INTO m VALUES (0.1, '0.10'), (NULL, ''), (NULL, NULL);`)
+	rows, err := db.Query(`SELECT v, CAST(v AS VARCHAR), s FROM m ORDER BY rowid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var f, cast, text *canonical.Decimal
+		if err := rows.Scan(Dec(&f, DecFloat), Dec(&cast, DecText), Dec(&text, DecText)); err != nil {
+			t.Fatal(err)
+		}
+		show := func(d *canonical.Decimal) string {
+			if d == nil {
+				return "nil"
+			}
+			return d.String()
+		}
+		got = append(got, show(f)+" "+show(cast)+" "+show(text))
+	}
+	if want := []string{"0.1 0.1 0.1", "nil nil nil", "nil nil nil"}; !slices.Equal(got, want) {
+		t.Errorf("Dec = %q, want %q", got, want)
+	}
+}
+
+// TestProbeOptional pins the schema probe: a table, a column set present
+// whole, and a column set one of whose columns is missing.
+func TestProbeOptional(t *testing.T) {
+	db := openScratch(t, `CREATE TABLE a (x INTEGER, y INTEGER);`)
+	var table, missing, cols, partial bool
+	if err := ProbeOptional(context.Background(), db,
+		Optional{Table: "a", Has: &table},
+		Optional{Table: "b", Has: &missing},
+		Optional{Table: "a", Columns: []string{"x", "y"}, Has: &cols},
+		Optional{Table: "a", Columns: []string{"x", "z"}, Has: &partial},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !table || missing || !cols || partial {
+		t.Errorf("probed %v %v %v %v, want true false true false", table, missing, cols, partial)
 	}
 }

@@ -27,7 +27,7 @@ func (c *Connection) statedPeriods(ctx context.Context, w canonical.Window) ([]c
 		return nil, err
 	}
 	var out []canonical.StatedPeriodChange
-	err = silver.ScanRows(ctx, c.db, `
+	err = silver.ScanRows(ctx, c.db, "", `
 SELECT period_end, period_start, account_external_id, currency,
        CAST(beginning_value AS VARCHAR), CAST(ending_value AS VARCHAR),
        CAST(accrual AS VARCHAR), CAST(net_additions AS VARCHAR),

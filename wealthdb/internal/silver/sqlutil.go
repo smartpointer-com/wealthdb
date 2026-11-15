@@ -188,12 +188,13 @@ func Extrema(ctx context.Context, db *sql.DB, what string, queries []string, arg
 }
 
 // ScanRows runs q bound by args and hands each row to fn, in the query's
-// order. The first error fn returns ends the loop and is returned; the
-// result is closed on every return.
-func ScanRows(ctx context.Context, db *sql.DB, q string, fn func(*sql.Rows) error, args ...any) error {
+// order. The first error fn returns ends the loop and is returned as it
+// is; the result is closed on every return. label prefixes the errors of
+// the query and of the rows, "" none.
+func ScanRows(ctx context.Context, db *sql.DB, label, q string, fn func(*sql.Rows) error, args ...any) error {
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return err
+		return labelled(label, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -201,7 +202,102 @@ func ScanRows(ctx context.Context, db *sql.DB, q string, fn func(*sql.Rows) erro
 			return err
 		}
 	}
-	return rows.Err()
+	return labelled(label, rows.Err())
+}
+
+// Query is ScanRows collecting: the record scan reads from each row, in
+// the query's order.
+func Query[T any](ctx context.Context, db *sql.DB, label, q string, scan func(*sql.Rows) (T, error), args ...any) ([]T, error) {
+	var out []T
+	err := ScanRows(ctx, db, label, q, func(rows *sql.Rows) error {
+		r, err := scan(rows)
+		if err != nil {
+			return err
+		}
+		out = append(out, r)
+		return nil
+	}, args...)
+	return out, err
+}
+
+// labelled prefixes err with label, a nil err and an empty label giving
+// err as it is.
+func labelled(label string, err error) error {
+	if err == nil || label == "" {
+		return err
+	}
+	return fmt.Errorf("%s: %w", label, err)
+}
+
+// DecPath is how a nullable money column of silver reaches a decimal. The
+// two paths can differ in the last digits, so each read keeps the one it
+// has.
+type DecPath int
+
+const (
+	// DecText reads the column as text, its value as the query yields it
+	// (a cast to text where the column is REAL), and parses it.
+	DecText DecPath = iota
+	// DecFloat reads the column as a float and converts it
+	// (canonical.NewDecimalFromFloat).
+	DecFloat
+)
+
+// Dec is a scan target for a nullable decimal read by path: NULL leaves
+// *into nil, and so does text that is empty or no number
+// (DecimalPtrOrNil).
+func Dec(into **canonical.Decimal, path DecPath) sql.Scanner {
+	return decScanner{into, path}
+}
+
+type decScanner struct {
+	into **canonical.Decimal
+	path DecPath
+}
+
+func (d decScanner) Scan(src any) error {
+	if d.path == DecFloat {
+		var f sql.NullFloat64
+		if err := f.Scan(src); err != nil {
+			return err
+		}
+		*d.into = DecimalPtrFromNullFloat(f)
+		return nil
+	}
+	var s sql.NullString
+	if err := s.Scan(src); err != nil {
+		return err
+	}
+	*d.into = DecimalPtrOrNil(s)
+	return nil
+}
+
+// Optional is a part of a silver that a newer silver schema adds: a
+// table, or columns of one, present together or not. An adapter lists
+// its optional parts once and probes them at open (ProbeOptional).
+type Optional struct {
+	Table string
+	// Columns are the columns of Table; none names the table itself.
+	Columns []string
+	// Has is set to whether the silver holds the part.
+	Has *bool
+}
+
+// ProbeOptional sets each part's Has to whether the silver holds it.
+// SQLite-only.
+func ProbeOptional(ctx context.Context, db *sql.DB, parts ...Optional) error {
+	for _, p := range parts {
+		var err error
+		if len(p.Columns) == 0 {
+			*p.Has, err = HasTables(ctx, db, p.Table)
+		} else {
+			*p.Has, err = HasColumns(ctx, db, p.Table, p.Columns...)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DecimalPtrOrNil parses a string-encoded decimal from a silver

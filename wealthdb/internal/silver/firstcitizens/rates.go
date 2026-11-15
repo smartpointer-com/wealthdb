@@ -41,7 +41,7 @@ func (c *Connection) applyStatementRates(ctx context.Context, batch *canonical.S
 			closings[cb.AccountExternalID] = append(closings[cb.AccountExternalID], i)
 		}
 	}
-	err = silver.ScanRows(ctx, c.db, `SELECT account_external_id, period_start, period_end, interest_rate
+	err = silver.ScanRows(ctx, c.db, "", `SELECT account_external_id, period_start, period_end, interest_rate
   FROM `+statementRatesTable+` ORDER BY account_external_id, period_end`, func(rows *sql.Rows) error {
 		var (
 			acct       string

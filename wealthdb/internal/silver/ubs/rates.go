@@ -63,7 +63,7 @@ SELECT snapshot_at, account_external_id, rate_pct, upper_limit, COALESCE(valid_f
  WHERE side = 'credit'
  ORDER BY account_external_id, snapshot_at, COALESCE(valid_from, ''), tier`
 	out := map[string][]rateCapture{}
-	err = silver.ScanRows(ctx, r.db, q, func(rows *sql.Rows) error {
+	err = silver.ScanRows(ctx, r.db, "", q, func(rows *sql.Rows) error {
 		var (
 			at        int64
 			account   string

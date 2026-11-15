@@ -186,7 +186,7 @@ func (r *webReader) quarterlyReports(ctx context.Context, w canonical.Window) (q
 		lines []reportLine
 	}
 	var reports []*report
-	err = silver.ScanRows(ctx, r.db, `
+	err = silver.ScanRows(ctx, r.db, "", `
 WITH nxt AS (
     SELECT instrument_isin, as_of, LEAD(as_of) OVER (PARTITION BY instrument_isin ORDER BY as_of) AS next_as_of
       FROM (SELECT DISTINCT instrument_isin, as_of FROM `+reportsTable+`)),
