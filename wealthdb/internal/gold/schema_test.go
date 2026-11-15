@@ -3,11 +3,14 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // mustExec runs one statement and fails the test on an error.
@@ -203,32 +206,113 @@ func TestCurrentSchemaVersionReturnsAnUnreadableSchemaMeta(t *testing.T) {
 	}
 }
 
-// TestAccountKindCheckAdmitsCard exercises migration 0037's widened
-// CHECK at the DDL level, below Writer's Go-side validation: 'card'
-// is admitted alongside the kinds 0036 already allowed, and an
-// unrecognised kind is still refused by the constraint.
-func TestAccountKindCheckAdmitsCard(t *testing.T) {
+// enumChecksDropped is the migration that recreates silver_sources and
+// accounts without their enum CHECKs.
+const enumChecksDropped = 188
+
+// enumCheckTables are the two tables that migration recreates.
+const enumCheckTables = `('silver_sources', 'accounts')`
+
+// TestEnumChecksDroppedKeepsRowsAndShape applies the migration to a gold
+// one version below it that holds rows in both tables and the derived
+// set, as a live gold does. Every row, every column's place, type,
+// default and NOT NULL, and every constraint but the CHECKs stay equal.
+// A value outside a vocabulary then reaches the table, and the writer
+// still refuses it.
+func TestEnumChecksDroppedKeepsRowsAndShape(t *testing.T) {
 	t.Parallel()
-	db, ctx := openMigrated(t)
-
-	insert := func(id, kind string) error {
-		_, err := db.ExecContext(ctx, `
-            INSERT INTO accounts (
-                silver_source_id, account_external_id, account_kind,
-                first_seen_at, last_seen_at
-            ) VALUES ('test-src', ?, ?, 1, 1)`, id, kind)
-		return err
+	ms, err := migrations()
+	if err != nil {
+		t.Fatal(err)
 	}
+	i := slices.IndexFunc(ms, func(m migration) bool { return m.version == enumChecksDropped })
+	if i < 1 {
+		t.Fatalf("no migration %04d above another", enumChecksDropped)
+	}
+	db, ctx := openAtVersion(t, ms[i-1].version)
+	set, err := derived()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyDerived(ctx, db, set, ms[i-1].version, enumChecksDropped-1); err != nil {
+		t.Fatalf("apply the derived set: %v", err)
+	}
+	execEach(t, db,
+		`INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
+		    high_watermark, first_loaded_at, last_loaded_at)
+		    VALUES ('src-a', 'schwab', '/silver/a.db', -1, 10, 20)`,
+		`INSERT INTO silver_sources VALUES ('src-b', 'viac', '/silver/b.db', 7, 11, 21, 2, 30, 40)`,
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+		    first_seen_at, last_seen_at)
+		    VALUES ('src-a', 'ACC-1', 'brokerage', 1, 2)`,
+		`INSERT INTO accounts VALUES ('src-b', 'ACC-2', 'custody', 'Name', 'CHF', 'REL',
+		    'Nick', 'Category', 'PF-1', 'pillar_3a', 'automated', 3, 4, '{"k": [1, "v"]}')`,
+	)
 
-	for _, kind := range []string{"card", "cash", "mortgage", "donor_advised_fund"} {
-		if err := insert("ACC-"+kind, kind); err != nil {
-			t.Errorf("account_kind %q rejected by CHECK: %v", kind, err)
+	shape := func() map[string]string {
+		return map[string]string{
+			"columns": rowsDigest(t, ctx, db, `SELECT table_name, column_index, column_name,
+			    data_type, is_nullable, column_default
+			    FROM duckdb_columns() WHERE table_name IN `+enumCheckTables),
+			"constraints": rowsDigest(t, ctx, db, `SELECT table_name, constraint_type,
+			    constraint_column_names
+			    FROM duckdb_constraints()
+			    WHERE table_name IN `+enumCheckTables+` AND constraint_type <> 'CHECK'`),
+			"indexes": rowsDigest(t, ctx, db, `SELECT table_name, index_name
+			    FROM duckdb_indexes() WHERE table_name IN `+enumCheckTables),
+			"silver_sources": rowsDigest(t, ctx, db, `SELECT * FROM silver_sources`),
+			"accounts":       rowsDigest(t, ctx, db, `SELECT * FROM accounts`),
 		}
 	}
-	for _, kind := range []string{"credit_card", "garbage", ""} {
-		if err := insert("REJ-"+kind, kind); err == nil {
-			t.Errorf("account_kind %q accepted, want CHECK violation", kind)
+	checks := func() string {
+		return rowsDigest(t, ctx, db, `SELECT table_name, constraint_column_names
+		    FROM duckdb_constraints()
+		    WHERE table_name IN `+enumCheckTables+` AND constraint_type = 'CHECK'`)
+	}
+	want := shape()
+	if checks() == "" {
+		t.Fatal("no CHECK before the migration: the test reads nothing")
+	}
+
+	if err := applyMigration(ctx, db, ms[i]); err != nil {
+		t.Fatalf("apply migration %04d: %v", enumChecksDropped, err)
+	}
+
+	got := shape()
+	for _, k := range slices.Sorted(maps.Keys(want)) {
+		if got[k] != want[k] {
+			t.Errorf("%s changed:\n got %s\nwant %s", k, got[k], want[k])
 		}
+	}
+	if c := checks(); c != "" {
+		t.Errorf("CHECKs survive: %s", c)
+	}
+
+	// The gate is the writer's: the tables take any text.
+	execEach(t, db,
+		`INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path,
+		    high_watermark, first_loaded_at, last_loaded_at)
+		    VALUES ('src-c', 'not_a_kind', '/silver/c.db', -1, 0, 0)`,
+		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+		    tax_wrapper, management_style, first_seen_at, last_seen_at)
+		    VALUES ('src-c', 'ACC-3', 'not_a_kind', 'not_a_wrapper', 'not_a_style', 1, 1)`,
+	)
+	bad, wrapper, style := canonical.AccountKind("not_a_kind"),
+		canonical.TaxWrapper("not_a_wrapper"), canonical.ManagementStyle("not_a_style")
+	for name, a := range map[string]canonical.AccountChange{
+		"account_kind":     {AccountKind: bad},
+		"tax_wrapper":      {AccountKind: canonical.AccountKindCash, TaxWrapper: &wrapper},
+		"management_style": {AccountKind: canonical.AccountKindCash, ManagementStyle: &style},
+	} {
+		a.SilverSourceID, a.AccountExternalID, a.FirstSeenAt, a.LastSeenAt = "src-a", "ACC-4", 1, 1
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := NewWriter(tx).UpsertAccounts(ctx, []canonical.AccountChange{a}); err == nil {
+			t.Errorf("the writer took an invalid %s", name)
+		}
+		_ = tx.Rollback()
 	}
 }
 

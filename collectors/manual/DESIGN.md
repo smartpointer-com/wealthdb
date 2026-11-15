@@ -305,7 +305,5 @@ pair. Interest is a mark above the cash that eventually comes out (a gain).
 A claim paid out to a third party is a mark-down with **no ledger row**
 (a loss); forfeiture is the mark going to zero the same way.
 
-**Gold registration.** `internal/gold/migrations/0016_silver_sources_manual.sql`
-adds `manual` to the `silver_sources` `silver_kind` whitelist. The adapter
-registers in `cmd/wealthdb`. The `wealthdb.cfg` entry is
+**Gold registration.** The adapter registers in `cmd/wealthdb`. The `wealthdb.cfg` entry is
 `{"id":"manual","kind":"manual","path":"…/manual.db"}`.

@@ -293,8 +293,7 @@ recorded per event, never blended.
 ## Gold mapping
 
 The gold adapter lives in `wealthdb/internal/silver/angellist/`
-(registered in `cmd/wealthdb/main.go`; `silver_kind` whitelisted by gold
-migration 0014). The collector does the valuation + lifecycle work; the
+(registered in `cmd/wealthdb/main.go`). The collector does the valuation + lifecycle work; the
 adapter is a thin forward-fill:
 
 - **Account.** One canonical `account` for the whole LP book

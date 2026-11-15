@@ -646,12 +646,13 @@ per-source configuration; with fewer than 3 observed gaps no cadence
 is inferred and the flag stays off.
 
 `unknown_adapter_policy` is unreachable through the real pipeline.
-`silver_sources.silver_kind` has a CHECK constraint that admits only the
-known adapter kinds, and each registers a policy from its `init()`. A
-guard test (`TestEveryCheckKindHasAdapterAndPolicy`) cross-checks the
-CHECK list against the adapter and policy registries. fred is exempt: it
-is a pure FX reference source that never reaches the returns engine. The
-flag stays as defense in depth, unit-tested at policy resolution.
+A load opens a source only through a registered adapter, and each
+adapter that emits accounts registers a policy from its `init()`. A
+guard test (`TestEveryAccountKindHasPolicy`) checks every registered
+kind against the policy registry. The reference sources (curves, fred,
+refdata) are exempt: they emit no accounts and never reach the returns
+engine. The flag stays as defense in depth, unit-tested at policy
+resolution.
 
 `flows_before_inception` marks an entity whose observed external ledger
 flows reach back before its resolved inception (data-derived, policy

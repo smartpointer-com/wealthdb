@@ -1,18 +1,12 @@
 package gold
 
-// Structural guard for the returns-policy registry: every adapter kind the
-// gold silver_sources CHECK constraint admits must ship a registered
-// ReturnsPolicy, so `unknown_adapter_policy` stays unreachable through the
-// real pipeline (RETURNS-NOTES.md "Quality flags"). The CHECK list exists
-// only in the newest silver_sources migration (the rename-recreate pattern
-// rewrites it wholesale), so it is parsed out of the embedded SQL and
-// cross-checked against the silver adapter registry (populated by the blank
-// imports in returns_policy_import_test.go) and the policy registry.
+// Structural guard for the returns-policy registry: every registered
+// adapter kind that emits accounts must ship a registered ReturnsPolicy,
+// so `unknown_adapter_policy` stays unreachable through the real pipeline
+// (RETURNS-NOTES.md "Quality flags"). The adapter registry is populated
+// by the blank imports in returns_policy_import_test.go.
 
 import (
-	"io/fs"
-	"regexp"
-	"sort"
 	"testing"
 	"time"
 
@@ -21,76 +15,32 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-var (
-	checkClauseRe = regexp.MustCompile(`(?s)silver_kind\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(silver_kind\s+IN\s*\(([^)]*)\)`)
-	quotedKindRe  = regexp.MustCompile(`'([^']+)'`)
-)
+// referenceKinds are the adapter kinds that emit no accounts: curves and
+// fred (published rates, fred's FX rates too) and refdata (fund
+// compositions and security facts). Nothing of theirs reaches the
+// returns engine; TestRegisteredFlowPolicies pins their Known=false
+// fallback.
+var referenceKinds = []string{"curves", "fred", "refdata"}
 
-// silverKindCheckList extracts the silver_kind whitelist from the
-// highest-numbered migration that declares the CHECK constraint.
-func silverKindCheckList(t *testing.T) []string {
-	t.Helper()
-	files, err := fs.Glob(migrationsFS, "migrations/*.sql")
-	if err != nil {
-		t.Fatalf("glob migrations: %v", err)
-	}
-	sort.Strings(files) // numeric prefixes sort lexically; the last match wins
-	var kinds []string
-	for _, name := range files {
-		b, err := fs.ReadFile(migrationsFS, name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		m := checkClauseRe.FindSubmatch(b)
-		if m == nil {
-			continue
-		}
-		kinds = kinds[:0]
-		for _, q := range quotedKindRe.FindAllStringSubmatch(string(m[1]), -1) {
-			kinds = append(kinds, q[1])
-		}
-	}
-	if len(kinds) == 0 {
-		t.Fatal("no migration declares the silver_sources silver_kind CHECK constraint")
-	}
-	return kinds
-}
-
-// TestEveryCheckKindHasAdapterAndPolicy pins the three-way invariant between
-// the migration CHECK list, the adapter registry, and the policy registry: a
-// kind admitted into gold must have an adapter, and every adapter kind must
-// register a ReturnsPolicy — except the reference sources: curves and fred
-// (published rates, fred's FX rates too) and refdata (fund compositions
-// and security facts). They emit no accounts, positions or transactions,
-// so nothing of theirs reaches the returns engine;
-// TestRegisteredFlowPolicies pins their Known=false fallback.
-func TestEveryCheckKindHasAdapterAndPolicy(t *testing.T) {
+// TestEveryAccountKindHasPolicy pins the invariant between the adapter
+// registry and the policy registry: every registered kind but the
+// reference ones registers a ReturnsPolicy, and each reference kind is
+// a registered one, so the exemption cannot outlive its adapter.
+func TestEveryAccountKindHasPolicy(t *testing.T) {
 	t.Parallel()
-	checkKinds := silverKindCheckList(t)
 	registered := silver.Kinds()
-
-	inCheck := make(map[string]bool, len(checkKinds))
-	for _, k := range checkKinds {
-		inCheck[k] = true
+	if len(registered) <= len(referenceKinds) {
+		t.Fatalf("registered kinds %v: the blank imports are missing", registered)
 	}
-	inRegistry := make(map[string]bool, len(registered))
-	for _, k := range registered {
-		inRegistry[k] = true
-	}
-
-	for _, k := range checkKinds {
-		if !inRegistry[k] {
-			t.Errorf("kind %q: in the silver_sources CHECK but no silver adapter registers it", k)
+	reference := make(map[string]bool, len(referenceKinds))
+	for _, k := range referenceKinds {
+		reference[k] = true
+		if _, err := silver.Get(k); err != nil {
+			t.Errorf("reference kind %q: %v", k, err)
 		}
 	}
 	for _, k := range registered {
-		if !inCheck[k] {
-			t.Errorf("kind %q: adapter registered but missing from the silver_sources CHECK (add a whitelist migration)", k)
-		}
-	}
-
-	for _, k := range checkKinds {
-		if k == "curves" || k == "fred" || k == "refdata" {
+		if reference[k] {
 			continue
 		}
 		if rp, ok := returns.ReturnsPolicyFor(k); !ok || !rp.Flow.Known {

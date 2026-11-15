@@ -987,7 +987,7 @@ Example config file:
 | `mcp.insecure` | bool | Acknowledges `mcp.auth: none`. Validation refuses `none` without it. |
 | `silver_sources[]` | array | Registered silver databases. |
 | `silver_sources[].id` | string | User-defined unique identifier. Used in CLI args. Must match `^[A-Za-z0-9_-]+$`. |
-| `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …). It must name a registered kind (§5.2). The full set is the `silver_kind` whitelist enforced in gold (`internal/gold/migrations`) and mirrors the registered adapters under `internal/silver/`. |
+| `silver_sources[].kind` | string | Picks the adapter (e.g. `schwab`, `ubs`, `swissquote`, `fred`, …). It must name a registered kind (§5.2): one of the adapters under `internal/silver/`. A load refuses any other kind. |
 | `silver_sources[].path` | string | Filesystem path to the silver database, expanded as above. Used by single-file adapters (Schwab, Swissquote, single-source UBS, fred). Mutually exclusive with `subsources`. |
 | `silver_sources[].fx_priority` | integer | Optional. FX-rate precedence when several sources publish the same `(base, quote)` pair: lower = higher priority, absent/null = lowest. Ties broken by the order sources appear in this array. Affects only FX resolution (§10.6 / §13.2) — no effect on positions or transactions. |
 | `silver_sources[].taxable_wrapper` | string | Optional. The taxable wrapper this source's taxable accounts actually sit in, validated against the canonical `tax_wrapper` enum at config-load time. A bank feed says what a product IS and never who holds it, so an adapter emits the generic `taxable_personal` for any taxable account; this states the deployment's answer once per source instead of once per account, so an account opened later is right on the load that first sees it. It rewrites `taxable_personal` and nothing else — a retirement, trust or custodial wrapper the adapter had positive evidence for is kept, and an account with no wrapper at all is left alone. A per-account `account_overrides.tax_wrapper` still wins. See §13.8. |
@@ -1358,10 +1358,11 @@ reference records).
 `silver.Register(&Adapter{})` is called from each backend
 package's `init()` (the name comes from the adapter's `Kind()`).
 Backends live under `internal/silver/<source>`. The registered set is
-not restated here — it would drift the moment one is added. Two places
-carry it, and both are checked by the build: the blank-import block in
-`cmd/wealthdb/main.go` below, and the `silver_kind` CHECK on
-`silver_sources` (§7.2), which a load validates every source against.
+not restated here — it would drift the moment one is added. The
+blank-import block in `cmd/wealthdb/main.go` below carries it. A load
+looks every source's kind up in the registry and refuses a kind no
+adapter registers. Gold's `silver_kind` column carries no CHECK, so a
+new adapter needs no migration.
 
 ```go
 import (
@@ -1744,18 +1745,12 @@ CREATE TABLE schema_meta (
 -- last successful load. Opaque to gold (see §6.4); gold only
 -- compares it to fresh values returned by Status() / ChangeWindow().
 --
--- Each new adapter widens the silver_kind CHECK in its own migration
--- (DuckDB cannot alter a constraint in place, so the migration renames
--- and recreates the table, carrying every column below).
+-- silver_kind names the adapter. It carries no CHECK: a load opens a
+-- source only through a registered adapter, so a new adapter needs no
+-- migration.
 CREATE TABLE silver_sources (
     silver_source_id    TEXT    PRIMARY KEY,
-    silver_kind         TEXT    NOT NULL CHECK (silver_kind IN (
-        'schwab', 'ubs', 'swissquote', 'fidelity',
-        'relevate', 'viac', 'cointracking', 'carta', 'angellist',
-        'equityzen', 'manual', 'fred', 'chase', 'firstcitizens',
-        'raiffeisen_at', 'amex', 'synthetic', 'plaid', 'refdata',
-        'curves'
-    )),
+    silver_kind         TEXT    NOT NULL,            -- a registered adapter kind; §6.3
     silver_path         TEXT    NOT NULL,            -- as observed at last load
     high_watermark      BIGINT  NOT NULL,            -- plugin's logical change number after the last load
     first_loaded_at     BIGINT  NOT NULL,

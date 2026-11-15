@@ -54,9 +54,9 @@ those accounts. So the loader keeps them out of `fidelity-web` entirely, under
 the three ids registered above.
 
 `kind: "fidelity"` reuses the fidelity gold adapter — it `COALESCE`s
-the empty live tables and projects `historical_position_snapshots`, and the
-`silver_sources` whitelist is keyed on the adapter *kind*, so no id here needs
-whitelisting of its own. Per-account taxonomy (`tax_wrapper` /
+the empty live tables and projects `historical_position_snapshots`. Gold
+keys a source's adapter on its *kind*, so no id here needs a registration of
+its own. Per-account taxonomy (`tax_wrapper` /
 `management_style`) comes from `account_overrides[<id>]` in the config, one
 block per source id, since gold keys an account on `(silver_source_id,
 account_external_id)` and an entry under one id never reaches another's
