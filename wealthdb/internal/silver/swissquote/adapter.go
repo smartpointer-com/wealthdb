@@ -6,6 +6,7 @@ package swissquote
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
@@ -41,16 +42,19 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		return nil, err
 	}
 	c := &Connection{db: db}
-	if err := silver.ProbeOptional(ctx, c.db, c.schema.optional()...); err != nil {
+	note, err := silver.ProbeOptional(ctx, c.db, filepath.Base(spec.Path), c.schema.optional()...)
+	if err != nil {
 		c.db.Close()
 		return nil, err
 	}
+	c.Note(note)
 	return c, nil
 }
 
 type Connection struct {
 	db     *sql.DB
 	schema schema
+	silver.Advice
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
@@ -69,12 +73,15 @@ type schema struct {
 
 func (s *schema) optional() []silver.Optional {
 	return []silver.Optional{
+		// A silver from before v5 states the product as account_type, which
+		// v5 renames: the adapter reads either, so only a silver with
+		// neither lacks it.
 		{Table: "accounts", Columns: []string{"account_product"}, Has: &s.accountProduct},
-		{Table: "accounts", Columns: []string{"account_type"}, Has: &s.accountType},
-		{Table: "positions", Columns: []string{"name"}, Has: &s.positionName},
-		{Table: "positions", Columns: []string{"isin"}, Has: &s.positionISIN},
-		{Table: "positions", Columns: []string{"average_cost"}, Has: &s.averageCost},
-		{Table: "positions", Columns: []string{"price_quote"}, Has: &s.priceQuote},
-		{Table: "positions", Columns: []string{"accrued_interest_chf"}, Has: &s.accruedInterest},
+		{Table: "accounts", Columns: []string{"account_type"}, Version: 2, Has: &s.accountType},
+		{Table: "positions", Columns: []string{"name"}, Version: 3, Has: &s.positionName},
+		{Table: "positions", Columns: []string{"isin"}, Version: 3, Has: &s.positionISIN},
+		{Table: "positions", Columns: []string{"average_cost"}, Version: 6, Has: &s.averageCost},
+		{Table: "positions", Columns: []string{"price_quote"}, Version: 6, Has: &s.priceQuote},
+		{Table: "positions", Columns: []string{"accrued_interest_chf"}, Version: 7, Has: &s.accruedInterest},
 	}
 }

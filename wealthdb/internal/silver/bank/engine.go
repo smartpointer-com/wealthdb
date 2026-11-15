@@ -29,6 +29,7 @@ import (
 	"context"
 	"database/sql"
 	"math"
+	"path/filepath"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -77,9 +78,15 @@ type Source struct {
 	// Closings are the CLOSING balance series, emitted in this order
 	// after the CURRENT balances.
 	Closings []Series
+	// ListingVersion is the silver schema version that adds Listing. A
+	// silver older than it reads with no CURRENT balance
+	// (silver.AppendReportedBalances), and the load advises its collector's
+	// load.
+	ListingVersion int
 	// Probe, where set, reads at Open which optional parts the silver
-	// holds and yields the pass Snapshots applies last; nil for none.
-	Probe func(ctx context.Context, db *sql.DB) (Pass, error)
+	// holds and yields the pass Snapshots applies last, nil for none, and
+	// the note on the parts an older silver lacks.
+	Probe func(ctx context.Context, db *sql.DB) (Pass, silver.SchemaNote, error)
 
 	// IDCol is the ledger's id column.
 	IDCol string
@@ -169,11 +176,24 @@ func (a *Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connec
 		return nil, err
 	}
 	c := &connection{src: a.src, db: db}
-	if a.src.Probe != nil {
-		if c.pass, err = a.src.Probe(ctx, db); err != nil {
+	if a.src.Listing != "" {
+		var listed bool
+		note, err := silver.ProbeOptional(ctx, db, filepath.Base(spec.Path),
+			silver.Optional{Table: a.src.Listing, Version: a.src.ListingVersion, Has: &listed})
+		if err != nil {
 			db.Close()
 			return nil, err
 		}
+		c.Note(note)
+	}
+	if a.src.Probe != nil {
+		var note silver.SchemaNote
+		if c.pass, note, err = a.src.Probe(ctx, db); err != nil {
+			db.Close()
+			return nil, err
+		}
+		note.Silver = filepath.Base(spec.Path)
+		c.Note(note)
 	}
 	return c, nil
 }
@@ -182,6 +202,7 @@ type connection struct {
 	src  *Source
 	db   *sql.DB
 	pass Pass
+	silver.Advice
 }
 
 func (c *connection) Close() error { return silver.CloseDB(&c.db) }

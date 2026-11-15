@@ -49,6 +49,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -84,10 +85,12 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		return nil, err
 	}
 	c := &Connection{db: db}
-	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
+	note, err := silver.ProbeOptional(ctx, db, filepath.Base(spec.Path), c.schema.optional()...)
+	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("manual silver: %w", err)
 	}
+	c.Note(note)
 	return c, nil
 }
 
@@ -95,6 +98,7 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 type Connection struct {
 	db     *sql.DB
 	schema schema
+	silver.Advice
 }
 
 // schema is which optional parts of the silver schema a file holds,
@@ -108,8 +112,8 @@ type schema struct {
 
 func (s *schema) optional() []silver.Optional {
 	return []silver.Optional{
-		{Table: "cost_basis", Has: &s.costBasis},
-		{Table: "exits", Has: &s.exits},
+		{Table: "cost_basis", Version: 4, Has: &s.costBasis},
+		{Table: "exits", Version: 5, Has: &s.exits},
 	}
 }
 

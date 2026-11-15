@@ -62,6 +62,7 @@ package fidelity
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
@@ -98,16 +99,19 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		return nil, err
 	}
 	c := &Connection{db: db}
-	if err := silver.ProbeOptional(ctx, c.db, c.schema.optional()...); err != nil {
+	note, err := silver.ProbeOptional(ctx, c.db, filepath.Base(spec.Path), c.schema.optional()...)
+	if err != nil {
 		c.db.Close()
 		return nil, err
 	}
+	c.Note(note)
 	return c, nil
 }
 
 type Connection struct {
 	db     *sql.DB
 	schema schema
+	silver.Advice
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
@@ -127,13 +131,13 @@ type schema struct {
 
 func (s *schema) optional() []silver.Optional {
 	return []silver.Optional{
-		{Table: "historical_position_snapshots", Has: &s.historical},
-		{Table: "historical_position_snapshots", Columns: []string{"cost_basis"}, Has: &s.historicalCost},
-		{Table: "accounts", Columns: []string{"management_style"}, Has: &s.managementStyle},
-		{Table: "open_lots", Has: &s.openLots},
-		{Table: "open_lots", Columns: []string{"cusip"}, Has: &s.openLotCUSIP},
-		{Table: "closed_lots", Columns: []string{"security_name"}, Has: &s.closedLotNames},
-		{Table: statedPeriodsTable, Has: &s.stated},
-		{Table: "dump_runs", Columns: []string{"activity_since"}, Has: &s.runModes},
+		{Table: "historical_position_snapshots", Version: 4, Has: &s.historical},
+		{Table: "historical_position_snapshots", Columns: []string{"cost_basis"}, Version: 9, Has: &s.historicalCost},
+		{Table: "accounts", Columns: []string{"management_style"}, Version: 3, Has: &s.managementStyle},
+		{Table: "open_lots", Version: 11, Has: &s.openLots},
+		{Table: "open_lots", Columns: []string{"cusip"}, Version: 11, Has: &s.openLotCUSIP},
+		{Table: "closed_lots", Columns: []string{"security_name"}, Version: 12, Has: &s.closedLotNames},
+		{Table: statedPeriodsTable, Version: 15, Has: &s.stated},
+		{Table: "dump_runs", Columns: []string{"activity_since"}, Version: 1, Has: &s.runModes},
 	}
 }

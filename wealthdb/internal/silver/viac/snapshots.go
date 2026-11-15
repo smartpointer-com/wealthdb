@@ -50,10 +50,7 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 	// A silver may carry a promoted `management_style` column.
 	// When present, the silver value wins; otherwise the default
 	// is `automated` — every VIAC product is robo-managed.
-	mgmtCol := "NULL"
-	if c.schema.managementStyle {
-		mgmtCol = "management_style"
-	}
+	mgmtCol := silver.ColumnOr(c.schema.managementStyle, "management_style")
 	q := fmt.Sprintf(`
 SELECT snapshot_at, account_external_id, product_code,
        COALESCE(name, ''), COALESCE(state, ''),

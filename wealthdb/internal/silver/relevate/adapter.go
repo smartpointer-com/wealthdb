@@ -45,6 +45,7 @@ package relevate
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -75,16 +76,19 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		return nil, err
 	}
 	c := &Connection{db: db}
-	if err := silver.ProbeOptional(ctx, c.db, c.schema.optional()...); err != nil {
+	note, err := silver.ProbeOptional(ctx, c.db, filepath.Base(spec.Path), c.schema.optional()...)
+	if err != nil {
 		c.db.Close()
 		return nil, err
 	}
+	c.Note(note)
 	return c, nil
 }
 
 type Connection struct {
 	db     *sql.DB
 	schema schema
+	silver.Advice
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
@@ -98,7 +102,7 @@ type schema struct {
 
 func (s *schema) optional() []silver.Optional {
 	return []silver.Optional{
-		{Table: "historical_position_snapshots", Has: &s.historicalPositions},
-		{Table: "historical_cash_balances", Has: &s.historicalCash},
+		{Table: "historical_position_snapshots", Version: 2, Has: &s.historicalPositions},
+		{Table: "historical_cash_balances", Version: 2, Has: &s.historicalCash},
 	}
 }

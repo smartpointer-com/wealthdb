@@ -17,6 +17,15 @@ var webOptionalTables = []string{
 	reportsTable, reportLinesTable,
 }
 
+// webTableVersions is the ubs-web migration that adds each of
+// webOptionalTables.
+var webTableVersions = map[string]int{
+	"advices": 13, "account_rates": 16, "statement_trades": 14, "portfolio_transactions": 12,
+	"historical_position_snapshots": 2, "historical_cash_balances": 2, "historical_mortgages": 5, "mortgages": 4,
+	"card_accounts": 7, "card_transactions": 7, "card_invoices": 7,
+	reportsTable: 17, reportLinesTable: 17,
+}
+
 // webSchema is which optional parts of the ubs-web silver schema a file
 // holds, probed once (webReader.schema).
 type webSchema struct {
@@ -31,11 +40,11 @@ type webSchema struct {
 func (s *webSchema) optional() []silver.Optional {
 	s.tables = make([]bool, len(webOptionalTables))
 	out := []silver.Optional{
-		{Table: "historical_position_snapshots", Columns: []string{"cost_basis"}, Has: &s.historicalCost},
-		{Table: "dump_runs", Columns: []string{"window_since"}, Has: &s.windows},
+		{Table: "historical_position_snapshots", Columns: []string{"cost_basis"}, Version: 13, Has: &s.historicalCost},
+		{Table: "dump_runs", Columns: []string{"window_since"}, Version: 6, Has: &s.windows},
 	}
 	for i, t := range webOptionalTables {
-		out = append(out, silver.Optional{Table: t, Has: &s.tables[i]})
+		out = append(out, silver.Optional{Table: t, Version: webTableVersions[t], Has: &s.tables[i]})
 	}
 	return out
 }
@@ -44,9 +53,11 @@ func (s *webSchema) optional() []silver.Optional {
 // makes that call, so a reader that opened has probed.
 func (r *webReader) schema(ctx context.Context) (webSchema, error) {
 	if !r.probed {
-		if err := silver.ProbeOptional(ctx, r.db, r.parts.optional()...); err != nil {
+		note, err := silver.ProbeOptional(ctx, r.db, r.file, r.parts.optional()...)
+		if err != nil {
 			return webSchema{}, err
 		}
+		r.note = note
 		r.probed = true
 	}
 	return r.parts, nil
@@ -73,17 +84,32 @@ type psnSchema struct {
 }
 
 func (s *psnSchema) optional() []silver.Optional {
-	return []silver.Optional{{Table: "holdings", Columns: []string{"cost_basis"}, Has: &s.holdingCost}}
+	return []silver.Optional{{Table: "holdings", Columns: []string{"cost_basis"}, Version: 5, Has: &s.holdingCost}}
 }
 
 // schema is the file's optional parts, probed on the first call: Open
 // makes that call, so a reader that opened has probed.
 func (r *psnReader) schema(ctx context.Context) (psnSchema, error) {
 	if !r.probed {
-		if err := silver.ProbeOptional(ctx, r.db, r.parts.optional()...); err != nil {
+		note, err := silver.ProbeOptional(ctx, r.db, r.file, r.parts.optional()...)
+		if err != nil {
 			return psnSchema{}, err
 		}
+		r.note = note
 		r.probed = true
 	}
 	return r.parts, nil
+}
+
+// SchemaAdvice is the notes of the feeds whose silver is older than the
+// adapter (silver.SchemaAdviser).
+func (c *Connection) SchemaAdvice() []silver.SchemaNote {
+	var a silver.Advice
+	if c.psn != nil {
+		a.Note(c.psn.note)
+	}
+	if c.web != nil {
+		a.Note(c.web.note)
+	}
+	return a.SchemaAdvice()
 }

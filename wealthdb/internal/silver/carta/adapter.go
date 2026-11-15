@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
@@ -46,10 +47,12 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		return nil, err
 	}
 	c := &Connection{db: db}
-	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
+	note, err := silver.ProbeOptional(ctx, db, filepath.Base(spec.Path), c.schema.optional()...)
+	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("carta silver: %w", err)
 	}
+	c.Note(note)
 	return c, nil
 }
 
@@ -58,6 +61,7 @@ type Connection struct {
 	memo   memo
 	db     *sql.DB
 	schema schema
+	silver.Advice
 }
 
 // schema is which optional parts of the silver schema a file holds,
@@ -71,9 +75,9 @@ type schema struct {
 
 func (s *schema) optional() []silver.Optional {
 	return []silver.Optional{
-		{Table: "securities", Columns: []string{"exercise_fmv"}, Has: &s.exercise},
-		{Table: "k1_capital_accounts", Has: &s.k1},
-		{Table: "k1_capital_accounts", Columns: []string{"period_end"}, Has: &s.k1PeriodEnd},
+		{Table: "securities", Columns: []string{"exercise_fmv"}, Version: 4, Has: &s.exercise},
+		{Table: "k1_capital_accounts", Version: 4, Has: &s.k1},
+		{Table: "k1_capital_accounts", Columns: []string{"period_end"}, Version: 5, Has: &s.k1PeriodEnd},
 	}
 }
 

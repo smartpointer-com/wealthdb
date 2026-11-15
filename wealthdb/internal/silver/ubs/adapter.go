@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -56,7 +57,7 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		if err != nil {
 			return nil, err
 		}
-		c.psn = &psnReader{db: db, source: spec.ID}
+		c.psn = &psnReader{db: db, source: spec.ID, file: filepath.Base(spec.Path)}
 		if _, err := c.psn.schema(ctx); err != nil {
 			_ = c.Close()
 			return nil, err
@@ -72,9 +73,9 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		}
 		switch s.Kind {
 		case "ubs-psn":
-			c.psn = &psnReader{db: db, source: spec.ID}
+			c.psn = &psnReader{db: db, source: spec.ID, file: filepath.Base(s.Path)}
 		case "ubs-web":
-			c.web = &webReader{db: db}
+			c.web = &webReader{db: db, file: filepath.Base(s.Path)}
 		default:
 			_ = db.Close()
 			_ = c.Close()

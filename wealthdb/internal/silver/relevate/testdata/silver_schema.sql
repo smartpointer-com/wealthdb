@@ -65,3 +65,32 @@ CREATE TABLE transactions (
         CHECK (source IN ('deposits_endpoint', 'credit_note_pdf', 'manual')),
     payload                 TEXT    NOT NULL
 );
+
+-- 0002_historical_snapshots.sql: the quarterly reports' holdings and cash.
+CREATE TABLE historical_position_snapshots (
+    snapshot_at           INTEGER NOT NULL,
+    account_external_id   TEXT    NOT NULL,
+    isin                  TEXT    NOT NULL,
+    security_name         TEXT    NOT NULL,
+    asset_class           TEXT,
+    currency              TEXT    NOT NULL,
+    units                 REAL,
+    allocation_pct        REAL,
+    market_value          REAL    NOT NULL,
+    document_id           INTEGER,
+    source_sha256         TEXT    NOT NULL,
+    payload               TEXT    NOT NULL,
+    PRIMARY KEY (snapshot_at, account_external_id, isin)
+);
+
+CREATE TABLE historical_cash_balances (
+    snapshot_at           INTEGER NOT NULL,
+    account_external_id   TEXT    NOT NULL,
+    currency              TEXT    NOT NULL,
+    balance_kind          TEXT    NOT NULL,
+    amount                REAL    NOT NULL,
+    document_id           INTEGER,
+    source_sha256         TEXT    NOT NULL,
+    payload               TEXT    NOT NULL,
+    PRIMARY KEY (snapshot_at, account_external_id, currency, balance_kind)
+);

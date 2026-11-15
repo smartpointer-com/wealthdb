@@ -93,8 +93,13 @@ func appendBalances(ctx context.Context, db *sql.DB, label, q string, args []any
 // loaded run and account the run's roster listed; it is the adapter's own
 // constant. An account's own roster rows count as listings too. A roster
 // row with no balance emits none. kind names the collector in errors. A
-// silver without runsTable is an error that names the collector's load,
-// which adds it.
+// silver without runsTable, loaded before the migration that adds it,
+// emits no CURRENT balance: a load reads it as far as it goes, and the
+// adapter's probe of the table advises it
+// (silver.ProbeOptional). Its accounts keep their closing balances. A
+// CURRENT balance read from the roster rows alone would stamp a quiet
+// account at its last changed row, and read it as left where a later run
+// listed only the others.
 //
 // Silver content-dedups an unchanged roster row, so the runs table is the
 // only record that a quiet account was still listed. An account the
@@ -108,7 +113,7 @@ func AppendReportedBalances(ctx context.Context, db *sql.DB, kind, runsTable str
 		return fmt.Errorf("%s: %w", label, err)
 	}
 	if !has {
-		return fmt.Errorf("%s silver has no %s; run `%s load` first", kind, runsTable, kind)
+		return nil
 	}
 	q := `
 SELECT id, at, balance FROM (

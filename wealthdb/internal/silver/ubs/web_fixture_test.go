@@ -12,11 +12,12 @@ import (
 //go:embed testdata/web_silver_schema.sql
 var webSilverSchemaSQL string
 
-// webFixture is a web silver of two dumps: one relationship, one
+// webFixture is a web silver at the newest schema, of two dumps: one relationship, one
 // portfolio, a cash account and a custody holding, a statement's
 // historical holding and cash period, and a few ledger rows, one valued
 // after its dump. Every identifier, name and number is invented.
 const webFixture = `
+INSERT INTO schema_meta(silver_schema_version, applied_at) VALUES (17, 0);
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, window_since, window_until) VALUES
     (1000, 17, '/x/1', 0, 1000), (2000, 17, '/x/2', 1000, 2000);
 INSERT INTO banking_relationships(snapshot_at, banking_relationship_id, account_number_prefix, description, payload) VALUES
@@ -78,4 +79,13 @@ func openSubsources(t *testing.T, psnPath, webPath string) silver.Connection {
 	}
 	t.Cleanup(func() { conn.Close() })
 	return conn
+}
+
+// A web silver at the newest schema lacks nothing: the load advises
+// nothing.
+func TestACurrentWebSilverAdvisesNothing(t *testing.T) {
+	conn := openSubsources(t, "", newWebFixtureSilver(t))
+	if n := conn.(silver.SchemaAdviser).SchemaAdvice(); len(n) != 0 {
+		t.Errorf("advice = %v, want none", n)
+	}
 }

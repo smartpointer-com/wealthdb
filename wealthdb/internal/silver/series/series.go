@@ -35,6 +35,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
@@ -63,10 +64,12 @@ func (a *Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connec
 		return nil, err
 	}
 	c := &Connection{kind: a.kind, db: db}
-	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
+	note, err := silver.ProbeOptional(ctx, db, filepath.Base(spec.Path), c.schema.optional(a.kind)...)
+	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s silver: %w", a.kind, err)
 	}
+	c.Note(note)
 	return c, nil
 }
 
@@ -75,6 +78,7 @@ type Connection struct {
 	kind   string
 	db     *sql.DB
 	schema schema
+	silver.Advice
 }
 
 // schema is which fact tables a file holds, probed once at open.
@@ -82,10 +86,18 @@ type schema struct {
 	fx, rates bool
 }
 
-func (s *schema) optional() []silver.Optional {
+// optional lists the fact tables, each with the version of the kind's
+// collector migration that adds it: fred's FX rates from its first and its
+// rates from its second; curves states no FX rates, and its rates from its
+// first.
+func (s *schema) optional(kind string) []silver.Optional {
+	fx, rates := 1, 2
+	if kind == "curves" {
+		fx, rates = 0, 1
+	}
 	return []silver.Optional{
-		{Table: silver.FxRatesTable, Has: &s.fx},
-		{Table: silver.RatesTable, Has: &s.rates},
+		{Table: silver.FxRatesTable, Version: fx, Has: &s.fx},
+		{Table: silver.RatesTable, Version: rates, Has: &s.rates},
 	}
 }
 

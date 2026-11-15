@@ -324,11 +324,7 @@ func (c *apiReader) appendPositions(ctx context.Context, byTime map[int64]*canon
 	if err != nil {
 		return err
 	}
-	hasOpenPL := s.unrealizedGain
-	openPLCol := "NULL"
-	if hasOpenPL {
-		openPLCol = "unrealized_gain_loss"
-	}
+	openPLCol := silver.ColumnOr(s.unrealizedGain, "unrealized_gain_loss")
 	q := fmt.Sprintf(`
 SELECT snapshot_at, account_external_id, instrument_key, payload, %s
   FROM positions

@@ -83,6 +83,7 @@ var adapter = bank.New(bank.Source{
 	Display:        func(r silver.BankRosterRow) string { return displayName(r.Name, r.AccountType, r.Mask) },
 	Account:        withDetailsRates,
 	Listing:        "run_accounts",
+	ListingVersion: 3,
 	Closings: []bank.Series{{
 		// One CLOSING cash balance per day the kontostaende series
 		// carries a saldo — the cash time series (silver's

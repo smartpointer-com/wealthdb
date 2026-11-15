@@ -37,6 +37,8 @@ type webReader struct {
 	// parts is the file's optional schema, once probed is set (schema).
 	parts  webSchema
 	probed bool
+	note   silver.SchemaNote
+	file   string // the silver's base name, for the note
 }
 
 func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
@@ -130,11 +132,7 @@ func (r *webReader) snapshotsDimensions(
 	if err != nil {
 		return err
 	}
-	hasRegistration := s.registration
-	regCol := "NULL"
-	if hasRegistration {
-		regCol = "account_registration"
-	}
+	regCol := silver.ColumnOr(s.registration, "account_registration")
 	q := fmt.Sprintf(`
 SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
   FROM accounts

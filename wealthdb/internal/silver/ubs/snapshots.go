@@ -405,11 +405,8 @@ func (r *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTi
 	if err != nil {
 		return fmt.Errorf("appendHoldings: %w", err)
 	}
-	hasCost := s.holdingCost
-	costCols := `NULL, NULL, NULL, NULL, NULL`
-	if hasCost {
-		costCols = `cost_basis, cost_currency, acquisition_fx_rate, acquisition_fx_from, acquisition_fx_to`
-	}
+	costCols := silver.ColumnOr(s.holdingCost,
+		"cost_basis", "cost_currency", "acquisition_fx_rate", "acquisition_fx_from", "acquisition_fx_to")
 	q := `
 SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
   FROM holdings

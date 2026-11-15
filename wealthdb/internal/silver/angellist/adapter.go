@@ -61,6 +61,7 @@ package angellist
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -95,16 +96,19 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		return nil, err
 	}
 	c := &Connection{db: db}
-	if err := silver.ProbeOptional(ctx, c.db, c.schema.optional()...); err != nil {
+	note, err := silver.ProbeOptional(ctx, c.db, filepath.Base(spec.Path), c.schema.optional()...)
+	if err != nil {
 		c.db.Close()
 		return nil, err
 	}
+	c.Note(note)
 	return c, nil
 }
 
 type Connection struct {
 	db     *sql.DB
 	schema schema
+	silver.Advice
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
@@ -119,8 +123,8 @@ type schema struct {
 
 func (s *schema) optional() []silver.Optional {
 	return []silver.Optional{
-		{Table: "k1_capital_accounts", Columns: []string{"property_distributions_minor"}, Has: &s.propertyMinor},
-		{Table: "funding_accounts", Has: &s.fundingAccounts},
-		{Table: "funding_transactions", Has: &s.fundingTransactions},
+		{Table: "k1_capital_accounts", Columns: []string{"property_distributions_minor"}, Version: 8, Has: &s.propertyMinor},
+		{Table: "funding_accounts", Version: 6, Has: &s.fundingAccounts},
+		{Table: "funding_transactions", Version: 6, Has: &s.fundingTransactions},
 	}
 }

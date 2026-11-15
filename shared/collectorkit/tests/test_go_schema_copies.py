@@ -76,9 +76,7 @@ COPIES = {
     "refdata": Copy(("refdata/testdata/silver_schema.sql",)),
     "relevate": Copy(("relevate/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
-        "documents": UNREAD, "performance_points": UNREAD,
-        "historical_position_snapshots": "read by historical.go; no test holds it",
-        "historical_cash_balances": "read by historical.go; no test holds it"}),
+        "documents": UNREAD, "performance_points": UNREAD}),
     "schwab-api": Copy(("schwab/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "open_orders": UNREAD, "user_preference": UNREAD}),
     "schwab-web": Copy(("schwab/testdata/web_silver_schema.sql",), {
@@ -90,6 +88,7 @@ COPIES = {
     "ubs-psn": Copy(("ubs/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "cash_account_pricing": UNREAD,
         "portfolio_performance": UNREAD}),
+    "ubs-web": Copy(("ubs/testdata/web_silver_schema.sql",)),
     "viac": Copy(("viac/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
         "documents": UNREAD, "wealth_history": UNREAD}),
@@ -102,8 +101,6 @@ EXEMPT = {
     "synthetic/testdata/silver_schema.sql":
         "no collector writes it; fred and refdata check their tables in it",
 }
-# The ubs adapter also reads the ubs-web silver; its tests build that
-# schema inline, so there is no copy here to check.
 
 
 def _columns(conn: sqlite3.Connection) -> dict[str, dict[str, str]]:

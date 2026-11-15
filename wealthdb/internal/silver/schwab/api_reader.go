@@ -18,6 +18,8 @@ type apiReader struct {
 	// parts is the file's optional schema, once probed is set (schema).
 	parts  apiSchema
 	probed bool
+	note   silver.SchemaNote
+	file   string // the silver's base name, for the note
 }
 
 func (c *apiReader) Close() error { return silver.CloseDB(&c.db) }

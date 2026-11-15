@@ -37,6 +37,8 @@ type webReader struct {
 	// parts is the file's optional schema, once probed is set (schema).
 	parts  webSchema
 	probed bool
+	note   silver.SchemaNote
+	file   string // the silver's base name, for the note
 }
 
 func (r *webReader) Close() error { return silver.CloseDB(&r.db) }

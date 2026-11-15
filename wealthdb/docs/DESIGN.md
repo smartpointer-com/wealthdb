@@ -4218,10 +4218,17 @@ Examples of adapter-supplied values:
   does not carry per-account registration labels (Roth IRA, Coverdell
   ESA). fidelity-web's DESIGN.md §11.5 says why.
 
-Adapters use SQLite PRAGMA-based feature detection where the
-silver schema has evolved (e.g. Swissquote's pre-v5 silvers used
-`account_type` instead of `account_product`); older silvers
-still load with the corresponding columns left NULL.
+A silver older than its adapter is read as far as it goes. Each
+adapter names its optional tables and columns once, each with the
+silver schema version that adds it (`silver.Optional`), and probes them
+at open. An absent column reads as NULL and a read of an absent table
+is skipped, so the load goes on with that part empty in gold. The load
+then prints one line per such silver file: its schema version, the
+version the adapter reads, and the parts that load empty until its
+collector's load applies the migrations. The line names no command:
+some kinds are written by more than one collector. A current silver prints nothing, and
+the exit code does not change. Swissquote's pre-v5 silvers name
+`account_product` `account_type`; the adapter reads either.
 
 Config-side override: `account_overrides` (§5.1) sets what an
 adapter cannot classify, such as a Schwab IRA whose wrapper no

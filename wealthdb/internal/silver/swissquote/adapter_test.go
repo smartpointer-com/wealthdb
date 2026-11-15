@@ -323,6 +323,14 @@ func TestSnapshotsAccountCategoryPreV5(t *testing.T) {
 	if got := accountCategories(t, path)["1234567"]; got == nil || *got != "Trading" {
 		t.Errorf("1234567 category = %v, want 'Trading'", got)
 	}
+	// The adapter reads the older name, so a pre-v5 silver lacks nothing.
+	if _, err := seed.Exec(`CREATE TABLE schema_meta (silver_schema_version INTEGER, applied_at INTEGER);
+        INSERT INTO schema_meta VALUES (4, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if n := openAdapter(t, path).(silver.SchemaAdviser).SchemaAdvice(); len(n) != 0 {
+		t.Errorf("advice = %v, want none", n)
+	}
 }
 
 // accountCategories is the AccountCategory of each account in the first

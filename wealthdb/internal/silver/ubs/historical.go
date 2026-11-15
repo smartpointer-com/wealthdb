@@ -133,11 +133,7 @@ func (r *webReader) appendHistoricalSecurities(
 	if err != nil {
 		return fmt.Errorf("appendHistoricalSecurities: %w", err)
 	}
-	hasCostBasis := s.historicalCost
-	costBasisCol := `NULL`
-	if hasCostBasis {
-		costBasisCol = `cost_basis`
-	}
+	costBasisCol := silver.ColumnOr(s.historicalCost, "cost_basis")
 	q := `
 SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
        units, market_value, market_value_currency,

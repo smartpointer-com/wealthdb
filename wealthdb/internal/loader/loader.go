@@ -160,6 +160,14 @@ func (l *Loader) Load(ctx context.Context, spec SourceSpec) (*LoadResult, error)
 		return nil, fmt.Errorf("Load(%s): open silver: %w", spec.ID, err)
 	}
 	defer conn.Close()
+	// A silver older than its adapter is read as far as it goes; each
+	// silver that lacks a part its version predates says so once: the
+	// parts load empty until its collector's load applies the migrations.
+	if adv, ok := conn.(silver.SchemaAdviser); ok {
+		for _, n := range adv.SchemaAdvice() {
+			log.Printf("%s loader: %s", spec.ID, n)
+		}
+	}
 
 	status, err := conn.Status(ctx)
 	if err != nil {

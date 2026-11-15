@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -352,7 +353,7 @@ func TestDecKeepsEachPath(t *testing.T) {
 func TestProbeOptional(t *testing.T) {
 	db := openScratch(t, `CREATE TABLE a (x INTEGER, y INTEGER);`)
 	var table, missing, cols, partial bool
-	if err := ProbeOptional(context.Background(), db,
+	if _, err := ProbeOptional(context.Background(), db, "test",
 		Optional{Table: "a", Has: &table},
 		Optional{Table: "b", Has: &missing},
 		Optional{Table: "a", Columns: []string{"x", "y"}, Has: &cols},
@@ -362,5 +363,53 @@ func TestProbeOptional(t *testing.T) {
 	}
 	if !table || missing || !cols || partial {
 		t.Errorf("probed %v %v %v %v, want true false true false", table, missing, cols, partial)
+	}
+}
+
+// TestProbeOptionalNotesAnOlderSilver pins the advice: a part absent from
+// a silver whose schema version predates it is noted, by name, with both
+// versions; a part the version already holds, or a part of version 0,
+// is not; a current silver notes nothing.
+func TestProbeOptionalNotesAnOlderSilver(t *testing.T) {
+	ctx := context.Background()
+	db := openScratch(t, `CREATE TABLE schema_meta (silver_schema_version INTEGER, applied_at INTEGER);
+INSERT INTO schema_meta VALUES (1, 0), (3, 0);
+CREATE TABLE a (x INTEGER);`)
+	var has [4]bool
+	parts := []Optional{
+		{Table: "a", Columns: []string{"y"}, Version: 4, Has: &has[0]},
+		{Table: "b", Version: 5, Has: &has[1]},
+		{Table: "c", Version: 2, Has: &has[2]},
+		{Table: "d", Has: &has[3]},
+	}
+	n, err := ProbeOptional(ctx, db, "kind", parts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := SchemaNote{Silver: "kind", Version: 3, Reads: 5, Missing: []string{"a.y", "b"}}
+	if !reflect.DeepEqual(n, want) {
+		t.Errorf("note = %+v, want %+v", n, want)
+	}
+	if got := n.String(); got != "kind is at silver schema 3 and the adapter reads 5; a.y and b load empty until its collector's load applies the migrations" {
+		t.Errorf("advice = %q", got)
+	}
+	var a Advice
+	a.Note(n)
+	a.Note(SchemaNote{})
+	a.Note(SchemaNote{Silver: "kind", Version: 3, Reads: 6, Missing: []string{"e"}})
+	want.Reads, want.Missing = 6, []string{"a.y", "b", "e"}
+	if got := a.SchemaAdvice(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Errorf("advice kept %+v, want the one joined note %+v", got, want)
+	}
+	current := openScratch(t, `CREATE TABLE schema_meta (silver_schema_version INTEGER, applied_at INTEGER);
+INSERT INTO schema_meta VALUES (5, 0); CREATE TABLE b (x INTEGER);`)
+	if n, err := ProbeOptional(ctx, current, "kind", parts[1]); err != nil || len(n.Missing) != 0 {
+		t.Errorf("a current silver noted %+v (%v)", n, err)
+	}
+	if got := ColumnOr(false, "p", "q"); got != "NULL, NULL" {
+		t.Errorf("ColumnOr(false) = %q", got)
+	}
+	if got := ColumnOr(true, "p", "q"); got != "p, q" {
+		t.Errorf("ColumnOr(true) = %q", got)
 	}
 }

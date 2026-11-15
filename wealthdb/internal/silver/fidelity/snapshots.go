@@ -156,10 +156,7 @@ func portfolioDisplay(id, kind string) string {
 // no classification or no portfolio at all; the gold COALESCE
 // upsert preserves whatever a later writer / override supplies.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, held map[string]canonical.AccountKind) error {
-	mgmtCol := "NULL"
-	if c.schema.managementStyle {
-		mgmtCol = "a.management_style"
-	}
+	mgmtCol := silver.ColumnOr(c.schema.managementStyle, "a.management_style")
 	q := fmt.Sprintf(`
 SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
        a.nickname, a.payload, p.kind, COALESCE(%s, '')

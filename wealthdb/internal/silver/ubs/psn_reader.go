@@ -18,6 +18,8 @@ type psnReader struct {
 	// parts is the file's optional schema, once probed is set (schema).
 	parts  psnSchema
 	probed bool
+	note   silver.SchemaNote
+	file   string // the silver's base name, for the note
 	// source is the source's id in gold, which a contract's key is
 	// scoped by.
 	source string

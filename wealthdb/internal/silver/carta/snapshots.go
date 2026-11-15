@@ -200,10 +200,7 @@ type fundState struct {
 // latest delta is `held`; a fund's latest delta is its position. Both are
 // part of their company's position (positionKey).
 func (c *Connection) states(ctx context.Context) ([]silver.Holding, error) {
-	exercise := `NULL, NULL, NULL`
-	if c.schema.exercise {
-		exercise = `exercise_type, exercise_date, exercise_fmv`
-	}
+	exercise := silver.ColumnOr(c.schema.exercise, "exercise_type", "exercise_date", "exercise_fmv")
 	q := `
 SELECT entity_external_id, security_type, security_external_id, snapshot_at,
        COALESCE(position_status = 'held', 0), rowid,

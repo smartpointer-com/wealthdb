@@ -18,16 +18,15 @@ const statementRatesTable = "statement_rates"
 
 // probeStatementRates is the source's pass over a silver that holds the
 // statement rates (applyStatementRates), probed at open. A silver older
-// than the table states no rates.
-func probeStatementRates(ctx context.Context, db *sql.DB) (bank.Pass, error) {
+// than the table (silver migration 0003) states no rates.
+func probeStatementRates(ctx context.Context, db *sql.DB) (bank.Pass, silver.SchemaNote, error) {
 	var has bool
-	if err := silver.ProbeOptional(ctx, db, silver.Optional{Table: statementRatesTable, Has: &has}); err != nil {
-		return nil, err
+	note, err := silver.ProbeOptional(ctx, db, "",
+		silver.Optional{Table: statementRatesTable, Version: 3, Has: &has})
+	if err != nil || !has {
+		return nil, note, err
 	}
-	if !has {
-		return nil, nil
-	}
-	return applyStatementRates, nil
+	return applyStatementRates, note, nil
 }
 
 // applyStatementRates puts the rate each statement states on a closing

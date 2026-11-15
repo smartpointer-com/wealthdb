@@ -173,8 +173,8 @@ INSERT INTO runs VALUES (2, 'a', 'x'), (2, 'a', 'y'), (5, 'a', 'x'), (9, 'a', 'x
 		"b@3=30 X", "b@5=30 X"}; err != nil || !slices.Equal(got, want) {
 		t.Errorf("AppendReportedBalances = %v, %v; want %v", got, err, want)
 	}
-	if _, err := emit("absent"); err == nil || err.Error() != "bank silver has no absent; run `bank load` first" {
-		t.Errorf("a silver without the run table = %v, want it to name the load", err)
+	if got, err := emit("absent"); err != nil || len(got) != 0 {
+		t.Errorf("a silver without the run table = %v, %v; want no CURRENT balance", got, err)
 	}
 	if _, err := db.Exec(`DROP TABLE accounts`); err != nil {
 		t.Fatal(err)

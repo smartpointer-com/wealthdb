@@ -196,10 +196,7 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 		"name": c.schema.positionName, "isin": c.schema.positionISIN, "average_cost": c.schema.averageCost,
 		"price_quote": c.schema.priceQuote, "accrued_interest_chf": c.schema.accruedInterest,
 	} {
-		optional[col] = "NULL"
-		if has {
-			optional[col] = col
-		}
+		optional[col] = silver.ColumnOr(has, col)
 	}
 	isinBySymbol, err := c.buildISINBySymbol(ctx, optional["isin"] != "NULL")
 	if err != nil {

@@ -57,10 +57,7 @@ func (c *Connection) readInKind(ctx context.Context) (*silver.InKind, error) {
 	if !c.schema.k1 {
 		return k, nil
 	}
-	periodEnd := `NULL`
-	if c.schema.k1PeriodEnd {
-		periodEnd = `k.period_end`
-	}
+	periodEnd := silver.ColumnOr(c.schema.k1PeriodEnd, "k.period_end")
 	q := `
 SELECT k.entity_external_id, k.tax_year, ` + periodEnd + `, k.property_distributions
   FROM k1_capital_accounts k

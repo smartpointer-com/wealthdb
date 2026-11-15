@@ -117,10 +117,7 @@ SELECT DISTINCT account_external_id, COALESCE(instrument_key, ''), description
 // account's first-seen timestamp reflects the statement, not
 // the toolkit-first-ran date.
 func (c *Connection) appendHistoricalAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, held map[string]canonical.AccountKind) error {
-	mgmtCol := "NULL"
-	if c.schema.managementStyle {
-		mgmtCol = "a.management_style"
-	}
+	mgmtCol := silver.ColumnOr(c.schema.managementStyle, "a.management_style")
 	// One live `accounts` row per distinct account_external_id
 	// that appears in historical_position_snapshots (joined on
 	// account, not date — the snapshot_at of the live row may be
@@ -218,10 +215,7 @@ func (c *Connection) appendHistoricalPositions(ctx context.Context, w canonical.
 		return err
 	}
 	// The statement's cost basis (migration 0009); NULL before it.
-	costCol := "NULL"
-	if c.schema.historicalCost {
-		costCol = "CAST(cost_basis AS VARCHAR)"
-	}
+	costCol := silver.ColumnOr(c.schema.historicalCost, "CAST(cost_basis AS VARCHAR)")
 	q := fmt.Sprintf(`
 SELECT as_of_date, account_external_id,
        COALESCE(instrument_key, ''),

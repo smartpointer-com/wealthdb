@@ -16,9 +16,9 @@ type apiSchema struct {
 
 func (s *apiSchema) optional() []silver.Optional {
 	return []silver.Optional{
-		{Table: "instruments", Has: &s.instruments},
-		{Table: "accounts", Columns: []string{"nickname"}, Has: &s.nickname},
-		{Table: "positions", Columns: []string{"unrealized_gain_loss"}, Has: &s.unrealizedGain},
+		{Table: "instruments", Version: 2, Has: &s.instruments},
+		{Table: "accounts", Columns: []string{"nickname"}, Version: 3, Has: &s.nickname},
+		{Table: "positions", Columns: []string{"unrealized_gain_loss"}, Version: 5, Has: &s.unrealizedGain},
 	}
 }
 
@@ -35,12 +35,12 @@ type webSchema struct {
 
 func (s *webSchema) optional() []silver.Optional {
 	return []silver.Optional{
-		{Table: "historical_position_snapshots", Has: &s.historicalPositions},
-		{Table: "historical_cash_balances", Has: &s.historicalCash},
-		{Table: "historical_cash_balances", Columns: []string{"interest_rate"}, Has: &s.historicalCashRate},
-		{Table: "accounts", Columns: []string{"account_registration"}, Has: &s.registration},
-		{Table: "open_lots", Has: &s.openLots},
-		{Table: "closed_lots", Has: &s.closedLots},
+		{Table: "historical_position_snapshots", Version: 2, Has: &s.historicalPositions},
+		{Table: "historical_cash_balances", Version: 2, Has: &s.historicalCash},
+		{Table: "historical_cash_balances", Columns: []string{"interest_rate"}, Version: 11, Has: &s.historicalCashRate},
+		{Table: "accounts", Columns: []string{"account_registration"}, Version: 3, Has: &s.registration},
+		{Table: "open_lots", Version: 6, Has: &s.openLots},
+		{Table: "closed_lots", Version: 7, Has: &s.closedLots},
 	}
 }
 
@@ -48,9 +48,11 @@ func (s *webSchema) optional() []silver.Optional {
 // makes that call, so a reader that opened has probed.
 func (c *apiReader) schema(ctx context.Context) (apiSchema, error) {
 	if !c.probed {
-		if err := silver.ProbeOptional(ctx, c.db, c.parts.optional()...); err != nil {
+		note, err := silver.ProbeOptional(ctx, c.db, c.file, c.parts.optional()...)
+		if err != nil {
 			return apiSchema{}, err
 		}
+		c.note = note
 		c.probed = true
 	}
 	return c.parts, nil
@@ -60,10 +62,25 @@ func (c *apiReader) schema(ctx context.Context) (apiSchema, error) {
 // makes that call, so a reader that opened has probed.
 func (r *webReader) schema(ctx context.Context) (webSchema, error) {
 	if !r.probed {
-		if err := silver.ProbeOptional(ctx, r.db, r.parts.optional()...); err != nil {
+		note, err := silver.ProbeOptional(ctx, r.db, r.file, r.parts.optional()...)
+		if err != nil {
 			return webSchema{}, err
 		}
+		r.note = note
 		r.probed = true
 	}
 	return r.parts, nil
+}
+
+// SchemaAdvice is the notes of the feeds whose silver is older than the
+// adapter (silver.SchemaAdviser).
+func (c *Connection) SchemaAdvice() []silver.SchemaNote {
+	var a silver.Advice
+	if c.api != nil {
+		a.Note(c.api.note)
+	}
+	if c.web != nil {
+		a.Note(c.web.note)
+	}
+	return a.SchemaAdvice()
 }

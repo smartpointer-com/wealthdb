@@ -7,6 +7,7 @@ package schwab
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
@@ -68,7 +69,7 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		if err != nil {
 			return nil, err
 		}
-		c.api = &apiReader{db: db, marks: markGuardOf(spec)}
+		c.api = &apiReader{db: db, marks: markGuardOf(spec), file: filepath.Base(spec.Path)}
 		if _, err := c.api.schema(ctx); err != nil {
 			_ = c.Close()
 			return nil, err
@@ -84,9 +85,9 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		}
 		switch s.Kind {
 		case "schwab-api":
-			c.api = &apiReader{db: db, marks: markGuardOf(spec)}
+			c.api = &apiReader{db: db, marks: markGuardOf(spec), file: filepath.Base(s.Path)}
 		case "schwab-web":
-			c.web = &webReader{db: db}
+			c.web = &webReader{db: db, file: filepath.Base(s.Path)}
 		default:
 			_ = db.Close()
 			_ = c.Close()

@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -344,16 +346,33 @@ func TestCurrentBalanceAtEachRunThatListedTheAccount(t *testing.T) {
 }
 
 // TestSnapshotsNeedRunAccounts pins a silver loaded before run_accounts
-// (silver migration 0002): its runs say nothing about a quiet account, so
-// the snapshots fail and name the load that adds the table.
+// (silver migration 0002): it is read as far as it goes. Its runs say
+// nothing about a quiet account, so no CURRENT balance is stamped, the
+// closing balances still are, and the load advises the collector's load.
 func TestSnapshotsNeedRunAccounts(t *testing.T) {
 	path, db := newFixture(t)
 	seed(t, db)
-	silvertest.Exec(t, db, `DROP TABLE run_accounts`)
+	silvertest.Exec(t, db, `DROP TABLE run_accounts;
+        INSERT INTO schema_meta (silver_schema_version, applied_at) VALUES (1, 0)`)
 	conn := openConn(t, path)
-	_, err := conn.Snapshots(context.Background(), silvertest.FullWindow(t, conn))
-	if want := "firstcitizens silver has no run_accounts; run `firstcitizens load` first"; err == nil || err.Error() != want {
-		t.Errorf("Snapshots = %v, want %q", err, want)
+	sb := silvertest.Merged(t, conn, silvertest.FullWindow(t, conn))
+	closings := 0
+	for _, cb := range sb.CashBalances {
+		switch cb.BalanceKind {
+		case canonical.BalanceKindCurrent:
+			t.Errorf("CURRENT balance %+v from a silver without run_accounts", cb)
+		case canonical.BalanceKindClosing:
+			closings++
+		}
+	}
+	if closings == 0 {
+		t.Error("no closing balance: the silver should still read as far as it goes")
+	}
+	notes := conn.(silver.SchemaAdviser).SchemaAdvice()
+	if len(notes) != 1 || !slices.Contains(notes[0].Missing, "run_accounts") ||
+		!strings.HasSuffix(notes[0].String(), " load empty until its collector's load applies the migrations") ||
+		notes[0].Silver != filepath.Base(path) {
+		t.Errorf("advice = %v, want one note naming run_accounts and the load", notes)
 	}
 }
 

@@ -11,8 +11,8 @@ import (
 // (silver.FullSpan), every snapshot and transaction, so the historical
 // snapshots of the Reporting PDFs, keyed on past period ends, reach gold
 // too. An idle reload is a no-op: the change number is the latest dump.
-// The source is observed through the latest run that read it
-// (observed).
+// The source is observed through the latest run that read it: a dry
+// run reads nothing.
 func (c *Connection) clock() silver.Clock {
 	return silver.Clock{
 		Kind: "viac",
@@ -25,7 +25,7 @@ func (c *Connection) clock() silver.Clock {
 		Ledger:   []string{silver.Range("transactions", "occurred_at")},
 		Pin:      true,
 		Mode:     silver.FullSpan{},
-		Observed: silver.Observed{Set: c.observed},
+		Observed: silver.Observed{Runs: `SELECT MAX(snapshot_at) FROM dump_runs WHERE NOT COALESCE(dry_run, 0)`},
 	}
 }
 
@@ -36,16 +36,4 @@ func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
 
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
 	return c.clock().ChangeWindow(ctx, c.db, since)
-}
-
-// observed sets both watermarks to the latest run. A dry run reads
-// nothing; a silver from before the column counts every run.
-func (c *Connection) observed(ctx context.Context, s *canonical.Status) error {
-	runs := `SELECT MAX(snapshot_at) FROM dump_runs`
-	if c.schema.dryRun {
-		runs += ` WHERE NOT COALESCE(dry_run, 0)`
-	}
-	t, err := silver.LatestRun(ctx, c.db, "viac", runs)
-	s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = t, t
-	return err
 }

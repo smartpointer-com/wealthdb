@@ -266,18 +266,75 @@ func (d decScanner) Scan(src any) error {
 
 // Optional is a part of a silver that a newer silver schema adds: a
 // table, or columns of one, present together or not. An adapter lists
-// its optional parts once and probes them at open (ProbeOptional).
+// its optional parts once and probes them at open (ProbeOptional). A
+// silver older than a part is read as far as it goes: an absent column
+// reads as NULL (ColumnOr) and a read of an absent table is skipped.
 type Optional struct {
 	Table string
 	// Columns are the columns of Table; none names the table itself.
 	Columns []string
+	// Version is the silver schema version that adds the part: the
+	// number of the collector migration that creates it. 0 marks a part
+	// a silver of any version may lack, which no load adds.
+	Version int
 	// Has is set to whether the silver holds the part.
 	Has *bool
 }
 
-// ProbeOptional sets each part's Has to whether the silver holds it.
-// SQLite-only.
-func ProbeOptional(ctx context.Context, db *sql.DB, parts ...Optional) error {
+// name is the part as the advice names it: the table, or its columns.
+func (p Optional) name() string {
+	if len(p.Columns) == 0 {
+		return p.Table
+	}
+	return p.Table + "." + strings.Join(p.Columns, ", "+p.Table+".")
+}
+
+// SchemaNote is what a silver older than its adapter lacks: the parts its
+// schema version predates, which a load of the silver's collector adds.
+type SchemaNote struct {
+	// Silver is the silver file's base name.
+	Silver string
+	// Version is the silver's schema version; Reads the newest version
+	// a part the adapter reads needs.
+	Version, Reads int
+	// Missing are the parts it lacks, by name.
+	Missing []string
+}
+
+// String is the advice the load prints for the note. It names no
+// command: a kind is no collector, and several collectors write some
+// kinds.
+func (n SchemaNote) String() string {
+	parts := strings.Join(n.Missing, ", ")
+	if k := len(n.Missing); k > 1 {
+		parts = strings.Join(n.Missing[:k-1], ", ") + " and " + n.Missing[k-1]
+	}
+	return fmt.Sprintf("%s is at silver schema %d and the adapter reads %d; %s load empty until its collector's load applies the migrations",
+		n.Silver, n.Version, n.Reads, parts)
+}
+
+// SchemaVersion is a silver's schema version, the newest of schema_meta;
+// 0 for a silver without the table. SQLite-only.
+func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
+	has, err := HasTables(ctx, db, "schema_meta")
+	if err != nil || !has {
+		return 0, err
+	}
+	var v sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT MAX(silver_schema_version) FROM schema_meta`).Scan(&v); err != nil {
+		return 0, fmt.Errorf("schema version: %w", err)
+	}
+	return int(v.Int64), nil
+}
+
+// ProbeOptional sets each part's Has to whether the silver holds it, and
+// notes the parts it lacks because its schema version predates them. A
+// silver whose schema_meta states no version gets no note.
+// silver is the file's base name, for the note. A note that names no
+// part is the zero note. SQLite-only.
+func ProbeOptional(ctx context.Context, db *sql.DB, silver string, parts ...Optional) (SchemaNote, error) {
+	note := SchemaNote{Silver: silver}
+	var absent []Optional
 	for _, p := range parts {
 		var err error
 		if len(p.Columns) == 0 {
@@ -286,11 +343,69 @@ func ProbeOptional(ctx context.Context, db *sql.DB, parts ...Optional) error {
 			*p.Has, err = HasColumns(ctx, db, p.Table, p.Columns...)
 		}
 		if err != nil {
-			return err
+			return SchemaNote{}, err
+		}
+		note.Reads = max(note.Reads, p.Version)
+		if !*p.Has && p.Version > 0 {
+			absent = append(absent, p)
 		}
 	}
-	return nil
+	if len(absent) == 0 {
+		return SchemaNote{}, nil
+	}
+	v, err := SchemaVersion(ctx, db)
+	if err != nil || v == 0 {
+		// A silver that states no version, which no collector writes,
+		// gets no advice.
+		return SchemaNote{}, err
+	}
+	note.Version = v
+	for _, p := range absent {
+		if p.Version > v {
+			note.Missing = append(note.Missing, p.name())
+		}
+	}
+	if len(note.Missing) == 0 {
+		return SchemaNote{}, nil
+	}
+	return note, nil
 }
+
+// ColumnOr is the select list of exprs where the silver holds them, else
+// as many NULLs: the read of optional columns (Optional).
+func ColumnOr(has bool, exprs ...string) string {
+	if has {
+		return strings.Join(exprs, ", ")
+	}
+	return strings.TrimSuffix(strings.Repeat("NULL, ", len(exprs)), ", ")
+}
+
+// Advice keeps the schema notes of a connection's silvers. A connection
+// embeds it, and so offers SchemaAdvice.
+type Advice struct{ notes []SchemaNote }
+
+// Note keeps n, where it names a part. A second note of the same silver
+// joins the first, so each silver has one.
+func (a *Advice) Note(n SchemaNote) {
+	if len(n.Missing) == 0 {
+		return
+	}
+	for i := range a.notes {
+		if m := &a.notes[i]; m.Silver == n.Silver {
+			m.Reads = max(m.Reads, n.Reads)
+			m.Missing = append(m.Missing, n.Missing...)
+			return
+		}
+	}
+	a.notes = append(a.notes, n)
+}
+
+// SchemaAdvice is the notes kept, one per silver that lacks a part.
+func (a *Advice) SchemaAdvice() []SchemaNote { return a.notes }
+
+// SchemaAdviser is a connection whose silvers can be older than its
+// adapter; the load prints each note (SchemaNote.String).
+type SchemaAdviser interface{ SchemaAdvice() []SchemaNote }
 
 // DecimalPtrOrNil parses a string-encoded decimal from a silver
 // column. Returns nil for NULL / empty input, and nil (not an

@@ -219,11 +219,7 @@ func (r *webReader) appendHistoricalCashBalances(
 	if err != nil {
 		return fmt.Errorf("appendHistoricalCashBalances: %w", err)
 	}
-	hasRate := s.historicalCashRate
-	rate := "NULL"
-	if hasRate {
-		rate = "interest_rate"
-	}
+	rate := silver.ColumnOr(s.historicalCashRate, "interest_rate")
 	q := `
 SELECT period_end, period_start, account_external_id, currency_iso,
        opening_balance, closing_balance, payload, ` + rate + `

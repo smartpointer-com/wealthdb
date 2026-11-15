@@ -26,6 +26,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"path/filepath"
 	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -53,16 +54,19 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		return nil, err
 	}
 	c := &Connection{db: db}
-	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
+	note, err := silver.ProbeOptional(ctx, db, filepath.Base(spec.Path), c.schema.optional()...)
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
+	c.Note(note)
 	return c, nil
 }
 
 type Connection struct {
 	db     *sql.DB
 	schema schema
+	silver.Advice
 }
 
 // schema is which optional parts of the silver schema a file holds,

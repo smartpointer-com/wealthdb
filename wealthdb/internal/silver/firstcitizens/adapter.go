@@ -78,6 +78,7 @@ var adapter = bank.New(bank.Source{
 	NameIsNickname: true,
 	AccountKind:    canonical.AccountKindCash,
 	Listing:        "run_accounts",
+	ListingVersion: 2,
 	Closings: []bank.Series{{
 		// One CLOSING cash balance per day the balance moved, valued at
 		// that day's end-of-day running balance from the transaction

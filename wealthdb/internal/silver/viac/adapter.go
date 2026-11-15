@@ -40,6 +40,7 @@ package viac
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
@@ -75,29 +76,30 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		return nil, err
 	}
 	c := &Connection{db: db}
-	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
+	note, err := silver.ProbeOptional(ctx, db, filepath.Base(spec.Path), c.schema.optional()...)
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
+	c.Note(note)
 	return c, nil
 }
 
 type Connection struct {
 	db     *sql.DB
 	schema schema
+	silver.Advice
 }
 
 // schema is which optional parts of the silver schema a file holds,
 // probed once at open.
 type schema struct {
 	managementStyle bool // accounts.management_style
-	dryRun          bool // dump_runs.dry_run
 }
 
 func (s *schema) optional() []silver.Optional {
 	return []silver.Optional{
-		{Table: "accounts", Columns: []string{"management_style"}, Has: &s.managementStyle},
-		{Table: "dump_runs", Columns: []string{"dry_run"}, Has: &s.dryRun},
+		{Table: "accounts", Columns: []string{"management_style"}, Version: 2, Has: &s.managementStyle},
 	}
 }
 
