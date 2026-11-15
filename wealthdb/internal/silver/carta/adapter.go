@@ -55,6 +55,7 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 
 // Connection reads one carta silver.
 type Connection struct {
+	memo   memo
 	db     *sql.DB
 	schema schema
 }

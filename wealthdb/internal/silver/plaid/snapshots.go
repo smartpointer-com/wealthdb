@@ -103,7 +103,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	secs, err := c.readSecurities(ctx)
+	secs, err := c.memo.securities(ctx, c)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			"do not add up to the holding's quantity and cost", unsummed)
 	}
 
-	latest, err := c.latestAccounts(ctx)
+	latest, err := c.memo.accounts(ctx, c)
 	if err != nil {
 		return nil, err
 	}

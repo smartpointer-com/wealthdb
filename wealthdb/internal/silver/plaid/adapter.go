@@ -50,7 +50,8 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 }
 
 type Connection struct {
-	db *sql.DB
+	memo memo
+	db   *sql.DB
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }

@@ -30,15 +30,15 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	ledger, err := c.loadFundLedger(ctx)
+	ledger, err := c.memo.ledger(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	inKind, err := c.readInKind(ctx)
+	inKind, err := c.memo.inKind(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	removals, err := c.removals(ctx)
+	removals, err := c.memo.removals(ctx, c)
 	if err != nil {
 		return nil, err
 	}

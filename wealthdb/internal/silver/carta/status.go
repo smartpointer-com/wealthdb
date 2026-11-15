@@ -81,11 +81,11 @@ func (c *Connection) flowDates(ctx context.Context) (lo, hi int64, err error) {
 
 // reach is the latest removal and K-1 period end, -1 where there is none.
 func (c *Connection) reach(ctx context.Context) (int64, error) {
-	removals, err := c.removals(ctx)
+	removals, err := c.memo.removals(ctx, c)
 	if err != nil {
 		return -1, err
 	}
-	inKind, err := c.readInKind(ctx)
+	inKind, err := c.memo.inKind(ctx, c)
 	if err != nil {
 		return -1, err
 	}
@@ -94,7 +94,7 @@ func (c *Connection) reach(ctx context.Context) (int64, error) {
 
 // snapshotDates are the carry dates, the removals and the K-1 period ends.
 func (c *Connection) snapshotDates(ctx context.Context) (lo, hi int64, err error) {
-	ledger, err := c.loadFundLedger(ctx)
+	ledger, err := c.memo.ledger(ctx, c)
 	if err != nil {
 		return -1, -1, err
 	}
@@ -107,6 +107,49 @@ func (c *Connection) snapshotDates(ctx context.Context) (lo, hi int64, err error
 	}
 	r, err := c.reach(ctx)
 	return lo, max(hi, r), err
+}
+
+// memo holds the reads that Status, ChangeWindow and Snapshots each need,
+// read once per connection: the removals, the K-1 distributions and the
+// fund ledger. The connection opens one silver read-only for one load. A
+// nil field is not read yet; a failed read is read again.
+type memo struct {
+	removed silver.Removals
+	k1      *silver.InKind
+	funds   fundLedger
+}
+
+func (m *memo) removals(ctx context.Context, c *Connection) (silver.Removals, error) {
+	if m.removed == nil {
+		r, err := c.removals(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m.removed = r
+	}
+	return m.removed, nil
+}
+
+func (m *memo) inKind(ctx context.Context, c *Connection) (*silver.InKind, error) {
+	if m.k1 == nil {
+		k, err := c.readInKind(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m.k1 = k
+	}
+	return m.k1, nil
+}
+
+func (m *memo) ledger(ctx context.Context, c *Connection) (fundLedger, error) {
+	if m.funds == nil {
+		l, err := c.loadFundLedger(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m.funds = l
+	}
+	return m.funds, nil
 }
 
 // Status and ChangeWindow are the clock's (silver.Clock).

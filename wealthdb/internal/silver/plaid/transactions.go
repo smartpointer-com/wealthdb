@@ -35,11 +35,11 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
-	accounts, err := c.latestAccounts(ctx)
+	accounts, err := c.memo.accounts(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	secs, err := c.readSecurities(ctx)
+	secs, err := c.memo.securities(ctx, c)
 	if err != nil {
 		return nil, err
 	}
@@ -55,6 +55,37 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 			cmp.Compare(a.TransactionExternalID, b.TransactionExternalID))
 	})
 	return silver.NewTransactionStream(out), nil
+}
+
+// memo holds the reads that Snapshots and Transactions both need, read
+// once per connection: each account as last described, and the
+// securities. The connection opens one silver read-only for one load. A
+// nil field is not read yet; a failed read is read again.
+type memo struct {
+	latest map[string]account
+	secs   map[string]security
+}
+
+func (m *memo) accounts(ctx context.Context, c *Connection) (map[string]account, error) {
+	if m.latest == nil {
+		a, err := c.latestAccounts(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m.latest = a
+	}
+	return m.latest, nil
+}
+
+func (m *memo) securities(ctx context.Context, c *Connection) (map[string]security, error) {
+	if m.secs == nil {
+		s, err := c.readSecurities(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m.secs = s
+	}
+	return m.secs, nil
 }
 
 // appendBankLedger adds the bank and card ledger of every cash and card
