@@ -4,7 +4,7 @@
 //
 // The package is pure, like internal/returns: a sorted stream of
 // Events in, a Result out, no database. It also holds the Policy each
-// source kind registers beside its adapter (RegisterPolicy), the method
+// source kind states in its silver.Source (RegisterPolicy), the method
 // the `lots` config block puts in force, and the two readings of a
 // missing cost basis the readers share (MissingBasis). The feed that
 // reads gold into events and the writer that stores a Result live in

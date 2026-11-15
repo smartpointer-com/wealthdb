@@ -265,6 +265,9 @@ func TestThePassStampsTheSignPins(t *testing.T) {
 	for _, p := range canonical.CashSignedKinds() {
 		want = append(want, p.SilverKind+":"+string(p.Kind))
 	}
+	if len(want) == 0 {
+		t.Fatal("no sign pins registered: the adapters are not imported")
+	}
 	if !slices.Equal(got, want) {
 		t.Errorf("stamped %v, want %v", got, want)
 	}

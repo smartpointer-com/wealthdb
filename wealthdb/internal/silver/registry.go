@@ -2,6 +2,7 @@ package silver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -37,6 +38,21 @@ type Source struct {
 	// RefineClass, where set, takes a lookup's type of a security over
 	// the class the adapter gave it (ClassRefiners).
 	RefineClass RefineClassFunc
+	// Settings, where set, reads the kind's own object of a config's
+	// silver source (SettingsFor).
+	Settings *Settings
+}
+
+// Settings is a kind's own object of a config's silver source: the key
+// it sits under, and the parser the config calls while it compiles.
+type Settings struct {
+	// Key is the object's key in a silver source of the config.
+	Key string
+	// Parse reads and checks the object a source of kind carries, and
+	// yields what OpenSpec.Settings hands the kind's Open. kind is the
+	// source's own, so a parser may refuse the object on another kind.
+	// An error names the key, so the config can prefix the source.
+	Parse func(raw json.RawMessage, kind string) (any, error)
 }
 
 // LabelTraits says whose words a kind's names are: a provider's, which
@@ -118,6 +134,19 @@ func TraitsOf(kind string) LabelTraits {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 	return registry[kind].Labels
+}
+
+// SettingsFor is the kind that reads the config key key and its
+// Settings, false when no registered kind does.
+func SettingsFor(key string) (string, *Settings, bool) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	for _, k := range sortedKindsLocked() {
+		if st := registry[k].Settings; st != nil && st.Key == key {
+			return k, st, true
+		}
+	}
+	return "", nil, false
 }
 
 // ClassRefiners returns the RefineClass of every registered source

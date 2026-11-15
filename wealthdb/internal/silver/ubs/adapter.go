@@ -22,10 +22,11 @@ const kindName = "ubs"
 func init() {
 	lp := lots.ShadowPolicy()
 	silver.Register(silver.Source{
-		Kind:    kindName,
-		Open:    (&Adapter{}).Open,
-		Returns: returnsPolicy(),
-		Lots:    &lp,
+		Kind:     kindName,
+		Settings: &silver.Settings{Key: "relationships", Parse: parseSettings},
+		Open:     (&Adapter{}).Open,
+		Returns:  returnsPolicy(),
+		Lots:     &lp,
 	})
 }
 
@@ -46,7 +47,8 @@ func (*Adapter) Kind() string { return kindName }
 // pre-PSN-start dates and PSN covers from each banking
 // relationship's go-live forward. See merge.go.
 func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
-	c := &Connection{relationships: spec.Relationships, source: spec.ID}
+	rels, _ := spec.Settings.([]RelationshipPair)
+	c := &Connection{relationships: rels, source: spec.ID}
 
 	// Single-path form: a PSN silver.
 	if spec.Path != "" {
@@ -104,7 +106,7 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 type Connection struct {
 	psn           *psnReader
 	web           *webReader
-	relationships []silver.RelationshipPair
+	relationships []RelationshipPair
 	// source is the source's id in gold, which a contract's key is
 	// scoped by.
 	source string

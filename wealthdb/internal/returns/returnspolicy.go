@@ -25,8 +25,8 @@ import (
 // when a source opts into a non-default value. A knob is added together with
 // the engine site that reads it — no forward stubs.
 //
-// A source declares its ReturnsPolicy co-located in its silver package and
-// registers it via RegisterPolicy from that package's init(). The engine
+// A source declares its ReturnsPolicy in the silver.Source of its silver
+// package, and silver.Register forwards it here (RegisterPolicy). The engine
 // resolves it by adapter kind exactly as it resolves adapters (silver.Get), and
 // never enumerates sources itself.
 type ReturnsPolicy struct {
@@ -179,12 +179,12 @@ var (
 )
 
 // RegisterPolicy records a source's ReturnsPolicy under its adapter kind. It is
-// called from each silver package's init() (beside silver.Register), so the
+// called by silver.Register, from each silver package's init(), so the
 // per-source policy lives co-located with that source's domain knowledge. Like
 // the adapter registry, a duplicate kind is a build-time bug and panics.
 //
 // internal/returns must NOT import internal/silver/*; the dependency runs the
-// other way (silver/<kind> imports returns and calls this), which is
+// other way (silver imports returns and calls this), which is
 // cycle-free because returns imports only internal/canonical.
 func RegisterPolicy(kind string, p ReturnsPolicy) {
 	policyMu.Lock()

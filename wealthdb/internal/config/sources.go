@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
@@ -48,41 +50,17 @@ type SilverSource struct {
 	// Relationships pairs cross-subsource entity identities under
 	// a single label the config chooses. Used by the UBS adapter to link
 	// the web `banking_relationship_id` (opaque SPA token) to the
-	// PSN `relationship_id` (SFTPCHxx, etc.). Optional.
-	Relationships []RelationshipPair `json:"relationships,omitempty"`
+	// PSN `relationship_id` (SFTPCHxx, etc.). Optional. The ubs adapter
+	// reads and checks it (silver.Settings).
+	Relationships json.RawMessage `json:"relationships,omitempty"`
 	// Schwab tunes the schwab adapter. Only a schwab-kind source takes
-	// it. Optional.
-	Schwab *SchwabSettings `json:"schwab,omitempty"`
-}
+	// it. Optional. The schwab adapter reads and checks it
+	// (silver.Settings).
+	Schwab json.RawMessage `json:"schwab,omitempty"`
 
-// SchwabSettings is the `schwab` object of a schwab-kind silver source:
-// the guard on the api feed's overnight marks (docs/adapters/schwab.md
-// §4.1). An absent field takes its default (silver.MarkGuard.WithDefaults).
-type SchwabSettings struct {
-	// MarkSpikePct is the move, in percent of a position's previous
-	// mark, past which a mark may be a spike. Default 10.
-	MarkSpikePct *float64 `json:"mark_spike_pct,omitempty"`
-	// MarkRevertPct is how close, in percent, a later mark must come back
-	// to the previous mark for the move to read as a spike. Default 2;
-	// below MarkSpikePct.
-	MarkRevertPct *float64 `json:"mark_revert_pct,omitempty"`
-}
-
-// markGuard is the guard the settings state. A field they leave out
-// stays zero, which the adapter reads as its default. A nil receiver
-// states nothing.
-func (s *SchwabSettings) markGuard() silver.MarkGuard {
-	var g silver.MarkGuard
-	if s == nil {
-		return g
-	}
-	if s.MarkSpikePct != nil {
-		g.SpikePct = *s.MarkSpikePct
-	}
-	if s.MarkRevertPct != nil {
-		g.RevertPct = *s.MarkRevertPct
-	}
-	return g
+	// settings is what the source's kind parsed from its own key, as
+	// Validate compiled it; nil where it states none.
+	settings any
 }
 
 // FxSourceOrder returns the silver_source_ids ordered by FX precedence,
@@ -123,23 +101,6 @@ type SilverSubsource struct {
 	Path string `json:"path"`
 }
 
-// RelationshipPair is one entry under `silver_sources[].relationships`.
-// At least one of `web_id` or `psn_id` must be set. `label` is
-// the display name the adapter stamps on canonical records.
-// `psn_start_override`, when set (YYYY-MM-DD), overrides
-// the auto-detected cutover date used to splice web↔PSN
-// transactions for this relationship.
-type RelationshipPair struct {
-	Label            string `json:"label"`
-	WebID            string `json:"web_id,omitempty"`
-	PSNID            string `json:"psn_id,omitempty"`
-	PSNStartOverride string `json:"psn_start_override,omitempty"`
-
-	// psnStart is PSNStartOverride at UTC midnight, as Validate
-	// compiled it; 0 when unset or never validated.
-	psnStart int64
-}
-
 // Lookup returns the named silver source from the config, or
 // (nil, false) if no source with that ID is defined.
 func (c *Config) Lookup(id string) (*SilverSource, bool) {
@@ -154,22 +115,13 @@ func (c *Config) Lookup(id string) (*SilverSource, bool) {
 // ToSilverOpenSpec converts a config.SilverSource into the
 // silver.OpenSpec the adapter contract expects. Lives here (not
 // in silver) so config carries the JSON tags / parse logic and
-// silver stays JSON-free. A psn_start_override is the day Validate
-// compiled.
+// silver stays JSON-free. Its settings are what Validate compiled.
 func (s *SilverSource) ToSilverOpenSpec() silver.OpenSpec {
-	out := silver.OpenSpec{ID: s.ID, Path: s.Path, MarkGuard: s.Schwab.markGuard()}
+	out := silver.OpenSpec{ID: s.ID, Path: s.Path, Settings: s.settings}
 	for _, sub := range s.Subsources {
 		out.Subsources = append(out.Subsources, silver.Subsource{
 			Kind: sub.Kind,
 			Path: sub.Path,
-		})
-	}
-	for _, rel := range s.Relationships {
-		out.Relationships = append(out.Relationships, silver.RelationshipPair{
-			Label:            rel.Label,
-			WebID:            rel.WebID,
-			PSNID:            rel.PSNID,
-			PSNStartOverride: rel.psnStart,
 		})
 	}
 	return out
@@ -237,51 +189,38 @@ func (c *Config) validateSources() (map[string]bool, error) {
 				return nil, fmt.Errorf("config: silver_sources[%d].subsources[%d].path is required", i, j)
 			}
 		}
-		for j := range s.Relationships {
-			rel := &s.Relationships[j]
-			if rel.Label == "" {
-				return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d].label is required", i, j)
-			}
-			if rel.WebID == "" && rel.PSNID == "" {
-				return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d]: at least one of web_id or psn_id must be set", i, j)
-			}
-			rel.psnStart = 0
-			if rel.PSNStartOverride != "" {
-				start, err := parseYYYYMMDD(rel.PSNStartOverride)
-				if err != nil {
-					return nil, fmt.Errorf("config: silver_sources[%d].relationships[%d].psn_start_override: %w", i, j, err)
-				}
-				rel.psnStart = start
-			}
-		}
-		if err := s.Schwab.validate(s.Kind); err != nil {
-			return nil, fmt.Errorf("config: silver_sources[%d].schwab: %w", i, err)
+		if err := s.compileSettings(i); err != nil {
+			return nil, err
 		}
 	}
 	return seenIDs, nil
 }
 
-// validate checks a source's `schwab` object: a schwab-kind source's
-// only, each percentage above zero, and the confirmation band below the
-// hold threshold once the defaults fill what the object leaves out. A
-// nil receiver is no object.
-func (s *SchwabSettings) validate(kind string) error {
-	if s == nil {
-		return nil
-	}
-	if kind != "schwab" {
-		return fmt.Errorf("applies to a source of kind schwab only, not %q", kind)
-	}
-	for _, f := range []struct {
-		name string
-		v    *float64
-	}{{"mark_spike_pct", s.MarkSpikePct}, {"mark_revert_pct", s.MarkRevertPct}} {
-		if f.v != nil && !(*f.v > 0) {
-			return fmt.Errorf("%s %v must be above 0", f.name, *f.v)
+// compileSettings parses the source's keys that a kind reads
+// (silver.SettingsFor), the relationships then the schwab object, and
+// keeps what its own kind's parser yields. A key's owner checks it on a
+// source of any kind, and may refuse it there. i is the source's index,
+// for the errors.
+func (s *SilverSource) compileSettings(i int) error {
+	s.settings = nil
+	for _, k := range []struct {
+		key string
+		raw json.RawMessage
+	}{{"relationships", s.Relationships}, {"schwab", s.Schwab}} {
+		if raw := bytes.TrimSpace(k.raw); len(raw) == 0 || string(raw) == "null" {
+			continue
 		}
-	}
-	if g := s.markGuard().WithDefaults(); g.RevertPct >= g.SpikePct {
-		return fmt.Errorf("mark_revert_pct %v must be below mark_spike_pct %v", g.RevertPct, g.SpikePct)
+		owner, st, ok := silver.SettingsFor(k.key)
+		if !ok {
+			return fmt.Errorf("config: silver_sources[%d].%s: no source kind reads it", i, k.key)
+		}
+		v, err := st.Parse(k.raw, s.Kind)
+		if err != nil {
+			return fmt.Errorf("config: silver_sources[%d].%w", i, err)
+		}
+		if owner == s.Kind {
+			s.settings = v
+		}
 	}
 	return nil
 }

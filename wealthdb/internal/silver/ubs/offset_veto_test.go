@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
@@ -414,7 +413,7 @@ func TestOffsetVetoProbeSkipsSuppressedWebRows(t *testing.T) {
 	seedPSNCashAmount(t, psnDB, "COVER-B", vetoAcctB, "1", "D", "CHF", "FEE", vetoDay1-86400)
 	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
 		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{db: psnDB},
-		[]silver.RelationshipPair{{WebID: "REL1", PSNStartOverride: vetoDay1 - 86400}})
+		[]RelationshipPair{{WebID: "REL1", PSNStartOverride: vetoDay1 - 86400}})
 	if err != nil {
 		t.Fatalf("transactionsBeforePSNStart: %v", err)
 	}
@@ -665,7 +664,7 @@ func TestAnAccountTheFeedNeverReachesKeepsItsExportRows(t *testing.T) {
 	seedPSNCashAmount(t, psnDB, "COVER-C", "CH0000000000000000CCC", "1", "D", "CHF", "FEE", vetoDay1-86400)
 	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
 		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{db: psnDB},
-		[]silver.RelationshipPair{{WebID: "REL1", PSNStartOverride: vetoDay1 - 86400}})
+		[]RelationshipPair{{WebID: "REL1", PSNStartOverride: vetoDay1 - 86400}})
 	if err != nil {
 		t.Fatalf("transactionsBeforePSNStart: %v", err)
 	}

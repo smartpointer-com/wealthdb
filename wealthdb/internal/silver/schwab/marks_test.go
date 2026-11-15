@@ -71,9 +71,9 @@ func markFixture(t *testing.T) (string, *sql.DB) {
 }
 
 // markedPositions reads the positions of window w, keyed "key@snapshot".
-func markedPositions(t *testing.T, path string, g silver.MarkGuard, w canonical.Window) map[string]canonical.PositionChange {
+func markedPositions(t *testing.T, path string, g MarkGuard, w canonical.Window) map[string]canonical.PositionChange {
 	t.Helper()
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path, MarkGuard: g})
+	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path, Settings: g})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func markedPositions(t *testing.T, path string, g silver.MarkGuard, w canonical.
 // The rows are invented.
 func TestASpikeThatRevertsReadsThePreviousMark(t *testing.T) {
 	path, _ := markFixture(t)
-	got := markedPositions(t, path, silver.MarkGuard{}, everything)
+	got := markedPositions(t, path, MarkGuard{}, everything)
 	cases := []struct {
 		row, value string
 		valuedAt   int64
@@ -150,10 +150,10 @@ func TestASpikeThatRevertsReadsThePreviousMark(t *testing.T) {
 // its rows match a load of the whole history.
 func TestAWindowReadsTheMarksAroundIt(t *testing.T) {
 	path, _ := markFixture(t)
-	whole := markedPositions(t, path, silver.MarkGuard{}, everything)
+	whole := markedPositions(t, path, MarkGuard{}, everything)
 	for _, start := range []int64{2000, 3000, 4000} {
 		w := canonical.Window{Start: start, End: 6000, HasChanges: true}
-		for row, p := range markedPositions(t, path, silver.MarkGuard{}, w) {
+		for row, p := range markedPositions(t, path, MarkGuard{}, w) {
 			if want := whole[row]; decStr(p.MarketValue) != decStr(want.MarketValue) || p.ValuedAt != want.ValuedAt {
 				t.Errorf("window from %d, %s: %s at %d, the whole history reads %s at %d", start, row,
 					decStr(p.MarketValue), p.ValuedAt, decStr(want.MarketValue), want.ValuedAt)
@@ -178,7 +178,7 @@ func TestTheNextLoadCorrectsTheNewest(t *testing.T) {
 	if w.Start != 5000 || w.End != 7000 {
 		t.Fatalf("window %d..%d, want 5000..7000: two snapshots back from the new one", w.Start, w.End)
 	}
-	got := markedPositions(t, path, silver.MarkGuard{}, w)
+	got := markedPositions(t, path, MarkGuard{}, w)
 	if p := got["NEWEST@6000"]; decStr(p.MarketValue) != "1000" || p.ValuedAt != 5000 {
 		t.Errorf("NEWEST@6000: %s at %d, want 1000 from 5000", decStr(p.MarketValue), p.ValuedAt)
 	}
@@ -190,11 +190,11 @@ func TestTheNextLoadCorrectsTheNewest(t *testing.T) {
 func TestTheMarkThresholdsAreConfigured(t *testing.T) {
 	path, _ := markFixture(t)
 	for _, c := range []struct {
-		guard silver.MarkGuard
+		guard MarkGuard
 		want  map[string]string
 	}{
-		{silver.MarkGuard{SpikePct: 25}, map[string]string{"SPIKE2@2000": "1200", "BLIP@2000": "880"}},
-		{silver.MarkGuard{RevertPct: 0.4}, map[string]string{"SPIKE2@2000": "1200", "BLIP@2000": "880"}},
+		{MarkGuard{SpikePct: 25}, map[string]string{"SPIKE2@2000": "1200", "BLIP@2000": "880"}},
+		{MarkGuard{RevertPct: 0.4}, map[string]string{"SPIKE2@2000": "1200", "BLIP@2000": "880"}},
 	} {
 		got := markedPositions(t, path, c.guard, everything)
 		for row, want := range c.want {
@@ -208,7 +208,7 @@ func TestTheMarkThresholdsAreConfigured(t *testing.T) {
 // A row without a value or a quantity states no mark: it is not counted
 // among the two observations a spike has to come back in.
 func TestARowWithoutAMarkIsNotCounted(t *testing.T) {
-	g := newMarkGuard(silver.MarkGuard{})
+	g := newMarkGuard(MarkGuard{})
 	k := markSeries{"ACC", "X"}
 	dec := func(s string) *canonical.Decimal {
 		d, err := canonical.NewDecimalFromString(s)

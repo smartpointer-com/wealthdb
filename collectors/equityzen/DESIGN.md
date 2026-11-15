@@ -394,8 +394,8 @@ So this collector stays on the documented default — the same call
 ## 6. Gold adapter
 
 The gold adapter lives at `wealthdb/internal/silver/equityzen/` and is
-registered with the gold engine by the blank import in
-`cmd/wealthdb/main.go`. It is the closest sibling of `angellist` (an
+registered with the gold engine by its import in
+`internal/silver/all`. It is the closest sibling of `angellist` (an
 event-sourced LP book with distributions) and a cousin of `carta`. The
 package doc comment in `adapter.go` is the canonical spec; there is no
 separate `docs/adapters/*.md`. Gold migration `0015` admits
@@ -439,7 +439,9 @@ exist in gold.
 
 ### Adapter shape
 
-- `adapter.go` — `silver.Register`, `Open` (read-only SQLite), `Connection`.
+- `adapter.go` — `Open` (read-only SQLite), `Connection`, and the
+  `silver.Source` it registers: the shared
+  `returns.PrivateMarketLedgerPolicy` and `lots.StatedPolicy`.
 - `status.go` — `Status` + `ChangeWindow`, driven by `dump_runs`
   (`LatestChangeNumber = MAX(dump_runs.snapshot_at)`, idle reload = no-op;
   the latest dump is also the source's observed watermark).
@@ -494,13 +496,12 @@ exist in gold.
 - `basis.go` — the book value and its basis stamp (derived; `average` for
   an SPV, `paid_in` for a fund).
 - `classmap.go` — `offerings.kind` → `asset_class`.
-- `policy.go` — registers the shared `returns.PrivateMarketLedgerPolicy`:
-  the ledger's `deposit`/`withdrawal` legs are real dated cash crossings of
+- The returns policy: the ledger's `deposit`/`withdrawal` legs are real dated cash crossings of
   the EquityZen boundary and count as external capital; the paired
   investment legs stay internal (counting both halves would cancel every
   event). `CapitalCallRisk` keeps the `nav_only_capital_call_risk` tag on
   flow-less windows.
-- `lotpolicy.go` — registers `lots.StatedPolicy`: the cost basis is what
+- The lot policy: the cost basis is what
   the source states, so the lot engine builds no lots and realizes a sale
   against that basis (`wealthdb/docs/LOTS.md`).
 

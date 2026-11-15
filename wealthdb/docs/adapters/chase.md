@@ -283,8 +283,8 @@ Three decisions of record:
 
 ## 7. Returns treatment
 
-The source registers `returns.DepositBankPolicy()`
-(`internal/silver/chase/policy.go`): regime `flow_complete`, the
+The source registers `returns.DepositBankPolicy()` in its
+`silver.Source` (`internal/silver/chase/adapter.go`): regime `flow_complete`, the
 standard bank external-capital set, and `AccountsGrainHidden`.
 
 `AccountsGrainHidden` governs the **deposit** accounts: they emit

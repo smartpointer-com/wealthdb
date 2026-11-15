@@ -30,6 +30,7 @@ func init() {
 	rp := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
 	silver.Register(silver.Source{
 		Kind:        kindName,
+		Settings:    &silver.Settings{Key: "schwab", Parse: parseSettings},
 		Open:        (&Adapter{}).Open,
 		Returns:     &rp,
 		Lots:        lotPolicy(),
@@ -67,7 +68,7 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		if err != nil {
 			return nil, err
 		}
-		c.api = &apiReader{db: db, marks: spec.MarkGuard}
+		c.api = &apiReader{db: db, marks: markGuardOf(spec)}
 		if _, err := c.api.schema(ctx); err != nil {
 			_ = c.Close()
 			return nil, err
@@ -83,7 +84,7 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		}
 		switch s.Kind {
 		case "schwab-api":
-			c.api = &apiReader{db: db, marks: spec.MarkGuard}
+			c.api = &apiReader{db: db, marks: markGuardOf(spec)}
 		case "schwab-web":
 			c.web = &webReader{db: db}
 		default:

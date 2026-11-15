@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,9 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/all"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/ubs"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -526,13 +530,13 @@ func TestValidateRefusesAMalformedPSNStartOverride(t *testing.T) {
 	c := &Config{
 		GoldDB: "/x", DefaultCurrency: "USD",
 		SilverSources: []SilverSource{{ID: "u", Kind: "ubs", Subsources: []SilverSubsource{{Kind: "ubs-psn", Path: "/p"}},
-			Relationships: []RelationshipPair{{Label: "main", PSNID: "SYNTH01", PSNStartOverride: "2024-13-01"}}}},
+			Relationships: json.RawMessage(`[{"label": "main", "psn_id": "SYNTH01", "psn_start_override": "2024-13-01"}]`)}},
 	}
 	err := c.Validate()
 	if err == nil || !strings.Contains(err.Error(), "relationships[0].psn_start_override") {
 		t.Fatalf("Validate = %v, want a psn_start_override refusal", err)
 	}
-	c.SilverSources[0].Relationships[0].PSNStartOverride = "2024-01-31"
+	c.SilverSources[0].Relationships = json.RawMessage(`[{"label": "main", "psn_id": "SYNTH01", "psn_start_override": "2024-01-31"}]`)
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate with a valid psn_start_override: %v", err)
 	}
@@ -547,7 +551,7 @@ func TestSchwabMarkGuard(t *testing.T) {
 		return Load(writeConfig(t, `{"gold_db": "/tmp/g.db", "default_currency": "USD", "silver_sources": [`+
 			source+`]}`))
 	}
-	for source, want := range map[string]silver.MarkGuard{
+	for source, want := range map[string]schwab.MarkGuard{
 		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db"}`:                                                          {SpikePct: 10, RevertPct: 2},
 		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {}}`:                                            {SpikePct: 10, RevertPct: 2},
 		`{"id": "s", "kind": "schwab", "path": "/tmp/s.db", "schwab": {"mark_spike_pct": 15}}`:                        {SpikePct: 15, RevertPct: 2},
@@ -559,7 +563,8 @@ func TestSchwabMarkGuard(t *testing.T) {
 			t.Errorf("%s: %v", source, err)
 			continue
 		}
-		if got := c.SilverSources[0].ToSilverOpenSpec().MarkGuard.WithDefaults(); got != want {
+		g, _ := c.SilverSources[0].ToSilverOpenSpec().Settings.(schwab.MarkGuard)
+		if got := g.WithDefaults(); got != want {
 			t.Errorf("%s: guard %+v, want %+v", source, got, want)
 		}
 	}
@@ -583,13 +588,13 @@ func TestSchwabMarkGuard(t *testing.T) {
 func TestToSilverOpenSpecCarriesTheSource(t *testing.T) {
 	c := &Config{GoldDB: "/x", DefaultCurrency: "USD", SilverSources: []SilverSource{{ID: "u", Kind: "ubs",
 		Subsources:    []SilverSubsource{{Kind: "ubs-psn", Path: "/p"}},
-		Relationships: []RelationshipPair{{Label: "main", WebID: "W1", PSNID: "SYNTH01", PSNStartOverride: "2024-01-31"}}}}}
+		Relationships: json.RawMessage(`[{"label": "main", "web_id": "W1", "psn_id": "SYNTH01", "psn_start_override": "2024-01-31"}]`)}}}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	spec := c.SilverSources[0].ToSilverOpenSpec()
 	want := silver.OpenSpec{ID: "u", Subsources: []silver.Subsource{{Kind: "ubs-psn", Path: "/p"}},
-		Relationships: []silver.RelationshipPair{{Label: "main", WebID: "W1", PSNID: "SYNTH01",
+		Settings: []ubs.RelationshipPair{{Label: "main", WebID: "W1", PSNID: "SYNTH01",
 			PSNStartOverride: time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC).Unix()}}}
 	if !reflect.DeepEqual(spec, want) {
 		t.Errorf("ToSilverOpenSpec = %+v, want %+v", spec, want)

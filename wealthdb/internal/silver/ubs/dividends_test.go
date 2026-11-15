@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
@@ -715,7 +714,7 @@ func TestAReversalTakesBackOnlyAGrossGoldBooked(t *testing.T) {
 	seedWebTxRaw(t, r, "EXP0000002", divIBAN, divDay, "CHF", 500, "Dividend",
 		exportPayload(divNarrative+"; "+divISIN, "Dividend", "Number/Amt. 600.00 CHF; Transaction no. EXP0000002"))
 	conn := &Connection{web: r, psn: &psnReader{db: db},
-		relationships: []silver.RelationshipPair{{WebID: "REL1", PSNStartOverride: divDay - 86400}}}
+		relationships: []RelationshipPair{{WebID: "REL1", PSNStartOverride: divDay - 86400}}}
 	stream, err := conn.Transactions(context.Background(), canonical.Window{Start: 0, End: 1 << 40, HasChanges: true})
 	if err != nil {
 		t.Fatal(err)

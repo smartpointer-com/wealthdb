@@ -337,7 +337,7 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 //
 // The second return value is what this pass decided that a LATER pass
 // needs (webTxOutcome).
-func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []silver.RelationshipPair) (silver.TransactionStream, webTxOutcome, error) {
+func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []RelationshipPair) (silver.TransactionStream, webTxOutcome, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), webTxOutcome{}, nil
 	}
@@ -416,7 +416,7 @@ type webTxPass struct {
 	withheld map[string]bool
 }
 
-func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []silver.RelationshipPair) (*webTxPass, error) {
+func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []RelationshipPair) (*webTxPass, error) {
 	var (
 		p   webTxPass
 		err error
@@ -1669,7 +1669,7 @@ func vetoConversions(all []offsetLeg, record func(offsetLeg)) map[string]bool {
 //
 // A relationship with no PSN counterpart (PSNID empty, or empty
 // MIN) gets cutoff=0 → no filter applied to its web rows.
-func buildPSNStartByWebRel(ctx context.Context, psn *psnReader, rels []silver.RelationshipPair) (map[string]int64, error) {
+func buildPSNStartByWebRel(ctx context.Context, psn *psnReader, rels []RelationshipPair) (map[string]int64, error) {
 	out := make(map[string]int64, len(rels))
 	if psn == nil {
 		return out, nil
@@ -1722,7 +1722,7 @@ func (r *webReader) buildHistoricalCutoffs(
 	ctx context.Context,
 	cutoffByWebRel map[string]int64,
 	psn *psnReader,
-	rels []silver.RelationshipPair,
+	rels []RelationshipPair,
 ) (portfolioCutoff, accountCutoff map[string]int64, err error) {
 	portfolioCutoff = map[string]int64{}
 	accountCutoff = map[string]int64{}

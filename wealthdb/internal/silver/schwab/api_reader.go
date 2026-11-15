@@ -14,7 +14,7 @@ type apiReader struct {
 	db *sql.DB
 	// marks tunes the guard on a spike that reverts (marks.go); a zero
 	// field takes the default.
-	marks silver.MarkGuard
+	marks MarkGuard
 	// parts is the file's optional schema, once probed is set (schema).
 	parts  apiSchema
 	probed bool

@@ -128,7 +128,7 @@ type Classified struct {
 
 // Policy is a source kind's knowledge of its feed: the knobs of
 // docs/LOTS.md §6 and the reading of its transactions. A source kind
-// registers one beside its adapter (RegisterPolicy); config may
+// states one in its silver.Source (RegisterPolicy); config may
 // override Mode, Grain and the method.
 type Policy struct {
 	Mode  Mode
@@ -247,8 +247,8 @@ var (
 	policies = map[string]Policy{}
 )
 
-// RegisterPolicy registers a source kind's Policy, from its silver
-// package's init beside silver.Register. A second registration for one
+// RegisterPolicy registers a source kind's Policy; silver.Register calls
+// it from the silver package's init. A second registration for one
 // kind panics: it is a build-time mistake.
 func RegisterPolicy(kind string, p Policy) {
 	policyMu.Lock()

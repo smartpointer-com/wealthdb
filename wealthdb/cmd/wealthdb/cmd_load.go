@@ -639,8 +639,8 @@ func matchNames(m *config.SpendingTransferMatching) []spending.CounterpartyName 
 }
 
 // buildSourceSpec assembles a loader.SourceSpec for one configured
-// silver source: translates `path` / `subsources` / `relationships` /
-// `schwab` to their silver-package counterparts and folds in every config
+// silver source: carries `path`, `subsources` and the settings its kind
+// parsed (`relationships`, `schwab`) and folds in every config
 // statement scoped to this source — the override families and
 // `transaction_instruments`.
 func buildSourceSpec(
@@ -655,8 +655,7 @@ func buildSourceSpec(
 		TaxableWrapper: s.TaxableWrapper,
 		Path:           openSpec.Path,
 		Subsources:     openSpec.Subsources,
-		Relationships:  openSpec.Relationships,
-		MarkGuard:      openSpec.MarkGuard,
+		Settings:       openSpec.Settings,
 		TransferLedger: transferLedger[s.ID],
 	}
 	if cfgOvr := cfg.AccountOverrides[s.ID]; len(cfgOvr) > 0 {

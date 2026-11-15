@@ -28,8 +28,7 @@ type Adapter interface {
 	// Close() when done. Open is read-only — adapters never write
 	// to silver. Single-backing-file adapters use spec.Path;
 	// multi-source adapters (UBS = web + PSN) use spec.Subsources
-	// and may use spec.Relationships to align cross-source
-	// identities.
+	// and may use spec.Settings to align cross-source identities.
 	Open(ctx context.Context, spec OpenSpec) (Connection, error)
 }
 
@@ -46,7 +45,7 @@ type RefineClassFunc = func(securityType string, ac canonical.AssetClass, v cano
 
 // OpenSpec is everything Adapter.Open needs to know about the
 // configured silver source. Single-file adapters read Path; UBS reads
-// ID, Subsources and Relationships; schwab reads MarkGuard too.
+// ID, Subsources and Settings; schwab reads Settings too.
 type OpenSpec struct {
 	// ID is the source's id in gold (silver_source_id), for an adapter
 	// whose keys are scoped by the source, such as a contract's
@@ -64,65 +63,16 @@ type OpenSpec struct {
 	// set.
 	Subsources []Subsource
 
-	// Relationships pairs cross-subsource entity identities under
-	// a single user-chosen label. Adapters that don't merge
-	// ignore this. UBS uses it to pair web banking_relationship_id
-	// with PSN SFTP relationship_id.
-	Relationships []RelationshipPair
-
-	// MarkGuard tunes the hold an adapter that guards its marks
-	// (schwab) puts on a mark that jumps. Adapters that don't guard
-	// their marks ignore it.
-	MarkGuard MarkGuard
-}
-
-// MarkGuard finds a bad quote in a position's marks: a spike that
-// reverts (docs/adapters/schwab.md §4.1). SpikePct is the move, in
-// percent of the previous mark, past which a mark may be a spike;
-// RevertPct how close, in percent, one of the next two marks must come
-// back to the previous mark for it to be one. A zero field takes
-// defaultMarkGuard's value.
-type MarkGuard struct {
-	SpikePct, RevertPct float64
-}
-
-// defaultMarkGuard reads a move of more than 10% that comes back within
-// 2% of the previous mark as a spike.
-var defaultMarkGuard = MarkGuard{SpikePct: 10, RevertPct: 2}
-
-// WithDefaults fills each zero field from defaultMarkGuard.
-func (g MarkGuard) WithDefaults() MarkGuard {
-	if g.SpikePct == 0 {
-		g.SpikePct = defaultMarkGuard.SpikePct
-	}
-	if g.RevertPct == 0 {
-		g.RevertPct = defaultMarkGuard.RevertPct
-	}
-	return g
+	// Settings is the source's own settings as its kind's
+	// Source.Settings parsed them from the config, nil where the
+	// config states none.
+	Settings any
 }
 
 // Subsource is one backing silver inside a merged Adapter.
 type Subsource struct {
 	Kind string
 	Path string
-}
-
-// RelationshipPair is one entry in OpenSpec.Relationships.
-// Either WebID or PSNID (or both) must be set; only the
-// configured side is used.
-type RelationshipPair struct {
-	// Label is the canonical (user-readable) name the adapter
-	// stamps on canonical records so downstream sees a single key
-	// regardless of which subsource produced the record.
-	Label string
-	// WebID, when set, is the web silver's banking_relationship_id.
-	WebID string
-	// PSNID, when set, is the PSN silver's relationship_id.
-	PSNID string
-	// PSNStartOverride, when non-zero, overrides the auto-detected
-	// PSN-start cutover date used to splice transactions between
-	// web and PSN. Unix seconds UTC. Zero = auto-detect.
-	PSNStartOverride int64
 }
 
 // Connection is one attached silver database, ready to answer

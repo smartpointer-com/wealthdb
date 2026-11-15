@@ -2,7 +2,6 @@ package schwab
 
 import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // markGuard finds the bad quotes in the api feed's overnight marks
@@ -60,7 +59,7 @@ type markFix struct {
 	from  int64
 }
 
-func newMarkGuard(g silver.MarkGuard) *markGuard {
+func newMarkGuard(g MarkGuard) *markGuard {
 	g = g.WithDefaults()
 	hundred := canonical.NewDecimalFromInt(100)
 	return &markGuard{

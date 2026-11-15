@@ -509,9 +509,9 @@ source.
 
 - **Registry.** `internal/returns/returnspolicy.go` defines
   `ReturnsPolicy` and a registry keyed by adapter kind (`RegisterPolicy`
-  / `ReturnsPolicyFor`). Each source declares its policy in
-  `internal/silver/<source>/policy.go` and registers it from that
-  package's `init()`, as it registers its adapter. Each constituent keeps
+  / `ReturnsPolicyFor`). Each source declares its policy in its
+  `silver.Source`, and `silver.Register` forwards it to the registry
+  from the adapter package's `init()`. Each constituent keeps
   its own source's policy inside a merged entity, so a policy is
   source-scoped even at the global grain. `DefaultReturnsPolicy(flow)`
   sets every knob to the engine's baseline, so a policy that changes no

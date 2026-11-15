@@ -2,32 +2,36 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
 )
 
-// A source's `schwab` object reaches the loader's SourceSpec, which hands
-// it to the adapter's OpenSpec: the guard a load opens with is the
-// configured one, and a source without the object states none.
+// A source's `schwab` object, as the schwab adapter parses it while the
+// config compiles, reaches the loader's SourceSpec, which hands it to the
+// adapter's OpenSpec: the guard a load opens with is the configured one,
+// and a source without the object states none.
 func TestBuildSourceSpecForwardsTheMarkGuard(t *testing.T) {
 	t.Parallel()
-	spike, revert := 15.0, 1.5
-	cfg := &config.Config{}
-	spec := buildSourceSpec(config.SilverSource{
-		ID: "s", Kind: "schwab", Path: "/tmp/s.db",
-		Schwab: &config.SchwabSettings{MarkSpikePct: &spike, MarkRevertPct: &revert},
-	}, cfg, nil)
-	if want := (silver.MarkGuard{SpikePct: 15, RevertPct: 1.5}); spec.MarkGuard != want {
-		t.Errorf("MarkGuard = %+v, want %+v", spec.MarkGuard, want)
+	cfg := &config.Config{GoldDB: "/x", DefaultCurrency: "USD", SilverSources: []config.SilverSource{
+		{ID: "s", Kind: "schwab", Path: "/tmp/s.db", Schwab: json.RawMessage(`{"mark_spike_pct": 15, "mark_revert_pct": 1.5}`)},
+		{ID: "t", Kind: "schwab", Path: "/tmp/t.db"},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
 	}
-	spec = buildSourceSpec(config.SilverSource{ID: "s", Kind: "schwab", Path: "/tmp/s.db"}, cfg, nil)
-	if spec.MarkGuard != (silver.MarkGuard{}) {
-		t.Errorf("MarkGuard = %+v for a source with no schwab object, want the zero guard", spec.MarkGuard)
+	spec := buildSourceSpec(cfg.SilverSources[0], cfg, nil)
+	if want := (schwab.MarkGuard{SpikePct: 15, RevertPct: 1.5}); spec.Settings != want {
+		t.Errorf("Settings = %+v, want %+v", spec.Settings, want)
+	}
+	spec = buildSourceSpec(cfg.SilverSources[1], cfg, nil)
+	if spec.Settings != nil {
+		t.Errorf("Settings = %+v for a source with no schwab object, want none", spec.Settings)
 	}
 }
 

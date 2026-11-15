@@ -1304,8 +1304,10 @@ type TransactionStream interface {
 ```
 
 - **`Open`.** A single-file adapter reads `spec.Path`. A merged
-  adapter (UBS = ubs-web + ubs-psn) reads `spec.Subsources` and aligns
-  identities through `spec.Relationships`.
+  adapter (UBS = ubs-web + ubs-psn) reads `spec.Subsources`.
+  `spec.Settings` carries the source's own settings as its kind
+  parsed them from the config (§6.3): the UBS relationships, which
+  align identities across the feeds, and the schwab mark guard.
 - **`Status`.** A cheap read of where silver stands. Every
   `wealthdb load` and `wealthdb status` calls it. Its timestamps are
   Unix seconds UTC, and -1 means nothing is observable.
@@ -1355,26 +1357,31 @@ reference records).
 
 ### 6.3 Registration
 
-`silver.Register(&Adapter{})` is called from each backend
-package's `init()` (the name comes from the adapter's `Kind()`).
-Backends live under `internal/silver/<source>`. The registered set is
-not restated here — it would drift the moment one is added. The
-blank-import block in `cmd/wealthdb/main.go` below carries it. A load
-looks every source's kind up in the registry and refuses a kind no
-adapter registers. Gold's `silver_kind` column carries no CHECK, so a
-new adapter needs no migration.
+Each backend package's `init()` registers one `silver.Source`, the
+one place a kind's facts are stated:
 
-```go
-import (
-    _ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
-    _ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/ubs"
-    _ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/swissquote"
-    // ...one blank import per backend package listed above.
-)
-```
+- `Kind` and `Open`;
+- `Returns` and `Lots`, its returns and lot policies (§10, LOTS.md);
+- `Labels`, whose words its names are, for `-p`;
+- `CashSigned`, the unsigned kinds whose cash it passes through signed
+  (CASHFLOW.md §4);
+- `RefineClass`, where it takes a lookup's security type over its own
+  class;
+- `Settings`, the config key it reads and the parser the config calls
+  while it compiles.
 
-Adding a new source means adding a package and one blank import —
-both trivial.
+`silver.Register` forwards the policies and the sign pins to the
+registries gold reads, so gold never imports silver. Backends live
+under `internal/silver/<source>`. The registered set is not restated
+here; it would drift the moment one is added. The package
+`internal/silver/all` imports every backend once, and
+`cmd/wealthdb/main.go` and the tests import it. A load looks every
+source's kind up in the registry and refuses a kind no adapter
+registers. Gold's `silver_kind` column carries no CHECK, so a new
+adapter needs no migration.
+
+Adding a new source means adding a package and one import in
+`silver/all`.
 
 ### 6.4 The logical change number
 
@@ -3121,9 +3128,8 @@ the dashboards — as a hybrid:
   gold orchestration is `internal/gold/returns.go` (`RunReturns`), which
   aggregates the per-account spine to every grain.
 
-Each source registers a `ReturnsPolicy` beside its adapter
-(`internal/silver/<source>/policy.go`), resolved by adapter kind through
-`internal/returns/returnspolicy.go`. The engine names no source: it reads
+Each source states a `ReturnsPolicy` in its `silver.Source` (§6.3),
+resolved by adapter kind through `internal/returns/returnspolicy.go`. The engine names no source: it reads
 the policy's knobs. §5.6 lists what config may override.
 
 The flags are `--method twr|mwr|both`, `--period monthly|quarterly|annual|total`
@@ -3628,7 +3634,8 @@ wealthdb/
 │   │   │                             equityzen fidelity firstcitizens fred manual plaid
 │   │   │                             raiffeisen_at refdata relevate schwab swissquote
 │   │   │                             synthetic ubs viac
-│   │   └── <source>/               — impl (snapshots/transactions/classmap) + co-located policy.go, and lotpolicy.go where the lot engine replays the source
+│   │   ├── all/                    — imports every backend once
+│   │   └── <source>/               — impl (snapshots/transactions/classmap); adapter.go registers its silver.Source, with policy.go and lotpolicy.go where a policy needs code
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
 │   │   ├── migrations/             — 0001…NNNN SQL: tables and data moves, //go:embed-ed by schema.go
 │   │   └── derived/                — every macro and view, one file per family, and LOCK (derived/README.md)
@@ -4287,8 +4294,8 @@ trust whose security name never mentions the metal or the ETF-ness
 
 The class pass (`gold.RefineClasses`) decides the final pair once. It
 runs first among the passes a load or a reload ends with, over every
-source. A pinned instrument takes its pin. Otherwise, an adapter that
-implements `silver.ClassRefiner` (schwab) takes OpenFIGI's security
+source. A pinned instrument takes its pin. Otherwise, a source whose
+`silver.Source` states a `RefineClass` (schwab) takes OpenFIGI's security
 type, from the refdata source's `security_identities`, over its own
 pair. The pass patches the `instruments` row and its `positions` rows
 together. It runs after every load, so a type a later refdata load

@@ -24,8 +24,9 @@ runtime (§4), and operating notes (§5). The layout follows
 - **Conduit accounts.** Cash passes through these accounts on its way to
   and from other sources. Their transactions matter for cross-source
   money-flow tracking. Their own return rows are noise, so the
-  registered ReturnsPolicy (`internal/silver/raiffeisen_at/policy.go`,
-  the shared deposit-bank policy) hides them at every grain. Their
+  ReturnsPolicy its `silver.Source` registers
+  (`internal/silver/raiffeisen_at/adapter.go`, the shared deposit-bank
+  policy) hides them at every grain. Their
   balances and flows still enter every aggregate.
 - **2FA is pushTAN** (§A). The login is confirmed in the Raiffeisen app;
   nothing is typed. The completion signal is a plain REST poll. The
@@ -657,7 +658,7 @@ plus `load.py`'s supplied pass. `pdftotext` comes from the image's
   recognised from the category or description, else deposit or
   withdrawal by sign.
 
-It registers via the blank import in `cmd/wealthdb/main.go` and the
+It registers via its import in `internal/silver/all` and the
 `silver_sources` migration
 (`internal/gold/migrations/0035_silver_sources_raiffeisen_at.sql`). Its
 return rows are hidden per §1.

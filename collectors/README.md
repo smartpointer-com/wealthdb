@@ -733,8 +733,8 @@ through a Go **adapter** under
 the silver DB and emits canonical snapshot/transaction batches, mapping
 into the canonical enums (`account_kind`, `tax_wrapper`,
 `management_style`, `asset_class` and the transaction kind, `TxKind`)
-and the transaction sign convention. The adapter registers itself from
-`init()` via `silver.Register` and is imported in `cmd/wealthdb`;
+and the transaction sign convention. The adapter registers its `silver.Source` from
+`init()` via `silver.Register`, and `internal/silver/all` imports it;
 several adapters also carry a design doc under
 [`../wealthdb/docs/adapters/`](../wealthdb/docs/adapters/). The
 interface, canonical vocabulary, and fixture-test pattern live on the
