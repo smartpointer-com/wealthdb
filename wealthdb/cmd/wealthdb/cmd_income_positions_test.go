@@ -46,7 +46,7 @@ func TestIncomePositionsAndTheCalendarAgree(t *testing.T) {
 			kinds = append(kinds, "('brk', '"+id+"', 'sig-exin', 1, 'INCOME_DIVIDENDS', 'rule', 100)")
 		}
 	}
-	rate := `'{"CdtIntrstRate1": "1.5", "CdtLmtAmt1": "0", "CalIntrstBasisDesc": "act/360", "EndOfDurtn": "9999-12-31"}'`
+	rate := `'{"interest_rate": "1.5", "interest_day_count": "ACT/360"}'`
 	for _, q := range []string{
 		`INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at, last_loaded_at)
 		 VALUES ('brk', 'synthetic', '/tmp/brk.db', -1, 0, 0)`,

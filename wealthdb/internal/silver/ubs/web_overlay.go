@@ -56,42 +56,6 @@ SELECT snapshot_at, instrument_isin, payload
 	return out, nil
 }
 
-// webCashKey is the (UTC date, account, currency) key for web's
-// cash-position rows. Web uses IBAN as account_external_id so
-// this matches PSN's cash_balances directly post-canonicalisation.
-type webCashKey struct {
-	utcDate  int64
-	account  string
-	currency string
-}
-
-// cashPayloadByKey returns web's per-(UTC date, account, ccy)
-// JSON payload for cash positions. Folded into PSN's cash
-// balances during the overlap.
-func (r *webReader) cashPayloadByKey(ctx context.Context, wStart, wEnd int64) (map[webCashKey]string, error) {
-	if r == nil {
-		return nil, nil
-	}
-	const q = `
-SELECT snapshot_at, account_external_id, currency_iso, payload
-  FROM positions
- WHERE instrument_isin IS NULL
-   AND snapshot_at BETWEEN ? AND ?`
-	out := make(map[webCashKey]string)
-	if err := silver.ScanRows(ctx, r.db, "web cashPayloadByKey", q, func(rows *sql.Rows) error {
-		var snap int64
-		var acct, ccy, payload string
-		if err := rows.Scan(&snap, &acct, &ccy, &payload); err != nil {
-			return err
-		}
-		out[webCashKey{utcDate: utcDay(snap), account: acct, currency: ccy}] = payload
-		return nil
-	}, wStart, wEnd); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // webTxTextKey identifies one booking across the era seam: the bank's
 // own number for the entry — the account statement's "Transaction
 // no.", which web silver uses as its transaction_external_id and which

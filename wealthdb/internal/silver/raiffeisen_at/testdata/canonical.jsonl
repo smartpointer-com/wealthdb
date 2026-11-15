@@ -2,15 +2,17 @@
 {"LatestChangeNumber":1772366400,"LatestSnapshotAt":1772366400,"LatestTransactionAt":1771113600,"ObservedSnapshotsThrough":1772366400,"ObservedTransactionsThrough":1772366400,"OldestSnapshotAt":1767225599,"OldestTransactionAt":1768003200}
 == window 1
 {"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1772366400,"Spans":null,"Start":-9223372036854775808}
-== accounts 1
+== accounts 2
 {"AccountCategory":null,"AccountExternalID":"ATkkBBBBBKKKKKKK1234","AccountKind":"cash","BaseCurrency":"EUR","DisplayName":"Testkonto …1234","FirstSeenAt":1772366400,"LastSeenAt":1772366400,"ManagementStyle":"self_directed","Nickname":null,"Payload":{},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
-== cash_balances 6
+{"AccountCategory":null,"AccountExternalID":"ATkkBBBBBKKKKKKK5678","AccountKind":"cash","BaseCurrency":"EUR","DisplayName":"Sparkonto …5678","FirstSeenAt":1772366400,"LastSeenAt":1772366400,"ManagementStyle":"self_directed","Nickname":null,"Payload":{"details":{"interest_credit":"0,125% ab 01.01.2026","interest_debit":"6,5% ab 01.01.2026"},"interest_conditions":[{"interest_rate":0.125,"interest_side":"credit","interest_valid_from":"2026-01-01"},{"interest_rate":6.5,"interest_side":"debit","interest_valid_from":"2026-01-01"}]},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
+== cash_balances 7
 {"AccountExternalID":"ATkkBBBBBKKKKKKK1234","Amount":"1000","BalanceKind":"closing","Currency":"EUR","Payload":{"basis":"daily_balance"},"SilverSourceID":"","SnapshotAt":1768089599}
 {"AccountExternalID":"ATkkBBBBBKKKKKKK1234","Amount":"1500","BalanceKind":"current","Currency":"EUR","Payload":{"basis":"roster"},"SilverSourceID":"","SnapshotAt":1772366400}
 {"AccountExternalID":"ATkkBBBBBKKKKKKK1234","Amount":"650","BalanceKind":"closing","Currency":"EUR","Payload":{"basis":"daily_balance"},"SilverSourceID":"","SnapshotAt":1770335999}
 {"AccountExternalID":"ATkkBBBBBKKKKKKK1234","Amount":"652.5","BalanceKind":"closing","Currency":"EUR","Payload":{"basis":"daily_balance"},"SilverSourceID":"","SnapshotAt":1771199999}
 {"AccountExternalID":"ATkkBBBBBKKKKKKK1234","Amount":"700","BalanceKind":"closing","Currency":"EUR","Payload":{"basis":"daily_balance"},"SilverSourceID":"","SnapshotAt":1768953599}
 {"AccountExternalID":"ATkkBBBBBKKKKKKK1234","Amount":"900","BalanceKind":"closing","Currency":"EUR","Payload":{"basis":"daily_balance"},"SilverSourceID":"","SnapshotAt":1767225599}
+{"AccountExternalID":"ATkkBBBBBKKKKKKK5678","Amount":"200","BalanceKind":"current","Currency":"EUR","Payload":{"basis":"roster"},"SilverSourceID":"","SnapshotAt":1772366400}
 == transactions 4
 {"AccountExternalID":"ATkkBBBBBKKKKKKK1234","AssetClass":"","CheckNumber":null,"Counterparty":"ACME GmbH","Currency":"EUR","Description":"COFFEE","GrossAmount":"-300","InstrumentExternalID":null,"InstrumentHint":"","Kind":"withdrawal","Memo":null,"NetAmount":"-300","OccurredAt":1768867200,"Payload":{},"Price":null,"ProviderCategory":"tv_phone_internet","Quantity":null,"SilverSourceID":"","TransactionExternalID":"t2","Vehicle":""}
 {"AccountExternalID":"ATkkBBBBBKKKKKKK1234","AssetClass":"","CheckNumber":null,"Counterparty":"ACME GmbH","Currency":"EUR","Description":"KONTOENTGELT","GrossAmount":"-50","InstrumentExternalID":null,"InstrumentHint":"","Kind":"fee","Memo":null,"NetAmount":"-50","OccurredAt":1770249600,"Payload":{},"Price":null,"ProviderCategory":"fees_bank","Quantity":null,"SilverSourceID":"","TransactionExternalID":"t3","Vehicle":""}

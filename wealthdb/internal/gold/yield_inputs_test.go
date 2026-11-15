@@ -66,7 +66,7 @@ func TestFundLines(t *testing.T) {
 	t.Parallel()
 	day := ymd(2026, 6, 15)
 	m1, m2 := ymd(2031, 6, 15), ymd(2028, 6, 15)
-	lines := []fundLine{{weight: 40, maturity: &m1}, {weight: 20, kind: "Floating"}, {weight: 10, defaulted: true},
+	lines := []fundLine{{weight: 40, maturity: &m1}, {weight: 20, kind: "Floating", floats: true}, {weight: 10, defaulted: true},
 		{weight: 10, inKind: true}, {weight: 20, maturity: &m2}}
 	five, four, three, two := 5.0, 4.0, 3.0, 2.0
 	infos := []yield.LineInfo{{Yield: &five, Duration: &four}, {}, {}, {}, {Yield: &three, Duration: &two}}

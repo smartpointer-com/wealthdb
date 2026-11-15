@@ -466,21 +466,23 @@ class Simulation:
                       "rate": max(offered, D(td["floor"])).quantize(CENT)}
 
     def _cash_terms(self, acct, ccy, day):
-        """The rate a balance's snapshot states, in UBS's shape (wealthdb
-        reads CdtIntrstRate1 up to CdtLmtAmt1, then CdtIntrstRate2; the day
-        the rates hold from; a term's end, 9999-12-31 for none; the day
-        count): the savings account's tiers and the term deposit's term.
-        Any other balance states none."""
+        """The rate a balance's snapshot states, under the stated-rate keys
+        (wealthdb's canonical/statedrate.go): the savings account's credit
+        tiers, the first up to its limit, and the term deposit's rate with
+        its term's end, each with the day it holds from and its day count
+        as wealthdb names it. Any other balance states none."""
         si = self.spec["savings_interest"]
         if acct.id == si["account"] and ccy == acct.currency:
             ((first, limit), (above, _)), since = self._savings_tiers(day)
-            return {"CdtIntrstRate1": text(first, 2), "CdtLmtAmt1": text(limit, 2), "CdtIntrstRate2": text(above, 2),
-                    "CdtIntrstVldFrmDt": since.isoformat(), "EndOfDurtn": "9999-12-31",
-                    "CalIntrstBasisDesc": si["day_count"]}
+            return {"interest_tiers": [{"rate": text(first, 2), "up_to": text(limit, 2)},
+                                       {"rate": text(above, 2), "up_to": None}],
+                    "interest_side": "credit", "interest_valid_from": since.isoformat(),
+                    "interest_day_count": si["day_count"].upper()}
         td = self.spec["term_deposit"]
         if acct.id == td["account"] and self._term:
-            return {"CdtIntrstRate1": text(self._term["rate"], 2), "CdtIntrstVldFrmDt": self._term["start"].isoformat(),
-                    "EndOfDurtn": self._term["end"].isoformat(), "CalIntrstBasisDesc": td["day_count"]}
+            return {"interest_rate": text(self._term["rate"], 2), "interest_side": "credit",
+                    "interest_valid_from": self._term["start"].isoformat(),
+                    "interest_term_end": self._term["end"].isoformat(), "interest_day_count": td["day_count"].upper()}
         return None
 
     def _in_force(self, kind, day, mine):

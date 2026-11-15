@@ -586,6 +586,9 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 // puts both on one stale snapshot and the row reports a measured gap
 // it never looked at.
 //
+// The balance carries the account record as its payload, with the
+// record's interest conditions under the stated-rate keys (psnRateKeys).
+//
 // The book balance is the CLOSING balance rather than a kind of its
 // own: where the two feeds overlap it equals the MT940 closing
 // figure, not the opening or the available one. It is signed at the
@@ -641,13 +644,21 @@ SELECT snapshot_at, account_external_id, payload
 		if _, spoken := stated[key{snap, extID, p.Currency}]; spoken {
 			return nil
 		}
+		balancePayload := json.RawMessage(payload)
+		if keys := psnRateKeys(balancePayload); keys != nil {
+			stamped, err := silver.WithStatedRates(balancePayload, keys)
+			if err != nil {
+				return fmt.Errorf("cash_accounts rates (snap=%d): %w", snap, err)
+			}
+			balancePayload = stamped
+		}
 		batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
 			SnapshotAt:        snap,
 			AccountExternalID: extID,
 			Currency:          p.Currency,
 			BalanceKind:       canonical.BalanceKindClosing,
 			Amount:            *p.BookBalance,
-			Payload:           json.RawMessage(payload),
+			Payload:           balancePayload,
 		})
 		return nil
 	}, w.Start, w.End); err != nil {

@@ -9,14 +9,16 @@ import (
 // TestCanonicalGolden holds every record the adapter yields to
 // testdata/canonical.jsonl, over the rows of the adapter tests in one
 // silver: the three product codes, report and live positions with their
-// cash, and a ledger of linked, unlinked and narrative-less rows.
+// cash, a strategy that states its cash's rate, and a ledger of linked,
+// unlinked and narrative-less rows.
 func TestCanonicalGolden(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	silvertest.Exec(t, db, `
         INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES
             (1000, 5, '/x/1'), (2000, 5, '/x/2000'), (3000, 5, '/x/3000');
         INSERT INTO accounts(snapshot_at, account_external_id, product_code, name, state, currency_code, management_style, payload) VALUES
-            (1000, 'P3A1', '3', 'Pillar 3a', 'ACTIVE', 'CHF', 'automated', '{}'),
+            (1000, 'P3A1', '3', 'Pillar 3a', 'ACTIVE', 'CHF', 'automated',
+             '{"strategy": {"interestRate": 0.05, "investmentType": "x"}}'),
             (1000, 'PVB1', '2', 'Vested', 'ACTIVE', 'CHF', 'automated', '{}'),
             (1000, 'INV1', '1', 'Free Invest', 'ACTIVE', 'CHF', 'automated', '{}'),
             (2000, 'P3A1', '3', 'Pillar 3a', 'ACTIVE', 'CHF', 'automated', '{}'),

@@ -61,21 +61,16 @@ const (
 // (instrument_terms_at).
 var bondVehicles = []string{"bond", "mortgage", "loan", "convertible_note"}
 
-// ubsRatingPath is where a UBS position's payload keeps the Rating
-// column of the positions export: the export's row sits under `web`.
-const ubsRatingPath = "$.web.Rating"
-
 // termsCandidatesSQL lists each bond-like instrument with what may state
 // its terms: its name; its own figures, each canonical.PayloadTermsKeys
 // key from its payload, else from its newest position's payload that
 // states one (a statement parser's holding, whose instrument a live feed
-// may describe later without them), and that position's UBS Rating;
-// OpenFIGI's ticker and market sector for its security, its security's
+// may describe later without them); OpenFIGI's ticker and market sector for its security, its security's
 // sector, and whether its key is a US ISIN (canonical.ReadBondDescription's
 // usID).
 var termsCandidatesSQL = func() string {
 	var stated, picked []string
-	for _, k := range append(canonical.PayloadTermsKeys(), ubsRatingPath) {
+	for _, k := range canonical.PayloadTermsKeys() {
 		stated = append(stated, fmt.Sprintf("json_extract_string(p.payload, '%s')", k))
 	}
 	for _, k := range canonical.PayloadTermsKeys() {
@@ -100,8 +95,7 @@ held AS (
      ORDER BY p.silver_source_id, p.instrument_external_id, p.snapshot_at DESC, p.account_external_id,
               p.position_key)
 SELECT i.silver_source_id, i.instrument_external_id, COALESCE(i.name, ''), COALESCE(i.currency, ''),
-       COALESCE(i.vehicle, ''), ` + strings.Join(picked, ", ") + `,
-       json_extract_string(h.payload, '` + ubsRatingPath + `'), f.ticker, COALESCE(s.sector, ''),
+       COALESCE(i.vehicle, ''), ` + strings.Join(picked, ", ") + `, f.ticker, COALESCE(s.sector, ''),
        COALESCE(f.market_sector, ''), COALESCE(exposure_key(ik.security_key) LIKE 'isin:US%', FALSE)
   FROM instruments i
   LEFT JOIN held h ON h.silver_source_id = i.silver_source_id AND h.instrument_external_id = i.instrument_external_id
@@ -198,21 +192,21 @@ func writeInstrumentTerms(ctx context.Context, tx *sql.Tx) error {
 	if err := scanAll(ctx, tx, termsCandidatesSQL, func(sc *sql.Rows) error {
 		var r termsRow
 		var name, ccy, sector, figiSector string
-		var ubsRating, ticker sql.NullString
+		var ticker sql.NullString
 		var usID bool
 		values := make([]sql.NullString, len(keys))
 		dst := []any{&r.src, &r.iid, &name, &ccy, &r.vehicle}
 		for i := range values {
 			dst = append(dst, &values[i])
 		}
-		if err := sc.Scan(append(dst, &ubsRating, &ticker, &sector, &figiSector, &usID)...); err != nil {
+		if err := sc.Scan(append(dst, &ticker, &sector, &figiSector, &usID)...); err != nil {
 			return err
 		}
 		stated := map[string]string{}
 		for i, k := range keys {
 			stated[k] = values[i].String
 		}
-		own := canonical.ReadPayloadTerms(stated, ubsRating.String)
+		own := canonical.ReadPayloadTerms(stated)
 		r.coupon.offer(own.Coupon, originPayload)
 		r.maturity.offer(own.Maturity, originPayload)
 		offerStated(&r.frequency, own.Frequency, originPayload)
@@ -313,104 +307,16 @@ func readConventions(ctx context.Context, q querier) (map[string]canonical.Yield
 	return out, nil
 }
 
-// accountRatesSQL rewrites account_rates from the rates the sources'
-// records state, read by the shape each source writes, and the ledger's
-// rate records:
-//
-//   - a cash balance that states UBS's tiers: its credit and debit tiers
-//     (CdtIntrstRate1 to 4, each up to its CdtLmtAmt; a tier past the
-//     first only after a tier with a limit), the day each holds from,
-//     the day count, and an end before the open one (9999) as a term
-//     deposit's. Each snapshot gives its rows, from the balance
-//     cash_chosen prefers, so a day reads the snapshot of its own;
-//   - an account whose details state Raiffeisen's credit and debit rate
-//     ("0,111% ab 01.01.2024": the rate, its decimal a comma or a dot,
-//     and the day it holds from);
-//   - an account whose strategy states VIAC's rate on its cash;
-//   - the ledger: each rate record of an account a source states, from
-//     its day on.
-//
-// A day count the source names is stored as canonical.DayCount names it
-// (act/360 reads ACT/360), else NULL.
-var accountRatesSQL = func() []string {
-	var ubs []string
-	for _, side := range []struct{ name, prefix string }{{"credit", "Cdt"}, {"debit", "Dbt"}} {
-		for tier := 1; tier <= 4; tier++ {
-			prev := "TRUE"
-			if tier > 1 {
-				prev = fmt.Sprintf(`TRY_CAST(json_extract_string(payload, '%sLmtAmt%d') AS DOUBLE) BETWEEN 0.005 AND 1e14`,
-					side.prefix, tier-1)
-			}
-			ubs = append(ubs, fmt.Sprintf(`
-SELECT silver_source_id, account_external_id, currency, '%[1]s' AS side, %[3]d AS tier,
-       TRY_CAST(json_extract_string(payload, '%[2]sIntrstRate%[3]d') AS DOUBLE) AS rate_pct,
-       CASE WHEN TRY_CAST(json_extract_string(payload, '%[2]sLmtAmt%[3]d') AS DOUBLE) BETWEEN 0.005 AND 1e14
-            THEN TRY_CAST(json_extract_string(payload, '%[2]sLmtAmt%[3]d') AS DOUBLE) END AS up_to,
-       TRY_CAST(json_extract_string(payload, '%[2]sIntrstVldFrmDt') AS DATE) AS valid_from,
-       CASE WHEN year(TRY_CAST(json_extract_string(payload, 'EndOfDurtn') AS DATE)) < 9000
-            THEN TRY_CAST(json_extract_string(payload, 'EndOfDurtn') AS DATE) END AS term_end,
-       `+dayCountSQL("json_extract_string(payload, 'CalIntrstBasisDesc')")+` AS day_count,
-       '%[2]sIntrstRate%[3]d' AS field, snapshot_at AS observed_at
-  FROM ubs_balances
- WHERE %[4]s`, side.name, side.prefix, tier, prev))
-		}
-	}
-	return []string{`DELETE FROM account_rates`, `
-INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, up_to, valid_from,
-                           term_end, day_count, origin, field, observed_at)
-WITH ubs_balances AS MATERIALIZED (
-    SELECT DISTINCT ON (cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at)
-           cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at, cb.payload
-      FROM cash_balances cb
-     WHERE ` + psnShapeSQL("cb") + ` IS NOT NULL
-     ORDER BY cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at,
-              ` + cashKindRank + `, cb.balance_kind),
-tiers AS (` + strings.Join(ubs, "\nUNION ALL") + `)
-SELECT silver_source_id, account_external_id, currency, side, tier, rate_pct, up_to, valid_from, term_end,
-       day_count, 'stated', field, observed_at
-  FROM tiers WHERE rate_pct IS NOT NULL`, `
-INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, valid_from,
-                           origin, field)
-SELECT a.silver_source_id, a.account_external_id, a.base_currency, s.side, 1,
-       TRY_CAST(replace(regexp_extract(json_extract_string(a.payload, '$.details.' || s.key),
-                                       '(-?[0-9]+([.,][0-9]+)?)\s*%', 1), ',', '.') AS DOUBLE),
-       TRY_STRPTIME(regexp_extract(json_extract_string(a.payload, '$.details.' || s.key),
-                                   '([0-9]{2}\.[0-9]{2}\.[0-9]{4})', 1), '%d.%m.%Y')::DATE,
-       'stated', 'details.' || s.key
-  FROM accounts a
- CROSS JOIN (VALUES ('credit', 'interest_credit'), ('debit', 'interest_debit')) s(side, key)
- WHERE regexp_matches(COALESCE(json_extract_string(a.payload, '$.details.' || s.key), ''), '[0-9]\s*%')`, `
-INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, origin, field)
-SELECT a.silver_source_id, a.account_external_id, a.base_currency, 'credit', 1,
-       TRY_CAST(json_extract_string(a.payload, '$.strategy.interestRate') AS DOUBLE), 'stated', 'strategy.interestRate'
-  FROM accounts a
- WHERE TRY_CAST(json_extract_string(a.payload, '$.strategy.interestRate') AS DOUBLE) IS NOT NULL`, `
+// accountRatesSQL rewrites account_rates with the ledger's rate records:
+// each rate record of an account a source states, from its day on.
+// writeStatedRates adds the rates the sources state.
+var accountRatesSQL = []string{`DELETE FROM account_rates`, `
 INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, valid_from,
                            term_end, origin, line_no)
 SELECT r.silver_source_id, r.account_external_id, r.currency, 'credit', 1, r.rate_pct,
        DATE '1970-01-01' + CAST(r.as_of // 86400 AS INTEGER), r.until, 'declared', r.line_no
   FROM yield_declared_rates r
   SEMI JOIN accounts a ON a.silver_source_id = r.silver_source_id AND a.account_external_id = r.account_external_id`}
-}()
-
-// psnShapeSQL reads the key of alias's payload that marks UBS PSN's
-// balance record. accountRatesSQL reads the balances where it is set in
-// that shape, and statedRatesSQL the others in the canonical keys, so no
-// balance is read in both or in neither.
-func psnShapeSQL(alias string) string {
-	return "json_extract_string(" + alias + ".payload, 'CdtIntrstRate1')"
-}
-
-// dayCountSQL maps a source's day-count text to canonical.DayCount's
-// names: case and spaces aside, ACT/360, ACT/365, ACT/ACT, 30/360 and
-// 30E/360; anything else is NULL.
-func dayCountSQL(expr string) string {
-	var cases []string
-	for _, dc := range canonical.DayCounts() {
-		cases = append(cases, fmt.Sprintf("WHEN '%s' THEN '%s'", strings.ToUpper(string(dc)), dc))
-	}
-	return "CASE upper(replace(" + expr + ", ' ', '')) " + strings.Join(cases, " ") + " END"
-}
 
 // statedRatesSQL lists the payloads that state a rate under the keys
 // canonical.ReadStatedRates reads: each cash balance's, observed at its
@@ -418,9 +324,7 @@ func dayCountSQL(expr string) string {
 // those that state one), and each account's of a kind that holds cash
 // (cashAccountKinds), stated once in its base currency. An account
 // payload is read on a kind that holds cash alone: a liability's rate is
-// its terms', and a kind with no deposit has none. A
-// balance that states UBS PSN's tiers is read in that shape alone, so a
-// snapshot never states two schedules for one side.
+// its terms', and a kind with no deposit has none.
 var statedRatesSQL = func() string {
 	kinds := make([]string, len(cashAccountKinds))
 	for i, k := range cashAccountKinds {
@@ -438,7 +342,6 @@ SELECT * FROM (
            cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at, cb.payload::VARCHAR
       FROM cash_balances cb
      WHERE (` + fmt.Sprintf(states, "cb") + `)
-       AND ` + psnShapeSQL("cb") + ` IS NULL
      ORDER BY cb.silver_source_id, cb.account_external_id, cb.currency, cb.snapshot_at,
               ` + cashKindRank + `, cb.balance_kind)
 UNION ALL
@@ -454,46 +357,93 @@ var cashAccountKinds = []canonical.AccountKind{canonical.AccountKindCash, canoni
 	canonical.AccountKindCustody, canonical.AccountKindSafekeeping}
 
 // writeStatedRates adds to account_rates the rates the sources' payloads
-// state under the canonical keys, one row per side and tier.
+// state under the canonical keys, one row per side and tier, each with
+// its day, its term's end and its day count. A tier is numbered by its
+// own number where the payload states one, else by its place. The rows
+// go in as one statement over a list per column (statedRatesInsertSQL),
+// so the insert binds fifteen lists however many rows there are.
 func writeStatedRates(ctx context.Context, tx *sql.Tx) error {
-	type tierRow struct {
-		src, acct string
-		ccy       sql.NullString
-		observed  sql.NullInt64
-		rate      canonical.StatedRate
-		tier      int
-	}
-	var rows []tierRow
+	var c statedRateColumns
 	if err := scanAll(ctx, tx, statedRatesSQL, func(sc *sql.Rows) error {
-		var r tierRow
-		var payload sql.NullString
-		if err := sc.Scan(&r.src, &r.acct, &r.ccy, &r.observed, &payload); err != nil {
+		var src, acct string
+		var ccy, payload sql.NullString
+		var observed sql.NullInt64
+		if err := sc.Scan(&src, &acct, &ccy, &observed, &payload); err != nil {
 			return err
 		}
 		for _, rate := range canonical.ReadStatedRates([]byte(payload.String)) {
-			r.rate = rate
-			for i := range rate.Tiers {
-				r.tier = i
-				rows = append(rows, r)
+			for i, t := range rate.Tiers {
+				c.add(src, acct, ccy, observed, rate, i, t)
 			}
 		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("stated rates: %w", err)
 	}
-	const cols = `silver_source_id, account_external_id, currency, side, tier, rate_pct, up_to, valid_from, origin, field,
-    observed_at`
-	return InsertChunked(ctx, tx, "account_rates", `INSERT INTO account_rates (`+cols+`) VALUES `, placeholders(cols),
-		len(rows), func(i int, args []any) []any {
-			r := rows[i]
-			t := r.rate.Tiers[r.tier]
-			return append(args, r.src, r.acct, r.ccy, r.rate.Side, r.tier+1, t.Pct, nullable(t.UpTo),
-				nullable(r.rate.ValidFrom), "stated", r.rate.Field, r.observed)
-		})
+	if len(c.src) == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, statedRatesInsertSQL, c.src, c.acct, c.ccy, c.hasCcy, c.side, c.tier, c.pct,
+		c.upTo, c.hasUpTo, c.validFrom, c.termEnd, c.dayCount, c.field, c.observed, c.hasObserved); err != nil {
+		return fmt.Errorf("stated rates insert: %w", err)
+	}
+	return nil
 }
 
-// writeAccountRates rewrites account_rates from every shape a source
-// states a rate in and the ledger's records. A card takes no rate
+// statedRateColumns are the stated rows of account_rates a column at a
+// time. A nullable column is a list of values and a list of whether each
+// is set; a date or a day count is text, "" where it is unset.
+type statedRateColumns struct {
+	src, acct, ccy, side, validFrom, termEnd, dayCount, field []string
+	hasCcy, hasUpTo, hasObserved                              []bool
+	tier, observed                                            []int64
+	pct, upTo                                                 []float64
+}
+
+// add appends tier i of rate, which the payload of src's acct observed
+// at observed states in ccy.
+func (c *statedRateColumns) add(src, acct string, ccy sql.NullString, observed sql.NullInt64,
+	rate canonical.StatedRate, i int, t canonical.StatedTier) {
+	number := i + 1
+	if t.Number != 0 {
+		number = t.Number
+	}
+	day := func(d *time.Time) string {
+		if d == nil {
+			return ""
+		}
+		return d.Format(time.DateOnly)
+	}
+	var upTo float64
+	if t.UpTo != nil {
+		upTo = *t.UpTo
+	}
+	c.src, c.acct = append(c.src, src), append(c.acct, acct)
+	c.ccy, c.hasCcy = append(c.ccy, ccy.String), append(c.hasCcy, ccy.Valid)
+	c.side, c.tier, c.pct = append(c.side, rate.Side), append(c.tier, int64(number)), append(c.pct, t.Pct)
+	c.upTo, c.hasUpTo = append(c.upTo, upTo), append(c.hasUpTo, t.UpTo != nil)
+	c.validFrom, c.termEnd = append(c.validFrom, day(rate.ValidFrom)), append(c.termEnd, day(rate.TermEnd))
+	c.dayCount, c.field = append(c.dayCount, string(rate.DayCount)), append(c.field, rate.Field)
+	c.observed, c.hasObserved = append(c.observed, observed.Int64), append(c.hasObserved, observed.Valid)
+}
+
+// statedRatesInsertSQL inserts the stated rows of statedRateColumns, its
+// lists bound in the order of its fields, one row per position.
+const statedRatesInsertSQL = `
+INSERT INTO account_rates (silver_source_id, account_external_id, currency, side, tier, rate_pct, up_to, valid_from,
+                           term_end, day_count, origin, field, observed_at)
+SELECT src, acct, CASE WHEN has_ccy THEN ccy END, side, tier, pct, CASE WHEN has_up_to THEN up_to END,
+       CAST(NULLIF(valid_from, '') AS DATE), CAST(NULLIF(term_end, '') AS DATE), NULLIF(day_count, ''), 'stated',
+       field, CASE WHEN has_observed THEN observed END
+  FROM (SELECT unnest($1::VARCHAR[]) AS src, unnest($2::VARCHAR[]) AS acct, unnest($3::VARCHAR[]) AS ccy,
+               unnest($4::BOOLEAN[]) AS has_ccy, unnest($5::VARCHAR[]) AS side, unnest($6::BIGINT[]) AS tier,
+               unnest($7::DOUBLE[]) AS pct, unnest($8::DOUBLE[]) AS up_to, unnest($9::BOOLEAN[]) AS has_up_to,
+               unnest($10::VARCHAR[]) AS valid_from, unnest($11::VARCHAR[]) AS term_end,
+               unnest($12::VARCHAR[]) AS day_count, unnest($13::VARCHAR[]) AS field,
+               unnest($14::BIGINT[]) AS observed, unnest($15::BOOLEAN[]) AS has_observed)`
+
+// writeAccountRates rewrites account_rates from the ledger's records
+// and the rates the sources' payloads state. A card takes no rate
 // (YIELD.md §3).
 func writeAccountRates(ctx context.Context, tx *sql.Tx) error {
 	if err := execAll(ctx, tx, accountRatesSQL...); err != nil {

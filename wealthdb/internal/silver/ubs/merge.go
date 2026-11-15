@@ -27,10 +27,11 @@ import (
 //       relationship.
 //     - PSN stream (psn.Snapshots) emits all dimensions plus the
 //       positions / cash facts. The orchestrator wraps it in a
-//       fold stream that injects web's per-(date, key) payload
-//       under `payload.web` so web-only fields (cost_price,
+//       fold stream that injects web's per-(date, ISIN) position
+//       payload under `payload.web` so web-only fields (cost_price,
 //       lending_value, market_value_base) stay queryable through
-//       PSN's faithful safekeeping + portfolio identity.
+//       PSN's faithful safekeeping + portfolio identity, and states
+//       the row's Rating under the rating key.
 //     - A paid-in fold (paidInStream) over the merged stream sets the
 //       basis of a private-markets fund's units, which neither feed
 //       states, from the capital calls web reads.
@@ -140,7 +141,6 @@ func (c *Connection) inferredForwards(ctx context.Context) (inferredForwards, er
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	var (
 		webPosPayloads         map[webPosKey]string
-		webCashPayloads        map[webCashKey]string
 		webMortgages           []canonical.PositionChange
 		cutoff                 map[string]int64
 		psnTaxPair             map[string]taxPair
@@ -150,10 +150,6 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if c.web != nil && c.psn != nil {
 		var err error
 		webPosPayloads, err = c.web.positionPayloadByKey(ctx, w.Start, w.End)
-		if err != nil {
-			return nil, err
-		}
-		webCashPayloads, err = c.web.cashPayloadByKey(ctx, w.Start, w.End)
 		if err != nil {
 			return nil, err
 		}
@@ -244,11 +240,10 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			}
 			s = &psnHoldingsGapFilter{inner: s, firstHoldingsAt: lower, lastHoldingsAt: last}
 		}
-		if len(webPosPayloads)+len(webCashPayloads)+len(webMortgages) > 0 {
+		if len(webPosPayloads)+len(webMortgages) > 0 {
 			s = &psnWebFoldStream{
 				inner:     s,
 				webPos:    webPosPayloads,
-				webCash:   webCashPayloads,
 				mortgages: webMortgages,
 			}
 		}
@@ -442,14 +437,12 @@ func (s *psnStatementCarryStream) Next(ctx context.Context) (canonical.Transacti
 func (s *psnStatementCarryStream) Close() error { return s.inner.Close() }
 
 // psnWebFoldStream wraps a SnapshotStream and folds web's
-// per-(UTC date, key) payload into PSN's position and cash rows.
+// per-(UTC date, ISIN) position payload into PSN's position rows.
 // PSN keeps identity (safekeeping accounts, faithful portfolios,
 // parsed MT535 values); web's CSV row is preserved under the
 // "web" key inside the row's payload so cost_price / lending_
-// value / market_value_base remain queryable.
-//
-// Position match key is (utc_day(snapshot_at), ISIN). Cash match
-// key is (utc_day(snapshot_at), account, currency).
+// value / market_value_base remain queryable, and the row's Rating
+// is the position's grade (foldWebPayloadAsWebKey).
 //
 // The stream also carries forward the web-only mortgage positions,
 // which PSN does not surface. For each PSN batch
@@ -461,7 +454,6 @@ func (s *psnStatementCarryStream) Close() error { return s.inner.Close() }
 type psnWebFoldStream struct {
 	inner     silver.SnapshotStream
 	webPos    map[webPosKey]string
-	webCash   map[webCashKey]string
 	mortgages []canonical.PositionChange // template rows, snapshot_at set per batch
 }
 
@@ -475,13 +467,6 @@ func (s *psnWebFoldStream) Next(ctx context.Context) (canonical.SnapshotBatch, b
 		key := webPosKey{utcDate: utcDay(p.SnapshotAt), isin: p.PositionKey}
 		if webPayload, ok := s.webPos[key]; ok {
 			p.Payload = foldWebPayloadAsWebKey(p.Payload, webPayload)
-		}
-	}
-	for i := range batch.CashBalances {
-		cb := &batch.CashBalances[i]
-		key := webCashKey{utcDate: utcDay(cb.SnapshotAt), account: cb.AccountExternalID, currency: cb.Currency}
-		if webPayload, ok := s.webCash[key]; ok {
-			cb.Payload = foldWebPayloadAsWebKey(cb.Payload, webPayload)
 		}
 	}
 	// Only inject mortgages into batches that already carry
@@ -505,19 +490,37 @@ func (s *psnWebFoldStream) Close() error { return s.inner.Close() }
 
 // foldWebPayloadAsWebKey injects the web JSON under the "web" key
 // of a PSN-owned canonical row (the base row here is owned by PSN).
+// The web row's Rating column is the position's grade: it is stated
+// under canonical.PayloadRatingSP as well, where the row states one and
+// the base row states no grade under that key itself.
 func foldWebPayloadAsWebKey(base json.RawMessage, web string) json.RawMessage {
 	if web == "" {
 		return base
 	}
+	var row map[string]json.RawMessage
+	rating, rated := json.RawMessage(nil), false
+	if json.Unmarshal([]byte(web), &row) == nil {
+		rating, rated = row["Rating"]
+		rated = rated && string(rating) != "null"
+	}
+	alone := func() json.RawMessage {
+		if rated {
+			return json.RawMessage(`{"` + canonical.PayloadRatingSP + `":` + string(rating) + `,"web":` + web + `}`)
+		}
+		return json.RawMessage(`{"web":` + web + `}`)
+	}
 	baseTrim := bytes.TrimSpace(base)
 	if len(baseTrim) == 0 || baseTrim[0] != '{' {
-		return json.RawMessage(`{"web":` + web + `}`)
+		return alone()
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(baseTrim, &m); err != nil {
-		return json.RawMessage(`{"web":` + web + `}`)
+		return alone()
 	}
 	m["web"] = json.RawMessage(web)
+	if _, own := m[canonical.PayloadRatingSP]; rated && !own {
+		m[canonical.PayloadRatingSP] = rating
+	}
 	out, err := json.Marshal(m)
 	if err != nil {
 		return baseTrim

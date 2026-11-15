@@ -613,14 +613,14 @@ func TestAFloatingLineWithARealYieldIsFloating(t *testing.T) {
 	}
 }
 
-// A fund line of a kind the yield report reads as floating
-// (floatingLineKinds) is floating in the coupons view too, and one it
-// does not is not. The fund is invented.
+// A fund line's coupon kind reads as the coupon-kind label map says, in
+// the coupons view and in the yield report alike: N-PORT's Floating and
+// Variable float, Fixed is fixed and None a zero. The fund is invented.
 func TestFloatingLineKindsAgree(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	snap := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
-	kinds := append(slices.Clone(floatingLineKinds), "Fixed")
+	kinds := []string{"Floating", "Variable", "Fixed", "None"}
 	q := []string{
 		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
 		    first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
@@ -644,16 +644,14 @@ func TestFloatingLineKindsAgree(t *testing.T) {
 	rebuildExposureWithDefaults(t, db, ctx)
 	got := scanStrings(t, db, `SELECT line_coupon_kind || ' ' || coupon_bucket FROM exposure_yield_leaves(?, 'USD')
 	    WHERE depth > 0 AND line_coupon_kind IS NOT NULL ORDER BY 1`, snap+86399)
-	var want []string
-	for _, k := range kinds {
-		bucket := "fixed"
-		if floatingLine(k) {
-			bucket = "floating"
-		}
-		want = append(want, k+" "+bucket)
-	}
-	slices.Sort(want)
-	if strings.Join(got, ", ") != strings.Join(want, ", ") || floatingLine("Fixed") {
+	if want := []string{"Fixed fixed", "Floating floating", "None zero", "Variable floating"}; !slices.Equal(got, want) {
 		t.Errorf("line kinds %v, want %v", got, want)
+	}
+	in, err := YieldInputs(ctx, db, snap+86399, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := in.Funds["symbol:QFL"]; f == nil || f.Lines == nil || f.Lines.FloatingPct != 50 {
+		t.Errorf("the yield report's fund %+v, want half its lines floating", f)
 	}
 }

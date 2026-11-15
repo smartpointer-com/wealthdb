@@ -390,7 +390,8 @@ CREATE MACRO exposure_holdings(p_asof, p_ccy) AS TABLE (
 -- states none, as the yield report reads the kind and the two flags
 -- (gold.readFundLines). exposure_yield_leaves reads a stated floating
 -- kind, or a floating name where no kind is stated, before a real
--- yield: a provider states a real yield for a floating note too.
+-- yield: a provider states a real yield for a floating note too. A kind
+-- reads as the coupon-kind label map says (exposure_labels).
 -- ============================================================
 
 -- fund_filings_at: per fund, read as its security key, its filing (a
@@ -1137,13 +1138,15 @@ CREATE MACRO report_exposure_coverage(p_asof, p_ccy) AS TABLE (
 --     without a term counts under a year, a debt leaf without one that
 --     says PERP is perpetual, any other unknown;
 --   * coupon_kind: fixed, floating, inflation_linked or zero; a holding's
---     from its terms; a line's floating where its fund types it Floating
---     or Variable (N-PORT's kinds), else inflation-linked where its name
---     says so (TIPS, INFLATION), else floating where its name does (FRN,
+--     from its terms; a line's floating where the coupon-kind label map
+--     (exposure_labels) reads its fund's type as floating (N-PORT's
+--     Floating, Variable), else inflation-linked where its name says so
+--     (TIPS, INFLATION), else floating where its name does (FRN,
 --     FLOATING) and its fund types it no kind, else inflation-linked
 --     where it states a real yield (a provider states one for a floating
---     note too), else as its fund types it (Fixed, None), else read from
---     its coupon (zero is zero, any other fixed);
+--     note too), else fixed or zero as the map reads its fund's type
+--     (Fixed, None), else read from its coupon (zero is zero, any other
+--     fixed);
 --   * page_fund: the fund whose page may describe a leaf: a fund leaf's
 --     own, a line's fund;
 --   * rating: a holding's bucket from its terms, else the worse end of
@@ -1169,6 +1172,7 @@ CREATE MACRO exposure_yield_leaves(p_asof, p_ccy) AS TABLE (
             WHERE provider = 'gleif' AND lei IS NOT NULL AND name IS NOT NULL GROUP BY 1),
     gn AS (SELECT exposure_issuer_name(name) AS norm, MIN(lei) AS lei FROM gl
             GROUP BY 1 HAVING norm IS NOT NULL AND count(DISTINCT lei) = 1),
+    ck AS (SELECT label, value FROM exposure_labels WHERE provider = '' AND field = 'coupon_kind'),
     te AS (SELECT silver_source_id, account_external_id, COALESCE(currency, '') AS ccy, term_end
              FROM account_rates
             WHERE side = 'credit' AND term_end > CAST(to_timestamp(p_asof) AT TIME ZONE 'UTC' AS DATE)),
@@ -1196,12 +1200,11 @@ CREATE MACRO exposure_yield_leaves(p_asof, p_ccy) AS TABLE (
                                                        AND te.ccy IN (l.currency, '')))
                     ELSE t.maturity END AS maturity,
                CASE WHEN l.depth = 0 THEN t.coupon_kind
-                    WHEN l.line_coupon_kind IN ('Floating', 'Variable') THEN 'floating'
+                    WHEN ck.value = 'floating' THEN 'floating'
                     WHEN o.infl THEN 'inflation_linked'
                     WHEN o.frn AND l.line_coupon_kind IS NULL THEN 'floating'
                     WHEN l.line_real THEN 'inflation_linked'
-                    WHEN l.line_coupon_kind = 'Fixed' THEN 'fixed'
-                    WHEN l.line_coupon_kind = 'None' THEN 'zero'
+                    WHEN ck.value IN ('fixed', 'zero') THEN ck.value
                     WHEN l.line_coupon = 0 THEN 'zero'
                     WHEN l.line_coupon > 0 THEN 'fixed' END AS coupon_kind,
                CASE WHEN l.depth = 0 THEN t.rating END AS own_rating,
@@ -1213,7 +1216,8 @@ CREATE MACRO exposure_yield_leaves(p_asof, p_ccy) AS TABLE (
           LEFT JOIN gk ON gk.key = l.key
           LEFT JOIN exposure_custody cu ON cu.silver_source_id = l.src
           LEFT JOIN nm o ON o.name = l.own_name
-          LEFT JOIN nm c ON c.name = cu.custodian),
+          LEFT JOIN nm c ON c.name = cu.custodian
+          LEFT JOIN ck ON ck.label = exposure_norm(l.line_coupon_kind)),
     n AS (
         SELECT d.* EXCLUDE (own_norm, custodian_norm),
                CASE WHEN d.deposit THEN d.custodian_norm ELSE d.own_norm END AS norm,

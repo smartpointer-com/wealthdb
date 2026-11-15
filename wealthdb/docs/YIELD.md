@@ -210,9 +210,11 @@ under these keys:
 | Key | States | Read as |
 | --- | --- | --- |
 | `interest_rate` | the rate | percent a year: `0.75` or `0.75%` |
-| `interest_tiers` | a tiered rate, in place of `interest_rate` | a list of `{"rate": 0.5, "up_to": 10000}`; the last tier's `up_to` is null |
+| `interest_tiers` | a tiered rate, in place of `interest_rate` | a list of `{"rate": 0.5, "up_to": 10000}`; the last tier's `up_to` is null; a tier may state its own number as `tier` (below) |
 | `interest_valid_from` | the day the rate holds from | `2026-01-01` |
 | `interest_side` | who pays it | `credit` (the balance earns it, the default) or `debit` (it pays it) |
+| `interest_term_end` | the day a term deposit's rate ends | `2027-03-31` |
+| `interest_day_count` | how the rate counts its days | `ACT/360`, `ACT/365`, `ACT/ACT`, `30/360` or `30E/360` |
 | `interest_conditions` | several rates, such as a credit and a debit side | a list of objects, each with the keys above |
 
 A rate on a cash balance is read at that balance's snapshot. A source
@@ -231,10 +233,13 @@ It is read only on a kind of account that holds cash: `cash`,
 `brokerage`, `custody` or `safekeeping`. Each condition in
 `interest_conditions` states its own keys, one per side and day. A
 value that does not read states nothing, and neither does the condition
-it sits in. A balance that states UBS PSN's tiers reads those, and the
-keys beside them state nothing. A liability's rate is its terms'
-(below), never these keys. UBS PSN's balance records, Raiffeisen's
-account details and VIAC's strategy rate are read in their own shapes.
+it sits in. A source that numbers its tiers and may leave one out
+states each tier's `tier`: every tier of the list states one, each
+above the one before, and a tier before the last may then state no
+limit. A liability's rate is its terms' (below), never these keys.
+UBS PSN's balance records, Raiffeisen's account details and VIAC's
+strategy rate state their rates in shapes of their own. Their adapters
+write them under these keys.
 
 An account that states no rate has none: its cash reads unknown, never
 zero.
@@ -293,9 +298,8 @@ bond's row ([fidelity-web](../../collectors/fidelity-web/DESIGN.md)
 §4.5, [svb](../../collectors/svb/DESIGN.md#modelling-decisions)). Two
 other sources add to them:
 
-- UBS: the `Rating` column of the positions export is one more grade,
-  read off the newest position that carries it. Text that is no grade
-  (`No rating av.`) gives no rating.
+- UBS: the `Rating` column of the positions export is the position's
+  `rating_sp`. Text that is no grade (`No rating av.`) gives no rating.
 - manual: a note's record gives `interest_rate` and `maturity_date`.
 
 Every bond's price is clean, per 100 of face, in default or not. It is

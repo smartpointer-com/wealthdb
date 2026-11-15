@@ -813,6 +813,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0191: its exposure and yield views read a fund line's coupon kind
+  from a list in the macro body, not from the label table;
 - 0187: its gains, exposure, income and yield views predate the
   `account_wrapper` and `account_style` macros their bodies call;
 - 0179: its `web_fees` counts a portfolio's mortgages and cards in

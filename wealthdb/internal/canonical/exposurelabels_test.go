@@ -36,6 +36,10 @@ func TestExposureLabelsAreConsistent(t *testing.T) {
 			if _, ok := CountryByCode(l.Value); !ok {
 				t.Errorf("security type %q maps to %q, not a country", l.Label, l.Value)
 			}
+		case LabelCouponKind:
+			if !CouponKind(l.Value).Valid() {
+				t.Errorf("coupon kind %q maps to %q, not a coupon kind", l.Label, l.Value)
+			}
 		}
 	}
 	for field, want := range map[[2]string]string{
@@ -62,6 +66,11 @@ func TestExposureLabelsAreConsistent(t *testing.T) {
 		{"asset_type", "bond funds"}:                 "multi_asset",
 		{"asset_type", "short-term funds"}:           "multi_asset",
 		{"asset_type", "money market funds"}:         "cash",
+		// N-PORT's coupon kinds.
+		{"coupon_kind", "floating"}: "floating",
+		{"coupon_kind", "variable"}: "floating",
+		{"coupon_kind", "fixed"}:    "fixed",
+		{"coupon_kind", "none"}:     "zero",
 	} {
 		if got := seen[[3]string{"", field[0], field[1]}]; got != want {
 			t.Errorf("%s %q maps to %q, want %q", field[0], field[1], got, want)

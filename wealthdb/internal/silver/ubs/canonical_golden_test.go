@@ -9,14 +9,19 @@ import (
 // TestCanonicalGolden holds every record the adapter yields over a PSN
 // silver to testdata/canonical.jsonl. The silver joins the rows of the
 // adapter tests: the roster and the instruments of every class, a
-// holding with and without its instrument, signed cash balances, a rate,
+// holding with and without its instrument, signed cash balances, a book
+// balance whose account states tiered interest, a rate,
 // a forward, and trade confirmations and cash movements.
 func TestCanonicalGolden(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	silvertest.Exec(t, db, `
         INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
         INSERT INTO cash_accounts(snapshot_at, relationship_id, account_external_id, payload) VALUES
-            (1000, 'SFTPCHxx', 'CH00CASH', '{"AcctCcyIsoCd":"CHF","AcctTpDesc":"Private"}');
+            (1000, 'SFTPCHxx', 'CH00CASH', '{"AcctCcyIsoCd":"CHF","AcctTpDesc":"Private"}'),
+            (1000, 'SFTPCHxx', 'CH00SAVE', '{"AcctCcyIsoCd":"CHF","AcctTpDesc":"Savings","BookBalAmt":2000.00,
+             "BookBalCcyIsoCd":"CHF","CdtIntrstRate1":"0.25","CdtLmtAmt1":"25000.00","CdtIntrstRate2":"0.10",
+             "CdtIntrstVldFrmDt":"2026-01-01","DbtIntrstRate1":"5.5","EndOfDurtn":"9999-12-31",
+             "CalIntrstBasisDesc":"act/360"}');
         INSERT INTO safekeeping_accounts(snapshot_at, relationship_id, account_external_id, payload) VALUES
             (1000, 'SFTPCHxx', 'CH00SAFE', '{"InvstmtCcyIsoCd":"CHF","AcctTpDesc":"Custody"}');
         INSERT INTO portfolios(snapshot_at, relationship_id, portfolio_external_id, payload) VALUES

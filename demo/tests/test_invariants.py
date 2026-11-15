@@ -1128,12 +1128,13 @@ class TestHeldBonds(Built):
 
 class TestStatedRates(Built):
     """The rates the household's balances earn: a tiered savings rate and
-    a term deposit, both in UBS's shape on the balance's snapshot, and a
-    rate only the declarations ledger states. Each balance earns what its
-    rate says."""
+    a term deposit, both under the stated-rate keys on the balance's
+    snapshot, and a rate only the declarations ledger states. Each
+    balance earns what its rate says."""
 
-    UBS_KEYS = ("CdtIntrstRate1", "CdtLmtAmt1", "CdtIntrstRate2", "CdtIntrstVldFrmDt", "EndOfDurtn",
-                "CalIntrstBasisDesc")
+    SAVINGS_KEYS = ("interest_tiers", "interest_side", "interest_valid_from", "interest_day_count")
+    TERM_KEYS = ("interest_rate", "interest_side", "interest_valid_from", "interest_term_end", "interest_day_count")
+    TIER_KEYS = ("rate", "up_to")
 
     @classmethod
     def setUpClass(cls):
@@ -1150,9 +1151,10 @@ class TestStatedRates(Built):
                 cls.interest[(t["account_id"], t["currency"])].append(t)
 
     def test_the_rate_keys_are_the_ones_the_yield_pass_reads(self):
-        """It names a credit tier's keys by their side's prefix (Cdt) and
-        the tier's number."""
-        self.assertLessEqual(set(self.UBS_KEYS), goref.balance_rate_keys())
+        """The keys at a payload's top and those of a tier."""
+        top, tier = goref.balance_rate_keys()
+        self.assertLessEqual(set(self.SAVINGS_KEYS) | set(self.TERM_KEYS), top)
+        self.assertLessEqual(set(self.TIER_KEYS), tier)
 
     def before(self, key, t):
         """A balance just before a transaction: its last snapshot before the
@@ -1168,16 +1170,18 @@ class TestStatedRates(Built):
         key = (si["account"], "USD")
         for day, c in self.cash[key].items():
             stated = json.loads(c["payload"])
-            self.assertEqual(set(stated), set(self.UBS_KEYS), day)
-            self.assertEqual(stated["EndOfDurtn"], "9999-12-31")
-            self.assertLessEqual(dates.parse(stated["CdtIntrstVldFrmDt"]), day)
-            self.assertGreater(Decimal(stated["CdtIntrstRate1"]), Decimal(stated["CdtIntrstRate2"]))
+            self.assertEqual(set(stated), set(self.SAVINGS_KEYS), day)
+            self.assertEqual(stated["interest_side"], "credit")
+            self.assertLessEqual(dates.parse(stated["interest_valid_from"]), day)
+            first, above = stated["interest_tiers"]
+            self.assertIsNone(above["up_to"])
+            self.assertGreater(Decimal(first["rate"]), Decimal(above["rate"]))
         self.assertTrue(self.interest[key])
         for t in self.interest[key]:
-            stated = json.loads(self.cash[key][dates.day_of(t["occurred_at"])]["payload"])
-            balance, limit = self.before(key, t), Decimal(stated["CdtLmtAmt1"])
-            earned = (min(balance, limit) * Decimal(stated["CdtIntrstRate1"])
-                      + max(balance - limit, Decimal(0)) * Decimal(stated["CdtIntrstRate2"]))
+            first, above = json.loads(self.cash[key][dates.day_of(t["occurred_at"])]["payload"])["interest_tiers"]
+            balance, limit = self.before(key, t), Decimal(first["up_to"])
+            earned = (min(balance, limit) * Decimal(first["rate"])
+                      + max(balance - limit, Decimal(0)) * Decimal(above["rate"]))
             self.assertEqual(Decimal(t["net_amount"]), (earned / 100 / 12).quantize(Decimal("0.01")),
                              t["transaction_id"])
 
@@ -1190,10 +1194,11 @@ class TestStatedRates(Built):
         terms = {}
         for day, c in sorted(self.cash[key].items()):
             stated = json.loads(c["payload"])
-            start, end = dates.parse(stated["CdtIntrstVldFrmDt"]), dates.parse(stated["EndOfDurtn"])
+            self.assertEqual(set(stated), set(self.TERM_KEYS), day)
+            start, end = dates.parse(stated["interest_valid_from"]), dates.parse(stated["interest_term_end"])
             self.assertTrue(start <= day < end, day)
             self.assertEqual(end, dates.add_months(start, td["months"]))
-            terms[start] = (end, Decimal(stated["CdtIntrstRate1"]))
+            terms[start] = (end, Decimal(stated["interest_rate"]))
         self.assertGreater(len(terms), 2)
         paid = {dates.day_of(t["occurred_at"]): Decimal(t["net_amount"]) for t in self.interest[key]}
         for start, (end, rate) in terms.items():

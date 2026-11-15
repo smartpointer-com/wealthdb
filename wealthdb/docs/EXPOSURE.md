@@ -484,7 +484,8 @@ row.
   - else its coupon: `zero` where that is zero, `fixed` where it is
     above.
 
-  Nothing stated reads `unknown`.
+  Nothing stated reads `unknown`. A fund's type is read through the
+  label map's coupon kinds, case and spacing aside, as a label is.
 - A line of the composition in use that states no type takes the one
   its fund's filing states of the same security, read through the
   aliases. An issuer's daily file states no type; the fund's N-PORT

@@ -207,6 +207,28 @@ INSERT INTO account_rates VALUES
 	}
 }
 
+// A balance whose PSN record states its tiers keeps them: a capture that
+// lands on it adds nothing, and a sibling balance of no PSN shape takes
+// the capture's rate.
+func TestACaptureLeavesAPSNBalanceItsTiers(t *testing.T) {
+	r := newRatesFixture(t, `
+INSERT INTO account_rates VALUES
+ (300, 'ACCT-P', 'credit', 1, 0.75, NULL, '2026-03-01', 'legacy', '{}')`)
+	got := stamped(t, r, []canonical.SnapshotBatch{
+		{CashBalances: []canonical.CashBalanceChange{
+			balance(300, "ACCT-P", canonical.BalanceKindClosing, `{"CdtIntrstRate1":"0.4","interest_rate":0.4}`),
+			balance(300, "ACCT-P", canonical.BalanceKindAvailable, `{}`),
+		}},
+	})
+	if m := got[jsonKey(300, "ACCT-P", "closing")]; m[canonical.PayloadInterestRate] != 0.4 ||
+		m[canonical.PayloadInterestSide] != nil {
+		t.Errorf("the PSN balance %v", m)
+	}
+	if m := got[jsonKey(300, "ACCT-P", "available")]; m[canonical.PayloadInterestRate] != 0.75 {
+		t.Errorf("the other balance %v", m)
+	}
+}
+
 func TestAnAccountWithNoCreditRowGetsNoKeys(t *testing.T) {
 	// A debit condition alone is not emitted, and an account with no row
 	// at all reads as no rate, never as zero.

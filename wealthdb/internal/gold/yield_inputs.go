@@ -574,17 +574,19 @@ SELECT r.key, r.as_of, r.currency, r.tenor, r.dv01, MAX(c.net_assets)::DOUBLE
 }
 
 // readFundFilings reads, for each fund of list, the share of its filing's
-// lines at the instant (fund_filings_at) that float, by
-// weight, and the name the filing gives it.
+// lines at the instant (fund_filings_at) that float, by weight, a line's
+// kind read as the coupon-kind label map says (couponKindsSQL), and the
+// name the filing gives it.
 func readFundFilings(ctx context.Context, db querier, in *yield.Inputs, out map[string]*fundRead, list string,
 	args func(...any) []any) error {
 	return scanAll(ctx, db, `
 SELECT f.fund_ref, COALESCE(f.fund_name, ''),
-       100 * COALESCE(SUM(abs(l.weight)) FILTER (WHERE l.coupon_kind IN ('`+strings.Join(floatingLineKinds, "', '")+`')),
+       100 * COALESCE(SUM(abs(l.weight)) FILTER (WHERE ck.value = 'floating'),
                       0)::DOUBLE / NULLIF(SUM(abs(l.weight)), 0)::DOUBLE
   FROM fund_filings_at(?) f
   JOIN fund_lines l ON l.silver_source_id = f.silver_source_id AND l.fund_ref = f.stored_ref AND l.as_of = f.as_of
        AND l.basis = f.basis
+  LEFT JOIN (`+couponKindsSQL+`) ck ON ck.label = exposure_norm(l.coupon_kind)
  WHERE list_contains(`+list+`, f.fund_ref)
  GROUP BY ALL`, func(rows *sql.Rows) error {
 		var key, name string
@@ -622,7 +624,7 @@ type fundLine struct {
 	maturity                                   *time.Time
 	coupon, rate, ytm, ytw, duration, modified *float64
 	kind, class                                string
-	defaulted, inKind                          bool
+	defaulted, inKind, floats                  bool
 }
 
 // readFundLines summarises each fund's lines at the instant
@@ -664,10 +666,11 @@ SELECT ln.fund_ref, ln.as_of, ln.aged, COALESCE(ln.key, ''), COALESCE(ln.weight,
        ln.exchange_rate::DOUBLE, ln.yield_to_maturity::DOUBLE, ln.yield_to_worst::DOUBLE, ln.duration::DOUBLE,
        ln.modified_duration::DOUBLE, COALESCE(ln.coupon_kind, k.coupon_kind, ''),
        COALESCE(COALESCE(ln.is_default, k.is_default) OR COALESCE(ln.in_arrears, k.in_arrears), FALSE),
-       COALESCE(ln.paid_in_kind, FALSE), COALESCE(lt.value, '')
+       COALESCE(ln.paid_in_kind, FALSE), COALESCE(lt.value, ''), COALESCE(ck.value = 'floating', FALSE)
   FROM ln
   LEFT JOIN fund_line_labels lt ON lt.provider = ln.provider AND lt.field = 'asset_type' AND lt.raw = ln.asset_type
   LEFT JOIN fund_filing_kinds(?) k ON k.fund_ref = ln.own_ref AND k.key = ln.key
+  LEFT JOIN (`+couponKindsSQL+`) ck ON ck.label = exposure_norm(COALESCE(ln.coupon_kind, k.coupon_kind))
  ORDER BY ln.fund_ref, ln.line_no`, func(rows *sql.Rows) error {
 		var key string
 		var c comp
@@ -675,7 +678,7 @@ SELECT ln.fund_ref, ln.as_of, ln.aged, COALESCE(ln.key, ''), COALESCE(ln.weight,
 		var maturity sql.NullTime
 		var coupon, rate, ytm, ytw, dur, mod sql.NullFloat64
 		if err := rows.Scan(&key, &c.asOf, &c.aged, &l.key, &l.weight, &l.value, &l.quantity, &l.ccy, &maturity, &coupon,
-			&rate, &ytm, &ytw, &dur, &mod, &l.kind, &l.defaulted, &l.inKind, &l.class); err != nil {
+			&rate, &ytm, &ytw, &dur, &mod, &l.kind, &l.defaulted, &l.inKind, &l.class, &l.floats); err != nil {
 			return err
 		}
 		l.maturity, l.coupon, l.rate = nullDate(maturity), nullFloatToPtr(coupon), nullFloatToPtr(rate)
@@ -753,7 +756,7 @@ func readLine(in *yield.Inputs, l fundLine, day time.Time) yield.LineInfo {
 	}
 	info.Price = &price
 	if !debt || !l.maturity.After(day) || info.Yield != nil || !(price > 1 && price < 1000) ||
-		floatingLine(l.kind) || l.defaulted || l.inKind {
+		l.floats || l.defaulted || l.inKind {
 		return info
 	}
 	b := fixedincome.Bond{Coupon: *l.coupon, Frequency: in.ConventionFrequency(l.ccy), Maturity: *l.maturity,
@@ -768,13 +771,11 @@ func readLine(in *yield.Inputs, l fundLine, day time.Time) yield.LineInfo {
 	return info
 }
 
-// floatingLineKinds are the coupon kinds of a fund's line whose rate
-// floats, as N-PORT types them; exposure_yield_leaves reads the same
-// ones as floating.
-var floatingLineKinds = []string{"Floating", "Variable"}
-
-// floatingLine says a line of coupon kind kind floats.
-func floatingLine(kind string) bool { return slices.Contains(floatingLineKinds, kind) }
+// couponKindsSQL is the coupon-kind label map (canonical.LabelCouponKind):
+// a fund line's word for its coupon's kind, normalized, and the kind it
+// reads as. A line floats where its word reads as floating, as
+// exposure_yield_leaves reads it.
+const couponKindsSQL = `SELECT label, value FROM exposure_labels WHERE provider = '' AND field = 'coupon_kind'`
 
 // summarizeLines is yield.LineSummary of a fund's lines on day, given
 // what each says of its security (readLine). A line is debt where its
@@ -800,7 +801,7 @@ func summarizeLines(lines []fundLine, infos []yield.LineInfo, day time.Time, age
 		case string(canonical.AssetClassOther), string(canonical.AssetClassForeignExchange):
 			s.Derivatives = true
 		case "":
-			debt = l.coupon != nil || l.ytm != nil || l.ytw != nil || floatingLine(l.kind) || l.defaulted || l.inKind
+			debt = l.coupon != nil || l.ytm != nil || l.ytw != nil || l.floats || l.defaulted || l.inKind
 		}
 		if debt {
 			s.DebtPct += w
@@ -809,7 +810,7 @@ func summarizeLines(lines []fundLine, infos []yield.LineInfo, day time.Time, age
 			}
 		}
 		switch {
-		case floatingLine(l.kind):
+		case l.floats:
 			s.FloatingPct += w
 			continue
 		case l.defaulted:

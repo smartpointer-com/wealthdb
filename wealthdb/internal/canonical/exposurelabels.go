@@ -5,8 +5,9 @@ import (
 	"strings"
 )
 
-// The label maps: how a provider's words for a sector, a country and an
-// asset type map onto the exposure vocabularies (exposure.go). A label
+// The label maps: how a provider's words for a sector, a country, an
+// asset type and a coupon's kind map onto the exposure and yield
+// vocabularies (exposure.go, yield.go). A label
 // is matched lower-cased with its spaces collapsed. The generic maps
 // hold the spellings issuers, filings and vendors share; a provider whose
 // word means something else there gets a map of its own, which wins. A
@@ -26,6 +27,9 @@ const (
 	// and LabelSecurityTypeCountry onto the country the type implies.
 	LabelSecurityType        LabelField = "security_type"
 	LabelSecurityTypeCountry LabelField = "security_type_country"
+	// LabelCouponKind maps the word a fund line types its coupon by onto
+	// a CouponKind.
+	LabelCouponKind LabelField = "coupon_kind"
 )
 
 // Label is one map entry. Provider "" is the generic map.
@@ -107,6 +111,12 @@ var genericAssetTypes = map[AssetClass][]string{
 		"investmentfonds", "domestic equity funds", "international equity funds", "bond funds", "short-term funds"},
 }
 
+// The kinds a fund's filing types a line's coupon by (N-PORT's Fixed,
+// Floating, Variable and None), and the coupon kind each reads as.
+var genericCouponKinds = map[string]CouponKind{
+	"fixed": CouponFixed, "floating": CouponFloating, "variable": CouponFloating, "none": CouponZero,
+}
+
 // openFigiProvider is the lookup whose security types name a bond's
 // market.
 const openFigiProvider = "openfigi"
@@ -186,9 +196,9 @@ var countryAliases = map[string][]string{
 }
 
 // ExposureLabels is every map entry, sorted by provider, field and
-// label: the generic sectors, asset types and countries (each country's
-// code, its name and its other spellings), EDGAR's country codes and
-// OpenFIGI's bond types.
+// label: the generic sectors, asset types, countries (each country's
+// code, its name and its other spellings) and coupon kinds, EDGAR's
+// country codes and OpenFIGI's bond types.
 //
 // A label listed twice with one value is kept once. A label listed with
 // two values is kept twice, so the conflict breaks exposure_labels' key
@@ -239,6 +249,9 @@ func ExposureLabels() []Label {
 		for _, l := range labels {
 			add(l, code)
 		}
+	}
+	for l, k := range genericCouponKinds {
+		out = append(out, Label{Field: LabelCouponKind, Label: l, Value: string(k)})
 	}
 	out = append(out, edgarLabels()...)
 	for t, sector := range openFigiBondTypes {

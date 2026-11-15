@@ -49,7 +49,7 @@ func setupYieldGold(t *testing.T) string {
 		 ('ref', 'symbol:QBF', ?, 'inbox', 'distribution_yield', '', 3.6)`,
 		`INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount, payload)
 		 VALUES ('brk', ?, 'ACCT7781', 'USD', 'current', 5000,
-		  '{"CdtIntrstRate1": "1.5", "CdtLmtAmt1": "0", "CalIntrstBasisDesc": "act/360", "EndOfDurtn": "9999-12-31"}')`,
+		  '{"interest_rate": "1.5", "interest_day_count": "ACT/360"}')`,
 		`INSERT INTO rate_observations (silver_source_id, series_id, as_of, value) VALUES
 		 ('rates', 'USD-3M', ?, 4.0), ('rates', 'USD-1Y', ?, 4.0), ('rates', 'USD-10Y', ?, 4.0)`,
 		`INSERT INTO yield_curves (currency, tenor, tenor_months, silver_source_id, series_id) VALUES

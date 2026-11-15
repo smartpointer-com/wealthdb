@@ -36,7 +36,8 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 }
 
 // appendAccounts emits one AccountChange (AccountKind cash) per deposit account
-// from its latest roster snapshot.
+// from its latest roster snapshot, the rates its details state under the
+// stated-rate keys (detailsRateKeys).
 func (c *Connection) appendAccounts(ctx context.Context, ccy silver.AccountCurrencies,
 	batch *canonical.SnapshotBatch) error {
 	roster, err := silver.ReadBankRoster(ctx, c.db, "raiffeisen_at appendAccounts", "nickname", "account_type")
@@ -46,6 +47,11 @@ func (c *Connection) appendAccounts(ctx context.Context, ccy silver.AccountCurre
 	for _, r := range roster {
 		acc := r.Account(canonical.AccountKindCash, displayName(r.Name, r.AccountType, r.Mask), ccy.Of(r.ID))
 		acc.Nickname = silver.StrPtrIfNonEmpty(r.Name)
+		if keys := detailsRateKeys(acc.Payload); keys != nil {
+			if acc.Payload, err = silver.WithStatedRates(acc.Payload, keys); err != nil {
+				return fmt.Errorf("raiffeisen_at appendAccounts %s: %w", r.ID, err)
+			}
+		}
 		batch.Accounts = append(batch.Accounts, acc)
 	}
 	return nil

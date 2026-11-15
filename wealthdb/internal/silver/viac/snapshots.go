@@ -44,6 +44,8 @@ func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Wind
 		"dump_runs", "accounts", "positions", "cash_balances")
 }
 
+// appendAccounts emits one AccountChange per account snapshot, the rate
+// its strategy states under the stated-rate keys (strategyRateKeys).
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
 	// A silver may carry a promoted `management_style` column.
 	// When present, the silver value wins; otherwise the default
@@ -79,6 +81,14 @@ SELECT snapshot_at, account_external_id, product_code,
 			style = canonical.ManagementStyle(silverMgmt)
 		}
 		ccy := currency
+		accountPayload := json.RawMessage(payload)
+		if keys := strategyRateKeys(accountPayload); keys != nil {
+			stamped, err := silver.WithStatedRates(accountPayload, keys)
+			if err != nil {
+				return fmt.Errorf("viac account %s rate: %w", extID, err)
+			}
+			accountPayload = stamped
+		}
 		change := canonical.AccountChange{
 			AccountExternalID: extID,
 			AccountKind:       canonical.AccountKindBrokerage,
@@ -87,7 +97,7 @@ SELECT snapshot_at, account_external_id, product_code,
 			ManagementStyle:   &style,
 			FirstSeenAt:       snap,
 			LastSeenAt:        snap,
-			Payload:           json.RawMessage(payload),
+			Payload:           accountPayload,
 		}
 		if name != "" {
 			change.DisplayName = &name

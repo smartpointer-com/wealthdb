@@ -216,15 +216,10 @@ def payload_term_keys():
 
 
 def balance_rate_keys():
-    """The keys the yield pass reads a cash balance's stated rate by:
-    the ones it names whole, and each side's keys (CdtIntrstRate1 …)
-    expanded from the templates its SQL builds them by, a side's prefix
-    first and a tier's number last."""
-    t = (INTERNAL / "gold" / "yield_pass.go").read_text()
-    prefixes = [prefix for _, prefix in re.findall(r'\{"(credit|debit)", "(\w+)"\}', t)]
-    tiers = range(1, int(re.search(r"tier <= (\d+)", t).group(1)) + 1)
-    keys = set(re.findall(r"payload, '([A-Z]\w*)'\)", t))
-    for name, tiered in re.findall(r"'%(?:\[2\])?s([A-Za-z]+)(%(?:\[3\])?d)?'", t):
-        for prefix in prefixes:
-            keys |= {f"{prefix}{name}{n}" for n in tiers} if tiered else {prefix + name}
-    return keys
+    """The keys a cash balance's payload states its rate under, at its top
+    (canonical.StatedRateKeyNames), and the keys of one of its tiers
+    (StatedTier...)."""
+    t = _read("statedrate.go")
+    names = dict(re.findall(r'(Payload\w+)\s*=\s*"([^"]+)"', _read("payloadterms.go") + t))
+    top = set(go_slice(t, "StatedRateKeyNames", names))
+    return top, set(re.findall(r'StatedTier\w+\s*=\s*"([^"]+)"', t))

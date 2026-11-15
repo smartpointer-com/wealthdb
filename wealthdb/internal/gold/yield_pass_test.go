@@ -172,15 +172,15 @@ func TestYieldPassReadsPayloadTerms(t *testing.T) {
 		 ('test-src', 100, 'ACC1', 'QNR', 'QNR', 'fixed_income', 'bond', 'USD', 1000, 1000,
 		  '{"rating_moodys": "WR", "rating_sp": "NR"}'),
 		 ('test-ubs', 100, 'SAFE1', 'XX0000000061', 'XX0000000061', 'fixed_income', 'bond', 'CHF', 1000, 1000,
-		  '{"web": {"Rating": "A+"}}'),
+		  '{"rating_sp": "A+", "web": {"Rating": "A+"}}'),
 		 ('test-ubs', 200, 'SAFE1', 'XX0000000061', 'XX0000000061', 'fixed_income', 'bond', 'CHF', 1000, 1000,
-		  '{"web": {"Rating": "AA-"}}'),
+		  '{"rating_sp": "AA-", "web": {"Rating": "AA-"}}'),
 		 ('test-ubs', 100, 'SAFE1', 'XX0000000062', 'XX0000000062', 'fixed_income', 'bond', 'CHF', 1000, 1000,
-		  '{"web": {"Rating": "No rating av."}}'),
+		  '{"rating_sp": "No rating av.", "web": {"Rating": "No rating av."}}'),
 		 ('test-ubs', 100, 'SAFE1', 'XX0000000063', 'XX0000000063', 'fixed_income', 'bond', 'CHF', 1000, 1000,
-		  '{"web": {"Rating": "BBB"}}'),
+		  '{"rating_sp": "BBB", "web": {"Rating": "BBB"}}'),
 		 ('test-ubs', 200, 'SAFE1', 'XX0000000063', 'XX0000000063', 'fixed_income', 'bond', 'CHF', 1000, 1000,
-		  '{"web": {"Rating": "No rating av."}}')`)
+		  '{"rating_sp": "No rating av.", "web": {"Rating": "No rating av."}}')`)
 	if _, err := RebuildYield(ctx, db); err != nil {
 		t.Fatal(err)
 	}
@@ -230,27 +230,92 @@ func TestYieldPassReadsPayloadTerms(t *testing.T) {
 	}
 }
 
-// An account's stated rates come from the shape each source writes: a
-// cash balance's tiers with their limits, per snapshot; an account's
-// details (a comma or a dot decimal) or its strategy; and the ledger's
-// rate records for the accounts a source states. The rates here are
-// invented.
-func TestYieldPassReadsAccountRates(t *testing.T) {
+// ubsRatingKey is the migration that writes UBS's grade under the
+// rating key.
+const ubsRatingKey = 190
+
+// A gold loaded before the UBS adapter stated its grade under rating_sp
+// keeps its ratings: migration 0190 copies each position's web Rating to
+// the key, where the position states none of its own, and appends it to
+// the payload's text.
+func TestUBSRatingKeyMigrationKeepsTheGrades(t *testing.T) {
 	t.Parallel()
-	db, ctx := openMigrated(t)
+	db, ctx := openAtVersion(t, ubsRatingKey-1)
+	execEach(t, db,
+		`INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path, high_watermark, first_loaded_at,
+		 last_loaded_at) VALUES ('test-ubs', 'ubs', '/tmp/ubs.db', -1, 0, 0)`,
+		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, name, currency,
+		 payload, first_seen_at, last_seen_at) VALUES
+		 ('test-ubs', 'XX0000000061', 'fixed_income', 'bond', 'Example Ltd Notes', 'CHF', NULL, 0, 0),
+		 ('test-ubs', 'XX0000000062', 'fixed_income', 'bond', 'Example Ltd Notes', 'CHF', NULL, 0, 0),
+		 ('test-ubs', 'XX0000000063', 'fixed_income', 'bond', 'Example Ltd Notes', 'CHF', NULL, 0, 0)`,
+		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
+		 asset_class, vehicle, currency, quantity, market_value, payload) VALUES
+		 ('test-ubs', 100, 'SAFE1', 'XX0000000061', 'XX0000000061', 'fixed_income', 'bond', 'CHF', 1000, 1000,
+		  '{"fields": {"19A": [":HOLD//CHF1000,50"]}, "web": {"Rating": "A+"}}'),
+		 ('test-ubs', 200, 'SAFE1', 'XX0000000061', 'XX0000000061', 'fixed_income', 'bond', 'CHF', 1000, 1000,
+		  '{"web": {"Rating": "AA-"}}'),
+		 ('test-ubs', 100, 'SAFE1', 'XX0000000062', 'XX0000000062', 'fixed_income', 'bond', 'CHF', 1000, 1000,
+		  '{"web": {"Rating": "BBB"}, "rating_sp": "B"}'),
+		 ('test-ubs', 100, 'SAFE1', 'XX0000000063', 'XX0000000063', 'fixed_income', 'bond', 'CHF', 1000, 1000,
+		  '{"web": {"Rating": null}}')`)
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if got := scanStrings(t, db, `SELECT payload::VARCHAR FROM positions WHERE snapshot_at = 100
+	    ORDER BY instrument_external_id`); !slices.Equal(got, []string{
+		`{"fields": {"19A": [":HOLD//CHF1000,50"]}, "web": {"Rating": "A+"},"rating_sp":"A+"}`,
+		`{"web": {"Rating": "BBB"}, "rating_sp": "B"}`,
+		`{"web": {"Rating": null}}`,
+	}) {
+		t.Errorf("migrated payloads %q", got)
+	}
+	if _, err := RebuildYield(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	got := scanStrings(t, db, `SELECT instrument_external_id || ' ' || COALESCE(rating || '@' || rating_origin, '-')
+	    FROM instrument_terms ORDER BY 1`)
+	if want := []string{"XX0000000061 AA@payload", "XX0000000062 B@payload", "XX0000000063 -"}; !slices.Equal(got, want) {
+		t.Errorf("ratings %v, want %v", got, want)
+	}
+}
+
+// statedRateKeys is the migration that writes the stated-rate keys onto
+// the rows of UBS PSN's, Raiffeisen's and VIAC's rate shapes.
+const statedRateKeys = 189
+
+// The rates three sources state in a shape of their own reach a gold
+// loaded before their adapters wrote the stated-rate keys: migration
+// 0189 writes the keys onto the rows, and the yield pass reads them as it
+// read the shapes. A cash balance's tiers with their limits, per
+// snapshot; an account's details (a comma or a dot decimal) or its
+// strategy; the ledger's rate records for the accounts a source states.
+// Keys of another shape on a balance that states PSN's tiers give way to
+// the tiers. The rates here are invented.
+func TestStatedRateKeysMigrationKeepsTheRates(t *testing.T) {
+	t.Parallel()
+	db, ctx := openAtVersion(t, statedRateKeys-1)
 	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	execEach(t, db, `INSERT INTO silver_sources (silver_source_id, silver_kind, silver_path, high_watermark,
+	 first_loaded_at, last_loaded_at) VALUES ('test-src', 'ubs', '/tmp/test.db', -1, 0, 0)`)
 	q := `INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount,
 	 payload) VALUES
 	 ('test-src', ?, 'CUR', 'CHF', 'closing', 1000, '{"CdtIntrstRate1": "0.333", "CdtLmtAmt1": "77777",
 	   "CdtIntrstRate2": "0.111", "CdtLmtAmt2": "99999999999999999.99", "CdtIntrstRate3": "0", "CdtLmtAmt3": "0",
 	   "CdtIntrstVldFrmDt": "2026-01-01", "DbtIntrstRate1": "7.777", "DbtLmtAmt1": "0", "DbtIntrstRate2": "0",
-	   "DbtIntrstVldFrmDt": "2025-07-01", "CalIntrstBasisDesc": "act/360", "EndOfDurtn": "9999-12-31"}'),
+	   "DbtIntrstVldFrmDt": "2025-07-01", "CalIntrstBasisDesc": "act/360", "EndOfDurtn": "9999-12-31",
+	   "BookBalAmt": 1000.50}'),
 	 ('test-src', ?, 'CUR', 'CHF', 'available', 900, '{"CdtIntrstRate1": "0.333", "CdtLmtAmt1": "77777",
 	   "CalIntrstBasisDesc": "act/360"}'),
 	 ('test-src', ?, 'CUR', 'CHF', 'closing', 1000, '{"CdtIntrstRate1": "0.222", "CalIntrstBasisDesc": "30E/360"}'),
 	 ('test-src', ?, 'TERM', 'USD', 'closing', 5000, '{"CdtIntrstRate1": "3.333", "CdtLmtAmt1": "0",
-	   "CalIntrstBasisDesc": "ACT / 365", "EndOfDurtn": "2027-03-31"}')`
-	if _, err := db.ExecContext(ctx, q, day, day, day-86400*30, day); err != nil {
+	   "CalIntrstBasisDesc": "ACT / 365", "EndOfDurtn": "2027-03-31"}'),
+	 ('test-src', ?, 'PSN', 'CHF', 'closing', 80, '{"CdtIntrstRate1": "0.4", "interest_rate": 0.9}'),
+	 ('test-src', ?, 'NAN', 'CHF', 'closing', 80, '{"CdtIntrstRate1": "n/a", "interest_rate": 0.9}'),
+	 ('test-src', ?, 'WEB', 'CHF', 'closing', 80, '{"interest_rate": 0.7}'),
+	 ('test-src', ?, 'GAP', 'CHF', 'closing', 80, '{"CdtIntrstRate1": "x", "CdtLmtAmt1": "1000",
+	   "CdtIntrstRate2": "0.2", "CdtIntrstRate4": "0.4", "CdtLmtAmt3": "3000"}')`
+	if _, err := db.ExecContext(ctx, q, day, day, day-86400*30, day, day, day, day, day); err != nil {
 		t.Fatal(err)
 	}
 	execEach(t, db,
@@ -264,12 +329,21 @@ func TestYieldPassReadsAccountRates(t *testing.T) {
 		 ('test-src', 'SAVE', 'cash', 'Save', 'CHF', 0, 0, NULL)`,
 		`INSERT INTO yield_declared_rates (line_no, silver_source_id, account_external_id, as_of, currency, rate_pct)
 		 VALUES (7, 'test-src', 'SAVE', 1767225600, 'CHF', 0.444), (8, 'test-src', 'GONE', 1767225600, 'CHF', 0.555)`)
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	// The keys are appended: the payload's own values keep their text.
+	if got := scanStrings(t, db, `SELECT payload::VARCHAR FROM cash_balances
+	    WHERE account_external_id = 'CUR' AND balance_kind = 'closing' AND snapshot_at = ?`, day); len(got) != 1 ||
+		!strings.Contains(got[0], `"BookBalAmt": 1000.50,"interest_conditions":`) {
+		t.Errorf("migrated payload %v", got)
+	}
 	n, err := RebuildYield(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.RatedAccounts != 6 {
-		t.Errorf("rated accounts %d, want 6", n.RatedAccounts)
+	if n.RatedAccounts != 9 {
+		t.Errorf("rated accounts %d, want 9", n.RatedAccounts)
 	}
 	got := scanStrings(t, db, `SELECT concat_ws(' ', account_external_id, COALESCE(currency, '-'), side, tier,
 	    rate_pct, COALESCE(up_to::VARCHAR, '-'), COALESCE(valid_from::VARCHAR, '-'), COALESCE(term_end::VARCHAR, '-'),
@@ -280,17 +354,25 @@ func TestYieldPassReadsAccountRates(t *testing.T) {
 		// The older snapshot, and the newer one with its tiers: a second
 		// tier only after a capped first, a third after an open second
 		// never. One row a snapshot whatever its balance kinds.
-		"CUR CHF credit 1 0.222 - - - 30E/360 stated CdtIntrstRate1 - 05-31",
-		"CUR CHF credit 1 0.333 77777.0 2026-01-01 - ACT/360 stated CdtIntrstRate1 - 06-30",
-		"CUR CHF credit 2 0.111 - 2026-01-01 - ACT/360 stated CdtIntrstRate2 - 06-30",
-		"CUR CHF debit 1 7.777 - 2025-07-01 - ACT/360 stated DbtIntrstRate1 - 06-30",
-		"DOT EUR credit 1 0.222 - 2025-01-01 - - stated details.interest_credit - -",
-		"GIRO EUR credit 1 0.111 - 2024-01-01 - - stated details.interest_credit - -",
-		"GIRO EUR debit 1 7.777 - 2024-07-01 - - stated details.interest_debit - -",
-		"PILLAR CHF credit 1 0.111 - - - - stated strategy.interestRate - -",
+		"CUR CHF credit 1 0.222 - - - 30E/360 stated interest_rate - 05-31",
+		"CUR CHF credit 1 0.333 77777.0 2026-01-01 - ACT/360 stated interest_conditions[0].interest_tiers - 06-30",
+		"CUR CHF credit 2 0.111 - 2026-01-01 - ACT/360 stated interest_conditions[0].interest_tiers - 06-30",
+		"CUR CHF debit 1 7.777 - 2025-07-01 - ACT/360 stated interest_conditions[1].interest_rate - 06-30",
+		"DOT EUR credit 1 0.222 - 2025-01-01 - - stated interest_rate - -",
+		// A tier keeps its column's number where one before it has no
+		// rate, and a later one counts after a capped column.
+		"GAP CHF credit 2 0.2 - - - - stated interest_tiers - 06-30",
+		"GAP CHF credit 4 0.4 - - - - stated interest_tiers - 06-30",
+		"GIRO EUR credit 1 0.111 - 2024-01-01 - - stated interest_conditions[0].interest_rate - -",
+		"GIRO EUR debit 1 7.777 - 2024-07-01 - - stated interest_conditions[1].interest_rate - -",
+		"PILLAR CHF credit 1 0.111 - - - - stated interest_rate - -",
+		// A balance that states PSN's tiers reads them alone, and states
+		// nothing where they do not read.
+		"PSN CHF credit 1 0.4 - - - - stated interest_rate - 06-30",
 		// A record of an account no source states declares nothing.
 		"SAVE CHF credit 1 0.444 - 2026-01-01 - - declared - 7 -",
-		"TERM USD credit 1 3.333 - - 2027-03-31 ACT/365 stated CdtIntrstRate1 - 06-30",
+		"TERM USD credit 1 3.333 - - 2027-03-31 ACT/365 stated interest_rate - 06-30",
+		"WEB CHF credit 1 0.7 - - - - stated interest_rate - 06-30",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("account rates:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -325,8 +407,8 @@ func TestYieldPassReadsAccountRatesOnCashKindsAlone(t *testing.T) {
 // a flat rate on an account, stated once; tiers on a cash balance,
 // observed at its snapshot; a credit and a debit side on one account; a
 // rate that holds from a later day, the older rate in force until then.
-// An account that states none has no row, and a card's rate is none. A
-// balance that states UBS PSN's tiers reads those alone.
+// A term deposit's rate states its end and its day count. An account
+// that states none has no row, and a card's rate is none.
 func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -342,7 +424,8 @@ func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 	 ('test-src', ?, 'LATER', 'USD', 'closing', 700, '{"interest_rate": 2, "interest_valid_from": "2026-09-01"}'),
 	 ('test-src', ?, 'LATER', 'USD', 'closing', 700, '{"interest_rate": 1.5}'),
 	 ('test-src', ?, 'CARD', 'USD', 'closing', 50, '{"interest_rate": 19.9}'),
-	 ('test-src', ?, 'PSN', 'CHF', 'closing', 80, '{"CdtIntrstRate1": "0.4", "interest_rate": 0.9}'),
+	 ('test-src', ?, 'TERM', 'CHF', 'closing', 80, '{"interest_rate": 0.4, "interest_term_end": "2027-03-31",
+   "interest_day_count": "ACT/365"}'),
 	 ('test-src', ?, 'BAD', 'USD', 'closing', 50, '{"interest_rate": "n/a", "interest_tiers": [{"rate": 1}],
 	   "interest_side": "sideways"}')`
 	if _, err := db.ExecContext(ctx, q, day, day-86400, day, day, day, day-86400, day, day, day); err != nil {
@@ -357,7 +440,7 @@ func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 		 ('test-src', 'LATER', 'cash', 'Later', 'USD', 0, 0, NULL),
 		 ('test-src', 'NONE', 'cash', 'None', 'CHF', 0, 0, '{"basis": "statement"}'),
 		 ('test-src', 'CARD', 'card', 'Card', 'USD', 0, 0, '{"interest_rate": 19.9}'),
-		 ('test-src', 'PSN', 'cash', 'Psn', 'CHF', 0, 0, NULL),
+		 ('test-src', 'TERM', 'cash', 'Term', 'CHF', 0, 0, NULL),
 		 ('test-src', 'BAD', 'cash', 'Bad', 'USD', 0, 0, NULL)`)
 	n, err := RebuildYield(ctx, db)
 	if err != nil {
@@ -367,22 +450,22 @@ func TestYieldPassReadsTheStatedRateKeys(t *testing.T) {
 		t.Errorf("rated accounts %d, want 5", n.RatedAccounts)
 	}
 	got := scanStrings(t, db, `SELECT concat_ws(' ', account_external_id, COALESCE(currency, '-'), side, tier,
-	    rate_pct, COALESCE(up_to::VARCHAR, '-'), COALESCE(valid_from::VARCHAR, '-'), origin, COALESCE(field, '-'),
+	    rate_pct, COALESCE(up_to::VARCHAR, '-'), COALESCE(valid_from::VARCHAR, '-'), COALESCE(term_end::VARCHAR, '-'),
+	    COALESCE(day_count, '-'), origin, COALESCE(field, '-'),
 	    COALESCE(strftime(to_timestamp(observed_at) AT TIME ZONE 'UTC', '%m-%d'), '-'))
 	  FROM account_rates ORDER BY account_external_id, observed_at, side, tier`)
 	want := []string{
-		"BOTH EUR credit 1 0.1 - - stated interest_conditions[0].interest_rate 06-30",
-		"BOTH EUR debit 1 6.5 - - stated interest_conditions[1].interest_rate 06-30",
-		"FLAT CHF credit 1 0.75 - - stated interest_rate -",
-		"LATER USD credit 1 1.5 - - stated interest_rate 06-29",
-		"LATER USD credit 1 2.0 - 2026-09-01 stated interest_rate 06-30",
-		// A balance that states PSN's tiers reads them alone.
-		"PSN CHF credit 1 0.4 - - stated CdtIntrstRate1 06-30",
+		"BOTH EUR credit 1 0.1 - - - - stated interest_conditions[0].interest_rate 06-30",
+		"BOTH EUR debit 1 6.5 - - - - stated interest_conditions[1].interest_rate 06-30",
+		"FLAT CHF credit 1 0.75 - - - - stated interest_rate -",
+		"LATER USD credit 1 1.5 - - - - stated interest_rate 06-29",
+		"LATER USD credit 1 2.0 - 2026-09-01 - - stated interest_rate 06-30",
+		"TERM CHF credit 1 0.4 - - 2027-03-31 ACT/365 stated interest_rate 06-30",
 		// The day before, the current balance's own; on the day, of the
 		// snapshot's balances that state a rate, the closing one.
-		"TIER USD credit 1 9.99 - - stated interest_rate 06-29",
-		"TIER USD credit 1 0.5 10000.0 2026-06-01 stated interest_tiers 06-30",
-		"TIER USD credit 2 1.25 - 2026-06-01 stated interest_tiers 06-30",
+		"TIER USD credit 1 9.99 - - - - stated interest_rate 06-29",
+		"TIER USD credit 1 0.5 10000.0 2026-06-01 - - stated interest_tiers 06-30",
+		"TIER USD credit 2 1.25 - 2026-06-01 - - stated interest_tiers 06-30",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("account rates:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

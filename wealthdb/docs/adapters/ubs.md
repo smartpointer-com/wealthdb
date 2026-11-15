@@ -66,7 +66,7 @@ Web silver:
 
 | Silver table | Gold target | Notes |
 | --- | --- | --- |
-| `accounts`, `portfolios`, `positions` | `accounts`, `portfolios`, `instruments` | Accounts and portfolios before PSN starts. The web feed's instrument descriptions read better than PSN's names; the latest snapshot's wins. Live positions reach gold as `payload.web` on PSN's rows. |
+| `accounts`, `portfolios`, `positions` | `accounts`, `portfolios`, `instruments` | Accounts and portfolios before PSN starts. The web feed's instrument descriptions read better than PSN's names; the latest snapshot's wins. Live positions reach gold as `payload.web` on PSN's position rows, and their `Rating` as `rating_sp` there. |
 | `transactions` | `transactions` | §5, §7. |
 | `mortgages`, `historical_mortgages` | `accounts` (kind `mortgage`) + a negative `mortgage` position | No PSN cut: PSN carries no mortgages. |
 | `historical_position_snapshots`, `historical_cash_balances` | `positions`, `cash_balances` | §9. The positions also feed the valor index and road 3 of a dividend's security (§7). |
@@ -90,6 +90,13 @@ daily book balance for every cash account (`appendBookBalances`).
 - It is signed at the source, so no credit/debit indicator applies.
 - An (account, currency, day) the statement feed already emitted is
   skipped, so the pass only adds.
+- Its payload is the account's record. The record's interest
+  conditions are stated on it under the stated-rate keys (YIELD.md §3):
+  per side up to four tiers, each under its column's number, the day
+  the side holds from, the term's end before 9999, and the day count. A
+  tier past the first counts only after a column whose limit lies
+  between 0.005 and 1e14. The netbanking's conditions do not land on a
+  balance whose record states tiers.
 
 ## 4. `(asset_class, vehicle)` derivation for `holdings`
 

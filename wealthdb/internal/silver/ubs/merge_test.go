@@ -2,6 +2,7 @@ package ubs
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -98,5 +99,25 @@ func TestPSNHoldingsGapFilter(t *testing.T) {
 	// Holdings-day positions kept.
 	if posBySnap[firstHoldings] != 1 {
 		t.Errorf("holdings-day positions = %d, want 1", posBySnap[firstHoldings])
+	}
+}
+
+// The fold keeps web's row under `web` and states its Rating under the
+// rating key, where the PSN row states none of its own; a base that is
+// no object keeps the row alone.
+func TestTheWebFoldStatesTheRating(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ base, web, want string }{
+		{`{"fields":{}}`, `{"Rating":"A+","cost_price":1}`,
+			`{"fields":{},"rating_sp":"A+","web":{"Rating":"A+","cost_price":1}}`},
+		{`{"rating_sp":"B"}`, `{"Rating":"A+"}`, `{"rating_sp":"B","web":{"Rating":"A+"}}`},
+		{`{"fields":{}}`, `{"Rating":null}`, `{"fields":{},"web":{"Rating":null}}`},
+		{`{"fields":{}}`, `{"cost_price":1}`, `{"fields":{},"web":{"cost_price":1}}`},
+		{``, `{"Rating":"BBB"}`, `{"rating_sp":"BBB","web":{"Rating":"BBB"}}`},
+		{`[1]`, `{"cost_price": 1}`, `{"web":{"cost_price": 1}}`},
+	} {
+		if got := string(foldWebPayloadAsWebKey(json.RawMessage(tc.base), tc.web)); got != tc.want {
+			t.Errorf("%s + %s:\n %s, want %s", tc.base, tc.web, got, tc.want)
+		}
 	}
 }

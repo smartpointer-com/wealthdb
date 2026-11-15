@@ -19,8 +19,7 @@ import (
 // or under interest_conditions when a capture states schedules of
 // several valid_from days. Only the credit side goes: it is what a
 // positive balance earns. The debit side stays in silver. A balance whose
-// PSN record states its own tiers keeps those: the yield pass reads the
-// PSN shape there.
+// PSN record states its own tiers (psnShaped) keeps those.
 //
 // A capture is dated by its download instant, and no balance is added for
 // it. Its conditions go on the account's balances at the newest instant
@@ -171,6 +170,9 @@ func stampRates(batches []canonical.SnapshotBatch, rates map[string][]rateCaptur
 			keys := c.keys()
 			for _, rf := range instants[t] {
 				cb := &batches[rf.batch].CashBalances[rf.row]
+				if psnShaped(cb.Payload) {
+					continue
+				}
 				payload, err := silver.WithStatedRates(cb.Payload, keys)
 				if err != nil {
 					return fmt.Errorf("ubs-web rates %s: %w", account, err)
