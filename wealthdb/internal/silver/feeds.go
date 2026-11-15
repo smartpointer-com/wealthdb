@@ -1,6 +1,11 @@
 package silver
 
-import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+import (
+	"context"
+	"fmt"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+)
 
 // A source read through more than one feed (a subsource each) answers
 // Status and ChangeWindow by merging what its feeds answer. The merges
@@ -67,4 +72,47 @@ func MergeWindows(sinceN int64, windows []canonical.Window) canonical.Window {
 		out.NewChangeNumber = max(out.NewChangeNumber, w.NewChangeNumber)
 	}
 	return out
+}
+
+// Feed is one configured feed of a source, named for error messages,
+// with its own Status and ChangeWindow.
+type Feed struct {
+	Name         string
+	Status       func(context.Context) (canonical.Status, error)
+	ChangeWindow func(context.Context, int64) (canonical.Window, error)
+}
+
+// Feeds are the configured feeds of a source read through more than one
+// (a subsource each). Whole says each feed reads the whole source
+// (MergeStatuses). Kind names the source in errors.
+type Feeds struct {
+	Kind  string
+	Whole bool
+	List  []Feed
+}
+
+// Status merges the feeds' Status (MergeStatuses).
+func (f Feeds) Status(ctx context.Context) (canonical.Status, error) {
+	var statuses []canonical.Status
+	for _, fd := range f.List {
+		s, err := fd.Status(ctx)
+		if err != nil {
+			return canonical.Status{}, fmt.Errorf("%s %s status: %w", f.Kind, fd.Name, err)
+		}
+		statuses = append(statuses, s)
+	}
+	return MergeStatuses(statuses, f.Whole), nil
+}
+
+// ChangeWindow merges the feeds' windows past sinceN (MergeWindows).
+func (f Feeds) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
+	var windows []canonical.Window
+	for _, fd := range f.List {
+		w, err := fd.ChangeWindow(ctx, sinceN)
+		if err != nil {
+			return canonical.Window{}, fmt.Errorf("%s %s ChangeWindow: %w", f.Kind, fd.Name, err)
+		}
+		windows = append(windows, w)
+	}
+	return MergeWindows(sinceN, windows), nil
 }

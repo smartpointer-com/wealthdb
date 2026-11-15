@@ -1,6 +1,8 @@
 package silver
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -60,5 +62,42 @@ func TestMergeWindowsSpansTheChangedFeeds(t *testing.T) {
 		if got := MergeWindows(10, c.windows); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %+v, want %+v", name, got, c.want)
 		}
+	}
+}
+
+// Feeds asks each feed in order, merges what they answer, and names the
+// feed whose clock fails.
+func TestFeedsMergeAndNameTheFailingFeed(t *testing.T) {
+	ctx := context.Background()
+	feed := func(name string, s canonical.Status, w canonical.Window, err error) Feed {
+		return Feed{Name: name,
+			Status:       func(context.Context) (canonical.Status, error) { return s, err },
+			ChangeWindow: func(context.Context, int64) (canonical.Window, error) { return w, err }}
+	}
+	a := canonical.UnknownStatus()
+	a.LatestChangeNumber, a.ObservedSnapshotsThrough = 100, 100
+	b := canonical.UnknownStatus()
+	b.LatestChangeNumber, b.ObservedSnapshotsThrough = 200, 200
+	wa := canonical.Window{HasChanges: true, Start: 10, End: 20, NewChangeNumber: 100}
+	wb := canonical.Window{NewChangeNumber: 200}
+	f := Feeds{Kind: "k", List: []Feed{feed("a", a, wa, nil), feed("b", b, wb, nil)}}
+	s, err := f.Status(ctx)
+	if err != nil || s != MergeStatuses([]canonical.Status{a, b}, false) {
+		t.Errorf("Status = %+v (%v)", s, err)
+	}
+	f.Whole = true
+	if s, _ := f.Status(ctx); s.ObservedSnapshotsThrough != 200 {
+		t.Errorf("whole Status observed through %d, want the later 200", s.ObservedSnapshotsThrough)
+	}
+	w, err := f.ChangeWindow(ctx, 50)
+	if err != nil || !reflect.DeepEqual(w, MergeWindows(50, []canonical.Window{wa, wb})) {
+		t.Errorf("ChangeWindow = %+v (%v)", w, err)
+	}
+	f.List = append(f.List, feed("c", a, wa, errors.New("boom")))
+	if _, err := f.Status(ctx); err == nil || err.Error() != "k c status: boom" {
+		t.Errorf("a failing Status = %v", err)
+	}
+	if _, err := f.ChangeWindow(ctx, 0); err == nil || err.Error() != "k c ChangeWindow: boom" {
+		t.Errorf("a failing ChangeWindow = %v", err)
 	}
 }

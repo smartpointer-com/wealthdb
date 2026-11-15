@@ -32,7 +32,7 @@ import (
 //       lending_value, market_value_base) stay queryable through
 //       PSN's faithful safekeeping + portfolio identity, and states
 //       the row's Rating under the rating key.
-//     - A paid-in fold (paidInStream) over the merged stream sets the
+//     - A paid-in fold (paidInFold) over the merged stream sets the
 //       basis of a private-markets fund's units, which neither feed
 //       states, from the capital calls web reads.
 //
@@ -60,60 +60,36 @@ import (
 //       same for the two rails that record one trade: the MT515
 //       confirmation keeps it, the MT940 cash leg settling it drops.
 //     - The PSN stream is wrapped in a text fold
-//       (psnWebTextFoldStream) that fills a narrative column the
+//       (psnWebTextFold) that fills a narrative column the
 //       MT940 feed left as a bare code from the account-statement
 //       export's record of the same entry, matched on the bank's own
 //       transaction number. It moves no row and no number: the hard
 //       cut still decides which side emits, and amounts, dates, kinds
 //       and ids are untouched.
 
-// Status merges the per-subsource Status (silver.MergeStatuses).
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	var feeds []canonical.Status
-	for _, sub := range c.subsources() {
-		s, err := sub.status(ctx)
-		if err != nil {
-			return canonical.Status{}, fmt.Errorf("ubs %s status: %w", sub.name, err)
-		}
-		feeds = append(feeds, s)
-	}
-	// The report feed states the securities and the web feed the cash
-	// accounts: the source is observed only as far as both are.
-	return silver.MergeStatuses(feeds, false), nil
-}
-
-// subsource is one configured reader's Status and ChangeWindow, named
-// for error messages.
-type subsource struct {
-	name         string
-	status       func(context.Context) (canonical.Status, error)
-	changeWindow func(context.Context, int64) (canonical.Window, error)
-}
-
-// subsources lists the configured readers, PSN first.
-func (c *Connection) subsources() []subsource {
-	var out []subsource
+// feeds are the configured readers, PSN first. The report feed states
+// the securities and the web feed the cash accounts: the source is
+// observed only as far as both are.
+func (c *Connection) feeds() silver.Feeds {
+	f := silver.Feeds{Kind: "ubs"}
 	if c.psn != nil {
-		out = append(out, subsource{"psn", c.psn.Status, c.psn.ChangeWindow})
+		f.List = append(f.List, silver.Feed{Name: "psn", Status: c.psn.Status, ChangeWindow: c.psn.ChangeWindow})
 	}
 	if c.web != nil {
-		out = append(out, subsource{"web", c.web.Status, c.web.ChangeWindow})
+		f.List = append(f.List, silver.Feed{Name: "web", Status: c.web.Status, ChangeWindow: c.web.ChangeWindow})
 	}
-	return out
+	return f
+}
+
+// Status merges the per-subsource Status (silver.Feeds).
+func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+	return c.feeds().Status(ctx)
 }
 
 // ChangeWindow merges the per-subsource windows past sinceN
-// (silver.MergeWindows).
+// (silver.Feeds).
 func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
-	var windows []canonical.Window
-	for _, sub := range c.subsources() {
-		w, err := sub.changeWindow(ctx, sinceN)
-		if err != nil {
-			return canonical.Window{}, fmt.Errorf("ubs %s ChangeWindow: %w", sub.name, err)
-		}
-		windows = append(windows, w)
-	}
-	return silver.MergeWindows(sinceN, windows), nil
+	return c.feeds().ChangeWindow(ctx, sinceN)
 }
 
 // inferredForwards reads the forwards the PSN feed does not state yet,
@@ -238,14 +214,10 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			if c.web != nil {
 				lower = first
 			}
-			s = &psnHoldingsGapFilter{inner: s, firstHoldingsAt: lower, lastHoldingsAt: last}
+			s = silver.MapSnapshots(s, psnHoldingsGapFilter{firstHoldingsAt: lower, lastHoldingsAt: last}.apply)
 		}
 		if len(webPosPayloads)+len(webMortgages) > 0 {
-			s = &psnWebFoldStream{
-				inner:     s,
-				webPos:    webPosPayloads,
-				mortgages: webMortgages,
-			}
+			s = silver.MapSnapshots(s, psnWebFold{webPos: webPosPayloads, mortgages: webMortgages}.apply)
 		}
 		streams = append(streams, s)
 	}
@@ -263,7 +235,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	}
 	out := merged
 	if len(paidIn) > 0 {
-		out = &paidInStream{inner: merged, series: paidIn}
+		out = silver.MapSnapshots(merged, paidInFold{series: paidIn}.apply)
 	}
 	// The netbanking's credit rates go on the balances already emitted
 	// (rates.go), whichever stream emitted them.
@@ -333,21 +305,21 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 				return nil, fmt.Errorf("ubs web transaction text: %w", err)
 			}
 			if len(texts) > 0 {
-				s = &psnWebTextFoldStream{inner: s, texts: texts}
+				s = silver.MapTransactions(s, psnWebTextFold{texts: texts}.apply)
 			}
 		}
 		// Outermost, so the export's own record of the entry — found by the
 		// bank's number for it — fills a bare column first, and the dropped
 		// statement copy only fills what is still bare after that.
 		if len(hints.carry) > 0 {
-			s = &psnStatementCarryStream{inner: s, texts: hints.carry}
+			s = silver.MapTransactions(s, psnStatementCarry{texts: hints.carry}.apply)
 		}
 		streams = append(streams, s)
 	}
 	return silver.NewConcatTransactionStream(streams), nil
 }
 
-// psnWebTextFoldStream fills the narrative columns the MT940 feed left
+// psnWebTextFold fills the narrative columns the MT940 feed left
 // as a bare code from the account-statement export's record of the
 // same entry.
 //
@@ -372,16 +344,11 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 // A row whose payload carries no bank reference — every feed but the
 // cash movements — is passed through untouched, as is one no export
 // row matches.
-type psnWebTextFoldStream struct {
-	inner silver.TransactionStream
+type psnWebTextFold struct {
 	texts map[webTxTextKey]webTxText
 }
 
-func (s *psnWebTextFoldStream) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
-	batch, more, err := s.inner.Next(ctx)
-	if err != nil {
-		return batch, more, err
-	}
+func (s psnWebTextFold) apply(batch *canonical.TransactionBatch) {
 	for i := range batch.Transactions {
 		t := &batch.Transactions[i]
 		var p cashMovementPayload
@@ -392,12 +359,9 @@ func (s *psnWebTextFoldStream) Next(ctx context.Context) (canonical.TransactionB
 			web.fill(t)
 		}
 	}
-	return batch, more, nil
 }
 
-func (s *psnWebTextFoldStream) Close() error { return s.inner.Close() }
-
-// psnStatementCarryStream is the PSN half of the era fold: it carries the
+// psnStatementCarry is the PSN half of the era fold: it carries the
 // narrative of a statement reconstruction the web side dropped onto the
 // MT940 row that kept the booking, and that of an export row onto the
 // confirmation's cash leg that kept it.
@@ -415,28 +379,20 @@ func (s *psnWebTextFoldStream) Close() error { return s.inner.Close() }
 // are in hand, so nothing is re-matched here. No row is added or dropped
 // by this stream, and the amount, the value date, the kind and the id are
 // the surviving row's, byte for byte.
-type psnStatementCarryStream struct {
-	inner silver.TransactionStream
+type psnStatementCarry struct {
 	texts map[string]webTxText
 }
 
-func (s *psnStatementCarryStream) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
-	batch, more, err := s.inner.Next(ctx)
-	if err != nil {
-		return batch, more, err
-	}
+func (s psnStatementCarry) apply(batch *canonical.TransactionBatch) {
 	for i := range batch.Transactions {
 		t := &batch.Transactions[i]
 		if alt, ok := s.texts[t.TransactionExternalID]; ok {
 			alt.fill(t)
 		}
 	}
-	return batch, more, nil
 }
 
-func (s *psnStatementCarryStream) Close() error { return s.inner.Close() }
-
-// psnWebFoldStream wraps a SnapshotStream and folds web's
+// psnWebFold folds web's
 // per-(UTC date, ISIN) position payload into PSN's position rows.
 // PSN keeps identity (safekeeping accounts, faithful portfolios,
 // parsed MT535 values); web's CSV row is preserved under the
@@ -451,17 +407,12 @@ func (s *psnStatementCarryStream) Close() error { return s.inner.Close() }
 // snapshot. A PSN snapshot without it would report every account
 // the mortgage was last observed beside, and gold's per-account
 // reading would end the mortgage there (DESIGN.md §10.7).
-type psnWebFoldStream struct {
-	inner     silver.SnapshotStream
+type psnWebFold struct {
 	webPos    map[webPosKey]string
 	mortgages []canonical.PositionChange // template rows, snapshot_at set per batch
 }
 
-func (s *psnWebFoldStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
-	batch, more, err := s.inner.Next(ctx)
-	if err != nil {
-		return batch, more, err
-	}
+func (s psnWebFold) apply(batch *canonical.SnapshotBatch) {
 	for i := range batch.Positions {
 		p := &batch.Positions[i]
 		key := webPosKey{utcDate: utcDay(p.SnapshotAt), isin: p.PositionKey}
@@ -483,10 +434,7 @@ func (s *psnWebFoldStream) Next(ctx context.Context) (canonical.SnapshotBatch, b
 			batch.Positions = append(batch.Positions, m)
 		}
 	}
-	return batch, more, nil
 }
-
-func (s *psnWebFoldStream) Close() error { return s.inner.Close() }
 
 // foldWebPayloadAsWebKey injects the web JSON under the "web" key
 // of a PSN-owned canonical row (the base row here is owned by PSN).
@@ -528,7 +476,7 @@ func foldWebPayloadAsWebKey(base json.RawMessage, web string) json.RawMessage {
 	return out
 }
 
-// psnHoldingsGapFilter drops PSN PositionChanges whose SnapshotAt falls
+// psnHoldingsGapFilter drops the PSN PositionChanges whose SnapshotAt falls
 // outside the [firstHoldingsAt, lastHoldingsAt] window of PSN's MT535
 // holdings batches. PSN's cash and forward-contract feeds can bracket
 // holdings: they go live a day or two before the first batch, and after
@@ -544,21 +492,16 @@ func foldWebPayloadAsWebKey(base json.RawMessage, web string) json.RawMessage {
 // instrument and composition (the only compositions PSN states) go
 // with its position. Cash balances and
 // the other dimensions in the same batches pass through untouched,
-// so PSN cash still flows. Running BEFORE psnWebFoldStream means an
+// so PSN cash still flows. Running BEFORE psnWebFold means an
 // emptied bracket-day batch carries no positions, so the fold won't
 // anchor a mortgage onto it either (matching the rule that no snapshot
 // holds a mortgage alone). lastHoldingsAt == 0 means no upper bound.
 type psnHoldingsGapFilter struct {
-	inner           silver.SnapshotStream
 	firstHoldingsAt int64
 	lastHoldingsAt  int64
 }
 
-func (s *psnHoldingsGapFilter) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
-	batch, more, err := s.inner.Next(ctx)
-	if err != nil {
-		return batch, more, err
-	}
+func (s psnHoldingsGapFilter) apply(batch *canonical.SnapshotBatch) {
 	in := func(at int64) bool {
 		return at >= s.firstHoldingsAt && (s.lastHoldingsAt == 0 || at <= s.lastHoldingsAt)
 	}
@@ -572,7 +515,4 @@ func (s *psnHoldingsGapFilter) Next(ctx context.Context) (canonical.SnapshotBatc
 	batch.FundCompositions = slices.DeleteFunc(batch.FundCompositions,
 		func(c canonical.FundCompositionChange) bool { return !in(c.AsOf) })
 	batch.FundLines = slices.DeleteFunc(batch.FundLines, func(l canonical.FundLineChange) bool { return !in(l.AsOf) })
-	return batch, more, nil
 }
-
-func (s *psnHoldingsGapFilter) Close() error { return s.inner.Close() }

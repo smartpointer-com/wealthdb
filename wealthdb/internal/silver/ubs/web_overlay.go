@@ -72,7 +72,7 @@ type webTxTextKey struct {
 
 // buildSeamBankRefs is the set of bookings the MT940 feed already holds,
 // keyed by the bank's own number for the entry and the account it sits
-// on — the same identity psnWebTextFoldStream carries text along.
+// on — the same identity psnWebTextFold carries text along.
 //
 // The hard cut is placed at the first PSN DUMP, because that is the day
 // PSN's coverage becomes complete and a cut placed any earlier would

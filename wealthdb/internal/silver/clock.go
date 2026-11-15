@@ -11,9 +11,10 @@ import (
 // Clock declares how a silver answers Status and ChangeWindow: which run
 // is its change number, which dates bound its snapshots and its ledger,
 // how far it is observed, and which window a change opens (Mode). An
-// adapter's Status and ChangeWindow call the methods below. The schwab
-// and ubs web feeds keep clocks of their own: their change number is
-// their latest row, not a run.
+// adapter's Status and ChangeWindow call the methods below. A Runs may
+// name the latest row rather than a run, as the schwab and ubs web feeds'
+// do. A source read through several feeds merges their clocks
+// (Feeds).
 //
 // A range query yields one row, the (MIN, MAX) of a set of dates in unix
 // seconds, NULL where the set is empty. A list of them spans the least

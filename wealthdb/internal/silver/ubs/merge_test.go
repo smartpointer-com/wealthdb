@@ -52,7 +52,7 @@ func TestPSNHoldingsGapFilter(t *testing.T) {
 	}
 	trailingDay := fwdDay(300) // a nightly captured before that day's holdings
 	inner := silver.NewSnapshotStream([]canonical.SnapshotBatch{leadingDay, holdingsDay, trailingDay})
-	s := &psnHoldingsGapFilter{inner: inner, firstHoldingsAt: firstHoldings, lastHoldingsAt: lastHoldings}
+	s := silver.MapSnapshots(inner, psnHoldingsGapFilter{firstHoldingsAt: firstHoldings, lastHoldingsAt: lastHoldings}.apply)
 	defer s.Close()
 
 	ctx := context.Background()

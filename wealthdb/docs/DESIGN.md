@@ -1335,8 +1335,9 @@ type TransactionStream interface {
   - `PerKind`: a run past the watermark bounds each kind of reference
     record on a span of its own.
 
-  The schwab and ubs web feeds keep clocks of their own. Their change
-  number is their latest row, not a run.
+  The schwab and ubs web feeds' change number is their latest row, not
+  a run. A source read through several feeds (schwab, ubs) merges its
+  feeds' clocks (`silver.Feeds`).
 - **`Snapshots`.** The dimension upserts and snapshot-grain facts whose
   `snapshot_at` falls inside the window. A `SnapshotBatch` multiplexes
   the dimensions (portfolios, accounts, instruments), the facts

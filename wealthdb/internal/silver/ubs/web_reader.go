@@ -41,52 +41,6 @@ type webReader struct {
 
 func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
 
-// Status mirrors the canonical.Status contract using web silver
-// columns. Snapshot times come from `dump_runs`; transaction
-// times come from `transactions.value_date`. The LatestChange-
-// Number is MAX of either (whichever advanced): the value
-// ChangeWindow advances the watermark to. The historical tables
-// widen the snapshot range but not the change number, since
-// ChangeWindow never advances to their dates; a historical date
-// past the latest dump would otherwise keep the source from ever
-// reading as up to date.
-func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
-	out := canonical.UnknownStatus()
-	// dump_runs always has at least one row per snapshot, even
-	// when transactions/documents tables are empty for that run.
-	err := r.db.QueryRowContext(ctx, `
-        SELECT COALESCE(MIN(snapshot_at), -1),
-               COALESCE(MAX(snapshot_at), -1)
-          FROM dump_runs`).Scan(&out.OldestSnapshotAt, &out.LatestSnapshotAt)
-	if err != nil {
-		return canonical.Status{}, fmt.Errorf("ubs-web Status snapshots: %w", err)
-	}
-	err = r.db.QueryRowContext(ctx, `
-        SELECT COALESCE(MIN(value_date), -1),
-               COALESCE(MAX(value_date), -1)
-          FROM transactions`).Scan(&out.OldestTransactionAt, &out.LatestTransactionAt)
-	if err != nil {
-		return canonical.Status{}, fmt.Errorf("ubs-web Status transactions: %w", err)
-	}
-	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
-	// Historical (PDF) snapshots extend OldestSnapshotAt back —
-	// PDFs cover dates that pre-date the first live web dump.
-	histLo, histHi, err := r.historicalRange(ctx)
-	if err != nil {
-		return canonical.Status{}, err
-	}
-	if histLo >= 0 && (out.OldestSnapshotAt == -1 || histLo < out.OldestSnapshotAt) {
-		out.OldestSnapshotAt = histLo
-	}
-	if histHi > out.LatestSnapshotAt {
-		out.LatestSnapshotAt = histHi
-	}
-	if err := r.observed(ctx, &out); err != nil {
-		return canonical.Status{}, err
-	}
-	return out, nil
-}
-
 // observed sets the watermarks from the runs: each run reads the
 // holdings, and the ledger over its window [window_since,
 // window_until], so the ledger is observed through the end of the
@@ -109,53 +63,66 @@ SELECT window_since, COALESCE(window_until, snapshot_at) FROM dump_runs WHERE wi
 	return err
 }
 
-// ChangeWindow returns the union of new snapshots and new
-// transactions strictly after `since`. Matches the PSN reader's
-// convention so the merge layer's combine is straightforward.
+// clock is the web feed's. Snapshot times come from dump_runs,
+// widened to the historical (PDF) snapshots, which pre-date the first
+// live dump; transaction times from transactions.value_date. The change
+// number is the latest of either, the value the window advances the
+// watermark to. The historical tables widen the snapshot range but not
+// the change number: a historical date past the latest dump would
+// otherwise keep the source from ever reading as up to date. The
+// watermarks are observed().
 //
-// Historical (PDF-reconstructed) data extends Start backwards
-// when there's any new live content. The historical_position_
-// snapshots and historical_cash_balances tables key on
-// as_of_date / period_end / period_start (well before the live
-// dump_run watermark), so if the loader's delete-then-insert
-// window stayed at live-Start, re-emitting historical rows on
-// the next load would collide on the gold PK. Including the
-// historical range in Start guarantees the window-DELETE covers
-// any existing historical gold rows before they're re-inserted.
-//
-// NewChangeNumber stays a live-time concept (MAX over snapshot_at
-// / value_date) — the watermark advances only when live data
-// advances. This means re-running with no new dump_run is a
-// no-op even when historical data is present.
-func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	lo, hi, err := silver.Extrema(ctx, r.db, "ubs-web ChangeWindow", []string{
-		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs WHERE snapshot_at > ?`,
-		`SELECT MIN(value_date), MAX(value_date) FROM transactions WHERE value_date > ?`,
-	}, since)
-	if err != nil || lo < 0 {
-		return canonical.Window{NewChangeNumber: since}, err
+// A dump or a transaction past the watermark opens a window over the new
+// rows, widened to every date the web feed emits at that no dump run
+// shares (windowDates): the historical snapshots, the card billing
+// periods, the managed portfolios' trades and the private-markets
+// quarterly reports. Gold's delete-then-reinsert would otherwise leave
+// duplicates of them behind.
+func (r *webReader) clock() silver.Clock {
+	return silver.Clock{
+		Kind: "ubs-web",
+		Runs: `SELECT MAX(t) FROM (SELECT MAX(snapshot_at) AS t FROM dump_runs
+                    UNION ALL SELECT MAX(value_date) FROM transactions)`,
+		Snapshot: []string{`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs`},
+		Extra:    r.historicalRange,
+		Ledger:   []string{`SELECT MIN(value_date), MAX(value_date) FROM transactions`},
+		Observed: silver.Observed{Set: r.observed},
+		Mode: silver.Incremental{
+			New: []string{
+				`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs WHERE snapshot_at > ?`,
+				`SELECT MIN(value_date), MAX(value_date) FROM transactions WHERE value_date > ?`,
+			},
+			Extra: r.windowDates,
+		},
 	}
-	w := canonical.Window{HasChanges: true, Start: lo, End: hi, NewChangeNumber: max(since, hi)}
-	// Cards emit at their own dates — a billing period ends on a date no
-	// dump run need share — so the window has to reach them or gold's
-	// delete-then-reinsert would leave duplicates behind. The managed
-	// portfolios' trades are the same case, reaching years back past the
-	// oldest live dump, and so are the private-markets quarterly reports.
+}
+
+// windowDates spans the dates the web feed emits at that no dump run
+// shares (clock), -1 each where there is none.
+func (r *webReader) windowDates(ctx context.Context) (lo, hi int64, err error) {
+	lo, hi = -1, -1
 	for _, extra := range []func(context.Context) (int64, int64, error){
 		r.historicalRange, r.cardRange, r.portfolioTxnRange, r.reportRange,
 	} {
-		lo, hi, err := extra(ctx)
+		l, h, err := extra(ctx)
 		if err != nil {
-			return canonical.Window{}, err
+			return -1, -1, err
 		}
-		if lo >= 0 && lo < w.Start {
-			w.Start = lo
+		if l >= 0 && (lo < 0 || l < lo) {
+			lo = l
 		}
-		if hi > w.End {
-			w.End = hi
-		}
+		hi = max(hi, h)
 	}
-	return w, nil
+	return lo, hi, nil
+}
+
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
+	return r.clock().Status(ctx, r.db)
+}
+
+func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+	return r.clock().ChangeWindow(ctx, r.db, since)
 }
 
 // snapshotsForOverlap emits dimensions (portfolios, accounts,
@@ -315,7 +282,7 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 // identity match would be heuristic and risk double-counting.
 //
 // Which is a statement about ROWS. The era text fold
-// (psnWebTextFoldStream) does match one feed's entry to the other's,
+// (psnWebTextFold) does match one feed's entry to the other's,
 // on the bank's own transaction number, but only to fill a narrative
 // column the MT940 row left as a bare code: it emits no row, drops
 // none, and touches no amount, date, kind or id, so a false match

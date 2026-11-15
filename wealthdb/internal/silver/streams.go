@@ -171,3 +171,65 @@ func (s *concatTransactionStream) Close() error {
 	}
 	return firstErr
 }
+
+// MapSnapshots is inner with fn applied to each batch it yields, in
+// place, before the batch is handed on: a fold that rewrites the rows of
+// a stream without adding a batch or dropping one. Close closes inner.
+func MapSnapshots(inner SnapshotStream, fn func(*canonical.SnapshotBatch)) SnapshotStream {
+	return &mappedSnapshotStream{inner, fn}
+}
+
+type mappedSnapshotStream struct {
+	inner SnapshotStream
+	fn    func(*canonical.SnapshotBatch)
+}
+
+func (s *mappedSnapshotStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
+	batch, more, err := s.inner.Next(ctx)
+	if err != nil {
+		return batch, more, err
+	}
+	s.fn(&batch)
+	return batch, more, nil
+}
+
+func (s *mappedSnapshotStream) Close() error { return s.inner.Close() }
+
+// MapTransactions mirrors MapSnapshots for transaction streams.
+func MapTransactions(inner TransactionStream, fn func(*canonical.TransactionBatch)) TransactionStream {
+	return &mappedTransactionStream{inner, fn}
+}
+
+type mappedTransactionStream struct {
+	inner TransactionStream
+	fn    func(*canonical.TransactionBatch)
+}
+
+func (s *mappedTransactionStream) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
+	batch, more, err := s.inner.Next(ctx)
+	if err != nil {
+		return batch, more, err
+	}
+	s.fn(&batch)
+	return batch, more, nil
+}
+
+func (s *mappedTransactionStream) Close() error { return s.inner.Close() }
+
+// Lazy is a value built once, on first use, with the error its build
+// returned: a connection's cache of what several of its passes read.
+// The zero Lazy is ready to use.
+type Lazy[T any] struct {
+	built bool
+	v     T
+	err   error
+}
+
+// Get is the value, built by build on the first call.
+func (l *Lazy[T]) Get(build func() (T, error)) (T, error) {
+	if !l.built {
+		l.v, l.err = build()
+		l.built = true
+	}
+	return l.v, l.err
+}

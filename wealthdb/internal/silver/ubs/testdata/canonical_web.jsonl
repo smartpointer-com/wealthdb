@@ -1,0 +1,27 @@
+== status 1
+{"LatestChangeNumber":2600,"LatestSnapshotAt":2000,"LatestTransactionAt":2600,"ObservedSnapshotsThrough":2000,"ObservedTransactionsThrough":2000,"OldestSnapshotAt":500,"OldestTransactionAt":900}
+== window 1
+{"End":2600,"HasChanges":true,"NewChangeNumber":2600,"Spans":null,"Start":500}
+== portfolios 3
+{"BaseCurrency":"CHF","DisplayName":null,"FirstSeenAt":800,"LastSeenAt":800,"Nickname":null,"Payload":null,"PortfolioExternalID":"P1","RelationshipID":null,"SilverSourceID":""}
+{"BaseCurrency":null,"DisplayName":"Example portfolio","FirstSeenAt":1000,"LastSeenAt":1000,"Nickname":null,"Payload":{},"PortfolioExternalID":"P1","RelationshipID":"REL1","SilverSourceID":""}
+{"BaseCurrency":null,"DisplayName":"Example portfolio","FirstSeenAt":2000,"LastSeenAt":2000,"Nickname":null,"Payload":{},"PortfolioExternalID":"P1","RelationshipID":"REL1","SilverSourceID":""}
+== accounts 6
+{"AccountCategory":null,"AccountExternalID":"CH00WEBCASH","AccountKind":"cash","BaseCurrency":"CHF","DisplayName":"CHF Checking, Example Account","FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":null,"Nickname":null,"Payload":{},"PortfolioExternalID":"P1","RelationshipID":"REL1","SilverSourceID":"","TaxWrapper":null}
+{"AccountCategory":null,"AccountExternalID":"CH00WEBCASH","AccountKind":"cash","BaseCurrency":"CHF","DisplayName":"CHF Checking, Example Account","FirstSeenAt":2000,"LastSeenAt":2000,"ManagementStyle":null,"Nickname":null,"Payload":{},"PortfolioExternalID":"P1","RelationshipID":"REL1","SilverSourceID":"","TaxWrapper":null}
+{"AccountCategory":null,"AccountExternalID":"CH00WEBCASH","AccountKind":"cash","BaseCurrency":"CHF","DisplayName":null,"FirstSeenAt":500,"LastSeenAt":500,"ManagementStyle":null,"Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":null}
+{"AccountCategory":null,"AccountExternalID":"CH00WEBCASH","AccountKind":"cash","BaseCurrency":"CHF","DisplayName":null,"FirstSeenAt":800,"LastSeenAt":800,"ManagementStyle":null,"Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":null}
+{"AccountCategory":null,"AccountExternalID":"CH00WEBSAFE","AccountKind":"safekeeping","BaseCurrency":"CHF","DisplayName":"Custody account","FirstSeenAt":2000,"LastSeenAt":2000,"ManagementStyle":null,"Nickname":null,"Payload":{},"PortfolioExternalID":"P1","RelationshipID":"REL1","SilverSourceID":"","TaxWrapper":null}
+{"AccountCategory":null,"AccountExternalID":"P1:overlay","AccountKind":"overlay","BaseCurrency":null,"DisplayName":"Portfolio overlay (historical)","FirstSeenAt":800,"LastSeenAt":800,"ManagementStyle":null,"Nickname":null,"Payload":null,"PortfolioExternalID":"P1","RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
+== instruments 2
+{"AssetClass":"public_equity","CUSIP":null,"Currency":"CHF","FirstSeenAt":2000,"ISIN":"CH0000000001","InstrumentExternalID":"CH0000000001","LastSeenAt":2000,"Name":"Shs Example Materials AG","Payload":null,"SilverSourceID":"","Symbol":null,"Vehicle":"stock"}
+{"AssetClass":"public_equity","CUSIP":null,"Currency":"CHF","FirstSeenAt":800,"ISIN":"CH0000000001","InstrumentExternalID":"CH0000000001","LastSeenAt":800,"Name":"Shs Example Materials AG","Payload":null,"SilverSourceID":"","Symbol":null,"Vehicle":"stock"}
+== positions 1
+{"AccountExternalID":"P1:overlay","AccruedInterest":null,"AcquisitionDate":null,"AssetClass":"public_equity","Basis":{"Fees":"","Method":"","Origin":""},"BookValue":null,"Currency":"CHF","InstrumentExternalID":"CH0000000001","MarketValue":"3200","Payload":{"cost_currency":"CHF","cost_price":"38"},"PositionKey":"CH0000000001","Quantity":"80","SilverSourceID":"","SnapshotAt":800,"ValuedAt":0,"Vehicle":"stock"}
+== cash_balances 2
+{"AccountExternalID":"CH00WEBCASH","Amount":"100","BalanceKind":"opening","Currency":"CHF","Payload":{},"SilverSourceID":"","SnapshotAt":500}
+{"AccountExternalID":"CH00WEBCASH","Amount":"200","BalanceKind":"closing","Currency":"CHF","Payload":{},"SilverSourceID":"","SnapshotAt":800}
+== transactions 3
+{"AccountExternalID":"CH00WEBCASH","AssetClass":"","CheckNumber":null,"Counterparty":"Example Bank","Currency":"CHF","Description":"Account fee","GrossAmount":null,"InstrumentExternalID":null,"InstrumentHint":"","Kind":"withdrawal","Memo":null,"NetAmount":"-15","OccurredAt":2600,"Payload":{"Description1":"Account fee","bank_ref":"WT3"},"Price":null,"ProviderCategory":"Account fee","Quantity":null,"SilverSourceID":"","TransactionExternalID":"WT3@CH00WEBCASH","Vehicle":""}
+{"AccountExternalID":"CH00WEBCASH","AssetClass":"","CheckNumber":null,"Counterparty":"Example Payer","Currency":"CHF","Description":"Example Payer","GrossAmount":null,"InstrumentExternalID":null,"InstrumentHint":"","Kind":"deposit","Memo":null,"NetAmount":"250","OccurredAt":900,"Payload":{"Description1":"Example Payer","bank_ref":"WT1"},"Price":null,"ProviderCategory":"Credit","Quantity":null,"SilverSourceID":"","TransactionExternalID":"WT1@CH00WEBCASH","Vehicle":""}
+{"AccountExternalID":"CH00WEBCASH","AssetClass":"","CheckNumber":null,"Counterparty":"Example Shop","Currency":"CHF","Description":"Example Shop","GrossAmount":null,"InstrumentExternalID":null,"InstrumentHint":"","Kind":"withdrawal","Memo":null,"NetAmount":"-40","OccurredAt":1500,"Payload":{"Description1":"Example Shop","bank_ref":"WT2"},"Price":null,"ProviderCategory":"e-banking payment order","Quantity":null,"SilverSourceID":"","TransactionExternalID":"WT2@CH00WEBCASH","Vehicle":""}

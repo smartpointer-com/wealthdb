@@ -175,7 +175,7 @@ func TestThePaidInBasisReachesOnlyTheJoinedPositions(t *testing.T) {
 		pos(25*pmDay, pmSafe, "EUR"),
 		withBook,
 	}}})
-	s := &paidInStream{inner: inner, series: series}
+	s := silver.MapSnapshots(inner, paidInFold{series: series}.apply)
 	defer s.Close()
 	batch, _, err := s.Next(context.Background())
 	if err != nil {

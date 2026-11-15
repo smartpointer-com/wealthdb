@@ -41,122 +41,59 @@ type webReader struct {
 
 func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
 
-// Status reports the silver-side observable range for the web
-// feed. Snapshot-time extrema come from dump_runs plus the
-// historical tables (which use as_of_date / period_end rather
-// than dump times). Transaction-time extrema come from
-// transactions.timestamp, without the form_1099b rows the
-// transaction stream leaves out (Transactions says why).
-// LatestChangeNumber is the latest dump or transaction time, the
-// value ChangeWindow advances the watermark to. The historical
-// period ends widen the snapshot range but not the change number:
-// ChangeWindow never advances to them, so a silver whose latest
-// period end is past its latest dump and transaction would never
-// read as up to date.
-func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
-	out := canonical.UnknownStatus()
-	if err := r.db.QueryRowContext(ctx, `
-        SELECT COALESCE(MIN(snapshot_at), -1),
-               COALESCE(MAX(snapshot_at), -1)
-          FROM dump_runs`).Scan(&out.OldestSnapshotAt, &out.LatestSnapshotAt); err != nil {
-		return canonical.Status{}, fmt.Errorf("schwab-web Status snapshots: %w", err)
+// webTxNot1099B is the web ledger the transaction stream reads: every
+// row but the form_1099b ones (Transactions says why).
+const webTxNot1099B = `transactions WHERE source <> '` + sourceFORM1099B + `'`
+
+// clock is the web feed's. The snapshot range is the dumps', widened
+// to the historical tables (historicalDates), which use as_of_date /
+// period_end rather than dump times. The transaction range is the
+// ledger without its form_1099b rows. The change number is the latest
+// dump or transaction time, the value the window advances the watermark
+// to; the historical period ends widen the snapshot range but not the
+// change number, since a silver whose latest period end is past its
+// latest dump and transaction would otherwise never read as up to date.
+//
+// A dump or a transaction past the watermark opens a window over the new
+// rows, widened to the historical content so the loader's windowed
+// delete covers the historical gold rows before they are re-inserted.
+// The form_1099b rows reach no stream, so they widen no window.
+func (r *webReader) clock() silver.Clock {
+	return silver.Clock{
+		Kind: "schwab-web",
+		Runs: `SELECT MAX(t) FROM (SELECT MAX(snapshot_at) AS t FROM dump_runs
+                    UNION ALL SELECT MAX(timestamp) FROM ` + webTxNot1099B + `)`,
+		Snapshot: []string{`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs`},
+		Extra:    r.historicalDates,
+		Ledger:   []string{`SELECT MIN(timestamp), MAX(timestamp) FROM ` + webTxNot1099B},
+		Observed: silver.Observed{Runs: silver.LatestDump},
+		Mode: silver.Incremental{
+			New: []string{
+				`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs WHERE snapshot_at > ?`,
+				`SELECT MIN(timestamp), MAX(timestamp) FROM ` + webTxNot1099B + ` AND timestamp > ?`,
+			},
+			Extra: r.historicalDates,
+		},
 	}
-	if err := r.db.QueryRowContext(ctx, `
-        SELECT COALESCE(MIN(timestamp), -1),
-               COALESCE(MAX(timestamp), -1)
-          FROM transactions WHERE source <> ?`, sourceFORM1099B).Scan(&out.OldestTransactionAt, &out.LatestTransactionAt); err != nil {
-		return canonical.Status{}, fmt.Errorf("schwab-web Status transactions: %w", err)
-	}
-	out.LatestChangeNumber = max(out.LatestSnapshotAt, out.LatestTransactionAt)
-	ok, err := r.hasHistoricalTables(ctx)
-	if err != nil {
-		return canonical.Status{}, err
-	}
-	if ok {
-		histLo, histHi, err := r.historicalRange(ctx)
-		if err != nil {
-			return canonical.Status{}, err
-		}
-		if histLo >= 0 && (out.OldestSnapshotAt == -1 || histLo < out.OldestSnapshotAt) {
-			out.OldestSnapshotAt = histLo
-		}
-		if histHi > out.LatestSnapshotAt {
-			out.LatestSnapshotAt = histHi
-		}
-	}
-	if err := silver.ObserveByRuns(ctx, r.db, "schwab-web", `SELECT MAX(snapshot_at) FROM dump_runs`, &out); err != nil {
-		return canonical.Status{}, err
-	}
-	return out, nil
 }
 
-// ChangeWindow returns the union of new snapshots and new
-// transactions strictly after `since`, plus any historical
-// content reachable by either dimension. Extends Start back to
-// MIN(historical times) whenever there's any new live content so
-// the loader's window-DELETE covers existing historical gold
-// rows before they're re-inserted — same pattern as the UBS web
-// reader. The form_1099b rows reach no stream, so they widen no
-// window.
-func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	var (
-		snapMin, snapMax sql.NullInt64
-		txMin, txMax     sql.NullInt64
-	)
-	if err := r.db.QueryRowContext(ctx, `
-        SELECT MIN(snapshot_at), MAX(snapshot_at)
-          FROM dump_runs WHERE snapshot_at > ?`, since).Scan(&snapMin, &snapMax); err != nil {
-		return canonical.Window{}, fmt.Errorf("schwab-web ChangeWindow snapshots: %w", err)
+// historicalDates is historicalRange where the silver carries the
+// historical tables, -1 each where it does not.
+func (r *webReader) historicalDates(ctx context.Context) (lo, hi int64, err error) {
+	ok, err := r.hasHistoricalTables(ctx)
+	if err != nil || !ok {
+		return -1, -1, err
 	}
-	if err := r.db.QueryRowContext(ctx, `
-        SELECT MIN(timestamp), MAX(timestamp)
-          FROM transactions WHERE timestamp > ? AND source <> ?`, since, sourceFORM1099B).Scan(&txMin, &txMax); err != nil {
-		return canonical.Window{}, fmt.Errorf("schwab-web ChangeWindow transactions: %w", err)
-	}
-	w := canonical.Window{NewChangeNumber: since}
-	mergeNew := func(n sql.NullInt64) {
-		if !n.Valid {
-			return
-		}
-		w.HasChanges = true
-		if w.NewChangeNumber < n.Int64 {
-			w.NewChangeNumber = n.Int64
-		}
-	}
-	mins, maxs := []sql.NullInt64{snapMin, txMin}, []sql.NullInt64{snapMax, txMax}
-	for _, m := range mins {
-		if m.Valid && (!w.HasChanges || m.Int64 < w.Start) {
-			w.Start = m.Int64
-			w.HasChanges = true
-		}
-	}
-	for _, m := range maxs {
-		if m.Valid && m.Int64 > w.End {
-			w.End = m.Int64
-		}
-	}
-	mergeNew(snapMax)
-	mergeNew(txMax)
+	return r.historicalRange(ctx)
+}
 
-	if w.HasChanges {
-		ok, err := r.hasHistoricalTables(ctx)
-		if err != nil {
-			return canonical.Window{}, err
-		}
-		if ok {
-			histLo, histHi, err := r.historicalRange(ctx)
-			if err != nil {
-				return canonical.Window{}, err
-			}
-			if histLo >= 0 && histLo < w.Start {
-				w.Start = histLo
-			}
-			if histHi > w.End {
-				w.End = histHi
-			}
-		}
-	}
-	return w, nil
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
+	return r.clock().Status(ctx, r.db)
+}
+
+func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+	return r.clock().ChangeWindow(ctx, r.db, since)
 }
 
 // snapshotsDimensions emits AccountChange rows from web's

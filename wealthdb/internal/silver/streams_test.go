@@ -2,6 +2,8 @@ package silver
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -40,5 +42,45 @@ func TestBatchesStreamInTimeOrder(t *testing.T) {
 	}
 	if got := (Batches{}).Sorted(); len(got) != 0 {
 		t.Errorf("Sorted of none = %v, want none", got)
+	}
+}
+
+// The mapped streams apply their fold to every batch, in order, and add
+// or drop none; Lazy builds once and keeps the error with the value.
+func TestMapAndLazy(t *testing.T) {
+	ctx := context.Background()
+	snaps := MapSnapshots(NewSnapshotStream([]canonical.SnapshotBatch{
+		{Accounts: []canonical.AccountChange{{AccountExternalID: "a"}}},
+		{Accounts: []canonical.AccountChange{{AccountExternalID: "b"}}},
+	}), func(b *canonical.SnapshotBatch) { b.Accounts[0].AccountExternalID += "!" })
+	var ids []string
+	for more := true; more; {
+		var b canonical.SnapshotBatch
+		var err error
+		if b, more, err = snaps.Next(ctx); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, b.Accounts[0].AccountExternalID)
+	}
+	if !slices.Equal(ids, []string{"a!", "b!"}) {
+		t.Errorf("mapped snapshots = %v", ids)
+	}
+	txs := MapTransactions(NewTransactionStream(canonical.TransactionBatch{
+		Transactions: []canonical.TransactionChange{{TransactionExternalID: "t"}},
+	}), func(b *canonical.TransactionBatch) { b.Transactions[0].TransactionExternalID += "!" })
+	if b, more, err := txs.Next(ctx); err != nil || more || b.Transactions[0].TransactionExternalID != "t!" {
+		t.Errorf("mapped transactions = %+v %v %v", b, more, err)
+	}
+
+	var l Lazy[int]
+	calls := 0
+	build := func() (int, error) { calls++; return 7, errors.New("once") }
+	for range 2 {
+		if v, err := l.Get(build); v != 7 || err == nil || err.Error() != "once" {
+			t.Errorf("Get = %d, %v", v, err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("built %d times, want once", calls)
 	}
 }

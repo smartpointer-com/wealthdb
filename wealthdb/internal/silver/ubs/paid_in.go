@@ -175,19 +175,14 @@ func eachPair(ctx context.Context, db *sql.DB, q string, fn func(a, b string)) e
 	return nil
 }
 
-// paidInStream sets the paid-in basis on every position in a fund the
+// paidInFold sets the paid-in basis on every position in a fund the
 // calls join: same ISIN, same account, same currency, and no book
 // value the holding states itself.
-type paidInStream struct {
-	inner  silver.SnapshotStream
+type paidInFold struct {
 	series map[string]paidInSeries
 }
 
-func (s *paidInStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
-	batch, more, err := s.inner.Next(ctx)
-	if err != nil {
-		return batch, more, err
-	}
+func (s paidInFold) apply(batch *canonical.SnapshotBatch) {
 	for i := range batch.Positions {
 		p := &batch.Positions[i]
 		if p.BookValue != nil {
@@ -199,7 +194,4 @@ func (s *paidInStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool,
 		}
 		p.SetBookValue(ser.at(p.SnapshotAt), paidInBasis)
 	}
-	return batch, more, nil
 }
-
-func (s *paidInStream) Close() error { return s.inner.Close() }

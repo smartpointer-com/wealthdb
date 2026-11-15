@@ -56,18 +56,13 @@ type Connection struct {
 
 	// bridge resolves the web account_external_id (suffix) to the
 	// gold account id: the api hashValue, or with web alone the full
-	// account number. Built lazily on the first Snapshots/Transactions
-	// call.
-	bridge      map[string]string
-	bridgeBuilt bool
-	bridgeErr   error
+	// account number. Built on the first Snapshots/Transactions call.
+	bridge silver.Lazy[map[string]string]
 
 	// apiStartByHash caches where each api account's history
-	// begins (apiCoverageStart) for the transactions splice. Same
-	// lazy-build pattern as bridge.
-	apiStartByHash map[string]int64
-	apiStartBuilt  bool
-	apiStartErr    error
+	// begins (apiCoverageStart) for the transactions splice. Built on
+	// first use, as bridge is.
+	apiStartByHash silver.Lazy[map[string]int64]
 
 	// symbolToCUSIP resolves a ticker (the schwab-web silver's
 	// instrument_key) to the matching CUSIP (the schwab-api
@@ -76,9 +71,7 @@ type Connection struct {
 	// instruments row the api side registered — so the symbol /
 	// name / asset_class columns populate via the LEFT JOIN
 	// without a second instrument-emit on the web side.
-	symbolToCUSIP     map[string]string
-	symbolBridgeBuilt bool
-	symbolBridgeErr   error
+	symbolToCUSIP silver.Lazy[map[string]string]
 }
 
 // Close releases both readers. Safe to call multiple times, and on a
@@ -96,55 +89,28 @@ func (c *Connection) Close() error {
 	return errors.Join(apiErr, webErr)
 }
 
-// feed is a configured subsource, named for error messages, with what
-// the orchestrator asks of each.
-type feed struct {
-	name  string
-	clock interface {
-		Status(context.Context) (canonical.Status, error)
-		ChangeWindow(context.Context, int64) (canonical.Window, error)
-	}
-}
-
-// feeds lists the configured subsources, api first.
-func (c *Connection) feeds() []feed {
-	var out []feed
+// feeds are the configured subsources, api first. Each reads every
+// account of the source: it is observed through the later of the two.
+func (c *Connection) feeds() silver.Feeds {
+	f := silver.Feeds{Kind: "schwab", Whole: true}
 	if c.api != nil {
-		out = append(out, feed{"api", c.api})
+		f.List = append(f.List, silver.Feed{Name: "api", Status: c.api.Status, ChangeWindow: c.api.ChangeWindow})
 	}
 	if c.web != nil {
-		out = append(out, feed{"web", c.web})
+		f.List = append(f.List, silver.Feed{Name: "web", Status: c.web.Status, ChangeWindow: c.web.ChangeWindow})
 	}
-	return out
+	return f
 }
 
-// Status merges the per-subsource Status (silver.MergeStatuses).
+// Status merges the per-subsource Status (silver.Feeds).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	var statuses []canonical.Status
-	for _, f := range c.feeds() {
-		s, err := f.clock.Status(ctx)
-		if err != nil {
-			return canonical.Status{}, fmt.Errorf("schwab %s status: %w", f.name, err)
-		}
-		statuses = append(statuses, s)
-	}
-	// Each feed reads every account of the source: it is observed
-	// through the later of the two.
-	return silver.MergeStatuses(statuses, true), nil
+	return c.feeds().Status(ctx)
 }
 
 // ChangeWindow merges the per-subsource windows past sinceN
-// (silver.MergeWindows).
+// (silver.Feeds).
 func (c *Connection) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
-	var windows []canonical.Window
-	for _, f := range c.feeds() {
-		w, err := f.clock.ChangeWindow(ctx, sinceN)
-		if err != nil {
-			return canonical.Window{}, fmt.Errorf("schwab %s ChangeWindow: %w", f.name, err)
-		}
-		windows = append(windows, w)
-	}
-	return silver.MergeWindows(sinceN, windows), nil
+	return c.feeds().ChangeWindow(ctx, sinceN)
 }
 
 // Snapshots emits the merged stream. When only api is configured,
@@ -279,37 +245,28 @@ func (s *apiFromCoverageStart) Close() error { return s.inner.Close() }
 // full account number. Returns the cached value on
 // subsequent calls; returns the cached error if the build failed.
 func (c *Connection) ensureBridge(ctx context.Context) (map[string]string, error) {
-	if c.bridgeBuilt {
-		return c.bridge, c.bridgeErr
-	}
-	c.bridgeBuilt = true
-	if c.web == nil {
-		c.bridge = map[string]string{}
-		return c.bridge, nil
-	}
-	if c.api == nil {
-		c.bridge, c.bridgeErr = webOnlyBridge(ctx, c.web.db)
-	} else {
-		c.bridge, c.bridgeErr = buildAccountBridge(ctx, c.api.db, c.web.db)
-	}
-	return c.bridge, c.bridgeErr
+	return c.bridge.Get(func() (map[string]string, error) {
+		switch {
+		case c.web == nil:
+			return map[string]string{}, nil
+		case c.api == nil:
+			return webOnlyBridge(ctx, c.web.db)
+		}
+		return buildAccountBridge(ctx, c.api.db, c.web.db)
+	})
 }
 
 // ensureSymbolBridge builds the web ticker → api CUSIP map on
 // first use and caches the result.
 func (c *Connection) ensureSymbolBridge(ctx context.Context) (map[string]string, error) {
-	if c.symbolBridgeBuilt {
-		return c.symbolToCUSIP, c.symbolBridgeErr
-	}
-	c.symbolBridgeBuilt = true
-	if c.api == nil {
-		// Web alone: no CUSIPs to resolve a ticker to, so a web row keeps
-		// its own key, as the historical positions do.
-		c.symbolToCUSIP = map[string]string{}
-		return c.symbolToCUSIP, nil
-	}
-	c.symbolToCUSIP, c.symbolBridgeErr = buildSymbolToCUSIPBridge(ctx, c.api.db)
-	return c.symbolToCUSIP, c.symbolBridgeErr
+	return c.symbolToCUSIP.Get(func() (map[string]string, error) {
+		if c.api == nil {
+			// Web alone: no CUSIPs to resolve a ticker to, so a web row
+			// keeps its own key, as the historical positions do.
+			return map[string]string{}, nil
+		}
+		return buildSymbolToCUSIPBridge(ctx, c.api.db)
+	})
 }
 
 // buildSymbolToCUSIPBridge scans schwab-api silver positions for
@@ -536,35 +493,30 @@ func digitsOnly(s string) string {
 // Accounts with no api transactions at all (start absent from the
 // map) get NO web-side filter — web rows pass through unfiltered.
 func (c *Connection) ensureAPIStart(ctx context.Context) (map[string]int64, error) {
-	if c.apiStartBuilt {
-		return c.apiStartByHash, c.apiStartErr
-	}
-	c.apiStartBuilt = true
-	c.apiStartByHash = map[string]int64{}
-	if c.api == nil {
-		return c.apiStartByHash, nil // web alone: no cut
-	}
-	apiTimes, err := accountTimestamps(ctx, c.api.db, nil)
-	if err != nil {
-		c.apiStartErr = fmt.Errorf("schwab apiStartByHash: %w", err)
-		return nil, c.apiStartErr
-	}
-	webTimes := map[string][]int64{}
-	if c.web != nil {
-		bridge, err := c.ensureBridge(ctx)
+	return c.apiStartByHash.Get(func() (map[string]int64, error) {
+		out := map[string]int64{}
+		if c.api == nil {
+			return out, nil // web alone: no cut
+		}
+		apiTimes, err := accountTimestamps(ctx, c.api.db, nil)
 		if err != nil {
-			c.apiStartErr = err
-			return nil, err
+			return nil, fmt.Errorf("schwab apiStartByHash: %w", err)
 		}
-		if webTimes, err = accountTimestamps(ctx, c.web.db, bridge); err != nil {
-			c.apiStartErr = fmt.Errorf("schwab apiStartByHash: %w", err)
-			return nil, c.apiStartErr
+		webTimes := map[string][]int64{}
+		if c.web != nil {
+			bridge, err := c.ensureBridge(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if webTimes, err = accountTimestamps(ctx, c.web.db, bridge); err != nil {
+				return nil, fmt.Errorf("schwab apiStartByHash: %w", err)
+			}
 		}
-	}
-	for hash, times := range apiTimes {
-		c.apiStartByHash[hash] = apiCoverageStart(times, webTimes[hash])
-	}
-	return c.apiStartByHash, nil
+		for hash, times := range apiTimes {
+			out[hash] = apiCoverageStart(times, webTimes[hash])
+		}
+		return out, nil
+	})
 }
 
 // accountTimestamps reads every transaction timestamp of a silver,
