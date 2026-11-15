@@ -33,15 +33,15 @@ func TestAssetClassValid(t *testing.T) {
 			t.Errorf("AssetClass(%q).Valid() = false, want true", a)
 		}
 	}
-	// The adapters' intermediate 1-D labels are NOT exposure values —
-	// they are wrappers or blends that reach gold as (asset_class,
-	// vehicle) pairs, so Valid must reject them.
+	// The adapters' 1-D labels are NOT exposure values — they are
+	// wrappers or blends that reach gold as (asset_class, vehicle)
+	// pairs, so Valid must reject them.
 	for _, a := range []AssetClass{
-		AssetClassEquity, AssetClassETF, AssetClassBondETF, AssetClassFund,
-		AssetClassBond, AssetClassOption, AssetClassFuture, AssetClassFxForward,
-		AssetClassFxOption, AssetClassMoneyMarket, AssetClassOTCDerivative,
+		AssetClassEquity, "etf", "bond_etf", "fund",
+		"bond", "option", "future", AssetClassFxForward,
+		"fx_option", "money_market", "otc_derivative",
 		AssetClassSPV, AssetClassPrivateFund, AssetClassConvertibleNote,
-		AssetClassMortgage, "",
+		"mortgage", "",
 	} {
 		if a.Valid() {
 			t.Errorf("AssetClass(%q).Valid() = true, want false (intermediate-only)", a)
