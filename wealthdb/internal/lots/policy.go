@@ -96,25 +96,14 @@ const (
 	CorpIgnore
 )
 
-// Txn is a transaction as a policy sees it.
+// Txn is a transaction as DefaultClassify reads it: its canonical kind
+// and its quantity.
 type Txn struct {
-	ID          string
-	Kind        string
-	Description string
-	// Type is the source's own type, where the adapter keeps one in the
-	// payload ("type"); Comment the row's comment ("comment"); Action
-	// the payload's "Action" or "action".
-	Type, Comment, Action string
-	Quantity              float64
-	// The trade's two currencies and its fee, where the payload states
-	// them ("buy_currency", "sell_currency", "fee_amount",
-	// "fee_currency").
-	BuyCurrency, SellCurrency string
-	FeeAmount                 float64
-	FeeCurrency               string
+	Kind     string
+	Quantity float64
 }
 
-// Classified is a policy's reading of one transaction.
+// Classified is the engine's reading of one transaction.
 type Classified struct {
 	Action   Action
 	Rule     CorporateRule
@@ -127,9 +116,8 @@ type Classified struct {
 }
 
 // Policy is a source kind's knowledge of its feed: the knobs of
-// docs/LOTS.md §6 and the reading of its transactions. A source kind
-// states one in its silver.Source (RegisterPolicy); config may
-// override Mode, Grain and the method.
+// docs/LOTS.md §6. A source kind states one in its silver.Source
+// (RegisterPolicy); config may override Mode, Grain and the method.
 type Policy struct {
 	Mode  Mode
 	Grain Grain
@@ -137,9 +125,6 @@ type Policy struct {
 	// Skip names instruments that are never a key, beyond what the
 	// positions say: a fiat ticker a crypto source books as an asset.
 	Skip func(instrument string) bool
-	// Classify reads one transaction; nil reads the canonical kind
-	// alone (DefaultClassify).
-	Classify func(Txn) Classified
 	// DatedBySettlement marks a source whose trade dates are settlement
 	// dates, so a term near the one-year line can be off by the lag.
 	DatedBySettlement bool
@@ -227,19 +212,6 @@ func DefaultClassify(t Txn) Classified {
 		return Classified{Action: Corporate, Rule: CorpReorg}
 	}
 	return Classified{Action: Ignore}
-}
-
-// ClassifyCorporate is DefaultClassify with rule reading a corporate
-// action: for a source whose corporate actions say what they are only
-// in their own words.
-func ClassifyCorporate(rule func(Txn) CorporateRule) func(Txn) Classified {
-	return func(t Txn) Classified {
-		c := DefaultClassify(t)
-		if c.Action == Corporate {
-			c.Rule = rule(t)
-		}
-		return c
-	}
 }
 
 var (

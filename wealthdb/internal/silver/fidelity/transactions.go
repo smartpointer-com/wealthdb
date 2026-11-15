@@ -101,5 +101,14 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		return nil, err
 	}
 	out.Transactions = append(out.Transactions, legs...)
+	// Each row states what it does to the lots where its kind does not.
+	for i := range out.Transactions {
+		tx := &out.Transactions[i]
+		var d string
+		if tx.Description != nil {
+			d = *tx.Description
+		}
+		tx.Action = lotAction(tx.Kind, d)
+	}
 	return silver.NewTransactionStream(out), nil
 }

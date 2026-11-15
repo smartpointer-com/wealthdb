@@ -2059,6 +2059,7 @@ CREATE TABLE transactions (
     asset_class             TEXT,                    -- what a trade traded, where the instrument cannot say (§10.8)
     vehicle                 TEXT,
     instrument_hint         TEXT,                    -- the token an instrument lookup failed on (§10.8)
+    action                  TEXT,                    -- what the row does to its lots (§10.8)
     payload                 JSON,
     PRIMARY KEY (silver_source_id, transaction_external_id),
     FOREIGN KEY (silver_source_id, account_external_id)
@@ -3096,6 +3097,13 @@ macros of `derived/30_holdings.sql` factor that shared work out so it runs once.
   The writer gates each half against its own vocabulary and the two together
   as an admitted pair, so a wrapper value cannot reach the exposure column.
   Denormalised by decision: a transaction points at no position and no lot.
+- **`transactions.action`** is what a row does to the lots of its
+  instrument where its kind and the sign of its quantity do not say it
+  (`canonical.TxAction`, docs/LOTS.md §3.1). Only the source's own words
+  tell such rows apart: the deposit of a coin from its airdrop, a
+  corporate action's rule, an option leg booked on its stock. So the
+  adapter states it and the lot engine reads it, never the payload. NULL
+  on every other row.
 - **`transactions.instrument_hint`** (migration 0098) is the token an adapter
   resolved a row's instrument from when that resolution found nothing — a
   Swiss valor, a fund name, a ticker, whatever the feed states. The svb

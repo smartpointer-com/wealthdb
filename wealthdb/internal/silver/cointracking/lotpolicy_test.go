@@ -1,44 +1,74 @@
 package cointracking
 
 import (
+	"database/sql"
 	"testing"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-func TestClassifyLotsReadsTheCTType(t *testing.T) {
+// The kind table reads a row by its CT type, its comment and whether the
+// asset is cash: a deposit and an airdrop are both transfer_in, and only
+// the action tells them apart.
+func TestKindTableReadsTheCTType(t *testing.T) {
 	cases := []struct {
-		name string
-		t    lots.Txn
-		want lots.Classified
+		name, typ, comment string
+		cash               bool
+		kind               canonical.TxKind
+		action             canonical.TxAction
 	}{
-		{"deposit", lots.Txn{Type: "Deposit", Kind: "transfer_in"}, lots.Classified{Action: lots.In}},
-		{"airdrop", lots.Txn{Type: "Airdrop", Kind: "transfer_in"}, lots.Classified{Action: lots.Income}},
-		{"gift received", lots.Txn{Type: "Gift / Tip", Kind: "transfer_in"}, lots.Classified{Action: lots.Income}},
-		{"staking", lots.Txn{Type: "Staking", Kind: "staking", Quantity: 1}, lots.Classified{Action: lots.Income}},
-		{"dust in", lots.Txn{Type: "Income (non taxable)", Comment: "Dust Sweeping"}, lots.Classified{Action: lots.Acquired}},
-		{"move in", lots.Txn{Type: "Income (non taxable)"}, lots.Classified{Action: lots.In}},
-		{"dust out", lots.Txn{Type: "Other Expense", Comment: "Dust Sweeping"},
-			lots.Classified{Action: lots.Exchange, Disposal: lots.DisposeSell}},
-		{"spend", lots.Txn{Type: "Spend"}, lots.Classified{Action: lots.Exchange, Disposal: lots.DisposeSpend}},
-		{"fee", lots.Txn{Type: "Other Fee"}, lots.Classified{Action: lots.Exchange, Disposal: lots.DisposeFee}},
-		{"lost", lots.Txn{Type: "Stolen"}, lots.Classified{Action: lots.Gone, Disposal: lots.DisposeLost}},
-		{"donation", lots.Txn{Type: "Donation"}, lots.Classified{Action: lots.Gone, Disposal: lots.DisposeGift}},
-		{"withdrawal", lots.Txn{Type: "Withdrawal"}, lots.Classified{Action: lots.Out}},
-		{"trade, own-currency fee", lots.Txn{Type: "Trade", Kind: "buy", BuyCurrency: "BTC", SellCurrency: "USD",
-			FeeAmount: 1, FeeCurrency: "USD"}, lots.Classified{Action: lots.Buy}},
-		{"trade, third-currency fee", lots.Txn{Type: "Trade", Kind: "buy", BuyCurrency: "BTC", SellCurrency: "USD",
-			FeeAmount: 1, FeeCurrency: "BNB"}, lots.Classified{Action: lots.Buy, Fee: true}},
-		{"crypto trade, sell leg", lots.Txn{ID: "t:s", Type: "Trade", Kind: "sell", BuyCurrency: "ETH", SellCurrency: "BTC",
-			FeeAmount: 1, FeeCurrency: "BNB"}, lots.Classified{Action: lots.Sell, Disposal: lots.DisposeSell}},
-		{"crypto trade, buy leg", lots.Txn{ID: "t:b", Type: "Trade", Kind: "buy", BuyCurrency: "ETH", SellCurrency: "BTC",
-			FeeAmount: 1, FeeCurrency: "BNB"}, lots.Classified{Action: lots.Buy, Fee: true}},
-		{"no type: the kind", lots.Txn{Kind: "transfer_in", Quantity: 1}, lots.Classified{Action: lots.In}},
-		{"no type, no quantity: nothing moves", lots.Txn{Kind: "transfer_in"}, lots.Classified{Action: lots.Ignore}},
+		{"coin deposit", "Deposit", "", false, canonical.TxKindTransferIn, canonical.TxActionIn},
+		{"cash deposit", "Deposit", "", true, canonical.TxKindDeposit, canonical.TxActionIn},
+		{"coin withdrawal", "Withdrawal", "", false, canonical.TxKindTransferOut, canonical.TxActionOut},
+		{"cash withdrawal", "Withdrawal", "", true, canonical.TxKindWithdrawal, canonical.TxActionOut},
+		{"airdrop", "Airdrop", "", false, canonical.TxKindTransferIn, canonical.TxActionIncome},
+		{"gift received", "Gift / Tip", "", false, canonical.TxKindTransferIn, canonical.TxActionIncome},
+		{"staking", "Staking", "", false, canonical.TxKindStaking, canonical.TxActionIncome},
+		{"reward", "Reward / Bonus", "", false, canonical.TxKindInterest, canonical.TxActionIncome},
+		{"dust in", "Income (non taxable)", "Dust Sweeping", false, canonical.TxKindTransferIn, canonical.TxActionAcquired},
+		{"dust in, any case", "Income (non taxable)", "DUST SWEEPING", false, canonical.TxKindTransferIn,
+			canonical.TxActionAcquired},
+		{"move in", "Income (non taxable)", "", false, canonical.TxKindTransferIn, canonical.TxActionIn},
+		{"move out", "Expense (non taxable)", "", false, canonical.TxKindTransferOut, canonical.TxActionOut},
+		{"dust out", "Other Expense", "Dust Sweeping", false, "", canonical.TxActionConverted},
+		{"expense", "Other Expense", "Dust", false, "", canonical.TxActionSpend},
+		{"spend", "Spend", "", false, canonical.TxKindOther, canonical.TxActionSpend},
+		{"fee", "Other Fee", "", false, canonical.TxKindFee, canonical.TxActionFee},
+		{"stolen", "Stolen", "", false, canonical.TxKindOther, canonical.TxActionLost},
+		{"donation", "Donation", "", false, canonical.TxKindTransferOut, canonical.TxActionGift},
 	}
 	for _, c := range cases {
-		if got := classifyLots(c.t); got != c.want {
-			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
+		r, ok := silver.Classify(kindTable, silver.KindRow{Verb: c.typ, Text: c.comment, Cash: c.cash})
+		if !ok || r.Kind != c.kind || r.Action != c.action {
+			t.Errorf("%s: %v %q %q, want %q %q", c.name, ok, r.Kind, r.Action, c.kind, c.action)
+		}
+	}
+	if r, ok := silver.Classify(kindTable, silver.KindRow{Verb: "Margin Profit"}); ok {
+		t.Errorf("an unknown type matched %+v", r)
+	}
+}
+
+// A fee is a third-currency fee when it is in neither of the trade's
+// currencies, in any case, and not zero.
+func TestThirdCurrencyFee(t *testing.T) {
+	amt := func(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+	cases := []struct {
+		amount, fee, buy, sell string
+		want                   bool
+	}{
+		{"1", "BNB", "BTC", "USD", true},
+		{"1", "bnb", "BTC", "USD", true},
+		{"1", "USD", "BTC", "USD", false},
+		{"1", "btc", "BTC", "USD", false},
+		{"0", "BNB", "BTC", "USD", false},
+		{"", "BNB", "BTC", "USD", false},
+		{"1", "", "BTC", "USD", false},
+	}
+	for _, c := range cases {
+		if got := thirdCurrencyFee(amt(c.amount), c.fee, c.buy, c.sell); got != c.want {
+			t.Errorf("%+v: %v, want %v", c, got, c.want)
 		}
 	}
 }

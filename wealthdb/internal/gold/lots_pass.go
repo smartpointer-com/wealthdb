@@ -115,7 +115,8 @@ func lotFingerprints(ctx context.Context, db *sql.DB, f *lotFeed, cfg lots.Confi
 	rows, err := db.QueryContext(ctx, `
 WITH ids AS (SELECT unnest(?::VARCHAR[]) id),
      t AS (SELECT silver_source_id s, count(*) n, bit_xor(hash(transaction_external_id, occurred_at, account_external_id,
-                  instrument_external_id, instrument_hint, kind, currency, quantity, net_amount, description, payload::VARCHAR)) h
+                  instrument_external_id, instrument_hint, kind, currency, quantity, net_amount, description, action,
+                  payload::VARCHAR)) h
              FROM transactions WHERE silver_source_id IN (SELECT id FROM ids) GROUP BY 1),
      p AS (SELECT silver_source_id s, count(*) n, bit_xor(hash(snapshot_at, account_external_id, position_key,
                   instrument_external_id, currency, quantity, asset_class, vehicle,

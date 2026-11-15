@@ -393,6 +393,51 @@ func TestInsertTransactionsEnrichment(t *testing.T) {
 	}
 }
 
+// The writer stores a row's action, NULL where it states none, and
+// refuses one the lot engine does not read.
+func TestInsertTransactionsStoresTheAction(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertTransactions(ctx, []canonical.TransactionChange{{
+			SilverSourceID: "test-src", TransactionExternalID: "TX-ROC", OccurredAt: 1500, AccountExternalID: "ACC",
+			Kind: canonical.TxKindCorporateAction, Currency: "USD", Action: canonical.TxActionReturnOfCapital,
+		}, {
+			SilverSourceID: "test-src", TransactionExternalID: "TX-BUY", OccurredAt: 1500, AccountExternalID: "ACC",
+			Kind: canonical.TxKindBuy, Currency: "USD",
+		}})
+	})
+	got := map[string]sql.NullString{}
+	rows, err := db.QueryContext(ctx, `SELECT transaction_external_id, action FROM transactions`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var a sql.NullString
+		if err := rows.Scan(&id, &a); err != nil {
+			t.Fatal(err)
+		}
+		got[id] = a
+	}
+	if got["TX-ROC"].String != "return_of_capital" || got["TX-BUY"].Valid {
+		t.Errorf("actions %v", got)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := NewWriter(tx).InsertTransactions(ctx, []canonical.TransactionChange{{
+		SilverSourceID: "test-src", TransactionExternalID: "TX-BAD", OccurredAt: 1500, AccountExternalID: "ACC",
+		Kind: canonical.TxKindBuy, Currency: "USD", Action: "garbage",
+	}}); err == nil {
+		t.Error("the writer took an invalid action")
+	}
+}
+
 func TestInvalidEnumRejected(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

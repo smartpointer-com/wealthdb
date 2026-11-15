@@ -119,10 +119,10 @@ two canonical rows (`transactions.go`):
   a `sell` + `buy` pair whose ±V base-currency net amounts cancel,
   so SUM-derived cash balances are unaffected by the trade.
 - **Non-Trade CT types** (Deposit, Withdrawal, Staking, Income,
-  Airdrop, Gift, Spend, Lost, Stolen, …) → 1 row via the CT-type →
-  `TxKind` map in `kindmap.go`. Currency is the asset that
-  actually moved; non-base assets also carry instrument + quantity
-  so instrument-keyed rollups work.
+  Airdrop, Gift, Spend, Lost, Stolen, …) → 1 row via the CT-type
+  table in `kindmap.go`, which gives the row its `TxKind` and its
+  action. Currency is the asset that actually moved; non-base assets
+  also carry instrument + quantity so instrument-keyed rollups work.
 
 The closing-balance invariant `balance(C) = SUM(quantity WHERE
 instrument = C) + SUM(net_amount WHERE currency = C)` ties the
@@ -132,11 +132,17 @@ it gets no row of its own, which would double-count it. A fee in a
 third currency rides the payload. Only the standalone "Other Fee" type
 produces a `fee` row.
 
-Every row's payload carries the CT fields the lot engine reads, under
-their silver column names, each only when set: `type`, `comment`,
-`buy_currency`, `sell_currency`, `fee_amount` and `fee_currency`. The
-kind alone cannot tell a deposit from an airdrop or a dust sweep; the
-type can. [../LOTS.md](../LOTS.md) §6 says how the lot engine reads them.
+A row states its action, what it does to the coin's lots, where its
+kind cannot say it. The kind alone cannot tell a deposit from an airdrop
+or a dust sweep; the type and the comment can. A trade whose fee is in a third currency states
+`third_currency_fee` on the row that buys, or on the one row of a trade
+with the base currency on one side. [../LOTS.md](../LOTS.md) §6 lists the
+actions.
+
+Every row's payload carries the row's CT fields under their silver
+column names, each only when set: `type`, `comment`, `buy_currency`,
+`sell_currency`, `fee_amount` and `fee_currency`. The lot engine reads
+the fee to value a third-currency fee.
 
 ## 8. Change number
 

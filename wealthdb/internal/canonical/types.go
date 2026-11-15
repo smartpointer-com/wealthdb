@@ -267,7 +267,73 @@ type TransactionChange struct {
 	// head that column "Check or Slip #", where a slip number rides in
 	// on an inflow. Gold migration 0075.
 	CheckNumber *string
-	Payload     json.RawMessage
+	// Action is what the row does to the lots of its instrument where
+	// its kind and the sign of its quantity do not say it: the deposit
+	// of a coin from its airdrop, a corporate action's rule, an option
+	// leg booked on its stock. Only the source's own words
+	// tell such rows apart, so the adapter states the verdict here and
+	// the lot engine reads it (gold's transactions.action). Empty on
+	// every other row.
+	Action  TxAction `json:",omitempty"`
+	Payload json.RawMessage
+}
+
+// TxAction is what a transaction does to the lots of its instrument,
+// as the lot engine reads it (docs/LOTS.md §3). The empty action leaves
+// the reading to the row's kind and the sign of its quantity.
+type TxAction string
+
+const (
+	// TxActionIgnore moves no lot.
+	TxActionIgnore TxAction = "ignore"
+	// TxActionIn and TxActionOut are the legs of a move: paired, the
+	// lots move with it; alone, a receipt of unknown cost or a
+	// departure with no proceeds.
+	TxActionIn  TxAction = "in"
+	TxActionOut TxAction = "out"
+	// TxActionIncome is a receipt in kind, at its market value.
+	TxActionIncome TxAction = "income"
+	// TxActionAcquired is a purchase at market value: the coin a dust
+	// sweep converts the dust into.
+	TxActionAcquired TxAction = "acquired"
+	// TxActionConverted is a sale at market value: the dust a sweep
+	// converts.
+	TxActionConverted TxAction = "converted"
+	// TxActionSpend is a spend at market value.
+	TxActionSpend TxAction = "spend"
+	// TxActionFee is a fee paid in kind, at market value.
+	TxActionFee TxAction = "fee"
+	// TxActionLost and TxActionGift relieve lots with no proceeds: lost
+	// or stolen, or given away.
+	TxActionLost TxAction = "lost"
+	TxActionGift TxAction = "gift"
+	// TxActionThirdCurrencyFee is a trade, read by its kind, whose fee
+	// is in neither of its currencies, so its amounts do not hold it:
+	// the engine values the fee and adds it to the cost of a buy or
+	// takes it off the proceeds of a sale.
+	TxActionThirdCurrencyFee TxAction = "third_currency_fee"
+	// The rules of a corporate action: a reorganisation pairs the day's
+	// legs, a return of capital lowers the cost, cash in lieu sells the
+	// fraction, an expiry disposes at zero, and a cash-only action
+	// moves no lot.
+	TxActionReorganisation  TxAction = "reorganisation"
+	TxActionReturnOfCapital TxAction = "return_of_capital"
+	TxActionCashInLieu      TxAction = "cash_in_lieu"
+	TxActionExpiry          TxAction = "expiry"
+	TxActionCashOnly        TxAction = "cash_only"
+)
+
+var txActionValues = map[TxAction]struct{}{
+	"": {}, TxActionIgnore: {}, TxActionIn: {}, TxActionOut: {}, TxActionIncome: {}, TxActionAcquired: {},
+	TxActionConverted: {}, TxActionSpend: {}, TxActionFee: {}, TxActionLost: {}, TxActionGift: {},
+	TxActionThirdCurrencyFee: {}, TxActionReorganisation: {}, TxActionReturnOfCapital: {},
+	TxActionCashInLieu: {}, TxActionExpiry: {}, TxActionCashOnly: {},
+}
+
+// Valid reports whether a is the empty action or one of the above.
+func (a TxAction) Valid() bool {
+	_, ok := txActionValues[a]
+	return ok
 }
 
 // Status is the return value of silver.Connection.Status(). See

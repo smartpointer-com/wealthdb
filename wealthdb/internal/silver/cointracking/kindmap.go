@@ -1,13 +1,15 @@
 package cointracking
 
-import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+import (
+	"regexp"
 
-// Direction discriminates inbound (asset arriving / cash inflow)
-// from outbound (asset leaving / cash outflow) for non-Trade
-// silver rows. Used by the adapter to sign Quantity, and to pick
-// between the inbound/outbound variant of canonical TxKinds that
-// have one of each (Deposit vs Withdrawal, Transfer_In vs
-// Transfer_Out).
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+)
+
+// direction discriminates inbound (asset arriving / cash inflow) from
+// outbound (asset leaving / cash outflow) for non-Trade silver rows. It
+// signs Quantity and NetAmount.
 type direction int
 
 const (
@@ -15,83 +17,60 @@ const (
 	dirOutbound direction = -1
 )
 
-// classification carries everything the adapter needs to project
-// one silver non-Trade row into a canonical TransactionChange:
-// the kind to stamp (varying per fiat-vs-crypto + base-vs-non-base),
-// the direction so Quantity gets the right sign, and a flag for
-// whether to preserve the raw CT type in the row's payload (the
-// canonical taxonomy collapses several CT types into one TxKind
-// for "Other"; the raw value is the discriminator a reader needs
-// to reconstruct the original event).
-type classification struct {
-	kind        canonical.TxKind
-	dir         direction
-	preserveRaw bool
+// kindTable maps a silver `transactions.type` to its canonical kind and
+// to what the row does to the coin's lots (docs/LOTS.md §6). The kind
+// alone cannot tell a deposit from an airdrop: both are transfer_in.
+//
+//   - Deposit and Withdrawal are deposit and withdrawal for a fiat
+//     currency (real cash), transfer_in and transfer_out for a coin
+//     (positions moving in and out).
+//   - The non-taxable income and expense are the two legs of a move
+//     between wallets, except that a dust sweep ("Dust Sweeping") is
+//     its own event: the dust is sold and the coin it converts into is
+//     bought, both at market value.
+//   - A gift is split by direction: "Gift / Tip" is one received,
+//     "Gift" and "Donation" one given.
+//   - Spend, Lost and Stolen are other, their type kept as the
+//     description: no canonical kind names a coin that leaves with no
+//     leg to balance it.
+//   - "Other Expense" states an action and no kind: its kind is read
+//     as for a type the table does not know (projectNonTrade).
+var kindTable = []silver.KindRule{
+	{Verb: "Deposit", When: silver.Cash, Kind: canonical.TxKindDeposit, Action: canonical.TxActionIn},
+	{Verb: "Deposit", Kind: canonical.TxKindTransferIn, Action: canonical.TxActionIn},
+	{Verb: "Withdrawal", When: silver.Cash, Kind: canonical.TxKindWithdrawal, Action: canonical.TxActionOut},
+	{Verb: "Withdrawal", Kind: canonical.TxKindTransferOut, Action: canonical.TxActionOut},
+	{Verb: "Other Fee", Kind: canonical.TxKindFee, Action: canonical.TxActionFee},
+	{Verb: "Staking", Kind: canonical.TxKindStaking, Action: canonical.TxActionIncome},
+	{Verb: "Reward / Bonus", Kind: canonical.TxKindInterest, Action: canonical.TxActionIncome},
+	{Verb: "Income", Kind: canonical.TxKindInterest, Action: canonical.TxActionIncome},
+	{Verb: "Income (non taxable)", Text: dustSweep, Kind: canonical.TxKindTransferIn, Action: canonical.TxActionAcquired},
+	{Verb: "Income (non taxable)", Kind: canonical.TxKindTransferIn, Action: canonical.TxActionIn},
+	{Verb: "Expense (non taxable)", Kind: canonical.TxKindTransferOut, Action: canonical.TxActionOut},
+	{Verb: "Airdrop", Kind: canonical.TxKindTransferIn, Action: canonical.TxActionIncome},
+	{Verb: "Airdrop (non taxable)", Kind: canonical.TxKindTransferIn, Action: canonical.TxActionIncome},
+	{Verb: "Gift / Tip", Kind: canonical.TxKindTransferIn, Action: canonical.TxActionIncome},
+	{Verb: "Gift", Kind: canonical.TxKindTransferOut, Action: canonical.TxActionGift},
+	{Verb: "Donation", Kind: canonical.TxKindTransferOut, Action: canonical.TxActionGift},
+	{Verb: "Spend", Kind: canonical.TxKindOther, Action: canonical.TxActionSpend},
+	{Verb: "Lost", Kind: canonical.TxKindOther, Action: canonical.TxActionLost},
+	{Verb: "Stolen", Kind: canonical.TxKindOther, Action: canonical.TxActionLost},
+	{Verb: "Other Expense", Text: dustSweep, Action: canonical.TxActionConverted},
+	{Verb: "Other Expense", Action: canonical.TxActionSpend},
 }
 
-// classifyCTType maps a silver `transactions.type` value to its
-// canonical kind + direction. Returns (classification, false) for
-// types the adapter doesn't recognise yet — the caller falls
-// through to TxKindOther so a new CT type ships as "unmapped"
-// rather than silently misclassified.
-//
-// `currencyIsFiat` tells the mapper whether the currency that
-// moved is a fiat (USD, EUR, …). It only affects Deposit /
-// Withdrawal: fiat → deposit/withdrawal (real cash), crypto →
-// transfer_in/transfer_out (positions moving in/out).
-func classifyCTType(ctType string, currencyIsFiat bool) (classification, bool) {
-	switch ctType {
-	// --- inbound, fiat-vs-crypto branches Deposit only ---
-	case "Deposit":
-		if currencyIsFiat {
-			return classification{kind: canonical.TxKindDeposit, dir: dirInbound}, true
-		}
-		return classification{kind: canonical.TxKindTransferIn, dir: dirInbound}, true
-	case "Withdrawal":
-		if currencyIsFiat {
-			return classification{kind: canonical.TxKindWithdrawal, dir: dirOutbound}, true
-		}
-		return classification{kind: canonical.TxKindTransferOut, dir: dirOutbound}, true
+// dustSweep matches the comment CoinTracking gives a dust sweep, read
+// with its surrounding space trimmed.
+var dustSweep = regexp.MustCompile(`(?i)^Dust Sweeping$`)
 
-	// --- fee ---
-	case "Other Fee":
-		return classification{kind: canonical.TxKindFee, dir: dirOutbound}, true
-
-	// --- staking (its own canonical kind) ---
-	case "Staking":
-		return classification{kind: canonical.TxKindStaking, dir: dirInbound}, true
-
-	// --- interest-like inbound (recurring yield / income) ---
-	case "Reward / Bonus", "Income":
-		return classification{kind: canonical.TxKindInterest, dir: dirInbound}, true
-
-	// --- non-taxable internal-transfer-pair markers ---
-	case "Income (non taxable)":
-		return classification{kind: canonical.TxKindTransferIn, dir: dirInbound}, true
-	case "Expense (non taxable)":
-		return classification{kind: canonical.TxKindTransferOut, dir: dirOutbound}, true
-
-	// --- airdrops (one-off inbound) ---
-	case "Airdrop", "Airdrop (non taxable)":
-		return classification{kind: canonical.TxKindTransferIn, dir: dirInbound}, true
-
-	// --- gifts: directionally split per CT (Gift / Tip is
-	//      inbound — "received a tip"; Gift is outbound — "I
-	//      gave something") ---
-	case "Gift / Tip":
-		return classification{kind: canonical.TxKindTransferIn, dir: dirInbound}, true
-	case "Gift", "Donation":
-		return classification{kind: canonical.TxKindTransferOut, dir: dirOutbound}, true
-
-	// --- losses without a compensating leg. The canonical taxonomy
-	//      doesn't have a dedicated kind for these (they're cost-
-	//      basis-zeroing events, not really transfers), so they
-	//      collapse to TxKindOther with the raw CT type preserved
-	//      in payload for downstream tax tooling. ---
-	case "Spend", "Lost", "Stolen":
-		return classification{kind: canonical.TxKindOther, dir: dirOutbound, preserveRaw: true}, true
+// directionOf is the direction of a row the table gives a kind: the
+// actions that bring the coin in are inbound, the rest outbound.
+func directionOf(a canonical.TxAction) direction {
+	switch a {
+	case canonical.TxActionIn, canonical.TxActionIncome, canonical.TxActionAcquired:
+		return dirInbound
 	}
-	return classification{}, false
+	return dirOutbound
 }
 
 // fiatTickers is the same set the price fetcher uses to skip fiat

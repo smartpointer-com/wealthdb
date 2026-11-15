@@ -1,27 +1,28 @@
 package schwab
 
 import (
+	"encoding/json"
 	"testing"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-func TestCorporateRuleReadsTheActionThenTheDescription(t *testing.T) {
+func TestCorporateActionReadsTheActionThenTheDescription(t *testing.T) {
 	cases := []struct {
 		action, desc string
-		want         lots.CorporateRule
+		want         canonical.TxAction
 	}{
-		{"Return Of Capital", "EXAMPLE CORP", lots.CorpReturnOfCapital},
-		{"Unissued Rights Redemption", "EXAMPLE CORP", lots.CorpIgnore},
-		{"Litigation", "EXAMPLE CORP", lots.CorpIgnore},
-		{"", "Exchange CALL EXAMPLE CORP $10", lots.CorpIgnore},
-		{"", "Removed due to Expiration CALL EXAMPLE", lots.CorpExpiry},
-		{"Reverse Split", "EXAMPLE CORP", lots.CorpReorg},
-		{"", "EXAMPLE FUND FORWARD SPLIT WITH STOCK SPLIT SHARES", lots.CorpReorg},
+		{"Return Of Capital", "EXAMPLE CORP", canonical.TxActionReturnOfCapital},
+		{"Unissued Rights Redemption", "EXAMPLE CORP", canonical.TxActionCashOnly},
+		{"Litigation", "EXAMPLE CORP", canonical.TxActionCashOnly},
+		{"", "Exchange CALL EXAMPLE CORP $10", canonical.TxActionCashOnly},
+		{"", "Removed due to Expiration CALL EXAMPLE", canonical.TxActionExpiry},
+		{"Reverse Split", "EXAMPLE CORP", canonical.TxActionReorganisation},
+		{"", "EXAMPLE FUND FORWARD SPLIT WITH STOCK SPLIT SHARES", canonical.TxActionReorganisation},
 	}
 	for _, c := range cases {
-		if got := corporateRule(lots.Txn{Action: c.action, Description: c.desc}); got != c.want {
-			t.Errorf("%q %q: %v, want %v", c.action, c.desc, got, c.want)
+		if got := lotAction(canonical.TxKindCorporateAction, "", c.action, c.desc); got != c.want {
+			t.Errorf("%q %q: %q, want %q", c.action, c.desc, got, c.want)
 		}
 	}
 }
@@ -32,35 +33,72 @@ func TestCorporateRuleReadsTheActionThenTheDescription(t *testing.T) {
 func TestCashInLieuReadsAlikeInBothFeeds(t *testing.T) {
 	cases := []struct {
 		typ, action, desc string
-		want              lots.CorporateRule
+		want              canonical.TxAction
 	}{
-		{"JOURNAL", "", "Cash In Lieu EXAMPLE HOLDINGS INC", lots.CorpCashInLieu},
-		{"JOURNAL", "", "CASH IN LIEU OF FRACTIONAL SHARES", lots.CorpCashInLieu},
-		{"", "Cash In Lieu", "EXAMPLE HOLDINGS INC", lots.CorpCashInLieu},
-		{"", "Reverse Split", "EXAMPLE HOLDINGS INC", lots.CorpReorg},
+		{"JOURNAL", "", "Cash In Lieu EXAMPLE HOLDINGS INC", canonical.TxActionCashInLieu},
+		{"JOURNAL", "", "CASH IN LIEU OF FRACTIONAL SHARES", canonical.TxActionCashInLieu},
+		{"", "Cash In Lieu", "EXAMPLE HOLDINGS INC", canonical.TxActionCashInLieu},
+		{"", "Reverse Split", "EXAMPLE HOLDINGS INC", canonical.TxActionReorganisation},
 	}
 	for _, c := range cases {
-		got := corporateRule(lots.Txn{Type: c.typ, Action: c.action, Description: c.desc})
-		if got != c.want {
-			t.Errorf("%q %q %q: %v, want %v", c.typ, c.action, c.desc, got, c.want)
+		if got := lotAction(canonical.TxKindCorporateAction, c.typ, c.action, c.desc); got != c.want {
+			t.Errorf("%q %q %q: %q, want %q", c.typ, c.action, c.desc, got, c.want)
 		}
 	}
 }
 
-func TestClassifyLeavesATradeWithoutCashAlone(t *testing.T) {
+// A TRADE moving no cash is no event; every other row of a kind that
+// says what it does is left to its kind.
+func TestLotActionLeavesATradeWithoutCashAlone(t *testing.T) {
 	cases := []struct {
-		kind, typ string
-		qty       float64
-		want      lots.Action
+		kind canonical.TxKind
+		typ  string
+		want canonical.TxAction
 	}{
-		{"other", "TRADE", 10, lots.Ignore},
-		{"sell", "TRADE", -10, lots.Sell},
-		{"other", "MEMORANDUM", 10, lots.In},
-		{"corporate_action", "RECEIVE_AND_DELIVER", 10, lots.Corporate},
+		{canonical.TxKindOther, "TRADE", canonical.TxActionIgnore},
+		{canonical.TxKindSell, "TRADE", ""},
+		{canonical.TxKindOther, "MEMORANDUM", ""},
+		{canonical.TxKindCorporateAction, "RECEIVE_AND_DELIVER", canonical.TxActionReorganisation},
 	}
 	for _, c := range cases {
-		if got := classify(lots.Txn{Kind: c.kind, Type: c.typ, Quantity: c.qty}).Action; got != c.want {
-			t.Errorf("%s %s: %v, want %v", c.kind, c.typ, got, c.want)
+		if got := lotAction(c.kind, c.typ, "", ""); got != c.want {
+			t.Errorf("%s %s: %q, want %q", c.kind, c.typ, got, c.want)
+		}
+	}
+}
+
+// The payload's type and action read as the strings it states: the
+// "Action" key over the "action" one, a null as no value.
+func TestPayloadVerbs(t *testing.T) {
+	cases := []struct{ payload, typ, action string }{
+		{`{"type":"TRADE","netAmount":0}`, "TRADE", ""},
+		{`{"Action":"Cash In Lieu","action":"Split"}`, "", "Cash In Lieu"},
+		{`{"Action":null,"action":"Split"}`, "", "Split"},
+		{`{"Action":"","action":"Split"}`, "", ""},
+		{`{"action":"Split","type":7}`, "7", "Split"},
+		{`not json`, "", ""},
+		{``, "", ""},
+	}
+	for _, c := range cases {
+		if typ, action := payloadVerbs(json.RawMessage(c.payload)); typ != c.typ || action != c.action {
+			t.Errorf("%s: %q %q, want %q %q", c.payload, typ, action, c.typ, c.action)
+		}
+	}
+}
+
+// The readers state the action of the rows they emit: a TRADE that
+// moves no cash, and a corporate action by its words.
+func TestSetLotActions(t *testing.T) {
+	desc := "Cash In Lieu EXAMPLE HOLDINGS INC"
+	txs := []canonical.TransactionChange{
+		{Kind: canonical.TxKindOther, Payload: json.RawMessage(`{"type":"TRADE"}`)},
+		{Kind: canonical.TxKindCorporateAction, Description: &desc, Payload: json.RawMessage(`{"type":"JOURNAL"}`)},
+		{Kind: canonical.TxKindBuy, Payload: json.RawMessage(`{"type":"TRADE"}`)},
+	}
+	setLotActions(txs)
+	for i, want := range []canonical.TxAction{canonical.TxActionIgnore, canonical.TxActionCashInLieu, ""} {
+		if txs[i].Action != want {
+			t.Errorf("row %d: %q, want %q", i, txs[i].Action, want)
 		}
 	}
 }

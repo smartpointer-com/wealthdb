@@ -207,8 +207,8 @@ to gold's `kind` (`kindFor`):
 
 A `TRADE` with a zero `netAmount` buys and sells nothing. Schwab books
 a "System transfer" this way. It restates a holding at its cost, and the
-shares stay in the account. The row is `other`, and the lot engine
-skips it.
+shares stay in the account. The row is `other` with the action
+`ignore`, and the lot engine skips it.
 
 A `JOURNAL` moves cash or shares inside the holder's accounts. Schwab
 books some cash rows as journals too, and the adapter types them by the
@@ -219,9 +219,8 @@ words of their description (`journalShapes`):
   (`Foreign Tax Paid`) are `tax`;
 - a depositary's fee on an ADR (`ADR Mgmt Fee`) is a `fee`;
 - cash in lieu of a fractional share is a `corporate_action`, as the web
-  feed books it. The lot engine reads it as cash in lieu
-  (`CorpCashInLieu`) in both feeds. A cash-only row without an instrument moves no
-  lot.
+  feed books it. Its action is `cash_in_lieu` in both feeds. A cash-only
+  row without an instrument moves no lot.
 
 The API often books the withholding and the depositary's fee with no
 such words: the description names only the security, and the row moves

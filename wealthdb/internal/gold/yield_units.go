@@ -356,17 +356,6 @@ func (u *yieldUnits) holdsAt(k unitKey, t unitTrade) bool {
 // after it, as the snapshot shows (after).
 func readUnitTrades(ctx context.Context, db querier, srcs, iids []string, from, asOf int64) ([]bookedTrade,
 	error) {
-	kinds := map[string]string{}
-	if err := scanAll(ctx, db, `SELECT silver_source_id, silver_kind FROM silver_sources`, func(rows *sql.Rows) error {
-		var id, kind string
-		if err := rows.Scan(&id, &kind); err != nil {
-			return err
-		}
-		kinds[id] = kind
-		return nil
-	}); err != nil {
-		return nil, err
-	}
 	var out []bookedTrade
 	err := scanAll(ctx, db, unitWindowCTE+`,
 folded AS (
@@ -384,7 +373,7 @@ named AS (
     UNION SELECT ia.src, ia.alias FROM instrument_aliases() ia
             JOIN paid ON paid.src = ia.src AND paid.k = ia.k)
 SELECT t.silver_source_id, t.account_external_id, t.k, t.instrument_external_id, t.occurred_at,
-       t.transaction_external_id, t.kind, CAST(t.quantity AS DOUBLE), `+lotTxnColumns+`
+       t.kind, CAST(t.quantity AS DOUBLE), COALESCE(t.action, '')
   FROM folded t
   JOIN first f ON f.silver_source_id = t.silver_source_id
  WHERE t.occurred_at >= f.first_at
@@ -394,17 +383,13 @@ SELECT t.silver_source_id, t.account_external_id, t.k, t.instrument_external_id,
 		var k unitKey
 		var iid string
 		var at int64
-		var t lots.Txn
-		if err := rows.Scan(append([]any{&k.src, &k.acct, &k.iid, &iid, &at, &t.ID, &t.Kind, &t.Quantity},
-			lotTxnFields(&t)...)...); err != nil {
+		var kind string
+		var qty float64
+		var action canonical.TxAction
+		if err := rows.Scan(&k.src, &k.acct, &k.iid, &iid, &at, &kind, &qty, &action); err != nil {
 			return err
 		}
-		pol, _ := lots.PolicyFor(kinds[k.src])
-		classify := pol.Classify
-		if classify == nil {
-			classify = lots.DefaultClassify
-		}
-		if move, corp := unitMove(classify(t), t.Quantity); move != 0 {
+		if move, corp := unitMove(lotClassify(kind, qty, action), qty); move != 0 {
 			out = append(out, bookedTrade{key: k, iid: iid, trade: unitTrade{at: at, qty: move, corp: corp}})
 		}
 		return nil

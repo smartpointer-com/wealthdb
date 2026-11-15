@@ -296,6 +296,38 @@ func TestLotPassCorporateActions(t *testing.T) {
 	}
 }
 
+// The feed reads what a row does to the lots from its action, and from
+// its kind where it states none: a return of capital lowers the cost,
+// an option leg booked on the stock moves no lot, a coin that arrives
+// as income opens a lot at market value rather than one of unknown
+// cost, and a third-currency fee goes on the cost of its buy.
+func TestLotPassReadsTheStatedAction(t *testing.T) {
+	t.Parallel()
+	db, ctx := lotFixture(t, `
+        INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES
+            ('lot-src', 3*86400, 'USD', 'COIN', 40),
+            ('lot-src', 3*86400, 'USD', 'FEE', 2);
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
+                                  instrument_external_id, kind, currency, quantity, net_amount, action, payload) VALUES
+            ('lot-src', 'b1', 1*86400,  'A', 'XYZ',  'buy',              'USD',  10, -100, NULL, NULL),
+            ('lot-src', 'o1', 2*86400,  'A', 'XYZ',  'buy',              'USD',   1,   -5, 'ignore', NULL),
+            ('lot-src', 'r1', 5*86400,  'A', 'XYZ',  'corporate_action', 'USD',   0,   20, 'return_of_capital', NULL),
+            ('lot-src', 'i1', 3*86400,  'A', 'COIN', 'transfer_in',      'COIN',  2,    2, 'income', NULL),
+            ('lot-src', 'f1', 3*86400,  'A', 'COIN', 'buy',              'USD',   1,  -40, 'third_currency_fee',
+             '{"fee_amount": 3, "fee_currency": "FEE"}');
+        INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+                               instrument_external_id, asset_class, currency, quantity, market_value) VALUES
+            ('lot-src', 20*86400, 'A', 'XYZ',  'XYZ',  'public_equity', 'USD', 10, 150),
+            ('lot-src', 20*86400, 'A', 'COIN', 'COIN', 'crypto',        'USD',  3, 120);`)
+	rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = 'XYZ'`); !closeEnough(got, 80) {
+		t.Errorf("XYZ basis %v, want 80: the option leg moves no lot, the return of capital lowers the cost", got)
+	}
+	if got := queryFloat(t, db, `SELECT book_value FROM positions WHERE position_key = 'COIN'`); !closeEnough(got, 126) {
+		t.Errorf("COIN basis %v, want 126: the income at market value, the buy with its fee", got)
+	}
+}
+
 func TestLotPassObservesZeroOnlyForAPresentAccount(t *testing.T) {
 	t.Parallel()
 	// XYZ leaves A's snapshot while A shows other rows: an implied

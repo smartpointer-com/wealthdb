@@ -64,7 +64,10 @@ A key is an instrument held in one account of one source. A pooled
 source keys on the portfolio instead of the account (§6). A key's open
 lots are its book.
 
-The feed reads gold into events, per key, in time order.
+The feed reads gold into events, per key, in time order. A row reads
+by its kind and the sign of its quantity, or by its action where the
+adapter states one (`transactions.action`): the source's own words
+tell a deposit from an airdrop, or name a corporate action's rule.
 
 | event | from |
 |---|---|
@@ -176,15 +179,16 @@ pairs relieves lots with no proceeds.
 
 ### 3.5 Corporate actions
 
-A policy maps each corporate action to a rule:
+A corporate action's rule is its action. A row that states none is a
+reorganisation:
 
-| rule | the engine does |
+| action | the engine does |
 |---|---|
-| reorg | pairs the account's outgoing and incoming legs of the day (below) |
-| return of capital | lowers the cost of the open lots, pro rata by quantity |
-| cash in lieu | sells the shares for the amount |
-| expiry | disposes at zero proceeds: the premium is the loss |
-| ignore | nothing: a cash-only action |
+| `reorganisation` | pairs the account's outgoing and incoming legs of the day (below) |
+| `return_of_capital` | lowers the cost of the open lots, pro rata by quantity |
+| `cash_in_lieu` | sells the shares for the amount |
+| `expiry` | disposes at zero proceeds: the premium is the loss |
+| `cash_only` | nothing: a cash-only action |
 
 The reorg legs of one account and day:
 
@@ -315,25 +319,28 @@ of a purchase of the same key is a `wash_sale_window` finding.
 ## 6. Per-source policies
 
 A policy holds what a kind knows of its feed: its mode and grain, what
-its fees mean, whether its trades are dated by settlement, the
-instruments that are never keys, and how its transactions read
-(`lots.Policy`).
+its fees mean, whether its trades are dated by settlement, and the
+instruments that are never keys (`lots.Policy`). The kind's adapter
+states the actions of its rows (§3.1).
 
 - **cointracking.** Pooled per portfolio: coins sweep between wallets on
   arrival, so a wallet holds no lots of its own. Fees included: the
   amounts are net of a trade's fee in either of its own currencies, so
   the cost holds it and nothing is added. A fee in a third currency is
-  valued and added. A fiat ticker is never a key. The adapter keeps
-  CoinTracking's type in the payload, which tells a deposit from an
+  valued and added (`third_currency_fee`). A fiat ticker is never a
+  key. The action is CoinTracking's type, which tells a deposit from an
   airdrop:
 
-  | CoinTracking type | the engine reads |
-  |---|---|
-  | Staking, Reward / Bonus, Income, Airdrop, Gift / Tip | income in kind |
-  | Other Fee | a fee disposal |
-  | Spend | a spend at market value |
-  | Lost, Stolen, Gift, Donation | lots that leave with no proceeds |
-  | `Income (non taxable)`, `Other Expense` with the comment "Dust Sweeping" | a dust sweep: the dust sells and the coin is bought at market value |
+  | CoinTracking type | action | the engine reads |
+  |---|---|---|
+  | Deposit, Income (non taxable) | `in` | a transfer in |
+  | Withdrawal, Expense (non taxable) | `out` | a transfer out |
+  | Staking, Reward / Bonus, Income, Airdrop, Gift / Tip | `income` | income in kind |
+  | Other Fee | `fee` | a fee disposal |
+  | Spend, Other Expense | `spend` | a spend at market value |
+  | Lost, Stolen | `lost` | lots that leave with no proceeds |
+  | Gift, Donation | `gift` | lots that leave with no proceeds |
+  | `Income (non taxable)`, `Other Expense` with the comment "Dust Sweeping" | `acquired`, `converted` | a dust sweep: the dust sells and the coin is bought at market value |
 
 - **fidelity**, which also reads the svb collector's sources. Fees
   unknown: the statements do not say whether commission is in an
@@ -341,12 +348,12 @@ instruments that are never keys, and how its transactions read
   effective date, so a term near the one-year line can be off. A
   corporate action reads by the action its description opens with. An
   option leg ("PUT (XYZ)", "CALL (XYZ)"), which the statements book
-  on the underlying's key, moves no lot of the stock. The core money
-  market fund is cash, and no key.
+  on the underlying's key, moves no lot of the stock (`ignore`). The
+  core money market fund is cash, and no key.
 - **schwab.** A corporate action reads by its stated action, else its
   description; rights redemptions, litigation proceeds and option
-  exchanges move no lot. A trade that moves no cash (a "System
-  transfer") moves no lot either.
+  exchanges move no lot (`cash_only`). A trade that moves no cash (a
+  "System transfer") moves no lot either (`ignore`).
 - **ubs, swissquote, viac.** Shadow, at the average method. They state
   an average cost and no lots, and a gap in a history would fill with
   seeds of unknown cost. `gains check` compares the ledger with the

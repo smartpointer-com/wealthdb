@@ -247,6 +247,7 @@ SELECT activity_id, timestamp, account_external_id, kind, payload
 		return nil, err
 	}
 	settleDeliveries(out.Transactions, deliveries)
+	setLotActions(out.Transactions)
 	return silver.NewTransactionStream(out), nil
 }
 

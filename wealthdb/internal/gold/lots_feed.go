@@ -8,8 +8,10 @@ import (
 )
 
 // The lot engine's feed: gold rows into lots.Events (docs/LOTS.md §3).
-// One generic reader serves every source; the source kind's registered
-// lots.Policy says how to read its transactions.
+// One generic reader serves every source. A transaction reads by the
+// action its adapter states, else by its kind (lotClassify); the source
+// kind's registered lots.Policy holds the rest of what the engine knows
+// of its feed.
 
 type lotFeed struct {
 	cfg     lots.Config

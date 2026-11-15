@@ -29,9 +29,9 @@ import (
 //	           + SUM(NetAmount WHERE Currency   = C)
 //
 // A trade's fee in one of its own currencies is inside its amounts; one
-// in a third currency is not, and rides the payload (lotPayload) for
-// the lot engine to value. Only the standalone "Other Fee" type
-// produces a fee row.
+// in a third currency is not. The row's action says so, and the fee
+// rides the payload (rowPayload) for the lot engine to value. Only the
+// standalone "Other Fee" type produces a fee row.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
@@ -75,7 +75,7 @@ SELECT
 			&feeAmtStr, &feeCcy, &payload, &comment); err != nil {
 			return err
 		}
-		payload, err = lotPayload(payload, ctType, comment,
+		payload, err = rowPayload(payload, ctType, comment,
 			buyCcy, sellCcy, feeAmtStr, feeCcy)
 		if err != nil {
 			return fmt.Errorf("tx %s payload: %w", txID, err)
@@ -89,10 +89,11 @@ SELECT
 		if ctType == "Trade" {
 			emitted, err = c.projectTrade(ctx,
 				txID, walletID, occurredAt, base, portfolioID,
-				buyAmtStr, buyCcy, sellAmtStr, sellCcy, payload)
+				buyAmtStr, buyCcy, sellAmtStr, sellCcy,
+				thirdCurrencyFee(feeAmtStr, feeCcy, buyCcy, sellCcy), payload)
 		} else {
 			emitted, err = projectNonTrade(
-				txID, walletID, occurredAt, base, ctType,
+				txID, walletID, occurredAt, base, ctType, comment,
 				buyAmtStr, buyCcy, sellAmtStr, sellCcy,
 				payload)
 		}
@@ -131,13 +132,15 @@ SELECT portfolio_external_id, MIN(quote_currency)
 }
 
 // projectTrade splits a Trade silver row into 1 row (one side is
-// the base currency) or 2 rows (neither side is the base).
+// the base currency) or 2 rows (neither side is the base). A fee in a
+// third currency (feeApart) goes on the row that buys, or on the one row
+// of a trade with the base currency on one side.
 func (c *Connection) projectTrade(
 	ctx context.Context,
 	txID, walletID string, occurredAt int64, base, portfolioID string,
 	buyAmtStr sql.NullString, buyCcy string,
 	sellAmtStr sql.NullString, sellCcy string,
-	payload sql.NullString,
+	feeApart bool, payload sql.NullString,
 ) ([]canonical.TransactionChange, error) {
 	buyAmt, err := decimalOrNil(buyAmtStr)
 	if err != nil {
@@ -152,6 +155,10 @@ func (c *Connection) projectTrade(
 		return nil, nil
 	}
 	pl := silver.JSONOrNil(payload)
+	var fee canonical.TxAction
+	if feeApart {
+		fee = canonical.TxActionThirdCurrencyFee
+	}
 
 	base = strings.ToUpper(base)
 	buyCcy = strings.ToUpper(buyCcy)
@@ -162,12 +169,12 @@ func (c *Connection) projectTrade(
 		// 1-leg buy: cash (base) → asset (other).
 		return []canonical.TransactionChange{
 			buildBaseLegTradeRow(txID, walletID, occurredAt, base,
-				buyCcy, *buyAmt, *sellAmt, canonical.TxKindBuy, pl)}, nil
+				buyCcy, *buyAmt, *sellAmt, canonical.TxKindBuy, fee, pl)}, nil
 	case buyCcy == base:
 		// 1-leg sell: asset (other) → cash (base).
 		return []canonical.TransactionChange{
 			buildBaseLegTradeRow(txID, walletID, occurredAt, base,
-				sellCcy, *sellAmt, *buyAmt, canonical.TxKindSell, pl)}, nil
+				sellCcy, *sellAmt, *buyAmt, canonical.TxKindSell, fee, pl)}, nil
 	default:
 		// 2-leg split (crypto-to-crypto or fiat-to-fiat-without-base).
 		v, err := c.lookupTradeValue(ctx, portfolioID, base, occurredAt,
@@ -176,9 +183,9 @@ func (c *Connection) projectTrade(
 			return nil, err
 		}
 		sellRow := buildSplitLeg(txID, sellLeg, walletID, occurredAt, base,
-			sellCcy, *sellAmt, canonical.TxKindSell, v, pl)
+			sellCcy, *sellAmt, canonical.TxKindSell, v, "", pl)
 		buyRow := buildSplitLeg(txID, buyLeg, walletID, occurredAt, base,
-			buyCcy, *buyAmt, canonical.TxKindBuy, v, pl)
+			buyCcy, *buyAmt, canonical.TxKindBuy, v, fee, pl)
 		return []canonical.TransactionChange{sellRow, buyRow}, nil
 	}
 }
@@ -190,7 +197,7 @@ func (c *Connection) projectTrade(
 func buildBaseLegTradeRow(
 	txID, walletID string, occurredAt int64, base, instrument string,
 	qty, cashAmt canonical.Decimal, kind canonical.TxKind,
-	payload []byte,
+	action canonical.TxAction, payload []byte,
 ) canonical.TransactionChange {
 	quantity := qty
 	if kind == canonical.TxKindSell {
@@ -208,6 +215,7 @@ func buildBaseLegTradeRow(
 		Quantity:              &quantity,
 		GrossAmount:           netAmount,
 		NetAmount:             netAmount,
+		Action:                action,
 		Payload:               payload,
 	}
 }
@@ -227,7 +235,7 @@ const (
 func buildSplitLeg(
 	txID, suffix, walletID string, occurredAt int64, base, instrument string,
 	qty canonical.Decimal, kind canonical.TxKind, v *canonical.Decimal,
-	payload []byte,
+	action canonical.TxAction, payload []byte,
 ) canonical.TransactionChange {
 	quantity := qty
 	if kind == canonical.TxKindSell {
@@ -248,6 +256,7 @@ func buildSplitLeg(
 		Quantity:              &quantity,
 		GrossAmount:           netAmount,
 		NetAmount:             netAmount,
+		Action:                action,
 		Payload:               payload,
 	}
 }
@@ -344,13 +353,13 @@ SELECT CAST(price_usd AS VARCHAR)
 }
 
 // projectNonTrade maps a non-Trade silver row to its canonical
-// counterpart (at most one row). Direction (inbound vs outbound)
-// is determined by the CT type via classifyCTType; Currency is the
+// counterpart (at most one row). Its kind, direction (inbound vs
+// outbound) and action are the CT type's by kindTable; Currency is the
 // asset that moved and NetAmount the signed amount of it; Instrument
 // and Quantity are set only when that asset is NOT the base
 // (position event).
 func projectNonTrade(
-	txID, walletID string, occurredAt int64, base string, ctType string,
+	txID, walletID string, occurredAt int64, base, ctType, comment string,
 	buyAmtStr sql.NullString, buyCcy string,
 	sellAmtStr sql.NullString, sellCcy string,
 	payload sql.NullString,
@@ -362,7 +371,7 @@ func projectNonTrade(
 	//   - Outbound types (Withdrawal, Lost, Spend, Other Fee, …):
 	//     sell_currency / sell_amount. CT puts standalone fees on
 	//     the sell-side. A fee in a row's fee_amount / fee_currency
-	//     columns rides the payload (lotPayload), never a row of its
+	//     columns rides the payload (rowPayload), never a row of its
 	//     own.
 	var (
 		currency string
@@ -400,16 +409,15 @@ func projectNonTrade(
 	base = strings.ToUpper(base)
 	isBase := currency == base
 
-	cls, known := classifyCTType(ctType, isFiat(currency))
-	if !known {
-		// New CT type — emit as Other with the raw value in the
-		// description so a reader can recover it without payload
-		// introspection.
-		cls = classification{kind: canonical.TxKindOther, preserveRaw: true}
+	rule, _ := silver.Classify(kindTable, silver.KindRow{
+		Verb: ctType, Text: strings.TrimSpace(comment), Cash: isFiat(currency)})
+	kind, dir := rule.Kind, directionOf(rule.Action)
+	if kind == "" {
+		// A type the table gives no kind, a new one among them: other,
+		// in the direction of the side its amount is on.
+		kind, dir = canonical.TxKindOther, dirOutbound
 		if buyCcy != "" {
-			cls.dir = dirInbound
-		} else {
-			cls.dir = dirOutbound
+			dir = dirInbound
 		}
 	}
 
@@ -422,10 +430,10 @@ func projectNonTrade(
 	// the value through unchanged, so the pre-signing per
 	// direction wins.
 	signed := amount
-	if cls.dir == dirOutbound {
+	if dir == dirOutbound {
 		signed = amount.Neg()
 	}
-	netAmount := canonical.ApplyCanonicalSign(cls.kind, &signed)
+	netAmount := canonical.ApplyCanonicalSign(kind, &signed)
 
 	// Currency is always the asset that moved — not the portfolio's
 	// base currency. Combined with NetAmount=signed-amount-in-
@@ -444,10 +452,11 @@ func projectNonTrade(
 		TransactionExternalID: txID,
 		OccurredAt:            occurredAt,
 		AccountExternalID:     walletID,
-		Kind:                  cls.kind,
+		Kind:                  kind,
 		Currency:              currency,
 		GrossAmount:           netAmount,
 		NetAmount:             netAmount,
+		Action:                rule.Action,
 		Payload:               silver.JSONOrNil(payload),
 	}
 
@@ -461,7 +470,9 @@ func projectNonTrade(
 		out.Quantity = &signed
 	}
 
-	if cls.preserveRaw {
+	// Other collapses several types into one kind; the type, kept as
+	// the description, is what tells them apart.
+	if kind == canonical.TxKindOther {
 		desc := ctType
 		out.Description = &desc
 	}
@@ -469,12 +480,12 @@ func projectNonTrade(
 	return []canonical.TransactionChange{out}, nil
 }
 
-// lotPayload is a row's payload: silver's own, with the row's
-// CoinTracking fields the lot engine reads (docs/LOTS.md §6) added
-// under their silver column names. The kind a row maps to cannot tell
-// a deposit from an airdrop or a dust sweep; the type can. Empty
-// fields are left out.
-func lotPayload(silverPayload sql.NullString, ctType, comment,
+// rowPayload is a row's payload: silver's own, with the row's
+// CoinTracking fields added under their silver column names: the type
+// and comment, which say what the row is, and the trade's currencies and
+// fee. The lot engine reads the fee to value one in a third currency
+// (docs/LOTS.md §6). Empty fields are left out.
+func rowPayload(silverPayload sql.NullString, ctType, comment,
 	buyCcy, sellCcy string, feeAmt sql.NullString, feeCcy string) (sql.NullString, error) {
 	m := map[string]any{}
 	if silverPayload.Valid && silverPayload.String != "" {

@@ -583,6 +583,9 @@ func (w *Writer) InsertTransactions(ctx context.Context, batch []canonical.Trans
 		if !batch[i].Kind.Valid() {
 			return fmt.Errorf("InsertTransactions row %d: invalid kind %q", i, batch[i].Kind)
 		}
+		if !batch[i].Action.Valid() {
+			return fmt.Errorf("InsertTransactions row %d: invalid action %q", i, batch[i].Action)
+		}
 		if err := validateOptionalTaxonomyPair("InsertTransactions", i,
 			batch[i].AssetClass, batch[i].Vehicle); err != nil {
 			return err
@@ -594,10 +597,10 @@ INSERT INTO transactions (
     account_external_id, instrument_external_id, asset_class, vehicle,
     instrument_hint, kind, currency,
     gross_amount, net_amount, quantity, price, description,
-    counterparty, provider_category, check_number, payload
+    counterparty, provider_category, check_number, action, payload
 ) VALUES `
 	return InsertChunked(ctx, w.tx, "InsertTransactions", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
 		func(i int, args []any) []any {
 			r := &batch[i]
 			return append(args,
@@ -610,15 +613,16 @@ INSERT INTO transactions (
 				nullable(r.Quantity), nullable(r.Price),
 				storedDescription(r),
 				nullable(r.Counterparty), nullable(r.ProviderCategory),
-				nullable(r.CheckNumber),
+				nullable(r.CheckNumber), nullableEnumValue(r.Action),
 				nullableJSON(r.Payload))
 		})
 }
 
 // nullableEnumValue is nullableEnumString's by-value twin, for a
 // typed-string column whose "unset" is the empty string rather than a
-// nil pointer — a trade's own exposure, wrapper, or instrument hint,
-// all of which the adapter leaves empty where it has nothing to add.
+// nil pointer — a trade's own exposure, wrapper, instrument hint or
+// action, all of which the adapter leaves empty where it has nothing to
+// add.
 func nullableEnumValue[T ~string](v T) any {
 	if v == "" {
 		return nil

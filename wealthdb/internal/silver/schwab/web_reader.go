@@ -306,6 +306,7 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 	built = spliceNonExternalToJSON(built, jsonThrough)
 	built = supersedeStatementCashWithDistributions(built)
 	out := canonical.TransactionBatch{Transactions: dedupeCrossFeedExternalFlows(built)}
+	setLotActions(out.Transactions)
 	return silver.NewTransactionStream(out), nil
 }
 

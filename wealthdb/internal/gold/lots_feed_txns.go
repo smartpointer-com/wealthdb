@@ -10,30 +10,47 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
-// lotTxnColumns are the columns of a transaction a policy's Classify
-// reads beside its kind and quantity (lots.Txn), as lotTxnFields scans
-// them.
-const lotTxnColumns = `COALESCE(description, ''),
-       COALESCE(json_extract_string(payload, '$.type'), ''),
-       COALESCE(json_extract_string(payload, '$.comment'), ''),
-       COALESCE(json_extract_string(payload, '$.Action'), json_extract_string(payload, '$.action'), ''),
-       COALESCE(json_extract_string(payload, '$.buy_currency'), ''),
-       COALESCE(json_extract_string(payload, '$.sell_currency'), ''),
-       COALESCE(TRY_CAST(json_extract_string(payload, '$.fee_amount') AS DOUBLE), 0),
-       COALESCE(json_extract_string(payload, '$.fee_currency'), '')`
+// lotActions are the lot engine's readings of the actions an adapter
+// states: every action but the third-currency fee, which reads by the
+// kind (lotClassify).
+var lotActions = map[canonical.TxAction]lots.Classified{
+	canonical.TxActionIgnore:          {Action: lots.Ignore},
+	canonical.TxActionIn:              {Action: lots.In},
+	canonical.TxActionOut:             {Action: lots.Out},
+	canonical.TxActionIncome:          {Action: lots.Income},
+	canonical.TxActionAcquired:        {Action: lots.Acquired},
+	canonical.TxActionConverted:       {Action: lots.Exchange, Disposal: lots.DisposeSell},
+	canonical.TxActionSpend:           {Action: lots.Exchange, Disposal: lots.DisposeSpend},
+	canonical.TxActionFee:             {Action: lots.Exchange, Disposal: lots.DisposeFee},
+	canonical.TxActionLost:            {Action: lots.Gone, Disposal: lots.DisposeLost},
+	canonical.TxActionGift:            {Action: lots.Gone, Disposal: lots.DisposeGift},
+	canonical.TxActionReorganisation:  {Action: lots.Corporate, Rule: lots.CorpReorg},
+	canonical.TxActionReturnOfCapital: {Action: lots.Corporate, Rule: lots.CorpReturnOfCapital},
+	canonical.TxActionCashInLieu:      {Action: lots.Corporate, Rule: lots.CorpCashInLieu},
+	canonical.TxActionExpiry:          {Action: lots.Corporate, Rule: lots.CorpExpiry},
+	canonical.TxActionCashOnly:        {Action: lots.Corporate, Rule: lots.CorpIgnore},
+}
 
-// lotTxnFields are the fields of t that lotTxnColumns fill, in their
-// order.
-func lotTxnFields(t *lots.Txn) []any {
-	return []any{&t.Description, &t.Type, &t.Comment, &t.Action, &t.BuyCurrency, &t.SellCurrency, &t.FeeAmount,
-		&t.FeeCurrency}
+// lotClassify reads a transaction of kind and quantity qty by its
+// action: an action the engine knows holds, a third-currency fee reads
+// by the kind with the fee, and no action reads by the kind alone
+// (lots.DefaultClassify).
+func lotClassify(kind string, qty float64, action canonical.TxAction) lots.Classified {
+	if c, ok := lotActions[action]; ok {
+		return c
+	}
+	c := lots.DefaultClassify(lots.Txn{Kind: kind, Quantity: qty})
+	c.Fee = action == canonical.TxActionThirdCurrencyFee
+	return c
 }
 
 func (f *lotFeed) readTransactions(ctx context.Context, db *sql.DB) error {
 	rows, err := db.QueryContext(ctx, `
 SELECT silver_source_id, transaction_external_id, occurred_at, account_external_id,
        instrument_external_id, instrument_hint, kind, currency,
-       CAST(quantity AS DOUBLE), CAST(net_amount AS DOUBLE), `+lotTxnColumns+`,
+       CAST(quantity AS DOUBLE), CAST(net_amount AS DOUBLE), COALESCE(action, ''),
+       COALESCE(TRY_CAST(json_extract_string(payload, '$.fee_amount') AS DOUBLE), 0),
+       COALESCE(json_extract_string(payload, '$.fee_currency'), ''),
        CASE WHEN json_extract_string(payload, '$.`+canonical.PayloadEquityTransferLedger+`') = 'true'
             THEN COALESCE(TRY_CAST(json_extract_string(payload, '$.`+canonical.PayloadCostBasis+`') AS DOUBLE), 0) ELSE 0 END
   FROM transactions
@@ -50,11 +67,12 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
 			inst, hint                sql.NullString
 			at                        int64
 			qty, amt                  sql.NullFloat64
-			t                         lots.Txn
-			ledgerCost                float64
+			action                    canonical.TxAction
+			fee, ledgerCost           float64
+			feeCcy                    string
 		)
-		dest := append([]any{&src, &txn, &at, &acct, &inst, &hint, &kind, &ccy, &qty, &amt}, lotTxnFields(&t)...)
-		if err := rows.Scan(append(dest, &ledgerCost)...); err != nil {
+		if err := rows.Scan(&src, &txn, &at, &acct, &inst, &hint, &kind, &ccy, &qty, &amt, &action, &fee, &feeCcy,
+			&ledgerCost); err != nil {
 			return fmt.Errorf("lots: read transactions: %w", err)
 		}
 		s := f.sources[src]
@@ -62,12 +80,7 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
 		if !inst.Valid {
 			name, isHint = hint.String, true
 		}
-		t.ID, t.Kind, t.Quantity = txn, kind, qty.Float64
-		classify := s.pol.Classify
-		if classify == nil {
-			classify = lots.DefaultClassify
-		}
-		c := classify(t)
+		c := lotClassify(kind, qty.Float64, action)
 		if c.Action == lots.Ignore {
 			continue
 		}
@@ -84,8 +97,8 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
 		q := math.Abs(qty.Float64)
 		ev := lots.Event{At: at, Key: k, Txn: txn, Account: acct, Qty: q, AcqDay: lots.DayOf(at)}
 		aux := lotAux{ccy: ccy}
-		if c.Fee && t.FeeAmount != 0 {
-			aux.fee, aux.feeCcy = math.Abs(t.FeeAmount), t.FeeCurrency
+		if c.Fee && fee != 0 {
+			aux.fee, aux.feeCcy = math.Abs(fee), feeCcy
 		}
 		switch c.Action {
 		case lots.Buy:
