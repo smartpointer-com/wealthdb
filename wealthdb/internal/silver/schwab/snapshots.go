@@ -72,7 +72,7 @@ func (c *apiReader) appendInstrumentBonds(ctx context.Context, w canonical.Windo
 	if err != nil || !s.instruments {
 		return err
 	}
-	if err := silver.ScanRows(ctx, c.db, "appendInstrumentBonds", `
+	return silver.ScanRows(ctx, c.db, "appendInstrumentBonds", `
 SELECT snapshot_at, symbol, payload FROM instruments
  WHERE snapshot_at BETWEEN ? AND ?
  ORDER BY snapshot_at, symbol`, func(rows *sql.Rows) error {
@@ -110,10 +110,7 @@ SELECT snapshot_at, symbol, payload FROM instruments
 			Payload:              bondTermsPayload(vehicle, i),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // dumpTimesInWindow returns the distinct dump_runs.snapshot_at values
@@ -124,17 +121,13 @@ SELECT snapshot_at FROM dump_runs
  WHERE snapshot_at BETWEEN ? AND ?
  ORDER BY snapshot_at`
 
-	out, err := silver.Query(ctx, db, "dump_runs in window", q, func(rows *sql.Rows) (rec int64, err error) {
+	return silver.Query(ctx, db, "dump_runs in window", q, func(rows *sql.Rows) (int64, error) {
 		var t int64
 		if err := rows.Scan(&t); err != nil {
-			return rec, fmt.Errorf("dump_runs in window scan: %w", err)
+			return 0, fmt.Errorf("dump_runs in window scan: %w", err)
 		}
 		return t, nil
 	}, w.Start, w.End)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // schwabAccountPayload covers the {accountNumber, hashValue}
@@ -166,7 +159,7 @@ func (c *apiReader) appendAccounts(ctx context.Context, w canonical.Window, byTi
 		q = `SELECT snapshot_at, account_external_id, payload, nickname FROM accounts WHERE snapshot_at BETWEEN ? AND ?`
 	}
 
-	if err := silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap     int64
 			extID    string
@@ -195,10 +188,7 @@ func (c *apiReader) appendAccounts(ctx context.Context, w canonical.Window, byTi
 			Payload:           json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // schwabBalancePayload covers the field read from account_balances
@@ -218,7 +208,7 @@ SELECT snapshot_at, account_external_id, balance_kind, payload
   FROM account_balances
  WHERE snapshot_at BETWEEN ? AND ?`
 
-	if err := silver.ScanRows(ctx, c.db, "appendAccountBalances", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendAccountBalances", q, func(rows *sql.Rows) error {
 		var (
 			snap        int64
 			extID, kind string
@@ -255,10 +245,7 @@ SELECT snapshot_at, account_external_id, balance_kind, payload
 			Payload:           json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 func canonicalBalanceKind(silverKind string) canonical.BalanceKind {
@@ -345,13 +332,13 @@ SELECT snapshot_at, account_external_id, instrument_key, payload, %s
 		quantity      canonical.Decimal
 	}
 	guard := newMarkGuard(c.marks)
-	read, err := silver.Query(ctx, c.db, "appendPositions", q, func(rows *sql.Rows) (rec apiPosition, err error) {
+	read, err := silver.Query(ctx, c.db, "appendPositions", q, func(rows *sql.Rows) (apiPosition, error) {
 		var r apiPosition
 		if err := rows.Scan(&r.snap, &r.extID, &r.posKey, &r.payload, &r.openPL); err != nil {
-			return rec, fmt.Errorf("appendPositions scan: %w", err)
+			return apiPosition{}, fmt.Errorf("appendPositions scan: %w", err)
 		}
 		if err := json.Unmarshal([]byte(r.payload), &r.pp); err != nil {
-			return rec, fmt.Errorf("appendPositions row (snap=%d, key=%s): %w", r.snap, r.posKey, err)
+			return apiPosition{}, fmt.Errorf("appendPositions row (snap=%d, key=%s): %w", r.snap, r.posKey, err)
 		}
 		guard.snapshot(r.snap)
 		// Cash-like assetType → cash_balances, not positions.

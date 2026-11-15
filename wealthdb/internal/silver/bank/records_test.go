@@ -1,82 +1,80 @@
-package silver
+package bank
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
-func openScratch(t *testing.T, ddl string) *sql.DB {
+// scratch is a silver SQLite with ddl applied.
+func scratch(t *testing.T, ddl string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "s.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(ddl); err != nil {
-		t.Fatal(err)
-	}
+	_, db := silvertest.NewDB(t, ddl)
 	return db
 }
 
-// TestSnapshotTimesMergesExtraInsideTheWindow pins the batch times: the
-// query's times and every extra time inside the window, once each, ascending.
-func TestSnapshotTimesMergesExtraInsideTheWindow(t *testing.T) {
-	db := openScratch(t, `CREATE TABLE p (t INTEGER);
-INSERT INTO p VALUES (30), (10), (30), (50);`)
-	w := canonical.Window{Start: 10, End: 40, HasChanges: true}
-	got, err := SnapshotTimes(context.Background(), db, w, []int64{5, 20, 30, 45},
-		`SELECT t FROM p WHERE t BETWEEN ? AND ?`, w.Start, w.End)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []int64{10, 20, 30}; !slices.Equal(got, want) {
-		t.Errorf("SnapshotTimes = %v, want %v", got, want)
-	}
-}
-
-// TestAccountCurrenciesReadTheLatestRow pins the roster currency: the
-// account's latest row, and the fallback where that row names none or the
-// account has no row.
-func TestAccountCurrenciesReadTheLatestRow(t *testing.T) {
-	db := openScratch(t, `CREATE TABLE accounts (
-    snapshot_at INTEGER, account_external_id TEXT, currency TEXT);
-INSERT INTO accounts VALUES (1, 'a', 'EUR'), (2, 'a', 'CHF'),
-                            (1, 'b', 'GBP'), (2, 'b', NULL);`)
-	ccy, err := ReadAccountCurrencies(context.Background(), db, "USD")
+// TestReadFactsReadTheLatestRow pins an account's currency and product:
+// its latest roster row, and the default currency where that row names
+// none or the account has no row. Without a ProductCol, every account is
+// of the source's AccountKind.
+func TestReadFactsReadTheLatestRow(t *testing.T) {
+	db := scratch(t, `CREATE TABLE accounts (
+    snapshot_at INTEGER, account_external_id TEXT, currency TEXT, product TEXT);
+INSERT INTO accounts VALUES (1, 'a', 'EUR', 'card'), (2, 'a', 'CHF', 'card'),
+                            (1, 'b', 'GBP', 'card'), (2, 'b', NULL, 'deposit');`)
+	ctx := context.Background()
+	c := &connection{src: &Source{Kind: "bank", DefaultCurrency: "USD", ProductCol: "product", CardProduct: "card"}, db: db}
+	f, err := c.readFacts(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for id, want := range map[string]string{"a": "CHF", "b": "USD", "c": "USD"} {
-		if got := ccy.Of(id); got != want {
-			t.Errorf("Of(%q) = %q, want %q", id, got, want)
+		if got := f.currency(id); got != want {
+			t.Errorf("currency(%q) = %q, want %q", id, got, want)
 		}
+	}
+	if !f.card("a") || f.card("b") || f.card("c") {
+		t.Errorf("card a, b, c = %v, %v, %v; want the latest row's product", f.card("a"), f.card("b"), f.card("c"))
+	}
+	for _, kind := range []canonical.AccountKind{canonical.AccountKindCard, canonical.AccountKindCash} {
+		c.src = &Source{Kind: "bank", DefaultCurrency: "USD", AccountKind: kind}
+		f, err := c.readFacts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.currency("a") != "CHF" || f.card("b") != (kind == canonical.AccountKindCard) {
+			t.Errorf("%s: currency(a) = %q, card(b) = %v", kind, f.currency("a"), f.card("b"))
+		}
+	}
+	c.src = &Source{Kind: "bank", ProductCol: "nope"}
+	if _, err := c.readFacts(ctx); err == nil || !strings.HasPrefix(err.Error(), "bank account facts: ") {
+		t.Errorf("a failing query = %v, want it named", err)
 	}
 }
 
-// TestReadBankRosterTakesEachAccountsLatestRow pins the bank roster read: an
+// TestReadRosterTakesEachAccountsLatestRow pins the bank roster read: an
 // account's latest row, its first and latest snapshot, the source's latest
 // snapshot, and the name and type columns the caller names.
-func TestReadBankRosterTakesEachAccountsLatestRow(t *testing.T) {
+func TestReadRosterTakesEachAccountsLatestRow(t *testing.T) {
 	ctx := context.Background()
-	db := openScratch(t, `CREATE TABLE accounts (
+	db := scratch(t, `CREATE TABLE accounts (
     snapshot_at INTEGER, account_external_id TEXT, nickname TEXT,
     account_type TEXT, mask TEXT, balance REAL, payload TEXT);
 INSERT INTO accounts VALUES
     (1, 'a', NULL,   'Checking', '1111', 10.5, '{"v":1}'),
     (3, 'a', 'Main', 'Checking', '1111', 20.25, '{"v":3}'),
     (2, 'b', NULL,   'Savings',  '2222', NULL,  '{}');`)
-	got, err := ReadBankRoster(ctx, db, "test", "nickname", "account_type")
+	got, err := readRoster(ctx, db, "test", "nickname", "account_type")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []BankRosterRow{
+	want := []RosterRow{
 		{ID: "a", Name: "Main", AccountType: "Checking", Mask: "1111",
 			Balance: sql.NullFloat64{Float64: 20.25, Valid: true}, Payload: `{"v":3}`,
 			FirstSeen: 1, LastSeen: 3, SourceLatest: 3},
@@ -91,25 +89,25 @@ INSERT INTO accounts VALUES
 			got[0].DisplayName(), got[1].DisplayName())
 	}
 
-	untyped, err := ReadBankRoster(ctx, db, "test", "nickname", "")
+	untyped, err := readRoster(ctx, db, "test", "nickname", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if untyped[1].AccountType != "" {
 		t.Errorf("no type column read %q", untyped[1].AccountType)
 	}
-	if _, err := ReadBankRoster(ctx, db, "the roster", "nope", ""); err == nil ||
+	if _, err := readRoster(ctx, db, "the roster", "nope", ""); err == nil ||
 		!strings.HasPrefix(err.Error(), "the roster: ") {
 		t.Errorf("a failing query = %v, want it named", err)
 	}
 }
 
-// TestBankRosterRowRecords pins the records a roster row becomes: the
+// TestRosterRowRecords pins the records a roster row becomes: the
 // account with the bank defaults, and the CURRENT balance stamped at the
 // source's latest snapshot, only when there is a balance and that snapshot
 // is inside the window.
-func TestBankRosterRowRecords(t *testing.T) {
-	r := BankRosterRow{ID: "a", Name: "Main", Mask: "1111",
+func TestRosterRowRecords(t *testing.T) {
+	r := RosterRow{ID: "a", Name: "Main", Mask: "1111",
 		Balance: sql.NullFloat64{Float64: 20.25, Valid: true}, Payload: `{"v":3}`,
 		FirstSeen: 1, LastSeen: 3, SourceLatest: 5}
 
@@ -146,18 +144,18 @@ func TestBankRosterRowRecords(t *testing.T) {
 // row per account and run that listed it inside the window, valued at its
 // latest roster row at or before the run, in the account's currency. A run
 // that listed an account twice states it once, a roster row counts as a
-// listing, and a row with no balance states none. A silver without the run
-// table fails, naming the collector's load.
+// listing, and a row with no balance states none. A failing query is
+// named for the collector.
 func TestAppendReportedBalances(t *testing.T) {
 	ctx := context.Background()
-	db := openScratch(t, `CREATE TABLE accounts (snapshot_at INTEGER, account_external_id TEXT, balance REAL);
+	db := scratch(t, `CREATE TABLE accounts (snapshot_at INTEGER, account_external_id TEXT, balance REAL);
 INSERT INTO accounts VALUES (1, 'a', 10), (4, 'a', 40), (1, 'b', NULL), (3, 'b', 30);
 CREATE TABLE runs (snapshot_at INTEGER, account_external_id TEXT, kind TEXT);
 INSERT INTO runs VALUES (2, 'a', 'x'), (2, 'a', 'y'), (5, 'a', 'x'), (9, 'a', 'x'), (2, 'b', 'x'), (5, 'b', 'x');`)
 	ccy := func(id string) string { return map[string]string{"a": "CHF"}[id] + "X" }
 	emit := func(table string) ([]string, error) {
 		var batch canonical.SnapshotBatch
-		err := AppendReportedBalances(ctx, db, "bank", table, canonical.Window{Start: 0, End: 8}, ccy, &batch)
+		err := appendReportedBalances(ctx, db, "bank", table, canonical.Window{Start: 0, End: 8}, ccy, &batch)
 		var out []string
 		for _, cb := range batch.CashBalances {
 			if cb.BalanceKind != canonical.BalanceKindCurrent || string(cb.Payload) != `{"basis":"roster"}` {
@@ -173,9 +171,6 @@ INSERT INTO runs VALUES (2, 'a', 'x'), (2, 'a', 'y'), (5, 'a', 'x'), (9, 'a', 'x
 		"b@3=30 X", "b@5=30 X"}; err != nil || !slices.Equal(got, want) {
 		t.Errorf("AppendReportedBalances = %v, %v; want %v", got, err, want)
 	}
-	if got, err := emit("absent"); err != nil || len(got) != 0 {
-		t.Errorf("a silver without the run table = %v, %v; want no CURRENT balance", got, err)
-	}
 	if _, err := db.Exec(`DROP TABLE accounts`); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +184,7 @@ INSERT INTO runs VALUES (2, 'a', 'x'), (2, 'a', 'y'), (5, 'a', 'x'), (9, 'a', 'x
 // supplies, and the figure as stored when no sign is given.
 func TestAppendClosingBalances(t *testing.T) {
 	ctx := context.Background()
-	db := openScratch(t, `CREATE TABLE b (id TEXT, at INTEGER, v REAL);
+	db := scratch(t, `CREATE TABLE b (id TEXT, at INTEGER, v REAL);
 INSERT INTO b VALUES ('a', 10, 1.5), ('c', 20, -2), ('a', 30, 4);`)
 	const q = `SELECT id, at, v FROM b WHERE at >= ? ORDER BY at`
 	ccy := func(id string) string { return map[string]string{"a": "CHF"}[id] + "X" }
@@ -202,7 +197,7 @@ INSERT INTO b VALUES ('a', 10, 1.5), ('c', 20, -2), ('a', 30, 4);`)
 	}
 
 	var batch canonical.SnapshotBatch
-	if err := AppendClosingBalances(ctx, db, "test", q, []any{15}, `{"basis":"x"}`, ccy, neg, &batch); err != nil {
+	if err := appendClosingBalances(ctx, db, "test", q, []any{15}, `{"basis":"x"}`, ccy, neg, &batch); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -217,13 +212,13 @@ INSERT INTO b VALUES ('a', 10, 1.5), ('c', 20, -2), ('a', 30, 4);`)
 	}
 
 	batch = canonical.SnapshotBatch{}
-	if err := AppendClosingBalances(ctx, db, "test", q, []any{0}, `{}`, ccy, nil, &batch); err != nil {
+	if err := appendClosingBalances(ctx, db, "test", q, []any{0}, `{}`, ccy, nil, &batch); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(batch.CashBalances); n != 3 || batch.CashBalances[0].Amount.String() != "1.5" {
 		t.Errorf("unsigned rows = %+v, want 3 with the figures as stored", batch.CashBalances)
 	}
-	if err := AppendClosingBalances(ctx, db, "the series", `SELECT nope FROM b`, nil, `{}`,
+	if err := appendClosingBalances(ctx, db, "the series", `SELECT nope FROM b`, nil, `{}`,
 		ccy, nil, &batch); err == nil || !strings.HasPrefix(err.Error(), "the series: ") {
 		t.Errorf("a failing query = %v, want it named", err)
 	}
@@ -233,13 +228,13 @@ INSERT INTO b VALUES ('a', 10, 1.5), ('c', 20, -2), ('a', 30, 4);`)
 // per account and day, the fitid-highest row with a balance, inside the
 // bound window.
 func TestRunningBalanceQueryTakesTheDaysLastRow(t *testing.T) {
-	db := openScratch(t, `CREATE TABLE transactions (
+	db := scratch(t, `CREATE TABLE transactions (
     account_external_id TEXT, posted_at INTEGER, fitid TEXT, balance REAL);
 INSERT INTO transactions VALUES
     ('a', 100, 'f1', 10), ('a', 100, 'f2', 12), ('a', 100, 'f3', NULL),
     ('a', 200, 'f4', 15), ('b', 100, 'f5', 7),  ('a', 900, 'f6', 99);`)
 	var batch canonical.SnapshotBatch
-	if err := AppendClosingBalances(context.Background(), db, "test", RunningBalanceQuery,
+	if err := appendClosingBalances(context.Background(), db, "test", RunningBalanceQuery,
 		[]any{0, 500}, `{}`, func(string) string { return "USD" }, nil, &batch); err != nil {
 		t.Fatal(err)
 	}

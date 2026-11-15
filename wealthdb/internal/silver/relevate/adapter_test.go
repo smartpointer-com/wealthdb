@@ -24,12 +24,6 @@ func openAdapter(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{}, path)
 }
 
-func TestKindIsRelevate(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "relevate" {
-		t.Errorf("Kind() = %q, want %q", got, "relevate")
-	}
-}
-
 func TestStatusEmpty(t *testing.T) {
 	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 }
@@ -39,8 +33,8 @@ func TestStatusEmpty(t *testing.T) {
 // quantity, so the adapter derives market_value = the account's
 // securities balance × the fund's allocation. The 'cash' balance
 // becomes a CashBalanceChange; the account is brokerage /
-// vested_benefits / automated. asset_class maps Stocks→equity,
-// everything else→fund.
+// vested_benefits / automated. The sleeve label sets the exposure:
+// Stocks→public_equity, an unknown label→multi_asset.
 func TestSnapshotsDerivedMarketValue(t *testing.T) {
 	path, seed := newFixtureSilver(t)
 	if _, err := seed.Exec(`

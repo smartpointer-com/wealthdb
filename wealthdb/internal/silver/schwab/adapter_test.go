@@ -28,12 +28,6 @@ func openAdapter(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{}, path)
 }
 
-func TestKindIsSchwab(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "schwab" {
-		t.Errorf("Kind() = %q, want %q", got, "schwab")
-	}
-}
-
 // A configuration names the api subsource, the web one or both; with
 // neither the source has nothing to read and is refused.
 func TestOpenTakesEitherSubsource(t *testing.T) {

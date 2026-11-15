@@ -15,11 +15,10 @@ import (
 // file defines the type, its lifecycle and the shared event scan.
 type psnReader struct {
 	db *sql.DB
-	// parts is the file's optional schema, once probed is set (schema).
-	parts  psnSchema
-	probed bool
-	note   silver.SchemaNote
-	file   string // the silver's base name, for the note
+	// parts is the file's optional schema (schema).
+	parts silver.Lazy[psnSchema]
+	note  silver.SchemaNote
+	file  string // the silver's base name, for the note
 	// source is the source's id in gold, which a contract's key is
 	// scoped by.
 	source string
@@ -28,10 +27,10 @@ type psnReader struct {
 	// conversionMirrors and cashConfirmations read. Each scans the whole
 	// silver, unwindowed, and a connection serves one load over a silver
 	// that does not change under it, so each is read once per connection
-	// however many passes ask for it.
-	coverage      psnCashCoverage
-	mirrors       *conversionMirrors
-	confirmations []cashConfirmation
+	// however many passes ask for it (silver.Lazy).
+	coverage      silver.Lazy[psnCashCoverage]
+	mirrors       silver.Lazy[*conversionMirrors]
+	confirmations silver.Lazy[[]cashConfirmation]
 }
 
 func (r *psnReader) Close() error { return silver.CloseDB(&r.db) }
@@ -81,7 +80,7 @@ func (r *psnReader) eachCashMovement(ctx context.Context, what string, fn func(p
 	if r == nil || r.db == nil {
 		return nil
 	}
-	if err := silver.ScanRows(ctx, r.db, fmt.Sprintf("%s", what), `
+	return silver.ScanRows(ctx, r.db, what, `
 SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
   FROM events
  WHERE kind = 'cash_movement'`, func(rows *sql.Rows) error {
@@ -89,12 +88,6 @@ SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
 		if err := rows.Scan(&row.eventID, &row.at, &row.account, &row.currency, &row.payload); err != nil {
 			return fmt.Errorf("%s scan: %w", what, err)
 		}
-		if err := fn(row); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+		return fn(row)
+	})
 }

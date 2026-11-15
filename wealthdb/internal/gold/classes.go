@@ -9,7 +9,7 @@ import (
 )
 
 // ClassRefiner reads a lookup's type of a security over the pair an
-// adapter gave its instrument (silver.ClassRefiner): it returns the
+// adapter gave its instrument (silver.RefineClassFunc): it returns the
 // (asset_class, vehicle) of an instrument named name, which the adapter
 // classed (ac, v) and OpenFIGI types securityType. It is an alias so
 // that silver.ClassRefiners' map is the pass's map.

@@ -29,10 +29,10 @@ import (
 // corrected and the sign nets it against the booking it corrects.
 //
 // The two CASH_SWEEP_* kinds are core-position shuffles (cash
-// ↔ money-market fund); we route them as TxKindOther so the
+// ↔ money-market fund); they route as TxKindOther so the
 // source sign is preserved verbatim — gold's cash_balances roll-
 // up already reflects the resulting balance via the snapshot
-// path, so we don't want the sign helper to second-guess these.
+// path, so the sign helper must not second-guess these.
 //
 // Unrecognised values land as TxKindOther with the raw kind
 // preserved in payload.

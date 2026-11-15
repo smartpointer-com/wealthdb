@@ -152,9 +152,7 @@ func (k Clock) Status(ctx context.Context, db *sql.DB) (canonical.Status, error)
 	case o.Set != nil:
 		err = o.Set(ctx, &s)
 	case o.Runs != "":
-		var t int64
-		t, err = LatestRun(ctx, db, k.Kind, o.Runs)
-		s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = t, t
+		err = ObserveByRuns(ctx, db, k.Kind, o.Runs, &s)
 	default:
 		s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = s.LatestChangeNumber, s.LatestChangeNumber
 	}

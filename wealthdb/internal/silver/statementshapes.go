@@ -21,16 +21,16 @@ var (
 	StmtOptionDescRe = regexp.MustCompile(`^(CALL|PUT)\b`)
 	// StmtCUSIPRe matches a 9-character CUSIP instrument key.
 	StmtCUSIPRe = regexp.MustCompile(`^[A-Z0-9]{8}[0-9]$`)
-	// StmtBondDescRe matches a coupon-bearing bond line ("… 04.12500% …" / "FIXED COUPON").
-	StmtBondDescRe = regexp.MustCompile(`(?i)\b\d{1,2}\.\d{3,5}%|FIXED COUPON`)
+	// stmtBondDescRe matches a coupon-bearing bond line ("… 04.12500% …" / "FIXED COUPON").
+	stmtBondDescRe = regexp.MustCompile(`(?i)\b\d{1,2}\.\d{3,5}%|FIXED COUPON`)
 	// StmtMoneyMktKeyRe matches a US money-market fund's 5-letter doubled-X ticker.
 	StmtMoneyMktKeyRe = regexp.MustCompile(`^[A-Z]{3}XX$`)
-	// StmtETFDescRe matches a description carrying the "ETF" token.
-	StmtETFDescRe = regexp.MustCompile(`\bETF\b`)
-	// StmtMutualFundRe matches an ordinary mutual fund's 5-letter single-trailing-X ticker.
-	StmtMutualFundRe = regexp.MustCompile(`^[A-Z]{4}X$`)
-	// StmtETFIssuerRe matches ETF-only issuer families whose lines often omit the "ETF" token.
-	StmtETFIssuerRe = regexp.MustCompile(`(?i)^(ISHARES|SPDR|VANGUARD|XTRACKERS|PROSHARES|WISDOMTREE)\b`)
+	// stmtETFDescRe matches a description carrying the "ETF" token.
+	stmtETFDescRe = regexp.MustCompile(`\bETF\b`)
+	// stmtMutualFundRe matches an ordinary mutual fund's 5-letter single-trailing-X ticker.
+	stmtMutualFundRe = regexp.MustCompile(`^[A-Z]{4}X$`)
+	// stmtETFIssuerRe matches ETF-only issuer families whose lines often omit the "ETF" token.
+	stmtETFIssuerRe = regexp.MustCompile(`(?i)^(ISHARES|SPDR|VANGUARD|XTRACKERS|PROSHARES|WISDOMTREE)\b`)
 )
 
 // StatementShapePair is the (exposure, vehicle) pair of a statement line
@@ -50,13 +50,13 @@ var (
 func StatementShapePair(instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
 	switch {
 	case StmtCUSIPRe.MatchString(instrumentKey),
-		StmtBondDescRe.MatchString(description):
+		stmtBondDescRe.MatchString(description):
 		return canonical.AssetClassFixedIncome, canonical.VehicleBond
-	case StmtETFDescRe.MatchString(description):
+	case stmtETFDescRe.MatchString(description):
 		return RefineETFExposure(description), canonical.VehicleETF
-	case StmtMutualFundRe.MatchString(instrumentKey):
+	case stmtMutualFundRe.MatchString(instrumentKey):
 		return FundExposure(description), canonical.VehicleFund
-	case StmtETFIssuerRe.MatchString(description):
+	case stmtETFIssuerRe.MatchString(description):
 		return RefineETFExposure(description), canonical.VehicleETF
 	}
 	return canonical.AssetClassPublicEquity, canonical.VehicleStock

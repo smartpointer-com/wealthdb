@@ -47,29 +47,29 @@ func (s *webSchema) optional() []silver.Optional {
 // schema is the file's optional parts, probed on the first call: Open
 // makes that call, so a reader that opened has probed.
 func (c *apiReader) schema(ctx context.Context) (apiSchema, error) {
-	if !c.probed {
-		note, err := silver.ProbeOptional(ctx, c.db, c.file, c.parts.optional()...)
+	return c.parts.Get(func() (apiSchema, error) {
+		var s apiSchema
+		note, err := silver.ProbeOptional(ctx, c.db, c.file, s.optional()...)
 		if err != nil {
 			return apiSchema{}, err
 		}
 		c.note = note
-		c.probed = true
-	}
-	return c.parts, nil
+		return s, nil
+	})
 }
 
 // schema is the file's optional parts, probed on the first call: Open
 // makes that call, so a reader that opened has probed.
 func (r *webReader) schema(ctx context.Context) (webSchema, error) {
-	if !r.probed {
-		note, err := silver.ProbeOptional(ctx, r.db, r.file, r.parts.optional()...)
+	return r.parts.Get(func() (webSchema, error) {
+		var s webSchema
+		note, err := silver.ProbeOptional(ctx, r.db, r.file, s.optional()...)
 		if err != nil {
 			return webSchema{}, err
 		}
 		r.note = note
-		r.probed = true
-	}
-	return r.parts, nil
+		return s, nil
+	})
 }
 
 // SchemaAdvice is the notes of the feeds whose silver is older than the

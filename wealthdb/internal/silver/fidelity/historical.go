@@ -141,11 +141,11 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
 		extID, payload, silverMgmt           string
 		portfolioID, nickname, portfolioKind sql.NullString
 	}
-	seedRows, err := silver.Query(ctx, c.db, "appendHistoricalAccounts", q, func(rows *sql.Rows) (rec acctRow, err error) {
+	seedRows, err := silver.Query(ctx, c.db, "appendHistoricalAccounts", q, func(rows *sql.Rows) (acctRow, error) {
 		var r acctRow
 		if err := rows.Scan(&r.extID, &r.portfolioID, &r.nickname, &r.payload,
 			&r.portfolioKind, &r.silverMgmt); err != nil {
-			return rec, err
+			return acctRow{}, err
 		}
 		return r, nil
 	}, w.Start, w.End)
@@ -233,15 +233,15 @@ SELECT as_of_date, account_external_id,
 		return err
 	}
 
-	if err := silver.ScanRows(ctx, c.db, "appendHistoricalPositions", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendHistoricalPositions", q, func(rows *sql.Rows) error {
 		var (
 			snap                           int64
 			acct, instrKey, desc, currency string
-			qtyStr, valueStr, costStr      *canonical.Decimal
+			qty, value, cost               *canonical.Decimal
 			payload                        string
 		)
 		if err := rows.Scan(&snap, &acct, &instrKey, &desc, &currency,
-			silver.Dec(&qtyStr, silver.DecText), silver.Dec(&valueStr, silver.DecText), silver.Dec(&costStr, silver.DecText), &payload); err != nil {
+			silver.Dec(&qty, silver.DecText), silver.Dec(&value, silver.DecText), silver.Dec(&cost, silver.DecText), &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -298,17 +298,14 @@ SELECT as_of_date, account_external_id,
 			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
-			Quantity:             qtyStr,
-			MarketValue:          valueStr,
+			Quantity:             qty,
+			MarketValue:          value,
 			Payload:              json.RawMessage(payload),
 		}
-		pos.SetBookValue(costStr, lotBasis)
+		pos.SetBookValue(cost, lotBasis)
 		batch.Positions = append(batch.Positions, pos)
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // syntheticHistoricalInstrumentKey deterministically derives a

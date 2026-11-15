@@ -542,6 +542,37 @@ func TestValidateRefusesAMalformedPSNStartOverride(t *testing.T) {
 	}
 }
 
+// The relationships parser refuses an entry without a label, one without
+// an id, and a field it does not know. A source of another kind may carry
+// a valid array: it validates, and the source opens with no settings.
+func TestValidateRefusesAMalformedRelationship(t *testing.T) {
+	source := func(kind, rels string) *Config {
+		s := SilverSource{ID: "u", Kind: kind, Relationships: json.RawMessage(rels)}
+		if kind == "ubs" {
+			s.Subsources = []SilverSubsource{{Kind: "ubs-psn", Path: "/p"}}
+		} else {
+			s.Path = "/p"
+		}
+		return &Config{GoldDB: "/x", DefaultCurrency: "USD", SilverSources: []SilverSource{s}}
+	}
+	for rels, want := range map[string]string{
+		`[{"psn_id": "SYNTH01"}]`:                     "relationships[0].label is required",
+		`[{"label": "main"}]`:                         "relationships[0]: at least one of web_id or psn_id must be set",
+		`[{"label": "main", "psn_ident": "SYNTH01"}]`: "unknown field",
+	} {
+		if err := source("ubs", rels).Validate(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: Validate = %v, want %q", rels, err, want)
+		}
+	}
+	c := source("chase", `[{"label": "main", "psn_id": "SYNTH01"}]`)
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a valid array on a chase source: %v", err)
+	}
+	if got := c.SilverSources[0].ToSilverOpenSpec().Settings; got != nil {
+		t.Errorf("chase settings = %+v, want none", got)
+	}
+}
+
 // A schwab source's `schwab` object sets the mark guard it opens with,
 // the defaults filling what it leaves out. Validation refuses the object
 // on another kind, a percentage of 0 or less, and a confirmation band

@@ -35,20 +35,18 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		var (
 			activityID, acct, rawKind, instr, currency, payload string
 			occurredAt                                          int64
-			qtyStr, priceStr, amtStr                            *canonical.Decimal
+			qty, price, amount                                  *canonical.Decimal
 		)
 		if err := rows.Scan(&activityID, &occurredAt, &acct, &rawKind, &instr,
-			&currency, silver.Dec(&qtyStr, silver.DecText), silver.Dec(&priceStr, silver.DecText), silver.Dec(&amtStr, silver.DecText), &payload); err != nil {
+			&currency, silver.Dec(&qty, silver.DecText), silver.Dec(&price, silver.DecText), silver.Dec(&amount, silver.DecText), &payload); err != nil {
 			return fmt.Errorf("fidelity Transactions scan: %w", err)
 		}
 
-		qty := qtyStr
 		p := parseTxPayload(payload)
 		// The amount is resolved BEFORE the kind, because some kinds
 		// depend on it: Fidelity's `WIRE` and `TRANSFER` verbs carry no
 		// direction, and their signs are the only thing that does.
-		netDec := amtStr
-		kind := kindFor(rawKind, qty, netDec, p.Action, acct)
+		kind := kindFor(rawKind, qty, amount, p.Action, acct)
 		// The narrative is all gold has to categorise a fidelity row
 		// by: no merchant, no counterparty, no description. It is what
 		// separates the two kinds of fee this source books — an ADR
@@ -69,9 +67,9 @@ SELECT activity_id, timestamp, account_external_id, kind,
 			AccountExternalID:     acct,
 			Kind:                  kind,
 			Currency:              currency,
-			NetAmount:             netDec,
+			NetAmount:             amount,
 			Quantity:              qty,
-			Price:                 priceStr,
+			Price:                 price,
 			Payload:               json.RawMessage(payload),
 		}
 		if descr != "" {

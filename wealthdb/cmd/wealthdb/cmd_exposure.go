@@ -403,6 +403,9 @@ func (t typedIssuers) load(ctx context.Context, db *sql.DB) error {
 			kinds = append(kinds, k)
 		}
 	}
+	if len(kinds) == 0 {
+		return nil
+	}
 	args := make([]any, len(kinds))
 	for i, k := range kinds {
 		args[i] = k

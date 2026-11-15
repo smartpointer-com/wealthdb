@@ -10,7 +10,7 @@
 //
 //   - one ACCOUNT per roster account, from its latest roster row: cash for a
 //     deposit account, card for a credit card, in the taxable personal
-//     wrapper and self-directed (silver.BankRosterRow.Account);
+//     wrapper and self-directed (RosterRow.Account);
 //   - CASH BALANCES, never positions: cash is not an instrument. Gold's
 //     report_cash macro synthesises the read-time cash position from them.
 //     A CURRENT balance from the roster's live figure, and a CLOSING series
@@ -51,7 +51,7 @@ type Source struct {
 	Clock silver.Clock
 
 	// NameCol and TypeCol are the roster's name and type columns
-	// (silver.ReadBankRoster); TypeCol "" reads no type.
+	// (readRoster); TypeCol "" reads no type.
 	NameCol, TypeCol string
 	// NameIsNickname says the name column holds the holder's nickname:
 	// the account record carries it as such, and -p treats the display
@@ -64,24 +64,24 @@ type Source struct {
 	ProductCol, CardProduct string
 	AccountKind             canonical.AccountKind
 	// Display, where set, is an account's display name; nil takes the
-	// name, else the mask (silver.BankRosterRow.DisplayName).
-	Display func(r silver.BankRosterRow) string
+	// name, else the mask (RosterRow.DisplayName).
+	Display func(r RosterRow) string
 	// Account, where set, completes an account record.
 	Account func(acc *canonical.AccountChange) error
 
 	// Listing is the table that records each account a run's roster
 	// listed. Each such run then stamps a CURRENT balance
-	// (silver.AppendReportedBalances). With Listing "", one CURRENT
-	// balance per account is stamped at the source's latest roster
-	// snapshot (silver.BankRosterRow.CurrentBalance).
+	// (appendReportedBalances). With Listing "", one CURRENT balance per
+	// account is stamped at the source's latest roster snapshot
+	// (RosterRow.CurrentBalance).
 	Listing string
 	// Closings are the CLOSING balance series, emitted in this order
 	// after the CURRENT balances.
 	Closings []Series
 	// ListingVersion is the silver schema version that adds Listing. A
-	// silver older than it reads with no CURRENT balance
-	// (silver.AppendReportedBalances), and the load advises its collector's
-	// load.
+	// silver older than it reads with no CURRENT balance, and the load
+	// advises its collector's load. Its accounts keep their closing
+	// balances.
 	ListingVersion int
 	// Probe, where set, reads at Open which optional parts the silver
 	// holds and yields the pass Snapshots applies last, nil for none, and
@@ -168,8 +168,6 @@ func (a *Adapter) Source() silver.Source {
 	}
 }
 
-func (a *Adapter) Kind() string { return a.src.Kind }
-
 func (a *Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, a.src.Kind+" silver")
 	if err != nil {
@@ -177,9 +175,8 @@ func (a *Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connec
 	}
 	c := &connection{src: a.src, db: db}
 	if a.src.Listing != "" {
-		var listed bool
 		note, err := silver.ProbeOptional(ctx, db, filepath.Base(spec.Path),
-			silver.Optional{Table: a.src.Listing, Version: a.src.ListingVersion, Has: &listed})
+			silver.Optional{Table: a.src.Listing, Version: a.src.ListingVersion, Has: &c.listed})
 		if err != nil {
 			db.Close()
 			return nil, err
@@ -199,9 +196,11 @@ func (a *Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connec
 }
 
 type connection struct {
-	src  *Source
-	db   *sql.DB
-	pass Pass
+	src *Source
+	db  *sql.DB
+	// listed says the silver holds the Listing table.
+	listed bool
+	pass   Pass
 	silver.Advice
 }
 
@@ -223,23 +222,23 @@ type facts struct {
 	card     func(accountID string) bool
 }
 
-// readFacts reads each account's currency and product from its latest
-// roster row.
+// readFacts reads each account's currency and, with a ProductCol, its
+// product from its latest roster row. An account whose latest row names no
+// currency, or that has no row, takes DefaultCurrency.
 func (c *connection) readFacts(ctx context.Context) (facts, error) {
 	s := c.src
-	if s.ProductCol == "" {
-		ccy, err := silver.ReadAccountCurrencies(ctx, c.db, s.DefaultCurrency)
-		card := s.AccountKind == canonical.AccountKindCard
-		return facts{currency: ccy.Of, card: func(string) bool { return card }}, err
+	product := "''"
+	if s.ProductCol != "" {
+		product = "a." + s.ProductCol
 	}
 	q := `
-SELECT a.account_external_id, COALESCE(a.currency, ''), a.` + s.ProductCol + `
+SELECT a.account_external_id, COALESCE(a.currency, ''), ` + product + `
   FROM accounts a
  WHERE a.snapshot_at = (SELECT MAX(a2.snapshot_at) FROM accounts a2
                          WHERE a2.account_external_id = a.account_external_id)`
 	type fact struct{ currency, product string }
 	byID := map[string]fact{}
-	err := silver.ScanRows(ctx, c.db, "", q, func(rows *sql.Rows) error {
+	err := silver.ScanRows(ctx, c.db, s.Kind+" account facts", q, func(rows *sql.Rows) error {
 		var id string
 		var f fact
 		if err := rows.Scan(&id, &f.currency, &f.product); err != nil {
@@ -248,6 +247,11 @@ SELECT a.account_external_id, COALESCE(a.currency, ''), a.` + s.ProductCol + `
 		byID[id] = f
 		return nil
 	})
+	card := func(id string) bool { return byID[id].product == s.CardProduct }
+	if s.ProductCol == "" {
+		all := s.AccountKind == canonical.AccountKindCard
+		card = func(string) bool { return all }
+	}
 	return facts{
 		currency: func(id string) string {
 			if ccy := byID[id].currency; ccy != "" {
@@ -255,7 +259,7 @@ SELECT a.account_external_id, COALESCE(a.currency, ''), a.` + s.ProductCol + `
 			}
 			return s.DefaultCurrency
 		},
-		card: func(id string) bool { return byID[id].product == s.CardProduct },
+		card: card,
 	}, err
 }
 
@@ -287,8 +291,8 @@ func (c *connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendAccounts(ctx, w, f, &batch); err != nil {
 		return nil, err
 	}
-	if c.src.Listing != "" {
-		if err := silver.AppendReportedBalances(ctx, c.db, c.src.Kind, c.src.Listing, w, f.currency, &batch); err != nil {
+	if c.listed {
+		if err := appendReportedBalances(ctx, c.db, c.src.Kind, c.src.Listing, w, f.currency, &batch); err != nil {
 			return nil, err
 		}
 	}
@@ -311,7 +315,7 @@ func (c *connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 func (c *connection) appendAccounts(ctx context.Context, w canonical.Window, f facts,
 	batch *canonical.SnapshotBatch) error {
 	s := c.src
-	roster, err := silver.ReadBankRoster(ctx, c.db, s.Kind+" appendAccounts", s.NameCol, s.TypeCol)
+	roster, err := readRoster(ctx, c.db, s.Kind+" appendAccounts", s.NameCol, s.TypeCol)
 	if err != nil {
 		return err
 	}
@@ -365,7 +369,7 @@ func (c *connection) appendClosings(ctx context.Context, w canonical.Window, f f
 		}
 	}
 	from := len(batch.CashBalances)
-	err := silver.AppendClosingBalances(ctx, c.db, c.src.Kind+" "+s.Label,
+	err := appendClosingBalances(ctx, c.db, c.src.Kind+" "+s.Label,
 		s.Query, append([]any{lo, hi}, s.Args...), `{"basis":"`+s.Basis+`"}`, f.currency,
 		func(id string, v float64) canonical.Decimal { return signed(v, s.Cards || f.card(id)) },
 		batch)

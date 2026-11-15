@@ -29,16 +29,18 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	// to a column.
 	//
 	// instrument_external_id is silver's own column, resolved from the
-	// description at load (migration 0005). No join to `instruments`:
-	// what the instrument IS belongs to the instrument row, and the
-	// gold adapter classifies that from the same silver in one place.
-	const q = `
+	// description at load (migration 0005); an older silver reads NULL,
+	// and a trade then states the fund it names (InstrumentHint). No join to
+	// `instruments`: what the instrument IS belongs to the instrument
+	// row, and the gold adapter classifies that from the same silver in
+	// one place.
+	q := `
 SELECT transaction_external_id, occurred_at, account_external_id,
        type, kind, currency,
        CAST(amount_chf AS VARCHAR),
        COALESCE(json_extract(payload, '$.description'), ''),
        payload,
-       instrument_external_id
+       ` + silver.ColumnOr(c.schema.txInstrument, "instrument_external_id") + `
   FROM transactions
  WHERE occurred_at BETWEEN ? AND ?`
 

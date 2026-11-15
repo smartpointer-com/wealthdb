@@ -55,15 +55,7 @@ func (x *valorIndex) add(valor, isin string) {
 // same map: a connection pairs one reader of each silver, so psn is the
 // same on every call.
 func (r *webReader) valorIndex(ctx context.Context, psn *psnReader) (map[string]string, error) {
-	if r.valors != nil {
-		return r.valors, nil
-	}
-	x, err := buildValorIndex(ctx, psn, r)
-	if err != nil {
-		return nil, err
-	}
-	r.valors = x
-	return x, nil
+	return r.valors.Get(func() (map[string]string, error) { return buildValorIndex(ctx, psn, r) })
 }
 
 // buildValorIndex reads every road both silvers offer.
@@ -113,7 +105,7 @@ func (r *psnReader) addInstrumentValors(ctx context.Context, x *valorIndex) erro
 	if r == nil || r.db == nil {
 		return nil
 	}
-	if err := silver.ScanRows(ctx, r.db, "psn addInstrumentValors", `SELECT isin, payload FROM instruments`, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "psn addInstrumentValors", `SELECT isin, payload FROM instruments`, func(rows *sql.Rows) error {
 		var isin, payload string
 		if err := rows.Scan(&isin, &payload); err != nil {
 			return fmt.Errorf("psn addInstrumentValors scan: %w", err)
@@ -127,10 +119,7 @@ func (r *psnReader) addInstrumentValors(ctx context.Context, x *valorIndex) erro
 		x.add(normalizeValor(p.InstrIdtfr.Valor), isin)
 		x.add(valorFromSwissISIN(isin), isin)
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // addPortfolioValors reads the portfolio transaction list, which names
@@ -143,7 +132,7 @@ func (r *webReader) addPortfolioValors(ctx context.Context, x *valorIndex) error
 	if err != nil || !ok {
 		return err
 	}
-	if err := silver.ScanRows(ctx, r.db, "ubs-web addPortfolioValors", `
+	return silver.ScanRows(ctx, r.db, "ubs-web addPortfolioValors", `
 SELECT valor, isin FROM portfolio_transactions
  WHERE valor IS NOT NULL AND isin IS NOT NULL`, func(rows *sql.Rows) error {
 		var valor, isin string
@@ -152,10 +141,7 @@ SELECT valor, isin FROM portfolio_transactions
 		}
 		x.add(normalizeValor(valor), strings.TrimSpace(isin))
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // addStatementValors reads the statements of assets, which print each
@@ -168,7 +154,7 @@ func (r *webReader) addStatementValors(ctx context.Context, x *valorIndex) error
 	if err != nil || !ok {
 		return err
 	}
-	if err := silver.ScanRows(ctx, r.db, "ubs-web addStatementValors", `
+	return silver.ScanRows(ctx, r.db, "ubs-web addStatementValors", `
 SELECT DISTINCT json_extract(payload, '$.valor'), instrument_isin
   FROM historical_position_snapshots
  WHERE instrument_isin IS NOT NULL`, func(rows *sql.Rows) error {
@@ -181,10 +167,7 @@ SELECT DISTINCT json_extract(payload, '$.valor'), instrument_isin
 			x.add(normalizeValor(valor.String), isin)
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // valorFromSwissISIN recovers the valor a Swiss ISIN is built from: the

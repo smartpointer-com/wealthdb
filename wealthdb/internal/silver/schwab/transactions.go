@@ -51,7 +51,7 @@ func (c *apiReader) buildDescriptionToInstrumentKey(ctx context.Context) (map[st
 // (possible across ticker reuse).
 func (c *apiReader) scanPositionDescriptions(ctx context.Context, out map[string]string) error {
 	const q = `SELECT DISTINCT payload FROM positions`
-	if err := silver.ScanRows(ctx, c.db, "schwab descToInstrument positions", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "schwab descToInstrument positions", q, func(rows *sql.Rows) error {
 		var payload string
 		if err := rows.Scan(&payload); err != nil {
 			return err
@@ -79,10 +79,7 @@ func (c *apiReader) scanPositionDescriptions(ctx context.Context, out map[string
 		}
 		out[norm] = key
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // scanInstrumentDescriptions adds the instruments table's descriptions
@@ -94,7 +91,7 @@ func (c *apiReader) scanInstrumentDescriptions(ctx context.Context, out map[stri
 		return err
 	}
 	const q = `SELECT symbol, payload FROM instruments`
-	if err := silver.ScanRows(ctx, c.db, "schwab descToInstrument instruments", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "schwab descToInstrument instruments", q, func(rows *sql.Rows) error {
 		var sym, payload string
 		if err := rows.Scan(&sym, &payload); err != nil {
 			return err
@@ -119,10 +116,7 @@ func (c *apiReader) scanInstrumentDescriptions(ctx context.Context, out map[stri
 			out[norm] = key
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // normalizeSchwabDescription folds the formatting differences

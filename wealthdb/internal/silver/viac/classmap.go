@@ -24,10 +24,9 @@ func taxWrapperFor(productCode string) canonical.TaxWrapper {
 	return canonical.TaxWrapperTaxablePersonal
 }
 
-// listedPrivateEquityRe matches the one exchange-traded holding in the
-// otherwise all-CSIF VIAC universe: the iShares Listed Private Equity
-// UCITS ETF. Silver's asset_class (equity / other) can't tell it
-// apart from the CSIF equity funds, so it's recognised by name.
+// listedPrivateEquityRe recognises a listed private-equity ETF by its
+// name. Silver's asset_class (equity / other) cannot tell it apart from
+// an equity index fund.
 var listedPrivateEquityRe = regexp.MustCompile(`(?i)private\s+equity`)
 
 // taxonomyFor derives the 2-D taxonomy pair (exposure, vehicle) — see
@@ -35,18 +34,16 @@ var listedPrivateEquityRe = regexp.MustCompile(`(?i)private\s+equity`)
 // name. Silver translates VIAC's raw section to its own class string
 // (EQUITIES → equity); the switch below reads that string.
 //
-// Every VIAC holding is a Credit Suisse Index Fund (CSIF) — a
-// non-exchange-traded institutional index fund, so the vehicle is
-// `fund` throughout — except the one listed private-equity ETF, which
-// is exchange-traded (`etf`). Exposure comes from silver's already-
+// A VIAC holding reads as an institutional index fund that is not
+// exchange-traded, so its vehicle is `fund`, unless its name marks a
+// listed private-equity ETF (`etf`). Exposure comes from silver's already-
 // canonicalised class where it's unambiguous; silver's 'other'
 // (VIAC's ALTERNATIVES sleeve) falls back to a name-derived exposure.
 //
 // The returned pair always satisfies canonical.ValidTaxonomyPair.
 func taxonomyFor(rawClass, name string) (canonical.AssetClass, canonical.Vehicle) {
-	// Name-based special case first: the iShares Listed Private Equity
-	// ETF, regardless of whether silver filed it under EQUITIES or
-	// ALTERNATIVES. Listed PE is private-equity exposure in an ETF
+	// Name-based special case first: a listed private-equity ETF,
+	// whether silver filed it under EQUITIES or ALTERNATIVES. Listed PE is private-equity exposure in an ETF
 	// wrapper (TAXONOMY.md §5.3).
 	if listedPrivateEquityRe.MatchString(name) {
 		return canonical.AssetClassPrivateEquity, canonical.VehicleETF
@@ -88,7 +85,7 @@ func taxonomyFor(rawClass, name string) (canonical.AssetClass, canonical.Vehicle
 // txKindFor maps silver's already-canonicalised `transactions.kind`
 // string to the canonical TxKind enum. Silver does the
 // VIAC-raw → canonical translation (TRADE_BUY → buy, FUSION_*
-// → corporate_action, etc.); we just type-cast and validate.
+// → corporate_action, etc.); txKindFor casts and validates it.
 // Unknown values fall through to TxKindOther.
 func txKindFor(raw string) canonical.TxKind {
 	k := canonical.TxKind(raw)

@@ -32,13 +32,12 @@ type webReader struct {
 	// valors keeps what valorIndex read, for the reason psnReader keeps
 	// its cash coverage: the cash pass, the portfolio pass and the
 	// realized lots each resolve against it.
-	valors map[string]string
+	valors silver.Lazy[map[string]string]
 
-	// parts is the file's optional schema, once probed is set (schema).
-	parts  webSchema
-	probed bool
-	note   silver.SchemaNote
-	file   string // the silver's base name, for the note
+	// parts is the file's optional schema (schema).
+	parts silver.Lazy[webSchema]
+	note  silver.SchemaNote
+	file  string // the silver's base name, for the note
 }
 
 func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
@@ -54,7 +53,7 @@ func (r *webReader) observed(ctx context.Context, out *canonical.Status) error {
 		return err
 	}
 	windows := s.windows
-	if err := silver.ObserveByRuns(ctx, r.db, "ubs-web", `SELECT MAX(snapshot_at) FROM dump_runs`, out); err != nil {
+	if err := silver.ObserveByRuns(ctx, r.db, "ubs-web", silver.LatestDump, out); err != nil {
 		return err
 	}
 	if !windows {
@@ -226,7 +225,7 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
  WHERE instrument_isin IS NOT NULL
    AND snapshot_at BETWEEN ? AND ?
  GROUP BY snapshot_at, instrument_isin`
-	if err := silver.ScanRows(ctx, r.db, "appendWebInstruments", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendWebInstruments", q, func(rows *sql.Rows) error {
 		var (
 			snap        int64
 			isin        string
@@ -269,10 +268,7 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 			LastSeenAt:           snap,
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // transactionsBeforePSNStart emits web transactions strictly
@@ -734,7 +730,7 @@ func (row webTxRow) dividendCredit() (*canonical.Decimal, bool) {
 // eachWebTx calls fn on each row of the web transactions table that
 // `where` (a WHERE clause over it, or "") selects.
 func (r *webReader) eachWebTx(ctx context.Context, what, where string, args []any, fn func(webTxRow) error) error {
-	if err := silver.ScanRows(ctx, r.db, fmt.Sprintf("%s", what), `
+	return silver.ScanRows(ctx, r.db, what, `
 SELECT transaction_external_id, value_date, account_external_id, currency_iso,
        amount_debit, amount_credit, counterparty, description_kind, payload
   FROM transactions `+where, func(rows *sql.Rows) error {
@@ -743,14 +739,8 @@ SELECT transaction_external_id, value_date, account_external_id, currency_iso,
 			&row.debit, &row.credit, &row.counterparty, &row.descKind, &row.payload); err != nil {
 			return fmt.Errorf("%s scan: %w", what, err)
 		}
-		if err := fn(row); err != nil {
-			return err
-		}
-		return nil
-	}, args...); err != nil {
-		return err
-	}
-	return nil
+		return fn(row)
+	}, args...)
 }
 
 // psnCut is the hard cut at each banking relationship's PSN start: a
@@ -1114,17 +1104,13 @@ func markReturnsInternal(payload json.RawMessage, kind canonical.TxKind) (json.R
 // snapshot_at values in [w.Start, w.End] from dump_runs.
 func (r *webReader) dumpRunTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
 	const q = `SELECT snapshot_at FROM dump_runs WHERE snapshot_at BETWEEN ? AND ? ORDER BY snapshot_at`
-	out, err := silver.Query(ctx, r.db, "ubs-web dumpRunTimesInWindow", q, func(rows *sql.Rows) (rec int64, err error) {
+	return silver.Query(ctx, r.db, "ubs-web dumpRunTimesInWindow", q, func(rows *sql.Rows) (int64, error) {
 		var t int64
 		if err := rows.Scan(&t); err != nil {
-			return rec, err
+			return 0, err
 		}
 		return t, nil
 	}, w.Start, w.End)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // appendWebPortfolios projects web silver portfolios into
@@ -1135,7 +1121,7 @@ SELECT snapshot_at, portfolio_external_id, banking_relationship_id,
        description, payload
   FROM portfolios
  WHERE snapshot_at BETWEEN ? AND ?`
-	if err := silver.ScanRows(ctx, r.db, "appendWebPortfolios", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendWebPortfolios", q, func(rows *sql.Rows) error {
 		var (
 			snap               int64
 			extID, payload     string
@@ -1162,10 +1148,7 @@ SELECT snapshot_at, portfolio_external_id, banking_relationship_id,
 			Payload:             json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // appendWebAccounts projects web silver accounts (cash and
@@ -1178,7 +1161,7 @@ SELECT snapshot_at, account_external_id, kind, currency_iso,
        description, payload
   FROM accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	if err := silver.ScanRows(ctx, r.db, "appendWebAccounts", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendWebAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap                                 int64
 			extID, kind, payload                 string
@@ -1217,10 +1200,7 @@ SELECT snapshot_at, account_external_id, kind, currency_iso,
 			Payload:             json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // buildAccountToRelMap returns a web account_external_id → web
@@ -1728,7 +1708,7 @@ func populateCutoffMap(
 	ctx context.Context, db *sql.DB, q string,
 	cutoffByRel map[string]int64, out map[string]int64,
 ) error {
-	if err := silver.ScanRows(ctx, db, "", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, db, "", q, func(rows *sql.Rows) error {
 		var id, rel string
 		if err := rows.Scan(&id, &rel); err != nil {
 			return err
@@ -1737,10 +1717,7 @@ func populateCutoffMap(
 			out[id] = c
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // webProjectedNet is the signed amount a `ubs-web` cash row projects into
@@ -2194,9 +2171,9 @@ func pdfCashIsExternal(p webTxPayload, own map[string]bool, outbound, railEra bo
 // "<security caption>; <ISIN>" — a typical caption looks like
 // "UBS (Lux) Fund Solutions SICAV - UBS Core MSCI EMU UCITS ETF
 // EUR dis-dist; LU0000000070". The trailing 12-char alphanumeric
-// after "; " is a valid ISIN when the caption names a security; we
-// validate by length-and-charset to avoid grabbing other ";"-
-// separated comments.
+// after "; " is a valid ISIN when the caption names a security; a
+// length-and-charset check avoids grabbing other ";"-separated
+// comments.
 //
 // Returns (nil, nil) when the field is missing, empty, or the
 // trailing token doesn't look like an ISIN. The full caption
@@ -2438,7 +2415,7 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
        portfolio_external_id, currency_iso, description, payload
   FROM mortgages
  WHERE snapshot_at BETWEEN ? AND ?`
-	if err := silver.ScanRows(ctx, r.db, "appendWebMortgages", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendWebMortgages", q, func(rows *sql.Rows) error {
 		var (
 			snap                      int64
 			extID, currency, payload  string
@@ -2483,10 +2460,7 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 			LastSeenAt:           snap,
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // latestMortgagePositions returns one PositionChange per mortgage

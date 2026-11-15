@@ -4,7 +4,12 @@
 CREATE TABLE dump_runs (
     snapshot_at           INTEGER NOT NULL PRIMARY KEY,
     silver_schema_version INTEGER NOT NULL,
-    run_dir               TEXT    NOT NULL
+    run_dir               TEXT    NOT NULL,
+    mode                  TEXT,
+    activity_since        INTEGER,
+    activity_until        INTEGER,
+    positions_present     INTEGER NOT NULL DEFAULT 0,
+    activity_present      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE portfolios (

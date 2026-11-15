@@ -149,6 +149,27 @@ func TestABookThatEmptiesEmitsTheClosureMarker(t *testing.T) {
 		t.Errorf("batch at 300 = %+v, want the marker once", batches[3])
 	}
 
+	// With no Account, Emit states the accounts, and the marker carries
+	// the last held batch's, seen at the exit.
+	emitWithAccount := func(t int64, held []Holding) (canonical.SnapshotBatch, error) {
+		b, err := heldKeys(map[int64][]string{})(t, held)
+		if len(b.Positions) > 0 {
+			b.Accounts = []canonical.AccountChange{account(t)}
+		}
+		return b, err
+	}
+	own, err := Book{States: states, Emit: emitWithAccount, Closure: true}.Batches(everything)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := own[2]; len(m.Positions) != 1 || len(m.Accounts) != 1 ||
+		m.Accounts[0].AccountExternalID != "acct" || m.Accounts[0].FirstSeenAt != 200 || m.Accounts[0].LastSeenAt != 200 {
+		t.Errorf("marker without Account = %+v, want the held batch's account seen at 200", m)
+	}
+	if own[1].Accounts[0].FirstSeenAt != 100 {
+		t.Errorf("held batch account = %+v, want it unchanged by the marker", own[1].Accounts)
+	}
+
 	plain, err := Book{States: states, Emit: heldKeys(map[int64][]string{})}.Batches(everything)
 	if err != nil {
 		t.Fatal(err)

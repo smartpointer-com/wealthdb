@@ -61,7 +61,9 @@ type Book struct {
 	Removals Removals
 	// Account is the book's one account as of t. Every batch with a
 	// position carries it, and so does the closure marker. A nil
-	// Account adds none, and Emit states the accounts itself.
+	// Account adds none, and Emit states the accounts itself; the
+	// closure marker then carries the last held batch's accounts, seen
+	// at the exit.
 	Account func(t int64) canonical.AccountChange
 	// Emit builds the batch at t from the holdings held at t: their
 	// positions, lots and instruments.
@@ -117,12 +119,28 @@ func (b Book) Batches(w canonical.Window) ([]canonical.SnapshotBatch, error) {
 			}
 			lastHeld = batch
 		case prevHeld && b.Closure:
-			batch = ClosureMarkerBatch(lastHeld, t, b.Account(t))
+			batch = b.closureMarker(lastHeld, t)
 		}
 		prevHeld = holds
 		out = append(out, batch)
 	}
 	return out, nil
+}
+
+// closureMarker is the closure marker at t after lastHeld, the last
+// batch with a position. Its accounts are Account's as of t, or, with no
+// Account, lastHeld's own, seen at t.
+func (b Book) closureMarker(lastHeld canonical.SnapshotBatch, t int64) canonical.SnapshotBatch {
+	if b.Account != nil {
+		return ClosureMarkerBatch(lastHeld, t, b.Account(t))
+	}
+	marker := ClosureMarkerBatch(lastHeld, t, canonical.AccountChange{})
+	marker.Accounts = make([]canonical.AccountChange, len(lastHeld.Accounts))
+	for i, a := range lastHeld.Accounts {
+		a.FirstSeenAt, a.LastSeenAt = t, t
+		marker.Accounts[i] = a
+	}
+	return marker
 }
 
 // times are the distinct state dates, Extra times and removal times

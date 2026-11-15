@@ -21,7 +21,7 @@ var psnContent = []string{
 	"cash_balances", "instruments", "fx_rates", "forward_contracts",
 }
 
-// clock is the PSN feed's. The snapshot range spans the dumps and the
+// psnClock is the PSN feed's clock. The snapshot range spans the dumps and the
 // content tables: PSN promotes snapshot_at on content rows to the
 // business date's midnight, which can be earlier than the dump's
 // wall-clock run time. A dump or an event past the watermark opens a
@@ -33,7 +33,7 @@ var psnContent = []string{
 // gold already holds are re-emitted unchanged. The change number is the
 // latest dump, so an idle reload stays a no-op; a nightly report states
 // the holdings and the day's events, so it is both observed watermarks.
-func (r *psnReader) clock() silver.Clock {
+var psnClock = func() silver.Clock {
 	snapshot := []string{silver.Range("dump_runs", "snapshot_at")}
 	var recent []string
 	for _, t := range psnContent {
@@ -55,13 +55,13 @@ func (r *psnReader) clock() silver.Clock {
 			Lookback: psnBusinessDayLookback,
 		},
 	}
-}
+}()
 
 // Status and ChangeWindow are the clock's (silver.Clock).
 func (r *psnReader) Status(ctx context.Context) (canonical.Status, error) {
-	return r.clock().Status(ctx, r.db)
+	return psnClock.Status(ctx, r.db)
 }
 
 func (r *psnReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	return r.clock().ChangeWindow(ctx, r.db, since)
+	return psnClock.ChangeWindow(ctx, r.db, since)
 }

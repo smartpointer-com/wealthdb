@@ -52,23 +52,23 @@ func (s *webSchema) optional() []silver.Optional {
 // schema is the file's optional parts, probed on the first call: Open
 // makes that call, so a reader that opened has probed.
 func (r *webReader) schema(ctx context.Context) (webSchema, error) {
-	if !r.probed {
-		note, err := silver.ProbeOptional(ctx, r.db, r.file, r.parts.optional()...)
+	return r.parts.Get(func() (webSchema, error) {
+		var s webSchema
+		note, err := silver.ProbeOptional(ctx, r.db, r.file, s.optional()...)
 		if err != nil {
 			return webSchema{}, err
 		}
 		r.note = note
-		r.probed = true
-	}
-	return r.parts, nil
+		return s, nil
+	})
 }
 
-// hasTable reports whether the silver carries an optional table
-// (webOptionalTables).
+// hasTable reports whether the silver carries an optional table. name
+// is one of webOptionalTables; any other name is a programming error.
 func (r *webReader) hasTable(ctx context.Context, name string) (bool, error) {
 	i := slices.Index(webOptionalTables, name)
 	if i < 0 {
-		return silver.HasTables(ctx, r.db, name)
+		panic("ubs: hasTable(" + name + "): not one of webOptionalTables")
 	}
 	s, err := r.schema(ctx)
 	if err != nil {
@@ -90,15 +90,15 @@ func (s *psnSchema) optional() []silver.Optional {
 // schema is the file's optional parts, probed on the first call: Open
 // makes that call, so a reader that opened has probed.
 func (r *psnReader) schema(ctx context.Context) (psnSchema, error) {
-	if !r.probed {
-		note, err := silver.ProbeOptional(ctx, r.db, r.file, r.parts.optional()...)
+	return r.parts.Get(func() (psnSchema, error) {
+		var s psnSchema
+		note, err := silver.ProbeOptional(ctx, r.db, r.file, s.optional()...)
 		if err != nil {
 			return psnSchema{}, err
 		}
 		r.note = note
-		r.probed = true
-	}
-	return r.parts, nil
+		return s, nil
+	})
 }
 
 // SchemaAdvice is the notes of the feeds whose silver is older than the

@@ -1,11 +1,11 @@
 package returns_test
 
-// This external test package blank-imports the silver adapters so their
-// init()-time returns.RegisterPolicy calls run, then pins the EXACT FlowPolicy
-// each source resolves to (via returns.ReturnsPolicyFor(kind).Flow). It lives
-// in package returns_test (not returns) to avoid an import
-// cycle: silver/<kind> imports internal/returns, so only an external test
-// package may pull the silver adapters in alongside the package under test.
+// This external test package blank-imports silver/all so silver.Register
+// forwards each kind's policy (returns.RegisterPolicy), then pins the EXACT
+// FlowPolicy each source resolves to (via returns.ReturnsPolicyFor(kind).Flow).
+// It lives in package returns_test (not returns) to avoid an import cycle:
+// silver imports internal/returns, so only an external test package may pull
+// the silver adapters in alongside the package under test.
 
 import (
 	"reflect"
@@ -14,8 +14,8 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 
-	// Blank-import every silver adapter that registers a policy, mirroring
-	// cmd/wealthdb/main.go, so registration runs before the assertions.
+	// Every adapter, as cmd/wealthdb/main.go imports them, so registration
+	// runs before the assertions.
 	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/all"
 )
 

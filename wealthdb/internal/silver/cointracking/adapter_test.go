@@ -49,12 +49,6 @@ func openAdapter(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{}, path)
 }
 
-func TestKindIsCointracking(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "cointracking" {
-		t.Errorf("Kind() = %q, want %q", got, "cointracking")
-	}
-}
-
 func TestStatusEmpty(t *testing.T) {
 	path := newFixtureSilver(t, "")
 	conn := openAdapter(t, path)

@@ -260,8 +260,8 @@ func privateMarketsPair(name string) (canonical.AssetClass, canonical.Vehicle) {
 //     known PSN code is a private-banking product).
 //   - Unknown codes return "" so the caller leaves TaxWrapper nil,
 //     AND log a one-shot WARN to stderr.
-//     This is the alarm bell for "PSN started surfacing a code we
-//     haven't classified" — the primary case being a pension
+//     This is the alarm bell for "PSN started surfacing a code the
+//     adapter has not classified" — the primary case being a pension
 //     product if PSN's coverage ever widens beyond pure private
 //     banking.
 //   - Empty code (silver payload missing AcctTpCd) is silent.

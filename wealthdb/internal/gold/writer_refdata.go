@@ -68,11 +68,22 @@ func (w *Writer) insertRefRows(ctx context.Context, r canonical.RefRows) error {
 		}
 		return strings.Join(parts, ", ")
 	}
+	// enums are the columns of a closed vocabulary, in column order.
+	type enumCol struct {
+		i       int
+		name    string
+		allowed []string
+	}
+	var enums []enumCol
+	for i, c := range t.Cols {
+		if allowed, ok := t.Enums[c.Gold]; ok {
+			enums = append(enums, enumCol{i, c.Gold, allowed})
+		}
+	}
 	for i, row := range r.Rows {
-		for _, c := range t.Cols {
-			allowed, ok := t.Enums[c.Gold]
-			if v := row[t.Col(c.Gold)]; ok && v != nil && !slices.Contains(allowed, v.(string)) {
-				return fmt.Errorf("%s row %d (%s): invalid %s %q", t.Gold, i, keyText(row), c.Gold, v)
+		for _, e := range enums {
+			if v := row[e.i]; v != nil && !slices.Contains(e.allowed, v.(string)) {
+				return fmt.Errorf("%s row %d (%s): invalid %s %q", t.Gold, i, keyText(row), e.name, v)
 			}
 		}
 	}

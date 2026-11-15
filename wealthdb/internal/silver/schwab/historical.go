@@ -227,7 +227,7 @@ SELECT period_end, period_start, account_external_id, currency_iso,
  WHERE period_end BETWEEN ? AND ?
     OR period_start BETWEEN ? AND ?`
 
-	if err := silver.ScanRows(ctx, r.db, "appendHistoricalCashBalances", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendHistoricalCashBalances", q, func(rows *sql.Rows) error {
 		var (
 			periodEnd, periodStart int64
 			suffix, ccy, payload   string
@@ -272,10 +272,7 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 			})
 		}
 		return nil
-	}, w.Start, w.End, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End, w.Start, w.End)
 }
 
 // historicalRange returns MIN/MAX time across the historical

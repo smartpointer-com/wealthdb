@@ -86,3 +86,32 @@ func TestWithStatedRatesWritesWhatTheReaderReads(t *testing.T) {
 		}
 	}
 }
+
+// A stated value's text is a string's, or any other value's JSON; null and
+// absent state none. A stated number is finite and decimal, ASCII space
+// around it ignored, its digits grouped by underscores.
+func TestStatedTextAndNumber(t *testing.T) {
+	for _, c := range []struct {
+		raw  json.RawMessage
+		text string
+		ok   bool
+	}{
+		{nil, "", false}, {json.RawMessage(`null`), "", false},
+		{json.RawMessage(`"0.25"`), "0.25", true}, {json.RawMessage(`1.5`), "1.5", true},
+		{json.RawMessage(`{"a":1}`), `{"a":1}`, true},
+	} {
+		if text, ok := JSONText(c.raw); text != c.text || ok != c.ok {
+			t.Errorf("JSONText(%s) = %q, %v, want %q, %v", c.raw, text, ok, c.text, c.ok)
+		}
+	}
+	for text, want := range map[string]float64{" 1_000.5\n": 1000.5, "-0.75": -0.75, "2e1": 20} {
+		if v, ok := StatedNumber(text); !ok || v != want {
+			t.Errorf("StatedNumber(%q) = %v, %v, want %v", text, v, ok, want)
+		}
+	}
+	for _, text := range []string{"", "0x10", "1__0", "_1", "1_", "NaN", "Inf", "1e999", " 1", "abc"} {
+		if v, ok := StatedNumber(text); ok {
+			t.Errorf("StatedNumber(%q) = %v, want none", text, v)
+		}
+	}
+}

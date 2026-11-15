@@ -36,7 +36,8 @@ watermark, silver-side change number, and a * if a
 With <id>: a detailed per-source block — counts per gold table,
 silver Status() extrema, when the source's holdings and its ledger
 were last observed, the stored watermark, and the most recent
-load_audit rows. A source is observed when a run reads it, whether
+load_audit rows (window=[all] for a load that re-read the whole
+history). A source is observed when a run reads it, whether
 or not anything changed: a portal that marks quarterly is observed
 through its latest download, its snapshot range through the
 quarter's end.

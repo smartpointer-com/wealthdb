@@ -25,16 +25,6 @@ func openCurves(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{kind: "curves"}, path)
 }
 
-// The kind is registered under its name, and its adapter says so.
-func TestCurvesKind(t *testing.T) {
-	if _, err := silver.Get("curves"); err != nil {
-		t.Fatal(err)
-	}
-	if got := (&Adapter{kind: "curves"}).Kind(); got != "curves" {
-		t.Fatalf("Kind() = %q, want curves", got)
-	}
-}
-
 // Two observation days of a euro and a franc series, loaded by a fetch
 // run at 1_790_000_000. The values are invented.
 const (

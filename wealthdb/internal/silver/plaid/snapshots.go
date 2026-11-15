@@ -103,7 +103,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
 	}
-	secs, err := c.memo.securities(ctx, c)
+	secs, err := c.securities(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 			"do not add up to the holding's quantity and cost", unsummed)
 	}
 
-	latest, err := c.memo.accounts(ctx, c)
+	latest, err := c.accounts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -185,25 +185,18 @@ type accountRun struct {
 // accountRuns are the runs in the window that read the accounts, oldest
 // first.
 func (c *Connection) accountRuns(ctx context.Context, w canonical.Window) ([]accountRun, error) {
-	var out []accountRun
-	if err := silver.ScanRows(ctx, c.db, "plaid accountRuns", `
+	return silver.Query(ctx, c.db, "plaid accountRuns", `
 SELECT d.snapshot_at, h.status IN ('fetched', 'absent', 'not_linked')
   FROM dump_runs d
   JOIN run_products a ON a.run_at = d.snapshot_at AND a.product = 'accounts'
   JOIN run_products h ON h.run_at = d.snapshot_at AND h.product = 'holdings'
  WHERE d.snapshot_at BETWEEN ? AND ?
    AND a.status = 'fetched'
- ORDER BY d.snapshot_at`, func(rows *sql.Rows) error {
+ ORDER BY d.snapshot_at`, func(rows *sql.Rows) (accountRun, error) {
 		var r accountRun
-		if err := rows.Scan(&r.at, &r.snapshots); err != nil {
-			return err
-		}
-		out = append(out, r)
-		return nil
-	}, w.Start, w.End); err != nil {
-		return nil, err
-	}
-	return out, nil
+		err := rows.Scan(&r.at, &r.snapshots)
+		return r, err
+	}, w.Start, w.End)
 }
 
 // heldByAccount is each account's positions in b, with the instruments
@@ -631,7 +624,7 @@ func instrumentChange(s security, key string, first, last int64) canonical.Instr
 func (c *Connection) appendStatementCloses(ctx context.Context, w canonical.Window, newest int64,
 	latest map[string]account, stated map[string]statedBalance,
 	at func(int64) *canonical.SnapshotBatch) error {
-	if err := silver.ScanRows(ctx, c.db, "plaid appendStatementCloses", `
+	return silver.ScanRows(ctx, c.db, "plaid appendStatementCloses", `
 SELECT account_id, last_statement_issue_date, last_statement_balance FROM (
     SELECT account_id, last_statement_issue_date, last_statement_balance,
            ROW_NUMBER() OVER (PARTITION BY account_id, last_statement_issue_date
@@ -662,10 +655,7 @@ SELECT account_id, last_statement_issue_date, last_statement_balance FROM (
 		b.CashBalances = append(b.CashBalances, silver.CashBalance(issued, id, currency,
 			canonical.BalanceKindClosing, amount.Neg(), `{"basis":"statement_closing"}`))
 		return nil
-	}, w.Start, w.End, newest); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End, newest)
 }
 
 // seenSpan is the first and last date the transactions that name one id

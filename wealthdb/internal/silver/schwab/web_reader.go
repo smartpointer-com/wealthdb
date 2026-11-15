@@ -34,11 +34,10 @@ import (
 // the bridged hash before emitting downstream.
 type webReader struct {
 	db *sql.DB
-	// parts is the file's optional schema, once probed is set (schema).
-	parts  webSchema
-	probed bool
-	note   silver.SchemaNote
-	file   string // the silver's base name, for the note
+	// parts is the file's optional schema (schema).
+	parts silver.Lazy[webSchema]
+	note  silver.SchemaNote
+	file  string // the silver's base name, for the note
 }
 
 func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
@@ -137,7 +136,7 @@ func (r *webReader) snapshotsDimensions(
 SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
   FROM accounts
  WHERE snapshot_at BETWEEN ? AND ?`, regCol)
-	if err := silver.ScanRows(ctx, r.db, "schwab-web snapshotsDimensions", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "schwab-web snapshotsDimensions", q, func(rows *sql.Rows) error {
 		var (
 			snap         int64
 			suffix       string
@@ -183,10 +182,7 @@ SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
 		}
 		batch.Accounts = append(batch.Accounts, change)
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // transactionsBeforeAPIStart emits web transactions that are
@@ -503,8 +499,8 @@ func crossFeedMatch(dayA int64, amtA float64, dayB int64, amtB float64) bool {
 // a rare coincidental same-amount, same-window distinct debit. A consuming
 // variant would have to consume exactly one copy per feed (PDF and JSON) per
 // distribution; getting that per-feed bookkeeping wrong would under-drop and
-// re-introduce the double-count this stage exists to prevent, so we keep the
-// safe direction.
+// re-introduce the double-count this stage exists to prevent, so the stage
+// keeps the safe direction.
 func supersedeStatementCashWithDistributions(built []builtWebTx) []builtWebTx {
 	// Index the authoritative distribution cash legs per account.
 	type leg struct {
@@ -557,8 +553,8 @@ func absInt64(v int64) int64 {
 // webKind maps the web silver's `kind` discriminator (the
 // space-separated text Schwab uses on statements and in
 // transaction-history exports) to canonical TxKind. Conservative
-// — unmapped strings route to TxKindOther so we never invent
-// semantics. Schwab uses different vocab on statements vs the
+// — unmapped strings route to TxKindOther so no semantics are
+// invented. Schwab uses different vocab on statements vs the
 // Trader API; the api-side mapping is in kindmap.go.
 //
 // Reinvested dividends land as two separate transactions on

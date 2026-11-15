@@ -208,7 +208,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		if err != nil {
 			return nil, fmt.Errorf("schwab api Transactions: %w", err)
 		}
-		streams = append(streams, &apiFromCoverageStart{inner: s, start: apiStart})
+		streams = append(streams, silver.MapTransactions(s, apiFromCoverageStart(apiStart)))
 	}
 	return silver.NewConcatTransactionStream(streams), nil
 }
@@ -217,28 +217,14 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 // coverage start: the strays apiCoverageStart set aside, whose period
 // the web side books. Where an account has no strays its start is its
 // first row, so nothing is dropped.
-type apiFromCoverageStart struct {
-	inner silver.TransactionStream
-	start map[string]int64
-}
-
-func (s *apiFromCoverageStart) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
-	batch, more, err := s.inner.Next(ctx)
-	if err != nil {
-		return batch, more, err
+func apiFromCoverageStart(start map[string]int64) func(*canonical.TransactionBatch) {
+	return func(b *canonical.TransactionBatch) {
+		b.Transactions = slices.DeleteFunc(b.Transactions, func(tx canonical.TransactionChange) bool {
+			at, ok := start[tx.AccountExternalID]
+			return ok && tx.OccurredAt < at
+		})
 	}
-	kept := batch.Transactions[:0]
-	for _, tx := range batch.Transactions {
-		if start, ok := s.start[tx.AccountExternalID]; ok && tx.OccurredAt < start {
-			continue
-		}
-		kept = append(kept, tx)
-	}
-	batch.Transactions = kept
-	return batch, more, nil
 }
-
-func (s *apiFromCoverageStart) Close() error { return s.inner.Close() }
 
 // ensureBridge builds the web suffix → account id map on first use and
 // caches the result. The id is the api hashValue, or with web alone the

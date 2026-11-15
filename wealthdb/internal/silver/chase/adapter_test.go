@@ -156,7 +156,7 @@ func project(t *testing.T, path string) (canonical.SnapshotBatch, canonical.Tran
 	t.Helper()
 	ctx := context.Background()
 	conn := openConn(t, path)
-	w := silvertest.FullWindow(t, conn)
+	w := silvertest.WindowSince0(t, conn)
 
 	snaps, err := conn.Snapshots(ctx, w)
 	if err != nil {
@@ -180,12 +180,6 @@ func project(t *testing.T, path string) (canonical.SnapshotBatch, canonical.Tran
 	return sb, tb
 }
 
-func TestKind(t *testing.T) {
-	if adapter.Kind() != "chase" {
-		t.Fatalf("Kind = %q", adapter.Kind())
-	}
-}
-
 // TestStatusAndChangeWindow pins spanExtrema: the snapshot range and the
 // re-emit window run from the first transaction (the first cash mark) to the
 // load. The load clock itself is silver's (TestLoadClock).
@@ -203,7 +197,7 @@ func TestStatusAndChangeWindow(t *testing.T) {
 		t.Errorf("snapshot range = [%d,%d], want [%d,%d]",
 			st.OldestSnapshotAt, st.LatestSnapshotAt, first, loadUnix)
 	}
-	if w := silvertest.FullWindow(t, conn); !w.Full {
+	if w := silvertest.WindowSince0(t, conn); !w.Full {
 		t.Errorf("window = %+v, want the whole history", w)
 	}
 }
@@ -219,7 +213,7 @@ func TestChangeWindowCoversStatementPeriodEnds(t *testing.T) {
 	conn := openConn(t, path)
 
 	quiet := silvertest.Day(2025, 10, 31) // earlier than any transaction or roster row
-	if w := silvertest.FullWindow(t, conn); !w.Full {
+	if w := silvertest.WindowSince0(t, conn); !w.Full {
 		t.Errorf("window = %+v, want the whole history, the earliest statement period_end %d in it",
 			w, quiet)
 	}

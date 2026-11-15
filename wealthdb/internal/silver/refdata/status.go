@@ -13,11 +13,9 @@ import (
 // The change clock is the silver load, not the fetch: dump_runs.loaded_at
 // rises with every load that writes a run, so a run fetched earlier but
 // loaded later (an import from another machine, a re-parse of kept
-// bronze) still reaches gold. The observed watermarks stay the fetch.
-const (
-	latestLoad  = `SELECT MAX(loaded_at) FROM dump_runs`
-	latestFetch = `SELECT MAX(snapshot_at) FROM dump_runs`
-)
+// bronze) still reaches gold. The observed watermarks stay the fetch
+// (silver.LatestDump).
+const latestLoad = `SELECT MAX(loaded_at) FROM dump_runs`
 
 // windowExtrema is the MIN/MAX as_of per kind of record
 // (silver.ReferenceTableKinds) over the rows of tables that the runs
@@ -51,7 +49,7 @@ func (c *Connection) clock() silver.Clock {
 		Kind:     kindName,
 		Runs:     latestLoad,
 		Snapshot: []string{silver.Range("compositions", "as_of")},
-		Observed: silver.Observed{Runs: latestFetch},
+		Observed: silver.Observed{Runs: silver.LatestDump},
 		Mode:     silver.PerKind(c.spans),
 	}
 }

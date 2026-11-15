@@ -92,7 +92,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 func (c *Connection) withReference(ctx context.Context, w canonical.Window, s silver.SnapshotStream) (silver.SnapshotStream, error) {
 	streams := []silver.SnapshotStream{s}
 	if c.schema.hasReference() {
-		ref, err := silver.NewReferenceStream(ctx, c.db, w)
+		ref, err := c.reference.Stream(ctx, c.db, w)
 		if err != nil {
 			return nil, err
 		}

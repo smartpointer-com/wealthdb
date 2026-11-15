@@ -38,26 +38,25 @@ func (c psnCashCoverage) speaksFor(account string, at int64) bool {
 // never of which slice of time a load happens to cover. The first call
 // reads it and later calls return the same map.
 func (r *psnReader) cashCoverage(ctx context.Context) (psnCashCoverage, error) {
-	if r != nil && r.coverage != nil {
-		return r.coverage, nil
+	if r == nil {
+		return psnCashCoverage{}, nil
 	}
-	out := psnCashCoverage{}
-	err := r.eachCashMovement(ctx, "ubs-psn cashCoverage", func(row psnCashRow) error {
-		acct := row.account
-		var p cashMovementPayload
-		if err := json.Unmarshal([]byte(row.payload), &p); err == nil && p.Account != "" {
-			acct = p.Account
+	return r.coverage.Get(func() (psnCashCoverage, error) {
+		out := psnCashCoverage{}
+		err := r.eachCashMovement(ctx, "ubs-psn cashCoverage", func(row psnCashRow) error {
+			acct := row.account
+			var p cashMovementPayload
+			if err := json.Unmarshal([]byte(row.payload), &p); err == nil && p.Account != "" {
+				acct = p.Account
+			}
+			if start, ok := out[acct]; !ok || row.at < start {
+				out[acct] = row.at
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		if start, ok := out[acct]; !ok || row.at < start {
-			out[acct] = row.at
-		}
-		return nil
+		return out, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if r != nil {
-		r.coverage = out
-	}
-	return out, nil
 }

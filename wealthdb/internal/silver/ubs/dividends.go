@@ -518,7 +518,7 @@ func (r *webReader) addCustodyTickers(ctx context.Context, d *dividendSecurities
 	if err != nil || !ok {
 		return err
 	}
-	if err := silver.ScanRows(ctx, r.db, "ubs-web addCustodyTickers", `
+	return silver.ScanRows(ctx, r.db, "ubs-web addCustodyTickers", `
 SELECT DISTINCT portfolio_external_id, account_external_id, instrument_isin,
        description, currency_iso, market_value_currency
   FROM historical_position_snapshots`, func(rows *sql.Rows) error {
@@ -539,10 +539,7 @@ SELECT DISTINCT portfolio_external_id, account_external_id, instrument_isin,
 			d.addTicker(portfolio.String, ticker, isin.String)
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // dividendConfirmations maps an MT940 dividend line's event id onto the

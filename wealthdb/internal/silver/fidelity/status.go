@@ -16,32 +16,21 @@ import (
 // is observed through the end of the first gapless stretch of those
 // windows. A statement corpus (historical_position_snapshots) observes
 // both through its latest statement, its ledger over the span of its
-// statements. A silver from before the run columns existed counts every
-// run as reading both through its own time.
+// statements.
 func (c *Connection) observed(ctx context.Context, s *canonical.Status) error {
-	modes, hasHist := c.schema.runModes, c.schema.historical
-	if !modes {
-		if err := silver.ObserveByRuns(ctx, c.db, "fidelity", `SELECT MAX(snapshot_at) FROM dump_runs`, s); err != nil {
-			return err
-		}
-	} else {
-		snap, err := silver.LatestRun(ctx, c.db, "fidelity",
-			`SELECT MAX(snapshot_at) FROM dump_runs WHERE positions_present = 1`)
-		if err != nil {
-			return err
-		}
-		s.ObservedSnapshotsThrough = snap
+	snap, err := silver.LatestRun(ctx, c.db, "fidelity",
+		`SELECT MAX(snapshot_at) FROM dump_runs WHERE positions_present = 1`)
+	if err != nil {
+		return err
 	}
-	var spans []silver.Span
-	if modes {
-		var err error
-		if spans, err = silver.RunSpans(ctx, c.db, "fidelity", `
+	s.ObservedSnapshotsThrough = snap
+	spans, err := silver.RunSpans(ctx, c.db, "fidelity", `
 SELECT activity_since, COALESCE(activity_until, snapshot_at) FROM dump_runs
- WHERE activity_present = 1 AND activity_since IS NOT NULL`); err != nil {
-			return err
-		}
+ WHERE activity_present = 1 AND activity_since IS NOT NULL`)
+	if err != nil {
+		return err
 	}
-	if hasHist {
+	if c.schema.historical {
 		var lo, hi sql.NullInt64
 		if err := c.db.QueryRowContext(ctx,
 			`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`).Scan(&lo, &hi); err != nil {
@@ -52,9 +41,7 @@ SELECT activity_since, COALESCE(activity_until, snapshot_at) FROM dump_runs
 			spans = append(spans, silver.Span{Since: lo.Int64, Until: hi.Int64})
 		}
 	}
-	if modes || hasHist {
-		s.ObservedTransactionsThrough = max(s.ObservedTransactionsThrough, silver.CoveredThrough(spans, silver.SpanSlack))
-	}
+	s.ObservedTransactionsThrough = max(s.ObservedTransactionsThrough, silver.CoveredThrough(spans, silver.SpanSlack))
 	return nil
 }
 

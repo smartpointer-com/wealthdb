@@ -3,6 +3,10 @@ package silver
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -50,4 +54,36 @@ func WithCreditRate(payload json.RawMessage, pct float64, validFrom string) (jso
 		r.ValidFrom = &t
 	}
 	return WithStatedRates(payload, canonical.StatedRateKeys(r))
+}
+
+// JSONText is a JSON value's text: a string's, or the JSON of any other
+// value. A null or absent (nil) value has none.
+func JSONText(raw json.RawMessage) (string, bool) {
+	if raw == nil || string(raw) == "null" {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s, true
+	}
+	return string(raw), true
+}
+
+// digitGroups is a number's text whose every underscore sits between two
+// digits: 1_000 reads as 1000.
+var digitGroups = regexp.MustCompile(`^[^_]*(?:[0-9]_[0-9][^_]*)*$`)
+
+// StatedNumber reads a stated value's text as a finite number: ASCII
+// space around it ignored, digits grouped by underscores. A hexadecimal
+// or non-finite number states none.
+func StatedNumber(text string) (float64, bool) {
+	text = strings.Trim(text, " \t\n\v\f\r")
+	if strings.ContainsAny(text, "xX") || !digitGroups.MatchString(text) {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(strings.ReplaceAll(text, "_", ""), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	return v, true
 }

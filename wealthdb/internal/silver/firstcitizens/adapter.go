@@ -10,10 +10,9 @@
 //   - One ACCOUNT (AccountKind 'cash') per deposit account. DisplayName from
 //     the nickname (falling back to the last-4 mask); TaxWrapper
 //     'taxable_personal', ManagementStyle 'self_directed'. All overridable via
-//     account_overrides. These are conduit accounts — cash passes through them
-//     between other sources — so the registered ReturnsPolicy hides their
-//     return rows at every grain; the balances and flows still enter the
-//     aggregates, where only the transaction flow matters.
+//     account_overrides. Deposit accounts are not investments, so the
+//     registered ReturnsPolicy hides their return rows at every grain; their
+//     balances and flows still enter the aggregates.
 //
 //   - CASH BALANCES, not positions or instruments — cash is not an instrument.
 //     They land in gold's cash_balances table (report_cash synthesises a
@@ -39,9 +38,7 @@ package firstcitizens
 
 import (
 	"fmt"
-	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
@@ -88,11 +85,11 @@ var adapter = bank.New(bank.Source{
 		//
 		// The ledger has no intra-day order, so the fitid-highest row of
 		// the day stands for its end-of-day balance
-		// (silver.RunningBalanceQuery); the imprecision is bounded by
+		// (bank.RunningBalanceQuery); the imprecision is bounded by
 		// same-day activity and resolves by the next day.
 		Label:  "appendRunningBalances",
 		Basis:  "running_balance",
-		Query:  silver.RunningBalanceQuery,
+		Query:  bank.RunningBalanceQuery,
 		DayEnd: true,
 	}},
 	Probe: probeStatementRates,
@@ -131,7 +128,7 @@ func providerCategory(class string) *string {
 // only DEBIT/CREDIT from `isDebit`), so interest and fees are recognised from
 // the description text; everything else is a deposit or withdrawal by the
 // (canonical) sign of the amount, which is the faithful classification for a
-// cash conduit account with no richer categorisation.
+// deposit account with no richer categorisation.
 //
 // A fee is a service charge, or FEE or FEES as a word of its own. A longer
 // word that only starts with the letters (a payee's name) names no fee.
@@ -140,24 +137,11 @@ func txKind(description string, amt canonical.Decimal) canonical.TxKind {
 	switch {
 	case strings.Contains(d, "INTEREST"):
 		return canonical.TxKindInterest
-	case strings.Contains(d, "SERVICE CHARGE") || hasWord(d, "FEE", "FEES"):
+	case strings.Contains(d, "SERVICE CHARGE") || silver.HasWord(d, "FEE", "FEES"):
 		return canonical.TxKindFee
 	case amt.IsNegative():
 		return canonical.TxKindWithdrawal
 	default:
 		return canonical.TxKindDeposit
 	}
-}
-
-// hasWord reports whether any of words is a word of s: a run of letters
-// and digits between any other runes.
-func hasWord(s string, words ...string) bool {
-	for _, w := range strings.FieldsFunc(s, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	}) {
-		if slices.Contains(words, w) {
-			return true
-		}
-	}
-	return false
 }

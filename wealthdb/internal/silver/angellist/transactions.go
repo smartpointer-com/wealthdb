@@ -52,9 +52,9 @@ func kindForFundingType(t, offering string) canonical.TxKind {
 // (the source sign wins — e.g. a refund is a positive `contribution`
 // reversal — so ApplyCanonicalSign is intentionally bypassed). The K-1
 // annual Line 19(a) distribution is NOT emitted here: it would restate these
-// dated disbursements.
+// dated disbursements. A silver without the ledger has none.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
-	if !w.HasChanges {
+	if !w.HasChanges || !c.schema.fundingTransactions {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 	account, err := c.accountSlug(ctx)
@@ -63,13 +63,16 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	}
 	var txs []canonical.TransactionChange
 	if account != "" {
-		const q = `
+		// A silver older than the position link reads every flow
+		// unlinked.
+		link := silver.ColumnOr(c.schema.fundingLinks, "ft.position_external_id")
+		q := `
 SELECT ft.transaction_external_id, ft.occurred_at, COALESCE(ft.type, ''),
        ft.amount_minor, COALESCE(ft.currency, 'USD'),
        COALESCE(ft.description, ''), COALESCE(ft.syndicate_name, ''),
-       COALESCE(ft.position_external_id, ''), COALESCE(o.kind, '')
+       COALESCE(` + link + `, ''), COALESCE(o.kind, '')
   FROM funding_transactions ft
-  LEFT JOIN offerings o ON o.position_external_id = ft.position_external_id
+  LEFT JOIN offerings o ON o.position_external_id = ` + link + `
  WHERE ft.occurred_at BETWEEN ? AND ?
  ORDER BY ft.occurred_at, ft.transaction_external_id`
 		txs, err = silver.Query(ctx, c.db, "Transactions", q, func(rows *sql.Rows) (rec canonical.TransactionChange, err error) {

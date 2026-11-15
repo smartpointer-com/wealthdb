@@ -89,17 +89,13 @@ func (c *Connection) snapshotTimestamps(ctx context.Context) ([]int64, error) {
 SELECT DISTINCT CAST(EXTRACT(epoch FROM CAST(as_of_date AS TIMESTAMP)) AS BIGINT) AS snap_at
   FROM positions_daily
  ORDER BY snap_at`
-	out, err := silver.Query(ctx, c.db, "snapshotTimestamps", q, func(rows *sql.Rows) (rec int64, err error) {
+	return silver.Query(ctx, c.db, "snapshotTimestamps", q, func(rows *sql.Rows) (int64, error) {
 		var t int64
 		if err := rows.Scan(&t); err != nil {
-			return rec, err
+			return 0, err
 		}
 		return t, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // appendPortfolios emits one PortfolioChange per row in
@@ -130,7 +126,7 @@ SELECT
     CAST(p.payload AS VARCHAR)
   FROM portfolios p
  ORDER BY p.portfolio_external_id`
-	if err := silver.ScanRows(ctx, c.db, "appendPortfolios", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendPortfolios", q, func(rows *sql.Rows) error {
 		var (
 			extID, name, baseCcy string
 			firstSeen            int64
@@ -155,10 +151,7 @@ SELECT
 		}
 		batch.Portfolios = append(batch.Portfolios, change)
 		return nil
-	}, snap); err != nil {
-		return err
-	}
-	return nil
+	}, snap)
 }
 
 // appendAccounts emits one AccountChange per silver.wallets row.
@@ -189,7 +182,7 @@ SELECT
   FROM wallets w
  ORDER BY w.portfolio_external_id, w.wallet_external_id`
 	style := canonical.ManagementStyleSelfDirected
-	if err := silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
 		var (
 			portfolioID, walletID, name, baseCcy string
 			firstSeen                            int64
@@ -225,10 +218,7 @@ SELECT
 		}
 		batch.Accounts = append(batch.Accounts, change)
 		return nil
-	}, snap); err != nil {
-		return err
-	}
-	return nil
+	}, snap)
 }
 
 // appendInstruments emits one InstrumentChange per distinct coin
@@ -252,7 +242,7 @@ SELECT
   )
  GROUP BY ticker
  ORDER BY ticker`
-	if err := silver.ScanRows(ctx, c.db, "appendInstruments", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendInstruments", q, func(rows *sql.Rows) error {
 		var (
 			ticker              string
 			firstSeen, lastSeen int64
@@ -274,10 +264,7 @@ SELECT
 		}
 		batch.Instruments = append(batch.Instruments, change)
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // appendPositionsAcrossSnapshots populates one PositionChange per
@@ -392,15 +379,15 @@ SELECT
    AND cp.as_of_date <= s.snap_date
    AND (cp.next_d IS NULL OR cp.next_d > s.snap_date)
  ORDER BY snap_at, s.portfolio_external_id, s.wallet_external_id, s.instrument_external_id`
-	if err := silver.ScanRows(ctx, c.db, "appendPositionsAcrossSnapshots", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendPositionsAcrossSnapshots", q, func(rows *sql.Rows) error {
 		var (
 			snap                                    int64
 			portfolioID, walletID, ticker, currency string
 			priceStr                                sql.NullString
-			qtyStr                                  *canonical.Decimal
+			qty                                     *canonical.Decimal
 		)
 		if err := rows.Scan(&snap, &portfolioID, &walletID, &ticker,
-			silver.Dec(&qtyStr, silver.DecText), &currency, &priceStr); err != nil {
+			silver.Dec(&qty, silver.DecText), &currency, &priceStr); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -410,7 +397,6 @@ SELECT
 			// as_of_date list, but skip defensively.
 			return nil
 		}
-		qty := qtyStr
 		if qty == nil {
 			return nil
 		}
@@ -451,10 +437,7 @@ SELECT
 		}
 		batch.Positions = append(batch.Positions, change)
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // appendFxRates emits one FxRateChange per row in silver.coin_prices:
@@ -478,7 +461,7 @@ SELECT
     CAST(price_usd AS VARCHAR)
   FROM coin_prices
  ORDER BY as_of_date, instrument_external_id`
-	if err := silver.ScanRows(ctx, c.db, "appendFxRates", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendFxRates", q, func(rows *sql.Rows) error {
 		var (
 			base     string
 			snap     int64
@@ -506,10 +489,7 @@ SELECT
 			MidRate:       rate,
 		})
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // latestDate is the latest date the silver holds: of a transaction, a

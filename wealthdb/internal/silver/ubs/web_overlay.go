@@ -17,8 +17,8 @@ import (
 
 // webPosKey is the per-(UTC date, ISIN) match key for the
 // position-payload overlay. Web silver flattens all securities
-// under a single portfolio, so we can't key
-// by (account, portfolio, ISIN) without ambiguity. ISIN alone
+// under a single portfolio, so (account, portfolio, ISIN) would be
+// ambiguous. ISIN alone
 // plus the day is enough granularity per source — overlay
 // payload semantics don't depend on uniqueness, only on having
 // useful cost_price/lending_value to fold.

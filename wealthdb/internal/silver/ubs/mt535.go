@@ -158,8 +158,8 @@ func findQuantity(qtys []mt535Qty) (canonical.Decimal, bool) {
 // parseSwiftDecimal converts a SWIFT amount string (comma as
 // decimal separator, trailing-comma terminator) into a Decimal.
 // Inputs that come through the regex have already been stripped
-// of the trailing terminator comma; here we only need to swap
-// the embedded comma for a dot.
+// of the trailing terminator comma; this only swaps the
+// embedded comma for a dot.
 //
 //	"1500000"     → 1500000
 //	"150,123456"  → 150.123456

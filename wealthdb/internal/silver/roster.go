@@ -3,7 +3,6 @@ package silver
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"sort"
 )
 
@@ -26,25 +25,24 @@ import (
 type Removals map[string]int64
 
 // QueryRemovals runs q, which yields (position key, removal time) rows,
-// into a Removals.
+// into a Removals. label names the source in errors.
 func QueryRemovals(ctx context.Context, db *sql.DB, label, q string, args ...any) (Removals, error) {
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("%s removals: %w", label, err)
-	}
-	defer rows.Close()
 	out := Removals{}
-	for rows.Next() {
+	err := ScanRows(ctx, db, label+" removals", q, func(rows *sql.Rows) error {
 		var (
 			key string
 			at  int64
 		)
 		if err := rows.Scan(&key, &at); err != nil {
-			return nil, err
+			return err
 		}
 		out[key] = at
+		return nil
+	}, args...)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Removed reports whether the holding is out of the roster at t.

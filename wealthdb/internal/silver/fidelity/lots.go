@@ -151,17 +151,14 @@ SELECT instrument_key, upper(trim(cusip)) FROM open_lots
 // scanCUSIPs reads (key, CUSIP) rows oldest first into out, so the
 // newest stays.
 func (c *Connection) scanCUSIPs(ctx context.Context, query string, out map[string]string) error {
-	if err := silver.ScanRows(ctx, c.db, "instrumentCUSIPs", query, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "instrumentCUSIPs", query, func(rows *sql.Rows) error {
 		var key, cusip string
 		if err := rows.Scan(&key, &cusip); err != nil {
 			return err
 		}
 		out[key] = cusip
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // latest returns the holding's latest fetch at or before t, or nil.

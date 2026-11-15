@@ -12,6 +12,24 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
+// Every action an adapter may state has a reading in lotActions, but the
+// third-currency fee, which reads by the kind with the fee. An action
+// added to canonical without an entry would otherwise read by the kind
+// alone, silently.
+func TestEveryActionHasALotReading(t *testing.T) {
+	for _, a := range canonical.TxActions {
+		if _, ok := lotActions[a]; ok == (a == canonical.TxActionThirdCurrencyFee) {
+			t.Errorf("action %q: in lotActions = %v", a, ok)
+		}
+	}
+	if len(lotActions) != len(canonical.TxActions)-1 {
+		t.Errorf("lotActions holds %d actions, canonical states %d but the fee", len(lotActions), len(canonical.TxActions)-1)
+	}
+	if got := lotClassify("buy", 1, canonical.TxActionThirdCurrencyFee); got != (lots.Classified{Action: lots.Buy, Fee: true}) {
+		t.Errorf("a third-currency fee on a buy = %+v, want the buy with the fee", got)
+	}
+}
+
 // Every id and figure below is invented. Days are Unix days; a
 // snapshot stamped at midnight states the day's close.
 

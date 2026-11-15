@@ -47,18 +47,16 @@ func (c *Connection) snapshotTimesInWindow(ctx context.Context, w canonical.Wind
 // appendAccounts emits one AccountChange per account snapshot, the rate
 // its strategy states under the stated-rate keys (strategyRateKeys).
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
-	// A silver may carry a promoted `management_style` column.
-	// When present, the silver value wins; otherwise the default
-	// is `automated` — every VIAC product is robo-managed.
-	mgmtCol := silver.ColumnOr(c.schema.managementStyle, "management_style")
-	q := fmt.Sprintf(`
+	// A silver management_style, where set, wins; otherwise the
+	// default is `automated`: every VIAC product is robo-managed.
+	const q = `
 SELECT snapshot_at, account_external_id, product_code,
        COALESCE(name, ''), COALESCE(state, ''),
        COALESCE(currency_code, 'CHF'),
-       COALESCE(%s, ''),
+       COALESCE(management_style, ''),
        payload
   FROM accounts
- WHERE snapshot_at BETWEEN ? AND ?`, mgmtCol)
+ WHERE snapshot_at BETWEEN ? AND ?`
 	if err := silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap                                              int64

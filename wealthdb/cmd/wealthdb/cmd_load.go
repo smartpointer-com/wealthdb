@@ -33,8 +33,9 @@ func cmdLoad(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, 
 		fmt.Fprintln(stderr, `usage: wealthdb load <silver_source_id> | -a
 
 Merge new silver snapshots into gold for one silver source, or
-for all configured sources (-a). See docs/DESIGN.md §8 for the
-load semantics.`)
+for all configured sources (-a). A silver older than its adapter
+still loads, and the load prints one line naming the parts it lacks.
+See docs/DESIGN.md §8 for the load semantics.`)
 	}
 	if err := parseFlags(fs, subargs, "load"); err != nil {
 		return err

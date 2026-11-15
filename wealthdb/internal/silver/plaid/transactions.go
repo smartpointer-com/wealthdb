@@ -35,11 +35,11 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
-	accounts, err := c.memo.accounts(ctx, c)
+	accounts, err := c.accounts(ctx)
 	if err != nil {
 		return nil, err
 	}
-	secs, err := c.memo.securities(ctx, c)
+	secs, err := c.securities(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -57,35 +57,16 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	return silver.NewTransactionStream(out), nil
 }
 
-// memo holds the reads that Snapshots and Transactions both need, read
-// once per connection: each account as last described, and the
-// securities. The connection opens one silver read-only for one load. A
-// nil field is not read yet; a failed read is read again.
-type memo struct {
-	latest map[string]account
-	secs   map[string]security
+// accounts and securities are the reads that Snapshots and Transactions
+// both need, read once per connection (silver.Lazy): each account as last
+// described, and the securities. The connection opens one silver
+// read-only for one load.
+func (c *Connection) accounts(ctx context.Context) (map[string]account, error) {
+	return c.latest.Get(func() (map[string]account, error) { return c.latestAccounts(ctx) })
 }
 
-func (m *memo) accounts(ctx context.Context, c *Connection) (map[string]account, error) {
-	if m.latest == nil {
-		a, err := c.latestAccounts(ctx)
-		if err != nil {
-			return nil, err
-		}
-		m.latest = a
-	}
-	return m.latest, nil
-}
-
-func (m *memo) securities(ctx context.Context, c *Connection) (map[string]security, error) {
-	if m.secs == nil {
-		s, err := c.readSecurities(ctx)
-		if err != nil {
-			return nil, err
-		}
-		m.secs = s
-	}
-	return m.secs, nil
+func (c *Connection) securities(ctx context.Context) (map[string]security, error) {
+	return c.secs.Get(func() (map[string]security, error) { return c.readSecurities(ctx) })
 }
 
 // appendBankLedger adds the bank and card ledger of every cash and card
@@ -98,7 +79,7 @@ func (m *memo) securities(ctx context.Context, c *Connection) (map[string]securi
 // verbatim, for the spending and income provider tiers.
 func (c *Connection) appendBankLedger(ctx context.Context, w canonical.Window,
 	accounts map[string]account, out *canonical.TransactionBatch) error {
-	if err := silver.ScanRows(ctx, c.db, "plaid Transactions", `
+	return silver.ScanRows(ctx, c.db, "plaid Transactions", `
 SELECT transaction_id, account_id, posted_at, amount, COALESCE(currency, ''),
        COALESCE(name, ''), COALESCE(original_description, ''),
        COALESCE(merchant_name, ''), COALESCE(category_primary, ''),
@@ -140,10 +121,7 @@ SELECT transaction_id, account_id, posted_at, amount, COALESCE(currency, ''),
 			Payload:               json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // investmentRow is one row of silver's `investment_transactions` table,
@@ -439,21 +417,14 @@ const investmentColumns = `investment_transaction_id, account_id, COALESCE(secur
        quantity, price, fees, posted_at, ` + investmentDate + `, payload`
 
 func (c *Connection) readInvestmentRows(ctx context.Context, where string, args ...any) ([]investmentRow, error) {
-	var out []investmentRow
-	if err := silver.ScanRows(ctx, c.db, "plaid Transactions", `SELECT `+investmentColumns+`
-  FROM investment_transactions `+where, func(rows *sql.Rows) error {
+	return silver.Query(ctx, c.db, "plaid Transactions", `SELECT `+investmentColumns+`
+  FROM investment_transactions `+where, func(rows *sql.Rows) (investmentRow, error) {
 		var r investmentRow
-		if err := rows.Scan(&r.id, &r.accountID, &r.securityID, &r.typ, &r.subtype, &r.name,
+		err := rows.Scan(&r.id, &r.accountID, &r.securityID, &r.typ, &r.subtype, &r.name,
 			&r.currency, &r.cancels, &r.rawAmount, &r.quantity, &r.price, &r.fees, &r.posted,
-			&r.occurred, &r.payload); err != nil {
-			return err
-		}
-		out = append(out, r)
-		return nil
-	}, args...); err != nil {
-		return nil, err
-	}
-	return out, nil
+			&r.occurred, &r.payload)
+		return r, err
+	}, args...)
 }
 
 // cancelledRows are the rows a `cancel` row names, by id, wherever they are

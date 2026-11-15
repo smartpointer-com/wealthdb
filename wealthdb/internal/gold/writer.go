@@ -25,12 +25,12 @@ import (
 //
 // Caller owns the transaction lifecycle: BeginTx, call writer
 // methods, Commit or Rollback. A Writer is not goroutine-safe;
-// use one per active transaction, as it remembers the distributions
-// it replaced (insertDividendEvents).
+// use one per active transaction, as it remembers the groups of a
+// whole-read reference table it replaced (insertRefRows).
 type Writer struct {
 	tx *sql.Tx
-	// replaced are the source, ref and provider whose distributions
-	// the writer has replaced.
+	// replaced are the table, source and group (RefTable.WholeBy, its
+	// values joined) whose rows the writer has replaced.
 	replaced map[[3]string]bool
 }
 

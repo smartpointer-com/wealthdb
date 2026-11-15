@@ -37,14 +37,14 @@ func TestAssetClassValid(t *testing.T) {
 	// wrappers or blends that reach gold as (asset_class, vehicle)
 	// pairs, so Valid must reject them.
 	for _, a := range []AssetClass{
-		AssetClassEquity, "etf", "bond_etf", "fund",
-		"bond", "option", "future", AssetClassFxForward,
+		"equity", "etf", "bond_etf", "fund",
+		"bond", "option", "future", "fx_forward",
 		"fx_option", "money_market", "otc_derivative",
-		AssetClassSPV, AssetClassPrivateFund, AssetClassConvertibleNote,
+		"spv", "private_fund", "convertible_note",
 		"mortgage", "",
 	} {
 		if a.Valid() {
-			t.Errorf("AssetClass(%q).Valid() = true, want false (intermediate-only)", a)
+			t.Errorf("AssetClass(%q).Valid() = true, want false (a 1-D label)", a)
 		}
 	}
 }

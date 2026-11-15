@@ -184,17 +184,13 @@ func (r *psnReader) conversionMirrors(ctx context.Context) (*conversionMirrors, 
 	if r == nil || r.db == nil {
 		return r.readConversionMirrors(ctx, nil)
 	}
-	if r.mirrors != nil {
-		return r.mirrors, nil
-	}
-	coverage, err := r.cashCoverage(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if r.mirrors, err = r.readConversionMirrors(ctx, coverage); err != nil {
-		return nil, err
-	}
-	return r.mirrors, nil
+	return r.mirrors.Get(func() (*conversionMirrors, error) {
+		coverage, err := r.cashCoverage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return r.readConversionMirrors(ctx, coverage)
+	})
 }
 
 // readConversionMirrors reads every conversion the feed describes whose

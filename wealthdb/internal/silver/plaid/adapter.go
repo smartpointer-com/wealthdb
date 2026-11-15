@@ -15,8 +15,7 @@
 // so no fact goes missing from that instant.
 //
 // The source has no change feed. A loaded run is the trigger, and a full
-// re-emit over the span of every date the projection touches is the
-// response (status.go).
+// re-emit of the whole history is the response (status.go).
 package plaid
 
 import (
@@ -39,8 +38,6 @@ func init() {
 
 type Adapter struct{}
 
-func (*Adapter) Kind() string { return kindName }
-
 func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "plaid silver")
 	if err != nil {
@@ -50,8 +47,9 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 }
 
 type Connection struct {
-	memo memo
-	db   *sql.DB
+	db     *sql.DB
+	latest silver.Lazy[map[string]account]
+	secs   silver.Lazy[map[string]security]
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }

@@ -28,7 +28,7 @@ func kindFor(silverKind, narrative string, creditDebit, txnType string) canonica
 	case "fx_option_confirmation":
 		// No dedicated fx_option TxKind in the canonical
 		// taxonomy; the option settlement is effectively an fx
-		// conversion at expiry, so we route to the generic fx
+		// conversion at expiry, so it routes to the generic fx
 		// kind. Revisit if a distinct kind becomes useful for
 		// analytics.
 		return canonical.TxKindFx
@@ -183,7 +183,7 @@ func cashMovementKind(narrative, creditDebit, txnType string) canonical.TxKind {
 	// capital instead of a cost inside the return. Match the distinctive
 	// stamp-duty terms anywhere in the narrative so the duty always lands in
 	// tax. (Defensive: no live UBS stamp-duty sample to confirm the exact
-	// wording, so we cover the standard FR/DE/EN forms.)
+	// wording, so the standard FR/DE/EN forms are all covered.)
 	if strings.Contains(upper, "TIMBRE") ||
 		strings.Contains(upper, "UMSATZABGABE") ||
 		strings.Contains(upper, "STEMPEL") ||

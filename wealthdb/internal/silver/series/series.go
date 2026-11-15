@@ -56,8 +56,6 @@ func init() {
 // Adapter opens the silver of one kind.
 type Adapter struct{ kind string }
 
-func (a *Adapter) Kind() string { return a.kind }
-
 func (a *Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, a.kind+" silver")
 	if err != nil {

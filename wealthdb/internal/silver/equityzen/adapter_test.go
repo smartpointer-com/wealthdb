@@ -64,12 +64,6 @@ func seed(t *testing.T, db *sql.DB) {
 	}
 }
 
-func TestKindIsEquityzen(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "equityzen" {
-		t.Errorf("Kind() = %q, want equityzen", got)
-	}
-}
-
 func TestStatusEmpty(t *testing.T) {
 	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 }

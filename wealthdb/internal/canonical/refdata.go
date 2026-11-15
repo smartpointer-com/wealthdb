@@ -155,7 +155,7 @@ type FundLineChange struct {
 // The reference tables that pass from silver to gold column for column
 // are declared once, in RefTables: a reference silver's table, the gold
 // table it loads into and their columns. The reference stream reads a
-// table's rows by its entry (silver.NewReferenceStream) and the writer
+// table's rows by its entry (silver.ReferenceSchema.Stream) and the writer
 // inserts them by it (gold.Writer.InsertReference). A batch carries
 // them as RefRows, one value per column. Compositions and lines are no
 // such tables: a source other than refdata writes them, and the reader
@@ -416,9 +416,6 @@ const (
 var DividendEventKinds = []DividendEventKind{DividendKindDividend, DividendKindCapitalGain,
 	DividendKindReturnOfCapital, DividendKindSpecial, DividendKindOther}
 
-// Valid reports whether k is one of DividendEventKinds.
-func (k DividendEventKind) Valid() bool { return slices.Contains(DividendEventKinds, k) }
-
 // DividendEventStatus says whether a source states a distribution as
 // final, or as estimated: its amount may still change.
 type DividendEventStatus string
@@ -427,9 +424,6 @@ const (
 	DividendFinal     DividendEventStatus = "final"
 	DividendEstimated DividendEventStatus = "estimated"
 )
-
-// Valid reports whether s is final or estimated.
-func (s DividendEventStatus) Valid() bool { return s == DividendFinal || s == DividendEstimated }
 
 // StatedPeriodChange is one insert into gold's `stated_periods`: an
 // account's summary of one period as a document states it. AsOf is the

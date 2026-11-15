@@ -34,8 +34,6 @@ func init() {
 // Adapter implements silver.Adapter.
 type Adapter struct{}
 
-func (*Adapter) Kind() string { return kindName }
-
 // Open attaches the configured UBS silvers.
 //
 // Single-file mode (spec.Path set): the file is read as a PSN

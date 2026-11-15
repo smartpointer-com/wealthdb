@@ -3,7 +3,8 @@
 // wallets, its trade history replayed into daily holdings per portfolio —
 // into canonical change records. docs/adapters/cointracking.md documents the
 // identifiers, the account taxonomy, the position and FX mapping and the
-// transaction rules; policy.go registers the returns policy.
+// transaction rules. init registers the kind (silver.Source), its returns
+// policy from policy.go and its lot policy from lotpolicy.go.
 package cointracking
 
 import (
@@ -33,8 +34,6 @@ func init() {
 }
 
 type Adapter struct{}
-
-func (*Adapter) Kind() string { return kindName }
 
 func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	// DuckDB takes options as `?key=value` query params on the DSN

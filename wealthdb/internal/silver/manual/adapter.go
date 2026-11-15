@@ -22,9 +22,10 @@
 //     only while it holds something then.
 //
 //   - One INSTRUMENT + one POSITION per held asset, keyed on the position id.
-//     The bronze `kind` IS the canonical asset_class (identity classmap,
-//     classmap.go). Manual holdings have no ISIN/CUSIP/symbol, so the
-//     instrument is adapter-scoped.
+//     The bronze `kind` sets the exposure and silver's `vehicle` column
+//     the vehicle, with a kind-derived default (classmap.go). Manual
+//     holdings have no ISIN/CUSIP/symbol, so the instrument is
+//     adapter-scoped.
 //
 //   - POSITIONS are per-date forward-filled snapshots reconstructed from the
 //     valuations time series (snapshots.go): for every event date a COMPLETE
@@ -76,8 +77,6 @@ func init() {
 }
 
 type Adapter struct{}
-
-func (*Adapter) Kind() string { return kindName }
 
 func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "manual silver")

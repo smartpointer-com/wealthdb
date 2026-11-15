@@ -88,8 +88,6 @@ func init() {
 
 type Adapter struct{}
 
-func (*Adapter) Kind() string { return kindName }
-
 func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "angellist silver")
 	if err != nil {
@@ -119,6 +117,7 @@ type schema struct {
 	propertyMinor       bool // k1_capital_accounts.property_distributions_minor
 	fundingAccounts     bool // the funding_accounts table
 	fundingTransactions bool // the funding_transactions table
+	fundingLinks        bool // funding_transactions.position_external_id
 }
 
 func (s *schema) optional() []silver.Optional {
@@ -126,5 +125,6 @@ func (s *schema) optional() []silver.Optional {
 		{Table: "k1_capital_accounts", Columns: []string{"property_distributions_minor"}, Version: 8, Has: &s.propertyMinor},
 		{Table: "funding_accounts", Version: 6, Has: &s.fundingAccounts},
 		{Table: "funding_transactions", Version: 6, Has: &s.fundingTransactions},
+		{Table: "funding_transactions", Columns: []string{"position_external_id"}, Version: 7, Has: &s.fundingLinks},
 	}
 }

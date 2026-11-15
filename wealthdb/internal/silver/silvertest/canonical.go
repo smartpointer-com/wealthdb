@@ -64,10 +64,7 @@ func DumpCanonical(ctx context.Context, conn silver.Connection, since int64) ([]
 			snaps.Close()
 			return nil, fmt.Errorf("conn.Snapshots: next: %w", err)
 		}
-		bv := reflect.ValueOf(b)
-		for i := range av.NumField() {
-			av.Field(i).Set(reflect.AppendSlice(av.Field(i), bv.Field(i)))
-		}
+		mergeBatches(&all, b)
 	}
 	if err := snaps.Close(); err != nil {
 		return nil, fmt.Errorf("conn.Snapshots: close: %w", err)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // lotPolicy is the lot policy (docs/LOTS.md §6): the statement
@@ -84,16 +85,7 @@ func payloadVerbs(payload json.RawMessage) (typ, action string) {
 	return typ, action
 }
 
-// payloadString is m's value at key as text, false where the key is
-// absent or null.
+// payloadString is m's value at key as text (silver.JSONText).
 func payloadString(m map[string]json.RawMessage, key string) (string, bool) {
-	raw, ok := m[key]
-	if !ok || string(raw) == "null" {
-		return "", false
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s, true
-	}
-	return string(raw), true
+	return silver.JSONText(m[key])
 }

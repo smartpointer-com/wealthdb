@@ -96,7 +96,7 @@ var adapter = bank.New(bank.Source{
 		// series fills, at period granularity.
 		//
 		// The fitid-highest row of a day stands for its end-of-day balance
-		// (silver.RunningBalanceQuery). On a card that is exact — the
+		// (bank.RunningBalanceQuery). On a card that is exact — the
 		// reconstruction rolls forward in (posted_at, fitid) order, so the
 		// fitid-highest row of a day IS the one carrying its end-of-day
 		// balance. On a deposit account the balance is the provider's own
@@ -105,7 +105,7 @@ var adapter = bank.New(bank.Source{
 		// same-day activity and resolves by the next day.
 		Label: "appendRunningBalances",
 		Basis: "running_balance",
-		Query: silver.RunningBalanceQuery,
+		Query: bank.RunningBalanceQuery,
 	}, {
 		// One CLOSING balance at a card statement's period_end, from the
 		// figure the statement printed — the balance truth for the era

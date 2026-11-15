@@ -43,8 +43,6 @@ func init() {
 // Adapter implements silver.Adapter.
 type Adapter struct{}
 
-func (*Adapter) Kind() string { return kindName }
-
 // Open attaches the configured Schwab silvers.
 //
 // Single-file mode (spec.Path set): the file is a schwab-api

@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -70,12 +68,6 @@ func openConn(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, adapter, path)
 }
 
-func TestKind(t *testing.T) {
-	if adapter.Kind() != "firstcitizens" {
-		t.Fatalf("Kind = %q", adapter.Kind())
-	}
-}
-
 // TestStatusAndChangeWindow pins spanExtrema: the snapshot range and the
 // re-emit window run from the first transaction (the first cash mark) to the
 // load. The load clock itself is silver's (TestLoadClock).
@@ -93,7 +85,7 @@ func TestStatusAndChangeWindow(t *testing.T) {
 		t.Errorf("snapshot range = [%d,%d], want [%d,%d]",
 			st.OldestSnapshotAt, st.LatestSnapshotAt, first, loadUnix)
 	}
-	if w := silvertest.FullWindow(t, conn); !w.Full {
+	if w := silvertest.WindowSince0(t, conn); !w.Full {
 		t.Errorf("window = %+v, want the whole history", w)
 	}
 }
@@ -116,27 +108,8 @@ func TestSpanReachesTheLastClosingStamp(t *testing.T) {
 	if want := day + silver.DayEndOffset; st.LatestSnapshotAt != want {
 		t.Errorf("LatestSnapshotAt = %d, want the day's last second %d", st.LatestSnapshotAt, want)
 	}
-	if w := silvertest.FullWindow(t, conn); !w.Full {
+	if w := silvertest.WindowSince0(t, conn); !w.Full {
 		t.Errorf("window = %+v, want the whole history, %d in it", w, day+silver.DayEndOffset)
-	}
-}
-
-// The window bounds the closing stamps, as it bounds every other record:
-// a day whose last second lies past the window's end is not emitted.
-func TestClosingMarksStayInsideTheWindow(t *testing.T) {
-	path, db := newFixture(t)
-	seed(t, db)
-	conn := openConn(t, path)
-	w := silvertest.FullWindow(t, conn)
-	w.End = silvertest.Day(2026, 1, 20) + 3600
-	var closes []int64
-	for _, cb := range silvertest.Merged(t, conn, w).CashBalances {
-		if cb.BalanceKind == canonical.BalanceKindClosing {
-			closes = append(closes, cb.SnapshotAt)
-		}
-	}
-	if want := []int64{silvertest.Day(2026, 1, 10) + silver.DayEndOffset}; !reflect.DeepEqual(closes, want) {
-		t.Errorf("closing stamps = %v, want %v", closes, want)
 	}
 }
 
@@ -145,7 +118,7 @@ func TestSnapshots(t *testing.T) {
 	seed(t, db)
 	conn := openConn(t, path)
 	ctx := context.Background()
-	w := silvertest.FullWindow(t, conn)
+	w := silvertest.WindowSince0(t, conn)
 
 	stream, err := conn.Snapshots(ctx, w)
 	if err != nil {
@@ -213,7 +186,7 @@ func TestTransactions(t *testing.T) {
 	seed(t, db)
 	conn := openConn(t, path)
 	ctx := context.Background()
-	w := silvertest.FullWindow(t, conn)
+	w := silvertest.WindowSince0(t, conn)
 
 	stream, err := conn.Transactions(ctx, w)
 	if err != nil {
@@ -287,7 +260,7 @@ func TestTransactionsCarryTheBanksFiling(t *testing.T) {
 	}
 	conn := openConn(t, path)
 	ctx := context.Background()
-	stream, err := conn.Transactions(ctx, silvertest.FullWindow(t, conn))
+	stream, err := conn.Transactions(ctx, silvertest.WindowSince0(t, conn))
 	if err != nil {
 		t.Fatalf("Transactions: %v", err)
 	}
@@ -311,71 +284,6 @@ func TestTransactionsCarryTheBanksFiling(t *testing.T) {
 	}
 }
 
-// TestCurrentBalanceAtEachRunThatListedTheAccount pins a CURRENT balance at
-// each run whose roster listed the account, valued at its roster row as of
-// that run. Silver content-dedups an unchanged roster row, so the quiet
-// account stands at every run that still lists it, the latest included,
-// while its account record keeps its own row. The account the latest runs
-// left out stops at its last listing run, so gold can end it
-// (wealthdb/docs/DESIGN.md §10.7) rather than reading it as open at the
-// source's latest run. A run that changed no roster row still bounds the
-// window.
-func TestCurrentBalanceAtEachRunThatListedTheAccount(t *testing.T) {
-	path, db := newFixture(t)
-	seed(t, db)
-	r0, r1, r2, r3 := silvertest.SeedRuns(t, db, loadUnix, "acct-1", "acct-2", "acct-3")
-	conn := openConn(t, path)
-	w := silvertest.FullWindow(t, conn)
-	if !w.Full {
-		t.Errorf("window = %+v, want the whole history, the latest run %d in it", w, r3)
-	}
-	batch := silvertest.Merged(t, conn, w)
-	want := map[string]map[int64]string{
-		"acct-1": {r2: "1500 USD", r3: "1500 USD"},
-		"acct-2": {r0: "250 USD", r1: "250 USD", r2: "250 USD", r3: "250 USD"},
-		"acct-3": {r0: "75 USD", r1: "80 USD"},
-	}
-	if got := silvertest.CurrentsByInstant(batch); !reflect.DeepEqual(got, want) {
-		t.Errorf("CURRENT balances =\n %v\nwant\n %v", got, want)
-	}
-	for _, a := range batch.Accounts {
-		if a.AccountExternalID == "acct-2" && a.LastSeenAt != r0 {
-			t.Errorf("quiet account LastSeenAt = %d, want its own latest row %d", a.LastSeenAt, r0)
-		}
-	}
-}
-
-// TestSnapshotsNeedRunAccounts pins a silver loaded before run_accounts
-// (silver migration 0002): it is read as far as it goes. Its runs say
-// nothing about a quiet account, so no CURRENT balance is stamped, the
-// closing balances still are, and the load advises the collector's load.
-func TestSnapshotsNeedRunAccounts(t *testing.T) {
-	path, db := newFixture(t)
-	seed(t, db)
-	silvertest.Exec(t, db, `DROP TABLE run_accounts;
-        INSERT INTO schema_meta (silver_schema_version, applied_at) VALUES (1, 0)`)
-	conn := openConn(t, path)
-	sb := silvertest.Merged(t, conn, silvertest.FullWindow(t, conn))
-	closings := 0
-	for _, cb := range sb.CashBalances {
-		switch cb.BalanceKind {
-		case canonical.BalanceKindCurrent:
-			t.Errorf("CURRENT balance %+v from a silver without run_accounts", cb)
-		case canonical.BalanceKindClosing:
-			closings++
-		}
-	}
-	if closings == 0 {
-		t.Error("no closing balance: the silver should still read as far as it goes")
-	}
-	notes := conn.(silver.SchemaAdviser).SchemaAdvice()
-	if len(notes) != 1 || !slices.Contains(notes[0].Missing, "run_accounts") ||
-		!strings.HasSuffix(notes[0].String(), " load empty until its collector's load applies the migrations") ||
-		notes[0].Silver != filepath.Base(path) {
-		t.Errorf("advice = %v, want one note naming run_accounts and the load", notes)
-	}
-}
-
 // A statement's rate rides on the account's closing balance on the
 // statement's closing day, else on the latest one before it inside the
 // cycle. A cycle in which the balance never moved adds no balance for its
@@ -396,7 +304,7 @@ func TestStatementRatesRideOnACycleClosingBalance(t *testing.T) {
 	conn := openConn(t, path)
 
 	got := map[int64]string{}
-	for _, cb := range silvertest.Merged(t, conn, silvertest.FullWindow(t, conn)).CashBalances {
+	for _, cb := range silvertest.Merged(t, conn, silvertest.WindowSince0(t, conn)).CashBalances {
 		if cb.BalanceKind == canonical.BalanceKindClosing {
 			got[cb.SnapshotAt] = string(cb.Payload)
 		} else if strings.Contains(string(cb.Payload), "interest_rate") {
@@ -423,7 +331,7 @@ func TestSnapshotsWithoutStatementRates(t *testing.T) {
 	seed(t, db)
 	silvertest.Exec(t, db, `DROP TABLE statement_rates`)
 	conn := openConn(t, path)
-	for _, cb := range silvertest.Merged(t, conn, silvertest.FullWindow(t, conn)).CashBalances {
+	for _, cb := range silvertest.Merged(t, conn, silvertest.WindowSince0(t, conn)).CashBalances {
 		if strings.Contains(string(cb.Payload), "interest_rate") {
 			t.Errorf("balance at %d states a rate: %s", cb.SnapshotAt, cb.Payload)
 		}

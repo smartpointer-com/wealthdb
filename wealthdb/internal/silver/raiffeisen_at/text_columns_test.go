@@ -49,7 +49,7 @@ func emitTextRows(t *testing.T) map[string]canonical.TransactionChange {
 	seedTextRows(t, db)
 	conn := openConn(t, path)
 	ctx := context.Background()
-	stream, err := conn.Transactions(ctx, silvertest.FullWindow(t, conn))
+	stream, err := conn.Transactions(ctx, silvertest.WindowSince0(t, conn))
 	if err != nil {
 		t.Fatalf("Transactions: %v", err)
 	}

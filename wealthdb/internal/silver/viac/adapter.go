@@ -10,14 +10,10 @@
 //     '1' → Free investment      → tax_wrapper = taxable_personal
 //     (Other codes fall through to taxable_personal.)
 //
-//   - Management style is robo-managed across every VIAC product
-//     today — the account holder picks a strategy from a fixed
-//     menu, an algorithm allocates and rebalances, no human in
-//     the loop. The adapter stamps ManagementStyleAutomated by
-//     default; if silver ever gains a per-account
-//     `management_style` column the adapter reads it via a
-//     hasColumn-gated SELECT and the silver value takes
-//     precedence.
+//   - Management style is automated for every VIAC product: the
+//     holder picks a strategy from a fixed menu and an algorithm
+//     allocates and rebalances. A silver `accounts.management_style`
+//     value, where set, takes precedence.
 //
 //   - Positions carry the per-fund CHF market value (silver
 //     positions.market_value_chf). The book value is quantity ×
@@ -68,8 +64,6 @@ func init() {
 
 type Adapter struct{}
 
-func (*Adapter) Kind() string { return kindName }
-
 func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "viac silver")
 	if err != nil {
@@ -94,12 +88,12 @@ type Connection struct {
 // schema is which optional parts of the silver schema a file holds,
 // probed once at open.
 type schema struct {
-	managementStyle bool // accounts.management_style
+	txInstrument bool // transactions.instrument_external_id
 }
 
 func (s *schema) optional() []silver.Optional {
 	return []silver.Optional{
-		{Table: "accounts", Columns: []string{"management_style"}, Version: 2, Has: &s.managementStyle},
+		{Table: "transactions", Columns: []string{"instrument_external_id"}, Version: 5, Has: &s.txInstrument},
 	}
 }
 

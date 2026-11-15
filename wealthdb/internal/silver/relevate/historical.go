@@ -77,9 +77,10 @@ type snapKey struct {
 
 // historicalRange returns MIN/MAX snapshot_at across the two
 // historical tables. Both -1 when the silver has no historical
-// rows (or hasn't been migrated to 0002). Used by ChangeWindow to
-// extend Start backwards so the loader's window-DELETE covers
-// existing historical rows before the re-INSERT.
+// rows (or hasn't been migrated to 0002). It widens the snapshot
+// range Status reports, and its start is how far an incremental
+// window reaches back (historicalStart), so the loader's windowed
+// delete covers existing historical rows before the re-insert.
 func (c *Connection) historicalRange(ctx context.Context) (int64, int64, error) {
 	if !c.hasHistorical() {
 		return -1, -1, nil

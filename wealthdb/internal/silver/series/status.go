@@ -13,34 +13,21 @@ import (
 // download + `load` of the collector bumps it and a subsequent `wealthdb
 // load` re-emits, while an idle reload is a no-op.
 
-// The MIN/MAX observation date over the fact tables a file holds.
-const (
-	fxExtrema    = `SELECT MIN(snapshot_at), MAX(snapshot_at) FROM ` + silver.FxRatesTable
-	ratesExtrema = `SELECT MIN(as_of), MAX(as_of) FROM ` + silver.RatesTable
-	bothExtrema  = `
-SELECT MIN(t), MAX(t) FROM (
-    SELECT snapshot_at AS t FROM ` + silver.FxRatesTable + `
-    UNION ALL SELECT as_of FROM ` + silver.RatesTable + `)`
-)
-
-// extrema is the observation-date range query of this file's fact
-// tables. A file that holds neither reads the rates, and its Status
-// fails on the missing table.
-func (c *Connection) extrema() string {
-	switch {
-	case c.schema.fx && c.schema.rates:
-		return bothExtrema
-	case c.schema.fx:
-		return fxExtrema
+// clock is the load clock (silver.LoadClock) over this file's fact
+// tables: it reports their observation dates and no transactions. When a
+// fetch run triggers it re-emits the full range, and the rows upsert by
+// date in silver, so the latest fetch's revisions win. A file that holds
+// neither table reports no snapshot range.
+func (c *Connection) clock() silver.Clock {
+	var ranges []string
+	if c.schema.fx {
+		ranges = append(ranges, silver.Range(silver.FxRatesTable, "snapshot_at"))
 	}
-	return ratesExtrema
+	if c.schema.rates {
+		ranges = append(ranges, silver.Range(silver.RatesTable, "as_of"))
+	}
+	return silver.Clock{Kind: c.kind, Runs: silver.LatestDump, Snapshot: ranges, Mode: silver.FullSpan{}}
 }
-
-// clock is the load clock over this file's fact tables: it reports their
-// observation dates and no transactions. When a fetch run triggers it
-// re-emits the full range, and the rows upsert by date in silver, so the
-// latest fetch's revisions win.
-func (c *Connection) clock() silver.Clock { return silver.LoadClock(c.kind, c.extrema()) }
 
 // Status and ChangeWindow are the clock's (silver.Clock).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {

@@ -11,13 +11,13 @@ import (
 // Status and ChangeWindow by merging what its feeds answer. The merges
 // below are the one rule for every such adapter.
 
-// MergeStatuses combines the Status of a source's feeds. The snapshot and
+// mergeStatuses combines the Status of a source's feeds. The snapshot and
 // transaction extrema span the union of the feeds' and the change number
 // is the latest; a feed's -1 ("no observable state") does not count. The
 // observed watermarks follow whole: feeds that each read the whole
 // source take the later, feeds that each read a part of it the earlier
 // (mergeObserved).
-func MergeStatuses(statuses []canonical.Status, whole bool) canonical.Status {
+func mergeStatuses(statuses []canonical.Status, whole bool) canonical.Status {
 	out := canonical.UnknownStatus()
 	for _, s := range statuses {
 		out.OldestSnapshotAt = earliest(out.OldestSnapshotAt, s.OldestSnapshotAt)
@@ -52,13 +52,17 @@ func latest(a, b int64) int64 {
 	return max(a, b)
 }
 
-// MergeWindows combines the change windows a source's feeds yield past
+// mergeWindows combines the change windows a source's feeds yield past
 // sinceN. The source has changes when any feed has, over the union of
 // the changed feeds' spans, and its new change number is the latest of
 // sinceN and every feed's, so the watermark moves by whatever progress
-// any feed made.
-func MergeWindows(sinceN int64, windows []canonical.Window) canonical.Window {
+// any feed made. A changed feed that re-reads its whole history makes
+// the merged window full (canonical.FullWindow). The merged window keeps
+// no per-kind Spans: every kind spans the union, which covers each
+// feed's own spans.
+func mergeWindows(sinceN int64, windows []canonical.Window) canonical.Window {
 	out := canonical.Window{NewChangeNumber: sinceN}
+	full := false
 	for _, w := range windows {
 		if w.HasChanges {
 			if !out.HasChanges {
@@ -68,8 +72,12 @@ func MergeWindows(sinceN int64, windows []canonical.Window) canonical.Window {
 				out.End = max(out.End, w.End)
 			}
 			out.HasChanges = true
+			full = full || w.Full
 		}
 		out.NewChangeNumber = max(out.NewChangeNumber, w.NewChangeNumber)
+	}
+	if full {
+		return canonical.FullWindow(out.NewChangeNumber)
 	}
 	return out
 }
@@ -84,14 +92,14 @@ type Feed struct {
 
 // Feeds are the configured feeds of a source read through more than one
 // (a subsource each). Whole says each feed reads the whole source
-// (MergeStatuses). Kind names the source in errors.
+// (mergeStatuses). Kind names the source in errors.
 type Feeds struct {
 	Kind  string
 	Whole bool
 	List  []Feed
 }
 
-// Status merges the feeds' Status (MergeStatuses).
+// Status merges the feeds' Status (mergeStatuses).
 func (f Feeds) Status(ctx context.Context) (canonical.Status, error) {
 	var statuses []canonical.Status
 	for _, fd := range f.List {
@@ -101,10 +109,10 @@ func (f Feeds) Status(ctx context.Context) (canonical.Status, error) {
 		}
 		statuses = append(statuses, s)
 	}
-	return MergeStatuses(statuses, f.Whole), nil
+	return mergeStatuses(statuses, f.Whole), nil
 }
 
-// ChangeWindow merges the feeds' windows past sinceN (MergeWindows).
+// ChangeWindow merges the feeds' windows past sinceN (mergeWindows).
 func (f Feeds) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window, error) {
 	var windows []canonical.Window
 	for _, fd := range f.List {
@@ -114,5 +122,5 @@ func (f Feeds) ChangeWindow(ctx context.Context, sinceN int64) (canonical.Window
 		}
 		windows = append(windows, w)
 	}
-	return MergeWindows(sinceN, windows), nil
+	return mergeWindows(sinceN, windows), nil
 }

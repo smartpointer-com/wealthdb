@@ -162,17 +162,14 @@ SELECT DISTINCT instrument_isin, portfolio_external_id
 
 // eachPair runs a query of two text columns and calls fn on each row.
 func eachPair(ctx context.Context, db *sql.DB, q string, fn func(a, b string)) error {
-	if err := silver.ScanRows(ctx, db, "", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, db, "", q, func(rows *sql.Rows) error {
 		var a, b string
 		if err := rows.Scan(&a, &b); err != nil {
 			return err
 		}
 		fn(a, b)
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // paidInFold sets the paid-in basis on every position in a fund the

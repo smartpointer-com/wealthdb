@@ -8,11 +8,8 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// NewSnapshotStream returns a SnapshotStream that walks a
-// precomputed slice of batches. A nil/empty slice yields nothing
-// (the no-changes case). Every adapter builds its batches eagerly
-// and hands them here rather than reimplementing the index-walk
-// iterator.
+// NewSnapshotStream walks a precomputed slice of batches. A nil or
+// empty slice yields nothing.
 func NewSnapshotStream(batches []canonical.SnapshotBatch) SnapshotStream {
 	return &sliceSnapshotStream{batches: batches}
 }
@@ -70,11 +67,8 @@ func (b Batches) Sorted() []canonical.SnapshotBatch {
 // earlier-wins FirstSeenAt accounting on instruments and accounts relies on.
 func (b Batches) Stream() SnapshotStream { return NewSnapshotStream(b.Sorted()) }
 
-// NewTransactionStream returns a TransactionStream that yields the
-// given batch exactly once. Every adapter assembles a single
-// transaction batch per load window (none yields more than one),
-// so the single-shot shape covers them all; the no-changes case
-// passes a zero batch (yielded once, applied as a no-op).
+// NewTransactionStream yields one batch once. The no-changes case
+// passes a zero batch, which applies as a no-op.
 func NewTransactionStream(batch canonical.TransactionBatch) TransactionStream {
 	return &singleTxStream{batch: batch}
 }
@@ -94,24 +88,37 @@ func (s *singleTxStream) Next(context.Context) (canonical.TransactionBatch, bool
 
 func (s *singleTxStream) Close() error { return nil }
 
-// NewConcatSnapshotStream returns a SnapshotStream that drains each
-// underlying stream in order, then reports exhaustion. Adapters that
-// merge two source streams (api+web, psn+web) hand their ordered
-// slice here rather than each carrying its own concat type.
-func NewConcatSnapshotStream(streams []SnapshotStream) SnapshotStream {
-	return &concatSnapshotStream{streams: streams}
+// batchStream is a stream of batches of B: SnapshotStream and
+// TransactionStream.
+type batchStream[B any] interface {
+	Next(ctx context.Context) (B, bool, error)
+	Close() error
 }
 
-type concatSnapshotStream struct {
-	streams []SnapshotStream
+// NewConcatSnapshotStream drains each stream in order, then reports
+// exhaustion: the merged adapters' streams.
+func NewConcatSnapshotStream(streams []SnapshotStream) SnapshotStream {
+	return &concat[canonical.SnapshotBatch, SnapshotStream]{streams: streams}
+}
+
+// NewConcatTransactionStream is NewConcatSnapshotStream for transaction
+// streams.
+func NewConcatTransactionStream(streams []TransactionStream) TransactionStream {
+	return &concat[canonical.TransactionBatch, TransactionStream]{streams: streams}
+}
+
+// concat drains each of streams in order.
+type concat[B any, S batchStream[B]] struct {
+	streams []S
 	idx     int
 }
 
-func (s *concatSnapshotStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
+func (s *concat[B, S]) Next(ctx context.Context) (B, bool, error) {
+	var none B
 	if s.idx < len(s.streams) {
 		batch, more, err := s.streams[s.idx].Next(ctx)
 		if err != nil {
-			return canonical.SnapshotBatch{}, false, err
+			return none, false, err
 		}
 		if more {
 			return batch, true, nil
@@ -119,50 +126,12 @@ func (s *concatSnapshotStream) Next(ctx context.Context) (canonical.SnapshotBatc
 		// A final possibly-empty batch with more=false ends this
 		// stream; advance and report more based on what's left.
 		s.idx++
-		anyLeft := s.idx < len(s.streams)
-		return batch, anyLeft, nil
+		return batch, s.idx < len(s.streams), nil
 	}
-	return canonical.SnapshotBatch{}, false, nil
+	return none, false, nil
 }
 
-func (s *concatSnapshotStream) Close() error {
-	var firstErr error
-	for _, st := range s.streams {
-		if err := st.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-// NewConcatTransactionStream mirrors NewConcatSnapshotStream for
-// transaction streams.
-func NewConcatTransactionStream(streams []TransactionStream) TransactionStream {
-	return &concatTransactionStream{streams: streams}
-}
-
-type concatTransactionStream struct {
-	streams []TransactionStream
-	idx     int
-}
-
-func (s *concatTransactionStream) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
-	if s.idx < len(s.streams) {
-		batch, more, err := s.streams[s.idx].Next(ctx)
-		if err != nil {
-			return canonical.TransactionBatch{}, false, err
-		}
-		if more {
-			return batch, true, nil
-		}
-		s.idx++
-		anyLeft := s.idx < len(s.streams)
-		return batch, anyLeft, nil
-	}
-	return canonical.TransactionBatch{}, false, nil
-}
-
-func (s *concatTransactionStream) Close() error {
+func (s *concat[B, S]) Close() error {
 	var firstErr error
 	for _, st := range s.streams {
 		if err := st.Close(); err != nil && firstErr == nil {
@@ -176,36 +145,21 @@ func (s *concatTransactionStream) Close() error {
 // place, before the batch is handed on: a fold that rewrites the rows of
 // a stream without adding a batch or dropping one. Close closes inner.
 func MapSnapshots(inner SnapshotStream, fn func(*canonical.SnapshotBatch)) SnapshotStream {
-	return &mappedSnapshotStream{inner, fn}
+	return &mapped[canonical.SnapshotBatch, SnapshotStream]{inner, fn}
 }
 
-type mappedSnapshotStream struct {
-	inner SnapshotStream
-	fn    func(*canonical.SnapshotBatch)
-}
-
-func (s *mappedSnapshotStream) Next(ctx context.Context) (canonical.SnapshotBatch, bool, error) {
-	batch, more, err := s.inner.Next(ctx)
-	if err != nil {
-		return batch, more, err
-	}
-	s.fn(&batch)
-	return batch, more, nil
-}
-
-func (s *mappedSnapshotStream) Close() error { return s.inner.Close() }
-
-// MapTransactions mirrors MapSnapshots for transaction streams.
+// MapTransactions is MapSnapshots for transaction streams.
 func MapTransactions(inner TransactionStream, fn func(*canonical.TransactionBatch)) TransactionStream {
-	return &mappedTransactionStream{inner, fn}
+	return &mapped[canonical.TransactionBatch, TransactionStream]{inner, fn}
 }
 
-type mappedTransactionStream struct {
-	inner TransactionStream
-	fn    func(*canonical.TransactionBatch)
+// mapped is inner with fn applied to each batch it yields.
+type mapped[B any, S batchStream[B]] struct {
+	inner S
+	fn    func(*B)
 }
 
-func (s *mappedTransactionStream) Next(ctx context.Context) (canonical.TransactionBatch, bool, error) {
+func (s *mapped[B, S]) Next(ctx context.Context) (B, bool, error) {
 	batch, more, err := s.inner.Next(ctx)
 	if err != nil {
 		return batch, more, err
@@ -214,7 +168,7 @@ func (s *mappedTransactionStream) Next(ctx context.Context) (canonical.Transacti
 	return batch, more, nil
 }
 
-func (s *mappedTransactionStream) Close() error { return s.inner.Close() }
+func (s *mapped[B, S]) Close() error { return s.inner.Close() }
 
 // Lazy is a value built once, on first use, with the error its build
 // returned: a connection's cache of what several of its passes read.

@@ -65,15 +65,13 @@ var bondVehicles = []string{"bond", "mortgage", "loan", "convertible_note"}
 // its terms: its name; its own figures, each canonical.PayloadTermsKeys
 // key from its payload, else from its newest position's payload that
 // states one (a statement parser's holding, whose instrument a live feed
-// may describe later without them); OpenFIGI's ticker and market sector for its security, its security's
-// sector, and whether its key is a US ISIN (canonical.ReadBondDescription's
-// usID).
+// may describe later without them); OpenFIGI's ticker and market
+// sector for its security, its security's sector, and whether its key is a
+// US ISIN (canonical.ReadBondDescription's usID).
 var termsCandidatesSQL = func() string {
 	var stated, picked []string
 	for _, k := range canonical.PayloadTermsKeys() {
 		stated = append(stated, fmt.Sprintf("json_extract_string(p.payload, '%s')", k))
-	}
-	for _, k := range canonical.PayloadTermsKeys() {
 		picked = append(picked, fmt.Sprintf("COALESCE(json_extract_string(i.payload, '%[1]s'), "+
 			"json_extract_string(h.payload, '%[1]s'))", k))
 	}

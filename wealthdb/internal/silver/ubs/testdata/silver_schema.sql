@@ -1,7 +1,8 @@
--- Minimal subset of ubs-psn's silver schema for adapter
--- tests. Mirrors the column types of the upstream migration but
--- skips PRAGMAs and FK declarations that don't affect the
--- adapter's read path.
+-- Minimal subset of ubs-psn's silver schema for adapter tests: the
+-- tables and columns the adapter reads, at migration 0004. The
+-- holdings cost columns of 0005 are added where a test needs them
+-- (basis_test.go). shared/collectorkit/tests/test_go_schema_copies.py
+-- holds it to the migrations.
 
 CREATE TABLE dump_runs (
     snapshot_at           INTEGER NOT NULL PRIMARY KEY,

@@ -2,13 +2,13 @@ package ubs
 
 import (
 	"encoding/json"
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // A PSN cash account record states the account's interest conditions in
@@ -100,40 +100,18 @@ func psnRateKeys(payload []byte) map[string]any {
 	return canonical.StatedRateKeys(rates...)
 }
 
-// psnText is a record value's text: a string's, or the JSON of any other
-// value. A null or absent value has none.
+// psnText is a record value's text (silver.JSONText).
 func psnText(m map[string]json.RawMessage, key string) (string, bool) {
-	raw, ok := m[key]
-	if !ok || string(raw) == "null" {
-		return "", false
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s, true
-	}
-	return string(raw), true
+	return silver.JSONText(m[key])
 }
 
-// psnDigitGroups is a number's text whose every underscore sits between
-// two digits: 1_000 reads as 1000.
-var psnDigitGroups = regexp.MustCompile(`^[^_]*(?:[0-9]_[0-9][^_]*)*$`)
-
-// psnNumber reads a record value as a finite number: its text, ASCII
-// space around it ignored, digits grouped by underscores.
+// psnNumber reads a record value as a finite number (silver.StatedNumber).
 func psnNumber(m map[string]json.RawMessage, key string) (float64, bool) {
 	s, ok := psnText(m, key)
 	if !ok {
 		return 0, false
 	}
-	s = strings.Trim(s, " \t\n\v\f\r")
-	if strings.ContainsAny(s, "xX") || !psnDigitGroups.MatchString(s) {
-		return 0, false
-	}
-	v, err := strconv.ParseFloat(strings.ReplaceAll(s, "_", ""), 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0, false
-	}
-	return v, true
+	return silver.StatedNumber(s)
 }
 
 // psnDatePattern is a day as the record writes one: a year, a month and

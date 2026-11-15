@@ -58,10 +58,6 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	// The closure marker depends on ChangeWindow spanning the full content
-	// history (it does — see status.go): a window starting between the last
-	// held date and the exit date would miss the transition and re-emit
-	// nothing.
 	batches, err := silver.Book{
 		States:   states,
 		Extra:    append(append(ledger.carryDates(), inKind.PeriodEnds()...), entityDates...),
@@ -145,7 +141,7 @@ func normCcy(c string) string {
 // key (silver.Removals). A dump's manifest (dump_runs.payload) names every
 // entity the run read, and a run reads the whole portfolio; a dry run, or a
 // manifest that names no entity, says nothing about the roster. Whether a
-// listed company still holds anything is buildBatch's question, so a
+// listed company still holds anything is emit's question (dropRemoved), so a
 // removal of a company whose lots had all exited is a no-op there.
 func (c *Connection) removals(ctx context.Context) (silver.Removals, error) {
 	const q = `

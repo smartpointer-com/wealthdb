@@ -91,8 +91,6 @@ func init() {
 
 type Adapter struct{}
 
-func (*Adapter) Kind() string { return kindName }
-
 func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "fidelity silver")
 	if err != nil {
@@ -126,7 +124,6 @@ type schema struct {
 	openLotCUSIP    bool // open_lots.cusip
 	closedLotNames  bool // closed_lots.security_name, with disposed_date and the closed_positions kind (silver migration 0012)
 	stated          bool // the stated_periods table
-	runModes        bool // the run columns: what each run read
 }
 
 func (s *schema) optional() []silver.Optional {
@@ -138,6 +135,5 @@ func (s *schema) optional() []silver.Optional {
 		{Table: "open_lots", Columns: []string{"cusip"}, Version: 11, Has: &s.openLotCUSIP},
 		{Table: "closed_lots", Columns: []string{"security_name"}, Version: 12, Has: &s.closedLotNames},
 		{Table: statedPeriodsTable, Version: 15, Has: &s.stated},
-		{Table: "dump_runs", Columns: []string{"activity_since"}, Version: 1, Has: &s.runModes},
 	}
 }

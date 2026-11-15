@@ -74,7 +74,7 @@ func (r *psnReader) taxPairByISIN(ctx context.Context) (map[string]taxPair, erro
 // where nothing happened to the holding.
 //
 // Built from the latest roster snapshot (the portfolio↔safekeeping
-// relationship is long-lived; we apply today's structure
+// relationship is long-lived; today's structure applies
 // retroactively to the historical PDFs).
 func (r *psnReader) safekeepingByPortfolio(ctx context.Context) (map[string]string, error) {
 	if r == nil {

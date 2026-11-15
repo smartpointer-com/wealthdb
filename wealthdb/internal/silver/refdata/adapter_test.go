@@ -6,6 +6,8 @@ import (
 	_ "embed"
 	"fmt"
 	"maps"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -114,22 +116,38 @@ func seed(t *testing.T, db *sql.DB) {
 	    VALUES ('symbol:EXMP', 'sic', ?, 'sec-edgar', '3571', 'sic', ?)`, d3, run2)
 }
 
-func TestKindIsRefdata(t *testing.T) {
-	t.Parallel()
-	if got := (&Adapter{}).Kind(); got != "refdata" {
-		t.Fatalf("Kind() = %q", got)
-	}
-}
-
 func TestStatusEmpty(t *testing.T) {
 	t.Parallel()
-	path, _ := newFixtureSilver(t)
-	st, err := openAdapter(t, path).Status(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.LatestChangeNumber != -1 || st.OldestSnapshotAt != -1 || st.ObservedSnapshotsThrough != -1 {
-		t.Errorf("empty silver status = %+v, want the -1 sentinels", st)
+	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
+}
+
+// A silver older than the adapter names, once, the parts of the later
+// migrations it lacks, in the order of their versions; a current one
+// names none.
+func TestAnOlderSilverIsAdvised(t *testing.T) {
+	t.Parallel()
+	lineCols := "lines." + strings.Join(silver.ReferenceLineYieldColumns, ", lines.")
+	for name, c := range map[string]struct {
+		open func(*testing.T) (string, *sql.DB)
+		want []string
+	}{
+		"v1": {newV1Silver, []string{lineCols, "fund_risk", "characteristics", "period_facts", "dividend_events", "fund_returns"}},
+		"v2": {newV2Silver, []string{"dividend_events", "fund_returns"}},
+		"v3": {newV3Silver, []string{"fund_returns"}},
+		"v4": {newFixtureSilver, nil},
+	} {
+		path, _ := c.open(t)
+		notes := openAdapter(t, path).(silver.SchemaAdviser).SchemaAdvice()
+		if c.want == nil {
+			if len(notes) != 0 {
+				t.Errorf("%s: advice = %v, want none", name, notes)
+			}
+			continue
+		}
+		if len(notes) != 1 || !reflect.DeepEqual(notes[0].Missing, c.want) || notes[0].Reads != 4 ||
+			notes[0].Silver != filepath.Base(path) {
+			t.Errorf("%s: advice = %+v, want one note naming %v", name, notes, c.want)
+		}
 	}
 }
 

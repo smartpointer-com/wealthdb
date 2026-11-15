@@ -12,10 +12,9 @@
 //     the account type (Kontoart) and the last-4 mask; TaxWrapper
 //     'taxable_personal', ManagementStyle 'self_directed'. All overridable via
 //     account_overrides. The rates its details state ride under the
-//     stated-rate keys (rates.go). These are conduit accounts — cash passes
-//     through them between other sources — so the registered ReturnsPolicy
-//     hides their return rows at every grain; the balances and flows still
-//     enter the aggregates, where only the transaction flow matters.
+//     stated-rate keys (rates.go). Deposit accounts are not investments, so
+//     the registered ReturnsPolicy hides their return rows at every grain;
+//     their balances and flows still enter the aggregates.
 //
 //   - CASH BALANCES, not positions or instruments — cash is not an instrument.
 //     A CLOSING balance for every day the daily-balance series carries a saldo
@@ -40,7 +39,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"unicode"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
@@ -80,7 +78,7 @@ var adapter = bank.New(bank.Source{
 	TypeCol:        "account_type",
 	NameIsNickname: true,
 	AccountKind:    canonical.AccountKindCash,
-	Display:        func(r silver.BankRosterRow) string { return displayName(r.Name, r.AccountType, r.Mask) },
+	Display:        func(r bank.RosterRow) string { return displayName(r.Name, r.AccountType, r.Mask) },
 	Account:        withDetailsRates,
 	Listing:        "run_accounts",
 	ListingVersion: 3,
@@ -190,7 +188,7 @@ func textColumns(desc, cp, payload string) (description, counterparty *string) {
 // and fees are recognised from the source category (kategorieCode) or the
 // description text — German and English tokens both, since the wire mixes them;
 // everything else is a deposit or withdrawal by the (canonical) sign of the
-// amount, the faithful classification for a cash conduit account. The full
+// amount, the faithful classification for a deposit account. The full
 // category is preserved in `payload` for any later refinement.
 //
 // The long, unambiguous tokens (INTEREST, ZINS, ENTGELT, …) are matched as
@@ -208,7 +206,7 @@ func txKind(category, description string, amt canonical.Decimal) canonical.TxKin
 	case containsAny(hay, "ENTGELT", "SPESEN", "GEBÜHR", "GEBUEHR", "KONTOFÜHRUNG", "KONTOFUEHRUNG",
 		"SERVICE CHARGE", "SERVICE FEE"):
 		return canonical.TxKindFee
-	case hasWholeToken(hay, "FEE", "FEES", "CHARGE", "CHARGES"):
+	case silver.HasWord(hay, "FEE", "FEES", "CHARGE", "CHARGES"):
 		return canonical.TxKindFee
 	case amt.IsNegative():
 		return canonical.TxKindWithdrawal
@@ -221,22 +219,6 @@ func containsAny(s string, subs ...string) bool {
 	for _, sub := range subs {
 		if strings.Contains(s, sub) {
 			return true
-		}
-	}
-	return false
-}
-
-// hasWholeToken reports whether any of `tokens` appears in `s` as a whole word
-// or slug segment (splitting on every non-alphanumeric rune, so both
-// underscore-slugged category codes and free-text descriptions are covered).
-func hasWholeToken(s string, tokens ...string) bool {
-	for _, w := range strings.FieldsFunc(s, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	}) {
-		for _, t := range tokens {
-			if w == t {
-				return true
-			}
 		}
 	}
 	return false

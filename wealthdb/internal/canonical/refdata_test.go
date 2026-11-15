@@ -1,19 +1,23 @@
 package canonical
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
-// A distribution's kind and status are of their words.
+// The dividend calendar's enum columns admit the kinds and statuses a
+// distribution may carry, and no other word.
 func TestDividendEventVocabulary(t *testing.T) {
 	t.Parallel()
-	for _, k := range DividendEventKinds {
-		if !k.Valid() {
-			t.Errorf("%s is not valid", k)
-		}
+	enums := RefTableOf("dividend_calendar").Enums
+	kinds := make([]string, len(DividendEventKinds))
+	for i, k := range DividendEventKinds {
+		kinds[i] = string(k)
 	}
-	if DividendEventKind("interest").Valid() || DividendEventKind("").Valid() {
-		t.Error("a kind outside the vocabulary is valid")
+	if !slices.Equal(enums["kind"], kinds) {
+		t.Errorf("kind enum = %q, want %q", enums["kind"], kinds)
 	}
-	if !DividendFinal.Valid() || !DividendEstimated.Valid() || DividendEventStatus("paid").Valid() {
-		t.Error("status vocabulary")
+	if want := []string{string(DividendFinal), string(DividendEstimated)}; !slices.Equal(enums["status"], want) {
+		t.Errorf("status enum = %q, want %q", enums["status"], want)
 	}
 }

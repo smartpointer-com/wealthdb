@@ -507,9 +507,11 @@ func (r *psnReader) cashConfirmations(ctx context.Context) ([]cashConfirmation, 
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
-	if r.confirmations != nil {
-		return r.confirmations, nil
-	}
+	return r.confirmations.Get(func() ([]cashConfirmation, error) { return r.readCashConfirmations(ctx) })
+}
+
+// readCashConfirmations is cashConfirmations' read.
+func (r *psnReader) readCashConfirmations(ctx context.Context) ([]cashConfirmation, error) {
 	var all []caRow
 	if err := silver.ScanRows(ctx, r.db, "ubs cashConfirmations", `
 SELECT event_external_id, timestamp, payload
@@ -559,7 +561,6 @@ SELECT event_external_id, timestamp, payload
 		}
 		out = append(out, c)
 	}
-	r.confirmations = out
 	return out, nil
 }
 

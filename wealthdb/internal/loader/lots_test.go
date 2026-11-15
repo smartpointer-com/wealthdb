@@ -37,7 +37,6 @@ var lotsState struct {
 
 type lotsAdapter struct{}
 
-func (lotsAdapter) Kind() string { return lotsKind }
 func (lotsAdapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	lotsState.openedAs = spec.ID
 	return lotsConn{}, nil
@@ -63,7 +62,7 @@ func (lotsConn) RealizedLots(context.Context) ([]canonical.RealizedLotChange, er
 	return lotsState.realized, nil
 }
 
-func init() { silver.Register(silver.Source{Kind: lotsAdapter{}.Kind(), Open: lotsAdapter{}.Open}) }
+func init() { silver.Register(silver.Source{Kind: lotsKind, Open: lotsAdapter{}.Open}) }
 
 func lotsGold(t *testing.T) (*loader.Loader, *sql.DB) {
 	t.Helper()

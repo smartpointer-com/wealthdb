@@ -55,12 +55,6 @@ func seed(t *testing.T, db *sql.DB) {
 	}
 }
 
-func TestKindIsAngellist(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "angellist" {
-		t.Errorf("Kind() = %q, want angellist", got)
-	}
-}
-
 func TestStatusEmpty(t *testing.T) {
 	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 }

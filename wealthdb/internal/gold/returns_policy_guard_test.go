@@ -4,7 +4,7 @@ package gold
 // adapter kind that emits accounts must ship a registered ReturnsPolicy,
 // so `unknown_adapter_policy` stays unreachable through the real pipeline
 // (RETURNS-NOTES.md "Quality flags"). The adapter registry is populated
-// by the blank imports in returns_policy_import_test.go.
+// by the blank import of silver/all in returns_policy_import_test.go.
 
 import (
 	"testing"
@@ -30,7 +30,7 @@ func TestEveryAccountKindHasPolicy(t *testing.T) {
 	t.Parallel()
 	registered := silver.Kinds()
 	if len(registered) <= len(referenceKinds) {
-		t.Fatalf("registered kinds %v: the blank imports are missing", registered)
+		t.Fatalf("registered kinds %v: the blank import of silver/all is missing", registered)
 	}
 	reference := make(map[string]bool, len(referenceKinds))
 	for _, k := range referenceKinds {
@@ -44,7 +44,7 @@ func TestEveryAccountKindHasPolicy(t *testing.T) {
 			continue
 		}
 		if rp, ok := returns.ReturnsPolicyFor(k); !ok || !rp.Flow.Known {
-			t.Errorf("kind %q: no registered ReturnsPolicy — add internal/silver/%s/policy.go and the test blank imports", k, k)
+			t.Errorf("kind %q: no registered ReturnsPolicy: set Returns in its silver.Source", k)
 		}
 	}
 }

@@ -18,17 +18,10 @@ import (
 // (internal/silver/{schwab,ubs,swissquote,...}) registers its Open in
 // a Source from its init() function via Register.
 type Adapter interface {
-	// Kind returns the silver-kind discriminator that appears in
-	// the wealthdb config file's silver_sources[].kind field
-	// (e.g. "schwab", "ubs", "swissquote").
-	Kind() string
-
 	// Open attaches to the silver source(s) described by spec and
 	// returns a Connection. The Connection is single-use; callers
 	// Close() when done. Open is read-only — adapters never write
-	// to silver. Single-backing-file adapters use spec.Path;
-	// multi-source adapters (UBS = web + PSN) use spec.Subsources
-	// and may use spec.Settings to align cross-source identities.
+	// to silver.
 	Open(ctx context.Context, spec OpenSpec) (Connection, error)
 }
 
@@ -44,8 +37,9 @@ type Adapter interface {
 type RefineClassFunc = func(securityType string, ac canonical.AssetClass, v canonical.Vehicle, name string) (canonical.AssetClass, canonical.Vehicle)
 
 // OpenSpec is everything Adapter.Open needs to know about the
-// configured silver source. Single-file adapters read Path; UBS reads
-// ID, Subsources and Settings; schwab reads Settings too.
+// configured silver source. Single-file adapters read Path. The merged
+// adapters (schwab = api + web, UBS = web + PSN) read Subsources and
+// Settings. UBS also reads ID.
 type OpenSpec struct {
 	// ID is the source's id in gold (silver_source_id), for an adapter
 	// whose keys are scoped by the source, such as a contract's

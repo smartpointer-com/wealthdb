@@ -186,7 +186,7 @@ CREATE TABLE realized_lots (
 -- what each security is and reports, and what each pays
 -- (canonical/refdata.go). The ten tables repeat the refdata collector's
 -- silver shape column for column (collectors/refdata/migrations), so one
--- reader serves both kinds (silver.NewReferenceStream). as_of is the UTC
+-- reader serves both kinds (silver.ReferenceSchema.Stream). as_of is the UTC
 -- midnight of the day a row describes (for a period fact, its period's
 -- last day; for a distribution, the day its source stated it) and must
 -- lie inside the window of the run that adds it; run_at is the instant

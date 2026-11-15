@@ -26,19 +26,31 @@ func TestEveryReferenceTableHasAKind(t *testing.T) {
 	if len(ReferenceTableKinds) != len(tables) {
 		t.Errorf("ReferenceTableKinds has %d tables, the reference tables are %d", len(ReferenceTableKinds), len(tables))
 	}
-	run := ReferenceRunTables(ReferenceSchema{Yield: true, Calendar: true, Returns: true})
+	run := ReferenceRunTables(schemaAt(4))
 	for _, table := range tables {
 		if slices.Contains(run, table) == (table == "lines") {
 			t.Errorf("ReferenceRunTables at v4 = %v, want every reference table but lines", run)
 		}
 	}
-	if v1 := ReferenceRunTables(ReferenceSchema{}); slices.ContainsFunc(v1, func(t string) bool {
+	if v1 := ReferenceRunTables(schemaAt(1)); slices.ContainsFunc(v1, func(t string) bool {
 		return slices.Contains(ReferenceYieldTables, t) || t == ReferenceCalendarTable
 	}) {
 		t.Errorf("ReferenceRunTables at v1 = %v, want no table of schema v2 or v3", v1)
 	}
-	if v2 := ReferenceRunTables(ReferenceSchema{Yield: true}); slices.Contains(v2, ReferenceCalendarTable) ||
+	if v2 := ReferenceRunTables(schemaAt(2)); slices.Contains(v2, ReferenceCalendarTable) ||
 		!slices.Contains(v2, "period_facts") {
 		t.Errorf("ReferenceRunTables at v2 = %v, want the tables of schema v2 and none of v3", v2)
 	}
+}
+
+// schemaAt is the schema of a file at version v: it holds each part of a
+// version up to v.
+func schemaAt(v int) ReferenceSchema {
+	s := ReferenceSchema{tables: map[string]bool{}, lineYield: v >= 2}
+	for _, t := range canonical.RefTables {
+		if t.Version > 1 {
+			s.tables[t.Silver] = t.Version <= v
+		}
+	}
+	return s
 }

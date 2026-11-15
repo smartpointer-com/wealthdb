@@ -36,12 +36,11 @@ func NamesPhysicalMetal(name string) bool {
 // "Money Center Bank".
 var moneyMarketRe = regexp.MustCompile(`(?i)\bMONEY\s+MARKET\b|\bMONEY\s+FUND\b|\bCASH\s+RESERVES\b|\bMM(?:KT|F)\b|\bMONEY\s+MKT\b`)
 
-// NamesMoneyMarket reports whether a fund's security name reads as a
+// namesMoneyMarket reports whether a fund's security name reads as a
 // money-market fund — a cash equivalent (TAXONOMY.md: money-market
-// funds are cash, not fixed income). Callers use it to route a
-// fund/mutual-fund holding to (cash, fund) before name-based exposure
-// refinement, which has no money-market awareness.
-func NamesMoneyMarket(name string) bool {
+// funds are cash, not fixed income). FundExposure reads it before the
+// name-based exposure refinement, which has no money-market awareness.
+func namesMoneyMarket(name string) bool {
 	return moneyMarketRe.MatchString(name)
 }
 
@@ -52,7 +51,7 @@ func NamesMoneyMarket(name string) bool {
 // not the exposure RefineETFExposure would guess from a bond keyword in its
 // name.
 func FundExposure(name string) canonical.AssetClass {
-	if NamesMoneyMarket(name) {
+	if namesMoneyMarket(name) {
 		return canonical.AssetClassCash
 	}
 	return RefineETFExposure(name)

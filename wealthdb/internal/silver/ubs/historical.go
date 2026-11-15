@@ -34,7 +34,7 @@ import (
 //
 // Window semantics: the loader's window-DELETE deletes positions
 // and cash_balances rows WHERE snapshot_at BETWEEN w.Start AND
-// w.End, so any historical timestamp we emit must be inside the
+// w.End, so any historical timestamp emitted must be inside the
 // window or the next load will collide on the gold PK. The
 // webReader's ChangeWindow extends Start back to MIN(historical
 // times) when there's a new dump_run, so this loop's WHERE clause
@@ -85,7 +85,7 @@ func (r *webReader) snapshotsHistorical(
 // `historical_position_snapshots` (rows where instrument_isin IS
 // NOT NULL). UBS PDFs don't surface the safekeeping account
 // reliably, so silver leaves account_external_id empty on these
-// rows. We attach them to the per-portfolio overlay account
+// rows. They attach to the per-portfolio overlay account
 // pattern PSN already uses for forward contracts (account_kind=
 // 'overlay', '<portfolio>:overlay'), preserving the invariant
 // that every position is owned by some account row.
@@ -95,7 +95,7 @@ func (r *webReader) snapshotsHistorical(
 // balances` rows on the same (account, currency, period_end) and
 // would collide on the gold cash_balances PK. The monthly cash-
 // balances table is the richer source (opening + closing per
-// month vs quarter-end only), so we use it exclusively for cash.
+// month vs quarter-end only), so it alone supplies the cash.
 // safekeepingByPortfolio maps a portfolio_external_id to the PSN
 // safekeeping account that holds its securities, where exactly one
 // of them can be (see psnReader.safekeepingByPortfolio). When a
@@ -146,7 +146,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 	// portfolio), not one per holding.
 	emitted := map[snapshotKey]bool{}
 
-	if err := silver.ScanRows(ctx, r.db, "appendHistoricalSecurities", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendHistoricalSecurities", q, func(rows *sql.Rows) error {
 		var (
 			asOf                                     int64
 			portID, isin, ccy, mvCcy                 string
@@ -195,7 +195,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 				// Real safekeeping account. Leave DisplayName nil so
 				// the PSN-era AccountChange (which carries the proper
 				// mandate name) wins via gold's latest-last_seen_at
-				// upsert guard; our contribution just extends
+				// upsert guard; this row only extends
 				// first_seen_at back to the PDF era.
 				ac.AccountKind = canonical.AccountKindSafekeeping
 			} else {
@@ -279,10 +279,7 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		pos.SetBookValue(bookValue, basis)
 		batch.Positions = append(batch.Positions, pos)
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // statementSecuritiesAccount names the account a statement's securities
@@ -378,7 +375,7 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 	// balances the snapshot carries.
 	accountEmitted := map[snapshotKey]bool{}
 
-	if err := silver.ScanRows(ctx, r.db, "appendHistoricalCashBalances", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendHistoricalCashBalances", q, func(rows *sql.Rows) error {
 		var (
 			periodEnd, periodStart int64
 			acctID, ccy            string
@@ -428,10 +425,7 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 			})
 		}
 		return nil
-	}, w.Start, w.End, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End, w.Start, w.End)
 }
 
 // appendHistoricalMortgages attaches each PDF-derived mortgage
@@ -470,7 +464,7 @@ SELECT as_of_date, account_external_id, currency_iso,
        outstanding_balance, product_name, collateral_description, payload
   FROM historical_mortgages
  WHERE as_of_date BETWEEN ? AND ?`
-	if err := silver.ScanRows(ctx, r.db, "appendHistoricalMortgages", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendHistoricalMortgages", q, func(rows *sql.Rows) error {
 		var (
 			asOf                     int64
 			extID, currency, payload string
@@ -529,10 +523,7 @@ SELECT as_of_date, account_external_id, currency_iso,
 			Payload:              json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // historicalRange returns the span of dates the historical tables cover, or
@@ -544,13 +535,12 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 		`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`,
 		`SELECT MIN(period_start), MAX(period_end) FROM historical_cash_balances`,
 	}
-	// The change window's range probes the file as it is at each call.
 	for _, table := range []string{"historical_position_snapshots", "historical_cash_balances"} {
-		if ok, err := silver.HasTables(ctx, r.db, table); err != nil || !ok {
+		if ok, err := r.hasTable(ctx, table); err != nil || !ok {
 			return -1, -1, err
 		}
 	}
-	ok, err := silver.HasTables(ctx, r.db, "historical_mortgages")
+	ok, err := r.hasTable(ctx, "historical_mortgages")
 	if err != nil {
 		return -1, -1, err
 	}

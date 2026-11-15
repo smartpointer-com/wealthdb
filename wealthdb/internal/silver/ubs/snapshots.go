@@ -105,7 +105,7 @@ SELECT snapshot_at, relationship_id, account_external_id,
        portfolio_external_id, payload
   FROM cash_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	if err := silver.ScanRows(ctx, r.db, "appendCashAccounts", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendCashAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap        int64
 			relID       string
@@ -123,11 +123,10 @@ SELECT snapshot_at, relationship_id, account_external_id,
 		var p cashAccountPayload
 		_ = json.Unmarshal([]byte(payload), &p) // best-effort
 
-		// We leave DisplayName nil so the user-facing positions
-		// output falls back to the IBAN (already human-
-		// readable), rather than showing the less-informative
-		// AcctTpDesc like "Private" or "Custody". The AcctTpDesc
-		// itself is forwarded as AccountCategory.
+		// DisplayName stays nil, so the positions view falls back
+		// to the IBAN (already human-readable) rather than the
+		// less-informative AcctTpDesc like "Private" or "Custody".
+		// The AcctTpDesc itself is forwarded as AccountCategory.
 		change := canonical.AccountChange{
 			AccountExternalID:   extID,
 			AccountKind:         canonical.AccountKindCash,
@@ -144,10 +143,7 @@ SELECT snapshot_at, relationship_id, account_external_id,
 		}
 		batch.Accounts = append(batch.Accounts, change)
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 type safekeepingPayload struct {
@@ -241,7 +237,7 @@ SELECT snapshot_at, relationship_id, portfolio_external_id,
        base_currency, payload
   FROM portfolios
  WHERE snapshot_at BETWEEN ? AND ?`
-	if err := silver.ScanRows(ctx, r.db, "appendPortfolios", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendPortfolios", q, func(rows *sql.Rows) error {
 		var (
 			snap         int64
 			relID, extID string
@@ -264,15 +260,12 @@ SELECT snapshot_at, relationship_id, portfolio_external_id,
 			Payload:             json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // ---- instruments + holdings ----------------------------------------------
 
-// instrumentMeta is the lookup we build from `instruments` so
+// instrumentMeta is the lookup built from `instruments` so
 // appendHoldings can populate position.asset_class and currency
 // without re-parsing instrument payloads on every holding.
 type instrumentMeta struct {
@@ -295,8 +288,8 @@ type instrumentPayload struct {
 }
 
 // instrumentNames is the UBS InstrNm object — a multi-language
-// envelope carrying long and short names per locale. We pick
-// LngNmEnglish for the canonical Name; ShrtNmEnglish is a useful
+// envelope carrying long and short names per locale.
+// LngNmEnglish is the canonical Name; ShrtNmEnglish is a useful
 // fallback when the long name is empty.
 type instrumentNames struct {
 	LngNmEnglish  string `json:"LngNmEnglish"`
@@ -377,7 +370,7 @@ SELECT snapshot_at, isin, payload
 }
 
 // holdingsPayloadShape mirrors the relevant slice of the MT535
-// payload — the two SWIFT tags we extract (19A monetary amounts,
+// payload — the two SWIFT tags extracted (19A monetary amounts,
 // 93B quantities). Everything else stays in the raw payload for
 // forensics.
 type holdingsPayloadShape struct {
@@ -412,7 +405,7 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
   FROM holdings
  WHERE snapshot_at BETWEEN ? AND ?`
 
-	if err := silver.ScanRows(ctx, r.db, "appendHoldings", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendHoldings", q, func(rows *sql.Rows) error {
 		var (
 			snap          int64
 			safekeepingID string
@@ -434,7 +427,7 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
 		// instruments per content, so most snapshots don't carry
 		// a fresh row). Fall back to AssetClass=other / blank
 		// currency when the ISIN has never been seen — the
-		// currency-from-HOLD step below typically rescues us.
+		// currency-from-HOLD step below typically fills it.
 		meta := instrumentMeta{
 			AssetClass: canonical.AssetClassOther,
 			Vehicle:    canonical.VehicleOther,
@@ -505,10 +498,7 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
 		pos.SetBookValue(book, basis)
 		batch.Positions = append(batch.Positions, pos)
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // ---- cash_balances / fx_rates / forwards ---------------------------------
@@ -526,7 +516,7 @@ func (r *psnReader) appendCashBalances(ctx context.Context, w canonical.Window, 
 SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
   FROM cash_balances
  WHERE snapshot_at BETWEEN ? AND ?`
-	if err := silver.ScanRows(ctx, r.db, "appendCashBalances", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendCashBalances", q, func(rows *sql.Rows) error {
 		var (
 			snap                            int64
 			extID, balanceKind, currencyISO string
@@ -564,10 +554,7 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 			Payload:           json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // appendBookBalances emits the book balance the account master-data
@@ -619,7 +606,7 @@ func (r *psnReader) appendBookBalances(ctx context.Context, w canonical.Window, 
 SELECT snapshot_at, account_external_id, payload
   FROM cash_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	if err := silver.ScanRows(ctx, r.db, "appendBookBalances", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendBookBalances", q, func(rows *sql.Rows) error {
 		var (
 			snap           int64
 			extID, payload string
@@ -658,10 +645,7 @@ SELECT snapshot_at, account_external_id, payload
 			Payload:           balancePayload,
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // bookBalancePayload is the balance half of the account master-data
@@ -691,8 +675,8 @@ type fxRatePeriod struct {
 }
 
 // fxRatePayload — UBS ships ForeignExchangeRatePeriodData as
-// either a single-rate object OR an array of period entries. We
-// capture the raw bytes and split based on the leading byte; see
+// either a single-rate object OR an array of period entries. The
+// raw bytes are kept and split on the leading byte; see
 // firstFxPeriod.
 type fxRatePayload struct {
 	ForeignExchangeRatePeriodData json.RawMessage `json:"ForeignExchangeRatePeriodData"`
@@ -732,7 +716,7 @@ func (r *psnReader) appendFxRates(ctx context.Context, w canonical.Window, byTim
 SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
   FROM fx_rates
  WHERE snapshot_at BETWEEN ? AND ?`
-	if err := silver.ScanRows(ctx, r.db, "appendFxRates", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendFxRates", q, func(rows *sql.Rows) error {
 		var (
 			snap                       int64
 			baseCcy, quoteCcy, payload string
@@ -763,10 +747,7 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
 			Payload:       json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // appendForwardContracts projects the FX-forward contracts as
@@ -787,7 +768,7 @@ SELECT snapshot_at, contract_external_id, payload
 	// The (snapshot, portfolio) overlay accounts already emitted, so
 	// one AccountChange serves every forward.
 	overlayEmitted := map[snapshotKey]bool{}
-	if err := silver.ScanRows(ctx, r.db, "appendForwardContracts", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, r.db, "appendForwardContracts", q, func(rows *sql.Rows) error {
 		var (
 			snap       int64
 			contractID string
@@ -835,10 +816,7 @@ SELECT snapshot_at, contract_external_id, payload
 		}
 		batch.Positions = append(batch.Positions, pos)
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // overlayAccountID returns the synthetic account_external_id that

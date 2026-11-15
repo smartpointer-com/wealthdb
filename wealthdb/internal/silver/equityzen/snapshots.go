@@ -40,10 +40,6 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	// The closure marker depends on ChangeWindow spanning the full content
-	// history (it does — see status.go): a window starting between the last
-	// held date and the exit date would miss the transition and re-emit
-	// nothing.
 	batches, err := silver.Book{
 		States:   states,
 		Removals: removals,

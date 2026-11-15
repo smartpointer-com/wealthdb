@@ -209,7 +209,7 @@ func TestAPIFromCoverageStartDropsTheStrays(t *testing.T) {
 	inner := silver.NewTransactionStream(canonical.TransactionBatch{Transactions: []canonical.TransactionChange{
 		mk("stray", "A", 10), mk("kept", "A", 200), mk("other", "B", 5), mk("unmapped", "C", 1),
 	}})
-	s := &apiFromCoverageStart{inner: inner, start: map[string]int64{"A": 200, "B": 5}}
+	s := silver.MapTransactions(inner, apiFromCoverageStart(map[string]int64{"A": 200, "B": 5}))
 	batch, _, err := s.Next(context.Background())
 	if err != nil {
 		t.Fatal(err)

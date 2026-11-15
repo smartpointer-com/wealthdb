@@ -10,14 +10,12 @@ import "slices"
 // what moves a holding's value. The recognised exposure values and
 // the Valid method live in taxonomy.go (docs/TAXONOMY.md §2).
 //
-// An adapter may read a source's own 1-D class first (equity, bond,
-// fund, …) and map it to an (exposure, vehicle) pair at the emit
-// boundary. Unrecognised source codes fall through to AssetClassOther
+// A source's own class words (equity, bond, fund, …) are mapped to an
+// (exposure, vehicle) pair at the emit boundary (TAXONOMY.md §4).
+// Unrecognised source codes fall through to AssetClassOther
 // (docs/DESIGN.md §6.8).
 type AssetClass string
 
-// The exposure values below double as 1-D labels in the adapters'
-// classmaps and keep the same meaning in both roles.
 const (
 	AssetClassMetal  AssetClass = "metal"
 	AssetClassCrypto AssetClass = "crypto"
@@ -28,19 +26,6 @@ const (
 	// AssetClassRealEstate is a directly-held property.
 	AssetClassRealEstate AssetClass = "real_estate"
 	AssetClassOther      AssetClass = "other"
-)
-
-// 1-D labels that are no exposure values: Valid rejects them, and they
-// never reach gold. AssetClassSPV is an LP interest in a single-company
-// special-purpose vehicle, AssetClassPrivateFund one in a multi-company
-// venture/PE fund. AssetClassConvertibleNote is an early-stage
-// convertible loan, note or SAFE.
-const (
-	AssetClassEquity          AssetClass = "equity"
-	AssetClassFxForward       AssetClass = "fx_forward"
-	AssetClassSPV             AssetClass = "spv"
-	AssetClassPrivateFund     AssetClass = "private_fund"
-	AssetClassConvertibleNote AssetClass = "convertible_note"
 )
 
 // AccountKind discriminates `accounts.account_kind`. This is the

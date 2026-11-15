@@ -38,8 +38,8 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 	// Historical projection from the Quartalsbericht PDFs (silver
-	// migration 0002). Silently no-op on silvers that haven't been
-	// migrated yet.
+	// migration 0002). A silver older than migration 0002 states none;
+	// the load names the missing tables (silver.ProbeOptional).
 	if err := c.appendHistoricalPositions(ctx, w, byTime); err != nil {
 		return nil, err
 	}

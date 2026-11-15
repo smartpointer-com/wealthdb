@@ -62,12 +62,6 @@ func seed(t *testing.T, db *sql.DB) {
 	}
 }
 
-func TestKindIsManual(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "manual" {
-		t.Errorf("Kind() = %q, want manual", got)
-	}
-}
-
 func TestStatusEmpty(t *testing.T) {
 	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 }

@@ -112,10 +112,10 @@ func (c *Config) Lookup(id string) (*SilverSource, bool) {
 	return nil, false
 }
 
-// ToSilverOpenSpec converts a config.SilverSource into the
-// silver.OpenSpec the adapter contract expects. Lives here (not
-// in silver) so config carries the JSON tags / parse logic and
-// silver stays JSON-free. Its settings are what Validate compiled.
+// ToSilverOpenSpec converts a config.SilverSource into the silver.OpenSpec
+// the adapter contract expects: its id, path and subsources, and the
+// settings its kind parsed while Validate compiled the config
+// (compileSettings).
 func (s *SilverSource) ToSilverOpenSpec() silver.OpenSpec {
 	out := silver.OpenSpec{ID: s.ID, Path: s.Path, Settings: s.settings}
 	for _, sub := range s.Subsources {
@@ -199,8 +199,11 @@ func (c *Config) validateSources() (map[string]bool, error) {
 // compileSettings parses the source's keys that a kind reads
 // (silver.SettingsFor), the relationships then the schwab object, and
 // keeps what its own kind's parser yields. A key's owner checks it on a
-// source of any kind, and may refuse it there. i is the source's index,
-// for the errors.
+// source of any kind, and may refuse it there. In a binary without the
+// kind that reads a key, the key is refused. A kind reads one key
+// (silver.Source.Settings), so a source keeps at most one value. A new
+// key needs a field of SilverSource and an entry in this list. i is the
+// source's index, for the errors.
 func (s *SilverSource) compileSettings(i int) error {
 	s.settings = nil
 	for _, k := range []struct {

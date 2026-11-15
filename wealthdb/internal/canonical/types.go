@@ -3,6 +3,7 @@ package canonical
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -323,18 +324,16 @@ const (
 	TxActionCashOnly        TxAction = "cash_only"
 )
 
-var txActionValues = map[TxAction]struct{}{
-	"": {}, TxActionIgnore: {}, TxActionIn: {}, TxActionOut: {}, TxActionIncome: {}, TxActionAcquired: {},
-	TxActionConverted: {}, TxActionSpend: {}, TxActionFee: {}, TxActionLost: {}, TxActionGift: {},
-	TxActionThirdCurrencyFee: {}, TxActionReorganisation: {}, TxActionReturnOfCapital: {},
-	TxActionCashInLieu: {}, TxActionExpiry: {}, TxActionCashOnly: {},
+// TxActions are the actions an adapter may state, the empty action aside.
+var TxActions = []TxAction{
+	TxActionIgnore, TxActionIn, TxActionOut, TxActionIncome, TxActionAcquired,
+	TxActionConverted, TxActionSpend, TxActionFee, TxActionLost, TxActionGift,
+	TxActionThirdCurrencyFee, TxActionReorganisation, TxActionReturnOfCapital,
+	TxActionCashInLieu, TxActionExpiry, TxActionCashOnly,
 }
 
-// Valid reports whether a is the empty action or one of the above.
-func (a TxAction) Valid() bool {
-	_, ok := txActionValues[a]
-	return ok
-}
+// Valid reports whether a is the empty action or one of TxActions.
+func (a TxAction) Valid() bool { return a == "" || slices.Contains(TxActions, a) }
 
 // Status is the return value of silver.Connection.Status(). See
 // docs/DESIGN.md §6.2 for semantics. All timestamps are Unix

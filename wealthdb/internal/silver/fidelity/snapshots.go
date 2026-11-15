@@ -94,7 +94,7 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
   FROM portfolios
  WHERE snapshot_at BETWEEN ? AND ?`
 	usd := "USD"
-	if err := silver.ScanRows(ctx, c.db, "appendPortfolios", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendPortfolios", q, func(rows *sql.Rows) error {
 		var (
 			snap                 int64
 			extID, kind, payload string
@@ -116,10 +116,7 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 			Payload:             json.RawMessage(payload),
 		})
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // portfolioDisplay is a portfolio's DisplayName: its label with the
@@ -166,7 +163,7 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
    AND p.portfolio_external_id = a.portfolio_external_id
  WHERE a.snapshot_at BETWEEN ? AND ?`, mgmtCol)
 	usd := "USD"
-	if err := silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap                                 int64
 			extID, payload, silverMgmt           string
@@ -205,10 +202,7 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 		}
 		batch.Accounts = append(batch.Accounts, change)
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }
 
 // applyPortfolioKindTaxonomy stamps TaxWrapper (plus AccountKind
@@ -346,7 +340,7 @@ func coreRate(payload string, sec sql.NullFloat64) (string, error) {
 // rather than re-deriving from instrument_key + description.
 func (c *Connection) appendPositionsAndCash(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, lots *lotCarry, cusips map[string]string) error {
 	// CAST decimals to VARCHAR so SQLite's REAL → float64 round-
-	// trip doesn't bleed precision before we parse into the
+	// trip doesn't bleed precision before the parse into the
 	// shopspring/decimal-backed canonical.Decimal.
 	const q = `
 SELECT snapshot_at, account_external_id, instrument_key,
@@ -362,18 +356,18 @@ SELECT snapshot_at, account_external_id, instrument_key,
   FROM positions
  WHERE snapshot_at BETWEEN ? AND ?`
 
-	if err := silver.ScanRows(ctx, c.db, "appendPositionsAndCash", q, func(rows *sql.Rows) error {
+	return silver.ScanRows(ctx, c.db, "appendPositionsAndCash", q, func(rows *sql.Rows) error {
 		var (
 			snap                                   int64
 			acct, key, desc, silverClass, currency string
 			isCore                                 int
 			valueStr                               sql.NullString
-			qtyStr, costStr                        *canonical.Decimal
+			qty, cost                              *canonical.Decimal
 			secYield                               sql.NullFloat64
 			payload                                string
 		)
 		if err := rows.Scan(&snap, &acct, &key, &desc, &silverClass, &currency,
-			&isCore, silver.Dec(&qtyStr, silver.DecText), &valueStr, silver.Dec(&costStr, silver.DecText), &secYield, &payload); err != nil {
+			&isCore, silver.Dec(&qty, silver.DecText), &valueStr, silver.Dec(&cost, silver.DecText), &secYield, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -426,16 +420,13 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
-			Quantity:             qtyStr,
+			Quantity:             qty,
 			MarketValue:          silver.DecimalPtrOrNil(valueStr),
 			Payload:              json.RawMessage(payload),
 		}
-		pos.SetBookValue(costStr, lotBasis)
+		pos.SetBookValue(cost, lotBasis)
 		lots.attach(batch, &pos)
 		batch.Positions = append(batch.Positions, pos)
 		return nil
-	}, w.Start, w.End); err != nil {
-		return err
-	}
-	return nil
+	}, w.Start, w.End)
 }

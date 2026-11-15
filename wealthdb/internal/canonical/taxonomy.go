@@ -16,8 +16,7 @@ import (
 
 // Asset-class (exposure) values written to gold. Five more are
 // declared in enums.go (PrivateEquity, RealEstate, Metal, Crypto,
-// Other). An adapter may also use those five as 1-D labels in its
-// classmap, with the same meaning.
+// Other).
 const (
 	AssetClassPublicEquity    AssetClass = "public_equity"
 	AssetClassFixedIncome     AssetClass = "fixed_income"
@@ -27,9 +26,6 @@ const (
 	AssetClassForeignExchange AssetClass = "foreign_exchange"
 	AssetClassHedgeFund       AssetClass = "hedge_fund"
 	AssetClassMultiAsset      AssetClass = "multi_asset"
-	// AssetClassPrivateEquity, AssetClassRealEstate, AssetClassMetal,
-	// AssetClassCrypto and AssetClassOther are declared in enums.go and
-	// reused verbatim here.
 )
 
 // assetClassValues is the exposure dimension of the taxonomy —

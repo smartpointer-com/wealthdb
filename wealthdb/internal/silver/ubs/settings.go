@@ -12,9 +12,8 @@ import (
 // Either WebID or PSNID (or both) must be set; only the
 // configured side is used.
 type RelationshipPair struct {
-	// Label is the canonical (user-readable) name the adapter
-	// stamps on canonical records so downstream sees a single key
-	// regardless of which subsource produced the record.
+	// Label names the relationship in the config. The adapter reads
+	// only the ids.
 	Label string
 	// WebID, when set, is the web silver's banking_relationship_id.
 	WebID string
@@ -28,7 +27,6 @@ type RelationshipPair struct {
 
 // relationshipEntry is one entry under `silver_sources[].relationships`
 // in the config. At least one of `web_id` or `psn_id` must be set.
-// `label` is the display name the adapter stamps on canonical records.
 // `psn_start_override`, when set (YYYY-MM-DD), overrides the
 // auto-detected cutover date used to splice web↔PSN transactions for
 // this relationship.

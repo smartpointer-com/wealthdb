@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	_ "modernc.org/sqlite" // SQLite driver registration for all adapters.
 
@@ -45,11 +46,11 @@ func CloseDB(db **sql.DB) error {
 	return err
 }
 
-// HasColumns reports whether `table` has every named column, via PRAGMA
+// hasColumns reports whether `table` has every named column, via PRAGMA
 // table_info: the newer columns a silver migration adds, which an older
 // silver lacks (ProbeOptional). The names are distinct. SQLite-only.
-func HasColumns(ctx context.Context, db *sql.DB, table string, columns ...string) (bool, error) {
-	return hasAll(ctx, db, "HasColumns "+table, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE TRUE`,
+func hasColumns(ctx context.Context, db *sql.DB, table string, columns ...string) (bool, error) {
+	return hasAll(ctx, db, "hasColumns "+table, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE TRUE`,
 		[]any{table}, columns)
 }
 
@@ -120,20 +121,12 @@ func readPage[T any](ctx context.Context, db *sql.DB, span canonical.Span, budge
 // a holding changes without a row of its own, such as a removal.
 func SnapshotTimes(ctx context.Context, db *sql.DB, w canonical.Window, extra []int64,
 	q string, args ...any) ([]int64, error) {
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("snapshot times: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
+	out, err := Query(ctx, db, "snapshot times", q, func(rows *sql.Rows) (int64, error) {
 		var t int64
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	if err := rows.Err(); err != nil {
+		err := rows.Scan(&t)
+		return t, err
+	}, args...)
+	if err != nil {
 		return nil, err
 	}
 	for _, t := range extra {
@@ -313,9 +306,9 @@ func (n SchemaNote) String() string {
 		n.Silver, n.Version, n.Reads, parts)
 }
 
-// SchemaVersion is a silver's schema version, the newest of schema_meta;
+// schemaVersion is a silver's schema version, the newest of schema_meta;
 // 0 for a silver without the table. SQLite-only.
-func SchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
+func schemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	has, err := HasTables(ctx, db, "schema_meta")
 	if err != nil || !has {
 		return 0, err
@@ -340,7 +333,7 @@ func ProbeOptional(ctx context.Context, db *sql.DB, silver string, parts ...Opti
 		if len(p.Columns) == 0 {
 			*p.Has, err = HasTables(ctx, db, p.Table)
 		} else {
-			*p.Has, err = HasColumns(ctx, db, p.Table, p.Columns...)
+			*p.Has, err = hasColumns(ctx, db, p.Table, p.Columns...)
 		}
 		if err != nil {
 			return SchemaNote{}, err
@@ -353,7 +346,7 @@ func ProbeOptional(ctx context.Context, db *sql.DB, silver string, parts ...Opti
 	if len(absent) == 0 {
 		return SchemaNote{}, nil
 	}
-	v, err := SchemaVersion(ctx, db)
+	v, err := schemaVersion(ctx, db)
 	if err != nil || v == 0 {
 		// A silver that states no version, which no collector writes,
 		// gets no advice.
@@ -454,16 +447,6 @@ func NullStringPtr(n sql.NullString) *string {
 	return &v
 }
 
-// NullInt64Ptr converts a sql.NullInt64 to a *int64: nil when not
-// valid, else a pointer to the value.
-func NullInt64Ptr(n sql.NullInt64) *int64 {
-	if !n.Valid {
-		return nil
-	}
-	v := n.Int64
-	return &v
-}
-
 // StrPtrIfNonEmpty returns nil for the empty string, else a pointer
 // to s. Use for optional free-text columns where "" means absent.
 func StrPtrIfNonEmpty(s string) *string {
@@ -498,6 +481,20 @@ func JoinText(parts ...string) string {
 		}
 	}
 	return strings.Join(kept, "; ")
+}
+
+// HasWord reports whether any of words is a word of s: a run of letters
+// and digits between any other runes. A slugged code ("fees_bank") and
+// free text split alike.
+func HasWord(s string, words ...string) bool {
+	for _, w := range strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if slices.Contains(words, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // JSONOrNil returns nil for NULL / empty input, else the raw JSON

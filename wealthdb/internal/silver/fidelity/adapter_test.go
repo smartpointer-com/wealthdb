@@ -27,12 +27,6 @@ func openAdapter(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{}, path)
 }
 
-func TestKindIsFidelity(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "fidelity" {
-		t.Errorf("Kind() = %q, want %q", got, "fidelity")
-	}
-}
-
 func TestStatusEmpty(t *testing.T) {
 	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 }

@@ -519,7 +519,7 @@ func TestPositionTaxonomyPair(t *testing.T) {
 	}
 	reject("missing vehicle", func(p *canonical.PositionChange) { p.Vehicle = "" })
 	reject("invalid exposure", func(p *canonical.PositionChange) { p.AssetClass = "bogus" })
-	reject("legacy value in asset_class", func(p *canonical.PositionChange) { p.AssetClass = canonical.AssetClassEquity })
+	reject("legacy value in asset_class", func(p *canonical.PositionChange) { p.AssetClass = "equity" })
 	reject("nonsensical pair", func(p *canonical.PositionChange) {
 		p.AssetClass, p.Vehicle = canonical.AssetClassCrypto, canonical.VehicleMortgage
 	})

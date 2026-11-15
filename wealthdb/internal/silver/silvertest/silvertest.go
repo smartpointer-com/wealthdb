@@ -60,9 +60,9 @@ func Exec(t testing.TB, db *sql.DB, q string, args ...any) {
 	}
 }
 
-// FullWindow is conn's change window since change number 0, which has to
+// WindowSince0 is conn's change window since change number 0, which has to
 // report changes.
-func FullWindow(t testing.TB, conn silver.Connection) canonical.Window {
+func WindowSince0(t testing.TB, conn silver.Connection) canonical.Window {
 	t.Helper()
 	w, err := conn.ChangeWindow(context.Background(), 0)
 	if err != nil {
@@ -123,14 +123,18 @@ func Transactions(t testing.TB, conn silver.Connection, w canonical.Window) []ca
 func Merged(t testing.TB, conn silver.Connection, w canonical.Window) canonical.SnapshotBatch {
 	t.Helper()
 	var all canonical.SnapshotBatch
-	v := reflect.ValueOf(&all).Elem()
 	for _, b := range Snapshots(t, conn, w) {
-		bv := reflect.ValueOf(b)
-		for i := range v.NumField() {
-			v.Field(i).Set(reflect.AppendSlice(v.Field(i), bv.Field(i)))
-		}
+		mergeBatches(&all, b)
 	}
 	return all
+}
+
+// mergeBatches appends each of b's slices to dst's of the same kind.
+func mergeBatches(dst *canonical.SnapshotBatch, b canonical.SnapshotBatch) {
+	v, bv := reflect.ValueOf(dst).Elem(), reflect.ValueOf(b)
+	for i := range v.NumField() {
+		v.Field(i).Set(reflect.AppendSlice(v.Field(i), bv.Field(i)))
+	}
 }
 
 // CurrentsByInstant maps each account of batch to its CURRENT cash

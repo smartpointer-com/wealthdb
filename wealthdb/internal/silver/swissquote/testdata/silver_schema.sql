@@ -13,9 +13,8 @@ CREATE TABLE accounts (
     account_external_id TEXT    NOT NULL,
     payload             TEXT    NOT NULL,
     -- swissquote v2 promoted column, renamed from account_type in
-    -- v5. Tolerated as optional by the adapter (hasColumn check at
-    -- query-build time), under either name, so older silvers still
-    -- load.
+    -- v5. Probed at open (schema.optional), under either name, so
+    -- older silvers still load.
     account_product     TEXT    NOT NULL DEFAULT '',
     PRIMARY KEY (snapshot_at, account_external_id)
 );
@@ -27,17 +26,15 @@ CREATE TABLE positions (
     currency            TEXT    NOT NULL,
     payload             TEXT    NOT NULL,
     -- swissquote v3 promoted columns (name from DOM tooltip,
-    -- isin from FullQuote link href). Both tolerated as optional
-    -- by the adapter (hasColumn check at query-build time) so
-    -- older silvers still load.
+    -- isin from FullQuote link href). Both probed at open
+    -- (schema.optional), so older silvers still load.
     name                TEXT,
     isin                TEXT,
     -- swissquote v4 provenance tag: 'live' for current XLS
     -- export rows, 'pp:<doc_id>' for rows reconstructed from a
     -- Portfolio Performance PDF (snapshot_at = PDF as-of date).
     source              TEXT    NOT NULL DEFAULT 'live',
-    -- swissquote v6 cost-basis columns, tolerated as optional like
-    -- the v3 ones.
+    -- swissquote v6 cost-basis columns, probed like the v3 ones.
     average_cost             REAL,
     price_quote              TEXT CHECK (price_quote IN ('unit', 'percent')),
     market_value_chf         REAL,

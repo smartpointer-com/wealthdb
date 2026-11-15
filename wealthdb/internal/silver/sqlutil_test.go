@@ -14,6 +14,32 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
+func openScratch(t *testing.T, ddl string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(ddl); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+// TestHasWord pins the word match: a word is a run of letters and digits,
+// so a slug's segment matches and a longer word that starts with it does
+// not.
+func TestHasWord(t *testing.T) {
+	for s, want := range map[string]bool{
+		"MONTHLY FEE": true, "fees_bank": false, "FEES_BANK": true, "FEEDBACK LTD": false, "": false,
+	} {
+		if got := HasWord(s, "FEE", "FEES"); got != want {
+			t.Errorf("HasWord(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
+
 // TestJoinText pins the transaction-text composition rule the adapters
 // share: trim each part, drop the empty ones, join the rest with "; ",
 // and yield "" — never a stray separator — when nothing is left.
@@ -136,12 +162,12 @@ func TestHasColumns(t *testing.T) {
 		{"b", []string{"x"}, false},
 		{"a", nil, true},
 	} {
-		got, err := HasColumns(context.Background(), db, c.table, c.columns...)
+		got, err := hasColumns(context.Background(), db, c.table, c.columns...)
 		if err != nil {
-			t.Fatalf("HasColumns(%s, %q): %v", c.table, c.columns, err)
+			t.Fatalf("hasColumns(%s, %q): %v", c.table, c.columns, err)
 		}
 		if got != c.want {
-			t.Errorf("HasColumns(%s, %q) = %v, want %v", c.table, c.columns, got, c.want)
+			t.Errorf("hasColumns(%s, %q) = %v, want %v", c.table, c.columns, got, c.want)
 		}
 	}
 }
@@ -226,6 +252,22 @@ INSERT INTO a VALUES (300), (700); INSERT INTO b VALUES (200), (500);`)
 	if _, _, err := Extrema(ctx, db, "the range", []string{`SELECT nope FROM a`}); err == nil ||
 		!strings.HasPrefix(err.Error(), "the range: ") {
 		t.Errorf("a failing query = %v, want it named", err)
+	}
+}
+
+// TestSnapshotTimesMergesExtraInsideTheWindow pins the batch times: the
+// query's times and every extra time inside the window, once each, ascending.
+func TestSnapshotTimesMergesExtraInsideTheWindow(t *testing.T) {
+	db := openScratch(t, `CREATE TABLE p (t INTEGER);
+INSERT INTO p VALUES (30), (10), (30), (50);`)
+	w := canonical.Window{Start: 10, End: 40, HasChanges: true}
+	got, err := SnapshotTimes(context.Background(), db, w, []int64{5, 20, 30, 45},
+		`SELECT t FROM p WHERE t BETWEEN ? AND ?`, w.Start, w.End)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int64{10, 20, 30}; !slices.Equal(got, want) {
+		t.Errorf("SnapshotTimes = %v, want %v", got, want)
 	}
 }
 

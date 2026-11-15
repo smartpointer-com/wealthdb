@@ -27,7 +27,7 @@ func TestPSNHoldingsGapFilter(t *testing.T) {
 		return canonical.SnapshotBatch{
 			Positions: []canonical.PositionChange{{
 				SnapshotAt: at, AccountExternalID: "fwd", PositionKey: "fwd",
-				AssetClass: canonical.AssetClassFxForward, MarketValue: &mv,
+				AssetClass: "fx_forward", MarketValue: &mv,
 			}},
 			CashBalances: []canonical.CashBalanceChange{{
 				SnapshotAt: at, AccountExternalID: "iban", Currency: "CHF",

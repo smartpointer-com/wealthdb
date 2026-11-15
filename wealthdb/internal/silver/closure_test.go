@@ -18,14 +18,14 @@ func TestClosureMarkerBatch(t *testing.T) {
 	prev := canonical.SnapshotBatch{
 		Positions: []canonical.PositionChange{
 			{SnapshotAt: 100, AccountExternalID: "ACCT", PositionKey: "deal-A",
-				InstrumentExternalID: &instA, AssetClass: canonical.AssetClassSPV,
+				InstrumentExternalID: &instA, AssetClass: "spv",
 				Vehicle: canonical.VehicleSPV, Currency: "USD", Quantity: &qty, MarketValue: &mv},
 			{SnapshotAt: 100, AccountExternalID: "ACCT", PositionKey: "deal-B",
 				InstrumentExternalID: &instB, AssetClass: canonical.AssetClassPrivateEquity,
 				Vehicle: canonical.VehicleFund, Currency: "USD", MarketValue: &mv},
 		},
 		Instruments: []canonical.InstrumentChange{
-			{InstrumentExternalID: instA, AssetClass: canonical.AssetClassSPV,
+			{InstrumentExternalID: instA, AssetClass: "spv",
 				Vehicle: canonical.VehicleSPV, Name: &nameA, FirstSeenAt: 100, LastSeenAt: 100},
 			{InstrumentExternalID: instB, AssetClass: canonical.AssetClassPrivateEquity,
 				Vehicle: canonical.VehicleFund, FirstSeenAt: 100, LastSeenAt: 100},

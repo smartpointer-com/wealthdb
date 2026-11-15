@@ -12,7 +12,7 @@ import (
 
 // The reference tables: the silver shape of the refdata collector
 // (collectors/refdata/migrations), which the synthetic kind repeats so a
-// generator can write the same records. NewReferenceStream reads them
+// generator can write the same records. ReferenceSchema.Stream reads them
 // into canonical reference records (canonical/refdata.go): compositions
 // and lines into records of their own, every other table by its entry of
 // canonical.RefTables.
@@ -27,6 +27,7 @@ import (
 //	characteristics  one row per fund, day, provider, field and label
 //	period_facts     one row per security, field, period and provider
 //	dividend_events  one row per fund or security, provider and distribution
+//	fund_returns     one row per fund, day and month
 //
 // Every row carries as_of, the UTC midnight of the day it describes (for
 // a period fact, its period's last day; for a distribution, the day its
@@ -34,8 +35,9 @@ import (
 // fund_risk, characteristics, period_facts and the lines columns from
 // coupon_kind on come with the refdata silver's schema v2
 // (0002_yield_facts.sql), dividend_events with v3
-// (0003_dividend_calendar.sql). A file at an older version holds none of
-// them, and its records read with those fields absent.
+// (0003_dividend_calendar.sql), fund_returns with v4. A file at an older
+// version holds none of them, and its records read with those fields
+// absent (ReferenceSchema).
 
 // ReferenceTables are the tables every reference silver holds: the first
 // six of the list above.
@@ -64,42 +66,56 @@ func referenceTableKinds() map[string]string {
 	return kinds
 }
 
-// ReferenceSchema says which of the later schema versions' tables a
-// reference silver holds: v2's (ReferenceYieldTables), v3's
-// (ReferenceCalendarTable) and v4's (ReferenceReturnsTable). A file last
-// migrated before a version lacks its tables and reads as stating none
-// of their records.
-type ReferenceSchema struct{ Yield, Calendar, Returns bool }
-
-// ProbeReferenceSchema reads which of the later versions' tables db
-// holds.
-func ProbeReferenceSchema(ctx context.Context, db *sql.DB) (ReferenceSchema, error) {
-	var s ReferenceSchema
-	var err error
-	if s.Yield, err = HasTables(ctx, db, ReferenceYieldTables...); err != nil {
-		return s, err
-	}
-	if s.Calendar, err = HasTables(ctx, db, ReferenceCalendarTable); err != nil {
-		return s, err
-	}
-	s.Returns, err = HasTables(ctx, db, ReferenceReturnsTable)
-	return s, err
+// ReferenceSchema is which parts of the later schema versions a
+// reference silver holds: each table of canonical.RefTables past v1, and
+// the lines columns of v2 (ReferenceLineYieldColumns). A file last
+// migrated before a version lacks its parts and reads as stating none of
+// their records. ProbeReferenceSchema reads it.
+type ReferenceSchema struct {
+	// tables are the later versions' tables, by silver name, each with
+	// whether the file holds it.
+	tables    map[string]bool
+	lineYield bool
 }
 
-// ReferenceRunTables are the reference tables whose rows carry run_at,
-// in the order of the list above: every one but lines, whose rows belong
-// to their composition's fund-day and run, and only the later versions'
-// tables the file holds (s).
+// ProbeReferenceSchema reads which parts of the later versions db holds,
+// and notes the parts a file older than them lacks (ProbeOptional), in
+// the order of their versions. silver is the file's base name, for the
+// note.
+func ProbeReferenceSchema(ctx context.Context, db *sql.DB, silver string) (ReferenceSchema, SchemaNote, error) {
+	s := ReferenceSchema{tables: map[string]bool{}}
+	parts := []Optional{{Table: "lines", Columns: ReferenceLineYieldColumns, Version: 2, Has: &s.lineYield}}
+	held := map[string]*bool{}
+	for _, t := range canonical.RefTables {
+		if t.Version > 1 {
+			held[t.Silver] = new(bool)
+			parts = append(parts, Optional{Table: t.Silver, Version: t.Version, Has: held[t.Silver]})
+		}
+	}
+	slices.SortStableFunc(parts, func(a, b Optional) int { return a.Version - b.Version })
+	note, err := ProbeOptional(ctx, db, silver, parts...)
+	for name, h := range held {
+		s.tables[name] = *h
+	}
+	return s, note, err
+}
+
+// holds says the file holds t: a table of v1, or a later one it holds.
+func (schema ReferenceSchema) holds(t *canonical.RefTable) bool {
+	return t.Version <= 1 || schema.tables[t.Silver]
+}
+
+// ReferenceRunTables are the reference tables whose rows carry run_at:
+// every one but lines, whose rows belong to their composition's fund-day
+// and run, and only the later versions' tables the file holds (s). The
+// first six of the list above come first, then canonical.RefTables'
+// later tables in its order.
 func ReferenceRunTables(s ReferenceSchema) []string {
 	tables := slices.Clone(ReferenceTables)
-	if s.Yield {
-		tables = append(tables, ReferenceYieldTables...)
-	}
-	if s.Calendar {
-		tables = append(tables, ReferenceCalendarTable)
-	}
-	if s.Returns {
-		tables = append(tables, ReferenceReturnsTable)
+	for _, t := range canonical.RefTables {
+		if t.Version > 1 && s.holds(t) {
+			tables = append(tables, t.Silver)
+		}
 	}
 	return slices.DeleteFunc(tables, func(t string) bool { return t == "lines" })
 }
@@ -109,19 +125,6 @@ func ReferenceRunTables(s ReferenceSchema) []string {
 var ReferenceLineYieldColumns = []string{"coupon_kind", "is_default", "in_arrears", "paid_in_kind",
 	"exchange_rate", "duration", "modified_duration", "yield_to_maturity", "yield_to_worst", "yield_to_call",
 	"real_duration", "real_yield", "accrual_date"}
-
-// holds says the file holds t: it is of a schema version s holds.
-func (s ReferenceSchema) holds(t *canonical.RefTable) bool {
-	switch t.Version {
-	case 2:
-		return s.Yield
-	case 3:
-		return s.Calendar
-	case 4:
-		return s.Returns
-	}
-	return true
-}
 
 // ReferenceRecordBudget bounds the records of one batch of fund-days:
 // its compositions, lines and the rows of every fund table. A batch
@@ -172,27 +175,16 @@ type refPage struct {
 	k keyset
 }
 
-// NewReferenceStream streams the reference rows whose as_of lies in w,
-// each kind of record over its own span of w (canonical.Window.SpanOf),
-// and the rows of a table read whole by a group (canonical.RefTable's
-// WholeBy) for each group a row of the span names. Nothing is read for a
-// window without changes, nor for a kind without.
-func NewReferenceStream(ctx context.Context, db *sql.DB, w canonical.Window) (SnapshotStream, error) {
+// Stream streams the reference rows of a file of schema s whose as_of
+// lies in w, each kind of record over its own span of w
+// (canonical.Window.SpanOf), and the rows of a table read whole by a group
+// (canonical.RefTable's WholeBy) for each group a row of the span names.
+// Nothing is read for a window without changes, nor for a kind without.
+func (schema ReferenceSchema) Stream(ctx context.Context, db *sql.DB, w canonical.Window) (SnapshotStream, error) {
 	if !w.HasChanges {
 		return NewSnapshotStream(nil), nil
 	}
-	schema, err := ProbeReferenceSchema(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	hasLineYield, err := HasColumns(ctx, db, "lines", ReferenceLineYieldColumns...)
-	if err != nil {
-		return nil, err
-	}
-	s := &referenceStream{db: db, w: w, lineYieldSelect: strings.Repeat(", NULL", len(ReferenceLineYieldColumns))}
-	if hasLineYield {
-		s.lineYieldSelect = ", " + strings.Join(ReferenceLineYieldColumns, ", ")
-	}
+	s := &referenceStream{db: db, w: w, lineYieldSelect: ", " + ColumnOr(schema.lineYield, ReferenceLineYieldColumns...)}
 	for _, t := range canonical.RefTables {
 		if !schema.holds(t) {
 			continue
@@ -215,20 +207,19 @@ func NewReferenceStream(ctx context.Context, db *sql.DB, w canonical.Window) (Sn
 			parts = append(parts, "SELECT fund_ref, as_of FROM "+t+" WHERE as_of BETWEEN ?1 AND ?2")
 		}
 	}
-	rows, err := db.QueryContext(ctx, strings.Join(parts, "\nUNION ")+`
-ORDER BY 2, 1`, days.Start, days.End)
-	if err != nil {
-		return nil, fmt.Errorf("reference fund-days: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	var err error
+	s.days, err = Query(ctx, db, "reference fund-days", strings.Join(parts, "\nUNION ")+`
+ORDER BY 2, 1`, func(rows *sql.Rows) (fundDay, error) {
 		var d fundDay
 		if err := rows.Scan(&d.ref, &d.asOf); err != nil {
-			return nil, fmt.Errorf("reference fund-days scan: %w", err)
+			return d, fmt.Errorf("reference fund-days scan: %w", err)
 		}
-		s.days = append(s.days, d)
+		return d, nil
+	}, days.Start, days.End)
+	if err != nil {
+		return nil, err
 	}
-	return s, rows.Err()
+	return s, nil
 }
 
 // columnList is t's silver columns, comma-separated.
@@ -337,15 +328,10 @@ func (s *referenceStream) readFundDay(ctx context.Context, d fundDay, b *canonic
 }
 
 func (s *referenceStream) readCompositions(ctx context.Context, d fundDay, b *canonical.SnapshotBatch) error {
-	rows, err := s.db.QueryContext(ctx, `
+	return ScanRows(ctx, s.db, "reference compositions", `
 SELECT basis, provider, source_kind, fund_name, currency, net_assets, line_count,
        weight_sum, units_outstanding, run_at, payload
-  FROM compositions WHERE fund_ref = ? AND as_of = ? ORDER BY basis`, d.ref, d.asOf)
-	if err != nil {
-		return fmt.Errorf("reference compositions: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+  FROM compositions WHERE fund_ref = ? AND as_of = ? ORDER BY basis`, func(rows *sql.Rows) error {
 		var (
 			basis, provider, kind               string
 			name, ccy, net, sum, units, payload sql.NullString
@@ -362,21 +348,16 @@ SELECT basis, provider, source_kind, fund_name, currency, net_assets, line_count
 			WeightSum: DecimalPtrOrNil(sum), UnitsOutstanding: DecimalPtrOrNil(units),
 			FetchedAt: runAt, Payload: JSONOrNil(payload),
 		})
-	}
-	return rows.Err()
+		return nil
+	}, d.ref, d.asOf)
 }
 
 func (s *referenceStream) readLines(ctx context.Context, d fundDay, b *canonical.SnapshotBatch) error {
-	rows, err := s.db.QueryContext(ctx, `
+	return ScanRows(ctx, s.db, "reference lines", `
 SELECT basis, line_no, isin, cusip, figi, ticker, exchange, name, asset_type,
        weight, quantity, market_value, currency, country, risk_country, sector, industry,
        maturity, coupon, long_currency, long_amount, short_currency, short_amount, payload`+s.lineYieldSelect+`
-  FROM lines WHERE fund_ref = ? AND as_of = ? ORDER BY basis, line_no`, d.ref, d.asOf)
-	if err != nil {
-		return fmt.Errorf("reference lines: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+  FROM lines WHERE fund_ref = ? AND as_of = ? ORDER BY basis, line_no`, func(rows *sql.Rows) error {
 		var (
 			basis                                            string
 			lineNo                                           int64
@@ -416,25 +397,20 @@ SELECT basis, line_no, isin, cusip, figi, ticker, exchange, name, asset_type,
 			AccrualDate: ISODate(accrual.String),
 			Payload:     JSONOrNil(payload),
 		})
-	}
-	return rows.Err()
+		return nil
+	}, d.ref, d.asOf)
 }
 
 // readFundRows reads a fund-day's rows of one fund table.
 func (s *referenceStream) readFundRows(ctx context.Context, f refQuery, d fundDay, b *canonical.SnapshotBatch) error {
-	rows, err := s.db.QueryContext(ctx, f.q, d.ref, d.asOf)
-	if err != nil {
-		return fmt.Errorf("reference %s: %w", f.t.What, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	return ScanRows(ctx, s.db, "reference "+f.t.What, f.q, func(rows *sql.Rows) error {
 		row, _, err := scanRef(rows, f.t, false)
 		if err != nil {
 			return err
 		}
 		b.AppendRef(f.t, row)
-	}
-	return rows.Err()
+		return nil
+	}, d.ref, d.asOf)
 }
 
 // scanRef reads one row of t into a value per column (canonical.RefRows),

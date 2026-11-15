@@ -46,8 +46,6 @@ func init() {
 
 type Adapter struct{}
 
-func (*Adapter) Kind() string { return kindName }
-
 func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "synthetic silver")
 	if err != nil {
@@ -60,12 +58,24 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 		return nil, err
 	}
 	c.Note(note)
+	if c.schema.hasReference() {
+		// The reference tables' versions are the refdata collector's
+		// schema versions, not this silver's, so the probe's note is
+		// left out.
+		if c.reference, _, err = silver.ProbeReferenceSchema(ctx, db, ""); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return c, nil
 }
 
 type Connection struct {
 	db     *sql.DB
 	schema schema
+	// reference is which later parts of the reference schema the file
+	// holds, where it holds every reference table (schema.reference).
+	reference silver.ReferenceSchema
 	silver.Advice
 }
 

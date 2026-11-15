@@ -221,26 +221,6 @@ func accountIDs(as []canonical.AccountChange) []string {
 	return out
 }
 
-func TestKind(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "synthetic" {
-		t.Fatalf("Kind = %q, want synthetic", got)
-	}
-}
-
-func TestCloseIsIdempotent(t *testing.T) {
-	path, _ := newFixture(t)
-	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Path: path})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatalf("first Close: %v", err)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-}
-
 func TestStatusEmpty(t *testing.T) {
 	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 	path, _ := newFixture(t)

@@ -49,8 +49,6 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
-	// The closure marker depends on ChangeWindow spanning the full content
-	// history (it does — see status.go).
 	batches, err := silver.Book{
 		States:   states,
 		Extra:    k.PeriodEnds(),
@@ -95,8 +93,11 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // position_snapshots — the exited / funding-only investments load.py derives
 // from the funding ledger. They carry no current holding, but their
 // contributions / distributions reference them; seen-range = the funding
-// transaction date span.
+// transaction date span. A silver whose ledger names no position has none.
 func (c *Connection) exitedInstruments(ctx context.Context) ([]canonical.InstrumentChange, error) {
+	if !c.schema.fundingLinks {
+		return nil, nil
+	}
 	const q = `
 SELECT o.position_external_id, COALESCE(o.company_name, ''), COALESCE(o.kind, ''),
        MIN(ft.occurred_at), MAX(ft.occurred_at)
@@ -105,7 +106,7 @@ SELECT o.position_external_id, COALESCE(o.company_name, ''), COALESCE(o.kind, ''
  WHERE o.position_external_id NOT IN (SELECT position_external_id FROM position_snapshots)
  GROUP BY o.position_external_id, o.company_name, o.kind
  ORDER BY o.position_external_id`
-	out, err := silver.Query(ctx, c.db, "exitedInstruments", q, func(rows *sql.Rows) (rec canonical.InstrumentChange, err error) {
+	return silver.Query(ctx, c.db, "exitedInstruments", q, func(rows *sql.Rows) (rec canonical.InstrumentChange, err error) {
 		var (
 			pid, company, kind string
 			first, last        sql.NullInt64
@@ -126,10 +127,6 @@ SELECT o.position_external_id, COALESCE(o.company_name, ''), COALESCE(o.kind, ''
 		}
 		return inst, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // fundingCashBalance is the funding account's current uninvested cash as a

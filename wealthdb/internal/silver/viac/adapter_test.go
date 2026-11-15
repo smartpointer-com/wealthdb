@@ -24,12 +24,6 @@ func openAdapter(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{}, path)
 }
 
-func TestKindIsViac(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "viac" {
-		t.Errorf("Kind() = %q, want %q", got, "viac")
-	}
-}
-
 func TestStatusEmpty(t *testing.T) {
 	silvertest.AssertEmptyStatus(t, &Adapter{}, silverSchemaSQL)
 }
@@ -419,6 +413,31 @@ func TestTransactionsCarryTheInstrumentTheyNamed(t *testing.T) {
 	}
 	if u.InstrumentHint != "Something Unresolved" {
 		t.Errorf("an unresolved trade hinted %q, want the name it failed on", u.InstrumentHint)
+	}
+}
+
+// A silver older than migration 0005 has no transactions.instrument_external_id:
+// its trades still load, each stating the fund it names as a hint, and the
+// load names the column.
+func TestTransactionsOnASilverWithoutTheInstrumentColumn(t *testing.T) {
+	path, seed := newFixtureSilver(t)
+	silvertest.Exec(t, seed, `
+        ALTER TABLE transactions DROP COLUMN instrument_external_id;
+        CREATE TABLE schema_meta (silver_schema_version INTEGER PRIMARY KEY, applied_at INTEGER);
+        INSERT INTO schema_meta (silver_schema_version, applied_at) VALUES (4, 0);
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 4, '/x/1');
+        INSERT INTO transactions(transaction_external_id, snapshot_at, occurred_at, account_external_id, type, kind, amount_chf, currency, payload) VALUES
+            ('tx1', 1000, 900, 'P3A1', 'TRADE_BUY', 'buy', -100.00, 'CHF', '{"description":"Example Equity Index"}');
+    `)
+	conn := openAdapter(t, path)
+	txs := silvertest.Transactions(t, conn, silvertest.WindowSince0(t, conn))
+	if len(txs) != 1 || txs[0].InstrumentExternalID != nil || txs[0].InstrumentHint != "Example Equity Index" {
+		t.Errorf("transactions = %+v, want tx1 with no instrument and the fund as its hint", txs)
+	}
+	notes := conn.(silver.SchemaAdviser).SchemaAdvice()
+	if len(notes) != 1 || notes[0].Version != 4 ||
+		len(notes[0].Missing) != 1 || notes[0].Missing[0] != "transactions.instrument_external_id" {
+		t.Errorf("advice = %+v, want one note at version 4 naming transactions.instrument_external_id", notes)
 	}
 }
 

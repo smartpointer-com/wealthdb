@@ -17,8 +17,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	}
 
 	// CAST(net_amount AS VARCHAR) preserves precision on the way
-	// out — SQLite stores it as REAL (IEEE 754 double) but we
-	// want exact decimal arithmetic in canonical types.
+	// out: SQLite stores it as REAL (IEEE 754 double), so it is read
+	// as text for exact decimal arithmetic in canonical types.
 	const q = `
 SELECT account_external_id, occurred_at, transaction_type,
        isin, symbol, currency, CAST(net_amount AS VARCHAR), payload
@@ -103,7 +103,7 @@ func narrative(txType, payload string) string {
 // extractTradeFields pulls quantity and unit_price from the
 // transaction payload if present. Returns ok=false if neither is
 // usable. unit_price may carry a "%" suffix for bond rows (price
-// as percent of face); we strip it.
+// as percent of face); the percent sign is stripped.
 func extractTradeFields(payload string) (*canonical.Decimal, *canonical.Decimal, bool) {
 	var p struct {
 		Quantity  *canonical.Decimal `json:"quantity"`

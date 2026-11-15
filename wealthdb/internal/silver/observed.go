@@ -78,23 +78,11 @@ func CoveredThrough(spans []Span, slack int64) int64 {
 
 // RunSpans reads the (since, until) rows a query yields, one per run.
 func RunSpans(ctx context.Context, db *sql.DB, kind, q string) ([]Span, error) {
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("%s Status windows: %w", kind, err)
-	}
-	defer rows.Close()
-	var spans []Span
-	for rows.Next() {
+	label := kind + " Status windows"
+	return Query(ctx, db, label, q, func(rows *sql.Rows) (Span, error) {
 		var sp Span
-		if err := rows.Scan(&sp.Since, &sp.Until); err != nil {
-			return nil, fmt.Errorf("%s Status windows: %w", kind, err)
-		}
-		spans = append(spans, sp)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s Status windows: %w", kind, err)
-	}
-	return spans, nil
+		return sp, labelled(label, rows.Scan(&sp.Since, &sp.Until))
+	})
 }
 
 // CoveredByRuns is CoveredThrough over RunSpans.

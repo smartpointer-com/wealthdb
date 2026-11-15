@@ -65,12 +65,6 @@ INSERT INTO cash_flows(cash_flow_external_id, entity_external_id, snapshot_at, k
 	}
 }
 
-func TestKindIsCarta(t *testing.T) {
-	if got := (&Adapter{}).Kind(); got != "carta" {
-		t.Errorf("Kind() = %q, want carta", got)
-	}
-}
-
 func TestStatusTransactionExtrema(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)
@@ -372,8 +366,8 @@ INSERT INTO fund_metrics(snapshot_at, entity_external_id, currency, net_asset_va
 		{"entity:100", canonical.AssetClassPrivateEquity, canonical.VehicleStock, canonical.AssetClassPrivateEquity},
 		{"entity:400", canonical.AssetClassPrivateEquity, canonical.VehicleOption, canonical.AssetClassPrivateEquity},
 		{"entity:500", canonical.AssetClassPrivateEquity, canonical.VehicleStock, canonical.AssetClassPrivateEquity},
-		{"entity:300", canonical.AssetClassPrivateDebt, canonical.VehicleConvertibleNote, canonical.AssetClassConvertibleNote},
-		{"entity:200", canonical.AssetClassPrivateEquity, canonical.VehicleFund, canonical.AssetClassPrivateFund},
+		{"entity:300", canonical.AssetClassPrivateDebt, canonical.VehicleConvertibleNote, "convertible_note"},
+		{"entity:200", canonical.AssetClassPrivateEquity, canonical.VehicleFund, "private_fund"},
 	}
 	for _, tc := range cases {
 		if !canonical.ValidTaxonomyPair(tc.exposure, tc.vehicle) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // An account's details state its current credit and debit rates as text
@@ -44,7 +45,7 @@ func detailsRateKeys(payload []byte) map[string]any {
 	}
 	var rates []canonical.StatedRate
 	for _, s := range detailsRateSides {
-		text, ok := detailsText(p.Details[s.key])
+		text, ok := silver.JSONText(p.Details[s.key])
 		if !ok || !statesRate.MatchString(text) {
 			continue
 		}
@@ -59,17 +60,4 @@ func detailsRateKeys(payload []byte) map[string]any {
 		rates = append(rates, r)
 	}
 	return canonical.StatedRateKeys(rates...)
-}
-
-// detailsText is a detail's text: a string's, or the JSON of any other
-// value. A null or absent detail has none.
-func detailsText(raw json.RawMessage) (string, bool) {
-	if raw == nil || string(raw) == "null" {
-		return "", false
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s, true
-	}
-	return string(raw), true
 }

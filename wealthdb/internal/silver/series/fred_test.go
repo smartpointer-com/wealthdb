@@ -28,16 +28,6 @@ func openFred(t *testing.T, path string) silver.Connection {
 	return silvertest.Open(t, &Adapter{kind: "fred"}, path)
 }
 
-// The kind is registered under its name, and its adapter says so.
-func TestFredKind(t *testing.T) {
-	if _, err := silver.Get("fred"); err != nil {
-		t.Fatal(err)
-	}
-	if got := (&Adapter{kind: "fred"}).Kind(); got != "fred" {
-		t.Fatalf("Kind() = %q, want fred", got)
-	}
-}
-
 // Two observation dates (2020-01-02/03) loaded by a fetch run at
 // 1_700_000_000. Mixed quote directions, like the real series.
 func seedFred(t *testing.T, db *sql.DB) {

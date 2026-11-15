@@ -23,6 +23,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -40,27 +41,29 @@ func init() {
 
 type Adapter struct{}
 
-func (*Adapter) Kind() string { return kindName }
-
 func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "refdata silver")
 	if err != nil {
 		return nil, err
 	}
-	schema, err := silver.ProbeReferenceSchema(ctx, db)
+	schema, note, err := silver.ProbeReferenceSchema(ctx, db, filepath.Base(spec.Path))
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("refdata silver: %w", err)
 	}
-	return &Connection{db: db, schema: schema}, nil
+	c := &Connection{db: db, schema: schema}
+	c.Note(note)
+	return c, nil
 }
 
-// Connection reads one refdata silver. schema says which tables of silver
-// migrations 0002 and 0003 it holds: a silver last loaded before a
-// migration lacks its tables and reads as stating none of their records.
+// Connection reads one refdata silver. schema says which parts of the
+// later silver migrations it holds (silver.ReferenceSchema): a silver last
+// loaded before a migration lacks its parts and reads as stating none of
+// their records, and the load advises its collector's load.
 type Connection struct {
 	db     *sql.DB
 	schema silver.ReferenceSchema
+	silver.Advice
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
@@ -68,7 +71,7 @@ func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
 // Snapshots emits the reference records whose as_of lies in the window,
 // each kind over its own span (ChangeWindow).
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
-	return silver.NewReferenceStream(ctx, c.db, w)
+	return c.schema.Stream(ctx, c.db, w)
 }
 
 // Transactions: refdata has no event-grain facts.

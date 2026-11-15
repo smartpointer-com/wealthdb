@@ -10,11 +10,12 @@ import (
 // file per case, over the rows of the adapter tests: open lots carried
 // across dumps, realized lots of every document kind, the portfolio and
 // pool taxonomy, and a ledger of the verbs whose kind the sign decides.
+// Each run read the positions and the whole ledger.
 func TestCanonicalGolden(t *testing.T) {
 	for _, c := range []struct{ name, seed string }{
 		{"lots", `
-        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES
-            (1000, 13, '/x/1'), (2000, 13, '/x/2'), (3000, 13, '/x/3'), (4000, 13, '/x/4');
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, positions_present, activity_present, activity_since) VALUES
+            (1000, 13, '/x/1', 1, 1, 0), (2000, 13, '/x/2', 1, 1, 0), (3000, 13, '/x/3', 1, 1, 0), (4000, 13, '/x/4', 1, 1, 0);
         INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
             (1000, 'ACC1', '{}'), (2000, 'ACC1', '{}'), (3000, 'ACC1', '{}'), (4000, 'ACC1', '{}');
         INSERT INTO positions(snapshot_at, account_external_id, instrument_key, description, asset_class, quantity, current_value, cost_basis_total, payload) VALUES
@@ -30,7 +31,7 @@ func TestCanonicalGolden(t *testing.T) {
             (4000, 'ACC1', 'QQQ', 0, 'SYNCUSIP2', 5, 400, 2000, '2023-01-10', 500, 2500, 'LONG', 'sha-b', '{}'),
             (4000, 'ACC1', 'BND1', 0, 'BND1', 5000, 99, 4950, 'Transferred', 0, 4950, NULL, 'sha-c', '{}');`},
 		{"realized", `
-        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 13, '/x/1');
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, positions_present, activity_present, activity_since) VALUES (1000, 13, '/x/1', 1, 1, 0);
         INSERT INTO positions(snapshot_at, account_external_id, instrument_key, description, quantity, payload) VALUES
             (1000, 'ACC1', 'VTI', 'Total Market ETF', 10, '{}'),
             (1000, 'ACC1', 'BND1', 'Treasury Note', 5000, '{}');
@@ -52,7 +53,7 @@ func TestCanonicalGolden(t *testing.T) {
             ('s5', 'statement', 'ACC2', NULL, NULL, 'NASDAQ ETF', 'SYNCUSIP6', NULL, 'You Sold', 1, NULL, NULL, '2024-09-12', 400, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'sha-stmt'),
             ('s6', 'statement', 'ACC2', NULL, NULL, 'TREASURY NOTE', 'BND1', NULL, 'You Sold', 1000, NULL, NULL, '2024-10-01', 990, 1000, NULL, -10, NULL, NULL, NULL, NULL, NULL, NULL, 'sha-stmt');`},
 		{"daf", `
-        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 7, '/x/1');
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, positions_present, activity_present, activity_since) VALUES (1000, 7, '/x/1', 1, 1, 0);
         INSERT INTO portfolios(snapshot_at, portfolio_external_id, kind, payload) VALUES
             (1000, 'PORT1', '529', '{}'),
             (1000, 'Fidelity Charitable Giving', 'daf', '{}');
@@ -63,7 +64,7 @@ func TestCanonicalGolden(t *testing.T) {
             (1000, 'ACC1', 'VTI', 'Vanguard Total Market', 'etf', 'USD', 0, 10, 2500.00, '{}'),
             (1000, '9990001', 'POOLX1', 'Example Growth Pool', 'daf_pool', 'USD', 0, 1000, 100000.00, '{}');`},
 		{"ledger", `
-        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 4, '/x/1');
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, positions_present, activity_present, activity_since) VALUES (1000, 4, '/x/1', 1, 1, 0);
         INSERT INTO accounts(snapshot_at, account_external_id, portfolio_external_id, nickname, management_style, payload) VALUES
             (1000, '000000001', 'PORT1', NULL, NULL, '{}');
         INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, currency, quantity, price, amount, payload) VALUES

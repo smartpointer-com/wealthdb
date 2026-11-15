@@ -374,10 +374,13 @@ func TestHistoricalRangeSpansEveryTable(t *testing.T) {
 	if lo, hi, err := r.historicalRange(ctx); err != nil || lo != 100 || hi != 400 {
 		t.Errorf("span = (%d, %d, %v), want (100, 400, nil)", lo, hi, err)
 	}
-	if _, err := r.db.Exec(`DROP TABLE historical_cash_balances`); err != nil {
+	// The schema is probed once per reader, so the older silver is a
+	// fresh one.
+	old := newWebFixture(t)
+	if _, err := old.db.Exec(`DROP TABLE historical_cash_balances`); err != nil {
 		t.Fatal(err)
 	}
-	if lo, hi, err := r.historicalRange(ctx); err != nil || lo != -1 || hi != -1 {
+	if lo, hi, err := old.historicalRange(ctx); err != nil || lo != -1 || hi != -1 {
 		t.Errorf("pre-migration silver: (%d, %d, %v), want (-1, -1, nil)", lo, hi, err)
 	}
 }
