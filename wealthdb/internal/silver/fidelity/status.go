@@ -4,51 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
-
-// Status reports the observable snapshot/transaction range and
-// the latest change number. Snapshot extrema span both dump_runs
-// and the content tables (positions); LatestChangeNumber stays
-// pinned to MAX(dump_runs.snapshot_at) so an idle reload is a
-// no-op even when historical content is present. The observed
-// watermarks are observed().
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	hasHist, err := c.hasHistoricalTable(ctx)
-	if err != nil {
-		return canonical.UnknownStatus(), err
-	}
-	histClause := "SELECT NULL AS t WHERE 0"
-	if hasHist {
-		histClause = "SELECT as_of_date AS t FROM historical_position_snapshots"
-	}
-	q := fmt.Sprintf(`
-SELECT
-    COALESCE((SELECT MIN(t) FROM (
-        SELECT MIN(snapshot_at) AS t FROM dump_runs
-        UNION ALL SELECT MIN(snapshot_at) FROM positions
-        UNION ALL %s
-    )), -1),
-    COALESCE((SELECT MAX(t) FROM (
-        SELECT MAX(snapshot_at) AS t FROM dump_runs
-        UNION ALL SELECT MAX(snapshot_at) FROM positions
-        UNION ALL %s
-    )), -1),
-    COALESCE((SELECT MIN(timestamp) FROM transactions), -1),
-    COALESCE((SELECT MAX(timestamp) FROM transactions), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs),  -1)
-`, histClause, histClause)
-	s, err := silver.ContentStatus(ctx, c.db, "fidelity", q)
-	if err != nil {
-		return s, err
-	}
-	if err := c.observed(ctx, hasHist, &s); err != nil {
-		return s, err
-	}
-	return s, nil
-}
 
 // observed sets the watermarks from the runs and the statements. A run
 // observes the holdings when it read the positions page, and the ledger
@@ -100,78 +60,76 @@ SELECT activity_since, COALESCE(activity_until, snapshot_at) FROM dump_runs
 	return nil
 }
 
-// ChangeWindow returns a window that brackets every silver row
-// the next snapshot pass needs to see. Trigger is "is there
-// anything new in dump_runs or transactions past since" (so an
-// idle reload remains a no-op); bounds widen to cover any
-// position snapshot whose snapshot_at — or any historical
-// position snapshot whose as_of_date — or any stated period's last
-// day — falls outside the trigger range so the snapshot pass doesn't
-// drop rows.
+// clock: a dump or a transaction past the watermark opens a window over
+// the new rows, widened to every position snapshot, every statement
+// (historicalRange) and every stated period's last day, so the snapshot
+// pass drops no row. The snapshot range spans the dumps, the positions
+// and the statements; the change number is the latest dump, so an idle
+// reload is a no-op even with historical content. The watermarks are
+// observed().
+func (c *Connection) clock() silver.Clock {
+	return silver.Clock{
+		Kind: "fidelity",
+		Runs: silver.LatestDump,
+		Snapshot: []string{
+			silver.Range("dump_runs", "snapshot_at"),
+			silver.Range("positions", "snapshot_at"),
+		},
+		Extra:  c.historicalRange,
+		Ledger: []string{silver.Range("transactions", "timestamp")},
+		Observed: silver.Observed{Set: func(ctx context.Context, s *canonical.Status) error {
+			hasHist, err := c.hasHistoricalTable(ctx)
+			if err != nil {
+				return err
+			}
+			return c.observed(ctx, hasHist, s)
+		}},
+		Pin: true,
+		Mode: silver.Incremental{
+			New: []string{
+				silver.RangePast("dump_runs", "snapshot_at"),
+				silver.RangePast("transactions", "timestamp"),
+			},
+			Widen: []string{silver.Range("positions", "snapshot_at")},
+			Extra: c.windowDates,
+		},
+	}
+}
+
+// historicalRange is the span of the statements' as-of dates, -1 each
+// where the silver holds none.
+func (c *Connection) historicalRange(ctx context.Context) (lo, hi int64, err error) {
+	if ok, err := c.hasHistoricalTable(ctx); err != nil || !ok {
+		return -1, -1, err
+	}
+	return silver.Extrema(ctx, c.db, "fidelity historical",
+		[]string{`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`})
+}
+
+// windowDates are the dates a window with changes widens to past the
+// positions: the statements' and every stated period's last day.
+func (c *Connection) windowDates(ctx context.Context) (lo, hi int64, err error) {
+	if lo, hi, err = c.historicalRange(ctx); err != nil {
+		return -1, -1, err
+	}
+	w := canonical.Window{Start: math.MaxInt64, End: hi}
+	if lo >= 0 {
+		w.Start = lo
+	}
+	if err := c.widenToStatedPeriods(ctx, &w); err != nil {
+		return -1, -1, err
+	}
+	if w.Start == math.MaxInt64 {
+		w.Start = -1
+	}
+	return w.Start, w.End, nil
+}
+
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+	return c.clock().Status(ctx, c.db)
+}
+
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
-	hasHist, err := c.hasHistoricalTable(ctx)
-	if err != nil {
-		return w, err
-	}
-	const q = `
-SELECT
-    COALESCE(
-        (SELECT MIN(t) FROM (
-            SELECT MIN(snapshot_at) AS t FROM dump_runs    WHERE snapshot_at > ?
-            UNION ALL SELECT MIN(timestamp) AS t FROM transactions WHERE timestamp > ?
-        )),
-        -1
-    ),
-    COALESCE(
-        (SELECT MAX(t) FROM (
-            SELECT MAX(snapshot_at) AS t FROM dump_runs    WHERE snapshot_at > ?
-            UNION ALL SELECT MAX(timestamp) AS t FROM transactions WHERE timestamp > ?
-        )),
-        -1
-    ),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), ?),
-    COALESCE((SELECT MIN(snapshot_at) FROM positions), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM positions), -1)
-`
-	var start, end, newCN sql.NullInt64
-	var posLo, posHi sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q, since, since, since, since, since).
-		Scan(&start, &end, &newCN, &posLo, &posHi); err != nil {
-		return w, fmt.Errorf("fidelity ChangeWindow: %w", err)
-	}
-	if start.Valid && start.Int64 >= 0 && end.Valid && end.Int64 >= 0 {
-		w.Start = start.Int64
-		w.End = end.Int64
-		w.HasChanges = true
-	}
-	if w.HasChanges {
-		if posLo.Valid && posLo.Int64 >= 0 && posLo.Int64 < w.Start {
-			w.Start = posLo.Int64
-		}
-		if posHi.Valid && posHi.Int64 > w.End {
-			w.End = posHi.Int64
-		}
-		if hasHist {
-			var histLo, histHi sql.NullInt64
-			if err := c.db.QueryRowContext(ctx, `
-SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`).
-				Scan(&histLo, &histHi); err != nil {
-				return w, fmt.Errorf("fidelity ChangeWindow historical: %w", err)
-			}
-			if histLo.Valid && histLo.Int64 >= 0 && histLo.Int64 < w.Start {
-				w.Start = histLo.Int64
-			}
-			if histHi.Valid && histHi.Int64 > w.End {
-				w.End = histHi.Int64
-			}
-		}
-		if err := c.widenToStatedPeriods(ctx, &w); err != nil {
-			return w, err
-		}
-	}
-	if newCN.Valid {
-		w.NewChangeNumber = newCN.Int64
-	}
-	return w, nil
+	return c.clock().ChangeWindow(ctx, c.db, since)
 }

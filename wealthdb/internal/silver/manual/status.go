@@ -2,8 +2,6 @@ package manual
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -20,77 +18,31 @@ func (c *Connection) snapshotExtrema() string {
 	return `SELECT MIN(t), MAX(t) FROM (` + c.eventDates() + `)`
 }
 
-// Status reports the content snapshot range, the exits' date range, and
-// pins LatestChangeNumber to MAX(load_runs.load_at). The manual collector
-// rebuilds silver from the CSVs on every load, so each load bumps load_at
-// and a subsequent `wealthdb load` re-emits; an idle reload (no new load)
-// is a no-op.
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
-	var oldS, newS sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, c.snapshotExtrema()).Scan(&oldS, &newS); err != nil {
-		return s, fmt.Errorf("manual Status snapshot: %w", err)
-	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
+// clock: the manual collector rebuilds silver from the CSVs on every
+// load, so each load bumps load_at, and a load past the watermark
+// re-emits the full history: the window spans the snapshot stream, so
+// the per-event forward-filled snapshots all reach gold. The
+// transaction range is the exits'.
+func (c *Connection) clock() silver.Clock {
+	k := silver.Clock{
+		Kind:     "manual",
+		Runs:     `SELECT MAX(load_at) FROM load_runs`,
+		Snapshot: []string{c.snapshotExtrema()},
+		Observed: silver.Observed{Runs: `SELECT MAX(CAST(load_at AS INTEGER)) FROM load_runs`},
+		Mode:     silver.FullSpan{Span: []string{c.snapshotExtrema()}},
 	}
 	if c.exits {
-		var oldT, newT sql.NullInt64
-		if err := c.db.QueryRowContext(ctx, `
-SELECT MIN(CAST(strftime('%s', exit_date) AS INTEGER)), MAX(CAST(strftime('%s', exit_date) AS INTEGER)) FROM exits`).Scan(&oldT, &newT); err != nil {
-			return s, fmt.Errorf("manual Status exits: %w", err)
-		}
-		if oldT.Valid {
-			s.OldestTransactionAt = oldT.Int64
-		}
-		if newT.Valid {
-			s.LatestTransactionAt = newT.Int64
-		}
+		k.Ledger = []string{`
+SELECT MIN(CAST(strftime('%s', exit_date) AS INTEGER)), MAX(CAST(strftime('%s', exit_date) AS INTEGER)) FROM exits`}
 	}
-
-	var latestLoad sql.NullInt64
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT MAX(load_at) FROM load_runs`).Scan(&latestLoad); err != nil {
-		return s, fmt.Errorf("manual Status load: %w", err)
-	}
-	if latestLoad.Valid {
-		s.LatestChangeNumber = latestLoad.Int64
-	}
-	if err := silver.ObserveByRuns(ctx, c.db, "manual", `SELECT MAX(CAST(load_at AS INTEGER)) FROM load_runs`, &s); err != nil {
-		return s, err
-	}
-	return s, nil
+	return k
 }
 
-// ChangeWindow triggers on a new load — any load_run past `since`. When
-// triggered it re-emits the FULL history: Start/End span the snapshot stream,
-// so the per-event forward-filled snapshots all reach gold (gold's
-// deleteWindow over [Start,End] makes the re-emit idempotent). NewChangeNumber
-// advances to the latest load so an idle reload doesn't re-trigger.
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+	return c.clock().Status(ctx, c.db)
+}
+
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
-
-	var latestLoad sql.NullInt64
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT MAX(load_at) FROM load_runs`).Scan(&latestLoad); err != nil {
-		return w, fmt.Errorf("manual ChangeWindow load: %w", err)
-	}
-	if !latestLoad.Valid || latestLoad.Int64 <= since {
-		return w, nil // no new load since the watermark
-	}
-
-	var start, end sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, c.snapshotExtrema()).Scan(&start, &end); err != nil {
-		return w, fmt.Errorf("manual ChangeWindow span: %w", err)
-	}
-	w.NewChangeNumber = latestLoad.Int64
-	if start.Valid && end.Valid {
-		w.Start = start.Int64
-		w.End = end.Int64
-		w.HasChanges = true
-	}
-	return w, nil
+	return c.clock().ChangeWindow(ctx, c.db, since)
 }

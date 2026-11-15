@@ -1318,6 +1318,18 @@ type TransactionStream interface {
   record on a span of its own (`Window.Spans`). The stream and the
   load's windowed delete then read each kind over its span, and leave a
   kind without changes alone.
+- **The clock.** An adapter declares its `Status` and `ChangeWindow`
+  as a `silver.Clock`. It names the run that is the change number, the
+  range queries of the snapshots and the ledger, the observed
+  watermarks, and a mode:
+  - `FullSpan`: a run past the watermark re-emits the whole history;
+  - `Incremental`: the window spans the rows past the watermark,
+    widened to the rows a re-emit must cover;
+  - `PerKind`: a run past the watermark bounds each kind of reference
+    record on a span of its own.
+
+  The schwab and ubs web feeds keep clocks of their own. Their change
+  number is their latest row, not a run.
 - **`Snapshots`.** The dimension upserts and snapshot-grain facts whose
   `snapshot_at` falls inside the window. A `SnapshotBatch` multiplexes
   the dimensions (portfolios, accounts, instruments), the facts
@@ -1411,7 +1423,7 @@ its carried values look.
   Windows that meet within a day join (`silver.CoveredThrough`).
 - A silver that records no fetch windows counts each run as reading
   the ledger from the previous run or from the start of the history,
-  so both watermarks are its latest run (`silver.ObserveByRuns`).
+  so both watermarks are its latest run (`silver.Observed`).
   That is every kind but these:
 
 | kind | holdings | ledger |

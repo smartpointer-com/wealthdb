@@ -2,106 +2,55 @@ package synthetic
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// snapshotExtrema is the MIN/MAX snapshot_at over the three snapshot-grain
-// tables.
-const snapshotExtrema = `
-SELECT MIN(t), MAX(t) FROM (
-    SELECT snapshot_at AS t FROM positions
-    UNION ALL SELECT snapshot_at FROM cash_balances
-    UNION ALL SELECT snapshot_at FROM fx_rates)`
-
-// Status reports the snapshot and transaction ranges and pins
-// LatestChangeNumber to MAX(dump_runs.change_number). Every field is the
-// "no observable state" sentinel until something is there to observe.
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
-
-	var oldS, newS sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, snapshotExtrema).Scan(&oldS, &newS); err != nil {
-		return s, fmt.Errorf("synthetic Status snapshot: %w", err)
-	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-
-	var oldT, newT sql.NullInt64
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT MIN(occurred_at), MAX(occurred_at) FROM transactions`).Scan(&oldT, &newT); err != nil {
-		return s, fmt.Errorf("synthetic Status transactions: %w", err)
-	}
-	if oldT.Valid {
-		s.OldestTransactionAt = oldT.Int64
-	}
-	if newT.Valid {
-		s.LatestTransactionAt = newT.Int64
-	}
-
-	var latest sql.NullInt64
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT MAX(change_number) FROM dump_runs`).Scan(&latest); err != nil {
-		return s, fmt.Errorf("synthetic Status change number: %w", err)
-	}
-	if latest.Valid {
-		s.LatestChangeNumber = latest.Int64
-	}
-	// A run writes its window whole: the holdings through its end, and
-	// the ledger over [window_start, window_end].
-	snap, err := silver.LatestRun(ctx, c.db, "synthetic", `SELECT MAX(window_end) FROM dump_runs`)
-	if err != nil {
-		return s, err
-	}
-	s.ObservedSnapshotsThrough = snap
-	if s.ObservedTransactionsThrough, err = silver.CoveredByRuns(ctx, c.db, "synthetic",
-		`SELECT window_start, window_end FROM dump_runs`); err != nil {
-		return s, err
-	}
-	return s, nil
+// clock: the silver is append-only. A run adds the days after the
+// previous run's as-of, and each company figure filed since then, whose
+// as_of (its period's last day) can lie before that as-of. It records
+// itself in dump_runs, numbered by change_number, and changes nothing
+// already written. Its [window_start, window_end] bounds every
+// snapshot_at, occurred_at and as_of it added, so its window reaches back
+// to such a figure's day.
+//
+// The window spans the runs appended past the watermark, and only those:
+// the union of their own windows, its change number the newest of them. A
+// fresh gold (watermark -1) takes every run at once; a later load takes
+// only what was appended since, and gold's windowed delete touches only
+// those windows. An append run therefore leaves everything outside its
+// window exactly as the previous load wrote it. Snapshots and
+// Transactions read by time, not by run, so the window stays correct
+// even where two runs' windows overlap: every row inside [Start, End] is
+// re-emitted, whichever run added it.
+//
+// A run writes its window whole: the holdings through its end, and the
+// ledger over [window_start, window_end]. Every range is the "no
+// observable state" sentinel until something is there to observe.
+var clock = silver.Clock{
+	Kind: "synthetic",
+	Runs: `SELECT MAX(change_number) FROM dump_runs`,
+	Snapshot: []string{
+		silver.Range("positions", "snapshot_at"),
+		silver.Range("cash_balances", "snapshot_at"),
+		silver.Range("fx_rates", "snapshot_at"),
+	},
+	Ledger: []string{silver.Range("transactions", "occurred_at")},
+	Observed: silver.Observed{
+		Runs:    `SELECT MAX(window_end) FROM dump_runs`,
+		Windows: `SELECT window_start, window_end FROM dump_runs`,
+	},
+	Mode: silver.Incremental{New: []string{
+		`SELECT MIN(window_start), MAX(window_end) FROM dump_runs WHERE change_number > ?`,
+	}},
 }
 
-// ChangeWindow spans the runs appended since `since`, and only those.
-//
-// The silver is append-only: a run adds the days after the previous run's
-// as-of, and each company figure filed since then, whose as_of (its
-// period's last day) can lie before that as-of. It records itself in
-// dump_runs and changes nothing already written. Its [window_start,
-// window_end] bounds every snapshot_at, occurred_at and as_of it added,
-// so its window reaches back to such a figure's day. The window is the
-// union of the new runs' own windows, and NewChangeNumber is the newest of
-// them. A fresh gold (watermark -1) takes every run at once; a later load
-// takes only what was appended since, and gold's windowed delete touches
-// only those windows. An append run therefore leaves everything outside
-// its window exactly as the previous load wrote it.
-//
-// Snapshots and Transactions read by time, not by run, so the window stays
-// correct even where two runs' windows overlap: every row inside
-// [Start, End] is re-emitted, whichever run added it. With no run past the
-// watermark there is nothing to apply.
-func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+	return clock.Status(ctx, c.db)
+}
 
-	var start, end, latest sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, `
-SELECT MIN(window_start), MAX(window_end), MAX(change_number)
-  FROM dump_runs
- WHERE change_number > ?`, since).Scan(&start, &end, &latest); err != nil {
-		return w, fmt.Errorf("synthetic ChangeWindow: %w", err)
-	}
-	if !latest.Valid {
-		return w, nil // no run appended since the watermark
-	}
-	w.Start = start.Int64
-	w.End = end.Int64
-	w.NewChangeNumber = latest.Int64
-	w.HasChanges = true
-	return w, nil
+func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+	return clock.ChangeWindow(ctx, c.db, since)
 }

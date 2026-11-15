@@ -2,115 +2,50 @@ package relevate
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// Status reports the observable snapshot range. Relevate silver
-// has no transactions surfaced yet (silver.transactions is
-// schema-ready; the deposits_endpoint source yields rows only if
-// Relevate exposes a transaction-history endpoint). The
-// transaction-extrema fields stay at the -1 sentinel until then.
-//
-// OldestSnapshotAt / LatestSnapshotAt span both live (dump_runs)
-// and historical (Quartalsbericht-derived) tables — that's the
-// user-facing question "what dates does relevate cover in gold?".
-// LatestChangeNumber stays bound to MAX(dump_runs.snapshot_at) —
-// it's the "what new bronze has gold not seen yet" watermark, and
-// historical rows are deterministic outputs of the loader's PDF
-// parse step, not a separate change source.
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	const q = `
-SELECT
-    COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1),
-    COALESCE((SELECT MIN(occurred_at) FROM transactions), -1),
-    COALESCE((SELECT MAX(occurred_at) FROM transactions), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs),  -1)
-`
-	s, err := silver.ContentStatus(ctx, c.db, "relevate", q)
-	if err != nil {
-		return s, err
+// clock: the snapshot range spans the dumps and the historical tables
+// (silver migration 0002, from the Quartalsbericht PDFs). A dump or a
+// transaction past the watermark opens a window over the new rows, its
+// start reaching back to the earliest historical snapshot. The change
+// number is the latest dump: the historical rows are outputs of the
+// loader's PDF parse, not a change source of their own. The transaction
+// range stays the -1 sentinel while the silver holds no transactions.
+func (c *Connection) clock() silver.Clock {
+	return silver.Clock{
+		Kind:     "relevate",
+		Runs:     silver.LatestDump,
+		Snapshot: []string{silver.Range("dump_runs", "snapshot_at")},
+		Extra:    c.historicalRange,
+		Ledger:   []string{silver.Range("transactions", "occurred_at")},
+		Pin:      true,
+		Mode: silver.Incremental{
+			New: []string{
+				silver.RangePast("dump_runs", "snapshot_at"),
+				silver.RangePast("transactions", "occurred_at"),
+			},
+			Extra: c.historicalStart,
+		},
 	}
-
-	// Fold the historical tables into the snapshot range.
-	histMin, histMax, err := c.historicalRange(ctx)
-	if err != nil {
-		return s, err
-	}
-	if histMin >= 0 {
-		if s.OldestSnapshotAt == -1 || histMin < s.OldestSnapshotAt {
-			s.OldestSnapshotAt = histMin
-		}
-	}
-	if histMax >= 0 {
-		if s.LatestSnapshotAt == -1 || histMax > s.LatestSnapshotAt {
-			s.LatestSnapshotAt = histMax
-		}
-	}
-	if err := silver.ObserveByRuns(ctx, c.db, "relevate", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
-		return s, err
-	}
-	return s, nil
 }
 
-// ChangeWindow shape mirrors the swissquote / fidelity
-// adapters: trigger is any new dump_run or transaction past
-// `since`, NewChangeNumber is MAX(dump_runs.snapshot_at) so
-// an idle reload is a no-op.
-//
-// When historical-PDF tables exist (silver migration 0002), the
-// Start of any new window is extended backwards to MIN(historical
-// snapshot_at). This ensures the loader's window-DELETE step
-// covers the historical rows before the re-INSERT, so freshly-
-// re-parsed historical content lands in gold idempotently.
-func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
-	const q = `
-SELECT
-    COALESCE(
-        (SELECT MIN(t) FROM (
-            SELECT MIN(snapshot_at) AS t FROM dump_runs    WHERE snapshot_at > ?
-            UNION ALL SELECT MIN(occurred_at) AS t FROM transactions WHERE occurred_at > ?
-        )),
-        -1
-    ),
-    COALESCE(
-        (SELECT MAX(t) FROM (
-            SELECT MAX(snapshot_at) AS t FROM dump_runs    WHERE snapshot_at > ?
-            UNION ALL SELECT MAX(occurred_at) AS t FROM transactions WHERE occurred_at > ?
-        )),
-        -1
-    ),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), ?)
-`
-	var start, end, newCN sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q, since, since, since, since, since).
-		Scan(&start, &end, &newCN); err != nil {
-		return w, fmt.Errorf("relevate ChangeWindow: %w", err)
-	}
-	if start.Valid && start.Int64 >= 0 && end.Valid && end.Int64 >= 0 {
-		w.Start = start.Int64
-		w.End = end.Int64
-		w.HasChanges = true
+// historicalStart is the earliest historical snapshot, the start a
+// window reaches back to: a rebuild from the same Quartalsbericht PDFs
+// then replaces their rows in place rather than appending beside stale
+// rows of the prior gold load.
+func (c *Connection) historicalStart(ctx context.Context) (lo, hi int64, err error) {
+	lo, _, err = c.historicalRange(ctx)
+	return lo, -1, err
+}
 
-		// Extend Start back to cover historical rows so a
-		// rebuild from the same set of Quartalsbericht PDFs
-		// replaces them in place rather than appending alongside
-		// stale rows from the prior gold load.
-		histMin, _, err := c.historicalRange(ctx)
-		if err != nil {
-			return w, err
-		}
-		if histMin >= 0 && histMin < w.Start {
-			w.Start = histMin
-		}
-	}
-	if newCN.Valid {
-		w.NewChangeNumber = newCN.Int64
-	}
-	return w, nil
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+	return c.clock().Status(ctx, c.db)
+}
+
+func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+	return c.clock().ChangeWindow(ctx, c.db, since)
 }

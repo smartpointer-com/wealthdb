@@ -2,8 +2,6 @@ package equityzen
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -11,15 +9,6 @@ import (
 
 // Silver dates are source ISO TEXT (calendar dates); strftime('%s', …)
 // converts them to the canonical unix seconds the gold contract uses.
-
-// snapshotExtrema yields the MIN/MAX position event date (positions.as_of_date)
-// plus MAX(dump_runs). The positions timeline runs from each deal's original
-// investment (well before the first download) to the latest event date.
-const snapshotExtrema = `
-SELECT
-    (SELECT MIN(CAST(strftime('%s', as_of_date) AS INTEGER)) FROM positions WHERE as_of_date IS NOT NULL),
-    (SELECT MAX(CAST(strftime('%s', as_of_date) AS INTEGER)) FROM positions WHERE as_of_date IS NOT NULL),
-    (SELECT MAX(snapshot_at) FROM dump_runs)`
 
 // txExtrema yields the MIN/MAX cash-flow date — the buyer's purchases and
 // distributions (see transactions.go).
@@ -38,84 +27,42 @@ SELECT MIN(t), MAX(t) FROM (
     UNION ALL
     SELECT CAST(strftime('%s', flow_date) AS INTEGER) FROM cash_flows WHERE flow_date IS NOT NULL)`
 
-// Status reports the content snapshot + transaction ranges and pins
-// LatestChangeNumber to MAX(dump_runs.snapshot_at) — a new download is the
-// only thing that advances the watermark, so idle reloads stay no-ops.
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
-	var oldest, latest, latestRun sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, snapshotExtrema).
-		Scan(&oldest, &latest, &latestRun); err != nil {
-		return s, fmt.Errorf("equityzen Status: %w", err)
-	}
-	if oldest.Valid {
-		s.OldestSnapshotAt = oldest.Int64
-	}
-	if latest.Valid {
-		s.LatestSnapshotAt = latest.Int64
-	}
-	// A dump that stopped listing a deal is a snapshot at the dump time
-	// (snapshots.go), which can lie after every mark.
-	removals, err := c.removals(ctx)
-	if err != nil {
-		return s, err
-	}
-	s.LatestSnapshotAt = removals.Reach(s.LatestSnapshotAt)
-	if latestRun.Valid {
-		s.LatestChangeNumber = latestRun.Int64
-	}
+// positionRange is the MIN/MAX position event date. The positions timeline
+// runs from each deal's original investment (well before the first
+// download) to the latest event date.
+const positionRange = `
+SELECT (SELECT MIN(CAST(strftime('%s', as_of_date) AS INTEGER)) FROM positions WHERE as_of_date IS NOT NULL),
+       (SELECT MAX(CAST(strftime('%s', as_of_date) AS INTEGER)) FROM positions WHERE as_of_date IS NOT NULL)`
 
-	var oldestTx, latestTx sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, txExtrema).Scan(&oldestTx, &latestTx); err != nil {
-		return s, fmt.Errorf("equityzen Status (tx): %w", err)
+// clock: a new download, any dump past the watermark, re-emits the full
+// event history. A download can revise any deal's marks at any past event
+// date (a tender records, a statement NAV finalises), and the adapter
+// forward-fills complete per-event portfolios, so re-emit-all is the
+// natural unit. A dump that stopped listing a deal is a snapshot at the
+// dump time (snapshots.go), which can lie after every mark: the snapshot
+// range and the window reach it.
+func (c *Connection) clock() silver.Clock {
+	return silver.Clock{
+		Kind:     "equityzen",
+		Runs:     silver.LatestDump,
+		Snapshot: []string{positionRange},
+		Extra:    c.removalDates,
+		Ledger:   []string{txExtrema},
+		Mode:     silver.FullSpan{Span: []string{windowExtrema}, Extra: c.removalDates},
 	}
-	if oldestTx.Valid {
-		s.OldestTransactionAt = oldestTx.Int64
-	}
-	if latestTx.Valid {
-		s.LatestTransactionAt = latestTx.Int64
-	}
-	if err := silver.ObserveByRuns(ctx, c.db, "equityzen", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
-		return s, err
-	}
-	return s, nil
 }
 
-// ChangeWindow triggers on a new download — any dump_run past `since`. When
-// triggered it re-emits the FULL event history: Start/End span both fact
-// streams and the latest dump that stopped listing a deal. Re-emit-all is
-// the natural unit because a new download can revise
-// any deal's marks at any past event date (a tender records, a statement NAV
-// finalises), and the adapter forward-fills complete per-event portfolios;
-// gold's deleteWindow over [Start,End] makes the re-emit idempotent.
-// NewChangeNumber advances to the latest dump_run so an idle reload doesn't
-// re-trigger.
+// removalDates reach the latest dump that stopped listing a deal.
+func (c *Connection) removalDates(ctx context.Context) (lo, hi int64, err error) {
+	removals, err := c.removals(ctx)
+	return -1, removals.Reach(-1), err
+}
+
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+	return c.clock().Status(ctx, c.db)
+}
+
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
-
-	var latestRun sql.NullInt64
-	if err := c.db.QueryRowContext(ctx,
-		`SELECT MAX(snapshot_at) FROM dump_runs`).Scan(&latestRun); err != nil {
-		return w, fmt.Errorf("equityzen ChangeWindow dump: %w", err)
-	}
-	if !latestRun.Valid || latestRun.Int64 <= since {
-		return w, nil // no new download since the watermark
-	}
-
-	var start, end sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, windowExtrema).Scan(&start, &end); err != nil {
-		return w, fmt.Errorf("equityzen ChangeWindow span: %w", err)
-	}
-	w.NewChangeNumber = latestRun.Int64
-	if start.Valid && end.Valid {
-		w.Start = start.Int64
-		w.End = end.Int64
-		w.HasChanges = true
-		removals, err := c.removals(ctx)
-		if err != nil {
-			return w, err
-		}
-		w.End = removals.Reach(w.End)
-	}
-	return w, nil
+	return c.clock().ChangeWindow(ctx, c.db, since)
 }

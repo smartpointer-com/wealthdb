@@ -105,7 +105,7 @@ Any other value lands as `other`, with the raw type in the payload
 - Historical dates never move the change number, so an idle reload is a
   no-op. They do widen `Status`'s snapshot range.
 - Each run reads the holdings and the ledger, so both observed
-  watermarks are the latest run (`silver.ObserveByRuns`).
+  watermarks are the latest run (`silver.Observed`).
 
 ## 8. Instrument identity: name, ISIN and historical positions
 

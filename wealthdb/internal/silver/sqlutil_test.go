@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -181,94 +180,6 @@ func TestWithAccrued(t *testing.T) {
 	}
 	if WithAccrued(nil, &accrued) != nil {
 		t.Error("a nil value gained one")
-	}
-}
-
-// loadClockSchema is the least a load-clock silver holds: its dump runs, a
-// dated content table and a ledger.
-const loadClockSchema = `CREATE TABLE dump_runs (snapshot_at INTEGER);
-CREATE TABLE accounts (snapshot_at INTEGER);
-CREATE TABLE transactions (posted_at INTEGER);`
-
-const loadClockSpan = `
-SELECT MIN(t), MAX(t) FROM (
-    SELECT snapshot_at AS t FROM accounts
-    UNION ALL SELECT posted_at FROM transactions)`
-
-// TestLoadClock pins the shared load clock: the status reads the span, the
-// ledger and the newest dump; a dump past the watermark re-emits the whole
-// span up to that dump; an idle reload and an empty silver change nothing.
-func TestLoadClock(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("empty silver", func(t *testing.T) {
-		db := openScratch(t, loadClockSchema)
-		s, err := LoadClockStatus(ctx, db, "test", loadClockSpan)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if s != canonical.UnknownStatus() {
-			t.Errorf("Status = %+v, want the unknown status", s)
-		}
-		w, err := LoadClockChangeWindow(ctx, db, "test", loadClockSpan, -1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(w, canonical.Window{NewChangeNumber: -1}) {
-			t.Errorf("ChangeWindow(-1) = %+v, want no changes", w)
-		}
-	})
-
-	db := openScratch(t, loadClockSchema+`
-INSERT INTO dump_runs VALUES (500), (900);
-INSERT INTO accounts VALUES (500), (900);
-INSERT INTO transactions VALUES (100), (300);`)
-
-	s, err := LoadClockStatus(ctx, db, "test", loadClockSpan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := canonical.Status{
-		OldestSnapshotAt: 100, LatestSnapshotAt: 900,
-		OldestTransactionAt: 100, LatestTransactionAt: 300,
-		LatestChangeNumber:       900,
-		ObservedSnapshotsThrough: 900, ObservedTransactionsThrough: 900,
-	}
-	if s != want {
-		t.Errorf("Status = %+v, want %+v", s, want)
-	}
-	s, err = LoadClockStatusOver(ctx, db, "test", loadClockSpan,
-		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM accounts`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.OldestTransactionAt != 500 || s.LatestTransactionAt != 900 {
-		t.Errorf("StatusOver ledger = [%d,%d], want the query's [500,900]",
-			s.OldestTransactionAt, s.LatestTransactionAt)
-	}
-
-	for _, c := range []struct {
-		since int64
-		want  canonical.Window
-	}{
-		{0, canonical.Window{HasChanges: true, Start: 100, End: 900, NewChangeNumber: 900}},
-		// A dump past the watermark still re-emits the full span.
-		{500, canonical.Window{HasChanges: true, Start: 100, End: 900, NewChangeNumber: 900}},
-		// The watermark at the newest dump is an idle reload.
-		{900, canonical.Window{NewChangeNumber: 900}},
-	} {
-		w, err := LoadClockChangeWindow(ctx, db, "test", loadClockSpan, c.since)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(w, c.want) {
-			t.Errorf("ChangeWindow(%d) = %+v, want %+v", c.since, w, c.want)
-		}
-	}
-
-	if _, err := LoadClockStatus(ctx, db, "test", `SELECT nope FROM accounts`); err == nil ||
-		!strings.Contains(err.Error(), "test Status snapshot") {
-		t.Errorf("a failing span query = %v, want it named", err)
 	}
 }
 

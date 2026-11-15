@@ -30,20 +30,23 @@ SELECT MIN(t), MAX(t) FROM (
     UNION ALL SELECT window_start FROM run_products
     UNION ALL SELECT last_statement_issue_date FROM liabilities)`
 
-// ledgerExtrema spans both ledgers. LoadClockStatus reads only the bank and
-// card ledger, and an Item linked for investments alone has none.
+// ledgerExtrema is the transaction range over both ledgers: an Item linked
+// for investments alone has no bank or card ledger.
 const ledgerExtrema = `
 SELECT MIN(t), MAX(t) FROM (
     SELECT posted_at AS t FROM transactions
     UNION ALL SELECT ` + investmentDate + ` FROM investment_transactions)`
 
-// Status and ChangeWindow are the shared load clock: this source has no
-// change feed of its own, so a loaded run is the trigger and a full re-emit
-// is the response. See silver.LoadClockStatus.
+// clock is the shared load clock (silver.LoadClock): this source has no
+// change feed of its own, so a loaded run is the trigger and a full
+// re-emit is the response.
+var clock = silver.LoadClock(kindName, spanExtrema, ledgerExtrema)
+
+// Status and ChangeWindow are the clock's (silver.Clock).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	return silver.LoadClockStatusOver(ctx, c.db, kindName, spanExtrema, ledgerExtrema)
+	return clock.Status(ctx, c.db)
 }
 
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	return silver.LoadClockChangeWindow(ctx, c.db, kindName, spanExtrema, since)
+	return clock.ChangeWindow(ctx, c.db, since)
 }

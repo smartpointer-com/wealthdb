@@ -2,94 +2,45 @@ package cointracking
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// Status reports the observable snapshot + transaction extrema
-// and pins LatestChangeNumber to MAX(dump_runs.snapshot_at) so
-// idle reloads remain no-ops. Same shape as VIAC's status; the
-// silver's `transactions.occurred_at` is a TIMESTAMP column, so
-// EXTRACT(epoch FROM …) coerces it to the int64 the canonical
-// Status expects.
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	const q = `
-SELECT
-    COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1),
-    COALESCE((SELECT CAST(EXTRACT(epoch FROM MIN(occurred_at)) AS BIGINT) FROM transactions), -1),
-    COALESCE((SELECT CAST(EXTRACT(epoch FROM MAX(occurred_at)) AS BIGINT) FROM transactions), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1)
-`
-	s, err := silver.ContentStatus(ctx, c.db, "cointracking", q)
-	if err != nil {
-		return s, err
-	}
-	if err := silver.ObserveByRuns(ctx, c.db, "cointracking", `SELECT MAX(snapshot_at) FROM dump_runs`, &s); err != nil {
-		return s, err
-	}
-	return s, nil
+// The DuckDB range queries: transactions.occurred_at is a TIMESTAMP and
+// coin_prices.as_of_date a DATE, so EXTRACT(epoch FROM …) coerces each to
+// the unix seconds of the canonical model.
+const (
+	dumpRange  = `SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs`
+	tradeRange = `SELECT CAST(EXTRACT(epoch FROM MIN(occurred_at)) AS BIGINT),
+       CAST(EXTRACT(epoch FROM MAX(occurred_at)) AS BIGINT) FROM transactions`
+	priceRange = `SELECT CAST(EXTRACT(epoch FROM CAST(MIN(as_of_date) AS TIMESTAMP)) AS BIGINT),
+       CAST(EXTRACT(epoch FROM CAST(MAX(as_of_date) AS TIMESTAMP)) AS BIGINT) FROM coin_prices`
+)
+
+// clock: a dump past the watermark re-emits every transaction, every dump
+// and every coin price. Silver rebuilds its transactions on each load by
+// replaying the full trade history of each portfolio, so a transaction
+// dated years back can appear with no other sign than the new dump; the
+// coin prices are in the window because the adapter emits FX rates from
+// them. The change number is the latest dump.
+var clock = silver.Clock{
+	Kind:     "cointracking",
+	Runs:     silver.LatestDump,
+	Snapshot: []string{dumpRange},
+	Ledger:   []string{tradeRange},
+	Pin:      true,
+	Mode: silver.Incremental{
+		New:   []string{`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs WHERE snapshot_at > ?`},
+		Widen: []string{tradeRange, dumpRange, priceRange},
+	},
 }
 
-// ChangeWindow triggers on any new dump_run past `since`. NewChange
-// Number pins to MAX(dump_runs.snapshot_at) — the silver loader
-// stamps that on every fresh download → load cycle, so an idle
-// reload (no new dump_run) is a no-op.
-//
-// When triggered, the window spans EVERY transaction in silver and
-// every dump_run snapshot. Reason: silver's transactions table is
-// rebuilt on each load by replaying the full per-portfolio trade
-// history, so a "new" CT transaction at occurred_at=2017-09-02
-// can appear without the watermark side knowing — the only
-// reliable signal is a new dump_run. Once triggered, gold's
-// deleteWindow + applyTransactions effectively rebuild gold's
-// transactions for this source, which matches silver's replay
-// semantics.
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+	return clock.Status(ctx, c.db)
+}
+
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
-	const q = `
-SELECT
-    -- trigger: any new dump_run past the caller's watermark?
-    (SELECT MIN(snapshot_at) FROM dump_runs WHERE snapshot_at > ?) AS trigger_dump,
-    -- window start: earliest of any transaction, any dump_run,
-    -- or any coin_price (so the fx_rates the adapter emits from
-    -- coin_prices fall inside the window gold uses for
-    -- delete-and-reinsert).
-    COALESCE(
-        LEAST(
-            COALESCE((SELECT CAST(EXTRACT(epoch FROM MIN(occurred_at)) AS BIGINT) FROM transactions), 9223372036854775807),
-            COALESCE((SELECT MIN(snapshot_at) FROM dump_runs), 9223372036854775807),
-            COALESCE((SELECT CAST(EXTRACT(epoch FROM CAST(MIN(as_of_date) AS TIMESTAMP)) AS BIGINT) FROM coin_prices), 9223372036854775807)
-        ),
-        -1
-    ) AS window_start,
-    -- window end: latest of any transaction, any dump_run, or any
-    -- coin_price (same reason as the start clause).
-    COALESCE(
-        GREATEST(
-            COALESCE((SELECT CAST(EXTRACT(epoch FROM MAX(occurred_at)) AS BIGINT) FROM transactions), -1),
-            COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1),
-            COALESCE((SELECT CAST(EXTRACT(epoch FROM CAST(MAX(as_of_date) AS TIMESTAMP)) AS BIGINT) FROM coin_prices), -1)
-        ),
-        -1
-    ) AS window_end,
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), ?) AS new_cn
-`
-	var trigger, start, end, newCN sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q, since, since).
-		Scan(&trigger, &start, &end, &newCN); err != nil {
-		return w, fmt.Errorf("cointracking ChangeWindow: %w", err)
-	}
-	if trigger.Valid && start.Valid && start.Int64 >= 0 && end.Valid && end.Int64 >= 0 {
-		w.Start = start.Int64
-		w.End = end.Int64
-		w.HasChanges = true
-	}
-	if newCN.Valid {
-		w.NewChangeNumber = newCN.Int64
-	}
-	return w, nil
+	return clock.ChangeWindow(ctx, c.db, since)
 }

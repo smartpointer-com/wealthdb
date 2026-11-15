@@ -16,19 +16,17 @@ import (
 // extrema is the observation-date range of the rates.
 const extrema = `SELECT MIN(as_of), MAX(as_of) FROM ` + silver.RatesTable
 
-// Status reports the observation-date range of the rates and pins
-// LatestChangeNumber and both observed watermarks to the latest loaded
-// fetch run (silver.FetchRunStatus).
+// clock is the load clock over the rates: it reports their observation
+// dates and no transactions. When a fetch run triggers it re-emits the
+// full range, and the rates upsert by date in silver, so the latest
+// fetch's revisions win.
+var clock = silver.LoadClock(kindName, extrema)
+
+// Status and ChangeWindow are the clock's (silver.Clock).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	return silver.FetchRunStatus(ctx, c.db, kindName, extrema)
+	return clock.Status(ctx, c.db)
 }
 
-// ChangeWindow triggers on a new fetch run (any dump_runs row past
-// `since`). When triggered it re-emits the FULL range of the rates:
-// gold's deleteWindow over [Start,End] makes the re-emit idempotent
-// (rates upsert by date in silver, so the latest fetch's revisions win).
-// NewChangeNumber advances to the latest fetch so an idle reload doesn't
-// re-trigger.
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	return silver.LoadClockChangeWindow(ctx, c.db, kindName, extrema, since)
+	return clock.ChangeWindow(ctx, c.db, since)
 }

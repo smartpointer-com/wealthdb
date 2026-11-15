@@ -2,106 +2,62 @@ package viac
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// Status reports the observable snapshot + transaction extrema and
-// pins LatestChangeNumber to MAX(dump_runs.snapshot_at) so idle
-// reloads remain no-ops.
-//
-// Oldest/Latest snapshot span the historical position + cash
-// snapshots reconstructed from the Reporting PDFs (silver schema v3:
-// positions/cash_balances rows tagged source='report:<docid>',
-// keyed on each report's period-end date), not just the live dump
-// timestamps — so `wealthdb status` shows the holdings history as
-// far back as the reports reach, before the first live dump.
-func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	const q = `
-SELECT
-    COALESCE((SELECT MIN(t) FROM (
-        SELECT MIN(snapshot_at) AS t FROM dump_runs
-        UNION ALL SELECT MIN(snapshot_at) FROM positions
-        UNION ALL SELECT MIN(snapshot_at) FROM cash_balances
-    )), -1),
-    COALESCE((SELECT MAX(t) FROM (
-        SELECT MAX(snapshot_at) AS t FROM dump_runs
-        UNION ALL SELECT MAX(snapshot_at) FROM positions
-        UNION ALL SELECT MAX(snapshot_at) FROM cash_balances
-    )), -1),
-    COALESCE((SELECT MIN(occurred_at) FROM transactions), -1),
-    COALESCE((SELECT MAX(occurred_at) FROM transactions), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs),  -1)
-`
-	s, err := silver.ContentStatus(ctx, c.db, "viac", q)
-	if err != nil {
-		return s, err
+// clock: a dump or a transaction past the watermark re-emits the whole
+// history, every snapshot and transaction, so the historical snapshots
+// of the Reporting PDFs, keyed on past period ends, reach gold too. An
+// idle reload is a no-op: the change number is the latest dump. The
+// source is observed through the latest run that read it (observed).
+func (c *Connection) clock() silver.Clock {
+	return silver.Clock{
+		Kind: "viac",
+		Runs: silver.LatestDump,
+		Snapshot: []string{
+			silver.Range("dump_runs", "snapshot_at"),
+			silver.Range("positions", "snapshot_at"),
+			silver.Range("cash_balances", "snapshot_at"),
+		},
+		Ledger: []string{silver.Range("transactions", "occurred_at")},
+		Pin:    true,
+		Mode: silver.Incremental{
+			New: []string{
+				silver.RangePast("dump_runs", "snapshot_at"),
+				silver.RangePast("transactions", "occurred_at"),
+			},
+			Widen: []string{
+				silver.Range("positions", "snapshot_at"),
+				silver.Range("cash_balances", "snapshot_at"),
+				silver.Range("dump_runs", "snapshot_at"),
+				silver.Range("transactions", "occurred_at"),
+			},
+		},
+		Observed: silver.Observed{Set: c.observed},
 	}
-	// A dry run reads nothing; a silver from before the column counts
-	// every run.
+}
+
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
+	return c.clock().Status(ctx, c.db)
+}
+
+func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+	return c.clock().ChangeWindow(ctx, c.db, since)
+}
+
+// observed sets both watermarks to the latest run. A dry run reads
+// nothing; a silver from before the column counts every run.
+func (c *Connection) observed(ctx context.Context, s *canonical.Status) error {
 	runs := `SELECT MAX(snapshot_at) FROM dump_runs`
 	if dry, err := silver.HasColumn(ctx, c.db, "dump_runs", "dry_run"); err != nil {
-		return s, err
+		return err
 	} else if dry {
 		runs += ` WHERE NOT COALESCE(dry_run, 0)`
 	}
-	if err := silver.ObserveByRuns(ctx, c.db, "viac", runs, &s); err != nil {
-		return s, err
-	}
-	return s, nil
-}
-
-// ChangeWindow trigger: any new dump_run or transaction past `since`.
-//
-// When triggered, the window spans the ENTIRE snapshot + transaction
-// history (global MIN..MAX across positions, cash_balances, dump_runs
-// and transactions), not just the post-`since` delta. This is what
-// lets historical backfill work: the Reporting PDFs introduce
-// position/cash snapshots whose snapshot_at is a PAST period-end date
-// (e.g. 2021-12-31), so a delta window of (since, now] would never
-// cover them. A full-history window means gold's windowed
-// delete-then-reinsert refreshes every viac snapshot on each load
-// that has new work — correct and idempotent, and cheap while a silver
-// holds only a few snapshots. Idle reloads (no new dump/txn) still no-op
-// via the watermark: NewChangeNumber stays MAX(dump_runs.snapshot_at),
-// and the historical snapshots' past dates never advance it.
-func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
-	const q = `
-SELECT
-    (SELECT COUNT(*) FROM dump_runs    WHERE snapshot_at > ?)
-        + (SELECT COUNT(*) FROM transactions WHERE occurred_at > ?),
-    COALESCE((SELECT MIN(t) FROM (
-        SELECT MIN(snapshot_at) AS t FROM positions
-        UNION ALL SELECT MIN(snapshot_at) FROM cash_balances
-        UNION ALL SELECT MIN(snapshot_at) FROM dump_runs
-        UNION ALL SELECT MIN(occurred_at) FROM transactions
-    )), -1),
-    COALESCE((SELECT MAX(t) FROM (
-        SELECT MAX(snapshot_at) AS t FROM positions
-        UNION ALL SELECT MAX(snapshot_at) FROM cash_balances
-        UNION ALL SELECT MAX(snapshot_at) FROM dump_runs
-        UNION ALL SELECT MAX(occurred_at) FROM transactions
-    )), -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), ?)
-`
-	var trigger sql.NullInt64
-	var start, end, newCN sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q, since, since, since).
-		Scan(&trigger, &start, &end, &newCN); err != nil {
-		return w, fmt.Errorf("viac ChangeWindow: %w", err)
-	}
-	if trigger.Valid && trigger.Int64 > 0 &&
-		start.Valid && start.Int64 >= 0 && end.Valid && end.Int64 >= 0 {
-		w.Start = start.Int64
-		w.End = end.Int64
-		w.HasChanges = true
-	}
-	if newCN.Valid {
-		w.NewChangeNumber = newCN.Int64
-	}
-	return w, nil
+	t, err := silver.LatestRun(ctx, c.db, "viac", runs)
+	s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = t, t
+	return err
 }

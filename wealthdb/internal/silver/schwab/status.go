@@ -3,111 +3,57 @@ package schwab
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// Status returns the silver-side snapshot/transaction extrema and
-// the latest logical change number. Per docs/adapters/schwab.md §6,
-// the change number is MAX(dump_runs.snapshot_at), or -1 if there
-// are no dump_runs at all.
-func (c *apiReader) Status(ctx context.Context) (canonical.Status, error) {
-	s := canonical.UnknownStatus()
-
-	// One query that returns all four extrema. COALESCE(...,-1)
-	// gives the canonical sentinel when a table is empty.
-	const q = `
-SELECT
-    COALESCE((SELECT MIN(snapshot_at) FROM dump_runs),    -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs),    -1),
-    COALESCE((SELECT MIN(timestamp)   FROM transactions), -1),
-    COALESCE((SELECT MAX(timestamp)   FROM transactions), -1)
-`
-	var oldS, newS, oldT, newT sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q).Scan(&oldS, &newS, &oldT, &newT); err != nil {
-		return s, fmt.Errorf("schwab Status: %w", err)
+// clock is the api feed's: a dump or a transaction past the watermark
+// opens a window over the new rows (docs/DESIGN.md §6.2 and §8.1), its
+// start reaching back two dumps (reachBack). Each pull reads the
+// holdings, and the ledger from its last pull, so the latest dump is the
+// change number and both observed watermarks. Per docs/adapters/schwab.md
+// §6, the change number is -1 when there are no dumps at all.
+func (c *apiReader) clock() silver.Clock {
+	return silver.Clock{
+		Kind:     "schwab",
+		Runs:     silver.LatestDump,
+		Snapshot: []string{silver.Range("dump_runs", "snapshot_at")},
+		Ledger:   []string{silver.Range("transactions", "timestamp")},
+		Pin:      true,
+		Mode: silver.Incremental{
+			New: []string{
+				silver.RangePast("dump_runs", "snapshot_at"),
+				silver.RangePast("transactions", "timestamp"),
+			},
+			ReachBack: c.reachBack,
+		},
 	}
-	if oldS.Valid {
-		s.OldestSnapshotAt = oldS.Int64
-	}
-	if newS.Valid {
-		s.LatestSnapshotAt = newS.Int64
-	}
-	if oldT.Valid {
-		s.OldestTransactionAt = oldT.Int64
-	}
-	if newT.Valid {
-		s.LatestTransactionAt = newT.Int64
-	}
-	// LatestChangeNumber == latest snapshot_at. Each pull reads the
-	// holdings, and the ledger from its last pull, so it observes both.
-	s.LatestChangeNumber = s.LatestSnapshotAt
-	s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = s.LatestSnapshotAt, s.LatestSnapshotAt
-	return s, nil
 }
 
-// ChangeWindow returns the time window covering all changes in
-// silver since the given change number (exclusive). See
-// docs/DESIGN.md §6.2 and §8.1.
-//
-// Window.Start is the earliest snapshot_at or transaction
-// timestamp strictly greater than `since`. Window.End is the
-// latest of the two. Window.NewChangeNumber is the value to
-// advance the gold watermark to upon successful load.
-// HasChanges is false when nothing in silver is strictly newer
-// than `since`.
-//
-// Start reaches back two dump snapshots before the first new one: the
-// mark guard reads a spike by the two observations after it, so a new
-// snapshot can turn either of the two before it into a spike
+// reachBack is the second dump before start, or start where there are
+// fewer: the mark guard reads a spike by the two observations after it,
+// so a new snapshot can turn either of the two before it into a spike
 // (marks.go), and the load re-emits them.
-func (c *apiReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
-
-	const q = `
-SELECT
-    COALESCE(
-        (SELECT MIN(t) FROM (
-            SELECT MIN(snapshot_at) AS t FROM dump_runs    WHERE snapshot_at > ?
-            UNION ALL
-            SELECT MIN(timestamp)   AS t FROM transactions WHERE timestamp   > ?
-        )),
-        -1
-    ),
-    COALESCE(
-        (SELECT MAX(t) FROM (
-            SELECT MAX(snapshot_at) AS t FROM dump_runs    WHERE snapshot_at > ?
-            UNION ALL
-            SELECT MAX(timestamp)   AS t FROM transactions WHERE timestamp   > ?
-        )),
-        -1
-    ),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), ?)
-`
-	var start, end, newCN sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, q, since, since, since, since, since).
-		Scan(&start, &end, &newCN); err != nil {
-		return w, fmt.Errorf("schwab ChangeWindow: %w", err)
-	}
-
-	if start.Valid && start.Int64 >= 0 && end.Valid && end.Int64 >= 0 {
-		w.Start = start.Int64
-		w.End = end.Int64
-		w.HasChanges = true
-		var back sql.NullInt64
-		if err := c.db.QueryRowContext(ctx, `
+func (c *apiReader) reachBack(ctx context.Context, start int64) (int64, error) {
+	var back sql.NullInt64
+	if err := c.db.QueryRowContext(ctx, `
 SELECT MIN(snapshot_at) FROM (
     SELECT snapshot_at FROM dump_runs WHERE snapshot_at < ? ORDER BY snapshot_at DESC LIMIT 2)`,
-			w.Start).Scan(&back); err != nil {
-			return w, fmt.Errorf("schwab ChangeWindow: %w", err)
-		}
-		if back.Valid {
-			w.Start = back.Int64
-		}
+		start).Scan(&back); err != nil {
+		return start, err
 	}
-	if newCN.Valid {
-		w.NewChangeNumber = newCN.Int64
+	if back.Valid {
+		return back.Int64, nil
 	}
-	return w, nil
+	return start, nil
+}
+
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (c *apiReader) Status(ctx context.Context) (canonical.Status, error) {
+	return c.clock().Status(ctx, c.db)
+}
+
+func (c *apiReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+	return c.clock().ChangeWindow(ctx, c.db, since)
 }

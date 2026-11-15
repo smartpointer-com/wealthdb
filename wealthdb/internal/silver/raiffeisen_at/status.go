@@ -23,13 +23,16 @@ SELECT MIN(t), MAX(t) FROM (
     UNION ALL SELECT posted_at FROM transactions
     UNION ALL SELECT balance_date + %d FROM daily_balances)`, silver.DayEndOffset)
 
-// Status and ChangeWindow are the shared load clock: this source has no
+// clock is the shared load clock (silver.LoadClock): this source has no
 // change feed of its own, so a loaded dump is the trigger and a full
-// re-emit is the response. See silver.LoadClockStatus.
+// re-emit is the response.
+var clock = silver.LoadClock("raiffeisen_at", spanExtrema, silver.Range("transactions", "posted_at"))
+
+// Status and ChangeWindow are the clock's (silver.Clock).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	return silver.LoadClockStatus(ctx, c.db, "raiffeisen_at", spanExtrema)
+	return clock.Status(ctx, c.db)
 }
 
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	return silver.LoadClockChangeWindow(ctx, c.db, "raiffeisen_at", spanExtrema, since)
+	return clock.ChangeWindow(ctx, c.db, since)
 }

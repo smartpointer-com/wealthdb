@@ -303,8 +303,8 @@ says why.
 
 ## 8. Change number
 
-The source runs on the shared load clock (`silver.LoadClockStatus`,
-`silver.LoadClockChangeWindow`): `LatestChangeNumber` is
+The source runs on the shared load clock (`silver.LoadClock`):
+`LatestChangeNumber` is
 `MAX(dump_runs.snapshot_at)`, and a new load re-emits the full history
 ([../DESIGN.md](../DESIGN.md) §6.4).
 

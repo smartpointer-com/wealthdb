@@ -206,7 +206,7 @@ key it reads as.
 - There are no transactions; the transaction range is `-1`.
 - `LatestChangeNumber` is the latest load, `MAX(dump_runs.loaded_at)`.
 - Both observed watermarks are the latest fetch run,
-  `MAX(dump_runs.snapshot_at)` (`silver.ObserveByRuns`).
+  `MAX(dump_runs.snapshot_at)` (`silver.Observed`).
   `wealthdb status` therefore shows when reference data was last
   fetched. How old each composition is belongs to the exposure report.
 

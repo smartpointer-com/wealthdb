@@ -60,22 +60,6 @@ INSERT INTO accounts VALUES (1, 'a', 'EUR'), (2, 'a', 'CHF'),
 	}
 }
 
-// TestContentStatusReadsTheExtrema pins the content Status: each value the
-// query yields lands in its field, and a NULL leaves the field unknown.
-func TestContentStatusReadsTheExtrema(t *testing.T) {
-	db := openScratch(t, `CREATE TABLE x (a INTEGER);`)
-	s, err := ContentStatus(context.Background(), db, "test", `SELECT 1, 2, NULL, 4, 5`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := canonical.UnknownStatus()
-	want.OldestSnapshotAt, want.LatestSnapshotAt = 1, 2
-	want.LatestTransactionAt, want.LatestChangeNumber = 4, 5
-	if s != want {
-		t.Errorf("ContentStatus = %+v, want %+v", s, want)
-	}
-}
-
 // TestReadBankRosterTakesEachAccountsLatestRow pins the bank roster read: an
 // account's latest row, its first and latest snapshot, the source's latest
 // snapshot, and the name and type columns the caller names.

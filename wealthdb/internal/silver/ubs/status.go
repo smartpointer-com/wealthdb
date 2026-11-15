@@ -2,56 +2,10 @@ package ubs
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
-
-// Status mirrors Schwab's adapter: -1 sentinels for "no rows".
-// Snapshot extrema span both dump_runs and the content tables —
-// PSN promotes snapshot_at on content rows to business-date
-// midnight, which can be earlier than the dump's wall-clock run
-// time. LatestChangeNumber = MAX(dump_runs.snapshot_at) so an
-// idle reload stays a no-op.
-func (r *psnReader) Status(ctx context.Context) (canonical.Status, error) {
-	const q = `
-SELECT
-    COALESCE((SELECT MIN(t) FROM (
-        SELECT MIN(snapshot_at) AS t FROM dump_runs
-        UNION ALL SELECT MIN(snapshot_at) FROM cash_accounts
-        UNION ALL SELECT MIN(snapshot_at) FROM safekeeping_accounts
-        UNION ALL SELECT MIN(snapshot_at) FROM portfolios
-        UNION ALL SELECT MIN(snapshot_at) FROM holdings
-        UNION ALL SELECT MIN(snapshot_at) FROM cash_balances
-        UNION ALL SELECT MIN(snapshot_at) FROM instruments
-        UNION ALL SELECT MIN(snapshot_at) FROM fx_rates
-        UNION ALL SELECT MIN(snapshot_at) FROM forward_contracts
-    )), -1),
-    COALESCE((SELECT MAX(t) FROM (
-        SELECT MAX(snapshot_at) AS t FROM dump_runs
-        UNION ALL SELECT MAX(snapshot_at) FROM cash_accounts
-        UNION ALL SELECT MAX(snapshot_at) FROM safekeeping_accounts
-        UNION ALL SELECT MAX(snapshot_at) FROM portfolios
-        UNION ALL SELECT MAX(snapshot_at) FROM holdings
-        UNION ALL SELECT MAX(snapshot_at) FROM cash_balances
-        UNION ALL SELECT MAX(snapshot_at) FROM instruments
-        UNION ALL SELECT MAX(snapshot_at) FROM fx_rates
-        UNION ALL SELECT MAX(snapshot_at) FROM forward_contracts
-    )), -1),
-    COALESCE((SELECT MIN(timestamp)   FROM events),    -1),
-    COALESCE((SELECT MAX(timestamp)   FROM events),    -1),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1)
-`
-	s, err := silver.ContentStatus(ctx, r.db, "ubs", q)
-	if err != nil {
-		return s, err
-	}
-	// A nightly report states the holdings and the day's events.
-	s.ObservedSnapshotsThrough, s.ObservedTransactionsThrough = s.LatestChangeNumber, s.LatestChangeNumber
-	return s, nil
-}
 
 // psnBusinessDayLookback is how far before the previous dump the
 // window reaches for business-dated rows. A report arrives at the
@@ -61,96 +15,53 @@ SELECT
 // a long outage) needs a full `wealthdb reload`.
 const psnBusinessDayLookback = int64(7 * 24 * 3600)
 
-// ChangeWindow returns a window that brackets every silver row
-// the next snapshot pass needs to see. Trigger is still "is there
-// anything new in dump_runs or events past since" (so an idle
-// reload remains a no-op), but the window bounds are computed
-// across the content tables and events too. Those carry
-// business-date timestamps, and PSN delivers a report after the
-// business day it covers: a new dump's holdings and events are
-// dated before the dump, and before `since`, the previous dump's
-// time, as well. So once a dump has triggered, the bounds take
-// every content row and event dated after since minus
-// psnBusinessDayLookback. The rows in that stretch that gold
-// already holds are re-emitted unchanged.
-//
-// NewChangeNumber stays a live-time concept
-// (MAX(dump_runs.snapshot_at)) so subsequent loads with no new
-// dump don't re-trigger.
-func (r *psnReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	w := canonical.Window{NewChangeNumber: since}
+// psnContent are the PSN tables of business-dated content rows.
+var psnContent = []string{
+	"cash_accounts", "safekeeping_accounts", "portfolios", "holdings",
+	"cash_balances", "instruments", "fx_rates", "forward_contracts",
+}
 
-	const q = `
-SELECT
-    COALESCE(
-        (SELECT MIN(t) FROM (
-            SELECT MIN(snapshot_at) AS t FROM dump_runs WHERE snapshot_at > ?
-            UNION ALL
-            SELECT MIN(timestamp)   AS t FROM events    WHERE timestamp   > ?
-        )),
-        -1
-    ),
-    COALESCE(
-        (SELECT MAX(t) FROM (
-            SELECT MAX(snapshot_at) AS t FROM dump_runs WHERE snapshot_at > ?
-            UNION ALL
-            SELECT MAX(timestamp)   AS t FROM events    WHERE timestamp   > ?
-        )),
-        -1
-    ),
-    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), ?),
-    COALESCE((SELECT MIN(t) FROM (
-        SELECT MIN(snapshot_at) AS t FROM cash_accounts        WHERE snapshot_at > ?
-        UNION ALL SELECT MIN(snapshot_at) FROM safekeeping_accounts WHERE snapshot_at > ?
-        UNION ALL SELECT MIN(snapshot_at) FROM portfolios           WHERE snapshot_at > ?
-        UNION ALL SELECT MIN(snapshot_at) FROM holdings             WHERE snapshot_at > ?
-        UNION ALL SELECT MIN(snapshot_at) FROM cash_balances        WHERE snapshot_at > ?
-        UNION ALL SELECT MIN(snapshot_at) FROM instruments          WHERE snapshot_at > ?
-        UNION ALL SELECT MIN(snapshot_at) FROM fx_rates             WHERE snapshot_at > ?
-        UNION ALL SELECT MIN(snapshot_at) FROM forward_contracts    WHERE snapshot_at > ?
-        UNION ALL SELECT MIN(timestamp)   FROM events               WHERE timestamp   > ?
-    )), -1),
-    COALESCE((SELECT MAX(t) FROM (
-        SELECT MAX(snapshot_at) AS t FROM cash_accounts        WHERE snapshot_at > ?
-        UNION ALL SELECT MAX(snapshot_at) FROM safekeeping_accounts WHERE snapshot_at > ?
-        UNION ALL SELECT MAX(snapshot_at) FROM portfolios           WHERE snapshot_at > ?
-        UNION ALL SELECT MAX(snapshot_at) FROM holdings             WHERE snapshot_at > ?
-        UNION ALL SELECT MAX(snapshot_at) FROM cash_balances        WHERE snapshot_at > ?
-        UNION ALL SELECT MAX(snapshot_at) FROM instruments          WHERE snapshot_at > ?
-        UNION ALL SELECT MAX(snapshot_at) FROM fx_rates             WHERE snapshot_at > ?
-        UNION ALL SELECT MAX(snapshot_at) FROM forward_contracts    WHERE snapshot_at > ?
-        UNION ALL SELECT MAX(timestamp)   FROM events               WHERE timestamp   > ?
-    )), -1)
-`
-	floor := since
-	if since >= 0 {
-		floor = since - psnBusinessDayLookback
+// clock is the PSN feed's. The snapshot range spans the dumps and the
+// content tables: PSN promotes snapshot_at on content rows to the
+// business date's midnight, which can be earlier than the dump's
+// wall-clock run time. A dump or an event past the watermark opens a
+// window over the new rows. PSN delivers a report after the business day
+// it covers, so a new dump's holdings and events are dated before the
+// dump, and before the watermark, the previous dump's time, as well:
+// the window widens to every content row and event dated after the
+// watermark less psnBusinessDayLookback. The rows in that stretch that
+// gold already holds are re-emitted unchanged. The change number is the
+// latest dump, so an idle reload stays a no-op; a nightly report states
+// the holdings and the day's events, so it is both observed watermarks.
+func (r *psnReader) clock() silver.Clock {
+	snapshot := []string{silver.Range("dump_runs", "snapshot_at")}
+	var recent []string
+	for _, t := range psnContent {
+		snapshot = append(snapshot, silver.Range(t, "snapshot_at"))
+		recent = append(recent, silver.RangePast(t, "snapshot_at"))
 	}
-	args := []any{since, since, since, since, since}
-	for i := 0; i < 18; i++ {
-		args = append(args, floor)
+	return silver.Clock{
+		Kind:     "ubs",
+		Runs:     silver.LatestDump,
+		Snapshot: snapshot,
+		Ledger:   []string{silver.Range("events", "timestamp")},
+		Pin:      true,
+		Mode: silver.Incremental{
+			New: []string{
+				silver.RangePast("dump_runs", "snapshot_at"),
+				silver.RangePast("events", "timestamp"),
+			},
+			Recent:   append(recent, silver.RangePast("events", "timestamp")),
+			Lookback: psnBusinessDayLookback,
+		},
 	}
-	var start, end, newCN sql.NullInt64
-	var contentLo, contentHi sql.NullInt64
-	if err := r.db.QueryRowContext(ctx, q, args...).
-		Scan(&start, &end, &newCN, &contentLo, &contentHi); err != nil {
-		return w, fmt.Errorf("ubs ChangeWindow: %w", err)
-	}
-	if start.Valid && start.Int64 >= 0 && end.Valid && end.Int64 >= 0 {
-		w.Start = start.Int64
-		w.End = end.Int64
-		w.HasChanges = true
-	}
-	if w.HasChanges {
-		if contentLo.Valid && contentLo.Int64 >= 0 && contentLo.Int64 < w.Start {
-			w.Start = contentLo.Int64
-		}
-		if contentHi.Valid && contentHi.Int64 > w.End {
-			w.End = contentHi.Int64
-		}
-	}
-	if newCN.Valid {
-		w.NewChangeNumber = newCN.Int64
-	}
-	return w, nil
+}
+
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (r *psnReader) Status(ctx context.Context) (canonical.Status, error) {
+	return r.clock().Status(ctx, r.db)
+}
+
+func (r *psnReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+	return r.clock().ChangeWindow(ctx, r.db, since)
 }
