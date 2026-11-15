@@ -39,7 +39,9 @@ package firstcitizens
 
 import (
 	"fmt"
+	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
@@ -129,17 +131,32 @@ func providerCategory(class string) *string {
 // the description text; everything else is a deposit or withdrawal by the
 // (canonical) sign of the amount, which is the faithful classification for a
 // cash conduit account with no richer categorisation.
+//
+// A fee is a service charge, or FEE or FEES as a word of its own. A longer
+// word that only starts with the letters (a payee's name) names no fee.
 func txKind(description string, amt canonical.Decimal) canonical.TxKind {
 	d := strings.ToUpper(description)
 	switch {
 	case strings.Contains(d, "INTEREST"):
 		return canonical.TxKindInterest
-	case strings.Contains(d, "SERVICE CHARGE") || strings.Contains(d, "SERVICE FEE") ||
-		strings.Contains(d, " FEE") || strings.HasPrefix(d, "FEE"):
+	case strings.Contains(d, "SERVICE CHARGE") || hasWord(d, "FEE", "FEES"):
 		return canonical.TxKindFee
 	case amt.IsNegative():
 		return canonical.TxKindWithdrawal
 	default:
 		return canonical.TxKindDeposit
 	}
+}
+
+// hasWord reports whether any of words is a word of s: a run of letters
+// and digits between any other runes.
+func hasWord(s string, words ...string) bool {
+	for _, w := range strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if slices.Contains(words, w) {
+			return true
+		}
+	}
+	return false
 }

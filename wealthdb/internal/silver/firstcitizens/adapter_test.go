@@ -410,3 +410,31 @@ func TestSnapshotsWithoutStatementRates(t *testing.T) {
 		}
 	}
 }
+
+// TestTxKindFeeIsAWord pins the fee rule: FEE or FEES as a word of the
+// description, or a service charge, kinds a fee. A longer word that only
+// starts with FEE does not. Every description is invented.
+func TestTxKindFeeIsAWord(t *testing.T) {
+	out, in := canonical.NewDecimalFromInt(-10), canonical.NewDecimalFromInt(10)
+	for _, tc := range []struct {
+		desc string
+		amt  canonical.Decimal
+		want canonical.TxKind
+	}{
+		{"MONTHLY MAINTENANCE FEE", out, canonical.TxKindFee},
+		{"FEE WIRE OUT", out, canonical.TxKindFee},
+		{"Wire Fees", out, canonical.TxKindFee},
+		{"WIRE-FEE", out, canonical.TxKindFee},
+		{"SERVICE CHARGE", out, canonical.TxKindFee},
+		{"MONTHLY SERVICE FEE", out, canonical.TxKindFee},
+		{"FEE REFUND", in, canonical.TxKindFee},
+		{"ACH DEBIT EXAMPLE FEEDER FUND", out, canonical.TxKindWithdrawal},
+		{"FEEDBACK REWARD", in, canonical.TxKindDeposit},
+		{"COFFEE BAR", out, canonical.TxKindWithdrawal},
+		{"INTEREST PAYMENT", in, canonical.TxKindInterest},
+	} {
+		if got := txKind(tc.desc, tc.amt); got != tc.want {
+			t.Errorf("txKind(%q) = %q, want %q", tc.desc, got, tc.want)
+		}
+	}
+}
