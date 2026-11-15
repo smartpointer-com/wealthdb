@@ -1,8 +1,10 @@
 package synthetic
 
-import "github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
+import (
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
+)
 
-// init registers this kind's co-located ReturnsPolicy: flow_complete on the
+// returnsPolicy is the kind's ReturnsPolicy: flow_complete on the
 // shared bank external and transfer-like sets, every other knob at its
 // default.
 //
@@ -13,6 +15,7 @@ import "github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 // `returns_policy_overrides`: `flow_regime` for a source whose ledger is not
 // flow-complete (nav_only, crypto_partial) and `accounts_grain` for one whose
 // accounts should not surface as rows of their own (docs/DESIGN.md §5.6).
-func init() {
-	returns.RegisterPolicy(kindName, returns.DefaultReturnsPolicy(returns.BankFlowPolicy()))
+func returnsPolicy() *returns.ReturnsPolicy {
+	p := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
+	return &p
 }

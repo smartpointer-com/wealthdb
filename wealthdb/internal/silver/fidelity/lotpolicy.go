@@ -7,17 +7,17 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
-// init registers the lot policy of the fidelity kind, which also reads
+// lotPolicy is the lot policy of the fidelity kind, which also reads
 // the svb statements (docs/LOTS.md §6). Fees unknown: the statements do
 // not say whether commission is in an amount. Dated by settlement: a
 // row's date is its settlement or effective date. A corporate action
 // reads by the action its description opens with. An option leg the
 // statement books on the underlying's key moves no lot of the stock.
-func init() {
+func lotPolicy() *lots.Policy {
 	p := lots.TradingPolicy()
 	p.DatedBySettlement = true
 	p.Classify = classify
-	lots.RegisterPolicy(kindName, p)
+	return &p
 }
 
 var classifyCorporate = lots.ClassifyCorporate(corporateRule)

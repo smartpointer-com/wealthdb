@@ -5,7 +5,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
-// init registers this source's co-located ReturnsPolicy.
+// returnsPolicy is the kind's ReturnsPolicy.
 //
 // NAV-only regime: the adapter emits no cash flow of its own, only an
 // exit's sell (transactions.go), so the source's own returns come from
@@ -24,12 +24,12 @@ import (
 // Closure is ledger-exact, as on the other sources whose flows are
 // hand-dated: a release leg dated the day a claim is marked to zero is a
 // real exit, not a stray to be subsumed into a closing tail.
-func init() {
+func returnsPolicy() *returns.ReturnsPolicy {
 	p := returns.DefaultReturnsPolicy(
 		returns.NewFlowPolicy(returns.RegimeNavOnly,
 			[]canonical.TxKind{canonical.TxKindTransferIn, canonical.TxKindTransferOut},
 			nil),
 	)
 	p.ClosureScope = returns.ClosureLedgerExact
-	returns.RegisterPolicy(kindName, p)
+	return &p
 }

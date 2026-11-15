@@ -63,7 +63,7 @@ func (lotsConn) RealizedLots(context.Context) ([]canonical.RealizedLotChange, er
 	return lotsState.realized, nil
 }
 
-func init() { silver.Register(lotsAdapter{}) }
+func init() { silver.Register(silver.Source{Kind: lotsAdapter{}.Kind(), Open: lotsAdapter{}.Open}) }
 
 func lotsGold(t *testing.T) (*loader.Loader, *sql.DB) {
 	t.Helper()

@@ -56,13 +56,29 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "equityzen"
 
+// init registers the kind (silver.Source).
+//
+// Returns: see returns.PrivateMarketLedgerPolicy for the double-entry
+// custody-ledger rationale (transactions.go emits the pairs on the
+// custody account). Lots: the cost basis of its SPV units and fund
+// interests is what the source states, capital paid in, and no lot book
+// describes it (docs/LOTS.md §6). The engine builds none and realizes a
+// sale against the stated basis.
 func init() {
-	silver.Register(&Adapter{})
+	rp, lp := returns.PrivateMarketLedgerPolicy(), lots.StatedPolicy()
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: &rp,
+		Lots:    &lp,
+	})
 }
 
 type Adapter struct{}

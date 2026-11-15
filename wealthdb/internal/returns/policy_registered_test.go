@@ -16,26 +16,7 @@ import (
 
 	// Blank-import every silver adapter that registers a policy, mirroring
 	// cmd/wealthdb/main.go, so registration runs before the assertions.
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/amex"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/angellist"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/carta"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/chase"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/cointracking"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/curves"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/equityzen"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/fidelity"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/firstcitizens"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/fred"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/manual"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/plaid"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/raiffeisen_at"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/refdata"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/relevate"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/schwab"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/swissquote"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/synthetic"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/ubs"
-	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/viac"
+	_ "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/all"
 )
 
 func TestRegisteredFlowPolicies(t *testing.T) {

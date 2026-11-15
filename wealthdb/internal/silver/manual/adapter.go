@@ -50,13 +50,28 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "manual"
 
+// init registers the kind (silver.Source).
+//
+// Lots: the cost basis of the holdings it is typed from is what the
+// source states, capital paid in, and no lot book describes it
+// (docs/LOTS.md §6). The engine builds none and realizes a sale against
+// the stated basis. Its account labels and holdings are named by hand:
+// the holder's own words.
 func init() {
-	silver.Register(&Adapter{})
+	lp := lots.StatedPolicy()
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: returnsPolicy(),
+		Lots:    &lp,
+		Labels:  silver.LabelTraits{TypedAccountLabels: true, TypedHoldings: true},
+	})
 }
 
 type Adapter struct{}

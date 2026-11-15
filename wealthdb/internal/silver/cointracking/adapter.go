@@ -19,8 +19,17 @@ import (
 
 const kindName = "cointracking"
 
+// init registers the kind (silver.Source).
+//
+// A wallet label is the holder's own words.
 func init() {
-	silver.Register(&Adapter{})
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: returnsPolicy(),
+		Lots:    lotPolicy(),
+		Labels:  silver.LabelTraits{TypedAccountLabels: true},
+	})
 }
 
 type Adapter struct{}

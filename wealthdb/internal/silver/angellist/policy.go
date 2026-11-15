@@ -5,7 +5,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
-// init registers angellist's co-located ReturnsPolicy. Real funding-wallet
+// returnsPolicy is the kind's ReturnsPolicy. Real funding-wallet
 // ledger: deposit/withdrawal are genuine bank wires (external).
 // contribution/distribution are INTERNAL (funding wallet <-> tracked deals) and
 // are deliberately NOT external.
@@ -16,8 +16,8 @@ import (
 // receiving brokerage's in-leg, so the vehicle realizes its gain on the day
 // the shares leave and the pair nets in every aggregate holding both
 // accounts. Forward knobs defaulted.
-func init() {
-	returns.RegisterPolicy(kindName, returns.DefaultReturnsPolicy(
+func returnsPolicy() *returns.ReturnsPolicy {
+	p := returns.DefaultReturnsPolicy(
 		returns.NewFlowPolicy(
 			returns.RegimeFlowComplete,
 			[]canonical.TxKind{
@@ -26,5 +26,6 @@ func init() {
 			},
 			[]canonical.TxKind{canonical.TxKindTransferIn, canonical.TxKindTransferOut},
 		),
-	))
+	)
+	return &p
 }

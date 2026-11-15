@@ -5,7 +5,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
-// init registers this source's co-located ReturnsPolicy. UBS is a CONDUIT
+// returnsPolicy is the kind's ReturnsPolicy. UBS is a CONDUIT
 // relationship: external cash lands in a cash account and funds securities in a
 // DIFFERENT account inside the same banking relationship. The knobs below
 // make the engine count that capital exactly once and are source-scoped — they
@@ -28,11 +28,11 @@ import (
 //   - Inception = InceptionFirstRealSnapshot: anchor UBS's return window at its
 //     first real position snapshot rather than the sparse cash-only pre-history,
 //     killing the tiny-base artifact of a window opened years early.
-func init() {
+func returnsPolicy() *returns.ReturnsPolicy {
 	p := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
 	p.OnboardScope = returns.OnboardPerEntityOnce
 	p.ConduitKinds = []canonical.AccountKind{canonical.AccountKindCash}
 	p.ExternalOnly = true
 	p.Inception = returns.InceptionFirstRealSnapshot
-	returns.RegisterPolicy(kindName, p)
+	return &p
 }

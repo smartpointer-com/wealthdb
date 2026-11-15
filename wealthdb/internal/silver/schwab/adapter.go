@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
@@ -17,8 +19,23 @@ import (
 // "schwab-web". Mirrors the UBS adapter's subsource pattern.
 const kindName = "schwab"
 
+// init registers the kind (silver.Source).
+//
+// Returns: flow-complete bank/pension, the standard bank external and
+// transfer-like sets, forward knobs defaulted (no-op). The API states a
+// corporate action's cash signed, and the adapter passes it through
+// (canonical.CashSignedKinds). The class pass reads a lookup's type of a
+// security over the adapter's class (RefineClass).
 func init() {
-	silver.Register(&Adapter{})
+	rp := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
+	silver.Register(silver.Source{
+		Kind:        kindName,
+		Open:        (&Adapter{}).Open,
+		Returns:     &rp,
+		Lots:        lotPolicy(),
+		CashSigned:  []canonical.TxKind{canonical.TxKindCorporateAction},
+		RefineClass: (&Adapter{}).RefineClass,
+	})
 }
 
 // Adapter implements silver.Adapter.

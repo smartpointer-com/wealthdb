@@ -6,7 +6,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
-// init registers cointracking's lot policy (docs/LOTS.md §6).
+// lotPolicy is the lot policy (docs/LOTS.md §6).
 //
 //   - Pooled at the portfolio: coins sweep between a portfolio's
 //     wallets on arrival, so a wallet is no holder of lots. A withdrawal
@@ -16,13 +16,13 @@ import (
 //     either of the trade's own currencies, so the cost already holds
 //     it. A fee in a third currency is valued and added (Classified.Fee).
 //   - A fiat ticker is never a key: it is cash.
-func init() {
+func lotPolicy() *lots.Policy {
 	p := lots.TradingPolicy()
 	p.Grain = lots.GrainPortfolio
 	p.Fees = lots.FeesIncluded
 	p.Skip = isFiat
 	p.Classify = classifyLots
-	lots.RegisterPolicy(kindName, p)
+	return &p
 }
 
 // classifyLots reads a row by its CoinTracking type, which the adapter

@@ -5,7 +5,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
-// init registers cointracking's co-located ReturnsPolicy. Crypto: only FIAT
+// returnsPolicy is the kind's ReturnsPolicy. Crypto: only FIAT
 // deposit/withdrawal are real external capital. Crypto transfer_in/out are an
 // unclassifiable mix (wallet-to-wallet internal + airdrops/gifts which are
 // return) with no discriminator surviving to gold -> excluded (flag
@@ -20,7 +20,7 @@ import (
 //     meaningless (coins sweep between wallets on arrival), so they show values
 //     with TWR/MWR blanked; the portfolios grain and up stay valid, so returns
 //     are reported per portfolio and above.
-func init() {
+func returnsPolicy() *returns.ReturnsPolicy {
 	p := returns.DefaultReturnsPolicy(
 		returns.NewFlowPolicy(
 			returns.RegimeCryptoPartial,
@@ -30,5 +30,5 @@ func init() {
 	)
 	p.OnboardScope = returns.OnboardNone
 	p.AccountsGrain = returns.AccountsGrainBlanked
-	returns.RegisterPolicy(kindName, p)
+	return &p
 }

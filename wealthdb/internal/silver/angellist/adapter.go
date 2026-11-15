@@ -62,13 +62,27 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "angellist"
 
+// init registers the kind (silver.Source).
+//
+// Lots: the cost basis of its SPV stakes and fund interests is what
+// the source states, capital paid in, and no lot book describes it
+// (docs/LOTS.md §6). The engine builds none and realizes a sale against
+// the stated basis. An account id is the holder's portal slug.
 func init() {
-	silver.Register(&Adapter{})
+	lp := lots.StatedPolicy()
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: returnsPolicy(),
+		Lots:    &lp,
+		Labels:  silver.LabelTraits{TypedAccountIDs: true},
+	})
 }
 
 type Adapter struct{}

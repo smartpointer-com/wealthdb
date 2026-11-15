@@ -40,6 +40,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
@@ -47,8 +48,19 @@ import (
 // 0035 gold migration adds).
 const kindName = "raiffeisen_at"
 
+// init registers the kind (silver.Source).
+//
+// See returns.DepositBankPolicy for the flow-complete + hidden-plumbing
+// rationale. An account's display name is the roster's nickname where
+// it has one.
 func init() {
-	silver.Register(&Adapter{})
+	rp := returns.DepositBankPolicy()
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: &rp,
+		Labels:  silver.LabelTraits{NicknameIsLabel: true},
+	})
 }
 
 type Adapter struct{}

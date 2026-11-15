@@ -10,13 +10,24 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "amex"
 
+// init registers the kind (silver.Source).
+//
+// Every account this source emits is a card. See returns.CardIssuerPolicy
+// for why a card contributes nothing to returns at any grain, and
+// gold.returnsInvisibleKind for where they are dropped.
 func init() {
-	silver.Register(&Adapter{})
+	rp := returns.CardIssuerPolicy()
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: &rp,
+	})
 }
 
 type Adapter struct{}

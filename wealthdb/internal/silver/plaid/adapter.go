@@ -28,8 +28,13 @@ import (
 
 const kindName = "plaid"
 
+// init registers the kind (silver.Source).
 func init() {
-	silver.Register(&Adapter{})
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: returnsPolicy(),
+	})
 }
 
 type Adapter struct{}

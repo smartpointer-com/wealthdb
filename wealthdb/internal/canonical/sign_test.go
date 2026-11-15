@@ -99,26 +99,34 @@ func TestApplyCanonicalSignCardKinds(t *testing.T) {
 
 // TestCashSignedKindsPinOnlyUnsignedKinds keeps the sign pins to the six
 // kinds cash flow excludes for want of a sign (a pin on any other kind
-// would move its rows ahead of every verdict) and in a fixed order, which
-// the pass stamps.
+// would move its rows ahead of every verdict), once each, and lists them
+// in a fixed order, which the pass stamps. Which sources pin what is
+// held where they register (silver/all).
 func TestCashSignedKindsPinOnlyUnsignedKinds(t *testing.T) {
-	pins := CashSignedKinds()
-	if len(pins) == 0 {
-		t.Fatal("no sign pins")
-	}
 	unsigned := CashflowUnsignedKinds()
 	for _, k := range unsigned {
 		if canonicalSign(k) != 0 {
 			t.Errorf("%s has a canonical sign, so cash flow need not exclude it", k)
 		}
 	}
-	for i, p := range pins {
-		if !slices.Contains(unsigned, p.Kind) {
-			t.Errorf("%s pins %s, which is none of the six kinds cash flow excludes", p.SilverKind, p.Kind)
-		}
-		if i > 0 && (pins[i-1].SilverKind > p.SilverKind ||
-			pins[i-1].SilverKind == p.SilverKind && pins[i-1].Kind >= p.Kind) {
-			t.Errorf("pins out of order at %d: %v", i, pins)
-		}
+	var s pinSet
+	s.add("schwab", TxKindCorporateAction)
+	s.add("fidelity", TxKindOther, TxKindCorporateAction)
+	want := []SignedKindPin{{"fidelity", TxKindCorporateAction}, {"fidelity", TxKindOther}, {"schwab", TxKindCorporateAction}}
+	if got := s.list(); !slices.Equal(got, want) {
+		t.Errorf("pins = %v, want %v", got, want)
+	}
+	for _, c := range []struct {
+		name string
+		kind TxKind
+	}{{"a signed kind", TxKindDeposit}, {"a pin twice", TxKindCorporateAction}} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: no panic", c.name)
+				}
+			}()
+			s.add("schwab", c.kind)
+		}()
 	}
 }

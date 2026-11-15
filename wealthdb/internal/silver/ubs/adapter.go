@@ -8,13 +8,25 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "ubs"
 
+// init registers the kind (silver.Source).
+//
+// Lots: shadow at the average method. The source states an average cost
+// for its positions and no lots, so the replay fills nothing; `gains
+// check` compares its ledger with the stated cost (docs/LOTS.md §6, §9).
 func init() {
-	silver.Register(&Adapter{})
+	lp := lots.ShadowPolicy()
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: returnsPolicy(),
+		Lots:    &lp,
+	})
 }
 
 // Adapter implements silver.Adapter.

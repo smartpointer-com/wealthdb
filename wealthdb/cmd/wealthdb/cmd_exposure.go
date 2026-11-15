@@ -8,14 +8,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"maps"
-	"slices"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // `wealthdb exposure <view>` — what is really owned, every fund looked
@@ -395,10 +394,15 @@ func buildExposureBucketColumns(ccy, view, column string) []columnSpec[gold.Expo
 // (withLoads).
 type typedIssuers map[string]bool
 
-// load reads the names of the instruments of the sources whose kind is
-// one of typedHoldingKinds.
+// load reads the names of the instruments of the sources whose kind
+// names its holdings by hand (silver.LabelTraits.TypedHoldings).
 func (t typedIssuers) load(ctx context.Context, db *sql.DB) error {
-	kinds := slices.Sorted(maps.Keys(typedHoldingKinds))
+	var kinds []string
+	for _, k := range silver.Kinds() {
+		if silver.TraitsOf(k).TypedHoldings {
+			kinds = append(kinds, k)
+		}
+	}
 	args := make([]any, len(kinds))
 	for i, k := range kinds {
 		args[i] = k

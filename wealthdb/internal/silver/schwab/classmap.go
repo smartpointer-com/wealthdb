@@ -83,7 +83,7 @@ func bondByAbbrev(ac canonical.AssetClass, name string) canonical.AssetClass {
 	return ac
 }
 
-// RefineClass implements silver.ClassRefiner: gold's class pass reads
+// RefineClass is the kind's silver.Source.RefineClass: gold's class pass reads
 // OpenFIGI's type of a security over the pair the adapter gave it
 // (docs/adapters/schwab.md §4.2). The precedence is the lookup's type
 // where gold holds one, then Schwab's own instrument type, then the

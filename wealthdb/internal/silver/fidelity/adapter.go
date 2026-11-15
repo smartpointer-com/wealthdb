@@ -63,13 +63,29 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "fidelity"
 
+// init registers the kind (silver.Source).
+//
+// Returns: flow-complete bank/pension, the standard bank external and
+// transfer-like sets, forward knobs defaulted (no-op). The statements
+// and the API state a corporate action's cash signed, and the adapter
+// passes it through (canonical.CashSignedKinds); the svb families load
+// as this kind.
 func init() {
-	silver.Register(&Adapter{})
+	rp := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
+	silver.Register(silver.Source{
+		Kind:       kindName,
+		Open:       (&Adapter{}).Open,
+		Returns:    &rp,
+		Lots:       lotPolicy(),
+		CashSigned: []canonical.TxKind{canonical.TxKindCorporateAction},
+	})
 }
 
 type Adapter struct{}

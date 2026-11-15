@@ -7,13 +7,28 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "swissquote"
 
+// init registers the kind (silver.Source).
+//
+// Returns: flow-complete bank/pension, the standard bank external and
+// transfer-like sets, forward knobs defaulted (no-op).
+// Lots: shadow at the average method. The source states an average cost
+// for its positions and no lots, so the replay fills nothing; `gains
+// check` compares its ledger with the stated cost (docs/LOTS.md §6, §9).
 func init() {
-	silver.Register(&Adapter{})
+	rp, lp := returns.DefaultReturnsPolicy(returns.BankFlowPolicy()), lots.ShadowPolicy()
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: &rp,
+		Lots:    &lp,
+	})
 }
 
 type Adapter struct{}

@@ -7,13 +7,13 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
-// init registers schwab's lot policy (docs/LOTS.md §6): the statement
+// lotPolicy is the lot policy (docs/LOTS.md §6): the statement
 // lots are the anchors and the documents' realized lots the stated
 // sales; the engine replays the history around them.
-func init() {
+func lotPolicy() *lots.Policy {
 	p := lots.TradingPolicy()
 	p.Classify = classify
-	lots.RegisterPolicy(kindName, p)
+	return &p
 }
 
 var classifyCorporate = lots.ClassifyCorporate(corporateRule)

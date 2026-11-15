@@ -6,6 +6,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // accountLabel is an account or portfolio column's text: the display
@@ -29,7 +30,8 @@ type accountRef struct {
 // typed reports whether the account's display name may be the
 // customer's own words: its source's kind says so (typedAccountLabel),
 // its source names an account by the bank's nickname
-// (nicknameLabelKinds), or the name is the account's nickname.
+// (silver.LabelTraits.NicknameIsLabel), or the name is the account's
+// nickname.
 func (a accountRef) typed(kindOf func(string) string) bool {
 	if typedAccountLabel(kindOf, a.source) {
 		return true
@@ -37,7 +39,7 @@ func (a accountRef) typed(kindOf func(string) string) bool {
 	if a.name == nil || *a.name == "" {
 		return false
 	}
-	return nicknameLabelKinds[kindOf(a.source)] || a.nickname != nil && *a.name == *a.nickname
+	return silver.TraitsOf(kindOf(a.source)).NicknameIsLabel || a.nickname != nil && *a.name == *a.nickname
 }
 
 // idClass is how -p redacts the account's id: as a pseudonym whatever
@@ -240,15 +242,12 @@ func typedPseudonym(kindOf func(string) string, source string) (prefix, src stri
 	return source, source
 }
 
-// typedHoldingKinds are the silver kinds whose holdings are named by
-// hand: a manual silver's name, position key and instrument id are its
-// holder's words. The declared accounts hold nothing.
-var typedHoldingKinds = map[string]bool{"manual": true}
-
 // typedHolding reports whether a source's holdings are named by hand:
-// the source's kind is one of typedHoldingKinds.
+// a manual silver's name, position key and instrument id are its
+// holder's words (silver.LabelTraits.TypedHoldings). The declared
+// accounts hold nothing.
 func typedHolding(kindOf func(string) string, source string) bool {
-	return typedHoldingKinds[kindOf(source)]
+	return silver.TraitsOf(kindOf(source)).TypedHoldings
 }
 
 // holdingIDCol is col, whose cells identify a holding: its position key
@@ -421,32 +420,18 @@ func accountCategoryCol[T any](categories typedCategories, get func(T) *string) 
 	return col
 }
 
-// typedLabelKinds are the silver kinds whose account display names may
-// be the customer's own words: a crypto tracker's wallet labels, a
-// manual silver's account labels.
-var typedLabelKinds = map[string]bool{"cointracking": true, "manual": true}
-
-// nicknameLabelKinds are the silver kinds whose account display name is
-// the bank roster's nickname where it has one: the customer's words. A
-// config nickname replaces the account's nickname in gold but not its
-// display name, so the kind says what comparing the two cannot.
-var nicknameLabelKinds = map[string]bool{"chase": true, "firstcitizens": true, "raiffeisen_at": true}
-
-// typedIDKinds are the silver kinds whose account id is a name its
-// holder chose rather than one the provider issues: an AngelList
-// account's id is the holder's portal slug, which can spell a name.
-var typedIDKinds = map[string]bool{"angellist": true}
-
 // typedAccountID reports whether a source's account ids are its holder's
-// words: the source's kind is one of typedIDKinds.
+// words rather than ones the provider issues
+// (silver.LabelTraits.TypedAccountIDs).
 func typedAccountID(kindOf func(string) string, source string) bool {
-	return typedIDKinds[kindOf(source)]
+	return silver.TraitsOf(kindOf(source)).TypedAccountIDs
 }
 
 // typedAccountLabel reports whether the display names of a source's
 // accounts may be the customer's own words rather than the bank's
-// product labels: the source's kind is one of typedLabelKinds, or the
-// source holds the declared accounts, which the config names.
+// product labels: the source's kind says so
+// (silver.LabelTraits.TypedAccountLabels), or the source holds the
+// declared accounts, which the config names.
 func typedAccountLabel(kindOf func(string) string, source string) bool {
-	return source == canonical.DeclaredSourceID || typedLabelKinds[kindOf(source)]
+	return source == canonical.DeclaredSourceID || silver.TraitsOf(kindOf(source)).TypedAccountLabels
 }

@@ -1,8 +1,10 @@
 package plaid
 
-import "github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
+import (
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
+)
 
-// init registers this kind's co-located ReturnsPolicy: flow_complete on the
+// returnsPolicy is the kind's ReturnsPolicy: flow_complete on the
 // shared bank external and transfer-like sets, every other knob at its
 // default.
 //
@@ -19,6 +21,7 @@ import "github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 // accounts, so the grain stays normal. A deployment states an Item's own
 // regime with config `returns_policy_overrides` (docs/DESIGN.md §5.6), as
 // for the synthetic kind.
-func init() {
-	returns.RegisterPolicy(kindName, returns.DefaultReturnsPolicy(returns.BankFlowPolicy()))
+func returnsPolicy() *returns.ReturnsPolicy {
+	p := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
+	return &p
 }

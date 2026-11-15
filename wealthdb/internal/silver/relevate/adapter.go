@@ -46,13 +46,23 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 const kindName = "relevate"
 
+// init registers the kind (silver.Source).
+//
+// Returns: flow-complete bank/pension, the standard bank external and
+// transfer-like sets, forward knobs defaulted (no-op).
 func init() {
-	silver.Register(&Adapter{})
+	rp := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
+	silver.Register(silver.Source{
+		Kind:    kindName,
+		Open:    (&Adapter{}).Open,
+		Returns: &rp,
+	})
 }
 
 type Adapter struct{}
