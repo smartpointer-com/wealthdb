@@ -73,10 +73,10 @@ type Config struct {
 	// commodity trust whose security name doesn't give away what
 	// it holds. Keyed by silver_source_id (outer) and then
 	// instrument_external_id (inner — copy it from the gold
-	// `instruments` table). The loader applies these AFTER the
-	// adapter has classified, to both the instrument dimension and
-	// every position row referencing it, so config wins on
-	// overlap. See docs/DESIGN.md §13.8.
+	// `instruments` table). The class pass sets these after the
+	// sources load, on both the instrument dimension and every
+	// position row referencing it, so config wins over the adapter
+	// and the lookups. See docs/DESIGN.md §13.8.
 	InstrumentOverrides map[string]map[string]InstrumentOverride `json:"instrument_overrides,omitempty"`
 	// TransactionInstruments links a row (a securities trade, or an
 	// income or withholding row of a security) whose own feed states its

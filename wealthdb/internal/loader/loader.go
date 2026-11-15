@@ -55,12 +55,6 @@ type SourceSpec struct {
 	// accounts, BEFORE both override maps above; see
 	// config.SilverSource.TaxableWrapper.
 	TaxableWrapper string
-	// InstrumentOverrides is the per-instrument_external_id
-	// override map for this source — the taxonomy pair from the
-	// config-file `instrument_overrides` block. Applied after the
-	// adapter has classified, to the instrument dimension and to
-	// every position row referencing the instrument.
-	InstrumentOverrides map[string]InstrumentOverride
 	// TransactionInstruments links a row the adapter could not
 	// resolve, keyed by the token it looked up and failed on
 	// (canonical.TransactionChange.InstrumentHint, and the realized
@@ -119,14 +113,6 @@ type PortfolioOverride struct {
 	// Exclude drops the portfolio and every account inside it. See
 	// the config package's PortfolioOverride for what it is for.
 	Exclude bool
-}
-
-// InstrumentOverride is the loader's view of one config-file
-// instrument_overrides entry: the 2-D taxonomy pair (exposure +
-// vehicle), validated upstream at config-load time.
-type InstrumentOverride struct {
-	AssetClass string
-	Vehicle    string
 }
 
 // LoadResult summarises one Load call. Populated even when no
@@ -390,10 +376,9 @@ func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.
 // The spec's config statements (any may be empty) are applied after
 // stamping, widest scope first so the narrower always wins on the same
 // column: the source-wide taxable wrapper, then portfolio overrides,
-// then per-account ones, all to AccountChange records; instrument
-// overrides to InstrumentChange and PositionChange records. See
-// applyTaxableWrapper, applyPortfolioOverrides, applyAccountOverrides
-// and applyInstrumentOverrides. Then dropSuperseded removes the rows
+// then per-account ones, all to AccountChange records. See
+// applyTaxableWrapper, applyPortfolioOverrides and
+// applyAccountOverrides. Then dropSuperseded removes the rows
 // of an account another source carries from a date on — after the
 // rest, so it drops finished records rather than leaving half-dressed
 // ones behind. Last, once the stream drains, comes the closing write:
@@ -434,7 +419,6 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 		// the override's day.
 		earlier.observe(batch.Accounts, spec.Overrides)
 		applyAccountOverrides(batch.Accounts, spec.Overrides, keptKinds)
-		applyInstrumentOverrides(batch.Instruments, batch.Positions, spec.InstrumentOverrides)
 		// Before the drop, record what each superseded account held
 		// going into its handover — read after the statements above, so
 		// the zero row carries the same dressed keys as the row it ends.
@@ -1147,36 +1131,6 @@ func applyAccountOverrides(accounts []canonical.AccountChange, overrides map[str
 	}
 }
 
-// applyInstrumentOverrides patches each InstrumentChange whose
-// instrument_external_id appears in the overrides map, and every
-// PositionChange referencing such an instrument — positions carry
-// their own classification copy, so both must move together or the
-// dimension and the fact rows would disagree. Overrides for
-// instruments not in the batch are silently ignored (the position
-// may not be held in this snapshot window).
-func applyInstrumentOverrides(instruments []canonical.InstrumentChange, positions []canonical.PositionChange, overrides map[string]InstrumentOverride) {
-	if len(overrides) == 0 {
-		return
-	}
-	for i := range instruments {
-		ov, ok := overrides[instruments[i].InstrumentExternalID]
-		if !ok {
-			continue
-		}
-		applyInstrumentOverrideTo(&instruments[i].AssetClass, &instruments[i].Vehicle, ov)
-	}
-	for i := range positions {
-		if positions[i].InstrumentExternalID == nil {
-			continue
-		}
-		ov, ok := overrides[*positions[i].InstrumentExternalID]
-		if !ok {
-			continue
-		}
-		applyInstrumentOverrideTo(&positions[i].AssetClass, &positions[i].Vehicle, ov)
-	}
-}
-
 // applyTransactionInstruments links a row whose feed named an
 // instrument nothing in the product could resolve, keyed by the token
 // the adapter looked up and failed on — every row of the source that
@@ -1218,13 +1172,4 @@ func linkHint(instrument **string, hint string, links map[string]string) bool {
 	}
 	*instrument = &id
 	return true
-}
-
-func applyInstrumentOverrideTo(ac *canonical.AssetClass, veh *canonical.Vehicle, ov InstrumentOverride) {
-	if ov.AssetClass != "" {
-		*ac = canonical.AssetClass(ov.AssetClass)
-	}
-	if ov.Vehicle != "" {
-		*veh = canonical.Vehicle(ov.Vehicle)
-	}
 }

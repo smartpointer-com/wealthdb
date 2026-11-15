@@ -682,15 +682,6 @@ func buildSourceSpec(
 			}
 		}
 	}
-	if cfgOvr := cfg.InstrumentOverrides[s.ID]; len(cfgOvr) > 0 {
-		spec.InstrumentOverrides = make(map[string]loader.InstrumentOverride, len(cfgOvr))
-		for instrID, ov := range cfgOvr {
-			spec.InstrumentOverrides[instrID] = loader.InstrumentOverride{
-				AssetClass: ov.AssetClass,
-				Vehicle:    ov.Vehicle,
-			}
-		}
-	}
 	if links := cfg.TransactionInstruments[s.ID]; len(links) > 0 {
 		spec.TransactionInstruments = maps.Clone(links)
 	}
@@ -702,27 +693,27 @@ func buildSourceSpec(
 	return spec
 }
 
-// runClassPass reads OpenFIGI's security types over the classes of the
-// instruments whose adapter takes them (gold.RefineClasses). The
-// instruments instrument_overrides pins keep their pair. It prints
+// runClassPass sets the pairs the config pins with instrument_overrides
+// and reads OpenFIGI's security types over the classes of the other
+// instruments whose adapter takes them (gold.RefineClasses). It prints
 // nothing: every load writes the adapter's pairs back, so the pass
 // rewrites the same instruments each time.
 func runClassPass(ctx context.Context, db *sql.DB, cfg *config.Config) error {
-	_, err := gold.RefineClasses(ctx, db, silver.ClassRefiners(), pinnedInstruments(cfg))
+	_, err := gold.RefineClasses(ctx, db, silver.ClassRefiners(), instrumentPins(cfg))
 	return err
 }
 
-// pinnedInstruments names, per source, the instruments the config pins
-// with instrument_overrides.
-func pinnedInstruments(cfg *config.Config) map[string]map[string]bool {
-	pinned := map[string]map[string]bool{}
+// instrumentPins is, per source, the pair instrument_overrides pins on
+// each instrument it names.
+func instrumentPins(cfg *config.Config) map[string]map[string]gold.ClassPin {
+	pins := map[string]map[string]gold.ClassPin{}
 	for src, overrides := range cfg.InstrumentOverrides {
-		pinned[src] = map[string]bool{}
-		for iid := range overrides {
-			pinned[src][iid] = true
+		pins[src] = map[string]gold.ClassPin{}
+		for iid, ov := range overrides {
+			pins[src][iid] = gold.ClassPin{AssetClass: canonical.AssetClass(ov.AssetClass), Vehicle: canonical.Vehicle(ov.Vehicle)}
 		}
 	}
-	return pinned
+	return pins
 }
 
 // runExposurePass rebuilds the exposure report's derived tables

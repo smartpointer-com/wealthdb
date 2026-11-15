@@ -1007,7 +1007,7 @@ Example config file:
 | `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper, and `accounts` for an account whose rate is not its wrapper's), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12), `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive) and `settlement_cycles` (a market's settlement cycles, each in business days from a day on; a market named replaces its built-in cycles). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the config, never in the repository. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains, exposure and yield reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the config, never in the repository. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole portfolio held inside a retirement or trust wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / account_kind / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
-| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name does not give away what it holds (`metal × etf`). The loader applies overrides AFTER the adapter classifies, to both the instrument dimension and every position row referencing it, so config wins on overlap. The class pass leaves a pinned instrument alone. See §13.8. |
+| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name does not give away what it holds (`metal × etf`). The class pass sets the pair after the sources load, on both the instrument dimension and every position row referencing it, so config wins over the adapter and over OpenFIGI's type. An edit or a removal reaches the instrument at the next load. See §13.8. |
 | `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.8. |
 | `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, lots, cash balances, transactions and stated periods dated on or AFTER the date (a stated period by its last day), and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.9) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.8. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
@@ -4278,9 +4278,9 @@ outcome that gets it there.
 The instrument dimension has the same escape hatch:
 `instrument_overrides`, keyed by `(silver_source_id,
 instrument_external_id)`, pins a per-instrument `(asset_class,
-vehicle)` pair (validated as an admitted taxonomy pair). The loader
-patches both the `instruments` row and every `positions` row
-referencing the instrument — position rows carry their own
+vehicle)` pair (validated as an admitted taxonomy pair). The class
+pass below sets it on both the `instruments` row and every `positions`
+row referencing the instrument — position rows carry their own
 `asset_class`/`vehicle` copy, so the two must move together.
 `transactions` needs no such patch: a trade states a pair only where
 its instrument cannot answer (§10.8), so there is no copy of the
@@ -4290,15 +4290,15 @@ the pair right — the canonical example is an exchange-traded commodity
 trust whose security name never mentions the metal or the ETF-ness
 (`metal × etf`).
 
-Between the adapter and the override sits the class pass
-(`gold.RefineClasses`). It runs first among the passes a load or a
-reload ends with. An adapter that implements `silver.ClassRefiner`
-(schwab) takes OpenFIGI's security type, from the refdata source's
-`security_identities`, over its own pair. The pass reads the type for
-each instrument of such a source, patches the `instruments` row and its
-`positions` rows as the override does, and leaves a pinned instrument
-alone. It runs after every load, so a type a later refdata load brings
-reaches a source loaded before it (docs/adapters/schwab.md §4.2).
+The class pass (`gold.RefineClasses`) decides the final pair once. It
+runs first among the passes a load or a reload ends with, over every
+source. A pinned instrument takes its pin. Otherwise, an adapter that
+implements `silver.ClassRefiner` (schwab) takes OpenFIGI's security
+type, from the refdata source's `security_identities`, over its own
+pair. The pass patches the `instruments` row and its `positions` rows
+together. It runs after every load, so a type a later refdata load
+brings reaches a source loaded before it (docs/adapters/schwab.md
+§4.2), and a pin reaches rows an earlier load wrote.
 
 Two statements in the same family are not overrides of an adapter's
 answer but answers an adapter cannot have.

@@ -9,7 +9,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -426,52 +425,6 @@ func TestAccountOverridesApplied(t *testing.T) {
 	for id, w := range want {
 		if g := got[id]; g != w {
 			t.Errorf("%s: nickname/category = %q/%q, want %q/%q", id, g[0], g[1], w[0], w[1])
-		}
-	}
-}
-
-func TestInstrumentOverridesApplied(t *testing.T) {
-	h := newHarness(t)
-
-	h.silverExec(t, `
-        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 1, '/x/1');
-        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
-            (1000, 'ACC1', '{"hashValue":"ACC1"}');
-        INSERT INTO positions(snapshot_at, account_external_id, instrument_key, payload) VALUES
-            (1000, 'ACC1', '000000AA1',
-             '{"longQuantity":10,"shortQuantity":0,"marketValue":1500.00,
-               "instrument":{"assetType":"COLLECTIVE_INVESTMENT","type":"EXCHANGE_TRADED_FUND",
-                             "cusip":"000000AA1","symbol":"AAAA","description":"PLACEHOLDER TR METAL SHS"}}'),
-            (1000, 'ACC1', '000000BB2',
-             '{"longQuantity":5,"shortQuantity":0,"marketValue":500.00,
-               "instrument":{"assetType":"EQUITY","cusip":"000000BB2","symbol":"BBBB"}}');
-    `)
-
-	_, err := h.loader.Load(context.Background(), loader.SourceSpec{
-		ID: "schwab-test", Kind: "schwab", Path: h.silverPath,
-		InstrumentOverrides: map[string]loader.InstrumentOverride{
-			// The adapter classifies this one (public_equity, etf) from
-			// the name; the config pins the true (metal, etf) pair.
-			"000000AA1": {AssetClass: "metal", Vehicle: "etf"},
-			"000000XX9": {AssetClass: "crypto", Vehicle: "etf"}, // no such instrument in batch
-		},
-	})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	// The overridden row carries the pinned pair; the un-overridden
-	// EQUITY row carries the schwab adapter's own (public_equity, stock).
-	for _, q := range []struct{ table, id, want string }{
-		{"instruments", "000000AA1", "metal/etf"},
-		{"instruments", "000000BB2", "public_equity/stock"},
-		{"positions", "000000AA1", "metal/etf"},
-		{"positions", "000000BB2", "public_equity/stock"},
-	} {
-		got := h.goldScalar(t, fmt.Sprintf(
-			`SELECT asset_class || '/' || vehicle FROM %s WHERE instrument_external_id = '%s'`, q.table, q.id))
-		if got != q.want {
-			t.Errorf("%s[%s] pair = %q, want %q", q.table, q.id, got, q.want)
 		}
 	}
 }
