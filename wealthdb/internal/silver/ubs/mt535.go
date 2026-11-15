@@ -23,6 +23,9 @@ import (
 //   :AGGR//UNIT/10000,        → aggregate quantity, 10000 units
 //   :AGGR//FAMT/100000,       → aggregate FACE amount, for bonds
 //   :INDC//ACTU/USD150,123456 → indicative actual price USD 150.123456
+//   :HOLD//NUSD2500,          → market value USD -2,500.00: a leading
+//                               N is ISO 15022's sign for a negative
+//                               amount, as the collector reads it
 //
 // The :70C::SUBB// narrative adds the average unit cost (AVER), the
 // holding cost (AHOD, equal to BOOK) and, when the instrument currency
@@ -33,7 +36,7 @@ import (
 // (psnBookValue).
 
 var (
-	re19A = regexp.MustCompile(`^:([A-Z]{3,4})//([A-Z]{3})([0-9,]+?),?$`)
+	re19A = regexp.MustCompile(`^:([A-Z]{3,4})//(N?)([A-Z]{3})([0-9,]+?),?$`)
 	re93B = regexp.MustCompile(`^:([A-Z]{3,4})//([A-Z]+)/([0-9,]+?),?$`)
 )
 
@@ -62,13 +65,16 @@ func parse19A(raw []string) []mt535Money {
 		if m == nil {
 			continue
 		}
-		amt, err := parseSwiftDecimal(m[3])
+		amt, err := parseSwiftDecimal(m[4])
 		if err != nil {
 			continue
 		}
+		if m[2] == "N" {
+			amt = amt.Neg()
+		}
 		out = append(out, mt535Money{
 			Qualifier: m[1],
-			Currency:  m[2],
+			Currency:  m[3],
 			Amount:    amt,
 		})
 	}

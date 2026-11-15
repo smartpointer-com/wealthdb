@@ -137,3 +137,18 @@ func TestFindQuantity(t *testing.T) {
 		t.Error("no AGGR/AVAI should give ok=false")
 	}
 }
+
+// An amount with ISO 15022's negative sign, N before the currency, reads
+// as negative, as the collector reads it; one without stays positive.
+func TestParse19AReadsTheNegativeSign(t *testing.T) {
+	got := parse19A([]string{":HOLD//NCHF1500,25", ":BOOK//CHF900,"})
+	if len(got) != 2 {
+		t.Fatalf("parse19A = %+v, want both entries", got)
+	}
+	if got[0].Qualifier != "HOLD" || got[0].Currency != "CHF" || got[0].Amount.String() != "-1500.25" {
+		t.Errorf("negative entry = %+v, want HOLD CHF -1500.25", got[0])
+	}
+	if got[1].Amount.String() != "900" {
+		t.Errorf("positive entry = %+v, want 900", got[1])
+	}
+}
