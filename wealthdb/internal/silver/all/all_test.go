@@ -9,8 +9,7 @@ import (
 )
 
 // TestEveryKindRegisters pins what the registry holds once every
-// adapter is imported: the kinds, the sign pins, the label traits and
-// the class refiners.
+// adapter is imported: the kinds, the sign pins and the label traits.
 func TestEveryKindRegisters(t *testing.T) {
 	want := []string{"amex", "angellist", "carta", "chase", "cointracking", "curves", "equityzen",
 		"fidelity", "firstcitizens", "fred", "manual", "plaid", "raiffeisen_at", "refdata", "relevate",
@@ -35,12 +34,5 @@ func TestEveryKindRegisters(t *testing.T) {
 		if got := silver.TraitsOf(k); got != traits[k] {
 			t.Errorf("TraitsOf(%s) = %+v, want %+v", k, got, traits[k])
 		}
-	}
-	var refiners []string
-	for k := range silver.ClassRefiners() {
-		refiners = append(refiners, k)
-	}
-	if !slices.Equal(refiners, []string{"schwab"}) {
-		t.Errorf("class refiners %v, want [schwab]", refiners)
 	}
 }

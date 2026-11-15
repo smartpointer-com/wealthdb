@@ -74,23 +74,23 @@ Every other position lands in `positions`. `taxonomyFor` derives the
 | Schwab `assetType` | Gold `(asset_class, vehicle)` |
 | --- | --- |
 | `EQUITY` | `(public_equity, stock)` |
-| `COLLECTIVE_INVESTMENT` with `instrument.type = EXCHANGE_TRADED_FUND` | `(etfExposure(name), etf)`. This is how the Trader API types ETFs. |
-| `COLLECTIVE_INVESTMENT`, other | `(fundExposure(name), fund)` |
-| `ETF` | `(etfExposure(name), etf)`. In the API's enum; position dumps use `COLLECTIVE_INVESTMENT`. |
-| `MUTUAL_FUND` | `(fundExposure(name), fund)` |
+| `COLLECTIVE_INVESTMENT` with `instrument.type = EXCHANGE_TRADED_FUND` | `(ETFExposureAbbrev(name), etf)`. This is how the Trader API types ETFs. |
+| `COLLECTIVE_INVESTMENT`, other | `(FundExposureAbbrev(name), fund)` |
+| `ETF` | `(ETFExposureAbbrev(name), etf)`. In the API's enum; position dumps use `COLLECTIVE_INVESTMENT`. |
+| `MUTUAL_FUND` | `(FundExposureAbbrev(name), fund)` |
 | `BOND` / `FIXED_INCOME` | `(fixed_income, bond)` |
 | `OPTION` | `(public_equity, option)` (equity underlying) |
 | `FUTURE` | `(public_equity, future)` (equity underlying) |
 | (unrecognised) | `(other, other)`; the `assetType` stays in the payload |
 
-- `etfExposure` reads the exposure from the name with
+- `silver.ETFExposureAbbrev` reads the exposure from the name with
   `silver.RefineETFExposure`: crypto → `crypto`, bullion → `metal`
   (miners funds stay `public_equity`: they hold stocks), bond and
   fixed-income → `fixed_income`, else `public_equity`. It also reads
   the bond words Schwab abbreviates (`BD`, `BND`, `TREAS`, `GOVT`,
   `INFL PROT`) as `fixed_income`.
-- `fundExposure` first routes a money-market fund's name to `cash`
-  (`silver.FundExposure`), then reads the rest the same way.
+- `silver.FundExposureAbbrev` first routes a money-market fund's name
+  to `cash` (`silver.FundExposure`), then reads the rest the same way.
 - Gold's class pass reads OpenFIGI's type of the security over this
   pair (§4.2).
 - Config `instrument_overrides` pins a product whose name hides its
@@ -164,30 +164,13 @@ first that speaks wins:
 1. OpenFIGI's security type, where gold holds one (`security_identities`,
    from the refdata source).
 2. Schwab's own instrument type: `assetType` and `instrument.type` (§4).
-3. The security name (`etfExposure`, `fundExposure`).
+3. The security name (`silver.ETFExposureAbbrev`,
+   `silver.FundExposureAbbrev`).
 
 The adapter reads 2 and 3 at load time. OpenFIGI's type reaches gold
-through another source, so gold's class pass reads it after the loads
-(`gold.RefineClasses`, the adapter's `RefineClass`). The pass runs first
-among the passes a load or a reload ends with. It reads the type so:
-
-- A bond's type (`Govt`, `Corp`, `Muni`, `Mtge`, `Pool`) gives
-  `(fixed_income, bond)`.
-- A share's type (`Common Stock`, `Depositary Receipt`, `REIT`, …) gives
-  `(public_equity, stock)`.
-- A fund's type (`Mutual Fund`, `Closed-End Fund`, `ETP`, …) keeps an
-  ETF or a fund as Schwab types it. `ETP` makes a fund an ETF. Any other
-  instrument becomes a fund, or an ETF for `ETP`, with its exposure from
-  the name. A crypto trust Schwab types as an equity reads as
-  `(crypto, fund)`.
-- Any other type, such as an option's or a warrant's, leaves the pair.
-
-OpenFIGI types an ETF as `Mutual Fund`, which names no exposure. A bond
-ETF's exposure still comes from its name, abbreviations included.
-
-The pass looks the type up under the instrument's ISIN, the US ISIN of
-its CUSIP, its CUSIP and its symbol, in that order. It rewrites the
-instrument row and every position row of the instrument. An instrument
+through another source, so gold's class pass reads it after the loads.
+The pass reads it the same way for every source
+([../DESIGN.md](../DESIGN.md) §13.8). An instrument that
 `instrument_overrides` pins keeps the config's pair.
 
 ## 5. `transactions.kind` mapping
@@ -360,7 +343,7 @@ api silver does not have. §8 has the tax lots, open and realized.
   `assetType`, so the pair comes from the statement section
   (`taxonomyHistorical`):
   - `Equities` → `(public_equity, stock)`;
-  - `Exchange Traded Funds` → `(etfExposure(description), etf)`;
+  - `Exchange Traded Funds` → `(ETFExposureAbbrev(description), etf)`;
   - `Fixed Income` → `(fixed_income, bond)`;
   - `Options` → `(public_equity, option)`;
   - any other section falls back to the key and description shapes:
@@ -369,7 +352,7 @@ api silver does not have. §8 has the tax lots, open and realized.
     `(fixed_income, bond)`; the word ETF → etf; a four-letter-plus-X
     ticker → fund; an ETF-only issuer name (iShares, SPDR, Vanguard,
     …) → etf; else `(public_equity, stock)`. An ETF or a fund reads
-    Schwab's abbreviated bond words as `etfExposure` does.
+    Schwab's abbreviated bond words as `ETFExposureAbbrev` does.
 
   The api's classification wins on the instrument row when the same
   key appears there (per-column upsert). A statement prints a holding's

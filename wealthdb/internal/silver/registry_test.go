@@ -5,8 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // resetForTesting clears the registry.
@@ -69,21 +67,15 @@ func TestRegisterDuplicatePanics(t *testing.T) {
 	Register(stub("alpha"))
 }
 
-// TestTraitsAndRefiners pins the lookups by kind: an unregistered kind
-// has no traits, and only a source that states a refiner offers one.
-func TestTraitsAndRefiners(t *testing.T) {
+// TestTraitsOf pins the lookup by kind: an unregistered kind has no
+// traits.
+func TestTraitsOf(t *testing.T) {
 	resetForTesting()
 	typed := stub("typed")
 	typed.Labels = LabelTraits{TypedHoldings: true}
-	typed.RefineClass = func(_ string, ac canonical.AssetClass, v canonical.Vehicle, _ string) (canonical.AssetClass, canonical.Vehicle) {
-		return ac, v
-	}
 	Register(typed)
 	Register(stub("plain"))
 	if !TraitsOf("typed").TypedHoldings || TraitsOf("plain") != (LabelTraits{}) || TraitsOf("nope") != (LabelTraits{}) {
 		t.Errorf("TraitsOf: typed %+v, plain %+v, nope %+v", TraitsOf("typed"), TraitsOf("plain"), TraitsOf("nope"))
-	}
-	if r := ClassRefiners(); len(r) != 1 || r["typed"] == nil {
-		t.Errorf("ClassRefiners = %v, want typed alone", r)
 	}
 }

@@ -694,12 +694,12 @@ func buildSourceSpec(
 }
 
 // runClassPass sets the pairs the config pins with instrument_overrides
-// and reads OpenFIGI's security types over the classes of the other
-// instruments whose adapter takes them (gold.RefineClasses). It prints
+// and reads OpenFIGI's security types over the classes of every other
+// instrument (gold.RefineClasses, silver.RefineClass). It prints
 // nothing: every load writes the adapter's pairs back, so the pass
 // rewrites the same instruments each time.
 func runClassPass(ctx context.Context, db *sql.DB, cfg *config.Config) error {
-	_, err := gold.RefineClasses(ctx, db, silver.ClassRefiners(), instrumentPins(cfg))
+	_, err := gold.RefineClasses(ctx, db, silver.RefineClass, instrumentPins(cfg))
 	return err
 }
 

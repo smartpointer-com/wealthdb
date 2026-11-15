@@ -80,3 +80,76 @@ func RefineETFExposure(name string) canonical.AssetClass {
 	}
 	return canonical.AssetClassPublicEquity
 }
+
+// bondAbbrevRe matches the bond words a broker abbreviates in a fund's
+// description ("TOTAL BD MKT", "SHORT-TERM TREAS", "INFL PROT"), which
+// RefineETFExposure reads only spelled out.
+var bondAbbrevRe = regexp.MustCompile(`(?i)\bBN?D\b|\bTREAS\b|\bGOVT\b|\bINFL(?:ATION)?[- ]PROT`)
+
+// ETFExposureAbbrev is an ETF's exposure read from its name:
+// RefineETFExposure, with abbreviated bond words read as fixed income.
+func ETFExposureAbbrev(name string) canonical.AssetClass {
+	return BondByAbbrev(RefineETFExposure(name), name)
+}
+
+// FundExposureAbbrev is the same reading for a fund that is not exchange
+// traded, a money-market fund's name read as cash first (FundExposure).
+func FundExposureAbbrev(name string) canonical.AssetClass {
+	return BondByAbbrev(FundExposure(name), name)
+}
+
+// BondByAbbrev reads a fund that the spelled-out name patterns leave as
+// public equity as fixed income where its name holds an abbreviated
+// bond word.
+func BondByAbbrev(ac canonical.AssetClass, name string) canonical.AssetClass {
+	if ac == canonical.AssetClassPublicEquity && bondAbbrevRe.MatchString(name) {
+		return canonical.AssetClassFixedIncome
+	}
+	return ac
+}
+
+// RefineClass reads a lookup's type of a security over the pair an
+// adapter gave the instrument. Gold's class pass (gold.RefineClasses)
+// calls it for every instrument of every source that OpenFIGI types and
+// the config does not pin. It returns the (asset_class, vehicle) pair of
+// an instrument named name, which the adapter classed (ac, v) and
+// OpenFIGI types securityType. The precedence is the lookup's type, then
+// the adapter's own type, then the name:
+//
+//   - A bond's type (Govt, Corp, Muni, …) makes it (fixed_income, bond).
+//   - A share's type (Common Stock, Depositary Receipt, REIT, …) makes
+//     it (public_equity, stock).
+//   - A fund's type keeps an ETF or a fund as the adapter types it, an
+//     ETP's making a fund an ETF. Anything else becomes a fund (an ETP
+//     an ETF) with its exposure read from its name: a trust an adapter
+//     types as an equity, say.
+//   - Any other type (an option, a warrant, an index) leaves the pair.
+//
+// A pair the taxonomy does not admit leaves the pair too, so every pair
+// it returns satisfies canonical.ValidTaxonomyPair.
+func RefineClass(securityType string, ac canonical.AssetClass, v canonical.Vehicle,
+	name string) (canonical.AssetClass, canonical.Vehicle) {
+	refined, rv := ac, v
+	switch figi := canonical.OpenFIGIVehicle(securityType); figi {
+	case canonical.VehicleBond:
+		refined, rv = canonical.AssetClassFixedIncome, canonical.VehicleBond
+	case canonical.VehicleStock:
+		refined, rv = canonical.AssetClassPublicEquity, canonical.VehicleStock
+	case canonical.VehicleETF, canonical.VehicleFund:
+		switch {
+		case v == canonical.VehicleETF:
+			// OpenFIGI types an ETF "Mutual Fund": the adapter's type is
+			// the finer one.
+		case v == canonical.VehicleFund:
+			rv = figi
+		case figi == canonical.VehicleETF:
+			refined, rv = ETFExposureAbbrev(name), canonical.VehicleETF
+		default:
+			refined, rv = FundExposureAbbrev(name), canonical.VehicleFund
+		}
+	}
+	if !canonical.ValidTaxonomyPair(refined, rv) {
+		return ac, v
+	}
+	return refined, rv
+}

@@ -91,3 +91,47 @@ func TestStatementShapePair(t *testing.T) {
 		}
 	}
 }
+
+// RefineClass reads OpenFIGI's type over the pair an adapter's type and
+// the name give an instrument: a bond's or a share's type sets the
+// pair; a fund's keeps an ETF or a fund and makes anything else a fund,
+// its exposure read from the name; any other type, and a pair the
+// taxonomy refuses, leaves the pair. Names are invented.
+func TestRefineClassTakesTheLookupsTypeFirst(t *testing.T) {
+	pe, fi := canonical.AssetClassPublicEquity, canonical.AssetClassFixedIncome
+	cases := []struct {
+		figi    string
+		ac      canonical.AssetClass
+		v       canonical.Vehicle
+		name    string
+		wantAC  canonical.AssetClass
+		wantVeh canonical.Vehicle
+	}{
+		// A crypto trust an adapter types as an equity is a fund.
+		{"Mutual Fund", pe, canonical.VehicleStock, "EXAMPLE BITCOIN TRUST", canonical.AssetClassCrypto, canonical.VehicleFund},
+		{"ETP", pe, canonical.VehicleStock, "EXAMPLE ETHEREUM TRUST", canonical.AssetClassCrypto, canonical.VehicleETF},
+		{"Closed-End Fund", pe, canonical.VehicleStock, "EXAMPLE MUNICIPAL INCOME", fi, canonical.VehicleFund},
+		// An ETF an adapter types keeps its pair under OpenFIGI's fund type,
+		// its exposure read from its abbreviated name.
+		{"Mutual Fund", fi, canonical.VehicleETF, "EXAMPLE TOTAL BD MKT ETF", fi, canonical.VehicleETF},
+		{"ETP", pe, canonical.VehicleFund, "EXAMPLE UNIT TRUST", pe, canonical.VehicleETF},
+		{"Common Stock", pe, canonical.VehicleETF, "EXAMPLE HOLDINGS", pe, canonical.VehicleStock},
+		{"Depositary Receipt", canonical.AssetClassOther, canonical.VehicleOther, "EXAMPLE ADR", pe, canonical.VehicleStock},
+		{"Corp", pe, canonical.VehicleStock, "EXAMPLE 4% 2041", fi, canonical.VehicleBond},
+		{"Option", pe, canonical.VehicleOption, "EXAMPLE CALL", pe, canonical.VehicleOption},
+		{"", pe, canonical.VehicleStock, "EXAMPLE BITCOIN TRUST", pe, canonical.VehicleStock},
+		// A money-market fund OpenFIGI calls an ETP stays a fund: cash is
+		// no exchange-traded exposure.
+		{"ETP", canonical.AssetClassCash, canonical.VehicleFund, "EXAMPLE MONEY MARKET", canonical.AssetClassCash, canonical.VehicleFund},
+	}
+	for _, c := range cases {
+		ac, v := RefineClass(c.figi, c.ac, c.v, c.name)
+		if ac != c.wantAC || v != c.wantVeh {
+			t.Errorf("RefineClass(%q, %s, %s, %q) = (%s, %s), want (%s, %s)",
+				c.figi, c.ac, c.v, c.name, ac, v, c.wantAC, c.wantVeh)
+		}
+		if again, againV := RefineClass(c.figi, ac, v, c.name); again != ac || againV != v {
+			t.Errorf("RefineClass(%q) over its own (%s, %s) = (%s, %s)", c.figi, ac, v, again, againV)
+		}
+	}
+}

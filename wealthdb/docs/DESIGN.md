@@ -1374,8 +1374,6 @@ one place a kind's facts are stated:
 - `Labels`, whose words its names are, for `-p`;
 - `CashSigned`, the unsigned kinds whose cash it passes through signed
   (CASHFLOW.md §4);
-- `RefineClass`, where it takes a lookup's security type over its own
-  class;
 - `Settings`, the config key it reads and the parser the config calls
   while it compiles.
 
@@ -2500,8 +2498,8 @@ its transactions, because none is a per-source fact:
    table of that name, its `exposure` block into the `exposure_*`
    tables and its `yield` block into the `yield_*` tables (§7.6).
 3. The class pass (`gold.RefineClasses`) reads OpenFIGI's security
-   types over the classes of the instruments whose adapter takes them
-   (§13.8). Every later pass reads the classes.
+   types over the classes of every source's instruments (§13.8). Every
+   later pass reads the classes.
 4. The deterministic enrichment pass re-asserts every spend and income
    verdict in gold (§10.10, docs/SPENDING.md §3). An own-account move's
    two legs routinely arrive from two different sources, so neither is
@@ -4341,13 +4339,42 @@ trust whose security name never mentions the metal or the ETF-ness
 
 The class pass (`gold.RefineClasses`) decides the final pair once. It
 runs first among the passes a load or a reload ends with, over every
-source. A pinned instrument takes its pin. Otherwise, a source whose
-`silver.Source` states a `RefineClass` (schwab) takes OpenFIGI's security
-type, from the refdata source's `security_identities`, over its own
-pair. The pass patches the `instruments` row and its `positions` rows
+source. A pinned instrument takes its pin. Every other instrument takes
+OpenFIGI's security type, from the refdata source's
+`security_identities`, over the pair its adapter gave it. The pass
+reads one type per instrument, under the first of these keys that has
+one:
+
+1. the instrument's ISIN;
+2. the US ISIN its CUSIP stands for;
+3. its CUSIP;
+4. its ticker.
+
+So a type under an ISIN or a CUSIP always wins over one under the
+ticker. One reading of a type serves every source
+(`silver.RefineClass`):
+
+- A bond's type (`Govt`, `Corp`, `Muni`, `Mtge`, `Pool`) gives
+  `(fixed_income, bond)`.
+- A share's type (`Common Stock`, `Depositary Receipt`, `REIT`, …) gives
+  `(public_equity, stock)`.
+- A fund's type (`Mutual Fund`, `Closed-End Fund`, `ETP`, …) keeps an
+  ETF or a fund as the adapter types it. `ETP` makes a fund an ETF. Any
+  other instrument becomes a fund, or an ETF for `ETP`, with its
+  exposure from the name. A crypto trust an adapter types as an equity
+  reads as `(crypto, fund)`.
+- Any other type, such as an option's or a warrant's, leaves the pair.
+  So does a pair the taxonomy does not admit.
+
+OpenFIGI types an ETF as `Mutual Fund`, which names no exposure. So a
+fund's exposure comes from its name, as in §6.8. There the abbreviated
+bond words `BD`, `BND`, `TREAS`, `GOVT` and `INFL PROT` read as
+`fixed_income` too.
+
+The pass patches the `instruments` row and its `positions` rows
 together. It runs after every load, so a type a later refdata load
-brings reaches a source loaded before it (docs/adapters/schwab.md
-§4.2), and a pin reaches rows an earlier load wrote.
+brings reaches a source loaded before it, and a pin reaches rows an
+earlier load wrote.
 
 Two statements in the same family are not overrides of an adapter's
 answer but answers an adapter cannot have.

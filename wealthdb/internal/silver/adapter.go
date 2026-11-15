@@ -25,17 +25,6 @@ type Adapter interface {
 	Open(ctx context.Context, spec OpenSpec) (Connection, error)
 }
 
-// RefineClassFunc takes a lookup's type of a security over a source's
-// own reading of the instrument's class (Source.RefineClass). Gold's
-// class pass (gold.RefineClasses) calls it for every instrument of the
-// kind's sources that OpenFIGI states a security type for and the
-// config does not pin. It returns the (asset_class, vehicle) pair of an
-// instrument named name, which the adapter classed (ac, v) and OpenFIGI
-// types securityType; every pair it returns satisfies
-// canonical.ValidTaxonomyPair. It is an alias, so gold's class pass
-// takes it unconverted.
-type RefineClassFunc = func(securityType string, ac canonical.AssetClass, v canonical.Vehicle, name string) (canonical.AssetClass, canonical.Vehicle)
-
 // OpenSpec is everything Adapter.Open needs to know about the
 // configured silver source. Single-file adapters read Path. The merged
 // adapters (schwab = api + web, UBS = web + PSN) read Subsources and

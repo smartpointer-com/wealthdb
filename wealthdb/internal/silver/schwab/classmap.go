@@ -18,19 +18,20 @@ import (
 // they are routed to cash_balances by snapshots.go first.
 //
 //   - EQUITY                                     → (public_equity, stock)
-//   - COLLECTIVE_INVESTMENT + EXCHANGE_TRADED_FUND → (etfExposure(name), etf)
-//   - COLLECTIVE_INVESTMENT (other) / MUTUAL_FUND  → (fundExposure(name), fund)
-//   - ETF (the standalone assetType enum value)  → (etfExposure(name), etf)
+//   - COLLECTIVE_INVESTMENT + EXCHANGE_TRADED_FUND → (ETFExposureAbbrev(name), etf)
+//   - COLLECTIVE_INVESTMENT (other) / MUTUAL_FUND  → (FundExposureAbbrev(name), fund)
+//   - ETF (the standalone assetType enum value)  → (ETFExposureAbbrev(name), etf)
 //   - BOND / FIXED_INCOME                        → (fixed_income, bond)
 //   - OPTION                                     → (public_equity, option)  [equity underlying]
 //   - FUTURE                                     → (public_equity, future)  [equity underlying]
 //   - anything else / empty                      → (other, other)
 //
-// etfExposure reads the underlying exposure (crypto / metal /
-// fixed_income / else public_equity) from the fund/ETF's security
-// name — the wrapper (etf vs fund) is fixed by the assetType here,
-// only the exposure is name-derived. Gold's class pass reads
-// OpenFIGI's type of the security over this pair (RefineClass), and
+// silver.ETFExposureAbbrev reads the underlying exposure (crypto /
+// metal / fixed_income / else public_equity) from the fund/ETF's
+// security name, Schwab's abbreviated bond words included — the
+// wrapper (etf vs fund) is fixed by the assetType here, only the
+// exposure is name-derived. Gold's class pass reads OpenFIGI's type of
+// the security over this pair (silver.RefineClass), and
 // instrument_overrides over both. Every pair returned satisfies
 // canonical.ValidTaxonomyPair.
 func taxonomyFor(rawAssetType, rawInstrumentType, name string) (canonical.AssetClass, canonical.Vehicle) {
@@ -38,14 +39,14 @@ func taxonomyFor(rawAssetType, rawInstrumentType, name string) (canonical.AssetC
 	case "EQUITY":
 		return canonical.AssetClassPublicEquity, canonical.VehicleStock
 	case "ETF":
-		return etfExposure(name), canonical.VehicleETF
+		return silver.ETFExposureAbbrev(name), canonical.VehicleETF
 	case "MUTUAL_FUND":
-		return fundExposure(name), canonical.VehicleFund
+		return silver.FundExposureAbbrev(name), canonical.VehicleFund
 	case "COLLECTIVE_INVESTMENT":
 		if rawInstrumentType == "EXCHANGE_TRADED_FUND" {
-			return etfExposure(name), canonical.VehicleETF
+			return silver.ETFExposureAbbrev(name), canonical.VehicleETF
 		}
-		return fundExposure(name), canonical.VehicleFund
+		return silver.FundExposureAbbrev(name), canonical.VehicleFund
 	case "BOND", "FIXED_INCOME":
 		return canonical.AssetClassFixedIncome, canonical.VehicleBond
 	case "OPTION":
@@ -54,76 +55,6 @@ func taxonomyFor(rawAssetType, rawInstrumentType, name string) (canonical.AssetC
 		return canonical.AssetClassPublicEquity, canonical.VehicleFuture
 	}
 	return canonical.AssetClassOther, canonical.VehicleOther
-}
-
-// bondAbbrevRe matches the bond words Schwab abbreviates in a fund's
-// description ("TOTAL BD MKT", "SHORT-TERM TREAS", "INFL PROT"), which
-// silver.RefineETFExposure reads only spelled out.
-var bondAbbrevRe = regexp.MustCompile(`(?i)\bBN?D\b|\bTREAS\b|\bGOVT\b|\bINFL(?:ATION)?[- ]PROT`)
-
-// etfExposure is an ETF's exposure read from its name: RefineETFExposure,
-// with Schwab's abbreviated bond words read as fixed income.
-func etfExposure(name string) canonical.AssetClass {
-	return bondByAbbrev(silver.RefineETFExposure(name), name)
-}
-
-// fundExposure is the same reading for a fund that is not exchange
-// traded, a money-market fund's name read as cash first (FundExposure).
-func fundExposure(name string) canonical.AssetClass {
-	return bondByAbbrev(silver.FundExposure(name), name)
-}
-
-// bondByAbbrev reads a fund that the spelled-out name patterns leave as
-// public equity as fixed income where its name holds an abbreviated
-// bond word.
-func bondByAbbrev(ac canonical.AssetClass, name string) canonical.AssetClass {
-	if ac == canonical.AssetClassPublicEquity && bondAbbrevRe.MatchString(name) {
-		return canonical.AssetClassFixedIncome
-	}
-	return ac
-}
-
-// RefineClass is the kind's silver.Source.RefineClass: gold's class pass reads
-// OpenFIGI's type of a security over the pair the adapter gave it
-// (docs/adapters/schwab.md §4.2). The precedence is the lookup's type
-// where gold holds one, then Schwab's own instrument type, then the
-// name:
-//
-//   - A bond's type (Govt, Corp, Muni, …) makes it (fixed_income, bond).
-//   - A share's type (Common Stock, Depositary Receipt, REIT, …) makes
-//     it (public_equity, stock).
-//   - A fund's type keeps an ETF or a fund as Schwab types it, an ETP's
-//     making a fund an ETF. Anything else becomes a fund (an ETP an
-//     ETF) with its exposure read from its name: a trust Schwab types as
-//     an equity, say.
-//   - Any other type (an option, a warrant, an index) leaves the pair.
-//
-// A pair the taxonomy does not admit leaves the pair too.
-func (*Adapter) RefineClass(securityType string, ac canonical.AssetClass, v canonical.Vehicle,
-	name string) (canonical.AssetClass, canonical.Vehicle) {
-	refined, rv := ac, v
-	switch figi := canonical.OpenFIGIVehicle(securityType); figi {
-	case canonical.VehicleBond:
-		refined, rv = canonical.AssetClassFixedIncome, canonical.VehicleBond
-	case canonical.VehicleStock:
-		refined, rv = canonical.AssetClassPublicEquity, canonical.VehicleStock
-	case canonical.VehicleETF, canonical.VehicleFund:
-		switch {
-		case v == canonical.VehicleETF:
-			// OpenFIGI types an ETF "Mutual Fund": Schwab's type is the
-			// finer one.
-		case v == canonical.VehicleFund:
-			rv = figi
-		case figi == canonical.VehicleETF:
-			refined, rv = etfExposure(name), canonical.VehicleETF
-		default:
-			refined, rv = fundExposure(name), canonical.VehicleFund
-		}
-	}
-	if !canonical.ValidTaxonomyPair(refined, rv) {
-		return ac, v
-	}
-	return refined, rv
 }
 
 // Instrument-key and description shapes for the statement-history
@@ -149,8 +80,8 @@ var histMoneyMktRe = regexp.MustCompile(`(?i)\bMONEY MARKET\b|\bCASH RESERVES\b`
 // instrument dimension whenever the same instrument reappears with a
 // source-classified value. Money-market
 // funds are cash × fund (TAXONOMY.md §5.8); a word-ETF / mutual-fund
-// line takes its exposure from etfExposure(description) inside
-// the etf / fund vehicle. Every returned pair satisfies
+// line takes its exposure from silver.ETFExposureAbbrev(description)
+// inside the etf / fund vehicle. Every returned pair satisfies
 // canonical.ValidTaxonomyPair; instrument_overrides remains the
 // escape hatch for shapes these heuristics misjudge.
 func taxonomyHistorical(section, instrumentKey, description string) (canonical.AssetClass, canonical.Vehicle) {
@@ -165,7 +96,7 @@ func taxonomyHistorical(section, instrumentKey, description string) (canonical.A
 	case "Equities":
 		return canonical.AssetClassPublicEquity, canonical.VehicleStock
 	case "Exchange Traded Funds":
-		return etfExposure(description), canonical.VehicleETF
+		return silver.ETFExposureAbbrev(description), canonical.VehicleETF
 	case "Fixed Income":
 		return canonical.AssetClassFixedIncome, canonical.VehicleBond
 	case "Options":
@@ -185,7 +116,7 @@ func taxonomyHistoricalByShape(instrumentKey, description string) (canonical.Ass
 	}
 	ac, v := silver.StatementShapePair(instrumentKey, description)
 	if v == canonical.VehicleETF || v == canonical.VehicleFund {
-		ac = bondByAbbrev(ac, description)
+		ac = silver.BondByAbbrev(ac, description)
 	}
 	return ac, v
 }

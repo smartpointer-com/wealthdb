@@ -25,18 +25,16 @@ const kindName = "schwab"
 // Returns: flow-complete bank/pension, the standard bank external and
 // transfer-like sets, forward knobs defaulted (no-op). The API states a
 // corporate action's cash signed, and the adapter passes it through
-// (canonical.CashSignedKinds). The class pass reads a lookup's type of a
-// security over the adapter's class (RefineClass).
+// (canonical.CashSignedKinds).
 func init() {
 	rp := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
 	silver.Register(silver.Source{
-		Kind:        kindName,
-		Settings:    &silver.Settings{Key: "schwab", Parse: parseSettings},
-		Open:        (&Adapter{}).Open,
-		Returns:     &rp,
-		Lots:        lotPolicy(),
-		CashSigned:  []canonical.TxKind{canonical.TxKindCorporateAction},
-		RefineClass: (&Adapter{}).RefineClass,
+		Kind:       kindName,
+		Settings:   &silver.Settings{Key: "schwab", Parse: parseSettings},
+		Open:       (&Adapter{}).Open,
+		Returns:    &rp,
+		Lots:       lotPolicy(),
+		CashSigned: []canonical.TxKind{canonical.TxKindCorporateAction},
 	})
 }
 

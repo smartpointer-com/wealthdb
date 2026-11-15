@@ -35,9 +35,6 @@ type Source struct {
 	// the API states it, for the rows that move no shares
 	// (canonical.CashSignedKinds).
 	CashSigned []canonical.TxKind
-	// RefineClass, where set, takes a lookup's type of a security over
-	// the class the adapter gave it (ClassRefiners).
-	RefineClass RefineClassFunc
 	// Settings, where set, reads the kind's own object of a config's
 	// silver source (SettingsFor).
 	Settings *Settings
@@ -147,20 +144,6 @@ func SettingsFor(key string) (string, *Settings, bool) {
 		}
 	}
 	return "", nil, false
-}
-
-// ClassRefiners returns the RefineClass of every registered source
-// that states one, by kind.
-func ClassRefiners() map[string]RefineClassFunc {
-	registryMu.RLock()
-	defer registryMu.RUnlock()
-	out := map[string]RefineClassFunc{}
-	for kind, s := range registry {
-		if s.RefineClass != nil {
-			out[kind] = s.RefineClass
-		}
-	}
-	return out
 }
 
 func sortedKindsLocked() []string {
