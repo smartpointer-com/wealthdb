@@ -78,7 +78,11 @@ Conventions:
 Gold's `securities` is a different table. The exposure pass builds it
 from every source that describes a security (DESIGN.md §10.14).
 
-Columns pass through by name. Two things are added:
+Columns pass through by name. Every table but `compositions` and
+`lines` is declared once, in `canonical.RefTables`
+(`internal/canonical/refdata.go`): its silver and gold names and its
+columns. The stream reads it, and the writer inserts it, by that entry.
+Two things are added:
 
 - A composition's `fetched_at` is the row's `run_at`.
 - A line gets a `security_key` (§3), computed from its identifiers.

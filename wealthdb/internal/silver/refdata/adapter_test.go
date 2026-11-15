@@ -258,19 +258,26 @@ func TestSnapshotsMapRecords(t *testing.T) {
 	if k := got.FundLines[1].SecurityKey; len(k) < 5 || k[:5] != "name:" {
 		t.Errorf("cash line key = %q, want a name key", k)
 	}
-	if len(got.FundAttributes) != 1 || got.FundAttributes[0].UCITS == nil || !*got.FundAttributes[0].UCITS ||
-		got.FundAttributes[0].HedgedCurrency == nil || *got.FundAttributes[0].HedgedCurrency != "CHF" ||
-		got.FundAttributes[0].Lending != nil {
-		t.Errorf("attributes = %+v", got.FundAttributes)
+	if a := refRows(got, "fund_attributes"); len(a) != 1 {
+		t.Errorf("attributes = %v", a)
+	} else {
+		checkFields(t, "attributes", cells("fund_attributes", a[0], "ucits", "hedged_currency", "lending"),
+			[]string{"true", "CHF", "<nil>"})
 	}
-	if len(got.FundCounterparties) != 1 || got.FundCounterparties[0].Role != "swap" {
-		t.Errorf("counterparties = %+v", got.FundCounterparties)
+	if c := refRows(got, "fund_counterparties"); len(c) != 1 {
+		t.Errorf("counterparties = %v", c)
+	} else {
+		checkFields(t, "counterparties", cells("fund_counterparties", c[0], "role"), []string{"swap"})
 	}
-	if len(got.Securities) != 1 || got.Securities[0].FIGI == nil || *got.Securities[0].FIGI != "BBG000000002" {
-		t.Errorf("securities = %+v", got.Securities)
+	if s := refRows(got, "security_identities"); len(s) != 1 {
+		t.Errorf("securities = %v", s)
+	} else {
+		checkFields(t, "securities", cells("security_identities", s[0], "figi"), []string{"BBG000000002"})
 	}
-	if len(got.SecurityFacts) != 1 || got.SecurityFacts[0].Value != "3571" {
-		t.Errorf("facts = %+v", got.SecurityFacts)
+	if f := refRows(got, "security_facts"); len(f) != 1 {
+		t.Errorf("facts = %v", f)
+	} else {
+		checkFields(t, "facts", cells("security_facts", f[0], "value"), []string{"3571"})
 	}
 }
 
@@ -340,8 +347,8 @@ func TestSnapshotsBatchLinelessFundDays(t *testing.T) {
 	var batches []int
 	for _, b := range silvertest.Snapshots(t, openAdapter(t, path),
 		canonical.Window{Start: d1, End: d1 + days*86400, HasChanges: true}) {
-		if len(b.FundCharacteristics) > 0 {
-			batches = append(batches, len(b.FundCharacteristics))
+		if n := len(refRows(b, "fund_characteristics")); n > 0 {
+			batches = append(batches, n)
 		}
 	}
 	if !slices.Equal(batches, []int{20, 10}) {
@@ -404,23 +411,24 @@ func TestSnapshotsPageSecurities(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(b.Securities) > 0 {
+		bs, bf, bp := refRows(b, "security_identities"), refRows(b, "security_facts"), refRows(b, "security_period_facts")
+		if len(bs) > 0 {
 			secPages++
 		}
-		if len(b.SecurityFacts) > 0 {
+		if len(bf) > 0 {
 			factPages++
 		}
-		if len(b.SecurityPeriodFacts) > 0 {
+		if len(bp) > 0 {
 			periodPages++
 		}
-		for _, s := range b.Securities {
-			secs[fmt.Sprintf("%s|%d|%s", s.SecurityKey, s.AsOf, s.Provider)]++
+		for _, s := range bs {
+			secs[strings.Join(cells("security_identities", s, "security_key", "as_of", "provider"), "|")]++
 		}
-		for _, f := range b.SecurityFacts {
-			facts[f.SecurityKey]++
+		for _, f := range bf {
+			facts[cells("security_facts", f, "security_key")[0]]++
 		}
-		for _, f := range b.SecurityPeriodFacts {
-			periods[f.PeriodStart.Format(time.DateOnly)]++
+		for _, f := range bp {
+			periods[cells("security_period_facts", f, "period_start")[0]]++
 		}
 		if !more {
 			break
@@ -468,11 +476,38 @@ func seedYield(t *testing.T, db *sql.DB) {
 	        'us-gaap:EarningsPerShareDiluted', 'USD/shares', 2026, 'Q1', '10-Q', '2026-04-10', ?, '{"f":1}')`, d3, run2)
 }
 
-// fields renders optional values for a field-by-field comparison.
+// refRows is the batch's rows of the reference table gold
+// (canonical.RefTables).
+func refRows(b canonical.SnapshotBatch, gold string) [][]any {
+	return b.RefRowsOf(canonical.RefTableOf(gold))
+}
+
+// cells renders the gold columns cols of a row of the reference table
+// gold, as fields does.
+func cells(gold string, row []any, cols ...string) []string {
+	t := canonical.RefTableOf(gold)
+	vs := make([]any, len(cols))
+	for i, c := range cols {
+		vs[i] = row[t.Col(c)]
+	}
+	return fields(vs...)
+}
+
+// fields renders optional values for a field-by-field comparison: a
+// record's pointer fields and a reference row's values alike, nil as
+// <nil>, a date as YYYY-MM-DD and a payload as its text.
 func fields(vs ...any) []string {
 	out := make([]string, len(vs))
 	for i, v := range vs {
 		switch v := v.(type) {
+		case nil:
+			out[i] = "<nil>"
+		case canonical.Decimal:
+			out[i] = v.String()
+		case time.Time:
+			out[i] = v.Format(time.DateOnly)
+		case []byte:
+			out[i] = string(v)
 		case *string:
 			out[i] = "<nil>"
 			if v != nil {
@@ -534,36 +569,36 @@ func TestSnapshotsMapYieldRecords(t *testing.T) {
 	checkFields(t, "equity line", fields(e.CouponKind, e.IsDefault, e.InArrears, e.PaidInKind, e.ExchangeRate,
 		e.Duration, e.AccrualDate), []string{"<nil>", "<nil>", "<nil>", "<nil>", "<nil>", "<nil>", "<nil>"})
 
-	if len(got.FundRisk) != 2 {
-		t.Fatalf("fund risk = %+v, want 2 rows", got.FundRisk)
+	risk := refRows(got, "fund_risk")
+	if len(risk) != 2 {
+		t.Fatalf("fund risk = %v, want 2 rows", risk)
 	}
 	for i, want := range [][]string{
 		{"isin:XX0000000001", fmt.Sprint(d3), "USD", "10Y", "125.5", "12400", "<nil>", "<nil>", `{"r":1}`},
 		{"isin:XX0000000001", fmt.Sprint(d3), canonical.NoCurrency, "5Y", "<nil>", "<nil>", "3.25", "1.5", `{}`},
 	} {
-		r := got.FundRisk[i]
-		checkFields(t, "fund risk", fields(r.FundRef, r.AsOf, r.Currency, r.Tenor, r.DV01, r.DV100,
-			r.CreditIGDV01, r.CreditHYDV01, string(r.Payload)), want)
+		checkFields(t, "fund risk", cells("fund_risk", risk[i], "fund_ref", "as_of", "currency", "tenor", "dv01",
+			"dv100", "credit_ig_dv01", "credit_hy_dv01", "payload"), want)
 	}
 
-	if len(got.FundCharacteristics) != 2 {
-		t.Fatalf("characteristics = %+v, want 2", got.FundCharacteristics)
+	chars := refRows(got, "fund_characteristics")
+	if len(chars) != 2 {
+		t.Fatalf("characteristics = %v, want 2", chars)
 	}
 	for i, want := range [][]string{
 		{"isin:XX0000000001", fmt.Sprint(d3), "ishares", "credit_quality", "AAA", "42.5", `{}`},
 		{"isin:XX0000000001", fmt.Sprint(d3), "ishares", "effective_duration", "", "6.31", `{"c":1}`},
 	} {
-		c := got.FundCharacteristics[i]
-		checkFields(t, "characteristic", fields(c.FundRef, c.AsOf, c.Provider, c.Field, c.Label,
-			c.Value.String(), string(c.Payload)), want)
+		checkFields(t, "characteristic", cells("fund_characteristics", chars[i], "fund_ref", "as_of", "provider",
+			"field", "label", "value", "payload"), want)
 	}
 
-	if len(got.SecurityPeriodFacts) != 1 {
-		t.Fatalf("period facts = %+v, want 1", got.SecurityPeriodFacts)
+	periods := refRows(got, "security_period_facts")
+	if len(periods) != 1 {
+		t.Fatalf("period facts = %v, want 1", periods)
 	}
-	f := got.SecurityPeriodFacts[0]
-	checkFields(t, "period fact", fields(f.SecurityKey, f.Field, f.AsOf, &f.PeriodStart, f.Provider,
-		f.Value.String(), f.Scheme, f.Unit, f.FiscalYear, f.FiscalPeriod, f.Form, f.Filed, string(f.Payload)),
+	checkFields(t, "period fact", cells("security_period_facts", periods[0], "security_key", "field", "as_of",
+		"period_start", "provider", "value", "scheme", "unit", "fiscal_year", "fiscal_period", "form", "filed", "payload"),
 		[]string{"symbol:EXMP", "eps_diluted", fmt.Sprint(d3), "2025-12-01", "sec-edgar",
 			"1.23", "us-gaap:EarningsPerShareDiluted", "USD/shares", "2026", "Q1", "10-Q", "2026-04-10", `{"f":1}`})
 }
@@ -593,12 +628,13 @@ func TestSnapshotsReadAV1Silver(t *testing.T) {
 		t.Fatalf("window = %+v, want [d0, d3]", w)
 	}
 	got := silvertest.Merged(t, conn, w)
-	if len(got.FundCompositions) != 4 || len(got.FundLines) != 8 || len(got.Securities) != 1 ||
-		len(got.SecurityFacts) != 1 {
+	nSecs, nFacts := len(refRows(got, "security_identities")), len(refRows(got, "security_facts"))
+	if len(got.FundCompositions) != 4 || len(got.FundLines) != 8 || nSecs != 1 || nFacts != 1 {
 		t.Errorf("v1 records = %d compositions, %d lines, %d securities, %d facts",
-			len(got.FundCompositions), len(got.FundLines), len(got.Securities), len(got.SecurityFacts))
+			len(got.FundCompositions), len(got.FundLines), nSecs, nFacts)
 	}
-	if n := len(got.FundRisk) + len(got.FundCharacteristics) + len(got.SecurityPeriodFacts); n != 0 {
+	if n := len(refRows(got, "fund_risk")) + len(refRows(got, "fund_characteristics")) +
+		len(refRows(got, "security_period_facts")); n != 0 {
 		t.Errorf("a v1 silver states %d v2 records", n)
 	}
 	for _, l := range got.FundLines {
@@ -623,16 +659,16 @@ func TestChangeWindowSpansAYieldOnlyRun(t *testing.T) {
 	}{
 		{"fund_risk", `INSERT INTO fund_risk (fund_ref, as_of, currency, tenor, dv01, run_at)
 		    VALUES ('isin:XX0000000009', ?, 'USD', '1Y', '1', ?)`,
-			func(b canonical.SnapshotBatch) int { return len(b.FundRisk) }},
+			func(b canonical.SnapshotBatch) int { return len(refRows(b, "fund_risk")) }},
 		{"characteristics", `INSERT INTO characteristics (fund_ref, as_of, provider, field, value, run_at)
 		    VALUES ('isin:XX0000000009', ?, 'ishares', 'sec_yield', '4.1', ?)`,
-			func(b canonical.SnapshotBatch) int { return len(b.FundCharacteristics) }},
+			func(b canonical.SnapshotBatch) int { return len(refRows(b, "fund_characteristics")) }},
 		{"period_facts", `INSERT INTO period_facts (security_key, field, as_of, period_start, provider, value, run_at)
 		    VALUES ('symbol:EXMP', 'cash', ?, '2026-03-01', 'sec-edgar', '100', ?)`,
-			func(b canonical.SnapshotBatch) int { return len(b.SecurityPeriodFacts) }},
+			func(b canonical.SnapshotBatch) int { return len(refRows(b, "security_period_facts")) }},
 		{"dividend_events", `INSERT INTO dividend_events (ref, provider, event_id, as_of, kind, ex_date, run_at)
 		    VALUES ('symbol:EXMP', 'six', 'e1', ?, 'dividend', '2026-02-20', ?)`,
-			func(b canonical.SnapshotBatch) int { return len(b.DividendEvents) }},
+			func(b canonical.SnapshotBatch) int { return len(refRows(b, "dividend_calendar")) }},
 	} {
 		t.Run(c.table, func(t *testing.T) {
 			t.Parallel()
@@ -732,14 +768,9 @@ func TestSnapshotsMapDividendEvents(t *testing.T) {
 		d3, run2, d3, run2, d3, run2, d2, run2)
 	got := silvertest.Merged(t, openAdapter(t, path), canonical.Window{Start: d3, End: d3, HasChanges: true})
 	var lines []string
-	for _, e := range got.DividendEvents {
-		var status *string
-		if e.Status != nil {
-			st := string(*e.Status)
-			status = &st
-		}
-		lines = append(lines, strings.Join(fields(e.Ref, e.Provider, e.EventID, e.AsOf, string(e.Kind), e.ExDay,
-			e.RecordDay, e.PayDay, e.DeclaredDay, e.Amount, e.Currency, status), " "))
+	for _, e := range refRows(got, "dividend_calendar") {
+		lines = append(lines, strings.Join(cells("dividend_calendar", e, "ref", "provider", "event_id", "as_of", "kind",
+			"ex_day", "record_day", "pay_day", "declared_day", "amount", "currency", "status"), " "))
 	}
 	want := []string{
 		"isin:XX0000000001 ishares e1 " + fmt.Sprint(d3) + " dividend 2026-02-20 <nil> <nil> <nil> <nil> <nil> <nil>",
@@ -765,14 +796,12 @@ func TestSnapshotsReadFundReturns(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := silvertest.Merged(t, conn, w)
-	if len(got.FundReturns) != 2 {
-		t.Fatalf("returns = %+v, want 2 rows", got.FundReturns)
+	returns := refRows(got, "fund_returns")
+	if len(returns) != 2 {
+		t.Fatalf("returns = %v, want 2 rows", returns)
 	}
-	r := got.FundReturns[1]
-	if r.FundRef != "isin:XX0000000001" || r.AsOf != d1 || r.Month != "2025-12-31" || *r.ClassID != "C000000001" ||
-		r.TotalReturn.String() != "1.25" {
-		t.Errorf("return = %+v", r)
-	}
+	checkFields(t, "return", cells("fund_returns", returns[1], "fund_ref", "as_of", "month", "class_id", "total_return"),
+		[]string{"isin:XX0000000001", fmt.Sprint(d1), "2025-12-31", "C000000001", "1.25"})
 }
 
 // A return that is no decimal fails the load.
@@ -819,8 +848,8 @@ func TestSnapshotsReadAV3Silver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := silvertest.Merged(t, conn, w); len(got.FundCompositions) != 4 || len(got.FundReturns) != 0 {
-		t.Errorf("v3 records = %d compositions, %d returns", len(got.FundCompositions), len(got.FundReturns))
+	if got := silvertest.Merged(t, conn, w); len(got.FundCompositions) != 4 || len(refRows(got, "fund_returns")) != 0 {
+		t.Errorf("v3 records = %d compositions, %d returns", len(got.FundCompositions), len(refRows(got, "fund_returns")))
 	}
 }
 
@@ -843,8 +872,8 @@ func TestSnapshotsReadAV2Silver(t *testing.T) {
 		t.Errorf("window = %+v, want no span of dividend events", w)
 	}
 	got := silvertest.Merged(t, conn, w)
-	if len(got.FundCompositions) != 4 || len(got.FundRisk) != 2 || len(got.DividendEvents) != 0 {
-		t.Errorf("v2 records = %d compositions, %d risk rows, %d events", len(got.FundCompositions), len(got.FundRisk),
-			len(got.DividendEvents))
+	nRisk, nEvents := len(refRows(got, "fund_risk")), len(refRows(got, "dividend_calendar"))
+	if len(got.FundCompositions) != 4 || nRisk != 2 || nEvents != 0 {
+		t.Errorf("v2 records = %d compositions, %d risk rows, %d events", len(got.FundCompositions), nRisk, nEvents)
 	}
 }

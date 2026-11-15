@@ -6,7 +6,8 @@ import (
 )
 
 // ReferenceRows counts one record of each reference slice, every slice
-// of a batch from FundCompositions on, and none of the slices before.
+// of a batch from FundCompositions on, and none of the slices before. An
+// entry of Reference counts as its rows.
 func TestReferenceRowsCountsEveryReferenceSlice(t *testing.T) {
 	t.Parallel()
 	var b SnapshotBatch
@@ -23,6 +24,8 @@ func TestReferenceRowsCountsEveryReferenceSlice(t *testing.T) {
 			want++
 		}
 	}
+	// A reference table's entry counts its rows.
+	b.Reference[0].Rows = [][]any{{}}
 	if got := b.ReferenceRows(); want == 0 || got != want {
 		t.Errorf("ReferenceRows = %d, want %d", got, want)
 	}

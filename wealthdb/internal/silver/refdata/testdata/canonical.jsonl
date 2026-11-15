@@ -18,18 +18,18 @@
 {"AccrualDate":null,"AsOf":1772236800,"AssetType":"Cash","Basis":"holdings","CUSIP":null,"Country":null,"Coupon":null,"CouponKind":null,"Currency":"USD","Duration":null,"Exchange":null,"ExchangeRate":null,"FIGI":null,"FundRef":"isin:XX0000000001","ISIN":null,"InArrears":null,"Industry":null,"IsDefault":null,"LineNo":2,"LongAmount":null,"LongCurrency":null,"MarketValue":null,"Maturity":null,"ModifiedDuration":null,"Name":"USD CASH","PaidInKind":null,"Payload":{},"Quantity":null,"RealDuration":null,"RealYield":null,"Region":null,"RiskCountry":null,"Sector":null,"SecurityKey":"name:687438212fbb","ShortAmount":null,"ShortCurrency":null,"SilverSourceID":"","Ticker":null,"Weight":"39","YieldToCall":null,"YieldToMaturity":null,"YieldToWorst":null}
 {"AccrualDate":null,"AsOf":1772236800,"AssetType":"Equity","Basis":"holdings","CUSIP":null,"Country":"United States","Coupon":null,"CouponKind":null,"Currency":"USD","Duration":null,"Exchange":null,"ExchangeRate":null,"FIGI":null,"FundRef":"isin:XX0000000001","ISIN":"xx0000000002","InArrears":null,"Industry":null,"IsDefault":null,"LineNo":1,"LongAmount":null,"LongCurrency":null,"MarketValue":null,"Maturity":null,"ModifiedDuration":null,"Name":"Example Corp","PaidInKind":null,"Payload":{},"Quantity":null,"RealDuration":null,"RealYield":null,"Region":null,"RiskCountry":null,"Sector":"Information Technology","SecurityKey":"isin:XX0000000002","ShortAmount":null,"ShortCurrency":null,"SilverSourceID":"","Ticker":null,"Weight":"60.5","YieldToCall":null,"YieldToMaturity":null,"YieldToWorst":null}
 == fund_attributes 1
-{"AsOf":1772236800,"Depositary":null,"Distribution":null,"Domicile":"IE","FundRef":"isin:XX0000000001","HedgedCurrency":"CHF","IndexName":null,"LegalForm":null,"Lending":null,"Payload":{},"Replication":null,"SilverSourceID":"","TER":null,"UCITS":true}
+{"as_of":1772236800,"depositary":null,"distribution":null,"domicile":"IE","fund_ref":"isin:XX0000000001","hedged_currency":"CHF","index_name":null,"legal_form":null,"lending":null,"payload":{},"replication":null,"silver_source_id":"","ter":null,"ucits":true}
 == fund_counterparties 1
-{"AsOf":1772236800,"FundRef":"isin:XX0000000001","LEI":null,"Name":"Example Bank","Payload":{},"Role":"swap","Share":"12.5","SilverSourceID":""}
-== securities 1
-{"AsOf":1772236800,"CUSIP":null,"Exchange":null,"FIGI":"BBG000000002","ISIN":"XX0000000002","LEI":null,"ListingCurrency":null,"Name":"Example Corp","Payload":{},"Provider":"openfigi","SecurityKey":"symbol:EXMP","SecurityType":null,"SilverSourceID":"","Ticker":"EXMP"}
+{"as_of":1772236800,"fund_ref":"isin:XX0000000001","lei":null,"name":"Example Bank","payload":{},"role":"swap","share":"12.5","silver_source_id":""}
+== security_identities 1
+{"as_of":1772236800,"cusip":null,"exchange":null,"figi":"BBG000000002","isin":"XX0000000002","lei":null,"listing_currency":null,"name":"Example Corp","payload":{},"provider":"openfigi","security_key":"symbol:EXMP","security_type":null,"silver_source_id":"","ticker":"EXMP"}
 == security_facts 1
-{"AsOf":1772236800,"Field":"sic","Payload":{},"Provider":"sec-edgar","Scheme":"sic","SecurityKey":"symbol:EXMP","SilverSourceID":"","Value":"3571"}
+{"as_of":1772236800,"field":"sic","payload":{},"provider":"sec-edgar","scheme":"sic","security_key":"symbol:EXMP","silver_source_id":"","value":"3571"}
 == fund_risk 2
-{"AsOf":1772236800,"CreditHYDV01":"1.5","CreditIGDV01":"3.25","Currency":"XXX","DV01":null,"DV100":null,"FundRef":"isin:XX0000000001","Payload":{},"SilverSourceID":"","Tenor":"5Y"}
-{"AsOf":1772236800,"CreditHYDV01":null,"CreditIGDV01":null,"Currency":"USD","DV01":"125.5","DV100":"12400","FundRef":"isin:XX0000000001","Payload":{"r":1},"SilverSourceID":"","Tenor":"10Y"}
+{"as_of":1772236800,"credit_hy_dv01":"1.5","credit_ig_dv01":"3.25","currency":"XXX","dv01":null,"dv100":null,"fund_ref":"isin:XX0000000001","payload":{},"silver_source_id":"","tenor":"5Y"}
+{"as_of":1772236800,"credit_hy_dv01":null,"credit_ig_dv01":null,"currency":"USD","dv01":"125.5","dv100":"12400","fund_ref":"isin:XX0000000001","payload":{"r":1},"silver_source_id":"","tenor":"10Y"}
 == fund_characteristics 2
-{"AsOf":1772236800,"Field":"credit_quality","FundRef":"isin:XX0000000001","Label":"AAA","Payload":{},"Provider":"ishares","SilverSourceID":"","Value":"42.5"}
-{"AsOf":1772236800,"Field":"effective_duration","FundRef":"isin:XX0000000001","Label":"","Payload":{"c":1},"Provider":"ishares","SilverSourceID":"","Value":"6.31"}
+{"as_of":1772236800,"field":"credit_quality","fund_ref":"isin:XX0000000001","label":"AAA","payload":{},"provider":"ishares","silver_source_id":"","value":"42.5"}
+{"as_of":1772236800,"field":"effective_duration","fund_ref":"isin:XX0000000001","label":"","payload":{"c":1},"provider":"ishares","silver_source_id":"","value":"6.31"}
 == security_period_facts 1
-{"AsOf":1772236800,"Field":"eps_diluted","Filed":"2026-04-10T00:00:00Z","FiscalPeriod":"Q1","FiscalYear":2026,"Form":"10-Q","Payload":{"f":1},"PeriodStart":"2025-12-01T00:00:00Z","Provider":"sec-edgar","Scheme":"us-gaap:EarningsPerShareDiluted","SecurityKey":"symbol:EXMP","SilverSourceID":"","Unit":"USD/shares","Value":"1.23"}
+{"as_of":1772236800,"field":"eps_diluted","filed":"2026-04-10T00:00:00Z","fiscal_period":"Q1","fiscal_year":2026,"form":"10-Q","payload":{"f":1},"period_start":"2025-12-01T00:00:00Z","provider":"sec-edgar","scheme":"us-gaap:EarningsPerShareDiluted","security_key":"symbol:EXMP","silver_source_id":"","unit":"USD/shares","value":"1.23"}

@@ -370,7 +370,7 @@ func (w Window) Changes(kind string) bool {
 // gold declares no foreign keys, so the order within the load's
 // transaction does not matter.
 //
-// The reference records (refdata.go) are dated by AsOf, which plays
+// The reference records (refdata.go) are dated by as_of, which plays
 // SnapshotAt's part: the load's windowed delete clears them by it.
 type SnapshotBatch struct {
 	Portfolios   []PortfolioChange
@@ -381,30 +381,47 @@ type SnapshotBatch struct {
 	CashBalances []CashBalanceChange
 	FxRates      []FxRateChange
 
-	FundCompositions   []FundCompositionChange
-	FundLines          []FundLineChange
-	FundAttributes     []FundAttributesChange
-	FundCounterparties []FundCounterpartyChange
-	Securities         []SecurityChange
-	SecurityFacts      []SecurityFactChange
+	FundCompositions []FundCompositionChange
+	FundLines        []FundLineChange
+	// Reference holds the rows of the tables RefTables declares, at most
+	// one entry per table as AppendRef builds them.
+	Reference []RefRows
 
-	FundRisk            []FundRiskChange
-	FundReturns         []FundReturnChange
-	FundCharacteristics []FundCharacteristicChange
-	SecurityPeriodFacts []SecurityPeriodFactChange
-	RateObservations    []RateObservationChange
-
-	DividendEvents  []DividendEventChange
-	StatedPeriods   []StatedPeriodChange
-	ExposureReports []ExposureReportChange
+	RateObservations []RateObservationChange
+	StatedPeriods    []StatedPeriodChange
+	ExposureReports  []ExposureReportChange
 }
 
 // ReferenceRows is the number of reference records in b.
 func (b *SnapshotBatch) ReferenceRows() int {
-	return len(b.FundCompositions) + len(b.FundLines) + len(b.FundAttributes) +
-		len(b.FundCounterparties) + len(b.Securities) + len(b.SecurityFacts) +
-		len(b.FundRisk) + len(b.FundReturns) + len(b.FundCharacteristics) + len(b.SecurityPeriodFacts) +
-		len(b.RateObservations) + len(b.DividendEvents) + len(b.StatedPeriods) + len(b.ExposureReports)
+	n := len(b.FundCompositions) + len(b.FundLines) +
+		len(b.RateObservations) + len(b.StatedPeriods) + len(b.ExposureReports)
+	for _, r := range b.Reference {
+		n += len(r.Rows)
+	}
+	return n
+}
+
+// AppendRef adds row, a value per column of t, to b's rows of t.
+func (b *SnapshotBatch) AppendRef(t *RefTable, row []any) {
+	for i := range b.Reference {
+		if b.Reference[i].Table == t {
+			b.Reference[i].Rows = append(b.Reference[i].Rows, row)
+			return
+		}
+	}
+	b.Reference = append(b.Reference, RefRows{Table: t, Rows: [][]any{row}})
+}
+
+// RefRowsOf is every row of t in b, in the order the batch holds them.
+func (b *SnapshotBatch) RefRowsOf(t *RefTable) [][]any {
+	var out [][]any
+	for _, r := range b.Reference {
+		if r.Table == t {
+			out = append(out, r.Rows...)
+		}
+	}
+	return out
 }
 
 // SetSource sets SilverSourceID on every record of b. Adapters leave
@@ -420,16 +437,8 @@ func (b *SnapshotBatch) SetSource(id string) {
 	setSource(b.FxRates, id, func(r *FxRateChange) *string { return &r.SilverSourceID })
 	setSource(b.FundCompositions, id, func(r *FundCompositionChange) *string { return &r.SilverSourceID })
 	setSource(b.FundLines, id, func(r *FundLineChange) *string { return &r.SilverSourceID })
-	setSource(b.FundAttributes, id, func(r *FundAttributesChange) *string { return &r.SilverSourceID })
-	setSource(b.FundCounterparties, id, func(r *FundCounterpartyChange) *string { return &r.SilverSourceID })
-	setSource(b.Securities, id, func(r *SecurityChange) *string { return &r.SilverSourceID })
-	setSource(b.SecurityFacts, id, func(r *SecurityFactChange) *string { return &r.SilverSourceID })
-	setSource(b.FundRisk, id, func(r *FundRiskChange) *string { return &r.SilverSourceID })
-	setSource(b.FundReturns, id, func(r *FundReturnChange) *string { return &r.SilverSourceID })
-	setSource(b.FundCharacteristics, id, func(r *FundCharacteristicChange) *string { return &r.SilverSourceID })
-	setSource(b.SecurityPeriodFacts, id, func(r *SecurityPeriodFactChange) *string { return &r.SilverSourceID })
+	setSource(b.Reference, id, func(r *RefRows) *string { return &r.SilverSourceID })
 	setSource(b.RateObservations, id, func(r *RateObservationChange) *string { return &r.SilverSourceID })
-	setSource(b.DividendEvents, id, func(r *DividendEventChange) *string { return &r.SilverSourceID })
 	setSource(b.StatedPeriods, id, func(r *StatedPeriodChange) *string { return &r.SilverSourceID })
 	setSource(b.ExposureReports, id, func(r *ExposureReportChange) *string { return &r.SilverSourceID })
 }

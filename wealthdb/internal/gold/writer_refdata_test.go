@@ -30,10 +30,8 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 	accrual := time.Date(2040, 9, 15, 0, 0, 0, 0, time.UTC)
 	periodStart := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
 	filed := time.Date(1970, 2, 10, 0, 0, 0, 0, time.UTC)
-	year := int64(1970)
 	exDay, recordDay := time.Date(1970, 1, 2, 0, 0, 0, 0, time.UTC), time.Date(1970, 1, 3, 0, 0, 0, 0, time.UTC)
 	payDay, declaredDay := time.Date(1970, 1, 9, 0, 0, 0, 0, time.UTC), time.Date(1969, 12, 20, 0, 0, 0, 0, time.UTC)
-	final := canonical.DividendFinal
 	until := int64(259200)
 	b := &canonical.SnapshotBatch{
 		FundCompositions: []canonical.FundCompositionChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001",
@@ -51,37 +49,8 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 			Duration:     d("6.25"), ModifiedDuration: d("6.1"), YieldToMaturity: d("4.35"), YieldToWorst: d("4.2"),
 			YieldToCall: d("4.1"), RealDuration: d("5.5"), RealYield: d("1.85"), AccrualDate: &accrual,
 			Payload: []byte(`{"l":1,"lei":"QQQQ00000000000000L1"}`), Region: s("europe")}},
-		FundAttributes: []canonical.FundAttributesChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001",
-			AsOf: 86400, Domicile: s("QA"), LegalForm: s("SICAV"), UCITS: &yes, Replication: s("physical"),
-			Distribution: s("dis"), TER: d("0.12"), HedgedCurrency: s("QLH"), Lending: &no, IndexName: s("Qland Index"),
-			Depositary: s("Example Bank"), Payload: []byte(`{"a":1}`)}},
-		FundCounterparties: []canonical.FundCounterpartyChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001",
-			AsOf: 86400, Role: "swap", Name: "Example Bank", LEI: s("QQQQ00000000000000QQ"), Share: d("4.5"),
-			Payload: []byte(`{"p":1}`)}},
-		Securities: []canonical.SecurityChange{{SilverSourceID: "test-src", SecurityKey: "symbol:QRV", AsOf: 86400,
-			Provider: "p2", ISIN: s("XX0000000003"), CUSIP: s("Q0000AB02"), FIGI: s("BBG00000Q002"),
-			LEI: s("QQQQ00000000000000QR"), Ticker: s("QRV2"), Exchange: s("QX"), Name: s("Qorvant Holdings"),
-			SecurityType: s("Common Stock"), ListingCurrency: s("QLI"), Payload: []byte(`{"s":1}`)}},
-		SecurityFacts: []canonical.SecurityFactChange{{SilverSourceID: "test-src", SecurityKey: "symbol:QRV",
-			Field: "sic", AsOf: 86400, Provider: "p3", Value: "2834", Scheme: s("sic"), Payload: []byte(`{"f":1}`)}},
-		FundRisk: []canonical.FundRiskChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001", AsOf: 86400,
-			Currency: "QLJ", Tenor: "10Y", DV01: d("125.5"), DV100: d("12400"), CreditIGDV01: d("3.25"),
-			CreditHYDV01: d("1.5"), Payload: []byte(`{"r":1}`)}},
-		FundReturns: []canonical.FundReturnChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001", AsOf: 86400,
-			Month: "1970-01-31", ClassID: s("C000000001"), TotalReturn: *d("1.25"), Payload: []byte(`{"t":1}`)}},
-		FundCharacteristics: []canonical.FundCharacteristicChange{{SilverSourceID: "test-src",
-			FundRef: "isin:XX0000000001", AsOf: 86400, Provider: "p4", Field: "credit_quality", Label: "AAA",
-			Value: *d("42.5"), Payload: []byte(`{"q":1}`)}},
-		SecurityPeriodFacts: []canonical.SecurityPeriodFactChange{{SilverSourceID: "test-src", SecurityKey: "symbol:QRV",
-			Field: "eps_diluted", AsOf: 2592000, PeriodStart: periodStart, Provider: "p5", Value: *d("1.23"),
-			Scheme: s("us-gaap:EarningsPerShareDiluted"), Unit: s("QLK/shares"), FiscalYear: &year,
-			FiscalPeriod: s("Q1"), Form: s("10-Q"), Filed: &filed, Payload: []byte(`{"e":1}`)}},
 		RateObservations: []canonical.RateObservationChange{{SilverSourceID: "test-src", SeriesID: "QLRATE10",
 			AsOf: 86400, Value: *d("4.06"), Payload: []byte(`{"o":1}`)}},
-		DividendEvents: []canonical.DividendEventChange{{SilverSourceID: "test-src", Ref: "isin:XX0000000001",
-			Provider: "p6", EventID: "ev1", AsOf: 345600, Kind: canonical.DividendKindCapitalGain,
-			ExDay: &exDay, RecordDay: &recordDay, PayDay: &payDay, DeclaredDay: &declaredDay, Amount: d("0.1234"),
-			Currency: s("QLM"), Status: &final}},
 		StatedPeriods: []canonical.StatedPeriodChange{{SilverSourceID: "test-src", AccountExternalID: "ACCT-Q",
 			AsOf: 2592000, PeriodStart: 86400, Currency: "QLN", BeginningValue: d("100"), EndingValue: d("125.5"),
 			Accrual: d("1"), NetAdditions: d("-10"), NetGain: d("35.5"), Income: d("2"), Fees: d("0.5"),
@@ -91,6 +60,41 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 			Dimensions: map[string]map[string]float64{"region": {"europe": 60, "north_america": 40}},
 			Source:     []byte(`{"lines":2}`), Note: "Example Feeder Fund II"}},
 	}
+	for _, r := range []struct {
+		table string
+		row   map[string]any
+	}{
+		{"fund_attributes", map[string]any{"fund_ref": "isin:XX0000000001", "as_of": int64(86400), "domicile": "QA",
+			"legal_form": "SICAV", "ucits": true, "replication": "physical", "distribution": "dis", "ter": *d("0.12"),
+			"hedged_currency": "QLH", "lending": false, "index_name": "Qland Index", "depositary": "Example Bank",
+			"payload": []byte(`{"a":1}`)}},
+		{"fund_counterparties", map[string]any{"fund_ref": "isin:XX0000000001", "as_of": int64(86400), "role": "swap",
+			"name": "Example Bank", "lei": "QQQQ00000000000000QQ", "share": *d("4.5"), "payload": []byte(`{"p":1}`)}},
+		{"security_identities", map[string]any{"security_key": "symbol:QRV", "as_of": int64(86400), "provider": "p2",
+			"isin": "XX0000000003", "cusip": "Q0000AB02", "figi": "BBG00000Q002", "lei": "QQQQ00000000000000QR",
+			"ticker": "QRV2", "exchange": "QX", "name": "Qorvant Holdings", "security_type": "Common Stock",
+			"listing_currency": "QLI", "payload": []byte(`{"s":1}`)}},
+		{"security_facts", map[string]any{"security_key": "symbol:QRV", "field": "sic", "as_of": int64(86400),
+			"provider": "p3", "value": "2834", "scheme": "sic", "payload": []byte(`{"f":1}`)}},
+		{"fund_risk", map[string]any{"fund_ref": "isin:XX0000000001", "as_of": int64(86400), "currency": "QLJ",
+			"tenor": "10Y", "dv01": *d("125.5"), "dv100": *d("12400"), "credit_ig_dv01": *d("3.25"),
+			"credit_hy_dv01": *d("1.5"), "payload": []byte(`{"r":1}`)}},
+		{"fund_returns", map[string]any{"fund_ref": "isin:XX0000000001", "as_of": int64(86400), "month": "1970-01-31",
+			"class_id": "C000000001", "total_return": *d("1.25"), "payload": []byte(`{"t":1}`)}},
+		{"fund_characteristics", map[string]any{"fund_ref": "isin:XX0000000001", "as_of": int64(86400), "provider": "p4",
+			"field": "credit_quality", "label": "AAA", "value": *d("42.5"), "payload": []byte(`{"q":1}`)}},
+		{"security_period_facts", map[string]any{"security_key": "symbol:QRV", "field": "eps_diluted",
+			"as_of": int64(2592000), "period_start": periodStart, "provider": "p5", "value": *d("1.23"),
+			"scheme": "us-gaap:EarningsPerShareDiluted", "unit": "QLK/shares", "fiscal_year": int64(1970),
+			"fiscal_period": "Q1", "form": "10-Q", "filed": filed, "payload": []byte(`{"e":1}`)}},
+		{"dividend_calendar", map[string]any{"ref": "isin:XX0000000001", "provider": "p6", "event_id": "ev1",
+			"as_of": int64(345600), "kind": "capital_gain", "ex_day": exDay, "record_day": recordDay,
+			"pay_day": payDay, "declared_day": declaredDay, "amount": *d("0.1234"), "currency": "QLM",
+			"status": "final"}},
+	} {
+		b.AppendRef(canonical.RefTableOf(r.table), refRow(t, r.table, r.row))
+	}
+	b.SetSource("test-src")
 	before := filledTables(t, db, ctx)
 	inTx(t, db, ctx, func(w *Writer) error { return w.InsertReference(ctx, b) })
 
@@ -176,11 +180,10 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 
 	// A later statement of the distribution replaces its row, though the
 	// day it was stated on lies past the window that cleared the first.
-	restated := b.DividendEvents[0]
-	restated.AsOf, restated.Amount = 777600, d("0.2")
-	inTx(t, db, ctx, func(w *Writer) error {
-		return w.InsertReference(ctx, &canonical.SnapshotBatch{DividendEvents: []canonical.DividendEventChange{restated}})
-	})
+	calendar := canonical.RefTableOf("dividend_calendar")
+	restated := slices.Clone(b.RefRowsOf(calendar)[0])
+	restated[calendar.Col("as_of")], restated[calendar.Col("amount")] = int64(777600), *d("0.2")
+	inTx(t, db, ctx, func(w *Writer) error { return w.InsertReference(ctx, batch(restated)) })
 	var restatedRow string
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) || ' ' || MAX(as_of) || ' ' || MAX(amount) FROM dividend_calendar`).
 		Scan(&restatedRow); err != nil || restatedRow != "1 777600 0.20000000" {
@@ -190,12 +193,9 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 	// A writer's first batch of a ref and provider clears that pair's
 	// rows, so one the batch does not state leaves; a second batch of the
 	// pair adds to the first, and another provider's rows of the ref stay.
-	event := func(provider, id string) canonical.DividendEventChange {
-		return canonical.DividendEventChange{SilverSourceID: "test-src", Ref: "isin:XX0000000001", Provider: provider,
-			EventID: id, AsOf: 864000, Kind: canonical.DividendKindDividend}
-	}
-	batch := func(es ...canonical.DividendEventChange) *canonical.SnapshotBatch {
-		return &canonical.SnapshotBatch{DividendEvents: es}
+	event := func(provider, id string) []any {
+		return refRow(t, "dividend_calendar", map[string]any{"ref": "isin:XX0000000001", "provider": provider,
+			"event_id": id, "as_of": int64(864000), "kind": "dividend"})
 	}
 	inTx(t, db, ctx, func(w *Writer) error { return w.InsertReference(ctx, batch(event("p7", "evA"))) })
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -211,19 +211,19 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 	}
 
 	// A kind or a status outside the vocabulary is refused.
-	other := canonical.DividendEventStatus("paid")
-	for _, e := range []canonical.DividendEventChange{
-		{SilverSourceID: "test-src", Ref: "isin:XX0000000004", Provider: "p6", EventID: "x", Kind: "interest"},
-		{SilverSourceID: "test-src", Ref: "isin:XX0000000004", Provider: "p6", EventID: "y",
-			Kind: canonical.DividendKindDividend, Status: &other},
+	for _, e := range [][]any{
+		refRow(t, "dividend_calendar", map[string]any{"ref": "isin:XX0000000004", "provider": "p6", "event_id": "x",
+			"kind": "interest"}),
+		refRow(t, "dividend_calendar", map[string]any{"ref": "isin:XX0000000004", "provider": "p6", "event_id": "y",
+			"kind": "dividend", "status": "paid"}),
 	} {
 		tx, err := db.BeginTx(context.Background(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = NewWriter(tx).InsertReference(ctx, &canonical.SnapshotBatch{DividendEvents: []canonical.DividendEventChange{e}})
+		err = NewWriter(tx).InsertReference(ctx, batch(e))
 		if err == nil || !strings.Contains(err.Error(), "invalid") || !strings.Contains(err.Error(), "isin:XX0000000004") {
-			t.Errorf("%+v: %v", e, err)
+			t.Errorf("%v: %v", e, err)
 		}
 		_ = tx.Rollback()
 	}
@@ -296,6 +296,32 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 	}
 }
 
+// refRow is a row of the reference table gold (canonical.RefTables): the
+// value values names for each column, nil for one it leaves out.
+func refRow(t *testing.T, gold string, values map[string]any) []any {
+	t.Helper()
+	tbl := canonical.RefTableOf(gold)
+	row := make([]any, len(tbl.Cols))
+	for name, v := range values {
+		i := tbl.Col(name)
+		if i < 0 {
+			t.Fatalf("%s has no column %s", gold, name)
+		}
+		row[i] = v
+	}
+	return row
+}
+
+// batch is a batch of distributions of the source test-src.
+func batch(events ...[]any) *canonical.SnapshotBatch {
+	b := &canonical.SnapshotBatch{}
+	for _, e := range events {
+		b.AppendRef(canonical.RefTableOf("dividend_calendar"), e)
+	}
+	b.SetSource("test-src")
+	return b
+}
+
 // filledTables are gold's tables that hold a row, by name.
 func filledTables(t *testing.T, db *sql.DB, ctx context.Context) []string {
 	t.Helper()
@@ -340,7 +366,8 @@ func TestPayloadLEI(t *testing.T) {
 // TestEveryReferenceTableHasAKind pins that a load's windowed delete clears
 // each reference table over the span the stream re-emits it over: every
 // table names its kind of record but rate_observations, stated_periods
-// and exposure_reports, which their streams write over the window whole.
+// and exposure_reports, which their streams write over the window whole,
+// and a table canonical.RefTables declares names the registry's.
 func TestEveryReferenceTableHasAKind(t *testing.T) {
 	t.Parallel()
 	kinds := map[string]bool{}
@@ -362,6 +389,14 @@ func TestEveryReferenceTableHasAKind(t *testing.T) {
 	for table := range whole {
 		if !slices.Contains(ReferenceTables, table) {
 			t.Errorf("%s is not a reference table", table)
+		}
+	}
+	// A table the registry declares is a reference table whose kind is
+	// the registry's.
+	for _, rt := range canonical.RefTables {
+		i := slices.IndexFunc(SourceTables, func(st SourceTable) bool { return st.Name == rt.Gold })
+		if i < 0 || SourceTables[i].Class != ClassReference || SourceTables[i].RefKind != rt.Kind {
+			t.Errorf("registry table %s (kind %s) is no reference table of that kind", rt.Gold, rt.Kind)
 		}
 	}
 }

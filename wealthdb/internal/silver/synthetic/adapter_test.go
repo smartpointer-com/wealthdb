@@ -1150,12 +1150,12 @@ func TestSnapshotsCarryReferenceRecords(t *testing.T) {
 	}
 	var comps []canonical.FundCompositionChange
 	var lines []canonical.FundLineChange
-	var facts []canonical.SecurityFactChange
+	var facts []any
 	var fx int
 	for _, b := range silvertest.Snapshots(t, conn, w) {
 		comps = append(comps, b.FundCompositions...)
 		lines = append(lines, b.FundLines...)
-		facts = append(facts, b.SecurityFacts...)
+		facts = append(facts, refColumn(b, "security_facts", "value")...)
 		fx += len(b.FxRates)
 	}
 	if fx != 1 {
@@ -1167,7 +1167,7 @@ func TestSnapshotsCarryReferenceRecords(t *testing.T) {
 	if len(lines) != 1 || lines[0].SecurityKey != "symbol:ABCD" {
 		t.Errorf("lines = %+v", lines)
 	}
-	if len(facts) != 1 || facts[0].Value != "Technology" {
+	if len(facts) != 1 || facts[0] != "Technology" {
 		t.Errorf("facts = %+v", facts)
 	}
 }
@@ -1230,14 +1230,15 @@ func TestSnapshotsCarryYieldRecordsAndRates(t *testing.T) {
 		all.FundLines[0].YieldToMaturity == nil || all.FundLines[0].YieldToMaturity.String() != "4.5" {
 		t.Errorf("lines = %+v, want day 4's with its v2 columns", all.FundLines)
 	}
-	if len(all.FundRisk) != 1 || all.FundRisk[0].AsOf != day(4) {
-		t.Errorf("fund risk = %+v, want day 4's alone", all.FundRisk)
+	if risk := refColumn(all, "fund_risk", "as_of"); len(risk) != 1 || risk[0] != day(4) {
+		t.Errorf("fund risk days = %v, want day 4's alone", risk)
 	}
-	if len(all.FundCharacteristics) != 1 || all.FundCharacteristics[0].Value.String() != "4.4" {
-		t.Errorf("characteristics = %+v, want day 4's alone", all.FundCharacteristics)
+	if chars := refColumn(all, "fund_characteristics", "value"); len(chars) != 1 ||
+		chars[0].(canonical.Decimal).String() != "4.4" {
+		t.Errorf("characteristics = %v, want day 4's alone", chars)
 	}
-	if len(all.SecurityPeriodFacts) != 1 || all.SecurityPeriodFacts[0].AsOf != day(4) {
-		t.Errorf("period facts = %+v, want day 4's alone", all.SecurityPeriodFacts)
+	if periods := refColumn(all, "security_period_facts", "as_of"); len(periods) != 1 || periods[0] != day(4) {
+		t.Errorf("period fact days = %v, want day 4's alone", periods)
 	}
 	if len(all.RateObservations) != 1 || all.RateObservations[0].AsOf != day(4) ||
 		all.RateObservations[0].SeriesID != "DGS10" || all.RateObservations[0].Value.String() != "4.2" {
@@ -1265,8 +1266,8 @@ func TestSnapshotsWithoutYieldTables(t *testing.T) {
 	var lines []canonical.FundLineChange
 	for _, b := range silvertest.Snapshots(t, conn, window(t, conn, -1)) {
 		lines = append(lines, b.FundLines...)
-		if n := len(b.FundRisk) + len(b.FundCharacteristics) + len(b.SecurityPeriodFacts) +
-			len(b.RateObservations); n != 0 {
+		if n := len(refColumn(b, "fund_risk", "as_of")) + len(refColumn(b, "fund_characteristics", "as_of")) +
+			len(refColumn(b, "security_period_facts", "as_of")) + len(b.RateObservations); n != 0 {
 			t.Errorf("batch states %d v2 records", n)
 		}
 	}
@@ -1306,18 +1307,20 @@ func TestSnapshotsCarryDividendEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 		all := silvertest.Merged(t, conn, w)
+		events := canonical.RefTableOf("dividend_calendar")
+		rows := all.RefRowsOf(events)
 		var got []string
-		for _, e := range all.DividendEvents {
-			if e.RecordDay != nil {
-				got = append(got, e.Ref+" "+e.EventID)
+		for _, e := range rows {
+			if e[events.Col("record_day")] != nil {
+				got = append(got, e[events.Col("ref")].(string)+" "+e[events.Col("event_id")].(string))
 			}
 		}
 		want := ""
 		if withTable {
 			want = "symbol:EQF1 e2|symbol:EQF1 e4"
 		}
-		if strings.Join(got, "|") != want || len(got) != len(all.DividendEvents) || len(all.FundCompositions) != 1 {
-			t.Errorf("with the table %v: events %+v, compositions %d", withTable, all.DividendEvents,
+		if strings.Join(got, "|") != want || len(got) != len(rows) || len(all.FundCompositions) != 1 {
+			t.Errorf("with the table %v: events %v, compositions %d", withTable, rows,
 				len(all.FundCompositions))
 		}
 	}
@@ -1351,4 +1354,15 @@ func TestPositionValuedAt(t *testing.T) {
 	if seen < 2 {
 		t.Fatalf("day 2 holds %d positions, want the two the fixture seeds", seen)
 	}
+}
+
+// refColumn is the values of the gold column col of every row the batch
+// holds of the reference table gold (canonical.RefTables).
+func refColumn(b canonical.SnapshotBatch, gold, col string) []any {
+	t := canonical.RefTableOf(gold)
+	var out []any
+	for _, row := range b.RefRowsOf(t) {
+		out = append(out, row[t.Col(col)])
+	}
+	return out
 }

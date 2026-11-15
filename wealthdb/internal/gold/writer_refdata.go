@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
@@ -17,27 +18,100 @@ import (
 
 // InsertReference writes every reference record of a batch.
 func (w *Writer) InsertReference(ctx context.Context, b *canonical.SnapshotBatch) error {
-	for _, insert := range []func() error{
+	inserts := []func() error{
 		func() error { return w.insertFundCompositions(ctx, b.FundCompositions) },
 		func() error { return w.insertFundLines(ctx, b.FundLines) },
-		func() error { return w.insertFundAttributes(ctx, b.FundAttributes) },
-		func() error { return w.insertFundCounterparties(ctx, b.FundCounterparties) },
-		func() error { return w.insertSecurityIdentities(ctx, b.Securities) },
-		func() error { return w.insertSecurityFacts(ctx, b.SecurityFacts) },
-		func() error { return w.insertFundRisk(ctx, b.FundRisk) },
-		func() error { return w.insertFundReturns(ctx, b.FundReturns) },
-		func() error { return w.insertFundCharacteristics(ctx, b.FundCharacteristics) },
-		func() error { return w.insertSecurityPeriodFacts(ctx, b.SecurityPeriodFacts) },
+	}
+	for _, t := range canonical.RefTables {
+		for _, r := range b.Reference {
+			if r.Table == t {
+				inserts = append(inserts, func() error { return w.insertRefRows(ctx, r) })
+			}
+		}
+	}
+	inserts = append(inserts,
 		func() error { return w.insertRateObservations(ctx, b.RateObservations) },
-		func() error { return w.insertDividendEvents(ctx, b.DividendEvents) },
 		func() error { return w.insertStatedPeriods(ctx, b.StatedPeriods) },
-		func() error { return w.insertExposureReports(ctx, b.ExposureReports) },
-	} {
+		func() error { return w.insertExposureReports(ctx, b.ExposureReports) })
+	for _, insert := range inserts {
 		if err := insert(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// insertRefRows writes one table's rows of a batch (canonical.RefTables),
+// each a value per column after the source's id. A value outside its
+// column's vocabulary (RefTable.Enums) is refused. A table read whole by
+// a group (RefTable.WholeBy) replaces each group's rows: the first batch
+// of a writer to name a group clears its rows first, so gold drops what
+// silver no longer holds, such as a distribution whose days the source
+// corrected, and each row replaces one of the same key an earlier
+// statement wrote.
+func (w *Writer) insertRefRows(ctx context.Context, r canonical.RefRows) error {
+	t := r.Table
+	if len(r.Rows) == 0 {
+		return nil
+	}
+	values := func(row []any, cols []string) []any {
+		out := make([]any, len(cols))
+		for i, c := range cols {
+			out[i] = row[t.Col(c)]
+		}
+		return out
+	}
+	keyText := func(row []any) string {
+		parts := make([]string, len(t.Key))
+		for i, v := range values(row, t.Key) {
+			parts[i] = fmt.Sprint(v)
+		}
+		return strings.Join(parts, ", ")
+	}
+	for i, row := range r.Rows {
+		for _, c := range t.Cols {
+			allowed, ok := t.Enums[c.Gold]
+			if v := row[t.Col(c.Gold)]; ok && v != nil && !slices.Contains(allowed, v.(string)) {
+				return fmt.Errorf("%s row %d (%s): invalid %s %q", t.Gold, i, keyText(row), c.Gold, v)
+			}
+		}
+	}
+	verb := "INSERT"
+	if len(t.WholeBy) > 0 {
+		verb = "INSERT OR REPLACE"
+		if w.replaced == nil {
+			w.replaced = map[[3]string]bool{}
+		}
+		where := make([]string, len(t.WholeBy))
+		for i, c := range t.WholeBy {
+			where[i] = c + " = ?"
+		}
+		clear := "DELETE FROM " + t.Gold + "\n WHERE silver_source_id = ? AND " + strings.Join(where, " AND ")
+		for _, row := range r.Rows {
+			by := values(row, t.WholeBy)
+			parts := make([]string, len(by))
+			for i, v := range by {
+				parts[i] = fmt.Sprint(v)
+			}
+			group := [3]string{t.Gold, r.SilverSourceID, strings.Join(parts, "\x00")}
+			if w.replaced[group] {
+				continue
+			}
+			if _, err := w.tx.ExecContext(ctx, clear, append([]any{r.SilverSourceID}, by...)...); err != nil {
+				return fmt.Errorf("%s: clear (%s): %w", t.Gold, strings.Join(parts, ", "), err)
+			}
+			w.replaced[group] = true
+		}
+	}
+	cols := make([]string, len(t.Cols))
+	for i, c := range t.Cols {
+		cols[i] = c.Gold
+	}
+	head := "\n" + verb + " INTO " + t.Gold + " (\n    silver_source_id, " + strings.Join(cols, ", ") + "\n) VALUES "
+	return InsertChunked(ctx, w.tx, t.Gold, head, placeholders("silver_source_id, "+strings.Join(cols, ", ")), len(r.Rows),
+		func(i int, args []any) []any {
+			return append(append(args, r.SilverSourceID), r.Rows[i]...)
+		})
 }
 
 func (w *Writer) insertFundCompositions(ctx context.Context, batch []canonical.FundCompositionChange) error {
@@ -128,162 +202,6 @@ INSERT INTO fund_lines (
 		})
 }
 
-func (w *Writer) insertFundAttributes(ctx context.Context, batch []canonical.FundAttributesChange) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	const head = `
-INSERT INTO fund_attributes (
-    silver_source_id, fund_ref, as_of, domicile, legal_form, ucits, replication,
-    distribution, ter, hedged_currency, lending, index_name, depositary, payload
-) VALUES `
-	return InsertChunked(ctx, w.tx, "fund_attributes", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.FundRef, r.AsOf,
-				nullable(r.Domicile), nullable(r.LegalForm), nullable(r.UCITS),
-				nullable(r.Replication), nullable(r.Distribution), nullable(r.TER),
-				nullable(r.HedgedCurrency), nullable(r.Lending),
-				nullable(r.IndexName), nullable(r.Depositary), nullableJSON(r.Payload))
-		})
-}
-
-func (w *Writer) insertFundCounterparties(ctx context.Context, batch []canonical.FundCounterpartyChange) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	const head = `
-INSERT INTO fund_counterparties (
-    silver_source_id, fund_ref, as_of, role, name, lei, share, payload
-) VALUES `
-	return InsertChunked(ctx, w.tx, "fund_counterparties", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.FundRef, r.AsOf, r.Role, r.Name,
-				nullable(r.LEI), nullable(r.Share), nullableJSON(r.Payload))
-		})
-}
-
-func (w *Writer) insertSecurityIdentities(ctx context.Context, batch []canonical.SecurityChange) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	const head = `
-INSERT INTO security_identities (
-    silver_source_id, security_key, as_of, provider, isin, cusip, figi, lei,
-    ticker, exchange, name, security_type, listing_currency, payload
-) VALUES `
-	return InsertChunked(ctx, w.tx, "security_identities", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.SecurityKey, r.AsOf, r.Provider,
-				nullable(r.ISIN), nullable(r.CUSIP), nullable(r.FIGI),
-				nullable(r.LEI), nullable(r.Ticker), nullable(r.Exchange),
-				nullable(r.Name), nullable(r.SecurityType),
-				nullable(r.ListingCurrency), nullableJSON(r.Payload))
-		})
-}
-
-func (w *Writer) insertSecurityFacts(ctx context.Context, batch []canonical.SecurityFactChange) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	const head = `
-INSERT INTO security_facts (
-    silver_source_id, security_key, field, as_of, provider, value, scheme, payload
-) VALUES `
-	return InsertChunked(ctx, w.tx, "security_facts", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.SecurityKey, r.Field, r.AsOf, r.Provider,
-				r.Value, nullable(r.Scheme), nullableJSON(r.Payload))
-		})
-}
-
-func (w *Writer) insertFundRisk(ctx context.Context, batch []canonical.FundRiskChange) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	const head = `
-INSERT INTO fund_risk (
-    silver_source_id, fund_ref, as_of, currency, tenor,
-    dv01, dv100, credit_ig_dv01, credit_hy_dv01, payload
-) VALUES `
-	return InsertChunked(ctx, w.tx, "fund_risk", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.FundRef, r.AsOf, r.Currency, r.Tenor,
-				nullable(r.DV01), nullable(r.DV100),
-				nullable(r.CreditIGDV01), nullable(r.CreditHYDV01), nullableJSON(r.Payload))
-		})
-}
-
-func (w *Writer) insertFundReturns(ctx context.Context, batch []canonical.FundReturnChange) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	const head = `
-INSERT INTO fund_returns (
-    silver_source_id, fund_ref, as_of, month, class_id, total_return, payload
-) VALUES `
-	return InsertChunked(ctx, w.tx, "fund_returns", head,
-		`(?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.FundRef, r.AsOf, r.Month, nullable(r.ClassID), r.TotalReturn,
-				nullableJSON(r.Payload))
-		})
-}
-
-func (w *Writer) insertFundCharacteristics(ctx context.Context, batch []canonical.FundCharacteristicChange) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	const head = `
-INSERT INTO fund_characteristics (
-    silver_source_id, fund_ref, as_of, provider, field, label, value, payload
-) VALUES `
-	return InsertChunked(ctx, w.tx, "fund_characteristics", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.FundRef, r.AsOf, r.Provider, r.Field, r.Label,
-				r.Value, nullableJSON(r.Payload))
-		})
-}
-
-func (w *Writer) insertSecurityPeriodFacts(ctx context.Context, batch []canonical.SecurityPeriodFactChange) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	const head = `
-INSERT INTO security_period_facts (
-    silver_source_id, security_key, field, as_of, period_start, provider, value,
-    scheme, unit, fiscal_year, fiscal_period, form, filed, payload
-) VALUES `
-	return InsertChunked(ctx, w.tx, "security_period_facts", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.SecurityKey, r.Field, r.AsOf, r.PeriodStart, r.Provider, r.Value,
-				nullable(r.Scheme), nullable(r.Unit), nullable(r.FiscalYear),
-				nullable(r.FiscalPeriod), nullable(r.Form), nullable(r.Filed), nullableJSON(r.Payload))
-		})
-}
-
 func (w *Writer) insertRateObservations(ctx context.Context, batch []canonical.RateObservationChange) error {
 	if len(batch) == 0 {
 		return nil
@@ -360,57 +278,6 @@ INSERT INTO exposure_reports (
 			r := &batch[i]
 			return append(args, r.SilverSourceID, r.InstrumentExternalID, r.AsOf, dims[i],
 				nullableJSON(r.Source), nullableEnumValue(r.Note))
-		})
-}
-
-// insertDividendEvents writes a batch's distributions, each replacing the
-// row of the same distribution an earlier statement wrote. The first
-// batch to name a source's ref and provider clears that pair's rows
-// first: the reference stream reads each pair whole
-// (silver.NewReferenceStream), so gold drops what silver no longer
-// holds, such as a distribution whose days the source corrected. A kind
-// or a status outside the vocabulary is refused.
-func (w *Writer) insertDividendEvents(ctx context.Context, batch []canonical.DividendEventChange) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	for i, r := range batch {
-		if !r.Kind.Valid() {
-			return fmt.Errorf("dividend_calendar row %d (%s, %s, %s): invalid kind %q", i, r.Ref, r.Provider, r.EventID,
-				r.Kind)
-		}
-		if r.Status != nil && !r.Status.Valid() {
-			return fmt.Errorf("dividend_calendar row %d (%s, %s, %s): invalid status %q", i, r.Ref, r.Provider,
-				r.EventID, *r.Status)
-		}
-	}
-	if w.replaced == nil {
-		w.replaced = map[[3]string]bool{}
-	}
-	for _, r := range batch {
-		pair := [3]string{r.SilverSourceID, r.Ref, r.Provider}
-		if w.replaced[pair] {
-			continue
-		}
-		if _, err := w.tx.ExecContext(ctx, `DELETE FROM dividend_calendar
- WHERE silver_source_id = ? AND ref = ? AND provider = ?`, pair[0], pair[1], pair[2]); err != nil {
-			return fmt.Errorf("dividend_calendar: clear (%s, %s): %w", r.Ref, r.Provider, err)
-		}
-		w.replaced[pair] = true
-	}
-	const head = `
-INSERT OR REPLACE INTO dividend_calendar (
-    silver_source_id, ref, provider, event_id, as_of, kind, ex_day, record_day, pay_day, declared_day,
-    amount, currency, status
-) VALUES `
-	return InsertChunked(ctx, w.tx, "dividend_calendar", head,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
-		func(i int, args []any) []any {
-			r := &batch[i]
-			return append(args,
-				r.SilverSourceID, r.Ref, r.Provider, r.EventID, r.AsOf, string(r.Kind),
-				nullable(r.ExDay), nullable(r.RecordDay), nullable(r.PayDay), nullable(r.DeclaredDay),
-				nullable(r.Amount), nullable(r.Currency), nullableEnumString(r.Status))
 		})
 }
 

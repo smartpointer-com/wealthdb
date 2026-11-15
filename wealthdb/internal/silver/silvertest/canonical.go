@@ -25,7 +25,9 @@ import (
 // included, so a payload compares as parsed JSON. The lines are grouped
 // by record type under a "== name count" header, and sorted within the
 // group, so the order of batches and of records in a batch does not
-// show. An empty group is left out.
+// show. A reference table of canonical.RefTables is a group named after
+// its gold table, its records keyed by gold's columns. An empty group is
+// left out.
 //
 // It reads what a load reads and nothing more: Snapshots, Transactions
 // and RealizedLots are called only when the window has changes.
@@ -71,6 +73,12 @@ func DumpCanonical(ctx context.Context, conn silver.Connection, since int64) ([]
 		return nil, fmt.Errorf("conn.Snapshots: close: %w", err)
 	}
 	for i := range av.NumField() {
+		if av.Type().Field(i).Name == "Reference" {
+			if err := writeReference(&out, all.Reference); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err := writeGroup(&out, snakeCase(av.Type().Field(i).Name), av.Field(i).Interface()); err != nil {
 			return nil, err
 		}
@@ -129,6 +137,36 @@ func writeGroup(out *bytes.Buffer, name string, records any) error {
 	for _, l := range lines {
 		out.WriteString(l)
 		out.WriteByte('\n')
+	}
+	return nil
+}
+
+// writeReference writes the rows of each table canonical.RefTables
+// declares as a group of its own, in the registry's order, named after
+// its gold table: each row an object of silver_source_id and its gold
+// columns.
+func writeReference(out *bytes.Buffer, rows []canonical.RefRows) error {
+	for _, t := range canonical.RefTables {
+		var records []map[string]any
+		for _, r := range rows {
+			if r.Table != t {
+				continue
+			}
+			for _, row := range r.Rows {
+				rec := map[string]any{"silver_source_id": r.SilverSourceID}
+				for i, c := range t.Cols {
+					v := row[i]
+					if b, ok := v.([]byte); ok && c.Kind == canonical.RefJSON {
+						v = json.RawMessage(b)
+					}
+					rec[c.Gold] = v
+				}
+				records = append(records, rec)
+			}
+		}
+		if err := writeGroup(out, t.Gold, records); err != nil {
+			return err
+		}
 	}
 	return nil
 }
