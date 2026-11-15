@@ -166,3 +166,91 @@ func TestRetryGoldLockReturnsOtherErrorsAtOnce(t *testing.T) {
 		t.Errorf("err = %v after %d attempts, want %v after 1", err, attempts, boom)
 	}
 }
+
+// pendingGold is a fresh gold whose derived set carries another build's
+// hash: this binary has a derived set the file has not applied.
+func pendingGold(t *testing.T) string {
+	t.Helper()
+	path := freshGold(t)
+	db, err := gold.Open(path, gold.ModeReadWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE derived_state SET hash = 'another build'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// goldPending reports whether the gold at path has a migration or a
+// derived set this binary carries still to apply.
+func goldPending(t *testing.T, path string) bool {
+	t.Helper()
+	db, err := gold.Open(path, gold.ModeReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	pending, err := gold.MigrationsPending(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pending
+}
+
+// TestReadOpenStaysReadOnlyBesideAReader: a read of a gold at this
+// binary's schema opens read-only, so it attaches beside another
+// process's reader at once, without the ladder, and cannot write.
+func TestReadOpenStaysReadOnlyBesideAReader(t *testing.T) {
+	path := freshGold(t)
+	defer func(l []time.Duration) { goldLockLadder = l }(goldLockLadder)
+	goldLockLadder = []time.Duration{0}
+
+	startGoldReader(t, path, time.Second)
+
+	db, err := openGoldForRead(globalFlags{}, &config.Config{GoldDB: path})
+	if err != nil {
+		t.Fatalf("read open beside a reader: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE read_open_probe (x INTEGER)`); err == nil {
+		t.Error("the read handle took a write; want a read-only handle")
+	}
+}
+
+// TestReadOpenAppliesAPendingSet: a read of a gold with a derived set
+// still to apply opens read-write and applies it, as a write would.
+func TestReadOpenAppliesAPendingSet(t *testing.T) {
+	t.Parallel()
+	path := pendingGold(t)
+	db, err := openGoldForRead(globalFlags{}, &config.Config{GoldDB: path})
+	if err != nil {
+		t.Fatalf("read open of a pending gold: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if goldPending(t, path) {
+		t.Error("the read left the derived set pending; want it applied")
+	}
+}
+
+// TestReadOnlyReadLeavesAPendingSet: with -r a read opens read-only
+// whatever is pending, and reads the file as it is.
+func TestReadOnlyReadLeavesAPendingSet(t *testing.T) {
+	t.Parallel()
+	path := pendingGold(t)
+	db, err := openGoldForRead(globalFlags{ForceReadOnly: true}, &config.Config{GoldDB: path})
+	if err != nil {
+		t.Fatalf("read-only read of a pending gold: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !goldPending(t, path) {
+		t.Error("a read-only read applied the derived set")
+	}
+}

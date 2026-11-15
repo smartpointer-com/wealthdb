@@ -19,12 +19,15 @@ import (
 const defaultMissingGoldMsg = "gold database %q does not exist. Run 'wealthdb init' first (requires write access)."
 
 // openGoldForRead opens the gold DB for a read-side subcommand. It
-// picks read-write when the filesystem allows it — so an outstanding
-// migration is applied on open — and read-only when -r is set or the
-// path isn't writable. Returns a clear ExitMissingDB error
-// when the DB doesn't exist yet. missingDBMsg optionally overrides
-// the ExitMissingDB message (a format string taking the DB path)
-// for commands whose wording differs. The caller owns db.Close().
+// opens read-only and stays so while the database is at this binary's
+// schema, so reads run beside one another and beside the MCP server.
+// A gold with a migration or a derived set still to apply is opened
+// read-write instead, which applies them, where the filesystem allows
+// it; with -r or an unwritable path it stays read-only. Returns a
+// clear ExitMissingDB error when the DB doesn't exist yet.
+// missingDBMsg optionally overrides the ExitMissingDB message (a
+// format string taking the DB path) for commands whose wording
+// differs. The caller owns db.Close().
 func openGoldForRead(g globalFlags, cfg *config.Config, missingDBMsg ...string) (*sql.DB, error) {
 	dec, err := pathmode.Detect(cfg.GoldDB, g.ForceReadOnly, false)
 	if err != nil {
@@ -37,18 +40,33 @@ func openGoldForRead(g globalFlags, cfg *config.Config, missingDBMsg ...string) 
 		}
 		return nil, errs.Newf(errs.ExitMissingDB, msg, cfg.GoldDB)
 	}
-	openMode := gold.ModeReadWrite
-	if dec.Mode == pathmode.ModeReadOnly {
-		openMode = gold.ModeReadOnly
+	// The read-only open meets a writer, and the read-write one meets
+	// any reader: the MCP server holds a read-only handle for each
+	// call. Both wait on the same ladder.
+	ctx := context.Background()
+	open := func(mode gold.Mode) (*sql.DB, error) {
+		db, err := retryGoldLock(ctx, func() (*sql.DB, error) { return gold.Open(cfg.GoldDB, mode) })
+		if err != nil {
+			return nil, errs.Wrap(errs.ExitOpenFailed, err)
+		}
+		return db, nil
 	}
-	// A read command opens read-write where it can, and so meets a
-	// reader as a write command does: the MCP server holds a read-only
-	// handle for each call. It waits on the same ladder.
-	db, err := retryGoldLock(context.Background(), func() (*sql.DB, error) { return gold.Open(cfg.GoldDB, openMode) })
+	db, err := open(gold.ModeReadOnly)
+	if err != nil || dec.Mode == pathmode.ModeReadOnly {
+		return db, err
+	}
+	pending, err := gold.MigrationsPending(ctx, db)
 	if err != nil {
+		_ = db.Close()
 		return nil, errs.Wrap(errs.ExitOpenFailed, err)
 	}
-	return db, nil
+	if !pending {
+		return db, nil
+	}
+	if err := db.Close(); err != nil {
+		return nil, errs.Wrap(errs.ExitOpenFailed, err)
+	}
+	return open(gold.ModeReadWrite)
 }
 
 // gateGoldForWrite verifies the gold DB exists and is writable for a

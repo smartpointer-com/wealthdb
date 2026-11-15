@@ -478,8 +478,8 @@ empty config.
 
 `wealthdb` supports two access modes against the gold database:
 
-- **Read-write** — every subcommand §4.1 marks `(RW)`, plus all the
-  read commands.
+- **Read-write** — every subcommand §4.1 marks `(RW)`, and a read
+  command on a gold with a schema change still to apply.
 - **Read-only** — the ones §4.1 marks `(RO)`. Two are conditional and
   the table says so: `categorizations` dumps read-only but writes
   under `--forget`, and `categorize` writes unless `--dry-run`, which
@@ -523,10 +523,13 @@ In read-only mode, `wealthdb` opens the gold DB with DuckDB's
 `access_mode='read_only'` option. This is a hard guarantee at the
 driver level — even a buggy subcommand cannot write. Read-only
 opens are also the only concurrent ones: several of them attach
-the same file at once. They are not what a read subcommand gets
-by default, though — `openGoldForRead` picks read-write whenever
-the filesystem permits, so that concurrency needs `-r` /
-`--read-only` or a path this process cannot write.
+the same file at once. A read subcommand opens read-only
+(`openGoldForRead`). It reads the schema version and the derived
+set's hash. When the binary carries a migration or a derived set
+the file has not applied, it opens read-write instead, so the read
+applies them as a write command would. With `-r` / `--read-only`
+or a path this process cannot write, it stays read-only and reads
+the file as it is.
 
 In read-write mode, `wealthdb` opens with the default access mode.
 DuckDB takes an exclusive lock on the file for as long as the
