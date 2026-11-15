@@ -3,7 +3,6 @@ package synthetic
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -30,38 +29,34 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	if !w.HasChanges {
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
-	rows, err := c.db.QueryContext(ctx, `
+
+	var out canonical.TransactionBatch
+	if err := silver.ScanRows(ctx, c.db, "synthetic Transactions", `
 SELECT transaction_id, occurred_at, account_id, instrument_id, asset_class, vehicle,
        instrument_hint, kind, currency, gross_amount, net_amount, quantity, price,
        description, memo, counterparty, provider_category, check_number, payload
   FROM transactions
  WHERE occurred_at BETWEEN ? AND ?
- ORDER BY occurred_at, transaction_id`, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("synthetic Transactions: %w", err)
-	}
-	defer rows.Close()
-
-	var out canonical.TransactionBatch
-	for rows.Next() {
+ ORDER BY occurred_at, transaction_id`, func(rows *sql.Rows) error {
 		var (
 			id, account, rawKind, ccy, payload    string
 			occurred                              int64
 			instrument, assetClass, vehicle, hint sql.NullString
-			gross, net, quantity, price           sql.NullString
+			quantity, price                       *canonical.Decimal
+			gross, net                            *canonical.Decimal
 			description, memo, counterparty       sql.NullString
 			providerCategory, checkNumber         sql.NullString
 		)
 		if err := rows.Scan(&id, &occurred, &account, &instrument, &assetClass, &vehicle,
-			&hint, &rawKind, &ccy, &gross, &net, &quantity, &price,
+			&hint, &rawKind, &ccy, silver.Dec(&gross, silver.DecText), silver.Dec(&net, silver.DecText), silver.Dec(&quantity, silver.DecText), silver.Dec(&price, silver.DecText),
 			&description, &memo, &counterparty, &providerCategory, &checkNumber,
 			&payload); err != nil {
-			return nil, err
+			return err
 		}
 		var extra annotations
 		kind := txKind(rawKind, &extra)
 		ac, veh := tradedPair(assetClass.String, vehicle.String, &extra)
-		netAmount := canonical.ApplyCanonicalSign(kind, silver.DecimalPtrOrNil(net))
+		netAmount := canonical.ApplyCanonicalSign(kind, net)
 		tx := canonical.TransactionChange{
 			TransactionExternalID: id,
 			OccurredAt:            occurred,
@@ -71,10 +66,10 @@ SELECT transaction_id, occurred_at, account_id, instrument_id, asset_class, vehi
 			Vehicle:               veh,
 			Kind:                  kind,
 			Currency:              ccy,
-			GrossAmount:           canonical.ApplyCanonicalSign(kind, silver.DecimalPtrOrNil(gross)),
+			GrossAmount:           canonical.ApplyCanonicalSign(kind, gross),
 			NetAmount:             netAmount,
-			Quantity:              silver.DecimalPtrOrNil(quantity),
-			Price:                 silver.DecimalPtrOrNil(price),
+			Quantity:              quantity,
+			Price:                 price,
 			Description:           silver.StrPtrIfNonEmpty(description.String),
 			Memo:                  silver.StrPtrIfNonEmpty(memo.String),
 			Counterparty:          silver.StrPtrIfNonEmpty(counterparty.String),
@@ -88,8 +83,8 @@ SELECT transaction_id, occurred_at, account_id, instrument_id, asset_class, vehi
 			tx.InstrumentHint = hint.String
 		}
 		out.Transactions = append(out.Transactions, tx)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil

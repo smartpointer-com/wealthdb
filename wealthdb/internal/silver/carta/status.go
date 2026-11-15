@@ -2,7 +2,7 @@ package carta
 
 import (
 	"context"
-	"fmt"
+	"database/sql"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -27,20 +27,14 @@ SELECT MIN(snapshot_at), MAX(snapshot_at) FROM (
 // first statement, so these dates can fall outside the content span, and
 // ChangeWindow widens the window to cover them.
 func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int64, ok bool, err error) {
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT flow_date FROM cash_flows WHERE flow_date IS NOT NULL`)
-	if err != nil {
-		return 0, 0, false, fmt.Errorf("carta transactionExtrema: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "carta transactionExtrema", `SELECT flow_date FROM cash_flows WHERE flow_date IS NOT NULL`, func(rows *sql.Rows) error {
 		var d string
 		if err := rows.Scan(&d); err != nil {
-			return 0, 0, false, err
+			return err
 		}
 		ts, parsed := flowDateUnix(d)
 		if !parsed {
-			continue
+			return nil
 		}
 		if !ok || ts < oldest {
 			oldest = ts
@@ -49,8 +43,11 @@ func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int
 			latest = ts
 		}
 		ok = true
+		return nil
+	}); err != nil {
+		return 0, 0, false, err
 	}
-	return oldest, latest, ok, rows.Err()
+	return oldest, latest, ok, nil
 }
 
 // clock: a new download, any dump past the watermark, re-emits the full

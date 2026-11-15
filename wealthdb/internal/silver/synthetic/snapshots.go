@@ -91,21 +91,14 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // than a table states none of its records.
 func (c *Connection) withReference(ctx context.Context, w canonical.Window, s silver.SnapshotStream) (silver.SnapshotStream, error) {
 	streams := []silver.SnapshotStream{s}
-	ok, err := silver.HasTables(ctx, c.db, silver.ReferenceTables...)
-	if err != nil {
-		return nil, err
-	}
-	if ok {
+	if c.schema.hasReference() {
 		ref, err := silver.NewReferenceStream(ctx, c.db, w)
 		if err != nil {
 			return nil, err
 		}
 		streams = append(streams, ref)
 	}
-	if ok, err = silver.HasTables(ctx, c.db, silver.RatesTable); err != nil {
-		return nil, err
-	}
-	if ok {
+	if c.schema.rates {
 		streams = append(streams, silver.NewRateStream(c.db, w))
 	}
 	if len(streams) == 1 {
@@ -221,21 +214,19 @@ SELECT %[1]s, MIN(occurred_at), MAX(occurred_at)
  WHERE occurred_at BETWEEN ? AND ?
    AND %[1]s IS NOT NULL AND %[1]s <> ''
  GROUP BY %[1]s`, column)
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("synthetic transaction %s references: %w", column, err)
-	}
-	defer rows.Close()
 	out := map[string]seenSpan{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, fmt.Sprintf("synthetic transaction %s references", column), q, func(rows *sql.Rows) error {
 		var id string
 		var span seenSpan
 		if err := rows.Scan(&id, &span.first, &span.last); err != nil {
-			return nil, err
+			return err
 		}
 		out[id] = span
+		return nil
+	}, w.Start, w.End); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ---- facts ------------------------------------------------------------------
@@ -252,18 +243,13 @@ type positionRef struct {
 // position, a defect in the silver like a dangling id.
 func (c *Connection) readPositions(ctx context.Context, w canonical.Window,
 	lots map[positionRef][]canonical.PositionLotChange, at func(int64) *canonical.SnapshotBatch) error {
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "synthetic positions", `
 SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicle,
        currency, quantity, market_value, book_value, accrued_interest,
        acquisition_date, payload, valued_at
   FROM positions
  WHERE snapshot_at BETWEEN ? AND ?
- ORDER BY snapshot_at, account_id, position_key`, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("synthetic positions: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ ORDER BY snapshot_at, account_id, position_key`, func(rows *sql.Rows) error {
 		var (
 			snap                                   int64
 			account, key, assetClass, vehicle, ccy string
@@ -303,8 +289,8 @@ SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicl
 			l.InstrumentExternalID, l.Currency = pos.InstrumentExternalID, pos.Currency
 			b.PositionLots = append(b.PositionLots, l)
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return err
 	}
 	if len(lots) > 0 {
@@ -325,21 +311,15 @@ SELECT snapshot_at, account_id, position_key, instrument_id, asset_class, vehicl
 func (c *Connection) readPositionLots(ctx context.Context,
 	w canonical.Window) (map[positionRef][]canonical.PositionLotChange, error) {
 	out := map[positionRef][]canonical.PositionLotChange{}
-	ok, err := silver.HasTables(ctx, c.db, "position_lots")
-	if err != nil || !ok {
-		return out, err
+	if !c.schema.positionLots {
+		return out, nil
 	}
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "synthetic position lots", `
 SELECT snapshot_at, account_id, position_key, lot_key, quantity, book_value,
        acquisition_date, term, payload
   FROM position_lots
  WHERE snapshot_at BETWEEN ? AND ?
- ORDER BY snapshot_at, account_id, position_key, lot_key`, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("synthetic position lots: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ ORDER BY snapshot_at, account_id, position_key, lot_key`, func(rows *sql.Rows) error {
 		var (
 			ref                 positionRef
 			lotKey, payload     string
@@ -348,7 +328,7 @@ SELECT snapshot_at, account_id, position_key, lot_key, quantity, book_value,
 		)
 		if err := rows.Scan(&ref.snap, &ref.account, &ref.key, &lotKey, &quantity, &bookValue,
 			&acquired, &term, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		var extra annotations
 		l := canonical.PositionLotChange{
@@ -363,8 +343,11 @@ SELECT snapshot_at, account_id, position_key, lot_key, quantity, book_value,
 		l.SetBookValue(silver.DecimalPtrOrNil(bookValue), canonical.BasisStated)
 		l.Payload = payloadWith(payload, extra)
 		out[ref] = append(out[ref], l)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // lotTerm is a lot's stated term, absent where the row states none or
@@ -388,22 +371,17 @@ func lotTerm(s sql.NullString, extra *annotations) canonical.LotTerm {
 // currency and instant is already closing.
 func (c *Connection) readCashBalances(ctx context.Context, w canonical.Window,
 	at func(int64) *canonical.SnapshotBatch) error {
-	rows, err := c.db.QueryContext(ctx, `
-SELECT snapshot_at, account_id, currency, balance_kind, amount, payload
-  FROM cash_balances
- WHERE snapshot_at BETWEEN ? AND ?
- ORDER BY snapshot_at, account_id, currency, balance_kind`, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("synthetic cash balances: %w", err)
-	}
-	defer rows.Close()
 	type cashKey struct {
 		snap         int64
 		account, ccy string
 		kind         canonical.BalanceKind
 	}
 	taken := map[cashKey]string{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "synthetic cash balances", `
+SELECT snapshot_at, account_id, currency, balance_kind, amount, payload
+  FROM cash_balances
+ WHERE snapshot_at BETWEEN ? AND ?
+ ORDER BY snapshot_at, account_id, currency, balance_kind`, func(rows *sql.Rows) error {
 		var (
 			snap                                int64
 			account, ccy, kind, amount, payload string
@@ -440,24 +418,22 @@ SELECT snapshot_at, account_id, currency, balance_kind, amount, payload
 			Amount:            amt,
 			Payload:           payloadWith(payload, extra),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // readFxRates reads the window's fx rates, in gold's direction already (the
 // schema's). The mid rate is required, as a cash balance's amount is.
 func (c *Connection) readFxRates(ctx context.Context, w canonical.Window,
 	at func(int64) *canonical.SnapshotBatch) error {
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "synthetic fx rates", `
 SELECT snapshot_at, base_currency, quote_currency, mid_rate, bid_rate, ask_rate, payload
   FROM fx_rates
  WHERE snapshot_at BETWEEN ? AND ?
- ORDER BY snapshot_at, base_currency, quote_currency`, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("synthetic fx rates: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ ORDER BY snapshot_at, base_currency, quote_currency`, func(rows *sql.Rows) error {
 		var (
 			snap                      int64
 			base, quote, mid, payload string
@@ -481,8 +457,11 @@ SELECT snapshot_at, base_currency, quote_currency, mid_rate, bid_rate, ask_rate,
 			AskRate:       silver.DecimalPtrOrNil(ask),
 			Payload:       payloadWith(payload, nil),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // ---- dimensions -------------------------------------------------------------
@@ -560,13 +539,8 @@ func (c *Connection) readDimensions(ctx context.Context) (*dimensions, error) {
 }
 
 func (c *Connection) readPortfolios(ctx context.Context, d *dimensions) error {
-	rows, err := c.db.QueryContext(ctx, `
-SELECT portfolio_id, display_name, base_currency, nickname, payload FROM portfolios`)
-	if err != nil {
-		return fmt.Errorf("synthetic portfolios: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "synthetic portfolios", `
+SELECT portfolio_id, display_name, base_currency, nickname, payload FROM portfolios`, func(rows *sql.Rows) error {
 		var (
 			id, payload         string
 			name, ccy, nickname sql.NullString
@@ -581,8 +555,11 @@ SELECT portfolio_id, display_name, base_currency, nickname, payload FROM portfol
 			Nickname:            silver.StrPtrIfNonEmpty(nickname.String),
 			Payload:             payloadWith(payload, nil),
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // readAccounts reads the accounts table. The three taxonomy columns are taken
@@ -590,15 +567,10 @@ SELECT portfolio_id, display_name, base_currency, nickname, payload FROM portfol
 // `other`, which the column cannot do without, and tax_wrapper /
 // management_style to absent, which they can — with the raw value kept.
 func (c *Connection) readAccounts(ctx context.Context, d *dimensions) error {
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "synthetic accounts", `
 SELECT account_id, account_kind, display_name, base_currency, nickname,
        account_category, tax_wrapper, management_style, portfolio_id, payload
-  FROM accounts`)
-	if err != nil {
-		return fmt.Errorf("synthetic accounts: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+  FROM accounts`, func(rows *sql.Rows) error {
 		var (
 			id, kind, payload             string
 			name, ccy, nickname, category sql.NullString
@@ -639,21 +611,19 @@ SELECT account_id, account_kind, display_name, base_currency, nickname,
 		}
 		a.Payload = payloadWith(payload, extra)
 		d.accounts[id] = a
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 func (c *Connection) readInstruments(ctx context.Context, d *dimensions) error {
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "synthetic instruments", `
 SELECT instrument_id, valid_from, asset_class, vehicle,
        isin, cusip, symbol, name, currency, payload
   FROM instruments
- ORDER BY instrument_id, valid_from`)
-	if err != nil {
-		return fmt.Errorf("synthetic instruments: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ ORDER BY instrument_id, valid_from`, func(rows *sql.Rows) error {
 		var (
 			id, assetClass, vehicle, payload string
 			validFrom                        int64
@@ -679,6 +649,9 @@ SELECT instrument_id, valid_from, asset_class, vehicle,
 				Payload:              payloadWith(payload, extra),
 			},
 		})
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }

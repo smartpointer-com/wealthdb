@@ -33,9 +33,8 @@ var paidInBasis = canonical.Basis{
 // than migration 0008 states none.
 func (c *Connection) readInKind(ctx context.Context) (k *silver.InKind, dropped map[string]int64, err error) {
 	k = &silver.InKind{}
-	has, err := silver.HasColumn(ctx, c.db, "k1_capital_accounts", "property_distributions_minor")
-	if err != nil || !has {
-		return k, nil, err
+	if !c.schema.propertyMinor {
+		return k, nil, nil
 	}
 	const q = `
 SELECT k.fund_name, k.tax_year, k.property_distributions_minor,
@@ -43,29 +42,24 @@ SELECT k.fund_name, k.tax_year, k.property_distributions_minor,
        (SELECT MIN(o.position_external_id) FROM offerings o WHERE o.fund_name = k.fund_name)
   FROM k1_capital_accounts k
  WHERE k.property_distributions_minor > 0`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, nil, fmt.Errorf("readInKind: %w", err)
-	}
-	defer rows.Close()
 	dropped = map[string]int64{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "readInKind", q, func(rows *sql.Rows) error {
 		var (
 			fund               string
 			year, minor, count int64
 			pid                sql.NullString
 		)
 		if err := rows.Scan(&fund, &year, &minor, &count, &pid); err != nil {
-			return nil, nil, err
+			return err
 		}
 		if count != 1 {
 			dropped[fund] = count
-			continue
+			return nil
 		}
 		end := time.Date(int(year), time.December, 31, 0, 0, 0, 0, time.UTC).Unix()
 		k.Add(pid.String, end, decimal.New(minor, -2))
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
 	return k, dropped, nil

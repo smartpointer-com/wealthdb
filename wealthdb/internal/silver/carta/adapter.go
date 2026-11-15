@@ -29,20 +29,35 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 	if err != nil {
 		return nil, err
 	}
-	exercise, err := silver.HasColumn(ctx, db, "securities", "exercise_fmv")
-	if err != nil {
+	c := &Connection{db: db}
+	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("carta silver: %w", err)
 	}
-	return &Connection{db: db, exercise: exercise}, nil
+	return c, nil
 }
 
-// Connection reads one carta silver. exercise says whether its securities
-// carry the exercise facts (silver migration 0004): a silver last loaded
-// before that migration lacks them and reads as stating none.
+// Connection reads one carta silver.
 type Connection struct {
-	db       *sql.DB
-	exercise bool
+	db     *sql.DB
+	schema schema
+}
+
+// schema is which optional parts of the silver schema a file holds,
+// probed once at open. A silver last loaded before a part's migration
+// lacks it and reads as stating none of it.
+type schema struct {
+	exercise    bool // securities.exercise_fmv: the exercise facts (silver migration 0004)
+	k1          bool // the k1_capital_accounts table
+	k1PeriodEnd bool // k1_capital_accounts.period_end
+}
+
+func (s *schema) optional() []silver.Optional {
+	return []silver.Optional{
+		{Table: "securities", Columns: []string{"exercise_fmv"}, Has: &s.exercise},
+		{Table: "k1_capital_accounts", Has: &s.k1},
+		{Table: "k1_capital_accounts", Columns: []string{"period_end"}, Has: &s.k1PeriodEnd},
+	}
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }

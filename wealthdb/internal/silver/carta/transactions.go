@@ -3,7 +3,6 @@ package carta
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -64,27 +63,23 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	if err != nil {
 		return nil, err
 	}
-	rows, err := c.db.QueryContext(ctx, cashFlowQuery)
-	if err != nil {
-		return nil, fmt.Errorf("Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	var txs []canonical.TransactionChange
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "Transactions", cashFlowQuery, func(rows *sql.Rows) error {
 		var (
-			entityID              int64
-			cfID, flowDate, kind  string
-			ccy, desc             string
-			amount, shares, price sql.NullFloat64
+			entityID             int64
+			cfID, flowDate, kind string
+			ccy, desc            string
+			amount, shares       sql.NullFloat64
+			price                *canonical.Decimal
 		)
 		if err := rows.Scan(&cfID, &entityID, &flowDate, &kind, &amount,
-			&shares, &price, &ccy, &desc); err != nil {
-			return nil, err
+			&shares, silver.Dec(&price, silver.DecFloat), &ccy, &desc); err != nil {
+			return err
 		}
 		occurred, ok := flowDateUnix(flowDate)
 		if !ok || occurred < w.Start || occurred > w.End {
-			continue
+			return nil
 		}
 		isZero := !amount.Valid || amount.Float64 == 0
 		inst := instrumentID(entityID)
@@ -112,7 +107,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 			}
 			if withLot {
 				tx.Quantity = silver.DecimalPtrFromNullFloat(shares)
-				tx.Price = silver.DecimalPtrFromNullFloat(price)
+				tx.Price = price
 			}
 			txs = append(txs, tx)
 		}
@@ -153,8 +148,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		case "contribution":
 			emit(canonical.TxKindContribution, false)
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(canonical.TransactionBatch{Transactions: txs}), nil

@@ -26,6 +26,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -41,16 +42,50 @@ type Adapter struct{}
 
 func (*Adapter) Kind() string { return kindName }
 
-func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "synthetic silver")
 	if err != nil {
 		return nil, err
 	}
-	return &Connection{db: db}, nil
+	c := &Connection{db: db}
+	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 type Connection struct {
-	db *sql.DB
+	db     *sql.DB
+	schema schema
+}
+
+// schema is which optional parts of the silver schema a file holds,
+// probed once at open. A file older than a table states none of its
+// records.
+type schema struct {
+	reference    []bool // each of silver.ReferenceTables
+	rates        bool   // silver.RatesTable
+	positionLots bool   // the position_lots table
+	realizedLots bool   // the realized_lots table
+}
+
+func (s *schema) optional() []silver.Optional {
+	s.reference = make([]bool, len(silver.ReferenceTables))
+	out := []silver.Optional{
+		{Table: silver.RatesTable, Has: &s.rates},
+		{Table: "position_lots", Has: &s.positionLots},
+		{Table: "realized_lots", Has: &s.realizedLots},
+	}
+	for i, t := range silver.ReferenceTables {
+		out = append(out, silver.Optional{Table: t, Has: &s.reference[i]})
+	}
+	return out
+}
+
+// hasReference reports whether the file holds every reference table.
+func (s schema) hasReference() bool {
+	return !slices.Contains(s.reference, false)
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }

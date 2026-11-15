@@ -3,7 +3,6 @@ package carta
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -55,14 +54,11 @@ var (
 // silver older than migration 0004 states none.
 func (c *Connection) readInKind(ctx context.Context) (*silver.InKind, error) {
 	k := &silver.InKind{}
-	has, err := silver.HasTables(ctx, c.db, "k1_capital_accounts")
-	if err != nil || !has {
-		return k, err
+	if !c.schema.k1 {
+		return k, nil
 	}
 	periodEnd := `NULL`
-	if has, err := silver.HasColumn(ctx, c.db, "k1_capital_accounts", "period_end"); err != nil {
-		return nil, err
-	} else if has {
+	if c.schema.k1PeriodEnd {
 		periodEnd = `k.period_end`
 	}
 	q := `
@@ -75,12 +71,7 @@ SELECT k.entity_external_id, k.tax_year, ` + periodEnd + `, k.property_distribut
                       AND k2.tax_year IS k.tax_year
                       AND (COALESCE(k2.doc_id, -1), k2.content_sha256)
                           > (COALESCE(k.doc_id, -1), k.content_sha256))`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("readInKind: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "readInKind", q, func(rows *sql.Rows) error {
 		var (
 			eid     int64
 			year    sql.NullInt64
@@ -88,17 +79,20 @@ SELECT k.entity_external_id, k.tax_year, ` + periodEnd + `, k.property_distribut
 			printed string
 		)
 		if err := rows.Scan(&eid, &year, &end, &printed); err != nil {
-			return nil, err
+			return err
 		}
 		amount, err := canonical.NewDecimalFromString(printed)
 		if err != nil {
-			continue // not an amount: states none
+			return nil // not an amount: states none
 		}
 		if at, ok := k1PeriodEnd(year, end); ok {
 			k.Add(positionKey(eid), at, amount)
 		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return k, rows.Err()
+	return k, nil
 }
 
 // k1PeriodEnd is the last day of the period a K-1 covers, in unix

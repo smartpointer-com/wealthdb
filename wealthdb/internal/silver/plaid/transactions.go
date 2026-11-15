@@ -67,19 +67,14 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 // verbatim, for the spending and income provider tiers.
 func (c *Connection) appendBankLedger(ctx context.Context, w canonical.Window,
 	accounts map[string]account, out *canonical.TransactionBatch) error {
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "plaid Transactions", `
 SELECT transaction_id, account_id, posted_at, amount, COALESCE(currency, ''),
        COALESCE(name, ''), COALESCE(original_description, ''),
        COALESCE(merchant_name, ''), COALESCE(category_primary, ''),
        COALESCE(category_detailed, ''), COALESCE(check_number, ''),
        COALESCE(json_extract(payload, '$.category_id'), ''), payload
   FROM transactions
- WHERE posted_at BETWEEN ? AND ?`, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("plaid Transactions: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ WHERE posted_at BETWEEN ? AND ?`, func(rows *sql.Rows) error {
 		var (
 			id, accountID, rawAmount, currency, name, original  string
 			merchant, primary, detailed, check, legacy, payload string
@@ -91,7 +86,7 @@ SELECT transaction_id, account_id, posted_at, amount, COALESCE(currency, ''),
 		}
 		a, ok := accounts[accountID]
 		if !ok || !bankLedgerKind(a.kind) {
-			continue
+			return nil
 		}
 		amount, err := canonical.NewDecimalFromString(rawAmount)
 		if err != nil {
@@ -113,8 +108,11 @@ SELECT transaction_id, account_id, posted_at, amount, COALESCE(currency, ''),
 			CheckNumber:           silver.CheckNumberOnOutflow(check, net),
 			Payload:               json.RawMessage(payload),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // investmentRow is one row of silver's `investment_transactions` table,
@@ -415,23 +413,21 @@ const investmentColumns = `investment_transaction_id, account_id, COALESCE(secur
        quantity, price, fees, posted_at, ` + investmentDate + `, payload`
 
 func (c *Connection) readInvestmentRows(ctx context.Context, where string, args ...any) ([]investmentRow, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT `+investmentColumns+`
-  FROM investment_transactions `+where, args...)
-	if err != nil {
-		return nil, fmt.Errorf("plaid Transactions: %w", err)
-	}
-	defer rows.Close()
 	var out []investmentRow
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "plaid Transactions", `SELECT `+investmentColumns+`
+  FROM investment_transactions `+where, func(rows *sql.Rows) error {
 		var r investmentRow
 		if err := rows.Scan(&r.id, &r.accountID, &r.securityID, &r.typ, &r.subtype, &r.name,
 			&r.currency, &r.cancels, &r.rawAmount, &r.quantity, &r.price, &r.fees, &r.posted,
 			&r.occurred, &r.payload); err != nil {
-			return nil, err
+			return err
 		}
 		out = append(out, r)
+		return nil
+	}, args...); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // cancelledRows are the rows a `cancel` row names, by id, wherever they are

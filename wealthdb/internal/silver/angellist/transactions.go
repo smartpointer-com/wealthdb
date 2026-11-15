@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -73,19 +72,14 @@ SELECT ft.transaction_external_id, ft.occurred_at, COALESCE(ft.type, ''),
   LEFT JOIN offerings o ON o.position_external_id = ft.position_external_id
  WHERE ft.occurred_at BETWEEN ? AND ?
  ORDER BY ft.occurred_at, ft.transaction_external_id`
-		rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-		if err != nil {
-			return nil, fmt.Errorf("Transactions: %w", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
+		txs, err = silver.Query(ctx, c.db, "Transactions", q, func(rows *sql.Rows) (rec canonical.TransactionChange, err error) {
 			var (
 				id, ftype, ccy, desc, synd, posID, offering string
 				occurred                                    int64
 				amtMinor                                    sql.NullInt64
 			)
 			if err := rows.Scan(&id, &occurred, &ftype, &amtMinor, &ccy, &desc, &synd, &posID, &offering); err != nil {
-				return nil, err
+				return rec, err
 			}
 			net := minorPtr(amtMinor) // source-signed
 			tx := canonical.TransactionChange{
@@ -105,9 +99,9 @@ SELECT ft.transaction_external_id, ft.occurred_at, COALESCE(ft.type, ''),
 				inst := posID
 				tx.InstrumentExternalID = &inst
 			}
-			txs = append(txs, tx)
-		}
-		if err := rows.Err(); err != nil {
+			return tx, nil
+		}, w.Start, w.End)
+		if err != nil {
 			return nil, err
 		}
 	}

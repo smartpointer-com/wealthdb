@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -151,26 +150,22 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
           AND s2.as_of_date IS NOT NULL
           AND CAST(strftime('%s', s2.as_of_date) AS INTEGER) <= ?)
  ORDER BY p.deal_external_id`
-	rows, err := c.db.QueryContext(ctx, q, t)
-	if err != nil {
-		return batch, fmt.Errorf("buildBatch: %w", err)
-	}
-	defer rows.Close()
 
 	held := false
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "buildBatch", q, func(rows *sql.Rows) error {
 		var (
 			deal, currency, kind, company, symbol, payl string
 			asOf                                        int64
-			shares, cost, market, paidIn, bought, fee   sql.NullFloat64
+			shares, cost, paidIn, bought, fee           sql.NullFloat64
+			market                                      *canonical.Decimal
 			acqUnix                                     sql.NullInt64
 		)
-		if err := rows.Scan(&deal, &asOf, &currency, &shares, &cost, &market,
+		if err := rows.Scan(&deal, &asOf, &currency, &shares, &cost, silver.Dec(&market, silver.DecFloat),
 			&kind, &company, &symbol, &acqUnix, &payl, &paidIn, &bought, &fee); err != nil {
-			return batch, err
+			return err
 		}
 		if removals.Removed(deal, t) {
-			continue
+			return nil
 		}
 		held = true
 		acNew, vehicle := taxonomyForKind(kind)
@@ -185,7 +180,7 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
 			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
-			MarketValue:          silver.DecimalPtrFromNullFloat(market),
+			MarketValue:          market,
 			AcquisitionDate:      silver.DatePtrFromNullUnix(acqUnix),
 		}
 		spv := vehicle == canonical.VehicleSPV
@@ -224,8 +219,8 @@ SELECT p.deal_external_id, CAST(strftime('%s', p.as_of_date) AS INTEGER),
 			inst.Payload = json.RawMessage(payl)
 		}
 		batch.Instruments = append(batch.Instruments, inst)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, t); err != nil {
 		return batch, err
 	}
 	if !held {

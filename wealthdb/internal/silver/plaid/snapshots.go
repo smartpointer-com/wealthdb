@@ -185,27 +185,25 @@ type accountRun struct {
 // accountRuns are the runs in the window that read the accounts, oldest
 // first.
 func (c *Connection) accountRuns(ctx context.Context, w canonical.Window) ([]accountRun, error) {
-	rows, err := c.db.QueryContext(ctx, `
+	var out []accountRun
+	if err := silver.ScanRows(ctx, c.db, "plaid accountRuns", `
 SELECT d.snapshot_at, h.status IN ('fetched', 'absent', 'not_linked')
   FROM dump_runs d
   JOIN run_products a ON a.run_at = d.snapshot_at AND a.product = 'accounts'
   JOIN run_products h ON h.run_at = d.snapshot_at AND h.product = 'holdings'
  WHERE d.snapshot_at BETWEEN ? AND ?
    AND a.status = 'fetched'
- ORDER BY d.snapshot_at`, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("plaid accountRuns: %w", err)
-	}
-	defer rows.Close()
-	var out []accountRun
-	for rows.Next() {
+ ORDER BY d.snapshot_at`, func(rows *sql.Rows) error {
 		var r accountRun
 		if err := rows.Scan(&r.at, &r.snapshots); err != nil {
-			return nil, err
+			return err
 		}
 		out = append(out, r)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // heldByAccount is each account's positions in b, with the instruments
@@ -633,7 +631,7 @@ func instrumentChange(s security, key string, first, last int64) canonical.Instr
 func (c *Connection) appendStatementCloses(ctx context.Context, w canonical.Window, newest int64,
 	latest map[string]account, stated map[string]statedBalance,
 	at func(int64) *canonical.SnapshotBatch) error {
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "plaid appendStatementCloses", `
 SELECT account_id, last_statement_issue_date, last_statement_balance FROM (
     SELECT account_id, last_statement_issue_date, last_statement_balance,
            ROW_NUMBER() OVER (PARTITION BY account_id, last_statement_issue_date
@@ -644,12 +642,7 @@ SELECT account_id, last_statement_issue_date, last_statement_balance FROM (
        AND last_statement_issue_date BETWEEN ? AND ?
        AND last_statement_issue_date < ?
 ) WHERE rn = 1
- ORDER BY account_id, last_statement_issue_date`, w.Start, w.End, newest)
-	if err != nil {
-		return fmt.Errorf("plaid appendStatementCloses: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ ORDER BY account_id, last_statement_issue_date`, func(rows *sql.Rows) error {
 		var (
 			id      string
 			issued  int64
@@ -662,14 +655,17 @@ SELECT account_id, last_statement_issue_date, last_statement_balance FROM (
 		amount := silver.DecimalPtrOrNil(balance)
 		currency := cmp.Or(a.currency, stated[id].currency)
 		if !ok || a.kind != canonical.AccountKindCard || amount == nil || currency == "" {
-			continue
+			return nil
 		}
 		b := at(issued)
 		b.Accounts = append(b.Accounts, accountChange(a, issued, issued))
 		b.CashBalances = append(b.CashBalances, silver.CashBalance(issued, id, currency,
 			canonical.BalanceKindClosing, amount.Neg(), `{"basis":"statement_closing"}`))
+		return nil
+	}, w.Start, w.End, newest); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // seenSpan is the first and last date the transactions that name one id
@@ -697,44 +693,33 @@ func (c *Connection) transactionDimensions(ctx context.Context, w canonical.Wind
 		}
 	}
 
-	bank, err := c.db.QueryContext(ctx, `
-SELECT account_id, posted_at FROM transactions WHERE posted_at BETWEEN ? AND ?`, w.Start, w.End)
-	if err != nil {
-		return tail, fmt.Errorf("plaid transactionDimensions: %w", err)
-	}
-	for bank.Next() {
+	if err := silver.ScanRows(ctx, c.db, "plaid transactionDimensions", `
+SELECT account_id, posted_at FROM transactions WHERE posted_at BETWEEN ? AND ?`, func(bank *sql.Rows) error {
 		var id string
 		var t int64
 		if err := bank.Scan(&id, &t); err != nil {
-			bank.Close()
-			return tail, err
+			return err
 		}
 		if a, ok := latest[id]; ok && bankLedgerKind(a.kind) {
 			note(accounts, id, t)
 		}
-	}
-	bank.Close()
-	if err := bank.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return tail, err
 	}
 
-	inv, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "plaid transactionDimensions", `
 SELECT account_id, COALESCE(security_id, ''), COALESCE(currency, ''), t
   FROM (SELECT *, `+investmentDate+` AS t FROM investment_transactions)
- WHERE t BETWEEN ? AND ?`, w.Start, w.End)
-	if err != nil {
-		return tail, fmt.Errorf("plaid transactionDimensions: %w", err)
-	}
-	for inv.Next() {
+ WHERE t BETWEEN ? AND ?`, func(inv *sql.Rows) error {
 		var id, secID, currency string
 		var t int64
 		if err := inv.Scan(&id, &secID, &currency, &t); err != nil {
-			inv.Close()
-			return tail, err
+			return err
 		}
 		a, ok := latest[id]
 		if !ok || !investmentLedgerKind(a.kind) {
-			continue
+			return nil
 		}
 		note(accounts, id, t)
 		if sec, ok := secs[secID]; ok && !isCash(sec, cmp.Or(currency, a.currency)) {
@@ -742,9 +727,8 @@ SELECT account_id, COALESCE(security_id, ''), COALESCE(currency, ''), t
 			note(instruments, key, t)
 			instrumentOf[key] = sec
 		}
-	}
-	inv.Close()
-	if err := inv.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return tail, err
 	}
 
@@ -841,61 +825,52 @@ func scanAccount(rows *sql.Rows) (account, bool, error) {
 
 // accountsAt are the projected accounts of the run at t.
 func (c *Connection) accountsAt(ctx context.Context, t int64) ([]account, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT `+accountColumns+`
-  FROM accounts WHERE snapshot_at = ? ORDER BY account_id`, t)
-	if err != nil {
-		return nil, fmt.Errorf("plaid accountsAt: %w", err)
-	}
-	defer rows.Close()
 	var out []account
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "plaid accountsAt", `SELECT `+accountColumns+`
+  FROM accounts WHERE snapshot_at = ? ORDER BY account_id`, func(rows *sql.Rows) error {
 		a, projected, err := scanAccount(rows)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if projected {
 			out = append(out, a)
 		}
+		return nil
+	}, t); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // latestAccounts is every projected account in the description of the
 // latest run that listed it.
 func (c *Connection) latestAccounts(ctx context.Context) (map[string]account, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT `+accountColumns+`
+	out := map[string]account{}
+	if err := silver.ScanRows(ctx, c.db, "plaid latestAccounts", `SELECT `+accountColumns+`
   FROM accounts
  WHERE (snapshot_at, account_id) IN (SELECT MAX(snapshot_at), account_id
-                                       FROM accounts GROUP BY account_id)`)
-	if err != nil {
-		return nil, fmt.Errorf("plaid latestAccounts: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]account{}
-	for rows.Next() {
+                                       FROM accounts GROUP BY account_id)`, func(rows *sql.Rows) error {
 		a, projected, err := scanAccount(rows)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if projected {
 			out[a.id] = a
 		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (c *Connection) holdingsAt(ctx context.Context, t int64) ([]holding, error) {
-	rows, err := c.db.QueryContext(ctx, `
+	var out []holding
+	if err := silver.ScanRows(ctx, c.db, "plaid holdingsAt", `
 SELECT account_id, security_id, quantity, institution_value, cost_basis,
        institution_price, vested_quantity, vested_value, COALESCE(currency, ''),
        tax_lots, payload
-  FROM holdings WHERE snapshot_at = ? ORDER BY account_id, security_id, seq`, t)
-	if err != nil {
-		return nil, fmt.Errorf("plaid holdingsAt: %w", err)
-	}
-	defer rows.Close()
-	var out []holding
-	for rows.Next() {
+  FROM holdings WHERE snapshot_at = ? ORDER BY account_id, security_id, seq`, func(rows *sql.Rows) error {
 		var (
 			h    holding
 			lots string
@@ -903,18 +878,23 @@ SELECT account_id, security_id, quantity, institution_value, cost_basis,
 		if err := rows.Scan(&h.accountID, &h.securityID, &h.quantity, &h.value,
 			&h.costBasis, &h.price, &h.vestedQuantity, &h.vestedValue, &h.currency,
 			&lots, &h.payload); err != nil {
-			return nil, err
+			return err
 		}
+		var err error
 		if h.lots, err = parseTaxLots(lots); err != nil {
-			return nil, fmt.Errorf("plaid holdingsAt: holding %s of %s: %w", h.securityID, h.accountID, err)
+			return fmt.Errorf("plaid holdingsAt: holding %s of %s: %w", h.securityID, h.accountID, err)
 		}
 		out = append(out, h)
+		return nil
+	}, t); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (c *Connection) readSecurities(ctx context.Context) (map[string]security, error) {
-	rows, err := c.db.QueryContext(ctx, `
+	out := map[string]security{}
+	if err := silver.ScanRows(ctx, c.db, "plaid readSecurities", `
 SELECT s.security_id, COALESCE(s.name, ''), COALESCE(s.ticker_symbol, ''),
        COALESCE(s.type, ''), COALESCE(s.currency, ''), COALESCE(s.cusip, ''),
        COALESCE(s.isin, ''), COALESCE(s.cfi_code, ''), s.payload,
@@ -926,22 +906,19 @@ SELECT s.security_id, COALESCE(s.name, ''), COALESCE(s.ticker_symbol, ''),
             WHERE security_id IS NOT NULL
               AND LOWER(TRIM(type)) IN ('buy', 'sell')
               AND CAST(price AS REAL) NOT IN (0, 1))
-  FROM securities s`)
-	if err != nil {
-		return nil, fmt.Errorf("plaid readSecurities: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]security{}
-	for rows.Next() {
+  FROM securities s`, func(rows *sql.Rows) error {
 		var s security
 		if err := rows.Scan(&s.id, &s.name, &s.ticker, &s.typ, &s.currency,
 			&s.cusip, &s.isin, &s.cfi, &s.payload, &s.priced); err != nil {
-			return nil, err
+			return err
 		}
 		s.bond = readsAsBond(s)
 		out[s.id] = s
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ---- small helpers -----------------------------------------------------------

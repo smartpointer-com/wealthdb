@@ -209,24 +209,22 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
   FROM entities e
  WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM entities e2
                        WHERE e2.entity_external_id = e.entity_external_id)`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("entityMeta: %w", err)
-	}
-	defer rows.Close()
 	out := make(map[int64]entInfo)
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "entityMeta", q, func(rows *sql.Rows) error {
 		var (
 			id          int64
 			isFundInt   int
 			name, payld string
 		)
 		if err := rows.Scan(&id, &isFundInt, &name, &payld); err != nil {
-			return nil, err
+			return err
 		}
 		out[id] = entInfo{name: name, isFund: isFundInt != 0, payload: payld}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // buildBatch materialises the full portfolio as of date t: one position per
@@ -406,7 +404,7 @@ func exerciseValue(quantity, fmv sql.NullFloat64) (decimal.Decimal, bool) {
 // else the cash paid (cashPaidBasis).
 func (c *Connection) appendCapTableAt(ctx context.Context, t int64, acct string, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
 	exercise := `NULL, NULL, NULL`
-	if c.exercise {
+	if c.schema.exercise {
 		exercise = `exercise_type, exercise_date, exercise_fmv`
 	}
 	q := `
@@ -423,11 +421,6 @@ SELECT entity_external_id, security_type, security_external_id, snapshot_at,
                          AND s2.security_external_id = s.security_external_id
                          AND s2.snapshot_at <= ?)
  ORDER BY entity_external_id, security_external_id`
-	rows, err := c.db.QueryContext(ctx, q, t)
-	if err != nil {
-		return fmt.Errorf("appendCapTableAt: %w", err)
-	}
-	defer rows.Close()
 
 	// The sums are decimal so that a position's quantity and book value are
 	// exactly the sums of its share lots'.
@@ -447,7 +440,7 @@ SELECT entity_external_id, security_type, security_external_id, snapshot_at,
 	}
 	aggs := make(map[int64]*agg)
 	var order []int64
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendCapTableAt", q, func(rows *sql.Rows) error {
 		var (
 			entityID, secID, deltaAt          int64
 			secType, ccy, label, isDt, acqStr string
@@ -521,8 +514,8 @@ SELECT entity_external_id, security_type, security_external_id, snapshot_at,
 			l.ExercisePrice = &v
 		}
 		a.lots = append(a.lots, l)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, t); err != nil {
 		return err
 	}
 
@@ -597,12 +590,7 @@ SELECT entity_external_id, snapshot_at, COALESCE(currency, 'USD'),
  WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM fund_metrics fm2
                        WHERE fm2.entity_external_id = fm.entity_external_id
                          AND fm2.snapshot_at <= ?)`
-	rows, err := c.db.QueryContext(ctx, q, t)
-	if err != nil {
-		return fmt.Errorf("appendFundAt: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendFundAt", q, func(rows *sql.Rows) error {
 		var (
 			entityID, navAt       int64
 			ccy, nav, contributed string
@@ -640,6 +628,9 @@ SELECT entity_external_id, snapshot_at, COALESCE(currency, 'USD'),
 		active[entityID] = ccy
 		classesNew[entityID] = canonical.AssetClassPrivateEquity
 		vehicles[entityID] = canonical.VehicleFund
+		return nil
+	}, t); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }

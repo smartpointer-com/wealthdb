@@ -43,27 +43,22 @@ type fundLedger map[int64]*fundBook
 
 func (c *Connection) loadFundLedger(ctx context.Context) (fundLedger, error) {
 	ledger := fundLedger{}
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "loadFundLedger", `
 SELECT entity_external_id, flow_date, kind, amount, COALESCE(currency, 'USD')
   FROM cash_flows
  WHERE kind IN ('capital_call', 'distribution')
-   AND flow_date IS NOT NULL AND amount IS NOT NULL`)
-	if err != nil {
-		return nil, fmt.Errorf("loadFundLedger: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+   AND flow_date IS NOT NULL AND amount IS NOT NULL`, func(rows *sql.Rows) error {
 		var (
 			eid             int64
 			date, kind, ccy string
 			amount          float64
 		)
 		if err := rows.Scan(&eid, &date, &kind, &amount, &ccy); err != nil {
-			return nil, err
+			return err
 		}
 		at, ok := flowDateUnix(date)
 		if !ok {
-			continue
+			return nil
 		}
 		if kind == "distribution" {
 			amount = -amount
@@ -74,27 +69,21 @@ SELECT entity_external_id, flow_date, kind, amount, COALESCE(currency, 'USD')
 			ledger[eid] = b
 		}
 		b.flows = append(b.flows, fundFlow{at: at, net: amount})
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 
-	navs, err := c.db.QueryContext(ctx,
-		`SELECT entity_external_id, MIN(snapshot_at) FROM fund_metrics GROUP BY entity_external_id`)
-	if err != nil {
-		return nil, fmt.Errorf("loadFundLedger: %w", err)
-	}
-	defer navs.Close()
-	for navs.Next() {
+	if err := silver.ScanRows(ctx, c.db, "loadFundLedger", `SELECT entity_external_id, MIN(snapshot_at) FROM fund_metrics GROUP BY entity_external_id`, func(navs *sql.Rows) error {
 		var eid, at int64
 		if err := navs.Scan(&eid, &at); err != nil {
-			return nil, err
+			return err
 		}
 		if b, ok := ledger[eid]; ok {
 			b.firstNAV, b.hasNAV = at, true
 		}
-	}
-	if err := navs.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	for _, b := range ledger {

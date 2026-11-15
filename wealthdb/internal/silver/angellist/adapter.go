@@ -75,16 +75,38 @@ type Adapter struct{}
 
 func (*Adapter) Kind() string { return kindName }
 
-func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "angellist silver")
 	if err != nil {
 		return nil, err
 	}
-	return &Connection{db: db}, nil
+	c := &Connection{db: db}
+	if err := silver.ProbeOptional(ctx, c.db, c.schema.optional()...); err != nil {
+		c.db.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 type Connection struct {
-	db *sql.DB
+	db     *sql.DB
+	schema schema
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
+
+// schema is which optional parts of the silver schema a file holds,
+// probed once at open.
+type schema struct {
+	propertyMinor       bool // k1_capital_accounts.property_distributions_minor
+	fundingAccounts     bool // the funding_accounts table
+	fundingTransactions bool // the funding_transactions table
+}
+
+func (s *schema) optional() []silver.Optional {
+	return []silver.Optional{
+		{Table: "k1_capital_accounts", Columns: []string{"property_distributions_minor"}, Has: &s.propertyMinor},
+		{Table: "funding_accounts", Has: &s.fundingAccounts},
+		{Table: "funding_transactions", Has: &s.fundingTransactions},
+	}
+}

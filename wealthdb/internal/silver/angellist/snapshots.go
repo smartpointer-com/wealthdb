@@ -109,19 +109,13 @@ SELECT o.position_external_id, COALESCE(o.company_name, ''), COALESCE(o.kind, ''
  WHERE o.position_external_id NOT IN (SELECT position_external_id FROM position_snapshots)
  GROUP BY o.position_external_id, o.company_name, o.kind
  ORDER BY o.position_external_id`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("exitedInstruments: %w", err)
-	}
-	defer rows.Close()
-	var out []canonical.InstrumentChange
-	for rows.Next() {
+	out, err := silver.Query(ctx, c.db, "exitedInstruments", q, func(rows *sql.Rows) (rec canonical.InstrumentChange, err error) {
 		var (
 			pid, company, kind string
 			first, last        sql.NullInt64
 		)
 		if err := rows.Scan(&pid, &company, &kind, &first, &last); err != nil {
-			return nil, err
+			return rec, err
 		}
 		acNew, vehicle := taxonomyForKind(kind)
 		inst := canonical.InstrumentChange{
@@ -134,9 +128,12 @@ SELECT o.position_external_id, COALESCE(o.company_name, ''), COALESCE(o.kind, ''
 		if company != "" {
 			inst.Name = &company
 		}
-		out = append(out, inst)
+		return inst, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // fundingCashBalance is the funding account's current uninvested cash as a
@@ -147,9 +144,8 @@ func (c *Connection) fundingCashBalance(ctx context.Context, account string) (ca
 	if account == "" {
 		return canonical.CashBalanceChange{}, false, nil
 	}
-	has, err := silver.HasTables(ctx, c.db, "funding_accounts", "funding_transactions")
-	if err != nil || !has {
-		return canonical.CashBalanceChange{}, false, err
+	if !c.schema.fundingAccounts || !c.schema.fundingTransactions {
+		return canonical.CashBalanceChange{}, false, nil
 	}
 	var (
 		balMinor sql.NullInt64
@@ -160,7 +156,7 @@ func (c *Connection) fundingCashBalance(ctx context.Context, account string) (ca
 SELECT fa.balance_minor, fa.currency,
        (SELECT MAX(occurred_at) FROM funding_transactions)
   FROM funding_accounts fa LIMIT 1`
-	err = c.db.QueryRowContext(ctx, q).Scan(&balMinor, &ccy, &asOf)
+	err := c.db.QueryRowContext(ctx, q).Scan(&balMinor, &ccy, &asOf)
 	if errors.Is(err, sql.ErrNoRows) {
 		return canonical.CashBalanceChange{}, false, nil
 	}
@@ -295,14 +291,9 @@ SELECT ps.position_external_id, ps.as_of_date,
                          WHERE s2.position_external_id = ps.position_external_id
                            AND s2.as_of_date <= ?1)
  ORDER BY ps.position_external_id`
-	rows, err := c.db.QueryContext(ctx, q, t)
-	if err != nil {
-		return batch, fmt.Errorf("buildBatch: %w", err)
-	}
-	defer rows.Close()
 
 	held := false
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "buildBatch", q, func(rows *sql.Rows) error {
 		var (
 			pid, currency, kind, company, payl  string
 			asOf                                int64
@@ -311,10 +302,10 @@ SELECT ps.position_external_id, ps.as_of_date,
 		)
 		if err := rows.Scan(&pid, &asOf, &currency, &marketMinor, &contribMinor, &taxMinor,
 			&kind, &company, &invDate, &payl); err != nil {
-			return batch, err
+			return err
 		}
 		if removals.Removed(pid, t) {
-			continue
+			return nil
 		}
 		held = true
 		instKey := pid
@@ -358,8 +349,8 @@ SELECT ps.position_external_id, ps.as_of_date,
 			inst.Payload = json.RawMessage(payl)
 		}
 		batch.Instruments = append(batch.Instruments, inst)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, t); err != nil {
 		return batch, err
 	}
 	if !held {

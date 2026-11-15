@@ -34,40 +34,35 @@ func realizedRank(k canonical.RealizedDocKind) int { return slices.Index(realize
 // fails the load: gold has no catch-all kind to put the row under. A
 // silver without the table states none.
 func (c *Connection) RealizedLots(ctx context.Context) ([]canonical.RealizedLotChange, error) {
-	ok, err := silver.HasTables(ctx, c.db, "realized_lots")
-	if err != nil || !ok {
-		return nil, err
+	if !c.schema.realizedLots {
+		return nil, nil
 	}
 	pairs, err := c.instrumentPairs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := c.db.QueryContext(ctx, `
+	var out []canonical.RealizedLotChange
+	if err := silver.ScanRows(ctx, c.db, "synthetic realized lots", `
 SELECT realized_lot_id, account_id, instrument_id, description, document_kind, tax_year,
        acquisition_date, disposal_date, currency, quantity, proceeds, book_value,
        realized_gain_loss, term, payload
   FROM realized_lots
- ORDER BY realized_lot_id`)
-	if err != nil {
-		return nil, fmt.Errorf("synthetic realized lots: %w", err)
-	}
-	defer rows.Close()
-	var out []canonical.RealizedLotChange
-	for rows.Next() {
+ ORDER BY realized_lot_id`, func(rows *sql.Rows) error {
 		var (
 			id, account, kind, ccy, payload string
 			taxYear                         int
 			instrument, description         sql.NullString
 			acquired, disposed, term        sql.NullString
-			qty, proceeds, cost, gain       sql.NullString
+			proceeds                        *canonical.Decimal
+			qty, cost, gain                 *canonical.Decimal
 		)
 		if err := rows.Scan(&id, &account, &instrument, &description, &kind, &taxYear,
-			&acquired, &disposed, &ccy, &qty, &proceeds, &cost, &gain, &term, &payload); err != nil {
-			return nil, err
+			&acquired, &disposed, &ccy, silver.Dec(&qty, silver.DecText), silver.Dec(&proceeds, silver.DecText), silver.Dec(&cost, silver.DecText), silver.Dec(&gain, silver.DecText), &term, &payload); err != nil {
+			return err
 		}
 		dk := canonical.RealizedDocKind(kind)
 		if !dk.Valid() {
-			return nil, fmt.Errorf("synthetic realized lot %s: document_kind %q", id, kind)
+			return fmt.Errorf("synthetic realized lot %s: document_kind %q", id, kind)
 		}
 		var extra annotations
 		r := canonical.RealizedLotChange{
@@ -80,17 +75,17 @@ SELECT realized_lot_id, account_id, instrument_id, description, document_kind, t
 			AcquisitionDate:       silver.ISODate(acquired.String),
 			DisposalDate:          silver.ISODate(disposed.String),
 			Currency:              ccy,
-			Quantity:              silver.AbsPtr(silver.DecimalPtrOrNil(qty)),
-			Proceeds:              silver.AbsPtr(silver.DecimalPtrOrNil(proceeds)),
-			RealizedGainLoss:      silver.DecimalPtrOrNil(gain),
+			Quantity:              silver.AbsPtr(qty),
+			Proceeds:              silver.AbsPtr(proceeds),
+			RealizedGainLoss:      gain,
 			Term:                  lotTerm(term, &extra),
 		}
 		pair := pairs[instrument.String]
-		r.SetBookValue(silver.AbsPtr(silver.DecimalPtrOrNil(cost)), basisFor(pair.ac, pair.veh, true))
+		r.SetBookValue(silver.AbsPtr(cost), basisFor(pair.ac, pair.veh, true))
 		r.Payload = payloadWith(payload, extra)
 		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	silver.MarkPrimary(out, realizedRank, nil)
