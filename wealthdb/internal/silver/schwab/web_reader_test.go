@@ -313,3 +313,25 @@ func TestWebChangeNumberIgnoresHistoricalPeriodEnds(t *testing.T) {
 			s.LatestChangeNumber, w.NewChangeNumber, dump)
 	}
 }
+
+// The web window starts at the earliest of the new dumps and the new
+// transactions, whichever of the two comes first.
+func TestWebChangeWindowStartsAtTheEarliestNewRow(t *testing.T) {
+	f := newMergedFixture(t)
+	dump, trade := utcDay("2024-01-10"), utcDay("2024-01-20")
+	if _, err := f.web.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (?1, 1, '/x/1');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key,
+            source, source_sha256, payload) VALUES
+            ('T1', ?2, '5678', 'Buy', 'VTI', 'statement_pdf', 'sha-s', '{"amount":-100}');
+    `, dump, trade); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	w, err := (&webReader{db: f.web}).ChangeWindow(context.Background(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.HasChanges || w.Start != dump || w.End != trade {
+		t.Errorf("window = %+v, want [%d, %d] with changes", w, dump, trade)
+	}
+}

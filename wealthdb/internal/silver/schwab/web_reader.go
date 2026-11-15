@@ -124,6 +124,7 @@ func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Wi
 	for _, m := range mins {
 		if m.Valid && (!w.HasChanges || m.Int64 < w.Start) {
 			w.Start = m.Int64
+			w.HasChanges = true
 		}
 	}
 	for _, m := range maxs {
