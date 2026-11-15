@@ -1,9 +1,12 @@
 package swissquote
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
+	"strconv"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
@@ -23,13 +26,43 @@ func syntheticTxID(
 	txType, symbol, currency string,
 	netAmount canonical.Decimal,
 ) string {
-	// Include all the columns that, taken together, uniquely
-	// identify a row in the source CSV. If Swissquote ever ships
-	// two indistinguishable rows that are nonetheless legitimate
-	// distinct events, we'd collapse them — but in practice their
-	// per-row content is unique enough.
+	// Include all the columns that, taken together, identify a row
+	// in the source CSV. Two rows can still agree on all of them: an
+	// export may list one movement twice. distinctTxIDs keeps those
+	// apart.
 	h := sha256.New()
 	fmt.Fprintf(h, "%s|%d|%s|%s|%s|%s",
 		account, occurredAt, txType, symbol, currency, netAmount.String())
 	return hex.EncodeToString(h.Sum(nil))[:32] // 128 bits is plenty at portfolio scale
+}
+
+// distinctTxIDs gives each transaction of txs that shares its id with
+// an earlier one a suffix, `-2`, `-3`, …, so no two carry one id. A row
+// whose id is its own keeps it unchanged, so every id already in gold
+// stays. The copies of one id are numbered in the order of their
+// payload, then their instrument, not in the order the silver returns
+// them, so a reload numbers them alike. The order of txs stays.
+func distinctTxIDs(txs []canonical.TransactionChange) {
+	groups := map[string][]int{}
+	for i := range txs {
+		id := txs[i].TransactionExternalID
+		groups[id] = append(groups[id], i)
+	}
+	for id, idx := range groups {
+		if len(idx) < 2 {
+			continue
+		}
+		content := func(i int) string {
+			instrument := ""
+			if p := txs[i].InstrumentExternalID; p != nil {
+				instrument = *p
+			}
+			return string(txs[i].Payload) + "\x00" + instrument
+		}
+		order := slices.Clone(idx)
+		slices.SortStableFunc(order, func(a, b int) int { return cmp.Compare(content(a), content(b)) })
+		for n, i := range order[1:] {
+			txs[i].TransactionExternalID = id + "-" + strconv.Itoa(n+2)
+		}
+	}
 }

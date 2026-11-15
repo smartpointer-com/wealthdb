@@ -83,6 +83,7 @@ SELECT account_external_id, occurred_at, transaction_type,
 	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
+	distinctTxIDs(out.Transactions)
 	return silver.NewTransactionStream(out), nil
 }
 

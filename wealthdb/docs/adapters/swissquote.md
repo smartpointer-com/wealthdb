@@ -17,7 +17,7 @@ interface of [../DESIGN.md](../DESIGN.md) §6.
 | --- | --- | --- |
 | `account_external_id` | Swissquote customer ID | Numeric string from silver's `accounts.account_external_id`. |
 | `instrument_external_id` | ISIN when any row of the silver states one for the `(symbol, currency)` pair, else `symbol + '@' + currency` | §8 says why. A silver that states no ISIN still loads. |
-| `transaction_external_id` | synthetic | Silver has no stable per-event id: the order number is shared across partial fills, and cash rows carry `00000000`. The adapter hashes `(account, occurred_at, transaction_type, symbol or '', currency, net_amount)` (`syntheticTxID`). The hash is the same on every reload. |
+| `transaction_external_id` | synthetic | Silver has no stable per-event id: the order number is shared across partial fills, and cash rows carry `00000000`. The adapter hashes `(account, occurred_at, transaction_type, symbol or '', currency, net_amount)` (`syntheticTxID`). The hash is the same on every reload. Two rows can agree on all six: an export may list one movement twice. Then the first copy keeps the hash, and each later one takes `-2`, `-3`, … in the order of its payload (`distinctTxIDs`). |
 
 ## 3. Coverage matrix
 
