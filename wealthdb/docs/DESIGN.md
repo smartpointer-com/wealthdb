@@ -3649,6 +3649,7 @@ wealthdb/
 │   │   │                             raiffeisen_at refdata relevate schwab swissquote
 │   │   │                             synthetic ubs viac
 │   │   ├── all/                    — imports every backend once
+│   │   ├── bank/                   — the deposit and card adapter that amex, chase, firstcitizens and raiffeisen_at declare
 │   │   └── <source>/               — impl (snapshots/transactions/classmap); adapter.go registers its silver.Source, with policy.go and lotpolicy.go where a policy needs code
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
 │   │   ├── migrations/             — 0001…NNNN SQL: tables and data moves, //go:embed-ed by schema.go

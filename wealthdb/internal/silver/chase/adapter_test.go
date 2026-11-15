@@ -148,7 +148,7 @@ func seedCard(t *testing.T, db *sql.DB) {
 
 func openConn(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	return silvertest.Open(t, &Adapter{}, path)
+	return silvertest.Open(t, adapter, path)
 }
 
 // project runs the whole projection over the full window.
@@ -181,8 +181,8 @@ func project(t *testing.T, path string) (canonical.SnapshotBatch, canonical.Tran
 }
 
 func TestKind(t *testing.T) {
-	if (&Adapter{}).Kind() != "chase" {
-		t.Fatalf("Kind = %q", (&Adapter{}).Kind())
+	if adapter.Kind() != "chase" {
+		t.Fatalf("Kind = %q", adapter.Kind())
 	}
 }
 

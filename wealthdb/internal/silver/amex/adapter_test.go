@@ -139,12 +139,12 @@ func seed(t *testing.T, db *sql.DB) {
 
 func openConn(t *testing.T, path string) silver.Connection {
 	t.Helper()
-	return silvertest.Open(t, &Adapter{}, path)
+	return silvertest.Open(t, adapter, path)
 }
 
 func TestKind(t *testing.T) {
-	if (&Adapter{}).Kind() != "amex" {
-		t.Fatalf("Kind = %q", (&Adapter{}).Kind())
+	if adapter.Kind() != "amex" {
+		t.Fatalf("Kind = %q", adapter.Kind())
 	}
 }
 

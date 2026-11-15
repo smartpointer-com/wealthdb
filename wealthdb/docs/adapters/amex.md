@@ -76,9 +76,9 @@ Both defaults are overridable through config `account_overrides`.
 A card's outstanding balance is a **liability carried as negative
 cash** (the margin-debit precedent, migration 0037). Silver holds every
 figure the provider's way — the balance is the POSITIVE amount owed —
-and `signedBalance` negates it. That is the **only** place the flip
-happens, and every account this source emits is a card, so it is
-unconditional.
+and the shared bank adapter (`internal/silver/bank`) negates it. That is
+the **only** place the flip happens, and every account this source emits
+is a card, so it is unconditional.
 
 A credit limit and available credit are not balances of anything owned
 and never become rows.

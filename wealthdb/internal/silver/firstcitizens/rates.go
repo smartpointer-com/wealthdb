@@ -8,12 +8,27 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/bank"
 )
 
 // statementRatesTable holds the interest rate each statement states
 // (collectors/firstcitizens/migrations/0003_statement_rates.sql): one row
 // per account and cycle, the rate on the statement day in percent a year.
 const statementRatesTable = "statement_rates"
+
+// probeStatementRates is the source's pass over a silver that holds the
+// statement rates (applyStatementRates), probed at open. A silver older
+// than the table states no rates.
+func probeStatementRates(ctx context.Context, db *sql.DB) (bank.Pass, error) {
+	var has bool
+	if err := silver.ProbeOptional(ctx, db, silver.Optional{Table: statementRatesTable, Has: &has}); err != nil {
+		return nil, err
+	}
+	if !has {
+		return nil, nil
+	}
+	return applyStatementRates, nil
+}
 
 // applyStatementRates puts the rate each statement states on a closing
 // balance the batch already holds, as the payload's interest_rate,
@@ -26,21 +41,17 @@ const statementRatesTable = "statement_rates"
 // latest one before it inside the statement's cycle. A cycle in which the
 // balance never moved has no such balance, and its rate goes nowhere: no
 // balance is added for it. A cycle whose statement states no rate has no
-// row, so its balances state none. A silver older than the table states no
-// rates.
-func (c *Connection) applyStatementRates(ctx context.Context, batch *canonical.SnapshotBatch) error {
-	if !c.schema.statementRates {
-		return nil
-	}
-	// Each account's closing balances, in time order (appendRunningBalances
-	// emits them ordered by account and day).
+// row, so its balances state none.
+func applyStatementRates(ctx context.Context, db *sql.DB, batch *canonical.SnapshotBatch) error {
+	// Each account's closing balances, in time order (the running-balance
+	// series is ordered by account and day).
 	closings := map[string][]int{}
 	for i, cb := range batch.CashBalances {
 		if cb.BalanceKind == canonical.BalanceKindClosing {
 			closings[cb.AccountExternalID] = append(closings[cb.AccountExternalID], i)
 		}
 	}
-	err := silver.ScanRows(ctx, c.db, "", `SELECT account_external_id, period_start, period_end, interest_rate
+	err := silver.ScanRows(ctx, db, "", `SELECT account_external_id, period_start, period_end, interest_rate
   FROM `+statementRatesTable+` ORDER BY account_external_id, period_end`, func(rows *sql.Rows) error {
 		var (
 			acct       string

@@ -87,7 +87,7 @@ is signed the same way (spend negative, anything reducing the
 balance owed positive). Silver never normalises a liability.
 
 **Negating it is this adapter's job**, and it happens in exactly
-one place (`signedBalance` in `snapshots.go`). A card balance of
+one place (`signed` in `internal/silver/bank/engine.go`). A card balance of
 `1234.56` owed projects as `-1234.56`. Nothing downstream re-flips
 it.
 

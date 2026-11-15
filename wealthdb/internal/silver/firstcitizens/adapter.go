@@ -1,7 +1,8 @@
 // Package firstcitizens projects the firstcitizens collector's silver (a First
 // Citizens Bank retail deposit relationship — checking / savings) into
 // canonical change records. See collectors/firstcitizens/ for the bronze/silver
-// schema and the gold mapping this implements.
+// schema and the gold mapping this implements. The projection is the shared
+// bank adapter's (silver/bank); this file declares the source.
 //
 // A deposit relationship is cash-only, so the projection is simple (and
 // parallel to the chase sibling, whose silver is column-compatible):
@@ -10,9 +11,9 @@
 //     the nickname (falling back to the last-4 mask); TaxWrapper
 //     'taxable_personal', ManagementStyle 'self_directed'. All overridable via
 //     account_overrides. These are conduit accounts — cash passes through them
-//     between other sources — so the registered ReturnsPolicy (policy.go)
-//     hides their return rows at every grain; the balances and flows still
-//     enter the aggregates, where only the transaction flow matters.
+//     between other sources — so the registered ReturnsPolicy hides their
+//     return rows at every grain; the balances and flows still enter the
+//     aggregates, where only the transaction flow matters.
 //
 //   - CASH BALANCES, not positions or instruments — cash is not an instrument.
 //     They land in gold's cash_balances table (report_cash synthesises a
@@ -32,66 +33,113 @@
 //
 //   - TRANSACTIONS: the whole deposit ledger. The collector signs amounts the
 //     canonical way (positive = balance increase), so the source sign is
-//     preserved. The history row's transactionId is the stable external id.
+//     preserved; summing NetAmount reproduces the account's net cash flow.
+//     The history row's transactionId is the stable external id.
 package firstcitizens
 
 import (
-	"context"
-	"database/sql"
+	"fmt"
+	"strings"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/bank"
 )
 
 const kindName = "firstcitizens"
 
-// init registers the kind (silver.Source).
-//
-// See returns.DepositBankPolicy for the flow-complete + hidden-plumbing
-// rationale. An account's display name is the roster's nickname where
-// it has one.
-func init() {
-	rp := returns.DepositBankPolicy()
-	silver.Register(silver.Source{
-		Kind:    kindName,
-		Open:    (&Adapter{}).Open,
-		Returns: &rp,
-		Labels:  silver.LabelTraits{NicknameIsLabel: true},
-	})
-}
+// spanExtrema is the MIN/MAX of every date the projection touches: account
+// snapshots (accounts.snapshot_at), the loaded runs (dump_runs.snapshot_at,
+// where the CURRENT balances are stamped) and the transaction ledger: the
+// transaction events at posted_at, and the per-day cash marks at the day's
+// last second. It is the snapshot range Status reports.
+var spanExtrema = fmt.Sprintf(`
+SELECT MIN(t), MAX(t) FROM (
+    SELECT snapshot_at AS t FROM accounts
+    UNION ALL SELECT snapshot_at FROM dump_runs
+    UNION ALL SELECT posted_at FROM transactions
+    UNION ALL SELECT posted_at + %d FROM transactions WHERE balance IS NOT NULL)`, silver.DayEndOffset)
 
-type Adapter struct{}
+// adapter projects the source.
+var adapter = bank.New(bank.Source{
+	Kind:            kindName,
+	DefaultCurrency: "USD",
+	// See returns.DepositBankPolicy for the flow-complete + hidden-plumbing
+	// rationale.
+	Returns: returns.DepositBankPolicy(),
+	// The shared load clock (silver.LoadClock): this source has no change
+	// feed of its own, so a loaded dump is the trigger and a full re-emit
+	// is the response.
+	Clock:          silver.LoadClock(kindName, spanExtrema, silver.Range("transactions", "posted_at")),
+	NameCol:        "nickname",
+	NameIsNickname: true,
+	AccountKind:    canonical.AccountKindCash,
+	Listing:        "run_accounts",
+	Closings: []bank.Series{{
+		// One CLOSING cash balance per day the balance moved, valued at
+		// that day's end-of-day running balance from the transaction
+		// ledger — the exact cash time series, back to the ledger's
+		// start. Every history row carries a runningBalance, so the
+		// series has no gaps.
+		//
+		// The ledger has no intra-day order, so the fitid-highest row of
+		// the day stands for its end-of-day balance
+		// (silver.RunningBalanceQuery); the imprecision is bounded by
+		// same-day activity and resolves by the next day.
+		Label:  "appendRunningBalances",
+		Basis:  "running_balance",
+		Query:  silver.RunningBalanceQuery,
+		DayEnd: true,
+	}},
+	Probe: probeStatementRates,
+	IDCol: "fitid",
+	Cols: bank.LedgerCols{
+		Description: "description",
+		Category:    "json_extract(payload, '$.pfmData.classificationDesc')",
+	},
+	TxKind: func(r bank.Row, _ bool) (canonical.TxKind, bool, bool) {
+		return txKind(r.Description, r.Amount), true, false
+	},
+	Text: func(r bank.Row, tx *canonical.TransactionChange) {
+		tx.ProviderCategory = providerCategory(r.Category)
+	},
+})
 
-func (*Adapter) Kind() string { return kindName }
+// init registers the kind (silver.Source). An account's display name is
+// the roster's nickname where it has one.
+func init() { silver.Register(adapter.Source()) }
 
-func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
-	db, err := silver.OpenReadOnlySQLite(spec.Path, "firstcitizens silver")
-	if err != nil {
-		return nil, err
+// providerCategory is the bank's own filing of the row: the personal-finance
+// classification its app shows ("Transfer", "Interest Income", "Federal
+// Tax"). It is carried as found and translated nowhere — the bank files by
+// guess, and a rule the holder wrote outranks it — so it is what a rule and
+// the transfer fence can read. `Uncategorized` says nothing and is dropped.
+func providerCategory(class string) *string {
+	class = strings.TrimSpace(class)
+	if strings.EqualFold(class, "Uncategorized") {
+		return nil
 	}
-	c := &Connection{db: db}
-	if err := silver.ProbeOptional(ctx, c.db, c.schema.optional()...); err != nil {
-		c.db.Close()
-		return nil, err
-	}
-	return c, nil
+	return silver.StrPtrIfNonEmpty(class)
 }
 
-type Connection struct {
-	db     *sql.DB
-	schema schema
-}
-
-func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
-
-// schema is which optional parts of the silver schema a file holds,
-// probed once at open.
-type schema struct {
-	statementRates bool // the rates the statements state
-}
-
-func (s *schema) optional() []silver.Optional {
-	return []silver.Optional{
-		{Table: statementRatesTable, Has: &s.statementRates},
+// txKind maps a First Citizens deposit transaction to a canonical TxKind.
+// Unlike chase there is no OFX TRNTYPE in silver (the coarse silver `kind` is
+// only DEBIT/CREDIT from `isDebit`), so interest and fees are recognised from
+// the description text; everything else is a deposit or withdrawal by the
+// (canonical) sign of the amount, which is the faithful classification for a
+// cash conduit account with no richer categorisation.
+func txKind(description string, amt canonical.Decimal) canonical.TxKind {
+	d := strings.ToUpper(description)
+	switch {
+	case strings.Contains(d, "INTEREST"):
+		return canonical.TxKindInterest
+	case strings.Contains(d, "SERVICE CHARGE") || strings.Contains(d, "SERVICE FEE") ||
+		strings.Contains(d, " FEE") || strings.HasPrefix(d, "FEE"):
+		return canonical.TxKindFee
+	case amt.IsNegative():
+		return canonical.TxKindWithdrawal
+	default:
+		return canonical.TxKindDeposit
 	}
 }
