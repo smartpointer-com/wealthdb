@@ -34,6 +34,9 @@ import (
 // the bridged hash before emitting downstream.
 type webReader struct {
 	db *sql.DB
+	// parts is the file's optional schema, once probed is set (schema).
+	parts  webSchema
+	probed bool
 }
 
 func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
@@ -186,10 +189,11 @@ func (r *webReader) snapshotsDimensions(
 	// "Contributory IRA" / "Schwab One® Custodial Account
 	// (UTMA)" / "Education Savings" / etc.). Older silvers
 	// don't have the column; degrade gracefully.
-	hasRegistration, err := silver.HasColumn(ctx, r.db, "accounts", "account_registration")
+	s, err := r.schema(ctx)
 	if err != nil {
 		return err
 	}
+	hasRegistration := s.registration
 	regCol := "NULL"
 	if hasRegistration {
 		regCol = "account_registration"
@@ -198,12 +202,7 @@ func (r *webReader) snapshotsDimensions(
 SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
   FROM accounts
  WHERE snapshot_at BETWEEN ? AND ?`, regCol)
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("schwab-web snapshotsDimensions: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "schwab-web snapshotsDimensions", q, func(rows *sql.Rows) error {
 		var (
 			snap         int64
 			suffix       string
@@ -216,11 +215,11 @@ SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
 		}
 		hash, ok := bridge[suffix]
 		if !ok {
-			continue
+			return nil
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		change := canonical.AccountChange{
 			AccountExternalID: hash,
@@ -248,8 +247,11 @@ SELECT snapshot_at, account_external_id, nickname, payload, COALESCE(%s, '')
 			}
 		}
 		batch.Accounts = append(batch.Accounts, change)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // transactionsBeforeAPIStart emits web transactions that are
@@ -298,11 +300,6 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
  WHERE timestamp BETWEEN ? AND ?
    AND source <> ?
  ORDER BY timestamp, activity_id`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End, sourceFORM1099B)
-	if err != nil {
-		return nil, fmt.Errorf("schwab-web Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	var built []builtWebTx
 	// The last day the tx-history JSON export reaches per account,
@@ -310,24 +307,24 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 	// past the cutoff, and its span is what the splice below defers
 	// to (spliceNonExternalToJSON).
 	jsonThrough := map[string]int64{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "schwab-web Transactions", q, func(rows *sql.Rows) error {
 		var (
 			activityID, suffix, kind, payload, source string
 			ts                                        int64
 			instrumentKey                             sql.NullString
 		)
 		if err := rows.Scan(&activityID, &ts, &suffix, &kind, &instrumentKey, &payload, &source); err != nil {
-			return nil, err
+			return err
 		}
 		hash, ok := bridge[suffix]
 		if !ok {
-			continue
+			return nil
 		}
 		if source == sourceTxHistoryJSON {
 			jsonThrough[hash] = max(jsonThrough[hash], ts/86400)
 		}
 		if cutoff, ok := apiStartByHash[hash]; ok && ts >= cutoff {
-			continue
+			return nil
 		}
 		var instrPtr *string
 		if instrumentKey.Valid && instrumentKey.String != "" {
@@ -355,8 +352,8 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			Description: webNarrative(payload, description),
 			Payload:     json.RawMessage(payload),
 		}})
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End, sourceFORM1099B); err != nil {
 		return nil, err
 	}
 	// Reconcile the overlapping web sub-feeds (INTEROP §8), in order:

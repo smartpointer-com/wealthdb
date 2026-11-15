@@ -2,11 +2,13 @@ package fidelity
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // A wind-up moves a closing account's holdings into a sibling, and the
@@ -109,25 +111,19 @@ func counterLeg(l windUpInLeg) canonical.TransactionChange {
 // the accounts only its historical statements carry.
 func (c *Connection) ownAccountIDs(ctx context.Context) (map[string]bool, error) {
 	q := `SELECT account_external_id FROM accounts`
-	ok, err := c.hasHistoricalTable(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if ok {
+	if c.schema.historical {
 		q += ` UNION SELECT account_external_id FROM historical_position_snapshots`
 	}
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("fidelity own accounts: %w", err)
-	}
-	defer rows.Close()
 	out := map[string]bool{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "fidelity own accounts", q, func(rows *sql.Rows) error {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return err
 		}
 		out[id] = true
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }

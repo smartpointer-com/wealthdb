@@ -41,7 +41,7 @@ func (*Adapter) Kind() string { return kindName }
 // that api doesn't surface. With web alone, an account's id is its
 // full account number, which the web silver states for every account
 // (webOnlyBridge). See merge.go.
-func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	c := &Connection{}
 
 	// Single-path form: a schwab-api silver.
@@ -51,6 +51,10 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 			return nil, err
 		}
 		c.api = &apiReader{db: db, marks: spec.MarkGuard}
+		if _, err := c.api.schema(ctx); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
 		return c, nil
 	}
 
@@ -73,6 +77,18 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 	}
 	if c.api == nil && c.web == nil {
 		return nil, fmt.Errorf("schwab: configure subsources schwab-api, schwab-web or both")
+	}
+	if c.api != nil {
+		if _, err := c.api.schema(ctx); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+	}
+	if c.web != nil {
+		if _, err := c.web.schema(ctx); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
 	}
 	return c, nil
 }

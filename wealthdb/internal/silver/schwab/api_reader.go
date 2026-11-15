@@ -15,6 +15,9 @@ type apiReader struct {
 	// marks tunes the guard on a spike that reverts (marks.go); a zero
 	// field takes the default.
 	marks silver.MarkGuard
+	// parts is the file's optional schema, once probed is set (schema).
+	parts  apiSchema
+	probed bool
 }
 
 func (c *apiReader) Close() error { return silver.CloseDB(&c.db) }

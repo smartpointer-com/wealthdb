@@ -46,22 +46,17 @@ type openLot struct {
 // table.
 func (r *webReader) openLotsInWindow(ctx context.Context, w canonical.Window) (map[holdingKey][]openLot, error) {
 	out := map[holdingKey][]openLot{}
-	ok, err := silver.HasTables(ctx, r.db, "open_lots")
-	if err != nil || !ok {
+	s, err := r.schema(ctx)
+	if err != nil || !s.openLots {
 		return out, err
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, r.db, "schwab-web open lots", `
 SELECT as_of_date, account_external_id, instrument_key, lot_index,
        quantity, unit_cost, cost_basis, acquired_date,
        unrealized_gain_loss, term, footnotes, source_sha256, payload
   FROM open_lots
  WHERE as_of_date BETWEEN ? AND ?
- ORDER BY as_of_date, account_external_id, instrument_key, lot_index`, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("schwab-web open lots: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ ORDER BY as_of_date, account_external_id, instrument_key, lot_index`, func(rows *sql.Rows) error {
 		var (
 			k              holdingKey
 			l              openLot
@@ -70,13 +65,16 @@ SELECT as_of_date, account_external_id, instrument_key, lot_index,
 		if err := rows.Scan(&k.asOf, &k.suffix, &k.instrumentKey, &l.index,
 			&l.quantity, &l.unitCost, &l.costBasis, &acquired,
 			&l.unrealized, &term, &l.footnotes, &l.sha256, &l.payload); err != nil {
-			return nil, fmt.Errorf("schwab-web open lots scan: %w", err)
+			return fmt.Errorf("schwab-web open lots scan: %w", err)
 		}
 		l.acquired = silver.ISODate(acquired.String)
 		l.term = canonical.ParseLotTerm(term.String)
 		out[k] = append(out[k], l)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // change projects the lot onto the holding's position row: same

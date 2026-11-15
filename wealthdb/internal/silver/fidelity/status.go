@@ -18,11 +18,8 @@ import (
 // both through its latest statement, its ledger over the span of its
 // statements. A silver from before the run columns existed counts every
 // run as reading both through its own time.
-func (c *Connection) observed(ctx context.Context, hasHist bool, s *canonical.Status) error {
-	modes, err := silver.HasColumn(ctx, c.db, "dump_runs", "activity_since")
-	if err != nil {
-		return err
-	}
+func (c *Connection) observed(ctx context.Context, s *canonical.Status) error {
+	modes, hasHist := c.schema.runModes, c.schema.historical
 	if !modes {
 		if err := silver.ObserveByRuns(ctx, c.db, "fidelity", `SELECT MAX(snapshot_at) FROM dump_runs`, s); err != nil {
 			return err
@@ -37,6 +34,7 @@ func (c *Connection) observed(ctx context.Context, hasHist bool, s *canonical.St
 	}
 	var spans []silver.Span
 	if modes {
+		var err error
 		if spans, err = silver.RunSpans(ctx, c.db, "fidelity", `
 SELECT activity_since, COALESCE(activity_until, snapshot_at) FROM dump_runs
  WHERE activity_present = 1 AND activity_since IS NOT NULL`); err != nil {
@@ -75,16 +73,10 @@ func (c *Connection) clock() silver.Clock {
 			silver.Range("dump_runs", "snapshot_at"),
 			silver.Range("positions", "snapshot_at"),
 		},
-		Extra:  c.historicalRange,
-		Ledger: []string{silver.Range("transactions", "timestamp")},
-		Observed: silver.Observed{Set: func(ctx context.Context, s *canonical.Status) error {
-			hasHist, err := c.hasHistoricalTable(ctx)
-			if err != nil {
-				return err
-			}
-			return c.observed(ctx, hasHist, s)
-		}},
-		Pin: true,
+		Extra:    c.historicalRange,
+		Ledger:   []string{silver.Range("transactions", "timestamp")},
+		Observed: silver.Observed{Set: c.observed},
+		Pin:      true,
 		Mode: silver.Incremental{
 			New: []string{
 				silver.RangePast("dump_runs", "snapshot_at"),
@@ -99,8 +91,8 @@ func (c *Connection) clock() silver.Clock {
 // historicalRange is the span of the statements' as-of dates, -1 each
 // where the silver holds none.
 func (c *Connection) historicalRange(ctx context.Context) (lo, hi int64, err error) {
-	if ok, err := c.hasHistoricalTable(ctx); err != nil || !ok {
-		return -1, -1, err
+	if !c.schema.historical {
+		return -1, -1, nil
 	}
 	return silver.Extrema(ctx, c.db, "fidelity historical",
 		[]string{`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`})

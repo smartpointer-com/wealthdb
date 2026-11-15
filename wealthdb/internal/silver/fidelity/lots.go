@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log"
 	"sort"
 	"strconv"
@@ -76,11 +75,10 @@ type lotCarry struct {
 // the svb silvers, which state no lots, leave it empty.
 func (c *Connection) readOpenLots(ctx context.Context) (*lotCarry, error) {
 	carry := &lotCarry{fetches: map[holding][]lotFetch{}}
-	ok, err := silver.HasTables(ctx, c.db, "open_lots")
-	if err != nil || !ok {
-		return carry, err
+	if !c.schema.openLots {
+		return carry, nil
 	}
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "readOpenLots", `
 SELECT snapshot_at, account_external_id, instrument_key, lot_index, cusip,
        CAST(quantity             AS VARCHAR),
        CAST(unit_cost            AS VARCHAR),
@@ -91,33 +89,31 @@ SELECT snapshot_at, account_external_id, instrument_key, lot_index, cusip,
        COALESCE(term, ''),
        currency, source_sha256, payload
   FROM open_lots
- ORDER BY account_external_id, instrument_key, snapshot_at, lot_index`)
-	if err != nil {
-		return nil, fmt.Errorf("readOpenLots: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ ORDER BY account_external_id, instrument_key, snapshot_at, lot_index`, func(rows *sql.Rows) error {
 		var (
 			at        int64
 			h         holding
 			l         openLot
-			qty, cost sql.NullString
+			qty, cost *canonical.Decimal
 		)
 		if err := rows.Scan(&at, &h.account, &h.instrument, &l.index, &l.cusip,
-			&qty, &l.unitCost, &cost, &l.acquired, &l.unrealized, &l.value,
+			silver.Dec(&qty, silver.DecText), &l.unitCost, silver.Dec(&cost, silver.DecText), &l.acquired, &l.unrealized, &l.value,
 			&l.term, &l.currency, &l.sourceSHA, &l.payload); err != nil {
-			return nil, err
+			return err
 		}
-		l.quantity = silver.DecimalPtrOrNil(qty)
-		l.costBasis = silver.DecimalPtrOrNil(cost)
+		l.quantity = qty
+		l.costBasis = cost
 		fs := carry.fetches[h]
 		if n := len(fs); n == 0 || fs[n-1].at != at {
 			fs = append(fs, lotFetch{at: at})
 		}
 		fs[len(fs)-1].lots = append(fs[len(fs)-1].lots, l)
 		carry.fetches[h] = fs
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return carry, rows.Err()
+	return carry, nil
 }
 
 // instrumentCUSIPs maps an instrument key to the CUSIP its lots state:
@@ -128,24 +124,21 @@ SELECT snapshot_at, account_external_id, instrument_key, lot_index, cusip,
 // rule, where no source states another).
 func (c *Connection) instrumentCUSIPs(ctx context.Context) (map[string]string, error) {
 	out := map[string]string{}
-	for _, t := range []struct{ table, column, query string }{
-		// security_name marks migration 0012, which brought
-		// disposed_date and the closed_positions kind; RealizedLots
-		// guards on the same column.
-		{"closed_lots", "security_name", `
+	for _, t := range []struct {
+		has   bool
+		query string
+	}{
+		// RealizedLots guards on the same column.
+		{c.schema.closedLotNames, `
 SELECT instrument_key, upper(trim(cusip)) FROM closed_lots
  WHERE document_kind = 'closed_positions' AND instrument_key IS NOT NULL AND trim(COALESCE(cusip, '')) <> ''
  ORDER BY disposed_date, upper(trim(cusip))`},
-		{"open_lots", "cusip", `
+		{c.schema.openLotCUSIP, `
 SELECT instrument_key, upper(trim(cusip)) FROM open_lots
  WHERE trim(COALESCE(cusip, '')) <> ''
  ORDER BY snapshot_at, upper(trim(cusip))`},
 	} {
-		ok, err := silver.HasColumn(ctx, c.db, t.table, t.column)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
+		if !t.has {
 			continue
 		}
 		if err := c.scanCUSIPs(ctx, t.query, out); err != nil {
@@ -158,19 +151,17 @@ SELECT instrument_key, upper(trim(cusip)) FROM open_lots
 // scanCUSIPs reads (key, CUSIP) rows oldest first into out, so the
 // newest stays.
 func (c *Connection) scanCUSIPs(ctx context.Context, query string, out map[string]string) error {
-	rows, err := c.db.QueryContext(ctx, query)
-	if err != nil {
-		return fmt.Errorf("instrumentCUSIPs: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "instrumentCUSIPs", query, func(rows *sql.Rows) error {
 		var key, cusip string
 		if err := rows.Scan(&key, &cusip); err != nil {
 			return err
 		}
 		out[key] = cusip
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // latest returns the holding's latest fetch at or before t, or nil.

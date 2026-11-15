@@ -22,12 +22,11 @@ const statedPeriodsTable = "stated_periods"
 // account, document) order. period_end is the period's last day, which
 // gold keys the row by.
 func (c *Connection) statedPeriods(ctx context.Context, w canonical.Window) ([]canonical.StatedPeriodChange, error) {
-	ok, err := silver.HasTables(ctx, c.db, statedPeriodsTable)
-	if err != nil || !ok {
-		return nil, err
+	if !c.schema.stated {
+		return nil, nil
 	}
 	var out []canonical.StatedPeriodChange
-	err = silver.ScanRows(ctx, c.db, "", `
+	err := silver.ScanRows(ctx, c.db, "", `
 SELECT period_end, period_start, account_external_id, currency,
        CAST(beginning_value AS VARCHAR), CAST(ending_value AS VARCHAR),
        CAST(accrual AS VARCHAR), CAST(net_additions AS VARCHAR),
@@ -37,19 +36,21 @@ SELECT period_end, period_start, account_external_id, currency,
  WHERE period_end BETWEEN ? AND ?
  ORDER BY period_end, account_external_id, source_sha256`, func(rows *sql.Rows) error {
 		var (
-			r                                         canonical.StatedPeriodChange
-			begin, end, accrual, additions, gain, inc sql.NullString
-			fees, payload                             sql.NullString
+			r                                canonical.StatedPeriodChange
+			accrual                          *canonical.Decimal
+			begin, end, additions, gain, inc *canonical.Decimal
+			payload                          sql.NullString
+			fees                             *canonical.Decimal
 		)
 		if err := rows.Scan(&r.AsOf, &r.PeriodStart, &r.AccountExternalID, &r.Currency,
-			&begin, &end, &accrual, &additions, &gain, &inc, &fees,
+			silver.Dec(&begin, silver.DecText), silver.Dec(&end, silver.DecText), silver.Dec(&accrual, silver.DecText), silver.Dec(&additions, silver.DecText), silver.Dec(&gain, silver.DecText), silver.Dec(&inc, silver.DecText), silver.Dec(&fees, silver.DecText),
 			&r.SourceSHA256, &payload); err != nil {
 			return err
 		}
-		r.BeginningValue, r.EndingValue = silver.DecimalPtrOrNil(begin), silver.DecimalPtrOrNil(end)
-		r.Accrual, r.NetAdditions = silver.DecimalPtrOrNil(accrual), silver.DecimalPtrOrNil(additions)
-		r.NetGain, r.Income = silver.DecimalPtrOrNil(gain), silver.DecimalPtrOrNil(inc)
-		r.Fees = silver.DecimalPtrOrNil(fees)
+		r.BeginningValue, r.EndingValue = begin, end
+		r.Accrual, r.NetAdditions = accrual, additions
+		r.NetGain, r.Income = gain, inc
+		r.Fees = fees
 		r.Payload = silver.JSONOrNil(payload)
 		out = append(out, r)
 		return nil
@@ -64,9 +65,8 @@ SELECT period_end, period_start, account_external_id, currency,
 // period's last day, so a document's periods before or after the
 // statements' span still load.
 func (c *Connection) widenToStatedPeriods(ctx context.Context, w *canonical.Window) error {
-	ok, err := silver.HasTables(ctx, c.db, statedPeriodsTable)
-	if err != nil || !ok {
-		return err
+	if !c.schema.stated {
+		return nil
 	}
 	lo, hi, err := silver.Extrema(ctx, c.db, "fidelity ChangeWindow stated periods",
 		[]string{`SELECT MIN(period_end), MAX(period_end) FROM ` + statedPeriodsTable})

@@ -55,15 +55,19 @@ func realizedRank(k canonical.RealizedDocKind) int {
 // differently and yields none until its next load migrates it; the svb
 // silvers state none.
 func (c *Connection) RealizedLots(ctx context.Context) ([]canonical.RealizedLotChange, error) {
-	ok, err := silver.HasColumn(ctx, c.db, "closed_lots", "security_name")
-	if err != nil || !ok {
-		return nil, err
+	if !c.schema.closedLotNames {
+		return nil, nil
 	}
 	ids, err := c.realizedInstruments(ctx)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := c.db.QueryContext(ctx, `
+	var (
+		out     []canonical.RealizedLotChange
+		idents  [][]string
+		undated int
+	)
+	if err := silver.ScanRows(ctx, c.db, "fidelity RealizedLots", `
 SELECT lot_id, document_kind, account_external_id, tax_year, form_prepared,
        security_name, COALESCE(instrument_key, ''), cusip, action,
        CAST(quantity                AS VARCHAR),
@@ -79,30 +83,22 @@ SELECT lot_id, document_kind, account_external_id, tax_year, form_prepared,
        COALESCE(term, ''), covered, form_8949_box, specific_share_id,
        corrected, currency, source_sha256, payload
   FROM closed_lots
- ORDER BY lot_id`)
-	if err != nil {
-		return nil, fmt.Errorf("fidelity RealizedLots: %w", err)
-	}
-	defer rows.Close()
-	var (
-		out     []canonical.RealizedLotChange
-		idents  [][]string
-		undated int
-	)
-	for rows.Next() {
+ ORDER BY lot_id`, func(rows *sql.Rows) error {
 		var (
 			id, kind, acct, key, acquired, disposed, settled string
 			term, currency, sha, payload                     string
 			taxYear, covered, specificShare, corrected       sql.NullInt64
 			prepared, name, cusip, action, box               sql.NullString
-			qty, proceeds, cost, discount, wash, gain, fees  sql.NullString
+			fees                                             sql.NullString
+			proceeds                                         *canonical.Decimal
+			qty, cost, discount, wash, gain                  *canonical.Decimal
 			withheld                                         sql.NullString
 		)
 		if err := rows.Scan(&id, &kind, &acct, &taxYear, &prepared, &name, &key,
-			&cusip, &action, &qty, &acquired, &disposed, &settled, &proceeds, &cost,
-			&discount, &wash, &gain, &fees, &withheld, &term, &covered, &box,
+			&cusip, &action, silver.Dec(&qty, silver.DecText), &acquired, &disposed, &settled, silver.Dec(&proceeds, silver.DecText), silver.Dec(&cost, silver.DecText),
+			silver.Dec(&discount, silver.DecText), silver.Dec(&wash, silver.DecText), silver.Dec(&gain, silver.DecText), &fees, &withheld, &term, &covered, &box,
 			&specificShare, &corrected, &currency, &sha, &payload); err != nil {
-			return nil, fmt.Errorf("fidelity RealizedLots scan: %w", err)
+			return fmt.Errorf("fidelity RealizedLots scan: %w", err)
 		}
 		r := canonical.RealizedLotChange{
 			RealizedLotExternalID: id,
@@ -114,11 +110,11 @@ SELECT lot_id, document_kind, account_external_id, tax_year, form_prepared,
 			DisposalDate:          silver.ISODate(disposed),
 			SettlementDate:        silver.ISODate(settled),
 			Currency:              currency,
-			Quantity:              silver.AbsPtr(silver.DecimalPtrOrNil(qty)),
-			Proceeds:              silver.AbsPtr(silver.DecimalPtrOrNil(proceeds)),
-			RealizedGainLoss:      silver.DecimalPtrOrNil(gain),
-			WashSaleDisallowed:    silver.DecimalPtrOrNil(wash),
-			AccruedMarketDiscount: silver.DecimalPtrOrNil(discount),
+			Quantity:              silver.AbsPtr(qty),
+			Proceeds:              silver.AbsPtr(proceeds),
+			RealizedGainLoss:      gain,
+			WashSaleDisallowed:    wash,
+			AccruedMarketDiscount: discount,
 			Term:                  canonical.ParseLotTerm(term),
 			Covered:               boolPtr(covered),
 			Form8949Box:           silver.NullStringPtr(box),
@@ -128,9 +124,9 @@ SELECT lot_id, document_kind, account_external_id, tax_year, form_prepared,
 			r.TaxYear = int(taxYear.Int64)
 		} else if r.TaxYear = silver.TaxYearOf(r.DisposalDate, r.SettlementDate); r.TaxYear == 0 {
 			undated++
-			continue
+			return nil
 		}
-		r.SetBookValue(silver.AbsPtr(silver.DecimalPtrOrNil(cost)), lotBasis)
+		r.SetBookValue(silver.AbsPtr(cost), lotBasis)
 		instr, ok := ids.resolve(key)
 		if ok {
 			r.InstrumentExternalID = &instr
@@ -155,8 +151,8 @@ SELECT lot_id, document_kind, account_external_id, tax_year, form_prepared,
 		r.Payload = silver.PayloadWith(payload, extra)
 		out = append(out, r)
 		idents = append(idents, distinctNonEmpty(instr, key, cusip.String))
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	if undated > 0 {
@@ -337,10 +333,7 @@ func (r realizedIDs) resolve(key string) (string, bool) {
 // make it ambiguous.
 func (c *Connection) realizedInstruments(ctx context.Context) (realizedIDs, error) {
 	ids := realizedIDs{symbolFor: map[string]string{}, known: map[string]struct{}{}}
-	hasOpen, err := silver.HasTables(ctx, c.db, "open_lots")
-	if err != nil {
-		return ids, err
-	}
+	hasOpen := c.schema.openLots
 	const pair = ` cusip IS NOT NULL AND cusip <> '' AND instrument_key IS NOT NULL AND cusip <> instrument_key`
 	q := `
 SELECT DISTINCT CASE document_kind WHEN 'form_1099b' THEN 1 ELSE 0 END, cusip, instrument_key
@@ -353,19 +346,14 @@ SELECT DISTINCT 0, cusip, instrument_key FROM open_lots WHERE` + pair
 	}
 	q += `
 ORDER BY 1`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return ids, fmt.Errorf("realizedInstruments: %w", err)
-	}
-	defer rows.Close()
 	tierOf := map[string]int{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "realizedInstruments", q, func(rows *sql.Rows) error {
 		var (
 			tier          int
 			cusip, symbol string
 		)
 		if err := rows.Scan(&tier, &cusip, &symbol); err != nil {
-			return ids, err
+			return err
 		}
 		prev, seen := ids.symbolFor[cusip]
 		switch {
@@ -374,35 +362,29 @@ ORDER BY 1`
 		case tierOf[cusip] == tier && prev != symbol:
 			ids.symbolFor[cusip] = ""
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return ids, err
 	}
 
-	hasHist, err := c.hasHistoricalTable(ctx)
-	if err != nil {
-		return ids, err
-	}
 	q = `
 SELECT instrument_key FROM positions
 UNION SELECT instrument_key FROM transactions WHERE instrument_key IS NOT NULL`
-	if hasHist {
+	if c.schema.historical {
 		q += `
 UNION SELECT instrument_key FROM historical_position_snapshots WHERE instrument_key IS NOT NULL`
 	}
-	keys, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return ids, fmt.Errorf("realizedInstruments: %w", err)
-	}
-	defer keys.Close()
-	for keys.Next() {
+	if err := silver.ScanRows(ctx, c.db, "realizedInstruments", q, func(keys *sql.Rows) error {
 		var k string
 		if err := keys.Scan(&k); err != nil {
-			return ids, err
+			return err
 		}
 		ids.known[k] = struct{}{}
+		return nil
+	}); err != nil {
+		return ids, err
 	}
-	return ids, keys.Err()
+	return ids, nil
 }
 
 // boolPtr reads a 0/1 silver flag, nil where NULL.

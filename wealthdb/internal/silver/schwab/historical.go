@@ -98,13 +98,8 @@ SELECT as_of_date, account_external_id, instrument_key,
        unrealized_gain_loss, accrued_interest, payload
   FROM historical_position_snapshots
  WHERE as_of_date BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHistoricalPositions: %w", err)
-	}
-	defer rows.Close()
 
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendHistoricalPositions", q, func(rows *sql.Rows) error {
 		var (
 			asOf                             int64
 			suffix, instrumentKey, payload   string
@@ -121,7 +116,7 @@ SELECT as_of_date, account_external_id, instrument_key,
 		delete(lots, key) // what remains has no holding to ride beside
 		hash, ok := bridge[suffix]
 		if !ok {
-			continue
+			return nil
 		}
 		batch := getBatch(asOf)
 
@@ -184,8 +179,8 @@ SELECT as_of_date, account_external_id, instrument_key,
 		pos.AcquisitionDate = canonical.EarliestLotDate(changes)
 		batch.Positions = append(batch.Positions, pos)
 		batch.PositionLots = append(batch.PositionLots, changes...)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return err
 	}
 	orphans := 0
@@ -220,10 +215,11 @@ func (r *webReader) appendHistoricalCashBalances(
 	getBatch func(int64) *canonical.SnapshotBatch,
 	bridge map[string]string,
 ) error {
-	hasRate, err := silver.HasColumn(ctx, r.db, "historical_cash_balances", "interest_rate")
+	s, err := r.schema(ctx)
 	if err != nil {
 		return fmt.Errorf("appendHistoricalCashBalances: %w", err)
 	}
+	hasRate := s.historicalCashRate
 	rate := "NULL"
 	if hasRate {
 		rate = "interest_rate"
@@ -234,13 +230,8 @@ SELECT period_end, period_start, account_external_id, currency_iso,
   FROM historical_cash_balances
  WHERE period_end BETWEEN ? AND ?
     OR period_start BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHistoricalCashBalances: %w", err)
-	}
-	defer rows.Close()
 
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendHistoricalCashBalances", q, func(rows *sql.Rows) error {
 		var (
 			periodEnd, periodStart int64
 			suffix, ccy, payload   string
@@ -252,7 +243,7 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 		}
 		hash, ok := bridge[suffix]
 		if !ok {
-			continue
+			return nil
 		}
 
 		if open.Valid && periodStart >= w.Start && periodStart <= w.End {
@@ -284,8 +275,11 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 				Payload:           closingPayload,
 			})
 		}
+		return nil
+	}, w.Start, w.End, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // historicalRange returns MIN/MAX time across the historical
@@ -304,5 +298,6 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 // (rebuilt against 0001 only) won't have them, and the adapter
 // must still load — falling back to the live-only stream.
 func (r *webReader) hasHistoricalTables(ctx context.Context) (bool, error) {
-	return silver.HasTables(ctx, r.db, "historical_position_snapshots", "historical_cash_balances")
+	s, err := r.schema(ctx)
+	return s.historicalPositions && s.historicalCash, err
 }

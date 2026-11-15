@@ -26,22 +26,13 @@ import (
 // else a stable identity synthesised from its description so gold
 // still has an instrument to hang it on.
 
-// hasHistoricalTable reports whether the fidelity-web silver
-// carries the migration-0004 historical_position_snapshots
-// table. Pre-v4 silvers won't have it; the adapter must still
-// load, falling back to the live-only stream.
-func (c *Connection) hasHistoricalTable(ctx context.Context) (bool, error) {
-	return silver.HasTables(ctx, c.db, "historical_position_snapshots")
-}
-
 // historicalSnapshotTimes returns the distinct as_of_date values
 // in `historical_position_snapshots` that fall inside the window,
 // so the byTime dispatch in Snapshots() carries a batch slot per
 // historical date too.
 func (c *Connection) historicalSnapshotTimes(ctx context.Context, w canonical.Window) ([]int64, error) {
-	ok, err := c.hasHistoricalTable(ctx)
-	if err != nil || !ok {
-		return nil, err
+	if !c.schema.historical {
+		return nil, nil
 	}
 	return silver.SnapshotTimes(ctx, c.db, w, nil, `
 SELECT DISTINCT as_of_date
@@ -56,25 +47,23 @@ SELECT DISTINCT as_of_date
 // appendHistoricalPositions). Empty (not an error) on pre-v7 silvers
 // with no daf portfolios.
 func (c *Connection) dafAccountIDs(ctx context.Context) (map[string]struct{}, error) {
-	rows, err := c.db.QueryContext(ctx, `
+	out := map[string]struct{}{}
+	if err := silver.ScanRows(ctx, c.db, "dafAccountIDs", `
 SELECT DISTINCT a.account_external_id
   FROM accounts a JOIN portfolios p
     ON p.snapshot_at = a.snapshot_at
    AND p.portfolio_external_id = a.portfolio_external_id
- WHERE p.kind = 'daf'`)
-	if err != nil {
-		return nil, fmt.Errorf("dafAccountIDs: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]struct{}{}
-	for rows.Next() {
+ WHERE p.kind = 'daf'`, func(rows *sql.Rows) error {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return err
 		}
 		out[id] = struct{}{}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // heldKinds maps a vehicle the historical classifier reads off a row to
@@ -94,28 +83,25 @@ var heldKinds = map[canonical.Vehicle]canonical.AccountKind{
 // silver with no historical table.
 func (c *Connection) heldAccountKinds(ctx context.Context) (map[string]canonical.AccountKind, error) {
 	out := map[string]canonical.AccountKind{}
-	ok, err := c.hasHistoricalTable(ctx)
-	if err != nil || !ok {
-		return out, err
+	if !c.schema.historical {
+		return out, nil
 	}
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "heldAccountKinds", `
 SELECT DISTINCT account_external_id, COALESCE(instrument_key, ''), description
-  FROM historical_position_snapshots`)
-	if err != nil {
-		return nil, fmt.Errorf("heldAccountKinds: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+  FROM historical_position_snapshots`, func(rows *sql.Rows) error {
 		var id, key, desc string
 		if err := rows.Scan(&id, &key, &desc); err != nil {
-			return nil, err
+			return err
 		}
 		_, vehicle := classifyHistoricalPair(key, desc)
 		if kind, ok := heldKinds[vehicle]; ok && out[id] != canonical.AccountKindMortgage {
 			out[id] = kind
 		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // appendHistoricalAccounts projects the per-account master rows
@@ -131,12 +117,8 @@ SELECT DISTINCT account_external_id, COALESCE(instrument_key, ''), description
 // account's first-seen timestamp reflects the statement, not
 // the toolkit-first-ran date.
 func (c *Connection) appendHistoricalAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, held map[string]canonical.AccountKind) error {
-	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
-	if err != nil {
-		return err
-	}
 	mgmtCol := "NULL"
-	if hasMgmt {
+	if c.schema.managementStyle {
 		mgmtCol = "a.management_style"
 	}
 	// One live `accounts` row per distinct account_external_id
@@ -157,26 +139,20 @@ SELECT DISTINCT a.account_external_id, a.portfolio_external_id,
        SELECT MAX(a2.snapshot_at) FROM accounts a2
         WHERE a2.account_external_id = a.account_external_id
    )`, mgmtCol)
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHistoricalAccounts: %w", err)
-	}
-	defer rows.Close()
 	usd := "USD"
 	type acctRow struct {
 		extID, payload, silverMgmt           string
 		portfolioID, nickname, portfolioKind sql.NullString
 	}
-	var seedRows []acctRow
-	for rows.Next() {
+	seedRows, err := silver.Query(ctx, c.db, "appendHistoricalAccounts", q, func(rows *sql.Rows) (rec acctRow, err error) {
 		var r acctRow
 		if err := rows.Scan(&r.extID, &r.portfolioID, &r.nickname, &r.payload,
 			&r.portfolioKind, &r.silverMgmt); err != nil {
-			return err
+			return rec, err
 		}
-		seedRows = append(seedRows, r)
-	}
-	if err := rows.Err(); err != nil {
+		return r, nil
+	}, w.Start, w.End)
+	if err != nil {
 		return err
 	}
 	// For each snapshot in the window, emit one AccountChange +
@@ -242,12 +218,8 @@ func (c *Connection) appendHistoricalPositions(ctx context.Context, w canonical.
 		return err
 	}
 	// The statement's cost basis (migration 0009); NULL before it.
-	hasCost, err := silver.HasColumn(ctx, c.db, "historical_position_snapshots", "cost_basis")
-	if err != nil {
-		return err
-	}
 	costCol := "NULL"
-	if hasCost {
+	if c.schema.historicalCost {
 		costCol = "CAST(cost_basis AS VARCHAR)"
 	}
 	q := fmt.Sprintf(`
@@ -266,26 +238,21 @@ SELECT as_of_date, account_external_id,
 	if err != nil {
 		return err
 	}
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHistoricalPositions: %w", err)
-	}
-	defer rows.Close()
 
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendHistoricalPositions", q, func(rows *sql.Rows) error {
 		var (
 			snap                           int64
 			acct, instrKey, desc, currency string
-			qtyStr, valueStr, costStr      sql.NullString
+			qtyStr, valueStr, costStr      *canonical.Decimal
 			payload                        string
 		)
 		if err := rows.Scan(&snap, &acct, &instrKey, &desc, &currency,
-			&qtyStr, &valueStr, &costStr, &payload); err != nil {
+			silver.Dec(&qtyStr, silver.DecText), silver.Dec(&valueStr, silver.DecText), silver.Dec(&costStr, silver.DecText), &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		// Classified from the raw instrKey/desc (before the synthetic
 		// key substitution below); a linked row from its key and
@@ -337,14 +304,17 @@ SELECT as_of_date, account_external_id,
 			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
-			Quantity:             silver.DecimalPtrOrNil(qtyStr),
-			MarketValue:          silver.DecimalPtrOrNil(valueStr),
+			Quantity:             qtyStr,
+			MarketValue:          valueStr,
 			Payload:              json.RawMessage(payload),
 		}
-		pos.SetBookValue(silver.DecimalPtrOrNil(costStr), lotBasis)
+		pos.SetBookValue(costStr, lotBasis)
 		batch.Positions = append(batch.Positions, pos)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // syntheticHistoricalInstrumentKey deterministically derives a

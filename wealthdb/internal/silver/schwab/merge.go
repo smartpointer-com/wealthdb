@@ -326,23 +326,18 @@ SELECT DISTINCT json_extract(payload,'$.instrument.symbol') AS sym,
   FROM positions
  WHERE sym  IS NOT NULL AND sym  != ''
    AND cusip IS NOT NULL AND cusip != ''`
-	rows, err := api.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("schwab symbol bridge: %w", err)
-	}
-	defer rows.Close()
 	candidates := map[string]map[string]struct{}{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, api, "schwab symbol bridge", q, func(rows *sql.Rows) error {
 		var sym, cusip string
 		if err := rows.Scan(&sym, &cusip); err != nil {
-			return nil, err
+			return err
 		}
 		if candidates[sym] == nil {
 			candidates[sym] = map[string]struct{}{}
 		}
 		candidates[sym][cusip] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	out := make(map[string]string, len(candidates))
@@ -402,20 +397,15 @@ SELECT a.account_external_id, a.account_number
     ON a.account_external_id = m.account_external_id
    AND a.snapshot_at = m.s
  WHERE a.account_number IS NOT NULL`
-	rows, err := api.QueryContext(ctx, qAPI)
-	if err != nil {
-		return nil, fmt.Errorf("schwab bridge api scan: %w", err)
-	}
-	defer rows.Close()
 	apiAccts := make(map[string]string) // hashValue → accountNumber
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, api, "schwab bridge api scan", qAPI, func(rows *sql.Rows) error {
 		var hash, num string
 		if err := rows.Scan(&hash, &num); err != nil {
-			return nil, err
+			return err
 		}
 		apiAccts[hash] = num
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 
@@ -501,21 +491,16 @@ func webOnlyBridge(ctx context.Context, web *sql.DB) (map[string]string, error) 
 // newest non-empty `account_number_full`, empty where none states one.
 // Both bridges read it, so they agree on which number an account has.
 func webFullNumbers(ctx context.Context, web *sql.DB) ([]string, map[string]string, error) {
-	rows, err := web.QueryContext(ctx, `
+	var suffixes []string
+	fulls := map[string]string{}
+	if err := silver.ScanRows(ctx, web, "schwab bridge web scan", `
 SELECT account_external_id,
        COALESCE(json_extract(payload, '$.account_number_full'), '')
   FROM accounts
- ORDER BY snapshot_at, rowid`)
-	if err != nil {
-		return nil, nil, fmt.Errorf("schwab bridge web scan: %w", err)
-	}
-	defer rows.Close()
-	var suffixes []string
-	fulls := map[string]string{}
-	for rows.Next() {
+ ORDER BY snapshot_at, rowid`, func(rows *sql.Rows) error {
 		var suffix, full string
 		if err := rows.Scan(&suffix, &full); err != nil {
-			return nil, nil, err
+			return err
 		}
 		if _, seen := fulls[suffix]; !seen {
 			suffixes = append(suffixes, suffix)
@@ -523,8 +508,11 @@ SELECT account_external_id,
 		} else if full != "" {
 			fulls[suffix] = full
 		}
+		return nil
+	}); err != nil {
+		return nil, nil, err
 	}
-	return suffixes, fulls, rows.Err()
+	return suffixes, fulls, nil
 }
 
 // digitsOnly reduces an account number to its digit sequence,
@@ -583,31 +571,26 @@ func (c *Connection) ensureAPIStart(ctx context.Context) (map[string]int64, erro
 // ascending per account. With a bridge the web suffixes are translated
 // to api hashes and an unbridged account is skipped.
 func accountTimestamps(ctx context.Context, db *sql.DB, bridge map[string]string) (map[string][]int64, error) {
-	rows, err := db.QueryContext(ctx, `
+	out := map[string][]int64{}
+	if err := silver.ScanRows(ctx, db, "", `
 SELECT account_external_id, timestamp
   FROM transactions
- ORDER BY account_external_id, timestamp`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string][]int64{}
-	for rows.Next() {
+ ORDER BY account_external_id, timestamp`, func(rows *sql.Rows) error {
 		var account string
 		var ts int64
 		if err := rows.Scan(&account, &ts); err != nil {
-			return nil, err
+			return err
 		}
 		if bridge != nil {
 			hash, ok := bridge[account]
 			if !ok {
-				continue
+				return nil
 			}
 			account = hash
 		}
 		out[account] = append(out[account], ts)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	// Several web suffixes can bridge to one hash; each arrived sorted

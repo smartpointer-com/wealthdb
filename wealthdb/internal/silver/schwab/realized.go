@@ -55,8 +55,8 @@ func (c *Connection) RealizedLots(ctx context.Context) ([]canonical.RealizedLotC
 	if c.web == nil {
 		return nil, nil
 	}
-	ok, err := silver.HasTables(ctx, c.web.db, "closed_lots")
-	if err != nil || !ok {
+	s, err := c.web.schema(ctx)
+	if err != nil || !s.closedLots {
 		return nil, err
 	}
 	bridge, err := c.ensureBridge(ctx)
@@ -67,25 +67,20 @@ func (c *Connection) RealizedLots(ctx context.Context) ([]canonical.RealizedLotC
 	if err != nil {
 		return nil, err
 	}
-	rows, err := c.web.db.QueryContext(ctx, `
-SELECT logical_doc_key, document_kind, lot_index, account_external_id,
-       tax_year, security_name, cusip, instrument_key, quantity,
-       acquired_date, disposed_date, proceeds, cost_basis,
-       wash_sale_disallowed, accrued_market_discount, realized_gain_loss,
-       term, covered, form_8949_box, source_sha256, payload
-  FROM closed_lots
- ORDER BY logical_doc_key, document_kind, lot_index`)
-	if err != nil {
-		return nil, fmt.Errorf("schwab-web closed lots: %w", err)
-	}
-	defer rows.Close()
 
 	var (
 		out                              []canonical.RealizedLotChange
 		docOf                            = map[string]string{} // lot id → logical_doc_key
 		unbridged, unplaced, unknownKind int
 	)
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.web.db, "schwab-web closed lots", `
+SELECT logical_doc_key, document_kind, lot_index, account_external_id,
+       tax_year, security_name, cusip, instrument_key, quantity,
+       acquired_date, disposed_date, proceeds, cost_basis,
+       wash_sale_disallowed, accrued_market_discount, realized_gain_loss,
+       term, covered, form_8949_box, source_sha256, payload
+  FROM closed_lots
+ ORDER BY logical_doc_key, document_kind, lot_index`, func(rows *sql.Rows) error {
 		var (
 			docKey, kind, suffix  string
 			lotIndex              int64
@@ -93,27 +88,27 @@ SELECT logical_doc_key, document_kind, lot_index, account_external_id,
 			name, cusip, instrKey sql.NullString
 			acquired, disposed    sql.NullString
 			term, box             sql.NullString
-			quantity, proceeds    sql.NullFloat64
-			costBasis, washSale   sql.NullFloat64
-			marketDiscount, gain  sql.NullFloat64
+			quantity, proceeds    *canonical.Decimal
+			costBasis, washSale   *canonical.Decimal
+			marketDiscount, gain  *canonical.Decimal
 			sha, payload          string
 		)
 		if err := rows.Scan(&docKey, &kind, &lotIndex, &suffix,
-			&taxYear, &name, &cusip, &instrKey, &quantity,
-			&acquired, &disposed, &proceeds, &costBasis,
-			&washSale, &marketDiscount, &gain,
+			&taxYear, &name, &cusip, &instrKey, silver.Dec(&quantity, silver.DecFloat),
+			&acquired, &disposed, silver.Dec(&proceeds, silver.DecFloat), silver.Dec(&costBasis, silver.DecFloat),
+			silver.Dec(&washSale, silver.DecFloat), silver.Dec(&marketDiscount, silver.DecFloat), silver.Dec(&gain, silver.DecFloat),
 			&term, &covered, &box, &sha, &payload); err != nil {
-			return nil, fmt.Errorf("schwab-web closed lots scan: %w", err)
+			return fmt.Errorf("schwab-web closed lots scan: %w", err)
 		}
 		docKind := canonical.RealizedDocKind(kind)
 		if !docKind.Valid() {
 			unknownKind++
-			continue
+			return nil
 		}
 		hash, ok := bridge[suffix]
 		if !ok {
 			unbridged++
-			continue
+			return nil
 		}
 		r := canonical.RealizedLotChange{
 			RealizedLotExternalID: realizedLotID(docKey, kind, lotIndex),
@@ -124,11 +119,11 @@ SELECT logical_doc_key, document_kind, lot_index, account_external_id,
 			AcquiredVarious:       strings.EqualFold(strings.TrimSpace(acquired.String), "Various"),
 			DisposalDate:          silver.ISODate(disposed.String),
 			Currency:              "USD",
-			Quantity:              silver.AbsPtr(silver.DecimalPtrFromNullFloat(quantity)),
-			Proceeds:              silver.AbsPtr(silver.DecimalPtrFromNullFloat(proceeds)),
-			RealizedGainLoss:      silver.DecimalPtrFromNullFloat(gain),
-			WashSaleDisallowed:    silver.DecimalPtrFromNullFloat(washSale),
-			AccruedMarketDiscount: silver.DecimalPtrFromNullFloat(marketDiscount),
+			Quantity:              silver.AbsPtr(quantity),
+			Proceeds:              silver.AbsPtr(proceeds),
+			RealizedGainLoss:      gain,
+			WashSaleDisallowed:    washSale,
+			AccruedMarketDiscount: marketDiscount,
 			Term:                  canonical.ParseLotTerm(term.String),
 			Form8949Box:           silver.StrPtrIfNonEmpty(strings.TrimSpace(box.String)),
 			SourceDocument:        silver.StrPtrIfNonEmpty(sha),
@@ -141,9 +136,9 @@ SELECT logical_doc_key, document_kind, lot_index, account_external_id,
 		}
 		if r.TaxYear == 0 {
 			unplaced++
-			continue
+			return nil
 		}
-		r.SetBookValue(silver.AbsPtr(silver.DecimalPtrFromNullFloat(costBasis)), statementBasis)
+		r.SetBookValue(silver.AbsPtr(costBasis), statementBasis)
 		if covered.Valid {
 			v := covered.Int64 == 1
 			r.Covered = &v
@@ -151,8 +146,8 @@ SELECT logical_doc_key, document_kind, lot_index, account_external_id,
 		r.InstrumentExternalID, r.InstrumentHint = realizedInstrument(instrKey.String, cusip.String, name.String, symbolBridge)
 		docOf[r.RealizedLotExternalID] = docKey
 		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 

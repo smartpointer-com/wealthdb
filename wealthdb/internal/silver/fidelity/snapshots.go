@@ -93,13 +93,8 @@ func (c *Connection) appendPortfolios(ctx context.Context, w canonical.Window, b
 SELECT snapshot_at, portfolio_external_id, kind, payload
   FROM portfolios
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendPortfolios: %w", err)
-	}
-	defer rows.Close()
 	usd := "USD"
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendPortfolios", q, func(rows *sql.Rows) error {
 		var (
 			snap                 int64
 			extID, kind, payload string
@@ -109,7 +104,7 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		display := portfolioDisplay(extID, kind)
 		batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
@@ -120,8 +115,11 @@ SELECT snapshot_at, portfolio_external_id, kind, payload
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // portfolioDisplay is a portfolio's DisplayName: its label with the
@@ -158,12 +156,8 @@ func portfolioDisplay(id, kind string) string {
 // no classification or no portfolio at all; the gold COALESCE
 // upsert preserves whatever a later writer / override supplies.
 func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, held map[string]canonical.AccountKind) error {
-	hasMgmt, err := silver.HasColumn(ctx, c.db, "accounts", "management_style")
-	if err != nil {
-		return err
-	}
 	mgmtCol := "NULL"
-	if hasMgmt {
+	if c.schema.managementStyle {
 		mgmtCol = "a.management_style"
 	}
 	q := fmt.Sprintf(`
@@ -174,13 +168,8 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
     ON p.snapshot_at = a.snapshot_at
    AND p.portfolio_external_id = a.portfolio_external_id
  WHERE a.snapshot_at BETWEEN ? AND ?`, mgmtCol)
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendAccounts: %w", err)
-	}
-	defer rows.Close()
 	usd := "USD"
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap                                 int64
 			extID, payload, silverMgmt           string
@@ -192,7 +181,7 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		change := canonical.AccountChange{
 			AccountExternalID:   extID,
@@ -218,8 +207,11 @@ SELECT a.snapshot_at, a.account_external_id, a.portfolio_external_id,
 			change.ManagementStyle = &s
 		}
 		batch.Accounts = append(batch.Accounts, change)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // applyPortfolioKindTaxonomy stamps TaxWrapper (plus AccountKind
@@ -372,32 +364,28 @@ SELECT snapshot_at, account_external_id, instrument_key,
        payload
   FROM positions
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendPositionsAndCash: %w", err)
-	}
-	defer rows.Close()
 
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendPositionsAndCash", q, func(rows *sql.Rows) error {
 		var (
 			snap                                   int64
 			acct, key, desc, silverClass, currency string
 			isCore                                 int
-			qtyStr, valueStr, costStr              sql.NullString
+			valueStr                               sql.NullString
+			qtyStr, costStr                        *canonical.Decimal
 			secYield                               sql.NullFloat64
 			payload                                string
 		)
 		if err := rows.Scan(&snap, &acct, &key, &desc, &silverClass, &currency,
-			&isCore, &qtyStr, &valueStr, &costStr, &secYield, &payload); err != nil {
+			&isCore, silver.Dec(&qtyStr, silver.DecText), &valueStr, silver.Dec(&costStr, silver.DecText), &secYield, &payload); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		pending := strings.EqualFold(key, pendingActivity) || strings.EqualFold(desc, pendingActivity)
 		if key == "" && !pending {
-			continue
+			return nil
 		}
 
 		if isCore != 0 || pending {
@@ -411,7 +399,7 @@ SELECT snapshot_at, account_external_id, instrument_key,
 				}
 			}
 			addCurrentCash(batch, snap, acct, currency, amt, payload, isCore != 0)
-			continue
+			return nil
 		}
 
 		// Map silverClass + name to the single (exposure, vehicle)
@@ -441,13 +429,16 @@ SELECT snapshot_at, account_external_id, instrument_key,
 			AssetClass:           assetClassNew,
 			Vehicle:              vehicle,
 			Currency:             currency,
-			Quantity:             silver.DecimalPtrOrNil(qtyStr),
+			Quantity:             qtyStr,
 			MarketValue:          silver.DecimalPtrOrNil(valueStr),
 			Payload:              json.RawMessage(payload),
 		}
-		pos.SetBookValue(silver.DecimalPtrOrNil(costStr), lotBasis)
+		pos.SetBookValue(costStr, lotBasis)
 		lots.attach(batch, &pos)
 		batch.Positions = append(batch.Positions, pos)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }

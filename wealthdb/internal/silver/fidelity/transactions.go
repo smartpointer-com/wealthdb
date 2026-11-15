@@ -28,31 +28,26 @@ SELECT activity_id, timestamp, account_external_id, kind,
        payload
   FROM transactions
  WHERE timestamp BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("fidelity Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
 	var windUp []windUpInLeg
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "fidelity Transactions", q, func(rows *sql.Rows) error {
 		var (
 			activityID, acct, rawKind, instr, currency, payload string
 			occurredAt                                          int64
-			qtyStr, priceStr, amtStr                            sql.NullString
+			qtyStr, priceStr, amtStr                            *canonical.Decimal
 		)
 		if err := rows.Scan(&activityID, &occurredAt, &acct, &rawKind, &instr,
-			&currency, &qtyStr, &priceStr, &amtStr, &payload); err != nil {
-			return nil, fmt.Errorf("fidelity Transactions scan: %w", err)
+			&currency, silver.Dec(&qtyStr, silver.DecText), silver.Dec(&priceStr, silver.DecText), silver.Dec(&amtStr, silver.DecText), &payload); err != nil {
+			return fmt.Errorf("fidelity Transactions scan: %w", err)
 		}
 
-		qty := silver.DecimalPtrOrNil(qtyStr)
+		qty := qtyStr
 		p := parseTxPayload(payload)
 		// The amount is resolved BEFORE the kind, because some kinds
 		// depend on it: Fidelity's `WIRE` and `TRANSFER` verbs carry no
 		// direction, and their signs are the only thing that does.
-		netDec := silver.DecimalPtrOrNil(amtStr)
+		netDec := amtStr
 		kind := kindFor(rawKind, qty, netDec, p.Action, acct)
 		// The narrative is all gold has to categorise a fidelity row
 		// by: no merchant, no counterparty, no description. It is what
@@ -76,7 +71,7 @@ SELECT activity_id, timestamp, account_external_id, kind,
 			Currency:              currency,
 			NetAmount:             netDec,
 			Quantity:              qty,
-			Price:                 silver.DecimalPtrOrNil(priceStr),
+			Price:                 priceStr,
 			Payload:               json.RawMessage(payload),
 		}
 		if descr != "" {
@@ -96,8 +91,8 @@ SELECT activity_id, timestamp, account_external_id, kind,
 		if l, ok := asWindUpInLeg(tx, p.Action); ok {
 			windUp = append(windUp, l)
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	// A closed account's wind-up out-legs are printed nowhere (windup.go).

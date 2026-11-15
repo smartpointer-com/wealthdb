@@ -76,16 +76,48 @@ type Adapter struct{}
 
 func (*Adapter) Kind() string { return kindName }
 
-func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "fidelity silver")
 	if err != nil {
 		return nil, err
 	}
-	return &Connection{db: db}, nil
+	c := &Connection{db: db}
+	if err := silver.ProbeOptional(ctx, c.db, c.schema.optional()...); err != nil {
+		c.db.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 type Connection struct {
-	db *sql.DB
+	db     *sql.DB
+	schema schema
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
+
+// schema is which optional parts of the silver schema a file holds,
+// probed once at open.
+type schema struct {
+	historical      bool // the statement corpus (silver migration 0004)
+	historicalCost  bool // a statement's cost basis (silver migration 0009)
+	managementStyle bool // accounts.management_style
+	openLots        bool // the open_lots table
+	openLotCUSIP    bool // open_lots.cusip
+	closedLotNames  bool // closed_lots.security_name, with disposed_date and the closed_positions kind (silver migration 0012)
+	stated          bool // the stated_periods table
+	runModes        bool // the run columns: what each run read
+}
+
+func (s *schema) optional() []silver.Optional {
+	return []silver.Optional{
+		{Table: "historical_position_snapshots", Has: &s.historical},
+		{Table: "historical_position_snapshots", Columns: []string{"cost_basis"}, Has: &s.historicalCost},
+		{Table: "accounts", Columns: []string{"management_style"}, Has: &s.managementStyle},
+		{Table: "open_lots", Has: &s.openLots},
+		{Table: "open_lots", Columns: []string{"cusip"}, Has: &s.openLotCUSIP},
+		{Table: "closed_lots", Columns: []string{"security_name"}, Has: &s.closedLotNames},
+		{Table: statedPeriodsTable, Has: &s.stated},
+		{Table: "dump_runs", Columns: []string{"activity_since"}, Has: &s.runModes},
+	}
+}
