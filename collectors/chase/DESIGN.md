@@ -22,11 +22,10 @@ The README holds the quick start, the bronze layout and the silver tables.
   autopay, limits, disputes, lock/unlock, anything that mutates state at
   the provider) is out of scope in code and docs, as is any other product
   the same login may expose. See the §4 scope note for the decision.
-- **Conduit accounts.** The deposit accounts are conduits: cash passes
-  through them on its way to and from other sources. Their transactions
-  matter for cross-source money-flow tracking. Their own return rows are
+- **Deposit accounts are not investments.** Their transactions matter for
+  cross-source money-flow tracking. Their own return rows are
   noise, so the registered ReturnsPolicy hides them while the coarse grains
-  keep their balances and flows. The credit cards are not conduits. They
+  keep their balances and flows. The credit cards are not deposit accounts. They
   are revolving-credit liabilities, and gold keeps every `card` account out
   of returns altogether. The gold side is
   [docs/adapters/chase.md](../../wealthdb/docs/adapters/chase.md) §7.
@@ -710,9 +709,9 @@ account, `card` for a credit card. Neither product carries an instrument,
 so it emits cash balances, not positions, plus the whole transaction
 ledger keyed on silver's content-derived `fitid`. Silver keeps every card
 figure the provider's way, and the adapter turns the sign exactly once: a
-card's owed balance becomes gold's negative cash. The deposit accounts are
-conduits whose own return rows the registered ReturnsPolicy hides; cards
-never enter returns. The mapping, the balance sources and the returns
+card's owed balance becomes gold's negative cash. The registered
+ReturnsPolicy hides the deposit accounts' own return rows; cards never
+enter returns. The mapping, the balance sources and the returns
 treatment are in
 [docs/adapters/chase.md](../../wealthdb/docs/adapters/chase.md).
 
@@ -738,9 +737,9 @@ liabilities for net worth and statement-balance payments for money-flow
 reconciliation. Card *reads* are in scope; card *management* is not, and
 never will be without a fresh written opt-in. Cards cost separate
 card-activity / card-statement endpoints to capture, a liability
-`account_kind` and revolving-credit shape in the adapter. They have **no
-conduit-returns rationale**: a card is not a conduit, and gold keeps card
-accounts out of returns by their kind, not by the conduit policy.
+`account_kind` and revolving-credit shape in the adapter. They need **no
+returns policy of their own**: gold keeps card accounts out of returns by
+their kind, not by the deposit accounts' policy.
 
 ## 5. Operation & status
 

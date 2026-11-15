@@ -398,8 +398,7 @@ registered with the gold engine by its import in
 `internal/silver/all`. It is the closest sibling of `angellist` (an
 event-sourced LP book with distributions) and a cousin of `carta`. The
 package doc comment in `adapter.go` is the canonical spec; there is no
-separate `docs/adapters/*.md`. Gold migration `0015` admits
-`'equityzen'` as a `silver_kind`.
+separate `docs/adapters/*.md`.
 
 ### Enums — no gold change needed
 
@@ -447,7 +446,8 @@ exist in gold.
   the latest dump is also the source's observed watermark).
   Snapshot extrema = MIN/MAX `positions.as_of_date`, stretched to the
   latest dump that dropped a deal; transaction extrema = MIN/MAX
-  `cash_flows.flow_date`; the change window spans both. Silver dates
+  `cash_flows.flow_date`. A dump past the watermark re-emits the whole
+  history (`Window.Full`). Silver dates
   are source ISO TEXT → converted with `strftime('%s', …)` to the canonical
   unix seconds.
 - `snapshots.go` — **forward-fill**: for each distinct position event date

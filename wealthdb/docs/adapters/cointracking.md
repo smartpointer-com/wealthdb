@@ -1,9 +1,8 @@
 # cointracking adapter
 
 Adapter that projects the `cointracking` silver DuckDB into the
-canonical gold schema. Implements the `silver.Adapter` /
-`silver.Connection` interface defined in
-[../DESIGN.md](../DESIGN.md) §6.
+canonical gold schema. Implements the `silver.Connection` interface
+defined in [../DESIGN.md](../DESIGN.md) §6.
 
 cointracking.info is the aggregator-of-record for crypto holdings
 across centralised exchanges and on-chain wallets; the silver
@@ -150,6 +149,6 @@ the fee to value a third-currency fee.
 `dump_runs` is empty. `ChangeWindow` triggers on any new `dump_run`
 past the watermark. A trade's `occurred_at` is no trigger: the silver
 load replays the full trade history, so a new trade can appear at any
-old date. Once triggered, the window spans every transaction, every
-`dump_run` and every `coin_prices` date, so the FX rates the adapter
-emits fall inside it too.
+old date. Once triggered, the window is the whole history
+(`Window.Full`): the load deletes the source's rows whole before it
+re-inserts them, the FX rates included.

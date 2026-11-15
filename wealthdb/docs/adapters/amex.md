@@ -1,9 +1,9 @@
 # Amex adapter
 
 Adapter that projects the `amex` silver SQLite database into the
-canonical gold schema. Implements the `silver.Adapter` /
-`silver.Connection` interface defined in
-[../DESIGN.md](../DESIGN.md) §6.
+canonical gold schema. It is a source of the shared bank adapter
+(`internal/silver/bank`), which implements the `silver.Connection`
+interface defined in [../DESIGN.md](../DESIGN.md) §6.
 
 The source is an American Express card relationship, scoped to **credit
 and charge cards**. A card carries no instrument, so the adapter emits

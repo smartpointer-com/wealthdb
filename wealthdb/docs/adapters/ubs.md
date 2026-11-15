@@ -9,7 +9,7 @@ canonical gold schema:
   account-statement export, statements reconstructed from the PDF
   archive, cards, mortgages and the portfolio transaction list.
 
-It implements the `silver.Adapter` / `silver.Connection` interface of
+It implements the `silver.Connection` interface of
 [../DESIGN.md](../DESIGN.md) §6. With both subsources configured, the
 orchestrator (`merge.go`) splices them:
 
@@ -90,13 +90,17 @@ daily book balance for every cash account (`appendBookBalances`).
 - It is signed at the source, so no credit/debit indicator applies.
 - An (account, currency, day) the statement feed already emitted is
   skipped, so the pass only adds.
-- Its payload is the account's record. The record's interest
-  conditions are stated on it under the stated-rate keys (YIELD.md §3):
-  per side up to four tiers, each under its column's number, the day
-  the side holds from, the term's end before 9999, and the day count. A
-  tier past the first counts only after a column whose limit lies
-  between 0.005 and 1e14. The netbanking's conditions do not land on a
-  balance whose record states tiers.
+- Its payload is the account's record, with the record's interest
+  conditions added under the stated-rate keys (YIELD.md §3):
+  - up to four tiers per side, each numbered by its column. A tier past
+    the first counts only when the column before it has a limit between
+    0.005 and 1e14.
+  - the day each side holds from.
+  - the term's end, unless the account is open-ended (year 9000 or
+    later).
+  - the day count.
+- The netbanking's conditions do not land on a balance whose record
+  states tiers.
 
 ## 4. `(asset_class, vehicle)` derivation for `holdings`
 
@@ -520,7 +524,7 @@ often says less than the export's:
 
 The export's row for the same entry names the payee, the printed
 booking type and the detail line. So the PSN transaction stream is
-wrapped in a fold (`psnWebTextFoldStream`). It fills such a column from
+wrapped in a fold (`psnWebTextFold`). It fills such a column from
 the export's record of the same entry, matched on (account, bank
 reference).
 
@@ -606,8 +610,8 @@ eras land on one signed number.
   conversion mirror). A statement copy then folds onto the export row.
 - **The dropped copy's text carries over**, by the same `richerText`
   rule as the era text fold. An export survivor takes it as it is
-  emitted. A feed survivor takes it in `psnStatementCarryStream`,
-  applied outside `psnWebTextFoldStream`, so the export's text fills a
+  emitted. A feed survivor takes it in `psnStatementCarry`,
+  applied outside `psnWebTextFold`, so the export's text fills a
   bare column first. A cash leg takes its export copy's text first and
   its statement copy's after.
 
@@ -1265,7 +1269,7 @@ Same treatment as mortgages, for the same reason.
 This is the one place a reader of the chase adapter will guess wrong.
 
 Chase's silver stores a card provider-verbatim as a **positive amount
-owed**, and `signedBalance` negates it. UBS reports the opposite already:
+owed**, and the shared bank adapter (`internal/silver/bank`) negates it. UBS reports the opposite already:
 a purchase is negative, a payment positive, and a balance is negative
 while the card carries debt. That is `AccountKindCard`'s own convention —
 a revolving-credit liability held as negative cash — so the figures pass

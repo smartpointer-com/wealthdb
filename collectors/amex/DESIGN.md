@@ -24,8 +24,8 @@ tables. [AGENTS.md](AGENTS.md) holds the allow and forbid surface.
   plus a statement backfill, and `download` as the one verb that signs in
   (§L). [`firstcitizens`](../firstcitizens/) supplies the data path: a
   browser login, then REST through `page.request` (§A).
-- **A card is a liability, not a conduit.** Chase's conduit-returns
-  rationale is about its *cash* accounts and is not an argument about
+- **A card is a liability, not a deposit account.** Chase's returns
+  policy is about its *cash* accounts and is not an argument about
   cards. A card projects as `canonical.AccountKindCard`. Its balance is a
   liability in net worth, and it stays out of returns and allocation
   exactly as chase's cards do.
@@ -764,11 +764,13 @@ run holding the copy that survived, not the newest run loaded.
 
 ### 4.4 Gold adapter
 
-`wealthdb/internal/silver/amex/` follows the chase adapter's card half.
-Each card is a `canonical.AccountKindCard`, and the owed balance is
-negated into gold's canonical negative cash at exactly one point. Credit
-limit and available credit never become balance rows. The adapter carries a
-co-located `ReturnsPolicy` and fixture tests. The merchant-category
+`wealthdb/internal/silver/amex/` declares a source of the shared bank
+adapter (`wealthdb/internal/silver/bank`), as chase does. Each card is a
+`canonical.AccountKindCard`, and the bank adapter negates the owed
+balance into gold's canonical negative cash at exactly one point. Credit
+limit and available credit never become balance rows. Its
+`silver.Source` states `returns.CardIssuerPolicy()`, and fixture tests
+cover it. The merchant-category
 translation and the `card_spend` pairing are in
 [`wealthdb/docs/adapters/amex.md`](../../wealthdb/docs/adapters/amex.md).
 

@@ -1,8 +1,8 @@
 # Swissquote adapter
 
 The adapter projects the `swissquote` silver SQLite into the canonical
-gold schema. It implements the `silver.Adapter` / `silver.Connection`
-interface of [../DESIGN.md](../DESIGN.md) §6.
+gold schema. It implements the `silver.Connection` interface of
+[../DESIGN.md](../DESIGN.md) §6.
 
 ## 1. Silver source
 

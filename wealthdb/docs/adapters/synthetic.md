@@ -1,9 +1,8 @@
 # synthetic adapter
 
 Adapter that projects the `synthetic` silver SQLite database into the
-canonical gold schema. Implements the `silver.Adapter` /
-`silver.Connection` interface defined in
-[../DESIGN.md](../DESIGN.md) §6.
+canonical gold schema. Implements the `silver.Connection` interface
+defined in [../DESIGN.md](../DESIGN.md) §6.
 
 `synthetic` is the one generic silver kind. Every other kind reads a
 silver shaped by its source. This one reads a silver shaped by the
@@ -370,7 +369,7 @@ A file without the table states no realized lots.
 Ten tables carry reference records. They describe what a fund holds,
 what a fund is, what a security is and what each pays. They repeat the
 refdata collector's silver shape column for column, so one reader
-serves both kinds (`silver.NewReferenceStream`; [refdata.md](refdata.md) §2 maps
+serves both kinds (`silver.ReferenceSchema.Stream`; [refdata.md](refdata.md) §2 maps
 each table to its gold table).
 
 - `compositions`, `lines`, `attributes`, `counterparties`, `fund_risk`,

@@ -210,7 +210,7 @@ under these keys:
 | Key | States | Read as |
 | --- | --- | --- |
 | `interest_rate` | the rate | percent a year: `0.75` or `0.75%` |
-| `interest_tiers` | a tiered rate, in place of `interest_rate` | a list of `{"rate": 0.5, "up_to": 10000}`; the last tier's `up_to` is null; a tier may state its own number as `tier` (below) |
+| `interest_tiers` | a tiered rate, in place of `interest_rate` | a list of `{"rate": 0.5, "up_to": 10000}`; the last tier's `up_to` is null or absent; a tier may state its own number as `tier` (below) |
 | `interest_valid_from` | the day the rate holds from | `2026-01-01` |
 | `interest_side` | who pays it | `credit` (the balance earns it, the default) or `debit` (it pays it) |
 | `interest_term_end` | the day a term deposit's rate ends | `2027-03-31` |

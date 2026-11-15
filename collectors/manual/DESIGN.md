@@ -197,7 +197,7 @@ source.
 ## 6. Gold mapping
 
 The gold adapter is in [`wealthdb/internal/silver/manual/`](../../wealthdb/internal/silver/manual/),
-registered in `cmd/wealthdb/main.go`. It follows the carta/equityzen
+registered by its import in `internal/silver/all`. It follows the carta/equityzen
 structure, with an exit as its only transaction.
 
 **Accounts — one per declared sleeve**, and one default account for every
@@ -305,5 +305,6 @@ pair. Interest is a mark above the cash that eventually comes out (a gain).
 A claim paid out to a third party is a mark-down with **no ledger row**
 (a loss); forfeiture is the mark going to zero the same way.
 
-**Gold registration.** The adapter registers in `cmd/wealthdb`. The `wealthdb.cfg` entry is
+**Gold registration.** The adapter registers by its import in
+`internal/silver/all`. The `wealthdb.cfg` entry is
 `{"id":"manual","kind":"manual","path":"…/manual.db"}`.

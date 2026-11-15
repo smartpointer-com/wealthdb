@@ -44,9 +44,9 @@ calls:
   3 and 5 seconds), then answers "the database is locked by another
   wealthdb command; try again in a minute".
 - A command that opens gold read-write retries on the same ladder when
-  a reader is in the way: a write command, and a read command where the
-  file is writable, since it opens read-write to apply a pending
-  schema change. A reader holds its handle for one report, seconds at most.
+  a reader is in the way: a write command, and a read command that
+  finds a migration or a derived set still to apply, since it opens
+  read-write to apply it. A reader holds its handle for one report, seconds at most.
   The write mutex between writers stays non-blocking: another writer
   may run for an hour.
 - `compact` and `reload -a` rename a new file over the path. The next
@@ -245,7 +245,7 @@ same parameter specs and column registries the tools use.
 - Unit tests for arguments, filters, sort, column lookup, escalation,
   paging and rendering.
 - `TestWriteOpenWaitsOutAReader` holds the read-write retry against a
-  reader in another process; `TestCheckSchemaKnown` the staleness check.
+  reader in another process; `TestOpenRefusesANewerSchema` the staleness check.
 - `mcp/test_mcp.sh` (`make test-mcp`): the container geometry, the
   token file, the auth gate and the outdated-image check, against a
   stubbed engine and docker.

@@ -200,6 +200,9 @@ The pattern is structurally **incremental view maintenance**:
 gold is a materialized view of silver, refreshed by processing the
 bounded delta since the last load. See §8 for the full algorithm.
 
+A silver older than its adapter still loads, with the parts it lacks
+empty. The load then prints one line that names them (§6.8).
+
 ### 4.5 `wealthdb reset <id> | -a`
 
 Deletes all rows owned by the given `silver_source_id` from every
@@ -392,7 +395,9 @@ With `<id>`: detailed report — per-table counts in gold for that
 silver source, full `plugin.Status()` (oldest/latest snapshot and
 transaction timestamps in silver, latest change number, when the
 holdings and the ledger were last observed), the stored watermark,
-and the last few rows from `load_audit`.
+and the last few rows from `load_audit`. Each row shows its window:
+two dates, or `all` for a load that re-read the source's whole
+history (§8.2).
 
 `--marks [FROM [TO]]` answers how far a monthly return can be trusted.
 It prints one row per month-end in gold's history, the whole history by
@@ -994,8 +999,8 @@ Example config file:
 | `silver_sources[].subsources[]` | array | Optional. For adapters that merge several backing silvers under one logical source (UBS = `ubs-web` + `ubs-psn`). Each entry has its own `kind` and `path`. At least one entry required when present. |
 | `silver_sources[].subsources[].kind` | string | Subsource discriminator. UBS recognises `ubs-web` and `ubs-psn`. |
 | `silver_sources[].subsources[].path` | string | Filesystem path to that subsource's silver SQLite. Expanded like `path`. |
-| `silver_sources[].relationships[]` | array | Optional. Pairs cross-subsource entity identities under a single label. UBS uses it to map web `banking_relationship_id` to PSN `SFTPCH0X`. |
-| `silver_sources[].relationships[].label` | string | Required. Canonical user-readable name stamped on canonical records regardless of which subsource produced them. |
+| `silver_sources[].relationships[]` | array | Optional. Pairs cross-subsource entity identities, one entry per relationship. UBS uses it to map web `banking_relationship_id` to PSN `SFTPCH0X`. |
+| `silver_sources[].relationships[].label` | string | Required. A name for the relationship in the config. No record carries it. |
 | `silver_sources[].relationships[].web_id` | string | Optional. Web silver's `banking_relationship_id` (opaque SPA token, or `account_number_prefix` fallback). |
 | `silver_sources[].relationships[].psn_id` | string | Optional. PSN silver's `relationship_id` (SFTP server identifier like `SFTPCHxx`). At least one of `web_id` / `psn_id` must be set. |
 | `silver_sources[].relationships[].psn_start_override` | string | Optional `YYYY-MM-DD`. Overrides the auto-detected web↔PSN transaction-splice cutover for this relationship. Defaults to `MIN(snapshot_at)` in PSN's data for the paired `psn_id`. |
@@ -1007,7 +1012,7 @@ Example config file:
 | `yield` | object | Optional. The yield inputs that no source knows: `curves` (a currency's public yield curve, one series of a configured source per tenor, `"3M": "fred:DGS3MO"`), `withholding` (percent withheld at source by situs country and tax wrapper, `default` for any wrapper, and `accounts` for an account whose rate is not its wrapper's), `rating_funds` (a rating-sliced fund's bucket or range, `BBB` or `AAA-A`), `conventions` (coupon frequency and day count per market: a currency, or a currency and a bond sector or `bill`; built-in defaults), `horizon_months` (1 to 36, default 12), `cycles` (overrides of the built-in map from the eleven sectors to cyclical, defensive and sensitive) and `settlement_cycles` (a market's settlement cycles, each in business days from a day on; a market named replaces its built-in cycles). Validated at config-load time; §7.6 says how a load stores it. Deployment-specific: lives in the config, never in the repository. |
 | `holding_aliases` | array | Optional. Entries `{ "source", "account"?, "key", "as", "note"? }` naming a holding a source keys two ways, so the gains, exposure and yield reports read both keys as one: a statement's overview line (`key`) until a daily feed lists the same holding by ISIN (`as`), say. `account` scopes the alias to one account; absent, it covers every account of the source. The load writes the block into gold's `holding_aliases` table whole, and `gains_windows` maps every position, lot and event key through it before a bucket's start meets its end (docs/GAINS.md §5). Validated for a configured source, two different keys, one alias per key, and no alias of an alias. Deployment-specific: lives in the config, never in the repository. |
 | `portfolio_overrides` | object | Optional. Portfolio-grain counterpart of `account_overrides`. Nested map keyed by `silver_source_id` (outer) and `portfolio_external_id` (inner); the override applies to every account whose `portfolio_external_id` matches — e.g. a whole portfolio held inside a retirement or trust wrapper. Accepts `tax_wrapper` (unlike `account_overrides`, which also takes nickname / category / account_kind / management_style) or `exclude: true`, which drops the portfolio and every account inside it with their facts; one of the two must be set and they may not be combined. A per-account `tax_wrapper` override still wins over a portfolio one. See §13.8. |
-| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name does not give away what it holds (`metal × etf`). The class pass sets the pair after the sources load, on both the instrument dimension and every position row referencing it, so config wins over the adapter and over OpenFIGI's type. An edit or a removal reaches the instrument at the next load. See §13.8. |
+| `instrument_overrides` | object | Optional. Nested map keyed by `silver_source_id` (outer) and `instrument_external_id` (inner) pinning a per-instrument taxonomy pair. Each entry sets both `asset_class` (the exposure) and `vehicle` (the wrapper); both are required and validated as an admitted taxonomy pair (§7.2, docs/TAXONOMY.md) at config-load time. For holdings the adapter's structured signals and name heuristics misclassify — e.g. an exchange-traded commodity trust whose security name does not give away what it holds (`metal × etf`). The class pass sets the pair after the sources load, on both the instrument dimension and every position row referencing it, so config wins over the adapter and over OpenFIGI's type. An edit reaches every row at the next load. A removal reaches the rows a load writes again, and `wealthdb reload <id>` resets the rest. See §13.8. |
 | `transaction_instruments` | object | Optional. Nested map keyed by `silver_source_id` (outer) and the **lookup token** an adapter failed on (inner), naming the `instrument_external_id` that token means. Closes a row (a securities trade, or an income or withholding row of a security) whose feed states its instrument in a way nothing else in the product can resolve — a Swiss valor for a line the instrument dimension has no valor for, a fund renamed since the trade, a ticker of neither shape, a statement name that fits two holdings. The token is whatever the row's `instrument_hint` holds (§10.8); read the open set with `wealthdb transactions -C +instrument_hint`. Validated for a declared source and non-empty halves at config-load time; the instrument id itself cannot be checked without gold, as with the override families above. It states the IDENTITY only — what the instrument IS stays `instrument_overrides`' question. See §13.8. |
 | `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, lots, cash balances, transactions and stated periods dated on or AFTER the date (a stated period by its last day), and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.9) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.8. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
@@ -1246,8 +1251,8 @@ aggregate containing BOTH accounts double-represents the move (the
 
 ## 6. Plugin / adapter architecture
 
-Each bank has a Go package that implements a common `Adapter`
-interface. Adapters are statically compiled into the `wealthdb`
+Each bank has a Go package that registers a `silver.Source` (§6.3).
+Adapters are statically compiled into the `wealthdb`
 binary; no dynamic libraries, no out-of-process plugin servers.
 Registration happens at package init; the main binary picks the
 right one based on `silver_sources[].kind`.
@@ -1273,14 +1278,14 @@ then-INSERT model exactly — see §8.
 
 ### 6.2 Interface
 
-`internal/silver/adapter.go` defines the contract. An `Adapter` opens
-a `Connection`, and the connection answers four calls.
+`internal/silver/adapter.go` defines the contract. A `silver.Source`'s
+`Open` (§6.3) opens a `Connection`, and the connection answers four
+calls.
 
 ```go
 package silver
 
 type Adapter interface {
-    Kind() string                                       // "schwab", "ubs", "swissquote"
     Open(ctx context.Context, spec OpenSpec) (Connection, error)
 }
 
@@ -1303,9 +1308,10 @@ type TransactionStream interface {
 }
 ```
 
-- **`Open`.** A single-file adapter reads `spec.Path`. A merged
-  adapter (UBS = ubs-web + ubs-psn) reads `spec.Subsources`.
-  `spec.Settings` carries the source's own settings as its kind
+- **`Open`.** A single-file adapter reads `spec.Path`. The merged
+  adapters (schwab = schwab-api + schwab-web, UBS = ubs-web + ubs-psn)
+  read `spec.Subsources`. UBS also reads `spec.ID`. `spec.Settings`
+  carries the source's own settings as its kind
   parsed them from the config (§6.3): the UBS relationships, which
   align identities across the feeds, and the schwab mark guard.
 - **`Status`.** A cheap read of where silver stands. Every
@@ -1584,6 +1590,20 @@ A few rules apply to every adapter regardless of bank:
   everything else → `public_equity`. Products whose names do not give
   away the exposure are pinned via the config's
   `instrument_overrides` (§5.1, §13.8).
+- **A silver older than its adapter is read as far as it goes.** Each
+  adapter names its optional tables and columns once, each with the
+  silver schema version that adds it (`silver.Optional`). It probes
+  them at open. An absent column reads as NULL, and a read of an absent
+  table is skipped. The load goes on with that part empty in gold. It
+  then prints one line per such silver file:
+
+  ```
+  <id> loader: <file> is at silver schema N and the adapter reads M; <parts> load empty until its collector's load applies the migrations
+  ```
+
+  The line names no command, since some kinds are written by more than
+  one collector. A current silver prints nothing, and the exit code
+  does not change.
 - **Silver tables gold does not project** — each adapter doc lists
   its own, and §13.7 lists them across banks.
 
@@ -2419,6 +2439,7 @@ continuous queries, here triggered by a load rather than a stream.
        DELETE FROM transactions   WHERE silver_source_id = ?
                               AND occurred_at BETWEEN window.Start AND window.End;
        -- and each reference table (§7.6) by as_of, the same way.
+       -- a full window (§8.2) deletes the source's rows whole instead.
        -- accounts and instruments are NOT deleted; they are upsert
        -- targets whose payload/last_seen_at refresh on every load.
 
@@ -2532,11 +2553,11 @@ run, so its window is already its whole history. It says so with a
 full window (`Window.Full`, `canonical.FullWindow`): Start and End
 are the integer limits, the load deletes the source's rows whole
 rather than over a span, and `load_audit` records the limits, which
-`status -v` prints as `all`. The amount of work is the same; the
-adapter keeps no span query to hold the window wide enough. The load
-clock's sources (amex, chase, firstcitizens, raiffeisen_at, plaid,
-curves, fred, manual) and angellist, carta, equityzen, cointracking
-and viac are such sources. The others stay windowed.
+`wealthdb status <id>` prints as `all` (§4.7). The amount of work is
+the same; the adapter keeps no span query to hold the window wide
+enough. Every source whose clock mode is `silver.FullSpan` is such a
+source, and `silver.LoadClock` sets that mode (§6.2). The others stay
+windowed.
 
 ### 8.3 The adapter contract for `Snapshots` and `Transactions`
 
@@ -3651,12 +3672,14 @@ wealthdb/
 │                                     and the MCP server (mcp_*.go)
 ├── internal/
 │   ├── canonical/                  — change types + enums (asset_class, vehicle, …); zero deps
-│   ├── silver/                     — adapter interface + registry, one package per source:
-│   │   │                             amex angellist carta chase cointracking curves
-│   │   │                             equityzen fidelity firstcitizens fred manual plaid
-│   │   │                             raiffeisen_at refdata relevate schwab swissquote
-│   │   │                             synthetic ubs viac
+│   ├── silver/                     — adapter interface + registry, one package per source kind
+│   │   │                             (series holds curves and fred):
+│   │   │                             amex angellist carta chase cointracking equityzen
+│   │   │                             fidelity firstcitizens manual plaid raiffeisen_at
+│   │   │                             refdata relevate schwab series swissquote synthetic
+│   │   │                             ubs viac
 │   │   ├── all/                    — imports every backend once
+│   │   ├── curves/ · fred/         — the series fixtures (testdata only)
 │   │   ├── bank/                   — the deposit and card adapter that amex, chase, firstcitizens and raiffeisen_at declare
 │   │   └── <source>/               — impl (snapshots/transactions/classmap); adapter.go registers its silver.Source, with policy.go and lotpolicy.go where a policy needs code
 │   ├── gold/                       — DuckDB schema, writer, queries, report macros
@@ -3679,7 +3702,7 @@ canonical                    (zero deps)
    ↑
 lots, returns, fixedincome   import canonical
    ↑
-silver (interface)           imports canonical
+silver (interface, registry) imports canonical + returns + lots (it forwards the policies)
    ↑
 silver/<source> adapters     import silver + canonical + returns + lots (policies)
    ↑
@@ -3687,7 +3710,7 @@ gold                         imports canonical + returns + lots — NOT silver
    ↑
 loader                       imports gold + silver (the bridge)
    ↑
-cmd/wealthdb                 imports loader + gold + config + wizard + output
+cmd/wealthdb                 imports loader + gold + silver + config + wizard + output
 ```
 
 **`gold` never imports `silver`.** Only gold's tests import the
@@ -3960,6 +3983,10 @@ test's comment says how to run it.
   files.
 - `TestGoldenCategorizePrompts` and `TestGoldenResolveSymbolsPrompt`
   (cmd/wealthdb/modelpass_golden_test.go) hold the model prompts to `testdata/prompts`. `-update-prompts` rewrites them.
+- Each adapter's `TestCanonicalGolden` (`canonical_golden_test.go`,
+  `silvertest.Golden`) holds every record the adapter yields over its
+  fixture to `testdata/canonical.jsonl`. `-update-canonical` rewrites
+  the file.
 
 Over real gold or a real config, the corpus and the dumps hold real
 data. They are written outside the tree and never committed.
@@ -4206,7 +4233,9 @@ Examples of adapter-supplied values:
   product label scraped from the eBanking account-overview
   page): `Trading`/`Savings` → `taxable_personal`,
   `Säule 3a` → `pillar_3a`, `Freizügigkeit` → `vested_benefits`.
-  `nickname` stays NULL; Swissquote does not expose one.
+  `nickname` stays NULL; Swissquote does not expose one. A Swissquote
+  silver before v5 has `account_type` in place of `account_product`;
+  the adapter reads either.
 - **Fidelity** populates `tax_wrapper` (and, for a charitable
   account, `account_kind`) through `silver.portfolios.kind`:
   - `529` → `tax_wrapper=529`;
@@ -4217,18 +4246,6 @@ Examples of adapter-supplied values:
   (`automated` for a 529, `discretionary` for a managed trust). Silver
   does not carry per-account registration labels (Roth IRA, Coverdell
   ESA). fidelity-web's DESIGN.md §11.5 says why.
-
-A silver older than its adapter is read as far as it goes. Each
-adapter names its optional tables and columns once, each with the
-silver schema version that adds it (`silver.Optional`), and probes them
-at open. An absent column reads as NULL and a read of an absent table
-is skipped, so the load goes on with that part empty in gold. The load
-then prints one line per such silver file: its schema version, the
-version the adapter reads, and the parts that load empty until its
-collector's load applies the migrations. The line names no command:
-some kinds are written by more than one collector. A current silver prints nothing, and
-the exit code does not change. Swissquote's pre-v5 silvers name
-`account_product` `account_type`; the adapter reads either.
 
 Config-side override: `account_overrides` (§5.1) sets what an
 adapter cannot classify, such as a Schwab IRA whose wrapper no

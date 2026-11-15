@@ -14,11 +14,10 @@ the runtime (§4).
 - **The model is chase.** The [Chase](../chase/DESIGN.md) collector is
   the twin for a US retail deposit bank. This collector starts from
   chase and diverges only where the source differs.
-- **Conduit accounts.** Cash passes through these accounts on its way to
-  and from other sources. Their transactions matter for cross-source
-  money-flow tracking. Their own return rows are noise, so the
-  ReturnsPolicy its `silver.Source` registers
-  (`internal/silver/firstcitizens/adapter.go`) hides them, with chase's conduit reasoning.
+- **Deposit accounts are not investments.** Their transactions matter for
+  cross-source money-flow tracking. Their own return rows are noise, so
+  the ReturnsPolicy its `silver.Source` registers
+  (`internal/silver/firstcitizens/adapter.go`) hides them, as chase's does.
 - **The data surface is a Q2 REST API.** The digital banking runs on a
   **Q2 white-label platform** at
   `digitalbanking.firstcitizens.com/FCBTCOnline/`. Every datum arrives
@@ -314,7 +313,5 @@ that still listed an unchanged account is visible.
   is an earlier one. A cycle in which the balance never moved has no
   closing balance, and its rate is not used.
 
-The adapter registers via its import in `internal/silver/all` and
-the `silver_sources` migration
-(`internal/gold/migrations/0034_silver_sources_firstcitizens.sql`). Its
+The adapter registers via its import in `internal/silver/all`. Its
 return rows are hidden per §1.

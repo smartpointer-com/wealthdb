@@ -247,7 +247,7 @@ the span names, whatever its day. Gold clears its rows of each such
 ref and provider before it writes them (`gold.Writer`). Gold then holds
 what silver holds for them.
 
-`Snapshots` streams the window (`silver.NewReferenceStream`). A batch
+`Snapshots` streams the window (`silver.ReferenceSchema.Stream`). A batch
 holds whole fund-days, up to about twenty thousand records. A fund-day
 carries its rate sensitivities and its characteristics. Then come the
 security identities, the security facts, the period facts and the

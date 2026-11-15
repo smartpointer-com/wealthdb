@@ -9,7 +9,7 @@ canonical gold schema:
   positions, cash balances, transactions and tax lots read from
   statements, tax forms and the transaction-history export.
 
-It implements the `silver.Adapter` / `silver.Connection` interface of
+It implements the `silver.Connection` interface of
 [../DESIGN.md](../DESIGN.md) §6. With both subsources configured, the
 orchestrator (`merge.go`) splices them:
 

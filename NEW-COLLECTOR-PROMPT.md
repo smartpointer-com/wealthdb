@@ -259,12 +259,18 @@ and move on.
    beside the live history (its DESIGN.md §I).
 6. **Gold adapter** — wealthdb/internal/silver/<name>/ modeled on the
    newest comparable adapter (contract: wealthdb/docs/DESIGN.md §6):
-   the Adapter/Connection interface, one silver.Source registered from
+   the Connection interface, one silver.Source registered from
    adapter.go's init with its ReturnsPolicy and the kind's other facts
    (DESIGN.md §6.3), the import in wealthdb/internal/silver/all (a new
    kind needs no gold migration: a load accepts any registered kind; a
-   gold guard test fails when a registered kind has no policy),
-   fixture tests.
+   gold guard test fails when a registered kind has no policy).
+   A deposit or card source declares a `bank.Source`
+   (wealthdb/internal/silver/bank) instead of an adapter of its own.
+   The change number and window are a `silver.Clock` (`silver.LoadClock`
+   for a silver that records its dumps). Tables and columns a later
+   silver schema adds are `silver.Optional`. Add fixture tests and a
+   canonical golden file (`silvertest.Golden`; `-update-canonical`
+   rewrites it).
    Map accounts and transactions into the canonical
    enums; unrecognised values fall through to `other` with the raw
    value in payload — never fail the load. Validation gate: the user

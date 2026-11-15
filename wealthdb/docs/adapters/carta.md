@@ -312,7 +312,12 @@ figures in the fund position payload.
 download). `NewChangeNumber` is `MAX(dump_runs.snapshot_at)`, so an idle
 reload is a no-op ([../DESIGN.md](../DESIGN.md) §6.4).
 
-The window spans the **event-dated content**, not the download time:
+The window is the whole history (`Window.Full`): the load deletes the
+source's rows whole before it re-inserts them
+([../DESIGN.md](../DESIGN.md) §8.2).
+
+`Status` reports the **event-dated content** as the snapshot range, not
+the download time:
 
 - MIN/MAX `snapshot_at` across `entities`, `securities` and
   `fund_metrics`. The reconstructed deltas can sit years before the
@@ -323,8 +328,7 @@ The window spans the **event-dated content**, not the download time:
   lie after every mark.
 - each K-1's period end (§5), which can also lie after every mark.
 
-`Status` reports the content span, widened by the fund carry days, the
-removal times and the K-1 period ends, as the snapshot range. `LatestChangeNumber` is the
+The range also takes in the fund carry days. `LatestChangeNumber` is the
 newest dump. The source is observed through the newest dump that is not
 a dry run.
 

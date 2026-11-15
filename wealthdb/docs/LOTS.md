@@ -16,8 +16,9 @@ macros).
 
 ## 1. What it covers
 
-Each source kind registers a policy beside its adapter. The policy
-says how the engine treats the source:
+Each source kind states a lot policy in its `silver.Source`
+([DESIGN.md](DESIGN.md) §6.3). The policy says how the engine treats
+the source:
 
 | kind | mode | what the engine does |
 |---|---|---|
@@ -210,7 +211,8 @@ Income received in kind (staking, interest, rewards) opens a lot at its
 market value on the day, from `fx_daily`. A day with no rate within
 seven days leaves the lot without a cost.
 
-A fee a policy marks as in a third currency is valued the same way.
+A trade whose action is `third_currency_fee` has its fee valued the
+same way.
 It is added to the cost of a buy and taken off the proceeds of a sale.
 A fee without a rate is a finding (`fee_unvalued`).
 

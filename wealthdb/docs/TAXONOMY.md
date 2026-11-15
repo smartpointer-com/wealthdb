@@ -99,11 +99,12 @@ A new pair is added in `taxonomy.go` and in this table together.
 
 ## 4. How the intermediate 1-D labels map to the pair
 
-Some silver stores and adapter classifiers use a single 1-D label (the
-left column, declared in `enums.go`). The adapter maps the label to an
-`(asset_class, vehicle)` pair before it emits a row, so the 1-D labels
-never reach gold. Five labels (`private_equity`, `real_estate`, `metal`,
-`crypto`, `other`) are also exposure values, with the same meaning.
+Some silvers store a single 1-D label (the left column). Each
+adapter's classmap maps the label it reads to an `(asset_class,
+vehicle)` pair before it emits a row, so a 1-D label never reaches
+gold. The table is the shared reading of these labels. Five labels
+(`private_equity`, `real_estate`, `metal`, `crypto`, `other`) are also
+exposure values, with the same meaning.
 
 | 1-D label | 2-D `(asset_class, vehicle)` |
 | --- | --- |

@@ -1,9 +1,8 @@
 # plaid adapter
 
 Adapter that projects a `plaid` silver SQLite database into the
-canonical gold schema. Implements the `silver.Adapter` /
-`silver.Connection` interface defined in
-[../DESIGN.md](../DESIGN.md) §6.
+canonical gold schema. Implements the `silver.Connection` interface
+defined in [../DESIGN.md](../DESIGN.md) §6.
 
 Plaid is a data aggregator. One login at one institution is one Plaid
 **Item**, and one silver database holds one Item. The collector
@@ -301,8 +300,8 @@ settlement and states its trade date apart, as a time:
 - A buy or a sell books at the UTC day of its trade date, where Plaid
   states one no later than the posting date. Plaid's own `date` stays in
   the payload.
-- No trade books before the oldest date the investment ledger was read
-  from. A reload then always reaches it (§8).
+- A trade books at its trade date however far back it lies, since a
+  load re-emits the whole history (§8).
 
 **The bank and card ledger** (cash and card accounts). Silver holds it
 in the fleet's sign, and it still goes through `ApplyCanonicalSign`.

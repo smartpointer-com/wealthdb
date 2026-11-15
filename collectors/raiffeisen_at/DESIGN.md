@@ -19,11 +19,10 @@ runtime (§4), and operating notes (§5). The layout follows
   in other countries.
 - **The model is chase, refined by firstcitizens.** Both are US retail
   deposit collectors: browser login, REST or export data, statement PDFs
-  as documents, cash accounts as conduits in gold. This collector starts
+  as documents, cash accounts kept out of returns in gold. This collector starts
   from them and diverges only where the source differs.
-- **Conduit accounts.** Cash passes through these accounts on its way to
-  and from other sources. Their transactions matter for cross-source
-  money-flow tracking. Their own return rows are noise, so the
+- **Deposit accounts are not investments.** Their transactions matter for
+  cross-source money-flow tracking. Their own return rows are noise, so the
   ReturnsPolicy its `silver.Source` registers
   (`internal/silver/raiffeisen_at/adapter.go`, the shared deposit-bank
   policy) hides them at every grain. Their
@@ -658,9 +657,7 @@ plus `load.py`'s supplied pass. `pdftotext` comes from the image's
   recognised from the category or description, else deposit or
   withdrawal by sign.
 
-It registers via its import in `internal/silver/all` and the
-`silver_sources` migration
-(`internal/gold/migrations/0035_silver_sources_raiffeisen_at.sql`). Its
+It registers via its import in `internal/silver/all`. Its
 return rows are hidden per §1.
 
 ## 5. Operating notes
