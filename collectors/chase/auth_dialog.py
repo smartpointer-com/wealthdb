@@ -91,6 +91,14 @@ class ChallengeMenu:
             out.append(f)
         return out
 
+    def summary(self) -> str:
+        """What Chase offered, for the log: its factor codes and how many
+        phones and app devices it lists. Codes and counts only, never a
+        number or a device name."""
+        return (f"Chase offered: {', '.join(self.factors) or 'nothing'}; "
+                f"{len(self.phones)} phone(s), {len(self.devices)} app "
+                f"device(s) on file")
+
 
 def parse_challenge_options(body: dict) -> ChallengeMenu:
     """Reduce a raw `challenge-options` JSON body to a `ChallengeMenu`.

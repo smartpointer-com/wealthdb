@@ -153,12 +153,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 class _AuthWatch:
     """Watch the context's responses: flip `ok` on a signed-in `/svc/` call,
     and stash the `challenge-options` body (the factor menu) the CLI 2FA
-    needs; `invoked` marks that a code was sent / push fired."""
+    needs. `invoked` marks that Chase accepted the invocation (a code was
+    sent or a push fired); `invocation_status` holds the HTTP status of an
+    invocation Chase refused."""
 
     def __init__(self):
         self.ok = False
         self.challenge_options = None
-        self.invoked = False          # a challenge-invocations response arrived
+        self.invoked = False          # Chase accepted a challenge invocation
+        self.invocation_status = None  # the status of one it refused
 
     def attach(self, context):
         context.on("response", self._on_response)
@@ -183,9 +186,13 @@ class _AuthWatch:
                 if isinstance(body, dict):
                     self.challenge_options = body
             elif "challenge-invocations" in url:
-                # The method truly registered: a code was texted/called or a
-                # push was sent.
-                self.invoked = True
+                # A 2xx means the method truly registered: a code was
+                # texted/called or a push was sent. Any other status is
+                # Chase refusing it, and nothing reaches the phone.
+                if 200 <= resp.status < 300:
+                    self.invoked = True
+                else:
+                    self.invocation_status = resp.status
         except Exception:            # pragma: no cover — defensive
             pass
 
@@ -401,6 +408,7 @@ def _cli_two_factor(page, watch: _AuthWatch, args) -> int:
 
     _capture(page, args, "challenge")
     menu = auth_dialog.parse_challenge_options(watch.challenge_options)
+    log.info("%s", menu.summary())
     try:
         factor = auth_dialog.choose_factor(menu)
     except auth_dialog.ChallengeError as exc:
@@ -429,11 +437,18 @@ def _cli_two_factor(page, watch: _AuthWatch, args) -> int:
         # The push is sent once Next is clicked. Confirm the invocation fired
         # (so a click that did not register is not mistaken for a sent push)
         # before waiting on the approval.
-        if not wait_for(lambda: watch.invoked or watch.ok, page, 20):
+        if not wait_for(lambda: watch.invoked or watch.ok
+                        or watch.invocation_status is not None, page, 20):
             _capture(page, args, "push-not-sent")
             log.error("selected the app-approval method but Chase sent no "
                       "push — the control didn't register the click. Retry "
                       "with vnc-login. (DOM captured with --debug.)")
+            return 1
+        if not (watch.invoked or watch.ok):
+            _capture(page, args, "push-refused")
+            log.error("Chase refused to send the push (HTTP %s), so no "
+                      "notification will arrive. Retry with vnc-login to see "
+                      "Chase's own message.", watch.invocation_status)
             return 1
         log.info("approve the sign-in in the Chase app — it continues "
                  "automatically once approved.")
@@ -463,12 +478,19 @@ def _cli_two_factor(page, watch: _AuthWatch, args) -> int:
         # The code is sent (invocation fired) before the field renders; wait
         # for that signal or the field itself.
         if not wait_for(lambda: watch.invoked
+                        or watch.invocation_status is not None
                         or _locate(page, OTP_INPUT_SELECTOR) is not None,
                         page, 30):
             _capture(page, args, "code-not-sent")
             log.error("no code was sent — the method/number control didn't "
                       "register. Retry with vnc-login. (DOM captured with "
                       "--debug.)")
+            return 1
+        if watch.invocation_status is not None and not watch.invoked:
+            _capture(page, args, "code-refused")
+            log.error("Chase refused to send the code (HTTP %s). Retry with "
+                      "vnc-login to see Chase's own message.",
+                      watch.invocation_status)
             return 1
         _capture(page, args, "before-otp")
         code = auth_dialog.read_otp()

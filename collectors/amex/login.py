@@ -506,20 +506,27 @@ def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
                 break
         pump(page)
 
+    bot_check = False
     if failure is not None:
-        if failure.status_code is None:
-            # A logon POST whose body carried no verdict. Not expected — every
-            # known response is JSON with a statusCode — so say what the
-            # logon actually returned rather than blaming the credentials.
+        if failure.status_code is not None:
             raise LogonFailed(
-                f"could not read the sign-in outcome: the logon responded "
-                f"HTTP {failure.status} with no statusCode. Retry with "
-                f"--debug for a DOM capture.")
-        raise LogonFailed(
-            f"American Express refused the sign-in "
-            f"(HTTP {failure.status}, statusCode {failure.status_code}, "
-            f"errorCode {failure.error_code or '-'})"
-            + (f": {failure.error_message}" if failure.error_message else ""))
+                f"American Express refused the sign-in "
+                f"(HTTP {failure.status}, statusCode {failure.status_code}, "
+                f"errorCode {failure.error_code or '-'})"
+                + (f": {failure.error_message}" if failure.error_message
+                   else ""))
+        # A logon answered with no verdict at all: Amex's bot defense in
+        # front of the sign-in (an "I'm not a robot" check on screen), not a
+        # judgement of the credentials. Only a human can clear it.
+        if two_factor != TWOFACTOR_VNC:
+            raise LogonFailed(
+                f"Amex answered the sign-in with a bot check (HTTP "
+                f"{failure.status}, no statusCode), which a terminal cannot "
+                f"answer. Run `vnc-login` and complete it by hand.")
+        # Over VNC the human is there: forget the refused response and wait
+        # for the sign-in they complete in the browser.
+        watch.reset()
+        state, bot_check = "challenge", True
 
     if state is None:
         log.error("no login outcome after submit (neither signed in nor a "
@@ -548,6 +555,10 @@ def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
         except auth_dialog.ChallengeError as exc:
             log.error("2FA dialog ended: %s — retry with vnc-login.", exc)
             return False
+    elif bot_check:   # TWOFACTOR_VNC
+        log.info("Amex shows a bot check — clear it and sign in in the "
+                 "browser over VNC (up to %ds), including any passcode and "
+                 "\"Add This Device\" so later runs skip it.", mfa_timeout)
     else:   # TWOFACTOR_VNC
         log.info("a one-time passcode is required — complete the challenge "
                  "in the browser over VNC (up to %ds), including \"Add This "
@@ -668,8 +679,14 @@ def drive_to_auth(context, page, args, *, two_factor: str) -> bool:
     watch = _LogonWatch().attach(context)
     if not _prefill_and_submit(page, args):
         return False
-    ok = authenticate(context, page, watch, two_factor=two_factor,
-                      mfa_timeout=args.mfa_timeout, args=args)
+    try:
+        ok = authenticate(context, page, watch, two_factor=two_factor,
+                          mfa_timeout=args.mfa_timeout, args=args)
+    except LogonFailed:
+        # Capture the page the refusal left behind before it propagates:
+        # it is what --debug is for, and the error text points there.
+        _capture(page, args, "logon-refused")
+        raise
     _capture(page, args, "post-auth" if ok else "auth-failed")
     return ok
 

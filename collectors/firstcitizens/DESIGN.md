@@ -207,10 +207,14 @@ then leaves Sign In to the person at the VNC display.
     is not used, because the pinned Camoufox may drop it.
   - The human picks Text or Call. The code is read from stdin, typed into
     `q2-input#tacEntry` and submitted via `q2-btn[test-id="btnSubmit"]`.
-    `btnRegister` then registers the device.
+    `btnRegister` then registers the device. A login that cannot click it
+    warns: the next `download` meets the challenge again.
   - These are Stencil shadow-DOM controls. Every click targets the
     **inner `<button>`** of the `q2-btn`. A click on the `q2-btn` host
     reports actionable, but the Stencil handler never fires.
+  - A cookie-consent banner covers the bottom of the viewport, and with
+    it `btnRegister`. A covered button gets its click event dispatched
+    instead. The banner is never answered.
   - `vnc-login` (`--no-cli-mfa`) is the by-hand fallback. `--fresh`
     wipes the profile to force this untrusted path.
 

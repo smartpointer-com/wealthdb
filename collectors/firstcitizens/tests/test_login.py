@@ -209,3 +209,96 @@ def test_vnc_login_leaves_sign_in_to_the_person(front_half):
     assert run(by_hand=True) is True
     assert run(by_hand=True, creds=True, prefills=False) is True
     assert submits == []
+
+
+# ============================================================
+# Device registration: a miss is said, not swallowed
+# ============================================================
+
+class _RegisterLocator:
+    def __init__(self, present):
+        self.present = present
+        self.first = self
+
+    def count(self):
+        return 1 if self.present else 0
+
+
+class _RegisterPage:
+    def __init__(self, url, present):
+        self.url = url
+        self._present = present
+
+    def locator(self, _selector):
+        return _RegisterLocator(self._present)
+
+
+@pytest.fixture
+def register(monkeypatch):
+    monkeypatch.setattr(login, "wait_for", lambda *_a, **_k: True)
+    monkeypatch.setattr(login, "page_url", lambda page: page.url)
+    monkeypatch.setattr(login, "_click_q2btn", lambda _loc: True)
+    return login.parse_args([])
+
+
+def test_a_register_button_is_clicked(register, caplog):
+    page = _RegisterPage("https://bank.example/app/#/login/mfa/register",
+                         present=True)
+    with caplog.at_level("INFO", logger=login.log.name):
+        assert login._register_device(page, register) is True
+    assert "registered this device" in caplog.text
+
+
+def test_a_missing_register_step_warns_with_the_route(register, caplog):
+    # The login still succeeds, but the next download would meet the 2FA
+    # challenge again: the warning names where the page went instead.
+    page = _RegisterPage("https://bank.example/app/#/landingPage",
+                         present=False)
+    with caplog.at_level("INFO", logger=login.log.name):
+        assert login._register_device(page, register) is False
+    assert "registered this device" not in caplog.text
+    assert "/landingPage" in caplog.text
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+class _Button:
+    """A q2-btn's inner button; `covered` makes the plain click fail the way
+    Playwright's actionability check does under an overlay."""
+
+    def __init__(self, covered):
+        self.covered = covered
+        self.first = self
+        self.events = []
+
+    def count(self):
+        return 1
+
+    def click(self, **_kwargs):
+        if self.covered:
+            raise TimeoutError("element is covered by another element")
+        self.events.append("click")
+
+    def dispatch_event(self, kind):
+        self.events.append(f"dispatched {kind}")
+
+
+class _Q2Btn:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def locator(self, _selector):
+        return self.inner
+
+
+def test_a_q2_button_gets_a_plain_click():
+    inner = _Button(covered=False)
+    assert login._click_q2btn(_Q2Btn(inner)) is True
+    assert inner.events == ["click"]
+
+
+def test_a_covered_q2_button_gets_the_click_dispatched():
+    # The cookie banner covers the Register Device button; the banner itself
+    # is never clicked.
+    inner = _Button(covered=True)
+    assert login._click_q2btn(_Q2Btn(inner)) is True
+    assert inner.events == ["dispatched click"]

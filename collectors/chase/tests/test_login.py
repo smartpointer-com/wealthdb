@@ -97,6 +97,28 @@ def test_the_preflight_does_not_hide_the_real_response():
     assert watch.ok
 
 
+INVOCATION_URL = "https://secure.chase.com/svc/wl/auth/challenge-invocations"
+
+
+def test_watch_marks_an_accepted_invocation():
+    ctx = _StubContext()
+    watch = login._AuthWatch().attach(ctx)
+    ctx.fire(_StubResponse(INVOCATION_URL, status=200))
+    assert watch.invoked
+    assert watch.invocation_status is None
+
+
+def test_watch_does_not_read_a_refused_invocation_as_sent():
+    # Chase answering the invocation with an error status sends nothing to
+    # the phone; reading it as sent leaves the run waiting on a push that
+    # never comes.
+    ctx = _StubContext()
+    watch = login._AuthWatch().attach(ctx)
+    ctx.fire(_StubResponse(INVOCATION_URL, status=403))
+    assert not watch.invoked
+    assert watch.invocation_status == 403
+
+
 def test_parse_args_defaults():
     a = login.parse_args([])
     assert a.profile_dir == Path("/secrets/chase-profile")

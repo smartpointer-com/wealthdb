@@ -216,3 +216,19 @@ def test_demo_reports_a_dialog_that_ends(monkeypatch, capsys):
 def test_no_args_prints_help(capsys):
     assert ad.main([]) == 0
     assert "--demo" in capsys.readouterr().out
+
+
+def test_menu_summary_names_codes_and_counts_only():
+    menu = ad.ChallengeMenu(
+        token="t", factors=("INAPP", "OTP_SMS"),
+        phones=(ad.Target("p1", "xxx-xxx-0000"),),
+        devices=(ad.Target("d1", "Example Phone"),))
+    line = menu.summary()
+    assert line == ("Chase offered: INAPP, OTP_SMS; 1 phone(s), 1 app "
+                    "device(s) on file")
+    assert "0000" not in line and "Example" not in line
+
+
+def test_menu_summary_of_an_empty_menu():
+    assert ad.ChallengeMenu(token="", factors=()).summary() == (
+        "Chase offered: nothing; 0 phone(s), 0 app device(s) on file")

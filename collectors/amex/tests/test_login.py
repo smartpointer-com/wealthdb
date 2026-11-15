@@ -522,6 +522,33 @@ def test_a_verdictless_logon_response_says_so_rather_than_blaming_the_login():
     assert "no statusCode" in str(raised.value)
 
 
+def test_a_bot_check_from_a_terminal_points_to_vnc_login():
+    watch = _watch_with(403, None)
+    with pytest.raises(login.LogonFailed) as raised:
+        login.authenticate(None, _SelectorPage({}), watch,
+                           two_factor=login.TWOFACTOR_CLI)
+    assert "bot check" in str(raised.value)
+    assert "vnc-login" in str(raised.value)
+
+
+def test_vnc_hands_a_bot_checked_logon_to_the_human(monkeypatch):
+    # Over VNC the human clears the check and signs in by hand; the run
+    # waits for that sign-in instead of exiting on the refused logon.
+    ctx = _Context()
+    watch = login._LogonWatch().attach(ctx)
+    ctx.fire(_Resp(LOGON_URL, 403, None, "POST"))
+
+    def human_signs_in(predicate, _page, _timeout):
+        ctx.fire(_Resp(LOGON_URL, 200, {"statusCode": 0, "challenge": False,
+                                        "reauth": {"trust": True}}, "POST"))
+        return predicate()
+
+    monkeypatch.setattr(login, "wait_for", human_signs_in)
+    assert login.authenticate(None, _SelectorPage({}), watch,
+                              two_factor=login.TWOFACTOR_VNC,
+                              mfa_timeout=1) is True
+
+
 def test_a_trusted_device_authenticates_with_no_challenge_in_any_mode():
     watch = _watch_with(200, {"statusCode": 0, "challenge": False,
                               "reauth": {"trust": True}})
@@ -787,3 +814,26 @@ def test_prefill_asks_explore_to_overwrite(monkeypatch):
     monkeypatch.setattr(login, "_maybe_prefill_login", _spy)
     assert login._prefill(object(), "EXAMPLEUSER", "EXAMPLEPASS")
     assert seen["overwrite"] is True
+
+
+def test_a_refused_logon_is_captured_before_it_propagates(monkeypatch):
+    # A refused logon raises out of authenticate; --debug must still save
+    # the page it left, which the error text points to.
+    captured = []
+    monkeypatch.setattr(login, "_prefill_and_submit", lambda page, args: True)
+    monkeypatch.setattr(login, "_capture",
+                        lambda page, args, name: captured.append(name))
+
+    def refuse(*_a, **_k):
+        raise login.LogonFailed("refused")
+
+    monkeypatch.setattr(login, "authenticate", refuse)
+
+    class _Ctx:
+        def on(self, *_a):
+            pass
+
+    args = type("A", (), {"mfa_timeout": 1})()
+    with pytest.raises(login.LogonFailed):
+        login.drive_to_auth(_Ctx(), object(), args, two_factor="cli")
+    assert captured == ["logon-refused"]

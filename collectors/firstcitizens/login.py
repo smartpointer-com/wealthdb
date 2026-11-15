@@ -238,11 +238,19 @@ def _is_mfa(page, watch: _LogonWatch) -> bool:
 def _click_q2btn(loc) -> bool:
     """Click a Q2/Stencil `q2-btn` by its **inner `<button>`** (the reliable
     clickable element), reached through the open shadow root, falling back to
-    the host — the standard way to drive a Stencil button."""
+    the host — the standard way to drive a Stencil button.
+
+    The site's cookie-consent banner covers the bottom of the viewport, and
+    Playwright refuses a click on a covered element. A covered inner button
+    gets the click event dispatched to it instead, so the banner is never
+    answered."""
     with contextlib.suppress(Exception):
         inner = loc.locator("button").first
         if inner.count():
-            inner.click(timeout=5000)
+            try:
+                inner.click(timeout=5000)
+            except Exception:
+                inner.dispatch_event("click")
             return True
     with contextlib.suppress(Exception):
         loc.click(timeout=5000)
@@ -319,16 +327,24 @@ def _enter_mfa_code(page, code: str) -> bool:
     return _click_q2btn(page.locator(q2client.SEL_MFA_SUBMIT).first)
 
 
-def _register_device(page) -> None:
-    """Click "Register Device" so this device is trusted on future runs. The
-    step is optional — a failure here still leaves an authenticated session —
-    so it is best-effort."""
+def _register_device(page, args) -> bool:
+    """Click "Register Device" so this device is trusted on future runs.
+    A miss still leaves an authenticated session, so the login goes on; but
+    it warns, with the page's route and a --debug capture, because the next
+    unattended run then meets the 2FA challenge again."""
     wait_for(lambda: q2client.URL_MARK_MFA_REGISTER in page_url(page)
              or page.locator(q2client.SEL_MFA_REGISTER).count(), page, 20)
     with contextlib.suppress(Exception):
         reg = page.locator(q2client.SEL_MFA_REGISTER).first
         if reg.count() and _click_q2btn(reg):
             log.info("registered this device for future unattended runs")
+            return True
+    _capture(page, args, "mfa-register-missing")
+    route = page_url(page).partition("#")[2] or "(no route)"
+    log.warning("no Register Device step to click (page at %s): this device "
+                "stays unregistered, so the next download meets the 2FA "
+                "challenge again. (DOM captured with --debug.)", route)
+    return False
 
 
 def _drive_mfa_cli(page, args) -> bool:
@@ -373,7 +389,7 @@ def _drive_mfa_cli(page, args) -> bool:
         log.error("could not enter the Secure Access Code. Retry with "
                   "vnc-login. (DOM captured with --debug.)")
         return False
-    _register_device(page)
+    _register_device(page, args)
     _capture(page, args, "mfa-submitted")
     return True
 
