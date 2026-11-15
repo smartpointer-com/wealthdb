@@ -180,6 +180,34 @@ func TestOnlyASecuritiesSettlementFolds(t *testing.T) {
 	}
 }
 
+// TestARedemptionsMiscellaneousCashLegFolds: the bank books the cash of
+// a fund redemption under the miscellaneous code NMSC, not NSEC. When it
+// matches the confirmation's account, settlement day, currency and
+// amount, it is the same booking and folds.
+func TestARedemptionsMiscellaneousCashLegFolds(t *testing.T) {
+	_, db := newFixtureSilver(t)
+	seedFoldCashAccount(t, db)
+	seedTradeConfirmation(t, db, "mt515:T1", "REDM", "1000.00", foldSettleDay)
+	if _, err := db.Exec(`
+        INSERT INTO events (event_external_id, timestamp, relationship_id,
+            account_external_id, kind, currency_iso, payload)
+        VALUES ('mt940:R1', ?, 'R1', ?, 'cash_movement', 'CHF',
+                json_object('amount', '1000.00', 'credit_debit', 'C',
+                            'narrative', 'X00?',
+                            'account', ?, 'funds', 'CHF', 'txn_type', 'NMSC'))`,
+		foldSettleDay, foldCashIBAN, foldCashIBAN); err != nil {
+		t.Fatalf("seed redemption cash: %v", err)
+	}
+
+	got := psnRowsWith(t, db, psnHints{})
+	if len(got) != 1 {
+		t.Fatalf("emitted %d row(s), want the confirmation alone: %v", len(got), got)
+	}
+	if _, ok := got["mt515:T1"]; !ok {
+		t.Fatalf("the confirmation did not survive: %v", got)
+	}
+}
+
 // TestTheSeamKeysOnTheReferenceAndTheAccount pins the seam set's KEY,
 // which is the half that decides what gets dropped: the bank stamps one
 // Transaction no. on both legs of an inter-account transfer, so a key

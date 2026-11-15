@@ -221,7 +221,8 @@ type corporateActionPayload struct {
 // reconstruction and keeps the machine-readable record.
 //
 // Only a line the bank itself typed as a securities settlement is
-// eligible (`:61:` NSEC). A trade the MT940 feed never carried — the
+// eligible: `:61:` NSEC, or NMSC, the miscellaneous code the bank books
+// a fund redemption's cash under. A trade the MT940 feed never carried — the
 // minor-currency cash accounts it does not deliver — has nothing to
 // fold and keeps its confirmation, which is why the confirmation is
 // also the rail that reads completely.
@@ -331,7 +332,9 @@ func (f *settlementFold) covers(kind, account string, currencyISO *string, occur
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
 		return false
 	}
-	if strings.ToUpper(strings.TrimSpace(p.TxnType)) != "NSEC" {
+	switch strings.ToUpper(strings.TrimSpace(p.TxnType)) {
+	case "NSEC", "NMSC":
+	default:
 		return false
 	}
 	acct := account
