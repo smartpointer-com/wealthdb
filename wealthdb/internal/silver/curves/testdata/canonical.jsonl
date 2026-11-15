@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":1790000000,"LatestSnapshotAt":1767571200,"LatestTransactionAt":-1,"ObservedSnapshotsThrough":1790000000,"ObservedTransactionsThrough":1790000000,"OldestSnapshotAt":1767312000,"OldestTransactionAt":-1}
 == window 1
-{"End":1767571200,"HasChanges":true,"NewChangeNumber":1790000000,"Spans":null,"Start":1767312000}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1790000000,"Spans":null,"Start":-9223372036854775808}
 == rate_observations 3
 {"AsOf":1767312000,"Payload":{"basis":"spot","compounding":"continuous","currency":"EUR","tenor":"10Y"},"SeriesID":"YC.B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y","SilverSourceID":"","Value":"2.5000000001"}
 {"AsOf":1767571200,"Payload":{"basis":"spot","compounding":"annual","currency":"CHF","tenor":"10Y"},"SeriesID":"SNB1A.SNB.NSS.KZS.EID.J10M0","SilverSourceID":"","Value":"0.5"}

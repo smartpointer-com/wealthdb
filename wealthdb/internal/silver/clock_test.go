@@ -25,7 +25,7 @@ SELECT MIN(t), MAX(t) FROM (
 
 // TestLoadClock pins the shared load clock: the status reads the span, the
 // ledger and the newest dump; a dump past the watermark re-emits the whole
-// span; an idle reload, a watermark past every dump and an empty silver
+// history; an idle reload, a watermark past every dump and an empty silver
 // change nothing.
 func TestLoadClock(t *testing.T) {
 	ctx := context.Background()
@@ -68,9 +68,9 @@ INSERT INTO transactions VALUES (100), (300);`)
 		t.Errorf("Status = %+v, want %+v", s, want)
 	}
 	checkWindows(t, db, k, map[int64]canonical.Window{
-		0: {HasChanges: true, Start: 100, End: 900, NewChangeNumber: 900},
-		// A dump past the watermark still re-emits the full span.
-		500: {HasChanges: true, Start: 100, End: 900, NewChangeNumber: 900},
+		0: canonical.FullWindow(900),
+		// A dump past the watermark still re-emits the whole history.
+		500: canonical.FullWindow(900),
 		// The watermark at the newest dump is an idle reload.
 		900: {NewChangeNumber: 900},
 		// A watermark past every dump stays where it is.
@@ -99,8 +99,7 @@ func checkWindows(t *testing.T, db *sql.DB, k Clock, want map[int64]canonical.Wi
 
 // TestClockPinAndExtra pins a pinned change number, which follows the
 // latest run whatever the watermark, and the dates read in Go: they widen
-// the snapshot and the transaction range, and a full window that holds a
-// date.
+// the snapshot and the transaction range.
 func TestClockPinAndExtra(t *testing.T) {
 	ctx := context.Background()
 	db := openScratch(t, loadClockSchema+`
@@ -112,7 +111,6 @@ INSERT INTO accounts VALUES (400);`)
 	k := LoadClock("test", loadClockSpan)
 	k.Pin = true
 	k.Extra, k.LedgerExtra = dates(200, 600), dates(50, -1)
-	k.Mode = FullSpan{Span: k.Snapshot, Extra: dates(-1, 700)}
 	s, err := k.Status(ctx, db)
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +120,7 @@ INSERT INTO accounts VALUES (400);`)
 		t.Errorf("Status = %+v, want the snapshots over [200, 600] and the ledger from 50", s)
 	}
 	checkWindows(t, db, k, map[int64]canonical.Window{
-		-1:   {HasChanges: true, Start: 400, End: 700, NewChangeNumber: 500},
+		-1:   canonical.FullWindow(500),
 		1000: {NewChangeNumber: 500},
 	})
 	k.Extra = func(context.Context) (int64, int64, error) { return 0, 0, errors.New("boom") }

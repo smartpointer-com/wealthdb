@@ -331,11 +331,19 @@ func upsertSilverSource(ctx context.Context, tx *sql.Tx, spec SourceSpec, now in
 // (gold.SourceTable.TimeCol: snapshot_at for snapshot tables,
 // occurred_at for transactions, as_of for the reference tables) falls
 // inside the window: a reference table's inside its kind's span, none
-// for a kind without changes. Required before re-inserting the new
-// change records.
+// for a kind without changes. A full window (canonical.Window.Full)
+// removes the source's rows whole, whatever their time. Required before
+// re-inserting the new change records.
 func deleteWindow(ctx context.Context, tx *sql.Tx, sourceID string, w canonical.Window) error {
 	for _, t := range gold.SourceTables {
 		if t.TimeCol == "" {
+			continue
+		}
+		if w.Full {
+			if _, err := tx.ExecContext(ctx,
+				fmt.Sprintf(`DELETE FROM %s WHERE silver_source_id = ?`, t.Name), sourceID); err != nil {
+				return fmt.Errorf("delete from %s: %w", t.Name, err)
+			}
 			continue
 		}
 		span := canonical.Span{Start: w.Start, End: w.End}
@@ -766,6 +774,8 @@ func replaceRealizedLots(ctx context.Context, tx *sql.Tx, conn silver.Connection
 	return len(lots), nil
 }
 
+// insertLoadAudit records a load. A full window (canonical.FullWindow)
+// records its integer limits, which status reads as the whole history.
 func insertLoadAudit(ctx context.Context, tx *sql.Tx, sourceID string, now, watermarkBefore int64, res *LoadResult) error {
 	var beforeArg any = watermarkBefore
 	if watermarkBefore < 0 {

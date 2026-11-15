@@ -2,6 +2,7 @@ package canonical
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -324,6 +325,19 @@ type Window struct {
 	// does not name has no changes; where it is nil, every kind spans
 	// Start..End. SpanOf reads it.
 	Spans map[string]Span
+	// Full says the window is the source's whole history: the adapter
+	// re-emits everything it holds, and the load deletes the source's
+	// rows whole rather than over a span. Start and End are then the
+	// integer limits (FullWindow), so a reader that binds them reads
+	// every row. A window that is not full encodes without it.
+	Full bool `json:",omitempty"`
+}
+
+// FullWindow is the window with changes of a source that re-emits its
+// whole history, advancing to newChangeNumber.
+func FullWindow(newChangeNumber int64) Window {
+	return Window{Start: math.MinInt64, End: math.MaxInt64, NewChangeNumber: newChangeNumber,
+		HasChanges: true, Full: true}
 }
 
 // Span is an inclusive range of instants, Unix seconds UTC.

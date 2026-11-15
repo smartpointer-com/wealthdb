@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":1925794800,"LatestSnapshotAt":1925794800,"LatestTransactionAt":-1,"ObservedSnapshotsThrough":1925794800,"ObservedTransactionsThrough":1925794800,"OldestSnapshotAt":1924992000,"OldestTransactionAt":-1}
 == window 1
-{"End":1925794800,"HasChanges":true,"NewChangeNumber":1925794800,"Spans":null,"Start":1924992000}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1925794800,"Spans":null,"Start":-9223372036854775808}
 == accounts 1
 {"AccountCategory":"investment / brokerage","AccountExternalID":"acct-brk","AccountKind":"brokerage","BaseCurrency":"USD","DisplayName":"Example Bank …0000","FirstSeenAt":1925794800,"LastSeenAt":1925794800,"ManagementStyle":null,"Nickname":"Synthetic brokerage","Payload":{"account_id":"acct-brk"},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
 == instruments 1

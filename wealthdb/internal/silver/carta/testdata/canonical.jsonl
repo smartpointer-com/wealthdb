@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":1700000000,"LatestSnapshotAt":1757376000,"LatestTransactionAt":1757376000,"ObservedSnapshotsThrough":1700000000,"ObservedTransactionsThrough":1700000000,"OldestSnapshotAt":1672531200,"OldestTransactionAt":1672531200}
 == window 1
-{"End":1757376000,"HasChanges":true,"NewChangeNumber":1700000000,"Spans":null,"Start":1672531200}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1700000000,"Spans":null,"Start":-9223372036854775808}
 == accounts 3
 {"AccountCategory":null,"AccountExternalID":"IND1","AccountKind":"custody","BaseCurrency":"USD","DisplayName":"Carta","FirstSeenAt":1672531200,"LastSeenAt":1672531200,"ManagementStyle":"self_directed","Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
 {"AccountCategory":null,"AccountExternalID":"IND1","AccountKind":"custody","BaseCurrency":"USD","DisplayName":"Carta","FirstSeenAt":1688083200,"LastSeenAt":1688083200,"ManagementStyle":"self_directed","Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}

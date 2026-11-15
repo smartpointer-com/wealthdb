@@ -11,9 +11,8 @@ import (
 // contentSpan is the MIN/MAX snapshot_at across the position-bearing content
 // tables. carta reconstructs one download into event-dated deltas (an
 // exercise, a later acquisition, a quarterly NAV), which sit years
-// before the download. The observable snapshot range — and the load window —
-// must track THIS span, not dump_runs (the download time), so the historical
-// deltas fall in-window and reach gold's as-of query.
+// before the download. The observable snapshot range tracks THIS span, not
+// dump_runs (the download time).
 const contentSpan = `
 SELECT MIN(snapshot_at), MAX(snapshot_at) FROM (
     SELECT snapshot_at FROM entities
@@ -24,8 +23,8 @@ SELECT MIN(snapshot_at), MAX(snapshot_at) FROM (
 // transactionExtrema is the MIN/MAX cash-flow date — the transaction ledger
 // (transactions.go). flow_date is mixed-format TEXT, so it is parsed in Go
 // (flowDateUnix) rather than via strftime. A fund's calls can precede its
-// first statement, so these dates can fall outside the content span, and
-// ChangeWindow widens the window to cover them.
+// first statement, so these dates can fall outside the content span: the
+// transaction range Status reports.
 func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int64, ok bool, err error) {
 	if err := silver.ScanRows(ctx, c.db, "carta transactionExtrema", `SELECT flow_date FROM cash_flows WHERE flow_date IS NOT NULL`, func(rows *sql.Rows) error {
 		var d string
@@ -50,10 +49,9 @@ func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int
 	return oldest, latest, ok, nil
 }
 
-// clock: a new download, any dump past the watermark, re-emits the full
-// event-dated content range, every cash-flow date, and the snapshot times
-// a removal or a K-1's period end adds, so every reconstructed delta and
-// every ledger row reaches gold. The snapshot range spans the
+// clock: a new download, any dump past the watermark, re-emits the whole
+// history (silver.FullSpan), so every reconstructed delta and every
+// ledger row reaches gold. The snapshot range spans the
 // event-dated content, the days a fund's carried value changes
 // (fundcarry.go), and the removals and K-1 period ends (snapshots.go);
 // the transaction range is the cash-flow ledger (transactions.go). The
@@ -68,7 +66,7 @@ func (c *Connection) clock() silver.Clock {
 		LedgerExtra: c.flowDates,
 		Observed:    silver.Observed{Runs: `SELECT MAX(snapshot_at) FROM dump_runs WHERE dry_run = 0`},
 		Pin:         true,
-		Mode:        silver.FullSpan{Span: []string{contentSpan}, Extra: c.windowDates},
+		Mode:        silver.FullSpan{},
 	}
 }
 
@@ -106,16 +104,6 @@ func (c *Connection) snapshotDates(ctx context.Context) (lo, hi int64, err error
 			lo = t
 		}
 		hi = max(hi, t)
-	}
-	r, err := c.reach(ctx)
-	return lo, max(hi, r), err
-}
-
-// windowDates are the cash-flow dates, the removals and the K-1 period
-// ends.
-func (c *Connection) windowDates(ctx context.Context) (lo, hi int64, err error) {
-	if lo, hi, err = c.flowDates(ctx); err != nil {
-		return -1, -1, err
 	}
 	r, err := c.reach(ctx)
 	return lo, max(hi, r), err

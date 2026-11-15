@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":1772366400,"LatestSnapshotAt":1772366400,"LatestTransactionAt":1771113600,"ObservedSnapshotsThrough":1772366400,"ObservedTransactionsThrough":1772366400,"OldestSnapshotAt":1767225599,"OldestTransactionAt":1768003200}
 == window 1
-{"End":1772366400,"HasChanges":true,"NewChangeNumber":1772366400,"Spans":null,"Start":1767225599}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1772366400,"Spans":null,"Start":-9223372036854775808}
 == accounts 1
 {"AccountCategory":null,"AccountExternalID":"ATkkBBBBBKKKKKKK1234","AccountKind":"cash","BaseCurrency":"EUR","DisplayName":"Testkonto …1234","FirstSeenAt":1772366400,"LastSeenAt":1772366400,"ManagementStyle":"self_directed","Nickname":null,"Payload":{},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
 == cash_balances 6

@@ -42,7 +42,13 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		return nil, err
 	}
 
-	const q = `
+	// A full window reads every row: its limits are out of a TIMESTAMP's
+	// range.
+	where, args := ` WHERE occurred_at BETWEEN to_timestamp(?) AND to_timestamp(?)`, []any{w.Start, w.End}
+	if w.Full {
+		where, args = "", nil
+	}
+	q := `
 SELECT
     transaction_external_id,
     portfolio_external_id,
@@ -53,8 +59,7 @@ SELECT
     CAST(sell_amount AS VARCHAR), COALESCE(sell_currency, ''),
     CAST(fee_amount  AS VARCHAR), COALESCE(fee_currency,  ''),
     CAST(payload     AS VARCHAR), COALESCE(comment, '')
-  FROM transactions
- WHERE occurred_at BETWEEN to_timestamp(?) AND to_timestamp(?)
+  FROM transactions` + where + `
  ORDER BY occurred_at, transaction_external_id`
 
 	out := canonical.TransactionBatch{}
@@ -96,7 +101,7 @@ SELECT
 		}
 		out.Transactions = append(out.Transactions, emitted...)
 		return nil
-	}, w.Start, w.End); err != nil {
+	}, args...); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil

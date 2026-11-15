@@ -308,18 +308,15 @@ The source runs on the shared load clock (`silver.LoadClock`):
 `MAX(dump_runs.snapshot_at)`, and a new load re-emits the full history
 ([../DESIGN.md](../DESIGN.md) §6.4).
 
-The re-emit window is the MIN/MAX over three columns:
+The window is the whole history (`Window.Full`): the load deletes the
+source's rows whole before it re-inserts them, so a statement period
+with no ledger row of its own, whose closing balance sits at its
+`period_end`, is replaced like every other row. The snapshot range
+`Status` reports is the MIN/MAX over three columns:
 
 - `accounts.snapshot_at`;
 - `transactions.posted_at`;
 - `statement_balances.period_end`.
-
-The third is required for correctness. A statement period with no
-ledger row of its own still emits a closing balance at its
-`period_end`. That can be a quiet month, or one whose transactions were
-refused. A record outside the delete window is re-inserted without its
-predecessor being removed, so it would duplicate on every load.
-`period_start` is not included: nothing is emitted at it.
 
 ## 9. Known limits
 

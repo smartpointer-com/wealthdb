@@ -3,6 +3,7 @@ package firstcitizens
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -68,11 +69,20 @@ func (c *Connection) appendAccounts(ctx context.Context, ccy silver.AccountCurre
 // for. A run's CURRENT balance earlier that day holds only until the
 // day's close, and the ledger gives the day's value. The window bounds
 // the stamps, so the shared query reads the days whose stamp falls in it.
+// A full window's integer limits bind as they are: shifted, they would
+// wrap.
 func (c *Connection) appendRunningBalances(ctx context.Context, w canonical.Window,
 	ccy silver.AccountCurrencies, batch *canonical.SnapshotBatch) error {
 	q := fmt.Sprintf(`SELECT account_external_id, posted_at + %d, balance FROM (`+
 		silver.RunningBalanceQuery+`) ORDER BY 1, 2`, silver.DayEndOffset)
+	lo, hi := w.Start, w.End
+	if lo != math.MinInt64 {
+		lo -= silver.DayEndOffset
+	}
+	if hi != math.MaxInt64 {
+		hi -= silver.DayEndOffset
+	}
 	return silver.AppendClosingBalances(ctx, c.db, "firstcitizens appendRunningBalances",
-		q, []any{w.Start - silver.DayEndOffset, w.End - silver.DayEndOffset},
+		q, []any{lo, hi},
 		`{"basis":"running_balance"}`, ccy.Of, nil, batch)
 }

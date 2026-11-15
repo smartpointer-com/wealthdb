@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":1000,"LatestSnapshotAt":1000,"LatestTransactionAt":-1,"ObservedSnapshotsThrough":1000,"ObservedTransactionsThrough":1000,"OldestSnapshotAt":100,"OldestTransactionAt":-1}
 == window 1
-{"End":1000,"HasChanges":true,"NewChangeNumber":1000,"Spans":null,"Start":100}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1000,"Spans":null,"Start":-9223372036854775808}
 == accounts 4
 {"AccountCategory":"AngelList LP","AccountExternalID":"acct","AccountKind":"custody","BaseCurrency":"USD","DisplayName":null,"FirstSeenAt":100,"LastSeenAt":100,"ManagementStyle":"self_directed","Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
 {"AccountCategory":"AngelList LP","AccountExternalID":"acct","AccountKind":"custody","BaseCurrency":"USD","DisplayName":null,"FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":"self_directed","Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}

@@ -80,8 +80,8 @@ func TestChangeWindowAndSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !w.HasChanges || w.Start != d1 || w.End != d2 || w.NewChangeNumber != run {
-		t.Fatalf("window = %+v, want [%d,%d] up to change number %d", w, d1, d2, run)
+	if !w.HasChanges || !w.Full || w.NewChangeNumber != run {
+		t.Fatalf("window = %+v, want the whole history, [%d,%d] in it, up to change number %d", w, d1, d2, run)
 	}
 	b := silvertest.Merged(t, conn, w)
 	if len(b.FxRates) != 0 || len(b.Positions) != 0 {

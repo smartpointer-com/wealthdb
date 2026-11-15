@@ -192,7 +192,7 @@ func statusDetail(ctx context.Context, db *sql.DB, cfg *config.Config, id string
 		for _, r := range audit {
 			loads.Rows = append(loads.Rows, []string{
 				formatDateTime(r.LoadedAt / 1_000_000_000),
-				formatDate(r.WindowStart) + ".." + formatDate(r.WindowEnd),
+				formatWindow(r.WindowStart, r.WindowEnd),
 				fmt.Sprintf("%d", r.SnapshotsLoaded), fmt.Sprintf("%d", r.TransactionsLoaded),
 			})
 		}

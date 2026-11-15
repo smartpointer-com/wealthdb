@@ -1310,8 +1310,8 @@ func TestAStatementOlderThanEveryLedgerWindow(t *testing.T) {
 	if s := status(t, conn); s.OldestSnapshotAt != day(2) {
 		t.Errorf("oldest snapshot = %d, want the issue date %d", s.OldestSnapshotAt, day(2))
 	}
-	if w := window(t, conn); w.Start != day(2) {
-		t.Errorf("window starts %d, want the issue date %d", w.Start, day(2))
+	if w := window(t, conn); !w.Full {
+		t.Errorf("window = %+v, want the whole history, the issue date %d in it", w, day(2))
 	}
 	got := cashAt(collectSnapshots(t, conn), day(2), "acct-card", canonical.BalanceKindClosing)
 	if len(got) != 1 || !got[0].Amount.Equal(dec(t, "-380")) {
@@ -1952,8 +1952,8 @@ func TestMovementsAtNoWorth(t *testing.T) {
 // Plaid dates a trade at its settlement and states its trade date apart. A
 // buy or a sell books at the UTC day of its trade date. Every other row,
 // and a trade whose stated time is past its posting date, books at the
-// posting date. No trade books before the oldest window the ledger was
-// read in.
+// posting date, however far back the trade date lies: a load re-emits the
+// whole history.
 func TestTradesBookAtTheirTradeDate(t *testing.T) {
 	path, db := newFixture(t)
 	seedItem(t, db, runAt(10)) // the ledger's window starts at day 1
@@ -1975,7 +1975,7 @@ func TestTradesBookAtTheirTradeDate(t *testing.T) {
 	}
 	got := collectTransactions(t, openConn(t, path))
 	for id, want := range map[string]int64{"itx-buy": day(3), "itx-sell": day(4),
-		"itx-untimed": day(6), "itx-late": day(5), "itx-early": day(1), "itx-div": day(5)} {
+		"itx-untimed": day(6), "itx-late": day(5), "itx-early": day(0), "itx-div": day(5)} {
 		if at := got[id].OccurredAt; at != want {
 			t.Errorf("%s books at %d, want %d", id, at, want)
 		}
@@ -2162,8 +2162,8 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	}
 
 	w := window(t, conn)
-	if !w.HasChanges || w.Start != day(1) || w.End != runAt(10) || w.NewChangeNumber != runAt(10) {
-		t.Errorf("window = %+v", w)
+	if !w.HasChanges || !w.Full || w.NewChangeNumber != runAt(10) {
+		t.Errorf("window = %+v, want the whole history", w)
 	}
 	idle, err := conn.ChangeWindow(context.Background(), w.NewChangeNumber)
 	if err != nil {

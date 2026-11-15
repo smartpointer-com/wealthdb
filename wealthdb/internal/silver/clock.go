@@ -46,14 +46,13 @@ const LatestDump = `SELECT MAX(snapshot_at) FROM dump_runs`
 
 // LoadClock is the clock of a silver that records its dumps in dump_runs
 // and has no change feed of its own: a loaded dump is the trigger and a
-// full re-emit the response. span bounds every date the projection
-// touches, both the snapshot range and the window; ledger is the
-// transaction range.
-func LoadClock(kind, span string, ledger ...string) Clock {
+// full re-emit the response (FullSpan). snapshot is the snapshot range
+// Status reports; ledger is the transaction range.
+func LoadClock(kind, snapshot string, ledger ...string) Clock {
 	return Clock{
 		Kind: kind, Runs: LatestDump,
-		Snapshot: []string{span}, Ledger: ledger,
-		Mode: FullSpan{Span: []string{span}},
+		Snapshot: []string{snapshot}, Ledger: ledger,
+		Mode: FullSpan{},
 	}
 }
 
@@ -97,15 +96,10 @@ type Mode interface {
 
 // FullSpan is the clock of a source with no change feed of its own: a
 // run is a whole re-read of what the source shows, so a run past the
-// watermark re-emits the whole history, and gold's deleteWindow over
-// [Start, End] makes the re-emit idempotent. An idle reload is a no-op.
-type FullSpan struct {
-	// Span are range queries over every date the projection touches.
-	// The window has changes only where they hold a date.
-	Span []string
-	// Extra are dates read in Go that the window spans too.
-	Extra Dates
-}
+// watermark re-emits the whole history (canonical.FullWindow), and the
+// load deletes the source's rows whole before it re-inserts them. An
+// idle reload is a no-op.
+type FullSpan struct{}
 
 // Incremental is the clock of a source whose rows carry their own time:
 // the window spans what lies past the watermark, widened to the rows a
@@ -213,20 +207,12 @@ func (k Clock) latest(ctx context.Context, db *sql.DB, what string) (sql.NullInt
 	return t, nil
 }
 
-func (m FullSpan) window(ctx context.Context, db *sql.DB, k *Clock, since int64, latest sql.NullInt64,
+func (FullSpan) window(_ context.Context, _ *sql.DB, _ *Clock, since int64, latest sql.NullInt64,
 	w canonical.Window) (canonical.Window, error) {
 	if !latest.Valid || latest.Int64 <= since {
 		return w, nil // no run past the watermark
 	}
-	lo, hi, ok, err := rangeOf(ctx, db, m.Span)
-	if err != nil {
-		return w, fmt.Errorf("%s ChangeWindow span: %w", k.Kind, err)
-	}
-	if !ok {
-		return w, nil
-	}
-	w.Start, w.End, w.HasChanges = lo, hi, true
-	return w, widen(ctx, &w, m.Extra)
+	return canonical.FullWindow(w.NewChangeNumber), nil
 }
 
 func (m Incremental) window(ctx context.Context, db *sql.DB, k *Clock, since int64, _ sql.NullInt64,

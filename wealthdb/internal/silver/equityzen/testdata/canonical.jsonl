@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":1700000000,"LatestSnapshotAt":1704067200,"LatestTransactionAt":1704067200,"ObservedSnapshotsThrough":1700000000,"ObservedTransactionsThrough":1700000000,"OldestSnapshotAt":1640995200,"OldestTransactionAt":1640995200}
 == window 1
-{"End":1704067200,"HasChanges":true,"NewChangeNumber":1700000000,"Spans":null,"Start":1640995200}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1700000000,"Spans":null,"Start":-9223372036854775808}
 == accounts 6
 {"AccountCategory":null,"AccountExternalID":"equityzen","AccountKind":"custody","BaseCurrency":"USD","DisplayName":"EquityZen","FirstSeenAt":1640995200,"LastSeenAt":1640995200,"ManagementStyle":"self_directed","Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
 {"AccountCategory":null,"AccountExternalID":"equityzen","AccountKind":"custody","BaseCurrency":"USD","DisplayName":"EquityZen","FirstSeenAt":1646092800,"LastSeenAt":1646092800,"ManagementStyle":"self_directed","Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}

@@ -165,8 +165,8 @@ func TestRatesInTheWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !w.HasChanges || w.Start != d1962 || w.End != 1578009600 {
-		t.Fatalf("window = %+v, want [%d, 1578009600]", w, d1962)
+	if !w.HasChanges || !w.Full {
+		t.Fatalf("window = %+v, want the whole history, [%d, 1578009600] in it", w, d1962)
 	}
 	if fx := silvertest.Merged(t, conn, w).FxRates; len(fx) != 3 {
 		t.Errorf("fx rows = %d, want 3", len(fx))
@@ -277,8 +277,8 @@ func TestV1SilverWithoutRates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !w.HasChanges || w.Start != 1577923200 || w.End != 1578009600 {
-		t.Fatalf("window = %+v", w)
+	if !w.HasChanges || !w.Full {
+		t.Fatalf("window = %+v, want the whole history", w)
 	}
 	if fx := silvertest.Merged(t, conn, w).FxRates; len(fx) != 3 {
 		t.Errorf("fx rows = %d, want 3", len(fx))

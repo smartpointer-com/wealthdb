@@ -9,9 +9,9 @@ import (
 
 // contentMin and contentMax are the earliest and latest content date: the
 // position event dates (position_snapshots.as_of_date) unioned with the
-// funding-ledger dates (funding_transactions.occurred_at). The window must
-// span both: a funding cash flow can predate the first investment (an
-// opening deposit) or postdate the last valuation.
+// funding-ledger dates (funding_transactions.occurred_at): a funding cash
+// flow can predate the first investment (an opening deposit) or postdate
+// the last valuation.
 const (
 	contentMin = `SELECT MIN(t) FROM (SELECT MIN(as_of_date) t FROM position_snapshots
                     UNION ALL SELECT MIN(occurred_at) FROM funding_transactions)`
@@ -20,13 +20,14 @@ const (
 )
 
 // clock: a new download, any dump past the watermark, re-emits the full
-// event history: from the earliest position event date (an inception, an
-// early K-1 year) to the latest. A download can revise any position's
+// event history (silver.FullSpan). A download can revise any position's
 // marks at any past event date (a K-1 finalises, a statement restates),
 // and the adapter forward-fills complete per-event portfolios, so
-// re-emit-all is the natural unit. A download always has changes: a
-// silver with no content spans [0, 0]. The transaction range is the
-// funding-account cash ledger.
+// re-emit-all is the natural unit. The snapshot range runs from the
+// earliest content date (an inception, an early K-1 year) to the latest,
+// or to the latest removal or K-1 period end where that is later
+// (reachDates); the transaction range is the funding-account cash
+// ledger.
 func (c *Connection) clock() silver.Clock {
 	return silver.Clock{
 		Kind:     "angellist",
@@ -34,10 +35,7 @@ func (c *Connection) clock() silver.Clock {
 		Snapshot: []string{`SELECT (` + contentMin + `), (` + contentMax + `)`},
 		Extra:    c.reachDates,
 		Ledger:   []string{silver.Range("funding_transactions", "occurred_at")},
-		Mode: silver.FullSpan{
-			Span:  []string{`SELECT COALESCE((` + contentMin + `), 0), COALESCE((` + contentMax + `), 0)`},
-			Extra: c.reachDates,
-		},
+		Mode:     silver.FullSpan{},
 	}
 }
 

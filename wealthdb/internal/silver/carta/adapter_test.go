@@ -591,8 +591,8 @@ INSERT INTO securities(snapshot_at, entity_external_id, security_type, security_
 		t.Errorf("Status latest snapshot = %d %v, want the dump that dropped the company", s.LatestSnapshotAt, err)
 	}
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	if w.End != 1800000000 {
-		t.Errorf("window end = %d, want the dump that dropped the company", w.End)
+	if !w.Full {
+		t.Errorf("window = %+v, want the whole history", w)
 	}
 	batches := silvertest.Snapshots(t, conn, w)
 	if len(batches) != 2 {

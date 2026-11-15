@@ -406,14 +406,10 @@ The shared load clock (`silver.LoadClock`): a loaded run is the
 trigger, and a full re-emit is the response.
 
 - The change number is `MAX(dump_runs.snapshot_at)`.
-- The window spans every date the projection touches: the runs, both
-  ledgers' posting dates, the card statements' issue dates, and the
-  start of every ledger window a run read. Silver deletes the rows Plaid
-  stopped listing, and such a row can be the oldest one. Every row
-  silver held was stored by a run whose window reached its date, so
-  with every window in the span, a reload never leaves it standing in
-  gold. A trade books no earlier than the oldest window start, so the
-  span covers it too.
+- The window is the whole history (`Window.Full`): the load deletes the
+  source's rows whole before it re-inserts them. Silver deletes the rows
+  Plaid stopped listing, so such a row leaves gold on the next load. A
+  trade books at its trade date however far back it lies.
 - `Status` reports the transaction range over both ledgers, at the dates
   their rows book at. An Item linked for investments alone has no bank
   ledger.

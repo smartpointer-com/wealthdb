@@ -3,6 +3,7 @@ package cointracking
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -31,16 +32,21 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	}
 	if len(snapDates) == 0 {
 		// No positions_daily rows yet → fall back to a single
-		// dimensions-only batch at w.End so portfolios / accounts
-		// still get upserted on a fresh load with no trade history.
+		// dimensions-only batch at the latest date the silver holds,
+		// so portfolios / accounts still get upserted on a fresh load
+		// with no trade history.
+		var at int64
+		if err := c.db.QueryRowContext(ctx, latestDate).Scan(&at); err != nil {
+			return nil, fmt.Errorf("cointracking latest date: %w", err)
+		}
 		batch := canonical.SnapshotBatch{}
-		if err := c.appendPortfolios(ctx, &batch, w.End); err != nil {
+		if err := c.appendPortfolios(ctx, &batch, at); err != nil {
 			return nil, err
 		}
-		if err := c.appendAccounts(ctx, &batch, w.End); err != nil {
+		if err := c.appendAccounts(ctx, &batch, at); err != nil {
 			return nil, err
 		}
-		if err := c.appendInstruments(ctx, &batch, w.End); err != nil {
+		if err := c.appendInstruments(ctx, &batch, at); err != nil {
 			return nil, err
 		}
 		if err := c.appendFxRates(ctx, &batch); err != nil {
@@ -505,3 +511,13 @@ SELECT
 	}
 	return nil
 }
+
+// latestDate is the latest date the silver holds: of a transaction, a
+// dump or a coin price, -1 where it holds none. transactions.occurred_at
+// is a TIMESTAMP and coin_prices.as_of_date a DATE, so EXTRACT(epoch FROM
+// …) coerces each to unix seconds.
+const latestDate = `
+SELECT GREATEST(
+    COALESCE((SELECT CAST(EXTRACT(epoch FROM MAX(occurred_at)) AS BIGINT) FROM transactions), -1),
+    COALESCE((SELECT MAX(snapshot_at) FROM dump_runs), -1),
+    COALESCE((SELECT CAST(EXTRACT(epoch FROM CAST(MAX(as_of_date) AS TIMESTAMP)) AS BIGINT) FROM coin_prices), -1))`

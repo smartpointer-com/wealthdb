@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":1772366400,"LatestSnapshotAt":1772366400,"LatestTransactionAt":1772236800,"ObservedSnapshotsThrough":1772366400,"ObservedTransactionsThrough":1772366400,"OldestSnapshotAt":1761868800,"OldestTransactionAt":1763164800}
 == window 1
-{"End":1772366400,"HasChanges":true,"NewChangeNumber":1772366400,"Spans":null,"Start":1761868800}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1772366400,"Spans":null,"Start":-9223372036854775808}
 == accounts 2
 {"AccountCategory":null,"AccountExternalID":"acct-1","AccountKind":"cash","BaseCurrency":"USD","DisplayName":"Example Checking","FirstSeenAt":1772366400,"LastSeenAt":1772366400,"ManagementStyle":"self_directed","Nickname":"Example Checking","Payload":{},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
 {"AccountCategory":null,"AccountExternalID":"card-1","AccountKind":"card","BaseCurrency":"USD","DisplayName":"Example Card","FirstSeenAt":1772366400,"LastSeenAt":1772366400,"ManagementStyle":"self_directed","Nickname":"Example Card","Payload":{},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}

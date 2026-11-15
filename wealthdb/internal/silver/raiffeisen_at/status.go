@@ -13,9 +13,7 @@ import (
 // where the CURRENT balances are stamped), the transaction ledger
 // (posted_at), and the daily-balance series (the closing cash marks, at each
 // balance day's last second, which reach back further than the ledger's own
-// window). It bounds the snapshot range in Status and the re-emit window in
-// ChangeWindow (gold's deleteWindow over [Start,End] must cover every record
-// it re-applies).
+// window). It is the snapshot range Status reports.
 var spanExtrema = fmt.Sprintf(`
 SELECT MIN(t), MAX(t) FROM (
     SELECT snapshot_at AS t FROM accounts

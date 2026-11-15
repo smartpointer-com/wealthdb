@@ -127,8 +127,8 @@ func TestTheWindowReachesAFundCallBeforeAnyStatement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.Start != first {
-		t.Errorf("window starts %d, want the first call %d", w.Start, first)
+	if !w.Full {
+		t.Errorf("window = %+v, want the whole history, the first call %d in it", w, first)
 	}
 	st, err := conn.Status(ctx)
 	if err != nil {

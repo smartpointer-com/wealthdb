@@ -394,17 +394,12 @@ func (m measured) inward() bool {
 // dates a trade at its settlement and states its trade date apart, as a
 // time. A buy or a sell books at the UTC day of its trade date, where Plaid
 // states one no later than the posting date. Every other row books at its
-// posting date.
-//
-// A trade never books before the oldest date the investment ledger was
-// read from. A reload clears gold from the oldest date silver holds
-// (spanExtrema). A trade Plaid stops listing leaves no date of its own in
-// silver, but that window start stays in the span.
+// posting date. A load re-emits the whole history and deletes the
+// source's rows whole first (silver.FullSpan), so a trade books at its
+// trade date however far back it lies.
 const investmentDate = `(CASE
     WHEN LOWER(TRIM(type)) IN ('buy', 'sell') AND transaction_at / 86400 * 86400 <= posted_at
-    THEN MAX(transaction_at / 86400 * 86400,
-             COALESCE((SELECT MIN(window_start) FROM run_products
-                        WHERE product = 'investment_transactions'), 0))
+    THEN transaction_at / 86400 * 86400
     ELSE posted_at END)`
 
 const investmentColumns = `investment_transaction_id, account_id, COALESCE(security_id, ''),

@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":3000,"LatestSnapshotAt":3000,"LatestTransactionAt":950,"ObservedSnapshotsThrough":3000,"ObservedTransactionsThrough":3000,"OldestSnapshotAt":1000,"OldestTransactionAt":900}
 == window 1
-{"End":3000,"HasChanges":true,"NewChangeNumber":3000,"Spans":null,"Start":900}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":3000,"Spans":null,"Start":-9223372036854775808}
 == accounts 5
 {"AccountCategory":"INV","AccountExternalID":"INV1","AccountKind":"brokerage","BaseCurrency":"CHF","DisplayName":"Free Invest","FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":"automated","Nickname":null,"Payload":{},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
 {"AccountCategory":"P3A","AccountExternalID":"P3A1","AccountKind":"brokerage","BaseCurrency":"CHF","DisplayName":"Pillar 3a","FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":"automated","Nickname":null,"Payload":{},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"pillar_3a"}

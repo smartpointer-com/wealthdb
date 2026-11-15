@@ -1322,12 +1322,14 @@ type TransactionStream interface {
   the window. A reference source may bound each kind of reference
   record on a span of its own (`Window.Spans`). The stream and the
   load's windowed delete then read each kind over its span, and leave a
-  kind without changes alone.
+  kind without changes alone. A source that re-emits its whole history
+  says so (`Window.Full`, §8.2).
 - **The clock.** An adapter declares its `Status` and `ChangeWindow`
   as a `silver.Clock`. It names the run that is the change number, the
   range queries of the snapshots and the ledger, the observed
   watermarks, and a mode:
-  - `FullSpan`: a run past the watermark re-emits the whole history;
+  - `FullSpan`: a run past the watermark re-emits the whole history
+    (`canonical.FullWindow`);
   - `Incremental`: the window spans the rows past the watermark,
     widened to the rows a re-emit must cover;
   - `PerKind`: a run past the watermark bounds each kind of reference
@@ -2522,6 +2524,17 @@ the delta:
 The plugin guarantees that any silver record changed since the
 previous watermark has its `snapshot_at` or `occurred_at` inside
 the returned window. That is the load contract.
+
+A source with no change feed of its own re-reads everything on each
+run, so its window is already its whole history. It says so with a
+full window (`Window.Full`, `canonical.FullWindow`): Start and End
+are the integer limits, the load deletes the source's rows whole
+rather than over a span, and `load_audit` records the limits, which
+`status -v` prints as `all`. The amount of work is the same; the
+adapter keeps no span query to hold the window wide enough. The load
+clock's sources (amex, chase, firstcitizens, raiffeisen_at, plaid,
+curves, fred, manual) and angellist, carta, equityzen, cointracking
+and viac are such sources. The others stay windowed.
 
 ### 8.3 The adapter contract for `Snapshots` and `Transactions`
 

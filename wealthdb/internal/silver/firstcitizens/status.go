@@ -12,9 +12,7 @@ import (
 // snapshots (accounts.snapshot_at), the loaded runs (dump_runs.snapshot_at,
 // where the CURRENT balances are stamped) and the transaction ledger: the
 // transaction events at posted_at, and the per-day cash marks at the day's
-// last second. It bounds the snapshot range in Status and the re-emit window
-// in ChangeWindow (gold's deleteWindow over [Start,End] must cover every
-// record it re-applies).
+// last second. It is the snapshot range Status reports.
 var spanExtrema = fmt.Sprintf(`
 SELECT MIN(t), MAX(t) FROM (
     SELECT snapshot_at AS t FROM accounts

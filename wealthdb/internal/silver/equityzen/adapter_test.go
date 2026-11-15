@@ -103,9 +103,8 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !w.HasChanges || w.Start != silvertest.ISO(t, "2022-01-01") || w.End != silvertest.ISO(t, "2024-01-01") || w.NewChangeNumber != 1700000000 {
-		t.Errorf("ChangeWindow(-1) = %+v, want HasChanges Start=%d End=%d NewCN=1700000000",
-			w, silvertest.ISO(t, "2022-01-01"), silvertest.ISO(t, "2024-01-01"))
+	if !w.HasChanges || !w.Full || w.NewChangeNumber != 1700000000 {
+		t.Errorf("ChangeWindow(-1) = %+v, want the whole history up to NewCN=1700000000", w)
 	}
 	w2, err := conn.ChangeWindow(context.Background(), 1700000000)
 	if err != nil {
@@ -597,8 +596,8 @@ func TestADealADumpStopsListingLeavesAtThatDump(t *testing.T) {
 		t.Errorf("Status latest snapshot = %d %v, want the dump that dropped d2", s.LatestSnapshotAt, err)
 	}
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	if w.End != 1800000000 {
-		t.Errorf("window end = %d, want the dump that dropped d2", w.End)
+	if !w.Full {
+		t.Errorf("window = %+v, want the whole history", w)
 	}
 	posByT := map[int64]map[string]canonical.PositionChange{}
 	for _, b := range silvertest.Snapshots(t, conn, w) {

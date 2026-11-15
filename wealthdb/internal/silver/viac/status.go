@@ -7,11 +7,12 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// clock: a dump or a transaction past the watermark re-emits the whole
-// history, every snapshot and transaction, so the historical snapshots
-// of the Reporting PDFs, keyed on past period ends, reach gold too. An
-// idle reload is a no-op: the change number is the latest dump. The
-// source is observed through the latest run that read it (observed).
+// clock: a dump past the watermark re-emits the whole history
+// (silver.FullSpan), every snapshot and transaction, so the historical
+// snapshots of the Reporting PDFs, keyed on past period ends, reach gold
+// too. An idle reload is a no-op: the change number is the latest dump.
+// The source is observed through the latest run that read it
+// (observed).
 func (c *Connection) clock() silver.Clock {
 	return silver.Clock{
 		Kind: "viac",
@@ -21,20 +22,9 @@ func (c *Connection) clock() silver.Clock {
 			silver.Range("positions", "snapshot_at"),
 			silver.Range("cash_balances", "snapshot_at"),
 		},
-		Ledger: []string{silver.Range("transactions", "occurred_at")},
-		Pin:    true,
-		Mode: silver.Incremental{
-			New: []string{
-				silver.RangePast("dump_runs", "snapshot_at"),
-				silver.RangePast("transactions", "occurred_at"),
-			},
-			Widen: []string{
-				silver.Range("positions", "snapshot_at"),
-				silver.Range("cash_balances", "snapshot_at"),
-				silver.Range("dump_runs", "snapshot_at"),
-				silver.Range("transactions", "occurred_at"),
-			},
-		},
+		Ledger:   []string{silver.Range("transactions", "occurred_at")},
+		Pin:      true,
+		Mode:     silver.FullSpan{},
 		Observed: silver.Observed{Set: c.observed},
 	}
 }

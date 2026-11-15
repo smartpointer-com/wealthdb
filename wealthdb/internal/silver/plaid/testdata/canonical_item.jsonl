@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":1925794800,"LatestSnapshotAt":1925794800,"LatestTransactionAt":1925683200,"ObservedSnapshotsThrough":1925794800,"ObservedTransactionsThrough":1925794800,"OldestSnapshotAt":1924992000,"OldestTransactionAt":1925078400}
 == window 1
-{"End":1925794800,"HasChanges":true,"NewChangeNumber":1925794800,"Spans":null,"Start":1924992000}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1925794800,"Spans":null,"Start":-9223372036854775808}
 == accounts 10
 {"AccountCategory":"credit / credit card","AccountExternalID":"acct-card","AccountKind":"card","BaseCurrency":"USD","DisplayName":"Example Bank …0000","FirstSeenAt":1925337600,"LastSeenAt":1925337600,"ManagementStyle":"self_directed","Nickname":"Synthetic credit card","Payload":{"account_id":"acct-card"},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
 {"AccountCategory":"credit / credit card","AccountExternalID":"acct-card","AccountKind":"card","BaseCurrency":"USD","DisplayName":"Example Bank …0000","FirstSeenAt":1925337600,"LastSeenAt":1925424000,"ManagementStyle":"self_directed","Nickname":"Synthetic credit card","Payload":{"account_id":"acct-card"},"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}

@@ -87,8 +87,8 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !w.HasChanges || w.Start != 100 || w.End != 1000 || w.NewChangeNumber != 1000 {
-		t.Errorf("ChangeWindow(-1) = %+v, want HasChanges Start=100 End=1000 NewCN=1000", w)
+	if !w.HasChanges || !w.Full || w.NewChangeNumber != 1000 {
+		t.Errorf("ChangeWindow(-1) = %+v, want the whole history up to NewCN=1000", w)
 	}
 	w2, err := conn.ChangeWindow(context.Background(), 1000)
 	if err != nil {
@@ -253,8 +253,8 @@ func TestTransactionsFunding(t *testing.T) {
 	conn := openAdapter(t, path)
 
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	if !w.HasChanges || w.Start != 100 || w.End != 600 {
-		t.Fatalf("ChangeWindow = %+v, want HasChanges Start=100 End=600", w)
+	if !w.HasChanges || !w.Full {
+		t.Fatalf("ChangeWindow = %+v, want the whole history", w)
 	}
 	txs := silvertest.Transactions(t, conn, w)
 
@@ -441,8 +441,8 @@ func TestAPositionADumpStopsListingLeavesAtThatDump(t *testing.T) {
 		t.Errorf("Status latest snapshot = %d %v, want the dump that dropped p2", s.LatestSnapshotAt, err)
 	}
 	w, _ := conn.ChangeWindow(context.Background(), -1)
-	if w.End != 2000 {
-		t.Errorf("window end = %d, want the dump that dropped p2", w.End)
+	if !w.Full {
+		t.Errorf("window = %+v, want the whole history", w)
 	}
 	posByT := map[int64]map[string]canonical.PositionChange{}
 	for _, b := range collectBatches(t, conn) {

@@ -173,8 +173,8 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	}
 
 	w := silvertest.FullWindow(t, conn)
-	if w.Start != silvertest.Day(2026, 1, 12) || w.End != laterLoadUnix {
-		t.Errorf("window = [%d,%d]", w.Start, w.End)
+	if !w.Full {
+		t.Errorf("window = %+v, want the whole history", w)
 	}
 
 	// The watermark is the load clock, so a dump loaded past it re-triggers

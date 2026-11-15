@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":1700000000,"LatestSnapshotAt":1704067200,"LatestTransactionAt":-1,"ObservedSnapshotsThrough":1700000000,"ObservedTransactionsThrough":1700000000,"OldestSnapshotAt":1577836800,"OldestTransactionAt":-1}
 == window 1
-{"End":1704067200,"HasChanges":true,"NewChangeNumber":1700000000,"Spans":null,"Start":1577836800}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":1700000000,"Spans":null,"Start":-9223372036854775808}
 == accounts 7
 {"AccountCategory":null,"AccountExternalID":"later","AccountKind":"other","BaseCurrency":null,"DisplayName":"Later","FirstSeenAt":1704067200,"LastSeenAt":1704067200,"ManagementStyle":"self_directed","Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}
 {"AccountCategory":null,"AccountExternalID":"manual","AccountKind":"other","BaseCurrency":null,"DisplayName":"Manual","FirstSeenAt":1577836800,"LastSeenAt":1577836800,"ManagementStyle":"self_directed","Nickname":null,"Payload":null,"PortfolioExternalID":null,"RelationshipID":null,"SilverSourceID":"","TaxWrapper":"taxable_personal"}

@@ -1,7 +1,7 @@
 == status 1
 {"LatestChangeNumber":2000,"LatestSnapshotAt":2000,"LatestTransactionAt":1705057200,"ObservedSnapshotsThrough":2000,"ObservedTransactionsThrough":2000,"OldestSnapshotAt":1000,"OldestTransactionAt":1704099600}
 == window 1
-{"End":1705057200,"HasChanges":true,"NewChangeNumber":2000,"Spans":null,"Start":1000}
+{"End":9223372036854775807,"Full":true,"HasChanges":true,"NewChangeNumber":2000,"Spans":null,"Start":-9223372036854775808}
 == portfolios 2
 {"BaseCurrency":"EUR","DisplayName":"Euro Book","FirstSeenAt":1704099600,"LastSeenAt":1705017600,"Nickname":null,"Payload":{"note":"invented"},"PortfolioExternalID":"cu2","RelationshipID":null,"SilverSourceID":""}
 {"BaseCurrency":"USD","DisplayName":"First Book","FirstSeenAt":1704099600,"LastSeenAt":1705017600,"Nickname":null,"Payload":null,"PortfolioExternalID":"cu1","RelationshipID":null,"SilverSourceID":""}

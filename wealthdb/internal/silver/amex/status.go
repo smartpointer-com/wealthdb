@@ -9,13 +9,8 @@ import (
 
 // spanExtrema is the MIN/MAX of every date the projection touches: account
 // snapshots (accounts.snapshot_at), the transaction ledger (posted_at), and
-// the statement periods (period_end), which carry the historic balance marks.
-// It bounds the snapshot range in Status and the re-emit window in ChangeWindow
-// (gold's deleteWindow over [Start,End] must cover every record it re-applies).
-//
-// period_end belongs here and would be easy to omit: a card's balance history
-// comes ONLY from the statement periods, so a window derived from the ledger
-// alone would leave the oldest anchors outside the re-emit range.
+// the statement periods (period_end), which carry the historic balance
+// marks. It is the snapshot range Status reports.
 const spanExtrema = `
 SELECT MIN(t), MAX(t) FROM (
     SELECT snapshot_at AS t FROM accounts

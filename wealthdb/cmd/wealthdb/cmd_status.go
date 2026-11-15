@@ -222,9 +222,9 @@ func runStatusDetailed(ctx context.Context, db *sql.DB, cfg *config.Config, id s
 			if r.ChangeNumberBefore.Valid {
 				before = fmt.Sprintf("%d", r.ChangeNumberBefore.Int64)
 			}
-			fmt.Fprintf(stdout, "    %s  %s → %d  window=[%s..%s]  +%d snap +%d tx\n",
+			fmt.Fprintf(stdout, "    %s  %s → %d  window=[%s]  +%d snap +%d tx\n",
 				formatDateTime(r.LoadedAt/1_000_000_000), before, r.ChangeNumberAfter,
-				formatDate(r.WindowStart), formatDate(r.WindowEnd),
+				formatWindow(r.WindowStart, r.WindowEnd),
 				r.SnapshotsLoaded, r.TransactionsLoaded)
 		}
 	}

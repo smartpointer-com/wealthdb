@@ -115,8 +115,8 @@ func TestStatusAndChangeWindow(t *testing.T) {
 	if w.NewChangeNumber != loadUnix {
 		t.Errorf("NewChangeNumber = %d, want %d", w.NewChangeNumber, loadUnix)
 	}
-	if w.Start != firstClose || w.End != loadUnix {
-		t.Errorf("window = [%d,%d]", w.Start, w.End)
+	if !w.Full {
+		t.Errorf("window = %+v, want the whole history, [%d,%d] in it", w, firstClose, loadUnix)
 	}
 
 	// An idle reload (watermark already at the latest load) yields nothing.
@@ -146,8 +146,8 @@ func TestSpanReachesTheLastClosingStamp(t *testing.T) {
 	if want := day + silver.DayEndOffset; st.LatestSnapshotAt != want {
 		t.Errorf("LatestSnapshotAt = %d, want the day's last second %d", st.LatestSnapshotAt, want)
 	}
-	if w := silvertest.FullWindow(t, conn); w.End != day+silver.DayEndOffset {
-		t.Errorf("window end = %d, want %d", w.End, day+silver.DayEndOffset)
+	if w := silvertest.FullWindow(t, conn); !w.Full {
+		t.Errorf("window = %+v, want the whole history, %d in it", w, day+silver.DayEndOffset)
 	}
 }
 
@@ -327,8 +327,8 @@ func TestCurrentBalanceAtEachRunThatListedTheAccount(t *testing.T) {
 	r0, r1, r2, r3 := silvertest.SeedRuns(t, db, loadUnix, iban, quietIBAN, leftIBAN)
 	conn := openConn(t, path)
 	w := silvertest.FullWindow(t, conn)
-	if w.End != r3 {
-		t.Errorf("window end = %d, want the latest run %d", w.End, r3)
+	if !w.Full {
+		t.Errorf("window = %+v, want the whole history, the latest run %d in it", w, r3)
 	}
 	batch := silvertest.Merged(t, conn, w)
 	want := map[string]map[int64]string{

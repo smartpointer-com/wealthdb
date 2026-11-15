@@ -10,18 +10,13 @@ import (
 // spanExtrema is the MIN/MAX of every date the projection touches: the runs
 // (every balance and holding carries a run's start), both ledgers' posting
 // dates, the card statements' issue dates (their closing balances), and the
-// start of every ledger window a run read. It bounds the snapshot range in
-// Status and the re-emit window in ChangeWindow. Gold's deleteWindow over
-// [Start,End] must cover every record it re-applies. A trade books no later
-// than its posting date and no earlier than the oldest window start
-// (investmentDate), so the span covers it too.
+// start of every ledger window a run read. It is the snapshot range Status
+// reports.
 //
-// The window starts belong here and would be easy to omit. Silver deletes a
-// ledger's rows within each window a run read in full. It deletes the stale
-// pending rows wherever they are dated. So a row Plaid stopped listing can be
-// the oldest one. Every row silver ever held was stored by a run whose window
-// reached its date. With every window in the span, a reload never leaves
-// such a row standing in gold.
+// A load re-emits the whole history and deletes the source's rows whole
+// first (silver.FullSpan). Silver deletes a ledger's rows within each window
+// a run read in full, and the stale pending rows wherever they are dated, so
+// a row Plaid stopped listing leaves gold on the next load too.
 const spanExtrema = `
 SELECT MIN(t), MAX(t) FROM (
     SELECT snapshot_at AS t FROM dump_runs

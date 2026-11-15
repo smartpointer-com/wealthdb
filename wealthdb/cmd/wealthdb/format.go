@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -100,6 +101,16 @@ func strOrEmpty(p *string) string {
 // formatDate is an epoch second's UTC date.
 func formatDate(epoch int64) string {
 	return time.Unix(epoch, 0).UTC().Format("2006-01-02")
+}
+
+// formatWindow renders a load's window as its first and last day, or as
+// "all" for a load that re-emitted the source's whole history
+// (canonical.FullWindow).
+func formatWindow(start, end int64) string {
+	if start == math.MinInt64 && end == math.MaxInt64 {
+		return "all"
+	}
+	return formatDate(start) + ".." + formatDate(end)
 }
 
 // formatEpochDay renders a day number (days since the epoch) as a date.
