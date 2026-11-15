@@ -129,10 +129,11 @@ func (r *webReader) appendHistoricalSecurities(
 
 	// The cost value is a column of ubs-web migration 0013; an older
 	// silver states none.
-	hasCostBasis, err := silver.HasColumn(ctx, r.db, "historical_position_snapshots", "cost_basis")
+	s, err := r.schema(ctx)
 	if err != nil {
 		return fmt.Errorf("appendHistoricalSecurities: %w", err)
 	}
+	hasCostBasis := s.historicalCost
 	costBasisCol := `NULL`
 	if hasCostBasis {
 		costBasisCol = `cost_basis`
@@ -144,17 +145,12 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
   FROM historical_position_snapshots
  WHERE instrument_isin IS NOT NULL
    AND as_of_date BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHistoricalSecurities: %w", err)
-	}
-	defer rows.Close()
 
 	// One PortfolioChange and one AccountChange per (snapshot,
 	// portfolio), not one per holding.
 	emitted := map[snapshotKey]bool{}
 
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendHistoricalSecurities", q, func(rows *sql.Rows) error {
 		var (
 			asOf                                     int64
 			portID, isin, ccy, mvCcy                 string
@@ -172,14 +168,14 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		// on the gold PositionChange PK. Portfolios with no PSN
 		// counterpart (cutoff==0) pass through.
 		if cut := portfolioCutoff[portID]; cut > 0 && asOf >= cut {
-			continue
+			return nil
 		}
 		// Drop the year-end precious-metals detail line when its
 		// synthetic overview sibling is present for the same
 		// (as_of, portfolio) — see the function's opening comment.
 		if looksLikeISIN(isin) && pmOverview[snapshotKey{asOf, portID}] &&
 			isPreciousMetalsLine(descr.String, payload) {
-			continue
+			return nil
 		}
 		batch := getBatch(asOf)
 
@@ -286,8 +282,11 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		}
 		pos.SetBookValue(bookValue, basis)
 		batch.Positions = append(batch.Positions, pos)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // statementSecuritiesAccount names the account a statement's securities
@@ -321,21 +320,19 @@ SELECT DISTINCT as_of_date, portfolio_external_id
   FROM historical_position_snapshots
  WHERE instrument_isin LIKE 'PM-%'
    AND as_of_date BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("preciousMetalsOverviewKeys: %w", err)
-	}
-	defer rows.Close()
 	set := map[snapshotKey]bool{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "preciousMetalsOverviewKeys", q, func(rows *sql.Rows) error {
 		var asOf int64
 		var port string
 		if err := rows.Scan(&asOf, &port); err != nil {
-			return nil, err
+			return err
 		}
 		set[snapshotKey{asOf, port}] = true
+		return nil
+	}, w.Start, w.End); err != nil {
+		return nil, err
 	}
-	return set, rows.Err()
+	return set, nil
 }
 
 // isPreciousMetalsLine reports whether a historical_position_snapshots
@@ -380,17 +377,12 @@ SELECT period_end, period_start, account_external_id, currency_iso,
   FROM historical_cash_balances
  WHERE period_end BETWEEN ? AND ?
     OR period_start BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHistoricalCashBalances: %w", err)
-	}
-	defer rows.Close()
 
 	// One AccountChange per (snapshot, account), however many
 	// balances the snapshot carries.
 	accountEmitted := map[snapshotKey]bool{}
 
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendHistoricalCashBalances", q, func(rows *sql.Rows) error {
 		var (
 			periodEnd, periodStart int64
 			acctID, ccy            string
@@ -416,7 +408,7 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 			{periodEnd, close, canonical.BalanceKindClosing},
 		} {
 			if !b.balance.Valid || b.at < w.Start || b.at > w.End || (cut > 0 && b.at >= cut) {
-				continue
+				return nil
 			}
 			batch := getBatch(b.at)
 			if key := (snapshotKey{b.at, acctID}); !accountEmitted[key] {
@@ -439,8 +431,11 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 				Payload:           json.RawMessage(payload),
 			})
 		}
+		return nil
+	}, w.Start, w.End, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendHistoricalMortgages attaches each PDF-derived mortgage
@@ -479,12 +474,7 @@ SELECT as_of_date, account_external_id, currency_iso,
        outstanding_balance, product_name, collateral_description, payload
   FROM historical_mortgages
  WHERE as_of_date BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHistoricalMortgages: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendHistoricalMortgages", q, func(rows *sql.Rows) error {
 		var (
 			asOf                     int64
 			extID, currency, payload string
@@ -501,7 +491,7 @@ SELECT as_of_date, account_external_id, currency_iso,
 		// future-dated next-quarter Maturity Notice).
 		batch, ok := byTime[asOf]
 		if !ok || (len(batch.Positions) == 0 && len(batch.CashBalances) == 0) {
-			continue
+			return nil
 		}
 
 		display := sql.NullString{
@@ -542,8 +532,11 @@ SELECT as_of_date, account_external_id, currency_iso,
 			MarketValue:          silver.DecimalPtrFromNullFloat(outstanding),
 			Payload:              json.RawMessage(payload),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // historicalRange returns the span of dates the historical tables cover, or
@@ -555,12 +548,13 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 		`SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_position_snapshots`,
 		`SELECT MIN(period_start), MAX(period_end) FROM historical_cash_balances`,
 	}
+	// The change window's range probes the file as it is at each call.
 	for _, table := range []string{"historical_position_snapshots", "historical_cash_balances"} {
-		if ok, err := r.hasTable(ctx, table); err != nil || !ok {
+		if ok, err := silver.HasTables(ctx, r.db, table); err != nil || !ok {
 			return -1, -1, err
 		}
 	}
-	ok, err := r.hasTable(ctx, "historical_mortgages")
+	ok, err := silver.HasTables(ctx, r.db, "historical_mortgages")
 	if err != nil {
 		return -1, -1, err
 	}

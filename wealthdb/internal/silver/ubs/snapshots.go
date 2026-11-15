@@ -105,12 +105,7 @@ SELECT snapshot_at, relationship_id, account_external_id,
        portfolio_external_id, payload
   FROM cash_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendCashAccounts: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendCashAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap        int64
 			relID       string
@@ -123,7 +118,7 @@ SELECT snapshot_at, relationship_id, account_external_id,
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		var p cashAccountPayload
 		_ = json.Unmarshal([]byte(payload), &p) // best-effort
@@ -148,8 +143,11 @@ SELECT snapshot_at, relationship_id, account_external_id,
 			change.TaxWrapper = &w
 		}
 		batch.Accounts = append(batch.Accounts, change)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 type safekeepingPayload struct {
@@ -179,13 +177,8 @@ SELECT snapshot_at, relationship_id, account_external_id,
        portfolio_external_id, payload
   FROM safekeeping_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("appendSafekeepingAccounts: %w", err)
-	}
-	defer rows.Close()
 	mandatePortfolios := map[int64]map[string]bool{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendSafekeepingAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap         int64
 			relID, extID string
@@ -193,11 +186,11 @@ SELECT snapshot_at, relationship_id, account_external_id,
 			payload      string
 		)
 		if err := rows.Scan(&snap, &relID, &extID, &portfolioID, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		var p safekeepingPayload
 		_ = json.Unmarshal([]byte(payload), &p)
@@ -232,8 +225,11 @@ SELECT snapshot_at, relationship_id, account_external_id,
 			}
 			mandatePortfolios[snap][portfolioID.String] = true
 		}
+		return nil
+	}, w.Start, w.End); err != nil {
+		return nil, err
 	}
-	return mandatePortfolios, rows.Err()
+	return mandatePortfolios, nil
 }
 
 func (r *psnReader) appendPortfolios(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
@@ -245,12 +241,7 @@ SELECT snapshot_at, relationship_id, portfolio_external_id,
        base_currency, payload
   FROM portfolios
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendPortfolios: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendPortfolios", q, func(rows *sql.Rows) error {
 		var (
 			snap         int64
 			relID, extID string
@@ -262,7 +253,7 @@ SELECT snapshot_at, relationship_id, portfolio_external_id,
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
 			PortfolioExternalID: extID,
@@ -272,8 +263,11 @@ SELECT snapshot_at, relationship_id, portfolio_external_id,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // ---- instruments + holdings ----------------------------------------------
@@ -334,21 +328,16 @@ func (r *psnReader) appendInstruments(ctx context.Context, w canonical.Window, b
 SELECT snapshot_at, isin, payload
   FROM instruments
  ORDER BY snapshot_at ASC`
-	rows, err := r.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("appendInstruments: %w", err)
-	}
-	defer rows.Close()
 
 	lookup := make(map[string]instrumentMeta)
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendInstruments", q, func(rows *sql.Rows) error {
 		var (
 			snap    int64
 			isin    string
 			payload string
 		)
 		if err := rows.Scan(&snap, &isin, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		var p instrumentPayload
 		_ = json.Unmarshal([]byte(payload), &p)
@@ -363,11 +352,11 @@ SELECT snapshot_at, isin, payload
 		// window. Gold's upsert guard would no-op the older rows
 		// anyway, but skipping them here avoids the round-trip.
 		if snap < w.Start || snap > w.End {
-			continue
+			return nil
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		batch.Instruments = append(batch.Instruments, canonical.InstrumentChange{
 			InstrumentExternalID: isin,
@@ -380,8 +369,11 @@ SELECT snapshot_at, isin, payload
 			LastSeenAt:           snap,
 			Payload:              json.RawMessage(payload),
 		})
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return lookup, rows.Err()
+	return lookup, nil
 }
 
 // holdingsPayloadShape mirrors the relevant slice of the MT535
@@ -409,10 +401,11 @@ type holdingsPayloadShape struct {
 // safekeeping ID (e.g. BBBBxxxxxxxxxxS1); no cross-table translation
 // is needed.
 func (r *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch, instr map[string]instrumentMeta) error {
-	hasCost, err := silver.HasColumn(ctx, r.db, "holdings", "cost_basis")
+	s, err := r.schema(ctx)
 	if err != nil {
 		return fmt.Errorf("appendHoldings: %w", err)
 	}
+	hasCost := s.holdingCost
 	costCols := `NULL, NULL, NULL, NULL, NULL`
 	if hasCost {
 		costCols = `cost_basis, cost_currency, acquisition_fx_rate, acquisition_fx_from, acquisition_fx_to`
@@ -421,13 +414,8 @@ func (r *psnReader) appendHoldings(ctx context.Context, w canonical.Window, byTi
 SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
   FROM holdings
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHoldings: %w", err)
-	}
-	defer rows.Close()
 
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendHoldings", q, func(rows *sql.Rows) error {
 		var (
 			snap          int64
 			safekeepingID string
@@ -441,7 +429,7 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 
 		// Resolve instrument metadata via the latest-known lookup
@@ -519,8 +507,11 @@ SELECT snapshot_at, safekeeping_external_id, isin, payload, ` + costCols + `
 		}
 		pos.SetBookValue(book, basis)
 		batch.Positions = append(batch.Positions, pos)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // ---- cash_balances / fx_rates / forwards ---------------------------------
@@ -538,12 +529,7 @@ func (r *psnReader) appendCashBalances(ctx context.Context, w canonical.Window, 
 SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
   FROM cash_balances
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendCashBalances: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendCashBalances", q, func(rows *sql.Rows) error {
 		var (
 			snap                            int64
 			extID, balanceKind, currencyISO string
@@ -554,7 +540,7 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 
 		var p cashBalancePayload
@@ -570,7 +556,7 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 
 		bk := canonicalBalanceKind(balanceKind)
 		if !bk.Valid() {
-			continue
+			return nil
 		}
 		batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
 			SnapshotAt:        snap,
@@ -580,8 +566,11 @@ SELECT snapshot_at, account_external_id, balance_kind, currency_iso, payload
 			Amount:            amount,
 			Payload:           json.RawMessage(payload),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendBookBalances emits the book balance the account master-data
@@ -630,12 +619,7 @@ func (r *psnReader) appendBookBalances(ctx context.Context, w canonical.Window, 
 SELECT snapshot_at, account_external_id, payload
   FROM cash_accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendBookBalances: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendBookBalances", q, func(rows *sql.Rows) error {
 		var (
 			snap           int64
 			extID, payload string
@@ -645,17 +629,17 @@ SELECT snapshot_at, account_external_id, payload
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		var p bookBalancePayload
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return fmt.Errorf("cash_accounts payload (snap=%d): %w", snap, err)
 		}
 		if p.BookBalance == nil || p.Currency == "" {
-			continue
+			return nil
 		}
 		if _, spoken := stated[key{snap, extID, p.Currency}]; spoken {
-			continue
+			return nil
 		}
 		batch.CashBalances = append(batch.CashBalances, canonical.CashBalanceChange{
 			SnapshotAt:        snap,
@@ -665,8 +649,11 @@ SELECT snapshot_at, account_external_id, payload
 			Amount:            *p.BookBalance,
 			Payload:           json.RawMessage(payload),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // bookBalancePayload is the balance half of the account master-data
@@ -737,12 +724,7 @@ func (r *psnReader) appendFxRates(ctx context.Context, w canonical.Window, byTim
 SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
   FROM fx_rates
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendFxRates: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendFxRates", q, func(rows *sql.Rows) error {
 		var (
 			snap                       int64
 			baseCcy, quoteCcy, payload string
@@ -752,7 +734,7 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		var p fxRatePayload
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
@@ -763,7 +745,7 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
 			return fmt.Errorf("fx_rates payload (snap=%d): %w", snap, err)
 		}
 		if !ok {
-			continue
+			return nil
 		}
 		batch.FxRates = append(batch.FxRates, canonical.FxRateChange{
 			SnapshotAt:    snap,
@@ -772,8 +754,11 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, payload
 			MidRate:       period.MiddleRate,
 			Payload:       json.RawMessage(payload),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendForwardContracts projects the FX-forward contracts as
@@ -791,15 +776,10 @@ func (r *psnReader) appendForwardContracts(ctx context.Context, w canonical.Wind
 SELECT snapshot_at, contract_external_id, payload
   FROM forward_contracts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendForwardContracts: %w", err)
-	}
-	defer rows.Close()
 	// The (snapshot, portfolio) overlay accounts already emitted, so
 	// one AccountChange serves every forward.
 	overlayEmitted := map[snapshotKey]bool{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendForwardContracts", q, func(rows *sql.Rows) error {
 		var (
 			snap       int64
 			contractID string
@@ -810,14 +790,14 @@ SELECT snapshot_at, contract_external_id, payload
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		var p forwardPayload
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
 			return fmt.Errorf("forward_contracts payload (snap=%d): %w", snap, err)
 		}
 		if p.PrtflId == "" || p.matured(snap) {
-			continue
+			return nil
 		}
 		ccy := p.MrktValueCcyIsoCd
 		if ccy == "" {
@@ -846,8 +826,11 @@ SELECT snapshot_at, contract_external_id, payload
 			batch.FundLines = append(batch.FundLines, line)
 		}
 		batch.Positions = append(batch.Positions, pos)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // overlayAccountID returns the synthetic account_external_id that

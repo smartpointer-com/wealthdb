@@ -33,7 +33,7 @@ func (*Adapter) Kind() string { return kindName }
 // Connection orchestrates a merged stream where web data covers
 // pre-PSN-start dates and PSN covers from each banking
 // relationship's go-live forward. See merge.go.
-func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	c := &Connection{relationships: spec.Relationships, source: spec.ID}
 
 	// Single-path form: a PSN silver.
@@ -43,6 +43,10 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 			return nil, err
 		}
 		c.psn = &psnReader{db: db, source: spec.ID}
+		if _, err := c.psn.schema(ctx); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
 		return c, nil
 	}
 
@@ -65,6 +69,18 @@ func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection
 	}
 	if c.psn == nil && c.web == nil {
 		return nil, fmt.Errorf("ubs: at least one of subsources[ubs-web], subsources[ubs-psn] must be configured")
+	}
+	if c.psn != nil {
+		if _, err := c.psn.schema(ctx); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+	}
+	if c.web != nil {
+		if _, err := c.web.schema(ctx); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
 	}
 	return c, nil
 }

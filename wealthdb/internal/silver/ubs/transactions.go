@@ -2,6 +2,7 @@ package ubs
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -64,31 +65,26 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, payload
   FROM events
  WHERE timestamp BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("ubs Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
 	mirrored, grossed := 0, 0
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "ubs Transactions", q, func(rows *sql.Rows) error {
 		var (
 			eventID, extID, kind, payload string
 			currencyISO                   *string
 			occurredAt                    int64
 		)
 		if err := rows.Scan(&eventID, &occurredAt, &extID, &kind, &currencyISO, &payload); err != nil {
-			return nil, fmt.Errorf("ubs Transactions scan: %w", err)
+			return fmt.Errorf("ubs Transactions scan: %w", err)
 		}
 
 		if settled.covers(kind, extID, currencyISO, occurredAt, payload) {
-			continue
+			return nil
 		}
 
 		tx, err := buildTransaction(eventID, occurredAt, extID, kind, currencyISO, payload, ibans)
 		if err != nil {
-			return nil, fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
+			return fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
 		}
 		// A dividend line names its security and, where its confirmation
 		// states the gross, reads the gross with the tax withheld beside it.
@@ -103,15 +99,15 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 			// The payload decodes: buildTransaction read it above.
 			var p cashMovementPayload
 			if err := json.Unmarshal([]byte(payload), &p); err != nil {
-				return nil, fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
+				return fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
 			}
 			var reversed bool
 			if tax, taxed, reversed, err = dividends.reverse(&tx); err != nil {
-				return nil, fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
+				return fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
 			}
 			if !reversed && tx.Kind == canonical.TxKindDividend {
 				if tax, taxed, err = dividends.settle(&tx, p); err != nil {
-					return nil, fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
+					return fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
 				}
 			}
 		}
@@ -144,8 +140,8 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 			out.Transactions = append(out.Transactions, tax)
 			grossed++
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	if grossed > 0 {
@@ -291,23 +287,18 @@ func (r *psnReader) buildSettlementFold(ctx context.Context, ibans map[string]st
 	if r == nil || r.db == nil {
 		return out, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT currency_iso, payload FROM events WHERE kind = 'trade_confirmation'`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs buildSettlementFold: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "ubs buildSettlementFold", `
+SELECT currency_iso, payload FROM events WHERE kind = 'trade_confirmation'`, func(rows *sql.Rows) error {
 		var (
 			currencyISO *string
 			payload     string
 		)
 		if err := rows.Scan(&currencyISO, &payload); err != nil {
-			return nil, fmt.Errorf("ubs buildSettlementFold scan: %w", err)
+			return fmt.Errorf("ubs buildSettlementFold scan: %w", err)
 		}
 		var p tradeConfirmationPayload
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
-			return nil, fmt.Errorf("ubs buildSettlementFold payload: %w", err)
+			return fmt.Errorf("ubs buildSettlementFold payload: %w", err)
 		}
 		currency := p.NetCurrency
 		if currency == "" && currencyISO != nil {
@@ -319,8 +310,11 @@ SELECT currency_iso, payload FROM events WHERE kind = 'trade_confirmation'`)
 		if ok {
 			out.unpaired[key]++
 		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // covers reports whether an event is the cash leg of a trade a
@@ -366,23 +360,21 @@ func (r *psnReader) cashAccountIBANs(ctx context.Context) (map[string]string, er
 	if r == nil || r.db == nil {
 		return out, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, r.db, "ubs cashAccountIBANs", `
 SELECT DISTINCT json_extract(payload, '$.AcctId'), account_external_id
-  FROM cash_accounts`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs cashAccountIBANs: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+  FROM cash_accounts`, func(rows *sql.Rows) error {
 		var acctID, iban *string
 		if err := rows.Scan(&acctID, &iban); err != nil {
-			return nil, fmt.Errorf("ubs cashAccountIBANs scan: %w", err)
+			return fmt.Errorf("ubs cashAccountIBANs scan: %w", err)
 		}
 		if acctID != nil && iban != nil && *acctID != "" && *iban != "" {
 			out[*acctID] = *iban
 		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // isSellSide reports whether a trade confirmation's side is the one

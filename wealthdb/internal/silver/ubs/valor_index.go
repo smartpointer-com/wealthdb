@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 	"strings"
 )
 
@@ -112,12 +113,7 @@ func (r *psnReader) addInstrumentValors(ctx context.Context, x *valorIndex) erro
 	if r == nil || r.db == nil {
 		return nil
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT isin, payload FROM instruments`)
-	if err != nil {
-		return fmt.Errorf("psn addInstrumentValors: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "psn addInstrumentValors", `SELECT isin, payload FROM instruments`, func(rows *sql.Rows) error {
 		var isin, payload string
 		if err := rows.Scan(&isin, &payload); err != nil {
 			return fmt.Errorf("psn addInstrumentValors scan: %w", err)
@@ -130,8 +126,11 @@ func (r *psnReader) addInstrumentValors(ctx context.Context, x *valorIndex) erro
 		_ = json.Unmarshal([]byte(payload), &p)
 		x.add(normalizeValor(p.InstrIdtfr.Valor), isin)
 		x.add(valorFromSwissISIN(isin), isin)
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // addPortfolioValors reads the portfolio transaction list, which names
@@ -144,21 +143,19 @@ func (r *webReader) addPortfolioValors(ctx context.Context, x *valorIndex) error
 	if err != nil || !ok {
 		return err
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, r.db, "ubs-web addPortfolioValors", `
 SELECT valor, isin FROM portfolio_transactions
- WHERE valor IS NOT NULL AND isin IS NOT NULL`)
-	if err != nil {
-		return fmt.Errorf("ubs-web addPortfolioValors: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ WHERE valor IS NOT NULL AND isin IS NOT NULL`, func(rows *sql.Rows) error {
 		var valor, isin string
 		if err := rows.Scan(&valor, &isin); err != nil {
 			return fmt.Errorf("ubs-web addPortfolioValors scan: %w", err)
 		}
 		x.add(normalizeValor(valor), strings.TrimSpace(isin))
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // addStatementValors reads the statements of assets, which print each
@@ -171,15 +168,10 @@ func (r *webReader) addStatementValors(ctx context.Context, x *valorIndex) error
 	if err != nil || !ok {
 		return err
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, r.db, "ubs-web addStatementValors", `
 SELECT DISTINCT json_extract(payload, '$.valor'), instrument_isin
   FROM historical_position_snapshots
- WHERE instrument_isin IS NOT NULL`)
-	if err != nil {
-		return fmt.Errorf("ubs-web addStatementValors: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ WHERE instrument_isin IS NOT NULL`, func(rows *sql.Rows) error {
 		var valor sql.NullString
 		var isin string
 		if err := rows.Scan(&valor, &isin); err != nil {
@@ -188,8 +180,11 @@ SELECT DISTINCT json_extract(payload, '$.valor'), instrument_isin
 		if isin = strings.TrimSpace(isin); looksLikeISIN(isin) {
 			x.add(normalizeValor(valor.String), isin)
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // valorFromSwissISIN recovers the valor a Swiss ISIN is built from: the

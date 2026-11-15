@@ -518,15 +518,10 @@ func (r *webReader) addCustodyTickers(ctx context.Context, d *dividendSecurities
 	if err != nil || !ok {
 		return err
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, r.db, "ubs-web addCustodyTickers", `
 SELECT DISTINCT portfolio_external_id, account_external_id, instrument_isin,
        description, currency_iso, market_value_currency
-  FROM historical_position_snapshots`)
-	if err != nil {
-		return fmt.Errorf("ubs-web addCustodyTickers: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+  FROM historical_position_snapshots`, func(rows *sql.Rows) error {
 		var portfolio, account, isin, description, ccy, valuedIn sql.NullString
 		if err := rows.Scan(&portfolio, &account, &isin, &description, &ccy, &valuedIn); err != nil {
 			return fmt.Errorf("ubs-web addCustodyTickers scan: %w", err)
@@ -538,13 +533,16 @@ SELECT DISTINCT portfolio_external_id, account_external_id, instrument_isin,
 		}
 		if !isin.Valid {
 			d.addPortfolio(account.String, portfolio.String)
-			continue
+			return nil
 		}
 		if ticker := closingTicker(description.String); ticker != "" && looksLikeISIN(isin.String) {
 			d.addTicker(portfolio.String, ticker, isin.String)
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // dividendConfirmations maps an MT940 dividend line's event id onto the

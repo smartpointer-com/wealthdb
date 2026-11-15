@@ -45,25 +45,17 @@ func CloseDB(db **sql.DB) error {
 	return err
 }
 
-// HasColumn reports whether `table` has a column named `column`,
-// via PRAGMA table_info. Adapters use it to read newer
-// promoted columns from a silver DB when present without breaking
-// on older silvers that predate the column. SQLite-only.
-func HasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
-	return HasColumns(ctx, db, table, column)
-}
-
-// HasColumns reports whether `table` has every named column, for a
-// migration that adds several at once. The names are distinct.
-// SQLite-only.
+// HasColumns reports whether `table` has every named column, via PRAGMA
+// table_info: the newer columns a silver migration adds, which an older
+// silver lacks (ProbeOptional). The names are distinct. SQLite-only.
 func HasColumns(ctx context.Context, db *sql.DB, table string, columns ...string) (bool, error) {
 	return hasAll(ctx, db, "HasColumns "+table, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE TRUE`,
 		[]any{table}, columns)
 }
 
-// HasTables reports whether a silver DB has every named table.
-// Adapters use it to read the tables a newer silver migration adds
-// without breaking on older silvers that predate them. SQLite-only.
+// HasTables reports whether a silver DB has every named table: the
+// tables a newer silver migration adds, which an older silver lacks
+// (ProbeOptional). SQLite-only.
 func HasTables(ctx context.Context, db *sql.DB, names ...string) (bool, error) {
 	return hasAll(ctx, db, "HasTables", `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'`, nil, names)
 }

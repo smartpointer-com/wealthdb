@@ -119,21 +119,17 @@ func newRealizedAccounts(ctx context.Context, psn *psnReader) (realizedAccounts,
 	if psn == nil || psn.db == nil {
 		return out, nil
 	}
-	rows, err := psn.db.QueryContext(ctx, `SELECT DISTINCT account_external_id FROM safekeeping_accounts`)
-	if err != nil {
-		return out, fmt.Errorf("ubs psn safekeeping accounts: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, psn.db, "ubs psn safekeeping accounts", `SELECT DISTINCT account_external_id FROM safekeeping_accounts`, func(rows *sql.Rows) error {
 		var account string
 		if err := rows.Scan(&account); err != nil {
-			return out, fmt.Errorf("ubs psn safekeeping accounts scan: %w", err)
+			return fmt.Errorf("ubs psn safekeeping accounts scan: %w", err)
 		}
 		out.known[account] = true
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return out, err
 	}
+	var err error
 	out.byPortfolio, err = psn.safekeepingByPortfolio(ctx)
 	return out, err
 }
@@ -292,7 +288,10 @@ func (r *webReader) statementSales(ctx context.Context, accounts realizedAccount
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	var sales, reversals []statementTrade
+	nth := map[string]int{} // statement, figures and text → rows of them so far
+	skipped := 0
+	if err := silver.ScanRows(ctx, r.db, "ubs-web statement sales", `
 SELECT s.source_doc_token, s.seq, s.as_of_date, s.portfolio_external_id,
        COALESCE(s.custody_account, ''), COALESCE(s.reporting_currency_iso, ''),
        s.trade_date, s.value_date, s.booking_text, s.quantity,
@@ -308,15 +307,7 @@ SELECT s.source_doc_token, s.seq, s.as_of_date, s.portfolio_external_id,
  WHERE s.quantity <> 0
    AND s.transaction_price IS NOT NULL
    AND s.settlement_amount IS NOT NULL
- ORDER BY s.as_of_date, s.source_doc_token, s.seq`)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("ubs-web statement sales: %w", err)
-	}
-	defer rows.Close()
-	var sales, reversals []statementTrade
-	nth := map[string]int{} // statement, figures and text → rows of them so far
-	skipped := 0
-	for rows.Next() {
+ ORDER BY s.as_of_date, s.source_doc_token, s.seq`, func(rows *sql.Rows) error {
 		var t statementTrade
 		if err := rows.Scan(&t.token, &t.seq, &t.asOf, &t.portfolio,
 			&t.custody, &t.reportingCcy,
@@ -327,7 +318,7 @@ SELECT s.source_doc_token, s.seq, s.as_of_date, s.portfolio_external_id,
 			&t.fxGainPct, &t.realizedPct, &t.value,
 			&t.settlementAmount, &t.settlementCcy,
 			&t.settlementNo, &t.orderNo, &t.document); err != nil {
-			return nil, nil, nil, fmt.Errorf("ubs-web statement sales scan: %w", err)
+			return fmt.Errorf("ubs-web statement sales scan: %w", err)
 		}
 		t.account = accounts.resolve(t.custody, t.portfolio)
 		t.isin = strings.TrimSpace(t.isin)
@@ -355,8 +346,8 @@ SELECT s.source_doc_token, s.seq, s.as_of_date, s.portfolio_external_id,
 		default:
 			sales = append(sales, t)
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, nil, nil, err
 	}
 	if skipped > 0 {
@@ -412,32 +403,30 @@ func statementBookings(rows []statementTrade) []booking {
 // transaction lists cover. A list that prints no period of its own
 // covers its first booking to the statement date.
 func (r *webReader) listPeriods(ctx context.Context, accounts realizedAccounts) (map[string][]listPeriod, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	out := map[string][]listPeriod{}
+	if err := silver.ScanRows(ctx, r.db, "ubs-web statement list periods", `
 SELECT COALESCE(custody_account, ''), portfolio_external_id,
        COALESCE(MIN(period_start), MIN(trade_date), MIN(value_date)),
        COALESCE(MAX(period_end), MAX(as_of_date))
   FROM statement_trades
- GROUP BY source_doc_token, custody_account, portfolio_external_id`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs-web statement list periods: %w", err)
-	}
-	defer rows.Close()
-	out := map[string][]listPeriod{}
-	for rows.Next() {
+ GROUP BY source_doc_token, custody_account, portfolio_external_id`, func(rows *sql.Rows) error {
 		var (
 			custody, portfolio string
 			start, end         sql.NullInt64
 		)
 		if err := rows.Scan(&custody, &portfolio, &start, &end); err != nil {
-			return nil, fmt.Errorf("ubs-web statement list periods scan: %w", err)
+			return fmt.Errorf("ubs-web statement list periods scan: %w", err)
 		}
 		if !start.Valid || !end.Valid {
-			continue
+			return nil
 		}
 		account := accounts.resolve(custody, portfolio)
 		out[account] = append(out[account], listPeriod{start.Int64, end.Int64})
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // payload carries what the list prints beside the realized lot's own
@@ -510,26 +499,21 @@ func (r *webReader) exportSales(ctx context.Context, accounts realizedAccounts, 
 	if err != nil || !ok {
 		return nil, nil, err
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	var sales, reversals []exportTrade
+	skipped := 0
+	if err := silver.ScanRows(ctx, r.db, "ubs-web export sales", `
 SELECT transaction_external_id, safekeeping_account_external_id, portfolio_external_id,
        booking_type, trade_date, value_date, COALESCE(security_name, ''), COALESCE(valor, ''),
        COALESCE(isin, ''), quantity, COALESCE(valuation_currency_iso, ''),
        trans_value, realized_pl, payload
   FROM portfolio_transactions
  WHERE quantity <> 0
- ORDER BY value_date, transaction_external_id, safekeeping_account_external_id`)
-	if err != nil {
-		return nil, nil, fmt.Errorf("ubs-web export sales: %w", err)
-	}
-	defer rows.Close()
-	var sales, reversals []exportTrade
-	skipped := 0
-	for rows.Next() {
+ ORDER BY value_date, transaction_external_id, safekeeping_account_external_id`, func(rows *sql.Rows) error {
 		var t exportTrade
 		if err := rows.Scan(&t.txID, &t.custody, &t.portfolio, &t.bookingType,
 			&t.tradeDate, &t.valueDate, &t.name, &t.valor, &t.isin, &t.quantity,
 			&t.currency, &t.value, &t.pl, &t.payload); err != nil {
-			return nil, nil, fmt.Errorf("ubs-web export sales scan: %w", err)
+			return fmt.Errorf("ubs-web export sales scan: %w", err)
 		}
 		t.isin = strings.TrimSpace(t.isin)
 		t.currency = strings.ToUpper(strings.TrimSpace(t.currency))
@@ -549,8 +533,8 @@ SELECT transaction_external_id, safekeeping_account_external_id, portfolio_exter
 		default:
 			sales = append(sales, t)
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
 	if skipped > 0 {

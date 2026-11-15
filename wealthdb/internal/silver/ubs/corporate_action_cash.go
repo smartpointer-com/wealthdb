@@ -2,6 +2,7 @@ package ubs
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // A corporate action that pays cash — a dividend, a coupon — reaches
@@ -508,31 +510,26 @@ func (r *psnReader) cashConfirmations(ctx context.Context) ([]cashConfirmation, 
 	if r.confirmations != nil {
 		return r.confirmations, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	var all []caRow
+	if err := silver.ScanRows(ctx, r.db, "ubs cashConfirmations", `
 SELECT event_external_id, timestamp, payload
   FROM events
  WHERE kind = 'corporate_action_confirmation'
- ORDER BY event_external_id`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs cashConfirmations: %w", err)
-	}
-	defer rows.Close()
-	var all []caRow
-	for rows.Next() {
+ ORDER BY event_external_id`, func(rows *sql.Rows) error {
 		var (
 			row     caRow
 			payload string
 		)
 		if err := rows.Scan(&row.eventID, &row.at, &payload); err != nil {
-			return nil, fmt.Errorf("ubs cashConfirmations scan: %w", err)
+			return fmt.Errorf("ubs cashConfirmations scan: %w", err)
 		}
 		if err := json.Unmarshal([]byte(payload), &row.f); err != nil {
-			continue
+			return nil
 		}
 		row.m = parseCorporateAction(row.f)
 		all = append(all, row)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	gone := withdrawals(all)

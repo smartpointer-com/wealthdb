@@ -2,12 +2,13 @@ package ubs
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // Web-side overlay helpers. The orchestrator pre-fetches per-key
@@ -40,21 +41,19 @@ SELECT snapshot_at, instrument_isin, payload
   FROM positions
  WHERE instrument_isin IS NOT NULL
    AND snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, wStart, wEnd)
-	if err != nil {
-		return nil, fmt.Errorf("web positionPayloadByKey: %w", err)
-	}
-	defer rows.Close()
 	out := make(map[webPosKey]string)
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "web positionPayloadByKey", q, func(rows *sql.Rows) error {
 		var snap int64
 		var isin, payload string
 		if err := rows.Scan(&snap, &isin, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		out[webPosKey{utcDate: utcDay(snap), isin: isin}] = payload
+		return nil
+	}, wStart, wEnd); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // webCashKey is the (UTC date, account, currency) key for web's
@@ -78,21 +77,19 @@ SELECT snapshot_at, account_external_id, currency_iso, payload
   FROM positions
  WHERE instrument_isin IS NULL
    AND snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, wStart, wEnd)
-	if err != nil {
-		return nil, fmt.Errorf("web cashPayloadByKey: %w", err)
-	}
-	defer rows.Close()
 	out := make(map[webCashKey]string)
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "web cashPayloadByKey", q, func(rows *sql.Rows) error {
 		var snap int64
 		var acct, ccy, payload string
 		if err := rows.Scan(&snap, &acct, &ccy, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		out[webCashKey{utcDate: utcDay(snap), account: acct, currency: ccy}] = payload
+		return nil
+	}, wStart, wEnd); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // webTxTextKey identifies one booking across the era seam: the bank's

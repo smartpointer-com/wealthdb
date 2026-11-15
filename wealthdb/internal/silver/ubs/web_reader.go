@@ -33,6 +33,10 @@ type webReader struct {
 	// its cash coverage: the cash pass, the portfolio pass and the
 	// realized lots each resolve against it.
 	valors map[string]string
+
+	// parts is the file's optional schema, once probed is set (schema).
+	parts  webSchema
+	probed bool
 }
 
 func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
@@ -89,10 +93,11 @@ func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
 // first gapless stretch of the windows. A silver from before the window
 // columns counts every run as reading both through its own time.
 func (r *webReader) observed(ctx context.Context, out *canonical.Status) error {
-	windows, err := silver.HasColumn(ctx, r.db, "dump_runs", "window_since")
+	s, err := r.schema(ctx)
 	if err != nil {
 		return err
 	}
+	windows := s.windows
 	if err := silver.ObserveByRuns(ctx, r.db, "ubs-web", `SELECT MAX(snapshot_at) FROM dump_runs`, out); err != nil {
 		return err
 	}
@@ -252,12 +257,7 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
  WHERE instrument_isin IS NOT NULL
    AND snapshot_at BETWEEN ? AND ?
  GROUP BY snapshot_at, instrument_isin`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendWebInstruments: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendWebInstruments", q, func(rows *sql.Rows) error {
 		var (
 			snap        int64
 			isin        string
@@ -269,7 +269,7 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		acNew := canonical.AssetClassOther
 		vehicle := canonical.VehicleOther
@@ -299,8 +299,11 @@ SELECT snapshot_at, instrument_isin, currency_iso, description
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // transactionsBeforePSNStart emits web transactions strictly
@@ -762,15 +765,10 @@ func (row webTxRow) dividendCredit() (*canonical.Decimal, bool) {
 // eachWebTx calls fn on each row of the web transactions table that
 // `where` (a WHERE clause over it, or "") selects.
 func (r *webReader) eachWebTx(ctx context.Context, what, where string, args []any, fn func(webTxRow) error) error {
-	rows, err := r.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, r.db, fmt.Sprintf("%s", what), `
 SELECT transaction_external_id, value_date, account_external_id, currency_iso,
        amount_debit, amount_credit, counterparty, description_kind, payload
-  FROM transactions `+where, args...)
-	if err != nil {
-		return fmt.Errorf("%s: %w", what, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+  FROM transactions `+where, func(rows *sql.Rows) error {
 		var row webTxRow
 		if err := rows.Scan(&row.txID, &row.valueDate, &row.account, &row.currency,
 			&row.debit, &row.credit, &row.counterparty, &row.descKind, &row.payload); err != nil {
@@ -779,8 +777,11 @@ SELECT transaction_external_id, value_date, account_external_id, currency_iso,
 		if err := fn(row); err != nil {
 			return err
 		}
+		return nil
+	}, args...); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // psnCut is the hard cut at each banking relationship's PSN start: a
@@ -1144,20 +1145,17 @@ func markReturnsInternal(payload json.RawMessage, kind canonical.TxKind) (json.R
 // snapshot_at values in [w.Start, w.End] from dump_runs.
 func (r *webReader) dumpRunTimesInWindow(ctx context.Context, w canonical.Window) ([]int64, error) {
 	const q = `SELECT snapshot_at FROM dump_runs WHERE snapshot_at BETWEEN ? AND ? ORDER BY snapshot_at`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("ubs-web dumpRunTimesInWindow: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
+	out, err := silver.Query(ctx, r.db, "ubs-web dumpRunTimesInWindow", q, func(rows *sql.Rows) (rec int64, err error) {
 		var t int64
 		if err := rows.Scan(&t); err != nil {
-			return nil, err
+			return rec, err
 		}
-		out = append(out, t)
+		return t, nil
+	}, w.Start, w.End)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // appendWebPortfolios projects web silver portfolios into
@@ -1168,12 +1166,7 @@ SELECT snapshot_at, portfolio_external_id, banking_relationship_id,
        description, payload
   FROM portfolios
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendWebPortfolios: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendWebPortfolios", q, func(rows *sql.Rows) error {
 		var (
 			snap               int64
 			extID, payload     string
@@ -1184,12 +1177,12 @@ SELECT snapshot_at, portfolio_external_id, banking_relationship_id,
 		}
 		if relID.Valid {
 			if cut := cutoff[relID.String]; cut > 0 && snap >= cut {
-				continue
+				return nil
 			}
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		batch.Portfolios = append(batch.Portfolios, canonical.PortfolioChange{
 			PortfolioExternalID: extID,
@@ -1199,8 +1192,11 @@ SELECT snapshot_at, portfolio_external_id, banking_relationship_id,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendWebAccounts projects web silver accounts (cash and
@@ -1213,12 +1209,7 @@ SELECT snapshot_at, account_external_id, kind, currency_iso,
        description, payload
   FROM accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendWebAccounts: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendWebAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap                                 int64
 			extID, kind, payload                 string
@@ -1229,12 +1220,12 @@ SELECT snapshot_at, account_external_id, kind, currency_iso,
 		}
 		if relID.Valid {
 			if cut := cutoff[relID.String]; cut > 0 && snap >= cut {
-				continue
+				return nil
 			}
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		var ak canonical.AccountKind
 		switch kind {
@@ -1256,8 +1247,11 @@ SELECT snapshot_at, account_external_id, kind, currency_iso,
 			LastSeenAt:          snap,
 			Payload:             json.RawMessage(payload),
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // buildAccountToRelMap returns a web account_external_id → web
@@ -1273,20 +1267,18 @@ SELECT a.account_external_id, a.banking_relationship_id
     ON a.account_external_id = m.account_external_id
    AND a.snapshot_at = m.s
  WHERE a.banking_relationship_id IS NOT NULL`
-	rows, err := r.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("buildAccountToRelMap: %w", err)
-	}
-	defer rows.Close()
 	out := make(map[string]string)
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "buildAccountToRelMap", q, func(rows *sql.Rows) error {
 		var acct, rel string
 		if err := rows.Scan(&acct, &rel); err != nil {
-			return nil, err
+			return err
 		}
 		out[acct] = rel
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // buildOwnIBANSet returns the set of the relationship's OWN account IBANs, keyed
@@ -1300,20 +1292,18 @@ SELECT a.account_external_id, a.banking_relationship_id
 // and is authoritative, so an own mandate/portfolio destination absent from
 // `accounts` is still vetoed to internal by that flag, not by this set.
 func (r *webReader) buildOwnIBANSet(ctx context.Context) (map[string]bool, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT account_external_id FROM accounts`)
-	if err != nil {
-		return nil, fmt.Errorf("buildOwnIBANSet: %w", err)
-	}
-	defer rows.Close()
 	out := map[string]bool{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "buildOwnIBANSet", `SELECT DISTINCT account_external_id FROM accounts`, func(rows *sql.Rows) error {
 		var iban string
 		if err := rows.Scan(&iban); err != nil {
-			return nil, err
+			return err
 		}
 		out[normalizeIBAN(iban)] = true
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // offsetVetoEps bounds the amount mismatch for the same-day offset veto. Book
@@ -1769,12 +1759,7 @@ func populateCutoffMap(
 	ctx context.Context, db *sql.DB, q string,
 	cutoffByRel map[string]int64, out map[string]int64,
 ) error {
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, db, "", q, func(rows *sql.Rows) error {
 		var id, rel string
 		if err := rows.Scan(&id, &rel); err != nil {
 			return err
@@ -1782,8 +1767,11 @@ func populateCutoffMap(
 		if c := cutoffByRel[rel]; c > 0 {
 			out[id] = c
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // webProjectedNet is the signed amount a `ubs-web` cash row projects into
@@ -2481,12 +2469,7 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
        portfolio_external_id, currency_iso, description, payload
   FROM mortgages
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendWebMortgages: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "appendWebMortgages", q, func(rows *sql.Rows) error {
 		var (
 			snap                      int64
 			extID, currency, payload  string
@@ -2498,7 +2481,7 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		// Dimensions only: the balance and terms stay inside payload, and
 		// mortgage Positions are injected by the psn-web fold stream, NOT
@@ -2530,8 +2513,11 @@ SELECT snapshot_at, account_external_id, banking_relationship_id,
 			FirstSeenAt:          snap,
 			LastSeenAt:           snap,
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // latestMortgagePositions returns one PositionChange per mortgage
@@ -2564,19 +2550,14 @@ SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
        ) latest
     ON latest.account_external_id = m.account_external_id
    AND latest.s                    = m.snapshot_at`
-	rows, err := r.db.QueryContext(ctx, q, asOf)
-	if err != nil {
-		return nil, fmt.Errorf("latestMortgagePositions: %w", err)
-	}
-	defer rows.Close()
 	var out []canonical.PositionChange
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "latestMortgagePositions", q, func(rows *sql.Rows) error {
 		var (
 			extID, currency, payload string
-			outstanding              sql.NullFloat64
+			outstanding              *canonical.Decimal
 		)
-		if err := rows.Scan(&extID, &currency, &outstanding, &payload); err != nil {
-			return nil, err
+		if err := rows.Scan(&extID, &currency, silver.Dec(&outstanding, silver.DecFloat), &payload); err != nil {
+			return err
 		}
 		idCopy := extID
 		out = append(out, canonical.PositionChange{
@@ -2586,18 +2567,14 @@ SELECT m.account_external_id, m.currency_iso, m.outstanding_balance, m.payload
 			AssetClass:           canonical.AssetClassRealEstate,
 			Vehicle:              canonical.VehicleMortgage,
 			Currency:             currency,
-			MarketValue:          silver.DecimalPtrFromNullFloat(outstanding),
+			MarketValue:          outstanding,
 			Payload:              json.RawMessage(payload),
 		})
+		return nil
+	}, asOf); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
-}
-
-// hasTable reports whether the silver database carries a table. Older silvers
-// predate some of them, and a reader that serves every vintage asks rather
-// than assumes.
-func (r *webReader) hasTable(ctx context.Context, name string) (bool, error) {
-	return silver.HasTables(ctx, r.db, name)
+	return out, nil
 }
 
 // buildMortgageAccountIndex maps a folded mortgage reference onto the account
@@ -2620,26 +2597,19 @@ func (r *webReader) buildMortgageAccountIndex(ctx context.Context) (map[string]s
 		if !ok {
 			continue
 		}
-		rows, err := r.db.QueryContext(ctx,
-			`SELECT DISTINCT account_external_id FROM `+table)
-		if err != nil {
-			return nil, fmt.Errorf("buildMortgageAccountIndex %s: %w", table, err)
-		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			if k := mortgageRefKey(id, true); k != "" {
-				out[k] = id
-			}
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
+		if err := silver.ScanRows(ctx, r.db, "buildMortgageAccountIndex "+table,
+			`SELECT DISTINCT account_external_id FROM `+table, func(rows *sql.Rows) error {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					return err
+				}
+				if k := mortgageRefKey(id, true); k != "" {
+					out[k] = id
+				}
+				return nil
+			}); err != nil {
 			return nil, err
 		}
-		rows.Close()
 	}
 	return out, nil
 }

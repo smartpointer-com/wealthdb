@@ -171,7 +171,10 @@ func (r *webReader) quarterlyReports(ctx context.Context, w canonical.Window) (q
 	if !w.HasChanges {
 		return out, nil
 	}
-	ok, err := silver.HasTables(ctx, r.db, reportsTable, reportLinesTable)
+	ok, err := r.hasTable(ctx, reportsTable)
+	if err == nil && ok {
+		ok, err = r.hasTable(ctx, reportLinesTable)
+	}
 	if err != nil || !ok {
 		return out, err
 	}
@@ -312,7 +315,7 @@ func reportComposition(isin string, asOf int64, lines []reportLine) (canonical.F
 // reportRange is the span of the quarterly reports' dates, so the change
 // window reaches every report: (-1, -1) for a silver without them.
 func (r *webReader) reportRange(ctx context.Context) (int64, int64, error) {
-	ok, err := silver.HasTables(ctx, r.db, reportsTable)
+	ok, err := r.hasTable(ctx, reportsTable)
 	if err != nil || !ok {
 		return -1, -1, err
 	}

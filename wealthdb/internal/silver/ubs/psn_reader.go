@@ -15,6 +15,9 @@ import (
 // file defines the type, its lifecycle and the shared event scan.
 type psnReader struct {
 	db *sql.DB
+	// parts is the file's optional schema, once probed is set (schema).
+	parts  psnSchema
+	probed bool
 	// source is the source's id in gold, which a contract's key is
 	// scoped by.
 	source string
@@ -76,15 +79,10 @@ func (r *psnReader) eachCashMovement(ctx context.Context, what string, fn func(p
 	if r == nil || r.db == nil {
 		return nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, r.db, fmt.Sprintf("%s", what), `
 SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
   FROM events
- WHERE kind = 'cash_movement'`)
-	if err != nil {
-		return fmt.Errorf("%s: %w", what, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ WHERE kind = 'cash_movement'`, func(rows *sql.Rows) error {
 		var row psnCashRow
 		if err := rows.Scan(&row.eventID, &row.at, &row.account, &row.currency, &row.payload); err != nil {
 			return fmt.Errorf("%s scan: %w", what, err)
@@ -92,6 +90,9 @@ SELECT event_external_id, timestamp, account_external_id, currency_iso, payload
 		if err := fn(row); err != nil {
 			return err
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }

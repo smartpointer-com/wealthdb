@@ -99,32 +99,27 @@ func (s inferredSwap) payload() json.RawMessage {
 // leg and the far leg (either nil). A row whose narrative names no leg,
 // no reference or not both amounts is no leg.
 func (r *webReader) swapLegs(ctx context.Context) (map[string]*[2]*swapLeg, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	out := map[string]*[2]*swapLeg{}
+	if err := silver.ScanRows(ctx, r.db, "swapLegs", `
 SELECT value_date, account_external_id, payload FROM transactions
  WHERE description_kind IN (?, ?)
- ORDER BY value_date, account_external_id`, swapLedgerKinds[0], swapLedgerKinds[1])
-	if err != nil {
-		return nil, fmt.Errorf("swapLegs: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]*[2]*swapLeg{}
-	for rows.Next() {
+ ORDER BY value_date, account_external_id`, func(rows *sql.Rows) error {
 		var (
 			day              int64
 			account, payload string
 		)
 		if err := rows.Scan(&day, &account, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		var pl webTxPayload
 		if json.Unmarshal([]byte(payload), &pl) != nil {
-			continue
+			return nil
 		}
 		m := swapLegInNarrative.FindStringSubmatch(pl.Description1)
 		sold, okSold := narrativeLeg(swapSoldInNarrative, pl.Description3)
 		bought, okBought := narrativeLeg(swapBoughtInNarrative, pl.Description3)
 		if m == nil || !okSold || !okBought || sold.ccy == bought.ccy {
-			continue
+			return nil
 		}
 		legs := out[m[2]]
 		if legs == nil {
@@ -141,8 +136,11 @@ SELECT value_date, account_external_id, payload FROM transactions
 		if !slices.Contains(legs[i].accounts, account) {
 			legs[i].accounts = append(legs[i].accounts, account)
 		}
+		return nil
+	}, swapLedgerKinds[0], swapLedgerKinds[1]); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // narrativeLeg is the amount and currency re finds in s.
@@ -193,15 +191,6 @@ func (r *webReader) statementNearLeg(ctx context.Context, far *swapLeg, ledger i
 	for _, a := range far.accounts {
 		args = append(args, a)
 	}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT value_date, currency_iso, amount_debit, amount_credit, description_kind, payload
-  FROM transactions
- WHERE value_date >= ? AND value_date < ? AND transaction_external_id LIKE ?
-   AND account_external_id IN (?`+strings.Repeat(", ?", len(far.accounts)-1)+`)`, args...)
-	if err != nil {
-		return 0, false, fmt.Errorf("statementNearLeg: %w", err)
-	}
-	defer rows.Close()
 	type deal struct {
 		day int64
 		ref string
@@ -210,7 +199,11 @@ SELECT value_date, currency_iso, amount_debit, amount_credit, description_kind, 
 	// its sold currency, and how many rows it has.
 	type seen struct{ sells, buys, rows int }
 	deals := map[deal]*seen{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "statementNearLeg", `
+SELECT value_date, currency_iso, amount_debit, amount_credit, description_kind, payload
+  FROM transactions
+ WHERE value_date >= ? AND value_date < ? AND transaction_external_id LIKE ?
+   AND account_external_id IN (?`+strings.Repeat(", ?", len(far.accounts)-1)+`)`, func(rows *sql.Rows) error {
 		var (
 			ccy, payload  string
 			day           int64
@@ -218,19 +211,19 @@ SELECT value_date, currency_iso, amount_debit, amount_credit, description_kind, 
 			descKind      sql.NullString
 		)
 		if err := rows.Scan(&day, &ccy, &debit, &credit, &descKind, &payload); err != nil {
-			return 0, false, err
+			return err
 		}
 		if webKindByType[strings.ToUpper(descKind.String)] != canonical.TxKindFx ||
 			webReversal(descKind.String, true, debit, credit) {
-			continue
+			return nil
 		}
 		var pl webTxPayload
 		if json.Unmarshal([]byte(payload), &pl) != nil || len(pl.Continuation) == 0 {
-			continue
+			return nil
 		}
 		m := statementDealInNarrative.FindStringSubmatch(strings.TrimSpace(pl.Continuation[0]))
 		if m == nil {
-			continue
+			return nil
 		}
 		k := deal{utcDay(day), m[1]}
 		if deals[k] == nil {
@@ -245,8 +238,8 @@ SELECT value_date, currency_iso, amount_debit, amount_credit, description_kind, 
 		case ccy == far.sold.ccy && credit.Valid && !debit.Valid && credit.Float64 > 0:
 			s.buys++
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, args...); err != nil {
 		return 0, false, err
 	}
 	var found []int64
@@ -431,21 +424,19 @@ func (r *psnReader) firstForwardDay(ctx context.Context) (int64, error) {
 // portfolioByCashAccount maps each cash account to the portfolio its
 // latest snapshot names.
 func (r *psnReader) portfolioByCashAccount(ctx context.Context) (map[string]string, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	out := map[string]string{}
+	if err := silver.ScanRows(ctx, r.db, "psn portfolioByCashAccount", `
 SELECT account_external_id, portfolio_external_id FROM cash_accounts
  WHERE portfolio_external_id <> ''
- ORDER BY snapshot_at`)
-	if err != nil {
-		return nil, fmt.Errorf("psn portfolioByCashAccount: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
+ ORDER BY snapshot_at`, func(rows *sql.Rows) error {
 		var account, portfolio string
 		if err := rows.Scan(&account, &portfolio); err != nil {
-			return nil, err
+			return err
 		}
 		out[account] = portfolio
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }

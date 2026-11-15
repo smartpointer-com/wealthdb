@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // A currency conversion between two of the relationship's own cash
@@ -118,22 +119,20 @@ func (r *psnReader) holderNames(ctx context.Context) (map[string]bool, error) {
 	if r == nil || r.db == nil {
 		return out, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT DISTINCT json_extract(payload, '$.FrstSurNm') FROM account_holders`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs holderNames: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "ubs holderNames", `
+SELECT DISTINCT json_extract(payload, '$.FrstSurNm') FROM account_holders`, func(rows *sql.Rows) error {
 		var name sql.NullString
 		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("ubs holderNames scan: %w", err)
+			return fmt.Errorf("ubs holderNames scan: %w", err)
 		}
 		if n := normalizeHolderName(name.String); n != "" {
 			out[n] = true
 		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // portfolioOfCashAccount maps each cash account onto the portfolio it
@@ -145,26 +144,24 @@ func (r *psnReader) portfolioOfCashAccount(ctx context.Context) (map[string]stri
 	if r == nil || r.db == nil {
 		return out, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, r.db, "ubs portfolioOfCashAccount", `
 SELECT account_external_id,
        COALESCE(portfolio_external_id, json_extract(payload, '$.PrtflId'))
   FROM cash_accounts
- WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM cash_accounts)`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs portfolioOfCashAccount: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM cash_accounts)`, func(rows *sql.Rows) error {
 		var account string
 		var portfolio sql.NullString
 		if err := rows.Scan(&account, &portfolio); err != nil {
-			return nil, fmt.Errorf("ubs portfolioOfCashAccount scan: %w", err)
+			return fmt.Errorf("ubs portfolioOfCashAccount scan: %w", err)
 		}
 		if portfolio.String != "" {
 			out[account] = portfolio.String
 		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // mirrorPayload is what a mirror's payload states: the feed row it was

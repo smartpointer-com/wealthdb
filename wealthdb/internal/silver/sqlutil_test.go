@@ -143,9 +143,6 @@ func TestHasColumns(t *testing.T) {
 			t.Errorf("HasColumns(%s, %q) = %v, want %v", c.table, c.columns, got, c.want)
 		}
 	}
-	if ok, err := HasColumn(context.Background(), db, "a", "y"); err != nil || !ok {
-		t.Errorf("HasColumn(a, y) = %v, %v; want true", ok, err)
-	}
 }
 
 func TestLotHelpers(t *testing.T) {

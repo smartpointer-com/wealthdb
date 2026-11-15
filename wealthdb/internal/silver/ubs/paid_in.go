@@ -59,18 +59,13 @@ func (r *webReader) paidInByISIN(ctx context.Context, psn *psnReader, safekeepin
 	if err != nil || !ok {
 		return nil, err
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	series := map[string]*paidInSeries{}
+	refused := map[string]bool{}
+	if err := silver.ScanRows(ctx, r.db, "ubs-web capital calls", `
 SELECT DISTINCT instrument_isin, value_date, currency_iso, amount
   FROM advices
  WHERE kind = 'capital_call' AND instrument_isin IS NOT NULL AND instrument_isin <> ''
- ORDER BY value_date`)
-	if err != nil {
-		return nil, fmt.Errorf("ubs-web capital calls: %w", err)
-	}
-	defer rows.Close()
-	series := map[string]*paidInSeries{}
-	refused := map[string]bool{}
-	for rows.Next() {
+ ORDER BY value_date`, func(rows *sql.Rows) error {
 		var (
 			isin     string
 			at       sql.NullInt64
@@ -78,7 +73,7 @@ SELECT DISTINCT instrument_isin, value_date, currency_iso, amount
 			amount   sql.NullFloat64
 		)
 		if err := rows.Scan(&isin, &at, &currency, &amount); err != nil {
-			return nil, fmt.Errorf("ubs-web capital calls scan: %w", err)
+			return fmt.Errorf("ubs-web capital calls scan: %w", err)
 		}
 		s := series[isin]
 		if s == nil {
@@ -89,7 +84,7 @@ SELECT DISTINCT instrument_isin, value_date, currency_iso, amount
 		// total wrong, so the fund is refused rather than understated.
 		if !at.Valid || !amount.Valid || currency.String == "" || currency.String != s.currency {
 			refused[isin] = true
-			continue
+			return nil
 		}
 		total := canonical.NewDecimalFromFloat(amount.Float64)
 		if n := len(s.totals); n > 0 {
@@ -97,12 +92,12 @@ SELECT DISTINCT instrument_isin, value_date, currency_iso, amount
 		}
 		if n := len(s.dates); n > 0 && s.dates[n-1] == at.Int64 {
 			s.totals[n-1] = total
-			continue
+			return nil
 		}
 		s.dates = append(s.dates, at.Int64)
 		s.totals = append(s.totals, total)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	if len(series) == 0 {
@@ -167,19 +162,17 @@ SELECT DISTINCT instrument_isin, portfolio_external_id
 
 // eachPair runs a query of two text columns and calls fn on each row.
 func eachPair(ctx context.Context, db *sql.DB, q string, fn func(a, b string)) error {
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, db, "", q, func(rows *sql.Rows) error {
 		var a, b string
 		if err := rows.Scan(&a, &b); err != nil {
 			return err
 		}
 		fn(a, b)
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // paidInStream sets the paid-in basis on every position in a fund the

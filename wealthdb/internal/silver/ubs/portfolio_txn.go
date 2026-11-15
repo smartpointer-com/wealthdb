@@ -94,27 +94,22 @@ SELECT COALESCE(portfolio_external_id, json_extract(payload, '$.PrtflId')),
        account_external_id
   FROM cash_accounts
  WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM cash_accounts)`
-	rows, err := r.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("ubs portfolioCashAccounts: %w", err)
-	}
-	defer rows.Close()
 	accounts := map[portfolioCashKey][]string{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "ubs portfolioCashAccounts", q, func(rows *sql.Rows) error {
 		var portfolio, currency, account sql.NullString
 		if err := rows.Scan(&portfolio, &currency, &account); err != nil {
-			return nil, fmt.Errorf("ubs portfolioCashAccounts scan: %w", err)
+			return fmt.Errorf("ubs portfolioCashAccounts scan: %w", err)
 		}
 		if portfolio.String == "" || currency.String == "" || account.String == "" {
-			continue
+			return nil
 		}
 		k := portfolioCashKey{
 			portfolio: portfolio.String,
 			currency:  bookingCurrency(currency.String),
 		}
 		accounts[k] = append(accounts[k], account.String)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	out := make(map[portfolioCashKey]string, len(accounts))
@@ -146,23 +141,21 @@ SELECT account_external_id,
        COALESCE(portfolio_external_id, json_extract(payload, '$.PrtflId'))
   FROM safekeeping_accounts
  WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM safekeeping_accounts)`
-	rows, err := r.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("ubs portfolioOfSafekeeping: %w", err)
-	}
-	defer rows.Close()
 	out := map[string]string{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "ubs portfolioOfSafekeeping", q, func(rows *sql.Rows) error {
 		var account string
 		var portfolio sql.NullString
 		if err := rows.Scan(&account, &portfolio); err != nil {
-			return nil, fmt.Errorf("ubs portfolioOfSafekeeping scan: %w", err)
+			return fmt.Errorf("ubs portfolioOfSafekeeping scan: %w", err)
 		}
 		if portfolio.String != "" {
 			out[account] = portfolio.String
 		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // settledDayKey identifies "a securities settlement the ledger already
@@ -229,24 +222,19 @@ func (r *webReader) portfolioSettledDays(ctx context.Context, psn *psnReader, we
 SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, payload
   FROM events
  WHERE kind IN ('trade_confirmation', 'cash_movement')`
-	rows, err := psn.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("ubs portfolioSettledDays: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, psn.db, "ubs portfolioSettledDays", q, func(rows *sql.Rows) error {
 		var (
 			eventID, account, kind, payload string
 			currencyISO                     *string
 			occurredAt                      int64
 		)
 		if err := rows.Scan(&eventID, &occurredAt, &account, &kind, &currencyISO, &payload); err != nil {
-			return nil, fmt.Errorf("ubs portfolioSettledDays scan: %w", err)
+			return fmt.Errorf("ubs portfolioSettledDays scan: %w", err)
 		}
 		if kind == "trade_confirmation" {
 			var p tradeConfirmationPayload
 			if err := json.Unmarshal([]byte(payload), &p); err != nil {
-				continue
+				return nil
 			}
 			currency := p.NetCurrency
 			if currency == "" && currencyISO != nil {
@@ -260,18 +248,21 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 				at = occurredAt
 			}
 			out[newSettledDayKey(cashIBAN(ibans, p.CashAccountExternalID), currency, at)]++
-			continue
+			return nil
 		}
 		if settled.covers(kind, account, currencyISO, occurredAt, payload) {
-			continue
+			return nil
 		}
 		tx, err := buildTransaction(eventID, occurredAt, account, kind, currencyISO, payload, ibans)
 		if err != nil || (tx.Kind != canonical.TxKindBuy && tx.Kind != canonical.TxKindSell) {
-			continue
+			return nil
 		}
 		out[newSettledDayKey(tx.AccountExternalID, tx.Currency, tx.OccurredAt)]++
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // portfolioFreeOfPayment are the booking types that state a value and
@@ -425,13 +416,8 @@ SELECT transaction_external_id, safekeeping_account_external_id, value_date,
   FROM portfolio_transactions
  WHERE value_date BETWEEN ? AND ?
  ORDER BY value_date, transaction_external_id`
-	rows, err := r.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return out, fmt.Errorf("ubs-web portfolio transactions: %w", err)
-	}
-	defer rows.Close()
 	folded, unplaced, unpriced := 0, 0, 0
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "ubs-web portfolio transactions", q, func(rows *sql.Rows) error {
 		var (
 			txID, account, bookingType, payload         string
 			valueDate                                   int64
@@ -443,11 +429,11 @@ SELECT transaction_external_id, safekeeping_account_external_id, value_date,
 			&securityName, &valor, &isin, &quantity,
 			&settlementCcy, &valuationCcy,
 			&transPrice, &exchangeRate, &txValue, &payload); err != nil {
-			return out, fmt.Errorf("ubs-web portfolio transactions scan: %w", err)
+			return fmt.Errorf("ubs-web portfolio transactions scan: %w", err)
 		}
 		kind, isCash := portfolioCashKind(bookingType, txValue)
 		if !isCash {
-			continue
+			return nil
 		}
 		// Which currency the cash moved in. A row that states none
 		// settled in the currency it was valued in — the portfolio's
@@ -462,19 +448,19 @@ SELECT transaction_external_id, safekeeping_account_external_id, value_date,
 		}]
 		if !ok {
 			unplaced++
-			continue
+			return nil
 		}
 		amount, ok := portfolioSettlementAmount(
 			txValue.Float64, currency, bookingCurrency(valuationCcy.String), exchangeRate)
 		if !ok {
 			unpriced++
-			continue
+			return nil
 		}
 		key := newSettledDayKey(cashAccount, currency, valueDate)
 		if settled[key] > 0 {
 			settled[key]--
 			folded++
-			continue
+			return nil
 		}
 
 		net := canonical.NewDecimalFromFloat(math.Abs(amount))
@@ -523,6 +509,9 @@ SELECT transaction_external_id, safekeeping_account_external_id, value_date,
 			tx.InstrumentExternalID, tx.InstrumentHint = resolveValor(valorToISIN, valor.String)
 		}
 		out.Transactions = append(out.Transactions, tx)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return out, err
 	}
 	if folded > 0 {
 		log.Printf("ubs adapter: folded %d portfolio trade(s) another rail already settles — one booking, one row", folded)
@@ -533,7 +522,7 @@ SELECT transaction_external_id, safekeeping_account_external_id, value_date,
 	if unpriced > 0 {
 		log.Printf("ubs adapter: skipped %d portfolio trade(s) stating no rate between the currency they settled in and the one they are valued in", unpriced)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // portfolioTxnRange is the span of value dates the portfolio pass

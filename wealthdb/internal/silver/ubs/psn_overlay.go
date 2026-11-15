@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // PSN-side overlay helpers. The orchestrator pre-fetches PSN
@@ -97,28 +98,23 @@ SELECT account_external_id, payload
   FROM safekeeping_accounts
  WHERE snapshot_at = ?
  ORDER BY account_external_id`
-	rows, err := r.db.QueryContext(ctx, q, latest.Int64)
-	if err != nil {
-		return nil, fmt.Errorf("psn safekeepingByPortfolio: %w", err)
-	}
-	defer rows.Close()
 	accountsPerPortfolio := map[string][]string{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "psn safekeepingByPortfolio", q, func(rows *sql.Rows) error {
 		var acctID, payload string
 		if err := rows.Scan(&acctID, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		var p struct {
 			PrtflId string `json:"PrtflId"`
 		}
 		_ = json.Unmarshal([]byte(payload), &p)
 		if p.PrtflId == "" {
-			continue
+			return nil
 		}
 		accountsPerPortfolio[p.PrtflId] = append(
 			accountsPerPortfolio[p.PrtflId], acctID)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, latest.Int64); err != nil {
 		return nil, err
 	}
 	out := make(map[string]string, len(accountsPerPortfolio))
@@ -158,21 +154,18 @@ func filterHoldsSecurities(accts []string, holdsSecurities map[string]bool) []st
 // statement per safekeeping account per day whether or not anything is
 // pending, so every account appears in it.
 func (r *psnReader) safekeepingAccountsWithHoldings(ctx context.Context) (map[string]bool, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT DISTINCT safekeeping_external_id FROM holdings`)
-	if err != nil {
-		return nil, fmt.Errorf("psn safekeepingAccountsWithHoldings: %w", err)
-	}
-	defer rows.Close()
 	out := map[string]bool{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, r.db, "psn safekeepingAccountsWithHoldings", `SELECT DISTINCT safekeeping_external_id FROM holdings`, func(rows *sql.Rows) error {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return err
 		}
 		out[id] = true
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // holdingsSnapshotRange returns the snapshot_at of PSN's earliest and
