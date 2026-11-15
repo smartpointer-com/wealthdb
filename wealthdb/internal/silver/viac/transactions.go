@@ -41,25 +41,21 @@ SELECT transaction_external_id, occurred_at, account_external_id,
        instrument_external_id
   FROM transactions
  WHERE occurred_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("viac Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "viac Transactions", q, func(rows *sql.Rows) error {
 		var (
 			txID, acct, rawType, rawKind, currency, desc, payload string
 			occurredAt                                            int64
-			amtStr, instID                                        sql.NullString
+			instID                                                sql.NullString
+			amtStr                                                *canonical.Decimal
 		)
 		if err := rows.Scan(&txID, &occurredAt, &acct, &rawType, &rawKind, &currency,
-			&amtStr, &desc, &payload, &instID); err != nil {
-			return nil, fmt.Errorf("viac Transactions scan: %w", err)
+			silver.Dec(&amtStr, silver.DecText), &desc, &payload, &instID); err != nil {
+			return fmt.Errorf("viac Transactions scan: %w", err)
 		}
 		kind := txKindFor(rawKind)
-		netDec := silver.DecimalPtrOrNil(amtStr)
+		netDec := amtStr
 		tx := canonical.TransactionChange{
 			TransactionExternalID: txID,
 			OccurredAt:            occurredAt,
@@ -94,8 +90,8 @@ SELECT transaction_external_id, occurred_at, account_external_id,
 			tx.InstrumentHint = desc
 		}
 		out.Transactions = append(out.Transactions, tx)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil

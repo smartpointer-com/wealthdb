@@ -52,9 +52,7 @@ func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.W
 // nothing; a silver from before the column counts every run.
 func (c *Connection) observed(ctx context.Context, s *canonical.Status) error {
 	runs := `SELECT MAX(snapshot_at) FROM dump_runs`
-	if dry, err := silver.HasColumn(ctx, c.db, "dump_runs", "dry_run"); err != nil {
-		return err
-	} else if dry {
+	if c.schema.dryRun {
 		runs += ` WHERE NOT COALESCE(dry_run, 0)`
 	}
 	t, err := silver.LatestRun(ctx, c.db, "viac", runs)

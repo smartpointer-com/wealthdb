@@ -47,20 +47,31 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 	if err != nil {
 		return nil, err
 	}
-	rates, err := silver.HasTables(ctx, db, silver.RatesTable)
-	if err != nil {
+	c := &Connection{db: db}
+	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("fred silver: %w", err)
 	}
-	return &Connection{db: db, rates: rates}, nil
+	return c, nil
 }
 
-// Connection reads one fred silver. rates says whether it holds the rates
-// table (silver migration 0002): a silver last loaded before that
-// migration lacks it and reads as stating no rate series.
+// Connection reads one fred silver.
 type Connection struct {
-	db    *sql.DB
+	db     *sql.DB
+	schema schema
+}
+
+// schema is which optional parts of the silver schema a file holds,
+// probed once at open.
+type schema struct {
+	// rates: the rates table (silver migration 0002). A silver last
+	// loaded before that migration lacks it and reads as stating no rate
+	// series.
 	rates bool
+}
+
+func (s *schema) optional() []silver.Optional {
+	return []silver.Optional{{Table: silver.RatesTable, Has: &s.rates}}
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }

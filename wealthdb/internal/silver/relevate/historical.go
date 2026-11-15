@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -34,20 +33,18 @@ import (
 // has BOTH live and historical content gets a single combined
 // batch.
 
-// hasHistoricalTables returns true when migration 0002 has been
-// applied to the silver. Older silvers (still on 0001) silently
-// skip the historical projection.
-func (c *Connection) hasHistoricalTables(ctx context.Context) (bool, error) {
-	return silver.HasTables(ctx, c.db, "historical_position_snapshots", "historical_cash_balances")
+// hasHistorical reports whether the silver holds the historical tables
+// (silver migration 0002). Older silvers skip the historical projection.
+func (c *Connection) hasHistorical() bool {
+	return c.schema.historicalPositions && c.schema.historicalCash
 }
 
 // historicalSnapshotTimes returns the distinct snapshot_at values
 // present in either historical table within the window. Returns
 // nil when migration 0002 hasn't been applied.
 func (c *Connection) historicalSnapshotTimes(ctx context.Context, w canonical.Window) ([]int64, error) {
-	ok, err := c.hasHistoricalTables(ctx)
-	if err != nil || !ok {
-		return nil, err
+	if !c.hasHistorical() {
+		return nil, nil
 	}
 	return silver.SnapshotTimesOf(ctx, c.db, w, nil,
 		"historical_position_snapshots", "historical_cash_balances")
@@ -84,9 +81,8 @@ type snapKey struct {
 // extend Start backwards so the loader's window-DELETE covers
 // existing historical rows before the re-INSERT.
 func (c *Connection) historicalRange(ctx context.Context) (int64, int64, error) {
-	ok, err := c.hasHistoricalTables(ctx)
-	if err != nil || !ok {
-		return -1, -1, err
+	if !c.hasHistorical() {
+		return -1, -1, nil
 	}
 	return silver.Extrema(ctx, c.db, "historicalRange", []string{
 		`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM historical_position_snapshots`,
@@ -111,9 +107,8 @@ func (c *Connection) appendHistoricalPositions(
 	ctx context.Context, w canonical.Window,
 	byTime map[int64]*canonical.SnapshotBatch,
 ) error {
-	ok, err := c.hasHistoricalTables(ctx)
-	if err != nil || !ok {
-		return err
+	if !c.hasHistorical() {
+		return nil
 	}
 	const q = `
 SELECT snapshot_at, account_external_id, isin,
@@ -121,11 +116,6 @@ SELECT snapshot_at, account_external_id, isin,
        currency, units, market_value, payload
   FROM historical_position_snapshots
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHistoricalPositions: %w", err)
-	}
-	defer rows.Close()
 
 	chf := "CHF"
 
@@ -134,7 +124,7 @@ SELECT snapshot_at, account_external_id, isin,
 	accountEmitted := map[snapKey]bool{}
 	instrumentEmitted := map[snapKey]bool{}
 
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendHistoricalPositions", q, func(rows *sql.Rows) error {
 		var (
 			snap           int64
 			acct, isin     string
@@ -149,7 +139,7 @@ SELECT snapshot_at, account_external_id, isin,
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 
 		// One AccountChange per (snap, account).
@@ -203,8 +193,11 @@ SELECT snapshot_at, account_external_id, isin,
 			change.MarketValue = &d
 		}
 		batch.Positions = append(batch.Positions, change)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendHistoricalCash reads historical_cash_balances and emits a
@@ -222,9 +215,8 @@ func (c *Connection) appendHistoricalCash(
 	ctx context.Context, w canonical.Window,
 	byTime map[int64]*canonical.SnapshotBatch,
 ) error {
-	ok, err := c.hasHistoricalTables(ctx)
-	if err != nil || !ok {
-		return err
+	if !c.hasHistorical() {
+		return nil
 	}
 	const q = `
 SELECT snapshot_at, account_external_id, currency, SUM(amount)
@@ -232,15 +224,10 @@ SELECT snapshot_at, account_external_id, currency, SUM(amount)
  WHERE snapshot_at BETWEEN ? AND ?
    AND balance_kind IN ('cash', 'accrued_interest')
  GROUP BY snapshot_at, account_external_id, currency`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendHistoricalCash: %w", err)
-	}
-	defer rows.Close()
 
 	accountEmitted := map[snapKey]bool{}
 
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendHistoricalCash", q, func(rows *sql.Rows) error {
 		var (
 			snap   int64
 			acct   string
@@ -251,11 +238,11 @@ SELECT snapshot_at, account_external_id, currency, SUM(amount)
 			return err
 		}
 		if !amount.Valid {
-			continue
+			return nil
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 
 		if k := (snapKey{snap, acct}); !accountEmitted[k] {
@@ -271,6 +258,9 @@ SELECT snapshot_at, account_external_id, currency, SUM(amount)
 			BalanceKind:       canonical.BalanceKindCurrent,
 			Amount:            amt,
 		})
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }

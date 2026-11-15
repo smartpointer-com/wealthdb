@@ -43,14 +43,9 @@ SELECT t.transaction_external_id, t.occurred_at, t.account_external_id,
   FROM transactions t
   LEFT JOIN instruments i ON i.instrument_external_id = t.instrument_external_id
  WHERE t.occurred_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("relevate Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "relevate Transactions", q, func(rows *sql.Rows) error {
 		var (
 			txID, acctID, silverKind, ccy, payload string
 			instID                                 sql.NullString
@@ -59,7 +54,7 @@ SELECT t.transaction_external_id, t.occurred_at, t.account_external_id,
 		)
 		if err := rows.Scan(&txID, &occurredAt, &acctID,
 			&instID, &silverKind, &ccy, &netAmountStr, &payload); err != nil {
-			return nil, fmt.Errorf("relevate Transactions scan: %w", err)
+			return fmt.Errorf("relevate Transactions scan: %w", err)
 		}
 
 		kind := canonicalKindFor(silverKind)
@@ -74,7 +69,7 @@ SELECT t.transaction_external_id, t.occurred_at, t.account_external_id,
 		if netAmountStr.Valid && netAmountStr.String != "" {
 			d, err := canonical.NewDecimalFromString(netAmountStr.String)
 			if err != nil {
-				return nil, fmt.Errorf("relevate Transactions parse net_amount %q: %w", netAmountStr.String, err)
+				return fmt.Errorf("relevate Transactions parse net_amount %q: %w", netAmountStr.String, err)
 			}
 			tx.NetAmount = canonical.ApplyCanonicalSign(kind, &d)
 		}
@@ -83,8 +78,8 @@ SELECT t.transaction_external_id, t.occurred_at, t.account_external_id,
 			tx.InstrumentExternalID = &s
 		}
 		out.Transactions = append(out.Transactions, tx)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil

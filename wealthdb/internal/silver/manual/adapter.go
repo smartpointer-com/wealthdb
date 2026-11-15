@@ -68,26 +68,34 @@ func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connecti
 	if err != nil {
 		return nil, err
 	}
-	costBasis, err := silver.HasTables(ctx, db, "cost_basis")
-	if err != nil {
+	c := &Connection{db: db}
+	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("manual silver: %w", err)
 	}
-	exits, err := silver.HasTables(ctx, db, "exits")
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("manual silver: %w", err)
-	}
-	return &Connection{db: db, costBasis: costBasis, exits: exits}, nil
+	return c, nil
 }
 
-// Connection reads one manual silver. costBasis and exits say whether it
-// holds the paid-in series and the exits tables: a silver last loaded
-// before a table existed lacks it until the next load, and reads as a
-// book without that series.
+// Connection reads one manual silver.
 type Connection struct {
-	db               *sql.DB
+	db     *sql.DB
+	schema schema
+}
+
+// schema is which optional parts of the silver schema a file holds,
+// probed once at open. costBasis and exits say whether it holds the
+// paid-in series and the exits tables: a silver last loaded before a
+// table existed lacks it until the next load, and reads as a book
+// without that series.
+type schema struct {
 	costBasis, exits bool
+}
+
+func (s *schema) optional() []silver.Optional {
+	return []silver.Optional{
+		{Table: "cost_basis", Has: &s.costBasis},
+		{Table: "exits", Has: &s.exits},
+	}
 }
 
 // eventDates is the SQL that lists every holding event date, as unix
@@ -98,7 +106,7 @@ func (c *Connection) eventDates() string {
     SELECT CAST(strftime('%s', acquired_at) AS INTEGER) AS t FROM positions
     UNION ALL SELECT CAST(strftime('%s', closed_at)  AS INTEGER) FROM positions WHERE closed_at IS NOT NULL
     UNION ALL SELECT CAST(strftime('%s', as_of_date) AS INTEGER) FROM valuations`
-	if c.costBasis {
+	if c.schema.costBasis {
 		q += `
     UNION ALL SELECT CAST(strftime('%s', as_of_date) AS INTEGER) FROM cost_basis`
 	}

@@ -20,16 +20,46 @@ type Adapter struct{}
 
 func (*Adapter) Kind() string { return kindName }
 
-func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "swissquote silver")
 	if err != nil {
 		return nil, err
 	}
-	return &Connection{db: db}, nil
+	c := &Connection{db: db}
+	if err := silver.ProbeOptional(ctx, c.db, c.schema.optional()...); err != nil {
+		c.db.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 type Connection struct {
-	db *sql.DB
+	db     *sql.DB
+	schema schema
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
+
+// schema is which optional parts of the silver schema a file holds,
+// probed once at open.
+type schema struct {
+	accountProduct  bool // accounts.account_product (silver v5)
+	accountType     bool // accounts.account_type, its name before v5
+	positionName    bool // positions.name
+	positionISIN    bool // positions.isin
+	averageCost     bool // positions.average_cost
+	priceQuote      bool // positions.price_quote
+	accruedInterest bool // positions.accrued_interest_chf
+}
+
+func (s *schema) optional() []silver.Optional {
+	return []silver.Optional{
+		{Table: "accounts", Columns: []string{"account_product"}, Has: &s.accountProduct},
+		{Table: "accounts", Columns: []string{"account_type"}, Has: &s.accountType},
+		{Table: "positions", Columns: []string{"name"}, Has: &s.positionName},
+		{Table: "positions", Columns: []string{"isin"}, Has: &s.positionISIN},
+		{Table: "positions", Columns: []string{"average_cost"}, Has: &s.averageCost},
+		{Table: "positions", Columns: []string{"price_quote"}, Has: &s.priceQuote},
+		{Table: "positions", Columns: []string{"accrued_interest_chf"}, Has: &s.accruedInterest},
+	}
+}

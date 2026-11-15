@@ -2,8 +2,8 @@ package firstcitizens
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -31,21 +31,16 @@ SELECT fitid, posted_at, account_external_id, amount,
   FROM transactions
  WHERE posted_at BETWEEN ? AND ?
  ORDER BY posted_at, fitid`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("firstcitizens Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	var out canonical.TransactionBatch
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "firstcitizens Transactions", q, func(rows *sql.Rows) error {
 		var (
 			fitid, id, desc, class, payload string
 			posted                          int64
 			amtFloat                        float64
 		)
 		if err := rows.Scan(&fitid, &posted, &id, &amtFloat, &desc, &class, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		// The collector rounds money to cents before storing, so the
 		// float→decimal step is exact at display precision.
@@ -62,8 +57,8 @@ SELECT fitid, posted_at, account_external_id, amount,
 			ProviderCategory:      providerCategory(class),
 			Payload:               json.RawMessage(payload),
 		})
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil

@@ -68,13 +68,9 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 	// whichever exists so older silvers (pre-v5) still load until
 	// the silver loader is re-run.
 	productCol := ""
-	if has, err := silver.HasColumn(ctx, c.db, "accounts", "account_product"); err != nil {
-		return err
-	} else if has {
+	if c.schema.accountProduct {
 		productCol = "account_product"
-	} else if has, err := silver.HasColumn(ctx, c.db, "accounts", "account_type"); err != nil {
-		return err
-	} else if has {
+	} else if c.schema.accountType {
 		productCol = "account_type"
 	}
 
@@ -82,12 +78,7 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 	if productCol != "" {
 		q = fmt.Sprintf(`SELECT snapshot_at, account_external_id, payload, COALESCE(%s, '') FROM accounts WHERE snapshot_at BETWEEN ? AND ?`, productCol)
 	}
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendAccounts: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap    int64
 			extID   string
@@ -99,7 +90,7 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		change := canonical.AccountChange{
 			AccountExternalID: extID,
@@ -113,8 +104,11 @@ func (c *Connection) appendAccounts(ctx context.Context, w canonical.Window, byT
 			change.TaxWrapper = &w
 		}
 		batch.Accounts = append(batch.Accounts, change)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // ---- positions -----------------------------------------------------------
@@ -198,11 +192,10 @@ func (c *Connection) appendPositions(ctx context.Context, w canonical.Window, by
 	// optional maps each column a later migration added to itself, or
 	// to NULL on a silver that lacks it.
 	optional := map[string]string{}
-	for _, col := range []string{"name", "isin", "average_cost", "price_quote", "accrued_interest_chf"} {
-		has, err := silver.HasColumn(ctx, c.db, "positions", col)
-		if err != nil {
-			return err
-		}
+	for col, has := range map[string]bool{
+		"name": c.schema.positionName, "isin": c.schema.positionISIN, "average_cost": c.schema.averageCost,
+		"price_quote": c.schema.priceQuote, "accrued_interest_chf": c.schema.accruedInterest,
+	} {
 		optional[col] = "NULL"
 		if has {
 			optional[col] = col
@@ -220,25 +213,21 @@ SELECT snapshot_at, account_external_id, symbol, currency, payload,
  WHERE snapshot_at BETWEEN ? AND ?`,
 		optional["name"], optional["isin"], optional["average_cost"], optional["price_quote"],
 		optional["accrued_interest_chf"])
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendPositions: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendPositions", q, func(rows *sql.Rows) error {
 		var (
 			snap                    int64
 			extID, symbol, currency string
 			payload                 string
 			name, isin, quote       string
-			averageCost, accrued    sql.NullFloat64
+			accrued                 sql.NullFloat64
+			averageCost             *canonical.Decimal
 		)
-		if err := rows.Scan(&snap, &extID, &symbol, &currency, &payload, &name, &isin, &averageCost, &quote, &accrued); err != nil {
+		if err := rows.Scan(&snap, &extID, &symbol, &currency, &payload, &name, &isin, silver.Dec(&averageCost, silver.DecFloat), &quote, &accrued); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		var p positionPayload
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
@@ -293,10 +282,13 @@ SELECT snapshot_at, account_external_id, symbol, currency, payload,
 		if a := silver.DecimalPtrFromNullFloat(accrued); a != nil && currency == "CHF" && pos.MarketValue != nil {
 			pos.MarketValue, pos.AccruedInterest = silver.WithAccrued(pos.MarketValue, a), a
 		}
-		pos.SetBookValue(bookValue(p.Quantity, silver.DecimalPtrFromNullFloat(averageCost), quote), averageCostBasis)
+		pos.SetBookValue(bookValue(p.Quantity, averageCost, quote), averageCostBasis)
 		batch.Positions = append(batch.Positions, pos)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // buildISINBySymbol returns a `symbol + '@' + currency` → ISIN
@@ -316,19 +308,17 @@ SELECT symbol, currency, isin
   FROM positions
  WHERE isin IS NOT NULL AND isin != ''
  ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("buildISINBySymbol: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "buildISINBySymbol", q, func(rows *sql.Rows) error {
 		var symbol, currency, isin string
 		if err := rows.Scan(&symbol, &currency, &isin); err != nil {
-			return nil, err
+			return err
 		}
 		out[symbol+"@"+currency] = isin
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ---- currency_balances → CashBalance + FxRate ----------------------------
@@ -348,12 +338,7 @@ func (c *Connection) appendCurrencyBalancesAndFxRates(ctx context.Context, w can
 SELECT snapshot_at, account_external_id, currency, payload
   FROM currency_balances
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendCurrencyBalancesAndFxRates: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendCurrencyBalancesAndFxRates", q, func(rows *sql.Rows) error {
 		var (
 			snap            int64
 			extID, currency string
@@ -364,7 +349,7 @@ SELECT snapshot_at, account_external_id, currency, payload
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		var p currencyBalancePayload
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
@@ -396,6 +381,9 @@ SELECT snapshot_at, account_external_id, currency, payload
 				Payload:       json.RawMessage(payload),
 			})
 		}
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }

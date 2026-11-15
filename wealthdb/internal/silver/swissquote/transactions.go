@@ -24,14 +24,9 @@ SELECT account_external_id, occurred_at, transaction_type,
        isin, symbol, currency, CAST(net_amount AS VARCHAR), payload
   FROM transactions
  WHERE occurred_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("swissquote Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "swissquote Transactions", q, func(rows *sql.Rows) error {
 		var (
 			extID, txType, currency, payload string
 			isin, symbol                     sql.NullString
@@ -39,11 +34,11 @@ SELECT account_external_id, occurred_at, transaction_type,
 			netAmountStr                     string
 		)
 		if err := rows.Scan(&extID, &occurredAt, &txType, &isin, &symbol, &currency, &netAmountStr, &payload); err != nil {
-			return nil, fmt.Errorf("swissquote Transactions scan: %w", err)
+			return fmt.Errorf("swissquote Transactions scan: %w", err)
 		}
 		netDec, err := canonical.NewDecimalFromString(netAmountStr)
 		if err != nil {
-			return nil, fmt.Errorf("swissquote Transactions parse net_amount %q: %w", netAmountStr, err)
+			return fmt.Errorf("swissquote Transactions parse net_amount %q: %w", netAmountStr, err)
 		}
 
 		kind := kindFor(txType)
@@ -84,8 +79,8 @@ SELECT account_external_id, occurred_at, transaction_type,
 		}
 
 		out.Transactions = append(out.Transactions, tx)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil

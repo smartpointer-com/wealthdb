@@ -54,16 +54,36 @@ type Adapter struct{}
 
 func (*Adapter) Kind() string { return kindName }
 
-func (*Adapter) Open(_ context.Context, spec silver.OpenSpec) (silver.Connection, error) {
+func (*Adapter) Open(ctx context.Context, spec silver.OpenSpec) (silver.Connection, error) {
 	db, err := silver.OpenReadOnlySQLite(spec.Path, "viac silver")
 	if err != nil {
 		return nil, err
 	}
-	return &Connection{db: db}, nil
+	c := &Connection{db: db}
+	if err := silver.ProbeOptional(ctx, db, c.schema.optional()...); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 type Connection struct {
-	db *sql.DB
+	db     *sql.DB
+	schema schema
+}
+
+// schema is which optional parts of the silver schema a file holds,
+// probed once at open.
+type schema struct {
+	managementStyle bool // accounts.management_style
+	dryRun          bool // dump_runs.dry_run
+}
+
+func (s *schema) optional() []silver.Optional {
+	return []silver.Optional{
+		{Table: "accounts", Columns: []string{"management_style"}, Has: &s.managementStyle},
+		{Table: "dump_runs", Columns: []string{"dry_run"}, Has: &s.dryRun},
+	}
 }
 
 func (c *Connection) Close() error { return silver.CloseDB(&c.db) }

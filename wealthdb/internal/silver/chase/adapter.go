@@ -56,21 +56,19 @@ SELECT a.account_external_id, COALESCE(a.currency, ''), a.product
   FROM accounts a
  WHERE a.snapshot_at = (SELECT MAX(a2.snapshot_at) FROM accounts a2
                          WHERE a2.account_external_id = a.account_external_id)`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	out := map[string]accountFacts{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "", q, func(rows *sql.Rows) error {
 		var id string
 		var f accountFacts
 		if err := rows.Scan(&id, &f.currency, &f.product); err != nil {
-			return nil, err
+			return err
 		}
 		out[id] = f
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // currencyOf returns the account's currency, defaulting to USD. Chase retail

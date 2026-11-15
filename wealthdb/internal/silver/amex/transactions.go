@@ -3,7 +3,6 @@ package amex
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"strings"
 	"time"
 
@@ -51,14 +50,9 @@ SELECT txn_id, posted_at, account_external_id, amount,
   FROM transactions
  WHERE posted_at BETWEEN ? AND ?
  ORDER BY posted_at, txn_id`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("amex Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	var out canonical.TransactionBatch
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "amex Transactions", q, func(rows *sql.Rows) error {
 		var (
 			txID, id, rawKind, desc    string
 			merchant, category, rowCcy string
@@ -71,7 +65,7 @@ SELECT txn_id, posted_at, account_external_id, amount,
 		if err := rows.Scan(&txID, &posted, &id, &amtFloat, &rawKind, &desc,
 			&merchant, &category, &txnDate, &rowCcy, &isPending,
 			&payload); err != nil {
-			return nil, err
+			return err
 		}
 		// The collector rounds money to cents before storing, so the
 		// float→decimal step is exact at display precision.
@@ -116,8 +110,8 @@ SELECT txn_id, posted_at, account_external_id, amount,
 			ProviderCategory: silver.StrPtrIfNonEmpty(category),
 			Payload:          silver.PayloadWith(payload, extra),
 		})
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil

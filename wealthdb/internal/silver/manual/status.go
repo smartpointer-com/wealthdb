@@ -31,7 +31,7 @@ func (c *Connection) clock() silver.Clock {
 		Observed: silver.Observed{Runs: `SELECT MAX(CAST(load_at AS INTEGER)) FROM load_runs`},
 		Mode:     silver.FullSpan{Span: []string{c.snapshotExtrema()}},
 	}
-	if c.exits {
+	if c.schema.exits {
 		k.Ledger = []string{`
 SELECT MIN(CAST(strftime('%s', exit_date) AS INTEGER)), MAX(CAST(strftime('%s', exit_date) AS INTEGER)) FROM exits`}
 	}

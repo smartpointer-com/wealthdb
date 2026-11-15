@@ -2,6 +2,7 @@ package manual
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -19,31 +20,26 @@ import (
 // tie to a position. See collectors/manual/DESIGN.md §6.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	batch := canonical.TransactionBatch{}
-	if !w.HasChanges || !c.exits {
+	if !w.HasChanges || !c.schema.exits {
 		return silver.NewTransactionStream(batch), nil
 	}
-	rows, err := c.db.QueryContext(ctx, `
+	if err := silver.ScanRows(ctx, c.db, "manual Transactions", `
 SELECT e.position_id, COALESCE(p.account_id, '`+defaultAccountKey+`'),
        CAST(strftime('%s', e.exit_date) AS INTEGER), e.proceeds, e.currency, COALESCE(e.notes, '')
   FROM exits e
   JOIN positions p ON p.id = e.position_id
  WHERE CAST(strftime('%s', e.exit_date) AS INTEGER) BETWEEN ?1 AND ?2
- ORDER BY e.exit_date, e.position_id`, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("manual Transactions: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+ ORDER BY e.exit_date, e.position_id`, func(rows *sql.Rows) error {
 		var (
 			id, acct, proceeds, ccy, notes string
 			at                             int64
 		)
 		if err := rows.Scan(&id, &acct, &at, &proceeds, &ccy, &notes); err != nil {
-			return nil, fmt.Errorf("manual Transactions: %w", err)
+			return fmt.Errorf("manual Transactions: %w", err)
 		}
 		amt, err := canonical.NewDecimalFromString(proceeds)
 		if err != nil {
-			return nil, fmt.Errorf("manual Transactions: exit of %s: proceeds %q: %w", id, proceeds, err)
+			return fmt.Errorf("manual Transactions: exit of %s: proceeds %q: %w", id, proceeds, err)
 		}
 		inst := id
 		tx := canonical.TransactionChange{
@@ -61,9 +57,9 @@ SELECT e.position_id, COALESCE(p.account_id, '`+defaultAccountKey+`'),
 			tx.Description = &notes
 		}
 		batch.Transactions = append(batch.Transactions, tx)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("manual Transactions: %w", err)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return nil, err
 	}
 	return silver.NewTransactionStream(batch), nil
 }

@@ -29,9 +29,8 @@ const statementRatesTable = "statement_rates"
 // row, so its balances state none. A silver older than the table states no
 // rates.
 func (c *Connection) applyStatementRates(ctx context.Context, batch *canonical.SnapshotBatch) error {
-	has, err := silver.HasTables(ctx, c.db, statementRatesTable)
-	if err != nil || !has {
-		return err
+	if !c.schema.statementRates {
+		return nil
 	}
 	// Each account's closing balances, in time order (appendRunningBalances
 	// emits them ordered by account and day).
@@ -41,7 +40,7 @@ func (c *Connection) applyStatementRates(ctx context.Context, batch *canonical.S
 			closings[cb.AccountExternalID] = append(closings[cb.AccountExternalID], i)
 		}
 	}
-	err = silver.ScanRows(ctx, c.db, "", `SELECT account_external_id, period_start, period_end, interest_rate
+	err := silver.ScanRows(ctx, c.db, "", `SELECT account_external_id, period_start, period_end, interest_rate
   FROM `+statementRatesTable+` ORDER BY account_external_id, period_end`, func(rows *sql.Rows) error {
 		var (
 			acct       string

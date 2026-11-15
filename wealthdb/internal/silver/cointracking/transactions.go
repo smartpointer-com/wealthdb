@@ -56,14 +56,9 @@ SELECT
   FROM transactions
  WHERE occurred_at BETWEEN to_timestamp(?) AND to_timestamp(?)
  ORDER BY occurred_at, transaction_external_id`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("cointracking Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	out := canonical.TransactionBatch{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "cointracking Transactions", q, func(rows *sql.Rows) error {
 		var (
 			txID, portfolioID, walletID, ctType       string
 			buyCcy, sellCcy, feeCcy, comment          string
@@ -73,12 +68,12 @@ SELECT
 		if err := rows.Scan(&txID, &portfolioID, &walletID, &occurredAt,
 			&ctType, &buyAmtStr, &buyCcy, &sellAmtStr, &sellCcy,
 			&feeAmtStr, &feeCcy, &payload, &comment); err != nil {
-			return nil, err
+			return err
 		}
 		payload, err = lotPayload(payload, ctType, comment,
 			buyCcy, sellCcy, feeAmtStr, feeCcy)
 		if err != nil {
-			return nil, fmt.Errorf("tx %s payload: %w", txID, err)
+			return fmt.Errorf("tx %s payload: %w", txID, err)
 		}
 		base := baseByPortfolio[portfolioID]
 		if base == "" {
@@ -97,11 +92,11 @@ SELECT
 				payload)
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
 		out.Transactions = append(out.Transactions, emitted...)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil
@@ -116,20 +111,18 @@ func (c *Connection) portfolioBaseCurrencies(ctx context.Context) (map[string]st
 	const q = `
 SELECT portfolio_external_id, MIN(quote_currency)
   FROM portfolio_prices GROUP BY 1`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("portfolioBaseCurrencies: %w", err)
-	}
-	defer rows.Close()
 	out := make(map[string]string)
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "portfolioBaseCurrencies", q, func(rows *sql.Rows) error {
 		var p, ccy string
 		if err := rows.Scan(&p, &ccy); err != nil {
-			return nil, err
+			return err
 		}
 		out[p] = ccy
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // projectTrade splits a Trade silver row into 1 row (one side is

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"sort"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -83,15 +82,10 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
    AND (p.closed_at IS NULL
         OR CAST(strftime('%s', p.closed_at) AS INTEGER) > ?1)
  ORDER BY p.id`
-	rows, err := c.db.QueryContext(ctx, q, t)
-	if err != nil {
-		return batch, fmt.Errorf("buildBatch: %w", err)
-	}
-	defer rows.Close()
 
 	live := false
 	held := map[string]bool{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "buildBatch", q, func(rows *sql.Rows) error {
 		var (
 			id, acctID, kind, vehicle, currency, displayName, payload string
 			acqUnix                                                   int64
@@ -100,7 +94,7 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 		)
 		if err := rows.Scan(&id, &acctID, &kind, &vehicle, &currency, &displayName,
 			&acqUnix, &payload, &marketValue, &bookValue, &paidIn); err != nil {
-			return batch, err
+			return err
 		}
 		live = true
 		held[acctID] = true
@@ -157,8 +151,8 @@ SELECT p.id, COALESCE(p.account_id, '` + defaultAccountKey + `') AS account_id,
 			inst.Currency = &ccy
 		}
 		batch.Instruments = append(batch.Instruments, inst)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, t); err != nil {
 		return batch, err
 	}
 	if !live {
@@ -186,7 +180,7 @@ func (c *Connection) bookValueSQL() string {
            AND CAST(strftime('%s', v.as_of_date) AS INTEGER)
                = CAST(strftime('%s', p.acquired_at) AS INTEGER)
          LIMIT 1)`
-	if !c.costBasis {
+	if !c.schema.costBasis {
 		return atAcquisition
 	}
 	return `CASE WHEN ` + seriesCovers + `
@@ -204,7 +198,7 @@ const seriesCovers = `EXISTS (SELECT 1 FROM cost_basis cb WHERE cb.position_id =
 // paidInSQL is the SQL for whether bookValueSQL reads the cost_basis
 // series for the position, inside the same query.
 func (c *Connection) paidInSQL() string {
-	if !c.costBasis {
+	if !c.schema.costBasis {
 		return `0`
 	}
 	return seriesCovers
@@ -231,24 +225,19 @@ func (c *Connection) accountsFor(ctx context.Context, held map[string]bool, t in
 	if len(held) == 0 {
 		return nil, nil
 	}
-	rows, err := c.db.QueryContext(ctx, `
-SELECT id, COALESCE(display_name, ''), COALESCE(account_kind, ''),
-       COALESCE(tax_wrapper, ''), COALESCE(management_style, '')
-  FROM accounts ORDER BY id`)
-	if err != nil {
-		return nil, fmt.Errorf("accountsFor: %w", err)
-	}
-	defer rows.Close()
 
 	declared := map[string]canonical.AccountChange{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "accountsFor", `
+SELECT id, COALESCE(display_name, ''), COALESCE(account_kind, ''),
+       COALESCE(tax_wrapper, ''), COALESCE(management_style, '')
+  FROM accounts ORDER BY id`, func(rows *sql.Rows) error {
 		var id, name, kind, wrapper, style string
 		if err := rows.Scan(&id, &name, &kind, &wrapper, &style); err != nil {
-			return nil, err
+			return err
 		}
 		declared[id] = accountChange(id, name, kind, wrapper, style, t)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 

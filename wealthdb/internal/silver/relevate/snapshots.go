@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 
 	"github.com/shopspring/decimal"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -71,13 +70,8 @@ SELECT snapshot_at, account_external_id, currency_code,
        payload
   FROM accounts
  WHERE snapshot_at BETWEEN ? AND ?`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendAccounts: %w", err)
-	}
-	defer rows.Close()
 	wrapper := canonical.TaxWrapperVestedBenefits
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
 		var (
 			snap                                    int64
 			extID, currency, name, product, payload string
@@ -87,7 +81,7 @@ SELECT snapshot_at, account_external_id, currency_code,
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		w := wrapper
 		style := canonical.ManagementStyleAutomated
@@ -115,8 +109,11 @@ SELECT snapshot_at, account_external_id, currency_code,
 			change.AccountCategory = &product
 		}
 		batch.Accounts = append(batch.Accounts, change)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 func (c *Connection) appendInstruments(ctx context.Context, byTime map[int64]*canonical.SnapshotBatch) error {
@@ -132,21 +129,15 @@ SELECT instrument_external_id,
        COALESCE(asset_class, ''),
        first_seen_at, last_seen_at, payload
   FROM instruments`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("appendInstruments: %w", err)
-	}
-	defer rows.Close()
 	ccy := "CHF"
-	var instruments []canonical.InstrumentChange
-	for rows.Next() {
+	instruments, err := silver.Query(ctx, c.db, "appendInstruments", q, func(rows *sql.Rows) (rec canonical.InstrumentChange, err error) {
 		var (
 			extID, isin, name, rawClass string
 			firstSeen, lastSeen         int64
 			payload                     string
 		)
 		if err := rows.Scan(&extID, &isin, &name, &rawClass, &firstSeen, &lastSeen, &payload); err != nil {
-			return err
+			return rec, err
 		}
 		acNew, veh := taxonomyFor(rawClass, name)
 		change := canonical.InstrumentChange{
@@ -165,9 +156,9 @@ SELECT instrument_external_id,
 		if name != "" {
 			change.Name = &name
 		}
-		instruments = append(instruments, change)
-	}
-	if err := rows.Err(); err != nil {
+		return change, nil
+	})
+	if err != nil {
 		return err
 	}
 	// Emit once per snapshot batch.
@@ -196,17 +187,12 @@ SELECT snapshot_at, account_external_id, currency,
   FROM cash_balances
  WHERE snapshot_at BETWEEN ? AND ?
  GROUP BY snapshot_at, account_external_id, currency`
-	rows, err := c.db.QueryContext(ctx, balQ, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendPositionsAndCash (balances): %w", err)
-	}
-	defer rows.Close()
 	type acctBal struct {
 		currency   string
 		securities decimal.Decimal
 	}
 	securitiesByAcct := make(map[[2]any]acctBal)
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendPositionsAndCash (balances)", balQ, func(rows *sql.Rows) error {
 		var (
 			snap                   int64
 			acct, ccy              string
@@ -217,7 +203,7 @@ SELECT snapshot_at, account_external_id, currency,
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		if cashAmt.Valid {
 			amt := decimal.NewFromFloat(cashAmt.Float64)
@@ -235,8 +221,8 @@ SELECT snapshot_at, account_external_id, currency,
 				securities: decimal.NewFromFloat(securitiesAmt.Float64),
 			}
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return err
 	}
 
@@ -251,12 +237,7 @@ SELECT snapshot_at, account_external_id,
        allocation
   FROM positions
  WHERE snapshot_at BETWEEN ? AND ?`
-	prows, err := c.db.QueryContext(ctx, posQ, w.Start, w.End)
-	if err != nil {
-		return fmt.Errorf("appendPositionsAndCash (positions): %w", err)
-	}
-	defer prows.Close()
-	for prows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendPositionsAndCash (positions)", posQ, func(prows *sql.Rows) error {
 		var (
 			snap                              int64
 			acct, extID, isin, rawClass, name string
@@ -267,7 +248,7 @@ SELECT snapshot_at, account_external_id,
 		}
 		batch, ok := byTime[snap]
 		if !ok {
-			continue
+			return nil
 		}
 		key := instrumentKey(extID, isin)
 		acNew, veh := taxonomyFor(rawClass, name)
@@ -288,8 +269,11 @@ SELECT snapshot_at, account_external_id,
 			}
 		}
 		batch.Positions = append(batch.Positions, change)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return err
 	}
-	return prows.Err()
+	return nil
 }
 
 // instrumentKey is the identity a security keeps across feeds: its

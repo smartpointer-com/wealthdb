@@ -2,8 +2,8 @@ package raiffeisenat
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"unicode"
 
@@ -50,21 +50,16 @@ SELECT txn_id, posted_at, account_external_id, amount,
   FROM transactions
  WHERE posted_at BETWEEN ? AND ?
  ORDER BY posted_at, txn_id`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("raiffeisen_at Transactions: %w", err)
-	}
-	defer rows.Close()
 
 	var out canonical.TransactionBatch
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "raiffeisen_at Transactions", q, func(rows *sql.Rows) error {
 		var (
 			txnID, id, category, desc, cp, payload string
 			posted                                 int64
 			amtFloat                               float64
 		)
 		if err := rows.Scan(&txnID, &posted, &id, &amtFloat, &category, &desc, &cp, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		// The collector rounds money to cents before storing, so the
 		// float→decimal step is exact at display precision.
@@ -83,8 +78,8 @@ SELECT txn_id, posted_at, account_external_id, amount,
 			ProviderCategory:      silver.StrPtrIfNonEmpty(category),
 			Payload:               json.RawMessage(payload),
 		})
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
 	return silver.NewTransactionStream(out), nil

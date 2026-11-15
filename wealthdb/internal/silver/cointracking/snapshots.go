@@ -3,7 +3,6 @@ package cointracking
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -84,20 +83,17 @@ func (c *Connection) snapshotTimestamps(ctx context.Context) ([]int64, error) {
 SELECT DISTINCT CAST(EXTRACT(epoch FROM CAST(as_of_date AS TIMESTAMP)) AS BIGINT) AS snap_at
   FROM positions_daily
  ORDER BY snap_at`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("snapshotTimestamps: %w", err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
+	out, err := silver.Query(ctx, c.db, "snapshotTimestamps", q, func(rows *sql.Rows) (rec int64, err error) {
 		var t int64
 		if err := rows.Scan(&t); err != nil {
-			return nil, err
+			return rec, err
 		}
-		out = append(out, t)
+		return t, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // appendPortfolios emits one PortfolioChange per row in
@@ -128,12 +124,7 @@ SELECT
     CAST(p.payload AS VARCHAR)
   FROM portfolios p
  ORDER BY p.portfolio_external_id`
-	rows, err := c.db.QueryContext(ctx, q, snap)
-	if err != nil {
-		return fmt.Errorf("appendPortfolios: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendPortfolios", q, func(rows *sql.Rows) error {
 		var (
 			extID, name, baseCcy string
 			firstSeen            int64
@@ -157,8 +148,11 @@ SELECT
 			change.BaseCurrency = &b
 		}
 		batch.Portfolios = append(batch.Portfolios, change)
+		return nil
+	}, snap); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendAccounts emits one AccountChange per silver.wallets row.
@@ -188,13 +182,8 @@ SELECT
     CAST(w.payload AS VARCHAR)
   FROM wallets w
  ORDER BY w.portfolio_external_id, w.wallet_external_id`
-	rows, err := c.db.QueryContext(ctx, q, snap)
-	if err != nil {
-		return fmt.Errorf("appendAccounts: %w", err)
-	}
-	defer rows.Close()
 	style := canonical.ManagementStyleSelfDirected
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendAccounts", q, func(rows *sql.Rows) error {
 		var (
 			portfolioID, walletID, name, baseCcy string
 			firstSeen                            int64
@@ -229,8 +218,11 @@ SELECT
 			change.BaseCurrency = &b
 		}
 		batch.Accounts = append(batch.Accounts, change)
+		return nil
+	}, snap); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendInstruments emits one InstrumentChange per distinct coin
@@ -254,12 +246,7 @@ SELECT
   )
  GROUP BY ticker
  ORDER BY ticker`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("appendInstruments: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendInstruments", q, func(rows *sql.Rows) error {
 		var (
 			ticker              string
 			firstSeen, lastSeen int64
@@ -280,8 +267,11 @@ SELECT
 			LastSeenAt:           lastSeen,
 		}
 		batch.Instruments = append(batch.Instruments, change)
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendPositionsAcrossSnapshots populates one PositionChange per
@@ -396,19 +386,15 @@ SELECT
    AND cp.as_of_date <= s.snap_date
    AND (cp.next_d IS NULL OR cp.next_d > s.snap_date)
  ORDER BY snap_at, s.portfolio_external_id, s.wallet_external_id, s.instrument_external_id`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("appendPositionsAcrossSnapshots: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendPositionsAcrossSnapshots", q, func(rows *sql.Rows) error {
 		var (
 			snap                                    int64
 			portfolioID, walletID, ticker, currency string
-			qtyStr, priceStr                        sql.NullString
+			priceStr                                sql.NullString
+			qtyStr                                  *canonical.Decimal
 		)
 		if err := rows.Scan(&snap, &portfolioID, &walletID, &ticker,
-			&qtyStr, &currency, &priceStr); err != nil {
+			silver.Dec(&qtyStr, silver.DecText), &currency, &priceStr); err != nil {
 			return err
 		}
 		batch, ok := byTime[snap]
@@ -416,11 +402,11 @@ SELECT
 			// Snapshot date not in the planned set — shouldn't
 			// happen since byTime was built from the same DISTINCT
 			// as_of_date list, but skip defensively.
-			continue
+			return nil
 		}
-		qty := silver.DecimalPtrOrNil(qtyStr)
+		qty := qtyStr
 		if qty == nil {
-			continue
+			return nil
 		}
 		// Fiat held inside a crypto wallet (USD/EUR/CHF/etc.) is
 		// the wallet's CASH leg, not a position — gold's
@@ -436,7 +422,7 @@ SELECT
 				BalanceKind:       canonical.BalanceKindClosing,
 				Amount:            *qty,
 			})
-			continue
+			return nil
 		}
 		instrumentKey := ticker
 		acNew, vehicle := taxonomy()
@@ -458,8 +444,11 @@ SELECT
 			}
 		}
 		batch.Positions = append(batch.Positions, change)
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }
 
 // appendFxRates emits one FxRateChange per row in silver.coin_prices:
@@ -483,12 +472,7 @@ SELECT
     CAST(price_usd AS VARCHAR)
   FROM coin_prices
  ORDER BY as_of_date, instrument_external_id`
-	rows, err := c.db.QueryContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("appendFxRates: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "appendFxRates", q, func(rows *sql.Rows) error {
 		var (
 			base     string
 			snap     int64
@@ -498,11 +482,11 @@ SELECT
 			return err
 		}
 		if !priceStr.Valid || priceStr.String == "" {
-			continue
+			return nil
 		}
 		rate, err := canonical.NewDecimalFromString(priceStr.String)
 		if err != nil {
-			continue
+			return nil
 		}
 		// Gold's mid_rate convention is "1 unit of QUOTE = MidRate
 		// units of BASE" (matches Swissquote / UBS rate emission).
@@ -515,6 +499,9 @@ SELECT
 			QuoteCurrency: base,
 			MidRate:       rate,
 		})
+		return nil
+	}); err != nil {
+		return err
 	}
-	return rows.Err()
+	return nil
 }

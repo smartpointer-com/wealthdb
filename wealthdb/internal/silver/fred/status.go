@@ -25,7 +25,7 @@ SELECT MIN(t), MAX(t) FROM (
 
 // extrema is the observation-date range query of this file's fact tables.
 func (c *Connection) extrema() string {
-	if c.rates {
+	if c.schema.rates {
 		return bothExtrema
 	}
 	return fxExtrema

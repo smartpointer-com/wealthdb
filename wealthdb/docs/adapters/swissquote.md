@@ -122,7 +122,7 @@ A live XLS row is `'live'`. A row reconstructed from a Portfolio
 Performance PDF is `'pp:<doc_id>'`, with `snapshot_at` the PDF's as-of
 date.
 
-A column an older silver lacks reads as NULL (`silver.HasColumn`), so
+A column an older silver lacks reads as NULL (`silver.ProbeOptional`), so
 that silver still loads.
 
 ### Why `instrument_external_id` is ISIN-keyed when possible

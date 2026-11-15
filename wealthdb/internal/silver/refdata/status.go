@@ -2,6 +2,7 @@ package refdata
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -59,21 +60,19 @@ func (c *Connection) clock() silver.Clock {
 // over the tables whose rows carry run_at, for the runs loaded past since;
 // lines follow their compositions.
 func (c *Connection) spans(ctx context.Context, since int64) (map[string]canonical.Span, error) {
-	rows, err := c.db.QueryContext(ctx, windowExtrema(silver.ReferenceRunTables(c.schema)), since)
-	if err != nil {
-		return nil, fmt.Errorf("refdata ChangeWindow: %w", err)
-	}
-	defer rows.Close()
 	spans := map[string]canonical.Span{}
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "refdata ChangeWindow", windowExtrema(silver.ReferenceRunTables(c.schema)), func(rows *sql.Rows) error {
 		var kind string
 		var span canonical.Span
 		if err := rows.Scan(&kind, &span.Start, &span.End); err != nil {
-			return nil, fmt.Errorf("refdata ChangeWindow scan: %w", err)
+			return fmt.Errorf("refdata ChangeWindow scan: %w", err)
 		}
 		spans[kind] = span
+		return nil
+	}, since); err != nil {
+		return nil, err
 	}
-	return spans, rows.Err()
+	return spans, nil
 }
 
 // Status and ChangeWindow are the clock's (silver.Clock).

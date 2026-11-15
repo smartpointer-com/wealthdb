@@ -2,6 +2,7 @@ package fred
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -30,27 +31,22 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, mid, payload
   FROM fx_rates
  WHERE snapshot_at BETWEEN ? AND ?
  ORDER BY snapshot_at`
-	rows, err := c.db.QueryContext(ctx, q, w.Start, w.End)
-	if err != nil {
-		return nil, fmt.Errorf("fred Snapshots: %w", err)
-	}
-	defer rows.Close()
 
 	var (
 		batches []canonical.SnapshotBatch
 		cur     canonical.SnapshotBatch
 	)
-	for rows.Next() {
+	if err := silver.ScanRows(ctx, c.db, "fred Snapshots", q, func(rows *sql.Rows) error {
 		var (
 			snap                      int64
 			base, quote, mid, payload string
 		)
 		if err := rows.Scan(&snap, &base, &quote, &mid, &payload); err != nil {
-			return nil, fmt.Errorf("fred Snapshots scan: %w", err)
+			return fmt.Errorf("fred Snapshots scan: %w", err)
 		}
 		rate, err := canonical.NewDecimalFromString(mid)
 		if err != nil {
-			return nil, fmt.Errorf("fred fx_rates mid %q (snap=%d): %w", mid, snap, err)
+			return fmt.Errorf("fred fx_rates mid %q (snap=%d): %w", mid, snap, err)
 		}
 		cur.FxRates = append(cur.FxRates, canonical.FxRateChange{
 			SnapshotAt:    snap,
@@ -63,15 +59,15 @@ SELECT snapshot_at, base_currency_iso, quote_currency_iso, mid, payload
 			batches = append(batches, cur)
 			cur = canonical.SnapshotBatch{}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("fred Snapshots rows: %w", err)
+		return nil
+	}, w.Start, w.End); err != nil {
+		return nil, err
 	}
 	if len(cur.FxRates) > 0 {
 		batches = append(batches, cur)
 	}
 	fx := silver.NewSnapshotStream(batches)
-	if !c.rates {
+	if !c.schema.rates {
 		return fx, nil
 	}
 	return silver.NewConcatSnapshotStream([]silver.SnapshotStream{fx, silver.NewRateStream(c.db, w)}), nil
