@@ -68,9 +68,9 @@ Architecture:
 The text-level parsers (``parse_statement_period``,
 ``parse_account_blocks``, ``parse_holdings_block``) are pure
 functions of strings so tests exercise them against hand-crafted
-fixtures without a real PDF. ``parse_supplied_statement_pdf(path)``
-is the orchestration entry-point that opens the PDF via
-pdfplumber and delegates to the text-level parsers.
+fixtures without a real PDF. ``parse(extracted, path=...)`` reads
+a statement as pdfplumber extracted it and delegates to the
+text-level parsers. ``pdf_readers`` does the extraction.
 
 Performance note: this module keeps fidelity-web on pdfplumber.
 Under collectorkit's ``extract_text_pdfium`` (measured ~27x faster),
@@ -84,20 +84,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
-
 from datetime import date as date_cls
 
-from pdf_common import _ACCOUNT_HEADER_RE, parse_statement_period
+from collectorkit.words import Extracted
 
-# A coarse, human-readable epoch for load.py's parse-cache namespace.
-# Automatic invalidation is handled by the source fingerprint (see
-# load._SUPPLIED_PARSER_FINGERPRINT / collectorkit.srcfp), which re-keys the
-# cache whenever this module or its import closure changes, so an edit to
-# the text-level parsers cannot be replayed under stale cache entries.
-# Bumping this constant is an optional manual override to force a
-# re-parse without a code change.
-PARSER_VERSION = "1"
+from pdf_common import _ACCOUNT_HEADER_RE, parse_statement_period
 
 
 # ============================================================
@@ -942,11 +933,12 @@ def _parse_number(tok):
 
 
 # ============================================================
-# PDF orchestration
+# The extracted statement
 # ============================================================
 
-def parse_supplied_statement_pdf(path, *, expected_signature=None):
-    """Open a supplied statement PDF and return a structured dict:
+def parse(extracted: Extracted, *, path, expected_signature=None) -> dict:
+    """Read a supplied statement from its extracted text and return a
+    structured dict:
 
         {
             "path": "<absolute path>",
@@ -972,7 +964,7 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
     ``{"_error": "signature-mismatch", ...}``
     so the loader can log + skip without bailing the whole run.
     """
-    text = _extract_pdf_text(path)
+    text = extracted.text()
     if expected_signature and expected_signature not in text:
         return {
             "_error": "signature-mismatch",
@@ -1045,17 +1037,3 @@ def parse_supplied_statement_pdf(path, *, expected_signature=None):
         "accounts": accounts_out,
     }
 
-
-# ============================================================
-# CLI for standalone use
-# ============================================================
-
-if __name__ == "__main__":
-    import sys
-
-    from collectorkit import parser_cli
-    raise SystemExit(parser_cli.dump_json(
-        sys.argv[1:], parse_supplied_statement_pdf,
-        description="Extract per-account Holdings rows from one or "
-                    "more legacy supplied statement PDFs "
-                    "and emit JSON."))

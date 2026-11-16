@@ -48,7 +48,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, parsecache, silver, srcfp
+from collectorkit import bronze, cli, extract, parsecache, silver, srcfp
 from collectorkit.parsecache import ParseCache, ParsePool
 from collectorkit.parse import iso_date_to_epoch
 
@@ -56,6 +56,7 @@ import pdf_parsers
 import pdf_parsers_1099
 import pdf_parsers_daf
 import pdf_parsers_supplied
+import pdf_readers
 
 # Each family of silver rows has a module of its own: silver_retail
 # (master, positions, activity, documents), silver_lots, silver_daf,
@@ -101,40 +102,42 @@ from silver_statements import (  # noqa: F401
 log = logging.getLogger("fidelity-web.load")
 
 
-# A parse-cache entry must be invalidated whenever the logic that
-# produced it changes. srcfp.parser_fingerprint captures that logic
-# precisely: the normalised source (comment-, format- and
-# docstring-invariant) of the parser's whole first-party import
-# closure — pdf_parsers itself plus the collectorkit.pdf extractor and
-# the pdf_common helpers it imports, an edit to any of which shifts the
-# parsed rows — together with the installed versions of the third-party
-# extraction stack (pdfplumber on pdfminer.six, whose >=0.11,<1 pin
-# allows a text-shifting minor bump) and the running Python version. It
-# returns hex, so it drops straight into a sidecar filename.
-_EXTRACTOR_DISTS = ("pdfplumber", "pdfminer.six")
-
-# Parse-cache namespace for the 529 statement parser: a coarse manual
-# PARSER_VERSION (a deliberate epoch lever) plus the automatic logic
-# fingerprint. The supplied-statement parser's namespace additionally
-# folds in the signature guard (see _supplied_parser_version) because
-# that guard changes the parsed rows.
+# A parse-cache entry must be invalidated whenever anything that
+# produced it changes, and a parsed document depends on two things:
+#
+#   * the parser's code. srcfp.parser_fingerprint is the normalised source
+#     (comment-, format- and docstring-invariant) of the parser's whole
+#     first-party import closure — the parser module and the pdf_common and
+#     collectorkit helpers it imports, an edit to any of which shifts the
+#     parsed rows. The parser reads an extracted document, so nothing else
+#     belongs in it (python=False);
+#   * the extraction. collectorkit.extract.extraction_key names the engine,
+#     its arguments and versions (pdfplumber on pdfminer.six, whose
+#     >=0.11,<1 pin allows a text-shifting minor bump) and the Python minor
+#     version.
+#
+# Both are hex, so the namespace drops straight into a sidecar filename. The
+# supplied-statement parser's namespace additionally folds in the signature
+# guard (see _supplied_parser_version) because that guard changes the parsed
+# rows.
 _STATEMENT_PARSER_VERSION = (
-    f"stmt529.v{pdf_parsers.PARSER_VERSION}."
-    + srcfp.parser_fingerprint([pdf_parsers], _EXTRACTOR_DISTS)
+    "stmt529." + srcfp.parser_fingerprint([pdf_parsers], python=False)
+    + "." + extract.extraction_key(pdf_readers.STATEMENT_TEXT)
 )
 _SUPPLIED_PARSER_FINGERPRINT = (
-    f"supplied.v{pdf_parsers_supplied.PARSER_VERSION}."
-    + srcfp.parser_fingerprint([pdf_parsers_supplied], _EXTRACTOR_DISTS)
+    "supplied."
+    + srcfp.parser_fingerprint([pdf_parsers_supplied], python=False)
+    + "." + extract.extraction_key(pdf_readers.STATEMENT_TEXT)
 )
 _DAF_STATEMENT_PARSER_VERSION = (
-    f"dafstmt.v{pdf_parsers_daf.PARSER_VERSION}."
-    + srcfp.parser_fingerprint([pdf_parsers_daf], _EXTRACTOR_DISTS)
+    "dafstmt." + srcfp.parser_fingerprint([pdf_parsers_daf], python=False)
+    + "." + extract.extraction_key(pdf_readers.STATEMENT_TEXT)
 )
 # The Consolidated 1099 pass reads each PDF twice under two namespaces:
 # first only which form it is, then the lots of the copy it keeps.
 _CONSOLIDATED_1099_PARSER_VERSION = (
-    f"1099.v{pdf_parsers_1099.PARSER_VERSION}."
-    + srcfp.parser_fingerprint([pdf_parsers_1099], _EXTRACTOR_DISTS)
+    "1099." + srcfp.parser_fingerprint([pdf_parsers_1099], python=False)
+    + "." + extract.extraction_key(pdf_readers.FORM_1099_WORDS)
 )
 _CONSOLIDATED_1099_IDENTITY_VERSION = (
     _CONSOLIDATED_1099_PARSER_VERSION + ".identity")
@@ -298,8 +301,12 @@ def main(argv=None):
         pending = [d for d in dumps if not already_loaded(conn, d)]
         dumps_1099, rederive_1099s = _dumps_for_1099s(conn, dumps, pending)
 
-        cache = ParseCache(
-            args.parse_cache_dir or parsecache.default_dir("fidelity-web"))
+        cache_dir = (args.parse_cache_dir
+                     or parsecache.default_dir("fidelity-web"))
+        cache = ParseCache(cache_dir)
+        # The extracted text and words, kept apart from the parsed
+        # results, so a parser edit re-parses without opening a PDF.
+        extract_dir = cache_dir / EXTRACT_CACHE_SUBDIR
         with ParsePool(cache, os.cpu_count() or 1) as coord:
             # Enqueue every pending dump's statement PDFs and the
             # supplied PDFs, deduplicated by content, then dispatch once so all
@@ -317,26 +324,32 @@ def main(argv=None):
                         _read_1099_identity_worker, str(path))
             for dump in pending:
                 for path in _statement_pdf_candidates(dump):
+                    sha = coord.sha_for(path)
                     coord.enqueue(
-                        coord.sha_for(path), _STATEMENT_PARSER_VERSION,
-                        _parse_statement_pdf_worker, str(path))
+                        sha, _STATEMENT_PARSER_VERSION,
+                        _parse_statement_pdf_worker,
+                        _job(path, sha, extract_dir))
                 for path in _daf_statement_pdf_candidates(dump):
+                    sha = coord.sha_for(path)
                     coord.enqueue(
-                        coord.sha_for(path), _DAF_STATEMENT_PARSER_VERSION,
-                        _parse_daf_statement_pdf_worker, str(path))
+                        sha, _DAF_STATEMENT_PARSER_VERSION,
+                        _parse_daf_statement_pdf_worker,
+                        _job(path, sha, extract_dir))
             supplied_version = _supplied_parser_version(signature)
             for path in _supplied_pdf_candidates(supplied_dir):
+                sha = coord.sha_for(path)
                 coord.enqueue(
-                    coord.sha_for(path), supplied_version,
+                    sha, supplied_version,
                     _parse_supplied_statement_pdf_worker,
-                    (str(path), signature))
+                    (*_job(path, sha, extract_dir), signature))
             coord.dispatch()
 
             loaded = 0
             for dump in pending:
                 try:
                     conn.execute("BEGIN")
-                    load_dump(conn, dump, schema_version, coord)
+                    load_dump(conn, dump, schema_version, coord,
+                              extract_dir=extract_dir)
                     conn.commit()
                     loaded += 1
                 except Exception:
@@ -351,9 +364,11 @@ def main(argv=None):
                          "the CUSIP in their action text", filled)
             if dumps_1099:
                 _load_consolidated_1099s(
-                    conn, dumps_1099, rederive=rederive_1099s, coord=coord)
+                    conn, dumps_1099, rederive=rederive_1099s, coord=coord,
+                    extract_dir=extract_dir)
             _load_supplied_statements_oneshot(
                 conn, supplied_dir, signature=signature, coord=coord,
+                extract_dir=extract_dir,
             )
         validate(conn)
     finally:
@@ -436,7 +451,8 @@ def ts_from_dir(name):
 # Loaders
 # ============================================================
 
-def load_dump(conn, dump_dir, schema_version, coord=None):
+def load_dump(conn, dump_dir, schema_version, coord=None, *,
+              extract_dir=None):
     snapshot_at = ts_from_dir(dump_dir.name)
     log.info("loading %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
@@ -472,12 +488,14 @@ def load_dump(conn, dump_dir, schema_version, coord=None):
                         if lot_step else 0)
     txn_count = _load_transactions(conn, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir)
-    hist_pos_count = _load_historical_from_pdfs(conn, dump_dir, coord)
+    hist_pos_count = _load_historical_from_pdfs(
+        conn, dump_dir, coord, extract_dir=extract_dir)
 
     # Donor-Advised Fund phase.
     daf = _load_daf(conn, snapshot_at, dump_dir,
                     skip_positions=skip_positions)
-    daf_hist_count = _load_daf_historical(conn, dump_dir, coord)
+    daf_hist_count = _load_daf_historical(
+        conn, dump_dir, coord, extract_dir=extract_dir)
 
     log.info(
         "loaded %s: portfolios=%d accounts=%d positions=%d open_lots=%d "
@@ -559,17 +577,19 @@ def _insert_dump_run(conn, snapshot_at, schema_version, dump_dir, run_meta,
 # (`pdf_parsers_daf`) and reconciliation gate.
 
 
-def _parse_daf_statement_pdf_worker(path):
+def _parse_daf_statement_pdf_worker(job):
     """ProcessPoolExecutor target — module-level so it pickles
     cleanly under spawn (macOS); errors return a dict rather than
-    crashing the pool."""
+    crashing the pool. ``job`` is `_job`'s."""
+    path, sha, extract_dir = job
     try:
-        return pdf_parsers_daf.parse_daf_statement_pdf(path)
+        return pdf_readers.parse_daf_statement_pdf(
+            path, sha=sha, cache_dir=extract_dir)
     except Exception as e:
         return {"_error": repr(e), "path": str(path)}
 
 
-def _load_daf_historical(conn, dump_dir, coord=None):
+def _load_daf_historical(conn, dump_dir, coord=None, *, extract_dir=None):
     """Parse every DAF statement PDF in this dump and insert the
     period-end pool rows into ``historical_position_snapshots``. The
     reconciliation gate is enforced here: a statement whose pool sum
@@ -586,7 +606,7 @@ def _load_daf_historical(conn, dump_dir, coord=None):
         sha = coord.sha_for(path)
         parsed = coord.resolve(
             sha, _DAF_STATEMENT_PARSER_VERSION,
-            _parse_daf_statement_pdf_worker, str(path),
+            _parse_daf_statement_pdf_worker, _job(path, sha, extract_dir),
         )
         if "_error" in parsed:
             log.warning("daf historical: parse failed for %s: %s",
@@ -666,13 +686,16 @@ def _load_daf_historical(conn, dump_dir, coord=None):
 # content-addressed parse cache) and insert the resulting rows
 # serially. See the parse cache section below.
 
-def _parse_statement_pdf_worker(path):
+def _parse_statement_pdf_worker(job):
     """ProcessPoolExecutor target: parse one PDF and return its
     parsed dict (or ``{"_error": "<repr>"}`` so the parent can
     log and continue rather than crashing the whole pool).
-    Module-level so it pickles cleanly under spawn (macOS)."""
+    Module-level so it pickles cleanly under spawn (macOS).
+    ``job`` is `_job`'s."""
+    path, sha, extract_dir = job
     try:
-        return pdf_parsers.parse_statement_pdf(path)
+        return pdf_readers.parse_statement_pdf(
+            path, sha=sha, cache_dir=extract_dir)
     except Exception as e:
         return {"_error": repr(e), "path": str(path)}
 
@@ -690,6 +713,20 @@ def _parse_statement_pdf_worker(path):
 # across all cores. The sidecar is `<sha>.<version>.json`, so a cache
 # stays warm across a change of the code around it. An error result is
 # never cached.
+#
+# Beneath it, `collectorkit.extract` caches each document's extracted text
+# and words, keyed on the content hash and the extraction key, in the
+# EXTRACT_CACHE_SUBDIR of the parse cache. A parser edit moves the parse
+# namespace and re-parses from there.
+
+EXTRACT_CACHE_SUBDIR = "extract"
+
+
+def _job(path, sha, extract_dir):
+    """A worker's argument: the document, its sha256, and the extraction
+    cache directory (None for none). Strings only, so it pickles."""
+    return (str(path), sha, None if extract_dir is None else str(extract_dir))
+
 
 def _transient_coordinator():
     """A pool-less, sidecar-less parse pool for direct callers of the
@@ -698,7 +735,8 @@ def _transient_coordinator():
     return ParsePool(ParseCache(), 1)
 
 
-def _load_historical_from_pdfs(conn, dump_dir, coord=None):
+def _load_historical_from_pdfs(conn, dump_dir, coord=None, *,
+                               extract_dir=None):
     """Parse every 529 statement PDF in this dump's ``documents/``
     and insert the holdings rows into ``historical_position_snapshots``
     keyed by ``(as_of_date, account_external_id, description)``.
@@ -719,7 +757,7 @@ def _load_historical_from_pdfs(conn, dump_dir, coord=None):
         sha = coord.sha_for(path)
         result = coord.resolve(
             sha, _STATEMENT_PARSER_VERSION,
-            _parse_statement_pdf_worker, str(path),
+            _parse_statement_pdf_worker, _job(path, sha, extract_dir),
         )
         if "_error" in result:
             log.warning(
@@ -740,12 +778,13 @@ def _parse_supplied_statement_pdf_worker(args):
     its parsed dict, or ``{"_error": "<repr>"}`` so the parent can
     log and continue. Module-level so it pickles under spawn.
 
-    ``args`` is a ``(path, expected_signature)`` tuple — the pool
+    ``args`` is `_job`'s tuple plus the expected signature — the pool
     only takes a single argument per call."""
-    path, expected_signature = args
+    path, sha, extract_dir, expected_signature = args
     try:
-        return pdf_parsers_supplied.parse_supplied_statement_pdf(
+        return pdf_readers.parse_supplied_statement_pdf(
             path, expected_signature=expected_signature,
+            sha=sha, cache_dir=extract_dir,
         )
     except Exception as e:
         return {"_error": repr(e), "path": str(path)}
@@ -763,7 +802,8 @@ def _supplied_parser_version(signature):
 
 
 def _load_supplied_statements_oneshot(conn, supplied_dir, *,
-                                      signature=None, coord=None):
+                                      signature=None, coord=None,
+                                      extract_dir=None):
     """Load every monthly supplied statement from ``supplied_dir``:
     its holdings into ``historical_position_snapshots`` and its
     account-level activity into ``transactions``. No-op when
@@ -830,7 +870,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, *,
             sha = coord.sha_for(path)
             result = coord.resolve(
                 sha, version, _parse_supplied_statement_pdf_worker,
-                (str(path), signature),
+                (*_job(path, sha, extract_dir), signature),
             )
             err = result.get("_error")
             if err == "signature-mismatch":
@@ -888,15 +928,18 @@ def _read_1099_identity_worker(path):
     """ProcessPoolExecutor target: which form one Consolidated 1099 is,
     or ``{"_error": "<repr>"}``."""
     try:
-        return pdf_parsers_1099.read_consolidated_1099_identity(path)
+        return pdf_readers.read_consolidated_1099_identity(path)
     except Exception as e:
         return {"_error": repr(e), "path": str(path)}
 
 
-def _parse_1099_worker(path):
-    """Parse one Consolidated 1099 in full, or ``{"_error": "<repr>"}``."""
+def _parse_1099_worker(job):
+    """Parse one Consolidated 1099 in full, or ``{"_error": "<repr>"}``.
+    ``job`` is `_job`'s."""
+    path, sha, extract_dir = job
     try:
-        return pdf_parsers_1099.parse_consolidated_1099_pdf(path)
+        return pdf_readers.parse_consolidated_1099_pdf(
+            path, sha=sha, cache_dir=extract_dir)
     except Exception as e:
         return {"_error": repr(e), "path": str(path)}
 
@@ -926,7 +969,8 @@ def _dumps_for_1099s(conn, dumps, pending):
     return list(pending), False
 
 
-def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None):
+def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None,
+                             extract_dir=None):
     """Load the Form 1099-B lots of every Consolidated 1099 in ``dumps``
     into `closed_lots`, one form at a time, and file each copy's account
     and tax year into `documents` (`_file_1099_documents`).
@@ -952,7 +996,8 @@ def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None):
             if held.get(key) is not None and held[key] >= prepared:
                 continue
             parsed = coord.resolve(sha, _CONSOLIDATED_1099_PARSER_VERSION,
-                                   _parse_1099_worker, str(path))
+                                   _parse_1099_worker,
+                                   _job(path, sha, extract_dir))
             if "_error" in parsed:
                 log.warning("1099: parse failed for %s: %s",
                             path.name, parsed["_error"])

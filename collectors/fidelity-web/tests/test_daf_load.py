@@ -309,7 +309,7 @@ def test_daf_historical_from_statements(migrated, tmp_path, monkeypatch):
     }
     monkeypatch.setattr(
         load, "_parse_daf_statement_pdf_worker",
-        lambda path: parsed[Path(path).name])
+        lambda job: parsed[Path(job[0]).name])
 
     load.load_dump(migrated, dump, 7)
 

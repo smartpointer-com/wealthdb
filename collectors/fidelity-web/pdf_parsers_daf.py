@@ -32,8 +32,8 @@ imported (see load._load_daf_historical).
 
 Architecture mirrors ``pdf_parsers``: the text-level parsers are pure
 functions of strings (tested against hand-crafted fixtures);
-``parse_daf_statement_pdf(path)`` opens the PDF via pdfplumber and
-delegates.
+``parse(extracted, path=...)`` reads the statement as pdfplumber
+extracted it and delegates. ``pdf_readers`` does the extraction.
 """
 
 from __future__ import annotations
@@ -41,14 +41,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
-
 from collectorkit.statement_period import MONTH_NUMS as _MONTH_NUMS
-
-# Coarse manual epoch for load.py's parse-cache namespace; automatic
-# invalidation rides the source fingerprint (see
-# load._DAF_STATEMENT_PARSER_VERSION / collectorkit.srcfp).
-PARSER_VERSION = "1"
+from collectorkit.words import Extracted
 
 # "Ending Value as of June 30, 2023 $ 1,234.56". The same shape with
 # "Beginning" anchors the period start; the other summary lines carry
@@ -170,8 +164,9 @@ def reconcile(ending_value, rows, total_end, *, tolerance=0.01):
     return True, None
 
 
-def parse_daf_statement_pdf(path):
-    """Open a DAF statement PDF and return a structured dict:
+def parse(extracted: Extracted, *, path) -> dict:
+    """Read a DAF statement from its extracted text and return a
+    structured dict:
 
         {
             "path": "<absolute path>",
@@ -188,7 +183,7 @@ def parse_daf_statement_pdf(path):
     ``pools`` carries the period-END holdings (the snapshot). The
     caller enforces the reconciliation gate — an unreconciled parse is
     returned, not raised, so the loader can log the reason and skip."""
-    text = _extract_pdf_text(str(path))
+    text = extracted.text()
     as_of, ending = parse_ending_value(text)
     rows, _total_begin, total_end = parse_pool_rows(text)
     ok, reason = reconcile(ending, rows, total_end)

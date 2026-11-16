@@ -26,9 +26,10 @@ The text-level parsers (``parse_statement_period``,
 ``parse_account_blocks``, ``parse_holdings_block``) are pure
 functions of strings, so tests exercise them against
 hand-crafted fixtures without needing a real PDF.
-``parse_statement_pdf(path)`` is the orchestration entry-point
-that opens the PDF via pdfplumber and delegates to the
-text-level parsers.
+``parse(extracted, path=...)`` reads a statement as pdfplumber
+extracted it and delegates to the text-level parsers. The
+extraction itself, and ``parse_statement_pdf(path)``, live in
+``pdf_readers``, outside this module's fingerprint.
 
 Performance note: extraction stays on pdfplumber; see the note in
 ``pdf_parsers_supplied``. The parse cache in load.py absorbs the cost
@@ -40,18 +41,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from collectorkit.pdf import extract_text_pdfplumber as _extract_pdf_text
+from collectorkit.words import Extracted
 
 from pdf_common import _ACCOUNT_HEADER_RE, parse_statement_period
-
-# A coarse, human-readable epoch for load.py's parse-cache namespace.
-# Automatic invalidation is handled by the source fingerprint (see
-# load._STATEMENT_PARSER_VERSION / collectorkit.srcfp), which re-keys the
-# cache whenever this module or its import closure changes, so an edit to
-# the text-level parsers cannot be replayed under stale cache entries.
-# Bumping this constant is an optional manual override to force a
-# re-parse without a code change.
-PARSER_VERSION = "1"
 
 
 # ============================================================
@@ -247,11 +239,12 @@ def _parse_percent(tok):
 
 
 # ============================================================
-# PDF orchestration
+# The extracted statement
 # ============================================================
 
-def parse_statement_pdf(path):
-    """Open the statement PDF and return a structured dict:
+def parse(extracted: Extracted, *, path) -> dict:
+    """Read a statement from its extracted text and return a
+    structured dict:
 
         {
             "path": "<absolute path>",
@@ -267,7 +260,7 @@ def parse_statement_pdf(path):
         }
 
     """
-    text = _extract_pdf_text(path)
+    text = extracted.text()
     period = parse_statement_period(text)
     blocks = parse_account_blocks(text)
     accounts_out = []
@@ -297,17 +290,3 @@ def parse_statement_pdf(path):
         "accounts": accounts_out,
     }
 
-
-# ============================================================
-# CLI for standalone use
-# ============================================================
-
-if __name__ == "__main__":
-    import sys
-
-    from collectorkit import parser_cli
-    raise SystemExit(parser_cli.dump_json(
-        sys.argv[1:], parse_statement_pdf,
-        description="Extract per-account Holdings rows from one "
-                    "or more Fidelity 529 statement PDFs and emit "
-                    "JSON."))

@@ -720,10 +720,10 @@ def _statement_dump(tmp_path):
 def _counting_parser(monkeypatch, result):
     calls = []
 
-    def parse(path):
+    def parse(path, **_cache):
         calls.append(path)
         return result
-    monkeypatch.setattr(load.pdf_parsers, "parse_statement_pdf", parse)
+    monkeypatch.setattr(load.pdf_readers, "parse_statement_pdf", parse)
     return calls
 
 
@@ -781,26 +781,36 @@ def test_supplied_parser_version_depends_on_signature_without_leaking_it():
     assert "PLACEHOLDER REGISTRATION" not in v_a                   # no PII
 
 
-def test_parser_logic_fingerprint_in_cache_namespaces():
-    """Both parse-cache namespaces embed a hex parser-logic fingerprint
-    (srcfp.parser_fingerprint over the parser's import closure plus the
-    pdfplumber / pdfminer.six versions), so a parser edit, an imported-helper
-    edit, or a library upgrade invalidates the cache. The namespaces are clean
-    filename components, and the 529-statement vs supplied-statement parsers
-    get distinct fingerprints. What moves the fingerprint is covered by
-    test_srcfp."""
+def test_parse_cache_namespaces_hold_the_parser_and_the_extraction():
+    """Each parse-cache namespace is ``<kind>.<parser fingerprint>.<extraction
+    key>``: srcfp.parser_fingerprint over the parser's import closure, then
+    collectorkit.extract.extraction_key of the engine that reads the kind. So
+    a parser edit, an imported-helper edit, or an engine upgrade re-parses.
+    The namespaces are clean filename components, and the 529-statement vs
+    supplied-statement parsers get distinct fingerprints. What moves either
+    hash is covered by the kit's tests."""
     ok = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-    stmt = load._STATEMENT_PARSER_VERSION
-    supplied = load._SUPPLIED_PARSER_FINGERPRINT
-    assert stmt.startswith("stmt529.v") and set(stmt) <= ok
-    assert supplied.startswith("supplied.v") and set(supplied) <= ok
-    assert re.search(r"\.[0-9a-f]{32}$", stmt), "statement ns ends in a hex fingerprint"
-    assert re.search(r"\.[0-9a-f]{32}$", supplied), "supplied ns ends in a hex fingerprint"
+    text_key = load.extract.extraction_key(load.pdf_readers.STATEMENT_TEXT)
+    words_key = load.extract.extraction_key(load.pdf_readers.FORM_1099_WORDS)
+    shape = r"^{}\.[0-9a-f]{{32}}\.{}$"
+    for ns, kind, key in (
+            (load._STATEMENT_PARSER_VERSION, "stmt529", text_key),
+            (load._SUPPLIED_PARSER_FINGERPRINT, "supplied", text_key),
+            (load._DAF_STATEMENT_PARSER_VERSION, "dafstmt", text_key),
+            (load._CONSOLIDATED_1099_PARSER_VERSION, "1099", words_key)):
+        assert set(ns) <= ok
+        assert re.match(shape.format(kind, key), ns), kind
+    assert text_key != words_key
     # distinct parser modules -> distinct fingerprints
-    assert stmt.rsplit(".", 1)[-1] != supplied.rsplit(".", 1)[-1]
+    fingerprints = {ns.split(".")[1] for ns in (
+        load._STATEMENT_PARSER_VERSION, load._SUPPLIED_PARSER_FINGERPRINT,
+        load._DAF_STATEMENT_PARSER_VERSION,
+        load._CONSOLIDATED_1099_PARSER_VERSION)}
+    assert len(fingerprints) == 4
     # the supplied key folds the signature hash on top of its namespace
     assert load._supplied_parser_version(
-        "PLACEHOLDER REGISTRATION").startswith(supplied + ".")
+        "PLACEHOLDER REGISTRATION").startswith(
+            load._SUPPLIED_PARSER_FINGERPRINT + ".")
 
 
 # ============================================================

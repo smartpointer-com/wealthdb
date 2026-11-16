@@ -21,7 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
-import pdf_parsers_1099  # noqa: E402
+import pdf_readers  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 ACCT = "100000001"
@@ -58,16 +58,16 @@ def stub_1099(monkeypatch):
             "tax_year", "account_external_id", "prepared", "corrected")} | {
             "path": str(path)}
 
-    def full(path):
+    def full(path, **_cache):
         form = json.loads(Path(path).read_text())
         if form.get("broken_lots"):
             raise ValueError("unreadable")
         parsed.append(Path(path).parent.parent.name + "/" + Path(path).name)
         return identity(path) | {"lots": form["lots"]}
 
-    monkeypatch.setattr(pdf_parsers_1099, "read_consolidated_1099_identity",
+    monkeypatch.setattr(pdf_readers, "read_consolidated_1099_identity",
                         identity)
-    monkeypatch.setattr(pdf_parsers_1099, "parse_consolidated_1099_pdf", full)
+    monkeypatch.setattr(pdf_readers, "parse_consolidated_1099_pdf", full)
     return parsed
 
 

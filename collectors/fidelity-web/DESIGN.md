@@ -392,11 +392,11 @@ databases always conform to the latest schema.
 | `positions` | snapshot | `(snapshot_at, account_external_id, instrument_key)` | `description`, `quantity`, `last_price`, `current_value`, `cost_basis_total`, `average_cost_basis`, `type`, `currency`, `asset_class`, `is_core_position`; dividend-view fields (`ex_date`, `amount_per_share`, `pay_date`, `distribution_yield`, `sec_yield`, `est_annual_income`); rest in `payload` |
 | `transactions` | event | synthetic `activity_id` (SHA-256 prefix over the row's structural columns + a per-file occurrence index; §3.3 — file-independent so overlapping windows collapse) | `timestamp`, `account_external_id`, `kind`, `instrument_key`, `quantity`, `price`, `amount`, `settlement_date`, `currency`, `source_sha256` |
 | `documents` | event | `content_sha256` | `snapshot_at` (first observation), `file_path`, `file_name`, `size_bytes`, `doc_kind` (`statement` / `tax_form` / `balances_html` / `performance_html`), `file_format`, `tax_year`, `account_external_id` |
-| `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `cost_basis` and `unrealized_gain_loss` (USD as printed; supplied statements only, NULL where the statement states none), `currency`, `source_sha256`; rest in `payload`. Populated from two PDF archives — scraped 529 statements (`pdf_parsers.parse_statement_pdf()`) and statements supplied out-of-band under `<bronze-dir>/supplied-statements/` (`pdf_parsers_supplied.parse_supplied_statement_pdf()`). See §4.5. |
+| `historical_position_snapshots` | snapshot | `(as_of_date, account_external_id, description)` | `instrument_key` (cross-walked from `positions.description` when available; NULL otherwise), `quantity`, `price`, `market_value`, `percent_of_total`, `cost_basis` and `unrealized_gain_loss` (USD as printed; supplied statements only, NULL where the statement states none), `currency`, `source_sha256`; rest in `payload`. Populated from two PDF archives — scraped 529 statements (`pdf_parsers.parse()`) and statements supplied out-of-band under `<bronze-dir>/supplied-statements/` (`pdf_parsers_supplied.parse()`). See §4.5. |
 | `closed_lots` | event | synthetic `lot_id` (content plus an occurrence index within the document) | `document_kind` (`form_1099b` / `statement` / `closed_positions`), `account_external_id`, `tax_year`, `form_prepared`, `security_name`, `instrument_key`, `cusip`, `action`, `quantity`, `acquired_date` (ISO, or the form's own `Various` / `Unknown`), `disposed_date`, `settlement_date`, `proceeds`, `cost_basis`, `accrued_market_discount`, `wash_sale_disallowed`, `realized_gain_loss`, `fees`, `federal_tax_withheld`, `term` (`SHORT` / `LONG`), `covered`, `form_8949_box`, `specific_share_id`, `corrected`, `currency`, `source_sha256`; rest in `payload`. One row per realized lot as a source states it: the Form 1099-B lots of a Consolidated 1099 (§4.6), the sales of a supplied statement (§4.5), and the positions page's closed lots for a tax year (§8.3.1). The names and values match schwab-web's `closed_lots`. The same sale in two sources stays twice. Gold keeps every row and marks one kind per account and tax year as primary: the 1099-B, else the closed positions, else the statements. A statement sale has no `tax_year`, so gold takes its settlement year. A sale that settled in January after a December trade takes December's year, read off the 1099-B or the closed positions. |
 | `open_lots` | snapshot | `(snapshot_at, account_external_id, instrument_key, lot_index)` | `cusip`, `quantity`, `unit_cost`, `cost_basis`, `acquired_date` (ISO), `unrealized_gain_loss`, `current_value`, `term` (`SHORT` / `LONG`), `covered` (not stated; NULL), `currency`, `source_sha256`; the printed cells in `payload`. One row per open lot, as the positions page's lot table prints it (§8.3.1). `snapshot_at` is the dump that fetched the table; an unchanged position keeps the rows of its last fetch. Gold gives a position the lots of its latest fetch while their quantities and costs still sum to the position's. A lot carried past its fetch has no market value, and keeps its term only while that cannot have changed. |
 | `stated_periods` | snapshot | `(period_end, account_external_id, source_sha256)` | `period_start`, `beginning_value`, `ending_value`, `accrual`, `net_additions` (signed: in positive), `net_gain`, `income`, `fees` (positive), `currency`; the cells as read in `payload`. One account's period summary as a document states it; NULL where it states nothing. fidelity-web writes no row; the svb month-end workbook fills it in svb's brokerage DB. |
-| `parser_generations` | meta | `scope` | `generation`, `stamped_at`. Which generation of a document parser produced the rows a pass is holding — the same fingerprint the parse cache is keyed on. See §4.5. |
+| `parser_generations` | meta | `scope` | `generation`, `stamped_at`. Which generation of a document parser produced the rows a pass is holding — the same namespace the parse cache is keyed on. See §4.5. |
 
 Notes:
 - `currency` defaults to `'USD'` on both `positions` and
@@ -523,7 +523,7 @@ Fund's Giving Account statements (`pdf_parsers_daf`; see §12.3):
 document center* exposes monthly / quarterly statement PDFs for the
 account groups it serves statements for, such as 529 plan accounts.
 `download.py` scrapes these into
-`<dump>/documents/Statement<MMDDYYYY>.pdf`, parsed by `pdf_parsers.parse_statement_pdf()` and wired into
+`<dump>/documents/Statement<MMDDYYYY>.pdf`, parsed by `pdf_parsers.parse()` and wired into
 `load.py` via a `ProcessPoolExecutor` worker pool (PDF text
 extraction is CPU-bound; SQLite insert stays on the main thread).
 The cross-walk from the human-readable fund description to an
@@ -669,11 +669,20 @@ fails to parse, fails its signature guard or fails reconciliation
 keeps whatever it wrote before — stale rows beat no rows when nothing
 can re-derive them.
 
-The generation itself is not hand-maintained: it is the
-`collectorkit.srcfp.parser_fingerprint` value the parse cache is
-already keyed on, which folds in the parser's first-party import
-closure, the extraction libraries and — for the supplied statements —
-the signature guard.
+The generation itself is not hand-maintained: it is the namespace the
+parse cache is already keyed on. It holds three things:
+
+- the parser's code: `collectorkit.srcfp.parser_fingerprint` of the
+  parser module's first-party import closure;
+- the extraction: `collectorkit.extract.extraction_key` of the engine
+  that reads the kind, with its arguments and versions;
+- for the supplied statements, the signature guard.
+
+A parser module reads an extracted document and imports nothing that
+extracts. `pdf_readers.py` does the extraction and keeps each document's
+text and words in the `extract/` directory of the parse cache. So a
+parser edit re-parses from there without opening a PDF, and an engine
+upgrade reads every PDF again.
 
 ### 4.6 Tax-form structured data
 
@@ -1142,7 +1151,7 @@ one PDF per period that can cover several accounts of one household,
 each in its own section, including **EDUCATION (529)** sections.
 `_doc_stem` therefore names statement downloads
 `Statement_<period>.pdf` so the silver loader's 529 historical path
-(`Statement*.pdf` glob → `pdf_parsers.parse_statement_pdf`) parses the
+(`Statement*.pdf` glob → `pdf_parsers.parse`) parses the
 529 holdings into `historical_position_snapshots` (§4.5). An account
 outside the household surfaces as interested-party instead, which the
 walk leaves alone; its history can come from

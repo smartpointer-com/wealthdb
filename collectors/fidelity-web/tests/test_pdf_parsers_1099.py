@@ -16,17 +16,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pdf_parsers_1099 as P  # noqa: E402
+from collectorkit.words import Extracted, Page, Word, params_key  # noqa: E402
 
 
 # ============================================================
 # Fixture builders
 # ============================================================
 
+def _w(text, x0, x1):
+    """A word at ``x0``-``x1``; the lines are placed by `_pages`."""
+    return Word(text, x0, x1, 0.0, 8.0)
+
+
 def _prose(text, x0=22.0):
     """A line of running text: words left to right from ``x0``."""
     out = []
     for token in text.split():
-        out.append(P.Word(token, x0, x0 + 5 * len(token)))
+        out.append(_w(token, x0, x0 + 5 * len(token)))
         x0 += 5 * len(token) + 3
     return out
 
@@ -40,8 +46,8 @@ _FIGURE_X1 = {"proceeds": 333, "cost": 405, "discount": 477, "wash": 540,
 
 def _header():
     """The first column-header line, with every box label placed."""
-    line = [P.Word("Action", 29, 51), P.Word("Quantity", 114, 144)]
-    line += [P.Word(label, x0, x0 + 9) for label, x0 in _LABEL_X0.items()]
+    line = [_w("Action", 29, 51), _w("Quantity", 114, 144)]
+    line += [_w(label, x0, x0 + 9) for label, x0 in _LABEL_X0.items()]
     return sorted(line, key=lambda w: w.x0)
 
 
@@ -50,12 +56,12 @@ def _row(action, qty, acquired, sold, **figures):
     wash, gain, federal, state) to the text printed in it; a column left
     out prints nothing, as on the form."""
     line = _prose(action, 31)
-    line.append(P.Word(qty, 144 - 5 * len(qty), 144))
-    line.append(P.Word(acquired, 158, 189))
-    line.append(P.Word(sold, 212, 243))
+    line.append(_w(qty, 144 - 5 * len(qty), 144))
+    line.append(_w(acquired, 158, 189))
+    line.append(_w(sold, 212, 243))
     for column, text in figures.items():
         x1 = _FIGURE_X1[column]
-        line.append(P.Word(text, x1 - 5 * len(text), x1))
+        line.append(_w(text, x1 - 5 * len(text), x1))
     return line
 
 
@@ -180,6 +186,42 @@ def test_identity_reads_the_corrected_stamp():
     # The cover's footer comes first: it is the date the form was prepared.
     assert prepared == date(2026, 2, 20)
     assert corrected == date(2026, 2, 21)
+
+
+def _pages(lines):
+    """The lines as an extraction would hold them: each line 12 points
+    below the one before, a page ending at its footer."""
+    pages, words, top = [], [], 100.0
+    for line in lines:
+        words += [Word(w.text, w.x0, w.x1, top, top + 8.0) for w in line]
+        top += 12.0
+        if " Pages " in P._line_text(line):
+            pages.append(Page("", ((params_key({}), tuple(words)),)))
+            words, top = [], 100.0
+    pages.append(Page("", ((params_key({}), tuple(words)),)))
+    return pages
+
+
+def test_parse_reads_the_extracted_words_as_lines():
+    doc = P.parse(Extracted("pdfplumber", tuple(_pages(_DOC))), path="x.pdf")
+    assert (doc["tax_year"], doc["account_external_id"], doc["prepared"]) \
+        == (2025, "100000001", "2026-02-15")
+    assert doc["lots"] == [P.asdict(lot) for lot in _lots()]
+
+
+def test_the_identity_read_stops_at_the_first_page_that_states_it():
+    read = []
+
+    def pages():
+        for i, page in enumerate(_pages(_DOC)):
+            read.append(i)
+            yield page
+
+    ident = P.read_identity(pages(), path="x.pdf")
+    assert ident == {"path": "x.pdf", "tax_year": 2025,
+                     "account_external_id": "100000001",
+                     "prepared": "2026-02-15", "corrected": None}
+    assert read == [0]
 
 
 # ============================================================

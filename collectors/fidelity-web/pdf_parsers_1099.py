@@ -38,28 +38,20 @@ a form on its account and year and keeps the latest prepared one.
 
 Architecture mirrors the statement parsers: ``parse_1099b_lines`` is a
 pure function over lines of placed words, so tests build them by hand;
-``parse_consolidated_1099_pdf(path)`` opens the PDF with pdfplumber
-and delegates.
+``parse(extracted, path=...)`` groups the words pdfplumber extracted
+into lines (``collectorkit.words.rows``) and delegates.
+``pdf_readers`` does the extraction.
 """
 
 from __future__ import annotations
 
+import itertools
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import date as date_cls
 
-# A coarse, human-readable epoch for load.py's parse-cache namespace.
-# The source fingerprint (collectorkit.srcfp) re-keys the cache on any
-# edit to this module; bumping this forces a re-parse without one.
-PARSER_VERSION = "1"
-
-
-@dataclass(frozen=True)
-class Word:
-    """One word on a page, with its horizontal extent in PDF points."""
-    text: str
-    x0: float
-    x1: float
+from collectorkit.words import Extracted, Page, rows
 
 
 def _line_text(line):
@@ -214,8 +206,8 @@ def _number(token):
 
 def parse_1099b_lines(lines, *, tax_year=None):
     """Extract every Form 1099-B lot from a document's lines, each line
-    a list of ``Word`` in reading order. Returns [] when the document
-    has no 1099-B pages.
+    a sequence of ``collectorkit.words.Word`` in reading order. Returns
+    [] when the document has no 1099-B pages.
 
     The page is read top to bottom carrying three pieces of state: the
     section (box, term, covered), the column layout from the most
@@ -297,27 +289,18 @@ def parse_1099b_lines(lines, *, tax_year=None):
 
 
 # ============================================================
-# PDF orchestration
+# The extracted document
 # ============================================================
 
 # Words closer than this many points vertically share a line.
 _LINE_TOLERANCE = 2.0
 
 
-def _page_lines(page):
-    """Group a pdfplumber page's words into lines, each sorted left to
-    right, the lines top to bottom."""
-    lines = []
-    for w in sorted(page.extract_words(), key=lambda w: (w["top"], w["x0"])):
-        if lines and abs(lines[-1][0] - w["top"]) <= _LINE_TOLERANCE:
-            lines[-1][1].append(w)
-        else:
-            lines.append((w["top"], [w]))
-    return [
-        [Word(w["text"], w["x0"], w["x1"])
-         for w in sorted(ws, key=lambda w: w["x0"])]
-        for _, ws in lines
-    ]
+def _page_lines(page: Page):
+    """A page's words grouped into lines, each left to right, the lines
+    top to bottom; a line opens beyond ``_LINE_TOLERANCE`` of its first
+    word's top."""
+    return [row.words for row in rows(page.words(), _LINE_TOLERANCE, "first")]
 
 
 # The identity sits on the first page of the statement proper; a
@@ -336,29 +319,27 @@ def _identity_dict(path, year, acct, prepared, corrected):
     }
 
 
-def read_consolidated_1099_identity(path):
-    """Read only which form a Consolidated 1099 PDF is: the
-    ``parse_consolidated_1099_pdf`` dict without its ``lots``.
+def read_identity(pages: Iterable[Page], *, path) -> dict:
+    """Which form a Consolidated 1099 is: the ``parse`` dict without its
+    ``lots``.
 
     Fidelity serves the same form again on every download, so the
     loader reads this first and parses the lots of only the copy it
-    keeps. The pages are read until the year, the account and the
-    prepared date are all known."""
-    import pdfplumber
-
+    keeps. ``pages`` are taken in order, and only until the year, the
+    account and the prepared date are all known, so a reader that
+    extracts a page as it is asked for reads no more than that."""
     lines = []
     year = acct = prepared = corrected = None
-    with pdfplumber.open(str(path)) as pdf:
-        for page in pdf.pages[:_IDENTITY_MAX_PAGES]:
-            lines.extend(_page_lines(page))
-            year, acct, prepared, corrected = parse_identity(lines)
-            if year and acct and prepared:
-                break
+    for page in itertools.islice(pages, _IDENTITY_MAX_PAGES):
+        lines.extend(_page_lines(page))
+        year, acct, prepared, corrected = parse_identity(lines)
+        if year and acct and prepared:
+            break
     return _identity_dict(path, year, acct, prepared, corrected)
 
 
-def parse_consolidated_1099_pdf(path):
-    """Open a Consolidated Form 1099 PDF and return:
+def parse(extracted: Extracted, *, path) -> dict:
+    """Read a Consolidated Form 1099 from its extracted words and return:
 
         {
             "path": "<path>",
@@ -369,25 +350,12 @@ def parse_consolidated_1099_pdf(path):
             "lots": [{...}, ...],
         }
     """
-    import pdfplumber
-
     lines = []
-    with pdfplumber.open(str(path)) as pdf:
-        for page in pdf.pages:
-            lines.extend(_page_lines(page))
+    for page in extracted.pages:
+        lines.extend(_page_lines(page))
     year, acct, prepared, corrected = parse_identity(lines)
     lots = parse_1099b_lines(lines, tax_year=year)
     return {
         **_identity_dict(path, year, acct, prepared, corrected),
         "lots": [asdict(lot) for lot in lots],
     }
-
-
-if __name__ == "__main__":
-    import sys
-
-    from collectorkit import parser_cli
-    raise SystemExit(parser_cli.dump_json(
-        sys.argv[1:], parse_consolidated_1099_pdf,
-        description="Extract the Form 1099-B lots from one or more "
-                    "Consolidated Form 1099 PDFs and emit JSON."))

@@ -23,6 +23,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pdf_parsers_supplied as ppt  # noqa: E402
+from collectorkit.words import Extracted, Page  # noqa: E402
+
+
+def _parse(text, **kw):
+    """`ppt.parse` over a one-page extraction of ``text``."""
+    return ppt.parse(Extracted("pdfplumber", (Page(text),)),
+                     path="/fake/path.pdf", **kw)
 
 
 # ============================================================
@@ -330,10 +337,9 @@ def test_every_term_key_is_one_gold_reads():
     assert {"coupon_kind", "coupon_frequency", "interest_rate"} <= emitted
 
 
-def test_a_fund_row_states_no_terms(monkeypatch):
+def test_a_fund_row_states_no_terms():
     assert _bond_terms_rows()["ABCFX"].terms == {}
-    monkeypatch.setattr(ppt, "_extract_pdf_text", lambda path: _BOND_TERMS_TEXT)
-    holdings = ppt.parse_supplied_statement_pdf("/fake/path.pdf")["accounts"][0]["holdings"]
+    holdings = _parse(_BOND_TERMS_TEXT)["accounts"][0]["holdings"]
     by_key = {h["instrument_key"]: h for h in holdings}
     # The entry point lays the terms beside the row's figures; a fund's row
     # holds no term key.
@@ -344,29 +350,20 @@ def test_a_fund_row_states_no_terms(monkeypatch):
 
 
 # ============================================================
-# parse_supplied_statement_pdf — signature gate
+# parse — signature gate
 # ============================================================
 
-def test_parse_returns_signature_mismatch_when_substring_absent(monkeypatch):
-    # Stub the PDF text extractor so no real PDF is needed on
-    # disk; the function under test should bail out before
-    # reaching any text parsing when the signature is absent.
-    monkeypatch.setattr(
-        ppt, "_extract_pdf_text",
-        lambda path: "INVESTMENT REPORT — UNRELATED ACCOUNT",
-    )
-    out = ppt.parse_supplied_statement_pdf(
-        "/fake/path.pdf", expected_signature="PLACEHOLDER HOLDER",
-    )
+def test_parse_returns_signature_mismatch_when_substring_absent():
+    # The function under test should bail out before reaching any text
+    # parsing when the signature is absent.
+    out = _parse("INVESTMENT REPORT — UNRELATED ACCOUNT",
+                 expected_signature="PLACEHOLDER HOLDER")
     assert out["_error"] == "signature-mismatch"
     assert out["expected_signature"] == "PLACEHOLDER HOLDER"
 
 
-def test_parse_accepts_when_signature_present(monkeypatch):
-    monkeypatch.setattr(ppt, "_extract_pdf_text", lambda path: _MONTHLY_TEXT)
-    out = ppt.parse_supplied_statement_pdf(
-        "/fake/path.pdf", expected_signature="PLACEHOLDER HOLDER",
-    )
+def test_parse_accepts_when_signature_present():
+    out = _parse(_MONTHLY_TEXT, expected_signature="PLACEHOLDER HOLDER")
     assert "_error" not in out
     assert out["period_end"] == "2025-11-30"
     assert len(out["accounts"]) == 2
@@ -649,9 +646,8 @@ def test_the_listing_ends_at_its_totals():
     assert all(r.settlement_date.day != 13 for r in _sales())
 
 
-def test_the_pdf_entry_point_returns_the_sales(monkeypatch):
-    monkeypatch.setattr(ppt, "_extract_pdf_text", lambda path: _SALES_TEXT)
-    out = ppt.parse_supplied_statement_pdf("/fake/path.pdf")
+def test_the_entry_point_returns_the_sales():
+    out = _parse(_SALES_TEXT)
     (account,) = out["accounts"]
     first = account["sales"][0]
     assert first["settlement_date"] == "2026-03-04"
