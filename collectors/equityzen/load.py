@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, extract, pdftotext, silver
+from collectorkit import bronze, extract, loader, pdftotext, silver
 
 import statements  # PDF parsers for capital-account statements + K-1s
 
@@ -370,9 +370,16 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
 
 # ---- per-run load --------------------------------------------------------
 
-def load_run(conn: sqlite3.Connection, run_dir: Path) -> dict:
-    """Load one pending run dir (see :func:`main`) and return its counts."""
-    snapshot_at = bronze.parse_run_ts(run_dir.name)
+# The per-run counts, in load_run's order, as the log names them.
+RUN_COUNTS = ("offerings", "position-events", "cash_flows", "tax_documents",
+              "capital_account_statements", "k1_documents")
+
+
+def load_run(conn: sqlite3.Connection, run: loader.Run) -> tuple[int, ...]:
+    """Load one pending run dir and return its counts, in RUN_COUNTS
+    order. The frame wraps it in one transaction and writes its
+    `dump_runs` row (run_columns) after it."""
+    run_dir, snapshot_at = run.dir, run.snapshot_at
     snapshot_iso = datetime.fromtimestamp(snapshot_at, timezone.utc).date().isoformat()
 
     # deal_id -> (stage, node, body); prefer the rich detail node, fall back
@@ -394,89 +401,90 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> dict:
                 stage = node.get("dealStage") or (prev[0] if prev else None)
                 nodes[did] = (stage, node, body)
 
-    stats = {"name": run_dir.name, "snapshot_at": snapshot_at,
-             "offerings": 0, "positions": 0, "cash_flows": 0, "tax_documents": 0,
+    stats = {"offerings": 0, "positions": 0, "cash_flows": 0, "tax_documents": 0,
              "capital_account_statements": 0, "k1_documents": 0}
 
     # Extract+parse this run's PDF blobs concurrently before the serial load;
     # the cache makes the per-offering loop below a pure cache read.
     _prewarm_parses(_pdf_blobs(run_dir, nodes))
 
-    with conn:  # BEGIN … COMMIT (ROLLBACK on error)
-        for did, (_stage, node, _body) in nodes.items():
-            conn.execute(
-                "INSERT OR REPLACE INTO offerings(deal_external_id, kind, "
-                "asset_class, company_external_id, company_name, "
-                "fund_external_id, fund_name, parent_deal_name, ticker_symbol, "
-                "flavor, date_start, deal_share_price, basis, purchase_price, "
-                "shares_original, currency, last_seen_at, payload) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                _offering_row(snapshot_at, node))
-            stats["offerings"] += 1
-
-            # Parse this offering's document blobs (if fetched): tax_documents
-            # metadata + content hashes, capital-account statements, K-1s.
-            tax_rows, cap_rows, k1_rows, parsed = _parse_documents(run_dir, snapshot_at, node)
-            for row in tax_rows:
-                conn.execute(
-                    "INSERT OR REPLACE INTO tax_documents(document_external_id, "
-                    "deal_external_id, snapshot_at, document_type, "
-                    "document_type_display, download_url, local_path, content_hash, "
-                    "retrieved_at, payload) VALUES (?,?,?,?,?,?,?,?,?,?)", row)
-                stats["tax_documents"] += 1
-            for row in cap_rows:
-                conn.execute(
-                    "INSERT OR REPLACE INTO capital_account_statements("
-                    "document_external_id, deal_external_id, period_end, "
-                    "beginning_balance, contributions, withdrawals, transfers, "
-                    "profit_loss, carried_interest, ending_nav, currency, "
-                    "content_hash, snapshot_at, payload) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
-                stats["capital_account_statements"] += 1
-            for row in k1_rows:
-                conn.execute(
-                    "INSERT OR REPLACE INTO k1_documents(document_external_id, "
-                    "deal_external_id, tax_year, is_final, beginning_capital, "
-                    "current_year_income, withdrawals_distributions, ending_capital, "
-                    "currency, content_hash, snapshot_at, payload) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", row)
-                stats["k1_documents"] += 1
-
-            # Event-sourced positions: replace this deal's full history with
-            # the replay from this run's ledger. Fund statements (NAV) are
-            # injected as revaluation events only for kind='private_fund';
-            # SPVs stay tender-driven.
-            is_fund = _g(node, "deal", "company", "assetClass") == "ASSET_MULTI_COMPANY_FUND"
-            conn.execute("DELETE FROM positions WHERE deal_external_id = ?", (did,))
-            for row in _position_events(snapshot_at, snapshot_iso, node,
-                                        parsed if is_fund else []):
-                conn.execute(
-                    "INSERT INTO positions(deal_external_id, event_seq, as_of_date, "
-                    "event_type, status, is_open, event_external_id, shares_held, "
-                    "cost_basis_remaining, price_per_share, market_value, "
-                    "distributions_cumulative, total_value, snapshot_at, payload) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
-                stats["positions"] += 1
-
-            for row in _cash_flow_rows(snapshot_at, node):
-                conn.execute(
-                    "INSERT OR REPLACE INTO cash_flows(cash_flow_external_id, "
-                    "deal_external_id, snapshot_at, kind, flow_date, amount, "
-                    "execution_fee, method, currency, description, payload, "
-                    "shares, price_per_share) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
-                stats["cash_flows"] += 1
-
-        manifest = canonical_json(read_json(run_dir / "run.json"))
+    for did, (_stage, node, _body) in nodes.items():
         conn.execute(
-            "INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir, "
-            "payload) VALUES (?,?,?,?)",
-            (snapshot_at, silver.current_schema_version(conn),
-             str(run_dir.resolve()), manifest))
-    return stats
+            "INSERT OR REPLACE INTO offerings(deal_external_id, kind, "
+            "asset_class, company_external_id, company_name, "
+            "fund_external_id, fund_name, parent_deal_name, ticker_symbol, "
+            "flavor, date_start, deal_share_price, basis, purchase_price, "
+            "shares_original, currency, last_seen_at, payload) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            _offering_row(snapshot_at, node))
+        stats["offerings"] += 1
+
+        # Parse this offering's document blobs (if fetched): tax_documents
+        # metadata + content hashes, capital-account statements, K-1s.
+        tax_rows, cap_rows, k1_rows, parsed = _parse_documents(run_dir, snapshot_at, node)
+        for row in tax_rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO tax_documents(document_external_id, "
+                "deal_external_id, snapshot_at, document_type, "
+                "document_type_display, download_url, local_path, content_hash, "
+                "retrieved_at, payload) VALUES (?,?,?,?,?,?,?,?,?,?)", row)
+            stats["tax_documents"] += 1
+        for row in cap_rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO capital_account_statements("
+                "document_external_id, deal_external_id, period_end, "
+                "beginning_balance, contributions, withdrawals, transfers, "
+                "profit_loss, carried_interest, ending_nav, currency, "
+                "content_hash, snapshot_at, payload) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            stats["capital_account_statements"] += 1
+        for row in k1_rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO k1_documents(document_external_id, "
+                "deal_external_id, tax_year, is_final, beginning_capital, "
+                "current_year_income, withdrawals_distributions, ending_capital, "
+                "currency, content_hash, snapshot_at, payload) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            stats["k1_documents"] += 1
+
+        # Event-sourced positions: replace this deal's full history with
+        # the replay from this run's ledger. Fund statements (NAV) are
+        # injected as revaluation events only for kind='private_fund';
+        # SPVs stay tender-driven.
+        is_fund = _g(node, "deal", "company", "assetClass") == "ASSET_MULTI_COMPANY_FUND"
+        conn.execute("DELETE FROM positions WHERE deal_external_id = ?", (did,))
+        for row in _position_events(snapshot_at, snapshot_iso, node,
+                                    parsed if is_fund else []):
+            conn.execute(
+                "INSERT INTO positions(deal_external_id, event_seq, as_of_date, "
+                "event_type, status, is_open, event_external_id, shares_held, "
+                "cost_basis_remaining, price_per_share, market_value, "
+                "distributions_cumulative, total_value, snapshot_at, payload) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            stats["positions"] += 1
+
+        for row in _cash_flow_rows(snapshot_at, node):
+            conn.execute(
+                "INSERT OR REPLACE INTO cash_flows(cash_flow_external_id, "
+                "deal_external_id, snapshot_at, kind, flow_date, amount, "
+                "execution_fee, method, currency, description, payload, "
+                "shares, price_per_share) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            stats["cash_flows"] += 1
+
+    return tuple(stats[k] for k in ("offerings", "positions", "cash_flows",
+                                     "tax_documents",
+                                     "capital_account_statements",
+                                     "k1_documents"))
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def run_columns(run: loader.Run) -> dict:
+    """The run's `dump_runs` row: the frame's columns and the manifest."""
+    return {**loader.default_run_columns(run),
+            "payload": canonical_json(run.manifest)}
+
+
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__.strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -485,39 +493,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Bronze root to ingest from. Default: %(default)s.")
     p.add_argument("--silver-db", type=Path, default=DEFAULT_SILVER_DB,
                    help="Silver SQLite DB path. Default: %(default)s.")
-    cli.add_standard_args(p, verb="load")
-    return p.parse_args(argv)
+    return p
+
+
+# A walk that crashed or is still running holds a partial capture: its list
+# nodes would replace the positions a complete run replayed from the full
+# ledger, and its dump_runs row would count as an observation.
+# pending_run_dirs skips such a run, a loaded one, and a slug that names no
+# real instant. A loadable run's run.json is read as it is; one that cannot
+# be read ends the load.
+SPEC = loader.LoaderSpec(
+    name="equityzen", schema=MIGRATIONS_DIR, load_run=load_run,
+    parser=_parser, counts=RUN_COUNTS, run_columns=run_columns,
+    open_db=open_db, manifest=loader.MANIFEST_REQUIRED)
 
 
 def main(argv: list[str]) -> int:
-    args = parse_args(argv)
-    cli.configure_logging(args.verbose)
-
-    # --force = delete the silver DB, then rebuild from all bronze (the
-    # fleet-wide meaning). After a reset the DB is empty, so the
-    # already-loaded skip in pending_run_dirs re-ingests every run.
-    if args.force:
-        silver.reset(args.silver_db)
-    conn = open_db(args.silver_db)
-    silver.apply_migrations(conn, MIGRATIONS_DIR)
-
-    # A walk that crashed or is still running holds a partial capture: its
-    # list nodes would replace the positions a complete run replayed from the
-    # full ledger, and its dump_runs row would count as an observation.
-    # pending_run_dirs skips such a run, a loaded one, and a slug that names
-    # no real instant.
-    runs = bronze.pending_run_dirs(conn, args.bronze_dir, log=log)
-    log.info("found %d pending bronze run(s) under %s", len(runs),
-             args.bronze_dir)
-    for run_dir in runs:
-        stats = load_run(conn, run_dir)
-        log.info("  %s: offerings=%d position-events=%d cash_flows=%d "
-                 "tax_documents=%d capital_account_statements=%d k1_documents=%d",
-                 stats["name"], stats["offerings"], stats["positions"],
-                 stats["cash_flows"], stats["tax_documents"],
-                 stats["capital_account_statements"], stats["k1_documents"])
-    conn.close()
-    return 0
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":

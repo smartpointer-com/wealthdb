@@ -7,6 +7,7 @@ Synthetic deal/company ids + amounts only.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 import sys
@@ -17,6 +18,7 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import load as loader  # noqa: E402
+from collectorkit import loader as frame  # noqa: E402
 from collectorkit import silver  # noqa: E402
 
 RUN_SLUG = "20240301T000000Z"
@@ -99,9 +101,13 @@ def _dump_state(db_path: Path) -> dict:
 def test_load_offering_and_position(tmp_path):
     run_dir = _seed_bronze(tmp_path / "bronze")
     conn = _fresh_db(tmp_path)
-    stats = loader.load_run(conn, run_dir)
-    assert stats["offerings"] == 1
-    assert stats["positions"] >= 1
+    # One run through the load frame, as `load` loads each pending run.
+    spec = dataclasses.replace(loader.SPEC, pending=lambda *_a, **_k: [run_dir])
+    offerings, positions, *_ = frame.load_runs(spec, conn, frame.Load(
+        args=None, silver_db=None, bronze_dir=run_dir.parent, log=loader.log,
+        version=silver.current_schema_version(conn)))
+    assert offerings == 1
+    assert positions >= 1
 
     # Offering: deal D1, single-company SPV, ticker carried through.
     off = conn.execute(
