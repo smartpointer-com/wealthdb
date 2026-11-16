@@ -451,3 +451,201 @@ func (w webTxText) or(alt webTxText) webTxText {
 		providerCategory: pick(w.providerCategory, alt.providerCategory),
 	}
 }
+
+// extractInstrumentFromDescription1 pulls (ISIN, full caption)
+// out of the silver row's payload.Description1 field, when
+// present. UBS web statements format this field as
+// "<security caption>; <ISIN>" — a typical caption looks like
+// "UBS (Lux) Fund Solutions SICAV - UBS Core MSCI EMU UCITS ETF
+// EUR dis-dist; LU0000000070". The trailing 12-char alphanumeric
+// after "; " is a valid ISIN when the caption names a security; a
+// length-and-charset check avoids grabbing other ";"-separated
+// comments.
+//
+// Returns (nil, nil) when the field is missing, empty, or the
+// trailing token doesn't look like an ISIN. The full caption
+// (everything before the final separator, trimmed) is returned
+// even when no ISIN matches — it's still useful as a name
+// fallback.
+func extractInstrumentFromDescription1(p webTxPayload) (instrumentID, description *string) {
+	if p.Description1 == "" {
+		return nil, nil
+	}
+	caption := strings.TrimSpace(p.Description1)
+	// Try to split on the last "; ". Anything 12 chars long
+	// with the ISIN shape (2 alpha + 10 alnum) is treated as
+	// an ISIN; otherwise the caption stays whole.
+	if i := strings.LastIndex(caption, "; "); i >= 0 {
+		head := strings.TrimSpace(caption[:i])
+		tail := strings.TrimSpace(caption[i+2:])
+		if looksLikeISIN(tail) {
+			id := tail
+			desc := head
+			return &id, silver.StrPtrIfNonEmpty(desc)
+		}
+	}
+	return nil, silver.StrPtrIfNonEmpty(caption)
+}
+
+// webDescription returns the row's narrative — the gold description
+// less the payer's message, which travels apart as the change's Memo.
+// The Description1 caption (as extractInstrumentFromDescription1
+// returns it, ISIN tail stripped) wins whenever the row has one —
+// unchanged, because gold's name lookups key on it. Otherwise the
+// narrative is composed from what the row does carry, in a fixed
+// order: the booking type first, then the narrative lines — the PDF
+// backfill's statement continuation lines less the statement's
+// turnover-total line (bookingLines), or the CSV feed's Description3
+// — joined with "; " (silver.JoinText). A row with a bare booking
+// code and nothing else therefore reaches gold as that code; a row
+// with no text at all stays NULL. Nothing is inferred or paraphrased.
+// A payload that does not decode contributes only the booking type.
+func webDescription(captionDesc *string, bookingType string, p webTxPayload) *string {
+	if captionDesc != nil {
+		// A deposit product is the one caption that is not a security.
+		// Description1 names the PRODUCT ("UBS Call Deposit; Serial
+		// no. …") and the booking type carries the only fact that
+		// separates one of its rows from another — a principal
+		// movement from the interest it pays. Without the type every
+		// row of a deposit reads identically to any tier that works
+		// from the narrative: not ambiguous, IDENTICAL. Prepending it
+		// gives the row the same shape the statement era composes,
+		// so one spelling reaches both eras.
+		if isDepositProductBooking(bookingType) {
+			return silver.StrPtrIfNonEmpty(silver.JoinText(bookingType, *captionDesc))
+		}
+		return captionDesc
+	}
+	own, _ := bookingLines(p.Continuation)
+	parts := make([]string, 0, 2+len(own))
+	parts = append(parts, bookingType)
+	parts = append(parts, own...)
+	parts = append(parts, p.Description3)
+	return silver.StrPtrIfNonEmpty(silver.JoinText(parts...))
+}
+
+// isDepositProductBooking reports whether a booking type moves a
+// deposit product's principal. Case-folded because the two feeds spell
+// the same type differently — the statement era shouts it, the CSV
+// export title-cases it — which is the same fold webKind applies for
+// the same reason.
+func isDepositProductBooking(bookingType string) bool {
+	return bookingOf(bookingType).deposit
+}
+
+// isBookingType reports whether a string is nothing but the bank's own
+// classification of the entry — "Third-Party Charges", "Dividend",
+// "Custody Price".
+//
+// webKind already carries that vocabulary, and reading it there keeps
+// one list rather than two that drift: with neither direction set, a
+// booking type it names resolves to a kind, while anything else falls
+// past the switch to the direction fallback and, with no direction, to
+// TxKindOther. So "resolves to something" is exactly "is a booking
+// type", and a type added to the classifier is recognised here for
+// free.
+//
+// ONE BLIND SPOT, and it is structural rather than an oversight: a
+// booking type whose kind comes from the DIRECTION — every payment
+// order, "ORDER" among them — resolves to TxKindOther when asked with
+// no direction, so this returns false for it. Such a type is a booking
+// type by any other measure, and the callers are written to survive
+// the answer: webKindHint returns the booking type unchanged when
+// neither text is recognised, the payee refusal in text.go only
+// declines to blank a payee it would have blanked, and isFiledBooking
+// consults the booking's rail beside it. Widening the probe is not the
+// fix: asked WITH a direction the fallback answers for every string,
+// and then nothing is not a booking type.
+func isBookingType(s string) bool {
+	return strings.TrimSpace(s) != "" &&
+		webKind(s, false, false) != canonical.TxKindOther
+}
+
+// turnoverTotalPrefix is the upper-cased head of the line an Account
+// Statement prints before its closing balance: "Turnover total <debits>
+// <credits>", the period's two totals.
+const turnoverTotalPrefix = "TURNOVER TOTAL"
+
+// isTurnoverTotalLine reports whether a statement continuation line is the
+// period's turnover-total line: the two words, any case, followed by figures
+// and nothing else — no letter after the prefix, so a line that merely
+// begins with the words is not it. The line carries no date, so the
+// collector's parser attaches it to whichever booking precedes it; it names
+// the period's totals, never the booking's own text.
+func isTurnoverTotalLine(line string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+	if !strings.HasPrefix(upper, turnoverTotalPrefix) {
+		return false
+	}
+	rest := upper[len(turnoverTotalPrefix):]
+	if rest != "" && rest[0] != ' ' {
+		return false
+	}
+	for _, r := range rest {
+		if unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// bookingLines splits a PDF-backfill row's continuation lines into the
+// booking's own text — every non-blank line that is not a turnover-total
+// line, in order — and whether a turnover-total line was among them.
+func bookingLines(continuation []string) (own []string, turnover bool) {
+	for _, line := range continuation {
+		switch {
+		case strings.TrimSpace(line) == "":
+		case isTurnoverTotalLine(line):
+			turnover = true
+		default:
+			own = append(own, line)
+		}
+	}
+	return own, turnover
+}
+
+// isStatementSummary reports whether a PDF-backfill row's narrative is
+// nothing but the statement's turnover-total line — the shape of the
+// period summary the parser emits as a booking at each period close. The
+// caller pairs it with a zero amount: the same narrative under a real fee
+// or interest amount is a booking, and stays.
+func isStatementSummary(p webTxPayload) bool {
+	own, turnover := bookingLines(p.Continuation)
+	return turnover && len(own) == 0
+}
+
+// tickerFromDescription pulls the trailing `(TICKER)` segment
+// out of a UBS web caption like "Reg.shs Example AG (XMPL)" or
+// "Sponsored American Deposit Receipt Example Co Ltd
+// (Repr. 5 shs)     (XMPL)". Returns nil
+// when:
+//
+//   - The string has no trailing `(...)`.
+//   - The bracketed content isn't 1-10 chars of upper-case
+//     ASCII letters / digits / hyphens / dots (filters out things
+//     like "(Lux)", and keeps a class suffix such as "(EXMP.B)").
+//
+// Strict enough to avoid false positives on long parenthetical
+// phrases that happen to come last (e.g. "(Repr. 5 shs)").
+func tickerFromDescription(desc string) *string {
+	desc = strings.TrimRight(desc, " \t")
+	if !strings.HasSuffix(desc, ")") {
+		return nil
+	}
+	open := strings.LastIndex(desc, "(")
+	if open < 0 {
+		return nil
+	}
+	t := desc[open+1 : len(desc)-1]
+	if len(t) < 1 || len(t) > 10 {
+		return nil
+	}
+	for i := 0; i < len(t); i++ {
+		c := t[i]
+		if !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '-' && c != '.' {
+			return nil
+		}
+	}
+	return &t
+}

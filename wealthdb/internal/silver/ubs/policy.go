@@ -22,7 +22,7 @@ import (
 //   - ExternalOnly = true: only boundary-crossing flows count. Internal churn
 //     (cash<->securities settlements, inter-account transfers, FX, mandate
 //     funding) is not a flow. The external/internal split is emitted PRE-TAGGED
-//     on the transaction in web_reader.go (pdfCashIsExternal, PII-free own-IBAN
+//     on the transaction in external_flow.go (pdfCashIsExternal, PII-free own-IBAN
 //     rule): an internal row carries a `returns_flow: internal` payload key,
 //     and the engine drops it from the flow set.
 //   - Inception = InceptionFirstRealSnapshot: anchor UBS's return window at its

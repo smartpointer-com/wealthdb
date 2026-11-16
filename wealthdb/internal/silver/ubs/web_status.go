@@ -1,0 +1,119 @@
+package ubs
+
+import (
+	"context"
+	"database/sql"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
+)
+
+// webReader reads from the ubs-web silver SQLite. It owns
+// the splice cutoff: every record passed downstream has either no
+// known PSN counterpart (no cutoff) or a value/snapshot timestamp
+// strictly less than PSN-start for its banking relationship.
+//
+// PSN-start per relationship is derived per Snapshots/Transactions
+// call from the configured RelationshipPair list and the *psnReader
+// handle (buildPSNStartByWebRel).
+type webReader struct {
+	db *sql.DB
+
+	// valors keeps what valorIndex read, for the reason psnReader keeps
+	// its cash coverage: the cash pass, the portfolio pass and the
+	// realized lots each resolve against it.
+	valors silver.Lazy[map[string]string]
+	// rows is the ledger, read once (ledger).
+	rows silver.Lazy[[]webRow]
+
+	// parts is the file's optional schema (schema).
+	parts silver.Lazy[webSchema]
+	note  silver.SchemaNote
+	file  string // the silver's base name, for the note
+}
+
+func (r *webReader) Close() error { return silver.CloseDB(&r.db) }
+
+// observed sets the watermarks from the runs: each run reads the
+// holdings, and the ledger over its window [window_since,
+// window_until], so the ledger is observed through the end of the
+// first gapless stretch of the windows. A silver from before the window
+// columns counts every run as reading both through its own time.
+func (r *webReader) observed(ctx context.Context, out *canonical.Status) error {
+	s, err := r.schema(ctx)
+	if err != nil {
+		return err
+	}
+	windows := s.windows
+	if err := silver.ObserveByRuns(ctx, r.db, "ubs-web", silver.LatestDump, out); err != nil {
+		return err
+	}
+	if !windows {
+		return nil
+	}
+	out.ObservedTransactionsThrough, err = silver.CoveredByRuns(ctx, r.db, "ubs-web", `
+SELECT window_since, COALESCE(window_until, snapshot_at) FROM dump_runs WHERE window_since IS NOT NULL`)
+	return err
+}
+
+// clock is the web feed's. Snapshot times come from dump_runs,
+// widened to the historical (PDF) snapshots, which pre-date the first
+// live dump; transaction times from transactions.value_date. The change
+// number is the latest of either, the value the window advances the
+// watermark to. The historical tables widen the snapshot range but not
+// the change number: a historical date past the latest dump would
+// otherwise keep the source from ever reading as up to date. The
+// watermarks are observed().
+//
+// A dump or a transaction past the watermark opens a window over the new
+// rows, widened to every date the web feed emits at that no dump run
+// shares (windowDates): the historical snapshots, the card billing
+// periods, the managed portfolios' trades and the private-markets
+// quarterly reports. Gold's delete-then-reinsert would otherwise leave
+// duplicates of them behind.
+func (r *webReader) clock() silver.Clock {
+	return silver.Clock{
+		Kind: "ubs-web",
+		Runs: `SELECT MAX(t) FROM (SELECT MAX(snapshot_at) AS t FROM dump_runs
+                    UNION ALL SELECT MAX(value_date) FROM transactions)`,
+		Snapshot: []string{`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs`},
+		Extra:    r.historicalRange,
+		Ledger:   []string{`SELECT MIN(value_date), MAX(value_date) FROM transactions`},
+		Observed: silver.Observed{Set: r.observed},
+		Mode: silver.Incremental{
+			New: []string{
+				`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs WHERE snapshot_at > ?`,
+				`SELECT MIN(value_date), MAX(value_date) FROM transactions WHERE value_date > ?`,
+			},
+			Extra: r.windowDates,
+		},
+	}
+}
+
+// windowDates spans the dates the web feed emits at that no dump run
+// shares (clock), -1 each where there is none.
+func (r *webReader) windowDates(ctx context.Context) (lo, hi int64, err error) {
+	lo, hi = -1, -1
+	for _, extra := range []func(context.Context) (int64, int64, error){
+		r.historicalRange, r.cardRange, r.portfolioTxnRange, r.reportRange,
+	} {
+		l, h, err := extra(ctx)
+		if err != nil {
+			return -1, -1, err
+		}
+		if l >= 0 && (lo < 0 || l < lo) {
+			lo = l
+		}
+		hi = max(hi, h)
+	}
+	return lo, hi, nil
+}
+
+// Status and ChangeWindow are the clock's (silver.Clock).
+func (r *webReader) Status(ctx context.Context) (canonical.Status, error) {
+	return r.clock().Status(ctx, r.db)
+}
+
+func (r *webReader) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
+	return r.clock().ChangeWindow(ctx, r.db, since)
+}
