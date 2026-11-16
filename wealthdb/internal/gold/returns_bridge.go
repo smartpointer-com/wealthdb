@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
@@ -82,11 +81,7 @@ const bridgeTol = 0.005
 // config's returns settings, the window (whole months; FromEpoch <= 0 is
 // since inception) and the bucket size in Period.
 func RunBridge(ctx context.Context, db *sql.DB, p ReturnParams) ([]BridgeRow, error) {
-	fx, err := loadFxBounds(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	ds, err := loadReturnsDataset(ctx, db, p.OutCcy, fx, p.PolicyOverrides, p.TransferMatching)
+	ds, err := loadRunDataset(ctx, db, p)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +327,7 @@ func (in bridgeInput) gapAt(av func(int64) (float64, bool), day int64) float64 {
 		gap -= v
 	}
 	for _, a := range in.ds.accts {
-		if a.kind == string(canonical.AccountKindMortgage) {
+		if a.liability() {
 			if v, ok := a.valueAt(day); ok {
 				gap -= v
 			}

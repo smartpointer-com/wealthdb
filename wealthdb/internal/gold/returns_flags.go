@@ -61,7 +61,7 @@ func preFxHistory(assets []*accountData, outCcy string, winFrom int64, fx fxBoun
 
 func allNavOnly(assets []*accountData) bool {
 	for _, a := range assets {
-		if a.policy.Regime != returns.RegimeNavOnly {
+		if a.rpolicy.Flow.Regime != returns.RegimeNavOnly {
 			return false
 		}
 	}
@@ -70,7 +70,7 @@ func allNavOnly(assets []*accountData) bool {
 
 func anyNavOnly(assets []*accountData) bool {
 	for _, a := range assets {
-		if a.policy.Regime == returns.RegimeNavOnly {
+		if a.rpolicy.Flow.Regime == returns.RegimeNavOnly {
 			return true
 		}
 	}
@@ -91,9 +91,9 @@ func regimeFlags(assets []*accountData, winFrom, winTo int64) []string {
 	// which constituent happened to be visited first.
 	var crypto, journal, unknown, clamped, dropped, capRiskFlowless bool
 	for _, a := range assets {
-		crypto = crypto || (a.policy.Regime == returns.RegimeCryptoPartial && a.cryptoExcluded)
+		crypto = crypto || (a.rpolicy.Flow.Regime == returns.RegimeCryptoPartial && a.cryptoExcluded)
 		journal = journal || a.journalPresent
-		unknown = unknown || !a.policy.Known
+		unknown = unknown || !a.rpolicy.Flow.Known
 		clamped = clamped || a.hasClampedFlow
 		dropped = dropped || a.droppedNonzero
 		// A CapitalCallRisk constituent whose OWN accounts observed no

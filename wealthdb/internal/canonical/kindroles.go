@@ -6,8 +6,9 @@ import "slices"
 // kind, with what the kind is to the engine. Gold holds both tables as
 // data (account_kinds and txn_kind_roles, stamped with the derived set),
 // the Go predicates read them, and the SQL predicates at the head of the
-// flow macros are held to them by a test. So a kind's role is decided
-// here and nowhere else.
+// flow macros are held to them by a test. The returns roles (Capital,
+// Nettable) are read in Go alone, so gold does not stamp them. So a
+// kind's role is decided here and nowhere else.
 
 // AccountKindRow is one account kind and its roles.
 type AccountKindRow struct {

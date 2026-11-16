@@ -955,14 +955,23 @@ func TestLoadReturnsTransferMatching(t *testing.T) {
 	if m := c.ReturnsTransferMatching; m == nil || !m.Enabled {
 		t.Errorf("enabled block: got %+v", m)
 	}
+	if n := c.Notices(); n != nil {
+		t.Errorf("enabled block: notices %q, want none", n)
+	}
 
-	// The two knobs no longer apply: any value is accepted and ignored.
+	// The two knobs are accepted and ignored, and a set one is a notice.
 	for _, block := range []string{
 		`"returns_transfer_matching":{"enabled":true,"window_days":3,"tolerance_pct":1.5}}`,
 		`"returns_transfer_matching":{"enabled":false,"window_days":99,"tolerance_pct":-1}}`,
+		`"returns_transfer_matching":{"enabled":true,"tolerance_pct":1.5}}`,
 	} {
-		if _, err := Load(writeConfig(t, base+block)); err != nil {
+		c, err := Load(writeConfig(t, base+block))
+		if err != nil {
 			t.Errorf("%s: %v", block, err)
+			continue
+		}
+		if n := c.Notices(); len(n) != 1 || n[0] != ignoredKnobsNotice {
+			t.Errorf("%s: notices %q, want the ignored-knobs notice", block, n)
 		}
 	}
 
@@ -973,6 +982,9 @@ func TestLoadReturnsTransferMatching(t *testing.T) {
 	}
 	if c3.ReturnsTransferMatching != nil {
 		t.Error("absent block must stay nil")
+	}
+	if n := c3.Notices(); n != nil {
+		t.Errorf("absent block: notices %q, want none", n)
 	}
 }
 

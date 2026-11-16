@@ -158,12 +158,12 @@ func ClearMaterializeKey(ctx context.Context, db *sql.DB, scope string) error {
 	return nil
 }
 
-// HashInputs is the sha256 of the config's bytes. The whole config is the
+// HashConfig is the sha256 of the config's bytes. The whole config is the
 // input: a key that does not affect a table still changes the hash, and
 // the run materializes again. A hash of only the keys a phase reads
-// would skip a run it should not. What a load writes, the ledgers' effects
-// among it, the load key stamps.
-func HashInputs(config []byte) string {
+// would skip a run it should not. The load key covers what a load writes,
+// the ledgers' effects included.
+func HashConfig(config []byte) string {
 	h := sha256.Sum256(config)
 	return hex.EncodeToString(h[:])
 }

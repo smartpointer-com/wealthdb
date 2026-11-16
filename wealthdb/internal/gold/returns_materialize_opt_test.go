@@ -3,6 +3,7 @@ package gold
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -13,27 +14,44 @@ import (
 )
 
 // TestLoadReturnsDatasetsMultiMatchesSingle is the core guarantee for the
-// single-pass multi-currency loader: for every currency, the dataset it
-// produces must be bit-identical to the one loadReturnsDataset(ccy) builds from
-// the per-currency macros — same accounts, value series, snapshot days, flows,
-// derived flags and globalMax. If they ever diverge, the materialized table
-// would silently stop matching the CLI outside USD.
+// single-pass multi-currency load (everyCurrency): for every currency, the
+// dataset it produces must be bit-identical to the one loadReturnsDataset(ccy)
+// builds from the per-currency macros — same accounts, policies, value series,
+// snapshot days, flows, stored links, derived flags and globalMax. If they
+// ever diverge, the materialized table would silently stop matching the CLI
+// outside USD. Both sides load under a policy override and with the stored
+// links read, over a fixture that holds one stored pair.
 func TestLoadReturnsDatasetsMultiMatchesSingle(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedMaterializeFixture(t, db, ctx)
+	tMove := dy(2024, time.May, 1)
+	seedAcct(t, db, ctx, "src-a", "A2", canonical.AccountKindBrokerage, nil,
+		[]snap{{dy(2024, time.January, 2), 800}, {dy(2024, time.July, 2), 750}},
+		[]txn{{tMove, canonical.TxKindJournal, -100}})
+	seedAcct(t, db, ctx, "test-src", "B2", canonical.AccountKindBrokerage, nil,
+		[]snap{{dy(2024, time.January, 2), 300}, {dy(2024, time.July, 2), 410}},
+		[]txn{{tMove, canonical.TxKindDeposit, 100}})
+	seedTransferLink(t, db, ctx, "src-a", "A2-tx0", "test-src", "B2-tx0")
 
 	fx, err := loadFxBounds(ctx, db)
 	if err != nil {
 		t.Fatalf("loadFxBounds: %v", err)
 	}
-	multi, err := loadReturnsDatasetsMulti(ctx, db, fx, nil, nil)
+	blanked := returns.AccountsGrainBlanked
+	s := ReturnsSettings{TransferMatching: true,
+		PolicyOverrides: map[string]ReturnsPolicyOverride{"src-a": {AccountsGrain: &blanked}}}
+	multi, err := loadReturnsDatasets(ctx, db, everyCurrency(), fx, s)
 	if err != nil {
-		t.Fatalf("loadReturnsDatasetsMulti: %v", err)
+		t.Fatalf("loadReturnsDatasets: %v", err)
+	}
+	if a := multi["USD"].accts[acctKey("src-a", "A2")]; a == nil || a.rpolicy.AccountsGrain != blanked ||
+		len(a.links) != 1 {
+		t.Fatalf("the fixture's override and stored pair do not reach the multi load: %+v", a)
 	}
 
 	for _, ccy := range materializeCurrencies {
-		single, err := loadReturnsDataset(ctx, db, ccy, fx, nil, nil)
+		single, err := loadReturnsDataset(ctx, db, ccy, fx, s)
 		if err != nil {
 			t.Fatalf("loadReturnsDataset %s: %v", ccy, err)
 		}
@@ -65,6 +83,12 @@ func TestLoadReturnsDatasetsMultiMatchesSingle(t *testing.T) {
 				t.Errorf("%s/%s: flags differ (single %+v multi %+v)", ccy, key,
 					[]bool{a.cryptoExcluded, a.journalPresent, a.hasClampedFlow, a.droppedNonzero},
 					[]bool{b.cryptoExcluded, b.journalPresent, b.hasClampedFlow, b.droppedNonzero})
+			}
+			if !reflect.DeepEqual(a.rpolicy, b.rpolicy) {
+				t.Errorf("%s/%s: policies differ (single %+v multi %+v)", ccy, key, a.rpolicy, b.rpolicy)
+			}
+			if !reflect.DeepEqual(a.links, b.links) {
+				t.Errorf("%s/%s: links differ (single %+v multi %+v)", ccy, key, a.links, b.links)
 			}
 			if !slices.Equal(a.series, b.series) {
 				t.Errorf("%s/%s: value series differ:\n single %v\n multi  %v", ccy, key, a.series, b.series)
@@ -169,10 +193,11 @@ func TestGroupAccountsMemberOrderDeterministic(t *testing.T) {
 			[]snap{{t0, 1000}, {t1, 1100}}, nil)
 	}
 
-	accts, _, err := loadAccountData(ctx, db, "USD", nil)
+	spines, _, err := loadSpine(ctx, db, oneCurrency("USD"), nil)
 	if err != nil {
-		t.Fatalf("loadAccountData: %v", err)
+		t.Fatalf("loadSpine: %v", err)
 	}
+	accts := spines["USD"]
 
 	for _, level := range []string{"sources", "global"} {
 		groups, order := groupAccounts(level, accts, nil)

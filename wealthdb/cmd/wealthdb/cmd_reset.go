@@ -7,7 +7,6 @@ import (
 	"io"
 	"slices"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/loader"
 )
 
@@ -50,7 +49,7 @@ scratch for that source.`)
 		return err
 	}
 
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
 )
@@ -55,7 +54,7 @@ The model_name column tells you each row's provenance:
 		return errs.Newf(errs.ExitUsage, "resolutions: %s", err.Error())
 	}
 
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

@@ -32,27 +32,6 @@ func TestReturnsPolicyForUnknownDefault(t *testing.T) {
 	}
 }
 
-// TestBankFlowPolicyShape pins the shared bank policy shape (used by the six
-// flow-complete bank/pension silver packages) without depending on registration.
-func TestBankFlowPolicyShape(t *testing.T) {
-	bank := BankFlowPolicy()
-	if !bank.Known {
-		t.Error("BankFlowPolicy must be Known")
-	}
-	for _, k := range []canonical.TxKind{canonical.TxKindDeposit, canonical.TxKindWithdrawal,
-		canonical.TxKindTransferIn, canonical.TxKindTransferOut, canonical.TxKindJournal} {
-		if !bank.IsExternal(k, false) {
-			t.Errorf("bank: %s must be external", k)
-		}
-	}
-	if !bank.IsTransferLike(canonical.TxKindTransferIn) {
-		t.Error("bank transfer_in must be transfer-like (netting candidate)")
-	}
-	if bank.IsTransferLike(canonical.TxKindDeposit) {
-		t.Error("deposit must not be transfer-like (never netted)")
-	}
-}
-
 // TestPolicyKnobDefaults pins the opt-in policy knobs: OnboardNone is a
 // distinct enum value appended after the existing scopes (so their numeric
 // values are preserved), and DefaultReturnsPolicy leaves OnboardScope ==

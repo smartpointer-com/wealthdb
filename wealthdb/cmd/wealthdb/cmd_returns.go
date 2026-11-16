@@ -150,6 +150,17 @@ func returnsEntity(level string) string {
 	return ""
 }
 
+// returnsWhole reports whether the view is the returns grain of the whole
+// portfolio.
+func returnsWhole(level string) bool {
+	for _, g := range gold.ReturnsGrains() {
+		if g.Name == level {
+			return g.Whole
+		}
+	}
+	return false
+}
+
 // The choices of the returns options the CLI and the MCP tool share.
 var (
 	returnsMethods   = []string{"twr", "mwr", "both"}
@@ -191,7 +202,7 @@ func returnsReport(req request, cfg *config.Config) *report {
 // checkReturnsBenchmark refuses a benchmark on a view other than global:
 // a benchmark stands beside the whole portfolio, as on the dashboard.
 func checkReturnsBenchmark(view, benchmark string) error {
-	if benchmark != "" && view != "global" {
+	if benchmark != "" && !returnsWhole(view) {
 		return errs.Newf(errs.ExitUsage, "returns: --benchmark belongs to the global view")
 	}
 	return nil
@@ -241,9 +252,8 @@ func returnsCfgSettings(cfg *config.Config) gold.ReturnsSettings {
 	}
 	// The pairs come from the links the load stored, which applied the
 	// override ledger when it paired, so returns reads no file of its own.
-	if m := cfg.ReturnsTransferMatching; m != nil && m.Enabled {
-		s.TransferMatching = &gold.TransferMatching{}
-	}
+	m := cfg.ReturnsTransferMatching
+	s.TransferMatching = m != nil && m.Enabled
 	return s
 }
 

@@ -15,7 +15,7 @@ import (
 // tmParams returns CLI-default params with the stored transfer links read.
 func tmParams(level string, from, to int64) ReturnParams {
 	p := params(level, from, to)
-	p.TransferMatching = &TransferMatching{}
+	p.TransferMatching = true
 	return p
 }
 
@@ -42,23 +42,56 @@ func TestBindStoredLinks(t *testing.T) {
 		acctKey("s1", "C"): {src: "s1", acct: "C"},
 	}
 	bindStoredLinks(links, flows, byKey)
-	if got, want := byKey[acctKey("s1", "A")].crossLinks, map[string]crossLink{
+	if got, want := byKey[acctKey("s1", "A")].links, map[string]linkedLeg{
 		"out": {src: "s2", acct: "B", txID: "in", day: 102},
 		"w":   {src: "s1", acct: "C", txID: "d", day: 110},
 	}; !reflect.DeepEqual(got, want) {
 		t.Errorf("A: %+v; want %+v", got, want)
 	}
-	if got := byKey[acctKey("s2", "B")].crossLinks["in"]; got != (crossLink{src: "s1", acct: "A", txID: "out", day: 100}) {
+	if got := byKey[acctKey("s2", "B")].links["in"]; got != (linkedLeg{src: "s1", acct: "A", txID: "out", day: 100}) {
 		t.Errorf("B: %+v", got)
 	}
-	if got := byKey[acctKey("s1", "C")].crossLinks["d"]; got != (crossLink{src: "s1", acct: "A", txID: "w", day: 110}) {
+	if got := byKey[acctKey("s1", "C")].links["d"]; got != (linkedLeg{src: "s1", acct: "A", txID: "w", day: 110}) {
 		t.Errorf("C: %+v; a link inside one source binds too", got)
 	}
-	if _, ok := byKey[acctKey("s1", "A")].crossLinks["lone"]; ok {
+	if _, ok := byKey[acctKey("s1", "A")].links["lone"]; ok {
 		t.Error("a link whose partner is no flow is not bound")
 	}
-	if byKey[acctKey("s1", "A")].transferLikeIDs == nil {
-		t.Error("a linked account is indexed")
+}
+
+// TestBindStoredLinksIndexesTransferLike pins the returns binding's SECOND
+// side effect: linking an account must also index its transferLike slice, or
+// linkedDrops silently reads every linked leg as a nonTransfer one and
+// applies the wrong subsumption rule. Accounts without links stay unindexed.
+func TestBindStoredLinksIndexesTransferLike(t *testing.T) {
+	t.Parallel()
+	byKey := map[string]*accountData{
+		acctKey("s1", "A"): {src: "s1", acct: "A", transferLike: []returns.Flow{
+			{Day: 100, Amount: -5000, ID: "t1"},
+			{Day: 100, Amount: -25, ID: "fee"},
+		}},
+		acctKey("s2", "B"): {src: "s2", acct: "B", nonTransfer: []returns.Flow{
+			{Day: 102, Amount: 5000, ID: "t2"},
+		}},
+		acctKey("s2", "C"): {src: "s2", acct: "C", transferLike: []returns.Flow{
+			{Day: 100, Amount: 42, ID: "unlinked"},
+		}},
+	}
+	bindStoredLinks([]storedTransferLink{{src: "s1", txID: "t1", farSrc: "s2", farTxID: "t2"}},
+		attachedFlows{{"s1", "t1"}: {acct: "A", day: 100}, {"s2", "t2"}: {acct: "B", day: 102}}, byKey)
+
+	want := map[string]bool{"t1": true, "fee": true}
+	if got := byKey[acctKey("s1", "A")].transferLikeIDs; !reflect.DeepEqual(got, want) {
+		t.Errorf("sender index = %v, want the whole transferLike slice %v", got, want)
+	}
+	// The receiver's leg is a nonTransfer one, but the account is linked, so it
+	// still gets an (empty, non-nil) index — linkedDrops distinguishes
+	// "not transfer-like" from "never indexed".
+	if got := byKey[acctKey("s2", "B")].transferLikeIDs; got == nil || len(got) != 0 {
+		t.Errorf("receiver index = %v, want empty and non-nil", got)
+	}
+	if got := byKey[acctKey("s2", "C")].transferLikeIDs; got != nil {
+		t.Errorf("unlinked account index = %v, want nil (the map stays sparse)", got)
 	}
 }
 
@@ -149,8 +182,7 @@ func TestRunReturnsCrossSourceNetting(t *testing.T) {
 }
 
 // TestCrossSourceNettingNoPairIsByteIdentical pins the off-equivalence: with
-// the links read but none stored, output equals the baseline rows exactly,
-// even where the amounts would nearly pair.
+// the links read but none stored, output equals the baseline rows exactly.
 func TestCrossSourceNettingNoPairIsByteIdentical(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -161,7 +193,7 @@ func TestCrossSourceNettingNoPairIsByteIdentical(t *testing.T) {
 		[]txn{{dy(2024, time.March, 1), canonical.TxKindWithdrawal, -10000}})
 	seedAcct(t, db, ctx, "s2", "B1", canonical.AccountKindBrokerage, nil,
 		[]snap{{dy(2024, time.January, 2), 50000}, {dy(2024, time.December, 2), 61000}},
-		[]txn{{dy(2024, time.March, 3), canonical.TxKindDeposit, 10100}}) // 1% > tolerance
+		[]txn{{dy(2024, time.March, 3), canonical.TxKindDeposit, 10100}})
 	end := eod(2024, time.December, 2)
 
 	base, err := RunReturns(ctx, db, params("global", 0, end))
@@ -229,38 +261,6 @@ func TestCrossSourceNettingSubsumedDebutLegKeptOut(t *testing.T) {
 	}
 }
 
-// TestCrossMatchingMultiSingleParity pins the multi-currency loader: the
-// links the single-currency USD dataset derives are exactly the links the
-// multi loader's USD dataset derives.
-func TestCrossMatchingMultiSingleParity(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	seedCrossPair(t, db, ctx, dy(2024, time.January, 2))
-	tm := &TransferMatching{}
-
-	fx, err := loadFxBounds(ctx, db)
-	if err != nil {
-		t.Fatalf("fx: %v", err)
-	}
-	single, err := loadReturnsDataset(ctx, db, "USD", fx, nil, tm)
-	if err != nil {
-		t.Fatalf("single: %v", err)
-	}
-	multi, err := loadReturnsDatasetsMulti(ctx, db, fx, nil, tm)
-	if err != nil {
-		t.Fatalf("multi: %v", err)
-	}
-	for key, a := range single.accts {
-		b := multi["USD"].accts[key]
-		if b == nil {
-			t.Fatalf("multi lacks %q", key)
-		}
-		if !reflect.DeepEqual(a.crossLinks, b.crossLinks) {
-			t.Errorf("%q links differ: single %+v multi %+v", key, a.crossLinks, b.crossLinks)
-		}
-	}
-}
-
 // TestCrossSourceNettingObeysNettingSwitch pins that --netting off disables
 // cross-source pair drops too: the diagnostic view shows every raw leg.
 func TestCrossSourceNettingObeysNettingSwitch(t *testing.T) {
@@ -299,7 +299,7 @@ func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
 		src: "s1", acct: "A",
 		series:          []dayVal{{day: 100, val: 50000}, {day: 300, val: 40000}},
 		transferLike:    []returns.Flow{{Day: 150, Amount: -10000, ID: "out"}},
-		crossLinks:      map[string]crossLink{"out": {src: "s2", acct: "B", txID: "in", day: 150}},
+		links:           map[string]linkedLeg{"out": {src: "s2", acct: "B", txID: "in", day: 150}},
 		transferLikeIDs: map[string]bool{"out": true},
 	}
 	receiver := &accountData{
@@ -307,12 +307,12 @@ func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
 		// Debuts AFTER the flow: day 150 is pre-debut for the day-200 spine.
 		series:          []dayVal{{day: 200, val: 10000}, {day: 300, val: 11000}},
 		transferLike:    []returns.Flow{{Day: 150, Amount: 10000, ID: "in"}},
-		crossLinks:      map[string]crossLink{"in": {src: "s1", acct: "A", txID: "out", day: 150}},
+		links:           map[string]linkedLeg{"in": {src: "s1", acct: "A", txID: "out", day: 150}},
 		transferLikeIDs: map[string]bool{"in": true},
 	}
 	receiver.rpolicy.OnboardScope = returns.OnboardNone
 
-	drops, pairs := crossMatchedDrops([]*accountData{sender, receiver}, winFrom, winTo)
+	drops, pairs := linkedDrops([]*accountData{sender, receiver}, winFrom, winTo)
 	if pairs != 0 || len(drops) != 0 {
 		t.Errorf("pre-debut transferLike leg under OnboardNone must not net: pairs=%d drops=%v", pairs, drops)
 	}
@@ -321,7 +321,7 @@ func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
 	// OnboardNone (the deposit is the capital event there) and nets.
 	sender.nonTransfer, sender.transferLike, sender.transferLikeIDs = sender.transferLike, nil, nil
 	receiver.nonTransfer, receiver.transferLike, receiver.transferLikeIDs = receiver.transferLike, nil, nil
-	drops, pairs = crossMatchedDrops([]*accountData{sender, receiver}, winFrom, winTo)
+	drops, pairs = linkedDrops([]*accountData{sender, receiver}, winFrom, winTo)
 	if pairs != 1 || len(drops) != 2 {
 		t.Errorf("OnboardNone nonTransfer pre-debut pair must net: pairs=%d drops=%v", pairs, drops)
 	}
@@ -384,5 +384,58 @@ func TestRunReturnsStoredLinks(t *testing.T) {
 	}
 	if g, _ := summaryFor(run(params("global", 0, end)), ""); qualityHas(g, "cross_source_netted=1") {
 		t.Errorf("with transfer matching off a link was read: %v", g.Quality)
+	}
+}
+
+// TestStoredLinkBindsPerCurrency pins that a link binds per currency of a
+// load: where one leg has no FX path into a currency, that currency's
+// dataset holds the other leg as a plain flow, while a currency both legs
+// reach binds the pair. Here the yen leg reaches USD directly but has no
+// path into EUR: no yen-to-CHF rate, and no direct dollar-to-euro rate to
+// bridge through.
+func TestStoredLinkBindsPerCurrency(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "s1", "schwab")
+	seedReturnsSource(t, db, ctx, "s2", "schwab")
+	t0, tMove, t1 := dy(2024, time.January, 2), dy(2024, time.March, 1), dy(2024, time.June, 3)
+	seedAcct(t, db, ctx, "s1", "A1", canonical.AccountKindBrokerage, nil,
+		[]snap{{t0, 100000}, {t1, 90500}}, []txn{{tMove, canonical.TxKindJournal, -10000}})
+	seedAcct(t, db, ctx, "s2", "B1", canonical.AccountKindBrokerage, nil,
+		[]snap{{t0, 50000}, {t1, 60500}}, nil)
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertTransactions(ctx, []canonical.TransactionChange{{
+			SilverSourceID: "s2", TransactionExternalID: "B1-yen", OccurredAt: tMove, AccountExternalID: "B1",
+			Kind: canonical.TxKindDeposit, Currency: "JPY", NetAmount: decp(1500000)}})
+	})
+	seedTransferLink(t, db, ctx, "s1", "A1-tx0", "s2", "B1-yen")
+	seedFX(t, db, dy(2024, time.January, 1), "USD", "CHF", "1.10")
+	seedFX(t, db, dy(2024, time.January, 1), "CHF", "EUR", "1.05")
+	seedFX(t, db, dy(2024, time.January, 1), "USD", "JPY", "0.0067")
+
+	fx, err := loadFxBounds(ctx, db)
+	if err != nil {
+		t.Fatalf("fx: %v", err)
+	}
+	out, err := loadReturnsDatasets(ctx, db, everyCurrency(), fx, ReturnsSettings{TransferMatching: true})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	a, b := acctKey("s1", "A1"), acctKey("s2", "B1")
+	usd, eur := out["USD"], out["EUR"]
+	if _, ok := usd.accts[a].links["A1-tx0"]; !ok {
+		t.Error("USD: the pair does not bind, though both legs reach USD")
+	}
+	if _, ok := usd.accts[b].links["B1-yen"]; !ok {
+		t.Error("USD: the yen leg is not linked")
+	}
+	if l := eur.accts[a].links; l != nil {
+		t.Errorf("EUR: the dollar leg is linked (%+v), though the yen leg has no euro value", l)
+	}
+	if len(eur.accts[a].transferLike) != 1 {
+		t.Errorf("EUR: the dollar leg is no plain flow: %+v", eur.accts[a].transferLike)
+	}
+	if n := len(eur.accts[b].nonTransfer) + len(eur.accts[b].transferLike); n != 0 {
+		t.Errorf("EUR: the yen leg is a flow (%d), though it has no euro value", n)
 	}
 }

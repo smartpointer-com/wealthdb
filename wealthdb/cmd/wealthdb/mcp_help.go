@@ -241,6 +241,7 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - mwr_no_sign_change, mwr_nonunique, mwr_no_converge: the money-weighted return has no single answer.
 - mwr_negative_net_capital: the money put in, net, is zero or less.
 - unmatched_transfers=N: N transfers found no matching leg on another account.
+- cross_source_netted=N: N transfer pairs the load stored netted out inside the entity, across sources or inside one source.
 - nav_only, nav_only_capital_call_risk: a source that reports values only (private funds); the return is rough.
 - pre_fx_history: part of the window lies before the exchange-rate history begins.
 - flows_before_inception: money moved before the date the measurement starts; it counts in no window.

@@ -139,7 +139,7 @@ verdict.`)
 		if dumpFlag != "" {
 			return errs.Newf(errs.ExitUsage, "categorizations: %s applies to the dump, not to --forget", dumpFlag)
 		}
-		cfg, err := config.Load(g.ConfigPath)
+		cfg, err := g.loadConfig()
 		if err != nil {
 			return err
 		}
@@ -153,7 +153,7 @@ verdict.`)
 	if err != nil {
 		return errs.Newf(errs.ExitUsage, "categorizations: %s", err.Error())
 	}
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

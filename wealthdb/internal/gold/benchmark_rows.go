@@ -24,15 +24,11 @@ func BenchmarkNames(ctx context.Context, db *sql.DB) ([]string, error) {
 // benchmark `name` beside each row: its buckets on the bucket rows, and
 // on the summary row its figures over the days both sides have.
 func RunReturnsBenchmark(ctx context.Context, db *sql.DB, p ReturnParams, name string) ([]ReturnRow, error) {
-	fx, err := loadFxBounds(ctx, db)
+	ds, err := loadRunDataset(ctx, db, p)
 	if err != nil {
 		return nil, err
 	}
-	ds, err := loadReturnsDataset(ctx, db, p.OutCcy, fx, p.PolicyOverrides, p.TransferMatching)
-	if err != nil {
-		return nil, err
-	}
-	benchmarks, err := LoadBenchmarks(ctx, db, fx, []string{p.OutCcy})
+	benchmarks, err := LoadBenchmarks(ctx, db, ds.fx, []string{p.OutCcy})
 	if err != nil {
 		return nil, err
 	}

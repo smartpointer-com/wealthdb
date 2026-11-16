@@ -12,9 +12,11 @@
 //     the account type (Kontoart) and the last-4 mask; TaxWrapper
 //     'taxable_personal', ManagementStyle 'self_directed'. All overridable via
 //     account_overrides. The rates its details state ride under the
-//     stated-rate keys (rates.go). Deposit accounts are not investments, so
-//     the registered ReturnsPolicy hides their return rows at every grain;
-//     their balances and flows still enter the aggregates.
+//     stated-rate keys (rates.go). Deposit accounts are not investments. The
+//     source registers the plain bank policy, and the engine keeps every
+//     cash account out of returns by its kind, on any source: no return
+//     rows of its own at any grain, while its balances and flows still
+//     enter the aggregates.
 //
 //   - CASH BALANCES, not positions or instruments — cash is not an instrument.
 //     A CLOSING balance for every day the daily-balance series carries a saldo

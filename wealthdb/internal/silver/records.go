@@ -42,3 +42,17 @@ func CustodyAccount(id string, t int64) canonical.AccountChange {
 		LastSeenAt:        t,
 	}
 }
+
+// PrivateFundTaxonomy is the (exposure, vehicle) pair of a private-market
+// offering of the given kind. A single-company SPV and a multi-company
+// fund are both private-company ownership, so the exposure is
+// private_equity for both; the vehicle carries the packaging: "spv" is
+// an SPV, any other kind (an unknown or empty one included) the generic
+// fund, which never over-claims a single company. Both pairs satisfy
+// canonical.ValidTaxonomyPair.
+func PrivateFundTaxonomy(kind string) (canonical.AssetClass, canonical.Vehicle) {
+	if kind == "spv" {
+		return canonical.AssetClassPrivateEquity, canonical.VehicleSPV
+	}
+	return canonical.AssetClassPrivateEquity, canonical.VehicleFund
+}

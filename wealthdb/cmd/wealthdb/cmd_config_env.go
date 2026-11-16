@@ -66,7 +66,7 @@ a host script to eval. The blocks:
 // printConfigEnv loads the config, through its validation, and prints
 // one block.
 func printConfigEnv(g globalFlags, stdout io.Writer, emit func(*config.Config, io.Writer)) error {
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

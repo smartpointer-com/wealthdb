@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 )
 
 // TestStalePinFailsBeforeGoldIsOpened pins the order every command that
@@ -187,4 +189,39 @@ func goldState(t *testing.T, goldPath string) (version, loads, sources int) {
 		t.Fatalf("read gold state: %v", err)
 	}
 	return version, loads, sources
+}
+
+// An equity-transfer row that names no configured source fails before
+// anything loads, whichever column names it: unread, its leg would
+// book nothing, and a one-row move would book only its sending half.
+// A row naming a configured source the load does not cover is fine.
+func TestTransferLedgerNamesConfiguredSources(t *testing.T) {
+	t.Parallel()
+	const header = "silver_source_id,account,occurred_at,direction,value,currency,to_silver_source_id,to_account\n"
+	for _, tc := range []struct {
+		name, row, want string
+	}{
+		{"configured", "src-a,ACC-1,2024-03-01,out,100,USD,src-b,ACC-2\n", ""},
+		{"sender", "src-x,ACC-1,2024-03-01,out,100,USD,,\n",
+			`equity_transfers: the row of account "ACC-1" on 2024-03-01: silver_source_id "src-x" is no configured source`},
+		{"receiver", "src-a,ACC-1,2024-03-01,out,100,USD,src-y,ACC-2\n",
+			`equity_transfers: the row of to_account "ACC-2" on 2024-03-01: to_silver_source_id "src-y" is no configured source`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ledger := filepath.Join(t.TempDir(), "transfers.csv")
+			if err := os.WriteFile(ledger, []byte(header+tc.row), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{EquityTransfers: ledger,
+				SilverSources: []config.SilverSource{{ID: "src-a"}, {ID: "src-b"}}}
+			_, err := readLoadInputs(cfg)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("readLoadInputs: %v", err)
+			case tc.want != "" && (err == nil || err.Error() != tc.want):
+				t.Fatalf("readLoadInputs error = %v, want %q", err, tc.want)
+			}
+		})
+	}
 }

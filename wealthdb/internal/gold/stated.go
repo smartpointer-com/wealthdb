@@ -52,9 +52,9 @@ type StatedPeriodRow struct {
 
 // ReconcileStatedPeriods sets every stated period whose last day falls in
 // [p.FromEpoch, p.ToEpoch] against the engine's monthly account rows in
-// its currency, the engine run from inception. p supplies the config's
-// returns settings; its level, period, method, currency and start are
-// set here.
+// its currency, the engine run from inception. p supplies the window and
+// the config's returns settings; the run is the default one
+// (ReturnsSettings.defaultRun), its method twr.
 func ReconcileStatedPeriods(ctx context.Context, db *sql.DB, p ReturnParams) ([]StatedPeriodRow, error) {
 	to := p.ToEpoch
 	if to <= 0 {
@@ -106,9 +106,8 @@ SELECT s.silver_source_id, s.account_external_id, COALESCE(a.display_name, s.acc
 		// From inception, whatever the window: a calendar month's bucket
 		// starts at its first day only when the run does not, and a period
 		// that begins before the window still needs its first months.
-		q := p
-		q.Level, q.Period, q.Method, q.OutCcy = "accounts", "monthly", "twr", ccy
-		q.FromEpoch = 0
+		q := p.defaultRun(grainAccounts.name, "monthly", ccy, 0, p.ToEpoch)
+		q.Method = "twr"
 		got, err := RunReturns(ctx, db, q)
 		if err != nil {
 			return nil, err

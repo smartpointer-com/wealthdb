@@ -892,8 +892,8 @@ func namesCompatible(d, c TransferLeg) bool {
 // railsCompatible enforces the partner rail a leg demands, in both
 // directions. A leg that demands nothing (RailPartner empty) constrains
 // nothing, so a leg no caller classified is not constrained by rails at
-// all, and the silent side of a movement stays free
-// to pair (TransferLeg.Rail).
+// all, and the silent side of a movement stays free to pair
+// (TransferLeg.Rail).
 func railsCompatible(d, c TransferLeg) bool {
 	if d.RailPartner != "" && d.RailPartner != c.Rail {
 		return false

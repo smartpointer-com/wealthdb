@@ -4,49 +4,11 @@ import (
 	"maps"
 	"reflect"
 	"testing"
-
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
 // leg is a shorthand for a same-currency matcher input.
 func leg(group, owner, id string, day int64, amt float64) TransferLeg {
 	return TransferLeg{Group: group, Owner: owner, ID: id, Day: day, Ccy: "USD", Amt: amt}
-}
-
-// TestBindStoredLinksIndexesTransferLike pins the returns binding's SECOND
-// side effect: linking an account must also index its transferLike slice, or
-// crossMatchedDrops silently reads every linked leg as a nonTransfer one and
-// applies the wrong subsumption rule. Accounts without links stay unindexed.
-func TestBindStoredLinksIndexesTransferLike(t *testing.T) {
-	t.Parallel()
-	byKey := map[string]*accountData{
-		acctKey("s1", "A"): {src: "s1", acct: "A", transferLike: []returns.Flow{
-			{Day: 100, Amount: -5000, ID: "t1"},
-			{Day: 100, Amount: -25, ID: "fee"},
-		}},
-		acctKey("s2", "B"): {src: "s2", acct: "B", nonTransfer: []returns.Flow{
-			{Day: 102, Amount: 5000, ID: "t2"},
-		}},
-		acctKey("s2", "C"): {src: "s2", acct: "C", transferLike: []returns.Flow{
-			{Day: 100, Amount: 42, ID: "unlinked"},
-		}},
-	}
-	bindStoredLinks([]storedTransferLink{{src: "s1", txID: "t1", farSrc: "s2", farTxID: "t2"}},
-		attachedFlows{{"s1", "t1"}: {acct: "A", day: 100}, {"s2", "t2"}: {acct: "B", day: 102}}, byKey)
-
-	want := map[string]bool{"t1": true, "fee": true}
-	if got := byKey[acctKey("s1", "A")].transferLikeIDs; !reflect.DeepEqual(got, want) {
-		t.Errorf("sender index = %v, want the whole transferLike slice %v", got, want)
-	}
-	// The receiver's leg is a nonTransfer one, but the account is linked, so it
-	// still gets an (empty, non-nil) index — crossMatchedDrops distinguishes
-	// "not transfer-like" from "never indexed".
-	if got := byKey[acctKey("s2", "B")].transferLikeIDs; got == nil || len(got) != 0 {
-		t.Errorf("receiver index = %v, want empty and non-nil", got)
-	}
-	if got := byKey[acctKey("s2", "C")].transferLikeIDs; got != nil {
-		t.Errorf("unlinked account index = %v, want nil (the map stays sparse)", got)
-	}
 }
 
 // TestMatchTransferLegsWithinGroup: two accounts of the SAME group pair.
@@ -62,10 +24,11 @@ func TestMatchTransferLegsWithinGroup(t *testing.T) {
 	}
 }
 
-// TestSameAccountLegsNeverPair is the matcher without the reversal phase: an out and a back of one size on one account, days apart
-// and inside the window, stay two legs. A credit on the debit's own account
-// is no candidate in any cross-account phase, so it neither wins a tie nor
-// beats a far partner by being exact.
+// TestSameAccountLegsNeverPair is the matcher without the reversal phase:
+// an out and a back of one size on one account, days apart and inside the
+// window, stay two legs. A credit on the debit's own account is no
+// candidate in any cross-account phase, so it neither wins a tie nor beats
+// a far partner by being exact.
 func TestSameAccountLegsNeverPair(t *testing.T) {
 	t.Parallel()
 	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}

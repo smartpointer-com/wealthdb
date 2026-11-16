@@ -32,12 +32,12 @@ func TestReturnsExcludeGrains(t *testing.T) {
 		{"sources", "zz", "P1", "A1", false},    // unknown source
 	}
 	for _, c := range cases {
-		if got := e.excluded(c.level, c.src, c.pf, c.acct); got != c.want {
-			t.Errorf("excluded(%q,%q,%q,%q)=%v want %v", c.level, c.src, c.pf, c.acct, got, c.want)
+		if got := grainNamed(c.level).excludes(e, c.src, c.pf, c.acct); got != c.want {
+			t.Errorf("excludes(%q,%q,%q,%q)=%v want %v", c.level, c.src, c.pf, c.acct, got, c.want)
 		}
 	}
 	var nilE *ReturnsExclude
-	if nilE.excluded("sources", "ct", "P1", "A1") {
+	if grainNamed("sources").excludes(nilE, "ct", "P1", "A1") {
 		t.Error("nil ReturnsExclude must exclude nothing")
 	}
 }

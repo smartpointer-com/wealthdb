@@ -160,27 +160,28 @@ type Config struct {
 	// aggregate — the display mirror of ReturnsExclude (which removes an
 	// entity from the coarse-grain math instead). Same grain-keyed shape as
 	// returns_exclude. Use it for plumbing whose flows matter but whose own
-	// return is noise (per-source policies already hide whole conduit
-	// sources; this block covers deployment-specific ids). Absent ⇒ nothing
-	// hidden beyond policy. See docs/DESIGN.md §5.7 and internal/gold
-	// entityHidden.
+	// return is noise (the engine already hides every cash account, and
+	// returns_policy_overrides can hide a whole source; this block covers
+	// deployment-specific ids). Absent ⇒ nothing hidden beyond those. See
+	// docs/DESIGN.md §5.7 and internal/gold entityHidden.
 	ReturnsHide *ReturnsHide `json:"returns_hide,omitempty"`
 	// ReturnsPolicyOverrides adjusts a silver source's registered
 	// ReturnsPolicy, keyed by silver_sources[].id (NOT adapter kind — two
 	// sources sharing an adapter override independently). Partial: only the
 	// set fields change; every other knob keeps what the source's silver
 	// package registers. `flow_regime` replaces the source's flow
-	// completeness with the named regime — the escape hatch for a deployment whose data completeness differs from
-	// the registered default (e.g. pin a flow-counting source back to
-	// "nav_only" when its silver carries no transaction history).
+	// completeness with the named regime — the escape hatch for a
+	// deployment whose data completeness differs from the registered
+	// default (e.g. pin a flow-counting source back to "nav_only" when its
+	// silver carries no transaction history).
 	// `accounts_grain` sets the per-account display mode ("normal" |
 	// "blanked" | "hidden"). Absent block ⇒ registered policies apply
 	// unchanged. See docs/DESIGN.md §5.6 and internal/gold newAccountData.
 	ReturnsPolicyOverrides map[string]*ReturnsPolicyOverride `json:"returns_policy_overrides,omitempty"`
 	// ReturnsTransferMatching nets the transfer pairs the load stores
-	// (transfer_links) out of every return aggregate that contains BOTH
-	// legs, while finer grains keep counting each leg. Absent block or enabled=false ⇒ returns reads no
-	// pair. See docs/DESIGN.md §5.8.
+	// (transfer_links) out of every return aggregate that holds both legs
+	// live; finer grains keep counting each leg. Absent block or
+	// enabled=false ⇒ returns reads no pair. See docs/DESIGN.md §5.8.
 	ReturnsTransferMatching *ReturnsTransferMatching `json:"returns_transfer_matching,omitempty"`
 	// Spending groups the per-deployment knobs of the spending
 	// feature: which accounts spending counts, and how hard the
@@ -296,10 +297,18 @@ func Load(path string) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	if m := c.ReturnsTransferMatching; m != nil && (m.WindowDays != nil || m.TolerancePct != nil) {
-		fmt.Fprintln(os.Stderr, ignoredKnobsNotice)
-	}
 	return &c, nil
+}
+
+// Notices are the lines a front end shows for a config that loads but
+// sets something it ignores: one per such setting, none for a config
+// that sets nothing of the kind. Load prints nothing itself, so a
+// front end shows them once, wherever its messages go.
+func (c *Config) Notices() []string {
+	if m := c.ReturnsTransferMatching; m != nil && (m.WindowDays != nil || m.TolerancePct != nil) {
+		return []string{ignoredKnobsNotice}
+	}
+	return nil
 }
 
 // pathField is one path-valued key of the file: key names it in an

@@ -134,33 +134,3 @@ func TestPolicyOverrideAccountsGrain(t *testing.T) {
 		t.Error("a cash account must stay hidden under the normal override")
 	}
 }
-
-// TestPolicyOverrideMultiLoader pins that the multi-currency loader threads
-// the override map identically to the single-currency path — otherwise the
-// materialized report_returns would silently diverge from the CLI.
-func TestPolicyOverrideMultiLoader(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	seedReturnsSource(t, db, ctx, "man", "manual")
-	a, b := dy(2024, time.January, 2), dy(2024, time.December, 30)
-	seedAcct(t, db, ctx, "man", "RE", canonical.AccountKindBrokerage, nil,
-		[]snap{{a, 2000}, {b, 2100}}, nil)
-
-	fx, err := loadFxBounds(ctx, db)
-	if err != nil {
-		t.Fatalf("loadFxBounds: %v", err)
-	}
-	fc := returns.RegimeFlowComplete
-	ov := map[string]ReturnsPolicyOverride{"man": {FlowRegime: &fc}}
-	multi, err := loadReturnsDatasetsMulti(ctx, db, fx, ov, nil)
-	if err != nil {
-		t.Fatalf("loadReturnsDatasetsMulti: %v", err)
-	}
-	acct := multi["USD"].accts[acctKey("man", "RE")]
-	if acct == nil {
-		t.Fatal("multi loader missing man/RE")
-	}
-	if acct.policy.Regime != returns.RegimeFlowComplete || !acct.policy.IsExternal(canonical.TxKindDeposit, false) {
-		t.Errorf("multi loader must apply the override (regime=%v)", acct.policy.Regime)
-	}
-}

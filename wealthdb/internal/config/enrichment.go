@@ -165,10 +165,8 @@ type SpendingAccounts struct {
 // explicit value.
 type SpendingTransferMatching struct {
 	// WindowDays is the max day distance between the two legs of a
-	// pair. Defaults to the same 5 days the returns matcher uses: the
-	// two share one matching core, and a spending pass that banded
-	// differently would call the same movement internal in one report
-	// and external in the other.
+	// pair (default DefaultSpendMatchWindowDays). Every family reads the
+	// pairs this matcher stores, so one window serves them all.
 	WindowDays *int `json:"window_days,omitempty"`
 	// TolerancePct is the relative amount tolerance in percent of the
 	// larger leg (an absolute floor of 0.01 always applies, so 0 means

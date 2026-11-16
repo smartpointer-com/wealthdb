@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
@@ -203,5 +204,45 @@ func TestReturnsStatedCLI(t *testing.T) {
 	so, _, code = run(t, "-c", cfg, "returns", "stated", "-p", "-f", "csv", "-C", "stated_net_additions,document")
 	if code != 0 || strings.Contains(so, "100.00") || strings.Contains(so, "00ab00cd") {
 		t.Errorf("-p left an amount or the document legible:\n%s", so)
+	}
+}
+
+// The returns_transfer_matching block turns the stored links on only
+// where it is enabled; the ignored knobs change nothing.
+func TestReturnsCfgSettingsTransferMatching(t *testing.T) {
+	t.Parallel()
+	days := 3
+	for _, tc := range []struct {
+		name  string
+		block *config.ReturnsTransferMatching
+		want  bool
+	}{
+		{"absent", nil, false},
+		{"disabled", &config.ReturnsTransferMatching{}, false},
+		{"disabled with a knob", &config.ReturnsTransferMatching{WindowDays: &days}, false},
+		{"enabled", &config.ReturnsTransferMatching{Enabled: true}, true},
+		{"enabled with a knob", &config.ReturnsTransferMatching{Enabled: true, WindowDays: &days}, true},
+	} {
+		cfg := &config.Config{ReturnsTransferMatching: tc.block}
+		if got := returnsCfgSettings(cfg).TransferMatching; got != tc.want {
+			t.Errorf("%s: TransferMatching = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A benchmark belongs to the whole grain alone: every other grain and the
+// side views refuse it.
+func TestCheckReturnsBenchmarkWholeOnly(t *testing.T) {
+	t.Parallel()
+	for _, v := range []string{"accounts", "portfolios", "sources", "stated", "bridge"} {
+		if checkReturnsBenchmark(v, "spx") == nil {
+			t.Errorf("%s: a benchmark is accepted", v)
+		}
+	}
+	if err := checkReturnsBenchmark("global", "spx"); err != nil {
+		t.Errorf("global: %v", err)
+	}
+	if err := checkReturnsBenchmark("sources", ""); err != nil {
+		t.Errorf("no benchmark: %v", err)
 	}
 }

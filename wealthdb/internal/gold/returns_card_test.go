@@ -101,7 +101,7 @@ func seedCardFixture(t *testing.T, db *sql.DB, ctx context.Context, withCard boo
 // cardTestMatching is deliberately ON in every card test: a stored link is the
 // path a card leg could do the most damage on (netting away a real checking
 // withdrawal), so the comparisons run with the links read.
-var cardTestMatching = &TransferMatching{}
+const cardTestMatching = true
 
 // renderReturnRows serializes a returns result to a comparable string, every
 // field included, in the engine's own row order.

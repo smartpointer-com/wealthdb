@@ -83,7 +83,7 @@ and -p reach the two money columns; marked_pct does not move.`)
 		return errs.Newf(errs.ExitUsage, "status: at most one silver_source_id allowed")
 	}
 
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

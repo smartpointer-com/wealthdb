@@ -49,64 +49,6 @@ func TestEveryAccountKindHasPolicy(t *testing.T) {
 	}
 }
 
-// TestDepositBankPlumbingHidden locks the deposit-bank conduit policy end to
-// end: a chase-kind source emits NO rows of its own at the accounts or
-// sources grain (AccountsGrainHidden plumbing), while its balances and flows
-// still enter the global aggregate.
-func TestDepositBankPlumbingHidden(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	seedReturnsSource(t, db, ctx, "chx", "chase")
-	seedReturnsSource(t, db, ctx, "sq", "swissquote")
-
-	a, b := dy(2024, time.January, 2), dy(2024, time.December, 30)
-	seedAcct(t, db, ctx, "chx", "CHK", canonical.AccountKindCash, nil,
-		[]snap{{a, 4000}, {b, 4100}},
-		[]txn{{dy(2024, time.June, 3), canonical.TxKindDeposit, 100}})
-	seedAcct(t, db, ctx, "sq", "BRK", canonical.AccountKindBrokerage, nil,
-		[]snap{{a, 1000}, {b, 1100}}, nil)
-	end := eod(2024, time.December, 30)
-
-	acctRows, err := RunReturns(ctx, db, params("accounts", 0, end))
-	if err != nil {
-		t.Fatalf("RunReturns accounts: %v", err)
-	}
-	if _, ok := summaryFor(acctRows, "CHK"); ok {
-		t.Error("hidden plumbing must emit no accounts-grain row")
-	}
-	if _, ok := summaryFor(acctRows, "BRK"); !ok {
-		t.Error("the non-plumbing account must still emit its row")
-	}
-
-	srcRows, err := RunReturns(ctx, db, params("sources", 0, end))
-	if err != nil {
-		t.Fatalf("RunReturns sources: %v", err)
-	}
-	if _, ok := summaryFor(srcRows, "chx"); ok {
-		t.Error("an all-plumbing source must emit no sources-grain row")
-	}
-
-	// Global: the chase balance and its deposit are inside the math — start
-	// 5000, end 5200, net flow 100.
-	globRows, err := RunReturns(ctx, db, params("global", 0, end))
-	if err != nil {
-		t.Fatalf("RunReturns global: %v", err)
-	}
-	g, ok := summaryFor(globRows, "")
-	if !ok {
-		t.Fatal("no global row")
-	}
-	if v, ok := parseFloatPtr(g.StartValue); !ok || v != 5000 {
-		t.Errorf("global start = %v, want 5000 (plumbing balance included)", g.StartValue)
-	}
-	if nf := netFlowOf(t, globRows, ""); nf != 100 {
-		t.Errorf("global net_flow = %.2f, want 100 (plumbing deposit counted)", nf)
-	}
-	if g.TWR == nil || qualityHas(g, "unknown_adapter_policy") {
-		t.Errorf("global must compute with a known policy (TWR=%v q=%v)", g.TWR, g.Quality)
-	}
-}
-
 // TestCashAccountsHiddenWhateverTheSource pins the kind rule: a cash account
 // emits no rows of its own even on a source whose policy shows its accounts
 // (fidelity-kind, as a statement archive's deposit accounts are), so a
@@ -170,11 +112,15 @@ func TestCashAccountsHiddenWhateverTheSource(t *testing.T) {
 		t.Error("a source holding more than cash must keep its row")
 	}
 
-	g, ok := summaryFor(run("global"), "")
+	globRows := run("global")
+	g, ok := summaryFor(globRows, "")
 	if !ok {
 		t.Fatal("no global row")
 	}
 	if v, ok := parseFloatPtr(g.StartValue); !ok || v != 5200 {
 		t.Errorf("global start = %v, want 5200 (every cash account included)", g.StartValue)
+	}
+	if nf := netFlowOf(t, globRows, ""); nf != -2950 {
+		t.Errorf("global net_flow = %.2f, want -2950 (the cash account's withdrawal counted)", nf)
 	}
 }

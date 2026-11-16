@@ -8,7 +8,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
@@ -48,7 +47,7 @@ version `+fmt.Sprint(gold.WantedContractVersion)+`). It names:
 	if err := noPositionals(fs, "refdata-wanted"); err != nil {
 		return err
 	}
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

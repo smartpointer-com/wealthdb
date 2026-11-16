@@ -282,7 +282,7 @@ func TestPostExitResidueWithoutATwin(t *testing.T) {
 	p := params("sources", 0, d(time.April, 30)+43199)
 	p.OutCcy = "CHF"
 	for _, linked := range []bool{true, false} {
-		ds, err := loadReturnsDataset(ctx, db, "CHF", fx, nil, nil)
+		ds, err := loadReturnsDataset(ctx, db, "CHF", fx, ReturnsSettings{})
 		if err != nil {
 			t.Fatal(err)
 		}

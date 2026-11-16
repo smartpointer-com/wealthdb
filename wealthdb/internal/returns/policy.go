@@ -69,7 +69,9 @@ func (p FlowPolicy) IsExternal(k canonical.TxKind, ledger bool) bool {
 	return true
 }
 
-// IsTransferLike reports whether a kind participates in coarse-grain netting.
+// IsTransferLike reports whether a kind participates in coarse-grain
+// netting. The kind table alone decides (canonical.CapitalKind): the
+// regime plays no part.
 func (p FlowPolicy) IsTransferLike(k canonical.TxKind) bool {
 	_, nettable := canonical.CapitalKind(k)
 	return nettable
@@ -94,8 +96,9 @@ func BankFlowPolicy() FlowPolicy { return NewFlowPolicy(RegimeFlowComplete) }
 // boundary, so they count as external capital, while
 // buy/sell/contribution/distribution are the internal halves of those pairs
 // and are no capital kind. CapitalCallRisk keeps the
-// nav_only_capital_call_risk tag on any window that observes no flows (a positions-only silver), so value-growth
-// returns stay flagged when the ledger is absent. ClosureLedgerExact: an
+// nav_only_capital_call_risk tag on any window that observes no flows (a
+// positions-only silver), so value-growth returns stay flagged when the
+// ledger is absent. ClosureLedgerExact: an
 // exit's withdrawal legs are the realized proceeds, dated on the exit day
 // itself (the adapter emits a zero snapshot there), so a full-portfolio
 // closure books the real proceeds and the realized-vs-last-mark delta shows

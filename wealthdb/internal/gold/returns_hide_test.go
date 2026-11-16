@@ -119,42 +119,38 @@ func TestReturnsHidePortfolio(t *testing.T) {
 	}
 }
 
-// TestRegisteredHiddenModeHasNoEffect: the four sources that register the
-// hidden accounts-grain mode emit only cash and card accounts (the bank
-// engine knows no other kind), and the engine hides a cash account and drops
-// a card on any source. So their output is the same with the mode overridden
-// back to normal, at every grain.
-func TestRegisteredHiddenModeHasNoEffect(t *testing.T) {
+// TestHiddenModeChangesNothingForCashAndCards: a source of cash and card
+// accounts reads the same with the hidden accounts-grain mode, at every
+// grain and period: the engine hides a cash account and drops a card on any
+// source.
+func TestHiddenModeChangesNothingForCashAndCards(t *testing.T) {
 	t.Parallel()
-	normal := returns.AccountsGrainNormal
-	for _, kind := range []string{"amex", "chase", "firstcitizens", "raiffeisen_at"} {
-		db, ctx := openMigrated(t)
-		seedReturnsSource(t, db, ctx, "dep", kind)
-		seedReturnsSource(t, db, ctx, "brk", "schwab")
-		t0, t1, t2 := dy(2024, time.January, 2), dy(2024, time.April, 1), dy(2024, time.July, 2)
-		seedAcct(t, db, ctx, "brk", "B1", canonical.AccountKindBrokerage, nil,
-			[]snap{{t0, 1000}, {t2, 1300}}, []txn{{t1, canonical.TxKindDeposit, 200}})
-		seedCashOnlyAcct(t, db, ctx, "dep", "CASH1", canonical.AccountKindCash,
-			[]snap{{t0, 500}, {t1, 300}, {t2, 450}}, []txn{{t1, canonical.TxKindWithdrawal, -200}})
-		seedCashOnlyAcct(t, db, ctx, "dep", "CARD1", canonical.AccountKindCard,
-			[]snap{{t0, -80}, {t2, -60}}, []txn{{t1, canonical.TxKindPurchase, -15}})
-		for _, level := range []string{"accounts", "portfolios", "sources", "global"} {
-			for _, period := range []string{"total", "monthly"} {
-				p := params(level, 0, eod(2024, time.July, 2))
-				p.Period = period
-				registered, err := RunReturns(ctx, db, p)
-				if err != nil {
-					t.Fatal(err)
-				}
-				p.PolicyOverrides = map[string]ReturnsPolicyOverride{"dep": {AccountsGrain: &normal}}
-				overridden, err := RunReturns(ctx, db, p)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if g, w := renderReturnRows(overridden), renderReturnRows(registered); g != w {
-					t.Errorf("%s %s/%s: the registered hidden mode changes the rows:\n normal:\n%s\n registered:\n%s",
-						kind, level, period, g, w)
-				}
+	hidden := returns.AccountsGrainHidden
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "dep", "chase")
+	seedReturnsSource(t, db, ctx, "brk", "schwab")
+	t0, t1, t2 := dy(2024, time.January, 2), dy(2024, time.April, 1), dy(2024, time.July, 2)
+	seedAcct(t, db, ctx, "brk", "B1", canonical.AccountKindBrokerage, nil,
+		[]snap{{t0, 1000}, {t2, 1300}}, []txn{{t1, canonical.TxKindDeposit, 200}})
+	seedCashOnlyAcct(t, db, ctx, "dep", "CASH1", canonical.AccountKindCash,
+		[]snap{{t0, 500}, {t1, 300}, {t2, 450}}, []txn{{t1, canonical.TxKindWithdrawal, -200}})
+	seedCashOnlyAcct(t, db, ctx, "dep", "CARD1", canonical.AccountKindCard,
+		[]snap{{t0, -80}, {t2, -60}}, []txn{{t1, canonical.TxKindPurchase, -15}})
+	for _, level := range []string{"accounts", "portfolios", "sources", "global"} {
+		for _, period := range []string{"total", "monthly"} {
+			p := params(level, 0, eod(2024, time.July, 2))
+			p.Period = period
+			normal, err := RunReturns(ctx, db, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.PolicyOverrides = map[string]ReturnsPolicyOverride{"dep": {AccountsGrain: &hidden}}
+			hid, err := RunReturns(ctx, db, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if g, w := renderReturnRows(hid), renderReturnRows(normal); g != w {
+				t.Errorf("%s/%s: the hidden mode changes the rows:\n hidden:\n%s\n normal:\n%s", level, period, g, w)
 			}
 		}
 	}

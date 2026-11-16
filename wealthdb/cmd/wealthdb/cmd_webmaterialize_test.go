@@ -63,7 +63,7 @@ func TestWebMaterializeCLIEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantHash := gold.HashInputs(raw)
+	wantHash := gold.HashConfig(raw)
 	if stored, ok, err := gold.ReadMaterializeKey(context.Background(), db, gold.WebMaterializeScope); err != nil || !ok || stored.ConfigHash != wantHash {
 		t.Fatalf("stored key %+v ok=%v err=%v, want config hash %s", stored, ok, err, wantHash)
 	}

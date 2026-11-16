@@ -9,7 +9,9 @@ import (
 // The exposure report's readers: one per report_exposure_* macro.
 // docs/EXPOSURE.md defines every figure. Money leaves the macros as
 // DOUBLE (the look-through splits values by weight) and is read here at
-// four decimals, as every money column is.
+// four decimals, as every money column is. A macro's ORDER BY does not
+// bind the query that reads it, so a reader whose macro orders by its
+// own columns repeats that ORDER BY, and tied rows print in one order.
 
 // ExposureShares are the share columns every aggregate view carries, in
 // percent of net worth.
@@ -29,7 +31,8 @@ type ExposureClassRow struct {
 func ExposureClasses(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureClassRow, error) {
 	return scanRows(ctx, db, "ExposureClasses", `
 SELECT asset_class, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, direct_pct, via_funds_pct, quality
-  FROM report_exposure_classes(?, ?)`, []any{asOf, ccy}, func(r *ExposureClassRow) []any {
+  FROM report_exposure_classes(?, ?)
+ ORDER BY value DESC, asset_class`, []any{asOf, ccy}, func(r *ExposureClassRow) []any {
 		return []any{&r.AssetClass, dec(&r.Value), flt(&r.SharePct), flt(&r.DirectPct), flt(&r.ViaFundsPct), &r.Quality}
 	})
 }
@@ -91,7 +94,8 @@ func ExposureCountries(ctx context.Context, db *sql.DB, asOf int64, ccy, country
 	return scanRows(ctx, db, "ExposureCountries", `
 SELECT country, country_name, region, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, direct_pct,
        via_funds_pct, quality
-  FROM report_exposure_countries(?, ?, p_country := ?)`, []any{asOf, ccy, country}, func(r *ExposureCountryRow) []any {
+  FROM report_exposure_countries(?, ?, p_country := ?)
+ ORDER BY value DESC, country, region`, []any{asOf, ccy, country}, func(r *ExposureCountryRow) []any {
 		return []any{&r.Country, str(&r.CountryName), str(&r.Region), dec(&r.Value), flt(&r.SharePct),
 			flt(&r.DirectPct), flt(&r.ViaFundsPct), &r.Quality}
 	})
@@ -110,7 +114,8 @@ type ExposureCurrencyRow struct {
 func ExposureCurrencies(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureCurrencyRow, error) {
 	return scanRows(ctx, db, "ExposureCurrencies", `
 SELECT currency, currency_kind, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, direct_pct, via_funds_pct, quality
-  FROM report_exposure_currencies(?, ?)`, []any{asOf, ccy}, func(r *ExposureCurrencyRow) []any {
+  FROM report_exposure_currencies(?, ?)
+ ORDER BY value DESC, currency`, []any{asOf, ccy}, func(r *ExposureCurrencyRow) []any {
 		return []any{&r.Currency, &r.Kind, dec(&r.Value), flt(&r.SharePct), flt(&r.DirectPct), flt(&r.ViaFundsPct), &r.Quality}
 	})
 }
@@ -133,7 +138,8 @@ type ExposureSitusRow struct {
 func ExposureSitus(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureSitusRow, error) {
 	return scanRows(ctx, db, "ExposureSitus", `
 SELECT situs, country_name, region, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, funds_pct, quality
-  FROM report_exposure_situs(?, ?)`, []any{asOf, ccy}, func(r *ExposureSitusRow) []any {
+  FROM report_exposure_situs(?, ?)
+ ORDER BY value DESC, situs`, []any{asOf, ccy}, func(r *ExposureSitusRow) []any {
 		return []any{&r.Situs, str(&r.CountryName), str(&r.Region), dec(&r.Value), flt(&r.SharePct), flt(&r.FundsPct),
 			&r.Quality}
 	})
@@ -158,7 +164,8 @@ SELECT security, name, ticker, asset_class, sector, country, currency,
        CAST(market_cap::DECIMAL(28,0) AS VARCHAR), size, CAST(value::DECIMAL(28,4) AS VARCHAR),
        CAST(direct_value::DECIMAL(28,4) AS VARCHAR), CAST(via_funds_value::DECIMAL(28,4) AS VARCHAR),
        funds, share_pct, quality
-  FROM report_exposure_securities(?, ?, p_country := ?)`, []any{asOf, ccy, country}, func(r *ExposureSecurityRow) []any {
+  FROM report_exposure_securities(?, ?, p_country := ?)
+ ORDER BY abs(value) DESC, security`, []any{asOf, ccy, country}, func(r *ExposureSecurityRow) []any {
 		return []any{&r.Security, str(&r.Name), str(&r.Ticker), str(&r.AssetClass), str(&r.Sector), str(&r.Country),
 			str(&r.Ccy), dec(&r.MarketCap), str(&r.Size), dec(&r.Value), dec(&r.DirectValue), dec(&r.ViaFundsValue),
 			&r.Funds, flt(&r.SharePct), &r.Quality}
@@ -199,7 +206,8 @@ func ExposureFunds(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]E
 SELECT fund, name, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, via, proxy, leverage, provider, basis,
        composition_as_of, gap_days, lines, weight_sum, domicile, situs, situs_basis, replication, lending,
        hedged_currency, declaration_as_of, declared_dimensions, quality
-  FROM report_exposure_funds(?, ?)`, []any{asOf, ccy}, func(r *ExposureFundRow) []any {
+  FROM report_exposure_funds(?, ?)
+ ORDER BY fund = '(other holdings)', abs(value) DESC, fund`, []any{asOf, ccy}, func(r *ExposureFundRow) []any {
 		return []any{&r.Fund, str(&r.Name), dec(&r.Value), flt(&r.SharePct), str(&r.Via), str(&r.Proxy),
 			flt(&r.Leverage), str(&r.Provider), str(&r.Basis), i64(&r.CompositionAsOf), i64(&r.GapDays),
 			i64(&r.Lines), flt(&r.WeightSum), str(&r.Domicile), str(&r.Situs), str(&r.SitusBasis),

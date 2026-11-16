@@ -146,10 +146,11 @@ func TestRunReturnsCashZeroingIsAClosure(t *testing.T) {
 		[]snap{{t0, 1000}, {t1, 1000}}, nil)
 	seedCashAcct(t, db, ctx, "src-closed", "CASH", []snap{{t0, 500}, {t1, 0}})
 
-	accts, _, err := loadAccountData(ctx, db, "USD", nil)
+	spines, _, err := loadSpine(ctx, db, oneCurrency("USD"), nil)
 	if err != nil {
-		t.Fatalf("loadAccountData: %v", err)
+		t.Fatalf("loadSpine: %v", err)
 	}
+	accts := spines["USD"]
 	ds := &returnsDataset{accts: accts}
 	ds.finalize()
 	a, ok := accts[acctKey("src-closed", "CASH")]

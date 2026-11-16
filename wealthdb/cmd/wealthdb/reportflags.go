@@ -86,7 +86,7 @@ func (rf *reportFlags) resolve(g globalFlags, cmd string) (output.Format, *confi
 	if err != nil {
 		return "", nil, "", errs.Newf(errs.ExitUsage, "%s: %s", cmd, err.Error())
 	}
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return "", nil, "", err
 	}

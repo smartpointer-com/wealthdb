@@ -93,8 +93,9 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		return errs.Newf(errs.ExitUsage, "mcp-serve: --chars must be 1 or more")
 	}
 	// The config is loaded per call, but a broken one should fail the
-	// start, not the first question.
-	if _, err := config.Load(g.ConfigPath); err != nil {
+	// start, not the first question, and its notices show once, here.
+	cfg, err := config.Load(g.ConfigPath)
+	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(*tempDir, 0o700); err != nil {
@@ -118,6 +119,9 @@ func cmdMCPServe(ctx context.Context, g globalFlags, subargs []string, _ io.Read
 		// protocol.
 		log: slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level})),
 		now: time.Now,
+	}
+	for _, n := range cfg.Notices() {
+		s.log.Warn(n)
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)

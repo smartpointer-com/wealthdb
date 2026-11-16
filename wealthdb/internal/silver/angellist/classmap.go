@@ -1,17 +1,8 @@
 package angellist
 
-import "github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+import "github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 
-// taxonomyForKind maps the silver offerings.kind to the 2-D taxonomy
-// pair (exposure, vehicle). Both single-company SPVs/RUVs and
-// multi-company private funds are unlisted-company ownership, so the
-// exposure is private_equity for both; the vehicle carries the
-// SPV-vs-fund distinction (spv -> spv, fund -> fund). An unknown/empty
-// kind defaults to the generic private fund. The returned pair always
-// satisfies canonical.ValidTaxonomyPair.
-func taxonomyForKind(kind string) (canonical.AssetClass, canonical.Vehicle) {
-	if kind == "spv" {
-		return canonical.AssetClassPrivateEquity, canonical.VehicleSPV
-	}
-	return canonical.AssetClassPrivateEquity, canonical.VehicleFund
-}
+// taxonomyForKind maps the silver offerings.kind (spv | fund) to the
+// taxonomy pair: an SPV or RUV is an SPV, a fund the generic private fund
+// (silver.PrivateFundTaxonomy).
+var taxonomyForKind = silver.PrivateFundTaxonomy

@@ -68,8 +68,8 @@ type ReturnsPolicy struct {
 	// ExternalOnly: count only boundary-crossing flows. The engine
 	// (attachOneFlow) then drops every row the silver tagged internal (UBS
 	// marks conduit churn with a `returns_flow: internal` payload key).
-	// False by default (the flow set is governed by Flow.external /
-	// Flow.transferLike).
+	// False by default: the flow set is the source's regime over the
+	// capital kinds (canonical.CapitalKind).
 	ExternalOnly bool
 }
 
@@ -106,11 +106,11 @@ const (
 	// (crypto wallets that coins sweep between on arrival).
 	AccountsGrainBlanked
 	// AccountsGrainHidden: no rows of their own at ANY grain — the accounts
-	// are pure plumbing (deposit-bank cash conduits money passes through).
-	// Values and flows still enter every aggregate they belong to; an entity
-	// consisting only of hidden constituents (such a source's own sources-
-	// grain row, or its no-portfolio bucket) is hidden too. The global grain
-	// is never hidden.
+	// are pure plumbing. No registered policy sets it; a deployment sets it
+	// with returns_policy_overrides. Values and flows still enter every
+	// aggregate they belong to; an entity consisting only of hidden
+	// constituents (such a source's own sources-grain row, or its
+	// no-portfolio bucket) is hidden too. The global grain is never hidden.
 	AccountsGrainHidden
 )
 

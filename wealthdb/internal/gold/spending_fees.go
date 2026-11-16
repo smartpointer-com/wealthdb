@@ -125,11 +125,7 @@ func loadFeeLines(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, out
 // RunFees computes the fee view. p carries the window, the output currency,
 // the config's returns settings and the bucket size in Period.
 func RunFees(ctx context.Context, db *sql.DB, p ReturnParams) ([]FeeRow, error) {
-	fx, err := loadFxBounds(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	ds, err := loadReturnsDataset(ctx, db, p.OutCcy, fx, p.PolicyOverrides, p.TransferMatching)
+	ds, err := loadRunDataset(ctx, db, p)
 	if err != nil {
 		return nil, err
 	}

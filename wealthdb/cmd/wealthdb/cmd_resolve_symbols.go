@@ -92,7 +92,7 @@ func cmdResolveSymbols(ctx context.Context, g globalFlags, subargs []string, _ i
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

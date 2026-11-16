@@ -254,7 +254,7 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 //
 //  1. every leg is classified once: its region in its account's life;
 //  2. legs pair: a stored pair whose both legs would be flows on their own
-//     drops (crossMatchedDrops), and the netter cancels opposite transfer-like
+//     drops (linkedDrops), and the netter cancels opposite transfer-like
 //     legs no such pair dropped. It runs over every such leg, pre-debut and
 //     zero-tail legs included, so an internal pair whose other leg sits on a
 //     live account still cancels. A deposit or withdrawal never nets by
@@ -285,12 +285,14 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 	// Stored pairs obey the same --netting switch as the heuristic netter:
 	// netting off is the diagnostic view of every raw leg.
 	var tags []string
-	var crossDrop map[string]bool
+	var linkDrop map[string]bool
 	if p.Netting {
-		var crossPairs int
-		crossDrop, crossPairs = crossMatchedDrops(assets, winFrom, winTo)
-		if crossPairs > 0 {
-			tags = append(tags, fmt.Sprintf("cross_source_netted=%d", crossPairs))
+		// The tag counts every netted pair, the pairs inside one source
+		// among them.
+		var pairs int
+		linkDrop, pairs = linkedDrops(assets, winFrom, winTo)
+		if pairs > 0 {
+			tags = append(tags, fmt.Sprintf("cross_source_netted=%d", pairs))
 		}
 	}
 
@@ -303,7 +305,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 			f.ValuedOn = a.valuedOn(f.Day)
 			l := flowLeg{Flow: f, acct: a, nettable: nettable, region: a.region(f.Day, w)}
 			switch {
-			case crossDrop != nil && crossDrop[acctKey(key, f.ID)]:
+			case linkDrop != nil && linkDrop[acctKey(key, f.ID)]:
 				flows = moved.settle(flows, l, fateInside)
 			case nettable:
 				cand = append(cand, l)
@@ -570,9 +572,9 @@ func groupOnboardStep(grp []*accountData, day int64, moved *movedLegs) float64 {
 	return step
 }
 
-// crossMatchedDrops resolves the stored transfer links (crossLinks, bound
-// by bindStoredLinks) against THIS entity window: a linked pair
-// nets — both legs dropped — strictly when BOTH legs are live members, i.e.
+// linkedDrops resolves the stored transfer links (links, bound by
+// bindStoredLinks) against THIS entity window: a linked pair nets — both
+// legs dropped — strictly when BOTH legs are live members, i.e.
 // the partner's account is in the entity, both legs' days are inside
 // (winFrom, winTo], and each leg would be a flow on its own (fateOf): a
 // pre-debut or closure-drain leg is represented by its synthetic
@@ -581,10 +583,10 @@ func groupOnboardStep(grp []*accountData, day int64, moved *movedLegs) float64 {
 // treatment: at finer grains — and for pairs straddling the window — each leg
 // stays the real boundary flow it is for that view. Keys are
 // acctKey(acctKey(src,acct), txID); the returned count is netted PAIRS.
-func crossMatchedDrops(assets []*accountData, winFrom, winTo int64) (map[string]bool, int) {
+func linkedDrops(assets []*accountData, winFrom, winTo int64) (map[string]bool, int) {
 	any := false
 	for _, a := range assets {
-		if len(a.crossLinks) > 0 {
+		if len(a.links) > 0 {
 			any = true
 			break
 		}
@@ -604,11 +606,11 @@ func crossMatchedDrops(assets []*accountData, winFrom, winTo int64) (map[string]
 	drops := map[string]bool{}
 	pairs := 0
 	for _, a := range assets {
-		if len(a.crossLinks) == 0 {
+		if len(a.links) == 0 {
 			continue // links are sparse; skip unlinked members entirely
 		}
 		for f, nettable := range a.legs(winFrom, winTo) {
-			link, ok := a.crossLinks[f.ID]
+			link, ok := a.links[f.ID]
 			if !ok {
 				continue
 			}

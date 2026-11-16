@@ -16,7 +16,7 @@ import (
 // printBenchmarks is `wealthdb help benchmarks`: the built-in set and the
 // config's, each with its funds and weights.
 func printBenchmarks(g globalFlags, w io.Writer) error {
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

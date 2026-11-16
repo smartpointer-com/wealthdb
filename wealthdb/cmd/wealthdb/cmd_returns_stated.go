@@ -21,7 +21,7 @@ func returnsStatedReport(req request, cfg *config.Config) *report {
 	nicknames := accountNicknames{}
 	fetch := func(ctx context.Context, db *sql.DB) ([]gold.StatedPeriodRow, error) {
 		return gold.ReconcileStatedPeriods(ctx, db, withReturnsCfg(cfg, gold.ReturnParams{
-			FromEpoch: req.from, ToEpoch: req.to, Annualize: "auto", Netting: true, Inception: "full",
+			FromEpoch: req.from, ToEpoch: req.to,
 		}))
 	}
 	return withLoads(newReport(buildStatedColumnRegistry(kindOf, nicknames), defaultStatedColumns, fetch),

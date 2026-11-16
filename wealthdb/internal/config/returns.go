@@ -144,15 +144,15 @@ type ReturnsTransferMatching struct {
 	Enabled bool `json:"enabled"`
 	// WindowDays and TolerancePct are accepted and ignored: the load's
 	// matcher pairs the legs, under spending.internal_transfer_matching's
-	// knobs. Load says so where either is set.
+	// knobs. Config.Notices says so where either is set.
 	WindowDays   *int     `json:"window_days,omitempty"`
 	TolerancePct *float64 `json:"tolerance_pct,omitempty"`
 }
 
-// ignoredKnobsNotice is what Load prints where the block sets a knob that
-// no longer applies.
-const ignoredKnobsNotice = "config: returns_transfer_matching: window_days and tolerance_pct no longer apply; " +
-	"returns nets the transfer pairs the load stores"
+// ignoredKnobsNotice is the notice of a block that sets window_days or
+// tolerance_pct (Config.Notices).
+const ignoredKnobsNotice = "config: returns_transfer_matching: window_days and tolerance_pct are ignored; " +
+	"spending.internal_transfer_matching sets the matcher's window and tolerance"
 
 // Regime returns the FlowRegime Validate parsed and whether one is set.
 // A nil receiver, or one never validated, reports unset.

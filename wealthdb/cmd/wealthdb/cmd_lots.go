@@ -49,7 +49,7 @@ func cmdLots(ctx context.Context, g globalFlags, subargs []string, _ io.Reader, 
 	if err := noPositionals(fs, "lots"); err != nil {
 		return err
 	}
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

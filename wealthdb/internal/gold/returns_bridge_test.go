@@ -374,7 +374,7 @@ func TestBridgeAccountThatEndsWithValue(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ds, err := loadReturnsDataset(ctx, db, "USD", fx, nil, nil)
+		ds, err := loadReturnsDataset(ctx, db, "USD", fx, ReturnsSettings{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -514,7 +514,7 @@ func TestBridgeClosureInTheMonth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ds, err := loadReturnsDataset(ctx, db, "USD", fx, nil, nil)
+			ds, err := loadReturnsDataset(ctx, db, "USD", fx, ReturnsSettings{})
 			if err != nil {
 				t.Fatal(err)
 			}

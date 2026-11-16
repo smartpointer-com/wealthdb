@@ -74,7 +74,7 @@ func cmdCategorize(ctx context.Context, g globalFlags, subargs []string, _ io.Re
 		return errs.Newf(errs.ExitUsage, "categorize: --all and --refine choose different backlogs; pass one")
 	}
 
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}

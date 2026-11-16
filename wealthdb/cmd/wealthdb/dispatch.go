@@ -59,6 +59,7 @@ func runAt(now func() time.Time, args []string, stdin io.Reader, stdout, stderr 
 	}
 
 	g.now = now
+	g.notices = noticesOnce(stderr)
 	ctx := context.Background()
 	err = handler(ctx, g, subargs, stdin, stdout, stderr)
 	// A subcommand answers -h by printing its usage and returning

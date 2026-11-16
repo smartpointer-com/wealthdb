@@ -151,11 +151,11 @@ func validateNested[V any](at, noun string, m map[string]map[string]V, seenIDs m
 // income or returns twin — one matcher runs, and the families read its
 // pairs.
 //
-// Both knobs bound the matcher's banded passes — the named pass and the
-// amount pass — which are the phases that guess. A pair the holder stated
-// in the override ledger, or one the source asserted by stamping a
-// reference on both legs, spends neither: neither is a guess, so there is
-// no band to widen or narrow around it.
+// Both knobs bound the banded passes, the named pass and the amount pass,
+// which are the phases that guess. A pair the override ledger states, or
+// one a source asserts (a reference stamped on both legs, or one leg
+// describing the other's currency and figure), is no guess and is not
+// banded.
 func validateMatchKnobs(block string, windowDays *int, tolerancePct *float64) error {
 	if windowDays != nil && (*windowDays < 0 || *windowDays > 30) {
 		return fmt.Errorf("config: %s.window_days %d out of range [0, 30]", block, *windowDays)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +46,7 @@ See docs/DESIGN.md §8 for the load semantics.`)
 		return err
 	}
 
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}
@@ -328,10 +329,14 @@ type loadInputs struct {
 }
 
 // readLoadInputs reads the loadInputs (loader.ParseTransferLedger,
-// parseEnrichmentLedgers, config.ExposureRows, config.YieldRows).
+// checkTransferSources, parseEnrichmentLedgers, config.ExposureRows,
+// config.YieldRows).
 func readLoadInputs(cfg *config.Config) (loadInputs, error) {
 	transfers, err := loader.ParseTransferLedger(cfg.EquityTransfers)
 	if err != nil {
+		return loadInputs{}, err
+	}
+	if err := checkTransferSources(transfers, cfg.SilverSources); err != nil {
 		return loadInputs{}, err
 	}
 	enrichment, err := parseEnrichmentLedgers(cfg)
@@ -343,6 +348,33 @@ func readLoadInputs(cfg *config.Config) (loadInputs, error) {
 		return loadInputs{}, err
 	}
 	return loadInputs{transfers: transfers, enrichment: enrichment, exposure: exposure, yield: cfg.YieldRows()}, nil
+}
+
+// checkTransferSources refuses an equity-transfer leg whose source is no
+// configured source: a load applies a source's legs only, so the leg
+// would book nothing, and a one-row move would book its sending half
+// alone. Every configured source counts, not only the ones a load
+// covers, so a load of one source still reads a ledger that names the
+// others. The error names the row by its account and date, and the
+// column the id came from.
+func checkTransferSources(transfers map[string][]loader.TransferEntry, sources []config.SilverSource) error {
+	known := make(map[string]bool, len(sources))
+	for _, s := range sources {
+		known[s.ID] = true
+	}
+	for _, id := range slices.Sorted(maps.Keys(transfers)) {
+		if known[id] {
+			continue
+		}
+		e := transfers[id][0]
+		source, account := "silver_source_id", "account"
+		if e.PairSource != "" && e.Direction == "in" {
+			source, account = "to_silver_source_id", "to_account"
+		}
+		return fmt.Errorf("equity_transfers: the row of %s %q on %s: %s %q is no configured source",
+			account, e.Account, time.Unix(e.OccurredAt, 0).UTC().Format(time.DateOnly), source, id)
+	}
+	return nil
 }
 
 // parseEnrichmentLedgers reads the ledgers the pass applies. Every

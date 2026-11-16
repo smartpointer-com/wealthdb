@@ -60,7 +60,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 	// edit between the two reads leaves a key older than the tables, so
 	// the next run rebuilds rather than skip over them.
 	raw, readErr := os.ReadFile(g.ConfigPath)
-	cfg, err := config.Load(g.ConfigPath)
+	cfg, err := g.loadConfig()
 	if err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		return err
 	}
 	defer lock.unlock()
-	key := gold.MaterializeKey{ConfigHash: gold.HashInputs(raw), EngineVersion: engineVersion(),
+	key := gold.MaterializeKey{ConfigHash: gold.HashConfig(raw), EngineVersion: engineVersion(),
 		AsOf: anchorToDay(g.clock().UTC(), true).Unix()}
 	same, err := materializeInputsSame(ctx, cfg, key)
 	if err != nil {
@@ -145,8 +145,8 @@ var webMaterializePhases = []materializePhase{
 		return fmt.Sprintf("serving tables: materialized %d rows (histories, latest holdings, transaction lines)", n)
 	}},
 	{"returns", gold.MaterializeReturns, func(n int) string {
-		return fmt.Sprintf("returns: materialized %d rows (4 grains x 4 periods x %d currencies, plus per-year windows)",
-			n, len(gold.MaterializedCurrencies()))
+		return fmt.Sprintf("returns: materialized %d rows (%d grains x %d periods x %d currencies, plus per-year windows)",
+			n, len(gold.ReturnsGrains()), len(returnsPeriods), len(gold.MaterializedCurrencies()))
 	}},
 	{"gains", gold.MaterializeGains, func(n int) string {
 		return fmt.Sprintf("gains: materialized %d rows (monthly x %d currencies x %d readings of a missing cost basis)",
