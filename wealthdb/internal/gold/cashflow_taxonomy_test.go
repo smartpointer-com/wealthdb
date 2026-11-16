@@ -11,12 +11,11 @@ import (
 // The cash flow taxonomy pins: the five values exist in the dimension,
 // and both bases drop a row that resolves to one of them.
 //
-// TestSpendCategoriesMatchGoTable already compares the whole dimension
-// against canonical.SpendCategories, so nothing here re-checks the
-// seed's contents. What it checks is the consequence: a base names its
-// exclusions one by one, so a value added to the taxonomy without a
-// base edit would stay IN the base and double-count against the
-// cashflow statement that placed it.
+// The derived set stamps the whole dimension from
+// canonical.SpendCategories (TestDerivedStampsTheVocabulary), so nothing
+// here re-checks its contents. What it checks is the consequence: a
+// value placed in the taxonomy as a movement must leave both bases, or
+// it would double-count against the cashflow statement that placed it.
 
 // seedCashflowTaxonomyFixture lays down one transaction per new value,
 // on its own account, with the overlay row a rule would have written.

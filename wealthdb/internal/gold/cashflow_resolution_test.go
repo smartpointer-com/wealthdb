@@ -536,29 +536,30 @@ func TestTheCrossingDeltasAreDirectional(t *testing.T) {
 	check(t, seedLines(t, db, ctx, lines), lines)
 }
 
-// TestVehicleTransferDetailedMatchesTheResolution pins
-// canonical.VehicleTransferDetailed to the resolution's own CASE: for
-// every class that has a crossing delta, a row placed with that delta
-// and no far account lands on that class, read from either family.
-func TestVehicleTransferDetailedMatchesTheResolution(t *testing.T) {
+// TestEveryCrossingLandsOnItsPool pins the crossings' roles
+// (canonical.CategoryRoles) to the resolution: for every value placed as
+// a crossing, a row placed with that value and no far account lands on
+// the pool the value names, read from either family.
+func TestEveryCrossingLandsOnItsPool(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 	var lines []line
-	for _, c := range canonical.CashflowClasses() {
-		d, ok := canonical.VehicleTransferDetailed(c)
-		if !ok {
+	for _, c := range canonical.SpendCategories {
+		r := c.Roles()
+		if r.FlowPlace != canonical.PlaceVehicleDelta {
 			continue
 		}
-		want := "vehicles." + string(c) + "." + string(c)
+		d, pool := c.Detailed, string(r.FlowClassOut)
+		want := "vehicles." + pool + "." + pool
 		lines = append(lines,
-			line{id: "VT-OUT-" + string(c), account: "CASH", kind: "withdrawal", amount: -500,
+			line{id: "VT-OUT-" + pool, account: "CASH", kind: "withdrawal", amount: -500,
 				spend: d, want: want, why: d + " on the spending side"},
-			line{id: "VT-IN-" + string(c), account: "CASH", kind: "deposit", amount: 500,
+			line{id: "VT-IN-" + pool, account: "CASH", kind: "deposit", amount: 500,
 				income: d, want: want, why: d + " on the income side"})
 	}
 	if len(lines) == 0 {
-		t.Fatal("no class has a crossing delta; the walk proves nothing")
+		t.Fatal("no value is a crossing; the walk proves nothing")
 	}
 	check(t, seedLines(t, db, ctx, lines), lines)
 }
@@ -798,7 +799,12 @@ func TestNoVerdictPromotesAnUnsignedKind(t *testing.T) {
 	db, ctx := openMigrated(t)
 	seedResolutionFixture(t, db, ctx)
 
-	unsigned := canonical.CashflowUnsignedKinds()
+	var unsigned []canonical.TxKind
+	for _, r := range canonical.TxKindRows() {
+		if r.Unsigned {
+			unsigned = append(unsigned, r.Kind)
+		}
+	}
 	var rows []line
 	for _, k := range canonical.TxKinds() {
 		rows = append(rows, line{

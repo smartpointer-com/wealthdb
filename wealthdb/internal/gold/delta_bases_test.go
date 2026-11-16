@@ -21,8 +21,10 @@ import (
 // deposit reads as spending, its return as income, and no total looks
 // wrong.
 //
-// The lists are literal, so this is what a generator pin can reach: it
-// asks the deployed macro whether it names each delta.
+// The bases leave the values out through the role predicates
+// (detailed_stays_in_spending, detailed_stays_in_income), so this asks the
+// deployed predicates about each crossing and the deployed bases whether
+// they call them.
 func TestEveryDeltaLeavesTheFamilyBases(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -35,40 +37,41 @@ func TestEveryDeltaLeavesTheFamilyBases(t *testing.T) {
 		}
 		return def
 	}
-	check := func(when string) {
-		t.Helper()
-		// spending_lines_base is spending_lines_own and the linked
-		// repayments; the exclusions live in the first, and a
-		// repayment's category is held to them in spend_reimbursements.
-		spending, income := body("spending_lines_own"), body("income_lines_base")
-		repaid := body("spend_reimbursements")
-
-		crossings := 0
-		for _, c := range canonical.SpendCategories {
-			if !strings.HasSuffix(c.Detailed, "_transfer") {
-				continue
-			}
-			crossings++
-			if !strings.Contains(spending, "'"+c.Detailed+"'") {
-				t.Errorf("%s: spending_lines_own does not exclude the delta %q: "+
-					"a movement of the household's own money would be counted as spending",
-					when, c.Detailed)
-			}
-			if !strings.Contains(repaid, "'"+c.Detailed+"'") {
-				t.Errorf("%s: spend_reimbursements does not refuse the delta %q: "+
-					"a repayment would net against an own-account move", when, c.Detailed)
-			}
-			if !strings.Contains(income, "'"+c.Detailed+"'") {
-				t.Errorf("%s: income_lines_base does not exclude the delta %q: "+
-					"a movement of the household's own money would be counted as income",
-					when, c.Detailed)
-			}
-		}
-		// And the pin reads something: no crossings would pass every
-		// assertion above without checking anything.
-		if crossings < 5 {
-			t.Fatalf("found %d crossings in the vocabulary; this guard reads too little", crossings)
+	// spending_lines_base is spending_lines_own and the linked
+	// repayments; the exclusions live in the first, and a repayment's
+	// category is held to them in spend_reimbursements.
+	for macro, predicate := range map[string]string{
+		"spending_lines_own":   "detailed_stays_in_spending(",
+		"spend_reimbursements": "detailed_stays_in_spending(",
+		"income_lines_base":    "detailed_stays_in_income(",
+	} {
+		if !strings.Contains(body(macro), predicate) {
+			t.Errorf("%s does not read %s): the crossings would be counted", macro, predicate)
 		}
 	}
-	check("the bases")
+	crossings := 0
+	for _, c := range canonical.SpendCategories {
+		if !strings.HasSuffix(c.Detailed, "_transfer") {
+			continue
+		}
+		crossings++
+		var spending, income bool
+		if err := db.QueryRowContext(ctx, `SELECT NOT detailed_stays_in_spending(?1), NOT detailed_stays_in_income(?1)`,
+			c.Detailed).Scan(&spending, &income); err != nil {
+			t.Fatal(err)
+		}
+		if !spending {
+			t.Errorf("the spending base keeps the delta %q: a movement of the household's own money "+
+				"would be counted as spending, and a repayment would net against it", c.Detailed)
+		}
+		if !income {
+			t.Errorf("the income base keeps the delta %q: a movement of the household's own money "+
+				"would be counted as income", c.Detailed)
+		}
+	}
+	// And the pin reads something: no crossings would pass every
+	// assertion above without checking anything.
+	if crossings < 5 {
+		t.Fatalf("found %d crossings in the vocabulary; this guard reads too little", crossings)
+	}
 }

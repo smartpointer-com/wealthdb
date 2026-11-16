@@ -9,71 +9,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// TestSpendCategoriesMatchGoTable is the generator-style pin between
-// the spend_categories dimension the migrations seed — 0040, and every
-// migration after it that adds, changes or retires a row — and
-// canonical.SpendCategories. The Go table is the source those seeds
-// were generated from; if either side is edited alone — a taxonomy
-// refresh that skips the migration, or a hand-edit of the SQL — this
-// fails rather than letting gold and the enrichment pass disagree about
-// what a valid category is.
-//
-// The family column is compared with the rest: it is what the two
-// vocabularies are told apart by, and a row seeded into the wrong one
-// would be admitted by the wrong rules, pins and conversation.
-func TestSpendCategoriesMatchGoTable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	assertSpendCategoriesMatchGoTable(t, db, ctx)
-}
-
-// assertSpendCategoriesMatchGoTable compares db's dimension with the Go
-// table as sets: every row, and every column the table carries.
-func assertSpendCategoriesMatchGoTable(t *testing.T, db *sql.DB, ctx context.Context) {
-	t.Helper()
-	rows, err := db.QueryContext(ctx,
-		`SELECT spend_primary, spend_detailed, description, family FROM spend_categories`)
-	if err != nil {
-		t.Fatalf("read spend_categories: %v", err)
-	}
-	defer rows.Close()
-
-	seeded := map[string]canonical.SpendCategory{}
-	for rows.Next() {
-		var c canonical.SpendCategory
-		var family sql.NullString
-		if err := rows.Scan(&c.Primary, &c.Detailed, &c.Description, &family); err != nil {
-			t.Fatalf("scan spend_categories: %v", err)
-		}
-		if !family.Valid {
-			t.Errorf("%s has no family; it belongs to neither vocabulary", c.Detailed)
-		}
-		c.Family = canonical.Family(family.String)
-		seeded[c.Detailed] = c
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate spend_categories: %v", err)
-	}
-
-	if len(seeded) != len(canonical.SpendCategories) {
-		t.Errorf("spend_categories rows = %d, want %d", len(seeded), len(canonical.SpendCategories))
-	}
-	for _, want := range canonical.SpendCategories {
-		got, ok := seeded[want.Detailed]
-		if !ok {
-			t.Errorf("spend_categories is missing %q", want.Detailed)
-			continue
-		}
-		if got != want {
-			t.Errorf("spend_categories[%q] = %+v, want %+v", want.Detailed, got, want)
-		}
-		delete(seeded, want.Detailed)
-	}
-	for detailed := range seeded {
-		t.Errorf("spend_categories has %q, which the Go table does not", detailed)
-	}
-}
-
 // TestSpendOverlayAnswers: each overlay table answers, and so does the
 // spending base.
 func TestSpendOverlayAnswers(t *testing.T) {
@@ -843,54 +778,6 @@ func TestProviderViewRecordsWithoutDeciding(t *testing.T) {
 	}
 }
 
-// TestSpendCategoryLabelsMatchGoTable pins the seeded display labels to
-// canonical.SpendLabel. The migration seeds them literally so one can be
-// corrected by hand; this is what stops a correction there from silently
-// disagreeing with the rule in Go, and what catches a new taxonomy value
-// seeded without a label at all.
-func TestSpendCategoryLabelsMatchGoTable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	assertSpendCategoryLabelsMatchGoTable(t, db, ctx)
-}
-
-// assertSpendCategoryLabelsMatchGoTable reads every label in db's
-// dimension against the rule in Go.
-func assertSpendCategoryLabelsMatchGoTable(t *testing.T, db *sql.DB, ctx context.Context) {
-	t.Helper()
-	rows, err := db.QueryContext(ctx,
-		`SELECT spend_primary, spend_detailed, label, primary_label FROM spend_categories`)
-	if err != nil {
-		t.Fatalf("read labels: %v", err)
-	}
-	defer rows.Close()
-	n := 0
-	for rows.Next() {
-		var prim, det string
-		var label, primLabel sql.NullString
-		if err := rows.Scan(&prim, &det, &label, &primLabel); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		n++
-		if !label.Valid || !primLabel.Valid {
-			t.Errorf("%s has no label; every value must read as something", det)
-			continue
-		}
-		if want := canonical.SpendLabel(det); label.String != want {
-			t.Errorf("%s label = %q, want %q", det, label.String, want)
-		}
-		if want := canonical.SpendPrimaryLabel(prim); primLabel.String != want {
-			t.Errorf("%s primary_label = %q, want %q", det, primLabel.String, want)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate labels: %v", err)
-	}
-	if n != len(canonical.SpendCategories) {
-		t.Errorf("labelled %d rows, want %d", n, len(canonical.SpendCategories))
-	}
-}
-
 // TestTheATMFeesLabel: the dimension labels a seeded value by its
 // display label.
 func TestTheATMFeesLabel(t *testing.T) {
@@ -904,64 +791,6 @@ func TestTheATMFeesLabel(t *testing.T) {
 	}
 	if label != "ATM fees" {
 		t.Errorf("label = %q, want %q", label, "ATM fees")
-	}
-}
-
-// TestSpendCategoryCatchAllMatchesGoTable pins the seeded catch-all flag
-// to the Go predicates. The rule is expressed twice — once in Go for the
-// enrichment pass, once in SQL for the seed — and this is what stops the
-// two drifting.
-//
-// The seed reads a value's own spelling and knows nothing of families,
-// while Go asks the question inside one vocabulary: a row is a catch-all
-// if it is its own family's. That is the same rule read from two places,
-// and the OR below is where they meet — no value is a catch-all in one
-// family and an ordinary value in the other, because no value is in both
-// unless it is a delta, and a delta is never one.
-func TestSpendCategoryCatchAllMatchesGoTable(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	assertSpendCategoryCatchAllMatchesGoTable(t, db, ctx)
-}
-
-// assertSpendCategoryCatchAllMatchesGoTable reads every catch-all flag
-// in db's dimension against the Go predicates.
-func assertSpendCategoryCatchAllMatchesGoTable(t *testing.T, db *sql.DB, ctx context.Context) {
-	t.Helper()
-	rows, err := db.QueryContext(ctx,
-		`SELECT spend_detailed, catch_all FROM spend_categories`)
-	if err != nil {
-		t.Fatalf("read catch_all: %v", err)
-	}
-	defer rows.Close()
-	seen, flagged := 0, 0
-	for rows.Next() {
-		var det string
-		var flag sql.NullBool
-		if err := rows.Scan(&det, &flag); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		seen++
-		if !flag.Valid {
-			t.Errorf("%s has no catch_all flag", det)
-			continue
-		}
-		if flag.Bool {
-			flagged++
-		}
-		want := canonical.CatchAllSpendDetailed(det) || canonical.CatchAllIncomeDetailed(det)
-		if flag.Bool != want {
-			t.Errorf("%s catch_all = %v, want %v", det, flag.Bool, want)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate catch_all: %v", err)
-	}
-	if seen != len(canonical.SpendCategories) {
-		t.Errorf("checked %d rows, want %d", seen, len(canonical.SpendCategories))
-	}
-	if flagged == 0 {
-		t.Error("no value is a catch-all; the seed is not doing anything")
 	}
 }
 

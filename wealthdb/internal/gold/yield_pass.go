@@ -350,9 +350,17 @@ SELECT a.silver_source_id, a.account_external_id, a.base_currency, NULL, a.paylo
 }()
 
 // cashAccountKinds are the kinds of account that hold cash at a bank or
-// a broker: an account payload states a deposit's rate on these alone.
-var cashAccountKinds = []canonical.AccountKind{canonical.AccountKindCash, canonical.AccountKindBrokerage,
-	canonical.AccountKindCustody, canonical.AccountKindSafekeeping}
+// a broker (canonical.AccountKindRow.HoldsCash): an account payload
+// states a deposit's rate on these alone.
+var cashAccountKinds = func() []canonical.AccountKind {
+	var out []canonical.AccountKind
+	for _, r := range canonical.AccountKinds() {
+		if r.HoldsCash {
+			out = append(out, r.Kind)
+		}
+	}
+	return out
+}()
 
 // writeStatedRates adds to account_rates the rates the sources' payloads
 // state under the canonical keys, one row per side and tier, each with

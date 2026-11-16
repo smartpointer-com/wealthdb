@@ -2,6 +2,119 @@
 -- populations through their categories to their reports.
 
 -- ============================================================
+-- The roles of the kinds and the values, as predicates.
+--
+-- Each is a scalar macro, so it expands in place to the test it holds
+-- and a caller's plan is the one the test would give. Go states
+-- every role once (internal/canonical: the kind tables and
+-- CategoryRoles), the derived set stamps it into txn_kind_roles and
+-- spend_categories, and a test holds each predicate here to it
+-- (TestFlowPredicatesHoldTheRoles). A macro that reads a role on a
+-- join it already has reads the stamped column instead.
+-- ============================================================
+
+-- kind_is_spending: a row of the kind is in the spending population
+-- (txn_kind_roles.spending_side). Interest is charged when negative.
+CREATE MACRO kind_is_spending(p_kind, p_amount) AS (
+    p_kind IN ('purchase', 'refund', 'withdrawal', 'fee', 'tax')
+    OR (p_kind = 'interest' AND p_amount < 0)
+);
+
+-- kind_is_income: a row of the kind is in the income population
+-- (txn_kind_roles.income_side). Interest is earned when positive.
+CREATE MACRO kind_is_income(p_kind, p_amount) AS (
+    p_kind IN ('dividend', 'coupon', 'staking', 'capital_gain',
+               'reward', 'distribution', 'deposit')
+    OR (p_kind = 'interest' AND p_amount > 0)
+);
+
+-- kind_in_matcher_pool: the internal-transfer matcher may pair a row of
+-- the kind (txn_kind_roles.matcher_pool).
+CREATE MACRO kind_in_matcher_pool(p_kind) AS (
+    p_kind IN ('deposit', 'withdrawal', 'card_payment', 'transfer_in', 'transfer_out')
+);
+
+-- kind_is_unsigned: gold pins the kind no sign, and cash flow excludes
+-- it for want of one (txn_kind_roles.unsigned).
+CREATE MACRO kind_is_unsigned(p_kind) AS (
+    p_kind IN ('fx', 'fx_forward', 'fx_swap', 'corporate_action', 'journal', 'other')
+);
+
+-- kind_is_trade: a trade, or private capital committed or returned by
+-- a sale (txn_kind_roles.trade).
+CREATE MACRO kind_is_trade(p_kind) AS (
+    p_kind IN ('buy', 'sell', 'contribution')
+);
+
+-- income_kind_floor: the income type a row of the kind reads where no
+-- tier placed it (txn_kind_roles.income_floor), on its income side.
+CREATE MACRO income_kind_floor(p_kind, p_amount) AS (
+    CASE p_kind
+        WHEN 'dividend'     THEN 'INCOME_DIVIDENDS'
+        WHEN 'coupon'       THEN 'INCOME_INTEREST_EARNED'
+        WHEN 'staking'      THEN 'INCOME_STAKING'
+        WHEN 'capital_gain' THEN 'INCOME_DISTRIBUTIONS'
+        WHEN 'reward'       THEN 'INCOME_REWARDS'
+        WHEN 'distribution' THEN 'capital_return'
+        WHEN 'interest'     THEN
+            CASE WHEN p_amount > 0
+                 THEN 'INCOME_INTEREST_EARNED' END
+    END
+);
+
+-- spend_kind_floor: the same for spending (txn_kind_roles.spend_floor).
+-- A fee's floor is the one that reads the account: a card's, and a
+-- `cash` account's in no portfolio, is a bank fee; every other is the
+-- cost of holding investments (spend_txn_categories says why).
+CREATE MACRO spend_kind_floor(p_kind, p_amount, p_account_kind, p_portfolio) AS (
+    CASE p_kind
+        WHEN 'fee' THEN
+            CASE WHEN p_account_kind = 'card'
+                      OR (p_account_kind = 'cash'
+                          AND p_portfolio IS NULL)
+                 THEN 'BANK_FEES_OTHER_BANK_FEES'
+                 ELSE 'BANK_FEES_INVESTMENT_FEES' END
+        WHEN 'tax' THEN 'GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX'
+        WHEN 'interest' THEN
+            CASE WHEN p_amount < 0
+                 THEN 'BANK_FEES_INTEREST_CHARGE' END
+    END
+);
+
+-- detailed_stays_in_spending: a line of the value stays in the
+-- spending base (NOT spend_categories.leaves_spending). The values that
+-- leave are an own-account move, capital deployed, a liability reduced
+-- and the crossings. A line with no value stays. One test per value
+-- rather than an IN-list, which the planner turns into a join.
+CREATE MACRO detailed_stays_in_spending(p_detailed) AS (
+    p_detailed IS DISTINCT FROM 'internal_transfer'
+    AND p_detailed IS DISTINCT FROM 'investment'
+    AND p_detailed IS DISTINCT FROM 'debt_repayment'
+    AND p_detailed IS DISTINCT FROM 'retirement_transfer'
+    AND p_detailed IS DISTINCT FROM 'education_transfer'
+    AND p_detailed IS DISTINCT FROM 'health_transfer'
+    AND p_detailed IS DISTINCT FROM 'trust_transfer'
+    AND p_detailed IS DISTINCT FROM 'deposit_transfer'
+    AND p_detailed IS DISTINCT FROM 'mortgage_transfer'
+);
+
+-- detailed_stays_in_income: the same for the income base (NOT
+-- spend_categories.leaves_income). The values that leave name money
+-- that arrived without being earned.
+CREATE MACRO detailed_stays_in_income(p_detailed) AS (
+    p_detailed IS DISTINCT FROM 'internal_transfer'
+    AND p_detailed IS DISTINCT FROM 'capital_return'
+    AND p_detailed IS DISTINCT FROM 'loan_proceeds'
+    AND p_detailed IS DISTINCT FROM 'reimbursement'
+    AND p_detailed IS DISTINCT FROM 'retirement_transfer'
+    AND p_detailed IS DISTINCT FROM 'education_transfer'
+    AND p_detailed IS DISTINCT FROM 'health_transfer'
+    AND p_detailed IS DISTINCT FROM 'trust_transfer'
+    AND p_detailed IS DISTINCT FROM 'deposit_transfer'
+    AND p_detailed IS DISTINCT FROM 'mortgage_transfer'
+);
+
+-- ============================================================
 -- Period bucketing and the valued line bases
 -- ============================================================
 
@@ -77,8 +190,7 @@ CREATE MACRO spend_matcher_pool(p_from, p_to) AS TABLE (
            t.description, t.counterparty
       FROM transactions t
      WHERE t.occurred_at BETWEEN p_from AND p_to
-       AND t.kind IN ('deposit', 'withdrawal', 'card_payment',
-                      'transfer_in', 'transfer_out')
+       AND kind_in_matcher_pool(t.kind)
 );
 
 -- txn_evidence: the evidence a source states in a transaction's payload
@@ -258,9 +370,7 @@ CREATE MACRO income_enrichment_population(p_from, p_to) AS TABLE (
              ON sa.silver_source_id    = t.silver_source_id
             AND sa.account_external_id = t.account_external_id
      WHERE t.occurred_at BETWEEN p_from AND p_to
-       AND (t.kind IN ('dividend', 'coupon', 'staking', 'capital_gain',
-                       'reward', 'distribution', 'deposit')
-            OR (t.kind = 'interest' AND t.net_amount > 0))
+       AND kind_is_income(t.kind, t.net_amount)
 );
 
 -- spend_enrichment_population: the rows the spending pass sees. The
@@ -293,8 +403,7 @@ CREATE MACRO spend_enrichment_population(p_from, p_to) AS TABLE (
              ON sa.silver_source_id    = t.silver_source_id
             AND sa.account_external_id = t.account_external_id
      WHERE t.occurred_at BETWEEN p_from AND p_to
-       AND (t.kind IN ('purchase', 'refund', 'withdrawal', 'fee', 'tax')
-            OR (t.kind = 'interest' AND t.net_amount < 0))
+       AND kind_is_spending(t.kind, t.net_amount)
 );
 
 -- ============================================================
@@ -435,17 +544,7 @@ CREATE MACRO income_txn_categories() AS TABLE (
     WITH floored AS (
         SELECT e.*,
                t.instrument_external_id,
-               CASE t.kind
-                   WHEN 'dividend'     THEN 'INCOME_DIVIDENDS'
-                   WHEN 'coupon'       THEN 'INCOME_INTEREST_EARNED'
-                   WHEN 'staking'      THEN 'INCOME_STAKING'
-                   WHEN 'capital_gain' THEN 'INCOME_DISTRIBUTIONS'
-                   WHEN 'reward'       THEN 'INCOME_REWARDS'
-                   WHEN 'distribution' THEN 'capital_return'
-                   WHEN 'interest'     THEN
-                       CASE WHEN t.net_amount > 0
-                            THEN 'INCOME_INTEREST_EARNED' END
-               END AS kind_floor
+               income_kind_floor(t.kind, t.net_amount) AS kind_floor
           FROM income_txn_enrichment e
           LEFT JOIN transactions t
                  ON t.silver_source_id        = e.silver_source_id
@@ -640,16 +739,7 @@ CREATE MACRO income_lines_base(p_from, p_to) AS TABLE (
       LEFT JOIN income_txn_categories() c
              ON c.silver_source_id        = p.silver_source_id
             AND c.transaction_external_id = p.transaction_external_id
-     WHERE c.income_detailed IS DISTINCT FROM 'internal_transfer'
-       AND c.income_detailed IS DISTINCT FROM 'capital_return'
-       AND c.income_detailed IS DISTINCT FROM 'loan_proceeds'
-       AND c.income_detailed IS DISTINCT FROM 'reimbursement'
-       AND c.income_detailed IS DISTINCT FROM 'retirement_transfer'
-       AND c.income_detailed IS DISTINCT FROM 'education_transfer'
-       AND c.income_detailed IS DISTINCT FROM 'health_transfer'
-       AND c.income_detailed IS DISTINCT FROM 'trust_transfer'
-       AND c.income_detailed IS DISTINCT FROM 'deposit_transfer'
-       AND c.income_detailed IS DISTINCT FROM 'mortgage_transfer'
+     WHERE detailed_stays_in_income(c.income_detailed)
      ORDER BY p.occurred_at, p.silver_source_id, p.transaction_external_id
 );
 
@@ -897,18 +987,8 @@ CREATE MACRO cashflow_class_rank(p_class) AS (
 CREATE MACRO spend_txn_categories() AS TABLE (
     WITH floored AS (
         SELECT e.*,
-               CASE t.kind
-                   WHEN 'fee' THEN
-                       CASE WHEN a.account_kind = 'card'
-                                 OR (a.account_kind = 'cash'
-                                     AND a.portfolio_external_id IS NULL)
-                            THEN 'BANK_FEES_OTHER_BANK_FEES'
-                            ELSE 'BANK_FEES_INVESTMENT_FEES' END
-                   WHEN 'tax' THEN 'GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX'
-                   WHEN 'interest' THEN
-                       CASE WHEN t.net_amount < 0
-                            THEN 'BANK_FEES_INTEREST_CHARGE' END
-               END AS kind_floor
+               spend_kind_floor(t.kind, t.net_amount, a.account_kind,
+                                a.portfolio_external_id) AS kind_floor
           FROM spend_txn_enrichment e
           LEFT JOIN transactions t
                  ON t.silver_source_id        = e.silver_source_id
@@ -1018,15 +1098,7 @@ CREATE MACRO spending_lines_own(p_from, p_to) AS TABLE (
       LEFT JOIN spend_txn_categories() c
              ON c.silver_source_id        = p.silver_source_id
             AND c.transaction_external_id = p.transaction_external_id
-     WHERE c.spend_detailed IS DISTINCT FROM 'internal_transfer'
-       AND c.spend_detailed IS DISTINCT FROM 'investment'
-       AND c.spend_detailed IS DISTINCT FROM 'debt_repayment'
-       AND c.spend_detailed IS DISTINCT FROM 'retirement_transfer'
-       AND c.spend_detailed IS DISTINCT FROM 'education_transfer'
-       AND c.spend_detailed IS DISTINCT FROM 'health_transfer'
-       AND c.spend_detailed IS DISTINCT FROM 'trust_transfer'
-       AND c.spend_detailed IS DISTINCT FROM 'deposit_transfer'
-       AND c.spend_detailed IS DISTINCT FROM 'mortgage_transfer'
+     WHERE detailed_stays_in_spending(c.spend_detailed)
      ORDER BY p.occurred_at, p.silver_source_id, p.transaction_external_id
 );
 
@@ -1086,10 +1158,7 @@ CREATE MACRO spend_reimbursements() AS TABLE (
         SELECT r.silver_source_id, r.transaction_external_id, m.spend_detailed
           FROM repaid r
           JOIN spend_merchant_categories m ON m.merchant_signature = r.payer_signature
-         WHERE m.spend_detailed NOT IN ('internal_transfer', 'investment', 'debt_repayment',
-                                        'retirement_transfer', 'education_transfer',
-                                        'health_transfer', 'trust_transfer',
-                                        'deposit_transfer', 'mortgage_transfer')
+         WHERE detailed_stays_in_spending(m.spend_detailed)
     )
     SELECT r.silver_source_id, r.transaction_external_id,
            COALESCE(p.out_silver_source_id, s.out_silver_source_id) AS out_silver_source_id,
@@ -1314,7 +1383,7 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                -- A cash leg of a kind gold pins no sign for, where the
                -- row's source states it signed (cash_signed_kinds).
                (ck.kind IS NOT NULL
-                AND t.kind IN ('fx', 'fx_forward', 'fx_swap', 'corporate_action', 'journal', 'other')
+                AND kind_is_unsigned(t.kind)
                 AND COALESCE(t.quantity, 0) = 0
                 AND t.net_amount <> 0) AS cash_signed,
                (fa.silver_source_id IS NOT NULL)    AS far_known,
@@ -1370,9 +1439,7 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                -- A linked repayment takes the category of the outflow it
                -- answers: it nets there, as a merchant's refund does.
                CASE WHEN j.reimbursed_detailed IS NOT NULL THEN j.reimbursed_detailed
-                    WHEN j.kind IN ('dividend', 'coupon', 'staking', 'capital_gain',
-                                    'reward', 'distribution', 'deposit')
-                      OR (j.kind = 'interest' AND j.net_amount > 0)
+                    WHEN kind_is_income(j.kind, j.net_amount)
                     THEN COALESCE(j.income_detailed, j.spend_detailed)
                     ELSE COALESCE(j.spend_detailed, j.income_detailed)
                END AS verdict,
@@ -1383,9 +1450,7 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                -- beside a verdict, so a NULL verdict implies a NULL
                -- exposure and the two CASEs select one family by
                -- construction.
-               CASE WHEN j.kind IN ('dividend', 'coupon', 'staking', 'capital_gain',
-                                    'reward', 'distribution', 'deposit')
-                      OR (j.kind = 'interest' AND j.net_amount > 0)
+               CASE WHEN kind_is_income(j.kind, j.net_amount)
                     THEN COALESCE(j.income_stated_class, j.spend_stated_class)
                     ELSE COALESCE(j.spend_stated_class, j.income_stated_class)
                END AS stated_asset_class
@@ -1435,9 +1500,13 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
     placed AS (
         SELECT f.*,
                -- The dimension row of the resolved verdict, read once:
-               -- its primary is what tells a fee from a tax from a
-               -- donation without restating the taxonomy here.
+               -- its primary and its roles say where it draws without
+               -- restating the taxonomy here.
                vc.spend_primary AS verdict_primary,
+               vc.flow_place AS verdict_place,
+               vc.flow_class_in AS verdict_class_in,
+               vc.flow_class_out AS verdict_class_out,
+               vc.flow_leaf_detailed AS verdict_leaf_detailed,
                CASE
                    -- THE KINDS NO VERDICT MAY PLACE, tested ahead of
                    -- every verdict arm. gold pins no canonical sign for
@@ -1456,9 +1525,7 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    -- investing, as the trade it settles is.
                    WHEN f.cash_signed THEN
                         CASE WHEN f.asset_class = 'cash' THEN 'internal' ELSE 'investing' END
-                   WHEN f.kind IN ('fx', 'fx_forward', 'fx_swap',
-                                   'corporate_action', 'journal', 'other')
-                        THEN 'excluded'
+                   WHEN kind_is_unsigned(f.kind) THEN 'excluded'
                    -- A repayment linked to its outflow is that outflow's
                    -- money coming back: operating out, netted inside the
                    -- outflow's class (spend_reimbursements).
@@ -1475,26 +1542,26 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                             WHEN 'internal'   THEN 'internal'
                             ELSE 'vehicle_unpaired'
                         END
-                   -- A mortgage servicer the product holds no account
-                   -- for. Ahead of the crossings and needing no far
-                   -- account: the two roads to `financing · Mortgage`
-                   -- both read the far side, and this verdict exists
-                   -- for the rows where there is none to read.
-                   WHEN f.verdict = 'mortgage_transfer' THEN 'mortgage'
-                   -- The four crossings whose far side the product does
-                   -- not hold. The direction is the ROW's: a withdrawal
-                   -- placed `retirement_transfer` is a contribution and a
-                   -- deposit placed the same is a distribution.
-                   WHEN f.verdict IN ('retirement_transfer', 'education_transfer',
-                                      'health_transfer', 'trust_transfer',
-                                      'deposit_transfer')
-                        THEN 'vehicle_delta'
-                   -- Debt at a lender the product does not track, in
-                   -- either direction.
-                   WHEN f.verdict IN ('loan_proceeds', 'debt_repayment') THEN 'loans'
-                   -- Capital deployed to, or returned from, a
-                   -- destination the product does not track.
-                   WHEN f.verdict IN ('investment', 'capital_return') THEN 'investing'
+                   -- A verdict whose value places it, needing no far
+                   -- account (spend_categories.flow_place):
+                   --   mortgage       a mortgage servicer the product
+                   --                  holds no account for. The two roads
+                   --                  to `financing · Mortgage` both read
+                   --                  the far side, and this verdict
+                   --                  exists for the rows where there is
+                   --                  none to read.
+                   --   vehicle_delta  a crossing whose far side the
+                   --                  product does not hold. The direction
+                   --                  is the ROW's: a withdrawal placed
+                   --                  `retirement_transfer` is a
+                   --                  contribution and a deposit placed
+                   --                  the same is a distribution.
+                   --   loans          debt at a lender the product does
+                   --                  not track, in either direction.
+                   --   investing      capital deployed to, or returned
+                   --                  from, a destination the product
+                   --                  does not track.
+                   WHEN vc.flow_place IS NOT NULL THEN vc.flow_place
                    -- A private fund's distribution is returned capital
                    -- until something proves otherwise — the income
                    -- floor says so — and a rule or a pin promoting it to
@@ -1510,18 +1577,15 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    -- — is cash becoming cash, so the trade is
                    -- pool-internal rather than a movement anyone wants
                    -- drawn.
-                   WHEN f.kind IN ('buy', 'sell', 'contribution') THEN
+                   WHEN kind_is_trade(f.kind) THEN
                         CASE WHEN f.asset_class = 'cash' THEN 'internal' ELSE 'investing' END
-                   -- The inflow kinds.
-                   WHEN f.kind IN ('dividend', 'coupon', 'staking', 'capital_gain',
-                                   'reward', 'deposit')
-                     OR (f.kind = 'interest' AND f.net_amount > 0) THEN 'in'
+                   -- The inflow kinds, a distribution placed above.
+                   WHEN kind_is_income(f.kind, f.net_amount) THEN 'in'
                    -- The outflow kinds. `refund` is here with the rest:
                    -- a merchant credit nets inside its own category, and
                    -- the class's sign is what decides which side of the
                    -- diagram it is drawn on.
-                   WHEN f.kind IN ('purchase', 'refund', 'fee', 'tax', 'withdrawal')
-                     OR (f.kind = 'interest' AND f.net_amount < 0) THEN 'out'
+                   WHEN kind_is_spending(f.kind, f.net_amount) THEN 'out'
                    -- Everything left: the FX family and corporate
                    -- actions (but the cash legs a sign pin admits, above),
                    -- which gold pins no canonical sign for, so
@@ -1557,43 +1621,20 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    WHEN 'in' THEN
                         CASE
                             WHEN p.verdict IS NULL THEN '(uncategorized)'
-                            -- Money from labour, whoever pays for it:
-                            -- an employer, a platform or a client.
-                            WHEN p.verdict IN ('INCOME_SALARY', 'INCOME_GIG_ECONOMY',
-                                               'INCOME_CONTRACTOR')
-                                 THEN 'earnings'
-                            -- Money the household's assets produce
-                            -- without its labour: rent and royalties
-                            -- belong here beside the dividends.
-                            WHEN p.verdict IN ('INCOME_DIVIDENDS', 'INCOME_INTEREST_EARNED',
-                                               'INCOME_DISTRIBUTIONS', 'INCOME_STAKING',
-                                               'INCOME_RENTAL', 'INCOME_ROYALTIES',
-                                               'INCOME_ENERGY_FEED_IN')
-                                 THEN 'yield'
-                            -- Entitlements: a pension, a benefit, and
-                            -- maintenance from a former partner or
-                            -- for a child.
-                            WHEN p.verdict IN ('INCOME_RETIREMENT_PENSION', 'INCOME_GOVERNMENT_BENEFITS',
-                                               'INCOME_UNEMPLOYMENT', 'INCOME_LONG_TERM_DISABILITY',
-                                               'INCOME_MILITARY', 'INCOME_CHILD_SUPPORT',
-                                               'INCOME_ALIMONY')
-                                 THEN 'benefits'
-                            -- A card credit or a referral bonus sits
-                            -- with the receipts rather than the yield:
-                            -- it is not income from wealth.
-                            ELSE 'other_receipts'
+                            -- Earnings, yield or benefits by the value
+                            -- (spend_categories.flow_class_in). A card
+                            -- credit or a referral bonus sits with the
+                            -- receipts rather than the yield: it is not
+                            -- income from wealth.
+                            ELSE COALESCE(p.verdict_class_in, 'other_receipts')
                         END
                    WHEN 'giving_in' THEN 'other_receipts'
                    WHEN 'out' THEN
                         CASE
                             WHEN p.verdict IS NULL THEN '(uncategorized)'
-                            WHEN p.verdict_primary = 'BANK_FEES' THEN 'fees'
-                            WHEN p.verdict IN ('GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT',
-                                               'GOVERNMENT_AND_NON_PROFIT_WITHHOLDING_TAX')
-                                 THEN 'taxes'
-                            WHEN p.verdict IN ('GOVERNMENT_AND_NON_PROFIT_DONATIONS', 'gift')
-                                 THEN 'giving'
-                            ELSE 'consumption'
+                            -- Fees, taxes or giving by the value
+                            -- (spend_categories.flow_class_out).
+                            ELSE COALESCE(p.verdict_class_out, 'consumption')
                         END
                    WHEN 'giving_out' THEN 'giving'
                    -- `elsewhere` is Untracked investments: capital
@@ -1636,14 +1677,8 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    WHEN 'mortgage' THEN 'mortgage'
                    WHEN 'loans'    THEN 'loans'
                    WHEN 'vehicle_far' THEN p.far_wrapper_class
-                   WHEN 'vehicle_delta' THEN
-                        CASE p.verdict
-                            WHEN 'retirement_transfer' THEN 'retirement'
-                            WHEN 'education_transfer'  THEN 'education'
-                            WHEN 'health_transfer'     THEN 'health'
-                            WHEN 'trust_transfer'      THEN 'trusts'
-                            WHEN 'deposit_transfer'    THEN 'deposits'
-                        END
+                   -- The pool a crossing's value names.
+                   WHEN 'vehicle_delta' THEN p.verdict_class_out
                    WHEN 'vehicle_unpaired'  THEN 'unpaired'
                END AS class
           FROM placed p
@@ -1688,8 +1723,7 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    WHEN 'out' THEN
                         CASE WHEN n.verdict IS NULL THEN '(uncategorized)'
                              WHEN n.class IN ('taxes', 'fees', 'giving') THEN n.verdict
-                             WHEN n.verdict IN ('GENERAL_SERVICES_EDUCATION')
-                                  THEN n.verdict
+                             WHEN n.verdict_leaf_detailed THEN n.verdict
                              ELSE COALESCE(n.verdict_primary, n.verdict) END
                    -- A crossing to or from a giving vehicle has no
                    -- family value behind it: the row's verdict is
@@ -1716,7 +1750,7 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    -- what the money DID. A house bought and a REIT traded
                    -- share a class node and differ at group grain.
                    WHEN 'investing' THEN
-                        CASE WHEN n.verdict IN ('investment', 'capital_return')
+                        CASE WHEN n.verdict_place = 'investing'
                                   THEN n.verdict
                              WHEN n.kind IN ('buy', 'sell') THEN 'trades'
                              WHEN n.kind = 'corporate_action' THEN 'corporate_actions'
@@ -2598,7 +2632,7 @@ CREATE MACRO report_cashflow_coverage(p_from, p_to, p_period) AS TABLE (
     -- (cash_signed_kinds) moves cash and is in the ledger.
     unsigned AS (
         SELECT t.*,
-               (t.kind IN ('fx','fx_forward','fx_swap','corporate_action','journal','other')
+               (kind_is_unsigned(t.kind)
                 AND NOT (ck.kind IS NOT NULL AND COALESCE(t.quantity, 0) = 0
                          AND t.net_amount <> 0))
                OR (t.kind IN ('transfer_in','transfer_out')

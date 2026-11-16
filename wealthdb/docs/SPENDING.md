@@ -105,12 +105,12 @@ diffs cleanly against the table.
 
 It is vendored rather than fetched, so a taxonomy revision arrives as
 a reviewable diff instead of silently re-labelling history. Gold's
-`spend_categories` dimension is seeded from this table, one migration
-per change. Migration 0040 seeded the vendored spending rows, 0069 the
-income side and the `family` column, and 0111 moved the vendored rows
-to version 2. A generator-style test pins the migrated dimension to
-the table, so the two cannot drift. A new value is a row here plus a
-new migration. An applied migration is never edited.
+`spend_categories` dimension holds this table. The derived set stamps
+it whole: each value with its label, its catch-all flag and its roles
+(`canonical.CategoryRoles`: which base it leaves and where the cash
+flow statement draws it). So the two cannot drift. A new value is a
+row here and a new derived version. A value that is renamed or retired
+also needs a migration that moves the stored verdicts.
 
 wealthdb vendors 13 of the 18 primaries:
 
@@ -331,15 +331,15 @@ The vendored values shout in full caps and repeat their primary in the
 detail; the deltas are lower-case, because one vocabulary is
 Plaid's and the other is ours. Each row therefore carries what it
 should READ as beside what it IS: `spend_categories.label` and
-`.primary_label` (migration 0058). `canonical.SpendLabel` is the rule
-the seeds are generated from, and a test holds the two together.
+`.primary_label`. The derived set stamps both from
+`canonical.SpendLabel` and `canonical.SpendPrimaryLabel`.
 `FOOD_AND_DRINK_GROCERIES` reads "Groceries",
 `GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` reads "Other general
 merchandise", `internal_transfer` reads "Internal transfer".
 
 The rule is mechanical, so a value it reads wrongly is corrected by
-hand in `canonical.spendLabelOverrides`, and the same correction is
-seeded into the dimension. Six values carry one:
+hand in `canonical.spendLabelOverrides`, and the dimension carries the
+correction. Six values carry one:
 
 - `card_spend` reads **"Uncategorized card spend"**. The rule reads it
   "Card spend", which is true of every card purchase in the product.
@@ -1859,10 +1859,9 @@ A value is a catch-all when its detail part is `OTHER` or starts with
 off, and the convention is Plaid's own.
 `GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE` is one, and so is
 `INCOME_OTHER`, the income side's only catch-all. A delta never is.
-`spend_categories.catch_all` (migration 0060, recomputed by 0111) is
-the same predicate as `canonical.CatchAllSpendDetailed` and
-`CatchAllIncomeDetailed`, as data, so the query and the enrichment pass
-share one definition of what a catch-all is.
+`spend_categories.catch_all` is `canonical.CatchAllSpendDetailed` and
+`CatchAllIncomeDetailed` stamped as data, so the query and the
+enrichment pass share one definition of what a catch-all is.
 
 ---
 
@@ -2020,7 +2019,7 @@ ranks as the merchant it is.
 
 Delta-ness is read off the `spend_categories` dimension rather than
 restated as a list: a delta is primary-level (`spend_primary =
-spend_detailed`, §2), so a delta added to `canonical` and seeded is
+spend_detailed`, §2), so a delta added to `canonical` is
 blank in the merchant column with no change to the macro — and, being
 unlabelled, blank whatever the enrichment row holds. Everything
 downstream inherits the column from `spend_txn_categories()` by name —

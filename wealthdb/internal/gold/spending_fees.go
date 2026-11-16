@@ -351,7 +351,8 @@ func (e *feeEntity) row(b feeBucket, months []ReturnRow) FeeRow {
 	return r
 }
 
-// debtKind reports an account kind that is a debt: a mortgage or a card.
+// debtKind reports an account kind that is a debt
+// (canonical.AccountKindRow.Liability).
 func debtKind(kind string) bool {
-	return kind == string(canonical.AccountKindMortgage) || kind == string(canonical.AccountKindCard)
+	return canonical.AccountKind(kind).Liability()
 }

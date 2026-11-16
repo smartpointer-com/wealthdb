@@ -137,7 +137,7 @@ A negative `deposit` is a reversal by construction:
 
 Income uses the same provenance, the same three classes and the same
 predicates as SPENDING.md §2, in one table and one dimension.
-`spend_categories` carries a `family` column (migration 0069). A row is
+`spend_categories` carries a `family` column. A row is
 `spending`, `income`, or `both`.
 
 **Vendored, verbatim:** Plaid's `INCOME` primary, version 2, and its

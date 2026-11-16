@@ -799,12 +799,13 @@ func newAccountData(kinds, pfNames map[string]string, ov map[string]ReturnsPolic
 }
 
 // returnsInvisibleKind reports whether an account kind contributes nothing to
-// any return series, at any grain: only `card`. appendSeries drops such an
+// any return series, at any grain (canonical.AccountKindRow.ReturnsInvisible):
+// only `card`. appendSeries drops such an
 // account at load, so no grain enumerates it and attachOneFlow drops its flows.
 // docs/RETURNS-NOTES.md, "Credit cards are returns-invisible", has the why and
 // the report_global contract.
 func returnsInvisibleKind(kind string) bool {
-	return kind == string(canonical.AccountKindCard)
+	return canonical.AccountKind(kind).ReturnsInvisible()
 }
 
 // appendSeries adds one account-day value to byKey, creating the account record

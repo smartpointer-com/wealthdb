@@ -74,23 +74,32 @@ func TestDerivedLockHoldsTheFiles(t *testing.T) {
 	}
 }
 
-// The hash covers what the apply gives a database: a statement's code
-// and the serving registry move it, a comment line does not.
-func TestDerivedSetHashCoversCodeAndServingOnly(t *testing.T) {
+// The hash covers what the apply gives a database: a statement's code,
+// the serving registry and a stamped row move it, a comment line does
+// not.
+func TestDerivedSetHashCoversCodeServingAndStamps(t *testing.T) {
 	t.Parallel()
 	stmts := []derivedStmt{{file: "derived/10_a.sql", name: "a", sql: "-- a is one.\nCREATE MACRO a() AS 1;\n"}}
 	serving := []servingTable{{"serving_a", "a()"}}
-	base := derivedSetHash(stmts, serving)
+	stamps := []derivedStamp{{table: "t", cols: []string{"k", "v"}, rows: [][]any{{"x", true}}}}
+	base := derivedSetHash(stmts, serving, stamps)
 	for name, other := range map[string]string{
-		"a body edit":         derivedSetHash([]derivedStmt{{sql: "-- a is one.\nCREATE MACRO a() AS 2;\n"}}, serving),
-		"a new serving entry": derivedSetHash(stmts, append(slices.Clone(serving), servingTable{"serving_b", "a()"})),
-		"another source":      derivedSetHash(stmts, []servingTable{{"serving_a", "a(1)"}}),
+		"a body edit": derivedSetHash([]derivedStmt{{sql: "-- a is one.\nCREATE MACRO a() AS 2;\n"}}, serving,
+			stamps),
+		"a new serving entry": derivedSetHash(stmts, append(slices.Clone(serving), servingTable{"serving_b", "a()"}),
+			stamps),
+		"another source": derivedSetHash(stmts, []servingTable{{"serving_a", "a(1)"}}, stamps),
+		"a stamped value": derivedSetHash(stmts, serving,
+			[]derivedStamp{{table: "t", cols: []string{"k", "v"}, rows: [][]any{{"x", false}}}}),
+		"a stamped row": derivedSetHash(stmts, serving,
+			[]derivedStamp{{table: "t", cols: []string{"k", "v"}, rows: [][]any{{"x", true}, {"y", nil}}}}),
 	} {
 		if other == base {
 			t.Errorf("%s kept the hash", name)
 		}
 	}
-	if got := derivedSetHash([]derivedStmt{{sql: "-- a is 1, the unit.\n--\nCREATE MACRO a() AS 1;\n"}}, serving); got != base {
+	if got := derivedSetHash([]derivedStmt{{sql: "-- a is 1, the unit.\n--\nCREATE MACRO a() AS 1;\n"}}, serving,
+		stamps); got != base {
 		t.Error("a comment edit moved the hash")
 	}
 }
@@ -596,7 +605,7 @@ func TestMigrateAppliesAServingOnlyVersionBelowAMigration(t *testing.T) {
 	next := set
 	next.version = current + 1
 	next.serving = append(slices.Clone(set.serving), servingTable{"serving_probe", set.serving[0].source})
-	next.hash = derivedSetHash(next.stmts, next.serving)
+	next.hash = derivedSetHash(next.stmts, next.serving, next.stamps)
 	later := append(slices.Clone(ms), migration{version: current + 2, name: "probe",
 		body: fmt.Sprintf(`INSERT INTO schema_meta (gold_schema_version, applied_at) VALUES (%d, 0)`, current+2)})
 	if err := migrate(ctx, db, later, next); err != nil {

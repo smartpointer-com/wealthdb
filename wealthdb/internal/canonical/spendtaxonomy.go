@@ -51,19 +51,152 @@ const (
 func (f Family) InFamily(want Family) bool { return f == want || f == FamilyBoth }
 
 // SpendCategory is one (primary, detailed, description, family) row of
-// the taxonomy. Gold's `spend_categories` dimension is seeded from this
-// table, one migration per change — 0040 seeded the vendored spending
-// rows, 0069 the income side and the family column, 0111 moved the
-// vendored rows to Plaid's version 2 — and a generator-style test pins
-// the migrated dimension to the table so they cannot drift. A new value
-// is a row here plus a new migration; an applied migration is never
-// edited.
+// the taxonomy. Gold's `spend_categories` dimension holds this table:
+// the derived set stamps it whole, with each row's label, catch-all flag
+// and roles (Roles), so a new value is a row here and a new derived
+// version.
 type SpendCategory struct {
 	Primary     string
 	Detailed    string
 	Description string
 	Family      Family
 }
+
+// CashflowPlace is where the cash flow statement places a line by its
+// verdict alone, whatever its kind (cashflow_txn_nodes' place ladder).
+type CashflowPlace string
+
+const (
+	// PlaceMortgage is financing · Mortgage.
+	PlaceMortgage CashflowPlace = "mortgage"
+	// PlaceVehicleDelta is a crossing to a pool whose far side the
+	// product does not hold: the vehicles section, in the class
+	// CategoryRoles.FlowClassOut names.
+	PlaceVehicleDelta CashflowPlace = "vehicle_delta"
+	// PlaceLoans is debt at a lender the product does not track.
+	PlaceLoans CashflowPlace = "loans"
+	// PlaceInvesting is capital deployed to, or returned from, a
+	// destination the product does not track.
+	PlaceInvesting CashflowPlace = "investing"
+)
+
+// CategoryRoles are what a value is to the engine beyond its vocabulary:
+// which base it leaves, and where the cash flow statement draws it. The
+// zero value is an ordinary value, in both bases and placed by its kind.
+type CategoryRoles struct {
+	// LeavesSpending and LeavesIncome take a line of the value out of the
+	// family's base: a movement of the holder's own money, money that
+	// arrived without being earned, or a liability reduced.
+	LeavesSpending, LeavesIncome bool
+	// FlowPlace places a line of the value whatever its kind.
+	FlowPlace CashflowPlace
+	// FlowClassIn is the operating-in class of a receipt of the value,
+	// where it is not other_receipts.
+	FlowClassIn CashflowClass
+	// FlowClassOut is the operating-out class of an outflow of the
+	// value, where it is not consumption; on a vehicle crossing, the
+	// pool it crosses to.
+	FlowClassOut CashflowClass
+	// FlowLeafDetailed draws an outflow of the value as its own leaf
+	// rather than under its primary: a value its primary does not
+	// describe.
+	FlowLeafDetailed bool
+	// FeeGroup is a BANK_FEES value's group in the fee view (fee_group),
+	// empty for every other value.
+	FeeGroup string
+	// ProjectedIncome is an income type the income projection projects,
+	// so the cash flow projection's other income leaves it out.
+	ProjectedIncome bool
+}
+
+// The fee view's groups (fee_group), in the order the view lists them.
+const (
+	FeeGroupInvestment = "investment"
+	FeeGroupBank       = "bank"
+	FeeGroupATM        = "atm"
+	FeeGroupOther      = "other"
+)
+
+// crossing is the roles of a vehicle crossing to class: it leaves both
+// bases, and draws in the vehicles section.
+func crossing(class CashflowClass) CategoryRoles {
+	return CategoryRoles{LeavesSpending: true, LeavesIncome: true, FlowPlace: PlaceVehicleDelta, FlowClassOut: class}
+}
+
+// categoryRoles are the roles of the values that have any. The BANK_FEES
+// primary's values draw as fees by their primary (Roles), so they are
+// absent here unless they carry a fee group.
+var categoryRoles = map[string]CategoryRoles{
+	SpendDetailedInternalTransfer: {LeavesSpending: true, LeavesIncome: true},
+	SpendDetailedInvestment:       {LeavesSpending: true, FlowPlace: PlaceInvesting},
+	SpendDetailedDebtRepayment:    {LeavesSpending: true, FlowPlace: PlaceLoans},
+	IncomeDetailedCapitalReturn:   {LeavesIncome: true, FlowPlace: PlaceInvesting},
+	IncomeDetailedLoanProceeds:    {LeavesIncome: true, FlowPlace: PlaceLoans},
+	IncomeDetailedReimbursement:   {LeavesIncome: true},
+	DetailedRetirementTransfer:    crossing(ClassRetirement),
+	DetailedEducationTransfer:     crossing(ClassEducation),
+	DetailedHealthTransfer:        crossing(ClassHealth),
+	DetailedTrustTransfer:         crossing(ClassTrusts),
+	DetailedDepositTransfer:       crossing(ClassDeposits),
+	DetailedMortgageTransfer:      {LeavesSpending: true, LeavesIncome: true, FlowPlace: PlaceMortgage},
+
+	// Money from labour, whoever pays for it: an employer, a platform
+	// or a client.
+	"INCOME_SALARY":      {FlowClassIn: ClassEarnings},
+	"INCOME_GIG_ECONOMY": {FlowClassIn: ClassEarnings},
+	"INCOME_CONTRACTOR":  {FlowClassIn: ClassEarnings},
+	// Money the household's assets produce without its labour: rent
+	// and royalties belong here beside the dividends. The first four
+	// are what the income projection projects.
+	"INCOME_DIVIDENDS":          {FlowClassIn: ClassYield, ProjectedIncome: true},
+	"INCOME_INTEREST_EARNED":    {FlowClassIn: ClassYield, ProjectedIncome: true},
+	IncomeDetailedDistributions: {FlowClassIn: ClassYield, ProjectedIncome: true},
+	"INCOME_RENTAL":             {FlowClassIn: ClassYield, ProjectedIncome: true},
+	IncomeDetailedStaking:       {FlowClassIn: ClassYield},
+	IncomeDetailedRoyalties:     {FlowClassIn: ClassYield},
+	IncomeDetailedEnergyFeedIn:  {FlowClassIn: ClassYield},
+	// Entitlements: a pension, a benefit, and maintenance from a former
+	// partner or for a child. A pension is projected too.
+	"INCOME_RETIREMENT_PENSION":      {FlowClassIn: ClassBenefits, ProjectedIncome: true},
+	IncomeDetailedGovernmentBenefits: {FlowClassIn: ClassBenefits},
+	"INCOME_UNEMPLOYMENT":            {FlowClassIn: ClassBenefits},
+	"INCOME_LONG_TERM_DISABILITY":    {FlowClassIn: ClassBenefits},
+	"INCOME_MILITARY":                {FlowClassIn: ClassBenefits},
+	"INCOME_CHILD_SUPPORT":           {FlowClassIn: ClassBenefits},
+	IncomeDetailedAlimony:            {FlowClassIn: ClassBenefits},
+
+	"GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT": {FlowClassOut: ClassTaxes},
+	SpendDetailedWithholdingTax:             {FlowClassOut: ClassTaxes},
+	"GOVERNMENT_AND_NON_PROFIT_DONATIONS":   {FlowClassOut: ClassGiving},
+	SpendDetailedGift:                       {FlowClassOut: ClassGiving},
+	// School fees fold under a catch-all primary beside subscriptions
+	// and dry cleaning, so the value draws as its own leaf.
+	"GENERAL_SERVICES_EDUCATION": {FlowLeafDetailed: true},
+
+	SpendDetailedInvestmentFees:    {FeeGroup: FeeGroupInvestment},
+	"BANK_FEES_ATM_FEES":           {FeeGroup: FeeGroupATM},
+	"BANK_FEES_OTHER_BANK_FEES":    {FeeGroup: FeeGroupBank},
+	"BANK_FEES_OVERDRAFT_FEES":     {FeeGroup: FeeGroupBank},
+	"BANK_FEES_INSUFFICIENT_FUNDS": {FeeGroup: FeeGroupBank},
+}
+
+// Roles are the value's roles. Every value of the BANK_FEES primary
+// draws as fees, and its fee group is `other` where categoryRoles names
+// none.
+func (c SpendCategory) Roles() CategoryRoles {
+	r := categoryRoles[c.Detailed]
+	if c.Primary == bankFeesPrimary {
+		r.FlowClassOut = ClassFees
+		if r.FeeGroup == "" {
+			r.FeeGroup = FeeGroupOther
+		}
+	}
+	return r
+}
+
+// bankFeesPrimary is the primary whose values the cash flow statement
+// draws as fees.
+const bankFeesPrimary = "BANK_FEES"
 
 // The spending delta values. A rule, a pin, the internal-transfer
 // matcher or the provider tier — where the provider's own booking type
@@ -446,9 +579,8 @@ var extensionIncomeCategories = []SpendCategory{
 
 // SpendCategories is the whole taxonomy, both families — the vendored
 // pairs, then the extensions, then the deltas. Ordered for readable
-// diffs; the seed migrations were generated from it and
-// TestSpendCategoriesMatchGoTable compares the two as sets, so the order
-// carries no contract.
+// diffs; the derived set stamps it into spend_categories, a table read
+// by value, so the order carries no contract.
 var SpendCategories = concatCategories(
 	vendoredSpendCategories, vendoredIncomeCategories,
 	extensionSpendCategories, extensionIncomeCategories,
@@ -671,13 +803,9 @@ var spendLabelOverrides = map[string]string{
 // downstream depends on how a label reads. An unknown value is returned
 // unchanged rather than guessed at.
 //
-// Nothing at run time calls this: a label is SEEDED into
-// spend_categories by whichever migration adds or corrects the row
-// (0058 seeded them all, and every row added since carries its own), so
-// a label can be corrected by hand without
-// the correction being computed away. This is the rule those seeds were
-// generated from, and TestSpendCategoryLabelsMatchGoTable holds them
-// together — which is why its only callers are tests.
+// The derived set stamps each value's label into spend_categories from
+// this rule (vocabularyStamps in gold), so a label is corrected here, in
+// spendLabelOverrides.
 func SpendLabel(detailed string) string {
 	if label, ok := spendLabelOverrides[detailed]; ok {
 		return label
@@ -772,8 +900,8 @@ func DeltaIncomeCategories() []SpendCategory {
 // ModelSpendCategories returns the rows a model may choose a spend
 // category from — the vendored outflow vocabulary plus its extensions —
 // with the descriptions that tell it what each value means. A copy, so a
-// caller assembling a prompt cannot reorder the table the seed
-// migrations are pinned to.
+// caller assembling a prompt cannot reorder the table gold's dimension
+// is stamped from.
 func ModelSpendCategories() []SpendCategory {
 	return categoriesIn(FamilySpending, modelSpendCategories)
 }

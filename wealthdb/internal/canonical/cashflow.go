@@ -402,32 +402,3 @@ func ParseWrapperDestination(s string) (WrapperSide, CashflowClass, bool) {
 	}
 	return "", "", false
 }
-
-// VehicleTransferDetailed is the delta that stands for a crossing to
-// each pool a rule can place, as the cashflow resolution's SQL CASE
-// reads it: the crossing to a vehicle whose far side the product does
-// not hold.
-//
-// The first four are the wrapper boundary's own. `deposits` is not a
-// wrapper — no tax treatment sends a crossing there — and it is here
-// because the same one-legged shape needs the same bridge: a bank's
-// deposit product is a destination the collector cannot enumerate, so
-// the verdict is the only thing that can name it.
-//
-// A test accessor: TestVehicleTransferDetailedMatchesTheResolution
-// holds the CASE to it.
-func VehicleTransferDetailed(c CashflowClass) (string, bool) {
-	switch c {
-	case ClassRetirement:
-		return DetailedRetirementTransfer, true
-	case ClassEducation:
-		return DetailedEducationTransfer, true
-	case ClassHealth:
-		return DetailedHealthTransfer, true
-	case ClassTrusts:
-		return DetailedTrustTransfer, true
-	case ClassDeposits:
-		return DetailedDepositTransfer, true
-	}
-	return "", false
-}

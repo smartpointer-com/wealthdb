@@ -1,15 +1,11 @@
 package gold
 
 import (
-	"maps"
 	"math"
-	"regexp"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -257,42 +253,5 @@ func TestPlanWindow(t *testing.T) {
 			t.Errorf("PlanWindow(%s, %d) = %s to %s, want %s to the second before %s", c.now, c.lookback,
 				time.Unix(from, 0).UTC(), time.Unix(to, 0).UTC(), c.from, c.to)
 		}
-	}
-}
-
-// planIncomeClasses are the cash flow statement's operating-in classes,
-// as the derived cashflow_txn_nodes cases them, the projected types
-// aside; its two remaining arms are the SQL's own.
-func TestThePlansIncomeClassesAreTheStatements(t *testing.T) {
-	t.Parallel()
-	set := mustDerived(t)
-	var nodes string
-	for _, s := range set.stmts {
-		if s.name == "cashflow_txn_nodes" {
-			nodes = s.sql
-		}
-	}
-	in := regexp.MustCompile(`(?s)WHEN 'in' THEN\s*CASE(.*?)\bEND\b`).FindStringSubmatch(nodes)
-	if in == nil {
-		t.Fatal("no operating-in CASE in cashflow_txn_nodes")
-	}
-	sqlClasses := map[string]string{}
-	arm := regexp.MustCompile(`WHEN p\.verdict IN \(([^)]*)\)\s*(?:--[^\n]*\n\s*)*THEN '(\w+)'`)
-	for _, m := range arm.FindAllStringSubmatch(in[1], -1) {
-		for _, d := range regexp.MustCompile(`'(\w+)'`).FindAllStringSubmatch(m[1], -1) {
-			if !slices.Contains(projectedIncomeDetailed, d[1]) {
-				sqlClasses[d[1]] = m[2]
-			}
-		}
-	}
-	goClasses := map[string]string{}
-	for c, ds := range planIncomeClasses {
-		for _, d := range ds {
-			goClasses[d] = c
-		}
-	}
-	if !maps.Equal(goClasses, sqlClasses) || !strings.Contains(in[1], "THEN '"+planUncategorized+"'") ||
-		!strings.Contains(in[1], "ELSE '"+string(canonical.ClassOtherReceipts)+"'") {
-		t.Errorf("classes %v, the statement's %v", goClasses, sqlClasses)
 	}
 }

@@ -83,30 +83,19 @@ const (
 	AccountKindOther            AccountKind = "other"
 )
 
-var accountKindValues = map[AccountKind]struct{}{
-	AccountKindBrokerage: {}, AccountKindCash: {},
-	AccountKindSafekeeping: {}, AccountKindCustody: {},
-	AccountKindOverlay:        {},
-	AccountKindCrypto:         {},
-	AccountKindCryptoExchange: {}, AccountKindCryptoSelfCustody: {},
-	AccountKindMortgage:         {},
-	AccountKindCard:             {},
-	AccountKindDonorAdvisedFund: {},
-	AccountKindOther:            {},
-}
+// accountKindValues are the kinds of the account kind table
+// (kindroles.go).
+var accountKindValues = func() map[AccountKind]struct{} {
+	m := make(map[AccountKind]struct{}, len(accountKinds))
+	for _, r := range accountKinds {
+		m[r.Kind] = struct{}{}
+	}
+	return m
+}()
 
 func (a AccountKind) Valid() bool {
 	_, ok := accountKindValues[a]
 	return ok
-}
-
-// FollowsSource reports whether an account of the kind keeps the kind
-// its adapter states, whatever an override says: an adapter signs a
-// card's balance and books a mortgage's principal by its own kind, so a
-// restated liability would read a debt as an asset, and an overlay is
-// synthetic.
-func (a AccountKind) FollowsSource() bool {
-	return a == AccountKindCard || a == AccountKindMortgage || a == AccountKindOverlay
 }
 
 // TaxWrapper discriminates `accounts.tax_wrapper` — the tax /
@@ -277,16 +266,15 @@ const (
 	TxKindOther           TxKind = "other"
 )
 
-var txKindValues = map[TxKind]struct{}{
-	TxKindBuy: {}, TxKindSell: {}, TxKindDividend: {}, TxKindCoupon: {},
-	TxKindCapitalGain: {}, TxKindInterest: {}, TxKindStaking: {},
-	TxKindContribution: {}, TxKindDistribution: {}, TxKindFee: {}, TxKindTax: {},
-	TxKindDeposit: {}, TxKindWithdrawal: {},
-	TxKindPurchase: {}, TxKindRefund: {}, TxKindCardPayment: {}, TxKindReward: {},
-	TxKindFx: {}, TxKindFxForward: {}, TxKindFxSwap: {},
-	TxKindCorporateAction: {}, TxKindTransferIn: {},
-	TxKindTransferOut: {}, TxKindJournal: {}, TxKindOther: {},
-}
+// txKindValues are the kinds of the transaction kind table
+// (kindroles.go).
+var txKindValues = func() map[TxKind]struct{} {
+	m := make(map[TxKind]struct{}, len(txKindRows))
+	for _, r := range txKindRows {
+		m[r.Kind] = struct{}{}
+	}
+	return m
+}()
 
 func (t TxKind) Valid() bool {
 	_, ok := txKindValues[t]

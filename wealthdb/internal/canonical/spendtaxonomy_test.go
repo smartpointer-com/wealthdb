@@ -457,7 +457,7 @@ func TestSpendPredicatesRefuseTheIncomeVocabulary(t *testing.T) {
 // TestModelSpendCategoriesIsACopy guards the accessor the prompt
 // builder uses: it hands out the vocabulary a model may choose from,
 // no delta among it, and a caller reordering it must not disturb the
-// table the seed migrations are pinned to. VendoredSpendCategories,
+// table gold's dimension is stamped from. VendoredSpendCategories,
 // what a taxonomy refresh diffs against, is held to the same copy.
 func TestModelSpendCategoriesIsACopy(t *testing.T) {
 	for _, tc := range []struct {
@@ -527,7 +527,7 @@ func TestIncomeAccessorsAreCopiesOfTheirFamily(t *testing.T) {
 	// afterwards: a copy by construction today, but the contract is the
 	// accessor's, and an accessor rewritten to hand out its backing slice
 	// must fail here rather than let a prompt builder reorder the table
-	// the seed migrations are pinned to.
+	// gold's dimension is stamped from.
 	for _, tc := range []struct {
 		name  string
 		got   []SpendCategory
@@ -708,7 +708,7 @@ func TestLabelsAreUniqueWithinAFamily(t *testing.T) {
 }
 
 // TestIncomeLabels reads every income value through the labeller, which
-// is the rule the seed migrations were generated from. The mechanical
+// is the rule the dimension's labels are stamped from. The mechanical
 // rule takes the INCOME_ prefix off and opens the underscores out; the
 // corrections are spendLabelOverrides', and every one that reaches an
 // income value shows here.

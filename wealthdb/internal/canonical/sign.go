@@ -68,7 +68,7 @@ type pinSet struct {
 	pins []SignedKindPin
 }
 
-// add pins kinds of silverKind. A kind outside the six cash flow
+// add pins kinds of silverKind. A kind outside those cash flow
 // excludes for want of a sign panics: a pin on any other kind would move
 // its rows ahead of every verdict. So does a pin made twice. Both are
 // build-time mistakes in a source's registration.
@@ -106,19 +106,11 @@ func RegisterCashSigned(silverKind string, kinds ...TxKind) {
 	cashSigned.add(silverKind, kinds...)
 }
 
-// cashflowUnsignedKinds are the six kinds cash flow excludes for want of
-// a sign: canonicalSign's zero-signed set less interest, staking and
-// capital_gain, which cash flow reads by their sign or nets inside their
-// own class. A sign pin names one of them.
-var cashflowUnsignedKinds = []TxKind{
-	TxKindFx, TxKindFxForward, TxKindFxSwap, TxKindCorporateAction, TxKindJournal, TxKindOther,
-}
-
-// CashflowUnsignedKinds returns the six. A copy. A test accessor: the
-// sign pins and cashflow_txn_nodes' exclusion are both held to it.
-func CashflowUnsignedKinds() []TxKind {
-	return slices.Clone(cashflowUnsignedKinds)
-}
+// cashflowUnsignedKinds are the kinds cash flow excludes for want of a
+// sign (TxKindRow.Unsigned): canonicalSign's zero-signed set less
+// interest, staking and capital_gain, which cash flow reads by their
+// sign or nets inside their own class. A sign pin names one of them.
+var cashflowUnsignedKinds = kindsWhere(func(r TxKindRow) bool { return r.Unsigned })
 
 // SignedKindPin is one sign pin: a silver kind and a kind.
 type SignedKindPin struct {

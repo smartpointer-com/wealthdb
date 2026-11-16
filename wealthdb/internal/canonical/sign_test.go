@@ -97,14 +97,13 @@ func TestApplyCanonicalSignCardKinds(t *testing.T) {
 	}
 }
 
-// TestCashSignedKindsPinOnlyUnsignedKinds keeps the sign pins to the six
+// TestCashSignedKindsPinOnlyUnsignedKinds keeps the sign pins to the
 // kinds cash flow excludes for want of a sign (a pin on any other kind
 // would move its rows ahead of every verdict), once each, and lists them
 // in a fixed order, which the pass stamps. Which sources pin what is
 // held where they register (silver/all).
 func TestCashSignedKindsPinOnlyUnsignedKinds(t *testing.T) {
-	unsigned := CashflowUnsignedKinds()
-	for _, k := range unsigned {
+	for _, k := range cashflowUnsignedKinds {
 		if canonicalSign(k) != 0 {
 			t.Errorf("%s has a canonical sign, so cash flow need not exclude it", k)
 		}

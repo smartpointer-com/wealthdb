@@ -22,11 +22,18 @@ import (
 // statement's own figure for the trailing months spread evenly.
 
 // projectedIncomeDetailed are the income values the income projection
-// projects (incomeTypeSQL): their lines are its received half, so the
-// cash flow projection's other income leaves them out and counts none
-// twice.
-var projectedIncomeDetailed = []string{"INCOME_INTEREST_EARNED", "INCOME_DIVIDENDS", "INCOME_DISTRIBUTIONS",
-	"INCOME_RENTAL", "INCOME_RETIREMENT_PENSION"}
+// projects (canonical.CategoryRoles.ProjectedIncome, incomeTypeSQL):
+// their lines are its received half, so the cash flow projection's
+// other income leaves them out and counts none twice.
+var projectedIncomeDetailed = func() []string {
+	var out []string
+	for _, c := range canonical.SpendCategories {
+		if c.Roles().ProjectedIncome {
+			out = append(out, c.Detailed)
+		}
+	}
+	return out
+}()
 
 // PlanOutClasses are the operating-out classes the cash flow projection
 // breaks operating_out into (`-C +<class>`), in the vocabulary's order, the
@@ -234,16 +241,19 @@ const PlanOutsidePart = "outside_income"
 const PlanPoolPart = "pool_income"
 
 // planIncomeClasses are the operating-in classes of the cash flow
-// statement (cashflow_txn_nodes) by an income line's detailed type, the
-// projected types (projectedIncomeDetailed) aside: a line of no type is
-// the unresolved class, one of any other type other receipts. A test
-// holds it to the statement's CASE.
-var planIncomeClasses = map[string][]string{
-	string(canonical.ClassEarnings): {"INCOME_SALARY", "INCOME_GIG_ECONOMY", "INCOME_CONTRACTOR"},
-	string(canonical.ClassYield):    {"INCOME_STAKING", "INCOME_ROYALTIES", "INCOME_ENERGY_FEED_IN"},
-	string(canonical.ClassBenefits): {"INCOME_GOVERNMENT_BENEFITS", "INCOME_UNEMPLOYMENT", "INCOME_LONG_TERM_DISABILITY",
-		"INCOME_MILITARY", "INCOME_CHILD_SUPPORT", "INCOME_ALIMONY"},
-}
+// statement by an income line's detailed type
+// (canonical.CategoryRoles.FlowClassIn), the projected types
+// (projectedIncomeDetailed) aside: a line of no type is the unresolved
+// class, one of any other type other receipts.
+var planIncomeClasses = func() map[string][]string {
+	out := map[string][]string{}
+	for _, c := range canonical.SpendCategories {
+		if r := c.Roles(); r.FlowClassIn != "" && !r.ProjectedIncome {
+			out[string(r.FlowClassIn)] = append(out[string(r.FlowClassIn)], c.Detailed)
+		}
+	}
+	return out
+}()
 
 // planIncomeClassSQL is planIncomeClasses as the SQL class of an income
 // line w.

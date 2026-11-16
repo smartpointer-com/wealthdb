@@ -1,6 +1,7 @@
 package canonical
 
 import (
+	"maps"
 	"slices"
 	"testing"
 )
@@ -135,37 +136,39 @@ func TestParseWrapperDestination(t *testing.T) {
 	}
 }
 
-// TestVehicleTransferDetailed pins each pool, and the deposits class,
-// to the delta that stands for a crossing the product cannot see the
-// far side of, and that `unpaired` has none: nothing places a row
+// TestTheCrossingsNameTheirPools pins each pool, and the deposits
+// class, to the one delta that stands for a crossing the product cannot
+// see the far side of, and gives `unpaired` none: nothing places a row
 // there, only the absence of a far account puts one there.
-func TestVehicleTransferDetailed(t *testing.T) {
-	for _, tc := range []struct {
-		class    CashflowClass
-		detailed string
-	}{
-		{ClassRetirement, DetailedRetirementTransfer},
-		{ClassEducation, DetailedEducationTransfer},
-		{ClassHealth, DetailedHealthTransfer},
-		{ClassTrusts, DetailedTrustTransfer},
-		{ClassDeposits, DetailedDepositTransfer},
-	} {
-		got, ok := VehicleTransferDetailed(tc.class)
-		if !ok || got != tc.detailed {
-			t.Errorf("VehicleTransferDetailed(%q) = (%q, %v), want (%q, true)",
-				tc.class, got, ok, tc.detailed)
+func TestTheCrossingsNameTheirPools(t *testing.T) {
+	want := map[CashflowClass]string{
+		ClassRetirement: DetailedRetirementTransfer,
+		ClassEducation:  DetailedEducationTransfer,
+		ClassHealth:     DetailedHealthTransfer,
+		ClassTrusts:     DetailedTrustTransfer,
+		ClassDeposits:   DetailedDepositTransfer,
+	}
+	got := map[CashflowClass]string{}
+	for _, c := range SpendCategories {
+		r := c.Roles()
+		if r.FlowPlace != PlaceVehicleDelta {
+			continue
 		}
+		if _, dup := got[r.FlowClassOut]; dup {
+			t.Errorf("%s crosses to %s, which another value names", c.Detailed, r.FlowClassOut)
+		}
+		got[r.FlowClassOut] = c.Detailed
 		// Both families read the crossing, because one movement has a
-		// leg on each side.
-		if !ValidSpendDetailed(tc.detailed) {
-			t.Errorf("%q is not a spending value", tc.detailed)
+		// leg on each side, and it leaves both bases.
+		if !ValidSpendDetailed(c.Detailed) || !ValidIncomeDetailed(c.Detailed) {
+			t.Errorf("%q is not a value of both families", c.Detailed)
 		}
-		if !ValidIncomeDetailed(tc.detailed) {
-			t.Errorf("%q is not an income value", tc.detailed)
+		if !r.LeavesSpending || !r.LeavesIncome {
+			t.Errorf("%q stays in a base", c.Detailed)
 		}
 	}
-	if _, ok := VehicleTransferDetailed(ClassUnpaired); ok {
-		t.Error("unpaired has a transfer delta; no rule can place one there")
+	if !maps.Equal(got, want) {
+		t.Errorf("crossings = %v, want %v", got, want)
 	}
 }
 

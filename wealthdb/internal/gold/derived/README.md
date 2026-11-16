@@ -10,16 +10,22 @@ Every macro and view of the gold schema lives here, not in `migrations/`.
   with `;`.
 - `LOCK` holds one line `<version> <sha256>` per derived version. The hash
   is of the statements' code in name order, their whole-line comments
-  left out, and of the `servingTables` registry. The version takes the
-  next free number on the migrations' number line.
+  left out, of the `servingTables` registry and of the stamped rows. The
+  version takes the next free number on the migrations' number line.
 - From 180 on, the migrations and the derived versions together use each
   number once, with no gap: a test holds this.
 - The binary's schema version is the newer of the newest migration and
   the derived version.
 - `Migrate` runs the migrations. Then it applies the set whole where the
   database is below the binary's schema version or carries another hash.
-  The apply drops every macro and view and runs the files. `Migrate`
-  never touches a database above the binary's schema version.
+  The apply drops every macro and view, runs the files and stamps the
+  vocabulary tables. `Migrate` never touches a database above the
+  binary's schema version.
+- The vocabulary tables hold the binary's own vocabulary
+  (`vocabularyStamps` in `derived.go`): `spend_categories`,
+  `account_kinds` and `txn_kind_roles`, from `internal/canonical`. The
+  apply replaces their rows whole. A new value or a changed role
+  changes the hash, so it takes the next number too.
 - To change a macro: edit its body here, take the next number, and append
   `<number> <hash>` to `LOCK`. A test prints the line when it is missing.
 - A comment edit keeps the hash. It needs no number.

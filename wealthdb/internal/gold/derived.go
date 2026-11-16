@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // The derived set is every macro and view of the gold schema. It is a
@@ -26,9 +28,10 @@ var derivedFS embed.FS
 // derivedSet is the derived set this binary carries.
 type derivedSet struct {
 	version int    // the LOCK's last version
-	hash    string // derivedSetHash of stmts and serving
+	hash    string // derivedSetHash of stmts, serving and stamps
 	stmts   []derivedStmt
 	serving []servingTable
+	stamps  []derivedStamp
 }
 
 // derivedStmt is one CREATE MACRO or CREATE VIEW of a derived file.
@@ -68,16 +71,17 @@ func readDerived(fsys fs.FS) (derivedSet, error) {
 	}
 	set.version = lock[len(lock)-1].version
 	set.serving = servingTables
-	set.hash = derivedSetHash(set.stmts, set.serving)
+	set.stamps = vocabularyStamps()
+	set.hash = derivedSetHash(set.stmts, set.serving, set.stamps)
 	return set, nil
 }
 
 // derivedSetHash is the sha256 of what the apply gives a database: each
-// statement's code, its whole-line comments left out, in order, and then
-// each serving table with its source. DuckDB keeps no comment, so a
-// comment edit keeps the hash; a serving entry changes it as a body edit
-// does.
-func derivedSetHash(stmts []derivedStmt, serving []servingTable) string {
+// statement's code, its whole-line comments left out, in order, then
+// each serving table with its source, then each stamped table with its
+// rows. DuckDB keeps no comment, so a comment edit keeps the hash; a
+// serving entry or a stamped row changes it as a body edit does.
+func derivedSetHash(stmts []derivedStmt, serving []servingTable, stamps []derivedStamp) string {
 	h := sha256.New()
 	for _, s := range stmts {
 		h.Write([]byte(stripComments(s.sql)))
@@ -85,7 +89,77 @@ func derivedSetHash(stmts []derivedStmt, serving []servingTable) string {
 	for _, st := range serving {
 		h.Write([]byte(st.table + "\x00" + st.source + "\n"))
 	}
+	for _, st := range stamps {
+		fmt.Fprintf(h, "%s\x00%s\n", st.table, strings.Join(st.cols, ","))
+		for _, r := range st.rows {
+			for _, v := range r {
+				fmt.Fprintf(h, "%v\x1f", v)
+			}
+			h.Write([]byte("\n"))
+		}
+	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// derivedStamp is a table whose rows are the binary's own vocabulary:
+// the apply replaces them whole, so they change with the derived set
+// and with nothing else.
+type derivedStamp struct {
+	table string
+	cols  []string
+	rows  [][]any
+}
+
+// vocabularyStamps are the vocabulary tables the derived set stamps:
+// the category dimension with each value's label, catch-all flag and
+// roles, and the account and transaction kinds with theirs
+// (internal/canonical). An empty text is NULL.
+func vocabularyStamps() []derivedStamp {
+	text := func(s string) any {
+		if s == "" {
+			return nil
+		}
+		return s
+	}
+	cats := derivedStamp{table: "spend_categories", cols: []string{
+		"spend_primary", "spend_detailed", "description", "label", "primary_label", "catch_all", "family",
+		"leaves_spending", "leaves_income", "flow_place", "flow_class_in", "flow_class_out",
+		"flow_leaf_detailed", "fee_view_group", "projected_income"}}
+	for _, c := range canonical.SpendCategories {
+		r := c.Roles()
+		cats.rows = append(cats.rows, []any{c.Primary, c.Detailed, c.Description,
+			canonical.SpendLabel(c.Detailed), canonical.SpendPrimaryLabel(c.Primary),
+			canonical.CatchAllSpendDetailed(c.Detailed) || canonical.CatchAllIncomeDetailed(c.Detailed),
+			string(c.Family), r.LeavesSpending, r.LeavesIncome, text(string(r.FlowPlace)),
+			text(string(r.FlowClassIn)), text(string(r.FlowClassOut)), r.FlowLeafDetailed,
+			text(r.FeeGroup), r.ProjectedIncome})
+	}
+	accounts := derivedStamp{table: "account_kinds", cols: []string{
+		"kind", "liability", "holds_cash", "follows_source", "returns_invisible"}}
+	for _, k := range canonical.AccountKinds() {
+		accounts.rows = append(accounts.rows, []any{string(k.Kind), k.Liability, k.HoldsCash,
+			k.FollowsSource, k.ReturnsInvisible})
+	}
+	kinds := derivedStamp{table: "txn_kind_roles", cols: []string{
+		"kind", "spending_side", "income_side", "matcher_pool", "unsigned", "trade",
+		"income_floor", "spend_floor"}}
+	for _, k := range canonical.TxKindRows() {
+		kinds.rows = append(kinds.rows, []any{string(k.Kind), text(string(k.Spending)),
+			text(string(k.Income)), k.MatcherPool, k.Unsigned, k.Trade, text(k.IncomeFloor),
+			text(k.SpendFloor)})
+	}
+	return []derivedStamp{cats, accounts, kinds}
+}
+
+// stamp replaces st's rows with the set's.
+func (st derivedStamp) stamp(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+st.table); err != nil {
+		return err
+	}
+	tuple := "(" + strings.Repeat("?, ", len(st.cols)-1) + "?)"
+	return InsertChunked(ctx, tx, "stamp "+st.table,
+		`INSERT INTO `+st.table+` (`+strings.Join(st.cols, ", ")+`) VALUES `, tuple, len(st.rows),
+		func(i int, args []any) []any { return append(args, st.rows[i]...) })
 }
 
 // lockLine is one line of derived/LOCK: a derived version and the set's
@@ -178,9 +252,9 @@ func derivedHash(ctx context.Context, q querier) (string, error) {
 }
 
 // applyDerived replaces every macro and view of the database with set,
-// in one transaction: it drops them all, runs the files in order and
-// records the set's hash, and it stamps want where the database is below
-// it. Right after the statement that creates a serving table's macro, it
+// in one transaction: it drops them all, runs the files in order,
+// stamps the vocabulary tables and records the set's hash, and it
+// stamps want where the database is below it. Right after the statement that creates a serving table's macro, it
 // gives the table that macro's columns (reshapeServing), so a view below
 // reads the table in its new shape. On an error it rolls back, and the
 // set the database had stays whole.
@@ -210,6 +284,11 @@ func applyDerived(ctx context.Context, db *sql.DB, set derivedSet, current, want
 			if err := reshapeServing(ctx, tx, st); err != nil {
 				return fmt.Errorf("%s: %w", st.table, err)
 			}
+		}
+	}
+	for _, st := range set.stamps {
+		if err := st.stamp(ctx, tx); err != nil {
+			return fmt.Errorf("%s: %w", st.table, err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM derived_state; INSERT INTO derived_state VALUES (?)`, set.hash); err != nil {

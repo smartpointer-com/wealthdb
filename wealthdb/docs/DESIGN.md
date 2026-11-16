@@ -1743,16 +1743,19 @@ is documented where it is used:
   side, partner leg and evidence (docs/SPENDING.md §8).
 - `materialize_inputs` (migration `0155`), the inputs the last
   `web-materialize` built from — web/DESIGN.md §8.
-- The spending overlay: `spend_categories` (migration `0040`;
-  docs/SPENDING.md §2), and `spend_txn_enrichment`,
+- The spending overlay: `spend_categories` (the derived set stamps it
+  from `internal/canonical`; docs/SPENDING.md §2), and `spend_txn_enrichment`,
   `spend_merchant_categories` and `spend_account_scope` (migration
   `0041`; keys and lifecycle in docs/SPENDING.md §8, macros in §10.10).
 - The income overlay: `income_txn_enrichment`,
   `income_payer_categories` and `income_account_scope` (migration
   `0070`; the same three shapes with `payer_*` for `merchant_*`, macros
   in §10.11, docs/INCOME.md). The taxonomy is not a fourth table —
-  `spend_categories` gained a `family` column in migration `0069` and
-  carries both vocabularies.
+  `spend_categories` carries both vocabularies, told apart by its
+  `family` column. Beside it the derived set stamps `account_kinds` and
+  `txn_kind_roles`, the roles of each account kind and transaction
+  kind; the flow macros read them through the predicates at the head
+  of `derived/40_flows.sql`.
 
 ```sql
 -- ============================================================
