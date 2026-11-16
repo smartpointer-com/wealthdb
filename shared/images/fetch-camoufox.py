@@ -21,10 +21,26 @@ from __future__ import annotations
 
 import os
 import sys
+from importlib.metadata import version as dist_version
 
 from camoufox.addons import DefaultAddons, get_addon_path, maybe_download_addons
 from camoufox.locale import MMDB_FILE, MMDB_REPO, MaxMindDownloader, download_mmdb
 from camoufox.pkgman import OS_NAME, CamoufoxFetcher, Version
+
+
+def _stale(what: str) -> None:
+    """Stop where camoufox-py no longer has a name this script replaces.
+    Assigning a name the package no longer reads succeeds without a word
+    and brings the GitHub API lookup back."""
+    sys.exit(f"fetch-camoufox: camoufox-py {dist_version('camoufox')} has no "
+             f"{what}; re-check this script's patches against that release")
+
+
+def _patch(cls: type, name: str, fn) -> None:
+    """Replace method cls.name with fn, or stop (_stale)."""
+    if not callable(getattr(cls, name, None)):
+        _stale(f"{cls.__name__}.{name}")
+    setattr(cls, name, fn)
 
 
 def main(pin: str) -> int:
@@ -42,13 +58,20 @@ def main(pin: str) -> int:
     # points at the pinned asset straight away. The asset URL shape
     # matches CamoufoxFetcher.check_asset
     # (camoufox-<version>-<release>-<os>.<arch>.zip under the v<pin> tag).
-    CamoufoxFetcher.fetch_latest = lambda self: None
+    _patch(CamoufoxFetcher, "fetch_latest", lambda self: None)
     fetcher = CamoufoxFetcher()
+    url = ("https://github.com/daijro/camoufox/releases/download/"
+           f"v{pin}/camoufox-{pin}-{OS_NAME}.{fetcher.arch}.zip")
     fetcher._version_obj = Version(release=release, version=version)
-    fetcher._url = (
-        "https://github.com/daijro/camoufox/releases/download/"
-        f"v{pin}/camoufox-{pin}-{OS_NAME}.{fetcher.arch}.zip"
-    )
+    fetcher._url = url
+    # install() reads the pin through these properties; one that no
+    # longer reads the private names above would install another build.
+    try:
+        read = (fetcher.url, fetcher.version, fetcher.release)
+    except (AttributeError, ValueError):
+        read = None
+    if read != (url, version, release):
+        _stale("CamoufoxFetcher.url/version/release over _url and _version_obj")
     fetcher.install()
 
     installed = Version.from_path()
@@ -67,9 +90,9 @@ def main(pin: str) -> int:
     # printed message, hence the existence re-check. The GeoLite2 lookup
     # is a GitHub API call too; GitHub's fixed "latest" download link
     # serves the same file without one.
-    MaxMindDownloader.get_asset = lambda self: (
+    _patch(MaxMindDownloader, "get_asset", lambda self: (
         f"https://github.com/{MMDB_REPO}/releases/latest/download/"
-        "GeoLite2-City.mmdb")
+        "GeoLite2-City.mmdb"))
     download_mmdb()
     maybe_download_addons(list(DefaultAddons))
     missing = [a.name for a in DefaultAddons

@@ -1,5 +1,5 @@
 # camoufox + playwright pins live in shared/images/base-camoufox.Dockerfile
-# (camoufox[geoip]>=0.4.11,<0.5 + playwright==1.49.0 + the CAMOUFOX_BUILD
+# (camoufox[geoip], the matching Playwright pin and the CAMOUFOX_BUILD
 # browser pin). Bump them there, together: the browser build's juggler
 # patches target a specific Playwright, and camoufox-py's own fetch is
 # unpinned across Firefox majors (see fetch-camoufox.py), which is why the

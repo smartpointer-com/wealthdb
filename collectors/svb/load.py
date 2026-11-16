@@ -341,8 +341,8 @@ _UNKNOWN_KIND = "UNKNOWN"
 # blotter books for the reason every other broker adapter books its trades:
 # a sale here and the purchase it funded at another custodian are one round
 # trip, and omitting this half leaves the other reading as capital from
-# nowhere. Both kinds are internal to the returns engine (`BankExternal`
-# omits them), so booking them moves no net flow.
+# nowhere. Neither kind is a capital kind to the returns engine
+# (canonical.CapitalKind), so booking them moves no net flow.
 #
 # The two PENDING sections stay out: they are projections that settle into a
 # later statement, which books them again.

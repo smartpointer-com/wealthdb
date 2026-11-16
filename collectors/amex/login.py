@@ -159,9 +159,10 @@ class _LogonWatch:
         return amexclient.classify_logon(self.status, self.body or {})
 
     def reset(self) -> None:
-        """Forget the captured response. The challenge flow ends with a
-        SECOND logon call, and the first one's 'needs a passcode' verdict
-        must not be mistaken for the second one's."""
+        """Forget the captured response, so a later logon call's verdict
+        is read on its own. The passcode flow ends with a second logon
+        call, and a bot check over VNC ends with the one the human
+        completes."""
         self.status = None
         self.body = None
 
