@@ -26,6 +26,7 @@ import (
 //   :HOLD//NUSD2500,          → market value USD -2,500.00: a leading
 //                               N is ISO 15022's sign for a negative
 //                               amount, as the collector reads it
+//   :AGGR//UNIT/N100,         → aggregate quantity, -100 units
 //
 // The :70C::SUBB// narrative adds the average unit cost (AVER), the
 // holding cost (AHOD, equal to BOOK) and, when the instrument currency
@@ -37,7 +38,7 @@ import (
 
 var (
 	re19A = regexp.MustCompile(`^:([A-Z]{3,4})//(N?)([A-Z]{3})([0-9,]+?),?$`)
-	re93B = regexp.MustCompile(`^:([A-Z]{3,4})//([A-Z]+)/([0-9,]+?),?$`)
+	re93B = regexp.MustCompile(`^:([A-Z]{3,4})//([A-Z]+)/(N?)([0-9,]+?),?$`)
 )
 
 // mt535Money is one parsed 19A entry.
@@ -90,9 +91,12 @@ func parse93B(raw []string) []mt535Qty {
 		if m == nil {
 			continue
 		}
-		amt, err := parseSwiftDecimal(m[3])
+		amt, err := parseSwiftDecimal(m[4])
 		if err != nil {
 			continue
+		}
+		if m[3] == "N" {
+			amt = amt.Neg()
 		}
 		out = append(out, mt535Qty{
 			Qualifier: m[1],

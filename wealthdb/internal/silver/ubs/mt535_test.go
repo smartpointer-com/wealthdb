@@ -152,3 +152,39 @@ func TestParse19AReadsTheNegativeSign(t *testing.T) {
 		t.Errorf("positive entry = %+v, want 900", got[1])
 	}
 }
+
+// A quantity with the negative sign, N before the figure, reads as
+// negative; one without stays positive.
+func TestParse93BReadsTheNegativeSign(t *testing.T) {
+	got := parse93B([]string{":AGGR//UNIT/N100,", ":AVAI//FAMT/2500,5"})
+	if len(got) != 2 {
+		t.Fatalf("parse93B = %+v, want both entries", got)
+	}
+	if got[0].Qualifier != "AGGR" || got[0].Format != "UNIT" || got[0].Amount.String() != "-100" {
+		t.Errorf("negative entry = %+v, want AGGR UNIT -100", got[0])
+	}
+	if got[1].Amount.String() != "2500.5" {
+		t.Errorf("positive entry = %+v, want 2500.5", got[1])
+	}
+}
+
+// The corporate-action values read the same sign: an amount with N
+// before its currency, and a number of units with N before the figure.
+// A currency that itself begins with N is no sign.
+func TestSwiftValuesReadTheNegativeSign(t *testing.T) {
+	for _, tc := range []struct{ value, ccy, amount string }{
+		{":PSTA//NCHF1500,25", "CHF", "-1500.25"},
+		{":PSTA//NNOK12,", "NOK", "-12"},
+		{":PSTA//NOK12,", "NOK", "12"},
+	} {
+		ccy, amount, ok := swiftMoney(tc.value)
+		if !ok || ccy != tc.ccy || amount.String() != tc.amount {
+			t.Errorf("swiftMoney(%q) = %s %s %v, want %s %s", tc.value, ccy, amount.String(), ok, tc.ccy, tc.amount)
+		}
+	}
+	for value, want := range map[string]string{":CONB//UNIT/N40,": "-40", ":CONB//UNIT/40,": "40"} {
+		if got := swiftUnits(value); got == nil || got.String() != want {
+			t.Errorf("swiftUnits(%q) = %v, want %s", value, got, want)
+		}
+	}
+}

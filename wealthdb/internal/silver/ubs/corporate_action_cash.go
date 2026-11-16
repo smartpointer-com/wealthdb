@@ -106,8 +106,10 @@ type caMessage struct {
 	move                 caCashMove
 }
 
-// swiftMoney splits a `:QUAL//CCYamount` value into its currency and
+// swiftMoney splits a `:QUAL//[N]CCYamount` value into its currency and
 // figure. The figure keeps SWIFT's spelling; parseSwiftDecimal reads it.
+// A leading N, ISO 15022's sign for a negative amount, makes it negative
+// (swiftNegative).
 func swiftMoney(value string) (currency string, amount canonical.Decimal, ok bool) {
 	_, rest, found := strings.Cut(value, "//")
 	if !found || len(rest) < 4 {
@@ -115,10 +117,26 @@ func swiftMoney(value string) (currency string, amount canonical.Decimal, ok boo
 	}
 	currency, figure := rest[:3], rest[3:]
 	amount, err := parseSwiftDecimal(figure)
-	if err != nil {
-		return "", canonical.Decimal{}, false
+	if err == nil {
+		return currency, amount, true
 	}
-	return currency, amount, true
+	if unsigned, ok := swiftNegative(rest); ok && len(unsigned) >= 4 && isCurrencyCode(unsigned[:3]) {
+		if amount, err := parseSwiftDecimal(unsigned[3:]); err == nil {
+			return unsigned[:3], amount.Neg(), true
+		}
+	}
+	return "", canonical.Decimal{}, false
+}
+
+// swiftNegative is a SWIFT value without the leading N that signs it
+// negative; false where it carries none.
+func swiftNegative(s string) (string, bool) {
+	return strings.CutPrefix(s, "N")
+}
+
+// isCurrencyCode reports whether s is three upper-case letters.
+func isCurrencyCode(s string) bool {
+	return len(s) == 3 && strings.Trim(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") == ""
 }
 
 // swiftRate reads a `:QUAL//rate` value. A negative rate (`N` before the
@@ -150,8 +168,9 @@ func swiftExchange(value string) *caExchange {
 	return &caExchange{from: parts[0], to: parts[1], rate: rate}
 }
 
-// swiftUnits reads a `:QUAL//UNIT/quantity` value: a number of units. A
-// face amount (FAMT) or an amortised value is no number of shares.
+// swiftUnits reads a `:QUAL//UNIT/[N]quantity` value: a number of units,
+// negative after the N (swiftNegative). A face amount (FAMT) or an
+// amortised value is no number of shares.
 func swiftUnits(value string) *canonical.Decimal {
 	_, rest, _ := strings.Cut(value, "//")
 	kind, figure, found := strings.Cut(rest, "/")
@@ -160,7 +179,11 @@ func swiftUnits(value string) *canonical.Decimal {
 	}
 	units, err := parseSwiftDecimal(figure)
 	if err != nil {
-		return nil
+		unsigned, negative := swiftNegative(figure)
+		if units, err = parseSwiftDecimal(unsigned); !negative || err != nil {
+			return nil
+		}
+		units = units.Neg()
 	}
 	return &units
 }
