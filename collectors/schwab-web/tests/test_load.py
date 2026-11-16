@@ -229,7 +229,7 @@ class TestMigrations:
         for path in sorted(MIGRATIONS_DIR.glob("000[1-8]_*.sql")):
             (early / path.name).write_text(path.read_text())
         load.silver.apply_migrations(conn, early)
-        load.silver.stamp_generation(conn, load.DOCUMENT_GENERATION_SCOPE, "g")
+        load.silver.stamp_generation(conn, load.WALK_SCOPE, "g")
         # Export 1 holds a pair of genuine twins ('t1', 't2'); export 2
         # repeats both under other ids ('u1', 'u2') and adds 'u3'. A
         # statement row with the same payload is another source: kept.
@@ -253,7 +253,7 @@ class TestMigrations:
         assert kept == {"t1", "t2", "u3", "s1"}
         # The ids move, so the next load re-derives the archive.
         assert load.silver.stale_generation(
-            conn, load.DOCUMENT_GENERATION_SCOPE, "g")
+            conn, load.WALK_SCOPE, "g")
         assert load.silver.current_schema_version(conn) == _HEAD_VERSION
 
     def test_0010_makes_the_next_load_reread_the_archive(self, conn,
@@ -263,10 +263,10 @@ class TestMigrations:
         for path in sorted(MIGRATIONS_DIR.glob("000[1-9]_*.sql")):
             (early / path.name).write_text(path.read_text())
         load.silver.apply_migrations(conn, early)
-        load.silver.stamp_generation(conn, load.DOCUMENT_GENERATION_SCOPE, "g")
+        load.silver.stamp_generation(conn, load.WALK_SCOPE, "g")
         load.silver.apply_migrations(conn, MIGRATIONS_DIR)
         assert load.silver.stale_generation(
-            conn, load.DOCUMENT_GENERATION_SCOPE, "g")
+            conn, load.WALK_SCOPE, "g")
         assert load.silver.current_schema_version(conn) == _HEAD_VERSION
 
 
@@ -1850,10 +1850,12 @@ class TestRollbackDoesNotPoisonSeenSet:
             ).fetchone()[0]
         finally:
             conn.close()
-        # Run 1 marked the doc seen then rolled back; run 2 must re-parse
-        # and insert it — two parses, one surviving position row. With a
-        # poisoned seen-set run 2 would skip the doc and leave zero rows.
-        assert len(parse_calls) == 2
+        # Run 1 marked the doc seen then rolled back; run 2 must take it
+        # up again and insert it — one surviving position row. Its copy
+        # holds the same bytes, so the parse cache serves run 1's parse.
+        # With a poisoned seen-set run 2 would skip the doc and leave zero
+        # rows.
+        assert len(parse_calls) == 1
         assert n_pos == 1
 
 
@@ -2340,7 +2342,7 @@ def test_a_moved_parser_purges_the_snapshot_tables(tmp_path):
 
     conn = sqlite3.connect(str(args.silver_db))
     load.silver.stamp_generation(
-        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+        conn, load.WALK_SCOPE, "an older parser")
     conn.commit()
     conn.close()
 
@@ -2356,7 +2358,7 @@ def test_a_failed_run_leaves_the_generation_unstamped(tmp_path, monkeypatch):
     assert load.run_load(args) == 0
     conn = sqlite3.connect(str(args.silver_db))
     load.silver.stamp_generation(
-        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+        conn, load.WALK_SCOPE, "an older parser")
     conn.commit()
     conn.close()
 
@@ -2368,7 +2370,7 @@ def test_a_failed_run_leaves_the_generation_unstamped(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(args.silver_db))
     try:
         assert load.silver.stale_generation(
-            conn, load.DOCUMENT_GENERATION_SCOPE, load.DOCUMENT_GENERATION)
+            conn, load.WALK_SCOPE, load.WALK_GENERATION)
     finally:
         conn.close()
 
@@ -2394,7 +2396,7 @@ def test_an_explicit_reparse_still_purges_a_moved_generation(tmp_path):
 
     conn = sqlite3.connect(str(args.silver_db))
     load.silver.stamp_generation(
-        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+        conn, load.WALK_SCOPE, "an older parser")
     conn.commit()
     conn.close()
 
@@ -2544,7 +2546,7 @@ def test_a_silver_loaded_before_open_lots_gains_them_on_the_next_load(
         " VALUES (?, 'NNN', 'XMPL', 10.0, 120.0, NULL, 'sha0', '{}')",
         (as_of,))
     load.silver.stamp_generation(
-        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+        conn, load.WALK_SCOPE, "an older parser")
     conn.commit()
     conn.close()
 
@@ -2931,7 +2933,7 @@ def test_a_moved_parser_clears_the_parse_markers(tmp_path):
     conn = sqlite3.connect(str(args.silver_db))
     load._mark_parsed(conn, "NNN|0|Brokerage-Statement.PDF", "statement", "sha0")
     load.silver.stamp_generation(
-        conn, load.DOCUMENT_GENERATION_SCOPE, "an older parser")
+        conn, load.WALK_SCOPE, "an older parser")
     conn.commit()
     conn.close()
 
@@ -3013,3 +3015,117 @@ class TestCashInterestRate:
                              " ('documents', 'old', 0)")
         assert conn.execute("SELECT COUNT(*) FROM parser_generations"
                             ).fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# One generation per document kind; the parse cache
+# ---------------------------------------------------------------------------
+
+class TestGenerationPerKind:
+    """A moved kind re-derives its own documents from every run and no
+    others; a routine load parses nothing; a rebuilt silver reads its
+    parses from the cache."""
+
+    def _setup(self, monkeypatch, tmp_path):
+        args = _generation_args(tmp_path)
+        _make_doc_bronze(args.bronze_dir, "20260301T000000Z", "NNN", [
+            {"date": "02/28/2026", "type": "Statements",
+             "document": "Brokerage Statement",
+             "filename": "Brokerage-Statement_2026-02-28_NNN.PDF",
+             "content": "%PDF-1.4 stub statement\n"},
+            {"date": "01/23/2024", "type": "Letters",
+             "document": "3rd Party Distribution",
+             "filename": "3rd-Party-Distribution_2024-01-23_NNN.PDF",
+             "content": "%PDF-1.4 stub letter\n"}])
+        calls: list[str] = []
+
+        def statement(path, statement_year=None):
+            calls.append("statement")
+            return json.loads(json.dumps(TestRollbackDoesNotPoisonSeenSet.PARSED))
+
+        def letter(path):
+            calls.append("letter")
+            return [dict(r) for r in TestDistributionLoad._SYNTH_ROWS]
+
+        monkeypatch.setattr(load.pp, "parse_statement_pdf", statement)
+        monkeypatch.setattr(load.pp, "parse_distribution_pdf", letter)
+        return args, calls
+
+    @staticmethod
+    def _rows(db):
+        return _silver_rows(db)
+
+    def test_a_routine_load_parses_nothing(self, monkeypatch, tmp_path):
+        args, calls = self._setup(monkeypatch, tmp_path)
+        assert load.run_load(args) == 0
+        assert sorted(calls) == ["letter", "statement"]
+        calls.clear()
+        assert load.run_load(args) == 0
+        assert calls == []
+
+    def test_a_moved_kind_rederives_only_its_documents(
+            self, monkeypatch, tmp_path):
+        args, calls = self._setup(monkeypatch, tmp_path)
+        assert load.run_load(args) == 0
+        before = self._rows(args.silver_db)
+        conn = sqlite3.connect(str(args.silver_db))
+        load.silver.stamp_generation(
+            conn, "third_party_distribution", "an older parser")
+        conn.commit()
+        conn.close()
+        # The cache holds the letter's parse under the current generation;
+        # empty it, so the re-derive parses.
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "other-cache"))
+        calls.clear()
+        assert load.run_load(args) == 0
+        assert calls == ["letter"]
+        assert self._rows(args.silver_db) == before
+
+    def test_a_rebuilt_silver_reads_the_parse_cache(
+            self, monkeypatch, tmp_path):
+        args, calls = self._setup(monkeypatch, tmp_path)
+        assert load.run_load(args) == 0
+        before = self._rows(args.silver_db)
+        args.silver_db.unlink()
+        calls.clear()
+        assert load.run_load(args) == 0
+        assert calls == []
+        assert self._rows(args.silver_db) == before
+
+
+def _silver_rows(db):
+    """Every table's rows but the stamps and the dump_runs row, sorted."""
+    conn = sqlite3.connect(str(db))
+    try:
+        out = {}
+        for (t,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"):
+            if t in ("schema_meta", "parser_generations", "dump_runs"):
+                continue
+            out[t] = sorted(map(repr, conn.execute(f"SELECT * FROM {t}")))
+        return out
+    finally:
+        conn.close()
+
+
+def test_runs_loaded_one_at_a_time_give_the_silver_of_one_force(tmp_path):
+    from collectorkit import incremental
+    src = tmp_path / "src"
+    runs = [
+        _make_doc_bronze(src, "20260301T000000Z", "NNN", [
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-XNNN.XML", "content": _MINI_1099B_XML}]),
+        _make_tx_history_bronze(src, "20260302T000000Z", "NNN",
+                                [TestTxHistoryIngest._TX]),
+        _make_doc_bronze(src, "20260303T000000Z", "NNN", [
+            {"date": "02/15/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-XNNN.CSV", "content": _MINI_1099B_CSV}]),
+    ]
+    incremental.check(
+        load.main,
+        lambda db, bronze_dir: ["--silver-db", str(db), "--bronze-dir",
+                                str(bronze_dir), "--migrations-dir",
+                                str(MIGRATIONS_DIR), "--workers", "1"],
+        runs, tmp_path / "work")

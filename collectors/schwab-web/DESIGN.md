@@ -251,13 +251,31 @@ The tx-history exports carry no marker; they are skipped once they
 have transaction rows. Within one load, each logical document is
 parsed once, also under `--reparse`.
 
-**Parser generation (migration 0005)**: `parser_generations` records
-which generation of the document parsers wrote the rows in hand. A
-moved generation purges the statement snapshot tables and the parse
-markers, and the load re-walks every run as under `--reparse`. A load
-stamps the new generation only when every run and the account-number
-reconcile pass committed. After a failure the generation stays
-unstamped, so the next load re-walks the archive again.
+**Parser generations (migrations 0005, 0012)**: `parser_generations`
+records which generation of the loader's reading wrote the rows in
+hand, one scope per document kind and one for the walk itself.
+
+- A kind's generation is its parser module's code and the extraction
+  key of what it reads (the PDFium version among it). A moved kind
+  clears that kind's parse markers (the statements' also purge the
+  statement snapshot tables), and the load re-derives that kind's
+  documents from every run. The rest of each run is not read again.
+- The `documents` scope is the walk: how a run's manifest and its
+  exports become rows. Its generation moves with no parser. A
+  migration that changes the walk clears it, and the load then purges
+  every marker and the snapshot tables and re-walks every run as
+  under `--reparse`.
+
+A load stamps the generations only when every run and the
+account-number reconcile pass committed. After a failure they stay
+unstamped, so the next load re-derives again.
+
+**Parse and extraction caches**: a load keeps each document's parse
+under the collector's cache root, keyed on the document's content and
+file name and on its kind's generation. A `load --force` or a
+re-derive of another kind reads it back instead of parsing again. The
+PDFium text and words of each PDF are cached the same way, keyed on
+the extraction. A cache only saves time: an empty one costs a parse.
 
 **Gold-layer mitigation for `documents`**: when consuming web silver
 `documents`, deduplicate on `(account_external_id, doc_date,

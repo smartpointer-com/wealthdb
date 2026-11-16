@@ -42,14 +42,10 @@ def parse_1099b(path, fmt: str | None = None) -> dict:
     return form_1099b.parse(text, fmt)
 
 
-def parse_realized_report_pdf(path, kind: str, *, sha256: str | None = None,
-                              cache_dir=None) -> dict:
+def parse_realized_report_pdf(path, kind: str) -> dict:
     """Parse a realized-lot report PDF: `kind` is 'year_end_summary' (a
-    Year-End Summary or 1099 Composite PDF) or 'gain_loss_report'. With
-    the PDF's `sha256` and a `cache_dir` the extraction is cached by
-    content."""
-    extracted = extraction.pdfium(path, sha256, cache_dir,
-                                  words=kind == "year_end_summary")
+    Year-End Summary or 1099 Composite PDF) or 'gain_loss_report'."""
+    extracted = extraction.pdfium(path, words=kind == "year_end_summary")
     return realized_reports.parse(extracted, kind)
 
 

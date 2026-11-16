@@ -56,8 +56,7 @@ from stmt_tokens import TransactionRow, _parse_number, _row_date  # noqa: F401
 # Convenience: open + parse a file path
 # ============================================================
 
-def parse_statement_pdf(path, statement_year: int | None = None, *,
-                        sha256: str | None = None, cache_dir=None) -> dict:
+def parse_statement_pdf(path, statement_year: int | None = None) -> dict:
     """Open a Schwab brokerage statement PDF and return its path and
     what `stmt_parse.parse` reads from it: the statement period,
     transactions, positions, cash summary, account value, registration
@@ -66,10 +65,9 @@ def parse_statement_pdf(path, statement_year: int | None = None, *,
     `statement_year` dates the MM/DD activity rows of a statement
     whose period header does not read (parse_transactions); a printed
     period wins over it. The loader passes the year of the manifest
-    doc-date. With the PDF's `sha256` and a `cache_dir` the extraction
-    is cached by content.
+    doc-date.
     """
-    extracted = extraction.pdfium(path, sha256, cache_dir)
+    extracted = extraction.pdfium(path)
     return {"path": str(path),
             **stmt_parse.parse(extracted, statement_year=statement_year)}
 
@@ -85,14 +83,12 @@ def parse_statement_account_number(path) -> str | None:
     return parse_account_number(extraction.pdfium(path).text())
 
 
-def parse_distribution_pdf(path, *, sha256: str | None = None,
-                           cache_dir=None) -> list[dict]:
+def parse_distribution_pdf(path) -> list[dict]:
     """Open a 3rd-Party-Distribution PDF and return normalised silver
     rows. Thin wrapper over `parse_distribution_text` so the row logic
     is unit-testable without a real PDF."""
     name = str(path).rsplit("/", 1)[-1]
-    return letters.parse(extraction.pdfium(path, sha256, cache_dir),
-                         filename=name)
+    return letters.parse(extraction.pdfium(path), filename=name)
 
 
 # ============================================================
