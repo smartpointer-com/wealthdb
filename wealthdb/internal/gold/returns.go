@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"iter"
 	"math"
 	"slices"
 	"sort"
@@ -580,7 +581,7 @@ func (a *accountData) valueBefore(day int64) float64 {
 func (a *accountData) confirms(on, winTo int64, moves []returns.Flow) bool {
 	net := sumFlows(moves)
 	if on > winTo {
-		net += sumFlows(flowsIn(a.nonTransfer, winTo, on)) + sumFlows(flowsIn(a.transferLike, winTo, on))
+		net += a.netIn(winTo, on)
 	}
 	v, _ := a.valueAt(on)
 	before := a.valueBefore(on)
@@ -608,13 +609,33 @@ func (a *accountData) unshownAt(day int64) []returns.Flow {
 		return nil
 	}
 	var out []returns.Flow
-	for _, flows := range [][]returns.Flow{a.nonTransfer, a.transferLike} {
-		for _, f := range flowsIn(flows, a.snapDays[i-1], day) {
-			f.ValuedOn = a.snapDays[i]
-			out = append(out, f)
-		}
+	for f := range a.legs(a.snapDays[i-1], day) {
+		f.ValuedOn = a.snapDays[i]
+		out = append(out, f)
 	}
 	return out
+}
+
+// legs yields a's flows dated in (from, to], with whether the netter may pair
+// each: its deposits and withdrawals first, then its transfer-like legs, each in
+// ledger order. The flow series and every float sum over them keep this order.
+func (a *accountData) legs(from, to int64) iter.Seq2[returns.Flow, bool] {
+	return func(yield func(returns.Flow, bool) bool) {
+		for i, flows := range [2][]returns.Flow{a.nonTransfer, a.transferLike} {
+			for _, f := range flows {
+				if f.Day > from && f.Day <= to && !yield(f, i == 1) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// netIn is the signed sum of a's flows dated in (from, to]. Its deposits and
+// withdrawals and its transfer-like legs are summed apart and then added, the
+// order the tables are pinned by.
+func (a *accountData) netIn(from, to int64) float64 {
+	return sumFlowsIn(a.nonTransfer, from, to) + sumFlowsIn(a.transferLike, from, to)
 }
 
 // isConduit reports whether this account is a conduit (plumbing) under its

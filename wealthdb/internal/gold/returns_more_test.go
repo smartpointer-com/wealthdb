@@ -71,15 +71,15 @@ func params(level string, from, to int64) ReturnParams {
 }
 
 // TestNetTransfers covers the heuristic internal-transfer matching directly
-// against netOwnedTransfers (the ownership-free case: untagged ownedFlow inputs).
+// against netTransfers (the ownership-free case: legs with no account).
 func TestNetTransfers(t *testing.T) {
 	t.Parallel()
 	net := func(fs ...returns.Flow) (int, int) {
-		owned := make([]ownedFlow, len(fs))
+		legs := make([]flowLeg, len(fs))
 		for i, f := range fs {
-			owned[i] = ownedFlow{Flow: f}
+			legs[i] = flowLeg{Flow: f}
 		}
-		kept, unmatched := netOwnedTransfers(owned, newMovedLegs())
+		kept, unmatched := netTransfers(legs, func(flowLeg, flowLeg) {})
 		return len(kept), unmatched
 	}
 	// Opposite pair, same magnitude, within ±3 days ⇒ netted (internal move).
@@ -160,7 +160,7 @@ func TestRunReturnsPortfolioNameResolved(t *testing.T) {
 
 // TestRunReturnsStaggeredOnboarding covers the aggregate path: synthetic
 // onboarding (the late constituent's full debut value, with its own debut-region
-// deposit subsumed — see flowSubsumed) and the staggered_inception flag.
+// deposit subsumed — see fateOf) and the staggered_inception flag.
 func TestRunReturnsStaggeredOnboarding(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)

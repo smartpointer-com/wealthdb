@@ -249,7 +249,7 @@ Guards: `TestBridgeReadsTheCommonCases`,
   still unshown. Such a row is tagged `rolled_forward`. The per-period
   rows read the carried values too. Guard: `TestMWRReadsTheChainsValues`.
 - **Onboarding books the debut value.** A staggered constituent's real
-  debut-region flows are subsumed first (`flowSubsumed` in `entityFlows`),
+  debut-region flows take no flow first (the pre-debut region, `fateOf`),
   then synthetic onboarding books the first-snapshot value, less the
   pre-debut legs netting cancelled. Under per-entity-once it books the
   group's step (`groupOnboardStep`), which offsets the same legs and is
@@ -315,7 +315,7 @@ macro of its own:
   can be a genuine pair of external movements, so netting them would cancel
   real external capital. An internal move booked as deposit/withdrawal
   surfaces as two external flows, not silently cancelled. Netting is
-  deterministic — `netOwnedTransfers` sorts stably by `(|amount|, day, id)`.
+  deterministic — `netTransfers` sorts stably by `(|amount|, day, id)`.
   ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar days;
   FX-normalized via `value_outccy`; named constants.
 - **Cross-source transfer matching** (opt-in, DESIGN.md §5.8) is the one
@@ -324,7 +324,7 @@ macro of its own:
   amount within tolerance, day window) nets in entities containing both
   legs live — tagged `cross_source_netted=N` — because the cross-source
   evidence is exactly what the within-entity heuristic lacks. Matched
-  legs are withheld from `netOwnedTransfers`' candidate pool, matching
+  legs are withheld from `netTransfers`' candidate pool, matching
   operates on native amounts (partitions derive identical pairs whenever
   their attached-flow universes coincide), and `--netting off` disables
   cross-source drops along with the heuristic netter. Off ⇒
@@ -333,7 +333,7 @@ macro of its own:
   in a ~0 carry tail (`|v| < valueTol`) — mere staleness never triggers it.
   The per-source `ClosureScope` knob decides how the exit is accounted:
   - `ClosureSubsumeDrains` (default): flows dated inside the flat zero-carry
-    tail show no ΔV, so they are subsumed (`subsumesAtClosure`). The
+    tail show no ΔV, so they are subsumed (the zero-tail region). The
     closure flow books them instead, on the zeroing day (below).
     Real drains before the zeroing snapshot stay flows. Safe when the
     ledger may be missing or mis-dated around a closure.
@@ -349,7 +349,7 @@ macro of its own:
   window must hold that day.
 
   - **Inside a longer zero tail** it books what the tail's legs moved out,
-    once netting has run (`exitsAtClosure`). That is the legs' own money
+    once netting has run (the exit fate). That is the legs' own money
     on another day, so it is a real flow, not a synthetic one, and the
     bridge reads it as money that left. An exit leg dated days after the
     zeroing therefore leaves on the day the value shows the money gone. A
@@ -450,7 +450,7 @@ never fires and the engine
 books *both* the synthetic onboarding and the real funding — driving the
 chained TWR below −100%.
 
-**Mechanism (`flowSubsumed` + `entityFlows`):**
+**Mechanism (`entityFlows`: each leg's region and fate):**
 
 - A constituent debuting at `d > winFrom` has every own external flow dated
   `≤ d` **dropped** from the aggregate flow series; onboarding books the

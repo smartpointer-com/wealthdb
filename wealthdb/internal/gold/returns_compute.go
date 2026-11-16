@@ -213,7 +213,7 @@ func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, b
 	v0, _ := av(winFrom)
 	v1, _ := av(winTo)
 	r.StartValue, r.EndValue = decStr(v0), decStr(v1)
-	r.NetFlow = decStr(sumFlows(flowsIn(flows, winFrom, winTo)))
+	r.NetFlow = decStr(sumFlowsIn(flows, winFrom, winTo))
 	q := append([]string{}, entityQ...)
 
 	// Cumulative TWR chained over the entity's actual valuation (snapshot) days,
@@ -506,37 +506,141 @@ func solveMWR(solve func(v0, v1 float64, from, to int64, flows []returns.Flow) (
 	return &rate, q
 }
 
-// ownedFlow is a constituent flow tagged with its owning account and whether it
-// falls in a region the aggregate value series does NOT reflect (a late
-// constituent's pre-debut arrival, or a closing constituent's drain into the
-// zeroing snapshot). Such flows are SUBSUMED by the synthetic onboarding/closure
-// amount instead of being counted again. Netting still runs over the full set
-// (subsumed legs included) so genuine internal transfer pairs annihilate before
-// subsumption ever applies (the staggered-inception netting interaction).
-type ownedFlow struct {
-	returns.Flow
-	subsumed bool
-	// acct is the leg's account.
-	acct *accountData
-	// onSpine says the account holds value by the leg's day.
-	onSpine bool
-	// live says it also shows the leg by the window's end, so a synthetic flow
-	// can count on the money being inside.
-	live bool
-	// funds says the leg falls before acct's debut, where onboarding books acct's
-	// first value, alone or in its per-entity-once group's step.
-	funds bool
-	// closes says the leg falls into acct's closure: the closure day is the first
-	// valuation to show it, so the synthetic closure would book it again.
-	closes bool
-	// exits says the leg falls in acct's zero tail, where the value shows no
-	// change: a survivor leaves in the closure flow on the zeroing day.
-	exits bool
+// daySpan is an entity window, (from, to] in epoch days as flowsIn reads it.
+type daySpan struct{ from, to int64 }
+
+// region is where a leg's day falls in its account's life, for a window.
+type region uint8
+
+const (
+	// regionLive: the account's value shows the leg.
+	regionLive region = iota
+	// regionPreDebut: on or before a debut the window holds. Onboarding
+	// books the first value instead of what came before it.
+	regionPreDebut
+	// regionZeroTail: in the terminal zero tail, which shows no change for
+	// the leg. The closure on the zeroing day books it instead.
+	regionZeroTail
+)
+
+// region is where day falls in a's life for the window w. The pre-debut region
+// and the zero tail never overlap: the last nonzero day is never before the
+// debut.
+func (a *accountData) region(day int64, w daySpan) region {
+	if debut := a.firstDay(); debut > w.from && debut <= w.to && day <= debut {
+		return regionPreDebut
+	}
+	if cd := a.closureDay(); cd > w.from && day > a.lastNonzeroDay() && day <= cd && day <= w.to {
+		return regionZeroTail
+	}
+	return regionLive
 }
 
-// movedLegs is what an entity's accounts moved. Netting cancels some of it, which
-// the synthetic flows must then not book again, and the chain still reads all of
-// it between valuations (rolled).
+// flowLeg is one of an entity's flows in a window, classified once: its account,
+// whether the netter may pair it (a transfer-like kind), and its region.
+type flowLeg struct {
+	returns.Flow
+	acct     *accountData
+	nettable bool
+	region   region
+}
+
+// onSpine says the leg's account holds value by the leg's day.
+func (l flowLeg) onSpine() bool { return l.Day > l.acct.firstDay() }
+
+// shown says the account also values the leg by the window's end, so a
+// synthetic flow can count on the money being inside.
+func (l flowLeg) shown(w daySpan) bool { return l.onSpine() && l.ValuedOn != 0 && l.ValuedOn <= w.to }
+
+// funds says the leg falls before its account's debut, where onboarding books
+// the first value, alone or in its per-entity-once group's step.
+func (l flowLeg) funds() bool { return l.region == regionPreDebut && onboardsFirstValue(l.acct) }
+
+// closes says the closure day is the first valuation to show the leg, so the
+// synthetic closure would book it again.
+func (l flowLeg) closes(w daySpan) bool {
+	cd := l.acct.closureDay()
+	return cd > w.from && cd <= w.to && l.ValuedOn == cd &&
+		l.acct.rpolicy.ClosureScope != returns.ClosureLedgerExact
+}
+
+// fate is what becomes of a leg in the entity's flow series.
+type fate uint8
+
+const (
+	// fateFlow: a flow of the entity.
+	fateFlow fate = iota
+	// fateInside: money that moved between the entity's accounts. No flow
+	// books it, and the chain still reads it between valuations.
+	fateInside
+	// fateFundsDebut: money a debut's first value holds that the entity
+	// held already, so onboarding leaves it out.
+	fateFundsDebut
+	// fateExit: a zero-tail leg the closure on the zeroing day books.
+	fateExit
+	// fateDropped: a synthetic flow stands for it, or nothing the entity
+	// holds shows it.
+	fateDropped
+)
+
+// fateOf is the fate of a leg no pair claims, by its region. Two cells are the
+// source policy's:
+//
+//	region    fate                               policy cell
+//	live      flow
+//	preDebut  dropped: the first value holds it  OnboardNone: a deposit or withdrawal is a flow
+//	zeroTail  exit, or dropped on a final-day    ClosureLedgerExact: flow
+//	          zeroing (the closure books the
+//	          carried value)
+//
+// Under OnboardNone no onboarding replaces a pre-debut deposit, so it is the
+// capital event. A ledger-exact source dates its exit legs itself.
+func fateOf(l flowLeg) fate {
+	p := l.acct.rpolicy
+	switch l.region {
+	case regionPreDebut:
+		if !l.nettable && p.OnboardScope == returns.OnboardNone {
+			return fateFlow
+		}
+		return fateDropped
+	case regionZeroTail:
+		switch {
+		case p.ClosureScope == returns.ClosureLedgerExact:
+			return fateFlow
+		case l.acct.zeroesBeforeLastDay():
+			return fateExit
+		}
+		return fateDropped
+	}
+	return fateFlow
+}
+
+// pairFate is the fate of a leg the netter paired with partner: the money
+// stayed inside the entity. A pre-debut leg funds the debut where the
+// partner's value shows the money; a leg on the spine is an inside move. A
+// leg before the spine is dropped otherwise: the money is new to the entity
+// where it lands.
+func pairFate(l, partner flowLeg, w daySpan) fate {
+	switch {
+	case l.funds() && partner.shown(w):
+		return fateFundsDebut
+	case l.onSpine():
+		return fateInside
+	}
+	return fateDropped
+}
+
+// zeroesBeforeLastDay says a's value goes to zero before the spine's last
+// day, so its zero tail holds exit legs for the closure on the zeroing day.
+func (a *accountData) zeroesBeforeLastDay() bool {
+	zd := a.zeroingDay()
+	return zd != 0 && zd != a.closureDay()
+}
+
+// movedLegs is what an entity's accounts moved, summed per account into the
+// three synthetic amounts. Pairing cancels some of it, which the synthetic
+// flows must then not book again, and the chain still reads all of it between
+// valuations (rolled).
 type movedLegs struct {
 	funded  map[*accountData]float64        // onboarding: what the first value holds through moves, signed
 	closing map[*accountData]float64        // closure: what the last value holds that stays inside or left already, signed
@@ -569,30 +673,49 @@ func (m *movedLegs) left(a *accountData, f returns.Flow) {
 
 func (m *movedLegs) add(a *accountData, f returns.Flow) { m.moves[a] = append(m.moves[a], f) }
 
-// cancel records a cancelled pair. A debut's first value holds a leg's money as an
-// inside move only if the partner's account was on the spine by then: money from
-// an account the entity does not hold yet is new to it. Money leaving a closing
-// account stays inside where the partner is on the spine or debuts into it.
-func (m *movedLegs) cancel(a, b ownedFlow) {
-	inside := func(leg, partner ownedFlow) bool { return leg.onSpine || (leg.funds && partner.live) }
-	if inside(a, b) && inside(b, a) {
+// settle applies the fate of a leg no pair claims, or of a cross-source pair's
+// leg (fateInside), and returns flows with the leg appended where it is a flow.
+func (m *movedLegs) settle(flows []returns.Flow, l flowLeg, f fate) []returns.Flow {
+	switch f {
+	case fateFlow:
+		m.add(l.acct, l.Flow)
+		m.left(l.acct, l.Flow)
+		return append(flows, l.Flow)
+	case fateInside:
+		m.add(l.acct, l.Flow)
+		m.left(l.acct, l.Flow)
+	case fateExit:
+		m.exits[l.acct] += l.Amount
+	}
+	return flows
+}
+
+// pair settles two legs the netter cancelled. They stay what the accounts moved
+// only where neither leg is dropped. A funding leg leaves its debut's
+// onboarding, and its partner's legs that the funding explains are marked on
+// the partner's valuation day. Money leaving a closing account stays inside
+// where the partner is shown or funds a debut, so the final-day closure leaves
+// it out. A zero-tail exit leg that money came in on is passed through.
+func (m *movedLegs) pair(a, b flowLeg, w daySpan) {
+	fates := [2]fate{pairFate(a, b, w), pairFate(b, a, w)}
+	if fates[0] != fateDropped && fates[1] != fateDropped {
 		m.add(a.acct, a.Flow)
 		m.add(b.acct, b.Flow)
 	}
-	for _, p := range [][2]ownedFlow{{a, b}, {b, a}} {
-		leg, partner := p[0], p[1]
-		if leg.funds && partner.live {
-			m.funded[leg.acct] += leg.Amount
+	for i, p := range [2][2]flowLeg{{a, b}, {b, a}} {
+		l, partner := p[0], p[1]
+		if fates[i] == fateFundsDebut {
+			m.funded[l.acct] += l.Amount
 			if m.fundedFrom[partner.acct] == nil {
 				m.fundedFrom[partner.acct] = map[int64]float64{}
 			}
 			m.fundedFrom[partner.acct][partner.ValuedOn] += partner.Amount
 		}
-		if leg.closes && leg.live && (partner.live || partner.funds) {
-			m.closing[leg.acct] += leg.Amount
+		if l.closes(w) && l.shown(w) && (partner.shown(w) || partner.funds()) {
+			m.closing[l.acct] += l.Amount
 		}
-		if leg.exits && leg.Amount > 0 {
-			m.passIn[leg.acct] = append(m.passIn[leg.acct], leg.Flow)
+		if fateOf(l) == fateExit && l.Amount > 0 {
+			m.passIn[l.acct] = append(m.passIn[l.acct], l.Flow)
 		}
 	}
 }
@@ -619,31 +742,44 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 	return out
 }
 
-// entityFlows assembles the entity's external flow series at a coarse grain:
-//   - deposit/withdrawal flows (never heuristically netted — see
-//     RETURNS-NOTES; a cross-source-matched pair whose both legs are live
-//     members drops);
-//   - transfer-like flows, netted to drop internal moves;
-//   - the synthetic onboarding/closure flows (which never enter netting).
+// entityFlows assembles the entity's external flow series, its quality tags and
+// the moves the chain may read before their accounts value (rolled). Each dollar
+// that crosses the entity's boundary counts once, in the same bucket as the value
+// change it causes (RETURNS-NOTES §"staggered inception"):
 //
-// Each constituent's flows in a region the aggregate value series cannot yet (or
-// no longer) reflect are subsumed by the synthetic amount, so each dollar
-// crossing the entity boundary is counted exactly once, in the same bucket as the
-// value change it causes. See flowSubsumed / RETURNS-NOTES §"staggered inception".
+//  1. every leg is classified once: its region in its account's life;
+//  2. legs pair: a cross-source matched pair whose both legs would be flows on
+//     their own drops (crossMatchedDrops), and the netter cancels opposite
+//     transfer-like legs. It runs over every transfer-like leg, pre-debut and
+//     zero-tail legs included, so an internal pair whose other leg sits on a
+//     live account still cancels. A deposit or withdrawal never nets by
+//     heuristic (RETURNS-NOTES);
+//  3. each leg takes its fate (fateOf, pairFate) and is summed per account into
+//     the three synthetic amounts (movedLegs);
+//  4. the synthetic onboarding and closure flows book the regions the value
+//     series cannot show yet or any more, less those amounts;
+//  5. the flows are sorted by day.
+//
+// The flows are appended in a fixed order: each account's deposits and
+// withdrawals in member order, then the transfer-like legs pairing keeps, then
+// the synthetic flows. sortFlows is not stable, so that order fixes every float
+// sum over the series.
 func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, aggregate bool) ([]returns.Flow, []string, []returns.Flow) {
-	var flows []returns.Flow
-	var tags []string
-
 	if !aggregate {
 		// Accounts grain, single constituent: every policy-external flow is exact.
 		// (Cross-source links never net here: the partner is by definition in
 		// another source, so it can't be a member of a single-account entity.)
-		a := assets[0]
-		return append(flowsIn(a.nonTransfer, winFrom, winTo), flowsIn(a.transferLike, winFrom, winTo)...), tags, nil
+		var flows []returns.Flow
+		for f := range assets[0].legs(winFrom, winTo) {
+			flows = append(flows, f)
+		}
+		return flows, nil, nil
 	}
+	w := daySpan{winFrom, winTo}
 
 	// Cross-source matched pairs obey the same --netting switch as the
 	// heuristic netter: netting off is the diagnostic view of every raw leg.
+	var tags []string
 	var crossDrop map[string]bool
 	if p.Netting {
 		var crossPairs int
@@ -653,116 +789,78 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 		}
 	}
 
-	// Deposits/withdrawals: always external (never netted — see RETURNS-NOTES,
-	// with the one exception of a cross-source-matched pair whose both legs are
-	// live members of this entity window: the money provably moved between the
-	// entity's own pockets, so both legs drop). Pre-debut flows are normally
-	// subsumed because synthetic onboarding books the
-	// debut value instead; under OnboardNone there is no onboarding, so a real
-	// debut-region deposit IS the capital event and must be kept (otherwise the
-	// funded value shows up as pure performance). Closure-drain flows are still
-	// subsumed — explicit closure fires regardless of OnboardScope — except under
-	// ClosureLedgerExact, where a zero-tail flow is a real dated exit leg (an
-	// exit's proceeds land on the zeroing day itself) and IS the capital event.
+	var flows []returns.Flow
+	var cand []flowLeg
 	moved := newMovedLegs()
 	for _, a := range assets {
-		for _, f := range flowsIn(a.nonTransfer, winFrom, winTo) {
+		key := acctKey(a.src, a.acct)
+		for f, nettable := range a.legs(winFrom, winTo) {
 			f.ValuedOn = a.valuedOn(f.Day)
-			if crossDrop[acctKey(acctKey(a.src, a.acct), f.ID)] {
-				moved.add(a, f)
-				moved.left(a, f)
-				continue
+			l := flowLeg{Flow: f, acct: a, nettable: nettable, region: a.region(f.Day, w)}
+			switch {
+			case crossDrop != nil && crossDrop[acctKey(key, f.ID)]:
+				flows = moved.settle(flows, l, fateInside)
+			case nettable:
+				cand = append(cand, l)
+			default:
+				flows = moved.settle(flows, l, fateOf(l))
 			}
-			if flowSubsumed(a, f.Day, winFrom, winTo, false) {
-				if exitsAtClosure(a, f.Day, winFrom, winTo, false) {
-					moved.exits[a] += f.Amount
-				}
-				continue
-			}
-			moved.add(a, f)
-			moved.left(a, f)
-			flows = append(flows, f)
 		}
 	}
-
-	// Transfer-like: net opposite pairs within the boundary to drop internal moves,
-	// THEN subsume any surviving pre-debut / closure-drain leg. Netting runs over the
-	// full candidate set (subsumed legs included) so an internal pair whose other leg
-	// sits on an already-alive account still annihilates and is never orphaned. The
-	// synthetic flows below then leave out what such a pair moved (movedLegs).
-	// Cross-source-matched legs are already accounted for (their pair dropped
-	// above) and are withheld from the candidate pool so greedy heuristic
-	// netting can't consume them again.
-	var cand []ownedFlow
-	for _, a := range assets {
-		cd := a.closureDay()
-		for _, f := range flowsIn(a.transferLike, winFrom, winTo) {
-			f.ValuedOn = a.valuedOn(f.Day)
-			if crossDrop[acctKey(acctKey(a.src, a.acct), f.ID)] {
-				moved.add(a, f)
-				moved.left(a, f)
-				continue
-			}
-			onSpine := f.Day > a.firstDay()
-			cand = append(cand, ownedFlow{Flow: f, subsumed: flowSubsumed(a, f.Day, winFrom, winTo, true),
-				acct: a, onSpine: onSpine, live: onSpine && f.ValuedOn != 0 && f.ValuedOn <= winTo,
-				funds:  onboardsFirstValue(a) && subsumesAtDebut(a, f.Day, winFrom, winTo),
-				closes: cd > winFrom && cd <= winTo && f.ValuedOn == cd && a.rpolicy.ClosureScope != returns.ClosureLedgerExact,
-				exits:  exitsAtClosure(a, f.Day, winFrom, winTo, true)})
-		}
-	}
-	keep := func(of ownedFlow) {
-		switch {
-		case of.exits: // a survivor in the zero tail leaves in the closure flow
-			moved.exits[of.acct] += of.Amount
-		case !of.subsumed: // a survivor that is its own pre-debut capital is subsumed
-			moved.add(of.acct, of.Flow)
-			moved.left(of.acct, of.Flow)
-			flows = append(flows, of.Flow)
-		}
-	}
+	kept := cand
 	if p.Netting {
-		kept, unmatched := netOwnedTransfers(cand, moved)
-		for _, of := range kept {
-			keep(of)
-		}
+		var unmatched int
+		kept, unmatched = netTransfers(cand, func(a, b flowLeg) { moved.pair(a, b, w) })
 		if unmatched > 0 {
 			tags = append(tags, fmt.Sprintf("unmatched_transfers=%d", unmatched))
 		}
-	} else {
-		for _, of := range cand {
-			keep(of)
-		}
+	}
+	for _, l := range kept {
+		flows = moved.settle(flows, l, fateOf(l))
 	}
 
-	// Synthetic onboarding (the late constituent's whole arrival) + explicit
-	// closure. The real pre-debut / closure-drain flows were subsumed above, so
-	// no near-day dedup is needed: onboarding books the debut value, and the
-	// closure loop below books the exit on the zeroing day (see that loop's
-	// comment), each less what netting found moved inside the entity.
-	//
-	// OnboardScope splits the onboarding GRAIN — the AMOUNT booked when a
-	// constituent debuts after winFrom:
-	//   - OnboardPerConstituent (default): the debuting account's OWN value, less
-	//     the legs netting cancelled against a live partner (movedLegs).
-	//   - OnboardPerEntityOnce: the newly-debuting constituents' first value MINUS
-	//     the legs netting cancelled against a live partner, as above, and MINUS
-	//     same-day sibling FUNDING drops those legs do not explain (NOT the raw
-	//     calendar aggregate delta — see groupOnboardStep: same-day external
-	//     deposits and market moves on siblings are excluded so they aren't
-	//     double-counted). An internal cash->securities move inside a UBS
-	//     relationship debuts a securities account while its funding cash
-	//     account drops by the same amount, so the step-up nets to ~0 and
-	//     NOTHING is onboarded — the capital was already booked once (inception
-	//     value + the external cash deposit). Genuinely new external value that
-	//     wasn't captured as a same-unit deposit still steps the aggregate up and
-	//     is onboarded. This prevents the conduit double-count, and it is
-	//     source-scoped: the grain is read per constituent from a.rpolicy, so a
-	//     non-UBS constituent keeps per-constituent onboarding even in the
-	//     merged global entity.
-	// Conduit-kind accounts never emit their OWN onboarding (ConduitKinds); under
-	// per-entity-once their value still enters the aggregate step-up (they hold the
-	// inception cash), and under the default they are simply skipped.
+	flows = moved.onboarding(flows, assets, w)
+	flows = moved.closures(flows, assets, w)
+	sortFlows(flows)
+	// The opening value is as stale as any other: what its accounts moved before
+	// the window and have not shown yet counts for the chain too.
+	for _, a := range assets {
+		if a.firstDay() <= winFrom {
+			moved.moves[a] = append(moved.moves[a], a.unshownAt(winFrom)...)
+		}
+	}
+	return flows, tags, moved.rolled(assets, winTo)
+}
+
+// onboarding appends the synthetic onboarding flows: a late constituent's whole
+// arrival, booked as its debut value less what pairing found the entity held
+// already (movedLegs). Its real pre-debut legs took no flow, so no near-day dedup
+// is needed.
+//
+// OnboardScope splits the onboarding GRAIN — the AMOUNT booked when a
+// constituent debuts after w.from:
+//   - OnboardPerConstituent (default): the debuting account's OWN value, less
+//     the legs netting cancelled against a live partner (movedLegs).
+//   - OnboardPerEntityOnce: the newly-debuting constituents' first value MINUS
+//     the legs netting cancelled against a live partner, as above, and MINUS
+//     same-day sibling FUNDING drops those legs do not explain (NOT the raw
+//     calendar aggregate delta — see groupOnboardStep: same-day external
+//     deposits and market moves on siblings are excluded so they aren't
+//     double-counted). An internal cash->securities move inside a UBS
+//     relationship debuts a securities account while its funding cash
+//     account drops by the same amount, so the step-up nets to ~0 and
+//     NOTHING is onboarded — the capital was already booked once (inception
+//     value + the external cash deposit). Genuinely new external value that
+//     wasn't captured as a same-unit deposit still steps the aggregate up and
+//     is onboarded. This prevents the conduit double-count, and it is
+//     source-scoped: the grain is read per constituent from a.rpolicy, so a
+//     non-UBS constituent keeps per-constituent onboarding even in the
+//     merged global entity.
+//
+// Conduit-kind accounts never emit their OWN onboarding (ConduitKinds); under
+// per-entity-once their value still enters the aggregate step-up (they hold the
+// inception cash), and under the default they are simply skipped.
+func (m *movedLegs) onboarding(flows []returns.Flow, assets []*accountData, w daySpan) []returns.Flow {
 	perEntityGroups := map[string][]*accountData{}
 	for _, a := range assets {
 		if a.rpolicy.OnboardScope == returns.OnboardNone {
@@ -784,59 +882,62 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 		// money was in the entity before the debut, and its out-leg is gone, so
 		// it is no new capital.
 		debut := a.firstDay()
-		if debut > winFrom && debut <= winTo {
+		if debut > w.from && debut <= w.to {
 			v, _ := a.valueAt(debut)
-			if of, ok := returns.FundedOnboardingFlow(debut, v, moved.funded[a]); ok {
+			if of, ok := returns.FundedOnboardingFlow(debut, v, m.funded[a]); ok {
 				flows = append(flows, of)
 			}
 		}
 	}
-	// Per-entity-once: onboard the aggregate step-up at each distinct post-winFrom
+	// Per-entity-once: onboard the aggregate step-up at each distinct post-w.from
 	// debut day within the source group. When the group's inception coincides with
-	// winFrom (the common case once the window is anchored at the first real
-	// snapshot) NO account debuts after winFrom, so nothing is onboarded: the
+	// w.from (the common case once the window is anchored at the first real
+	// snapshot) NO account debuts after w.from, so nothing is onboarded: the
 	// inception value is the opening base V0, external deposits add capital, and
 	// internal churn is nothing — capital counted exactly once.
 	for _, grp := range perEntityGroups {
-		for _, day := range groupDebutDays(grp, winFrom, winTo) {
-			step := groupOnboardStep(grp, day, moved)
+		for _, day := range groupDebutDays(grp, w.from, w.to) {
+			step := groupOnboardStep(grp, day, m)
 			if of, ok := returns.OnboardingFlow(day, step); ok {
 				flows = append(flows, of)
 			}
 		}
 	}
+	return flows
+}
 
-	// Explicit closure, unchanged by OnboardScope / ConduitKinds, the mirror of
-	// onboarding: dated on the zeroing day, the first valuation that shows the
-	// account empty. A ledger-exact closure books nothing here — its kept real
-	// flows are the exit.
-	//   - An account that zeroes on the spine's final day has no exit leg yet. The
-	//     closure books its carried value, less what netting found moved inside and
-	//     what already left as a flow since its last valuation.
-	//   - Inside a longer zero tail the closure books what the tail's surviving
-	//     legs moved out, so the money that moved on leaves on the day the value
-	//     shows it gone. A window that ends before an exit leg still holds the
-	//     zeroing, so the account's own tail legs past the window's end count
-	//     too, unnetted, as confirms reads flows past winTo. With no leg the
-	//     closure books nothing: the zeroing reads as a loss, a write-off.
+// closures appends the explicit closure flows, unchanged by OnboardScope /
+// ConduitKinds, the mirror of onboarding: dated on the zeroing day, the first
+// valuation that shows the account empty. A ledger-exact closure books nothing
+// here — its kept real flows are the exit.
+//   - An account that zeroes on the spine's final day has no exit leg yet. The
+//     closure books its carried value, less what netting found moved inside and
+//     what already left as a flow since its last valuation.
+//   - Inside a longer zero tail the closure books what the tail's surviving
+//     legs moved out, so the money that moved on leaves on the day the value
+//     shows it gone. A window that ends before an exit leg still holds the
+//     zeroing, so the account's own tail legs past the window's end count
+//     too, unnetted, as confirms reads flows past w.to. With no leg the
+//     closure books nothing: the zeroing reads as a loss, a write-off.
+func (m *movedLegs) closures(flows []returns.Flow, assets []*accountData, w daySpan) []returns.Flow {
 	for _, a := range assets {
 		if a.rpolicy.ClosureScope == returns.ClosureLedgerExact {
 			continue
 		}
 		zd := a.zeroingDay()
-		if zd <= winFrom || zd > winTo {
+		if zd <= w.from || zd > w.to {
 			continue
 		}
-		amount, exit := -moved.exits[a], true
+		amount, exit := -m.exits[a], true
 		if cd := a.closureDay(); zd == cd {
 			last, _ := a.valueAt(cd - 1)
-			amount, exit = last+moved.closing[a], false
+			amount, exit = last+m.closing[a], false
 		} else {
-			amount -= tailLegsAfter(a, winTo)
+			amount -= tailLegsAfter(a, w.to)
 			// Money a sibling passed in after the zeroing and the exit legs paid
 			// on was never in the zeroing's value: it leaves on the day it came
 			// in, and the zeroing day books only the rest.
-			passed := passThrough(moved.passIn[a], moved.exits[a])
+			passed := passThrough(m.passIn[a], m.exits[a])
 			for _, f := range passed {
 				amount += f.Amount
 			}
@@ -850,18 +951,10 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 			// The zeroing valuation shows the exit, so the gap it ends weighs it
 			// with the gap's own legs (movedLegs.rolled).
 			cf.ValuedOn = zd
-			moved.add(a, cf)
+			m.add(a, cf)
 		}
 	}
-	sortFlows(flows)
-	// The opening value is as stale as any other: what its accounts moved before
-	// the window and have not shown yet counts for the chain too.
-	for _, a := range assets {
-		if a.firstDay() <= winFrom {
-			moved.moves[a] = append(moved.moves[a], a.unshownAt(winFrom)...)
-		}
-	}
-	return flows, tags, moved.rolled(assets, winTo)
+	return flows
 }
 
 // tailLegsAfter is the signed sum of a's own legs in its zero tail dated after
@@ -871,8 +964,7 @@ func tailLegsAfter(a *accountData, winTo int64) float64 {
 	if cd <= winTo {
 		return 0
 	}
-	from := max(winTo, a.lastNonzeroDay())
-	return sumFlows(flowsIn(a.nonTransfer, from, cd)) + sumFlows(flowsIn(a.transferLike, from, cd))
+	return a.netIn(max(winTo, a.lastNonzeroDay()), cd)
 }
 
 // passThrough is the outflows, as real flows on the days the money came in, of
@@ -975,12 +1067,12 @@ func groupOnboardStep(grp []*accountData, day int64, moved *movedLegs) float64 {
 // written by matchCrossTransfers) against THIS entity window: a linked pair
 // nets — both legs dropped — strictly when BOTH legs are live members, i.e.
 // the partner's account is in the entity, both legs' days are inside
-// (winFrom, winTo], and neither leg sits in a subsumption region (a pre-debut
-// or closure-drain leg is represented by its synthetic onboarding/closure
-// amount, so dropping its live partner too would count the capital
-// asymmetrically). Legs failing any condition keep their normal treatment:
-// at finer grains — and for pairs straddling the window — each leg stays the
-// real boundary flow it is for that view. Keys are
+// (winFrom, winTo], and each leg would be a flow on its own (fateOf): a
+// pre-debut or closure-drain leg is represented by its synthetic
+// onboarding/closure amount, so dropping its live partner too would count the
+// capital asymmetrically. Legs failing any condition keep their normal
+// treatment: at finer grains — and for pairs straddling the window — each leg
+// stays the real boundary flow it is for that view. Keys are
 // acctKey(acctKey(src,acct), txID); the returned count is netted PAIRS.
 func crossMatchedDrops(assets []*accountData, winFrom, winTo int64) (map[string]bool, int) {
 	any := false
@@ -997,8 +1089,10 @@ func crossMatchedDrops(assets []*accountData, winFrom, winTo int64) (map[string]
 	for _, a := range assets {
 		members[acctKey(a.src, a.acct)] = a
 	}
-	live := func(a *accountData, day int64, transferLike bool) bool {
-		return day > winFrom && day <= winTo && !flowSubsumed(a, day, winFrom, winTo, transferLike)
+	w := daySpan{winFrom, winTo}
+	live := func(a *accountData, day int64, nettable bool) bool {
+		return day > winFrom && day <= winTo &&
+			fateOf(flowLeg{Flow: returns.Flow{Day: day}, acct: a, nettable: nettable, region: a.region(day, w)}) == fateFlow
 	}
 	drops := map[string]bool{}
 	pairs := 0
@@ -1006,91 +1100,36 @@ func crossMatchedDrops(assets []*accountData, winFrom, winTo int64) (map[string]
 		if len(a.crossLinks) == 0 {
 			continue // links are sparse; skip unlinked members entirely
 		}
-		check := func(f returns.Flow, transferLike bool) {
+		for f, nettable := range a.legs(winFrom, winTo) {
 			link, ok := a.crossLinks[f.ID]
 			if !ok {
-				return
+				continue
 			}
 			// Process each pair once, from its lexicographically-smaller leg.
 			me, other := acctKey(acctKey(a.src, a.acct), f.ID), acctKey(acctKey(link.src, link.acct), link.txID)
 			if me > other {
-				return
+				continue
 			}
 			partner := members[acctKey(link.src, link.acct)]
-			if partner == nil || !live(a, f.Day, transferLike) ||
+			if partner == nil || !live(a, f.Day, nettable) ||
 				!live(partner, link.day, partner.transferLikeIDs[link.txID]) {
-				return
+				continue
 			}
 			drops[me], drops[other] = true, true
 			pairs++
-		}
-		for _, f := range flowsIn(a.nonTransfer, winFrom, winTo) {
-			check(f, false)
-		}
-		for _, f := range flowsIn(a.transferLike, winFrom, winTo) {
-			check(f, true)
 		}
 	}
 	return drops, pairs
 }
 
-// flowSubsumed reports whether a constituent's flow on `day` falls in a
-// region the synthetic onboarding/closure amount represents instead, per the
-// flow's slice: the nonTransfer path keeps pre-debut flows under OnboardNone
-// (the deposit IS the capital event there — no onboarding replaces it), while
-// the transferLike path subsumes pre-debut legs unconditionally. Closure
-// drains are subsumed unless the source books ledger-exact exits.
-func flowSubsumed(a *accountData, day, winFrom, winTo int64, transferLike bool) bool {
-	if subsumesAtDebut(a, day, winFrom, winTo) &&
-		(transferLike || a.rpolicy.OnboardScope != returns.OnboardNone) {
-		return true
-	}
-	return a.rpolicy.ClosureScope != returns.ClosureLedgerExact &&
-		subsumesAtClosure(a, day, winFrom, winTo)
-}
-
-// subsumesAtDebut reports whether a flow on `day` falls in a late constituent's
-// pre-debut region, where synthetic onboarding books the debut value instead. It
-// must NOT fire for an OnboardNone source: there is no onboarding to replace the
-// subsumed flow, so the real deposit IS the capital event and has to be kept.
-func subsumesAtDebut(a *accountData, day, winFrom, winTo int64) bool {
-	debut := a.firstDay()
-	return debut > winFrom && debut <= winTo && day <= debut
-}
-
-// subsumesAtClosure reports whether a flow falls in a constituent's terminal
-// zero tail, which already shows no ΔV for it, so counting it there would book
-// an exit the value does not show. The closure flow on the zeroing day books it
-// instead (exitsAtClosure). Independent of OnboardScope — explicit closure fires
-// regardless. Callers bypass it under ClosureLedgerExact, where a zero-tail flow
-// is a real dated exit leg and is kept.
-func subsumesAtClosure(a *accountData, day, winFrom, winTo int64) bool {
-	cd := a.closureDay()
-	return cd > winFrom && day > a.lastNonzeroDay() && day <= cd && day <= winTo
-}
-
-// exitsAtClosure reports whether a flow on `day` is an exit leg of a's closure:
-// subsumed in the zero tail of an account that held value and did not zero on
-// the spine's final day (whose closure books the carried value instead). The closure flow on
-// the zeroing day books the survivors of netting among such legs, when the
-// window holds that day.
-func exitsAtClosure(a *accountData, day, winFrom, winTo int64, transferLike bool) bool {
-	zd := a.zeroingDay()
-	return zd != 0 && zd != a.closureDay() && flowSubsumed(a, day, winFrom, winTo, transferLike) &&
-		!subsumesAtDebut(a, day, winFrom, winTo)
-}
-
-// netOwnedTransfers greedily matches opposite-direction transfer legs (largest
+// netTransfers greedily matches opposite-direction transfer legs (largest
 // first) whose output-currency magnitudes agree within ε and whose days are
-// within the netting window, dropping matched pairs as internal. It carries
-// per-leg ownership/subsumed tags through unchanged: the deterministic
-// (|amount|, day, id) tie-break means internal pairs annihilate the same way
-// whether or not a leg is subsumed. Survivors keep their tags so the caller can
-// drop subsumed pre-debut / closure-drain legs AFTER netting. Returns the
-// survivors and the count of unmatched legs, and records each cancelled pair in
-// moved.
-func netOwnedTransfers(cand []ownedFlow, moved *movedLegs) (kept []ownedFlow, unmatched int) {
-	var pos, neg []ownedFlow
+// within the netting window, and hands each matched pair to pair, positive leg
+// first, in match order. The deterministic (|amount|, day, id) tie-break means
+// internal pairs cancel the same way whatever a leg's region. Returns the legs
+// left unpaired, positive ones first, and their count.
+func netTransfers(cand []flowLeg, pair func(pos, neg flowLeg)) (kept []flowLeg, unmatched int) {
+	var pos, neg []flowLeg
 	for _, f := range cand {
 		if f.Amount >= 0 {
 			pos = append(pos, f)
@@ -1100,7 +1139,7 @@ func netOwnedTransfers(cand []ownedFlow, moved *movedLegs) (kept []ownedFlow, un
 	}
 	// Largest-magnitude first, with a fully deterministic tie-break on
 	// (day, transaction id) so equal-magnitude legs match reproducibly.
-	byMag := func(s []ownedFlow) {
+	byMag := func(s []flowLeg) {
 		sort.SliceStable(s, func(i, j int) bool {
 			mi, mj := math.Abs(s[i].Amount), math.Abs(s[j].Amount)
 			if mi != mj {
@@ -1128,7 +1167,7 @@ func netOwnedTransfers(cand []ownedFlow, moved *movedLegs) (kept []ownedFlow, un
 			if math.Abs(pf.Amount+nf.Amount) <= eps && absDay(pf.Day-nf.Day) <= nettingWindowDay {
 				usedNeg[j] = true
 				matched = true
-				moved.cancel(pf, nf)
+				pair(pf, nf)
 				break
 			}
 		}
@@ -1421,6 +1460,17 @@ func sumFlows(flows []returns.Flow) float64 {
 	return s
 }
 
+// sumFlowsIn is sumFlows(flowsIn(flows, from, to)), summed in the same order.
+func sumFlowsIn(flows []returns.Flow, from, to int64) float64 {
+	var s float64
+	for _, f := range flows {
+		if f.Day > from && f.Day <= to {
+			s += f.Amount
+		}
+	}
+	return s
+}
+
 func sortFlows(flows []returns.Flow) {
 	sort.Slice(flows, func(i, j int) bool { return flows[i].Day < flows[j].Day })
 }
@@ -1497,12 +1547,8 @@ func regimeFlags(assets []*accountData, winFrom, winTo int64) []string {
 // attached flows count: synthetic onboarding/closure flows are assembled per
 // entity at compute time and never stored on the account.
 func hasObservedFlowIn(a *accountData, from, to int64) bool {
-	for _, fs := range [][]returns.Flow{a.nonTransfer, a.transferLike} {
-		for _, f := range fs {
-			if f.Day > from && f.Day <= to {
-				return true
-			}
-		}
+	for range a.legs(from, to) {
+		return true
 	}
 	return false
 }

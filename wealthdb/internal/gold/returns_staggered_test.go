@@ -13,7 +13,7 @@ import (
 // These regression tests lock the staggered-inception semantics: a constituent
 // that joins (or leaves) the aggregate value spine mid-window has its pre-debut
 // funding (or closure drain) SUBSUMED by the synthetic onboarding (or closure)
-// amount, never double-counted. Subsumption (subsumesAtDebut / subsumesAtClosure
+// amount, never double-counted. Subsumption (accountData.region
 // in returns_compute.go) covers the whole pre-debut region at any distance from
 // debut — an account fed by month-end snapshots can be funded months before its
 // first one — so every fixture below dates the real funding well before debut, far outside
@@ -232,8 +232,8 @@ func TestDrainBeforeTheZeroingIsTheOnlyFlow(t *testing.T) {
 	}
 }
 
-// TestStaggeredPostClosureFlowSubsumed exercises the closure-drain branch of
-// flowSubsumed (and lastNonzeroDay): a flow dated in the flat zero-carry tail —
+// TestStaggeredPostClosureFlowSubsumed exercises the zero-tail region of
+// accountData.region (and lastNonzeroDay): a flow dated in the flat zero-carry tail —
 // after the last non-zero day — is subsumed rather than booked on a day with no
 // matching value move. It is the closure's exit leg, so the closure flow books
 // it on the zeroing day, where the value shows the drop.
