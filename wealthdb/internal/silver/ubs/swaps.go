@@ -213,7 +213,7 @@ SELECT value_date, currency_iso, amount_debit, amount_credit, description_kind, 
 		if err := rows.Scan(&day, &ccy, &debit, &credit, &descKind, &payload); err != nil {
 			return err
 		}
-		if webKindByType[strings.ToUpper(descKind.String)] != canonical.TxKindFx ||
+		if bookingTypes[strings.ToUpper(descKind.String)].kind != canonical.TxKindFx ||
 			webReversal(descKind.String, true, debit, credit) {
 			return nil
 		}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -169,21 +168,6 @@ func (r *webReader) portfolioSettledDays(ctx context.Context, psn *psnReader, we
 	return out, nil
 }
 
-// portfolioFreeOfPayment are the booking types that state a value and
-// move no money: securities delivered to or received from another
-// custody account with no cash leg. ISO 15022 calls that delivery or
-// receipt free of payment, and UBS spells it out in the type.
-//
-// They are named because the rule below cannot see them any other way.
-// Every other row that settles nothing says so by leaving the value
-// cell empty; these are valued, because the securities are worth
-// something, and booking that value as cash would invent a payment on
-// both accounts at once.
-var portfolioFreeOfPayment = map[string]bool{
-	"CUSTODY ACCOUNT TRANSFER DELIVERY WITHOUT PAYMENT": true,
-	"CUSTODY ACCOUNT TRANSFER RECEIPT WITHOUT PAYMENT":  true,
-}
-
 // portfolioCashKind reports the ledger kind for one row of the
 // portfolio transaction list, and whether the row settles against cash
 // at all.
@@ -205,7 +189,7 @@ func portfolioCashKind(bookingType string, value sql.NullFloat64) (canonical.TxK
 	if !value.Valid || value.Float64 == 0 {
 		return "", false
 	}
-	if portfolioFreeOfPayment[strings.ToUpper(strings.TrimSpace(bookingType))] {
+	if bookingOf(bookingType).settles == settlesNothing {
 		return "", false
 	}
 	if value.Float64 > 0 {

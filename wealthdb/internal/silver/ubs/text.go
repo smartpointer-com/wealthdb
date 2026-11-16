@@ -268,8 +268,7 @@ func lineAfterPayee(payee string, p webTxPayload, pdfBackfill bool) string {
 // writes its type as a Description1 segment behind the payee
 // ("<payee>; ATM Withdrawal"), and a type reads as words.
 func isFiledBooking(line string) bool {
-	upper := strings.ToUpper(strings.TrimSpace(line))
-	return isBookingType(line) || outboundPaymentRailBookings[upper] || inboundArrivalBookings[upper]
+	return isBookingType(line) || bookingOf(line).rail != noRail
 }
 
 // narrativeLabels are the words that open a narrative line the bank files
@@ -338,29 +337,6 @@ func firstSegment(s string) string {
 // where the bank itself is the counterparty.
 const bankName = "UBS"
 
-// ownServiceCharges are the booking types under which the bank bills
-// for its own services. Each names a product rather than a party,
-// because the party is the bank.
-//
-// Two charge types are deliberately absent. An ADR/GDR handling fee is
-// a DEPOSITARY's charge passed through, and a third-party charge says
-// as much in its name: the bank collects both on someone else's
-// behalf, so attributing them to the bank would misstate who was paid.
-var ownServiceCharges = map[string]bool{
-	"UBS ADVICE":                        true,
-	"CUSTODY PRICE":                     true,
-	"RENTAL FEE SAFE BOX":               true,
-	"BALANCE CLOSING OF SERVICE PRICES": true,
-	"INTEREST CALCULATION BALANCE":      true,
-	// The mandate management charge, and the cancel / re-bill pair
-	// that corrects one. Their payee column holds the relationship
-	// the mandate runs under, which is a reference and not a party:
-	// left alone it becomes the merchant, one per mandate.
-	"UBS MANAGE":     true,
-	"CAN UBS MANAGE": true,
-	"REC UBS MANAGE": true,
-}
-
 // isOwnServiceCharge reports whether a booking type is one the bank
 // bills for itself. A `;Reversal` suffix is stripped first, as webKind
 // strips it: a reversed custody price is still the bank's booking.
@@ -368,7 +344,7 @@ func isOwnServiceCharge(bookingType string) bool {
 	if base, ok := stripReversalSuffix(bookingType); ok {
 		bookingType = base
 	}
-	return ownServiceCharges[strings.ToUpper(strings.TrimSpace(bookingType))]
+	return bookingOf(bookingType).ownCharge
 }
 
 // isServicePriceClose reports whether a booking is the service-price

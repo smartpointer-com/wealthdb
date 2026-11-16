@@ -1807,23 +1807,18 @@ func webKindHint(descKind, counterparty sql.NullString) string {
 // question, not this one's: the two eras state it differently, and this
 // function sees neither the amounts nor the era.
 //
-// The match is case-insensitive on the whole (trimmed) string. The
-// MT940 CSV feed and the PDF Account-Statement backfill spell the same
-// concept differently ("Dividend" vs "DIVIDEND"), so an upper-cased
-// EXACT match classifies both, and exact (not prefix) matching keeps
-// the two vocabularies from colliding: MT940's multi-token forms
-// ("UCCDD…; order") never equal a bare PDF booking type ("ORDER").
+// The type is matched as bookingOf matches it.
 func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 	// Strip a `;Reversal` suffix and classify the base, so a reversal
 	// flavour the bank invents later needs no entry of its own.
 	if base, ok := stripReversalSuffix(descKind); ok {
 		return webKind(base, hasDebit, hasCredit)
 	}
-	bookingType := strings.ToUpper(strings.TrimSpace(descKind))
-	if kind, ok := webKindByType[bookingType]; ok {
-		return kind
+	b := bookingOf(descKind)
+	if b.kind != "" {
+		return b.kind
 	}
-	if webSecuritiesTypes[bookingType] {
+	if b.settles == settlesTrade {
 		return securitiesSide(hasDebit, hasCredit)
 	}
 	// Everything else, the bare payment order ("ORDER") among it, is
@@ -1840,93 +1835,6 @@ func webKind(descKind string, hasDebit, hasCredit bool) canonical.TxKind {
 		return canonical.TxKindWithdrawal
 	}
 	return canonical.TxKindOther
-}
-
-// webKindByType maps the booking types whose kind does not depend on
-// the direction, upper-cased.
-var webKindByType = map[string]canonical.TxKind{
-	// Income / cost: NOT capital flows; excluded from returns.
-	"DIVIDEND":                            canonical.TxKindDividend,
-	"REVERSAL DIVIDEND":                   canonical.TxKindDividend,
-	"COUPON":                              canonical.TxKindCoupon,
-	"INTEREST":                            canonical.TxKindInterest,
-	"INTEREST CALCULATION BALANCE":        canonical.TxKindInterest,
-	"CALL DEPOSIT INTEREST PAYMENT":       canonical.TxKindInterest,
-	"FIXED TERM DEPOSIT INTEREST PAYMENT": canonical.TxKindInterest,
-	"FEE":                                 canonical.TxKindFee,
-	"FEES":                                canonical.TxKindFee,
-	"CUSTODY PRICE":                       canonical.TxKindFee,
-	"ADR/GDR HANDLING FEES":               canonical.TxKindFee,
-	"THIRD-PARTY CHARGES":                 canonical.TxKindFee,
-	"RENTAL FEE SAFE BOX":                 canonical.TxKindFee,
-	"BALANCE CLOSING OF SERVICE PRICES":   canonical.TxKindFee,
-	"ADVICE":                              canonical.TxKindFee,
-	"UBS ADVICE":                          canonical.TxKindFee,
-	// The discretionary mandate's periodic management charge. Like
-	// "Custody Price" it names the product charged for and carries no
-	// instrument, quantity or price. `CAN` cancels a charge already
-	// billed and `REC` re-bills the corrected figure; the
-	// cancellation's inflow survives because the statement era prints
-	// it as a negative debit, which webReversal reads.
-	"UBS MANAGE":     canonical.TxKindFee,
-	"CAN UBS MANAGE": canonical.TxKindFee,
-	"REC UBS MANAGE": canonical.TxKindFee,
-	// Currency conversion between the holder's own accounts — an
-	// internal reshuffle, not a capital flow. The MT940 feed names the
-	// instrument, the older PDF backfill only says "FOREX". Enumerated
-	// so the multi-token MT940 forms do not fall through to the
-	// direction fallback and book as deposits / withdrawals.
-	"FOREX PURCHASE":        canonical.TxKindFx,
-	"FOREX SALE":            canonical.TxKindFx,
-	"PURCHASE FX SPOT":      canonical.TxKindFx,
-	"SALE FX SPOT":          canonical.TxKindFx,
-	"PURCHASE FX FORWARD":   canonical.TxKindFxForward,
-	"SALE FX FORWARD":       canonical.TxKindFxForward,
-	"PURCHASE FROM FX SWAP": canonical.TxKindFxSwap,
-	"SALE FROM FX SWAP":     canonical.TxKindFxSwap,
-	"BUY":                   canonical.TxKindBuy,
-	"SECURITIES PURCHASE":   canonical.TxKindBuy,
-	"SELL":                  canonical.TxKindSell,
-	"SECURITIES SALE":       canonical.TxKindSell,
-	// Mobile payments cross the relationship boundary like a card
-	// payment. Named so the kind follows the booking type: the silver
-	// row carries an unsigned figure in either column, and
-	// ApplyCanonicalSign orients the amount by the kind, so a reversal
-	// keeps its inflow whichever column printed it.
-	"PAYMENT UBS TWINT":  canonical.TxKindWithdrawal,
-	"DEBIT UBS TWINT":    canonical.TxKindWithdrawal,
-	"CREDIT UBS TWINT":   canonical.TxKindDeposit,
-	"REVERSAL UBS TWINT": canonical.TxKindDeposit,
-}
-
-// webSecuritiesTypes are the booking types that settle a securities
-// trade, whose side (buy or sell) follows the cash direction. They
-// reallocate between cash and instruments and are excluded from flows.
-//
-// Private-market vehicles settle the same way under their own
-// vocabulary: a capital call buys fund units and a distribution sells
-// them, both against the cash account in the same portfolio as the
-// units. Left to the direction fallback they would be deposits and
-// withdrawals, which returns count as external capital — each leg of
-// one internal move booked as though the other did not exist.
-var webSecuritiesTypes = map[string]bool{
-	"SHARE":                               true,
-	"MUTUAL FUNDS":                        true,
-	"INVESTMENT FUNDS":                    true,
-	"UBS INVESTMENT FUNDS":                true,
-	"STRUCTURED PRODUCTS":                 true,
-	"PURCHASE":                            true,
-	"SALE":                                true,
-	"PRECIOUS METAL BUY":                  true,
-	"PRECIOUS METAL SELL":                 true,
-	"BUY PM SPOT W/O VAT":                 true,
-	"SELL PM SPOT W/O VAT":                true,
-	"SUBSCRIPTION RIGHT":                  true,
-	"CAPITAL CALL":                        true,
-	"ISSUE WITHOUT RIGHTS":                true,
-	"PURCHASE FROM ISSUE WITH PREPAYMENT": true,
-	"CASH SETTLEMENT":                     true,
-	"CASH DISTRIBUTION":                   true,
 }
 
 // securitiesSide maps a securities-settlement row to buy (cash out /
@@ -2013,55 +1921,6 @@ func normalizeIBAN(s string) string {
 	return strings.ToUpper(strings.ReplaceAll(s, " ", ""))
 }
 
-// outboundPaymentRailBookings are the Account-Statement booking types of
-// owner-initiated payments through the domestic payment rails and debit
-// channels: payment orders (e-banking / paper / telephone / standing),
-// e-bill (PayNet), direct debit (LSV), QR-bill, ATM cash, card and TWINT
-// debits. These pay a beneficiary OUTSIDE the relationship by construction —
-// moves between own accounts book as transfer forms that the collector's
-// internal markers flag, carry an own counter IBAN, or mirror on the
-// receiving own account and fall to the same-day offset veto — so a debit
-// with one of these types that survives those checks is a boundary-crossing
-// payment even when the statement records no counter IBAN (it usually
-// doesn't: the beneficiary appears in free text only). Matching is exact on
-// the upper-cased booking type, mirroring webKind's exact-match rationale.
-var outboundPaymentRailBookings = map[string]bool{
-	"E-BANKING PAYMENT ORDER":    true,
-	"MULTI E-BANKING ORDER":      true,
-	"PAYMENT ORDER":              true,
-	"SPECIAL PAYMENT ORDER":      true,
-	"PAYMENT ORDER BY TELEPHONE": true,
-	"VARIOUS STANDING ORDERS":    true,
-	"PAYNET ORDER":               true,
-	"MULTI PAYNET ORDER":         true,
-	"DIRECT DEBIT":               true,
-	"QR-BILL (INSTANT PAYMENT)":  true,
-	"ATM WITHDRAWAL":             true,
-	"UBS BANCOMAT WITHDRAWAL":    true,
-	"PAYMENT TO CARD":            true,
-	"DEBIT CARD PAYMENT":         true,
-	"PAYMENT UBS TWINT":          true,
-	"DEBIT UBS TWINT":            true,
-}
-
-// inboundArrivalBookings are the booking types of payments ARRIVING through
-// the interbank rails: the generic credit-transfer booking (an incoming
-// SIC/SWIFT wire), its e-banking flavour, salary, and the two TWINT inflows
-// — a mobile payment received, an outbound one reversed — which mirror the
-// TWINT debits in the outbound set. The mirror of the outbound set — the
-// MT940 feed counts the identical arrivals as deposits, so demoting the PDF
-// era's copies would understate inflows against counted outflows and
-// fabricate return. Own-product cash parkings (CALL DEPOSIT / FIXED TERM
-// DEPOSIT increases, decreases, repayments) deliberately stay OUT of the
-// set: they settle an own product inside the relationship.
-var inboundArrivalBookings = map[string]bool{
-	"CREDIT":             true,
-	"E-BANKING CREDIT":   true,
-	"SALARY PAYMENT":     true,
-	"CREDIT UBS TWINT":   true,
-	"REVERSAL UBS TWINT": true,
-}
-
 // pdfCashIsExternal decides whether a PDF-backfill cash movement is a genuine
 // boundary-crossing (EXTERNAL) owner-capital flow or internal churn. outbound
 // reports the row's direction (debit side); railEra reports whether the row
@@ -2082,8 +1941,8 @@ var inboundArrivalBookings = map[string]bool{
 //  2. own counter IBAN                           ⇒ INTERNAL
 //  3. HYPOTHEK / MATURITY / CLOSING booking      ⇒ INTERNAL (own liability /
 //     product settling inside the relationship)
-//  4. railEra + direction-matching rail booking  ⇒ EXTERNAL (outbound:
-//     outboundPaymentRailBookings; inbound: inboundArrivalBookings). No
+//  4. railEra + direction-matching rail booking  ⇒ EXTERNAL (the
+//     booking type's rail, railOut or railIn; bookingTypes). No
 //     counter IBAN required — the MT940 feed counts the identical bookings
 //     as withdrawals/deposits via its direction fallback, so demoting the
 //     gap-fill PDF copies would make returns depend on which feed covered
@@ -2127,10 +1986,11 @@ func pdfCashIsExternal(p webTxPayload, own map[string]bool, outbound, railEra bo
 	if strings.Contains(bt, "HYPOTHEK") || strings.Contains(bt, "MATURITY") || strings.Contains(bt, "CLOSING") {
 		return false
 	}
-	if railEra && outbound && outboundPaymentRailBookings[bt] {
+	rail := bookingTypes[bt].rail
+	if railEra && outbound && rail == railOut {
 		return true // owner-initiated payment through the rails ⇒ boundary-crossing
 	}
-	if railEra && !outbound && inboundArrivalBookings[bt] {
+	if railEra && !outbound && rail == railIn {
 		return true // interbank arrival ⇒ boundary-crossing
 	}
 	if ctr == "" {
@@ -2214,35 +2074,13 @@ func webDescription(captionDesc *string, bookingType string, p webTxPayload) *st
 	return silver.StrPtrIfNonEmpty(silver.JoinText(parts...))
 }
 
-// depositProductBookings are the booking types that move PRINCIPAL in
-// or out of one of the bank's own cash-parking products — a call
-// deposit, a fixed-term deposit, a notice account. The bank books
-// every one of them on the account that funds the product and never
-// lists the product as an account of its own, so these rows are the
-// only trace of it there is.
-//
-// The interest payment is deliberately absent. It is the one movement
-// of a deposit that is not a transfer: the money is new, it is income,
-// and a list that swept it in with the rest would take a year of
-// interest out of the income statement.
-var depositProductBookings = map[string]bool{
-	"CALL DEPOSIT NEW INVESTMENT":       true,
-	"CALL DEPOSIT INCREASE":             true,
-	"CALL DEPOSIT DECREASE":             true,
-	"CALL DEPOSIT REPAYMENT":            true,
-	"FIXED TERM DEPOSIT NEW INVESTMENT": true,
-	"FIXED TERM DEPOSIT INCREASE":       true,
-	"FIXED TERM DEPOSIT DECREASE":       true,
-	"FIXED TERM DEPOSIT REPAYMENT":      true,
-}
-
 // isDepositProductBooking reports whether a booking type moves a
 // deposit product's principal. Case-folded because the two feeds spell
 // the same type differently — the statement era shouts it, the CSV
 // export title-cases it — which is the same fold webKind applies for
 // the same reason.
 func isDepositProductBooking(bookingType string) bool {
-	return depositProductBookings[strings.ToUpper(strings.TrimSpace(bookingType))]
+	return bookingOf(bookingType).deposit
 }
 
 // isBookingType reports whether a string is nothing but the bank's own
@@ -2265,9 +2103,9 @@ func isDepositProductBooking(bookingType string) bool {
 // the answer: webKindHint returns the booking type unchanged when
 // neither text is recognised, the payee refusal in text.go only
 // declines to blank a payee it would have blanked, and isFiledBooking
-// consults the rail sets beside it. Widening the probe is not the fix:
-// asked WITH a direction the fallback answers for every string, and
-// then nothing is not a booking type.
+// consults the booking's rail beside it. Widening the probe is not the
+// fix: asked WITH a direction the fallback answers for every string,
+// and then nothing is not a booking type.
 func isBookingType(s string) bool {
 	return strings.TrimSpace(s) != "" &&
 		webKind(s, false, false) != canonical.TxKindOther
