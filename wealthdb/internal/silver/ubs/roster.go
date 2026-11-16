@@ -18,11 +18,10 @@ import (
 //
 // The loader writes a master-data row per (relationship, account) only
 // when its payload changed, so each table holds an account's row at the
-// snapshots where it changed. A lookup's "current" is one of three
+// snapshots where it changed. A lookup's "current" is one of two
 // readings of that:
 //
-//   - the rows at the table's newest snapshot (newest);
-//   - each account at its latest row (portfolioByCashAccount);
+//   - each account at its latest row (current, portfolioByCashAccount);
 //   - any row the table holds (cashAccountIBANs, knownCustody, holders).
 type psnRoster struct {
 	// cash and custody are every row of cash_accounts and
@@ -116,25 +115,36 @@ SELECT DISTINCT json_extract(payload, '$.FrstSurNm') FROM account_holders`, func
 	return out, nil
 }
 
-// byKey orders rows as the tables' key does: snapshot, relationship,
-// account.
+// byKey orders rows as the tables' primary key does: snapshot,
+// relationship, account.
 func byKey(a, b rosterRow) int {
 	return cmp.Or(cmp.Compare(a.snapshot, b.snapshot),
 		cmp.Compare(a.relationship, b.relationship), cmp.Compare(a.account, b.account))
 }
 
-// newest is the rows of the table's newest snapshot, in key order.
-func newest(rows []rosterRow) []rosterRow {
+// current is the roster as it stands at the table's newest snapshot:
+// each account of each relationship at its latest row, in relationship
+// and account order. The loader reads an account's state at a snapshot
+// the same way when it decides whether a row changed. An account the
+// newest batch left unchanged has no row there and stands at an older
+// one.
+func current(rows []rosterRow) []rosterRow {
+	type key struct{ relationship, account string }
+	at := map[key]int{}
 	var out []rosterRow
 	for _, row := range rows {
-		switch {
-		case len(out) == 0 || row.snapshot > out[0].snapshot:
-			out = append(out[:0], row)
-		case row.snapshot == out[0].snapshot:
+		k := key{row.relationship, row.account}
+		switch i, seen := at[k]; {
+		case !seen:
+			at[k] = len(out)
 			out = append(out, row)
+		case row.snapshot > out[i].snapshot:
+			out[i] = row
 		}
 	}
-	slices.SortFunc(out, byKey)
+	slices.SortFunc(out, func(a, b rosterRow) int {
+		return cmp.Or(cmp.Compare(a.relationship, b.relationship), cmp.Compare(a.account, b.account))
+	})
 	return out
 }
 
@@ -145,7 +155,7 @@ func newest(rows []rosterRow) []rosterRow {
 func (ro *psnRoster) holderNames() map[string]bool { return ro.holders }
 
 // portfolioCashAccounts maps (portfolio, currency) onto the cash
-// account gold keys by, from the newest snapshot.
+// account gold keys by, in the current roster.
 //
 // The export names the custody account the securities moved in and the
 // currency the cash moved in, never the cash account itself. A managed
@@ -161,7 +171,7 @@ func (ro *psnRoster) holderNames() map[string]bool { return ro.holders }
 // one would move a balance that never moved.
 func (ro *psnRoster) portfolioCashAccounts() map[portfolioCashKey]string {
 	accounts := map[portfolioCashKey][]string{}
-	for _, row := range newest(ro.cash) {
+	for _, row := range current(ro.cash) {
 		portfolio := row.portfolioOf()
 		if portfolio == "" || row.currency.String == "" || row.account == "" {
 			continue
@@ -179,7 +189,7 @@ func (ro *psnRoster) portfolioCashAccounts() map[portfolioCashKey]string {
 }
 
 // portfolioOfSafekeeping maps a custody account onto the portfolio it
-// belongs to, from the newest snapshot — the half of portfolioCashKey
+// belongs to, in the current roster — the half of portfolioCashKey
 // the export does not state in a form the rest of the adapter shares.
 //
 // The list names the portfolio in a column of its own, and that column
@@ -190,14 +200,14 @@ func (ro *psnRoster) portfolioCashAccounts() map[portfolioCashKey]string {
 // belongs to exactly one portfolio, so it answers for every row
 // whichever scope reported it.
 func (ro *psnRoster) portfolioOfSafekeeping() map[string]string {
-	return portfolioOfAccount(newest(ro.custody))
+	return portfolioOfAccount(current(ro.custody))
 }
 
 // portfolioOfCashAccount maps each cash account onto the portfolio it
-// belongs to, from the newest snapshot — the other half of
+// belongs to, in the current roster — the other half of
 // portfolioCashKey for a row the feed booked on a cash account.
 func (ro *psnRoster) portfolioOfCashAccount() map[string]string {
-	return portfolioOfAccount(newest(ro.cash))
+	return portfolioOfAccount(current(ro.cash))
 }
 
 // portfolioOfAccount maps each row's account onto the portfolio it
@@ -263,12 +273,12 @@ func (ro *psnRoster) knownCustody() map[string]bool {
 	return out
 }
 
-// custodyByPortfolio groups the custody accounts of the newest snapshot
+// custodyByPortfolio groups the custody accounts of the current roster
 // by the portfolio their payload names, each portfolio's accounts in
 // account order (psnReader.safekeepingByPortfolio). ok is false where
 // the table holds no row.
 func (ro *psnRoster) custodyByPortfolio() (map[string][]string, bool) {
-	rows := newest(ro.custody)
+	rows := current(ro.custody)
 	if len(rows) == 0 {
 		return nil, false
 	}

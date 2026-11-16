@@ -72,7 +72,7 @@ func (r *psnReader) taxPairByISIN(ctx context.Context) (map[string]taxPair, erro
 // ambiguous — one continuous series cut in two, with a seam on a date
 // where nothing happened to the holding.
 //
-// Built from the newest roster snapshot (the portfolio↔safekeeping
+// Built from the current roster (psnRoster: the portfolio↔safekeeping
 // relationship is long-lived; today's structure applies
 // retroactively to the historical PDFs).
 func (r *psnReader) safekeepingByPortfolio(ctx context.Context) (map[string]string, error) {
