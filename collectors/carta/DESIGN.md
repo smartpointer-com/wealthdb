@@ -357,7 +357,8 @@ The carta specifics:
 
 ## 5. Silver schema
 
-SQLite + JSON1, source-shaped, owned by `load.py` (via
+SQLite + JSON1, source-shaped, owned by the loader (`load.py`, with
+`captable.py`, `exercises.py`, `fund_documents.py` and `common.py`; via
 `collectorkit.silver`), in `migrations/`. Timestamps INTEGER
 Unix-seconds-UTC; stable filter columns promoted, rest in `payload`; snapshot
 tables monotemporal on `snapshot_at` — which is the **event date**, not the

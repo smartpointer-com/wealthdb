@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 import k1
+import fund_documents
 import load
 from collectorkit import silver
 from conftest import MIGRATIONS_DIR, docs_dir, load_one
@@ -217,7 +218,7 @@ def test_a_statement_adds_its_lines_to_partner_metrics_of_the_same_day(
     load.load_fund_metrics(migrated, snap, 9, edir)
     docs = docs_dir(tmp_path, [{"id": 5, "document_type": "Capital account statements",
                              "document_date": "12/31/2098", "fund_id": 9}])
-    monkeypatch.setattr(load, "_pdf_text", lambda pdf: _STATEMENT)
+    monkeypatch.setattr(fund_documents, "_pdf_text", lambda pdf: _STATEMENT)
     assert load.load_statement_nav(migrated, docs, 9) == 1
     assert migrated.execute(
         "SELECT net_asset_value, capital_contributed, management_fees, "
@@ -249,7 +250,7 @@ def test_a_run_without_documents_keeps_the_statement_lines(
     # statements rewrites the partner-metrics figures and leaves the
     # statement lines merged onto that row in place, and the fund's calls
     # and distributions as the run with documents built them.
-    monkeypatch.setattr(load, "_pdf_text", lambda pdf: _STATEMENT)
+    monkeypatch.setattr(fund_documents, "_pdf_text", lambda pdf: _STATEMENT)
     conn = silver.open_db(tmp_path / "carta.db")
     silver.apply_migrations(conn, MIGRATIONS_DIR)
     assert load_one(conn, _fund_run(tmp_path, "20990101T000000Z",
@@ -450,7 +451,7 @@ def test_a_new_k1_generation_derives_the_tax_documents_again(
     load.load_k1_capital_accounts(migrated, docs)
     before = migrated.execute("SELECT * FROM k1_capital_accounts").fetchall()
     calls.clear()
-    monkeypatch.setattr(load, "K1_GENERATION", "next")
+    monkeypatch.setattr(fund_documents, "K1_GENERATION", "next")
     with caplog.at_level("INFO"):
         assert load.load_k1_capital_accounts(migrated, docs) == 1
     assert calls == ["doc_1.pdf", "doc_2.pdf"]
@@ -643,7 +644,7 @@ def test_a_run_loads_every_cost_basis_fact(tmp_path, monkeypatch):
     ])
     (run / "run.json").write_text(json.dumps(
         {"status": "complete", "individual_id": "ind-1"}))
-    monkeypatch.setattr(load, "_pdf_text", lambda pdf: _STATEMENT)
+    monkeypatch.setattr(fund_documents, "_pdf_text", lambda pdf: _STATEMENT)
     monkeypatch.setattr(k1, "bbox_xhtml",
                         lambda pdf, timeout=None: _bbox(_k1_face()))
 

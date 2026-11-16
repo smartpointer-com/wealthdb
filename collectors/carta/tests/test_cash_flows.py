@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import fund_documents
 import load
 from collectorkit import pdftotext, silver
 from conftest import MIGRATIONS_DIR, docs_dir, load_one
@@ -45,7 +46,7 @@ def test_statement_nav_row_carries_contributed_capital(migrated, tmp_path, monke
         {"id": "s2", "document_type": "Capital account statement",
          "document_date": "03/31/2099", "fund_id": "42"},
     ])
-    monkeypatch.setattr(load, "_pdf_text", lambda pdf: {
+    monkeypatch.setattr(fund_documents, "_pdf_text", lambda pdf: {
         "s1": "Capital contributions   51,374   51,374   103,861\n"
               "Ending balance   $   121,947   $   121,947   $   121,947\n",
         "s2": "Ending balance   $   89,513   $   89,513   $   89,513\n",
@@ -267,9 +268,9 @@ def test_the_residue_is_what_the_earliest_notice_says_preceded_it():
 def _stub_parsers(monkeypatch, statements: dict, notices: dict):
     """Keyed by document id: `statements` yields (contributions, distributions)
     inception-to-date, `notices` yields a parsed notice."""
-    monkeypatch.setattr(load, "_parse_statement_flows",
+    monkeypatch.setattr(fund_documents, "_parse_statement_flows",
                         lambda pdf: statements[pdf.stem.removeprefix("doc_")])
-    monkeypatch.setattr(load, "_parse_notice",
+    monkeypatch.setattr(fund_documents, "_parse_notice",
                         lambda pdf: notices.get(pdf.stem.removeprefix("doc_")))
 
 
@@ -533,7 +534,7 @@ def test_each_fund_reads_only_its_own_documents(tmp_path, monkeypatch, caplog):
     texts = {"s1": _statement("217,500", "224,931"), "n1": _CALL_NOTICE,
              "t1": _statement("95,380", "101,742"), "d1": _DIST_NOTICE,
              "u1": _statement("70,113", "73,309")}
-    monkeypatch.setattr(load, "_pdf_text",
+    monkeypatch.setattr(fund_documents, "_pdf_text",
                         lambda pdf: texts[pdf.stem.removeprefix("doc_")])
     conn = silver.open_db(tmp_path / "carta.db")
     silver.apply_migrations(conn, MIGRATIONS_DIR)
@@ -605,7 +606,7 @@ def test_a_file_that_is_not_a_pdf_reads_as_not_downloaded(tmp_path,
     index.write_text(json.dumps({"results": rows}))
     texts = {"t1": _statement("95,380", "101,742"), "d1": _DIST_NOTICE,
              "u1": _statement("70,113", "73,309")}
-    monkeypatch.setattr(load, "_pdf_text",
+    monkeypatch.setattr(fund_documents, "_pdf_text",
                         lambda pdf: texts[pdf.stem.removeprefix("doc_")])
     conn = silver.open_db(tmp_path / "carta.db")
     silver.apply_migrations(conn, MIGRATIONS_DIR)
