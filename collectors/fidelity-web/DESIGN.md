@@ -719,7 +719,9 @@ so the documents table holds one row per copy and a form cannot be
 keyed on its sha. The pass keys a form on its account and tax year,
 both read off the form, and keeps the copy prepared latest (the page
 footer's date). A corrected form is prepared later than the original
-and so replaces its lots. Each copy is first read only far enough to
+and so replaces its lots. Of the copies prepared the same day, the
+first one loaded stays, so a `load --force` keeps the copy the
+routine loads kept. Each copy is first read only far enough to
 learn which form it is; the lots are parsed for the copy kept, and
 only when it is newer than the one silver holds. The pass reads the
 dumps a load ingests, or every dump in bronze when its parser

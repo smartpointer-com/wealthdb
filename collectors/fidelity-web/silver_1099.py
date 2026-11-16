@@ -50,9 +50,12 @@ def _latest_1099_copies(copies):
     Fidelity re-renders a Consolidated 1099 on every download, so one
     form arrives in every dump with new bytes. A form is its account and
     tax year; the copy prepared latest wins, which puts a corrected form
-    over the original, and between copies of one form the later dump's.
-    Only the identities are read by then; the lots are parsed for the
-    copies kept."""
+    over the original. Between copies prepared the same day the first
+    one wins, in dump order: the copy a routine load took when the form
+    first arrived, which later loads keep. So a `load --force` keeps
+    the same copy, and no load re-parses a re-rendered form. Only the
+    identities are read by then; the lots are parsed for the copies
+    kept."""
     chosen = {}
     for dump, path, sha, ident in copies:
         key = (ident.get("account_external_id"), ident.get("tax_year"))
@@ -63,7 +66,7 @@ def _latest_1099_copies(copies):
                 ident.get("_error", "unrecognised layout"))
             continue
         best = chosen.get(key)
-        if best is None or ident["prepared"] >= best[0]:
+        if best is None or ident["prepared"] > best[0]:
             chosen[key] = (ident["prepared"], path, sha)
     return chosen
 

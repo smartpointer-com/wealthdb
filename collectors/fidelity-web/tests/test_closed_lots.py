@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+from collectorkit import incremental  # noqa: E402
 import pdf_readers  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
@@ -107,7 +108,7 @@ def test_a_corrected_form_replaces_the_original(migrated, tmp_path, stub_1099):
     assert stub_1099 == ["20260501T000000Z/CORRECTED_Consolidated_Form_1099.pdf"]
 
 
-def test_copies_of_one_form_keep_the_later_dumps(migrated, tmp_path, stub_1099):
+def test_copies_of_one_form_keep_the_first_dumps(migrated, tmp_path, stub_1099):
     d1 = _form(tmp_path / "20260301T000000Z", "Consolidated_Form_1099.pdf",
                prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
     d2 = _form(tmp_path / "20260302T000000Z", "Consolidated_Form_1099__1.pdf",
@@ -115,8 +116,37 @@ def test_copies_of_one_form_keep_the_later_dumps(migrated, tmp_path, stub_1099):
 
     load._load_consolidated_1099s(migrated, [d1, d2], rederive=True)
 
-    assert stub_1099 == ["20260302T000000Z/Consolidated_Form_1099__1.pdf"]
+    assert stub_1099 == ["20260301T000000Z/Consolidated_Form_1099.pdf"]
     assert len(_held(migrated)) == 1
+
+
+def _run(root, slug):
+    """A finished run dir with a manifest, as `scan_bronze` admits it."""
+    run = root / slug
+    run.mkdir(parents=True)
+    (run / "run.json").write_text(json.dumps(
+        {"status": "complete", "cli_config": {"mode": "documents"}}))
+    return run
+
+
+def test_runs_loaded_one_at_a_time_give_the_silver_of_one_force(
+        tmp_path, stub_1099, monkeypatch):
+    """A routine load and a `load --force` keep the same copy of a form
+    Fidelity served twice with new bytes: the first one loaded."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    src = tmp_path / "src"
+    _form(_run(src, "20260301T000000Z"), "Consolidated_Form_1099.pdf",
+          prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
+    _form(_run(src, "20260302T000000Z"), "Consolidated_Form_1099.pdf",
+          prepared="2026-02-15", copy=1, lots=[_lot(100.0, 90.0)])
+    _form(_run(src, "20260303T000000Z"), "Consolidated_Form_1099__1.pdf",
+          prepared="2026-02-15", year=2024, lots=[_lot(30.0, 20.0)])
+    incremental.check(
+        load.main,
+        lambda db, bronze: ["--silver-db", str(db), "--bronze-dir",
+                            str(bronze), "--parse-cache-dir",
+                            str(tmp_path / "pc")],
+        sorted(src.iterdir()), tmp_path / "work")
 
 
 def test_a_form_already_held_is_not_parsed_again(migrated, tmp_path, stub_1099):
