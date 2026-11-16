@@ -42,12 +42,18 @@ CREATE MACRO account_is_debt(p_kind) AS (
 --     so a value is the same to the bit at every caller.
 --
 -- A scalar macro, so it expands in place and a statement keeps its plan.
--- A caller that reads a zero amount as zero in every currency puts that
--- arm in front, in a COALESCE. A CASE around the call would hide the
--- repeated cast from the planner's common-subexpression pass and change
--- the plan.
 CREATE MACRO fx_pick(p_amt, p_ccy, p_tgt, p_d, p_c1, p_c2, p_u1, p_u2) AS
     COALESCE(CASE WHEN p_ccy = p_tgt THEN p_amt::DOUBLE END,
+        p_amt::DOUBLE * p_d, p_amt::DOUBLE * p_c1 * p_c2,
+        p_amt::DOUBLE * p_u1 * p_u2);
+
+-- fx_pick_keep_zero: fx_pick, except that a zero amount reads zero in
+-- every currency, with or without a rate. The zero arm sits in the same
+-- COALESCE as the paths: a second COALESCE around fx_pick costs a CASE
+-- per row on the history reads, and a CASE around the call hides the
+-- repeated cast from the planner's common-subexpression pass.
+CREATE MACRO fx_pick_keep_zero(p_amt, p_ccy, p_tgt, p_d, p_c1, p_c2, p_u1, p_u2) AS
+    COALESCE(CASE WHEN p_amt = 0 THEN 0::DOUBLE WHEN p_ccy = p_tgt THEN p_amt::DOUBLE END,
         p_amt::DOUBLE * p_d, p_amt::DOUBLE * p_c1 * p_c2,
         p_amt::DOUBLE * p_u1 * p_u2);
 
@@ -157,8 +163,8 @@ CREATE MACRO hist_acct_lines_base() AS TABLE (
         SELECT src, snap, acct, ccy, amt, TRUE FROM cash_all)
     SELECT l.src, l.snap, l.acct, l.ccy, l.amt, l.is_cash, a.base_currency,
            CASE WHEN a.base_currency IS NULL THEN NULL ELSE
-               CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE END, fx_pick(l.amt, l.ccy, a.base_currency,
-                   b0.rate, b1.rate, b2.rate, b3.rate, b4.rate)) AS DECIMAL(28,4)) END AS base_val
+               CAST(fx_pick_keep_zero(l.amt, l.ccy, a.base_currency,
+                   b0.rate, b1.rate, b2.rate, b3.rate, b4.rate) AS DECIMAL(28,4)) END AS base_val
       FROM lines l
       LEFT JOIN accounts a ON l.src = a.silver_source_id AND l.acct = a.account_external_id
       ASOF LEFT JOIN fx_daily b0 ON b0.from_ccy = l.ccy AND b0.to_ccy = a.base_currency AND b0.day <= (l.snap // 86400)
@@ -173,8 +179,8 @@ CREATE MACRO hist_acct_lines_base() AS TABLE (
 CREATE MACRO report_accounts_history(p_ccy) AS TABLE (
     WITH conv AS (
         SELECT l.src, l.snap, l.acct, l.ccy, l.is_cash, l.base_currency, l.base_val,
-               CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE END, fx_pick(l.amt, l.ccy, p_ccy,
-                   o0.rate, o1.rate, o2.rate, o3.rate, o4.rate)) AS DECIMAL(28,4)) AS out_val
+               CAST(fx_pick_keep_zero(l.amt, l.ccy, p_ccy,
+                   o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(28,4)) AS out_val
           FROM hist_acct_lines_base() l
           ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = l.ccy AND o0.to_ccy = p_ccy AND o0.day <= (l.snap // 86400)
           ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = l.ccy AND o1.to_ccy = 'CHF' AND o1.day <= (l.snap // 86400)
@@ -401,8 +407,8 @@ CREATE MACRO report_portfolios_history_multi() AS TABLE (
                CAST(CASE WHEN l.amt = 0 THEN 0::DOUBLE ELSE fx_reporting_value(l.amt, l.ccy, 'EUR', fxl, fxb) END AS DECIMAL(28,4)) AS out_eur,
                CAST(CASE WHEN l.amt = 0 THEN 0::DOUBLE ELSE fx_reporting_value(l.amt, l.ccy, 'GBP', fxl, fxb) END AS DECIMAL(28,4)) AS out_gbp,
                CASE WHEN bk.base_currency IS NULL THEN NULL ELSE
-                   CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE END, fx_pick(l.amt, l.ccy, bk.base_currency,
-                       b0.rate, b1.rate, b2.rate, b3.rate, b4.rate)) AS DECIMAL(28,4)) END AS base_val
+                   CAST(fx_pick_keep_zero(l.amt, l.ccy, bk.base_currency,
+                       b0.rate, b1.rate, b2.rate, b3.rate, b4.rate) AS DECIMAL(28,4)) END AS base_val
           FROM lines l
           JOIN portfolio_buckets() bk ON bk.src = l.src AND bk.pid = l.pid
           ASOF LEFT JOIN fx_reporting_legs fxl    ON fxl.from_ccy = l.ccy AND fxl.day <= (l.snap // 86400)
@@ -489,8 +495,8 @@ CREATE MACRO report_sources_history_multi() AS TABLE (
                CAST(CASE WHEN l.amt = 0 THEN 0::DOUBLE ELSE fx_reporting_value(l.amt, l.ccy, 'EUR', fxl, fxb) END AS DECIMAL(28,4)) AS out_eur,
                CAST(CASE WHEN l.amt = 0 THEN 0::DOUBLE ELSE fx_reporting_value(l.amt, l.ccy, 'GBP', fxl, fxb) END AS DECIMAL(28,4)) AS out_gbp,
                CASE WHEN bk.base_currency IS NULL THEN NULL ELSE
-                   CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE END, fx_pick(l.amt, l.ccy, bk.base_currency,
-                       b0.rate, b1.rate, b2.rate, b3.rate, b4.rate)) AS DECIMAL(28,4)) END AS base_val
+                   CAST(fx_pick_keep_zero(l.amt, l.ccy, bk.base_currency,
+                       b0.rate, b1.rate, b2.rate, b3.rate, b4.rate) AS DECIMAL(28,4)) END AS base_val
           FROM lines l
           JOIN source_buckets() bk ON bk.src = l.src
           ASOF LEFT JOIN fx_reporting_legs fxl    ON fxl.from_ccy = l.ccy AND fxl.day <= (l.snap // 86400)
