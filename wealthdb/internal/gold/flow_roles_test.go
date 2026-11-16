@@ -128,6 +128,16 @@ func TestFlowPredicatesHoldTheRoles(t *testing.T) {
 		}
 	}
 
+	for _, k := range append(canonical.AccountKinds(), canonical.AccountKindRow{Kind: "no_such_kind"}) {
+		var debt bool
+		if err := db.QueryRowContext(ctx, `SELECT account_is_debt(?)`, string(k.Kind)).Scan(&debt); err != nil {
+			t.Fatal(err)
+		}
+		if debt != k.Liability {
+			t.Errorf("account_is_debt(%s) = %v, the role %v", k.Kind, debt, k.Liability)
+		}
+	}
+
 	cats := slices.Concat(canonical.SpendCategories, []canonical.SpendCategory{{Detailed: "NO_SUCH_VALUE"}})
 	for _, c := range cats {
 		r := c.Roles()

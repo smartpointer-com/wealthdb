@@ -20,6 +20,14 @@ CREATE MACRO account_wrapper(w) AS COALESCE(w, 'taxable_personal');
 
 CREATE MACRO account_style(s) AS COALESCE(s, 'self_directed');
 
+-- account_is_debt: an account of the kind is a debt
+-- (account_kinds.liability). A scalar macro, so it expands in place to
+-- the IN-list it holds, and a test holds it to the stamped roles
+-- (TestFlowPredicatesHoldTheRoles).
+CREATE MACRO account_is_debt(p_kind) AS (
+    p_kind IN ('mortgage', 'card')
+);
+
 -- ===========================================================================
 -- FX: one line's value in another currency
 -- ===========================================================================
@@ -1286,7 +1294,7 @@ CREATE MACRO report_cash_history_multi() AS TABLE (
 CREATE MACRO report_debt_history() AS TABLE (
     WITH debt AS (
         SELECT silver_source_id AS src, account_external_id AS acct
-          FROM accounts WHERE account_kind IN ('mortgage', 'card')),
+          FROM accounts WHERE account_is_debt(account_kind)),
     lines AS (
         SELECT l.src, l.snap, l.acct, l.ccy, l.amt, l.is_cash
           FROM hist_acct_lines_base() l
@@ -1314,11 +1322,11 @@ CREATE MACRO report_debt_fx(p_ccy) AS TABLE (
     WITH ccys AS (
         SELECT DISTINCT p.currency AS ccy
           FROM positions p JOIN accounts a USING (silver_source_id, account_external_id)
-         WHERE a.account_kind IN ('mortgage', 'card')
+         WHERE account_is_debt(a.account_kind)
         UNION
         SELECT DISTINCT c.currency
           FROM cash_balances c JOIN accounts a USING (silver_source_id, account_external_id)
-         WHERE a.account_kind IN ('mortgage', 'card')),
+         WHERE account_is_debt(a.account_kind)),
     grid AS (SELECT s.day, c.ccy FROM hist_days() s CROSS JOIN ccys c)
     SELECT g.day, g.ccy AS currency,
            CASE WHEN g.ccy = p_ccy THEN 1::DOUBLE
@@ -1365,7 +1373,7 @@ CREATE MACRO report_marks(p_ccy) AS TABLE (
           JOIN accounts a ON a.silver_source_id = p.silver_source_id
            AND a.account_external_id = p.account_external_id
          WHERE p.market_value > 0 AND p.asset_class <> 'cash'
-           AND a.account_kind NOT IN ('mortgage', 'card')),
+           AND NOT account_is_debt(a.account_kind)),
     valued AS (
         SELECT l.day,
                l.day - COALESCE(l.valued_at, l.snapshot_at) // 86400 <= 5 AS marked,

@@ -607,7 +607,7 @@ CREATE VIEW web_fees AS
       FROM serving_accounts_history h
       JOIN entity e ON e.silver_source_id = h.silver_source_id
        AND e.account_external_id = h.account_external_id
-     WHERE e.entity_kind = 'account' OR e.account_kind NOT IN ('mortgage', 'card')
+     WHERE e.entity_kind = 'account' OR NOT account_is_debt(e.account_kind)
     UNION ALL
     SELECT epoch_ms(r.end_day * 1000), 'return',
            e.silver_source_id, e.account_label, e.entity_key, e.entity_kind, e.entity,
