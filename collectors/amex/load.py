@@ -3,9 +3,10 @@
 
 Parses each bronze run dir (see download.py for the layout) into the silver
 schema (migrations/): the card roster, the transaction ledger, the per-period
-statement balances, and the document inventory. Idempotent — an already-loaded
-dump is skipped, and posted transactions INSERT OR IGNORE on their stable id,
-so re-running converges.
+statement balances, and the document inventory. The kit's load frame
+(`collectorkit.loader`) drives the runs. Idempotent — an already-loaded dump
+is skipped, and posted transactions INSERT OR IGNORE on their stable id, so
+re-running converges.
 
 The **activity JSON is the ledger of record** (DESIGN.md §D). It alone carries
 the provider's stable 18-digit id, both the charge and post dates, the
@@ -42,7 +43,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, documents, silver, srcfp
+from collectorkit import (bronze, channels, derivations, documents, loader,
+                          parsecache, silver, srcfp)
 from collectorkit.money import parse_money
 from collectorkit.parse import date_in_name, epoch_day
 
@@ -60,15 +62,33 @@ SOURCE_STATEMENT = "statement"
 
 # `rebuild_statements` parses every statement PDF, drops the whole
 # `source='statement'` era and re-imports it, so a re-parse already REPLACES.
-# The stamp is what gives it a reason to run when no bronze run has landed:
-# a parser edit lands no run, so without it nothing would re-read the PDFs.
-# See migration 0002.
+# It records each statement document under this scope and the parser
+# generation (`document_derivations`, migration 0003). A document with no
+# record under the current generation is what gives the rebuild a reason to
+# run when no bronze run has landed: a parser edit lands no run, so without
+# it nothing would re-read the PDFs.
 STATEMENT_GENERATION_SCOPE = "statement"
 # `pdftotext` is a binary, not a Python dist, so it is pinned by the version
 # it reports — a poppler upgrade that re-renders a column is exactly the
 # drift that would otherwise pass unnoticed here.
 STATEMENT_GENERATION = srcfp.parser_fingerprint(
     [statement_parser], extra_tools=(("pdftotext", "-v"),))
+# The parse cache's namespace for a statement's parse result. It holds the
+# generation, so a moved parser or pdftotext reads none of the old entries.
+STATEMENT_CACHE_NAMESPACE = f"card-statement-{STATEMENT_GENERATION}"
+
+# The statement documents the rebuild derives from, and per document the
+# statement rows silver holds for its card and the period its file name
+# dates. Migration 0003 seeds `document_derivations` with the same count.
+_STATEMENT_DOCUMENTS_SQL = (
+    "SELECT sha256 FROM documents WHERE doc_kind = 'statement' "
+    "ORDER BY sha256")
+_STATEMENT_DOCUMENT_ROWS_SQL = (
+    "SELECT d.sha256, (SELECT COUNT(*) FROM transactions t "
+    "WHERE t.source = 'statement' "
+    "AND t.account_external_id = d.account_external_id "
+    "AND t.statement_end_at = d.doc_date) "
+    "FROM documents d WHERE d.doc_kind = 'statement' ORDER BY d.sha256")
 
 
 # A year-end summary is filed under this stem by download.py.
@@ -307,15 +327,14 @@ def statement_rows(account_external_id: str,
 
 
 def export_seam(conn, account_external_id: str) -> int | None:
-    """The oldest row the ACTIVITY channel reaches for this account.
+    """The oldest row the ACTIVITY channel reaches for this account
+    (`channels.seams`).
 
     Anchored to activity-sourced rows only, never to all rows: that is what
     keeps the two channels disjoint and keeps the seam from drifting as
     statements are added. None when the account has no activity loaded yet."""
-    row = conn.execute(
-        "SELECT MIN(posted_at) FROM transactions WHERE account_external_id=? "
-        "AND source=?", (account_external_id, SOURCE_ACTIVITY)).fetchone()
-    return row[0] if row and row[0] is not None else None
+    return channels.seams(conn, "transactions", "posted_at",
+                          (SOURCE_ACTIVITY,)).get(account_external_id)
 
 
 def activity_reach(conn, account_external_id: str) -> int | None:
@@ -327,11 +346,9 @@ def activity_reach(conn, account_external_id: str) -> int | None:
     end for the window (collectorkit.cli.resolve_lookback always ends today),
     so what leaves the gap is a card that simply posted nothing after the
     period closed — or a caller passing walk() an explicit `until`, which
-    only the tests do."""
-    row = conn.execute(
-        "SELECT MAX(posted_at) FROM transactions WHERE account_external_id=? "
-        "AND source=?", (account_external_id, SOURCE_ACTIVITY)).fetchone()
-    return row[0] if row and row[0] is not None else None
+    only the tests do. `channels.reach` reads it."""
+    return channels.reach(conn, "transactions", "posted_at",
+                          (SOURCE_ACTIVITY,)).get(account_external_id)
 
 
 def statement_balance_from_pdf(parsed: statement_parser.ParsedCardStatement,
@@ -504,7 +521,21 @@ def _pending_total(payload: dict) -> float | None:
     return _money2(parse_money(charges.get("amount")))
 
 
-def _parse_statements(copies_by_name: dict) -> tuple[dict, int]:
+def _parse_statement(cache: parsecache.ParseCache, pdf: Path,
+                     sha: str) -> statement_parser.ParsedCardStatement:
+    """One statement's parse, read from the parse cache when this document
+    was parsed by this generation before. A parse that raises is not
+    cached, so it is tried again next load."""
+    cached = cache.get(sha, STATEMENT_CACHE_NAMESPACE)
+    if cached is not None:
+        return parsecache.from_json(cached, statement_parser.ParsedCardStatement)
+    parsed = statement_parser.parse_card_statement_pdf(pdf)
+    cache.put(sha, STATEMENT_CACHE_NAMESPACE, parsecache.to_json(parsed))
+    return parsed
+
+
+def _parse_statements(copies_by_name: dict,
+                      cache: parsecache.ParseCache) -> tuple[dict, int]:
     """Parse one usable copy of each period, newest run first.
 
     Returns ({period_end_epoch: (run_ts, ParsedCardStatement)}, parse_errors).
@@ -516,8 +547,9 @@ def _parse_statements(copies_by_name: dict) -> tuple[dict, int]:
     good, which is the ordinary case. Older copies get a turn only when it is
     refused, which is what keeps one bad re-render from erasing a period an
     earlier run had read cleanly; a copy whose bytes match one already
-    refused for that period is skipped without parsing, a hash being far
-    cheaper than the subprocess.
+    refused for that period is skipped. Each parse is read from `cache` when
+    the same bytes were parsed by the same generation before, so a rebuild
+    runs `pdftotext` only on documents it has not read.
 
     A statement whose own summary does not add up, or whose sections do not
     sum to the figures printed for them, was mis-read: nothing from it is
@@ -531,13 +563,11 @@ def _parse_statements(copies_by_name: dict) -> tuple[dict, int]:
     for name, chain in sorted(copies_by_name.items()):
         refused: set[str] = set()
         for index, (run_ts, slug, pdf) in enumerate(chain):
-            digest = None
-            if index:
-                digest, _ = bronze.sha256_file(pdf)
-                if digest in refused:
-                    continue
+            digest, _ = bronze.sha256_file(pdf)
+            if index and digest in refused:
+                continue
             try:
-                parsed = statement_parser.parse_card_statement_pdf(pdf)
+                parsed = _parse_statement(cache, pdf, digest)
             except Exception as exc:        # noqa: BLE001 — any parse failure
                 log.warning("statement %s (run %s): parse failed (%r); "
                             "skipped", name, slug, exc)
@@ -556,8 +586,6 @@ def _parse_statements(copies_by_name: dict) -> tuple[dict, int]:
                 break
             log.warning("statement %s (run %s): %s; skipped",
                         name, slug, reason)
-            if digest is None:
-                digest, _ = bronze.sha256_file(pdf)
             refused.add(digest)
     return out, errors
 
@@ -684,17 +712,17 @@ def _import_statements(conn, account_external_id: str,
     imported = 0
     for end, (run_ts, parsed) in sorted(parsed_by_end.items(),
                                         key=lambda item: item[0]):
+        decision = channels.period_decision(starts[end], end, seam, reach,
+                                            oldest)
         covered = 0
-        if seam is not None and end < seam:
+        if decision == channels.IMPORT:
             # Wholly below the seam: this document is the only channel
             # holding these rows, so it is what imports them.
             for tx in statement_rows(account_external_id, parsed):
                 _insert_transaction(conn, account_external_id, tx)
                 imported += 1
             covered = 1
-        elif (seam is not None and end != oldest
-                and starts[end] >= seam
-                and reach is not None and end <= reach):
+        elif decision == channels.COVERED:
             # Wholly INSIDE the activity's reach: that channel already
             # carries every row in the period, so the rows ARE in silver and
             # the flag says so. Bounded at both ends — chase's rule is the
@@ -722,9 +750,15 @@ def _import_statements(conn, account_external_id: str,
                  len(parsed_by_end), imported)
 
 
-def rebuild_statements(conn, bronze_dir: Path) -> None:
+def rebuild_statements(conn, bronze_dir: Path,
+                       cache: parsecache.ParseCache | None = None) -> None:
     """Rebuild every statement-sourced row in silver, from every run
     `load_run` reads (`_statement_copies`).
+
+    The parses come through `cache` (by default the collector's parse cache,
+    `parsecache.default_dir`), so a rebuild re-reads only the documents no
+    earlier load parsed under this generation. Entries of older
+    generations are swept once the rebuild has committed.
 
     **This is a derived table, not an incremental one, and it has to be.** The
     export seam is `MIN(posted_at)` over the account's ACTIVITY rows, and it
@@ -755,13 +789,15 @@ def rebuild_statements(conn, bronze_dir: Path) -> None:
       that shape is a broken `pdftotext`, not bronze losing its documents. A
       single unreadable document stays a per-document skip.
     """
+    if cache is None:
+        cache = parsecache.ParseCache(parsecache.default_dir("amex"))
     stems = _account_stems(conn)
     copies, runs_by_until = _statement_copies(bronze_dir, stems)
 
     parsed_by_account: dict[str, dict] = {}
     errors = 0
     for acct_id, by_name in copies.items():
-        parsed_by_end, failed = _parse_statements(by_name)
+        parsed_by_end, failed = _parse_statements(by_name, cache)
         errors += failed
         if parsed_by_end:
             parsed_by_account[acct_id] = parsed_by_end
@@ -783,8 +819,9 @@ def rebuild_statements(conn, bronze_dir: Path) -> None:
             _restore_activity_balances(conn, acct_id, by_name, runs_by_until)
         for acct_id, parsed_by_end in parsed_by_account.items():
             _import_statements(conn, acct_id, parsed_by_end)
-        silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
-                                STATEMENT_GENERATION)
+        for sha, rows in conn.execute(_STATEMENT_DOCUMENT_ROWS_SQL).fetchall():
+            derivations.record_derivation(conn, sha, STATEMENT_GENERATION_SCOPE,
+                                          STATEMENT_GENERATION, rows)
         conn.execute("COMMIT")
     except Exception:
         try:
@@ -792,6 +829,7 @@ def rebuild_statements(conn, bronze_dir: Path) -> None:
         except sqlite3.Error:
             pass            # already unwound; the original error is the one
         raise
+    cache.sweep({STATEMENT_CACHE_NAMESPACE})
 
 
 def _account_stems(conn) -> dict[str, str]:
@@ -801,151 +839,144 @@ def _account_stems(conn) -> dict[str, str]:
     return {bronze.safe_stem(r[0]): r[0] for r in rows}
 
 
-def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
-    """Load one bronze run dir. Returns True if ingested, False if skipped
-    (no manifest, non-complete dump, or already loaded). Idempotent."""
-    if not bronze.run_is_loadable(run_dir):
-        run_json = run_dir / "run.json"
-        log.info("skip %s (%s)", run_dir.name,
-                 f"status={bronze.run_status(run_json)}"
-                 if run_json.is_file() else "no run.json")
-        return False
-    try:
-        snapshot_at = bronze.parse_run_ts(run_dir.name)
-    except ValueError:
-        log.warning("skip %s (unparseable run slug)", run_dir.name)
-        return False
-    if snapshot_at in silver.loaded_snapshots(conn):
-        return False
-
+def load_run(conn: sqlite3.Connection, run: loader.Run) -> int:
+    """Load one pending bronze run dir (`bronze.pending_run_dirs`) and return
+    the accounts its roster listed. The frame makes the run one
+    transaction, so a failure part-way leaves silver as it was, with no
+    dump_runs row, and the next load retries the whole dump."""
+    run_dir, snapshot_at = run.dir, run.snapshot_at
     accounts = _read_accounts(run_dir)
     # A statement dir / activity file is named by the safe-stemmed key; map it
     # back so every table keys on the same account_external_id.
     stem_to_id = {bronze.safe_stem(a["account_key"]): str(a["account_key"])
                   for a in accounts if a.get("account_key")}
 
-    # One transaction per dump: a failure part-way leaves silver as it was,
-    # with no dump_runs row, so the next load retries the whole dump.
-    with silver.transaction(conn):
-        # The statement era is derived from every run together, so a new run
-        # owes it a rebuild. Clearing the stamp with the run records that
-        # debt: the stamp reads stale until `rebuild_statements` commits, and
-        # a rebuild that fails or is killed is retried by the next load.
-        conn.execute("DELETE FROM parser_generations WHERE scope = ?",
-                     (STATEMENT_GENERATION_SCOPE,))
-        # The activity pass runs first: it is what reports the unposted total the
-        # roster snapshot records.
-        pending_by_account: dict[str, float | None] = {}
-        activity_dir = run_dir / "activity"
-        if activity_dir.is_dir():
-            for path in sorted(activity_dir.glob("*.json")):
-                payload = _read_json(path)
-                if not isinstance(payload, dict):
-                    continue
-                acct_id = stem_to_id.get(path.stem, path.stem)
-                rows = activity_rows(payload)
-                # The window a manifest advertises is what was ASKED for; this is
-                # what came back. A run whose fetch stopped short is still
-                # loadable and still 'complete' (silver ingest is additive) but
-                # the shortfall has to be visible, or the seam it moves looks
-                # like the account's real reach. Covers runs already on disk,
-                # whose manifests predate the download side's coverage block.
-                #
-                # Measured on the payload, never on `rows`: the projection also
-                # drops a row the ledger cannot key (no post date, no amount, no
-                # identifier), and counting those as a shortfall would send a
-                # reader hunting a pagination bug that never happened.
-                expected = payload.get("totalTransactionCount")
-                fetched = len(payload.get("transactions") or [])
-                if isinstance(expected, int) and fetched < expected:
-                    log.warning("  %s: activity holds %d of the %d rows the "
-                                "source reported for the window — that fetch "
-                                "came back short", bronze.log_id(acct_id),
-                                fetched, expected)
-                posted = [r for r in rows if not r["is_pending"]]
-                pending = [r for r in rows if r["is_pending"]]
-                for tx in posted:
-                    _insert_transaction(conn, acct_id, tx)
-                _replace_pending(conn, acct_id, pending)
-                pending_by_account[acct_id] = _pending_total(payload)
-                balances = statement_balance_row(payload)
-                if balances is not None:
-                    _insert_statement_balance(conn, snapshot_at, acct_id, balances,
-                                              SOURCE_ACTIVITY)
-                log.info("  %s: %d posted, %d pending", bronze.log_id(acct_id),
-                         len(posted), len(pending))
+    # The statement era is derived from every run together, so a new run
+    # owes it a rebuild. Clearing the scope's records with the run records
+    # that debt: every statement document reads pending until
+    # `rebuild_statements` commits, and a rebuild that fails or is killed is
+    # retried by the next load.
+    conn.execute("DELETE FROM document_derivations WHERE scope = ?",
+                 (STATEMENT_GENERATION_SCOPE,))
+    # The activity pass runs first: it is what reports the unposted total the
+    # roster snapshot records.
+    pending_by_account: dict[str, float | None] = {}
+    activity_dir = run_dir / "activity"
+    if activity_dir.is_dir():
+        for path in sorted(activity_dir.glob("*.json")):
+            payload = _read_json(path)
+            if not isinstance(payload, dict):
+                continue
+            acct_id = stem_to_id.get(path.stem, path.stem)
+            rows = activity_rows(payload)
+            # The window a manifest advertises is what was ASKED for; this is
+            # what came back. A run whose fetch stopped short is still
+            # loadable and still 'complete' (silver ingest is additive) but
+            # the shortfall has to be visible, or the seam it moves looks
+            # like the account's real reach. Covers runs already on disk,
+            # whose manifests predate the download side's coverage block.
+            #
+            # Measured on the payload, never on `rows`: the projection also
+            # drops a row the ledger cannot key (no post date, no amount, no
+            # identifier), and counting those as a shortfall would send a
+            # reader hunting a pagination bug that never happened.
+            expected = payload.get("totalTransactionCount")
+            fetched = len(payload.get("transactions") or [])
+            if isinstance(expected, int) and fetched < expected:
+                log.warning("  %s: activity holds %d of the %d rows the "
+                            "source reported for the window — that fetch "
+                            "came back short", bronze.log_id(acct_id),
+                            fetched, expected)
+            posted = [r for r in rows if not r["is_pending"]]
+            pending = [r for r in rows if r["is_pending"]]
+            for tx in posted:
+                _insert_transaction(conn, acct_id, tx)
+            _replace_pending(conn, acct_id, pending)
+            pending_by_account[acct_id] = _pending_total(payload)
+            balances = statement_balance_row(payload)
+            if balances is not None:
+                _insert_statement_balance(conn, snapshot_at, acct_id, balances,
+                                          SOURCE_ACTIVITY)
+            log.info("  %s: %d posted, %d pending", bronze.log_id(acct_id),
+                     len(posted), len(pending))
 
-        for acct in accounts:
-            _insert_account(conn, snapshot_at, acct,
-                            pending_by_account.get(str(acct.get("account_key"))))
+    for acct in accounts:
+        _insert_account(conn, snapshot_at, acct,
+                        pending_by_account.get(str(acct.get("account_key"))))
 
-        # Documents are inventoried per run (a PDF's first sighting is its
-        # snapshot); their CONTENT is read by rebuild_statements, once all runs
-        # are in, because what it imports depends on the seam every run together
-        # produces.
-        stmt_dir = run_dir / "statements"
-        if stmt_dir.is_dir():
-            for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
-                acct_id = stem_to_id.get(acct_dir.name, acct_dir.name)
-                for pdf in sorted(acct_dir.glob("*.pdf")):
-                    _insert_document(conn, snapshot_at, acct_id, pdf)
-
-        conn.execute(
-            "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version,"
-            " run_dir) VALUES (?,?,?)",
-            (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
-    log.info("loaded %s (%d account(s))", run_dir.name, len(accounts))
-    return True
+    # Documents are inventoried per run (a PDF's first sighting is its
+    # snapshot); their CONTENT is read by rebuild_statements, once all runs
+    # are in, because what it imports depends on the seam every run together
+    # produces.
+    stmt_dir = run_dir / "statements"
+    if stmt_dir.is_dir():
+        for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
+            acct_id = stem_to_id.get(acct_dir.name, acct_dir.name)
+            for pdf in sorted(acct_dir.glob("*.pdf")):
+                _insert_document(conn, snapshot_at, acct_id, pdf)
+    return len(accounts)
 
 
-def main(argv: list[str]) -> int:
+def _run_columns(run: loader.Run) -> dict:
+    """The run's `dump_runs` row; its `run_dir` is the path as given."""
+    return {"snapshot_at": run.snapshot_at,
+            "silver_schema_version": run.version, "run_dir": str(run.dir)}
+
+
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="Bronze tree root (holds the <UTC-ts>/ run dirs).")
     p.add_argument("--silver-db", type=Path, default=None,
                    help="Silver SQLite path. Default: <bronze-dir>/amex.db.")
-    cli.add_standard_args(p, verb="load")
-    args = p.parse_args(argv)
-    cli.configure_logging(args.verbose)
+    return p
 
-    # Preflight, before anything is written or recorded: the statement
-    # rebuild DELETES the deep era and re-imports what parses, so a missing
-    # `pdftotext` would empty it rather than skip it. Failing here leaves
-    # silver untouched and the next invocation retries cleanly.
+
+def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    return args.silver_db or (args.bronze_dir / "amex.db"), args.bronze_dir
+
+
+def _require_pdftotext(args: argparse.Namespace) -> int | None:
+    """Preflight, before anything is written or recorded: the statement
+    rebuild DELETES the deep era and re-imports what parses, so a missing
+    `pdftotext` would empty it rather than skip it. Failing here leaves
+    silver untouched and the next invocation retries cleanly."""
     if shutil.which("pdftotext") is None:
         log.error("`pdftotext` (poppler-utils) is not on PATH, so no "
                   "statement PDF can be read. Refusing to load: the "
                   "statement rebuild would drop the deep era rather than "
                   "skip it. Install poppler-utils and re-run.")
         return 1
+    return None
 
-    db_path = args.silver_db or (args.bronze_dir / "amex.db")
-    if args.force:
-        silver.reset(db_path)
-    conn = silver.open_db(db_path)
-    try:
-        silver.apply_migrations(conn, MIGRATIONS_DIR)
-        loaded = 0
-        for run_dir in bronze.iter_run_dirs(args.bronze_dir):
-            if load_run(conn, run_dir):
-                loaded += 1
-        # A stale stamp owes the rebuild a run: a moved statement parser (a
-        # parser-only change lands no run), or an ingested run whose rebuild
-        # has not committed yet (`load_run` clears the stamp).
-        if loaded or silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
-                                             STATEMENT_GENERATION):
-            # Only after every run is in: the seam this depends on is the
-            # MIN over all of them together.
-            try:
-                rebuild_statements(conn, args.bronze_dir)
-            except RuntimeError as exc:
-                log.error("%s", exc)
-                return 1
-        log.info("done: %d run(s) ingested into %s", loaded, db_path)
-    finally:
-        conn.close()
-    return 0
+
+def _statement_pass(conn: sqlite3.Connection, load: loader.Load) -> int | None:
+    """Rebuild the statement era when it is owed: after a run, and when a
+    statement document has no record under the current generation. That
+    is a moved statement parser (a parser-only change lands no run), or an
+    ingested run whose rebuild has not committed yet (`load_run` clears
+    the records). Only after every run is in: the seam this depends on is
+    the MIN over all of them together."""
+    if load.loaded or derivations.pending_derivations(
+            conn, STATEMENT_GENERATION_SCOPE, STATEMENT_GENERATION,
+            _STATEMENT_DOCUMENTS_SQL):
+        try:
+            rebuild_statements(conn, load.bronze_dir)
+        except RuntimeError as exc:
+            log.error("%s", exc)
+            return 1
+    return None
+
+
+SPEC = loader.LoaderSpec(
+    name="amex", schema=MIGRATIONS_DIR, load_run=load_run, parser=_parser,
+    counts=("accounts",), defaults=_paths, preflight=_require_pdftotext,
+    after_runs=_statement_pass, run_columns=_run_columns)
+
+
+def main(argv: list[str] | None = None) -> int:
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

@@ -47,7 +47,7 @@ class Copy:
 # Keyed by the collector, as its directory under collectors/ names it.
 COPIES = {
     "amex": Copy(("amex/testdata/silver_schema.sql",), {
-        "schema_meta": VERSION, "parser_generations": BOOKKEEPING}),
+        "schema_meta": VERSION, "document_derivations": BOOKKEEPING}),
     "angellist": Copy(("angellist/testdata/silver_schema.sql",), {
         "commitments": UNREAD, "portfolio_timeseries": UNREAD,
         "tax_documents": UNREAD, "vehicles": UNREAD}),

@@ -6,8 +6,10 @@ amounts are round. Nothing is derived from a real capture.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -17,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from collectorkit import silver  # noqa: E402
+from collectorkit import loader, silver  # noqa: E402
 
 import load  # noqa: E402
 
@@ -115,6 +117,26 @@ def write_run(root: Path, slug: str, *, accounts=None, activity=None,
         manifest["until"] = until
     (run / "run.json").write_text(json.dumps(manifest))
     return run
+
+
+def load_run(conn, run_dir: Path) -> bool:
+    """Load one run dir as the frame loads each pending run: in one
+    transaction, its dump_runs row written last. False when the frame
+    passes over it (already loaded, or not loadable). No pass runs."""
+    spec = dataclasses.replace(load.SPEC, pending=lambda c, bronze_dir, log: [
+        d for d in load.SPEC.pending(c, bronze_dir, log=log) if d == run_dir])
+    one = loader.Load(args=None, silver_db=Path(), bronze_dir=run_dir.parent,
+                      log=load.log, version=silver.current_schema_version(conn))
+    loader.load_runs(spec, conn, one)
+    return one.loaded == 1
+
+
+@pytest.fixture(autouse=True)
+def parse_cache(tmp_path, monkeypatch):
+    """Each test's own parse cache, so no parse leaks between tests."""
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("WEALTHDB_CACHE_DIR", str(cache))
+    return cache / "parse-cache"
 
 
 @pytest.fixture()
@@ -232,7 +254,7 @@ def test_pending_rows_are_flagged():
 def test_a_run_loads_accounts_and_transactions(db, tmp_path):
     run = write_run(tmp_path / "bronze", "20260312T000000Z",
                     activity={KEY_A: _activity([_tx(1), _tx(2)])})
-    assert load.load_run(db, run) is True
+    assert load_run(db, run) is True
     accounts = [tuple(r) for r in db.execute(
         "SELECT account_external_id, account_token, display_name, mask, "
         "currency, balance, payment_due_at FROM accounts")]
@@ -252,21 +274,21 @@ def test_a_failed_load_leaves_silver_unchanged(db, tmp_path, monkeypatch):
 
     monkeypatch.setattr(load, "_insert_account", boom)
     with pytest.raises(OSError):
-        load.load_run(db, run)
+        load_run(db, run)
     for table in ("accounts", "transactions", "statement_balances",
                   "dump_runs"):
         assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
     monkeypatch.undo()
-    assert load.load_run(db, run) is True
+    assert load_run(db, run) is True
     assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
 
 
 def test_reloading_the_same_run_is_a_no_op(db, tmp_path):
     run = write_run(tmp_path / "bronze", "20260312T000000Z",
                     activity={KEY_A: _activity([_tx(1)])})
-    assert load.load_run(db, run) is True
-    assert load.load_run(db, run) is False
+    assert load_run(db, run) is True
+    assert load_run(db, run) is False
     assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
 
 
@@ -276,8 +298,8 @@ def test_a_second_run_adds_only_new_rows(db, tmp_path):
                       activity={KEY_A: _activity([_tx(1), _tx(2)])})
     second = write_run(root, "20260413T000000Z",
                        activity={KEY_A: _activity([_tx(2), _tx(3)])})
-    load.load_run(db, first)
-    load.load_run(db, second)
+    load_run(db, first)
+    load_run(db, second)
     ids = [r[0] for r in db.execute(
         "SELECT txn_id FROM transactions ORDER BY txn_id")]
     assert ids == ["100000000000000001", "100000000000000002",
@@ -288,7 +310,7 @@ def test_an_incomplete_run_is_skipped(db, tmp_path):
     run = write_run(tmp_path / "bronze", "20260312T000000Z",
                     activity={KEY_A: _activity([_tx(1)])},
                     status="in-progress")
-    assert load.load_run(db, run) is False
+    assert load_run(db, run) is False
     assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
 
 
@@ -313,19 +335,19 @@ def test_a_run_without_a_manifest_is_neither_loaded_nor_recorded(tmp_path):
 
 def test_an_unchanged_roster_does_not_add_a_snapshot(db, tmp_path):
     root = tmp_path / "bronze"
-    load.load_run(db, write_run(root, "20260312T000000Z",
+    load_run(db, write_run(root, "20260312T000000Z",
                                 activity={KEY_A: _activity([_tx(1)])}))
-    load.load_run(db, write_run(root, "20260413T000000Z",
+    load_run(db, write_run(root, "20260413T000000Z",
                                 activity={KEY_A: _activity([_tx(1)])}))
     assert db.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
 
 
 def test_a_changed_balance_adds_a_snapshot(db, tmp_path):
     root = tmp_path / "bronze"
-    load.load_run(db, write_run(root, "20260312T000000Z",
+    load_run(db, write_run(root, "20260312T000000Z",
                                 accounts=[_account(amount="250.00")],
                                 activity={KEY_A: _activity([_tx(1)])}))
-    load.load_run(db, write_run(root, "20260413T000000Z",
+    load_run(db, write_run(root, "20260413T000000Z",
                                 accounts=[_account(amount="300.00")],
                                 activity={KEY_A: _activity([_tx(1)])}))
     balances = [r[0] for r in db.execute(
@@ -339,7 +361,7 @@ def test_two_accounts_stay_separate(db, tmp_path):
                                                    token="BBBB1B2C3D4E5F6")],
                     activity={KEY_A: _activity([_tx(1)]),
                               KEY_B: _activity([_tx(2)])})
-    load.load_run(db, run)
+    load_run(db, run)
     rows = dict(tuple(r) for r in
                 db.execute("SELECT account_external_id, COUNT(*) "
                            "FROM transactions GROUP BY 1"))
@@ -356,10 +378,10 @@ def test_a_pending_row_that_posts_leaves_no_twin(db, tmp_path):
     root = tmp_path / "bronze"
     provisional = _tx(1, status="pending")
     provisional["identifier"] = provisional["referenceNumber"] = "P0001ABCDEF"
-    load.load_run(db, write_run(root, "20260312T000000Z",
+    load_run(db, write_run(root, "20260312T000000Z",
                                 activity={KEY_A: _activity([provisional])}))
     assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 1
-    load.load_run(db, write_run(root, "20260413T000000Z",
+    load_run(db, write_run(root, "20260413T000000Z",
                                 activity={KEY_A: _activity([_tx(1)])}))
     rows = [tuple(r) for r in
             db.execute("SELECT txn_id, is_pending FROM transactions")]
@@ -369,9 +391,9 @@ def test_a_pending_row_that_posts_leaves_no_twin(db, tmp_path):
 def test_a_still_pending_row_survives_the_replace(db, tmp_path):
     root = tmp_path / "bronze"
     pending = _tx(9, status="pending")
-    load.load_run(db, write_run(root, "20260312T000000Z",
+    load_run(db, write_run(root, "20260312T000000Z",
                                 activity={KEY_A: _activity([pending])}))
-    load.load_run(db, write_run(root, "20260413T000000Z",
+    load_run(db, write_run(root, "20260413T000000Z",
                                 activity={KEY_A: _activity([pending])}))
     assert db.execute("SELECT COUNT(*) FROM transactions "
                       "WHERE is_pending=1").fetchone()[0] == 1
@@ -383,7 +405,7 @@ def test_the_replace_is_scoped_to_one_account(db, tmp_path):
                                                    token="BBBB1B2C3D4E5F6")],
                     activity={KEY_A: _activity([_tx(1, status="pending")]),
                               KEY_B: _activity([_tx(2, status="pending")])})
-    load.load_run(db, run)
+    load_run(db, run)
     assert db.execute("SELECT COUNT(*) FROM transactions "
                       "WHERE is_pending=1").fetchone()[0] == 2
 
@@ -402,7 +424,7 @@ def test_the_cycle_balance_block_lands(db, tmp_path):
                                            fees="0.00",
                                            interestCharges="0.00",
                                            statementBalance="150.00"))})
-    load.load_run(db, run)
+    load_run(db, run)
     row = tuple(db.execute(
         "SELECT period_start, period_end, opening, closing, new_charges, "
         "payments_and_credits, source FROM statement_balances").fetchone())
@@ -416,7 +438,7 @@ def test_a_total_balance_stands_in_for_a_statement_balance(db, tmp_path):
     run = write_run(tmp_path / "bronze", "20260312T000000Z",
                     activity={KEY_A: _activity(
                         [_tx(1)], balances=_balances(totalBalance="175.00"))})
-    load.load_run(db, run)
+    load_run(db, run)
     assert db.execute(
         "SELECT closing FROM statement_balances").fetchone()[0] == 175.0
 
@@ -424,7 +446,7 @@ def test_a_total_balance_stands_in_for_a_statement_balance(db, tmp_path):
 def test_no_balance_block_records_no_period(db, tmp_path):
     run = write_run(tmp_path / "bronze", "20260312T000000Z",
                     activity={KEY_A: _activity([_tx(1)])})
-    load.load_run(db, run)
+    load_run(db, run)
     assert db.execute(
         "SELECT COUNT(*) FROM statement_balances").fetchone()[0] == 0
 
@@ -434,7 +456,7 @@ def test_the_pending_total_reaches_the_account_row(db, tmp_path):
                                                 "currency": "USD"}}}
     run = write_run(tmp_path / "bronze", "20260312T000000Z",
                     activity={KEY_A: _activity([_tx(1)], balances=balances)})
-    load.load_run(db, run)
+    load_run(db, run)
     assert db.execute(
         "SELECT pending_charges FROM accounts").fetchone()[0] == 42.0
 
@@ -447,10 +469,10 @@ def test_statement_pdfs_are_inventoried_and_deduped(db, tmp_path):
     root = tmp_path / "bronze"
     files = {"2026-03-12.pdf": b"%PDF-1.4 synthetic statement\n",
              "yes-2025.pdf": b"%PDF-1.4 synthetic summary\n"}
-    load.load_run(db, write_run(root, "20260312T000000Z",
+    load_run(db, write_run(root, "20260312T000000Z",
                                 activity={KEY_A: _activity([_tx(1)])},
                                 statements={KEY_A: files}))
-    load.load_run(db, write_run(root, "20260413T000000Z",
+    load_run(db, write_run(root, "20260413T000000Z",
                                 activity={KEY_A: _activity([_tx(1)])},
                                 statements={KEY_A: files}))
     rows = [tuple(r) for r in
@@ -536,7 +558,7 @@ def load_all(db, root: Path):
     — which is what `load` itself does, and what the seam depends on."""
     loaded = 0
     for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        if load.load_run(db, run_dir):
+        if load_run(db, run_dir):
             loaded += 1
     if loaded:
         load.rebuild_statements(db, root)
@@ -548,7 +570,8 @@ def _write_pdfs(run: Path, key: str, names) -> None:
     d = run / "statements" / key
     d.mkdir(parents=True, exist_ok=True)
     for n in names:
-        (d / n).write_bytes(b"%PDF-1.4 synthetic\n")
+        # Bytes of their own per name: the parse cache keys on content.
+        (d / n).write_bytes(b"%PDF-1.4 synthetic " + n.encode() + b"\n")
 
 
 def test_statement_rows_flip_the_document_sign(monkeypatch):
@@ -747,7 +770,7 @@ def test_the_seam_is_anchored_to_activity_rows_only(db, tmp_path):
     run = write_run(root, "20260315T120000Z",
                     activity={KEY_A: _activity(
                         [_tx(1, post="2026-02-10")])})
-    load.load_run(db, run)
+    load_run(db, run)
     assert load.export_seam(db, KEY_A) == day(2026, 2, 10)
     # A statement-sourced row must not move the seam, or it would drift as
     # statements are added and the two channels would stop being disjoint.
@@ -1004,10 +1027,11 @@ def test_the_loader_refuses_to_run_without_pdftotext(tmp_path, monkeypatch):
 
 
 def test_a_parser_that_fails_on_everything_leaves_the_deep_era_standing(
-        db, tmp_path, monkeypatch):
+        db, tmp_path, monkeypatch, parse_cache):
     # pdftotext present but broken: every document raises and none parses.
     # That shape is a tooling fault, not bronze losing its statements, and
     # rebuilding on it would drop years of rows and anchors for nothing.
+    # No cached parse may stand in, as after a parser or poppler upgrade.
     import datetime
     import statement_parser as sp
     root = tmp_path / "bronze"
@@ -1028,6 +1052,7 @@ def test_a_parser_that_fails_on_everything_leaves_the_deep_era_standing(
     def _explode(path):
         raise OSError("pdftotext: cannot execute")
     monkeypatch.setattr(sp, "parse_card_statement_pdf", _explode)
+    shutil.rmtree(parse_cache)
     with pytest.raises(RuntimeError):
         load.rebuild_statements(db, root)
     assert tuple(db.execute(counted,
@@ -1100,13 +1125,39 @@ def test_a_row_the_ledger_cannot_key_is_not_a_short_fetch(db, tmp_path,
 # Parser generations — a moved parser is a reason to rebuild
 # ============================================================
 
-def test_a_moved_parser_rebuilds_without_a_new_bronze_run(tmp_path, monkeypatch):
-    # A parser edit lands no bronze run, so the generation stamp is what
-    # gives `rebuild_statements` a reason to run.
+def _one_statement_tree(tmp_path) -> list[str]:
+    """A bronze tree of one run holding one statement; the load's args."""
     root = tmp_path / "bronze"
-    write_run(root, "20260312T000000Z", activity={KEY_A: _activity([_tx(1)])})
+    write_run(root, "20260312T000000Z",
+              statements={KEY_A: {"2025-12-12.pdf":
+                                  _statement_text("12/12/25").encode()}},
+              activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    return ["--bronze-dir", str(root), "--silver-db", str(tmp_path / "amex.db")]
+
+
+def _derivations(db_path: Path) -> list[tuple]:
+    conn = silver.open_db(db_path)
+    try:
+        return [tuple(r) for r in conn.execute(
+            "SELECT content_sha256, scope, generation, row_count "
+            "FROM document_derivations ORDER BY content_sha256")]
+    finally:
+        conn.close()
+
+
+def _set_generation(db_path: Path, generation: str) -> None:
+    conn = silver.open_db(db_path)
+    conn.execute("UPDATE document_derivations SET generation = ?",
+                 (generation,))
+    conn.close()
+
+
+def test_a_moved_parser_rebuilds_without_a_new_bronze_run(tmp_path, monkeypatch):
+    # A parser edit lands no bronze run, so a document derived under another
+    # generation is what gives `rebuild_statements` a reason to run.
+    _counting_parse(monkeypatch)
+    args = _one_statement_tree(tmp_path)
     db_path = tmp_path / "amex.db"
-    args = ["--bronze-dir", str(root), "--silver-db", str(db_path)]
     assert load.main(args) == 0
 
     ran = []
@@ -1114,37 +1165,24 @@ def test_a_moved_parser_rebuilds_without_a_new_bronze_run(tmp_path, monkeypatch)
     monkeypatch.setattr(load, "rebuild_statements",
                         lambda *a, **k: (ran.append(1), real(*a, **k))[1])
 
-    # Nothing new in bronze and a current stamp: no rebuild.
+    # Nothing new in bronze and every document current: no rebuild.
     assert load.main(args) == 0
     assert ran == []
 
-    conn = silver.open_db(db_path)
-    silver.stamp_generation(conn, load.STATEMENT_GENERATION_SCOPE,
-                            "an older parser")
-    conn.close()
-
+    _set_generation(db_path, "an older parser")
     assert load.main(args) == 0
     assert ran == [1]
-
-    conn = silver.open_db(db_path)
-    try:
-        assert conn.execute(
-            "SELECT generation FROM parser_generations WHERE scope = ?",
-            (load.STATEMENT_GENERATION_SCOPE,)).fetchone()[0] == \
-            load.STATEMENT_GENERATION
-    finally:
-        conn.close()
+    assert [r[2] for r in _derivations(db_path)] == [load.STATEMENT_GENERATION]
 
 
 def test_an_unfinished_rebuild_is_retried_by_the_next_load(tmp_path,
                                                            monkeypatch):
     # The run commits on its own; the rebuild runs after it. A rebuild that
-    # fails leaves the stamp stale, so a later load with nothing new in
-    # bronze still rebuilds.
-    root = tmp_path / "bronze"
-    write_run(root, "20260312T000000Z", activity={KEY_A: _activity([_tx(1)])})
+    # fails leaves the documents unrecorded, so a later load with nothing
+    # new in bronze still rebuilds.
+    _counting_parse(monkeypatch)
+    args = _one_statement_tree(tmp_path)
     db_path = tmp_path / "amex.db"
-    args = ["--bronze-dir", str(root), "--silver-db", str(db_path)]
 
     calls = []
     real = load.rebuild_statements
@@ -1157,17 +1195,240 @@ def test_an_unfinished_rebuild_is_retried_by_the_next_load(tmp_path,
 
     monkeypatch.setattr(load, "rebuild_statements", flaky)
     assert load.main(args) == 1
+    assert _derivations(db_path) == []
     assert load.main(args) == 0
     assert calls == [1, 1]
 
     conn = silver.open_db(db_path)
     try:
         assert conn.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
-        assert not silver.stale_generation(
-            conn, load.STATEMENT_GENERATION_SCOPE, load.STATEMENT_GENERATION)
     finally:
         conn.close()
+    assert [r[2] for r in _derivations(db_path)] == [load.STATEMENT_GENERATION]
 
     # Once a rebuild has committed, a load with nothing new skips it.
     assert load.main(args) == 0
     assert calls == [1, 1]
+
+
+def test_each_statement_document_is_recorded_with_its_rows(tmp_path,
+                                                           monkeypatch):
+    _counting_parse(monkeypatch)
+    root = tmp_path / "bronze"
+    body = _statement_text("12/12/25").encode()
+    write_run(root, "20260312T000000Z",
+              statements={KEY_A: {"2025-12-12.pdf": body,
+                                  "yes-2025.pdf": b"%PDF summary"}},
+              activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    db_path = tmp_path / "amex.db"
+    assert load.main(["--bronze-dir", str(root), "--silver-db", str(db_path)]) == 0
+    sha = load.bronze.sha256_file(root / "20260312T000000Z" / "statements"
+                                  / KEY_A / "2025-12-12.pdf")[0]
+    # The year-end summary derives nothing and is not recorded.
+    assert _derivations(db_path) == [
+        (sha, "statement", load.STATEMENT_GENERATION, 2)]
+
+
+def test_a_run_owes_the_rebuild_even_with_no_new_document(tmp_path,
+                                                          monkeypatch):
+    # The seam moves with the activity, so a run that carries the same
+    # statements again still rebuilds the era, from the cache.
+    calls = _counting_parse(monkeypatch)
+    args = _one_statement_tree(tmp_path)
+    assert load.main(args) == 0
+    ran = []
+    real = load.rebuild_statements
+    monkeypatch.setattr(load, "rebuild_statements",
+                        lambda *a, **k: (ran.append(1), real(*a, **k))[1])
+    root = Path(args[1])
+    shutil.copytree(root / "20260312T000000Z", root / "20260413T000000Z")
+    assert load.main(args) == 0
+    assert ran == [1] and calls == ["2025-12-12.pdf"]
+
+
+def _migrated_to(tmp_path, version: int):
+    """A silver migrated up to `version` only."""
+    older = tmp_path / "older-migrations"
+    older.mkdir()
+    for f in sorted(load.MIGRATIONS_DIR.glob("*.sql"))[:version]:
+        shutil.copy(f, older / f.name)
+    conn = silver.open_db(tmp_path / "amex.db")
+    silver.apply_migrations(conn, older)
+    return conn
+
+
+def _seed_documents(conn) -> None:
+    conn.executemany(
+        "INSERT INTO documents (sha256, snapshot_at, account_external_id, "
+        "doc_date, doc_kind, file_format, filename, size_bytes, payload) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        [("aa", 1, KEY_A, day(2025, 12, 12), "statement", "pdf",
+          "2025-12-12.pdf", 1, "{}"),
+         ("bb", 1, KEY_A, None, "year_end_summary", "pdf", "yes-2025.pdf",
+          1, "{}")])
+    conn.execute(
+        "INSERT INTO transactions (txn_id, posted_at, account_external_id, "
+        "amount, statement_end_at, is_pending, source, payload) "
+        "VALUES (?,?,?,?,?,0,'statement','{}')",
+        (f"stmt:{KEY_A}:2025-12-12:0000", day(2025, 12, 3), KEY_A, -1.0,
+         day(2025, 12, 12)))
+
+
+def test_the_migration_seeds_from_a_stamp(tmp_path):
+    conn = _migrated_to(tmp_path, 2)
+    _seed_documents(conn)
+    silver.stamp_generation(conn, load.STATEMENT_GENERATION_SCOPE, "gen-1")
+    silver.apply_migrations(conn, load.MIGRATIONS_DIR)
+    assert [tuple(r) for r in conn.execute(
+        "SELECT content_sha256, scope, generation, row_count "
+        "FROM document_derivations")] == [("aa", "statement", "gen-1", 1)]
+    assert conn.execute("SELECT COUNT(*) FROM sqlite_master "
+                        "WHERE name = 'parser_generations'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_the_migration_seeds_nothing_without_a_stamp(tmp_path):
+    # No stamp: a run landed after the last rebuild, which is still owed.
+    conn = _migrated_to(tmp_path, 2)
+    _seed_documents(conn)
+    silver.apply_migrations(conn, load.MIGRATIONS_DIR)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 0
+    conn.close()
+
+
+# ============================================================
+# The parse cache
+# ============================================================
+
+def _counting_parse(monkeypatch, *, fail=()):
+    """Count the parser's calls; the parse is the synthetic text's own."""
+    import statement_parser as sp
+    calls = []
+
+    def parse(path):
+        calls.append(Path(path).name)
+        if Path(path).name in fail:
+            raise OSError("synthetic extraction failure")
+        return sp.parse_card_statement_text(Path(path).read_text())
+    monkeypatch.setattr(sp, "parse_card_statement_pdf", parse)
+    return calls
+
+
+def _statement_era(db_path: Path) -> tuple[list, list]:
+    """The statement-sourced rows and period figures, apart from the run
+    that holds each period's copy."""
+    conn = silver.open_db(db_path)
+    try:
+        return ([tuple(r) for r in conn.execute(
+                    "SELECT txn_id, posted_at, amount, kind, description, "
+                    "payload FROM transactions WHERE source = 'statement' "
+                    "ORDER BY txn_id")],
+                [tuple(r) for r in conn.execute(
+                    "SELECT period_start, period_end, opening, closing, "
+                    "new_charges, payments_and_credits, transactions_covered "
+                    "FROM statement_balances WHERE source = 'statement' "
+                    "ORDER BY period_end")])
+    finally:
+        conn.close()
+
+
+def _statement_text(closing: str) -> str:
+    from test_statement_parser import BUY, PAY, statement
+    return statement(closing=closing, payment_rows=PAY, charge_rows=BUY)
+
+
+def test_a_load_after_a_new_run_parses_no_statement_again(tmp_path,
+                                                          monkeypatch):
+    # Every run carries the whole statement archive again. The rebuild a new
+    # run owes reads each document's parse from the cache.
+    calls = _counting_parse(monkeypatch)
+    root = tmp_path / "bronze"
+    stmts = {KEY_A: {"2025-12-12.pdf": _statement_text("12/12/25").encode(),
+                     "2026-01-12.pdf": _statement_text("01/12/26").encode()}}
+    write_run(root, "20260312T000000Z", statements=stmts,
+              activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    db_path = tmp_path / "amex.db"
+    args = ["--bronze-dir", str(root), "--silver-db", str(db_path)]
+    assert load.main(args) == 0
+    assert sorted(calls) == ["2025-12-12.pdf", "2026-01-12.pdf"]
+    first = _statement_era(db_path)
+    assert first[0] and first[1]
+
+    write_run(root, "20260413T000000Z", statements=stmts,
+              activity={KEY_A: _activity([_tx(2, post="2026-03-10")])})
+    calls.clear()
+    assert load.main(args) == 0
+    assert calls == []
+    # The cached parse is the parse: the statement era is what it was.
+    assert _statement_era(db_path) == first
+
+
+def test_a_parse_that_raised_is_parsed_again(tmp_path, monkeypatch):
+    calls = _counting_parse(monkeypatch, fail={"2025-12-12.pdf"})
+    root = tmp_path / "bronze"
+    write_run(root, "20260312T000000Z",
+              statements={KEY_A: {"2025-12-12.pdf":
+                                  _statement_text("12/12/25").encode()}},
+              activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    db_path = tmp_path / "amex.db"
+    args = ["--bronze-dir", str(root), "--silver-db", str(db_path)]
+    assert load.main(args) == 0
+    _set_generation(db_path, "older")
+    assert load.main(args) == 0
+    assert calls == ["2025-12-12.pdf", "2025-12-12.pdf"]
+
+
+def test_a_moved_parser_reads_none_of_the_old_entries(tmp_path, monkeypatch,
+                                                      parse_cache):
+    calls = _counting_parse(monkeypatch)
+    root = tmp_path / "bronze"
+    write_run(root, "20260312T000000Z",
+              statements={KEY_A: {"2025-12-12.pdf":
+                                  _statement_text("12/12/25").encode()}},
+              activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
+    args = ["--bronze-dir", str(root), "--silver-db", str(tmp_path / "amex.db")]
+    assert load.main(args) == 0
+    monkeypatch.setattr(load, "STATEMENT_GENERATION", "a-newer-parser")
+    monkeypatch.setattr(load, "STATEMENT_CACHE_NAMESPACE",
+                        "card-statement-a-newer-parser")
+    assert load.main(args) == 0
+    assert calls == ["2025-12-12.pdf", "2025-12-12.pdf"]
+    # The old generation's entry is swept.
+    assert [p.name.split(".")[1] for p in parse_cache.iterdir()] == [
+        "card-statement-a-newer-parser"]
+
+
+# ============================================================
+# Loads stay incremental
+# ============================================================
+
+def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path,
+                                                           monkeypatch):
+    # The later run reaches deeper (the seam moves and withdraws a period's
+    # rows), holds the same statements plus a new one, and posts the
+    # earlier run's pending charge. A third run never finished.
+    from collectorkit import incremental
+    _counting_parse(monkeypatch)
+    fixture = tmp_path / "fixture"
+    old = {"2025-12-12.pdf": _statement_text("12/12/25").encode(),
+           "2026-01-12.pdf": _statement_text("01/12/26").encode()}
+    first = write_run(fixture, "20260312T000000Z", until="2026-03-12",
+                      statements={KEY_A: old},
+                      activity={KEY_A: _activity(
+                          [_tx(1, post="2026-02-10"),
+                           _tx(2, post="2026-03-11", status="pending")],
+                          balances=_balances(totalBalance="20.00"),
+                          until="2026-03-12")})
+    second = write_run(fixture, "20260413T000000Z", until="2026-04-12",
+                       statements={KEY_A: {**old, "2026-03-12.pdf":
+                                           _statement_text("03/12/26").encode()}},
+                       activity={KEY_A: _activity(
+                           [_tx(3, post="2026-01-05"), _tx(1, post="2026-02-10"),
+                            _tx(4, post="2026-03-12")],
+                           since="2026-01-01", until="2026-04-12")})
+    unfinished = write_run(fixture, "20260414T000000Z", status="in_progress",
+                           activity={KEY_A: _activity([_tx(5)])})
+    incremental.check(load.main, lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze)],
+        [first, second, unfinished], tmp_path / "work")
