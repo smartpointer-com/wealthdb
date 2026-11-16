@@ -24,9 +24,10 @@ A product is loaded as far as the run read it:
   others    nothing; the rows of earlier runs stay as they are.
 
 A run older than the newest one loaded, say one restored from a backup,
-cannot be replayed on top of newer windows. The Item's database is then
-rebuilt from all of its runs, as `--force` does: into a fresh file, put
-in place only once every run is in.
+cannot be replayed on top of newer windows. It stops its Item: that
+database stays as it was, the other Items load, and the exit status is
+1. `--force` then rebuilds the Item's database from all of its runs:
+into a fresh file, put in place only once every run is in.
 
 Usage:
     load.py --bronze-dir DIR [--item NAME ...] [--silver-db PATH] [--force]
@@ -37,7 +38,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sqlite3
 import sys
 import time
@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, rebuild, silver
 
 import items
 import trees
@@ -428,11 +428,6 @@ def _silver_item(conn) -> tuple[str, str] | None:
     return tuple(row) if row else None
 
 
-def _discard(path: Path) -> None:
-    for sidecar in ("", "-wal", "-shm", "-journal"):
-        path.with_name(path.name + sidecar).unlink(missing_ok=True)
-
-
 def _load_runs(conn, tree: Path, runs: list[Path], version: int) -> None:
     for run_dir in runs:
         try:
@@ -451,20 +446,9 @@ def _rebuild(tree: Path, db_path: Path, runs: list[Path]) -> int:
     """Build the Item's silver afresh from all its runs, beside the one in
     place, and put it in place only once every run is in. A run that
     cannot be loaded leaves the silver as it was."""
-    fresh = db_path.with_name(db_path.name + ".rebuild")
-    _discard(fresh)
-    try:
-        conn = silver.open_db(fresh)
-        try:
-            version = silver.apply_migrations(conn, MIGRATIONS)
-            _load_runs(conn, tree, runs, version)
-        finally:
-            conn.close()
-    except BaseException:
-        _discard(fresh)
-        raise
-    _discard(db_path)
-    os.replace(fresh, db_path)
+    rebuild.rebuild(db_path, MIGRATIONS,
+                    lambda conn, version: _load_runs(conn, tree, runs,
+                                                     version))
     log.info("%s: rebuilt %s. Its change number is the newest run's start, "
              "as before, so gold takes it in on `wealthdb reload <source>`.",
              tree.name, db_path)
@@ -472,10 +456,10 @@ def _rebuild(tree: Path, db_path: Path, runs: list[Path]) -> int:
 
 
 def load_item(tree: Path, db_path: Path, *, force: bool,
-              rebuild: str) -> int:
+              command: str) -> int:
     """Bring one Item's silver up to date with its runs, and return the
     number of runs loaded. A tree with no run yet loads nothing and opens
-    no database. `rebuild` is the command that rebuilds this database.
+    no database. `command` is the command that rebuilds this database.
 
     Raises TreeError when:
 
@@ -483,7 +467,10 @@ def load_item(tree: Path, db_path: Path, *, force: bool,
     - the database is another Item's, or not a plaid silver at all.
 
     Raises RunBroken when a run cannot be loaded. An update keeps the runs
-    loaded before it. A rebuild leaves the silver as it was."""
+    loaded before it. A rebuild leaves the silver as it was.
+
+    Raises LoadStop, before anything is written, when a run is older than
+    the newest one loaded."""
     identity = trees.identity(tree)
     if identity is None:
         return 0
@@ -503,19 +490,19 @@ def load_item(tree: Path, db_path: Path, *, force: bool,
         if held is not None and held != identity:
             raise trees.TreeError(
                 f"{db_path} holds the silver of another Item ({held[1]}); "
-                f"{rebuild} rebuilds it from {tree}")
+                f"`{command}` rebuilds it from {tree}")
         loaded = silver.loaded_snapshots(conn)
         pending = [r for r in runs if bronze.parse_run_ts(r.name) not in loaded]
-        older = bool(pending and loaded
-                     and bronze.parse_run_ts(pending[0].name) < max(loaded))
-        if not older:
-            _load_runs(conn, tree, pending, version)
-            return len(pending)
+        if (pending and loaded
+                and bronze.parse_run_ts(pending[0].name) < max(loaded)):
+            rebuild.stop(db_path, f"run {pending[0].name} is older than the "
+                                  f"newest loaded run, so it cannot be "
+                                  f"loaded on top of the newer ones",
+                         command=command)
+        _load_runs(conn, tree, pending, version)
+        return len(pending)
     finally:
         conn.close()
-    log.info("%s: run %s is older than the newest loaded run; rebuilding the "
-             "Item's silver from all its runs", tree.name, pending[0].name)
-    return _rebuild(tree, db_path, runs)
 
 
 # ---- the command ---------------------------------------------------------------------
@@ -553,12 +540,12 @@ def main(argv: list[str] | None = None) -> int:
     status = 0
     for tree in found:
         db_path = args.silver_db or tree / f"{tree.name}.db"
-        rebuild = (f"`load --force --item {tree.name}"
+        command = (f"load --force --item {tree.name}"
                    + (f" --silver-db {args.silver_db}" if args.silver_db
-                      else "") + "`")
+                      else ""))
         try:
-            n = load_item(tree, db_path, force=args.force, rebuild=rebuild)
-        except (trees.TreeError, RunBroken) as e:
+            n = load_item(tree, db_path, force=args.force, command=command)
+        except (trees.TreeError, RunBroken, rebuild.LoadStop) as e:
             log.error("%s", e)
             status = 1
             continue

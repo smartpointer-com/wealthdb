@@ -309,7 +309,14 @@ such as `./plaid download --item bank --lookback all`.
 
 ## Silver
 
-`load` writes one SQLite database per Item. Its tables:
+`load` writes one SQLite database per Item. It loads each run once,
+oldest first. A run older than the newest one loaded, such as one
+restored from a backup, stops its Item. That database stays as it was,
+the other Items load, and `load` exits with status 1. The log names the
+run and the command that rebuilds the Item from all its runs, such as
+`./plaid load --force --item bank`.
+
+Its tables:
 
 | Table | Holds |
 | --- | --- |

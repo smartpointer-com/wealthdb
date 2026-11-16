@@ -27,7 +27,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from collectorkit import bronze, cli, parse, silver
+from collectorkit import loader, parse, silver
 
 log = logging.getLogger("fred.load")
 
@@ -107,18 +107,17 @@ def _rate_rows(run_dir: Path, sid: str, meta: dict) -> list[tuple]:
     return [(day, sid, val, payload) for day, val in _dated(run_dir, sid)]
 
 
-def load_run(conn, run_dir: Path) -> tuple[int, int]:
+def load_run(conn, run: loader.Run) -> tuple[int, int]:
     """Upsert every dated observation in one bronze run into its family's
     table. Returns the (fx_rates, rates) row counts written."""
-    manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     fx, rates = [], []
-    for sid, meta in manifest.get("series", {}).items():
+    for sid, meta in run.manifest.get("series", {}).items():
         # An FX entry carries no family; download.py names only the rates.
         family = meta.get("family", "fx")
         if family == "fx":
-            fx += _fx_rows(run_dir, sid, meta)
+            fx += _fx_rows(run.dir, sid, meta)
         elif family == "rates":
-            rates += _rate_rows(run_dir, sid, meta)
+            rates += _rate_rows(run.dir, sid, meta)
         else:
             log.warning("series %s has unknown family %r in manifest; "
                         "skipping", sid, family)
@@ -126,51 +125,25 @@ def load_run(conn, run_dir: Path) -> tuple[int, int]:
             silver.upsert_rows(conn, "rates", RATE_COLUMNS, rates))
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument("--silver-db", type=Path, required=True,
                    help="Path to the silver SQLite DB (created if missing).")
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="Directory containing bronze run subdirectories.")
-    cli.add_standard_args(p, verb="load")
-    args = p.parse_args(sys.argv[1:] if argv is None else argv)
-    cli.configure_logging(args.verbose)
+    return p
 
-    # --force = delete the silver DB, then rebuild from all bronze (the
-    # fleet-wide meaning). After a reset the DB is empty, so the normal
-    # loaded-snapshots skip below naturally re-ingests every run.
-    if args.force:
-        silver.reset(args.silver_db)
-    conn = silver.open_db(args.silver_db)
-    version = silver.apply_migrations(conn, MIGRATIONS)
 
-    n_runs = n_fx = n_rates = 0
-    # A run dir with no run.json, or one whose status is not complete, is
-    # skipped without a dump_runs row, so a later load picks it up once
-    # its walk finalises.
-    for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
-        run_ts = bronze.parse_run_ts(run_dir.name)
-        conn.execute("BEGIN")
-        try:
-            fx, rates = load_run(conn, run_dir)
-            conn.execute(
-                "INSERT OR REPLACE INTO dump_runs "
-                "(snapshot_at, silver_schema_version, run_dir) VALUES (?, ?, ?)",
-                (run_ts, version, str(run_dir.resolve())),
-            )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-        n_runs += 1
-        n_fx += fx
-        n_rates += rates
-        log.info("loaded run %s: %d fx rows, %d rates rows", run_dir.name,
-                 fx, rates)
+# A run dir with no run.json, or one whose status is not complete, is
+# skipped without a dump_runs row, so a later load picks it up once its
+# walk finalises.
+SPEC = loader.LoaderSpec(
+    name="fred", schema=MIGRATIONS, load_run=load_run, parser=_parser,
+    counts=("fx rows", "rates rows"), manifest=loader.MANIFEST_REQUIRED)
 
-    log.info("done: %d run(s), %d fx rows, %d rates rows -> %s", n_runs,
-             n_fx, n_rates, args.silver_db)
-    return 0
+
+def main(argv: list[str] | None = None) -> int:
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":

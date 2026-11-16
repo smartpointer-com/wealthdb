@@ -597,17 +597,40 @@ def test_force_rebuilds_the_same_silver(tree):
         == before
 
 
-def test_an_older_run_found_later_rebuilds_the_item(tree, caplog):
+def test_an_older_run_found_later_stops_its_item(tree, caplog):
     # Replayed on top of the newer run, the older one would bring back the
     # pending row the newer one had removed.
     write_run(tree, "20260131T070000Z", transactions=[tx(2)])
     load_tree(tree)
+    before = (tree / "bank.db").read_bytes()
     write_run(tree, "20260130T070000Z", transactions=[tx(1, pending=True)])
-    assert load_tree(tree) == 0
+    assert load_tree(tree) == 1
+    assert (tree / "bank.db").read_bytes() == before
+    assert not (tree / "bank.db.rebuild").exists()
+    assert (f"{tree / 'bank.db'}: run 20260130T070000Z is older than the "
+            "newest loaded run, so it cannot be loaded on top of the newer "
+            "ones. The load stopped and left the silver as it was. "
+            "`load --force --item bank` rebuilds it from bronze."
+            in caplog.text)
+    # It stops at every load until the rebuild, which loads every run.
+    assert load_tree(tree) == 1
+    assert load_tree(tree, "--force") == 0
     assert rows(tree, "SELECT transaction_id FROM transactions") == [
         ("tx-2",)]
     assert rows(tree, "SELECT count(*) FROM dump_runs") == [(2,)]
-    assert "rebuilding" in caplog.text
+    assert load_tree(tree) == 0
+
+
+def test_an_older_run_stops_only_its_own_item(tmp_path):
+    root = tmp_path / "plaid"
+    write_run(root / "bank", "20260131T070000Z", transactions=[tx(2)])
+    write_run(root / "broker", "20260130T070000Z", transactions=[tx(1)])
+    assert load.main(["--bronze-dir", str(root)]) == 0
+    write_run(root / "bank", "20260130T070000Z", transactions=[tx(1)])
+    write_run(root / "broker", "20260131T070000Z", transactions=[tx(3)])
+    assert load.main(["--bronze-dir", str(root)]) == 1
+    assert rows(root / "bank", "SELECT count(*) FROM dump_runs") == [(1,)]
+    assert rows(root / "broker", "SELECT count(*) FROM dump_runs") == [(2,)]
 
 
 @pytest.mark.parametrize("other", [
@@ -747,7 +770,7 @@ def test_a_rebuild_that_cannot_finish_keeps_the_silver_in_place(tree):
     assert load_tree(tree, "--force") == 1
     assert rows(tree, "SELECT transaction_id FROM transactions") == before
     assert not (tree / "bank.db.rebuild").exists()
-    # An older run found later takes the same way.
+    # An older run found later stops the Item, and leaves it as it was.
     write_run(tree, "20260129T070000Z", transactions=[tx(0)])
     assert load_tree(tree) == 1
     assert rows(tree, "SELECT transaction_id FROM transactions") == before

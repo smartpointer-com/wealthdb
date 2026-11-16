@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 import load as loader
-from collectorkit import silver
+from collectorkit import incremental, silver
 from conftest import ecb_csv, snb_csv
 
 RUN_SLUG = "20260105T030405Z"
@@ -266,3 +266,19 @@ def test_schema_meta_version(tmp_path):
         assert silver.current_schema_version(conn) == 1
     finally:
         conn.close()
+
+
+def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
+    # The later run revises a day the first one stated, and adds a day.
+    fixture = tmp_path / "fixture"
+    series = {EUR_10Y: EUR_10Y_MEANS, CHF_10Y: CHF_10Y_MEANS}
+    runs = [
+        _seed_run(fixture, RUN_SLUG, ecb=[(EUR_10Y, "2026-01-05", "2.50")],
+                  snb=[("J10M0", "2026-01-05", "0.5")], series=series),
+        _seed_run(fixture, LATER_SLUG, ecb=[(EUR_10Y, "2026-01-05", "2.55"),
+                                            (EUR_10Y, "2026-01-06", "2.60")],
+                  series=series),
+    ]
+    incremental.check(loader.main, lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze)], runs,
+        tmp_path / "work")

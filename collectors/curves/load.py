@@ -33,7 +33,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from collectorkit import bronze, cli, parse, silver
+from collectorkit import loader, parse, silver
 
 log = logging.getLogger("curves.load")
 
@@ -184,13 +184,12 @@ def _answers(run_dir: Path, manifest: dict) -> dict[str, dict]:
     return out
 
 
-def load_run(conn, run_dir: Path) -> int:
+def load_run(conn, run: loader.Run) -> int:
     """Upsert every dated observation in one bronze run into `rates`.
     Returns the row count written."""
-    manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    answers = _answers(run_dir, manifest)
+    answers = _answers(run.dir, run.manifest)
     rows = []
-    for sid, meta in manifest.get("series", {}).items():
+    for sid, meta in run.manifest.get("series", {}).items():
         meaning = _meaning(sid, meta)
         if meaning is None:
             continue
@@ -200,44 +199,25 @@ def load_run(conn, run_dir: Path) -> int:
     return silver.upsert_rows(conn, "rates", RATE_COLUMNS, rows)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument("--silver-db", type=Path, required=True,
                    help="Path to the silver SQLite DB (created if missing).")
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="Directory containing bronze run subdirectories.")
-    cli.add_standard_args(p, verb="load")
-    args = p.parse_args(sys.argv[1:] if argv is None else argv)
-    cli.configure_logging(args.verbose)
+    return p
 
-    # --force = delete the silver DB, then rebuild from all bronze (the
-    # fleet-wide meaning). After a reset the DB is empty, so the normal
-    # loaded-snapshots skip below re-ingests every run.
-    if args.force:
-        silver.reset(args.silver_db)
-    conn = silver.open_db(args.silver_db)
-    version = silver.apply_migrations(conn, MIGRATIONS)
 
-    n_runs = n_rates = 0
-    # A run dir with no run.json, or one whose status is not complete, is
-    # skipped without a dump_runs row, so a later load picks it up once
-    # its walk finalises.
-    for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
-        run_ts = bronze.parse_run_ts(run_dir.name)
-        with silver.transaction(conn):
-            rates = load_run(conn, run_dir)
-            conn.execute(
-                "INSERT OR REPLACE INTO dump_runs "
-                "(snapshot_at, silver_schema_version, run_dir) VALUES (?, ?, ?)",
-                (run_ts, version, str(run_dir.resolve())),
-            )
-        n_runs += 1
-        n_rates += rates
-        log.info("loaded run %s: %d rates rows", run_dir.name, rates)
+# A run dir with no run.json, or one whose status is not complete, is
+# skipped without a dump_runs row, so a later load picks it up once its
+# walk finalises.
+SPEC = loader.LoaderSpec(
+    name="curves", schema=MIGRATIONS, load_run=load_run, parser=_parser,
+    counts=("rates rows",), manifest=loader.MANIFEST_REQUIRED)
 
-    log.info("done: %d run(s), %d rates rows -> %s", n_runs, n_rates,
-             args.silver_db)
-    return 0
+
+def main(argv: list[str] | None = None) -> int:
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":

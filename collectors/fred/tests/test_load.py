@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import load as loader
-from collectorkit import silver
+from collectorkit import incremental, silver
 
 RUN_SLUG = "20240102T030405Z"
 LATER_SLUG = "20240109T030405Z"
@@ -358,3 +358,21 @@ def test_the_summary_counts_both_families(tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger="fred.load"):
         assert _load(tmp_path / "fred.db", bronze) == 0
     assert "done: 1 run(s), 1 fx rows, 3 rates rows" in caplog.text
+
+
+def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
+    # The later run revises a day the first one stated, and adds a series.
+    fixture = tmp_path / "fixture"
+    runs = [
+        _seed_run(fixture, RUN_SLUG, {
+            "DEXSZUS": ({"base": "CHF", "quote": "USD"},
+                        [("2020-01-02", "0.9000")]),
+            "DGS10": (DGS10, [("2020-01-02", "1.80")])}),
+        _seed_run(fixture, LATER_SLUG, {
+            "DEXSZUS": ({"base": "CHF", "quote": "USD"},
+                        [("2020-01-02", "0.9050"), ("2020-01-03", "0.9100")]),
+            "DTB3": (DTB3, [("2020-01-03", "1.50")])}),
+    ]
+    incremental.check(loader.main, lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze)], runs,
+        tmp_path / "work")

@@ -344,11 +344,13 @@ describe each table, and each column whose name does not say enough.
 **Which runs.** A run is loaded once, oldest first, and only when its
 `run.json` says `complete`. Each run loads in one transaction. A run
 older than the newest one already loaded cannot be replayed on top of
-the newer windows, so the Item's database is then rebuilt from all its
-runs. `--force` does the same on request. A rebuild writes a fresh
-database beside the old one, and puts it in place only once every run
-is in. It keeps the newest run's start as gold's change number, so gold
-takes it in on `wealthdb reload <source>`.
+the newer windows, so it stops its Item. That database stays as it was,
+the other Items load, and the exit status is 1. The log names the run
+and `load --force --item <name>`, which rebuilds the Item's database
+from all its runs. A rebuild writes a fresh database beside the old one,
+and puts it in place only once every run is in. It keeps the newest
+run's start as gold's change number, so gold takes it in on
+`wealthdb reload <source>`.
 
 A complete run that lacks a file it lists, or holds a file not in the
 shape `download` writes, stops its tree. So does a run whose run.json
