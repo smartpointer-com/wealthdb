@@ -18,8 +18,7 @@ so the returned series covers every calendar day.
 
 The public-interface signatures (`FrankfurterClient`,
 `fetch_fiat_to_usd`) mirror the shape of the crypto clients so
-load.py and fetch_prices.py can call them with the same
-ergonomics.
+prices.py can call both with the same ergonomics.
 """
 from __future__ import annotations
 

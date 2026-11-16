@@ -411,9 +411,9 @@ is the current implementation. A second source, for coins delisted from
 every exchange, needs only a client module with the same
 `build_mapping` / `ohlcv_historical` interface.
 
-**Three invocation patterns.** `binance.py` is the polite client,
-`fetch_prices.py` the standalone CLI, and `load.py` embeds the same
-engine:
+**Three invocation patterns.** `binance.py` is the polite client and
+`prices.py` the engine. `fetch_prices.py` is the standalone CLI, and
+`load.py` runs the same engine after ingest:
 
 | Trigger | Mode | Behaviour |
 |---|---|---|

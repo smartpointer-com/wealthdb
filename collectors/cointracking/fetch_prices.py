@@ -42,9 +42,9 @@ from collectorkit import cli, silver
 
 from binance import BinanceClient, get_api_key
 from frankfurter import FrankfurterClient
-from load import (
-    apply_migrations, fetch_coin_prices, fetch_fx_rates,
-    backfill_first_day_gaps,
+from load import apply_migrations
+from prices import (
+    fetch_coin_prices, fetch_fx_rates, backfill_first_day_gaps,
 )
 
 log = logging.getLogger("cointracking.fetch_prices")

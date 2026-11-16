@@ -22,6 +22,7 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import load as loader  # noqa: E402
+import prices  # noqa: E402
 
 CU = "1"
 
@@ -597,6 +598,39 @@ def test_force_rebuild_equals_incremental(tmp_path):
     assert rebuilt == incremental
 
 
+
+def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
+    # Three exports land one load apart; a second silver is built from
+    # all three in one --force. The replay keeps a row's snapshot_at
+    # where history did not change, so this pins that the run-by-run
+    # order of a --force reproduces each load's stamps.
+    bronze = tmp_path / "bronze"
+    exports = [
+        ("20240201T000000Z", {"1": [_row("Deposit", buy="1", buy_cur="BTC",
+                                         date="2024-01-10 10:00:00")]}),
+        ("20240301T000000Z", {"1": [_row("Deposit", buy="1", buy_cur="BTC",
+                                         date="2024-01-10 10:00:00"),
+                                    _row("Withdrawal", sell="0.5",
+                                         sell_cur="BTC",
+                                         date="2024-02-20 10:00:00")],
+                              "2": [_row("Deposit", buy="2", buy_cur="ETH",
+                                         date="2024-02-01 10:00:00")]}),
+        ("20240401T000000Z", {"1": [_row("Deposit", buy="1", buy_cur="BTC",
+                                         date="2024-01-10 10:00:00")],
+                              "2": [_row("Deposit", buy="2", buy_cur="ETH",
+                                         date="2024-02-01 10:00:00")]}),
+    ]
+    one_by_one = tmp_path / "one-by-one.duckdb"
+    at_once = tmp_path / "at-once.duckdb"
+    argv = ["--bronze-dir", str(bronze), "--no-fetch-prices"]
+    for slug, portfolios in exports:
+        _seed_export(bronze, slug, portfolios)
+        assert loader.main([*argv, "--silver-db", str(one_by_one)]) == 0
+    assert loader.main([*argv, "--silver-db", str(at_once), "--force"]) == 0
+
+    a, b = _dump_silver_state(one_by_one), _dump_silver_state(at_once)
+    assert a["positions_daily"] and a == b
+
 # ---- Group, Tx-ID and the export's local time ------------------------
 
 def _times(conn) -> dict[tuple[str, str], str]:
@@ -899,7 +933,7 @@ def _coin_db(tmp_path):
 
 def test_a_failed_price_fetch_keeps_the_stored_price(tmp_path):
     conn = _coin_db(tmp_path)
-    assert loader.fetch_coin_prices(conn, _Coins(), "missing") == (0, 0)
+    assert prices.fetch_coin_prices(conn, _Coins(), "missing") == (0, 0)
     assert _price_rows(conn, "binance") == {D3: Decimal(100)}
 
 
@@ -909,7 +943,7 @@ def test_the_missing_fill_replaces_the_latest_priced_day(tmp_path):
     # outside the held range is not stored.
     conn = _coin_db(tmp_path)
     client = _Coins([(D1, 1.0), (D2, 2.0), (D3, 3.0), (date(2024, 1, 4), 4.0)])
-    assert loader.fetch_coin_prices(conn, client, "missing") == (1, 3)
+    assert prices.fetch_coin_prices(conn, client, "missing") == (1, 3)
     assert _price_rows(conn, "binance") == {
         D1: Decimal(1), D2: Decimal(2), D3: Decimal(3)}
 
@@ -919,18 +953,18 @@ def test_a_failed_fx_fetch_keeps_the_stored_rate(tmp_path):
     _held(conn, "EUR", (D1, D2))
     conn.execute(
         "INSERT INTO coin_prices VALUES (?, 'EUR', 1.1, 'frankfurter', 0)", [D2])
-    assert loader.fetch_fx_rates(conn, _Coins(), "missing") == (0, 0)
+    assert prices.fetch_fx_rates(conn, _Coins(), "missing") == (0, 0)
     assert _price_rows(conn, "frankfurter") == {D2: Decimal("1.1")}
 
 
 def test_backfill_counts_only_the_rows_it_writes(tmp_path, monkeypatch):
     # A row a fetch wrote in the same second carries the same fetched_at;
     # it is not a backfilled gap.
-    monkeypatch.setattr(loader.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(prices.time, "time", lambda: 1000.0)
     conn = _fresh_db(tmp_path)
     _held(conn, "BTC", (D1, D2))
     conn.execute(
         "INSERT INTO coin_prices VALUES (?, 'BTC', 5, 'binance', 1000)", [D2])
-    assert loader.backfill_first_day_gaps(conn) == 1
-    assert loader.backfill_first_day_gaps(conn) == 0
+    assert prices.backfill_first_day_gaps(conn) == 1
+    assert prices.backfill_first_day_gaps(conn) == 0
     assert _price_rows(conn, "binance") == {D1: Decimal(5), D2: Decimal(5)}
