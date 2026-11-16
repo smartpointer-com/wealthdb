@@ -43,7 +43,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, documents, pdftotext, silver, srcfp
+from collectorkit import (bronze, derivations, documents, loader, pdftotext,
+                          silver, srcfp)
 from collectorkit.money import parse_money
 from collectorkit.parse import date_in_name, epoch_day
 
@@ -54,10 +55,10 @@ log = logging.getLogger("firstcitizens.load")
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
-# `parser_generations` (migration 0003) records which generation of the
-# statement parser read the documents `parsed_statements` marks. A moved one
-# clears the rates and the marks, and every statement is read again. The
-# extraction side is the `pdftotext` binary, pinned by the version it reports.
+# `document_derivations` (migration 0004) records which generation of the
+# statement parser read each statement document. A moved one reads every
+# statement again. The extraction side is the `pdftotext` binary, pinned by
+# the version it reports.
 STATEMENT_GENERATION_SCOPE = "statements"
 STATEMENT_GENERATION = srcfp.parser_fingerprint(
     [statement_parser], extra_tools=(("pdftotext", "-v"),))
@@ -349,10 +350,11 @@ def _check_rate(account_external_id: str, parsed: dict) -> None:
                 key.replace("_", " "), apy)
 
 
-def _store_rate(conn, account_external_id: str, sha: str, parsed: dict) -> None:
-    """Write a statement's rate row. The first document of an account and
-    cycle writes it; another with the same figures is a copy, and one with
-    other figures is kept out with a warning."""
+def _store_rate(conn, account_external_id: str, sha: str, parsed: dict) -> bool:
+    """Write a statement's rate row, and say whether it did. The first
+    document of an account and cycle writes it; another with the same
+    figures is a copy, and one with other figures is kept out with a
+    warning."""
     row = _rate_row(account_external_id, sha, parsed)
     held = conn.execute(
         "SELECT interest_rate, apy_earned, apy, source_sha256 FROM statement_rates"
@@ -360,28 +362,40 @@ def _store_rate(conn, account_external_id: str, sha: str, parsed: dict) -> None:
     if held is None:
         _check_rate(account_external_id, parsed)
         conn.execute("INSERT INTO statement_rates VALUES (?,?,?,?,?,?,?,?)", row)
-    elif tuple(held[:3]) != row[3:6]:
+        return True
+    if tuple(held[:3]) != row[3:6]:
         log.warning("statement %s ending %s: another copy states other rates; "
                     "keeping those of %s", bronze.log_id(account_external_id),
                     parsed["period_end"].isoformat(), held[3][:12])
+    return False
+
+
+# The statement documents, in the order the rate pass reads them.
+_STATEMENTS_SQL = (
+    "SELECT d.sha256, d.account_external_id, d.filename, r.run_dir"
+    "  FROM documents d JOIN dump_runs r ON r.snapshot_at = d.snapshot_at"
+    " WHERE d.doc_kind = 'statement'"
+    " ORDER BY d.doc_date, d.snapshot_at, d.sha256")
 
 
 def load_statement_rates(conn, bronze_dir: Path) -> int:
     """Read the rate of every statement document the current parser
-    generation has not read, and mark it read. Returns the documents read.
+    generation has not read, and record it read. Returns the documents
+    read.
 
-    A document whose file is gone is left unmarked, so a later load reads
-    it if the file comes back, and so is one whose pdftotext timed out. One
-    pdftotext cannot read is marked: its bytes will not read better under
-    the same parser. A missing pdftotext stops the pass. A document whose
-    statement period does not read warns: a layout the parser does not
-    know would otherwise give no rate in silence."""
-    pending = conn.execute(
-        "SELECT d.sha256, d.account_external_id, d.filename, r.run_dir"
-        "  FROM documents d JOIN dump_runs r ON r.snapshot_at = d.snapshot_at"
-        " WHERE d.doc_kind = 'statement'"
-        "   AND d.sha256 NOT IN (SELECT sha256 FROM parsed_statements)"
-        " ORDER BY d.doc_date, d.snapshot_at, d.sha256").fetchall()
+    The rows of every pending document go first, so a moved generation
+    reads every statement into an empty table, in the pass's order. A
+    document whose file is gone is left unrecorded, so a later load reads
+    it if the file comes back, and so is one whose pdftotext timed out.
+    One pdftotext cannot read is recorded: its bytes will not read better
+    under the same parser. A missing pdftotext stops the pass. A document
+    whose statement period does not read warns: a layout the parser does
+    not know would otherwise give no rate in silence."""
+    pending = derivations.pending_derivations(
+        conn, STATEMENT_GENERATION_SCOPE, STATEMENT_GENERATION,
+        _STATEMENTS_SQL)
+    conn.executemany("DELETE FROM statement_rates WHERE source_sha256 = ?",
+                     [(row[0],) for row in pending])
     read = 0
     for sha, acct, filename, run_dir in pending:
         path = _statement_path(bronze_dir, run_dir, acct, filename)
@@ -402,26 +416,18 @@ def load_statement_rates(conn, bronze_dir: Path) -> int:
             if parsed is None:
                 log.warning("statement %s: %s: no statement period read; "
                             "no rate", bronze.log_id(acct), filename)
-        if parsed is not None and parsed["interest_rate"] is not None:
-            _store_rate(conn, acct, sha, parsed)
-        conn.execute("INSERT INTO parsed_statements VALUES (?)", (sha,))
+        stored = (parsed is not None and parsed["interest_rate"] is not None
+                  and _store_rate(conn, acct, sha, parsed))
+        derivations.record_derivation(conn, sha, STATEMENT_GENERATION_SCOPE,
+                                      STATEMENT_GENERATION, int(stored))
         read += 1
     return read
 
 
 def refresh_statement_rates(conn, bronze_dir: Path) -> None:
-    """The statement pass of a load, in one transaction. A moved parser
-    generation first clears what the old one read."""
+    """The statement pass of a load, in one transaction."""
     with silver.transaction(conn):
-        if silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
-                                   STATEMENT_GENERATION):
-            log.info("the statement parser has changed since silver was "
-                     "written; reading every statement again")
-            conn.execute("DELETE FROM statement_rates")
-            conn.execute("DELETE FROM parsed_statements")
         read = load_statement_rates(conn, bronze_dir)
-        silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
-                                STATEMENT_GENERATION)
     if read:
         log.info("read the rates of %d statement(s)", read)
 
@@ -461,77 +467,81 @@ def _read_history(path: Path) -> tuple[str | None, list]:
             txs if isinstance(txs, list) else [])
 
 
-def load_run(conn: sqlite3.Connection, run_dir: Path) -> None:
-    """Load one pending bronze run dir (`bronze.pending_run_dirs`) in one
-    transaction. Idempotent."""
-    snapshot_at = bronze.parse_run_ts(run_dir.name)
+def load_run(conn: sqlite3.Connection, run: loader.Run) -> int:
+    """Load one pending bronze run dir (`bronze.pending_run_dirs`). Returns
+    the accounts its roster listed. The frame makes the run one
+    transaction, so a failure part-way leaves silver as it was, with no
+    dump_runs row, and the next load retries the whole dump."""
+    run_dir, snapshot_at = run.dir, run.snapshot_at
     accounts = _read_accounts(run_dir)
     # Map a statement dir's safe-stemmed name back to the raw account id, so a
     # document links to the same account_external_id the roster + history use.
     stem_to_id = {bronze.safe_stem(a.get("id", "")): str(a.get("id", ""))
                   for a in accounts if a.get("id")}
 
-    # One transaction per dump: a failure part-way leaves silver as it was,
-    # with no dump_runs row, so the next load retries the whole dump.
-    with silver.transaction(conn):
-        for acct in accounts:
-            _insert_account(conn, snapshot_at, acct)
-        bronze.record_run_listing(conn, snapshot_at, _listed_ids(accounts))
+    for acct in accounts:
+        _insert_account(conn, snapshot_at, acct)
+    bronze.record_run_listing(conn, snapshot_at, _listed_ids(accounts))
 
-        hist_dir = run_dir / "history"
-        if hist_dir.is_dir():
-            for hist in sorted(hist_dir.glob("*.json")):
-                acct_id, txs = _read_history(hist)
-                if not acct_id:
-                    acct_id = stem_to_id.get(hist.stem, hist.stem)
-                for tx in history_rows(acct_id, txs):
-                    _insert_transaction(conn, acct_id, tx)
+    hist_dir = run_dir / "history"
+    if hist_dir.is_dir():
+        for hist in sorted(hist_dir.glob("*.json")):
+            acct_id, txs = _read_history(hist)
+            if not acct_id:
+                acct_id = stem_to_id.get(hist.stem, hist.stem)
+            for tx in history_rows(acct_id, txs):
+                _insert_transaction(conn, acct_id, tx)
 
-        stmt_dir = run_dir / "statements"
-        if stmt_dir.is_dir():
-            for acct_dir in sorted(p for p in stmt_dir.iterdir()
-                                   if p.is_dir()):
-                acct_id = stem_to_id.get(acct_dir.name, acct_dir.name)
-                for pdf in sorted(acct_dir.glob("*.pdf")):
-                    _insert_document(conn, snapshot_at, acct_id, pdf)
-
-        conn.execute(
-            "INSERT OR REPLACE INTO dump_runs (snapshot_at,"
-            " silver_schema_version, run_dir) VALUES (?,?,?)",
-            (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
-    log.info("loaded %s (%d accounts)", run_dir.name, len(accounts))
+    stmt_dir = run_dir / "statements"
+    if stmt_dir.is_dir():
+        for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
+            acct_id = stem_to_id.get(acct_dir.name, acct_dir.name)
+            for pdf in sorted(acct_dir.glob("*.pdf")):
+                _insert_document(conn, snapshot_at, acct_id, pdf)
+    return len(accounts)
 
 
-def main(argv: list[str]) -> int:
+def _run_columns(run: loader.Run) -> dict:
+    """The run's `dump_runs` row; its `run_dir` is the path as given."""
+    return {"snapshot_at": run.snapshot_at,
+            "silver_schema_version": run.version, "run_dir": str(run.dir)}
+
+
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="Bronze tree root (holds the <UTC-ts>/ run dirs).")
     p.add_argument("--silver-db", type=Path, default=None,
                    help="Silver SQLite path. Default: <bronze-dir>/firstcitizens.db.")
-    cli.add_standard_args(p, verb="load")
-    args = p.parse_args(argv)
-    cli.configure_logging(args.verbose)
+    return p
 
-    db_path = args.silver_db or (args.bronze_dir / "firstcitizens.db")
-    if args.force:
-        silver.reset(db_path)
-    conn = silver.open_db(db_path)
-    try:
-        silver.apply_migrations(conn, MIGRATIONS_DIR)
-        with silver.transaction(conn):
-            bronze.backfill_run_listings(
-                conn, args.bronze_dir,
-                lambda d: _listed_ids(_read_accounts(d, quiet=True)))
-        loaded = 0
-        for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
-            load_run(conn, run_dir)
-            loaded += 1
-        refresh_statement_rates(conn, args.bronze_dir)
-        log.info("done: %d run(s) ingested into %s", loaded, db_path)
-    finally:
-        conn.close()
-    return 0
+
+def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    return args.silver_db or (args.bronze_dir / "firstcitizens.db"), args.bronze_dir
+
+
+def _backfill_listings(conn: sqlite3.Connection, load: loader.Load) -> None:
+    """Record the roster listing of each loaded run that has none."""
+    with silver.transaction(conn):
+        bronze.backfill_run_listings(
+            conn, load.bronze_dir,
+            lambda d: _listed_ids(_read_accounts(d, quiet=True)))
+
+
+def _statement_pass(conn: sqlite3.Connection, load: loader.Load) -> None:
+    refresh_statement_rates(conn, load.bronze_dir)
+
+
+SPEC = loader.LoaderSpec(
+    name="firstcitizens", schema=MIGRATIONS_DIR, load_run=load_run,
+    parser=_parser, counts=("accounts",), defaults=_paths,
+    before_runs=_backfill_listings, after_runs=_statement_pass,
+    run_columns=_run_columns)
+
+
+def main(argv: list[str] | None = None) -> int:
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

@@ -66,7 +66,7 @@ COPIES = {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
         "documents": UNREAD}),
     "firstcitizens": Copy(("firstcitizens/testdata/silver_schema.sql",), {
-        "parsed_statements": BOOKKEEPING, "parser_generations": BOOKKEEPING}),
+        "document_derivations": BOOKKEEPING}),
     "fred": Copy(("fred/testdata/silver_schema.sql",), {
         "schema_meta": VERSION}),
     "manual": Copy(("manual/testdata/silver_schema.sql",)),

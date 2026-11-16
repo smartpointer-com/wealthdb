@@ -56,7 +56,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, documents, money, parse, pdftotext, silver
+from collectorkit import bronze, documents, loader, money, parse, pdftotext, silver
 
 import listing_parser
 import stitch
@@ -363,25 +363,12 @@ def _read_accounts(run_dir: Path, *, quiet: bool = False) -> list[dict]:
     return [a for a in data if isinstance(a, dict)] if isinstance(data, list) else []
 
 
-def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
-    """Load one bronze run dir, recording what the download covered in
-    `run_windows` for the supplied-listing stitch. Returns True if ingested,
-    False if skipped (non-complete dump, or already loaded). Idempotent; the
-    caller owns the transaction (`main` makes each run one)."""
-    run_json = run_dir / "run.json"
-    if not bronze.run_is_loadable(run_dir):
-        log.info("skip %s (%s)", run_dir.name,
-                 f"status={bronze.run_status(run_json)}" if run_json.is_file()
-                 else "no run.json")
-        return False
-    try:
-        snapshot_at = bronze.parse_run_ts(run_dir.name)
-    except ValueError:
-        log.warning("skip %s (unparseable run slug)", run_dir.name)
-        return False
-    if snapshot_at in silver.loaded_snapshots(conn):
-        return False
-
+def load_run(conn: sqlite3.Connection, run: loader.Run) -> int:
+    """Load one pending bronze run, recording what the download covered in
+    `run_windows` for the supplied-listing stitch. Returns the number of
+    accounts its roster listed. The frame owns the transaction and writes
+    the run's `dump_runs` row."""
+    run_dir, snapshot_at = run.dir, run.snapshot_at
     accounts = _read_accounts(run_dir)
     for acct in accounts:
         iban = _iban(acct)
@@ -417,12 +404,13 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
                 _insert_document(conn, snapshot_at, acct_dir.name, pdf)
 
     _insert_windows(conn, snapshot_at, run_windows(run_dir))
-    conn.execute(
-        "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version,"
-        " run_dir) VALUES (?,?,?)",
-        (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
-    log.info("loaded %s (%d account(s))", run_dir.name, len(accounts))
-    return True
+    return len(accounts)
+
+
+def _run_columns(run: loader.Run) -> dict:
+    """The run's `dump_runs` row; its `run_dir` is the path as given."""
+    return {"snapshot_at": run.snapshot_at,
+            "silver_schema_version": run.version, "run_dir": str(run.dir)}
 
 
 # ============================================================
@@ -923,7 +911,7 @@ def load_supplied(conn: sqlite3.Connection, bronze_dir: Path,
     return wrote or trimmed > 0
 
 
-def main(argv: list[str]) -> int:
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="Bronze tree root (holds the <UTC-ts>/ run dirs).")
@@ -933,33 +921,38 @@ def main(argv: list[str]) -> int:
                    help="Transaction listings supplied by the bank, stitched "
                         "into silver on every load (DESIGN.md §I). Default: "
                         f"<bronze-dir>/{SUPPLIED_DIRNAME}.")
-    cli.add_standard_args(p, verb="load")
-    args = p.parse_args(argv)
-    cli.configure_logging(args.verbose)
+    return p
 
-    db_path = args.silver_db or (args.bronze_dir / "raiffeisen_at.db")
-    supplied_dir = args.supplied_dir or (args.bronze_dir / SUPPLIED_DIRNAME)
-    if args.force:
-        silver.reset(db_path)
-    conn = silver.open_db(db_path)
-    try:
-        silver.apply_migrations(conn, MIGRATIONS_DIR)
-        with silver.transaction(conn):
-            bronze.backfill_run_listings(
-                conn, args.bronze_dir,
-                lambda d: _listed_ids(_read_accounts(d, quiet=True)))
-        loaded = 0
-        for run_dir in bronze.iter_run_dirs(args.bronze_dir):
-            with silver.transaction(conn):          # one atomic load per run
-                if load_run(conn, run_dir):
-                    loaded += 1
-        log.info("done: %d run(s) ingested into %s", loaded, db_path)
-        load_supplied(conn, args.bronze_dir, supplied_dir,
-                      live_changed=loaded > 0)
-    finally:
-        conn.close()
-    return 0
+
+def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    return args.silver_db or (args.bronze_dir / "raiffeisen_at.db"), args.bronze_dir
+
+
+def _backfill_listings(conn: sqlite3.Connection, load: loader.Load) -> None:
+    """Record the roster listing of each loaded run that has none."""
+    with silver.transaction(conn):
+        bronze.backfill_run_listings(
+            conn, load.bronze_dir,
+            lambda d: _listed_ids(_read_accounts(d, quiet=True)))
+
+
+def _stitch_supplied(conn: sqlite3.Connection, load: loader.Load) -> None:
+    """The supplied-listing pass, after the runs (DESIGN.md §I)."""
+    supplied_dir = load.args.supplied_dir or (load.bronze_dir / SUPPLIED_DIRNAME)
+    load_supplied(conn, load.bronze_dir, supplied_dir,
+                  live_changed=load.loaded > 0)
+
+
+SPEC = loader.LoaderSpec(
+    name="raiffeisen_at", schema=MIGRATIONS_DIR, load_run=load_run,
+    parser=_parser, counts=("account(s)",), defaults=_paths,
+    before_runs=_backfill_listings, after_runs=_stitch_supplied,
+    run_columns=_run_columns)
+
+
+def main(argv: list[str] | None = None) -> int:
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

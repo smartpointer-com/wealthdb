@@ -290,9 +290,9 @@ for its cycle and its rate lines, into `statement_rates`:
 
 The bank renders a statement anew on every download. The first copy
 read writes the cycle's row. A copy with other figures is kept out with
-a warning. `parsed_statements` marks each document read, so a load
-reads only new documents. A moved parser generation reads them all
-again.
+a warning. `document_derivations` records each document read and the
+parser generation that read it, so a load reads only new documents. A
+moved parser generation reads them all again.
 
 The roster keeps a row only when an account changed. The
 `run_accounts` table records the accounts each run listed, so a run

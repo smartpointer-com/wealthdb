@@ -19,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import load  # noqa: E402
+from collectorkit import incremental  # noqa: E402
 from listing_fixtures import DAY, IBAN as LEDGER_IBAN, Ledger, ledger  # noqa: E402
 
-MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 
 # Synthetic IBAN: placeholder-letter body (root AGENTS.md §4) with a numeric
 # tail so the last-4 mask has something to show. Never a real IBAN.
@@ -202,17 +202,20 @@ def _write_bronze_run(root: Path, slug: str) -> Path:
     return run
 
 
-def _load(tmp_path: Path):
-    conn = load.silver.open_db(tmp_path / "raiffeisen_at.db")
-    load.silver.apply_migrations(conn, MIGRATIONS)
+def _load_runs(tmp_path: Path, bronze_dir: Path) -> sqlite3.Connection:
+    """Load every pending run of `bronze_dir` into a silver beside it."""
+    db = tmp_path / "raiffeisen_at.db"
+    assert load.main(["--bronze-dir", str(bronze_dir), "--silver-db", str(db),
+                      "--supplied-dir", str(tmp_path / "no-listings")]) == 0
+    conn = load.silver.open_db(db)
     return conn
 
 
 def test_load_run_end_to_end(tmp_path):
     bronze_dir = tmp_path / "bronze"
     _write_bronze_run(bronze_dir, "20260815T120000Z")
-    conn = _load(tmp_path)
-    assert load.load_run(conn, bronze_dir / "20260815T120000Z") is True
+    conn = _load_runs(tmp_path, bronze_dir)
+    assert load.silver.loaded_snapshots(conn) == {_epoch(2026, 8, 15) + 12 * 3600}
 
     acct = conn.execute("SELECT account_external_id, account_type, mask, "
                         "currency, balance, payload FROM accounts").fetchone()
@@ -243,16 +246,17 @@ def test_load_run_end_to_end(tmp_path):
     assert doc["doc_date"] == _epoch(2026, 8, 1)
     assert doc["doc_kind"] == "statement" and doc["file_format"] == "pdf"
 
+    run = conn.execute("SELECT run_dir FROM dump_runs").fetchone()
+    assert run["run_dir"] == str(bronze_dir / "20260815T120000Z")
 
-def test_load_run_is_idempotent(tmp_path):
+
+def test_load_is_idempotent(tmp_path):
     bronze_dir = tmp_path / "bronze"
     _write_bronze_run(bronze_dir, "20260815T120000Z")
-    conn = _load(tmp_path)
-    run = bronze_dir / "20260815T120000Z"
-    assert load.load_run(conn, run) is True
-    assert load.load_run(conn, run) is False        # already-loaded snapshot
+    _load_runs(tmp_path, bronze_dir).close()
+    conn = _load_runs(tmp_path, bronze_dir)          # already-loaded snapshot
     for table, n in (("transactions", 2), ("accounts", 1),
-                     ("daily_balances", 2), ("documents", 1)):
+                     ("daily_balances", 2), ("documents", 1), ("dump_runs", 1)):
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == n
 
 
@@ -260,9 +264,7 @@ def test_account_content_dedup_across_runs(tmp_path):
     bronze_dir = tmp_path / "bronze"
     _write_bronze_run(bronze_dir, "20260815T120000Z")
     _write_bronze_run(bronze_dir, "20260816T120000Z")   # identical roster
-    conn = _load(tmp_path)
-    for slug in ("20260815T120000Z", "20260816T120000Z"):
-        load.load_run(conn, bronze_dir / slug)
+    conn = _load_runs(tmp_path, bronze_dir)
     # Unchanged roster payload → a single accounts row despite two runs.
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
 
@@ -315,9 +317,9 @@ def test_non_complete_run_skipped(tmp_path):
     bronze_dir = tmp_path / "bronze"
     run = _write_bronze_run(bronze_dir, "20260815T120000Z")
     (run / "run.json").write_text(json.dumps({"status": "in-progress"}))
-    conn = _load(tmp_path)
-    assert load.load_run(conn, run) is False
+    conn = _load_runs(tmp_path, bronze_dir)
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+    assert load.silver.loaded_snapshots(conn) == set()
 
 
 def test_run_dir_without_manifest_neither_loaded_nor_recorded(tmp_path):
@@ -328,13 +330,14 @@ def test_run_dir_without_manifest_neither_loaded_nor_recorded(tmp_path):
     run = _write_bronze_run(bronze_dir, "20260815T120000Z")
     manifest = (run / "run.json").read_text()
     (run / "run.json").unlink()
-    conn = _load(tmp_path)
-    assert load.load_run(conn, run) is False
+    conn = _load_runs(tmp_path, bronze_dir)
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
     assert load.silver.loaded_snapshots(conn) == set()
+    conn.close()
 
     (run / "run.json").write_text(manifest)
-    assert load.load_run(conn, run) is True
+    conn = _load_runs(tmp_path, bronze_dir)
+    assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
 
 
 # ============================================================
@@ -760,3 +763,15 @@ def test_supplied_balances_give_way_to_a_live_balance(tmp_path):
         "SELECT balance_date FROM daily_balances WHERE source='supplied_listing'")}
     assert supplied_days and not live_days & supplied_days
     assert max(supplied_days) < min(live_days)
+
+
+def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
+    # A listing beside two downloads, the later one deeper: it takes days
+    # over from the listing and revises the roster balance.
+    fixture = tmp_path / "fixture"
+    runs = [_ledger_run(fixture, date(2024, 4, 1), date(2024, 6, 29)),
+            _ledger_run(fixture, date(2024, 2, 1), date(2024, 6, 30))]
+    _drop_listing(tmp_path, "a.pdf", date(2024, 1, 1), date(2024, 6, 30))
+    incremental.check(load.main, lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze),
+        "--supplied-dir", str(tmp_path / "supplied")], runs, tmp_path / "work")

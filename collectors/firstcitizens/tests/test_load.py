@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+from collectorkit import incremental  # noqa: E402
 
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 
@@ -217,8 +218,7 @@ def _load(tmp_path: Path) -> load.sqlite3.Connection:
 def test_load_run_end_to_end(tmp_path):
     bronze_dir = tmp_path / "bronze"
     _write_bronze_run(bronze_dir, "20260801T120000Z")
-    conn = _load(tmp_path)
-    load.load_run(conn, bronze_dir / "20260801T120000Z")
+    conn = _main(tmp_path, bronze_dir)
 
     acct = conn.execute("SELECT account_external_id, account_type, nickname, "
                         "mask, currency, balance FROM accounts").fetchone()
@@ -269,9 +269,7 @@ def test_account_content_dedup_across_runs(tmp_path):
     bronze_dir = tmp_path / "bronze"
     _write_bronze_run(bronze_dir, "20260801T120000Z")
     _write_bronze_run(bronze_dir, "20260802T120000Z")   # identical roster
-    conn = _load(tmp_path)
-    for slug in ("20260801T120000Z", "20260802T120000Z"):
-        load.load_run(conn, bronze_dir / slug)
+    conn = _main(tmp_path, bronze_dir)
     # Unchanged roster payload → a single accounts row despite two runs.
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
 
@@ -338,20 +336,21 @@ def test_failed_load_leaves_silver_unchanged(tmp_path, monkeypatch):
     # One dump is one transaction: a failure part-way rolls back the rows
     # already written and records no dump_runs row, so the next load retries.
     bronze_dir = tmp_path / "bronze"
-    run = _write_bronze_run(bronze_dir, "20260801T120000Z")
-    conn = _load(tmp_path)
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
 
     def boom(*_args, **_kwargs):
         raise OSError("synthetic read failure")
 
+    insert_document = load._insert_document
     monkeypatch.setattr(load, "_insert_document", boom)
     with pytest.raises(OSError):
-        load.load_run(conn, run)
+        _main(tmp_path, bronze_dir)
+    conn = load.silver.open_db(tmp_path / "firstcitizens.db")
     for table in ("accounts", "transactions", "documents", "dump_runs"):
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
-    monkeypatch.undo()
-    load.load_run(conn, run)
+    monkeypatch.setattr(load, "_insert_document", insert_document)
+    conn = _main(tmp_path, bronze_dir)
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 3
 
 
@@ -417,7 +416,7 @@ def test_a_statement_without_a_rate_writes_nothing(tmp_path, monkeypatch):
     _with_texts(monkeypatch, [_stmt_text(rate=None, apy=None)])
     conn = _main(tmp_path, bronze_dir)
     assert _rates(conn) == []
-    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 1
 
 
 def test_a_yield_the_rate_cannot_give_warns(tmp_path, monkeypatch, caplog):
@@ -462,7 +461,7 @@ def test_a_copy_with_the_same_rates_writes_nothing(tmp_path, monkeypatch, caplog
         conn = _main(tmp_path, bronze_dir)
     assert len(read) == 2 and caplog.text == ""
     assert [r[3] for r in _rates(conn)] == [3.07]
-    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 2
 
 
 def test_the_sentence_form_yield_is_checked(tmp_path, monkeypatch, caplog):
@@ -489,10 +488,7 @@ def test_a_missing_pdftotext_stops_the_pass(tmp_path, monkeypatch):
     with pytest.raises(load.pdftotext.ToolMissing):
         load.main(["--bronze-dir", str(bronze_dir), "--silver-db", str(db)])
     conn = load.silver.open_db(db)
-    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM parser_generations"
-                        " WHERE scope = ?", (load.STATEMENT_GENERATION_SCOPE,)
-                        ).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 0
 
 
 def test_a_moved_parser_reads_every_statement_again(tmp_path, monkeypatch):
@@ -504,7 +500,40 @@ def test_a_moved_parser_reads_every_statement_again(tmp_path, monkeypatch):
     conn = _main(tmp_path, bronze_dir)
     assert len(read) == 2
     assert [r[3] for r in _rates(conn)] == [4.04]
-    assert conn.execute("SELECT generation FROM parser_generations").fetchone()[0] == "another"
+    assert [tuple(r) for r in conn.execute(
+        "SELECT scope, generation, row_count FROM document_derivations")] == [
+        ("statements", "another", 1)]
+
+
+def test_the_marks_of_a_silver_before_derivations_carry_over(tmp_path, monkeypatch):
+    # A silver at schema version 3 marked its documents in parsed_statements
+    # under the generation parser_generations stamped. Under that same
+    # generation nothing is read again; under another, everything is.
+    bronze_dir = tmp_path / "bronze"
+    _write_bronze_run(bronze_dir, "20260801T120000Z")
+    db = tmp_path / "firstcitizens.db"
+    read = _with_texts(monkeypatch, [_stmt_text(), _stmt_text(rate="4.04%", apy="4.11%")])
+    _main(tmp_path, bronze_dir).close()
+    for generation, reads in ((load.STATEMENT_GENERATION, 1), ("older", 2)):
+        conn = load.sqlite3.connect(db)
+        (sha, count), = conn.execute(
+            "SELECT content_sha256, row_count FROM document_derivations")
+        conn.executescript(f"""
+            DROP TABLE document_derivations;
+            DELETE FROM schema_meta WHERE silver_schema_version = 4;
+            CREATE TABLE parsed_statements (sha256 TEXT NOT NULL PRIMARY KEY);
+            CREATE TABLE parser_generations (scope TEXT NOT NULL PRIMARY KEY,
+                generation TEXT NOT NULL, stamped_at INTEGER NOT NULL);
+            INSERT INTO parsed_statements VALUES ('{sha}');
+            INSERT INTO parser_generations VALUES ('statements', '{generation}', 0);
+        """)
+        conn.close()
+        conn = _main(tmp_path, bronze_dir)
+        assert len(read) == reads
+        assert [tuple(r) for r in conn.execute(
+            "SELECT scope, generation, row_count FROM document_derivations")] == [
+            ("statements", load.STATEMENT_GENERATION, count)]
+    assert [r[3] for r in _rates(conn)] == [4.04]
 
 
 def test_a_statement_gone_from_bronze_is_read_later(tmp_path, monkeypatch, caplog):
@@ -512,15 +541,17 @@ def test_a_statement_gone_from_bronze_is_read_later(tmp_path, monkeypatch, caplo
     run = _write_bronze_run(bronze_dir, "20260801T120000Z")
     pdf = run / "statements" / ACCT_ID / "07-31-2026.pdf"
     body = pdf.read_bytes()
-    conn = _load(tmp_path)
-    load.load_run(conn, run)
+    refresh = load.refresh_statement_rates
+    monkeypatch.setattr(load, "refresh_statement_rates", lambda *a: None)
+    _main(tmp_path, bronze_dir).close()
+    monkeypatch.setattr(load, "refresh_statement_rates", refresh)
     pdf.unlink()
     read = _with_texts(monkeypatch, [_stmt_text()])
     with caplog.at_level("WARNING", logger=load.log.name):
-        load.refresh_statement_rates(conn, bronze_dir)
+        _main(tmp_path, bronze_dir).close()
     assert read == [] and "not in bronze" in caplog.text
     pdf.write_bytes(body)
-    load.refresh_statement_rates(conn, bronze_dir)
+    conn = _main(tmp_path, bronze_dir)
     assert read == ["07-31-2026.pdf"] and len(_rates(conn)) == 1
 
 
@@ -536,7 +567,7 @@ def test_an_unreadable_statement_is_marked(tmp_path, monkeypatch, caplog):
         conn = _main(tmp_path, bronze_dir)
     assert "pdftotext exited 1" in caplog.text
     assert _rates(conn) == []
-    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 1
 
 
 def test_a_timed_out_statement_is_read_again(tmp_path, monkeypatch, caplog):
@@ -553,7 +584,7 @@ def test_a_timed_out_statement_is_read_again(tmp_path, monkeypatch, caplog):
     with caplog.at_level("WARNING", logger=load.log.name):
         conn = _main(tmp_path, bronze_dir)
     assert "timed out" in caplog.text
-    assert conn.execute("SELECT COUNT(*) FROM parsed_statements").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 0
 
 
 def test_a_statement_of_an_unknown_layout_warns(tmp_path, monkeypatch, caplog):
@@ -565,3 +596,26 @@ def test_a_statement_of_an_unknown_layout_warns(tmp_path, monkeypatch, caplog):
         conn = _main(tmp_path, bronze_dir)
     assert "no statement period read" in caplog.text
     assert _rates(conn) == []
+
+
+def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path, monkeypatch):
+    # The later run lists another account, books a new movement and holds
+    # the cycle's statement rendered anew, with other rates.
+    monkeypatch.setattr(load.statement_parser.pdftotext, "layout_text",
+                        lambda path, timeout=None: Path(path).read_text())
+    fixture = tmp_path / "fixture"
+    first = _write_bronze_run(fixture, "20260801T120000Z")
+    second = _write_bronze_run(fixture, "20260802T120000Z")
+    (first / "statements" / ACCT_ID / "07-31-2026.pdf").write_text(_stmt_text())
+    (second / "statements" / ACCT_ID / "07-31-2026.pdf").write_text(
+        _stmt_text(rate="4.35%", apy="4.44%"))
+    roster = json.loads((second / "accounts.json").read_text())
+    (second / "accounts.json").write_text(json.dumps(
+        roster + [{**roster[0], "id": "900002"}]))
+    history = json.loads((second / "history" / f"{ACCT_ID}.json").read_text())
+    history["transactions"].append(
+        _tx("T4", "7/18/2026", "7.50", True, "2250.00", "BAKERY"))
+    (second / "history" / f"{ACCT_ID}.json").write_text(json.dumps(history))
+    incremental.check(load.main, lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze)],
+        [first, second], tmp_path / "work")
