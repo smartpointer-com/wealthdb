@@ -10,53 +10,106 @@ import (
 
 const valueTol = 1e-6
 
-// computeEntityReturn produces the per-bucket rows (when --period != total) plus
-// the since-inception summary row for one entity built from its constituent
-// asset accounts. A single-account accounts-grain entity is the degenerate case:
-// no synthetic onboarding, no netting — exact.
-func computeEntityReturn(assets []*accountData, p ReturnParams, toDay int64, fx fxBounds) []ReturnRow {
-	rows, _ := computeEntityReturnFlows(assets, p, toDay, fx)
-	return rows
+// entity is one computed unit of a grain: its asset accounts and its
+// liabilities, its identity, and what every window of it reads alike.
+type entity struct {
+	grain       *grain
+	assets      []*accountData
+	liabilities []*accountData
+	// src is the entity's silver_source_id: the source every asset shares,
+	// "" for the whole, which spans every source.
+	src, id, label string
+	// value is the entity's value by day (entityValue).
+	value func(day int64) (float64, bool)
+	// snaps is the union of the assets' real snapshot days, for inception,
+	// the canonical headline bucket, and empty- and stale-bucket detection;
+	// gap is their median gap (medianSnapGap).
+	snaps []int64
+	gap   float64
+	gapOK bool
 }
 
-// computeEntityReturnFlows is computeEntityReturn with the entity's flow series
-// beside its rows, for a caller that reads both (the bridge).
-func computeEntityReturnFlows(assets []*accountData, p ReturnParams, toDay int64, fx fxBounds) ([]ReturnRow, []returns.Flow) {
-	// The accounts/sources/portfolios grains group by source, so every asset
-	// shares one src; the global grain spans all sources, so there is no single
-	// silver_source — assets[0].src would be a non-deterministic map pick.
-	src := ""
-	if p.Level != "global" {
-		src = assets[0].src
+// entities are the grain's entities over ds, in key order, each with its
+// members sorted (groupAccounts). An entity whose every member is hidden
+// (entityHidden) is left out: its values and flows live inside every
+// aggregate that holds it.
+func (ds *returnsDataset) entities(g *grain, excl *ReturnsExclude, hide *ReturnsHide) []*entity {
+	groups, order := groupAccounts(g.name, ds.accts, excl)
+	out := make([]*entity, 0, len(order))
+	for _, key := range order {
+		members := groups[key]
+		if entityHidden(g, members, hide) {
+			continue
+		}
+		e := &entity{grain: g}
+		e.liabilities, e.assets = splitLiabilities(members)
+		if len(e.assets) > 0 {
+			if !g.whole {
+				e.src = e.assets[0].src
+			}
+			e.id, e.label = g.ident(e.assets[0])
+			e.value = entityValue(e.assets)
+			e.snaps = unionSnapshotDays(e.assets)
+			e.gap, e.gapOK = medianSnapGap(e.snaps)
+		}
+		out = append(out, e)
 	}
-	entityID, label := entityIdentity(p.Level, assets)
+	return out
+}
 
-	winFrom, winTo, incFlags := entityWindow(assets, p, toDay)
-	if winTo <= winFrom {
-		return nil, nil
+// whole is the global grain's entity, nil where it holds no asset.
+func (ds *returnsDataset) whole(excl *ReturnsExclude) *entity {
+	for _, e := range ds.entities(grainGlobal, excl, nil) {
+		if len(e.assets) > 0 {
+			return e
+		}
 	}
-	aggregate := len(assets) > 1 || p.Level != "accounts"
+	return nil
+}
 
-	av := entityValue(assets)
+// entityRun is an entity over one window: the window and its flags, and the
+// entity's flows there (entityFlows).
+type entityRun struct {
+	*entity
+	p     ReturnParams
+	toDay int64
+	win   daySpan
+	flags []string
+	// aggregate: the flows are assembled across accounts, with synthetic
+	// onboarding and netting; one account of the single grain is exact.
+	aggregate     bool
+	flows, rolled []returns.Flow
+	tags          []string
+}
 
-	flows, qFlowTags, rolled := entityFlows(assets, p, winFrom, winTo, aggregate)
+// run is the entity over p's window, ending no later than toDay; nil where
+// the window holds no day.
+func (e *entity) run(p ReturnParams, toDay int64) *entityRun {
+	from, to, flags := entityWindow(e.assets, p, toDay)
+	if to <= from {
+		return nil
+	}
+	r := &entityRun{entity: e, p: p, toDay: toDay, win: daySpan{from, to}, flags: flags,
+		aggregate: len(e.assets) > 1 || !e.grain.single}
+	r.flows, r.tags, r.rolled = entityFlows(e.assets, p, from, to, r.aggregate)
+	return r
+}
 
-	// Snapshot-day union (real snapshots) for inception, the canonical headline
-	// bucket, and empty- / stale-bucket detection.
-	snaps := unionSnapshotDays(assets)
-	snapGap, snapGapOK := medianSnapGap(snaps)
-
+// rows are the run's per-bucket rows (when --period != total) and its
+// since-inception summary row.
+func (r *entityRun) rows(fx fxBounds) []ReturnRow {
+	p, winFrom, winTo, av, flows := r.p, r.win.from, r.win.to, r.value, r.flows
 	base := ReturnRow{
-		SilverSourceID: src, EntityID: entityID, EntityLabel: label,
+		SilverSourceID: r.src, EntityID: r.id, EntityLabel: r.label,
 		StartDay: winFrom, EndDay: winTo,
 	}
 
 	// Entity-level quality, carried on the summary row (and the
 	// nonpositive-base row that replaces it).
-	entityQ := append([]string{}, incFlags...)
-	entityQ = append(entityQ, qFlowTags...)
-	entityQ = append(entityQ, regimeFlags(assets, winFrom, winTo)...)
-	if preFxHistory(assets, p.OutCcy, winFrom, fx) {
+	entityQ := append([]string{}, r.flags...)
+	entityQ = append(entityQ, r.tags...)
+	entityQ = append(entityQ, regimeFlags(r.assets, winFrom, winTo)...)
+	if preFxHistory(r.assets, p.OutCcy, winFrom, fx) {
 		entityQ = append(entityQ, "pre_fx_history")
 	}
 	entityQ = append(entityQ, "after_tax")
@@ -64,14 +117,14 @@ func computeEntityReturnFlows(assets []*accountData, p ReturnParams, toDay int64
 	v0, ok0 := av(winFrom)
 	if !ok0 || v0 <= valueTol {
 		// Non-positive / unpriceable opening base ⇒ no meaningful return.
-		r := base
-		r.Period, r.IsSummary = "total", true
-		r.StartValue = decStrOrNil(v0, ok0)
+		row := base
+		row.Period, row.IsSummary = "total", true
+		row.StartValue = decStrOrNil(v0, ok0)
 		if vEnd, okE := av(winTo); okE {
-			r.EndValue = decStr(vEnd)
+			row.EndValue = decStr(vEnd)
 		}
-		r.Quality = append(entityQ, "nonpositive_base")
-		return []ReturnRow{r}, flows
+		row.Quality = append(entityQ, "nonpositive_base")
+		return []ReturnRow{row}
 	}
 
 	var out []ReturnRow
@@ -84,7 +137,7 @@ func computeEntityReturnFlows(assets []*accountData, p ReturnParams, toDay int64
 		prevEmpty := false
 		for _, b := range returns.BucketBoundaries(winFrom, winTo, periodKind(p.Period)) {
 			row := bucketRow(base, b[0], b[1], p.Period, av, flows)
-			empty := !hasSnapshotIn(snaps, b[0], b[1])
+			empty := !hasSnapshotIn(r.snaps, b[0], b[1])
 			switch {
 			case empty:
 				row.Quality = append(row.Quality, "empty_bucket", "carried_forward")
@@ -94,7 +147,7 @@ func computeEntityReturnFlows(assets []*accountData, p ReturnParams, toDay int64
 			// A bucket can hold snapshots yet end on a value far older
 			// than the source's own cadence (a feed that died
 			// mid-bucket) — invisible to the empty/carried flags.
-			if !empty && staleAt(snaps, b[1], snapGap, snapGapOK) {
+			if !empty && staleAt(r.snaps, b[1], r.gap, r.gapOK) {
 				row.Quality = append(row.Quality, "stale_snapshot")
 			}
 			prevEmpty = empty
@@ -103,13 +156,12 @@ func computeEntityReturnFlows(assets []*accountData, p ReturnParams, toDay int64
 	}
 
 	// Since-inception summary row, cumulative TWR pinned to the canonical bucket.
-	residue := residueEnds(assets, p, toDay, aggregate)
-	sr := summaryRow(base, winFrom, winTo, av, flows, rolled, snaps, residue, assets, p, entityQ)
-	if staleAt(snaps, winTo, snapGap, snapGapOK) {
+	residue := residueEnds(r.assets, p, r.toDay, r.aggregate)
+	sr := summaryRow(base, winFrom, winTo, av, flows, r.rolled, r.snaps, residue, r.assets, p, entityQ)
+	if staleAt(r.snaps, winTo, r.gap, r.gapOK) {
 		sr.Quality = append(sr.Quality, "stale_snapshot")
 	}
-	out = append(out, sr)
-	return out, flows
+	return append(out, sr)
 }
 
 // entityValue is the aggregate value at a day: each constituent's
@@ -236,28 +288,6 @@ func liabilityRow(a *accountData, toDay int64) ReturnRow {
 // NoPortfolioLabel names the accounts of a source outside any
 // portfolio, wherever a report lists them as one.
 const NoPortfolioLabel = "(no portfolio)"
-
-func entityIdentity(level string, assets []*accountData) (id, label string) {
-	a := assets[0]
-	switch level {
-	case "accounts":
-		return a.acct, a.label
-	case "sources":
-		return a.src, a.src
-	case "portfolios":
-		if a.portfolio == "" {
-			return "", NoPortfolioLabel
-		}
-		// EntityID stays the stable portfolio_external_id; the label prefers the
-		// resolved display name (falling back to the id when unresolved).
-		if a.portfolioName != "" {
-			return a.portfolio, a.portfolioName
-		}
-		return a.portfolio, a.portfolio
-	default:
-		return "", "global"
-	}
-}
 
 // ---- small helpers -------------------------------------------------------
 

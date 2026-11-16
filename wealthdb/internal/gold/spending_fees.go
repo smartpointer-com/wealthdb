@@ -257,14 +257,14 @@ func (l feeLine) newEntity(portfolioNames map[string]string, ds *returnsDataset)
 // of accounts inside a portfolio are never read.
 func feeMonths(ds *returnsDataset, p ReturnParams) map[string][]ReturnRow {
 	out := map[string][]ReturnRow{}
-	for _, level := range []struct{ grain, kind string }{{"portfolios", "portfolio"}, {"accounts", "account"}} {
+	for _, g := range []*grain{grainPortfolios, grainAccounts} {
 		w := p
-		w.Level, w.Method, w.Period, w.Annualize = level.grain, "twr", "monthly", "auto"
+		w.Level, w.Method, w.Period, w.Annualize = g.name, "twr", "monthly", "auto"
 		w.Netting, w.Inception = true, "full"
 		w.FromEpoch, w.ToEpoch = 0, ds.globalMax*SecondsPerDay
 		for _, r := range computeReturns(ds, w) {
 			if !r.IsSummary {
-				key := acctKey(r.SilverSourceID, level.kind+"\x00"+r.EntityID)
+				key := acctKey(r.SilverSourceID, g.entity+"\x00"+r.EntityID)
 				out[key] = append(out[key], r)
 			}
 		}

@@ -407,7 +407,7 @@ func (c *benchmarkWindows) summary(p ReturnParams) *ReturnRow {
 // two share no day or the household has no row there, the flags saying
 // why.
 func (c *benchmarkWindows) compare(ix *returns.Index, p ReturnParams) *benchmarkWindow {
-	p.Level, p.Period, p.Method = "global", "total", "both"
+	p.Level, p.Period, p.Method = grainGlobal.name, "total", "both"
 	whole := c.summary(p)
 	if whole == nil {
 		return &benchmarkWindow{}
@@ -438,15 +438,11 @@ func (c *benchmarkWindows) compare(ix *returns.Index, p ReturnParams) *benchmark
 		}
 	}
 	w.row, w.from, w.to, w.params = *row, row.StartDay, row.EndDay, p
-	groups, order := groupAccounts("global", c.ds.accts, p.ReturnsExclude)
-	if len(order) == 0 {
+	e := c.ds.whole(p.ReturnsExclude)
+	if e == nil {
 		return w
 	}
-	_, w.assets = splitLiabilities(groups[order[0]])
-	if len(w.assets) == 0 {
-		return w
-	}
-	w.av = entityValue(w.assets)
+	w.assets, w.av = e.assets, e.value
 	var rolled []returns.Flow
 	w.flows, _, rolled = entityFlows(w.assets, p, w.from, w.to, true)
 	w.v0 = openingValue(w.av, w.from, rolled)

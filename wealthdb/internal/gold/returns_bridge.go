@@ -160,8 +160,8 @@ func loadDebtRates(ctx context.Context, db *sql.DB, outCcy string) (map[string]m
 func computeBridge(in bridgeInput, p ReturnParams) []BridgeRow {
 	// The window runs read the residue in residueCurrency, as returns does.
 	in.ds.ensureTwins()
-	assets := bridgeAssets(in.ds, p)
-	months := in.months(assets, p)
+	e := in.ds.whole(p.ReturnsExclude)
+	months := in.months(e, p)
 	var firstDay int64
 	if len(months) > 0 {
 		firstDay = months[0].startDay
@@ -173,7 +173,7 @@ func computeBridge(in bridgeInput, p ReturnParams) []BridgeRow {
 			return
 		}
 		row := sumBridgeMonths(bucket, p.Period)
-		row.Quality = dedupeStrings(append(in.windowTags(assets, p, bucket, firstDay), bucketTags(bucket)...))
+		row.Quality = dedupeStrings(append(in.windowTags(e, p, bucket, firstDay), bucketTags(bucket)...))
 		out = append(out, row)
 		bucket = nil
 	}
@@ -187,17 +187,10 @@ func computeBridge(in bridgeInput, p ReturnParams) []BridgeRow {
 	return out
 }
 
-// bridgeAssets is what the global grain of returns measures.
-func bridgeAssets(ds *returnsDataset, p ReturnParams) []*accountData {
-	groups, _ := groupAccounts("global", ds.accts, p.ReturnsExclude)
-	_, assets := splitLiabilities(groups["global"])
-	return assets
-}
-
 // bridgeRunParams is p as the since-inception global run the months come
 // from: the run `returns global` makes with its default settings.
 func bridgeRunParams(p ReturnParams) ReturnParams {
-	p.Level, p.FromEpoch, p.Method, p.Period, p.Annualize = "global", 0, "twr", "monthly", "never"
+	p.Level, p.FromEpoch, p.Method, p.Period, p.Annualize = grainGlobal.name, 0, "twr", "monthly", "never"
 	p.Netting, p.Inception = true, "full"
 	return p
 }
@@ -205,25 +198,25 @@ func bridgeRunParams(p ReturnParams) ReturnParams {
 // months computes the history's months from one since-inception run of the
 // global grain. The caller's window plays no part, so a month reads the same
 // in every window and months add up to quarters and years.
-func (in bridgeInput) months(assets []*accountData, p ReturnParams) []bridgeMonth {
-	if len(assets) == 0 {
+func (in bridgeInput) months(e *entity, p ReturnParams) []bridgeMonth {
+	if e == nil {
 		return nil
 	}
 	run := bridgeRunParams(p)
 	toDay := in.ds.globalMax
 	run.ToEpoch = toDay * SecondsPerDay
-	winFrom, winTo, _ := entityWindow(assets, run, toDay)
-	if winTo <= winFrom {
+	r := e.run(run, toDay)
+	if r == nil {
 		return nil
 	}
-	rows, flows := computeEntityReturnFlows(assets, run, toDay, in.ds.fx)
+	winFrom, winTo, rows, flows := r.win.from, r.win.to, r.rows(in.ds.fx), r.flows
 	bucketQuality := map[int64][]string{}
 	for _, r := range rows {
 		if !r.IsSummary {
 			bucketQuality[r.EndDay] = r.Quality
 		}
 	}
-	av := entityValue(assets)
+	av := e.value
 	var out []bridgeMonth
 	for _, b := range returns.BucketBoundaries(winFrom, winTo, returns.BucketMonthly) {
 		m := bridgeMonth{startDay: b[0], endDay: b[1], tags: slices.Clone(bucketQuality[b[1]])}
@@ -356,7 +349,7 @@ func (in bridgeInput) gapAt(av func(int64) (float64, bool), day int64) float64 {
 // windowTags are returns' tags for the bucket's own window: what
 // `returns global FROM TO --period total` flags. They carry first, as the
 // summary row's do, and the window's opening tag joins the first bucket.
-func (in bridgeInput) windowTags(assets []*accountData, p ReturnParams, bucket []bridgeMonth, firstDay int64) []string {
+func (in bridgeInput) windowTags(e *entity, p ReturnParams, bucket []bridgeMonth, firstDay int64) []string {
 	start, end := bucket[0].startDay, bucket[len(bucket)-1].endDay
 	w := bridgeRunParams(p)
 	w.FromEpoch, w.ToEpoch, w.Period = start*SecondsPerDay, end*SecondsPerDay, "total"
@@ -369,7 +362,8 @@ func (in bridgeInput) windowTags(assets []*accountData, p ReturnParams, bucket [
 			tags = append(tags, "partial_window")
 		}
 	}
-	if rows := computeEntityReturn(assets, w, end, in.ds.fx); len(rows) > 0 {
+	if r := e.run(w, end); r != nil {
+		rows := r.rows(in.ds.fx)
 		// rolled_forward speaks of the rates' values; the bridge reads the
 		// carried values, as holdings does.
 		tags = append(tags, slices.DeleteFunc(rows[len(rows)-1].Quality, func(t string) bool { return t == "rolled_forward" })...)

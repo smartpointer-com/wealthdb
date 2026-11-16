@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,18 +23,10 @@ func init() {
 // gains are the gains report's.
 var returnsFamily = &family{
 	name: "returns",
-	views: []view{
-		// global's silver_source is the whole portfolio's, not one source.
-		{name: "global", build: buildReturns, principal: returnsPrincipal, header: returnsHeader,
-			excludes: []string{"source"}},
-		{name: "sources", build: buildReturns, principal: returnsPrincipal, header: returnsHeader},
-		{name: "portfolios", build: buildReturns, principal: returnsPrincipal, header: returnsHeader},
-		// On accounts the entity is the account.
-		{name: "accounts", build: buildReturns, principal: returnsPrincipal, header: returnsHeader,
-			keyAlias: map[string]string{"account": "entity"}},
+	views: append(returnsGrainViews(),
 		// The stated view carries no return: "value" is the engine's
 		// ending value.
-		{name: "stated", side: true, principal: fixedColumn("end_value"), usage: returnsStatedUsage,
+		view{name: "stated", side: true, principal: fixedColumn("end_value"), usage: returnsStatedUsage,
 			refuses:     statedRefusedFlags,
 			refuseWhy:   " — the periods and the currency are the document's",
 			ownCurrency: "each period in the currency its document states",
@@ -41,13 +34,13 @@ var returnsFamily = &family{
 				return returnsStatedReport(req, cfg)
 			}},
 		// On the bridge, "value" is the net worth it ends on.
-		{name: "bridge", side: true, principal: fixedColumn("end_net_worth"), usage: returnsBridgeUsage,
+		view{name: "bridge", side: true, principal: fixedColumn("end_net_worth"), usage: returnsBridgeUsage,
 			refuses: bridgeRefusedFlags, checkWindow: checkBridgeWindow,
 			header: periodHeader,
 			build: func(cfg *config.Config, req request) *report {
 				return returnsBridgeReport(req, cfg)
 			}},
-	},
+	),
 	options: []option{
 		{name: "method", cli: []string{"method"}, choices: returnsMethods, def: [2]string{"twr", "both"}},
 		{name: "period", cli: []string{"period"}, choices: returnsPeriods, def: [2]string{"quarterly", "total"}},
@@ -128,6 +121,35 @@ func returnsHeader(req request) []string {
 	return h
 }
 
+// returnsGrainViews are the views of the engine's grains, coarsest first.
+func returnsGrainViews() []view {
+	var out []view
+	for _, g := range slices.Backward(gold.ReturnsGrains()) {
+		v := view{name: g.Name, build: buildReturns, principal: returnsPrincipal, header: returnsHeader}
+		switch {
+		case g.Whole:
+			// The whole's silver_source is the whole portfolio's, not one source.
+			v.excludes = []string{"source"}
+		case g.Entity == "account":
+			// On accounts the entity is the account.
+			v.keyAlias = map[string]string{"account": "entity"}
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// returnsEntity is what an entity of the grain named level is: "account",
+// "portfolio", or "" for a source and the whole.
+func returnsEntity(level string) string {
+	for _, g := range gold.ReturnsGrains() {
+		if g.Name == level {
+			return g.Entity
+		}
+	}
+	return ""
+}
+
 // The choices of the returns options the CLI and the MCP tool share.
 var (
 	returnsMethods   = []string{"twr", "mwr", "both"}
@@ -155,7 +177,7 @@ func returnsReport(req request, cfg *config.Config) *report {
 	}
 	loads := []func(context.Context, *sql.DB) error{loadKinds}
 	// Only an account's entity reads its nickname.
-	if req.view == "accounts" {
+	if returnsEntity(req.view) == "account" {
 		loads = append(loads, nicknames.load)
 	}
 	defaults := defaultReturnColumnsFor(req.method)
@@ -274,10 +296,10 @@ func buildReturnColumnRegistry(outCcy, level string, kindOf func(string) string,
 	account, portfolio := entityCols(kindOf, nicknames, func(r gold.ReturnRow) (string, string, string) {
 		return r.SilverSourceID, r.EntityID, r.EntityLabel
 	})
-	switch level {
-	case "accounts":
+	switch returnsEntity(level) {
+	case "account":
 		entity, entityID = account[0], account[1]
-	case "portfolios":
+	case "portfolio":
 		entity, entityID = portfolio[0], portfolio[1]
 	}
 	return []columnSpec[gold.ReturnRow]{

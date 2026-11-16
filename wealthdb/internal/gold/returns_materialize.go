@@ -35,10 +35,11 @@ func multiColumns(prefix string) string {
 	return strings.Join(cols, ", ")
 }
 
-// materializeGrains and materializePeriods span the full RunReturns matrix;
-// together with materializeCurrencies each combination is one table partition.
+// materializeGrains (every grain, finest first) and materializePeriods span
+// the full RunReturns matrix; together with materializeCurrencies each
+// combination is one table partition.
 var (
-	materializeGrains  = []string{"accounts", "portfolios", "sources", "global"}
+	materializeGrains  = grainNames()
 	materializePeriods = []string{"monthly", "quarterly", "annual", "total"}
 )
 
@@ -181,7 +182,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 
 	globals := map[[2]string][]ReturnRow{}
 	for _, part := range parts {
-		if part.grain == "global" && part.windowFromYear == 0 {
+		if part.grain == grainGlobal.name && part.windowFromYear == 0 {
 			globals[[2]string{part.currency, part.granularity}] = part.rows
 		}
 	}

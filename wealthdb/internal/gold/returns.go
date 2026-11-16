@@ -134,10 +134,10 @@ func (h *ReturnsHide) hiddenConstituent(a *accountData) bool {
 }
 
 // entityHidden reports whether a computed entity emits no rows: every
-// constituent is display-hidden and the grain is not global — hidden plumbing
-// still aggregates, and the global row always shows it doing so.
-func entityHidden(level string, members []*accountData, h *ReturnsHide) bool {
-	if level == "global" || len(members) == 0 {
+// constituent is display-hidden and the grain is not the whole — hidden
+// plumbing still aggregates, and the global row always shows it doing so.
+func entityHidden(g *grain, members []*accountData, h *ReturnsHide) bool {
+	if g.whole || len(members) == 0 {
 		return false
 	}
 	for _, a := range members {
@@ -174,16 +174,16 @@ type ReturnsExclude struct {
 // and global grains, both an excluded account and any account of an excluded
 // portfolio drop out. A nil receiver excludes nothing.
 func (e *ReturnsExclude) excluded(level, src, portfolio, acct string) bool {
+	g := grainNamed(level)
+	return g != nil && g.excludes(e, src, portfolio, acct)
+}
+
+// excludes is excluded at the grain g.
+func (g *grain) excludes(e *ReturnsExclude, src, portfolio, acct string) bool {
 	if e == nil {
 		return false
 	}
-	switch level {
-	case "portfolios":
-		return e.Accounts[src][acct]
-	case "sources", "global":
-		return e.Accounts[src][acct] || e.Portfolios[src][portfolio]
-	}
-	return false // accounts grain: never excluded
+	return (g.excludesAccounts && e.Accounts[src][acct]) || (g.excludesPortfolios && e.Portfolios[src][portfolio])
 }
 
 // InceptionOverrides carries user-configured per-entity inception floors
@@ -204,39 +204,24 @@ type InceptionOverrides struct {
 // source. The global grain is never anchored. (0,false) ⇒ no override. A nil
 // receiver always returns (0,false), so the default path is untouched.
 func (o *InceptionOverrides) resolve(level, src, portfolio, acct string) (int64, bool) {
-	if o == nil {
+	g := grainNamed(level)
+	if o == nil || g == nil {
 		return 0, false
 	}
-	switch level {
-	case "accounts":
-		if m := o.Accounts[src]; m != nil {
-			if d, ok := m[acct]; ok {
-				return d, true
+	for _, scope := range g.inception {
+		var d int64
+		var ok bool
+		switch scope {
+		case scopeAccount:
+			d, ok = o.Accounts[src][acct]
+		case scopePortfolio:
+			if portfolio != "" {
+				d, ok = o.Portfolios[src][portfolio]
 			}
+		case scopeSource:
+			d, ok = o.Sources[src]
 		}
-		if portfolio != "" {
-			if m := o.Portfolios[src]; m != nil {
-				if d, ok := m[portfolio]; ok {
-					return d, true
-				}
-			}
-		}
-		if d, ok := o.Sources[src]; ok {
-			return d, true
-		}
-	case "portfolios":
-		if portfolio != "" {
-			if m := o.Portfolios[src]; m != nil {
-				if d, ok := m[portfolio]; ok {
-					return d, true
-				}
-			}
-		}
-		if d, ok := o.Sources[src]; ok {
-			return d, true
-		}
-	case "sources":
-		if d, ok := o.Sources[src]; ok {
+		if ok {
 			return d, true
 		}
 	}
@@ -355,29 +340,26 @@ func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 	}
 
 	ds.ensureTwins()
-	groups, order := groupAccounts(p.Level, ds.accts, p.ReturnsExclude)
+	g := grainNamed(p.Level)
+	if g == nil {
+		return nil
+	}
 	var out []ReturnRow
-	for _, key := range order {
-		members := groups[key]
-		// Display-hidden plumbing (cash accounts / policy AccountsGrainHidden
-		// / config returns_hide): the entity emits no rows of its own — its
-		// values and flows already live inside every aggregate that contains
-		// it.
-		if entityHidden(p.Level, members, p.ReturnsHide) {
-			continue
-		}
+	for _, e := range ds.entities(g, p.ReturnsExclude, p.ReturnsHide) {
 		// Mortgage / liability accounts: excluded from coarse rollups; on the
 		// accounts grain they surface as their own n/a + nonpositive_base line.
-		liability, assets := splitLiabilities(members)
-		if p.Level == "accounts" {
-			for _, m := range liability {
+		if g.single {
+			for _, m := range e.liabilities {
 				out = append(out, liabilityRow(m, toDay))
 			}
 		}
-		if len(assets) == 0 {
+		if len(e.assets) == 0 {
 			continue
 		}
-		rows := computeEntityReturn(assets, p, toDay, ds.fx)
+		var rows []ReturnRow
+		if r := e.run(p, toDay); r != nil {
+			rows = r.rows(ds.fx)
+		}
 		// AccountsGrainBlanked: per-account (accounts-grain) rows for a sweep
 		// source (crypto wallets) are economically meaningless, so keep their
 		// start/end values but blank TWR/MWR to n/a and flag it. Gate STRICTLY
@@ -385,7 +367,7 @@ func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 		// rows change; the portfolios/sources/global grains are NEVER gated
 		// (they aggregate coherent units, which ARE valid). One row per account
 		// is still emitted.
-		if p.Level == "accounts" && accountsGrainBlanked(assets) {
+		if g.single && accountsGrainBlanked(e.assets) {
 			for i := range rows {
 				rows[i].TWR, rows[i].TWRAnnualized = nil, nil
 				rows[i].MWR, rows[i].MWRAnnualized = nil, nil
@@ -1111,23 +1093,125 @@ func EpochDay(sec int64) int64 { return lots.EpochDay(sec) }
 
 // ---- grouping ------------------------------------------------------------
 
+// grain is one level of the returns hierarchy: how it groups the accounts
+// into entities, how an entity is named, and which config entries reach it.
+type grain struct {
+	name string
+	// entity names what one entity is to a reader: "account" or
+	// "portfolio", or "" for a source and the whole.
+	entity string
+	// key is the entity an account belongs to.
+	key func(a *accountData) string
+	// ident is an entity's id and label, read from its first asset.
+	ident func(a *accountData) (id, label string)
+	// excludesAccounts and excludesPortfolios say which returns_exclude
+	// entries drop an account from the grain's entities. No grain drops an
+	// entry of its own kind: an excluded portfolio still has its own row.
+	excludesAccounts, excludesPortfolios bool
+	// inception is the order in which an entity's configured inception
+	// floor is looked up, most specific first. The whole is never anchored.
+	inception []inceptionScope
+	// single: an entity is one account. Its flows are exact, a liability
+	// shows a line of its own, and a policy may blank its rates.
+	single bool
+	// whole: one entity of every source. It is never hidden and has no
+	// single source.
+	whole bool
+}
+
+// inceptionScope is a key of the inception_overrides block.
+type inceptionScope uint8
+
+const (
+	scopeAccount inceptionScope = iota
+	scopePortfolio
+	scopeSource
+)
+
+// The grains, finest first: each coarser grain aggregates the one before.
+var (
+	grainAccounts = &grain{name: "accounts", entity: "account",
+		key:       func(a *accountData) string { return acctKey(a.src, a.acct) },
+		ident:     func(a *accountData) (string, string) { return a.acct, a.label },
+		inception: []inceptionScope{scopeAccount, scopePortfolio, scopeSource}, single: true}
+	grainPortfolios = &grain{name: "portfolios", entity: "portfolio",
+		key:              func(a *accountData) string { return acctKey(a.src, a.portfolio) },
+		ident:            portfolioIdent,
+		excludesAccounts: true, inception: []inceptionScope{scopePortfolio, scopeSource}}
+	grainSources = &grain{name: "sources",
+		key:              func(a *accountData) string { return a.src },
+		ident:            func(a *accountData) (string, string) { return a.src, a.src },
+		excludesAccounts: true, excludesPortfolios: true, inception: []inceptionScope{scopeSource}}
+	grainGlobal = &grain{name: "global",
+		key:              func(*accountData) string { return "global" },
+		ident:            func(*accountData) (string, string) { return "", "global" },
+		excludesAccounts: true, excludesPortfolios: true, whole: true}
+	returnsGrains = []*grain{grainAccounts, grainPortfolios, grainSources, grainGlobal}
+)
+
+// portfolioIdent is a portfolio's id and label. The id stays the stable
+// portfolio_external_id; the label prefers the resolved display name and
+// falls back to the id. Accounts outside any portfolio are one entity.
+func portfolioIdent(a *accountData) (string, string) {
+	if a.portfolio == "" {
+		return "", NoPortfolioLabel
+	}
+	if a.portfolioName != "" {
+		return a.portfolio, a.portfolioName
+	}
+	return a.portfolio, a.portfolio
+}
+
+// grainNamed is the grain of that name, nil for none.
+func grainNamed(name string) *grain {
+	for _, g := range returnsGrains {
+		if g.name == name {
+			return g
+		}
+	}
+	return nil
+}
+
+// grainNames are the grains' names, finest first.
+func grainNames() []string {
+	out := make([]string, len(returnsGrains))
+	for i, g := range returnsGrains {
+		out[i] = g.name
+	}
+	return out
+}
+
+// ReturnsGrain is a returns grain as a front end lists it. Entity is
+// "account" or "portfolio" where an entity is one; Whole marks the grain
+// whose one entity spans every source.
+type ReturnsGrain struct {
+	Name, Entity string
+	Whole        bool
+}
+
+// ReturnsGrains are the returns grains, finest first.
+func ReturnsGrains() []ReturnsGrain {
+	out := make([]ReturnsGrain, len(returnsGrains))
+	for i, g := range returnsGrains {
+		out[i] = ReturnsGrain{Name: g.name, Entity: g.entity, Whole: g.whole}
+	}
+	return out
+}
+
+// groupAccounts groups accts into the entities of the grain named level,
+// each entity's members sorted, and returns the entity keys in order. An
+// unknown level groups nothing.
 func groupAccounts(level string, accts map[string]*accountData, excl *ReturnsExclude) (map[string][]*accountData, []string) {
 	groups := map[string][]*accountData{}
+	g := grainNamed(level)
+	if g == nil {
+		return groups, nil
+	}
 	for _, a := range accts {
-		if excl.excluded(level, a.src, a.portfolio, a.acct) {
+		if g.excludes(excl, a.src, a.portfolio, a.acct) {
 			continue // omitted from this (higher) grain; still shown at its own grain
 		}
-		var k string
-		switch level {
-		case "accounts":
-			k = acctKey(a.src, a.acct)
-		case "sources":
-			k = a.src
-		case "portfolios":
-			k = acctKey(a.src, a.portfolio)
-		default: // global
-			k = "global"
-		}
+		k := g.key(a)
 		groups[k] = append(groups[k], a)
 	}
 	order := make([]string, 0, len(groups))
