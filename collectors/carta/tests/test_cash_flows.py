@@ -14,7 +14,8 @@ import json
 from pathlib import Path
 
 import load
-from conftest import MIGRATIONS_DIR, docs_dir
+from collectorkit import pdftotext, silver
+from conftest import MIGRATIONS_DIR, docs_dir, load_one
 
 
 # ---- statement inception-to-date parsing -----------------------------------
@@ -534,11 +535,11 @@ def test_each_fund_reads_only_its_own_documents(tmp_path, monkeypatch, caplog):
              "u1": _statement("70,113", "73,309")}
     monkeypatch.setattr(load, "_pdf_text",
                         lambda pdf: texts[pdf.stem.removeprefix("doc_")])
-    conn = load.silver.open_db(tmp_path / "carta.db")
-    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+    conn = silver.open_db(tmp_path / "carta.db")
+    silver.apply_migrations(conn, MIGRATIONS_DIR)
 
     with caplog.at_level("WARNING"):
-        assert load.load_run(conn, _two_fund_run(tmp_path))
+        assert load_one(conn, _two_fund_run(tmp_path))
 
     assert [tuple(r) for r in conn.execute(
         "SELECT entity_external_id, net_asset_value, capital_contributed "
@@ -555,6 +556,36 @@ def test_each_fund_reads_only_its_own_documents(tmp_path, monkeypatch, caplog):
         "document u1 (Capital account statements) belongs to no fund entity "
         "of this run; not read"]
     conn.close()
+
+
+def test_each_document_is_extracted_once(tmp_path, monkeypatch):
+    # A statement feeds both its NAV row and the fund ledger, and a later
+    # run holds the same bytes again: pdftotext reads each document once,
+    # in the first load.
+    texts = {"s1": _statement("217,500", "224,931"), "n1": _CALL_NOTICE}
+    calls = []
+
+    def layout_text(pdf, timeout=None):
+        calls.append(Path(pdf).name)
+        return texts[Path(pdf).stem.removeprefix("doc_")]
+
+    monkeypatch.setattr(pdftotext, "layout_text", layout_text)
+    bronze, db = tmp_path / "bronze", tmp_path / "carta.db"
+    argv = ["--bronze-dir", str(bronze), "--silver-db", str(db)]
+    for name in ("20990201T000000Z", "20990301T000000Z"):
+        run = bronze / name
+        edir = run / "entities" / "fund_42"
+        edir.mkdir(parents=True)
+        (edir / "meta.json").write_text(json.dumps(
+            {"corporation_id": 42, "is_fund_investment": True}))
+        docs_dir(run, [
+            {"id": "s1", "document_type": "Capital account statements",
+             "document_date": "12/31/2098", "fund_id": "42"},
+            {"id": "n1", "document_type": "Capital calls", "fund_id": "42"}])
+        (run / "run.json").write_text(json.dumps(
+            {"status": "complete", "individual_id": "ind-1"}))
+        assert load.main(argv) == 0
+    assert calls == ["doc_s1.pdf", "doc_n1.pdf"]
 
 
 def test_a_file_that_is_not_a_pdf_reads_as_not_downloaded(tmp_path,
@@ -576,11 +607,11 @@ def test_a_file_that_is_not_a_pdf_reads_as_not_downloaded(tmp_path,
              "u1": _statement("70,113", "73,309")}
     monkeypatch.setattr(load, "_pdf_text",
                         lambda pdf: texts[pdf.stem.removeprefix("doc_")])
-    conn = load.silver.open_db(tmp_path / "carta.db")
-    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+    conn = silver.open_db(tmp_path / "carta.db")
+    silver.apply_migrations(conn, MIGRATIONS_DIR)
 
     with caplog.at_level("INFO"):
-        assert load.load_run(conn, run)
+        assert load_one(conn, run)
 
     assert sorted(r[0] for r in conn.execute(
         "SELECT doc_id FROM documents")) == ["d1", "t1", "u1"]

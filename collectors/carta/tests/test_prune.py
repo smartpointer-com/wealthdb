@@ -14,7 +14,7 @@ carta's PruneConfig decides, over tmp_path bronze trees in carta's layout
     than complete is deleted, and the bronze-root siblings (silver DB,
     side-loaded override CSVs) are never touched
 
-Plus the load-side half of the lifecycle (load.load_run):
+Plus the load-side half of the lifecycle (the load frame):
   * a status="in-progress" dump or one with no run.json is NOT loaded (the
     guard keeps a crashed walk's partial capture out of silver)
   * a status="complete" dump and a statusless dump ARE loaded
@@ -30,6 +30,7 @@ from pathlib import Path
 
 import load
 import prune
+from conftest import load_one
 
 OLD_TS = "20260101T010000Z"
 
@@ -158,14 +159,14 @@ def test_load_skips_dump_without_run_json(tmp_path, migrated):
     # reclaims the dir, and load neither loads nor records it.
     d = make_dump(tmp_path, OLD_TS, run_json=False,
                   entities=False, documents=False)
-    assert load.load_run(migrated, d) is False
+    assert load_one(migrated, d) is False
     assert _dump_runs_count(migrated) == 0
 
 
 def test_load_loads_complete_dump(tmp_path, migrated):
     d = make_dump(tmp_path, OLD_TS, status="complete",
                   entities=False, documents=False)
-    assert load.load_run(migrated, d) is True
+    assert load_one(migrated, d) is True
     assert _dump_runs_count(migrated) == 1
 
 
@@ -174,7 +175,7 @@ def test_load_loads_statusless_dump(tmp_path, migrated):
     # writes its manifest only at the end of a successful walk.
     d = make_dump(tmp_path, OLD_TS, status=None,
                   entities=False, documents=False)
-    assert load.load_run(migrated, d) is True
+    assert load_one(migrated, d) is True
     assert _dump_runs_count(migrated) == 1
 
 

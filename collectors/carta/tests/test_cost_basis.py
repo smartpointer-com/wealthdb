@@ -17,7 +17,8 @@ from pathlib import Path
 
 import k1
 import load
-from conftest import MIGRATIONS_DIR, docs_dir
+from collectorkit import silver
+from conftest import MIGRATIONS_DIR, docs_dir, load_one
 
 
 # ---- exercise detail -> certificate ----------------------------------------
@@ -249,16 +250,16 @@ def test_a_run_without_documents_keeps_the_statement_lines(
     # statement lines merged onto that row in place, and the fund's calls
     # and distributions as the run with documents built them.
     monkeypatch.setattr(load, "_pdf_text", lambda pdf: _STATEMENT)
-    conn = load.silver.open_db(tmp_path / "carta.db")
-    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
-    assert load.load_run(conn, _fund_run(tmp_path, "20990101T000000Z",
+    conn = silver.open_db(tmp_path / "carta.db")
+    silver.apply_migrations(conn, MIGRATIONS_DIR)
+    assert load_one(conn, _fund_run(tmp_path, "20990101T000000Z",
                                          documents=True))
     ledger = ("SELECT cash_flow_external_id, kind, flow_date, amount "
               "FROM cash_flows ORDER BY 1")
     full = [tuple(r) for r in conn.execute(ledger)]
     assert full == [("call:9:5", "capital_call", "12/31/2098", 103457.0),
                     ("dist:9:5", "distribution", "12/31/2098", 1623.0)]
-    assert load.load_run(conn, _fund_run(tmp_path, "20990102T000000Z",
+    assert load_one(conn, _fund_run(tmp_path, "20990102T000000Z",
                                          documents=False))
     assert [tuple(r) for r in conn.execute(
         "SELECT net_asset_value, management_fees, net_operating_income, "
@@ -423,10 +424,41 @@ def test_k1_rows_load_once_per_document(migrated, tmp_path, monkeypatch,
         "FROM k1_capital_accounts").fetchone()
     assert row == (1, 9, 2098, "104286", "3618", "2089", "12483", "12,483.")
     assert caplog.messages == []   # the 1042-S is not typed as a K-1
-    # The same bytes in a later run are not parsed again.
+    # The same bytes in a later run are not parsed again, the 1042-S with
+    # no face page included.
     calls.clear()
     assert load.load_k1_capital_accounts(migrated, docs) == 0
-    assert calls == ["doc_2.pdf"]
+    assert calls == []
+    assert migrated.execute(
+        "SELECT scope, generation, row_count FROM document_derivations "
+        "ORDER BY row_count").fetchall() == [
+            ("k1", load.K1_GENERATION, 0), ("k1", load.K1_GENERATION, 1)]
+
+
+def test_a_new_k1_generation_derives_the_tax_documents_again(
+        migrated, tmp_path, monkeypatch, caplog):
+    docs = docs_dir(tmp_path, [
+        {"id": 1, "document_type": "Tax - Schedule K-1", "fund_id": 9},
+        {"id": 2, "document_type": "Tax", "fund_id": 9}])
+    calls = []
+
+    def fake_bbox(pdf, timeout=None):
+        calls.append(pdf.name)
+        return _bbox(_COVER, _k1_face()) if pdf.name == "doc_1.pdf" else _bbox(_COVER)
+
+    monkeypatch.setattr(k1, "bbox_xhtml", fake_bbox)
+    load.load_k1_capital_accounts(migrated, docs)
+    before = migrated.execute("SELECT * FROM k1_capital_accounts").fetchall()
+    calls.clear()
+    monkeypatch.setattr(load, "K1_GENERATION", "next")
+    with caplog.at_level("INFO"):
+        assert load.load_k1_capital_accounts(migrated, docs) == 1
+    assert calls == ["doc_1.pdf", "doc_2.pdf"]
+    assert "k1: deriving 2 document(s) under parser generation next" in (
+        caplog.messages)
+    assert migrated.execute("SELECT * FROM k1_capital_accounts").fetchall() == before
+    assert {g for (g,) in migrated.execute(
+        "SELECT generation FROM document_derivations")} == {"next"}
 
 
 def test_a_k1_without_its_year_takes_the_index_year(migrated, tmp_path,
@@ -456,10 +488,17 @@ def test_a_reissued_k1_replaces_the_row_for_its_document(migrated, tmp_path,
     monkeypatch.setattr(k1, "bbox_xhtml",
                         lambda pdf, timeout=None: _bbox(_k1_face()))
     load.load_k1_capital_accounts(migrated, docs)
+    first = (docs / "doc_1.pdf").read_bytes()
     (docs / "doc_1.pdf").write_bytes(b"%PDF- amended")
     load.load_k1_capital_accounts(migrated, docs)
     assert migrated.execute(
         "SELECT COUNT(*) FROM k1_capital_accounts").fetchone() == (1,)
+    # The first bytes come back under the id: they are read again and
+    # replace the amended row, as a first sighting would.
+    (docs / "doc_1.pdf").write_bytes(first)
+    assert load.load_k1_capital_accounts(migrated, docs) == 1
+    assert migrated.execute(
+        "SELECT COUNT(*) FROM document_derivations").fetchone() == (1,)
 
 
 def test_a_tax_document_that_is_not_a_pdf_is_not_parsed(migrated, tmp_path,
@@ -536,13 +575,17 @@ def test_k1_date():
 
 # ---- migration 0004 backfill ------------------------------------------------
 
+# The schema version the whole chain ends at.
+_LATEST = int(sorted(MIGRATIONS_DIR.glob("[0-9]*_*.sql"))[-1].name[:4])
+
+
 def test_migration_backfills_rows_loaded_before_it(tmp_path):
     older = tmp_path / "migrations"
     older.mkdir()
     for f in MIGRATIONS_DIR.glob("000[1-3]_*.sql"):
         shutil.copy(f, older)
     c = sqlite3.connect(":memory:")
-    load.silver.apply_migrations(c, older)
+    silver.apply_migrations(c, older)
     c.execute(
         "INSERT INTO securities (snapshot_at, entity_external_id, "
         " security_type, security_external_id, payload) VALUES "
@@ -554,7 +597,7 @@ def test_migration_backfills_rows_loaded_before_it(tmp_path):
         (json.dumps({"partner": {"accepted_date": "2097-05-06T00:00:00"}}),
          json.dumps({"source": "capital_account_statement"})))
     c.commit()
-    assert load.silver.apply_migrations(c, MIGRATIONS_DIR) == 5
+    assert silver.apply_migrations(c, MIGRATIONS_DIR) == _LATEST
     assert c.execute("SELECT security_external_id, exercise_type, "
                      "exercise_fmv FROM securities ORDER BY 1").fetchall() == [
         (11, None, None), (21, "NSO", None)]
@@ -569,11 +612,11 @@ def test_migration_0005_leaves_the_period_of_existing_k1_rows_empty(tmp_path):
     for f in MIGRATIONS_DIR.glob("000[1-4]_*.sql"):
         shutil.copy(f, older)
     c = sqlite3.connect(":memory:")
-    load.silver.apply_migrations(c, older)
+    silver.apply_migrations(c, older)
     c.execute("INSERT INTO k1_capital_accounts (content_sha256, tax_year, "
               "payload) VALUES ('ab12', 2098, '{}')")
     c.commit()
-    assert load.silver.apply_migrations(c, MIGRATIONS_DIR) == 5
+    assert silver.apply_migrations(c, MIGRATIONS_DIR) == _LATEST
     assert c.execute("SELECT tax_year, period_start, period_end "
                      "FROM k1_capital_accounts").fetchall() == [(2098, None, None)]
 
@@ -604,9 +647,9 @@ def test_a_run_loads_every_cost_basis_fact(tmp_path, monkeypatch):
     monkeypatch.setattr(k1, "bbox_xhtml",
                         lambda pdf, timeout=None: _bbox(_k1_face()))
 
-    conn = load.silver.open_db(tmp_path / "carta.db")
-    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
-    assert load.load_run(conn, run)
+    conn = silver.open_db(tmp_path / "carta.db")
+    silver.apply_migrations(conn, MIGRATIONS_DIR)
+    assert load_one(conn, run)
 
     def q(sql):
         return [tuple(r) for r in conn.execute(sql).fetchall()]

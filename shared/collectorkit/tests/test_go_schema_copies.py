@@ -52,7 +52,8 @@ COPIES = {
         "commitments": UNREAD, "portfolio_timeseries": UNREAD,
         "tax_documents": UNREAD, "vehicles": UNREAD}),
     "carta": Copy(("carta/testdata/silver_schema.sql",), {
-        "k1_capital_accounts": "read; basis_test.go creates it inline"}),
+        "k1_capital_accounts": "read; basis_test.go creates it inline",
+        "document_derivations": BOOKKEEPING}),
     "chase": Copy(("chase/testdata/silver_schema.sql",), {
         "loader_state": BOOKKEEPING, "document_derivations": BOOKKEEPING}),
     "curves": Copy(("curves/testdata/silver_schema.sql",), {

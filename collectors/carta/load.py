@@ -46,17 +46,20 @@ Bronze → silver mapping (schema in migrations/):
                                   names it: capital-account statements ->
                                   its fund_metrics quarterly NAV history;
                                   statements + notices -> its cash_flows.
-                                  K-1s -> k1_capital_accounts (k1.py)
+                                  K-1s -> k1_capital_accounts (k1.py),
+                                  read once per document
+                                  (document_derivations)
 
 SQLite + JSON1 (the repo default — no DuckDB need here; this is shape
-transformation, not a window-function replay). collectorkit.silver provides
-the migration runner + dump_runs idempotency; collectorkit.bronze provides
-run-dir discovery + snapshot timestamp parsing.
+transformation, not a window-function replay). collectorkit.loader is the
+load frame: the command line, the migrations, the pending runs, one
+transaction per run and its `dump_runs` row.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import functools
 import json
 import logging
 import re
@@ -65,7 +68,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-from collectorkit import bronze, cli, docdedup, pdftotext, silver
+from collectorkit import (bronze, derivations, docdedup, extract, loader,
+                          pdftotext)
 
 import k1
 
@@ -771,11 +775,24 @@ def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
     return n
 
 
+# How statements and notices are read: `pdftotext -layout`.
+_LAYOUT = functools.partial(extract.pdftotext_layout, timeout=30)
+
+
+def _extract_dir() -> Path:
+    """Where extracted text is kept between runs and loads, keyed on the
+    document's bytes and the engine (collectorkit.extract.cached)."""
+    return extract.cache_root("carta") / "extract"
+
+
 def _pdf_text(pdf: Path) -> str | None:
     """A PDF's `pdftotext -layout` text, or None (logged) when it cannot be
-    extracted."""
+    extracted. Each document is extracted once: a run reads a statement
+    twice (its NAV row and the fund ledger), and later runs and loads read
+    the same bytes again, all from the cache."""
     try:
-        return pdftotext.layout_text(pdf, timeout=30)
+        return extract.cached(_LAYOUT, pdf, bronze.sha256_file(pdf)[0],
+                              _extract_dir()).text()
     except pdftotext.ExtractionError as exc:
         log.warning("pdftotext failed on %s: %s", pdf.name, exc)
         return None
@@ -1034,38 +1051,56 @@ _K1_COLUMNS = ("beginning_capital", "contributions", "net_income",
                "long_term_gain")
 
 
+# The K-1 face page reader's scope in document_derivations, and the
+# generation of what it reads. A change to k1.py that changes its results
+# raises the generation, and the next run that holds a tax document derives
+# it again.
+K1_SCOPE = "k1"
+K1_GENERATION = "1"
+
+
 def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
     """Parse each tax document's federal Schedule K-1 face page into a
     k1_capital_accounts row (k1.py), keyed on the PDF's sha256 like
     `documents`. The fund it belongs to is the index row's `fund_id`, which
     is the fund entity's id. The tax year and period are the form's own
     (k1.parse_face_page); the index's `tax_year` fills in only when the
-    form prints no year. A document already parsed under its sha256 is
-    skipped; a re-issue under the same document id replaces the stale row.
-    A tax document with no federal face page (a 1042-S) yields no row, with
-    a warning when the index types it as a K-1. Returns the number of rows
-    written."""
-    n = 0
+    form prints no year.
+
+    A document is read once per K-1 generation (document_derivations): one
+    already derived under K1_GENERATION is skipped. Deriving it replaces the
+    rows it derived before, and a re-issue under the same document id
+    replaces the stale row, whose document is then derived again should it
+    come back. A tax document with no federal face page (a 1042-S) yields no
+    row, with a warning when the index types it as a K-1. Returns the number
+    of rows written."""
+    tax: dict[str, tuple[dict, Path]] = {}
     for row in _index_rows(docs_dir):
         if "tax" not in (row.get("document_type") or "").lower():
             continue
         pdf = _document_pdf(docs_dir, row)
-        if pdf is None:
-            continue
-        sha = bronze.sha256_file(pdf)[0]
-        if conn.execute("SELECT 1 FROM k1_capital_accounts "
-                        "WHERE content_sha256 = ?", (sha,)).fetchone():
+        if pdf is not None:
+            tax.setdefault(bronze.sha256_file(pdf)[0], (row, pdf))
+    pending = {sha for (sha,) in derivations.pending_derivations(
+        conn, K1_SCOPE, K1_GENERATION, "SELECT value FROM json_each(?)",
+        (json.dumps(list(tax)),))}
+    n = 0
+    for sha, (row, pdf) in tax.items():
+        if sha not in pending:
             continue
         try:
             parsed = k1.parse_bbox(k1.bbox_xhtml(pdf, timeout=60))
         except pdftotext.ExtractionError as exc:
             log.warning("pdftotext -bbox failed on %s: %s", pdf.name, exc)
             continue
+        conn.execute("DELETE FROM k1_capital_accounts WHERE content_sha256 = ?",
+                     (sha,))
         if parsed is None:
             if "k-1" in row["document_type"].lower():
                 log.warning("%s is typed %r but has no federal K-1 face page; "
                             "no k1_capital_accounts row", pdf.name,
                             row["document_type"])
+            derivations.record_derivation(conn, sha, K1_SCOPE, K1_GENERATION, 0)
             continue
         year = parsed["tax_year"]
         indexed = str(row.get("tax_year") or "")
@@ -1076,6 +1111,10 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
                 log.info("%s: the index files it under tax year %s; the "
                          "form states %d", pdf.name, indexed, year)
         fund = row.get("fund_id")
+        conn.execute(
+            "DELETE FROM document_derivations WHERE scope = ? AND "
+            "content_sha256 IN (SELECT content_sha256 FROM "
+            "k1_capital_accounts WHERE doc_id = ?)", (K1_SCOPE, _doc_id(row)))
         conn.execute("DELETE FROM k1_capital_accounts WHERE doc_id = ?",
                      (_doc_id(row),))
         conn.execute(
@@ -1087,6 +1126,7 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
              int(fund) if str(fund or "").isdigit() else None, year,
              parsed["period_start"], parsed["period_end"],
              *(parsed[c] for c in _K1_COLUMNS), _cj(parsed["printed"])))
+        derivations.record_derivation(conn, sha, K1_SCOPE, K1_GENERATION, 1)
         n += 1
     return n
 
@@ -1389,148 +1429,139 @@ def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
 
 # ---- per-run driver ---------------------------------------------------------
 
-def load_run(conn, run_dir: Path) -> bool:
+# The per-run counts, in load_run's order, as the log names them.
+RUN_COUNTS = ("securities", "event(s)", "grant vesting", "fund-metric",
+              "NAV-history", "cap-call", "cash-flow(s)", "new doc(s)",
+              "new K-1(s)")
+
+
+def run_columns(run: loader.Run) -> dict:
+    """The run's `dump_runs` row: keyed at the download time for idempotency
+    and provenance, with the manifest's ids and counts."""
+    manifest = run.manifest
+    return {"snapshot_at": run.snapshot_at,
+            "silver_schema_version": run.version,
+            "run_dir": run.dir.name,
+            "individual_id": _s(manifest.get("individual_id")),
+            "firm_id": _s(manifest.get("firm_id")),
+            "dry_run": _b(manifest.get("dry_run")) or 0,
+            "entities_total": len(manifest.get("entities") or []),
+            "documents_total": (manifest.get("documents") or {}).get("indexed", 0),
+            "errors_total": len(manifest.get("errors") or []),
+            "payload": _cj(manifest)}
+
+
+def load_run(conn, run: loader.Run) -> tuple[int, ...]:
     """Load one bronze dump as an event-dated snapshot series (DESIGN.md §5).
     A single download is reconstructed into a snapshot per capital event /
     statement date: each cap-table entity gets a 'held' snapshot at
     held_since and (if exited) a 'cancelled' snapshot at the acquisition
     date; each fund entity gets a snapshot at the LP statement's effective
-    (sharing) date. dump_runs is keyed at the download time for idempotency
-    + provenance only. Returns True if loaded, False if skipped."""
-    # bronze.pending_run_dirs has already skipped a run whose status is not
-    # loadable; an unreadable manifest stays loadable there, but this
-    # loader needs the manifest's ids.
-    manifest = _read_json(run_dir / "run.json")
-    if not isinstance(manifest, dict):
-        log.warning("skipping %s: no readable run.json", run_dir.name)
-        return False
+    (sharing) date. Returns the run's counts, in RUN_COUNTS order."""
+    manifest, run_dir = run.manifest, run.dir
     # A dry run writes no manifest, so this covers older bronze only.
     if manifest.get("dry_run"):
         log.info("skipping %s: dry-run dump (bootstrap only, no holdings)",
                  run_dir.name)
-        return False
-    dump_snap = bronze.parse_run_ts(run_dir.name)
+        raise loader.Skip
+    dump_snap = run.snapshot_at
     ind_id = _s(manifest.get("individual_id"))
     firm_id = _s(manifest.get("firm_id"))
 
-    conn.execute("BEGIN")
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO dump_runs "
-            "(snapshot_at, silver_schema_version, run_dir, individual_id, "
-            " firm_id, dry_run, entities_total, documents_total, "
-            " errors_total, payload) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (dump_snap, silver.current_schema_version(conn), run_dir.name,
-             ind_id, firm_id, _b(manifest.get("dry_run")) or 0,
-             len(manifest.get("entities") or []),
-             (manifest.get("documents") or {}).get("indexed", 0),
-             len(manifest.get("errors") or []), _cj(manifest)),
-        )
+    n_sec = n_vest = n_fund = n_call = n_evt = n_navh = n_cf = 0
+    fund_eids = []
+    entities_dir = run_dir / "entities"
+    if entities_dir.is_dir():
+        for edir in sorted(entities_dir.iterdir()):
+            if not edir.is_dir():
+                continue
+            meta = _read_json(edir / "meta.json")
+            if not isinstance(meta, dict):
+                continue
+            hd = _read_json(edir / "holdings-dashboard.json")
+            hd = hd if isinstance(hd, dict) else {}
+            eid = meta.get("corporation_id")
 
-        n_sec = n_vest = n_fund = n_call = n_evt = n_navh = n_cf = 0
-        fund_eids = []
-        entities_dir = run_dir / "entities"
-        if entities_dir.is_dir():
-            for edir in sorted(entities_dir.iterdir()):
-                if not edir.is_dir():
-                    continue
-                meta = _read_json(edir / "meta.json")
-                if not isinstance(meta, dict):
-                    continue
-                hd = _read_json(edir / "holdings-dashboard.json")
-                hd = hd if isinstance(hd, dict) else {}
-                eid = meta.get("corporation_id")
-
-                if meta.get("is_fund_investment"):
-                    # Fund LP: snapshot at the capital-account statement's
-                    # effective (sharing) date — its NAV is a quarter-end
-                    # figure, not a download-time one. The full quarterly NAV
-                    # history comes from the statement PDFs (load_statement_nav,
-                    # after this loop).
-                    fund_eids.append(eid)
-                    sharing = _fund_sharing_date(edir)
-                    snap = _date_ts(sharing) or dump_snap
-                    load_entity(conn, snap, ind_id, firm_id, edir)
-                    n_fund += load_fund_metrics(conn, snap, eid, edir)
-                    n_call += load_cap_calls(conn, snap, eid, edir)
-                    n_vest += load_vesting(conn, dump_snap, eid, edir)
-                    n_evt += load_capital_events(conn, [
-                        (snap, eid, "statement", sharing,
-                         "capital-account statement / NAV")])
+            if meta.get("is_fund_investment"):
+                # Fund LP: snapshot at the capital-account statement's
+                # effective (sharing) date — its NAV is a quarter-end
+                # figure, not a download-time one. The full quarterly NAV
+                # history comes from the statement PDFs (load_statement_nav,
+                # after this loop).
+                fund_eids.append(eid)
+                sharing = _fund_sharing_date(edir)
+                snap = _date_ts(sharing) or dump_snap
+                load_entity(conn, snap, ind_id, firm_id, edir)
+                n_fund += load_fund_metrics(conn, snap, eid, edir)
+                n_call += load_cap_calls(conn, snap, eid, edir)
+                n_vest += load_vesting(conn, dump_snap, eid, edir)
+                n_evt += load_capital_events(conn, [
+                    (snap, eid, "statement", sharing,
+                     "capital-account statement / NAV")])
+            else:
+                # Cap-table: reconstruct the held -> cancelled lifecycle.
+                cancel_s = _entity_canceled_date(edir)
+                cancel_ts = _date_ts(cancel_s)
+                exercises = _read_exercises(edir)
+                matched = _match_exercises(edir, exercises)
+                override = _read_valuation_csv(
+                    run_dir.parent / f"{eid}-valuations.csv")
+                if override:
+                    # Side-loaded `<eid>-valuations.csv` is the single
+                    # source of truth: each cert held from its issue date and
+                    # re-valued at every FMV step, so the share count and
+                    # per-share price both move over time (DESIGN.md §5.1).
+                    first_ts = override[0][0]
+                    load_entity(conn, first_ts, ind_id, firm_id, edir)
+                    n_sec += load_securities_valued(
+                        conn, eid, edir, fmv_timeline=override,
+                        cancel_ts=cancel_ts, exercises=matched)
+                    events = [(first_ts, eid, "acquired", None,
+                               "first held (valuation override applies)")]
+                    events += [(t, eid, "price_change", None,
+                                "fair-market-value step")
+                               for t, _ in override[1:]]
+                    if cancel_ts is not None and cancel_ts > first_ts:
+                        events.append((cancel_ts, eid, "disposition",
+                                       cancel_s,
+                                       "acquisition: securities cancelled"))
+                    n_evt += load_capital_events(conn, events)
                 else:
-                    # Cap-table: reconstruct the held -> cancelled lifecycle.
-                    cancel_s = _entity_canceled_date(edir)
-                    cancel_ts = _date_ts(cancel_s)
-                    exercises = _read_exercises(edir)
-                    matched = _match_exercises(edir, exercises)
-                    override = _read_valuation_csv(
-                        run_dir.parent / f"{eid}-valuations.csv")
-                    if override:
-                        # Side-loaded `<eid>-valuations.csv` is the single
-                        # source of truth: each cert held from its issue date and
-                        # re-valued at every FMV step, so the share count and
-                        # per-share price both move over time (DESIGN.md §5.1).
-                        first_ts = override[0][0]
-                        load_entity(conn, first_ts, ind_id, firm_id, edir)
-                        n_sec += load_securities_valued(
-                            conn, eid, edir, fmv_timeline=override,
-                            cancel_ts=cancel_ts, exercises=matched)
-                        events = [(first_ts, eid, "acquired", None,
-                                   "first held (valuation override applies)")]
-                        events += [(t, eid, "price_change", None,
-                                    "fair-market-value step")
-                                   for t, _ in override[1:]]
-                        if cancel_ts is not None and cancel_ts > first_ts:
-                            events.append((cancel_ts, eid, "disposition",
-                                           cancel_s,
-                                           "acquisition: securities cancelled"))
-                        n_evt += load_capital_events(conn, events)
-                    else:
-                        # No override: value held shares at the FMV at the last
-                        # exercise (after-exercise basis), falling back to the
-                        # last strike when no exercise detail was captured.
-                        val_price = (_last_exercise_fmv(exercises)
-                                     or _last_exercise_price(edir))
-                        held_ts = _date_ts(hd.get("held_since")) or dump_snap
-                        load_entity(conn, held_ts, ind_id, firm_id, edir)
-                        n_sec += load_securities(conn, held_ts, eid, edir,
-                                                 held=True, val_price=val_price,
+                    # No override: value held shares at the FMV at the last
+                    # exercise (after-exercise basis), falling back to the
+                    # last strike when no exercise detail was captured.
+                    val_price = (_last_exercise_fmv(exercises)
+                                 or _last_exercise_price(edir))
+                    held_ts = _date_ts(hd.get("held_since")) or dump_snap
+                    load_entity(conn, held_ts, ind_id, firm_id, edir)
+                    n_sec += load_securities(conn, held_ts, eid, edir,
+                                             held=True, val_price=val_price,
+                                             exercises=matched)
+                    events = [(held_ts, eid, "acquired",
+                               _s(hd.get("held_since")), "shares first held")]
+                    if cancel_ts is not None and cancel_ts > held_ts:
+                        load_entity(conn, cancel_ts, ind_id, firm_id, edir)
+                        n_sec += load_securities(conn, cancel_ts, eid, edir,
+                                                 held=False,
+                                                 val_price=val_price,
                                                  exercises=matched)
-                        events = [(held_ts, eid, "acquired",
-                                   _s(hd.get("held_since")), "shares first held")]
-                        if cancel_ts is not None and cancel_ts > held_ts:
-                            load_entity(conn, cancel_ts, ind_id, firm_id, edir)
-                            n_sec += load_securities(conn, cancel_ts, eid, edir,
-                                                     held=False,
-                                                     val_price=val_price,
-                                                     exercises=matched)
-                            events.append((cancel_ts, eid, "disposition",
-                                           cancel_s,
-                                           "acquisition: securities cancelled"))
-                        n_evt += load_capital_events(conn, events)
-                    n_vest += load_vesting(conn, dump_snap, eid, edir)
+                        events.append((cancel_ts, eid, "disposition",
+                                       cancel_s,
+                                       "acquisition: securities cancelled"))
+                    n_evt += load_capital_events(conn, events)
+                n_vest += load_vesting(conn, dump_snap, eid, edir)
 
-        docs_dir = run_dir / "documents"
-        n_doc = load_documents(conn, dump_snap, run_dir.name, docs_dir)
-        n_k1 = load_k1_capital_accounts(conn, docs_dir)
-        for eid in fund_eids:
-            n_navh += load_statement_nav(conn, docs_dir, eid)
-        _warn_unowned_fund_documents(docs_dir, fund_eids)
-        n_cf = load_cash_flows(conn, run_dir, dump_snap)
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-
-    log.info("loaded %s: %d securities, %d event(s), %d grant vesting, "
-             "%d fund-metric (+%d NAV-history), %d cap-call, %d cash-flow(s), "
-             "%d new doc(s), %d new K-1(s)",
-             run_dir.name, n_sec, n_evt, n_vest, n_fund, n_navh, n_call, n_cf,
-             n_doc, n_k1)
-    return True
+    docs_dir = run_dir / "documents"
+    n_doc = load_documents(conn, dump_snap, run_dir.name, docs_dir)
+    n_k1 = load_k1_capital_accounts(conn, docs_dir)
+    for eid in fund_eids:
+        n_navh += load_statement_nav(conn, docs_dir, eid)
+    _warn_unowned_fund_documents(docs_dir, fund_eids)
+    n_cf = load_cash_flows(conn, run_dir, dump_snap)
+    return (n_sec, n_evt, n_vest, n_fund, n_navh, n_call, n_cf, n_doc, n_k1)
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__.strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1543,30 +1574,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--silver-db", type=Path, default=DEFAULT_SILVER_DB,
         help="Silver SQLite DB path. Default: %(default)s.",
     )
-    cli.add_standard_args(p, verb="load")
-    return p.parse_args(argv)
+    return p
+
+
+# bronze.pending_run_dirs skips a run whose status is not loadable; an
+# unreadable manifest stays loadable there, but this loader needs the
+# manifest's ids, so the frame passes over such a run with a warning.
+SPEC = loader.LoaderSpec(
+    name="carta", schema=MIGRATIONS_DIR, load_run=load_run, parser=_parser,
+    counts=RUN_COUNTS, run_columns=run_columns,
+    manifest=loader.MANIFEST_SKIP)
 
 
 def main(argv: list[str]) -> int:
-    args = parse_args(argv)
-    cli.configure_logging(args.verbose)
-
-    # --force = delete the silver DB, then rebuild from all bronze (the
-    # fleet-wide meaning). After a reset the DB is empty, so the
-    # already-loaded skip in pending_run_dirs re-ingests every run.
-    if args.force:
-        silver.reset(args.silver_db)
-    conn = silver.open_db(args.silver_db)
-    silver.apply_migrations(conn, MIGRATIONS_DIR)
-
-    n_loaded = 0
-    for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
-        if load_run(conn, run_dir):
-            n_loaded += 1
-
-    log.info("done: %d bronze run(s) loaded into %s", n_loaded, args.silver_db)
-    conn.close()
-    return 0
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":

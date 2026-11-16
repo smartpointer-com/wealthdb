@@ -377,6 +377,7 @@ the tables follow the internal responses.
 | `k1_capital_accounts` | content_sha256 | One per K-1 document (§5.3): the federal face page's tax year and, for a fiscal year, its period (migration 0005), the tax capital account (item L), net short- and long-term gain (boxes 8, 9a), and cash and property distributions (box 19 A, C). |
 | `capital_events` | (snapshot_at, entity_external_id, event_kind) | The reconstructed timeline (§5.1): one row per snapshot-defining event — `acquired` / `disposition` / `exercise` / `price_change` / `statement`. |
 | `cash_flows` | cash_flow_external_id | The dated money ledger (migration 0003, §5.2): one positive-magnitude row per cash event — `exercise` / `exit` (cap-table, carrying `shares` + `price_per_share`), `convertible_purchase` (a SAFE / note at its principal), and `capital_call` / `distribution` (fund). `kind` carries direction; the gold adapter projects each as a balanced double-entry pair on the custody account (§6). |
+| `document_derivations` | (content_sha256, scope) | Which documents a parser has read, under which generation, and how many rows each gave (migration 0006). Scope `k1`: each tax document, a 1042-S with no face page included. A document is read once per generation. |
 | `schema_meta`, `dump_runs` | — | collectorkit migration / snapshot bookkeeping. `dump_runs.snapshot_at` is the download time (idempotency only), distinct from the content tables' event-dated `snapshot_at`. |
 
 Identity: `entity_external_id` = Carta's `corporation_id`;
@@ -566,7 +567,10 @@ the figure inside the form's own parentheses, so it is positive; every
 other figure carries the sign the form prints. The fund is the index row's
 `fund_id`, which is the fund entity's id. A re-issued K-1 under the same
 document id replaces the row. Two documents that print the same tax year
-both stay; gold reconciles them.
+both stay; gold reconciles them. Each tax document is read once per
+generation of the reader (`K1_GENERATION`, recorded in
+`document_derivations`). A later run that holds the same bytes reads
+nothing.
 
 **Tax year and period (migration 0005).** The heading reads "For calendar
 year YYYY, or tax year beginning … ending …". A calendar-year form leaves
