@@ -18,6 +18,7 @@ EXAMPLES = COLLECTOR / "examples"
 sys.path.insert(0, str(COLLECTOR))
 
 import load as loader  # noqa: E402
+from collectorkit import incremental  # noqa: E402
 
 
 def _fresh_db(tmp_path: Path) -> sqlite3.Connection:
@@ -466,3 +467,28 @@ def test_a_value_gold_would_reject_fails_at_load(tmp_path, col, bad):
                                       positions=_POSITIONS.replace(
                                           "p-trust,trust", "p-trust,own")))
     assert col in str(exc.value)
+
+
+# ----------------------------------------------------------------------
+# A load depends on the CSVs alone.
+# ----------------------------------------------------------------------
+def test_books_loaded_in_turn_build_what_force_builds(tmp_path):
+    # Each load rebuilds silver from the CSVs it finds, so loading two
+    # states of a book in turn ends where one `load --force` of the last
+    # state does. load_runs is the log of the loads, one row each, so it
+    # is left out of the comparison.
+    book = _write_book(tmp_path)
+    argv = ["--bronze-dir", str(book)]
+    one_by_one, at_once = tmp_path / "one-by-one.db", tmp_path / "at-once.db"
+    assert loader.main([*argv, "--silver-db", str(one_by_one)]) == 0
+    _write(book, "valuations.csv",
+           _VALUATIONS + "p-own,2020-06-30,110,USD\n")
+    _write(book, "exits.csv", "position_id,exit_date,proceeds,currency\n"
+                              "p-trust,2020-12-31,250,USD\n")
+    assert loader.main([*argv, "--silver-db", str(one_by_one)]) == 0
+    assert loader.main([*argv, "--silver-db", str(at_once), "--force"]) == 0
+
+    a = incremental.silver_rows(one_by_one)
+    b = incremental.silver_rows(at_once)
+    assert len(a.pop("load_runs")) == 2 and len(b.pop("load_runs")) == 1
+    assert a["exits"] and a == b

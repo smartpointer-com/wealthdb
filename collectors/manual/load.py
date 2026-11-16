@@ -49,10 +49,12 @@ import logging
 import os
 import sqlite3
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from collectorkit import cli, silver
 
@@ -152,21 +154,6 @@ DEFAULT_ACCOUNT_KIND = "other"
 DEFAULT_TAX_WRAPPER = "taxable_personal"
 DEFAULT_MANAGEMENT_STYLE = "self_directed"
 
-# --- CSV column contracts. Required columns must be present in the header;
-# optional columns default to empty when a file omits them; any unexpected
-# column is rejected as a likely typo.
-ACCOUNTS_REQUIRED = ["id", "display_name", "account_kind"]
-ACCOUNTS_OPTIONAL = ["tax_wrapper", "management_style", "notes", "payload"]
-POSITIONS_REQUIRED = ["id", "kind", "display_name", "currency", "acquired_at"]
-POSITIONS_OPTIONAL = ["closed_at", "notes", "payload", "vehicle", "account_id"]
-VALUATIONS_REQUIRED = ["position_id", "as_of_date", "value", "currency"]
-VALUATIONS_OPTIONAL = ["notes", "payload"]
-COST_BASIS_REQUIRED = ["position_id", "as_of_date", "amount", "currency"]
-COST_BASIS_OPTIONAL = ["notes"]
-EXITS_REQUIRED = ["position_id", "exit_date", "proceeds", "currency"]
-EXITS_OPTIONAL = ["notes"]
-
-
 class LoadError(SystemExit):
     """A validation failure with file:row:column context. Subclasses
     SystemExit so an uncaught one exits non-zero with a clear message."""
@@ -237,8 +224,8 @@ def _json_obj(fname, rownum, col, value) -> dict:
 # ----------------------------------------------------------------------
 # CSV reading + header validation.
 # ----------------------------------------------------------------------
-def _read_csv(path: Path, required: list[str], optional: list[str],
-              ) -> list[dict]:
+def _read_csv(path: Path, required: tuple[str, ...],
+              optional: tuple[str, ...]) -> list[dict]:
     """Read a CSV into a list of row dicts (str values), validating the
     header. Missing file -> empty list (caller decides if that's fatal).
     Missing required column or unknown column -> LoadError."""
@@ -519,34 +506,100 @@ def apply_migrations(conn: sqlite3.Connection) -> int:
     return silver.apply_migrations(conn, MIGRATIONS_DIR)
 
 
+# ----------------------------------------------------------------------
+# The files of a book, in load order.
+# ----------------------------------------------------------------------
+@dataclass(frozen=True)
+class FileSpec:
+    """One CSV of the book and the silver table it fills.
+
+    `required` columns must be present in the header; `optional` ones
+    default to empty when the file omits them; any other column is
+    rejected as a likely typo. `validate(rows, book)` turns the file's
+    rows into records, a list or a dict keyed by id; `book` holds the
+    records of the files before it, by table. Each record holds a value
+    for every one of `columns`, the columns of `table` it fills."""
+    name: str
+    required: tuple[str, ...]
+    optional: tuple[str, ...]
+    validate: Callable[[list[dict], dict[str, Any]], Any]
+    table: str
+    columns: tuple[str, ...]
+
+
+FILES = (
+    FileSpec("accounts.csv",
+             ("id", "display_name", "account_kind"),
+             ("tax_wrapper", "management_style", "notes", "payload"),
+             lambda rows, book: validate_accounts(rows),
+             "accounts",
+             ("id", "display_name", "account_kind", "tax_wrapper",
+              "management_style", "notes", "payload")),
+    FileSpec("positions.csv",
+             ("id", "kind", "display_name", "currency", "acquired_at"),
+             ("closed_at", "notes", "payload", "vehicle", "account_id"),
+             lambda rows, book: validate_positions(rows, book["accounts"]),
+             "positions",
+             ("id", "account_id", "kind", "vehicle", "display_name",
+              "currency", "acquired_at", "closed_at", "notes", "payload")),
+    FileSpec("valuations.csv",
+             ("position_id", "as_of_date", "value", "currency"),
+             ("notes", "payload"),
+             lambda rows, book: validate_valuations(rows, book["positions"]),
+             "valuations",
+             ("position_id", "as_of_date", "value", "currency", "notes",
+              "payload")),
+    FileSpec("cost_basis.csv",
+             ("position_id", "as_of_date", "amount", "currency"),
+             ("notes",),
+             lambda rows, book: validate_cost_basis(rows, book["positions"]),
+             "cost_basis",
+             ("position_id", "as_of_date", "amount", "currency", "notes")),
+    FileSpec("exits.csv",
+             ("position_id", "exit_date", "proceeds", "currency"),
+             ("notes",),
+             lambda rows, book: validate_exits(rows, book["positions"]),
+             "exits",
+             ("position_id", "exit_date", "proceeds", "currency", "notes")),
+)
+
+
+def _records(validated) -> list[dict]:
+    return list(validated.values() if isinstance(validated, dict)
+                else validated)
+
+
+def _cell(value):
+    """A record's value as silver stores it: a date in ISO form, a
+    number as its decimal text, a payload as JSON."""
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return json.dumps(value)
+    return value
+
+
 def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
     """Validate the CSVs and rebuild silver from them in one transaction.
-    Returns a counts dict. Raises LoadError (rolling back) on any bad row."""
+    Returns a counts dict, by table. Raises LoadError (rolling back) on
+    any bad row."""
     bronze_dir = Path(bronze_dir)
-    accounts_rows = _read_csv(bronze_dir / "accounts.csv",
-                              ACCOUNTS_REQUIRED, ACCOUNTS_OPTIONAL)
-    positions_rows = _read_csv(bronze_dir / "positions.csv",
-                               POSITIONS_REQUIRED, POSITIONS_OPTIONAL)
-    valuations_rows = _read_csv(bronze_dir / "valuations.csv",
-                                VALUATIONS_REQUIRED, VALUATIONS_OPTIONAL)
-    cost_basis_rows = _read_csv(bronze_dir / "cost_basis.csv",
-                                COST_BASIS_REQUIRED, COST_BASIS_OPTIONAL)
-    exits_rows = _read_csv(bronze_dir / "exits.csv",
-                           EXITS_REQUIRED, EXITS_OPTIONAL)
+    rows = {f.table: _read_csv(bronze_dir / f.name, f.required, f.optional)
+            for f in FILES}
 
-    if not positions_rows:
+    if not rows["positions"]:
         log.warning("no positions.csv (or it is empty) in %s — nothing to "
                     "load", bronze_dir)
-        return {"accounts": 0, "positions": 0, "valuations": 0,
-                "cost_basis": 0, "exits": 0}
+        return {f.table: 0 for f in FILES}
 
     # Validate everything BEFORE touching silver, so a bad row never leaves
     # a half-rebuilt DB.
-    accounts = validate_accounts(accounts_rows)
-    positions = validate_positions(positions_rows, accounts)
-    valuations = validate_valuations(valuations_rows, positions)
-    cost_basis = validate_cost_basis(cost_basis_rows, positions)
-    exits = validate_exits(exits_rows, positions)
+    book: dict[str, Any] = {}
+    for f in FILES:
+        book[f.table] = f.validate(rows[f.table], book)
+    accounts, positions = book["accounts"], book["positions"]
     # An account nothing is held in projects no gold account, so it is a
     # typo or a leftover rather than an empty sleeve worth carrying.
     held = {p["account_id"] for p in positions.values()}
@@ -556,56 +609,16 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
 
     conn.execute("BEGIN")
     try:
-        conn.execute("DELETE FROM exits")
-        conn.execute("DELETE FROM cost_basis")
-        conn.execute("DELETE FROM valuations")
-        conn.execute("DELETE FROM positions")
-        conn.execute("DELETE FROM accounts")
-        conn.executemany(
-            "INSERT INTO accounts (id, display_name, account_kind, "
-            "tax_wrapper, management_style, notes, payload) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(a["id"], a["display_name"], a["account_kind"], a["tax_wrapper"],
-              a["management_style"], a["notes"], json.dumps(a["payload"]))
-             for a in accounts.values()],
-        )
-        conn.executemany(
-            "INSERT INTO positions (id, account_id, kind, vehicle, "
-            "display_name, currency, acquired_at, closed_at, notes, payload) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(p["id"], p["account_id"], p["kind"], p["vehicle"],
-              p["display_name"], p["currency"],
-              p["acquired_at"].isoformat(),
-              p["closed_at"].isoformat() if p["closed_at"] else None,
-              p["notes"], json.dumps(p["payload"]))
-             for p in positions.values()],
-        )
-        conn.executemany(
-            "INSERT INTO valuations (position_id, as_of_date, value, "
-            "currency, notes, payload) VALUES (?, ?, ?, ?, ?, ?)",
-            [(v["position_id"], v["as_of_date"].isoformat(), str(v["value"]),
-              v["currency"], v["notes"], json.dumps(v["payload"]))
-             for v in valuations],
-        )
-        conn.executemany(
-            "INSERT INTO cost_basis (position_id, as_of_date, amount, "
-            "currency, notes) VALUES (?, ?, ?, ?, ?)",
-            [(c["position_id"], c["as_of_date"].isoformat(), str(c["amount"]),
-              c["currency"], c["notes"])
-             for c in cost_basis],
-        )
-        conn.executemany(
-            "INSERT INTO exits (position_id, exit_date, proceeds, "
-            "currency, notes) VALUES (?, ?, ?, ?, ?)",
-            [(e["position_id"], e["exit_date"].isoformat(), str(e["proceeds"]),
-              e["currency"], e["notes"])
-             for e in exits],
-        )
-        counts = {"accounts": len(accounts),
-                  "positions": len(positions),
-                  "valuations": len(valuations),
-                  "cost_basis": len(cost_basis),
-                  "exits": len(exits)}
+        for f in reversed(FILES):
+            conn.execute(f"DELETE FROM {f.table}")
+        for f in FILES:
+            conn.executemany(
+                f"INSERT INTO {f.table} ({', '.join(f.columns)}) "
+                f"VALUES ({', '.join('?' for _ in f.columns)})",
+                [tuple(_cell(r[c]) for c in f.columns)
+                 for r in _records(book[f.table])],
+            )
+        counts = {f.table: len(book[f.table]) for f in FILES}
         conn.execute(
             "INSERT INTO load_runs (load_at, silver_schema_version, "
             "bronze_dir, positions_total, valuations_total, payload) "
