@@ -35,6 +35,7 @@ type webSchema struct {
 	registration        bool // accounts.account_registration (silver migration 0003)
 	openLots            bool // the open_lots table
 	closedLots          bool // the closed_lots table
+	txColumns           bool // transactions.amount .. action (silver migration 0014)
 }
 
 func (s *webSchema) optional() []silver.Optional {
@@ -45,6 +46,8 @@ func (s *webSchema) optional() []silver.Optional {
 		{Table: "accounts", Columns: []string{"account_registration"}, Version: 3, Has: &s.registration},
 		{Table: "open_lots", Version: 6, Has: &s.openLots},
 		{Table: "closed_lots", Version: 7, Has: &s.closedLots},
+		{Table: "transactions", Columns: []string{"amount", "quantity", "price", "description", "action"},
+			Version: 14, Has: &s.txColumns},
 	}
 }
 

@@ -26,7 +26,12 @@ CREATE TABLE transactions (
     source              TEXT    NOT NULL,
     source_sha256       TEXT    NOT NULL,
     payload             TEXT    NOT NULL,
-    logical_doc_key     TEXT
+    logical_doc_key     TEXT,
+    amount              TEXT,
+    quantity            TEXT,
+    price               TEXT,
+    description         TEXT,
+    action              TEXT
 );
 
 CREATE TABLE historical_position_snapshots (

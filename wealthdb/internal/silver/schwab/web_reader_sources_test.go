@@ -1,9 +1,11 @@
 package schwab
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // wtxAt builds a parsed web transaction at an explicit epoch-second timestamp
@@ -34,15 +36,10 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 	const pdf, js, dist = sourceStatementPDF, sourceTxHistoryJSON, sourceThirdPartyDistribution
 	const day = int64(86400)
 
-	// Guard the production cash-extraction path directly: a cash distribution
-	// carries its magnitude under `cash_amount` (no plain `amount`), so
-	// extractWebTxAmounts must read it — otherwise distByAcct stays empty and this
-	// whole stage silently no-ops, re-introducing the double-count it exists to
-	// prevent. The cases below build their distribution legs via
-	// buildWebTxFromPayload (the real extraction path) so this stays pinned.
-	if n, _, _ := extractWebTxAmounts(`{"transfer_kind":"cash","method":"wire","cash_amount":5000}`); n == nil {
-		t.Fatal("extractWebTxAmounts must read cash_amount for cash distributions")
-	}
+	// A cash distribution carries its magnitude under `cash_amount` (no
+	// plain `amount`); the loader states it in the amount column, which the
+	// cases below build their distribution legs from (buildWebTxFromColumns,
+	// the build loop's path).
 	// Kinded the way production kinds them: since the "Transfer Out" split
 	// a cash distribution books as a withdrawal, and a fixture holding the
 	// old kind would be testing a combination the build loop no longer
@@ -59,7 +56,7 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 		{
 			name: "cash distribution supersedes a matching statement debit (no double count)",
 			in: []builtWebTx{
-				buildWebTxFromPayload("d1", dist, canonical.TxKindWithdrawal, "A", 100*day, `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
+				buildWebTxFromColumns("d1", dist, canonical.TxKindWithdrawal, "A", 100*day, "5000.0", `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
 				wtxAt("p1", pdf, canonical.TxKindWithdrawal, "A", 100*day, -5000, ""),
 			},
 			wantIDs: []string{"d1"},
@@ -67,7 +64,7 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 		{
 			name: "cash distribution supersedes both statement and tx-history copies",
 			in: []builtWebTx{
-				buildWebTxFromPayload("d1", dist, canonical.TxKindWithdrawal, "A", 100*day, `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
+				buildWebTxFromColumns("d1", dist, canonical.TxKindWithdrawal, "A", 100*day, "5000.0", `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
 				// settlement offset within the 3-day window
 				wtxAt("p1", pdf, canonical.TxKindWithdrawal, "A", 102*day, -5000, ""),
 				wtxAt("j1", js, canonical.TxKindWithdrawal, "A", 100*day, -5000, ""),
@@ -87,7 +84,7 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 		{
 			name: "non-matching debit (beyond tolerance) is kept",
 			in: []builtWebTx{
-				buildWebTxFromPayload("d1", dist, canonical.TxKindWithdrawal, "A", 100*day, `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
+				buildWebTxFromColumns("d1", dist, canonical.TxKindWithdrawal, "A", 100*day, "5000.0", `{"transfer_kind":"cash","method":"wire","cash_amount":5000}`),
 				wtxAt("p1", pdf, canonical.TxKindWithdrawal, "A", 100*day, -9999, ""),
 			},
 			wantIDs: []string{"d1", "p1"},
@@ -111,14 +108,13 @@ func TestSupersedeStatementCashWithDistributions(t *testing.T) {
 
 // TestSecuritiesTransferIsExternalNetFlow pins INTEROP §8.2 securities transfers:
 // a third_party_distribution securities row maps to TxKindTransferOut, which is in
-// externalFlowKinds, so it moves net_flow. The row's net_flow magnitude comes from
-// the payload's `market_value` (the documented contract carries no plain `amount`
-// for these rows), so this test drives the *real* extraction path
-// (extractWebTxAmounts + ApplyCanonicalSign, exactly as the build loop does) rather
-// than hand-setting NetAmount — otherwise the assertion couldn't catch a regression
-// where production never reads market_value. The row then survives the full
-// assembly tail (cash dedup is a no-op for it, PDF↔JSON dedup ignores it) and
-// contributes its market_value (negative for the outflow) to the summed NetAmount.
+// externalFlowKinds, so it moves net_flow. The row's net_flow magnitude is its
+// amount column, which the loader fills from the payload's `market_value` (the
+// documented contract carries no plain `amount` for these rows); this test signs
+// it the way the build loop does (ApplyCanonicalSign) rather than hand-setting
+// NetAmount. The row then survives the full assembly tail (cash dedup is a no-op
+// for it, PDF↔JSON dedup ignores it) and contributes its market_value (negative
+// for the outflow) to the summed NetAmount.
 func TestSecuritiesTransferIsExternalNetFlow(t *testing.T) {
 	const dist = sourceThirdPartyDistribution
 	const day = int64(86400)
@@ -128,20 +124,13 @@ func TestSecuritiesTransferIsExternalNetFlow(t *testing.T) {
 	}
 
 	// Spec-shaped payload: market_value is the flow magnitude and there is NO
-	// plain `amount` key (DESIGN.md §6). The NetAmount must therefore come out of
-	// extractWebTxAmounts via market_value, not be supplied by the test.
+	// plain `amount` key (DESIGN.md §6). The loader states it in the amount
+	// column, and the build loop signs it by the kind.
 	const payload = `{"transfer_kind":"securities","symbol":"EXMPL","quantity":100,"market_value":25000}`
 	const kind = canonical.TxKindTransferOut
 
-	// Guard the production extraction directly: market_value alone must yield a
-	// non-nil magnitude.
-	rawNet, _, _ := extractWebTxAmounts(payload)
-	if rawNet == nil {
-		t.Fatal("extractWebTxAmounts returned nil NetAmount for a market_value-only securities transfer; market_value is not being read")
-	}
-
 	in := []builtWebTx{
-		buildWebTxFromPayload("sec1", dist, kind, "A", 100*day, payload),
+		buildWebTxFromColumns("sec1", dist, kind, "A", 100*day, "25000", payload),
 	}
 	// Run the same stage tail transactionsBeforeAPIStart runs.
 	built := spliceNonExternalToJSON(in, nil)
@@ -162,13 +151,13 @@ func TestSecuritiesTransferIsExternalNetFlow(t *testing.T) {
 	}
 }
 
-// buildWebTxFromPayload constructs a builtWebTx the same way the production build
-// loop in transactionsBeforeAPIStart does: it parses NetAmount out of the raw
-// silver payload via extractWebTxAmounts and applies the canonical sign for the
-// kind. Tests that assert on net_flow use this so they exercise the real
-// extraction path rather than hand-supplying NetAmount.
-func buildWebTxFromPayload(id, source string, kind canonical.TxKind, acct string, ts int64, payload string) builtWebTx {
-	netAmount, quantity, price := extractWebTxAmounts(payload)
+// buildWebTxFromColumns constructs a builtWebTx the same way the production
+// build loop in transactionsBeforeAPIStart does: it reads NetAmount off the
+// row's amount column and applies the canonical sign for the kind. Tests
+// that assert on net_flow use this so they exercise the build loop's path
+// rather than hand-supplying a signed NetAmount.
+func buildWebTxFromColumns(id, source string, kind canonical.TxKind, acct string, ts int64, amount, payload string) builtWebTx {
+	netAmount := silver.DecimalPtrOrNil(sql.NullString{String: amount, Valid: true})
 	return builtWebTx{source: source, tx: canonical.TransactionChange{
 		TransactionExternalID: id,
 		OccurredAt:            ts,
@@ -176,8 +165,6 @@ func buildWebTxFromPayload(id, source string, kind canonical.TxKind, acct string
 		Kind:                  kind,
 		Currency:              "USD",
 		NetAmount:             canonical.ApplyCanonicalSign(kind, netAmount),
-		Quantity:              quantity,
-		Price:                 price,
 		Payload:               []byte(payload),
 	}}
 }

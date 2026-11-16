@@ -225,8 +225,13 @@ func (r *webReader) transactionsBeforeAPIStart(
 	// as proceeds on the closing date, and an order filled in several lots
 	// prints as several sales. The statement and history feeds book every
 	// sale as cash; the lots reach gold as realized lots (realized.go).
-	const q = `
-SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payload, source
+	s, err := r.schema(ctx)
+	if err != nil {
+		return nil, err
+	}
+	q := `
+SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payload, source,
+       ` + silver.ColumnOr(s.txColumns, "amount", "quantity", "price", "description", "action") + `
   FROM transactions
  WHERE timestamp BETWEEN ? AND ?
    AND source <> ?
@@ -243,8 +248,11 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			activityID, suffix, kind, payload, source string
 			ts                                        int64
 			instrumentKey                             sql.NullString
+			amount, quantity, price, description      sql.NullString
+			action                                    sql.NullString
 		)
-		if err := rows.Scan(&activityID, &ts, &suffix, &kind, &instrumentKey, &payload, &source); err != nil {
+		if err := rows.Scan(&activityID, &ts, &suffix, &kind, &instrumentKey, &payload, &source,
+			&amount, &quantity, &price, &description, &action); err != nil {
 			return err
 		}
 		hash, ok := bridge[suffix]
@@ -262,9 +270,9 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			id := webInstrument(instrumentKey.String, symbolToCUSIP)
 			instrPtr = &id
 		}
-		netAmount, quantity, price := extractWebTxAmounts(payload)
-		description := extractWebTxDescription(payload)
-		txKind := webKind(kind, netAmount, description, payload)
+		netAmount := silver.DecimalPtrOrNil(amount)
+		security := silver.StrPtrIfNonEmpty(description.String)
+		txKind := webKind(kind, netAmount, security, payload)
 		built = append(built, builtWebTx{source: source, tx: canonical.TransactionChange{
 			TransactionExternalID: activityID,
 			OccurredAt:            ts,
@@ -278,9 +286,9 @@ SELECT activity_id, timestamp, account_external_id, kind, instrument_key, payloa
 			// NOT NULL.
 			Currency:    "USD",
 			NetAmount:   webSigned(kind, txKind, netAmount),
-			Quantity:    quantity,
-			Price:       price,
-			Description: webNarrative(payload, description),
+			Quantity:    silver.DecimalPtrOrNil(quantity),
+			Price:       silver.DecimalPtrOrNil(price),
+			Description: webNarrative(action.String, security),
 			Payload:     json.RawMessage(payload),
 		}})
 		return nil
@@ -729,64 +737,6 @@ func webTransferSide(netAmount *canonical.Decimal) canonical.TxKind {
 	}
 }
 
-// schwabWebTxPayload captures the payload shapes the silver
-// produces side-by-side. Statement-PDF rows use lower-case keys
-// with numeric values (`amount`, `quantity`, `price`).
-// Transaction-history JSON rows use Schwab's CSV-export-style
-// capitalised string keys (`Amount`, `Quantity`, `Price`) with
-// values like `"$1,000.00"`, `"(2,000.00)"`, or `""`.
-// third_party_distribution rows carry the external-flow magnitude
-// as `market_value` (securities) or `cash_amount` (cash) per the
-// documented payload contract (schwab-web DESIGN.md §6 / INTEROP
-// §8.2-8.3) — they don't structure a plain `amount`, so those are
-// the NetAmount source for transfer rows. Both payloads land in
-// the same silver row keyed by source, so the adapter probes
-// every shape.
-type schwabWebTxPayload struct {
-	Amount   *float64 `json:"amount"`
-	Quantity *float64 `json:"quantity"`
-	Price    *float64 `json:"price"`
-
-	// Distribution external-flow magnitude. Only consulted when
-	// neither `amount` nor `Amount` is present, so a row that does
-	// carry a plain amount is unaffected (and securities and cash
-	// transfers never both set their magnitude key on one row).
-	MarketValue *float64 `json:"market_value"`
-	CashAmount  *float64 `json:"cash_amount"`
-
-	AmountStr   string `json:"Amount"`
-	QuantityStr string `json:"Quantity"`
-	PriceStr    string `json:"Price"`
-}
-
-// extractWebTxAmounts parses NetAmount, Quantity, and Price out
-// of a schwab-web transaction payload, handling both the
-// statement_pdf and tx_history_json shapes. Errors are swallowed
-// — a malformed field just stays nil so one bad row doesn't
-// abort the whole batch.
-func extractWebTxAmounts(payload string) (netAmount, quantity, price *canonical.Decimal) {
-	var p schwabWebTxPayload
-	if err := json.Unmarshal([]byte(payload), &p); err != nil {
-		return nil, nil, nil
-	}
-	netAmount = pickWebAmount(p.Amount, p.AmountStr)
-	if netAmount == nil {
-		// third_party_distribution transfer rows carry the
-		// external-flow magnitude under `market_value` (securities)
-		// or `cash_amount` (cash), not a plain `amount` (DESIGN.md
-		// §6 / INTEROP §8.2-8.3). The canonical sign helper applied
-		// in the build loop turns this magnitude into the directional
-		// net_flow (e.g. TxKindTransferOut → negative outflow).
-		netAmount = pickWebAmount(p.MarketValue, "")
-		if netAmount == nil {
-			netAmount = pickWebAmount(p.CashAmount, "")
-		}
-	}
-	quantity = pickWebAmount(p.Quantity, p.QuantityStr)
-	price = pickWebAmount(p.Price, p.PriceStr)
-	return
-}
-
 // webSigned orients a web row's figure by its kind. The web feeds print
 // most figures as magnitudes and leave the direction to the section or
 // the word — a reinvestment, a distribution's market value — so the
@@ -810,50 +760,14 @@ func webSigned(silverKind string, kind canonical.TxKind, amount *canonical.Decim
 	return signed
 }
 
-// extractWebTxDescription pulls the security name out of the
-// silver payload. statement_pdf uses lower-case `description`;
-// tx_history_json uses capital `Description`. Returns nil when
-// both are absent or empty so cash-only rows (interest, fees,
-// transfers) don't get a spurious name.
-func extractWebTxDescription(payload string) *string {
-	var p struct {
-		Lower string `json:"description"`
-		Upper string `json:"Description"`
-	}
-	if err := json.Unmarshal([]byte(payload), &p); err != nil {
-		return nil
-	}
-	for _, s := range []string{p.Lower, p.Upper} {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			return &s
-		}
-	}
-	return nil
-}
-
 // webNarrative is the row's narrative for gold: the movement, then the
 // security it concerns — the fidelity adapter's action-then-security
 // reading. The security alone cannot tell a dividend from the withholding
 // taken from it, or an ADR's pass-through fee from either: all three name
-// the same security. The movement is the transaction history's `Action`
-// ("NRA Tax Adj", "ADR Mgmt Fee"), or on a statement row its `action` or
-// `category`; the statement's catch-all category, `Unknown`, says nothing
-// and is left out.
-func webNarrative(payload string, security *string) *string {
-	var p struct {
-		Action   string `json:"Action"`
-		Lower    string `json:"action"`
-		Category string `json:"category"`
-	}
-	_ = json.Unmarshal([]byte(payload), &p)
-	movement := ""
-	for _, s := range []string{p.Action, p.Lower, p.Category} {
-		if s = strings.TrimSpace(s); s != "" && !strings.EqualFold(s, "Unknown") {
-			movement = s
-			break
-		}
-	}
+// the same security. The movement is the row's action column: the
+// transaction history's `Action` ("NRA Tax Adj", "ADR Mgmt Fee"), or on a
+// statement row its `action` or `category`, where it states one.
+func webNarrative(movement string, security *string) *string {
 	sec := ""
 	if security != nil {
 		sec = *security
@@ -876,48 +790,4 @@ func distributionIsCash(payload string) bool {
 		return false
 	}
 	return p.TransferKind == "cash"
-}
-
-func pickWebAmount(num *float64, str string) *canonical.Decimal {
-	if num != nil {
-		d := canonical.NewDecimalFromFloat(*num)
-		return &d
-	}
-	d, ok := parseSchwabAmountString(str)
-	if !ok {
-		return nil
-	}
-	return &d
-}
-
-// parseSchwabAmountString parses Schwab's CSV-export string
-// format: optional surrounding parens (negative), optional "$"
-// prefix, optional "-" sign, comma thousands separators.
-// Returns ok=false for empty or unparseable input.
-func parseSchwabAmountString(s string) (canonical.Decimal, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return canonical.Decimal{}, false
-	}
-	negative := false
-	if len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' {
-		negative = true
-		s = s[1 : len(s)-1]
-	}
-	s = strings.NewReplacer("$", "", ",", "", " ", "").Replace(s)
-	if strings.HasPrefix(s, "-") {
-		negative = !negative
-		s = s[1:]
-	}
-	if s == "" {
-		return canonical.Decimal{}, false
-	}
-	d, err := canonical.NewDecimalFromString(s)
-	if err != nil {
-		return canonical.Decimal{}, false
-	}
-	if negative {
-		d = d.Neg()
-	}
-	return d, true
 }

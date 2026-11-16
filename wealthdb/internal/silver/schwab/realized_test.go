@@ -232,11 +232,11 @@ func TestRealizedLotsOptional(t *testing.T) {
 func TestForm1099BLeavesTheTransactionStream(t *testing.T) {
 	f := newMergedFixture(t)
 	if _, err := f.web.Exec(`
-        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, source, source_sha256, payload) VALUES
-            ('f-2021', ?1, '5678', 'Sale', NULL, 'form_1099b',    'sha-f', '{"tax_year":2021,"security_name":"VTI","proceeds":1000}'),
-            ('p-2021', ?2, '5678', 'Sale', 'VTI', 'statement_pdf', 'sha-p', '{"amount":1000,"description":"Sold VTI"}'),
-            ('p-div',  ?2, '5678', 'Dividend', 'VTI', 'statement_pdf', 'sha-p', '{"amount":12}'),
-            ('f-2020', ?3, '5678', 'Sale', NULL, 'form_1099b',    'sha-g', '{"tax_year":2020,"security_name":"QQQ","proceeds":400}');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, source, source_sha256, payload, amount, description) VALUES
+            ('f-2021', ?1, '5678', 'Sale', NULL, 'form_1099b',    'sha-f', '{"tax_year":2021,"security_name":"VTI","proceeds":1000}', NULL, NULL),
+            ('p-2021', ?2, '5678', 'Sale', 'VTI', 'statement_pdf', 'sha-p', '{"amount":1000,"description":"Sold VTI"}', '1000', 'Sold VTI'),
+            ('p-div',  ?2, '5678', 'Dividend', 'VTI', 'statement_pdf', 'sha-p', '{"amount":12}', '12', NULL),
+            ('f-2020', ?3, '5678', 'Sale', NULL, 'form_1099b',    'sha-g', '{"tax_year":2020,"security_name":"QQQ","proceeds":400}', NULL, NULL);
         INSERT INTO closed_lots
             (logical_doc_key, document_kind, lot_index, account_external_id, tax_year, security_name,
              quantity, disposed_date, proceeds, cost_basis, term, covered, source_sha256, payload) VALUES
@@ -283,10 +283,10 @@ func TestForm1099BWidensNoWindow(t *testing.T) {
 	f := newMergedFixture(t)
 	stmt := utcDay("2021-03-03")
 	if _, err := f.web.Exec(`
-        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, source, source_sha256, payload) VALUES
-            ('p-2021',  ?1, '5678', 'Sale', 'VTI', 'statement_pdf', 'sha-p', '{"amount":1000}'),
-            ('f-early', ?2, '5678', 'Sale', NULL,  'form_1099b',    'sha-f', '{"tax_year":2020}'),
-            ('f-late',  ?3, '5678', 'Sale', NULL,  'form_1099b',    'sha-f', '{"tax_year":2021}');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key, source, source_sha256, payload, amount) VALUES
+            ('p-2021',  ?1, '5678', 'Sale', 'VTI', 'statement_pdf', 'sha-p', '{"amount":1000}', '1000'),
+            ('f-early', ?2, '5678', 'Sale', NULL,  'form_1099b',    'sha-f', '{"tax_year":2020}', NULL),
+            ('f-late',  ?3, '5678', 'Sale', NULL,  'form_1099b',    'sha-f', '{"tax_year":2021}', NULL);
     `, stmt, utcDay("2020-06-01"), utcDay("2021-09-01")); err != nil {
 		t.Fatalf("seed: %v", err)
 	}

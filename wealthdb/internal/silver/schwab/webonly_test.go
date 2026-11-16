@@ -53,9 +53,11 @@ func TestWebAloneKeysAccountsByTheirFullNumber(t *testing.T) {
              acquired_date, unrealized_gain_loss, term, covered, footnotes, source_sha256, payload) VALUES
             (?1, '5678', 'VTI', 0, 10, 100, 1000, '2021-03-02', 500, 'LONG', NULL, NULL, 'sha-stmt', '{}');
         INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key,
-            source, source_sha256, payload) VALUES
-            ('T1', 500,  '5678', 'Deposit', NULL, 'statement_pdf', 'sha-stmt', '{"amount":250,"description":"FUNDS"}'),
-            ('T2', 2000, '5678', 'Buy',     'VTI', 'statement_pdf', 'sha-stmt', '{"amount":-100,"quantity":1,"description":"VTI"}');
+            source, source_sha256, payload, amount, quantity, description) VALUES
+            ('T1', 500,  '5678', 'Deposit', NULL, 'statement_pdf', 'sha-stmt', '{"amount":250,"description":"FUNDS"}',
+             '250', NULL, 'FUNDS'),
+            ('T2', 2000, '5678', 'Buy',     'VTI', 'statement_pdf', 'sha-stmt', '{"amount":-100,"quantity":1,"description":"VTI"}',
+             '-100', '1', 'VTI');
     `, asOf, periodStart)
 	ctx := context.Background()
 	cw, err := c.ChangeWindow(ctx, -1)
