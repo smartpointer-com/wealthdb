@@ -75,6 +75,19 @@ def test_clock_columns_are_ignored(tmp_path, old, capsys):
     assert _run(capsys, old, new) == (0, [])
 
 
+def test_the_time_a_document_was_derived_is_a_clock(tmp_path, capsys):
+    def build(path: Path, derived_at: int) -> Path:
+        return _silver(path, "CREATE TABLE document_derivations ("
+                       "content_sha256 TEXT, scope TEXT, generation TEXT,"
+                       " derived_at INTEGER, row_count INTEGER,"
+                       " PRIMARY KEY (content_sha256, scope))",
+                       "INSERT INTO document_derivations VALUES"
+                       f" ('aa', 'words', 'g1', {derived_at}, 2)")
+
+    old, new = build(tmp_path / "old.db", 1), build(tmp_path / "new.db", 2)
+    assert _run(capsys, old, new) == (0, [])
+
+
 def test_path_columns_differ_unless_ignored(tmp_path, old, capsys):
     new = _silver(tmp_path / "new.db", run_dir="/b")
     assert _run(capsys, old, new) == (1, ["dump_runs.run_dir: 1 rows changed"])

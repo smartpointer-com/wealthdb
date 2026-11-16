@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from collectorkit import loader, rebuild, silver
+from collectorkit import derivations, loader, rebuild, silver
 
 SCHEMA = """
 CREATE TABLE schema_meta (silver_schema_version INTEGER PRIMARY KEY,
@@ -283,7 +283,7 @@ def test_a_rebuild_clears_a_leftover_fresh_file(migrations, tmp_path):
     assert not (tmp_path / "toy.db.rebuild").exists()
 
 
-# ---- the table a collector's migration copies ------------------------------
+# ---- the tables a collector's migration copies -----------------------------
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -294,11 +294,12 @@ def _columns(conn, table):
 
 @pytest.mark.parametrize("table,ddl", [
     ("rebuild_level", rebuild.REBUILD_LEVEL_DDL),
+    ("document_derivations", derivations.DOCUMENT_DERIVATIONS_DDL),
 ])
 def test_every_collector_creates_the_kits_table_as_the_kit_states_it(
         table, ddl):
-    # A collector whose migrations create the table gets the one the kit's
-    # statement makes.
+    # A collector whose migrations create one of the kit's tables gets the
+    # one the kit's statement makes.
     want = sqlite3.connect(":memory:")
     want.execute(ddl)
     for migrations in sorted((REPO / "collectors").glob("*/migrations")):

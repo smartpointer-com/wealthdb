@@ -37,6 +37,7 @@ CLOCK_COLUMNS = (
     "schema_meta.applied_at",
     "parser_generations.stamped_at",
     "dump_runs.loaded_at",
+    "document_derivations.derived_at",
     "angellist:tax_documents.retrieved_at",
     "load_runs.load_at",
     "swissquote:documents.first_seen_at",
