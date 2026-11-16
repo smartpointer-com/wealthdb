@@ -87,7 +87,7 @@ History starts on 2023-07-01 and runs to the as-of date.
 | `tamberlow` | two 401(k) plans, a health savings account | payroll contributions that never touch household cash, HSA reimbursements, a yearly fee inside a plan, which the spending report counts and the cash flow statement does not |
 | `aubervane` | a discretionary mandate in one portfolio | four currencies, currency conversions, coupons, withholding, management fees |
 | `emberwright` | a venture fund interest and an SPV, in one account | capital calls, a distribution, quarterly NAV marks dated through `valued_at`, an SPV that exits in listed shares |
-| `tessarite` | a crypto exchange account | the `crypto_partial` regime, staking income, a deposit from and a withdrawal to a wallet nothing tracks, and no stated cost basis: the lot engine rebuilds it from the trades |
+| `tessarite` | a crypto exchange account | staking income, a deposit from and a withdrawal to a wallet nothing tracks, and no stated cost basis: the lot engine rebuilds it from the trades |
 | `driftwren` | a multi-currency account in EUR and GBP | spending abroad, a yearly USD wire paired across currencies, interest on the euro balance |
 | `homestead` | the family home | a NAV-only holding valued by yearly appraisals, each dated through `valued_at`, so the Mark age tile moves |
 | `fx` | none | daily USD rates for EUR, GBP and CHF, and a US dollar yield curve |

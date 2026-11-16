@@ -59,42 +59,6 @@ func TestBindStoredLinks(t *testing.T) {
 	}
 }
 
-// TestBindStoredLinksIndexesTransferLike pins the returns binding's SECOND
-// side effect: linking an account must also index its transferLike slice, or
-// linkedDrops silently reads every linked leg as a nonTransfer one and
-// applies the wrong subsumption rule. Accounts without links stay unindexed.
-func TestBindStoredLinksIndexesTransferLike(t *testing.T) {
-	t.Parallel()
-	byKey := map[string]*accountData{
-		acctKey("s1", "A"): {src: "s1", acct: "A", transferLike: []returns.Flow{
-			{Day: 100, Amount: -5000, ID: "t1"},
-			{Day: 100, Amount: -25, ID: "fee"},
-		}},
-		acctKey("s2", "B"): {src: "s2", acct: "B", nonTransfer: []returns.Flow{
-			{Day: 102, Amount: 5000, ID: "t2"},
-		}},
-		acctKey("s2", "C"): {src: "s2", acct: "C", transferLike: []returns.Flow{
-			{Day: 100, Amount: 42, ID: "unlinked"},
-		}},
-	}
-	bindStoredLinks([]storedTransferLink{{src: "s1", txID: "t1", farSrc: "s2", farTxID: "t2"}},
-		attachedFlows{{"s1", "t1"}: {acct: "A", day: 100}, {"s2", "t2"}: {acct: "B", day: 102}}, byKey)
-
-	want := map[string]bool{"t1": true, "fee": true}
-	if got := byKey[acctKey("s1", "A")].transferLikeIDs; !reflect.DeepEqual(got, want) {
-		t.Errorf("sender index = %v, want the whole transferLike slice %v", got, want)
-	}
-	// The receiver's leg is a nonTransfer one, but the account is linked, so it
-	// still gets an (empty, non-nil) index — linkedDrops distinguishes
-	// "not transfer-like" from "never indexed".
-	if got := byKey[acctKey("s2", "B")].transferLikeIDs; got == nil || len(got) != 0 {
-		t.Errorf("receiver index = %v, want empty and non-nil", got)
-	}
-	if got := byKey[acctKey("s2", "C")].transferLikeIDs; got != nil {
-		t.Errorf("unlinked account index = %v, want nil (the map stays sparse)", got)
-	}
-}
-
 // seedTransferLink stores the transfer pair (src, tx) and (farSrc, farTx),
 // one row per leg, as the load's enrichment pass does.
 func seedTransferLink(t *testing.T, db *sql.DB, ctx context.Context, src, tx, farSrc, farTx string) {
@@ -284,46 +248,29 @@ func TestCrossSourceNettingObeysNettingSwitch(t *testing.T) {
 	}
 }
 
-// TestCrossMatchedDropsOnboardNoneTransferLike pins the per-slice liveness
-// rule directly: a pre-debut TRANSFER-LIKE leg is subsumed unconditionally
-// (even under OnboardNone, unlike the nonTransfer slice), so its pair must
-// not net — dropping the partner's live leg would count the capital
-// asymmetrically. No registered policy produces this shape today; the pin
-// guards the invariant for future OnboardNone sources with transfer kinds.
-func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
+// TestLinkedDropsKeepsAPreDebutLeg pins the liveness rule directly: a leg
+// before its account's debut is subsumed by the debut's onboarding, so its
+// pair must not net through the link: dropping the partner's live leg would
+// count the capital asymmetrically. The netter pairs such a leg instead, and
+// the funding leaves the onboarding.
+func TestLinkedDropsKeepsAPreDebutLeg(t *testing.T) {
 	t.Parallel()
 	winFrom, winTo := int64(100), int64(300)
-	// bindStoredLinks indexes every linked account's transferLike slice;
-	// direct construction must uphold that invariant.
 	sender := &accountData{
 		src: "s1", acct: "A",
-		series:          []dayVal{{day: 100, val: 50000}, {day: 300, val: 40000}},
-		transferLike:    []returns.Flow{{Day: 150, Amount: -10000, ID: "out"}},
-		links:           map[string]linkedLeg{"out": {src: "s2", acct: "B", txID: "in", day: 150}},
-		transferLikeIDs: map[string]bool{"out": true},
+		series:       []dayVal{{day: 100, val: 50000}, {day: 300, val: 40000}},
+		transferLike: []returns.Flow{{Day: 150, Amount: -10000, ID: "out"}},
+		links:        map[string]linkedLeg{"out": {src: "s2", acct: "B", txID: "in", day: 150}},
 	}
 	receiver := &accountData{
 		src: "s2", acct: "B",
 		// Debuts AFTER the flow: day 150 is pre-debut for the day-200 spine.
-		series:          []dayVal{{day: 200, val: 10000}, {day: 300, val: 11000}},
-		transferLike:    []returns.Flow{{Day: 150, Amount: 10000, ID: "in"}},
-		links:           map[string]linkedLeg{"in": {src: "s1", acct: "A", txID: "out", day: 150}},
-		transferLikeIDs: map[string]bool{"in": true},
+		series:       []dayVal{{day: 200, val: 10000}, {day: 300, val: 11000}},
+		transferLike: []returns.Flow{{Day: 150, Amount: 10000, ID: "in"}},
+		links:        map[string]linkedLeg{"in": {src: "s1", acct: "A", txID: "out", day: 150}},
 	}
-	receiver.rpolicy.OnboardScope = returns.OnboardNone
-
-	drops, pairs := linkedDrops([]*accountData{sender, receiver}, winFrom, winTo)
-	if pairs != 0 || len(drops) != 0 {
-		t.Errorf("pre-debut transferLike leg under OnboardNone must not net: pairs=%d drops=%v", pairs, drops)
-	}
-
-	// Control: the same shape on the nonTransfer slice IS live under
-	// OnboardNone (the deposit is the capital event there) and nets.
-	sender.nonTransfer, sender.transferLike, sender.transferLikeIDs = sender.transferLike, nil, nil
-	receiver.nonTransfer, receiver.transferLike, receiver.transferLikeIDs = receiver.transferLike, nil, nil
-	drops, pairs = linkedDrops([]*accountData{sender, receiver}, winFrom, winTo)
-	if pairs != 1 || len(drops) != 2 {
-		t.Errorf("OnboardNone nonTransfer pre-debut pair must net: pairs=%d drops=%v", pairs, drops)
+	if drops, pairs := linkedDrops([]*accountData{sender, receiver}, winFrom, winTo); pairs != 0 || len(drops) != 0 {
+		t.Errorf("a pre-debut linked leg must not net: pairs=%d drops=%v", pairs, drops)
 	}
 }
 

@@ -41,13 +41,12 @@ func (a *accountData) region(day int64, w daySpan) region {
 	return regionLive
 }
 
-// flowLeg is one of an entity's flows in a window, classified once: its account,
-// whether the netter may pair it (a transfer-like kind), and its region.
+// flowLeg is one of an entity's flows in a window, classified once: its account
+// and its region.
 type flowLeg struct {
 	returns.Flow
-	acct     *accountData
-	nettable bool
-	region   region
+	acct   *accountData
+	region region
 }
 
 // onSpine says the leg's account holds value by the leg's day.
@@ -88,29 +87,24 @@ const (
 	fateDropped
 )
 
-// fateOf is the fate of a leg no pair claims, by its region. Two cells are the
+// fateOf is the fate of a leg no pair claims, by its region. One cell is the
 // source policy's:
 //
 //	region    fate                               policy cell
 //	live      flow
-//	preDebut  dropped: the first value holds it  OnboardNone: a deposit or withdrawal is a flow
+//	preDebut  dropped: the first value holds it
 //	zeroTail  exit, or dropped on a final-day    ClosureLedgerExact: flow
 //	          zeroing (the closure books the
 //	          carried value)
 //
-// Under OnboardNone no onboarding replaces a pre-debut deposit, so it is the
-// capital event. A ledger-exact source dates its exit legs itself.
+// A ledger-exact source dates its exit legs itself.
 func fateOf(l flowLeg) fate {
-	p := l.acct.rpolicy
 	switch l.region {
 	case regionPreDebut:
-		if !l.nettable && p.OnboardScope == returns.OnboardNone {
-			return fateFlow
-		}
 		return fateDropped
 	case regionZeroTail:
 		switch {
-		case p.ClosureScope == returns.ClosureLedgerExact:
+		case l.acct.rpolicy.ClosureScope == returns.ClosureLedgerExact:
 			return fateFlow
 		case l.acct.zeroesBeforeLastDay():
 			return fateExit
@@ -303,7 +297,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 		key := acctKey(a.src, a.acct)
 		for f, nettable := range a.legs(winFrom, winTo) {
 			f.ValuedOn = a.valuedOn(f.Day)
-			l := flowLeg{Flow: f, acct: a, nettable: nettable, region: a.region(f.Day, w)}
+			l := flowLeg{Flow: f, acct: a, region: a.region(f.Day, w)}
 			switch {
 			case linkDrop != nil && linkDrop[acctKey(key, f.ID)]:
 				flows = moved.settle(flows, l, fateInside)
@@ -370,13 +364,6 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 func (m *movedLegs) onboarding(flows []returns.Flow, assets []*accountData, w daySpan) []returns.Flow {
 	perEntityGroups := map[string][]*accountData{}
 	for _, a := range assets {
-		if a.rpolicy.OnboardScope == returns.OnboardNone {
-			// Crypto-sweep source: mid-window debuts are funded by within-entity
-			// transfers already excluded from flows, so any onboarding here would
-			// double-count. Read source-scoped from a.rpolicy exactly like the
-			// per-entity-once check, so only this source's constituents skip.
-			continue
-		}
 		if a.rpolicy.OnboardScope == returns.OnboardPerEntityOnce {
 			perEntityGroups[a.src] = append(perEntityGroups[a.src], a)
 			continue
@@ -599,9 +586,9 @@ func linkedDrops(assets []*accountData, winFrom, winTo int64) (map[string]bool, 
 		members[acctKey(a.src, a.acct)] = a
 	}
 	w := daySpan{winFrom, winTo}
-	live := func(a *accountData, day int64, nettable bool) bool {
+	live := func(a *accountData, day int64) bool {
 		return day > winFrom && day <= winTo &&
-			fateOf(flowLeg{Flow: returns.Flow{Day: day}, acct: a, nettable: nettable, region: a.region(day, w)}) == fateFlow
+			fateOf(flowLeg{Flow: returns.Flow{Day: day}, acct: a, region: a.region(day, w)}) == fateFlow
 	}
 	drops := map[string]bool{}
 	pairs := 0
@@ -609,7 +596,7 @@ func linkedDrops(assets []*accountData, winFrom, winTo int64) (map[string]bool, 
 		if len(a.links) == 0 {
 			continue // links are sparse; skip unlinked members entirely
 		}
-		for f, nettable := range a.legs(winFrom, winTo) {
+		for f := range a.legs(winFrom, winTo) {
 			link, ok := a.links[f.ID]
 			if !ok {
 				continue
@@ -620,8 +607,7 @@ func linkedDrops(assets []*accountData, winFrom, winTo int64) (map[string]bool, 
 				continue
 			}
 			partner := members[acctKey(link.src, link.acct)]
-			if partner == nil || !live(a, f.Day, nettable) ||
-				!live(partner, link.day, partner.transferLikeIDs[link.txID]) {
+			if partner == nil || !live(a, f.Day) || !live(partner, link.day) {
 				continue
 			}
 			drops[me], drops[other] = true, true
@@ -698,13 +684,7 @@ func netTransfers(cand []flowLeg, pair func(pos, neg flowLeg)) (kept []flowLeg, 
 // or in its per-entity-once group's step, so that value stands for everything
 // a's pre-debut legs moved.
 func onboardsFirstValue(a *accountData) bool {
-	switch a.rpolicy.OnboardScope {
-	case returns.OnboardPerEntityOnce:
-		return true
-	case returns.OnboardPerConstituent:
-		return !a.isConduit()
-	}
-	return false
+	return a.rpolicy.OnboardScope == returns.OnboardPerEntityOnce || !a.isConduit()
 }
 
 func flowsIn(flows []returns.Flow, from, to int64) []returns.Flow {

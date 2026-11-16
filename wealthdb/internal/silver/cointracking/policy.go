@@ -4,24 +4,18 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
-// returnsPolicy is the kind's ReturnsPolicy. Crypto: only FIAT
-// deposit/withdrawal are real external capital. Crypto transfer_in/out are an
-// unclassifiable mix (wallet-to-wallet internal + airdrops/gifts which are
-// return) with no discriminator surviving to gold -> excluded (flag
-// crypto_unclassified_transfers). Deposits and withdrawals never net.
+// returnsPolicy is the kind's ReturnsPolicy: flow_complete, so every
+// capital kind counts, every other knob at its default.
 //
-// Two source-scoped knobs depart from the defaults:
-//   - OnboardScope=OnboardNone: cold-storage wallets debut mid-window funded by
-//     within-entity crypto transfer_in legs already excluded from flows (their
-//     fiat was counted once at the exchange), so per-constituent onboarding would
-//     book a phantom +debut-value inflow and drag the aggregate TWR negative.
-//   - AccountsGrain=Blanked: per-wallet (accounts-grain) return rows are
-//     meaningless (coins sweep between wallets on arrival), so they show values
-//     with TWR/MWR blanked; the portfolios grain and up stay valid, so returns
-//     are reported per portfolio and above.
+// Fiat deposits and withdrawals are capital, and so are a coin's
+// transfer_in and transfer_out, valued at the day's rate. The load's
+// matcher pairs a move between two wallets (transfer_links), and such a
+// pair nets in every aggregate that holds both wallets, as any source's
+// transfers do. A leg with no partner is a flow, whatever moved the coin:
+// a wallet nothing tracks, an airdrop or a gift (kindTable gives them all
+// a transfer kind). A wallet that debuts funded by a move from another
+// wallet onboards only what that move did not bring in.
 func returnsPolicy() *returns.ReturnsPolicy {
-	p := returns.DefaultReturnsPolicy(returns.NewFlowPolicy(returns.RegimeCryptoPartial))
-	p.OnboardScope = returns.OnboardNone
-	p.AccountsGrain = returns.AccountsGrainBlanked
+	p := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
 	return &p
 }

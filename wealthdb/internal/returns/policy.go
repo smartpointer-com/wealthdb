@@ -9,7 +9,7 @@ import (
 // Regime is a source's flow completeness: which of its collected rows of
 // the capital kinds (canonical.CapitalKind) are owner capital. A leg the
 // equity-transfer ledger asserts is hand-stated, not collected, and counts
-// under every regime but crypto's.
+// under every regime.
 type Regime int
 
 const (
@@ -17,11 +17,6 @@ const (
 	// (banks, pension, the private-market ledgers). TWR and MWR are both
 	// valid.
 	RegimeFlowComplete Regime = iota
-	// RegimeCryptoPartial: fiat only. Deposits and withdrawals count; crypto
-	// transfer legs are an unclassifiable mix (internal moves and
-	// airdrops/gifts) and are excluded (cointracking). TWR from the value
-	// series and the fiat flows; MWR partial.
-	RegimeCryptoPartial
 	// RegimeNavOnly: none. No collected row counts (manual — its wires are
 	// already captured by the bank collectors); only the ledger's legs do,
 	// for value that moved in from another tracked vehicle rather than from
@@ -35,8 +30,6 @@ func (r Regime) String() string {
 	switch r {
 	case RegimeFlowComplete:
 		return "flow_complete"
-	case RegimeCryptoPartial:
-		return "crypto_partial"
 	case RegimeNavOnly:
 		return "nav_only"
 	}
@@ -57,12 +50,10 @@ type FlowPolicy struct {
 // flow under this policy. ledger marks a leg the equity-transfer ledger
 // asserts.
 func (p FlowPolicy) IsExternal(k canonical.TxKind, ledger bool) bool {
-	capital, nettable := canonical.CapitalKind(k)
+	capital, _ := canonical.CapitalKind(k)
 	switch {
 	case !capital:
 		return false
-	case p.Regime == RegimeCryptoPartial:
-		return !nettable
 	case p.Regime == RegimeNavOnly:
 		return ledger
 	}
@@ -125,10 +116,8 @@ func ParseRegime(s string) (Regime, error) {
 	switch s {
 	case "flow_complete":
 		return RegimeFlowComplete, nil
-	case "crypto_partial":
-		return RegimeCryptoPartial, nil
 	case "nav_only":
 		return RegimeNavOnly, nil
 	}
-	return 0, fmt.Errorf("unknown flow regime %q (want flow_complete, crypto_partial, or nav_only)", s)
+	return 0, fmt.Errorf("unknown flow regime %q (want flow_complete or nav_only)", s)
 }

@@ -78,11 +78,11 @@ func TestLoadReturnsDatasetsMultiMatchesSingle(t *testing.T) {
 				a.portfolio != b.portfolio || a.kind != b.kind {
 				t.Errorf("%s/%s: metadata differs", ccy, key)
 			}
-			if a.cryptoExcluded != b.cryptoExcluded || a.journalPresent != b.journalPresent ||
-				a.hasClampedFlow != b.hasClampedFlow || a.droppedNonzero != b.droppedNonzero {
+			if a.journalPresent != b.journalPresent || a.hasClampedFlow != b.hasClampedFlow ||
+				a.droppedNonzero != b.droppedNonzero {
 				t.Errorf("%s/%s: flags differ (single %+v multi %+v)", ccy, key,
-					[]bool{a.cryptoExcluded, a.journalPresent, a.hasClampedFlow, a.droppedNonzero},
-					[]bool{b.cryptoExcluded, b.journalPresent, b.hasClampedFlow, b.droppedNonzero})
+					[]bool{a.journalPresent, a.hasClampedFlow, a.droppedNonzero},
+					[]bool{b.journalPresent, b.hasClampedFlow, b.droppedNonzero})
 			}
 			if !reflect.DeepEqual(a.rpolicy, b.rpolicy) {
 				t.Errorf("%s/%s: policies differ (single %+v multi %+v)", ccy, key, a.rpolicy, b.rpolicy)

@@ -32,27 +32,12 @@ func TestReturnsPolicyForUnknownDefault(t *testing.T) {
 	}
 }
 
-// TestPolicyKnobDefaults pins the opt-in policy knobs: OnboardNone is a
-// distinct enum value appended after the existing scopes (so their numeric
-// values are preserved), and DefaultReturnsPolicy leaves OnboardScope ==
-// OnboardPerConstituent, AccountsGrain == AccountsGrainNormal, and
-// CapitalCallRisk == false — a strict no-op for every source that doesn't
-// set them.
+// TestPolicyKnobDefaults pins the opt-in policy knobs: DefaultReturnsPolicy
+// leaves OnboardScope == OnboardPerConstituent, AccountsGrain ==
+// AccountsGrainNormal, CapitalCallRisk == false and ClosureScope ==
+// ClosureSubsumeDrains — a strict no-op for every source that doesn't set
+// them.
 func TestPolicyKnobDefaults(t *testing.T) {
-	// Numeric values of the pre-existing scopes are unchanged by the append.
-	if OnboardPerConstituent != 0 || OnboardPerEntityOnce != 1 {
-		t.Errorf("existing OnboardScope values shifted: PerConstituent=%d PerEntityOnce=%d, want 0,1",
-			OnboardPerConstituent, OnboardPerEntityOnce)
-	}
-	// OnboardNone is a distinct constant, appended last.
-	if OnboardNone == OnboardPerConstituent || OnboardNone == OnboardPerEntityOnce {
-		t.Errorf("OnboardNone must be distinct from the existing scopes (got %d)", OnboardNone)
-	}
-	if OnboardNone != 2 {
-		t.Errorf("OnboardNone = %d, want 2 (appended after the existing values)", OnboardNone)
-	}
-
-	// DefaultReturnsPolicy leaves the opt-in knobs at their no-op defaults.
 	dp := DefaultReturnsPolicy(BankFlowPolicy())
 	if dp.OnboardScope != OnboardPerConstituent {
 		t.Errorf("default OnboardScope = %d, want OnboardPerConstituent", dp.OnboardScope)
@@ -70,10 +55,9 @@ func TestPolicyKnobDefaults(t *testing.T) {
 
 func TestRegimeString(t *testing.T) {
 	cases := map[Regime]string{
-		RegimeFlowComplete:  "flow_complete",
-		RegimeCryptoPartial: "crypto_partial",
-		RegimeNavOnly:       "nav_only",
-		Regime(99):          "unknown",
+		RegimeFlowComplete: "flow_complete",
+		RegimeNavOnly:      "nav_only",
+		Regime(99):         "unknown",
 	}
 	for r, want := range cases {
 		if got := r.String(); got != want {
@@ -103,17 +87,15 @@ func TestExternalKindSignsMatchCanonical(t *testing.T) {
 }
 
 // TestCompletenessCells pins what each regime counts: every capital kind
-// when complete, the fiat kinds (the capital kinds that never net) when
-// fiat only, and only the ledger's legs when none. No regime counts a kind
+// when complete, and only the ledger's legs when none. No regime counts a kind
 // outside the table, and nettability is the table's alone.
 func TestCompletenessCells(t *testing.T) {
 	for _, k := range canonical.TxKinds() {
 		capital, nettable := canonical.CapitalKind(k)
 		for _, ledger := range []bool{false, true} {
 			cells := map[Regime]bool{
-				RegimeFlowComplete:  capital,
-				RegimeCryptoPartial: capital && !nettable,
-				RegimeNavOnly:       capital && ledger,
+				RegimeFlowComplete: capital,
+				RegimeNavOnly:      capital && ledger,
 			}
 			for r, want := range cells {
 				if got := NewFlowPolicy(r).IsExternal(k, ledger); got != want {

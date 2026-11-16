@@ -408,13 +408,13 @@ func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 		if r := e.run(p, toDay); r != nil {
 			rows = r.rows(ds.fx)
 		}
-		// AccountsGrainBlanked: per-account (accounts-grain) rows for a sweep
-		// source (crypto wallets) are economically meaningless, so keep their
-		// start/end values but blank TWR/MWR to n/a and flag it. Gate STRICTLY
-		// on the group's per-constituent rpolicy so ONLY that source's account
-		// rows change; the portfolios/sources/global grains are NEVER gated
-		// (they aggregate coherent units, which ARE valid). One row per account
-		// is still emitted.
+		// AccountsGrainBlanked: per-account (accounts-grain) rows a source's
+		// policy declares meaningless keep their start/end values, with
+		// TWR/MWR blanked to n/a and flagged. Gate STRICTLY on the group's
+		// per-constituent rpolicy so ONLY that source's account rows change;
+		// the portfolios/sources/global grains are NEVER gated (they aggregate
+		// coherent units, which ARE valid). One row per account is still
+		// emitted.
 		if g.single && accountsGrainBlanked(e.assets) {
 			for i := range rows {
 				rows[i].TWR, rows[i].TWRAnnualized = nil, nil
@@ -511,7 +511,6 @@ type accountData struct {
 	nonTransfer    []returns.Flow        // external deposit/withdrawal — never heuristically netted; a stored pair may drop (links)
 	transferLike   []returns.Flow        // transfer_in/out/journal — netting candidates at coarse grains
 	journalPresent bool
-	cryptoExcluded bool
 	hasClampedFlow bool // a flow was valued at fx_daily's day-0 floor rate
 	droppedNonzero bool // left the spine (superseded, or past its carry horizon) while still holding value
 
@@ -519,10 +518,7 @@ type accountData struct {
 	// from the stored links when transfer matching is enabled (bindStoredLinks;
 	// nil otherwise). Consumed per entity in entityFlows: a linked pair nets
 	// only where both legs are live members of the same entity window.
-	// transferLikeIDs indexes the transferLike slice for accounts with links,
-	// so per-window liveness checks resolve a partner leg's slice in O(1).
-	links           map[string]linkedLeg
-	transferLikeIDs map[string]bool
+	links map[string]linkedLeg
 
 	// twin is the same account in residueCurrency's dataset, nil where the
 	// dataset is that currency's or none is linked (linkResidueTwins).
@@ -1027,11 +1023,6 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 	if a.rpolicy.ExternalOnly && returnsInternal {
 		return false
 	}
-	if a.rpolicy.Flow.Regime == returns.RegimeCryptoPartial &&
-		(kind == canonical.TxKindTransferIn || kind == canonical.TxKindTransferOut) {
-		a.cryptoExcluded = true
-		return false
-	}
 	if !a.rpolicy.Flow.IsExternal(kind, strings.HasPrefix(txID, canonical.LedgerTransferIDPrefix)) {
 		return false
 	}
@@ -1102,8 +1093,7 @@ func loadStoredTransferLinks(ctx context.Context, q querier) ([]storedTransferLi
 }
 
 // bindStoredLinks writes each stored link whose two legs are both attached
-// flows as symmetric linkedLeg entries on the owning accounts, and indexes
-// the linked accounts' transfer-like legs (indexLinkedTransferLike). A leg
+// flows as symmetric linkedLeg entries on the owning accounts. A leg
 // whose partner is no flow of the dataset (a card's, an excluded kind's, one
 // with no FX path) stays a plain flow.
 //
@@ -1123,7 +1113,6 @@ func bindStoredLinks(links []storedTransferLink, flows attachedFlows, byKey map[
 		linkLeg(byKey, l.src, from.acct, l.txID, linkedLeg{src: l.farSrc, acct: to.acct, txID: l.farTxID, day: to.day})
 		linkLeg(byKey, l.farSrc, to.acct, l.farTxID, linkedLeg{src: l.src, acct: from.acct, txID: l.txID, day: from.day})
 	}
-	indexLinkedTransferLike(byKey)
 }
 
 // linkLeg records `to` as the partner of the leg txID on the account (src,
@@ -1137,23 +1126,6 @@ func linkLeg(byKey map[string]*accountData, src, acct, txID string, to linkedLeg
 		acc.links = map[string]linkedLeg{}
 	}
 	acc.links[txID] = to
-}
-
-// indexLinkedTransferLike indexes the transferLike slice of every account that
-// carries links, so the per-window liveness check in linkedDrops can tell
-// which slice a partner's leg lives in without scanning it. Accounts without
-// links stay unindexed (the map is sparse), and an existing index is left
-// alone.
-func indexLinkedTransferLike(byKey map[string]*accountData) {
-	for _, acc := range byKey {
-		if len(acc.links) == 0 || acc.transferLikeIDs != nil {
-			continue
-		}
-		acc.transferLikeIDs = make(map[string]bool, len(acc.transferLike))
-		for _, f := range acc.transferLike {
-			acc.transferLikeIDs[f.ID] = true
-		}
-	}
 }
 
 // MaxEpoch is the open upper bound for a query over the whole history.

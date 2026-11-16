@@ -907,9 +907,10 @@ func TestLoadReturnsPolicyOverrides(t *testing.T) {
 func TestLoadReturnsPolicyOverridesRejects(t *testing.T) {
 	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"carta","kind":"carta","path":"/tmp/c.db"}],`
 	cases := map[string]string{
-		"unknown source": `"returns_policy_overrides":{"nope":{"flow_regime":"nav_only"}}}`,
-		"bad regime":     `"returns_policy_overrides":{"carta":{"flow_regime":"freeform"}}}`,
-		"bad grain mode": `"returns_policy_overrides":{"carta":{"accounts_grain":"invisible"}}}`,
+		"unknown source":   `"returns_policy_overrides":{"nope":{"flow_regime":"nav_only"}}}`,
+		"bad regime":       `"returns_policy_overrides":{"carta":{"flow_regime":"freeform"}}}`,
+		"no crypto regime": `"returns_policy_overrides":{"carta":{"flow_regime":"crypto_partial"}}}`,
+		"bad grain mode":   `"returns_policy_overrides":{"carta":{"accounts_grain":"invisible"}}}`,
 	}
 	for name, block := range cases {
 		if _, err := Load(writeConfig(t, base+block)); err == nil {

@@ -134,3 +134,58 @@ func TestPolicyOverrideAccountsGrain(t *testing.T) {
 		t.Error("a cash account must stay hidden under the normal override")
 	}
 }
+
+// TestPolicyOverrideAccountsGrainBlanked locks the "blanked" override: on the
+// accounts grain the source's row keeps its start and end values but blanks
+// TWR and MWR to n/a with accounts_grain_meaningless, while the portfolios,
+// sources and global grains still compute real numbers.
+func TestPolicyOverrideAccountsGrainBlanked(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "ctag", "cointracking")
+
+	wStart := dy(2023, time.January, 2)
+	end := dy(2023, time.December, 29)
+
+	pf := "PF1"
+	seedAcct(t, db, ctx, "ctag", "WALLET", canonical.AccountKindCrypto, &pf,
+		[]snap{{wStart, 5000}, {end, 6000}},
+		[]txn{{wStart, canonical.TxKindDeposit, 5000}})
+
+	blanked := returns.AccountsGrainBlanked
+	run := func(level string) []ReturnRow {
+		t.Helper()
+		p := params(level, 0, eod(2023, time.December, 29))
+		p.PolicyOverrides = map[string]ReturnsPolicyOverride{"ctag": {AccountsGrain: &blanked}}
+		rows, err := RunReturns(ctx, db, p)
+		if err != nil {
+			t.Fatalf("RunReturns %s: %v", level, err)
+		}
+		return rows
+	}
+
+	w, ok := summaryFor(run("accounts"), "WALLET")
+	if !ok {
+		t.Fatal("no WALLET accounts row")
+	}
+	if w.StartValue == nil || w.EndValue == nil {
+		t.Errorf("wallet start/end must be populated (start=%v end=%v)", w.StartValue, w.EndValue)
+	}
+	if w.TWR != nil || w.TWRAnnualized != nil || w.MWR != nil || w.MWRAnnualized != nil {
+		t.Errorf("wallet TWR/MWR must be n/a (got TWR=%v MWR=%v)", w.TWR, w.MWR)
+	}
+	if !qualityHas(w, "accounts_grain_meaningless") {
+		t.Errorf("quality = %v, want accounts_grain_meaningless", w.Quality)
+	}
+
+	// The coarser grains are coherent units: real numbers, never gated.
+	for _, g := range []struct{ level, entity string }{{"portfolios", "PF1"}, {"sources", "ctag"}, {"global", ""}} {
+		r, ok := summaryFor(run(g.level), g.entity)
+		if !ok {
+			t.Fatalf("no %s row", g.level)
+		}
+		if r.TWR == nil || qualityHas(r, "accounts_grain_meaningless") {
+			t.Errorf("%s grain must compute a real number and not be gated (TWR=%v q=%v)", g.level, r.TWR, r.Quality)
+		}
+	}
+}

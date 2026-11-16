@@ -300,8 +300,8 @@ every capital kind counts, every other knob at its default. A
 deployment states each source's own regime with config
 `returns_policy_overrides` ([../DESIGN.md](../DESIGN.md) §5.6). Its
 keys are source ids, so two synthetic sources override independently.
-The demo household overrides two of its sources this way: one to
-`crypto_partial`, one to `nav_only`.
+The demo household overrides one of its sources this way, to
+`nav_only`.
 
 ## 10. Provider vocabulary
 

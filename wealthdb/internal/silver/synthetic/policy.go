@@ -12,7 +12,7 @@ import (
 // wallet or a book of private holdings — so it registers the bank-style
 // default, and a deployment states each source's own regime with config
 // `returns_policy_overrides`: `flow_regime` for a source whose ledger is not
-// flow-complete (nav_only, crypto_partial) and `accounts_grain` for one whose
+// flow-complete (nav_only) and `accounts_grain` for one whose
 // accounts should not surface as rows of their own (docs/DESIGN.md §5.6).
 func returnsPolicy() *returns.ReturnsPolicy {
 	p := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())

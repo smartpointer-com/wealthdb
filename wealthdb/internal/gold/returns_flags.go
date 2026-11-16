@@ -89,9 +89,8 @@ func regimeFlags(assets []*accountData, winFrom, winTo int64) []string {
 	// flags are a display SET — order carries no meaning — and emitting them in
 	// iteration order would make a multi-asset entity's flag ordering depend on
 	// which constituent happened to be visited first.
-	var crypto, journal, unknown, clamped, dropped, capRiskFlowless bool
+	var journal, unknown, clamped, dropped, capRiskFlowless bool
 	for _, a := range assets {
-		crypto = crypto || (a.rpolicy.Flow.Regime == returns.RegimeCryptoPartial && a.cryptoExcluded)
 		journal = journal || a.journalPresent
 		unknown = unknown || !a.rpolicy.Flow.Known
 		clamped = clamped || a.hasClampedFlow
@@ -104,9 +103,6 @@ func regimeFlags(assets []*accountData, winFrom, winTo int64) []string {
 		// coarse grains) or a synthetic onboarding/closure flow mask the gap.
 		capRiskFlowless = capRiskFlowless ||
 			(a.rpolicy.CapitalCallRisk && !hasObservedFlowIn(a, winFrom, winTo))
-	}
-	if crypto {
-		flags = append(flags, "crypto_unclassified_transfers")
 	}
 	if journal {
 		flags = append(flags, "journal_present")

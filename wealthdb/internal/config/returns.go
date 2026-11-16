@@ -123,7 +123,7 @@ func excludeSets(in map[string][]string) map[string]map[string]bool {
 // value) from an explicit override; an empty object is a no-op.
 type ReturnsPolicyOverride struct {
 	// FlowRegime names the flow-classification regime that replaces the
-	// registered one: "flow_complete", "crypto_partial", or "nav_only".
+	// registered one: "flow_complete" or "nav_only".
 	FlowRegime *string `json:"flow_regime,omitempty"`
 	// AccountsGrain names the per-account display mode that replaces the
 	// registered one: "normal" (full rows), "blanked" (values shown, TWR/MWR

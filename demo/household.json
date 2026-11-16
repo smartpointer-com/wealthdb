@@ -220,7 +220,7 @@
       "Global 80/20": {"symbol:ORTM": 48, "symbol:ORIE": 32, "symbol:ORAB": 20}
     },
     "account_overrides": {"quayvane": {"qv-ira-01": {"nickname": "Sam's rollover IRA"}}},
-    "returns_policy_overrides": {"homestead": {"flow_regime": "nav_only"}, "tessarite": {"flow_regime": "crypto_partial"}},
+    "returns_policy_overrides": {"homestead": {"flow_regime": "nav_only"}},
     "lots": {"sources": {"tessarite": {"mode": "fill"}}},
     "inception_overrides": {"sources": {"emberwright": "2025-03-31"}},
     "spending_rules": [

@@ -497,9 +497,8 @@ double-count. Guard: `TestStaggeredJournalFundedNoPhantom`.
 
 *(referenced by DESIGN.md §10.9 and `internal/returns/returnspolicy.go`)*
 
-Source economics differ: NAV-only tiny bases, crypto sweep churn, drained
-closures, conduit cash. A single hardcoded model is wrong for most
-sources. Per-source `if` branches in shared engine code would leak one
+Source economics differ: NAV-only tiny bases, drained closures, conduit
+cash. A single hardcoded model is wrong for most sources. Per-source `if` branches in shared engine code would leak one
 source's behaviour into another, because at the global grain every
 constituent merges into one entity. So the engine reads a declarative
 `ReturnsPolicy` per source instead, and the returns calculation names no
@@ -520,7 +519,7 @@ source.
   | knob | default | effect |
   |---|---|---|
   | `Flow` | per source | the completeness regime: which collected rows of the capital kinds count (`canonical.CapitalKind` says which kinds those are) |
-  | `OnboardScope` | per constituent | `OnboardPerEntityOnce` books one step-up per entity (`groupOnboardStep`); `OnboardNone` books no onboarding |
+  | `OnboardScope` | per constituent | `OnboardPerEntityOnce` books one step-up per entity (`groupOnboardStep`) |
   | `AccountsGrain` | normal | `blanked` shows values with TWR/MWR n/a + `accounts_grain_meaningless`; `hidden` emits no rows, while values and flows still aggregate |
   | `CapitalCallRisk` | off | keeps `nav_only_capital_call_risk` on a window where the source's own accounts observed no external flow |
   | `ClosureScope` | `ClosureSubsumeDrains` | `ClosureLedgerExact` keeps zero-tail flows as real exit legs ("Netting and closure") |
@@ -536,13 +535,11 @@ source.
   - flow-complete counts every capital kind: banks, pensions, angellist,
     and carta and equityzen (`PrivateMarketLedgerPolicy`), whose holding
     legs (buy, sell, contribution, distribution) are no capital kind;
-  - crypto counts fiat flows only, deposit and withdrawal; its transfer
-    legs are excluded;
   - nav-only counts no collected row; manual counts only the
     equity-transfer ledger's legs.
 
-  A ledger leg counts under every regime but crypto's, and nets against a
-  partner where a grain holds both.
+  A ledger leg counts under every regime, and nets against a partner where
+  a grain holds both.
 - **Deposit banks and card issuers** register the bank policy. Their
   accounts are cash or cards: a cash account is plumbing and hides on any
   source, and a card emits nothing ("Credit cards are returns-invisible").
@@ -566,10 +563,11 @@ source.
   - `Inception = InceptionFirstRealSnapshot`: the window starts past the
     sparse cash-only pre-history, so a tiny opening base cannot inflate
     the return.
-- **cointracking** sets `OnboardNone`: its wallets debut funded by
-  crypto transfers already excluded from flows, so onboarding would
-  double-count. It also sets `AccountsGrain = blanked`, because coins
-  sweep between wallets.
+- **cointracking** registers the default policy. A coin's transfer legs
+  count as any source's transfers do. A move between two wallets is a pair
+  the load stores, and it nets where a grain holds both wallets. A wallet
+  that debuts funded by such a move onboards only what the move did not
+  bring in. A leg nothing pairs is a flow at the day's rate.
 - **Config overrides.** wealthdb.cfg can adjust a source's registered
   policy (`returns_policy_overrides`, DESIGN.md §5.6), keyed by
   silver_source_id. The override applies at the engine's single
@@ -611,9 +609,9 @@ every approximation is tagged. Computed set:
 `mwr_no_converge`, `mwr_incomplete_flows`, `mwr_negative_net_capital`,
 `unmatched_transfers=N`, `cross_source_netted=N`, `rolled_forward`,
 `post_exit_residue`, `journal_present`,
-`nav_only`, `nav_only_capital_call_risk`, `crypto_unclassified_transfers`,
-`unknown_adapter_policy`, `fx_clamped_flow`, `pre_fx_history`,
-`flows_before_inception`, `after_tax`.
+`nav_only`, `nav_only_capital_call_risk`, `unknown_adapter_policy`,
+`fx_clamped_flow`, `pre_fx_history`, `flows_before_inception`,
+`after_tax`.
 
 A benchmark's figures have flags of their own ("Benchmarks" below):
 `benchmark_gap`, `benchmark_partial_period`, `benchmark_start_clipped`,
@@ -628,12 +626,12 @@ moved that a valuation has not shown yet. TWR and MWR read it rolled in;
 
 `configured_inception` marks a window truncated to a configured
 inception override (DESIGN.md §5.4) rather than the data's own start.
-`accounts_grain_meaningless` blanks TWR/MWR on accounts-grain rows of
-sweep sources (a single crypto wallet's return is noise; the coarser
-grains stay valid). Plumbing goes further: every `cash` account, whatever
-its source, a source set to the hidden accounts-grain mode, and
-`returns_hide` ids emit no rows at all, nor does a portfolio or source made
-only of them, while still feeding every aggregate.
+`accounts_grain_meaningless` blanks TWR/MWR on accounts-grain rows of a
+source set to the blanked accounts-grain mode (its accounts' returns are
+noise one by one; the coarser grains stay valid). Plumbing goes further:
+every `cash` account, whatever its source, a source set to the hidden
+accounts-grain mode, and `returns_hide` ids emit no rows at all, nor does a
+portfolio or source made only of them, while still feeding every aggregate.
 `mwr_negative_net_capital` reports XIRR as n/a because the
 window's net invested capital (opening base plus net external flow) is
 zero or below.

@@ -16,7 +16,7 @@ import (
 // per-entity-once onboarding), Inception (entityWindow, first-real-snapshot
 // anchor), ConduitKinds via IsConduit (returns.go), ExternalOnly
 // (attachOneFlow in returns.go), AccountsGrain (returns.go, blanking
-// or hiding the per-account display for sweep/conduit sources),
+// or hiding the per-account display),
 // CapitalCallRisk (regimeFlags in returns_flags.go, tagging flow-less
 // windows), and ClosureScope (entityFlows, ledger-exact vs subsumed
 // closures). Every knob defaults to the engine's baseline behavior, so
@@ -37,7 +37,7 @@ type ReturnsPolicy struct {
 	// ---- consumed knobs ----
 
 	// OnboardScope: whether synthetic onboarding fires per constituent account
-	// (default), once per computed entity at inception, or never.
+	// (default) or once per computed entity at inception.
 	OnboardScope OnboardScope
 	// AccountsGrain: how the source's individual accounts surface in returns
 	// output — full rows (default), blanked rows (values shown, TWR/MWR n/a +
@@ -84,12 +84,6 @@ const (
 	// inception. Consumed by the engine (groupOnboardStep) and set
 	// live by UBS.
 	OnboardPerEntityOnce
-	// OnboardNone never injects synthetic onboarding for this source's
-	// constituents — for crypto-sweep sources whose mid-window debuts are funded
-	// by within-entity transfers already excluded from flows, so onboarding would
-	// double-count. Appended last so OnboardPerConstituent(0) and
-	// OnboardPerEntityOnce(1) keep their numeric values.
-	OnboardNone
 )
 
 // AccountsGrainMode selects how a source's individual accounts surface in
@@ -102,8 +96,9 @@ const (
 	AccountsGrainNormal AccountsGrainMode = iota
 	// AccountsGrainBlanked: accounts-grain rows are emitted with start/end
 	// values but TWR/MWR blanked to n/a + accounts_grain_meaningless — the
-	// accounts are return-bearing in aggregate but individually meaningless
-	// (crypto wallets that coins sweep between on arrival).
+	// accounts are return-bearing in aggregate but individually meaningless.
+	// No registered policy sets it; a deployment sets it with
+	// returns_policy_overrides.
 	AccountsGrainBlanked
 	// AccountsGrainHidden: no rows of their own at ANY grain — the accounts
 	// are pure plumbing. No registered policy sets it; a deployment sets it

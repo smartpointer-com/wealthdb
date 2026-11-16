@@ -16,12 +16,11 @@ func fateAccount(policy returns.ReturnsPolicy, series ...dayVal) *accountData {
 }
 
 // TestFateOfCells holds fateOf to its comment table cell by cell: the
-// region a leg's day falls in, then the two policy cells.
+// region a leg's day falls in, then the policy cell.
 func TestFateOfCells(t *testing.T) {
 	t.Parallel()
 	w := daySpan{from: 50, to: 300}
 	var standard returns.ReturnsPolicy
-	onboardNone := returns.ReturnsPolicy{OnboardScope: returns.OnboardNone}
 	ledgerExact := returns.ReturnsPolicy{ClosureScope: returns.ClosureLedgerExact}
 	live := []dayVal{{100, 1000}, {300, 1100}}
 	debut := []dayVal{{120, 1000}, {300, 1100}}
@@ -31,27 +30,19 @@ func TestFateOfCells(t *testing.T) {
 	finalDay := []dayVal{{100, 1000}, {299, 1000}, {300, 0}}
 
 	for _, tc := range []struct {
-		name     string
-		acct     *accountData
-		day      int64
-		nettable bool
-		region   region
-		want     fate
+		name   string
+		acct   *accountData
+		day    int64
+		region region
+		want   fate
 	}{
-		{"live", fateAccount(standard, live...), 150, false, regionLive, fateFlow},
-		{"live, nettable", fateAccount(standard, live...), 150, true, regionLive, fateFlow},
-		{"pre-debut", fateAccount(standard, debut...), 110, false, regionPreDebut, fateDropped},
-		{"pre-debut, nettable", fateAccount(standard, debut...), 110, true, regionPreDebut, fateDropped},
-		{"pre-debut under OnboardNone", fateAccount(onboardNone, debut...), 110, false, regionPreDebut, fateFlow},
-		{"pre-debut, nettable, under OnboardNone", fateAccount(onboardNone, debut...), 110, true, regionPreDebut,
-			fateDropped},
-		{"zero tail before the last day", fateAccount(standard, zeroing...), 250, false, regionZeroTail, fateExit},
-		{"zero tail under ClosureLedgerExact", fateAccount(ledgerExact, zeroing...), 250, false, regionZeroTail,
-			fateFlow},
-		{"zero tail of a final-day zeroing", fateAccount(standard, finalDay...), 300, false, regionZeroTail,
-			fateDropped},
+		{"live", fateAccount(standard, live...), 150, regionLive, fateFlow},
+		{"pre-debut", fateAccount(standard, debut...), 110, regionPreDebut, fateDropped},
+		{"zero tail before the last day", fateAccount(standard, zeroing...), 250, regionZeroTail, fateExit},
+		{"zero tail under ClosureLedgerExact", fateAccount(ledgerExact, zeroing...), 250, regionZeroTail, fateFlow},
+		{"zero tail of a final-day zeroing", fateAccount(standard, finalDay...), 300, regionZeroTail, fateDropped},
 	} {
-		l := flowLeg{Flow: returns.Flow{Day: tc.day, Amount: -100, ID: "x"}, acct: tc.acct, nettable: tc.nettable,
+		l := flowLeg{Flow: returns.Flow{Day: tc.day, Amount: -100, ID: "x"}, acct: tc.acct,
 			region: tc.acct.region(tc.day, w)}
 		if l.region != tc.region {
 			t.Errorf("%s: region %d, want %d", tc.name, l.region, tc.region)
@@ -73,7 +64,7 @@ func TestPairFateCells(t *testing.T) {
 	debuting := fateAccount(standard, dayVal{120, 1000}, dayVal{300, 1100})
 	sender := fateAccount(standard, dayVal{100, 5000}, dayVal{300, 4000})
 	leg := func(a *accountData, day, valuedOn int64, amt float64) flowLeg {
-		return flowLeg{Flow: returns.Flow{Day: day, Amount: amt, ID: "x", ValuedOn: valuedOn}, acct: a, nettable: true,
+		return flowLeg{Flow: returns.Flow{Day: day, Amount: amt, ID: "x", ValuedOn: valuedOn}, acct: a,
 			region: a.region(day, w)}
 	}
 	for _, tc := range []struct {
