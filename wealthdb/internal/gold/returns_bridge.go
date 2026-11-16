@@ -456,12 +456,8 @@ func centsStr(c int64) *string {
 
 // ---- materialization -----------------------------------------------------
 
-// bridgeInsertSQL writes one report_bridge row.
-const bridgeInsertSQL = `INSERT INTO report_bridge (computed_at, currency, period, start_day, end_day,
-    start_net_worth, end_net_worth, net_flow, onboarded, debt_repaid, net_saved, gain, bridge_gap, quality)
-    VALUES (?, ?, ?, ?, ?, CAST(? AS DECIMAL(24,2)), CAST(? AS DECIMAL(24,2)), CAST(? AS DECIMAL(24,2)),
-            CAST(? AS DECIMAL(24,2)), CAST(? AS DECIMAL(24,2)), CAST(? AS DECIMAL(24,2)),
-            CAST(? AS DECIMAL(24,2)), CAST(? AS DECIMAL(24,2)), ?)`
+const bridgeCols = `computed_at, currency, period, start_day, end_day, start_net_worth, end_net_worth,
+    net_flow, onboarded, debt_repaid, net_saved, gain, bridge_gap, quality`
 
 // bridgeMaterial is each reporting currency's monthly rows, ready to write.
 type bridgeMaterial map[string][]BridgeRow
@@ -487,24 +483,28 @@ func computeMaterialBridge(ctx context.Context, db *sql.DB, datasets map[string]
 	return out, nil
 }
 
-// write replaces report_bridge's rows.
+// write inserts report_bridge's rows, currency by currency. The money
+// columns carry the bridge's cents as decimal strings.
 func (m bridgeMaterial) write(ctx context.Context, tx *sql.Tx, computedAt int64) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM report_bridge`); err != nil {
-		return fmt.Errorf("report_bridge delete: %w", err)
+	type ref struct {
+		ccy string
+		row int
 	}
-	stmt, err := tx.PrepareContext(ctx, bridgeInsertSQL)
-	if err != nil {
-		return fmt.Errorf("report_bridge prepare: %w", err)
-	}
-	defer stmt.Close()
+	var refs []ref
 	for _, ccy := range materializeCurrencies {
-		for _, r := range m[ccy] {
-			if _, err := stmt.ExecContext(ctx, computedAt, ccy, r.Period, r.StartDay*SecondsPerDay, r.EndDay*SecondsPerDay,
-				*r.StartNetWorth, *r.EndNetWorth, *r.NetFlow, *r.Onboarded, *r.DebtRepaid, *r.NetSaved, *r.Gain, *r.Gap,
-				strings.Join(r.Quality, ";")); err != nil {
-				return fmt.Errorf("report_bridge insert: %w", err)
-			}
+		for j := range m[ccy] {
+			refs = append(refs, ref{ccy, j})
 		}
 	}
-	return nil
+	if len(refs) == 0 {
+		return nil
+	}
+	return insertColumns(ctx, tx, "report_bridge", "report_bridge", bridgeCols, len(refs),
+		func(i int, args []any) []any {
+			ccy := refs[i].ccy
+			r := &m[ccy][refs[i].row]
+			return append(args, computedAt, ccy, r.Period, r.StartDay*SecondsPerDay, r.EndDay*SecondsPerDay,
+				*r.StartNetWorth, *r.EndNetWorth, *r.NetFlow, *r.Onboarded, *r.DebtRepaid, *r.NetSaved, *r.Gain, *r.Gap,
+				strings.Join(r.Quality, ";"))
+		})
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -155,10 +156,18 @@ func TestRunMaterializePhasesStopsAtAFailure(t *testing.T) {
 	var errb strings.Builder
 	summary := func(n int) string { return fmt.Sprintf("materialized %d rows", n) }
 	ran := false
-	err := runMaterializePhases(&errb, []materializePhase{
-		{"serving", func() (int, error) { return 3, nil }, summary},
-		{"returns", func() (int, error) { return 5, fmt.Errorf("boom") }, summary},
-		{"gains", func() (int, error) { ran = true; return 0, nil }, summary},
+	phase := func(n int, err error, ran *bool) func(context.Context, *sql.DB, gold.MaterializeParams) (int, error) {
+		return func(context.Context, *sql.DB, gold.MaterializeParams) (int, error) {
+			if ran != nil {
+				*ran = true
+			}
+			return n, err
+		}
+	}
+	err := runMaterializePhases(context.Background(), &errb, nil, gold.MaterializeParams{}, []materializePhase{
+		{"serving", phase(3, nil, nil), summary},
+		{"returns", phase(5, fmt.Errorf("boom"), nil), summary},
+		{"gains", phase(0, nil, &ran), summary},
 	})
 	if err == nil || ran {
 		t.Fatalf("err=%v, later phase ran=%v", err, ran)

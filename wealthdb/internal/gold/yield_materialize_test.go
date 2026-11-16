@@ -31,7 +31,7 @@ func partIncomeSQL(ccy string) string {
 func TestMaterializeYieldMatchesTheReport(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldExposure(t)
-	n, err := MaterializeYield(ctx, db, at, 42, 12)
+	n, err := MaterializeYield(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 42, CashflowLookback: 12})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestMaterializeYieldMatchesTheReport(t *testing.T) {
 	}
 	stored.Close()
 	// A rerun replaces the tables.
-	if n2, err := MaterializeYield(ctx, db, at, 43, 12); err != nil || n2 != n {
+	if n2, err := MaterializeYield(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 43, CashflowLookback: 12}); err != nil || n2 != n {
 		t.Errorf("rerun: %d rows (%v), want %d", n2, err, n)
 	}
 }
@@ -162,7 +162,7 @@ func seedYieldBookFX(t *testing.T) (*sql.DB, context.Context, int64) {
 func TestMaterializeYieldMatchesEachBook(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldBookFX(t)
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+	if _, err := MaterializeYield(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 42, CashflowLookback: 12}); err != nil {
 		t.Fatal(err)
 	}
 	for _, ccy := range materializeCurrencies {
@@ -234,7 +234,7 @@ func TestMaterializeYieldCurveIsTheBooks(t *testing.T) {
 	if _, err := RebuildYield(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+	if _, err := MaterializeYield(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 42, CashflowLookback: 12}); err != nil {
 		t.Fatal(err)
 	}
 	for _, ccy := range materializeCurrencies {
@@ -283,7 +283,7 @@ func TestThePlansOtherIncomeIsStoredByClassAndAccount(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldBookFX(t)
 	seedPlanWage(t, db)
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+	if _, err := MaterializeYield(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 42, CashflowLookback: 12}); err != nil {
 		t.Fatal(err)
 	}
 	keys := scanStrings(t, db, `SELECT DISTINCT class || ' ' || silver_source_id || ' ' || account_external_id
@@ -349,7 +349,7 @@ func TestThePlansOutsideIncomeIsTheVehiclesRunRate(t *testing.T) {
 	if err != nil || fmt.Sprint(after) != fmt.Sprint(before) {
 		t.Errorf("look-back %+v (%v), before the vehicle %+v", after, err, before)
 	}
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+	if _, err := MaterializeYield(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 42, CashflowLookback: 12}); err != nil {
 		t.Fatal(err)
 	}
 	keys := func(part string) []string {
@@ -450,7 +450,7 @@ func TestThePlansPoolIncomeIsTheIncomeLinesAverage(t *testing.T) {
 		    signature_version, income_detailed, provenance, assigned_at) VALUES
 		    ('test-src', 'C1', 'sig-insurer', 1, 'reimbursement', 'rule', 100),
 		    ('test-src', 'G1', 'sig-shop', 1, 'INCOME_REWARDS', 'rule', 100)`)
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+	if _, err := MaterializeYield(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 42, CashflowLookback: 12}); err != nil {
 		t.Fatal(err)
 	}
 	from, to := PlanWindow(time.Unix(at, 0), 12)
@@ -622,7 +622,7 @@ func seedYieldYear(t *testing.T) (*sql.DB, context.Context, int64) {
 func TestMaterializedRealizedYieldIsTheBooks(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldYear(t)
-	if _, err := MaterializeYield(ctx, db, at, 42, 12); err != nil {
+	if _, err := MaterializeYield(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 42, CashflowLookback: 12}); err != nil {
 		t.Fatal(err)
 	}
 	figures, thin := 0, 0

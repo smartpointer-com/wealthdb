@@ -145,3 +145,17 @@ func TestLoadKeyStampsWhatNoWatermarkCovers(t *testing.T) {
 		}
 	}
 }
+
+// TestNoPhaseWritesALoadKeyTable: web-materialize reads the load key
+// before its phases and stores it after them, so no phase may rewrite
+// a table the key stamps.
+func TestNoPhaseWritesALoadKeyTable(t *testing.T) {
+	t.Parallel()
+	for _, tables := range [][]string{servingMaterialized, returnsMaterialized, gainsMaterialized, exposureMaterialized, yieldMaterialized} {
+		for _, table := range tables {
+			if slices.Contains(loadKeyTables, table) {
+				t.Errorf("a materialize phase rewrites %s, which the load key stamps", table)
+			}
+		}
+	}
+}

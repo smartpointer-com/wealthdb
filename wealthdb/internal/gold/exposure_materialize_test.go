@@ -39,7 +39,7 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 	// A benchmark beside them changes none of the rows below.
 	syncTestBenchmark(t, db, ctx)
 	to := exAsOf + 45*86400
-	n, err := MaterializeExposure(ctx, db, to, 42)
+	n, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: to, ComputedAt: 42})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestMaterializeExposureMatchesTheLiveViews(t *testing.T) {
 		t.Errorf("no large row materialized (%v)", err)
 	}
 	// A second run rewrites the table, it does not add to it.
-	m, err := MaterializeExposure(ctx, db, to, 43)
+	m, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: to, ComputedAt: 43})
 	if err != nil || m != n {
 		t.Errorf("second run: %d rows, %v; want %d", m, err, n)
 	}
@@ -245,7 +245,7 @@ func checkMaterializedWrappers(t *testing.T, ctx context.Context, db *sql.DB, at
 func TestMaterializeExposureOnAnEmptyGold(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	n, err := MaterializeExposure(ctx, db, exAsOf, 1)
+	n, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: exAsOf, ComputedAt: 1})
 	if err != nil || n != 0 {
 		t.Errorf("empty gold: %d rows, %v", n, err)
 	}
@@ -274,7 +274,7 @@ func TestFirstHoldingsAtCountsCash(t *testing.T) {
 func TestWebExposureSizesTheUnknown(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
+	if _, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: exAsOf, ComputedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -376,7 +376,7 @@ func checkSecuritySlicesNarrow(t *testing.T, db *sql.DB, at int64, ccy string) {
 func TestWebExposureSecuritiesAnswers(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	if _, err := MaterializeExposure(ctx, db, exAsOf, 1); err != nil {
+	if _, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: exAsOf, ComputedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	var n int

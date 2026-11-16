@@ -124,9 +124,10 @@ func TestPinnedKeysReadAsTheLiveOnes(t *testing.T) {
 	}
 }
 
-// TestAMaterializerLeavesNoPin: every materializer that pins leaves its
-// connection as it found it, on an empty gold and on one with a holding,
-// and a position written next is read.
+// TestAMaterializerLeavesNoPin: every materializer leaves its connection
+// as it found it, on an empty gold and on one with a holding, and a
+// position written next is read. Returns writes unpinned, the others
+// drop their pin.
 func TestAMaterializerLeavesNoPin(t *testing.T) {
 	t.Parallel()
 	for _, seeded := range []bool{false, true} {
@@ -137,13 +138,15 @@ func TestAMaterializerLeavesNoPin(t *testing.T) {
 				pitPosition(t, db, ctx, "pin-src", "A-0000", "AX", pitAt(-10, 12), 100)
 			}
 			at := pitAt(0, 12)
-			for name, run := range map[string]func() error{
-				"serving":  func() error { _, err := MaterializeServingTables(ctx, db); return err },
-				"gains":    func() error { _, err := MaterializeGains(ctx, db, at, at); return err },
-				"exposure": func() error { _, err := MaterializeExposure(ctx, db, at, at); return err },
-				"yield":    func() error { _, err := MaterializeYield(ctx, db, at, at, 12); return err },
+			p := MaterializeParams{ToEpoch: at, ComputedAt: at, CashflowLookback: 12}
+			for name, run := range map[string]func(context.Context, *sql.DB, MaterializeParams) (int, error){
+				"serving":  MaterializeServingTables,
+				"returns":  MaterializeReturns,
+				"gains":    MaterializeGains,
+				"exposure": MaterializeExposure,
+				"yield":    MaterializeYield,
 			} {
-				if err := run(); err != nil {
+				if _, err := run(ctx, db, p); err != nil {
 					t.Fatalf("%s: %v", name, err)
 				}
 				if left := pinLeft(t, db, ctx); left != "" {

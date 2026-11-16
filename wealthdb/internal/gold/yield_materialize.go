@@ -27,29 +27,27 @@ func yieldInstants(toEpoch int64) []int64 {
 // MaterializeYield rewrites the Yield dashboard's tables (migration
 // 0138) and the cash flow projection's look-back parts (migration
 // 0149): every holding's figures and DV01 per tenor in every reporting
-// currency at yieldInstants, and at toEpoch the projection's parts, the
+// currency at yieldInstants, and at p.ToEpoch the projection's parts, the
 // rate table, the principals maturities return, every income line
 // received, and the cash flow projection's parts over a look-back of
-// lookback months (CashflowPlan); and at every instant each benchmark's
+// p.CashflowLookback months (CashflowPlan); and at every instant each benchmark's
 // yield and duration. Each figure is the yield report's
 // (yield.Compute over YieldInputs), so the dashboard and the CLI agree.
-// It returns the number of rows written.
-// One transaction, so a reader sees the old tables or the new ones.
-func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64, lookback int) (int, error) {
-	// Every instant reads the same endings and spans, through the
-	// transaction.
-	tx, commit, err := beginPinned(ctx, db)
-	if err != nil {
-		return 0, fmt.Errorf("MaterializeYield: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck — no-op after commit
-	for _, t := range []string{"report_yield_positions", "report_yield_buckets", "report_yield_parts",
-		"report_yield_rates", "report_yield_events", "report_yield_received", "report_cashflow_plan",
-		"benchmark_yield"} {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
-			return 0, fmt.Errorf("MaterializeYield %s: delete: %w", t, err)
-		}
-	}
+// It returns the number of rows written. Every instant reads the same
+// endings and spans, through the transaction (rewriteTables).
+func MaterializeYield(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
+	return rewriteTables(ctx, db, "MaterializeYield", beginPinned, yieldMaterialized, func(tx *sql.Tx) (int, error) {
+		return fillYield(ctx, tx, p.ToEpoch, p.ComputedAt, p.CashflowLookback)
+	})
+}
+
+// yieldMaterialized are the tables MaterializeYield rewrites.
+var yieldMaterialized = []string{"report_yield_positions", "report_yield_buckets", "report_yield_parts",
+	"report_yield_rates", "report_yield_events", "report_yield_received", "report_cashflow_plan",
+	"benchmark_yield"}
+
+// fillYield writes MaterializeYield's rows.
+func fillYield(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64, lookback int) (int, error) {
 	m := yieldMaterializer{ctx: ctx, tx: tx, computedAt: computedAt}
 	mix, err := readBenchmarkMix(ctx, tx)
 	if err != nil {
@@ -93,9 +91,6 @@ func MaterializeYield(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 	}
 	if err := m.plan(today, toEpoch, lookback); err != nil {
 		return 0, err
-	}
-	if err := commit(); err != nil {
-		return 0, fmt.Errorf("MaterializeYield: %w", err)
 	}
 	return m.rows, nil
 }

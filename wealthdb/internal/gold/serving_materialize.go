@@ -44,36 +44,36 @@ var servingTables = []servingTable{
 	{"serving_marks", "report_marks_multi()"},
 }
 
+// servingMaterialized are the tables MaterializeServingTables rewrites.
+var servingMaterialized = func() []string {
+	names := make([]string, len(servingTables))
+	for i, s := range servingTables {
+		names[i] = s.table
+	}
+	return names
+}()
+
 // MaterializeServingTables rewrites the tables the Metabase serving
-// views read: the daily histories, the latest holdings and every
-// transaction line, each its report macro's rows. A macro computes its
-// whole output on every read, a history every day from the first
-// snapshot, whatever a query asks for, so the dashboards read the
-// output from a table instead. It returns the number of rows written.
-// One transaction, so a reader sees the old tables or the new ones.
-func MaterializeServingTables(ctx context.Context, db *sql.DB) (int, error) {
-	tx, commit, err := beginPinned(ctx, db)
-	if err != nil {
-		return 0, fmt.Errorf("MaterializeServingTables: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck — no-op after commit
-	total := 0
-	for _, s := range servingTables {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM `+s.table); err != nil {
-			return 0, fmt.Errorf("MaterializeServingTables %s: delete: %w", s.table, err)
+// views read (rewriteTables): the daily histories, the latest holdings
+// and every transaction line, each its report macro's rows. A macro
+// computes its whole output on every read, a history every day from
+// the first snapshot, whatever a query asks for, so the dashboards read
+// the output from a table instead. It reads no field of the params. It
+// returns the number of rows written.
+func MaterializeServingTables(ctx context.Context, db *sql.DB, _ MaterializeParams) (int, error) {
+	return rewriteTables(ctx, db, "MaterializeServingTables", beginPinned, servingMaterialized, func(tx *sql.Tx) (int, error) {
+		total := 0
+		for _, s := range servingTables {
+			res, err := tx.ExecContext(ctx, `INSERT INTO `+s.table+` SELECT * FROM `+s.source)
+			if err != nil {
+				return 0, fmt.Errorf("MaterializeServingTables %s: %w", s.table, err)
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return 0, fmt.Errorf("MaterializeServingTables %s: rows: %w", s.table, err)
+			}
+			total += int(n)
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO `+s.table+` SELECT * FROM `+s.source)
-		if err != nil {
-			return 0, fmt.Errorf("MaterializeServingTables %s: %w", s.table, err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return 0, fmt.Errorf("MaterializeServingTables %s: rows: %w", s.table, err)
-		}
-		total += int(n)
-	}
-	if err := commit(); err != nil {
-		return 0, fmt.Errorf("MaterializeServingTables: %w", err)
-	}
-	return total, nil
+		return total, nil
+	})
 }

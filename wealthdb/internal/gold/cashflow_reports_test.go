@@ -855,7 +855,7 @@ func TestWebCashflowAnswers(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedReportFixture(t, db, ctx)
-	if _, err := MaterializeServingTables(ctx, db); err != nil {
+	if _, err := MaterializeServingTables(ctx, db, MaterializeParams{}); err != nil {
 		t.Fatal(err)
 	}
 	var n int

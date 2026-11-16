@@ -14,7 +14,7 @@ import (
 // write.
 func mustMaterializeServing(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
-	if _, err := MaterializeServingTables(ctx, db); err != nil {
+	if _, err := MaterializeServingTables(ctx, db, MaterializeParams{}); err != nil {
 		t.Fatalf("materialize serving tables: %v", err)
 	}
 }
@@ -64,7 +64,7 @@ func TestMaterializeServingTablesHoldsTheMacrosRows(t *testing.T) {
 		t.Fatal("the fixture materialized no transaction line; the comparison below proves nothing")
 	}
 	assertTablesHoldTheMacros(t, db, ctx)
-	if _, err := MaterializeServingTables(ctx, db); err != nil {
+	if _, err := MaterializeServingTables(ctx, db, MaterializeParams{}); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	assertTablesHoldTheMacros(t, db, ctx)
@@ -163,7 +163,7 @@ func TestWebHistoryViewsCarryTheWrapperAndClass(t *testing.T) {
         VALUES ('test-src', ?, 'IRA1', 'USD', 'current', CAST('50' AS DECIMAL(28,4)))`, snap); err != nil {
 		t.Fatalf("seed retirement cash: %v", err)
 	}
-	if _, err := MaterializeServingTables(ctx, db); err != nil {
+	if _, err := MaterializeServingTables(ctx, db, MaterializeParams{}); err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
 

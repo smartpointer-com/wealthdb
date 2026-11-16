@@ -15,7 +15,7 @@ import (
 func TestMaterializeGainsMatchesTheMonthlyBuckets(t *testing.T) {
 	t.Parallel()
 	db, ctx := openGainsFixture(t)
-	n, err := MaterializeGains(ctx, db, gainsTo, 42)
+	n, err := MaterializeGains(ctx, db, MaterializeParams{ToEpoch: gainsTo, ComputedAt: 42})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestMaterializeGainsMatchesTheMonthlyBuckets(t *testing.T) {
 	matchesBuckets(t, ctx, db)
 
 	// A rerun replaces the table rather than adding to it.
-	if n2, err := MaterializeGains(ctx, db, gainsTo, 43); err != nil || n2 != n {
+	if n2, err := MaterializeGains(ctx, db, MaterializeParams{ToEpoch: gainsTo, ComputedAt: 43}); err != nil || n2 != n {
 		t.Fatalf("rerun: %d rows, err %v; want %d", n2, err, n)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM report_gains`).Scan(&total); err != nil || total != n {
@@ -44,7 +44,7 @@ func TestMaterializeGainsMatchesTheMonthlyBuckets(t *testing.T) {
 func TestMaterializedRealizedCostBasis(t *testing.T) {
 	t.Parallel()
 	db, ctx := openGainsFixture(t)
-	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
+	if _, err := MaterializeGains(ctx, db, MaterializeParams{ToEpoch: gainsTo, ComputedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := db.QueryContext(ctx, `
@@ -81,7 +81,7 @@ func TestMaterializedRealizedCostBasis(t *testing.T) {
 func TestWebGainsLabelsTheAccount(t *testing.T) {
 	t.Parallel()
 	db, ctx := openGainsFixture(t)
-	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
+	if _, err := MaterializeGains(ctx, db, MaterializeParams{ToEpoch: gainsTo, ComputedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	var account, wrapper, period string
@@ -113,7 +113,7 @@ func TestWebGainsLabelsTheAccount(t *testing.T) {
 func TestWebGainsReadsAMissingClassAsUnknown(t *testing.T) {
 	t.Parallel()
 	db, ctx := openGainsFixture(t)
-	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
+	if _, err := MaterializeGains(ctx, db, MaterializeParams{ToEpoch: gainsTo, ComputedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	blank := scanStrings(t, db, `SELECT DISTINCT k FROM report_gains WHERE asset_class IS NULL ORDER BY 1`)
@@ -148,7 +148,7 @@ func TestWebGainsReadsAMissingClassAsUnknown(t *testing.T) {
 func TestWebGainsAnswers(t *testing.T) {
 	t.Parallel()
 	db, ctx := openGainsFixture(t)
-	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
+	if _, err := MaterializeGains(ctx, db, MaterializeParams{ToEpoch: gainsTo, ComputedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -218,7 +218,7 @@ func TestMaterializeGainsCopiesAReadingThatChangesNothing(t *testing.T) {
         UPDATE lot_realized SET book_value = 0 WHERE gain_needs_cost(NULL, proceeds, book_value)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MaterializeGains(ctx, db, gainsTo, 42); err != nil {
+	if _, err := MaterializeGains(ctx, db, MaterializeParams{ToEpoch: gainsTo, ComputedAt: 42}); err != nil {
 		t.Fatal(err)
 	}
 	var ignore, zero int
@@ -286,7 +286,7 @@ func TestMaterializedGainSplitsHeldAndSold(t *testing.T) {
              DATE '1970-02-10', 'USD', 1, 700, 100, 'short', TRUE)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MaterializeGains(ctx, db, gainsTo, 1); err != nil {
+	if _, err := MaterializeGains(ctx, db, MaterializeParams{ToEpoch: gainsTo, ComputedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	var off int
@@ -361,7 +361,7 @@ func TestMaterializedSplitTakesTheNewestStartRate(t *testing.T) {
 		t.Fatal(err)
 	}
 	for run := 0; run < 2; run++ {
-		if _, err := MaterializeGains(ctx, db, gainsTo, int64(run)); err != nil {
+		if _, err := MaterializeGains(ctx, db, MaterializeParams{ToEpoch: gainsTo, ComputedAt: int64(run)}); err != nil {
 			t.Fatal(err)
 		}
 		for _, c := range []struct {

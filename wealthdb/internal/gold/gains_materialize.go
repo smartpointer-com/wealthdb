@@ -34,21 +34,22 @@ const gainsReadingsAgreeSQL = `
 SELECT NOT EXISTS (SELECT 1 FROM positions WHERE basis_missing(asset_class, vehicle, book_value))
    AND NOT EXISTS (SELECT 1 FROM realized_lots_all WHERE gain_needs_cost(realized_gain_loss, proceeds, book_value))`
 
-// MaterializeGains rewrites report_gains: for every reporting currency
-// and both readings of a missing cost basis, the monthly gains_windows
-// rows from the first data gold holds through toEpoch, the rows the
-// Metabase Gains dashboard sums, all from one evaluation. It returns
-// the number of rows written. One transaction, so a reader sees the old
-// table or the new one.
-func MaterializeGains(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {
-	tx, commit, err := beginPinned(ctx, db)
-	if err != nil {
-		return 0, fmt.Errorf("MaterializeGains: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck — no-op after commit
-	if _, err := tx.ExecContext(ctx, `DELETE FROM report_gains`); err != nil {
-		return 0, fmt.Errorf("MaterializeGains delete: %w", err)
-	}
+// gainsMaterialized are the tables MaterializeGains rewrites.
+var gainsMaterialized = []string{"report_gains"}
+
+// MaterializeGains rewrites report_gains (rewriteTables): for every
+// reporting currency and both readings of a missing cost basis, the
+// monthly gains_windows rows from the first data gold holds through
+// p.ToEpoch, the rows the Metabase Gains dashboard sums, all from one
+// evaluation. It returns the number of rows written.
+func MaterializeGains(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
+	return rewriteTables(ctx, db, "MaterializeGains", beginPinned, gainsMaterialized, func(tx *sql.Tx) (int, error) {
+		return fillGains(ctx, tx, p.ToEpoch, p.ComputedAt)
+	})
+}
+
+// fillGains writes MaterializeGains' rows.
+func fillGains(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64) (int, error) {
 	var agree bool
 	if err := tx.QueryRowContext(ctx, gainsReadingsAgreeSQL).Scan(&agree); err != nil {
 		return 0, fmt.Errorf("MaterializeGains probe: %w", err)
@@ -80,9 +81,6 @@ func MaterializeGains(ctx context.Context, db *sql.DB, toEpoch, computedAt int64
 			return 0, fmt.Errorf("MaterializeGains copy: %w", err)
 		}
 		n += int(k)
-	}
-	if err := commit(); err != nil {
-		return 0, fmt.Errorf("MaterializeGains: %w", err)
 	}
 	return n, nil
 }

@@ -80,7 +80,7 @@ func TestWebIncomeAnswersWithEveryColumn(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedIncomeReportFixture(t, db, ctx)
-	if _, err := MaterializeServingTables(ctx, db); err != nil {
+	if _, err := MaterializeServingTables(ctx, db, MaterializeParams{}); err != nil {
 		t.Fatal(err)
 	}
 

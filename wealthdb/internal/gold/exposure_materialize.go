@@ -67,32 +67,31 @@ const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, src, acct, position_key, va
 
 // MaterializeExposure rewrites report_exposure: the look-through at the
 // last second of every month from the first holding gold holds, and at
-// toEpoch, in every reporting currency, grouped by the dimensions the
+// p.ToEpoch, in every reporting currency, grouped by the dimensions the
 // Metabase Exposure dashboard charts and the source and tax wrapper its
 // pickers narrow to; and the debt, issuer and security tables at the
-// recent instants (materializeExposureRecent); and at toEpoch each
+// recent instants (materializeExposureRecent); and at p.ToEpoch each
 // benchmark's look-through (materializeBenchmarkExposure). It returns the
-// number of rows written. One transaction, so a reader sees the old tables or the
-// new ones.
-func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt int64) (int, error) {
-	// Every month end reads the same endings and spans.
-	tx, commit, err := beginPinned(ctx, db)
-	if err != nil {
-		return 0, fmt.Errorf("MaterializeExposure: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck — no-op after commit
-	for _, t := range []string{"report_exposure", "report_exposure_debt", "report_exposure_issuer_ranks",
-		"report_exposure_security_slices"} {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
-			return 0, fmt.Errorf("MaterializeExposure delete %s: %w", t, err)
-		}
-	}
+// number of rows written. Every month end reads the same endings and
+// spans (rewriteTables).
+func MaterializeExposure(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
+	return rewriteTables(ctx, db, "MaterializeExposure", beginPinned, exposureMaterialized, func(tx *sql.Tx) (int, error) {
+		return fillExposure(ctx, tx, p.ToEpoch, p.ComputedAt)
+	})
+}
+
+// exposureMaterialized are the tables MaterializeExposure rewrites.
+var exposureMaterialized = []string{"report_exposure", "report_exposure_debt", "report_exposure_issuer_ranks",
+	"report_exposure_security_slices"}
+
+// fillExposure writes MaterializeExposure's rows.
+func fillExposure(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64) (int, error) {
 	first, ok, err := FirstHoldingsAt(ctx, tx)
 	if err != nil {
 		return 0, fmt.Errorf("MaterializeExposure: %w", err)
 	}
 	if !ok {
-		return 0, commit()
+		return 0, nil
 	}
 	parts := make([]string, len(materializeCurrencies))
 	for i, c := range materializeCurrencies {
@@ -121,9 +120,6 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, toEpoch, computedAt in
 		return 0, err
 	}
 	n += k
-	if err := commit(); err != nil {
-		return 0, fmt.Errorf("MaterializeExposure: %w", err)
-	}
 	return n, nil
 }
 

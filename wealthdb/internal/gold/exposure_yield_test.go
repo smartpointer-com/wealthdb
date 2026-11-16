@@ -496,7 +496,7 @@ func TestExposureYieldEdges(t *testing.T) {
 func TestMaterializeExposureDebtMatchesTheViews(t *testing.T) {
 	t.Parallel()
 	db, ctx, at := seedYieldBookFX(t)
-	if _, err := MaterializeExposure(ctx, db, at, 42); err != nil {
+	if _, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 42}); err != nil {
 		t.Fatal(err)
 	}
 	for _, ccy := range materializeCurrencies {
