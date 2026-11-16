@@ -24,23 +24,18 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
 import csv
-import json
 import logging
 import math
 import sys
-from datetime import datetime
 from pathlib import Path
 
-from collectorkit import loader, parse, silver
+from collectorkit import loader, series
 
 log = logging.getLogger("curves.load")
 
 HERE = Path(__file__).resolve().parent
 MIGRATIONS = HERE / "migrations"
-
-RATE_COLUMNS = ("as_of", "series_id", "value", "payload")
 
 # The manifest fields that say what a series is. Each row's payload holds
 # them in this order.
@@ -61,12 +56,6 @@ SNB_FIXED = {"ZEITPUNKT": "A1100", "frequency": "P1D_L",
 BOM = "\ufeff"
 
 
-def date_to_epoch(s: str) -> int:
-    """An observation date 'YYYY-MM-DD' -> Unix seconds at 00:00 UTC.
-    Strict: anything else raises."""
-    return parse.epoch_day(datetime.strptime(s, "%Y-%m-%d"))
-
-
 def _number(value: str | None) -> str | None:
     """A cell's value as silver keeps it: the decimal string as the
     portal writes it. None for an empty cell or a placeholder that is no
@@ -82,11 +71,6 @@ def _warn_skipped(portal: str, skipped: int) -> None:
     if skipped:
         log.warning("%s: skipped %d value(s) that are no number", portal,
                     skipped)
-
-
-def _payload(fields: dict) -> str:
-    """A payload column's value: compact JSON, keys in the given order."""
-    return json.dumps(fields, separators=(",", ":"))
 
 
 def parse_ecb(text: str) -> dict[str, list[tuple[str, str]]]:
@@ -152,17 +136,6 @@ def parse_snb(text: str) -> dict[str, list[tuple[str, str]]]:
 PARSERS = {"ecb": parse_ecb, "snb": parse_snb}
 
 
-def _meaning(sid: str, meta: dict) -> dict | None:
-    """The manifest entry's RATE_MEANING fields, in order. None, with a
-    warning, when any of them is missing or empty."""
-    meaning = {k: meta.get(k) for k in RATE_MEANING}
-    if not all(meaning.values()):
-        log.warning("series %s has no %s in manifest; skipping", sid,
-                    "/".join(RATE_MEANING))
-        return None
-    return meaning
-
-
 def _answers(run_dir: Path, manifest: dict) -> dict[str, dict]:
     """Each portal's parsed answer in a run, by portal. A portal the run
     did not ask (its publication was unchanged) has no file and no
@@ -184,36 +157,25 @@ def _answers(run_dir: Path, manifest: dict) -> dict[str, dict]:
     return out
 
 
+# The one family: every series is a rate.
+FAMILIES = {"rates": series.Family("rates", series.RATE_COLUMNS,
+                                   RATE_MEANING)}
+
+
 def load_run(conn, run: loader.Run) -> int:
     """Upsert every dated observation in one bronze run into `rates`.
     Returns the row count written."""
     answers = _answers(run.dir, run.manifest)
-    rows = []
-    for sid, meta in run.manifest.get("series", {}).items():
-        meaning = _meaning(sid, meta)
-        if meaning is None:
-            continue
-        payload = _payload(meaning)
-        for day, value in answers.get(meta.get("portal"), {}).get(sid, []):
-            rows.append((date_to_epoch(day), sid, value, payload))
-    return silver.upsert_rows(conn, "rates", RATE_COLUMNS, rows)
+    (rows,) = series.load_series(
+        conn, run.manifest, FAMILIES, family_of=lambda meta: "rates",
+        observations=lambda sid, meta: answers.get(
+            meta.get("portal"), {}).get(sid, []),
+        log=log)
+    return rows
 
 
-def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__.strip())
-    p.add_argument("--silver-db", type=Path, required=True,
-                   help="Path to the silver SQLite DB (created if missing).")
-    p.add_argument("--bronze-dir", type=Path, required=True,
-                   help="Directory containing bronze run subdirectories.")
-    return p
-
-
-# A run dir with no run.json, or one whose status is not complete, is
-# skipped without a dump_runs row, so a later load picks it up once its
-# walk finalises.
-SPEC = loader.LoaderSpec(
-    name="curves", schema=MIGRATIONS, load_run=load_run, parser=_parser,
-    counts=("rates rows",), manifest=loader.MANIFEST_REQUIRED)
+SPEC = series.loader_spec("curves", MIGRATIONS, load_run, ("rates rows",),
+                          __doc__.strip())
 
 
 def main(argv: list[str] | None = None) -> int:
