@@ -25,7 +25,9 @@ const defaultAccountKey = "manual"
 // date < closed_at), each marked at its latest valuation on/before the date.
 // A closed position drops out exactly at its closed_at; a complete portfolio
 // exists at every date so historical as-of queries work. A position carries
-// no ValuedAt, and a book that empties emits an empty batch.
+// no ValuedAt. Where the last position leaves, that date gets the exit-day
+// zero snapshot (silver.ClosureMarkerBatch), so gold ends every position
+// there instead of carrying its last mark forward.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -43,6 +45,7 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		Emit: func(t int64, held []silver.Holding) (canonical.SnapshotBatch, error) {
 			return emit(t, held, declared), nil
 		},
+		Closure: true,
 	}.Batches(w)
 	if err != nil {
 		return nil, err
