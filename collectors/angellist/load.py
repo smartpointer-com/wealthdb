@@ -49,7 +49,7 @@ import re
 import sys
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import loader
 from collectorkit.money import parse_money_cents
 
 import statements
@@ -123,11 +123,14 @@ def _invest(data) -> dict:
     return ((data or {}).get("invest") or {}) if isinstance(data, dict) else {}
 
 
-def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> None:
+def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> str | None:
+    """Load one run's captures inside the frame's transaction, and return
+    the invest account slug they name. A run without captures.jsonl is
+    passed over (loader.Skip)."""
     cap_path = run_dir / "captures.jsonl"
     if not cap_path.is_file():
         log.warning("%s: no captures.jsonl, skipping", run_dir.name)
-        return
+        raise loader.Skip
     captures = [json.loads(line) for line in cap_path.read_text().splitlines()
                 if line.strip()]
     ops = _by_op(captures)
@@ -137,189 +140,191 @@ def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> None:
         v = c.get("variables") or {}
         acct_slug = acct_slug or v.get("investAccountSlug")
 
-    conn.execute("BEGIN")
-    try:
-        # Portfolio summary first — its dataDate is AngelList's "as of" for
-        # the current marks, and dates the current valuation event.
-        pdq = ops.get("PortfolioDashboard")
-        summary = (((_invest(pdq[0].get("data")).get("portfolio", {}) or {})
-                    .get("summary")) or {}) if pdq else {}
-        data_date = summary.get("dataDate") or snapshot_at
+    # Portfolio summary first — its dataDate is AngelList's "as of" for
+    # the current marks, and dates the current valuation event.
+    pdq = ops.get("PortfolioDashboard")
+    summary = (((_invest(pdq[0].get("data")).get("portfolio", {}) or {})
+                .get("summary")) or {}) if pdq else {}
+    data_date = summary.get("dataDate") or snapshot_at
 
-        # --- positions: union edges across all PositionsTable pages ---
-        nodes: dict[str, dict] = {}
-        for c in ops.get("PositionsTable", []):
-            conn_pos = (_invest(c.get("data")).get("portfolio", {}) or {}).get("positions") or {}
-            for e in conn_pos.get("edges", []):
-                n = e.get("node") or {}
-                if n.get("id"):
-                    nodes[n["id"]] = n
+    n_positions = _load_positions(conn, ops, snapshot_at, data_date)
+    if pdq:
+        _load_summary(conn, summary, acct_slug, snapshot_at)
+    n_commit = _load_commitments(conn, ops, snapshot_at)
+    n_fund = load_funding(conn, captures, snapshot_at)
 
-        for nid, n in nodes.items():
-            guid = n.get("investableGuid")
-            contrib_m, cur = money(n.get("contributedAmount"))
-            real_m, _ = money(n.get("realizedValue"))
-            total_m, curt = money(n.get("totalValue"))
-            currency = cur or curt or "USD"
-            inv_date = n.get("investmentDate")
-            status = n.get("status")
-            kind = None
-            if guid:
-                # investableGuid suffix discriminates the vehicle type:
-                # '-f' = multi-company fund, else single-company SPV / RUV.
-                kind = "fund" if guid.endswith("-f") else "spv"
-                conn.execute(
-                    "INSERT INTO vehicles "
-                    "(vehicle_external_id, name, avatar_url, kind, first_seen_at, last_seen_at, payload) "
-                    "VALUES (?,?,?,?,?,?,?) "
-                    "ON CONFLICT(vehicle_external_id) DO UPDATE SET "
-                    "name=excluded.name, avatar_url=excluded.avatar_url, kind=excluded.kind, "
-                    "first_seen_at=min(vehicles.first_seen_at, excluded.first_seen_at), "
-                    "last_seen_at=max(vehicles.last_seen_at, excluded.last_seen_at)",
-                    (guid, n.get("investableName"), n.get("investableAvatarUrl"), kind,
-                     snapshot_at, snapshot_at, None),
-                )
-            # offering: immutable per-position identity (fund_name / fund_tax_id
-            # are filled later from the linked K-1).
-            conn.execute(
-                "INSERT INTO offerings "
-                "(position_external_id, vehicle_external_id, kind, company_name, "
-                " investment_date, currency, first_seen_at, last_seen_at, payload) "
-                "VALUES (?,?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(position_external_id) DO UPDATE SET "
-                " vehicle_external_id=excluded.vehicle_external_id, kind=excluded.kind, "
-                " company_name=excluded.company_name, investment_date=excluded.investment_date, "
-                " currency=excluded.currency, "
-                " first_seen_at=min(offerings.first_seen_at, excluded.first_seen_at), "
-                " last_seen_at=max(offerings.last_seen_at, excluded.last_seen_at), "
-                " payload=excluded.payload",
-                (nid, guid, kind, n.get("investableName"), inv_date, currency,
-                 snapshot_at, snapshot_at, json.dumps(n, separators=(",", ":"))),
-            )
-
-            # Investment event (original capital, at the investment date) — a
-            # cost data point before the first K-1 statement. Nothing is
-            # distributed at inception.
-            if inv_date:
-                put_snapshot(conn, nid, inv_date, "investment", currency,
-                             market=contrib_m, basis="cost", contributed=contrib_m,
-                             distributions=None, is_open=True, status=status,
-                             snapshot_at=snapshot_at)
-            # Current valuation event, at the portfolio data date. The portal
-            # states a value only where it has one: `totalValue` is None for
-            # a position it has not marked, and for a Realized position it is
-            # the realized value — what came OUT, not what is held. So a
-            # Realized position marks 0 and closes; a stated value marks at
-            # FMV; no stated value emits no event, and the latest dated mark
-            # (a statement, else the investment's cost) carries, rather than
-            # a re-mark to cost above a later statement. Only a position with
-            # no dated mark at all takes cost at the data date.
-            if status == "closed":
-                put_snapshot(conn, nid, data_date, "valuation", currency,
-                             market=0, basis="fmv", contributed=contrib_m,
-                             distributions=real_m, is_open=False, status=status,
-                             snapshot_at=snapshot_at)
-            elif total_m is not None:
-                put_snapshot(conn, nid, data_date, "valuation", currency,
-                             market=total_m, basis="fmv", contributed=contrib_m,
-                             distributions=real_m, is_open=True, status=status,
-                             snapshot_at=snapshot_at)
-            elif not inv_date:
-                put_snapshot(conn, nid, data_date, "valuation", currency,
-                             market=contrib_m, basis="cost", contributed=contrib_m,
-                             distributions=real_m, is_open=True, status=status,
-                             snapshot_at=snapshot_at)
-
-        # --- portfolio summary + NAV time series ---
-        if pdq:
-            s = summary
-            ci, cur = money(s.get("totalCommittedAmount"))
-            co, _ = money(s.get("totalContributedAmount"))
-            iv, cur2 = money(s.get("totalInvestedAmount"))
-            rv, _ = money(s.get("totalRealizedValue"))
-            un, _ = money(s.get("totalUnrealizedValue"))
-            tv, _ = money(s.get("totalValue"))
-            conn.execute(
-                "INSERT OR REPLACE INTO portfolio_summary "
-                "(snapshot_at, invest_account_slug, currency, data_date, total_committed_minor, "
-                " total_contributed_minor, total_invested_minor, total_realized_minor, "
-                " total_unrealized_minor, total_value_minor, irr, tvpi, dpi, total_funds_count, "
-                " total_investments_count, total_startups_count, payload) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (snapshot_at, acct_slug, cur or cur2, s.get("dataDate"), ci, co, iv, rv, un, tv,
-                 s.get("irr"), s.get("tvpi"), s.get("dpi"), s.get("totalFundsCount"),
-                 s.get("totalInvestmentsCount"), s.get("totalStartupsCount"),
-                 json.dumps(s, separators=(",", ":"))),
-            )
-            for p in s.get("timeSeries") or []:
-                y, mo, d = p.get("year"), p.get("month"), p.get("day")
-                if not (y and mo and d):
-                    continue
-                as_of = f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
-                tsv, tcur = money(p.get("totalValue"))
-                ti, _ = money(p.get("totalInvestedAmount"))
-                rz, _ = money(p.get("realizedValue"))
-                uz, _ = money(p.get("unrealizedValue"))
-                oc, _ = money(p.get("offlineValueChange"))
-                conn.execute(
-                    "INSERT INTO portfolio_timeseries "
-                    "(invest_account_slug, as_of_date, currency, total_value_minor, "
-                    " total_invested_minor, realized_minor, unrealized_minor, "
-                    " offline_change_minor, is_approximate, snapshot_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(invest_account_slug, as_of_date) DO UPDATE SET "
-                    "currency=excluded.currency, total_value_minor=excluded.total_value_minor, "
-                    "total_invested_minor=excluded.total_invested_minor, "
-                    "realized_minor=excluded.realized_minor, "
-                    "unrealized_minor=excluded.unrealized_minor, "
-                    "offline_change_minor=excluded.offline_change_minor, "
-                    "is_approximate=excluded.is_approximate, snapshot_at=excluded.snapshot_at "
-                    "WHERE excluded.snapshot_at >= portfolio_timeseries.snapshot_at",
-                    (acct_slug, as_of, tcur, tsv, ti, rz, uz, oc,
-                     1 if p.get("isApproximate") else 0, snapshot_at),
-                )
-
-        # --- open commitments ---
-        oiq = ops.get("OpenInvestments")
-        n_commit = 0
-        if oiq:
-            for o in _invest(oiq[0].get("data")).get("openInvestments", []) or []:
-                opp = o.get("opportunity") or {}
-                synd = opp.get("syndicate") or {}
-                cm, cur = money(o.get("commitmentAmount"))
-                pm, _ = money(o.get("paymentAmount"))
-                rm, _ = money(o.get("remainingAmountNeededToFund"))
-                conn.execute(
-                    "INSERT OR REPLACE INTO commitments "
-                    "(snapshot_at, commitment_external_id, name, investable_slug, syndicate_name, "
-                    " syndicate_slug, opportunity_type, state, currency, commitment_minor, "
-                    " payment_minor, remaining_to_fund_minor, close_date, funding_deadline, "
-                    " needs_to_wire, needs_to_sign, payload) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (snapshot_at, o.get("id"), opp.get("investableName"), opp.get("investableSlug"),
-                     synd.get("name"), synd.get("slug"), opp.get("type"), o.get("state"), cur,
-                     cm, pm, rm, opp.get("closeDate"), opp.get("fundingDeadlineDate"),
-                     1 if o.get("needsToWire") else 0, 1 if o.get("needsToSign") else 0,
-                     json.dumps(o, separators=(",", ":"))),
-                )
-                n_commit += 1
-
-        n_fund = load_funding(conn, captures, snapshot_at)
-
-        manifest = (run_dir / "run.json")
-        conn.execute(
-            "INSERT OR REPLACE INTO dump_runs (snapshot_at, invest_account_slug, payload) "
-            "VALUES (?,?,?)",
-            (snapshot_at, acct_slug,
-             manifest.read_text() if manifest.is_file() else None),
-        )
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
     log.info("%s: %d position(s) / offering(s), %d vehicle(s), %d commitment(s), %d funding tx",
-             run_dir.name, len(nodes),
+             run_dir.name, n_positions,
              conn.execute("SELECT COUNT(*) FROM vehicles").fetchone()[0], n_commit, n_fund)
+    return acct_slug
+
+
+def _load_positions(conn, ops, snapshot_at: int, data_date) -> int:
+    """Positions: the union of edges across all PositionsTable pages, as
+    vehicles, offerings and their investment and valuation events.
+    Returns the positions read."""
+    nodes: dict[str, dict] = {}
+    for c in ops.get("PositionsTable", []):
+        conn_pos = (_invest(c.get("data")).get("portfolio", {}) or {}).get("positions") or {}
+        for e in conn_pos.get("edges", []):
+            n = e.get("node") or {}
+            if n.get("id"):
+                nodes[n["id"]] = n
+
+    for nid, n in nodes.items():
+        guid = n.get("investableGuid")
+        contrib_m, cur = money(n.get("contributedAmount"))
+        real_m, _ = money(n.get("realizedValue"))
+        total_m, curt = money(n.get("totalValue"))
+        currency = cur or curt or "USD"
+        inv_date = n.get("investmentDate")
+        status = n.get("status")
+        kind = None
+        if guid:
+            # investableGuid suffix discriminates the vehicle type:
+            # '-f' = multi-company fund, else single-company SPV / RUV.
+            kind = "fund" if guid.endswith("-f") else "spv"
+            conn.execute(
+                "INSERT INTO vehicles "
+                "(vehicle_external_id, name, avatar_url, kind, first_seen_at, last_seen_at, payload) "
+                "VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(vehicle_external_id) DO UPDATE SET "
+                "name=excluded.name, avatar_url=excluded.avatar_url, kind=excluded.kind, "
+                "first_seen_at=min(vehicles.first_seen_at, excluded.first_seen_at), "
+                "last_seen_at=max(vehicles.last_seen_at, excluded.last_seen_at)",
+                (guid, n.get("investableName"), n.get("investableAvatarUrl"), kind,
+                 snapshot_at, snapshot_at, None),
+            )
+        # offering: immutable per-position identity (fund_name / fund_tax_id
+        # are filled later from the linked K-1).
+        conn.execute(
+            "INSERT INTO offerings "
+            "(position_external_id, vehicle_external_id, kind, company_name, "
+            " investment_date, currency, first_seen_at, last_seen_at, payload) "
+            "VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(position_external_id) DO UPDATE SET "
+            " vehicle_external_id=excluded.vehicle_external_id, kind=excluded.kind, "
+            " company_name=excluded.company_name, investment_date=excluded.investment_date, "
+            " currency=excluded.currency, "
+            " first_seen_at=min(offerings.first_seen_at, excluded.first_seen_at), "
+            " last_seen_at=max(offerings.last_seen_at, excluded.last_seen_at), "
+            " payload=excluded.payload",
+            (nid, guid, kind, n.get("investableName"), inv_date, currency,
+             snapshot_at, snapshot_at, json.dumps(n, separators=(",", ":"))),
+        )
+
+        # Investment event (original capital, at the investment date) — a
+        # cost data point before the first K-1 statement. Nothing is
+        # distributed at inception.
+        if inv_date:
+            put_snapshot(conn, nid, inv_date, "investment", currency,
+                         market=contrib_m, basis="cost", contributed=contrib_m,
+                         distributions=None, is_open=True, status=status,
+                         snapshot_at=snapshot_at)
+        # Current valuation event, at the portfolio data date. The portal
+        # states a value only where it has one: `totalValue` is None for
+        # a position it has not marked, and for a Realized position it is
+        # the realized value — what came OUT, not what is held. So a
+        # Realized position marks 0 and closes; a stated value marks at
+        # FMV; no stated value emits no event, and the latest dated mark
+        # (a statement, else the investment's cost) carries, rather than
+        # a re-mark to cost above a later statement. Only a position with
+        # no dated mark at all takes cost at the data date.
+        if status == "closed":
+            put_snapshot(conn, nid, data_date, "valuation", currency,
+                         market=0, basis="fmv", contributed=contrib_m,
+                         distributions=real_m, is_open=False, status=status,
+                         snapshot_at=snapshot_at)
+        elif total_m is not None:
+            put_snapshot(conn, nid, data_date, "valuation", currency,
+                         market=total_m, basis="fmv", contributed=contrib_m,
+                         distributions=real_m, is_open=True, status=status,
+                         snapshot_at=snapshot_at)
+        elif not inv_date:
+            put_snapshot(conn, nid, data_date, "valuation", currency,
+                         market=contrib_m, basis="cost", contributed=contrib_m,
+                         distributions=real_m, is_open=True, status=status,
+                         snapshot_at=snapshot_at)
+    return len(nodes)
+
+
+def _load_summary(conn, summary: dict, acct_slug, snapshot_at: int) -> None:
+    """The portfolio summary and its NAV time series."""
+    s = summary
+    ci, cur = money(s.get("totalCommittedAmount"))
+    co, _ = money(s.get("totalContributedAmount"))
+    iv, cur2 = money(s.get("totalInvestedAmount"))
+    rv, _ = money(s.get("totalRealizedValue"))
+    un, _ = money(s.get("totalUnrealizedValue"))
+    tv, _ = money(s.get("totalValue"))
+    conn.execute(
+        "INSERT OR REPLACE INTO portfolio_summary "
+        "(snapshot_at, invest_account_slug, currency, data_date, total_committed_minor, "
+        " total_contributed_minor, total_invested_minor, total_realized_minor, "
+        " total_unrealized_minor, total_value_minor, irr, tvpi, dpi, total_funds_count, "
+        " total_investments_count, total_startups_count, payload) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (snapshot_at, acct_slug, cur or cur2, s.get("dataDate"), ci, co, iv, rv, un, tv,
+         s.get("irr"), s.get("tvpi"), s.get("dpi"), s.get("totalFundsCount"),
+         s.get("totalInvestmentsCount"), s.get("totalStartupsCount"),
+         json.dumps(s, separators=(",", ":"))),
+    )
+    for p in s.get("timeSeries") or []:
+        y, mo, d = p.get("year"), p.get("month"), p.get("day")
+        if not (y and mo and d):
+            continue
+        as_of = f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+        tsv, tcur = money(p.get("totalValue"))
+        ti, _ = money(p.get("totalInvestedAmount"))
+        rz, _ = money(p.get("realizedValue"))
+        uz, _ = money(p.get("unrealizedValue"))
+        oc, _ = money(p.get("offlineValueChange"))
+        conn.execute(
+            "INSERT INTO portfolio_timeseries "
+            "(invest_account_slug, as_of_date, currency, total_value_minor, "
+            " total_invested_minor, realized_minor, unrealized_minor, "
+            " offline_change_minor, is_approximate, snapshot_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(invest_account_slug, as_of_date) DO UPDATE SET "
+            "currency=excluded.currency, total_value_minor=excluded.total_value_minor, "
+            "total_invested_minor=excluded.total_invested_minor, "
+            "realized_minor=excluded.realized_minor, "
+            "unrealized_minor=excluded.unrealized_minor, "
+            "offline_change_minor=excluded.offline_change_minor, "
+            "is_approximate=excluded.is_approximate, snapshot_at=excluded.snapshot_at "
+            "WHERE excluded.snapshot_at >= portfolio_timeseries.snapshot_at",
+            (acct_slug, as_of, tcur, tsv, ti, rz, uz, oc,
+             1 if p.get("isApproximate") else 0, snapshot_at),
+        )
+
+
+def _load_commitments(conn, ops, snapshot_at: int) -> int:
+    """Open commitments. Returns the commitments read."""
+    oiq = ops.get("OpenInvestments")
+    n_commit = 0
+    if oiq:
+        for o in _invest(oiq[0].get("data")).get("openInvestments", []) or []:
+            opp = o.get("opportunity") or {}
+            synd = opp.get("syndicate") or {}
+            cm, cur = money(o.get("commitmentAmount"))
+            pm, _ = money(o.get("paymentAmount"))
+            rm, _ = money(o.get("remainingAmountNeededToFund"))
+            conn.execute(
+                "INSERT OR REPLACE INTO commitments "
+                "(snapshot_at, commitment_external_id, name, investable_slug, syndicate_name, "
+                " syndicate_slug, opportunity_type, state, currency, commitment_minor, "
+                " payment_minor, remaining_to_fund_minor, close_date, funding_deadline, "
+                " needs_to_wire, needs_to_sign, payload) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (snapshot_at, o.get("id"), opp.get("investableName"), opp.get("investableSlug"),
+                 synd.get("name"), synd.get("slug"), opp.get("type"), o.get("state"), cur,
+                 cm, pm, rm, opp.get("closeDate"), opp.get("fundingDeadlineDate"),
+                 1 if o.get("needsToWire") else 0, 1 if o.get("needsToSign") else 0,
+                 json.dumps(o, separators=(",", ":"))),
+            )
+            n_commit += 1
+    return n_commit
+
 
 
 def load_funding(conn, captures, snapshot_at: int) -> int:
@@ -889,7 +894,7 @@ def link_funding_transactions(conn, k1_aliases=None) -> None:
 
 # --------------------------------------------------------------------------
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__.strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -905,47 +910,56 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         "<bronze-dir>/angellist-documents — the bronze-root "
                         "sibling `download` saves into, so silver stays "
                         "reproducible from bronze alone. No-op when missing.")
-    cli.add_standard_args(p, verb="load")
-    return p.parse_args(argv)
+    return p
 
 
-def main(argv: list[str]) -> int:
-    args = parse_args(argv)
-    cli.configure_logging(args.verbose)
+# The silver DB and the documents dir are bronze-ROOT siblings of the
+# timestamped run dirs (DESIGN.md), so their defaults derive from
+# --bronze-dir: scoping it to another tree scopes them too, and the
+# in-container default still lands on the /data paths the wrapper mounts.
+def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    return (args.silver_db if args.silver_db is not None
+            else args.bronze_dir / "angellist.db"), args.bronze_dir
 
-    # The silver DB and the documents dir are bronze-ROOT siblings of the
-    # timestamped run dirs (DESIGN.md), so their defaults derive from
-    # --bronze-dir: scoping it to another tree scopes them too, and the
-    # in-container default still lands on the /data paths the wrapper mounts.
-    silver_db = (args.silver_db if args.silver_db is not None
-                 else args.bronze_dir / "angellist.db")
-    docs_dir = (args.documents_dir if args.documents_dir is not None
-                else args.bronze_dir / "angellist-documents")
 
-    # --force = delete the silver DB, then rebuild from all bronze (the
-    # fleet-wide meaning). After a reset the DB is empty, so the
-    # already-loaded skip in pending_run_dirs re-ingests every run.
-    if args.force:
-        silver.reset(silver_db)
-    conn = silver.open_db(silver_db)
-    silver.apply_migrations(conn, MIGRATIONS)
+def _documents_dir(load: loader.Load) -> Path:
+    return (load.args.documents_dir if load.args.documents_dir is not None
+            else load.bronze_dir / "angellist-documents")
 
-    # A dump whose walk never finished (no run.json, or a status other than
-    # complete) may hold a truncated captures.jsonl; pending_run_dirs skips
-    # it, and prune reclaims it instead.
-    n = 0
-    for run_dir in bronze.pending_run_dirs(conn, args.bronze_dir, log=log):
-        load_snapshot(conn, bronze.parse_run_ts(run_dir.name), run_dir)
-        n += 1
+
+def _run_columns(run: loader.Run) -> dict:
+    """The run's `dump_runs` row: its instant and its run.json as stored.
+    `load_run` adds the invest account slug."""
+    manifest = run.dir / "run.json"
+    return {"snapshot_at": run.snapshot_at,
+            "payload": manifest.read_text() if manifest.is_file() else None}
+
+
+def load_run(conn, run: loader.Run) -> None:
+    run.row["invest_account_slug"] = load_snapshot(conn, run.snapshot_at, run.dir)
+
+
+def _document_passes(conn, load: loader.Load) -> None:
+    """The passes over every loaded run and the documents dir."""
+    docs_dir = _documents_dir(load)
     load_documents(conn, docs_dir)
     fund_to_pid, k1_aliases = _pair_k1_to_positions(conn)
     build_k1_statement_snapshots(conn, fund_to_pid)
     build_financial_statement_snapshots(conn, docs_dir)
     link_funding_transactions(conn, k1_aliases)
-    conn.close()
-    log.info("loaded %d snapshot(s) into %s", n, silver_db)
-    return 0
+
+
+# A dump whose walk never finished (no run.json, or a status other than
+# complete) may hold a truncated captures.jsonl; pending_run_dirs skips it,
+# and prune reclaims it instead.
+SPEC = loader.LoaderSpec(
+    name="angellist", schema=MIGRATIONS, load_run=load_run, parser=_parser,
+    defaults=_paths, after_runs=_document_passes, run_columns=_run_columns)
+
+
+def main(argv: list[str] | None = None) -> int:
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

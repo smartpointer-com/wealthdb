@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+from collectorkit import incremental  # noqa: E402
 
 INV_DATE = 1600000000   # investment date (2020)
 DATA_DATE = 1700000000  # portfolio "as of" / valuation date (2023)
@@ -400,10 +401,11 @@ def test_default_paths_derive_from_bronze_dir(tmp_path):
     assert c.execute("SELECT COUNT(*) FROM k1_capital_accounts").fetchone()[0] == 1
     c.close()
     # an explicit flag wins over the derivation
-    assert load.parse_args(["--documents-dir", "/x"]).documents_dir == Path("/x")
-    assert load.parse_args(["--silver-db", "/y.db"]).silver_db == Path("/y.db")
-    assert load.parse_args([]).documents_dir is None
-    assert load.parse_args([]).silver_db is None
+    parse = load.SPEC.parser().parse_args
+    assert parse(["--documents-dir", "/x"]).documents_dir == Path("/x")
+    assert parse(["--silver-db", "/y.db"]).silver_db == Path("/y.db")
+    assert parse([]).documents_dir is None
+    assert parse([]).silver_db is None
 
 
 def test_funding(tmp_path):
@@ -757,10 +759,10 @@ def test_volatile_allowlist_is_complete():
 
 
 def test_force_rebuild_equals_incremental(tmp_path):
-    """`load --force` deletes the silver DB and rebuilds it from all bronze;
-    for UNCHANGED bronze that reproduces the plain incremental load exactly
-    (silver is a pure function of bronze). Guards the silver.reset wiring in
-    main(): a forced rebuild must land on identical data, never drift or
+    """`load --force` builds a fresh silver DB from all bronze and puts it
+    in place; for UNCHANGED bronze that reproduces the plain incremental
+    load exactly (silver is a pure function of bronze). Guards the rebuild
+    wiring: a forced rebuild must land on identical data, never drift or
     duplicate."""
     dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
     # One complete run spanning every populated table: two positions (an SPV
@@ -803,7 +805,7 @@ def test_force_rebuild_equals_incremental(tmp_path):
         and before["funding_transactions"] and before["tax_documents"] \
         and before["k1_capital_accounts"]
 
-    # Force = reset + full rebuild from the same, unchanged bronze.
+    # Force = a full rebuild from the same, unchanged bronze.
     assert load.main(argv + ["--force"]) == 0
     after = _dump_silver(db)
 
@@ -850,3 +852,32 @@ def test_an_unfinished_dump_is_not_loaded(tmp_path):
         "SELECT position_external_id FROM offerings")] == ["p1"]
     assert c.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
     c.close()
+
+
+def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
+    """The later run re-marks a position, closes another, adds one, and
+    carries a new NAV point; the K-1 pass runs over both silvers."""
+    fixture = tmp_path / "fixture"
+    runs = [
+        write_run(fixture, "20240101T000000Z", [
+            positions_capture([pos_node("p1", "acme-co-s", name="Synthetic Co"),
+                               pos_node("p2", "acme-fund-f", name="Fund One")]),
+            dashboard_capture(), commitments_capture()]),
+        write_run(fixture, "20240201T000000Z", [
+            positions_capture([
+                pos_node("p1", "acme-co-s", name="Synthetic Co", total=90000),
+                pos_node("p2", "acme-fund-f", name="Fund One", status="closed"),
+                pos_node("p3", "other-co-s", name="Other Co", total=None)]),
+            dashboard_capture(timeseries=[
+                {"year": 2024, "month": 2, "day": 1, "totalValue": m(55000),
+                 "totalInvestedAmount": m(60000), "realizedValue": m(0),
+                 "unrealizedValue": m(55000), "offlineValueChange": m(0),
+                 "isApproximate": False}])]),
+    ]
+    docs = tmp_path / "documents"
+    write_k1_csv(docs)
+    incremental.check(load.main, lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze),
+        "--documents-dir", str(docs)], runs, tmp_path / "work",
+        ignore=incremental.CLOCK_COLUMNS | {
+            f"{t}.{c}" for t, c in VOLATILE_COLUMNS})
