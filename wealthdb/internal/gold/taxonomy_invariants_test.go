@@ -6,23 +6,19 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// TestTaxonomyInvariants is the gold taxonomy-integrity +
-// value-preservation harness (docs/DESIGN.md §12.5, "Reload
-// verification"). It runs against a REAL gold DB — set
-// WEALTHDB_GOLD_VERIFY to its path — and is skipped otherwise, so it
-// never runs in CI against a fixture.
-//
-// For every positions / instruments row it asserts the
-// (asset_class, vehicle) pair is populated and taxonomy-admitted
-// (ValidTaxonomyPair), and prints the per-source distribution for
-// human review. When WEALTHDB_GOLD_BEFORE points at a pre-reload copy
-// of the gold DB it additionally asserts value preservation across
-// the reload (see checkValuePreservation).
+// TestTaxonomyInvariants checks the real gold WEALTHDB_GOLD_VERIFY
+// names, and is skipped without it. For every positions / instruments
+// row it asserts the (asset_class, vehicle) pair is populated and
+// taxonomy-admitted (ValidTaxonomyPair), and prints the per-source
+// distribution. With WEALTHDB_GOLD_BEFORE it also asserts value
+// preservation across a reload (checkValuePreservation). See
+// docs/DESIGN.md §12.5 (Reload verification) for how to run it.
 func TestTaxonomyInvariants(t *testing.T) {
 	t.Parallel()
 	path := os.Getenv("WEALTHDB_GOLD_VERIFY")
@@ -77,7 +73,7 @@ SELECT silver_source_id, asset_class, COALESCE(vehicle, ''), count(*)
 		t.Fatal(err)
 	}
 	sort.Strings(lines)
-	t.Logf("%s distribution (rows=%d):\n%s", tbl, total, join(lines))
+	t.Logf("%s distribution (rows=%d):\n%s", tbl, total, strings.Join(lines, "\n"))
 }
 
 // checkValuePreservation enforces that a reload never moves money or
@@ -87,16 +83,6 @@ SELECT silver_source_id, asset_class, COALESCE(vehicle, ''), count(*)
 // counts are identical before and after — the finest grain at which a
 // mis-projection could hide a value change. Absent the before-copy it
 // degrades to printing the current totals for a manual external diff.
-//
-// Workflow for a real check, from the repo root. wealthdb-go forwards
-// both variables and mounts each file's directory read-only, so the
-// copies sit where Docker can see them (under $HOME, not a sandboxed tmp):
-//
-//	cp $GOLD ~/gold-check/before.db     # BEFORE reload
-//	wealthdb reload -a                  # re-project with the current adapters
-//	cp $GOLD ~/gold-check/after.db
-//	WEALTHDB_GOLD_VERIFY=~/gold-check/after.db WEALTHDB_GOLD_BEFORE=~/gold-check/before.db \
-//	  wealthdb/wealthdb-test ./internal/gold -run TestTaxonomyInvariants -v -count=1
 func checkValuePreservation(ctx context.Context, t *testing.T, after *sql.DB) {
 	printCounts(ctx, t, "after", after)
 
@@ -118,14 +104,7 @@ func checkValuePreservation(ctx context.Context, t *testing.T, after *sql.DB) {
 SELECT silver_source_id || '\x1f' || account_external_id || '\x1f' || CAST(snapshot_at AS VARCHAR),
        COALESCE(CAST(sum(market_value) AS VARCHAR), 'NULL')
   FROM positions GROUP BY 1`
-	beforeTot, err := scanKV(ctx, before, q)
-	if err != nil {
-		t.Fatalf("before totals: %v", err)
-	}
-	afterTot, err := scanKV(ctx, after, q)
-	if err != nil {
-		t.Fatalf("after totals: %v", err)
-	}
+	beforeTot, afterTot := scanPairs(t, before, q), scanPairs(t, after, q)
 	drift := 0
 	for k, bv := range beforeTot {
 		if av, ok := afterTot[k]; !ok {
@@ -167,30 +146,5 @@ SELECT silver_source_id,
 		}
 		lines = append(lines, fmt.Sprintf("  %-12s positions=%-7d instruments=%-6d sum(market_value)=%s", src, pos, instr, total))
 	}
-	t.Logf("%s per-source counts:\n%s", label, join(lines))
-}
-
-func scanKV(ctx context.Context, db *sql.DB, q string) (map[string]string, error) {
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[string]string)
-	for rows.Next() {
-		var k, v string
-		if err := rows.Scan(&k, &v); err != nil {
-			return nil, err
-		}
-		out[k] = v
-	}
-	return out, rows.Err()
-}
-
-func join(lines []string) string {
-	out := ""
-	for _, l := range lines {
-		out += l + "\n"
-	}
-	return out
+	t.Logf("%s per-source counts:\n%s", label, strings.Join(lines, "\n"))
 }

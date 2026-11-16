@@ -11,14 +11,13 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
-// The far-account record: what the matcher has always seen and never
-// written down, and the class a narrative rule stands for where no
-// pairing exists.
+// The far side of a move: the partner leg's account the matcher saw, or
+// the account a rule or the source names, linked in transfer_links.
 //
-// Neither family reads any of it. An own-account move is not spending
-// and not income whichever account it went to, so these tests assert a
-// fact about the OVERLAY and, just as deliberately, that the two
-// families' reports did not move.
+// Neither family's base reads it. An own-account move is not spending
+// and not income whichever account it went to, so these tests assert
+// the links and, just as deliberately, that the two families' reports
+// do not move.
 
 // farOf reads the far account the pass linked for one transaction. Each
 // part comes back as the empty string where the pass linked none.
@@ -36,9 +35,9 @@ func farOf(t *testing.T, db *sql.DB, ctx context.Context, source, id string) (fa
 	return s.String, a.String
 }
 
-// TestMatcherRecordsBothEndsOfAPair is the core of the change: each leg
-// of a matched pair names the OTHER leg's account, so a reader can ask
-// where the money went without re-running the matcher.
+// TestMatcherRecordsBothEndsOfAPair: each leg of a matched pair names
+// the OTHER leg's account, so a reader can ask where the money went
+// without re-running the matcher.
 func TestMatcherRecordsBothEndsOfAPair(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
@@ -161,11 +160,11 @@ func TestATierAboveTheMortgageRuleReplacesItsValue(t *testing.T) {
 	}
 }
 
-// TestFarColumnsAreRewrittenEveryPass pins the re-assert: the pass owns
-// these columns as it owns every other derived one, so a pairing that
+// TestFarLinksAreRewrittenEveryPass pins the re-assert: the pass owns
+// these links as it owns every other derived row, so a pairing that
 // stops holding — a counter-leg that never loads, an override that
 // unmatches it — leaves nothing behind.
-func TestFarColumnsAreRewrittenEveryPass(t *testing.T) {
+func TestFarLinksAreRewrittenEveryPass(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
 		txn{source: "bank", id: "T-OUT", account: "CASH1", kind: "withdrawal",
@@ -218,11 +217,9 @@ func TestOnlyTheSpendingFamilyLinksFarSides(t *testing.T) {
 	}
 }
 
-// TestFarAccountChangesNoReport is the regression the whole stage has to
-// clear: the two families' reports are byte-identical with the far
-// columns written and with them blanked. Nothing reads them yet, and a
-// pass that started moving a verdict while recording where it went
-// would be a far worse change than the one intended.
+// TestFarAccountChangesNoReport: the two families' reports are
+// byte-identical with the links written and with them deleted.
+// Recording where money went must not move a verdict.
 func TestFarAccountChangesNoReport(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,

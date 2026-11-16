@@ -1038,10 +1038,11 @@ func TestMigration0111MovesEveryStoredVerdictToItsSuccessor(t *testing.T) {
 // which is finer than any floor, and a floor that outranked it would
 // quietly coarsen every such row.
 //
-// A fee's floor depends on its account (0103, 0110). On a card or on a
-// bank account it is a bank fee. A bank account here is a cash account in
-// no portfolio. Everywhere else it is an investment fee, the cash side of
-// an investment mandate included.
+// A fee's floor depends on its account (spend_kind_floor,
+// derived/40_flows.sql). On a card or on a bank account it is a bank
+// fee. A bank account here is a cash account in no portfolio. Everywhere
+// else it is an investment fee, the cash side of an investment mandate
+// included.
 func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -1129,7 +1130,7 @@ func TestSpendKindFloorPlacesWhatNothingElseCould(t *testing.T) {
 		"T-FXFEE": {"BANK_FEES_FOREIGN_TRANSACTION_FEES", "model"},
 		// interest joins them, but only when it was CHARGED: the
 		// same macro is read at transaction grain, where credited
-		// interest reaches it and is income, not a fee (0067)
+		// interest reaches it and is income, not a fee (spend_kind_floor)
 		"T-MARGIN": {"BANK_FEES_INTEREST_CHARGE", "kind"},
 		"T-CREDIT": {"", "signature-only"},
 		// and the floor covers nothing beyond those three kinds

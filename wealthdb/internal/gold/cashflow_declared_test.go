@@ -53,12 +53,8 @@ func TestADeclaredAccountPlacesTheMoveByItsWrapper(t *testing.T) {
 		}
 		enrichtest.SeedSpend(t, db, far)
 		if r.kind == "deposit" {
-			if _, err := db.ExecContext(ctx, `
-                INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
-                        payer_signature, signature_version, income_detailed, provenance, assigned_at)
-                     VALUES ('cf', ?, 'sig', 1, 'internal_transfer', 'rule', 100)`, r.id); err != nil {
-				t.Fatalf("seed income overlay for %s: %v", r.id, err)
-			}
+			enrichtest.SeedIncome(t, db, enrichtest.Income{Source: "cf", Txn: r.id, Signature: "sig",
+				Detailed: "internal_transfer", Provenance: "rule"})
 		}
 	}
 	got := seedLines(t, db, ctx, nil)

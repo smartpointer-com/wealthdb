@@ -147,7 +147,7 @@ func TestTransferEntryToChange(t *testing.T) {
 	if ch.NetAmount == nil || ch.NetAmount.InexactFloat64() <= 0 {
 		t.Errorf("transfer_in net_amount should be positive, got %v", ch.NetAmount)
 	}
-	if !strings.HasPrefix(ch.TransactionExternalID, transferIDPrefix) {
+	if !strings.HasPrefix(ch.TransactionExternalID, canonical.LedgerTransferIDPrefix) {
 		t.Errorf("id %q lacks the ledger prefix", ch.TransactionExternalID)
 	}
 	if !strings.Contains(string(ch.Payload), `"cost_basis":50`) {
@@ -204,7 +204,7 @@ func TestApplyTransferLedger(t *testing.T) {
 	var cnt int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM transactions WHERE silver_source_id='brokerco' AND account_external_id='HASH1' AND transaction_external_id LIKE ?`,
-		transferIDPrefix+"%").Scan(&cnt); err != nil {
+		canonical.LedgerTransferIDPrefix+"%").Scan(&cnt); err != nil {
 		t.Fatal(err)
 	}
 	if cnt != 2 {
@@ -215,7 +215,7 @@ func TestApplyTransferLedger(t *testing.T) {
 	if _, err := applyTransferLedger(ctx, tx, "brokerco", entries); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM transactions WHERE transaction_external_id LIKE ?`, transferIDPrefix+"%").Scan(&cnt); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM transactions WHERE transaction_external_id LIKE ?`, canonical.LedgerTransferIDPrefix+"%").Scan(&cnt); err != nil {
 		t.Fatal(err)
 	}
 	if cnt != 2 {
@@ -233,7 +233,7 @@ func TestApplyTransferLedger(t *testing.T) {
 	if _, err := applyTransferLedger(ctx, tx, "brokerco", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM transactions WHERE transaction_external_id LIKE ?`, transferIDPrefix+"%").Scan(&cnt); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM transactions WHERE transaction_external_id LIKE ?`, canonical.LedgerTransferIDPrefix+"%").Scan(&cnt); err != nil {
 		t.Fatal(err)
 	}
 	if cnt != 0 {

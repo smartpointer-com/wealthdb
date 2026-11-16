@@ -53,8 +53,8 @@ func TestExposureDeclaredSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range classes {
-		if r.AssetClass == "infrastructure" && (math.Abs(parse(t, r.Value)-56) > 0.005 || r.Quality != "declared=100%") {
-			t.Errorf("infrastructure = %v %q", parse(t, r.Value), r.Quality)
+		if r.AssetClass == "infrastructure" && (math.Abs(num(t, r.Value)-56) > 0.005 || r.Quality != "declared=100%") {
+			t.Errorf("infrastructure = %v %q", num(t, r.Value), r.Quality)
 		}
 	}
 	// countries: a declared region is a row of its own under unknown.
@@ -65,7 +65,7 @@ func TestExposureDeclaredSplit(t *testing.T) {
 	byRegion := map[string]float64{}
 	for _, r := range countries {
 		if r.Country == "unknown" && r.Region != nil {
-			byRegion[*r.Region] = parse(t, r.Value)
+			byRegion[*r.Region] = num(t, r.Value)
 		}
 	}
 	if math.Abs(byRegion["north_america"]-110)+math.Abs(byRegion["europe"]-60)+math.Abs(byRegion["other"]-30) > 0.015 {
@@ -80,8 +80,8 @@ func TestExposureDeclaredSplit(t *testing.T) {
 	for _, r := range secs {
 		if strings.Contains(r.Security, "QPRV") {
 			n++
-			if r.Security != "holding:test-src:QPRV" || parse(t, r.Value) != 200 {
-				t.Errorf("QPRV security row = %s %v", r.Security, parse(t, r.Value))
+			if r.Security != "holding:test-src:QPRV" || num(t, r.Value) != 200 {
+				t.Errorf("QPRV security row = %s %v", r.Security, num(t, r.Value))
 			}
 		}
 	}
@@ -335,8 +335,8 @@ func TestExposureDeclaredCashAndCryptoParts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range secs {
-		if r.Security == "holding:test-src:PE1" && math.Abs(parse(t, r.Value)-80) > 1e-6 {
-			t.Errorf("PE1's row = %v, want all 80", parse(t, r.Value))
+		if r.Security == "holding:test-src:PE1" && math.Abs(num(t, r.Value)-80) > 1e-6 {
+			t.Errorf("PE1's row = %v, want all 80", num(t, r.Value))
 		}
 		if r.Security == "" || r.Security == "cash:" {
 			t.Errorf("a part with no currency made the row %q", r.Security)

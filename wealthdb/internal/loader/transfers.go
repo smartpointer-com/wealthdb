@@ -17,13 +17,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/ledgercsv"
 )
 
-// transferIDPrefix marks the synthetic transaction_external_id of every
-// ledger-sourced transaction, so a load can delete-and-reinsert a source's
-// ledger transfers idempotently (picking up edits) without disturbing the
-// adapter-emitted rows, and returns can tell a ledger leg from a collected
-// row.
-const transferIDPrefix = canonical.LedgerTransferIDPrefix
-
 // requiredTransferCols are the equity-transfer ledger CSV columns every
 // file must carry. Lookup is by header name, so the columns may come in
 // any order; `quantity`, `cost_basis`, `instrument`, `note`,
@@ -215,7 +208,7 @@ func (e TransferEntry) syntheticID() string {
 		e.SilverSourceID, e.Account, strconv.FormatInt(e.OccurredAt, 10),
 		e.Direction, e.Instrument, strconv.FormatFloat(e.Quantity, 'f', -1, 64),
 	}, "|")))
-	return transferIDPrefix + fmt.Sprintf("%x", h[:8])
+	return canonical.LedgerTransferIDPrefix + fmt.Sprintf("%x", h[:8])
 }
 
 func (e TransferEntry) payload() json.RawMessage {
@@ -237,7 +230,7 @@ func (e TransferEntry) payload() json.RawMessage {
 func applyTransferLedger(ctx context.Context, tx *sql.Tx, sourceID string, entries []TransferEntry) (int, error) {
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM transactions WHERE silver_source_id = ? AND transaction_external_id LIKE ?`,
-		sourceID, transferIDPrefix+"%"); err != nil {
+		sourceID, canonical.LedgerTransferIDPrefix+"%"); err != nil {
 		return 0, fmt.Errorf("apply equity_transfers: clear prior: %w", err)
 	}
 	if len(entries) == 0 {

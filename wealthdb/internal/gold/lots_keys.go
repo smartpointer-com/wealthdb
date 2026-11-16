@@ -57,9 +57,6 @@ func (f *lotFeed) readSources(ctx context.Context, db *sql.DB) error {
 	return rows.Err()
 }
 
-// inLotSources restricts col to the replayed sources; it binds f.ids.
-func inLotSources(col string) string { return col + " IN (SELECT unnest(?::VARCHAR[]))" }
-
 func (f *lotFeed) readPortfolios(ctx context.Context, db *sql.DB) error {
 	rows, err := db.QueryContext(ctx, `SELECT src, acct, pid FROM portfolio_acct_map()`)
 	if err != nil {
@@ -85,7 +82,7 @@ func (f *lotFeed) readClasses(ctx context.Context, db *sql.DB) error {
 SELECT silver_source_id, holding_key(instrument_external_id, position_key),
        COALESCE(bool_or(quantity < 0), FALSE) AS short,
        bool_or(NOT basis_applies(asset_class, vehicle)) AS no_basis
-  FROM positions WHERE `+inLotSources("silver_source_id")+` GROUP BY ALL`, f.ids)
+  FROM positions WHERE `+inBoundList("silver_source_id")+` GROUP BY ALL`, f.ids)
 	if err != nil {
 		return fmt.Errorf("lots: read classes: %w", err)
 	}

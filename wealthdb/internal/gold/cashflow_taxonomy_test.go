@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // The cash flow taxonomy pins: the five values exist in the dimension,
@@ -44,28 +45,28 @@ func seedCashflowTaxonomyFixture(t *testing.T, db *sql.DB, ctx context.Context) 
             ('cf-src', 'T-EDU-IN',    1000, 'CASH1', 'deposit',    'USD',  120),
             ('cf-src', 'T-HSA-IN',    1000, 'CASH1', 'deposit',    'USD',  130),
             ('cf-src', 'T-TRU-IN',    1000, 'CASH1', 'deposit',    'USD',  140);
-
-        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                                          merchant_signature, signature_version,
-                                          spend_detailed, provenance, assigned_at) VALUES
-            ('cf-src', 'T-BUY',      'sig-shop',  1, 'FOOD_AND_DRINK_GROCERIES', 'rule', 100),
-            ('cf-src', 'T-LOAN-OUT', 'sig-loan',  1, 'debt_repayment',           'rule', 100),
-            ('cf-src', 'T-RET-OUT',  'sig-plan',  1, 'retirement_transfer',      'rule', 100),
-            ('cf-src', 'T-EDU-OUT',  'sig-plan',  1, 'education_transfer',       'rule', 100),
-            ('cf-src', 'T-HSA-OUT',  'sig-plan',  1, 'health_transfer',          'rule', 100),
-            ('cf-src', 'T-TRU-OUT',  'sig-plan',  1, 'trust_transfer',           'rule', 100);
-
-        INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
-                                           payer_signature, signature_version,
-                                           income_detailed, provenance, assigned_at) VALUES
-            ('cf-src', 'T-PAID',   'sig-payer', 1, 'INCOME_SALARY',       'rule', 100),
-            ('cf-src', 'T-RET-IN', 'sig-plan',  1, 'retirement_transfer', 'rule', 100),
-            ('cf-src', 'T-EDU-IN', 'sig-plan',  1, 'education_transfer',  'rule', 100),
-            ('cf-src', 'T-HSA-IN', 'sig-plan',  1, 'health_transfer',     'rule', 100),
-            ('cf-src', 'T-TRU-IN', 'sig-plan',  1, 'trust_transfer',      'rule', 100);
     `); err != nil {
 		t.Fatalf("seed cashflow taxonomy fixture: %v", err)
 	}
+	spend := func(txn, sig, detailed string) enrichtest.Spend {
+		return enrichtest.Spend{Source: "cf-src", Txn: txn, Signature: sig, Detailed: detailed, Provenance: "rule"}
+	}
+	enrichtest.SeedSpend(t, db,
+		spend("T-BUY", "sig-shop", "FOOD_AND_DRINK_GROCERIES"),
+		spend("T-LOAN-OUT", "sig-loan", "debt_repayment"),
+		spend("T-RET-OUT", "sig-plan", "retirement_transfer"),
+		spend("T-EDU-OUT", "sig-plan", "education_transfer"),
+		spend("T-HSA-OUT", "sig-plan", "health_transfer"),
+		spend("T-TRU-OUT", "sig-plan", "trust_transfer"))
+	income := func(txn, sig, detailed string) enrichtest.Income {
+		return enrichtest.Income{Source: "cf-src", Txn: txn, Signature: sig, Detailed: detailed, Provenance: "rule"}
+	}
+	enrichtest.SeedIncome(t, db,
+		income("T-PAID", "sig-payer", "INCOME_SALARY"),
+		income("T-RET-IN", "sig-plan", "retirement_transfer"),
+		income("T-EDU-IN", "sig-plan", "education_transfer"),
+		income("T-HSA-IN", "sig-plan", "health_transfer"),
+		income("T-TRU-IN", "sig-plan", "trust_transfer"))
 }
 
 // TestCashflowDeltasLeaveBothBases pins what the five values do: the five

@@ -60,3 +60,11 @@ const (
 	PayloadPairSource      = "pair_silver_source_id"
 	PayloadPairTransaction = "pair_transaction_external_id"
 )
+
+// LedgerTransferIDPrefix starts the transaction id of every leg the
+// equity-transfer ledger asserts (docs/DESIGN.md §13.9): a hand-stated
+// row, no collected one. A load deletes and reinserts a source's ledger
+// rows by it without touching the adapter's rows, returns tells a ledger
+// leg from a collected row by it, and the enrichment pass bounds its
+// reads of the pair keys to such rows. Written by the loader.
+const LedgerTransferIDPrefix = "xfer:"

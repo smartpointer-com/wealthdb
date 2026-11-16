@@ -90,7 +90,7 @@ SELECT silver_source_id, account_external_id, lot_key(instrument_external_id, in
        CAST(epoch(realized_effective_date(disposal_date, settlement_date, tax_year)) AS BIGINT),
        CAST(quantity AS DOUBLE), CAST(book_value AS DOUBLE), CAST(epoch(acquisition_date) AS BIGINT)
   FROM realized_lots
- WHERE is_primary AND quantity <> 0 AND `+inLotSources("silver_source_id")+`
+ WHERE is_primary AND quantity <> 0 AND `+inBoundList("silver_source_id")+`
  ORDER BY 1, 2, 3, 4, acquisition_date, realized_lot_external_id`, f.ids)
 	if err != nil {
 		return nil, fmt.Errorf("lots: read realized lots: %w", err)
@@ -141,7 +141,7 @@ func statedLot(qty, cost float64, costKnown bool, acq sql.NullInt64) lots.Stated
 // statement names a security by CUSIP and the trades by ticker.
 func (f *lotFeed) lotAliases(ctx context.Context, db *sql.DB) (map[[2]string]string, error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT src, alias, k FROM instrument_aliases() WHERE `+inLotSources("src"), f.ids)
+SELECT src, alias, k FROM instrument_aliases() WHERE `+inBoundList("src"), f.ids)
 	if err != nil {
 		return nil, fmt.Errorf("lots: read instrument aliases: %w", err)
 	}
@@ -177,7 +177,7 @@ SELECT l.silver_source_id, l.snapshot_at, lot_obs_at(l.snapshot_at), l.account_e
   FROM position_lots l
   JOIN positions p ON p.silver_source_id = l.silver_source_id AND p.snapshot_at = l.snapshot_at
    AND p.account_external_id = l.account_external_id AND p.position_key = l.position_key
- WHERE `+inLotSources("l.silver_source_id")+`
+ WHERE `+inBoundList("l.silver_source_id")+`
  ORDER BY 1, 2, 4, 5, l.acquisition_date, l.lot_key`, f.ids)
 	if err != nil {
 		return fmt.Errorf("lots: read anchors: %w", err)

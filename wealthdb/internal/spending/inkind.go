@@ -17,8 +17,9 @@ const evidenceEquityLedger = "equity-ledger"
 // statedMoveLegs are the legs of the moves one equity-transfer ledger
 // row states, each with its partner. The loader names a leg's partner
 // in its payload; a leg whose partner gold does not hold, or does not
-// name it back, has no link. The `xfer:` prefix is the loader's mark of
-// a ledger row, and it bounds the payload reads to those rows.
+// name it back, has no link. canonical.LedgerTransferIDPrefix is the
+// loader's mark of a ledger row, and it bounds the payload reads to
+// those rows.
 const statedMoveLegs = `
     SELECT a.silver_source_id, a.transaction_external_id,
            b.silver_source_id AS far_silver_source_id,
@@ -28,8 +29,8 @@ const statedMoveLegs = `
       JOIN transactions b
         ON b.silver_source_id = json_extract_string(a.payload, '$.` + canonical.PayloadPairSource + `')
        AND b.transaction_external_id = json_extract_string(a.payload, '$.` + canonical.PayloadPairTransaction + `')
-     WHERE starts_with(a.transaction_external_id, 'xfer:')
-       AND starts_with(b.transaction_external_id, 'xfer:')
+     WHERE starts_with(a.transaction_external_id, '` + canonical.LedgerTransferIDPrefix + `')
+       AND starts_with(b.transaction_external_id, '` + canonical.LedgerTransferIDPrefix + `')
        AND json_extract_string(b.payload, '$.` + canonical.PayloadPairSource + `') = a.silver_source_id
        AND json_extract_string(b.payload, '$.` + canonical.PayloadPairTransaction + `') = a.transaction_external_id`
 

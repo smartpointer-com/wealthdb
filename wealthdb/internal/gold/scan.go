@@ -176,3 +176,7 @@ func nullDate(v sql.NullTime) *time.Time {
 	t := v.Time.UTC()
 	return &t
 }
+
+// inBoundList restricts col to the VARCHAR list its one placeholder
+// binds.
+func inBoundList(col string) string { return col + " IN (SELECT unnest(?::VARCHAR[]))" }

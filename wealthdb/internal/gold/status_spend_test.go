@@ -1,6 +1,10 @@
 package gold
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
+)
 
 func TestStatusSpendCounters(t *testing.T) {
 	t.Parallel()
@@ -30,20 +34,17 @@ func TestStatusSpendCounters(t *testing.T) {
             ('test-src', 'T-JRNL',   3000, 'CASH1', 'journal',    'USD', -35),
             ('test-src', 'T-OTHBRK', 3000, 'CUST1',  'other',      'USD', -40);
 
-        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                                          merchant_signature, signature_version,
-                                          spend_detailed, provenance, assigned_at) VALUES
-            ('test-src', 'T-WD',  'SIG A', 1, NULL, 'signature-only', 100),
-            ('test-src', 'T-BUY', 'SIG B', 1, 'FOOD_AND_DRINK_GROCERIES', 'provider', 100);
-
-        -- Since migration 0068 no account kind is out of scope, so the
-        -- out-of-scope account this test needs is made one the only way
-        -- there is.
+        -- Every account kind is in scope by default, so a scope row
+        -- excludes the account this test needs out of scope.
         INSERT INTO spend_account_scope (silver_source_id, account_external_id, mode)
              VALUES ('test-src', 'CUST1', 'exclude');
     `); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	enrichtest.SeedSpend(t, db,
+		enrichtest.Spend{Source: "test-src", Txn: "T-WD", Signature: "SIG A", Provenance: "signature-only"},
+		enrichtest.Spend{Source: "test-src", Txn: "T-BUY", Signature: "SIG B",
+			Detailed: "FOOD_AND_DRINK_GROCERIES", Provenance: "provider"})
 
 	st, err := StatusForSource(ctx, db, "test-src", true)
 	if err != nil {

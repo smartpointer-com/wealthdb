@@ -150,6 +150,8 @@ func enrichmentSnapshot(t *testing.T, db *sql.DB, ctx context.Context) []string 
 	return out
 }
 
+// runPass runs the deterministic pass with the test defaults, and holds
+// every pass to the links' symmetry (assertLinksSymmetric).
 func runPass(t *testing.T, db *sql.DB, ctx context.Context, opts Options) *Result {
 	t.Helper()
 	if opts.MatchWindowDays == 0 {
@@ -165,6 +167,7 @@ func runPass(t *testing.T, db *sql.DB, ctx context.Context, opts Options) *Resul
 	if err != nil {
 		t.Fatalf("RunDeterministicPass: %v", err)
 	}
+	assertLinksSymmetric(t, db)
 	return res
 }
 

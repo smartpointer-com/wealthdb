@@ -197,12 +197,12 @@ WITH s AS (
            t.currency, CAST(epoch_ms(t.occurred_at * 1000) AS DATE) AS day,
            abs(CAST(t.quantity AS DOUBLE)) AS qty, CAST(t.net_amount AS DOUBLE) AS net
       FROM transactions t
-     WHERE t.kind = 'sell' AND t.net_amount IS NOT NULL AND `+inLotSources("t.silver_source_id")+`
+     WHERE t.kind = 'sell' AND t.net_amount IS NOT NULL AND `+inBoundList("t.silver_source_id")+`
        AND (t.instrument_external_id IS NOT NULL OR t.instrument_hint IS NOT NULL)),
 fees AS (
     SELECT silver_source_id AS src, json_extract_string(payload, '$.`+canonical.PayloadFeeFor+`') AS txn, SUM(CAST(net_amount AS DOUBLE)) AS fee
       FROM transactions
-     WHERE kind = 'fee' AND json_extract_string(payload, '$.`+canonical.PayloadFeeFor+`') IS NOT NULL AND `+inLotSources("silver_source_id")+`
+     WHERE kind = 'fee' AND json_extract_string(payload, '$.`+canonical.PayloadFeeFor+`') IS NOT NULL AND `+inBoundList("silver_source_id")+`
      GROUP BY ALL),
 p AS (
     SELECT s.src, s.txn, CAST(p.quantity AS DOUBLE) AS quantity, p.book_value, p.basis_origin, p.basis_method,
@@ -236,7 +236,7 @@ SELECT src, txn || '#stated', acct, instrument_external_id,
 	}
 	rows, err := w.tx.QueryContext(ctx, `
 SELECT silver_source_id, count(*) FROM lot_realized
- WHERE realized_lot_external_id LIKE '%#stated' AND `+inLotSources("silver_source_id")+` GROUP BY 1`, w.f.stated)
+ WHERE realized_lot_external_id LIKE '%#stated' AND `+inBoundList("silver_source_id")+` GROUP BY 1`, w.f.stated)
 	if err != nil {
 		return fmt.Errorf("lots: stated: %w", err)
 	}

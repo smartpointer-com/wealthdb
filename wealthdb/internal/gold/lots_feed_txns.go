@@ -54,7 +54,7 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
        CASE WHEN json_extract_string(payload, '$.`+canonical.PayloadEquityTransferLedger+`') = 'true'
             THEN COALESCE(TRY_CAST(json_extract_string(payload, '$.`+canonical.PayloadCostBasis+`') AS DOUBLE), 0) ELSE 0 END
   FROM transactions
- WHERE `+inLotSources("silver_source_id")+`
+ WHERE `+inBoundList("silver_source_id")+`
    AND (instrument_external_id IS NOT NULL OR instrument_hint IS NOT NULL)
  ORDER BY occurred_at, silver_source_id, transaction_external_id`, f.ids)
 	if err != nil {
@@ -144,7 +144,7 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
 // (documented_txns, the test the gains reports apply): the engine's
 // realized lots for them are not primary, so no sale counts twice.
 func (f *lotFeed) readDocumented(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `SELECT src, txn FROM documented_txns() WHERE `+inLotSources("src"), f.ids)
+	rows, err := db.QueryContext(ctx, `SELECT src, txn FROM documented_txns() WHERE `+inBoundList("src"), f.ids)
 	if err != nil {
 		return fmt.Errorf("lots: read documented sales: %w", err)
 	}

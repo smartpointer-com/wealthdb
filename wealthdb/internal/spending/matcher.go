@@ -12,9 +12,10 @@ import (
 // deposit on the receiving one — and left unpaired, the outgoing leg reads
 // as spending.
 //
-// The pass stores its pairs in transfer_links, which every family reads,
-// returns included. What this caller decides, each argued in
-// docs/SPENDING.md §3 ("The matcher"):
+// The pass stores its pairs in transfer_links, which every family reads.
+// Returns reads them only when wealthdb.cfg sets
+// returns_transfer_matching.enabled (gold.TransferMatching). What this
+// caller decides, each argued in docs/SPENDING.md §3 ("The matcher"):
 //
 //   - legs pair across sources and inside one;
 //   - a leg no cross-account phase paired pairs with its reversal on its
@@ -109,8 +110,6 @@ func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct fl
 const (
 	evidenceStatedAccount = "stated-account"
 	evidenceRule          = "rule"
-	// measureCash is a link's measure for a movement of money.
-	measureCash = "cash"
 )
 
 // phaseEvidence is the evidence each matcher phase writes, and

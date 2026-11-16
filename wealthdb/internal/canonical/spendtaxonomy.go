@@ -185,7 +185,7 @@ var categoryRoles = map[string]CategoryRoles{
 // none.
 func (c SpendCategory) Roles() CategoryRoles {
 	r := categoryRoles[c.Detailed]
-	if c.Primary == bankFeesPrimary {
+	if c.Primary == BankFeesPrimary {
 		r.FlowClassOut = ClassFees
 		if r.FeeGroup == "" {
 			r.FeeGroup = FeeGroupOther
@@ -194,9 +194,9 @@ func (c SpendCategory) Roles() CategoryRoles {
 	return r
 }
 
-// bankFeesPrimary is the primary whose values the cash flow statement
-// draws as fees.
-const bankFeesPrimary = "BANK_FEES"
+// BankFeesPrimary is the primary whose values the cash flow statement
+// draws as fees, and the fee view reads.
+const BankFeesPrimary = "BANK_FEES"
 
 // The spending delta values. A rule, a pin, the internal-transfer
 // matcher or the provider tier — where the provider's own booking type

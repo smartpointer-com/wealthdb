@@ -3,12 +3,16 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"maps"
 	"math"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // seedFeeLine books one spending line of a BANK_FEES detailed value.
@@ -20,13 +24,8 @@ func seedFeeLine(t *testing.T, db *sql.DB, ctx context.Context, src, id, acct, k
         VALUES (?, ?, ?, ?, ?, 'USD', CAST(? AS DECIMAL(28,4)), 'FEE')`, src, id, at, acct, kind, net); err != nil {
 		t.Fatalf("seed transaction %s: %v", id, err)
 	}
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                                          merchant_signature, signature_version,
-                                          spend_detailed, provenance, assigned_at)
-        VALUES (?, ?, 'sig-fee', 1, ?, 'manual', 100)`, src, id, detailed); err != nil {
-		t.Fatalf("seed enrichment %s: %v", id, err)
-	}
+	enrichtest.SeedSpend(t, db, enrichtest.Spend{Source: src, Txn: id, Signature: "sig-fee",
+		Detailed: detailed, Provenance: "manual"})
 }
 
 // seedFeeHousehold holds, over 2024, all invented:
@@ -196,7 +195,7 @@ func TestFeesSumToTheSpendingReport(t *testing.T) {
 		}
 		var report int64
 		for _, c := range cats {
-			if c.Category == "BANK_FEES" {
+			if c.Category == canonical.BankFeesPrimary {
 				report = cents(t, c.NetSpend)
 			}
 		}
@@ -338,37 +337,43 @@ func TestWebFeesHoldsTheCLIsFigures(t *testing.T) {
 	}
 }
 
-// TestFeeGroupsAreTheSQLLabels: fee_group (migration 0177) gives every
-// BANK_FEES detailed value of the taxonomy one of feeGroups, and every group
-// is reached.
+// TestFeeGroupsAreTheSQLLabels holds the fee SQL to canonical's fee
+// vocabulary. fee_group (derived/40_flows.sql) gives every value of
+// canonical.BankFeesPrimary one of the canonical.FeeGroup* groups and
+// reaches each, its labels are those groups, and web_fees
+// (derived/90_web.sql) picks its lines by the primary's spelling.
 func TestFeeGroupsAreTheSQLLabels(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
+	want := map[string]bool{canonical.FeeGroupInvestment: true, canonical.FeeGroupBank: true,
+		canonical.FeeGroupATM: true, canonical.FeeGroupOther: true}
 	got := map[string]bool{}
-	seen := 0
-	for _, c := range append(canonical.ModelSpendCategories(), canonical.DeltaSpendCategories()...) {
-		if c.Primary != "BANK_FEES" {
+	for _, c := range canonical.SpendCategories {
+		if c.Primary != canonical.BankFeesPrimary {
 			continue
 		}
-		seen++
 		var g string
 		if err := db.QueryRowContext(ctx, `SELECT fee_group(?)`, c.Detailed).Scan(&g); err != nil {
 			t.Fatalf("fee_group(%s): %v", c.Detailed, err)
 		}
 		got[g] = true
 	}
-	if seen == 0 {
-		t.Fatal("the taxonomy has no BANK_FEES value")
+	if !maps.Equal(got, want) {
+		t.Errorf("fee_group gives %v over the %s values, want %v", got, canonical.BankFeesPrimary, want)
 	}
-	if want := feeGroups; len(got) != len(want) || !func() bool {
-		for _, g := range want {
-			if !got[g] {
-				return false
-			}
-		}
-		return true
-	}() {
-		t.Errorf("fee_group gives %v, feeGroups is %v", got, want)
+	stmts := map[string]string{}
+	for _, st := range mustDerived(t).stmts {
+		stmts[st.name] = st.sql
+	}
+	labels := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?:THEN|ELSE) '(\w+)'`).FindAllStringSubmatch(stmts["fee_group"], -1) {
+		labels[m[1]] = true
+	}
+	if !maps.Equal(labels, want) {
+		t.Errorf("fee_group's labels are %v, want %v", labels, want)
+	}
+	if pick := "t.spend_primary = '" + canonical.BankFeesPrimary + "'"; !strings.Contains(stmts["web_fees"], pick) {
+		t.Errorf("web_fees does not pick its lines by %q", pick)
 	}
 }
 

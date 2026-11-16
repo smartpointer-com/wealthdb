@@ -68,9 +68,9 @@ type pinSet struct {
 	pins []SignedKindPin
 }
 
-// add pins kinds of silverKind. A kind outside those cash flow
-// excludes for want of a sign panics: a pin on any other kind would move
-// its rows ahead of every verdict. So does a pin made twice. Both are
+// add pins kinds of silverKind. A kind cash flow does not exclude for
+// want of a sign (TxKindRow.Unsigned) panics: a pin on it would move its
+// rows ahead of every verdict. So does a pin made twice. Both are
 // build-time mistakes in a source's registration.
 func (s *pinSet) add(silverKind string, kinds ...TxKind) {
 	s.mu.Lock()

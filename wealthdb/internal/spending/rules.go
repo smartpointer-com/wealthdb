@@ -229,7 +229,7 @@ var cashWithdrawalRule = spendRule{
 // bankFeeValues is every value under the BANK_FEES primary, read off the
 // taxonomy rather than listed, so a fee the table gains is one the rules
 // yield to with no edit here.
-var bankFeeValues = valuesUnderPrimary("BANK_FEES")
+var bankFeeValues = valuesUnderPrimary(canonical.BankFeesPrimary)
 
 // debtPaymentValues are the deltas a provider map places for a payment
 // on a debt: a card bill, a loan instalment, a mortgage instalment.

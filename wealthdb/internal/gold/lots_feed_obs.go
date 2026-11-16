@@ -72,7 +72,7 @@ func (f *lotFeed) readPositions(ctx context.Context, db *sql.DB) error {
 SELECT silver_source_id, snapshot_at, lot_obs_at(snapshot_at), account_external_id, position_key,
        holding_key(instrument_external_id, position_key), instrument_external_id IS NULL, currency,
        COALESCE(CAST(quantity AS DOUBLE), 0), stated_basis(book_value, basis_origin)
-  FROM positions WHERE `+inLotSources("silver_source_id")+`
+  FROM positions WHERE `+inBoundList("silver_source_id")+`
  ORDER BY silver_source_id, snapshot_at, account_external_id, position_key`, f.ids)
 	if err != nil {
 		return fmt.Errorf("lots: read positions: %w", err)

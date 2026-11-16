@@ -62,17 +62,15 @@ type enrichmentRow struct {
 	// writes to the overlay (writeTransferLinks).
 	//
 	// farSource and farAccount identify the account on the OTHER side
-	// of an own-account move: the matcher's partner leg, and the one
-	// thing the matcher has always known and never written down. They
-	// are a record of what was SEEN rather than a verdict, so they stay
-	// on a row a later tier re-categorises — nothing reads them unless
-	// the surviving verdict says the money stayed the holder's.
+	// of an own-account move: the matcher's partner leg, or the account
+	// a rule or the source names. They record what was SEEN, not a
+	// verdict, so they stay on a row a later tier re-categorises.
 	farSource, farAccount string
 	// statedAssetClass is what the holder said the capital went INTO,
 	// carried beside an investing verdict by a config rule or a pin
-	// (migration 0102). Like merchantLabel it describes
-	// the VERDICT rather than the row, so it travels with the verdict:
-	// written by the tier that placed one, cleared when the matcher
+	// (migration 0102). Like merchantLabel it describes the VERDICT
+	// rather than the row, so it travels with the verdict: written by
+	// the tier that placed one, cleared when the matcher
 	// replaces the verdict with `internal_transfer` — an exposure on an
 	// own-account move means nothing — and replaced, with a value or
 	// with nothing, by a pin above a rule.
@@ -410,7 +408,7 @@ func writeTransferLinks(ctx context.Context, tx *sql.Tx, rows []enrichmentRow, p
 			return append(args, r.key.source, r.key.txID,
 				nullableString(r.farSource), nullableString(r.farAccount),
 				nullableString(r.farTxID),
-				evidence, measureCash)
+				evidence, gold.LinkMeasureCash)
 		})
 }
 

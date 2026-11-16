@@ -11,10 +11,14 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
-// LinkMeasureInKind is the measure of a transfer_links row that links
-// two legs of a move of securities. The lot feed pairs on such links
-// first (pairTransfers).
-const LinkMeasureInKind = "in_kind"
+// The measures of a transfer_links row. LinkMeasureCash links a
+// movement of money. LinkMeasureInKind links the two legs of a move of
+// securities, and the lot feed pairs on such links first
+// (pairTransfers).
+const (
+	LinkMeasureCash   = "cash"
+	LinkMeasureInKind = "in_kind"
+)
 
 // lotLeg is one leg of a transfer, before pairing.
 type lotLeg struct {
@@ -52,7 +56,7 @@ func (f *lotFeed) readLinks(ctx context.Context, db *sql.DB) error {
 SELECT silver_source_id, transaction_external_id, far_silver_source_id, far_transaction_external_id
   FROM transfer_links
  WHERE measure = ? AND far_transaction_external_id IS NOT NULL
-   AND `+inLotSources("silver_source_id"), LinkMeasureInKind, f.ids)
+   AND `+inBoundList("silver_source_id"), LinkMeasureInKind, f.ids)
 	if err != nil {
 		return fmt.Errorf("lots: read links: %w", err)
 	}

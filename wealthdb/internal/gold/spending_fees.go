@@ -80,10 +80,6 @@ type feeEntity struct {
 	spans                []*accountData
 }
 
-// feeGroups are the detailed groups of fee_group, in
-// column order. A test holds the two to one set.
-var feeGroups = []string{"investment", "bank", "atm", "other"}
-
 // feeLine is one spending line of primary BANK_FEES.
 type feeLine struct {
 	src, acct, portfolio, label string
@@ -102,7 +98,7 @@ func loadFeeLines(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, out
 		  FROM report_spending_transactions(?, ?, ?) t
 		  LEFT JOIN accounts a ON a.silver_source_id = t.silver_source_id
 		       AND a.account_external_id = t.account_external_id
-		 WHERE t.spend_primary = 'BANK_FEES'`, fromEpoch, toEpoch, outCcy)
+		 WHERE t.spend_primary = ?`, fromEpoch, toEpoch, outCcy, canonical.BankFeesPrimary)
 	if err != nil {
 		return nil, fmt.Errorf("fee lines: %w", err)
 	}
@@ -180,7 +176,7 @@ func computeFees(ds *returnsDataset, lines []feeLine, portfolioNames map[string]
 		}
 		rows := make([]FeeRow, 0, len(entities))
 		for _, e := range entities {
-			rows = append(rows, e.row(b, months[acctKey(e.src, e.kind+"\x00"+e.id)]))
+			rows = append(rows, e.row(b, months[feeKey(e.src, e.kind, e.id)]))
 		}
 		slices.SortFunc(rows, func(x, y FeeRow) int {
 			if c := compareCost(y, x); c != 0 {
@@ -218,11 +214,16 @@ func compareCost(x, y FeeRow) int {
 	return 0
 }
 
+// feeKey keys a fee entity by its source, its kind (a grain's entity
+// word) and its id. A line, an entity and a monthly return row must key
+// alike, or the entity gets no monthly rows.
+func feeKey(src, kind, id string) string { return acctKey(src, acctKey(kind, id)) }
+
 func (l feeLine) entityKey() string {
 	if l.portfolio != "" {
-		return acctKey(l.src, "portfolio\x00"+l.portfolio)
+		return feeKey(l.src, grainPortfolios.entity, l.portfolio)
 	}
-	return acctKey(l.src, "account\x00"+l.acct)
+	return feeKey(l.src, grainAccounts.entity, l.acct)
 }
 
 // newEntity is the line's entity, with the accounts whose value it holds: every
@@ -230,9 +231,9 @@ func (l feeLine) entityKey() string {
 // cards are left out, as its return leaves them out; an account that is a card
 // or a mortgage holds its own balance.
 func (l feeLine) newEntity(portfolioNames map[string]string, ds *returnsDataset) *feeEntity {
-	e := &feeEntity{src: l.src, kind: "account", id: l.acct, label: l.label, fees: map[string]float64{}}
+	e := &feeEntity{src: l.src, kind: grainAccounts.entity, id: l.acct, label: l.label, fees: map[string]float64{}}
 	if l.portfolio != "" {
-		e.kind, e.id, e.label = "portfolio", l.portfolio, l.portfolio
+		e.kind, e.id, e.label = grainPortfolios.entity, l.portfolio, l.portfolio
 		if n, ok := portfolioNames[acctKey(l.src, l.portfolio)]; ok {
 			e.label = n
 		}
@@ -262,7 +263,7 @@ func feeMonths(ds *returnsDataset, p ReturnParams) map[string][]ReturnRow {
 		w.Method = "twr"
 		for _, r := range computeReturns(ds, w) {
 			if !r.IsSummary {
-				key := acctKey(r.SilverSourceID, g.entity+"\x00"+r.EntityID)
+				key := feeKey(r.SilverSourceID, g.entity, r.EntityID)
 				out[key] = append(out[key], r)
 			}
 		}
@@ -325,8 +326,10 @@ func (e *feeEntity) row(b feeBucket, months []ReturnRow) FeeRow {
 		total += e.fees[g]
 	}
 	r.Fees = decStr(total)
-	r.FeesInvestment, r.FeesBank = decStr(e.fees["investment"]), decStr(e.fees["bank"])
-	r.FeesATM, r.FeesOther = decStr(e.fees["atm"]), decStr(e.fees["other"])
+	r.FeesInvestment = decStr(e.fees[canonical.FeeGroupInvestment])
+	r.FeesBank = decStr(e.fees[canonical.FeeGroupBank])
+	r.FeesATM = decStr(e.fees[canonical.FeeGroupATM])
+	r.FeesOther = decStr(e.fees[canonical.FeeGroupOther])
 	mean, days := e.meanValue(b)
 	if days > 0 {
 		r.MeanValue = decStr(mean)

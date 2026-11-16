@@ -410,8 +410,7 @@ swiss/I-PIN sig="LOOKS INTERNAL" v13 cat=internal_transfer via=matcher label=(nu
 // income fixture, which reaches every road a link has but the ledger,
 // the reference, the described counter leg and the name
 // (TestTransferLinksCarryTheAssertedRoads): a pair on amount, a
-// reversal, a stated counter account, a far rule in both directions and
-// the mortgage rule's class.
+// reversal, a stated counter account and a far rule in both directions.
 func TestTransferLinksAreFrozen(t *testing.T) {
 	db, ctx := openGold(t)
 	runPass(t, db, ctx, seedFrozenIncomeFixture(t, db, ctx))
@@ -433,16 +432,17 @@ swiss/I-MATCH-IN far=bank/CASH1 tx=I-MATCH-OUT by=amount measure=cash
 swiss/I-PIN far=bank/CASH1 tx=I-PIN-PAIR by=amount measure=cash
 `
 
-// assertLinksAreTheOverlay holds transfer_links to the spending overlay
-// rows they are written from: every link is the far side of a row the
-// pass wrote there.
+// assertLinksAreTheOverlay holds transfer_links to the spending overlay:
+// every cash link is the far side of a row the pass wrote there. The
+// in-kind ledger links are writeStatedMoveLinks', and a stated leg the
+// matcher never paired has no overlay row.
 func assertLinksAreTheOverlay(t *testing.T, db *sql.DB) {
 	t.Helper()
 	orphans := scanPairs(t, db, `
         SELECT l.silver_source_id || '/' || l.transaction_external_id, l.evidence
           FROM transfer_links l
           LEFT JOIN spend_txn_enrichment e USING (silver_source_id, transaction_external_id)
-         WHERE e.silver_source_id IS NULL`)
+         WHERE l.measure = ? AND e.silver_source_id IS NULL`, gold.LinkMeasureCash)
 	if len(orphans) > 0 {
 		t.Errorf("links with no spending row: %v", orphans)
 	}

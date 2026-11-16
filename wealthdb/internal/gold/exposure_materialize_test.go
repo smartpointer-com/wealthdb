@@ -160,7 +160,7 @@ func checkMaterializedInstant(t *testing.T, ctx context.Context, db *sql.DB, at 
 		}
 		return
 	}
-	if want := parse(t, g.TotalValueOutCcy); math.Abs(total.Float64-want) > 0.01 {
+	if want := num(t, g.TotalValueOutCcy); math.Abs(total.Float64-want) > 0.01 {
 		t.Errorf("%s at %d: materialized %.4f, holdings global %.4f", ccy, at, total.Float64, want)
 	}
 	sizes, err := ExposureSizes(ctx, db, at, ccy)
@@ -174,7 +174,7 @@ func checkMaterializedInstant(t *testing.T, ctx context.Context, db *sql.DB, at 
 			ccy, at, r.AssetClass, r.Size).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
-		if want := parse(t, r.Value); math.Abs(v-want) > 0.01 {
+		if want := num(t, r.Value); math.Abs(v-want) > 0.01 {
 			t.Errorf("%s %s %s at %d: materialized %.4f, sizes view %.4f", ccy, r.AssetClass, r.Size, at, v, want)
 		}
 	}
@@ -189,7 +189,7 @@ func checkMaterializedInstant(t *testing.T, ctx context.Context, db *sql.DB, at 
 			ccy, at, r.Situs).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
-		if want := parse(t, r.Value); math.Abs(v-want) > 0.01 {
+		if want := num(t, r.Value); math.Abs(v-want) > 0.01 {
 			t.Errorf("%s situs %s at %d: materialized %.4f, situs view %.4f", ccy, r.Situs, at, v, want)
 		}
 	}
@@ -208,7 +208,7 @@ func checkMaterializedWrappers(t *testing.T, ctx context.Context, db *sql.DB, at
 	want := map[string]float64{}
 	for _, a := range accounts {
 		if a.TotalValueOutCcy != nil {
-			want[*a.TaxWrapper] += parse(t, a.TotalValueOutCcy)
+			want[*a.TaxWrapper] += num(t, a.TotalValueOutCcy)
 		}
 	}
 	var unwrapped bool
@@ -319,7 +319,7 @@ func checkMaterializedSecurities(t *testing.T, ctx context.Context, db *sql.DB, 
 		t.Fatal(err)
 	}
 	slices.SortStableFunc(rows, func(a, b ExposureSecurityRow) int {
-		va, vb := math.Round(math.Abs(parse(t, a.Value))*1e4), math.Round(math.Abs(parse(t, b.Value))*1e4)
+		va, vb := math.Round(math.Abs(num(t, a.Value))*1e4), math.Round(math.Abs(num(t, b.Value))*1e4)
 		if va != vb {
 			return cmp.Compare(vb, va)
 		}
@@ -335,7 +335,7 @@ func checkMaterializedSecurities(t *testing.T, ctx context.Context, db *sql.DB, 
 		if s == nil {
 			return "-"
 		}
-		return strconv.FormatFloat(parse(t, s), 'f', prec, 64)
+		return strconv.FormatFloat(num(t, s), 'f', prec, 64)
 	}
 	var want []string
 	for _, r := range rows {

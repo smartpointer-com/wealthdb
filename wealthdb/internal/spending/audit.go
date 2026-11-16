@@ -174,7 +174,9 @@ func TransferLinksStored(ctx context.Context, db querier) (bool, error) {
 	return found, rows.Err()
 }
 
-// readLinkedPairs reads the stored pairs, sorted (sortPairs).
+// readLinkedPairs reads the stored pairs, sorted (sortPairs). Only cash
+// links are pairs a matcher phase formed: an in-kind link is a move one
+// equity-transfer ledger row states (writeStatedMoveLinks).
 func readLinkedPairs(ctx context.Context, db querier, inPopulation map[txKey]bool) ([]Pair, error) {
 	// One row per pair: the leg that sent the money, joined to its
 	// partner. A pair is one debit and one credit (gold.TransferLeg.Amt),
@@ -189,7 +191,8 @@ func readLinkedPairs(ctx context.Context, db querier, inPopulation map[txKey]boo
             ON c.silver_source_id        = l.far_silver_source_id
            AND c.transaction_external_id = l.far_transaction_external_id
          WHERE l.far_transaction_external_id IS NOT NULL
-           AND CAST(d.net_amount AS DOUBLE) < 0`)
+           AND l.measure = ?
+           AND CAST(d.net_amount AS DOUBLE) < 0`, gold.LinkMeasureCash)
 	if err != nil {
 		return nil, fmt.Errorf("spending: read transfer links: %w", err)
 	}

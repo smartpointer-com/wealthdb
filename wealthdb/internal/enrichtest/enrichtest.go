@@ -26,8 +26,9 @@ type Spend struct {
 	Detailed, Provenance   string
 	Label, Provider        string
 	Stated                 string // stated_asset_class
-	// The far side of the move, where the pass knows it: a link with
-	// evidence `rule`, or FarEvidence, and the partner leg FarTxn.
+	// The far side of the move, where the pass knows it: a cash link
+	// (gold.LinkMeasureCash) with evidence `rule`, or FarEvidence, and
+	// the partner leg FarTxn.
 	FarSource, FarAccount, FarTxn, FarEvidence string
 	At                                         int64
 }

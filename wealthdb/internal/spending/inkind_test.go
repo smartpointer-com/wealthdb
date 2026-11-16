@@ -2,6 +2,7 @@ package spending
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -83,7 +84,39 @@ func TestStatedMoveLegsLinkEachOther(t *testing.T) {
           FROM transfer_links WHERE starts_with(transaction_external_id, 'xfer:')`); len(again) != 2 {
 		t.Errorf("second pass links %v", again)
 	}
-	assertLinksSymmetric(t, db)
+}
+
+// A stated move in kind is no cash pair: the audit lists it neither as
+// a pair a matcher phase formed nor as an unpaired leg, and the load's
+// far-account counter leaves its links out.
+func TestStatedMoveLegsAreNoCashPair(t *testing.T) {
+	db, ctx := openGold(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
+                                  instrument_external_id, kind, currency, quantity, net_amount, payload) VALUES
+            ('bank', 'xfer:out', ?, 'BRK1', 'VTI', 'transfer_out', 'USD', -10, -900,
+             '{"equity_transfer_ledger":true,"pair_silver_source_id":"other-bank","pair_transaction_external_id":"xfer:in"}'),
+            ('other-bank', 'xfer:in', ?, 'CUST2', 'VTI', 'transfer_in', 'USD', 10, 900,
+             '{"equity_transfer_ledger":true,"pair_silver_source_id":"bank","pair_transaction_external_id":"xfer:out"}')`,
+		day(10), day(10)); err != nil {
+		t.Fatal(err)
+	}
+	res := runPass(t, db, ctx, Options{})
+	if res.Cashflow.FarAccounts != 0 {
+		t.Errorf("FarAccounts = %d, want 0: an in-kind link is no cash move", res.Cashflow.FarAccounts)
+	}
+	pairs, unmatched, err := MatchedPairs(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pairs) != 0 {
+		t.Errorf("pairs %+v, want none: the ledger states the move, no matcher phase formed it", pairs)
+	}
+	for _, l := range unmatched {
+		if strings.HasPrefix(l.TxID, "xfer:") {
+			t.Errorf("stated leg %s/%s listed as unpaired", l.Source, l.TxID)
+		}
+	}
 }
 
 // Where the matcher paired a stated leg with a third leg, the ledger's
@@ -124,5 +157,4 @@ func TestAStatedPairUnpairsTheMatchersThirdLeg(t *testing.T) {
 	if len(got) != len(want) || got["bank/xfer:out"] != want["bank/xfer:out"] || got["other-bank/xfer:in"] != want["other-bank/xfer:in"] {
 		t.Errorf("links %v, want %v", got, want)
 	}
-	assertLinksSymmetric(t, db)
 }

@@ -272,9 +272,8 @@ func (p *Projection) Rate(ccy string, m int, path Path) float64 {
 
 // projector builds the projection of one set of inputs.
 type projector struct {
-	in       *Inputs
-	out      *Projection
-	measures map[HoldingKey]*Measures
+	in  *Inputs
+	out *Projection
 	// cash is each account's cash line per currency, for the cash rule.
 	cash map[AccountCurrency]Holding
 }
@@ -292,7 +291,7 @@ func (pj *projector) monthOf(d time.Time) int {
 func project(in *Inputs, measures map[HoldingKey]*Measures) *Projection {
 	out := &Projection{Start: monthStart(in.Day), From: in.Day.AddDate(0, 0, 1), Withholding: map[HoldingKey]float64{},
 		Currency: map[HoldingKey]string{}, FX: map[HoldingKey]float64{}}
-	pj := &projector{in: in, out: out, measures: measures, cash: map[AccountCurrency]Holding{}}
+	pj := &projector{in: in, out: out, cash: map[AccountCurrency]Holding{}}
 	for _, h := range in.Holdings {
 		if h.IsCash {
 			pj.cash[AccountCurrency{AccountKey{h.Source, h.Account}, h.Currency}] = h

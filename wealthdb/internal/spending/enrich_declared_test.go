@@ -48,10 +48,10 @@ func TestPassRuleNamesADeclaredAccount(t *testing.T) {
 	if d, p := verdictOf(t, db, ctx, "bank", "T-OUT"); d != canonical.SpendDetailedInternalTransfer || p != ProvenanceRule {
 		t.Errorf("T-OUT = (%q, %q)", d, p)
 	}
-	// The inbound leg: the income overlay carries the verdict, the
-	// spending overlay the far account.
+	// The inbound leg: the income overlay carries the verdict,
+	// transfer_links the far account.
 	if s, a := farOf(t, db, ctx, "bank", "T-IN"); s != canonical.DeclaredSourceID || a != "savings-bank" {
-		t.Errorf("T-IN far = (%q, %q), want the declared account on the spending overlay", s, a)
+		t.Errorf("T-IN far = (%q, %q), want the declared account linked", s, a)
 	}
 	var incomeDetailed, incomeProv string
 	if err := db.QueryRowContext(ctx, `

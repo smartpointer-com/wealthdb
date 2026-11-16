@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -304,18 +303,6 @@ func openExposureFixture(t *testing.T) (*sql.DB, context.Context) {
 	return db, context.Background()
 }
 
-func parse(t *testing.T, s *string) float64 {
-	t.Helper()
-	if s == nil {
-		return math.NaN()
-	}
-	v, err := strconv.ParseFloat(*s, 64)
-	if err != nil {
-		t.Fatalf("parse %q: %v", *s, err)
-	}
-	return v
-}
-
 // The invariant: every view sums to `holdings global`, in every output
 // currency.
 func TestExposureViewsSumToHoldingsGlobal(t *testing.T) {
@@ -326,7 +313,7 @@ func TestExposureViewsSumToHoldingsGlobal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := parse(t, g.TotalValueOutCcy)
+		want := num(t, g.TotalValueOutCcy)
 		sum := func(name string, err error, n int, value func(i int) *string) {
 			t.Helper()
 			if err != nil {
@@ -334,7 +321,7 @@ func TestExposureViewsSumToHoldingsGlobal(t *testing.T) {
 			}
 			total := 0.0
 			for i := range n {
-				total += parse(t, value(i))
+				total += num(t, value(i))
 			}
 			if math.Abs(total-want) > 0.01 {
 				t.Errorf("%s %s sums to %.4f, holdings global is %.4f", ccy, name, total, want)

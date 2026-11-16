@@ -166,17 +166,16 @@ CREATE MACRO spend_period_bucket(p_period, p_at) AS (
 --   * spend_scoped_accounts(), spend_enrichment_population() and
 --     spending_lines_base() keep their own scope. The pool adds
 --     candidates for PAIRING; it adds nothing to what a report charts.
---   * The eligible KIND set is `deposit`, `withdrawal`,
---     `card_payment`, `transfer_in`, `transfer_out`. Those are exactly
---     the kinds that mean "cash moved into or out of an account" AND
---     carry a pinned canonical sign (internal/canonical/sign.go), so
---     every leg can be oriented as debit or credit. `journal` and
---     `other` are catch-alls whose sign is whatever the source
---     supplied and whose meaning is "a bookkeeping entry"; `fx*` and
---     `corporate_action` are unsigned for the same reason;
---     `contribution` and `distribution` are booked from the funding
---     account's own perspective, so neither can ever be the RECEIVING
---     half of a movement out of it. Admitting any of them buys false
+--   * The eligible kinds are the matcher_pool role (txn_kind_roles,
+--     kind_in_matcher_pool): the kinds that mean "cash moved into or
+--     out of an account" AND carry a pinned canonical sign
+--     (internal/canonical/sign.go), so every leg can be oriented as
+--     debit or credit. `journal` and `other` are catch-alls whose sign
+--     is whatever the source supplied and whose meaning is "a
+--     bookkeeping entry"; `fx*` and `corporate_action` are unsigned for
+--     the same reason; `contribution` and `distribution` are booked
+--     from the funding account's own perspective, so neither can ever
+--     be the RECEIVING half of a movement out of it. Admitting any of them buys false
 --     pairs, and a false pair does not surface as a wrong category —
 --     it silently deletes a real spending line.
 --
@@ -1471,26 +1470,26 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
           FROM joined j
     ),
     -- THE ORDERED FAR-ACCOUNT TEST (docs/CASHFLOW.md §4). First match
-    -- wins, and
-    -- the WRAPPER is asked before the account KIND: any account kind can
-    -- sit inside any wrapper, and the wrapper is what says whose money
-    -- moved.
+    -- wins, and the WRAPPER is asked before the account KIND: any
+    -- account kind can sit inside any wrapper, and the wrapper is what
+    -- says whose money moved.
     --
-    -- A far account whose wrapper is unset falls past the first three
-    -- arms to the pool test, which admits it — the same render-time
-    -- default the pool macro applies, reached by the same rule rather
-    -- than by accident.
+    -- A far account whose wrapper is unset falls past the wrapper arms
+    -- and, unless it is a mortgage, reaches the pool test, which admits
+    -- it — the same render-time default the pool macro applies, reached
+    -- by the same rule rather than by accident.
     --
     -- The last two arms are where a move lands that no wrapper and no
     -- pool membership could place. A far account gold HOLDS, on the
     -- household's side, that the `cashflow.accounts` scope fenced out of
-    -- the pool — a setting, and named as one. Last, no far account at all: a rule or a pin placed
-    -- the verdict and nothing paired it, which under the closed world
-    -- the statement assumes is a finding — a counter-leg gold should
-    -- hold, or a declaration not yet written. Drawn as invisible that
-    -- money would vanish into the residual forever; drawn as a node it
-    -- is visible as what it is, and the remedy — collect the account,
-    -- declare it, or find the missing leg — is obvious.
+    -- the pool — a setting, and named as one. Last, no far account at
+    -- all: a rule or a pin placed the verdict and nothing paired it,
+    -- which under the closed world the statement assumes is a finding —
+    -- a counter-leg gold should hold, or a declaration not yet written.
+    -- Drawn as invisible that money would vanish into the residual
+    -- forever; drawn as a node it is visible as what it is, and the
+    -- remedy — collect the account, declare it, or find the missing leg
+    -- — is obvious.
     far AS (
         SELECT v.*,
                CASE
@@ -1522,14 +1521,14 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                CASE
                    -- THE KINDS NO VERDICT MAY PLACE, tested ahead of
                    -- every verdict arm. gold pins no canonical sign for
-                   -- these six — the adapter passes the source's
-                   -- through — so their direction is a per-source
-                   -- convention, and a section that reads direction
-                   -- cannot admit them. A pin or a rule may call such a
-                   -- row an own-account move; it still cannot make an
-                   -- unsigned amount readable. `fx` is cash becoming
-                   -- cash besides, and the two catch-alls are the
-                   -- exclusion both families already make.
+                   -- these kinds (txn_kind_roles.unsigned) — the adapter
+                   -- passes the source's through — so their direction is
+                   -- a per-source convention, and a section that reads
+                   -- direction cannot admit them. A pin or a rule may
+                   -- call such a row an own-account move; it still
+                   -- cannot make an unsigned amount readable. `fx` is
+                   -- cash becoming cash besides, and the two catch-alls
+                   -- are the exclusion both families already make.
                    --
                    -- The one exception is a cash leg its source states
                    -- signed (cash_signed_kinds): cash in lieu, a
@@ -1753,10 +1752,11 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    -- `n.class = 'elsewhere'` would fall to the ELSE the
                    -- moment a stated exposure moved a row off
                    -- `elsewhere`, and a house purchase would read
-                   -- `Real estate · Private capital`. No row reaches
-                   -- `investing` on a kind other than
-                   -- buy/sell/contribution/distribution except through
-                   -- those two verdicts, so the first arm covers it.
+                   -- `Real estate · Private capital`. A row reaches
+                   -- `investing` on another kind only through a value
+                   -- that places it there, or as a cash leg its source
+                   -- signs (cash_signed). A corporate action's is its
+                   -- own group; every other is private capital.
                    --
                    -- The class is what the money went INTO; the group is
                    -- what the money DID. A house bought and a REIT traded
@@ -1766,7 +1766,6 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                                   THEN n.verdict
                              WHEN n.kind IN ('buy', 'sell') THEN 'trades'
                              WHEN n.kind = 'corporate_action' THEN 'corporate_actions'
-                             WHEN n.kind IN ('contribution', 'distribution') THEN 'private_capital'
                              ELSE 'private_capital' END
                    WHEN 'loans' THEN n.verdict
                    -- The unpaired transfers split by what is missing:

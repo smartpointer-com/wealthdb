@@ -13,13 +13,6 @@ import (
 // Edge cases of the gains macros, each pinned by what docs/GAINS.md
 // says. Every id and figure is invented.
 
-func edgeExec(t *testing.T, db *sql.DB, ctx context.Context, q string) {
-	t.Helper()
-	if _, err := db.ExecContext(ctx, q); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-}
-
 const edgeBase = `
     INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES
         ('test-src', 0, 'CHF', 'USD', 0.5);
@@ -61,7 +54,7 @@ func TestGainsBasisChangeIsFlaggedNotBooked(t *testing.T) {
 	t.Parallel()
 	for name, bv := range map[string][2]string{"appears": {"NULL", "600"}, "vanishes": {"600", "NULL"}} {
 		db, ctx := openMigrated(t)
-		edgeExec(t, db, ctx, edgeBase+
+		mustExec(t, db, edgeBase+
 			edgePos(1000, "A1", "X", "X", "USD", 10, 1000, bv[0])+
 			edgePos(200000, "A1", "X", "X", "USD", 10, 1050, bv[1]))
 		r := edgeTotal(t, db, ctx, "USD", GainsAll)[0]
@@ -76,7 +69,7 @@ func TestGainsBasisChangeIsFlaggedNotBooked(t *testing.T) {
 func TestGainsCoverageNeedsEveryValue(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+
+	mustExec(t, db, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 1, 100, "80")+
 		edgePos(1000, "A1", "J", "J", "JPY", 1, 1000000, "NULL"))
 	rows, err := GainsCoverage(ctx, db, gainsFrom, gainsTo, "USD")
@@ -93,7 +86,7 @@ func TestGainsCoverageNeedsEveryValue(t *testing.T) {
 func TestGainsHintLotMeetsItsPosition(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+
+	mustExec(t, db, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
 		edgePos(200000, "A1", "X", "X", "USD", 5, 600, "300")+`
         INSERT INTO realized_lots (silver_source_id, realized_lot_external_id, account_external_id,
@@ -114,7 +107,7 @@ func TestGainsHintLotMeetsItsPosition(t *testing.T) {
 func TestGainsGrainsCarryAnUnlistedAccount(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+
+	mustExec(t, db, edgeBase+
 		edgePos(1000, "GHOST", "X", "X", "USD", 10, 1000, "600")+
 		edgePos(200000, "GHOST", "X", "X", "USD", 10, 1100, "600"))
 	for _, g := range []GainsGrain{GainsAll, GainsSources, GainsPortfolios, GainsAccounts} {
@@ -131,7 +124,7 @@ func TestGainsGrainsCarryAnUnlistedAccount(t *testing.T) {
 func TestGainsUnobservedAccountIsFlagged(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+
+	mustExec(t, db, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
 		edgePos(1000, "A2", "Y", "Y", "USD", 10, 1000, "900")+
 		edgePos(200000, "A2", "Y", "Y", "USD", 10, 1000, "900")+
@@ -147,7 +140,7 @@ func TestGainsUnobservedAccountIsFlagged(t *testing.T) {
 func TestGainsPositionsAgreeWithTheAccount(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+
+	mustExec(t, db, edgeBase+
 		edgePos(1000, "A1", "X-1", "X", "USD", 10, 1000, "600")+
 		edgePos(1000, "A1", "X-2", "X", "USD", 10, 1000, "NULL")+
 		edgePos(1000, "A1", "Y", "Y", "USD", 10, 1000, "800")+
@@ -175,7 +168,7 @@ func TestGainsPositionsAgreeWithTheAccount(t *testing.T) {
 func TestGainsChangeCarriesTheRateOnTheGain(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+`
+	mustExec(t, db, edgeBase+`
         INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES
             ('test-src', 150000, 'CHF', 'USD', 1.0);`+
 		edgePos(1000, "A1", "X", "CHF", "CHF", 10, 200, "100")+
@@ -191,7 +184,7 @@ func TestGainsChangeCarriesTheRateOnTheGain(t *testing.T) {
 func TestGainsLotsOnlyAndFxMissingCountOnce(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+`
+	mustExec(t, db, edgeBase+`
         INSERT INTO realized_lots (silver_source_id, realized_lot_external_id, account_external_id,
             instrument_external_id, document_kind, tax_year, acquired_various,
             disposal_date, currency, quantity, proceeds, book_value, realized_gain_loss, is_primary) VALUES
@@ -213,7 +206,7 @@ func TestGainsLotsOnlyAndFxMissingCountOnce(t *testing.T) {
 func TestReportPositionsKeepsItsEarlierColumns(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+`
+	mustExec(t, db, edgeBase+`
         INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES
             ('test-src', 86400*3, 'EUR', 'CHF', 0.95),
             ('test-src', 86400*5, 'CHF', 'USD', 1.13),
@@ -303,7 +296,7 @@ func TestGainsEveryPeriodAddsUpToTheTotal(t *testing.T) {
 func TestGainsAnonymousLotCounts(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+`
+	mustExec(t, db, edgeBase+`
         INSERT INTO realized_lots (silver_source_id, realized_lot_external_id, account_external_id,
             document_kind, tax_year, acquired_various, disposal_date, currency, quantity,
             proceeds, book_value, is_primary) VALUES
@@ -323,7 +316,7 @@ func TestGainsAnonymousLotCounts(t *testing.T) {
 func TestGainsWindowOpensAtTheFirstSell(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+`
+	mustExec(t, db, edgeBase+`
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, instrument_external_id, kind, currency, net_amount)
             VALUES ('test-src', 'S1', 90000, 'A1', 'X', 'sell', 'USD', 100);`+
@@ -339,7 +332,7 @@ func TestGainsWindowOpensAtTheFirstSell(t *testing.T) {
 func TestGainsLineWithoutValueIsNotALoss(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+
+	mustExec(t, db, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
 		strings.Replace(edgePos(200000, "A1", "X", "X", "USD", 10, 0, "600"), ", 0, 600,", ", NULL, 600,", 1))
 	r := edgeTotal(t, db, ctx, "USD", GainsAll)[0]
@@ -353,7 +346,7 @@ func TestGainsLineWithoutValueIsNotALoss(t *testing.T) {
 func TestGainsBucketCoverageNeedsEveryValue(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+
+	mustExec(t, db, edgeBase+
 		edgePos(200000, "A1", "X", "X", "USD", 1, 100, "80")+
 		edgePos(200000, "A1", "J", "J", "JPY", 1, 1000, "NULL"))
 	r := edgeTotal(t, db, ctx, "USD", GainsAll)[0]
@@ -366,7 +359,7 @@ func TestGainsBucketCoverageNeedsEveryValue(t *testing.T) {
 func TestGainsSoldOutAccountIsNotUnobserved(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+
+	mustExec(t, db, edgeBase+
 		edgePos(1000, "A1", "X", "X", "USD", 10, 1000, "600")+
 		edgePos(1000, "A2", "Y", "Y", "USD", 10, 1000, "900")+
 		edgePos(200000, "A2", "Y", "Y", "USD", 10, 1000, "900")+
@@ -386,7 +379,7 @@ func TestGainsSoldOutAccountIsNotUnobserved(t *testing.T) {
 func TestGainsMixedCurrenciesLeaveNativeFiguresBlank(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+
+	mustExec(t, db, edgeBase+
 		edgePos(200000, "A1", "X-USD", "X", "USD", 1, 100, "80")+
 		edgePos(200000, "A1", "X-CHF", "X", "CHF", 1, 100, "80"))
 	rows, err := GainsPositions(ctx, db, gainsFrom, gainsTo, "USD", lots.MissingIgnore)
@@ -404,7 +397,7 @@ func TestGainsMixedCurrenciesLeaveNativeFiguresBlank(t *testing.T) {
 func TestOpenLotsLeaveOutAccruedInterest(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	edgeExec(t, db, ctx, edgeBase+`
+	mustExec(t, db, edgeBase+`
         INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
             instrument_external_id, asset_class, vehicle, currency, quantity, market_value, book_value,
             accrued_interest, basis_origin, basis_method, basis_fees) VALUES

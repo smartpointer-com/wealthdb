@@ -314,16 +314,14 @@ func statusBase(ctx context.Context, db *sql.DB, silverSourceID string, includeD
 // The cash flow counters read the pool's nodes (cashflow_pool_nodes,
 // shared with the plan and the statement's lines), so a change to what
 // the pool holds or to what the resolution declines moves the numbers
-// with it. The first two join
-// the pool: a vehicle's own FX legs are not the household's, and
-// counting them would make the number permanently large and therefore
-// unreadable.
+// with it. The first two read the pool alone: a vehicle's own FX legs
+// are not the household's, and counting them would make the number
+// permanently large and therefore unreadable.
 func driftCounts(ctx context.Context, db *sql.DB, byID map[string]*SourceStatus) (string, error) {
 	ids := make([]string, 0, len(byID))
 	for id := range byID {
 		ids = append(ids, id)
 	}
-	in := func(col string) string { return col + " IN (SELECT unnest(?::VARCHAR[]))" }
 	for _, c := range []struct {
 		label string
 		query string
@@ -332,11 +330,11 @@ func driftCounts(ctx context.Context, db *sql.DB, byID map[string]*SourceStatus)
 	}{
 		{"uncategorised spend", `
         SELECT silver_source_id, COUNT(*) FROM spending_lines_base(?, ?)
-         WHERE ` + in("silver_source_id") + ` AND spend_detailed IS NULL GROUP BY 1`,
+         WHERE ` + inBoundList("silver_source_id") + ` AND spend_detailed IS NULL GROUP BY 1`,
 			[]any{int64(0), MaxEpoch, ids}, func(s *SourceStatus) *int { return &s.UncategorizedSpendCount }},
 		{"uncategorised income", `
         SELECT silver_source_id, COUNT(*) FROM income_lines_base(?, ?)
-         WHERE ` + in("silver_source_id") + ` AND income_detailed IS NULL GROUP BY 1`,
+         WHERE ` + inBoundList("silver_source_id") + ` AND income_detailed IS NULL GROUP BY 1`,
 			[]any{int64(0), MaxEpoch, ids}, func(s *SourceStatus) *int { return &s.UncategorizedIncomeCount }},
 		{"excluded-unmapped spend", `
         SELECT t.silver_source_id, COUNT(*)
@@ -344,20 +342,20 @@ func driftCounts(ctx context.Context, db *sql.DB, byID map[string]*SourceStatus)
           JOIN spend_scoped_accounts() sa
                  ON sa.silver_source_id    = t.silver_source_id
                 AND sa.account_external_id = t.account_external_id
-         WHERE ` + in("t.silver_source_id") + ` AND t.kind IN ('other', 'journal') GROUP BY 1`,
+         WHERE ` + inBoundList("t.silver_source_id") + ` AND t.kind IN ('other', 'journal') GROUP BY 1`,
 			[]any{ids}, func(s *SourceStatus) *int { return &s.ExcludedUnmappedCount }},
 		{"cashflow excluded by kind", `
         SELECT n.silver_source_id, COUNT(*)
           FROM cashflow_pool_nodes(?, ?) n
-         WHERE ` + in("n.silver_source_id") + ` AND n.disposition = 'excluded' GROUP BY 1`,
+         WHERE ` + inBoundList("n.silver_source_id") + ` AND n.disposition = 'excluded' GROUP BY 1`,
 			[]any{int64(0), MaxEpoch, ids}, func(s *SourceStatus) *int { return &s.CashflowExcludedByKindCount }},
 		{"cashflow wrapper coverage", `
         SELECT silver_source_id, COUNT(*) FROM cashflow_pool_accounts()
-         WHERE ` + in("silver_source_id") + ` AND tax_wrapper IS NULL GROUP BY 1`,
+         WHERE ` + inBoundList("silver_source_id") + ` AND tax_wrapper IS NULL GROUP BY 1`,
 			[]any{ids}, func(s *SourceStatus) *int { return &s.CashflowPooledNoWrapperCount }},
 		{"cashflow moves with no far account", `
         SELECT silver_source_id, COUNT(*) FROM cashflow_lines_base(?, ?)
-         WHERE ` + in("silver_source_id") + ` AND class = 'unpaired' AND NOT far_known GROUP BY 1`,
+         WHERE ` + inBoundList("silver_source_id") + ` AND class = 'unpaired' AND NOT far_known GROUP BY 1`,
 			[]any{int64(0), MaxEpoch, ids}, func(s *SourceStatus) *int { return &s.CashflowNoFarAccountCount }},
 	} {
 		if err := scanCounts(ctx, db, c.query, c.args, func(id string, n int) {

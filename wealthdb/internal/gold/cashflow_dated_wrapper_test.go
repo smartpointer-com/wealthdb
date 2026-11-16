@@ -1,6 +1,7 @@
 package gold
 
 import (
+	"maps"
 	"slices"
 	"testing"
 
@@ -11,7 +12,9 @@ import (
 // whose wrapper changes on a day, inside the household's pool before it and
 // a vehicle after it. Before the day a move into it is pool-internal
 // and its own spending is a line; after it the move is a vehicles
-// crossing and its spending is the vehicle's. Every figure is invented.
+// crossing and its spending is the vehicle's. Its income and its rows
+// cash flow excludes by kind are the pool's before the day alone. Every
+// figure is invented.
 func TestADatedWrapperMovesTheBoundaryOnItsDay(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -44,6 +47,43 @@ func TestADatedWrapperMovesTheBoundaryOnItsDay(t *testing.T) {
 	for _, id := range []string{"D-OWN-BEFORE", "D-OWN-AFTER", "D-OWN-ON"} {
 		enrichtest.SeedSpend(t, db, enrichtest.Spend{Source: "cf", Txn: id, Signature: "sig",
 			Detailed: "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", Provenance: "rule"})
+	}
+	excludedByKind := func() int {
+		t.Helper()
+		s := &SourceStatus{SilverSourceID: "cf"}
+		if label, err := driftCounts(ctx, db, map[string]*SourceStatus{"cf": s}); err != nil {
+			t.Fatalf("drift counts (%s): %v", label, err)
+		}
+		return s.CashflowExcludedByKindCount
+	}
+	excludedBefore := excludedByKind()
+	if _, err := db.ExecContext(ctx, `
+	    INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+	                              account_external_id, kind, currency, net_amount, description) VALUES
+	        ('cf', 'D-EARN-BEFORE', ?, 'TRUST', 'interest', 'USD', 7, 'trust interest'),
+	        ('cf', 'D-EARN-ON',     ?, 'TRUST', 'interest', 'USD', 8, 'trust interest'),
+	        ('cf', 'D-EARN-AFTER',  ?, 'TRUST', 'interest', 'USD', 9, 'trust interest'),
+	        ('cf', 'D-JRNL-BEFORE', ?, 'TRUST', 'journal', 'USD', -3, 'trust journal'),
+	        ('cf', 'D-JRNL-ON',     ?, 'TRUST', 'journal', 'USD', -4, 'trust journal'),
+	        ('cf', 'D-JRNL-AFTER',  ?, 'TRUST', 'journal', 'USD', -5, 'trust journal')`,
+		change-5*day, change, change+5*day, change-5*day, change, change+5*day); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for _, id := range []string{"D-EARN-BEFORE", "D-EARN-ON", "D-EARN-AFTER"} {
+		enrichtest.SeedIncome(t, db, enrichtest.Income{Source: "cf", Txn: id, Signature: "sig-earn",
+			Detailed: "INCOME_INTEREST_EARNED", Provenance: "rule"})
+	}
+	// The income side reads the boundary by the row's own day, half-open
+	// as the spending side does.
+	inPool := scanPairs(t, db, `SELECT transaction_external_id, in_pool::VARCHAR
+	        FROM income_lines_base(0, 9999999999) WHERE transaction_external_id LIKE 'D-EARN-%'`)
+	if want := map[string]string{"D-EARN-BEFORE": "true", "D-EARN-ON": "false", "D-EARN-AFTER": "false"}; !maps.Equal(inPool, want) {
+		t.Errorf("the trust's income in_pool = %v, want %v", inPool, want)
+	}
+	// status counts an excluded row where its account is in the pool on
+	// the row's day: the journal before the day alone.
+	if got := excludedByKind() - excludedBefore; got != 1 {
+		t.Errorf("cashflow excluded by kind counts %d of the trust's journals, want the one before the day", got)
 	}
 	check := func(when string) {
 		t.Helper()

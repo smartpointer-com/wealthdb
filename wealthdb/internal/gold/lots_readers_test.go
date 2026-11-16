@@ -63,7 +63,7 @@ func TestReadersUnderBothReadingsOfAMissingBasis(t *testing.T) {
 		gain    *float64
 	}{
 		{lots.MissingIgnore, "unknown", nil},
-		{lots.MissingZero, "assumed_zero", ptrF(500)},
+		{lots.MissingZero, "assumed_zero", ptr(500.0)},
 	} {
 		lots, err := RealizedLotsBetween(ctx, db, 0, 100*lotDay, "USD", false, SortAscending, c.missing)
 		if err != nil || len(lots) != 1 {
@@ -103,8 +103,6 @@ func TestReadersUnderBothReadingsOfAMissingBasis(t *testing.T) {
 		}
 	}
 }
-
-func ptrF(v float64) *float64 { return &v }
 
 func TestReadersFlagTheEnginesFindings(t *testing.T) {
 	t.Parallel()

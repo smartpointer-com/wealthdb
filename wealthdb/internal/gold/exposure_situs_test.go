@@ -468,26 +468,26 @@ func TestExposureSitusViews(t *testing.T) {
 	total := 0.0
 	by := map[string]ExposureSitusRow{}
 	for _, r := range rows {
-		total += parse(t, r.Value)
+		total += num(t, r.Value)
 		by[r.Situs] = r
 	}
-	if want := parse(t, g.TotalValueOutCcy); math.Abs(total-want) > 0.01 {
+	if want := num(t, g.TotalValueOutCcy); math.Abs(total-want) > 0.01 {
 		t.Errorf("situs sums to %.4f, holdings global is %.4f", total, want)
 	}
 	// Ireland: NOCF 60 by its ISIN and GAPF 100 by its domicile, both
 	// funds.
 	ie := by["IE"]
-	if math.Abs(parse(t, ie.Value)-160) > 0.005 || ie.Region == nil || *ie.Region != "europe" ||
+	if math.Abs(num(t, ie.Value)-160) > 0.005 || ie.Region == nil || *ie.Region != "europe" ||
 		ie.FundsPct == nil || math.Abs(*ie.FundsPct-100) > 1e-9 || ie.Quality != "isin=38%,domicile=63%" {
-		t.Errorf("IE = %v %v funds %v %q", parse(t, ie.Value), ie.Region, ie.FundsPct, ie.Quality)
+		t.Errorf("IE = %v %v funds %v %q", num(t, ie.Value), ie.Region, ie.FundsPct, ie.Quality)
 	}
 	// Switzerland: the house by its declared country, the cash and the
 	// gold by their custodian; no fund.
 	ch := by["CH"]
 	want := leafValue(t, db, ctx, `position_key IN ('HOUSE', 'cash:USD', 'cash:EUR', 'GOLD')`)
-	if math.Abs(parse(t, ch.Value)-want) > 0.005 || ch.FundsPct == nil || *ch.FundsPct != 0 ||
+	if math.Abs(num(t, ch.Value)-want) > 0.005 || ch.FundsPct == nil || *ch.FundsPct != 0 ||
 		qualityTags(ch.Quality) != "custody,country" {
-		t.Errorf("CH = %v, want %v; funds %v %q", parse(t, ch.Value), want, ch.FundsPct, ch.Quality)
+		t.Errorf("CH = %v, want %v; funds %v %q", num(t, ch.Value), want, ch.FundsPct, ch.Quality)
 	}
 	if u := by["unknown"]; u.Region != nil || u.Quality != "unknown=100%" {
 		t.Errorf("unknown = %v %q", u.Region, u.Quality)
@@ -518,7 +518,7 @@ func TestExposureSitusViews(t *testing.T) {
 		}
 		order = append(order, r.Reason)
 		if r.SilverSourceID == nil && r.Reason != "(no value)" {
-			bases += parse(t, r.Value)
+			bases += num(t, r.Value)
 		} else {
 			listed[r.Reason] = r
 		}

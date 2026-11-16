@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // The cash flow statement's half of the enrichment pass.
@@ -59,12 +60,13 @@ type CashflowResult struct {
 	// to tell it from a data problem, so the load that ends the state
 	// says that it did.
 	FirstPass bool
-	// FarAccounts is how many rows this pass linked to a far account —
-	// the other half of what the resolution needs, and
-	// a plain counter once the first pass is past. StatedFarAccounts is
-	// the subset the SOURCE named rather than the matcher paired, which
-	// is the only road that reaches a movement the product collects one
-	// side of.
+	// FarAccounts is how many rows this pass linked to a far account
+	// with a cash link — the other half of what the resolution needs,
+	// and a plain counter once the first pass is past. The in-kind
+	// links of writeStatedMoveLinks are no cash move, and not counted.
+	// StatedFarAccounts is the subset the SOURCE named rather than the
+	// matcher paired, which is the only road that reaches a movement
+	// the product collects one side of.
 	FarAccounts       int
 	StatedFarAccounts int
 	// ReferencePairs is how many own-account moves were paired on the
@@ -177,7 +179,7 @@ func stampCashflowBoundary(ctx context.Context, tx *sql.Tx, opts CashflowOptions
 	}
 	if err := tx.QueryRowContext(ctx, `
         SELECT COUNT(*) FROM transfer_links
-         WHERE far_silver_source_id IS NOT NULL`).Scan(&out.FarAccounts); err != nil {
+         WHERE measure = ?`, gold.LinkMeasureCash).Scan(&out.FarAccounts); err != nil {
 		return fmt.Errorf("cashflow: count far accounts: %w", err)
 	}
 	return countPooledAccountsWithoutWrapper(ctx, tx, out)

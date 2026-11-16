@@ -120,8 +120,8 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
             INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                       account_external_id, instrument_external_id,
                                       kind, currency, net_amount, description)
-                 VALUES ('cf', ?, 1728000, ?, ?, ?, 'USD', ?, ?)`,
-			l.id, l.account, nullIfEmpty(l.instrument), l.kind, l.amount, l.id); err != nil {
+                 VALUES ('cf', ?, 1728000, ?, NULLIF(?, ''), ?, 'USD', ?, ?)`,
+			l.id, l.account, l.instrument, l.kind, l.amount, l.id); err != nil {
 			t.Fatalf("seed transaction %s: %v", l.id, err)
 		}
 		if l.spend != "" || l.farAccount != "" || l.spendClass != "" {
@@ -133,16 +133,10 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
 			enrichtest.SeedSpend(t, db, far)
 		}
 		if l.income != "" || l.incomeClass != "" {
-			if _, err := db.ExecContext(ctx, `
-                INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
-                        payer_signature, signature_version, income_detailed, provenance,
-                        stated_asset_class, assigned_at)
-                     VALUES ('cf', ?, ?, 1, ?, 'rule', ?, 100)`,
-				// A payer signature of its own: shared with the spending
-				// rows', a repayment would link to one of them (0160).
-				l.id, "payer:"+l.id, nullIfEmpty(l.income), nullIfEmpty(l.incomeClass)); err != nil {
-				t.Fatalf("seed income overlay for %s: %v", l.id, err)
-			}
+			// A payer signature of its own: shared with the spending
+			// rows', a repayment would link to one of them (0160).
+			enrichtest.SeedIncome(t, db, enrichtest.Income{Source: "cf", Txn: l.id, Signature: "payer:" + l.id,
+				Detailed: l.income, Provenance: "rule", Stated: l.incomeClass})
 		}
 	}
 
@@ -174,13 +168,6 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
 		t.Fatalf("iterate cashflow_txn_nodes: %v", err)
 	}
 	return out
-}
-
-func nullIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // check walks the table, comparing the node each row landed on with the

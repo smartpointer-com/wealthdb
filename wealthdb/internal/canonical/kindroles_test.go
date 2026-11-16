@@ -96,7 +96,7 @@ func TestEveryRoleIsOnAValueOfItsFamily(t *testing.T) {
 			c.Family.InFamily(FamilyIncome) && !r.LeavesIncome) {
 			t.Errorf("%s is placed as %s and stays in a base", c.Detailed, r.FlowPlace)
 		}
-		if (r.FeeGroup != "") != (c.Primary == bankFeesPrimary) {
+		if (r.FeeGroup != "") != (c.Primary == BankFeesPrimary) {
 			t.Errorf("%s: fee group %q under %s", c.Detailed, r.FeeGroup, c.Primary)
 		}
 	}

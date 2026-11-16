@@ -136,7 +136,7 @@ func TestExposureParsedComposition(t *testing.T) {
 	for _, r := range secs {
 		if r.Security == canonical.SecurityKey("", "", "", "", "Investment A") {
 			found++
-			if v := parse(t, r.Value); math.Abs(v-75) > 1e-6 {
+			if v := num(t, r.Value); math.Abs(v-75) > 1e-6 {
 				t.Errorf("Investment A = %v, want 75", v)
 			}
 		}

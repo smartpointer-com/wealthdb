@@ -19,7 +19,6 @@
 --                        is not consumption; on a crossing, its pool.
 --   flow_leaf_detailed   an outflow draws as its own leaf, not under
 --                        its primary.
---   fee_view_group       a BANK_FEES value's group in the fee view.
 --   projected_income     the income projection projects the type.
 --
 -- account_kinds holds an account kind's roles (canonical.AccountKindRow)
@@ -37,7 +36,6 @@ ALTER TABLE spend_categories ADD COLUMN IF NOT EXISTS flow_place         TEXT;
 ALTER TABLE spend_categories ADD COLUMN IF NOT EXISTS flow_class_in      TEXT;
 ALTER TABLE spend_categories ADD COLUMN IF NOT EXISTS flow_class_out     TEXT;
 ALTER TABLE spend_categories ADD COLUMN IF NOT EXISTS flow_leaf_detailed BOOLEAN;
-ALTER TABLE spend_categories ADD COLUMN IF NOT EXISTS fee_view_group     TEXT;
 ALTER TABLE spend_categories ADD COLUMN IF NOT EXISTS projected_income   BOOLEAN;
 
 CREATE TABLE IF NOT EXISTS account_kinds (

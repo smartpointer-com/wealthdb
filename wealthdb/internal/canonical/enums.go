@@ -284,9 +284,9 @@ func (t TxKind) Valid() bool {
 // TxKinds returns every kind, sorted, so a test walking them meets a
 // new kind with no edit.
 func TxKinds() []TxKind {
-	out := make([]TxKind, 0, len(txKindValues))
-	for k := range txKindValues {
-		out = append(out, k)
+	out := make([]TxKind, 0, len(txKindRows))
+	for _, r := range txKindRows {
+		out = append(out, r.Kind)
 	}
 	slices.Sort(out)
 	return out

@@ -124,7 +124,7 @@ func vocabularyStamps() []derivedStamp {
 	cats := derivedStamp{table: "spend_categories", cols: []string{
 		"spend_primary", "spend_detailed", "description", "label", "primary_label", "catch_all", "family",
 		"leaves_spending", "leaves_income", "flow_place", "flow_class_in", "flow_class_out",
-		"flow_leaf_detailed", "fee_view_group", "projected_income"}}
+		"flow_leaf_detailed", "projected_income"}}
 	for _, c := range canonical.SpendCategories {
 		r := c.Roles()
 		cats.rows = append(cats.rows, []any{c.Primary, c.Detailed, c.Description,
@@ -132,7 +132,7 @@ func vocabularyStamps() []derivedStamp {
 			canonical.CatchAllSpendDetailed(c.Detailed) || canonical.CatchAllIncomeDetailed(c.Detailed),
 			string(c.Family), r.LeavesSpending, r.LeavesIncome, text(string(r.FlowPlace)),
 			text(string(r.FlowClassIn)), text(string(r.FlowClassOut)), r.FlowLeafDetailed,
-			text(r.FeeGroup), r.ProjectedIncome})
+			r.ProjectedIncome})
 	}
 	accounts := derivedStamp{table: "account_kinds", cols: []string{
 		"kind", "liability", "holds_cash", "follows_source", "returns_invisible"}}
@@ -254,10 +254,11 @@ func derivedHash(ctx context.Context, q querier) (string, error) {
 // applyDerived replaces every macro and view of the database with set,
 // in one transaction: it drops them all, runs the files in order,
 // stamps the vocabulary tables and records the set's hash, and it
-// stamps want where the database is below it. Right after the statement that creates a serving table's macro, it
-// gives the table that macro's columns (reshapeServing), so a view below
-// reads the table in its new shape. On an error it rolls back, and the
-// set the database had stays whole.
+// stamps want where the database is below it. Right after the statement
+// that creates a serving table's macro, it gives the table that macro's
+// columns (reshapeServing), so a view below reads the table in its new
+// shape. On an error it rolls back, and the set the database had stays
+// whole.
 func applyDerived(ctx context.Context, db *sql.DB, set derivedSet, current, want int) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

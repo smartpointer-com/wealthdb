@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // The four reports, and the two identities the design says are
@@ -731,12 +733,11 @@ func TestTheMemoSeparatesRevaluationFromError(t *testing.T) {
             ('cf', 3456000, 'CASH', 'EUR', 'current', CAST(150 AS DECIMAL(28,4)));
         INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
                                   account_external_id, kind, currency, net_amount)
-             VALUES ('cf', 'F-WAGE', 172800, 'CASH', 'deposit', 'EUR', CAST(50 AS DECIMAL(28,4)));
-        INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
-                payer_signature, signature_version, income_detailed, provenance, assigned_at)
-             VALUES ('cf', 'F-WAGE', 'sig', 1, 'INCOME_SALARY', 'rule', 100);`); err != nil {
+             VALUES ('cf', 'F-WAGE', 172800, 'CASH', 'deposit', 'EUR', CAST(50 AS DECIMAL(28,4)));`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	enrichtest.SeedIncome(t, db, enrichtest.Income{Source: "cf", Txn: "F-WAGE", Signature: "sig",
+		Detailed: "INCOME_SALARY", Provenance: "rule"})
 
 	rows, err := CashflowSummary(ctx, db, 90000, 3500000, "USD", "total")
 	if err != nil {

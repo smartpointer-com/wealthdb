@@ -181,11 +181,6 @@ func CapitalKind(k TxKind) (capital, nettable bool) {
 	return capital, nettable
 }
 
-// LedgerTransferIDPrefix starts the transaction id of every leg the
-// equity-transfer ledger asserts (docs/DESIGN.md §13.9): a hand-stated row,
-// no collected one.
-const LedgerTransferIDPrefix = "xfer:"
-
 // kindsWhere are the kinds whose row has the role, in table order.
 func kindsWhere(role func(TxKindRow) bool) []TxKind {
 	var out []TxKind
