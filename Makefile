@@ -196,7 +196,9 @@ test-collectors:  $(addprefix test-,$(COLLECTORS))
 BASE_IMAGES := base-python base-playwright base-camoufox
 
 # BUILD_BASES quiet,pull — build the shared bases in order, and stop at
-# the first that fails. quiet hides docker's output. pull refreshes the
+# the first that fails. quiet keeps docker's output in a temporary log
+# and prints it only when the build fails, so a failing RUN step shows
+# its own error, not only its Dockerfile lines. pull refreshes the
 # upstream image a base builds FROM; a base FROM a local wealthdb/ image
 # never pulls. Without pull, a base whose wealthdb.inputs label matches
 # the hash of its inputs is kept as it is (wealthdb_build_unchanged).
@@ -216,6 +218,7 @@ BASE_IMAGES := base-python base-playwright base-camoufox
 # These images are local-only and never pushed; nothing consumes the
 # attestation.
 define BUILD_BASES
+$(if $(1),log=$$(mktemp) || exit 1; trap 'rm -f "$$log"' EXIT;) \
 helpers=; \
 for x in shared/images/*; do \
 	case "$$x" in *.Dockerfile) ;; *) helpers="$$helpers $$x" ;; esac; \
@@ -234,10 +237,11 @@ for img in $(BASE_IMAGES); do \
 		continue; \
 	fi; \
 	echo "==> build base image wealthdb/$$img:$(TAG)$${pull:+ ($$pull)}"; \
-	docker build $(if $(1),-q) $$pull --provenance=false \
+	docker build $(if $(1),--progress=plain) $$pull --provenance=false \
 		$${hash:+--label "wealthdb.inputs=$$hash"} \
 		--build-arg WEALTHDB_IMAGE_TAG=$(TAG) \
-		-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/ $(if $(1),>/dev/null) || exit 1; \
+		-f "$$f" -t "wealthdb/$$img:$(TAG)" shared/ \
+		$(if $(1),>"$$log" 2>&1 || { cat "$$log" >&2; exit 1; },|| exit 1); \
 done
 endef
 

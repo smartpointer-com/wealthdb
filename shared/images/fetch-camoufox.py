@@ -23,7 +23,7 @@ import os
 import sys
 
 from camoufox.addons import DefaultAddons, get_addon_path, maybe_download_addons
-from camoufox.locale import MMDB_FILE, download_mmdb
+from camoufox.locale import MMDB_FILE, MMDB_REPO, MaxMindDownloader, download_mmdb
 from camoufox.pkgman import OS_NAME, CamoufoxFetcher, Version
 
 
@@ -35,20 +35,20 @@ def main(pin: str) -> int:
               file=sys.stderr)
         return 2
 
-    # The fetcher's constructor picks the newest supported release; when
-    # that differs from the pin, re-point it at the pinned asset before
-    # installing. The asset URL shape matches CamoufoxFetcher.check_asset
+    # The fetcher's constructor looks up the newest supported release
+    # through the GitHub API, which serves 60 unauthenticated calls an
+    # hour per address; a shared CI runner can exhaust that. The pin makes
+    # the lookup pointless, so the constructor skips it and the fetcher
+    # points at the pinned asset straight away. The asset URL shape
+    # matches CamoufoxFetcher.check_asset
     # (camoufox-<version>-<release>-<os>.<arch>.zip under the v<pin> tag).
+    CamoufoxFetcher.fetch_latest = lambda self: None
     fetcher = CamoufoxFetcher()
-    if (fetcher.version, fetcher.release) != (version, release):
-        print(f"fetch-camoufox: newest supported is "
-              f"{fetcher.version}-{fetcher.release}; installing pinned "
-              f"{pin} instead", file=sys.stderr)
-        fetcher._version_obj = Version(release=release, version=version)
-        fetcher._url = (
-            "https://github.com/daijro/camoufox/releases/download/"
-            f"v{pin}/camoufox-{pin}-{OS_NAME}.{fetcher.arch}.zip"
-        )
+    fetcher._version_obj = Version(release=release, version=version)
+    fetcher._url = (
+        "https://github.com/daijro/camoufox/releases/download/"
+        f"v{pin}/camoufox-{pin}-{OS_NAME}.{fetcher.arch}.zip"
+    )
     fetcher.install()
 
     installed = Version.from_path()
@@ -64,7 +64,12 @@ def main(pin: str) -> int:
     # read-only to the container user, so a lazy first-use download can
     # only crash the launch (geoip) or silently drop UBO from the
     # fingerprint. maybe_download_addons swallows its own failures with a
-    # printed message, hence the existence re-check.
+    # printed message, hence the existence re-check. The GeoLite2 lookup
+    # is a GitHub API call too; GitHub's fixed "latest" download link
+    # serves the same file without one.
+    MaxMindDownloader.get_asset = lambda self: (
+        f"https://github.com/{MMDB_REPO}/releases/latest/download/"
+        "GeoLite2-City.mmdb")
     download_mmdb()
     maybe_download_addons(list(DefaultAddons))
     missing = [a.name for a in DefaultAddons
