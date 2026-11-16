@@ -25,8 +25,8 @@ const transferIDPrefix = "xfer:"
 
 // requiredTransferCols are the equity-transfer ledger CSV columns every
 // file must carry. Lookup is by header name, so the columns may come in
-// any order; `quantity`, `cost_basis`, `instrument`, and `note` are
-// optional.
+// any order; `quantity`, `cost_basis`, `instrument`, `note`,
+// `to_silver_source_id` and `to_account` are optional.
 var requiredTransferCols = []string{"silver_source_id", "account", "occurred_at", "direction", "value", "currency"}
 
 // TransferEntry is one row of the equity-transfer ledger. Value is the market
@@ -45,6 +45,10 @@ type TransferEntry struct {
 	CostBasis      float64
 	Instrument     string
 	Note           string
+	// PairSource and PairID name the other leg of a move one ledger
+	// row states (movementLegs): its silver_source_id and synthetic
+	// id. Empty on a row that states one side only.
+	PairSource, PairID string
 }
 
 // ParseTransferLedger reads the equity-transfer ledger CSV at path and returns
@@ -86,7 +90,13 @@ func parseTransferLedger(r io.Reader) (map[string][]TransferEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("equity_transfers: line %d: %w", line, err)
 		}
-		out[e.SilverSourceID] = append(out[e.SilverSourceID], e)
+		legs, err := movementLegs(e, row.Get("to_silver_source_id"), row.Get("to_account"))
+		if err != nil {
+			return nil, fmt.Errorf("equity_transfers: line %d: %w", line, err)
+		}
+		for _, l := range legs {
+			out[l.SilverSourceID] = append(out[l.SilverSourceID], l)
+		}
 	}
 	return out, nil
 }
@@ -129,6 +139,29 @@ func transferFromRecord(row ledgercsv.Row) (TransferEntry, error) {
 		return e, fmt.Errorf("value must be non-negative (direction sets the sign)")
 	}
 	return e, nil
+}
+
+// movementLegs is the legs one ledger row states. A row that names
+// the receiving account (toSource, toAccount) is a whole move out of
+// its own account: it states the sending leg and the receiving one,
+// alike but for the account and the direction, each naming the other.
+// Those two legs are the two rows a file states the move with
+// otherwise, ids included. A row that names none is its one leg.
+func movementLegs(e TransferEntry, toSource, toAccount string) ([]TransferEntry, error) {
+	if toSource == "" && toAccount == "" {
+		return []TransferEntry{e}, nil
+	}
+	if toSource == "" || toAccount == "" {
+		return nil, fmt.Errorf("to_silver_source_id and to_account go together")
+	}
+	if e.Direction != "out" {
+		return nil, fmt.Errorf("a row with to_account is the sender's: direction must be 'out', got %q", e.Direction)
+	}
+	in := e
+	in.SilverSourceID, in.Account, in.Direction = toSource, toAccount, "in"
+	e.PairSource, e.PairID = in.SilverSourceID, in.syntheticID()
+	in.PairSource, in.PairID = e.SilverSourceID, e.syntheticID()
+	return []TransferEntry{e, in}, nil
 }
 
 func parseLedgerFloat(s string) (float64, error) {
@@ -189,7 +222,9 @@ func (e TransferEntry) payload() json.RawMessage {
 		Ledger     bool    `json:"equity_transfer_ledger"`
 		CostBasis  float64 `json:"cost_basis"`
 		Instrument string  `json:"instrument,omitempty"`
-	}{Ledger: true, CostBasis: e.CostBasis, Instrument: e.Instrument})
+		PairSource string  `json:"pair_silver_source_id,omitempty"`
+		PairID     string  `json:"pair_transaction_external_id,omitempty"`
+	}{Ledger: true, CostBasis: e.CostBasis, Instrument: e.Instrument, PairSource: e.PairSource, PairID: e.PairID})
 	return b
 }
 

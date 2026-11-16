@@ -8,9 +8,9 @@ package canonical
 // Each key's writers are named below. Another adapter may write a key
 // only with the meaning stated here, since the reader cannot tell the
 // writers apart. The txn_evidence() macro (gold derived/40_flows.sql)
-// projects every key but PayloadCostBasis as a typed column. The
-// enrichment pass reads the first four from it, and the other readers
-// extract theirs from the payload.
+// projects every key but PayloadCostBasis and the two pair keys as a
+// typed column. The enrichment pass reads the first four from it, and
+// the other readers extract theirs from the payload.
 const (
 	// PayloadBankRef is the reference a bank stamps on both halves of
 	// one movement, minted once per movement. The enrichment pass pairs
@@ -52,4 +52,11 @@ const (
 	// feed reads it on a ledger row. Written by the loader, on the same
 	// rows.
 	PayloadCostBasis = "cost_basis"
+	// PayloadPairSource and PayloadPairTransaction name the other leg
+	// of a move one equity-transfer ledger row states, by its
+	// silver_source_id and transaction_external_id. The enrichment pass
+	// links the two legs on them. Written by the loader, on the two
+	// legs of such a row only.
+	PayloadPairSource      = "pair_silver_source_id"
+	PayloadPairTransaction = "pair_transaction_external_id"
 )

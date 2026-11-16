@@ -153,8 +153,11 @@ Which snapshots observe:
 
 ### 3.4 Transfers
 
-A transfer out and a transfer in of the same instrument pair when they
-fall within 7 days of each other and their quantities within 5%:
+A move one row of the equity-transfer ledger states (DESIGN.md §13.9)
+pairs its two legs first. Every other transfer out and transfer in
+of the same instrument pair when they fall within 7 days of each
+other and their quantities within 5%. Every pair then follows these
+rules:
 
 - **Across keys** they are a move. The lots leave the giving key by its
   method at the departure, and open on the receiving key with their

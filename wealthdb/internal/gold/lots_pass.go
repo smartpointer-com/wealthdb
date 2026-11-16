@@ -105,7 +105,9 @@ func RebuildLots(ctx context.Context, db *sql.DB, opt LotsOptions) (*LotsSummary
 // lotFingerprints is one fingerprint per replayed or stated source: its
 // rows in every table the feed reads, the rows that tie sources together
 // (the rates, the portfolios), its policy and methods, and the engine
-// version. A row the engine itself wrote does not count.
+// version. A row the engine itself wrote does not count. The in-kind
+// links count only where a source has any, so a source without one
+// keeps the fingerprint it had without them.
 func lotFingerprints(ctx context.Context, db *sql.DB, f *lotFeed, cfg lots.Config) (map[string]string, error) {
 	out := map[string]string{}
 	ids := f.all()
@@ -132,11 +134,15 @@ WITH ids AS (SELECT unnest(?::VARCHAR[]) id),
      i AS (SELECT silver_source_id s, bit_xor(hash(instrument_external_id, cusip, symbol)) h
              FROM instruments WHERE silver_source_id IN (SELECT id FROM ids) GROUP BY 1),
      a AS (SELECT src s, bit_xor(hash(acct, pid)) h FROM portfolio_acct_map() GROUP BY 1),
-     x AS (SELECT count(*) n, bit_xor(hash(from_ccy, to_ccy, day, rate)) h FROM fx_daily)
-SELECT ids.id, concat_ws('/', t.n, t.h, p.n, p.h, l.n, l.h, r.n, r.h, i.h, a.h, x.n, x.h)
+     x AS (SELECT count(*) n, bit_xor(hash(from_ccy, to_ccy, day, rate)) h FROM fx_daily),
+     k AS (SELECT silver_source_id s, bit_xor(hash(transaction_external_id, far_silver_source_id,
+                  far_transaction_external_id)) h
+             FROM transfer_links WHERE measure = ? AND silver_source_id IN (SELECT id FROM ids) GROUP BY 1)
+SELECT ids.id, concat_ws('/', t.n, t.h, p.n, p.h, l.n, l.h, r.n, r.h, i.h, a.h, x.n, x.h, 'k' || k.h)
   FROM ids
   LEFT JOIN t ON t.s = ids.id LEFT JOIN p ON p.s = ids.id LEFT JOIN l ON l.s = ids.id
-  LEFT JOIN r ON r.s = ids.id LEFT JOIN i ON i.s = ids.id LEFT JOIN a ON a.s = ids.id, x`, ids)
+  LEFT JOIN r ON r.s = ids.id LEFT JOIN i ON i.s = ids.id LEFT JOIN a ON a.s = ids.id
+  LEFT JOIN k ON k.s = ids.id, x`, ids, LinkMeasureInKind)
 	if err != nil {
 		return nil, fmt.Errorf("lots: fingerprint: %w", err)
 	}

@@ -69,6 +69,65 @@ func TestParseTransferLedgerErrors(t *testing.T) {
 	}
 }
 
+// A row that names the receiving account states the whole move: the
+// two legs a two-row file states it with, ids included, each naming
+// the other in its payload.
+func TestParseTransferLedgerOneRowMove(t *testing.T) {
+	header := "silver_source_id,account,occurred_at,direction,quantity,cost_basis,value,currency,instrument,note"
+	one, err := parseTransferLedger(strings.NewReader(header + ",to_silver_source_id,to_account\n" +
+		"brokerco,Brokerage,2098-05-06,out,100,40,90,USD,VTI,a move,trustco,Trust\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	two, err := parseTransferLedger(strings.NewReader(header + "\n" +
+		"brokerco,Brokerage,2098-05-06,out,100,40,90,USD,VTI,a move\n" +
+		"trustco,Trust,2098-05-06,in,100,40,90,USD,VTI,a move\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(one["brokerco"]) != 1 || len(one["trustco"]) != 1 {
+		t.Fatalf("legs by source = %d and %d, want one each", len(one["brokerco"]), len(one["trustco"]))
+	}
+	out, in := one["brokerco"][0], one["trustco"][0]
+	if in.Direction != "in" || in.Account != "Trust" || in.Quantity != 100 || in.CostBasis != 40 || in.Value != 90 ||
+		in.Instrument != "VTI" || in.Note != "a move" || in.OccurredAt != out.OccurredAt {
+		t.Errorf("receiving leg mis-built: %+v", in)
+	}
+	if out.PairSource != "trustco" || out.PairID != in.syntheticID() || in.PairSource != "brokerco" || in.PairID != out.syntheticID() {
+		t.Errorf("legs do not name each other: %+v / %+v", out, in)
+	}
+	for src, legs := range two {
+		got, want := one[src][0], legs[0]
+		if got.syntheticID() != want.syntheticID() {
+			t.Errorf("%s: id %s, the two-row form's %s", src, got.syntheticID(), want.syntheticID())
+		}
+		got.PairSource, got.PairID = "", ""
+		if got != want {
+			t.Errorf("%s: leg %+v, the two-row form's %+v", src, got, want)
+		}
+		if p := string(one[src][0].toChange("X").Payload); !strings.Contains(p, `"`+canonical.PayloadPairSource+`":`) ||
+			!strings.Contains(p, `"`+canonical.PayloadPairTransaction+`":"`+one[src][0].PairID+`"`) {
+			t.Errorf("%s: payload %s names no partner", src, p)
+		}
+		if p := string(want.toChange("X").Payload); strings.Contains(p, "pair_") {
+			t.Errorf("%s: a two-row leg's payload names a partner: %s", src, p)
+		}
+	}
+}
+
+func TestParseTransferLedgerOneRowMoveErrors(t *testing.T) {
+	header := "silver_source_id,account,occurred_at,direction,value,currency,to_silver_source_id,to_account\n"
+	for name, row := range map[string]string{
+		"source without account": "brokerco,A,2098-01-01,out,1,USD,trustco,\n",
+		"account without source": "brokerco,A,2098-01-01,out,1,USD,,T\n",
+		"receiving row":          "brokerco,A,2098-01-01,in,1,USD,trustco,T\n",
+	} {
+		if _, err := parseTransferLedger(strings.NewReader(header + row)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
 func TestParseTransferLedgerMissingFile(t *testing.T) {
 	got, err := ParseTransferLedger("/no/such/ledger.csv")
 	if err != nil || got != nil {

@@ -2,11 +2,19 @@ package gold
 
 import (
 	"cmp"
+	"context"
+	"database/sql"
+	"fmt"
 	"math"
 	"slices"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
+
+// LinkMeasureInKind is the measure of a transfer_links row that links
+// two legs of a move of securities. The lot feed pairs on such links
+// first (pairTransfers).
+const LinkMeasureInKind = "in_kind"
 
 // lotLeg is one leg of a transfer, before pairing.
 type lotLeg struct {
@@ -37,9 +45,40 @@ type lotCorpLeg struct {
 	rule lots.CorporateRule
 }
 
-// pairTransfers pairs each transfer in with a transfer out of the same
-// instrument within lots.PairWindow and lots.PairTolerance. Inside one
-// key (a pooled portfolio) a pair cancels: nothing moves. Across keys a
+// readLinks reads the in-kind links of the replayed sources' legs:
+// each leg's partner leg.
+func (f *lotFeed) readLinks(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `
+SELECT silver_source_id, transaction_external_id, far_silver_source_id, far_transaction_external_id
+  FROM transfer_links
+ WHERE measure = ? AND far_transaction_external_id IS NOT NULL
+   AND `+inLotSources("silver_source_id"), LinkMeasureInKind, f.ids)
+	if err != nil {
+		return fmt.Errorf("lots: read links: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var leg, far [2]string
+		if err := rows.Scan(&leg[0], &leg[1], &far[0], &far[1]); err != nil {
+			return fmt.Errorf("lots: read links: %w", err)
+		}
+		f.links[leg] = far
+	}
+	return rows.Err()
+}
+
+// pairable reports whether out and recv may pair: two legs of one
+// source, or of two sources of one kind, whose instrument ids mean the
+// same thing.
+func pairable(out, recv *lotLeg) bool {
+	return out.src == recv.src || out.src.kind == recv.src.kind
+}
+
+// pairTransfers pairs the legs of each move a link states (readLinks)
+// first, where they are of one instrument and pairable. It pairs each
+// other transfer in with a transfer out of the same instrument within
+// lots.PairWindow and lots.PairTolerance. Inside one key (a pooled
+// portfolio) a pair cancels: nothing moves. Across keys a
 // pair is a move; across sources only between sources of one kind,
 // whose instrument ids mean the same thing. Either way, what the
 // receipt falls short by leaves as a fee in kind, and what it exceeds
@@ -60,6 +99,27 @@ func (f *lotFeed) pairTransfers() {
 	for i := range mate {
 		mate[i] = -1
 	}
+	if len(f.links) > 0 {
+		at := make(map[[2]string]int, len(legs))
+		for i := range legs {
+			at[[2]string{legs[i].src.id, legs[i].txn}] = i
+		}
+		for i := range legs {
+			a := &legs[i]
+			j, ok := at[f.links[[2]string{a.src.id, a.txn}]]
+			if !ok || mate[i] >= 0 || mate[j] >= 0 {
+				continue
+			}
+			b := &legs[j]
+			out, recv := a, b
+			if a.in {
+				out, recv = b, a
+			}
+			if a.in != b.in && a.inst == b.inst && pairable(out, recv) {
+				mate[i], mate[j] = j, i
+			}
+		}
+	}
 	// open lists the earlier legs of the instrument still unpaired, per
 	// direction (outs, ins), oldest first: a leg looks only at the other
 	// direction's, within the window, latest first.
@@ -74,6 +134,9 @@ func (f *lotFeed) pairTransfers() {
 		a := &legs[i]
 		if i == 0 || legs[i-1].inst != a.inst {
 			open[0], open[1] = open[0][:0], open[1][:0]
+		}
+		if mate[i] >= 0 {
+			continue
 		}
 		other := 1 - dir(a)
 		q := open[other][:0]
@@ -90,7 +153,7 @@ func (f *lotFeed) pairTransfers() {
 			if b.in {
 				out, recv = a, b
 			}
-			if out.src != recv.src && out.src.kind != recv.src.kind {
+			if !pairable(out, recv) {
 				continue
 			}
 			diff := math.Abs(out.qty - recv.qty)

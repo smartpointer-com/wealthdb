@@ -4435,7 +4435,8 @@ known transfer; the loader turns every row into a canonical
 returns engine books it as an ordinary flow with no special-casing
 and it shows in the transactions report. Columns:
 `silver_source_id, account, occurred_at (YYYY-MM-DD), direction
-(in|out), quantity, cost_basis, value, currency, instrument, note`.
+(in|out), quantity, cost_basis, value, currency, instrument, note,
+to_silver_source_id, to_account`. The last two are optional (below).
 `value` is the market value at transfer — the capital flow;
 `cost_basis` (the pre-transfer basis) rides along in the payload for
 reference and is not used by the returns math. `account` accepts
@@ -4465,6 +4466,31 @@ against `manual`'s single account (blank `instrument` and
 that source's returns policy admits exactly the two ledger kinds so
 the claim's arrival is funded rather than read as performance. The
 runbook is in `collectors/manual/DESIGN.md` §6.
+
+A row is one side of a move, or the whole move. A row that names
+`to_silver_source_id` and `to_account` states both sides:
+
+- Its `direction` is `out`. The row's own account is the sender.
+- The loader writes two transactions: the `transfer_out` on the
+  sender, and a `transfer_in` on `to_account` under
+  `to_silver_source_id`. Both carry the same date, value, quantity,
+  instrument, cost basis and note.
+- The two transactions equal those of the two-row form, with the same
+  ids. Each payload also names the other leg.
+- The enrichment pass links the two legs in `transfer_links`, with
+  evidence `equity-ledger` and measure `in_kind`. The lot engine pairs
+  them before it pairs the rest by quantity (LOTS.md §3.4).
+- A cash pair the matcher formed with either leg is dropped. Its other
+  leg keeps no link.
+
+Either both columns are set or neither. A two-row file needs neither
+column. A move to an account of another source kind can still be one
+row, but the lot engine does not pair it (LOTS.md §3.4):
+
+```
+silver_source_id,account,occurred_at,direction,quantity,cost_basis,value,currency,instrument,note,to_silver_source_id,to_account
+schwab,Brokerage,2098-05-06,out,100,4000,9000,USD,VTI,100 VTI to the joint account,schwab,Joint
+```
 
 An exit paid in shares — a private-market vehicle distributing the listed
 stock it received, which lands in a brokerage account — is two rows, one

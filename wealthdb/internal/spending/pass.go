@@ -306,6 +306,9 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	if err := writeTransferLinks(ctx, tx, spendRows, pairs); err != nil {
 		return nil, err
 	}
+	if err := writeStatedMoveLinks(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := countLinkedPairs(ctx, tx, &res.Cashflow); err != nil {
 		return nil, err
 	}
