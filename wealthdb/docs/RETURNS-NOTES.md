@@ -16,7 +16,7 @@ Each source's knowledge enters through its `ReturnsPolicy` (see
   global) **are best-effort** — heuristic transfer netting plus synthetic
   onboarding for staggered inception. Returns are **not additive across
   grains**: `global == Σ accounts + hidden plumbing` is a *value* identity
-  (guarded by a reconciliation test; cash-account, AccountsGrainHidden and
+  (guarded by a reconciliation test; cash-account, hidden-mode and
   returns_hide rows are in global but emit no accounts-grain row), never a
   return identity.
 - **Mortgage / net-negative entities** are excluded from return rollups;
@@ -526,20 +526,25 @@ source.
   | `ConduitKinds` | none | account kinds that feed the value spine but get no per-account onboarding |
   | `ExternalOnly` | off | drops every row the silver tagged `returns_flow: internal` (`attachOneFlow`) |
 
-- **Flow classification.** Banks and pensions are flow-complete
-  (`BankFlowPolicy`). Crypto counts fiat flows only, and its transfer
-  legs are excluded. carta and equityzen count boundary deposit and
-  withdrawal only (`PrivateMarketLedgerPolicy`). The holding legs of
-  their double-entry pairs (buy, sell, contribution, distribution) stay
-  internal, or every event would cancel to a net-0 flow. angellist counts
-  deposit and withdrawal plus the equity-transfer ledger's transfer legs;
-  contribution and distribution stay internal. manual is NAV-only and
-  counts only the equity-transfer ledger's legs.
-- **Shared policies.** `DepositBankPolicy` (checking, savings and
-  money-market conduits) and `CardIssuerPolicy` (card-only sources) are
-  the bank set with `AccountsGrainHidden`. A deposit account is cash
-  plumbing. A card emits nothing anyway ("Credit cards are
-  returns-invisible"); its policy states that rather than fall through to
+- **Flow classification.** One table says which kinds move capital
+  (deposit, withdrawal, transfer in and out, journal) and which of them
+  net (the transfers and journal); it lives beside the kind roles in
+  `internal/canonical` (`CapitalKind`). A source declares only its
+  completeness, the regime:
+  - flow-complete counts every capital kind: banks, pensions, angellist,
+    and carta and equityzen (`PrivateMarketLedgerPolicy`), whose holding
+    legs (buy, sell, contribution, distribution) are no capital kind;
+  - crypto counts fiat flows only, deposit and withdrawal; its transfer
+    legs are excluded;
+  - nav-only counts no collected row; manual counts only the
+    equity-transfer ledger's legs.
+
+  A ledger leg counts under every regime but crypto's, and nets against a
+  partner where a grain holds both.
+- **Deposit banks and card issuers** register the bank policy. Their
+  accounts are cash or cards: a cash account is plumbing and hides on any
+  source, and a card emits nothing ("Credit cards are returns-invisible").
+  The policy states that rather than fall through to
   `unknown_adapter_policy`.
 - **UBS.** UBS is a conduit relationship: external cash lands in a cash
   account and funds securities in another account of the same
@@ -567,9 +572,8 @@ source.
   policy (`returns_policy_overrides`, DESIGN.md §5.6), keyed by
   silver_source_id. The override applies at the engine's single
   resolution point (`newAccountData`), so the CLI and the materialized
-  `report_returns` agree. `flow_regime` replaces the whole flow
-  classification with the regime's own kind sets
-  (`FlowPolicyForRegime`). `accounts_grain` sets the per-account display
+  `report_returns` agree. `flow_regime` replaces the source's
+  completeness. `accounts_grain` sets the per-account display
   mode. It is the escape hatch for data completeness that differs from
   the registered default. One example: a flow-counting source whose
   silver carries no transactions pins back to `nav_only`. The
@@ -625,7 +629,7 @@ inception override (DESIGN.md §5.4) rather than the data's own start.
 `accounts_grain_meaningless` blanks TWR/MWR on accounts-grain rows of
 sweep sources (a single crypto wallet's return is noise; the coarser
 grains stay valid). Plumbing goes further: every `cash` account, whatever
-its source, `AccountsGrainHidden` sources (deposit banks, card issuers) and
+its source, a source set to the hidden accounts-grain mode, and
 `returns_hide` ids emit no rows at all, nor does a portfolio or source made
 only of them, while still feeding every aggregate.
 `mwr_negative_net_capital` reports XIRR as n/a because the

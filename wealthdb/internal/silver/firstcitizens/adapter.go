@@ -64,9 +64,10 @@ SELECT MIN(t), MAX(t) FROM (
 var adapter = bank.New(bank.Source{
 	Kind:            kindName,
 	DefaultCurrency: "USD",
-	// See returns.DepositBankPolicy for the flow-complete + hidden-plumbing
-	// rationale.
-	Returns: returns.DepositBankPolicy(),
+	// The bank policy: the ledger is the complete cash history. The engine
+	// hides a cash account's own rows on any source (gold.hiddenConstituent)
+	// and drops a card at load (gold.returnsInvisibleKind).
+	Returns: returns.DefaultReturnsPolicy(returns.BankFlowPolicy()),
 	// The shared load clock (silver.LoadClock): this source has no change
 	// feed of its own, so a loaded dump is the trigger and a full re-emit
 	// is the response.

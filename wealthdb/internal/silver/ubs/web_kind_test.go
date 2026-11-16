@@ -214,8 +214,8 @@ func TestAPrivateMarketCallIsABuyAndADistributionIsASell(t *testing.T) {
 // capital crossing the household's boundary.
 func TestAPrivateMarketSettlementIsNotAReturnsFlow(t *testing.T) {
 	external := map[canonical.TxKind]bool{}
-	for _, k := range returns.BankExternal() {
-		external[k] = true
+	for _, k := range canonical.TxKinds() {
+		external[k] = returns.BankFlowPolicy().IsExternal(k, false)
 	}
 	for _, bookingType := range []string{
 		"CAPITAL CALL", "Issue without rights", "Cash Distribution",

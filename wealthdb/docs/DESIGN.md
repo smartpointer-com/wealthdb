@@ -1017,7 +1017,7 @@ Example config file:
 | `supersession` | object | Optional. Ends a source's account at a date because something else carries it from there. An account can outlive its source — a deposit account whose bank is acquired keeps running under the acquirer's collector, a holding moves custodian — and gold keys an account on `(silver_source_id, account_external_id)`, so the two are two accounts and BOTH count. One grain-keyed map (`accounts`), keyed by `silver_source_id` to `account_external_id` to `YYYY-MM-DD` (UTC), validated for a declared source and a parseable date at config-load time. The loader drops that account's positions, lots, cash balances, transactions and stated periods dated on or AFTER the date (a stated period by its last day), and writes one zero row AT it for whatever the account still held — dropping alone is not enough, because gold carries a key forward until something supersedes it and a source that simply stops reporting supersedes nothing (§10.7). Cutting by date rather than dropping the account keeps the earlier half of a statement or dump that straddles the handover. The drop is of what the adapter read: an `equity_transfers` (§13.9) row dated on or after the date is refused by name and fails the load instead. This bounds a series at the END; `inception_overrides` below bounds the start. An entry matching nothing is a silent no-op. See §13.8. |
 | `inception_overrides` | object | Optional. Pins the returns-window START date per source / portfolio / account so an entity's track record begins at its first real capital rather than a tiny pre-history dust base. Three grain-keyed maps (`sources`, `portfolios`, `accounts`), values `YYYY-MM-DD` (UTC). Consumed by the returns engine at query time — it stamps no gold column. See §5.4. |
 | `returns_exclude` | object | Optional. Omits whole accounts or portfolios from HIGHER-grain return aggregates (`sources`, `global`) while still reporting them at their own grain — e.g. keep accounts that are tracked but are not part of the household's own wealth out of the source/global returns. Two grain-keyed maps (`portfolios`, `accounts`), each keyed by `silver_source_id` to a list of external ids; a listed source id must name a declared silver source. Returns only — holdings / net-worth are unaffected. See §5.5. |
-| `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
+| `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow completeness with a named regime (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
 | `lots` | object | Optional. The lot engine (docs/LOTS.md §7): `method` (`fifo` default, `lifo`, `hifo`, `lofo`, `average`), the global method; `missing_basis` (`ignore` default, `zero`), the readers' default reading of a missing cost basis; `sources` keyed by `silver_source_id` with `method`, `mode` (`fill` \| `shadow` \| `stated` \| `off`) and `grain` (`account` \| `portfolio`) overriding the source kind's policy; `portfolios` and `accounts` keyed by `silver_source_id` to an external id to `{"method": …}`; `basis`, a list of `{ "source", "account"?, "instrument", "per_unit", "acquired"?, "note"? }`, the cost basis of an instrument's lots the engine opens without one (a seed, a receipt nothing pairs, a transfer in with no ledger cost), at quantity × `per_unit` with `acquired` as the acquisition date. The method in force for a key is its account's, else its portfolio's, else its source's, else the kind's own, else the global one. Every source id must name a configured source; a bad value fails the load. Absent ⇒ fifo and each kind's registered policy. |
 | `returns_transfer_matching` | object | Optional, off by default. `enabled` (bool) makes returns read the transfer pairs the load stores: a pair nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. `window_days` and `tolerance_pct` are accepted and ignored, and the load says so: the load's matcher pairs the legs under `spending.internal_transfer_matching`. See §5.8. |
@@ -1145,13 +1145,11 @@ silver holding positions but no transaction history).
 - **Keys** are `silver_sources[].id` values (validated at load), NOT adapter
   kinds — two sources sharing an adapter override independently.
 - **`flow_regime`** (`"flow_complete"` | `"crypto_partial"` | `"nav_only"`)
-  REPLACES the source's whole flow classification with the named regime's
-  canonical kind sets: flow_complete → the bank external + netting sets,
-  crypto_partial → fiat deposit/withdrawal external with no netting set,
-  nav_only → no counted flows. Wholesale replacement is deliberate: swapping
-  only the regime name would leave the old kind sets attached — a hybrid no
-  regime defines. A regime override also marks the policy known, so
-  `unknown_adapter_policy` clears.
+  REPLACES the source's flow completeness: flow_complete → every capital
+  kind counts, crypto_partial → fiat deposit/withdrawal only, nav_only → no
+  collected row, only the equity-transfer ledger's legs. Which kinds move
+  capital, and which of them net, is one table for every source. A regime
+  override also marks the policy known, so `unknown_adapter_policy` clears.
 - **`accounts_grain`** (`"normal"` | `"blanked"` | `"hidden"`) replaces the
   per-account display mode: full rows, rows with TWR/MWR blanked to n/a +
   `accounts_grain_meaningless`, or no rows at all (plumbing — values and
@@ -1193,9 +1191,10 @@ an entity from the coarse-grain math instead.
   other holdings — so a return of its own is noise: n/a on a drained base,
   or a chained −100% on one drained and refilled. By the rule above, a
   portfolio or source made only of cash accounts emits no row either.
-- **Policy composition:** per-source policies already hide whole conduit
-  sources (`AccountsGrainHidden` — the deposit-bank collectors register it
-  by default); this block covers deployment-specific ids on top. An id in
+- **Policy composition:** the engine already hides every cash account,
+  and a `returns_policy_overrides` entry can hide a whole source
+  (`accounts_grain: "hidden"`); this block covers deployment-specific ids
+  on top. An id in
   both `returns_hide` and `returns_exclude` is excluded from the math AND
   shows nowhere.
 - **Returns only.** Holdings / net-worth views are unaffected.

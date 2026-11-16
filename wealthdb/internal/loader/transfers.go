@@ -20,8 +20,9 @@ import (
 // transferIDPrefix marks the synthetic transaction_external_id of every
 // ledger-sourced transaction, so a load can delete-and-reinsert a source's
 // ledger transfers idempotently (picking up edits) without disturbing the
-// adapter-emitted rows.
-const transferIDPrefix = "xfer:"
+// adapter-emitted rows, and returns can tell a ledger leg from a collected
+// row.
+const transferIDPrefix = canonical.LedgerTransferIDPrefix
 
 // requiredTransferCols are the equity-transfer ledger CSV columns every
 // file must carry. Lookup is by header name, so the columns may come in

@@ -20,13 +20,13 @@ import (
 )
 
 func TestRegisteredFlowPolicies(t *testing.T) {
-	// The NAV-only source: manual emits no transactions at all, so no
-	// COLLECTED kind is countable — nav_only regime, deposits and the
-	// private-market kinds stay outside. The two ledger kinds are the one
-	// exception: value that moved in from another tracked vehicle is booked
-	// through the equity-transfer ledger as a transfer_in / transfer_out on
-	// this source, and only those count — otherwise a claim arriving from
-	// an escrow reads as performance.
+	// The NAV-only source: no COLLECTED row counts — nav_only regime, deposits
+	// and the private-market kinds stay outside. The ledger's legs are the
+	// one exception: value that moved in from another tracked vehicle is
+	// booked through the equity-transfer ledger as a transfer_in /
+	// transfer_out on this source, and only those count — otherwise a claim
+	// arriving from an escrow reads as performance. They net against a
+	// partner in a grain that holds both, as every ledger leg does.
 	man, _ := returns.ReturnsPolicyFor("manual")
 	if !man.Flow.Known {
 		t.Error("manual: policy must be Known (registered)")
@@ -34,14 +34,15 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	if man.Flow.Regime != returns.RegimeNavOnly {
 		t.Errorf("manual: regime %v, want nav_only", man.Flow.Regime)
 	}
-	if man.Flow.IsExternal(canonical.TxKindDeposit) || man.Flow.IsExternal(canonical.TxKindContribution) {
-		t.Error("manual: a collected deposit or contribution must not count")
+	if man.Flow.IsExternal(canonical.TxKindDeposit, false) || man.Flow.IsExternal(canonical.TxKindContribution, false) ||
+		man.Flow.IsExternal(canonical.TxKindTransferIn, false) {
+		t.Error("manual: a collected deposit, contribution or transfer must not count")
 	}
-	if !man.Flow.IsExternal(canonical.TxKindTransferIn) || !man.Flow.IsExternal(canonical.TxKindTransferOut) {
-		t.Error("manual: the ledger kinds transfer_in / transfer_out must count")
+	if !man.Flow.IsExternal(canonical.TxKindTransferIn, true) || !man.Flow.IsExternal(canonical.TxKindTransferOut, true) {
+		t.Error("manual: the ledger's transfer_in / transfer_out legs must count")
 	}
-	if man.Flow.IsTransferLike(canonical.TxKindTransferIn) {
-		t.Error("manual: a ledger leg has nothing on this source to net against")
+	if !man.Flow.IsTransferLike(canonical.TxKindTransferIn) {
+		t.Error("manual: a ledger leg nets where a grain holds its partner")
 	}
 	if man.ClosureScope != returns.ClosureLedgerExact {
 		t.Error("manual: a hand-dated release leg on the day a claim zeroes is a real exit, not a drain to subsume")
@@ -60,15 +61,18 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		if rp.Flow.Regime != returns.RegimeFlowComplete {
 			t.Errorf("%s: regime %v, want flow_complete", k, rp.Flow.Regime)
 		}
-		if !rp.Flow.IsExternal(canonical.TxKindDeposit) || !rp.Flow.IsExternal(canonical.TxKindWithdrawal) {
+		if !rp.Flow.IsExternal(canonical.TxKindDeposit, false) || !rp.Flow.IsExternal(canonical.TxKindWithdrawal, false) {
 			t.Errorf("%s: deposit/withdrawal must be external", k)
 		}
-		if rp.Flow.IsExternal(canonical.TxKindBuy) || rp.Flow.IsExternal(canonical.TxKindSell) ||
-			rp.Flow.IsExternal(canonical.TxKindContribution) || rp.Flow.IsExternal(canonical.TxKindDistribution) {
+		if rp.Flow.IsExternal(canonical.TxKindBuy, false) || rp.Flow.IsExternal(canonical.TxKindSell, false) ||
+			rp.Flow.IsExternal(canonical.TxKindContribution, false) || rp.Flow.IsExternal(canonical.TxKindDistribution, false) {
 			t.Errorf("%s: holding legs are INTERNAL (counting both halves cancels every event)", k)
 		}
 		if rp.Flow.IsTransferLike(canonical.TxKindDeposit) || rp.Flow.IsTransferLike(canonical.TxKindWithdrawal) {
 			t.Errorf("%s: deposit/withdrawal must never net", k)
+		}
+		if !rp.Flow.IsExternal(canonical.TxKindTransferIn, true) || !rp.Flow.IsExternal(canonical.TxKindTransferOut, true) {
+			t.Errorf("%s: a ledger transfer leg counts, as on every flow-complete source", k)
 		}
 		if !rp.CapitalCallRisk {
 			t.Errorf("%s: CapitalCallRisk must be set", k)
@@ -84,10 +88,10 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	if ct.Flow.Regime != returns.RegimeCryptoPartial {
 		t.Errorf("cointracking regime %v, want crypto_partial", ct.Flow.Regime)
 	}
-	if !ct.Flow.IsExternal(canonical.TxKindDeposit) || !ct.Flow.IsExternal(canonical.TxKindWithdrawal) {
+	if !ct.Flow.IsExternal(canonical.TxKindDeposit, false) || !ct.Flow.IsExternal(canonical.TxKindWithdrawal, false) {
 		t.Error("cointracking: fiat deposit/withdrawal must be external")
 	}
-	if ct.Flow.IsExternal(canonical.TxKindTransferIn) || ct.Flow.IsExternal(canonical.TxKindTransferOut) {
+	if ct.Flow.IsExternal(canonical.TxKindTransferIn, false) || ct.Flow.IsExternal(canonical.TxKindTransferOut, false) {
 		t.Error("cointracking: crypto transfer legs must be excluded")
 	}
 	if ct.AccountsGrain != returns.AccountsGrainBlanked {
@@ -98,23 +102,23 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	// journal in none, and both net at the coarse grains.
 	fid, _ := returns.ReturnsPolicyFor("fidelity")
 	for _, k := range []canonical.TxKind{canonical.TxKindTransferIn, canonical.TxKindTransferOut, canonical.TxKindJournal} {
-		if !fid.Flow.IsExternal(k) || !fid.Flow.IsTransferLike(k) {
+		if !fid.Flow.IsExternal(k, false) || !fid.Flow.IsTransferLike(k) {
 			t.Errorf("fidelity: %s must be external and transfer-like", k)
 		}
 	}
 
 	// angellist: deposit/withdrawal external; contribution/distribution internal.
 	al, _ := returns.ReturnsPolicyFor("angellist")
-	if !al.Flow.IsExternal(canonical.TxKindDeposit) || !al.Flow.IsExternal(canonical.TxKindWithdrawal) {
+	if !al.Flow.IsExternal(canonical.TxKindDeposit, false) || !al.Flow.IsExternal(canonical.TxKindWithdrawal, false) {
 		t.Error("angellist: deposit/withdrawal must be external")
 	}
-	if al.Flow.IsExternal(canonical.TxKindContribution) || al.Flow.IsExternal(canonical.TxKindDistribution) {
+	if al.Flow.IsExternal(canonical.TxKindContribution, false) || al.Flow.IsExternal(canonical.TxKindDistribution, false) {
 		t.Error("angellist: contribution/distribution are INTERNAL (funding<->deals)")
 	}
 	// The equity-transfer ledger's kinds — an exit paid in shares — are
 	// external and transfer-like, so the vehicle's out-leg counts at its own
 	// grain and nets against the receiving source's in-leg at global.
-	if !al.Flow.IsExternal(canonical.TxKindTransferOut) || !al.Flow.IsExternal(canonical.TxKindTransferIn) {
+	if !al.Flow.IsExternal(canonical.TxKindTransferOut, false) || !al.Flow.IsExternal(canonical.TxKindTransferIn, false) {
 		t.Error("angellist: the ledger's transfer kinds must be external")
 	}
 	if !al.Flow.IsTransferLike(canonical.TxKindTransferOut) || !al.Flow.IsTransferLike(canonical.TxKindTransferIn) {
@@ -130,8 +134,8 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		if rp.Flow.Regime != returns.RegimeFlowComplete {
 			t.Errorf("%s: regime %v, want flow_complete", k, rp.Flow.Regime)
 		}
-		for _, tk := range returns.BankExternal() {
-			if !rp.Flow.IsExternal(tk) {
+		for _, tk := range capitalKinds() {
+			if !rp.Flow.IsExternal(tk, false) {
 				t.Errorf("%s: %s must be external", k, tk)
 			}
 		}
@@ -143,9 +147,9 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		}
 	}
 
-	// The cash-conduit deposit banks: complete ledgers on the shared bank set,
-	// but the accounts are pure plumbing — no rows of their own anywhere,
-	// values and flows still aggregate.
+	// The cash-conduit deposit banks: complete ledgers on the shared bank set.
+	// Their accounts are cash, which the engine hides on any source, so the
+	// policy needs no grain mode of its own.
 	for _, k := range []string{"chase", "firstcitizens", "raiffeisen_at"} {
 		rp, _ := returns.ReturnsPolicyFor(k)
 		if !rp.Flow.Known {
@@ -154,11 +158,11 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		if rp.Flow.Regime != returns.RegimeFlowComplete {
 			t.Errorf("%s: regime %v, want flow_complete", k, rp.Flow.Regime)
 		}
-		if !rp.Flow.IsExternal(canonical.TxKindDeposit) || !rp.Flow.IsExternal(canonical.TxKindWithdrawal) {
+		if !rp.Flow.IsExternal(canonical.TxKindDeposit, false) || !rp.Flow.IsExternal(canonical.TxKindWithdrawal, false) {
 			t.Errorf("%s: deposit/withdrawal must be external", k)
 		}
-		if rp.AccountsGrain != returns.AccountsGrainHidden {
-			t.Errorf("%s: AccountsGrain must be hidden (cash plumbing)", k)
+		if rp.AccountsGrain != returns.AccountsGrainNormal {
+			t.Errorf("%s: AccountsGrain %v, want normal (the engine hides cash)", k, rp.AccountsGrain)
 		}
 	}
 
@@ -166,9 +170,7 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	// drops `card` accounts at the loader — so what the policy declares is
 	// what there is to pin: Known, so the kind never reports
 	// unknown_adapter_policy; the shared bank set, on which none of the card
-	// kinds count as owner capital; and AccountsGrainHidden, which states the
-	// same invisibility a second way and holds if a card-only source ever
-	// emits a non-card account.
+	// kinds count as owner capital.
 	amx, _ := returns.ReturnsPolicyFor("amex")
 	if !amx.Flow.Known {
 		t.Error("amex: policy must be Known (registered)")
@@ -176,19 +178,19 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	if amx.Flow.Regime != returns.RegimeFlowComplete {
 		t.Errorf("amex: regime %v, want flow_complete", amx.Flow.Regime)
 	}
-	for _, tk := range returns.BankExternal() {
-		if !amx.Flow.IsExternal(tk) {
+	for _, tk := range capitalKinds() {
+		if !amx.Flow.IsExternal(tk, false) {
 			t.Errorf("amex: %s must be external", tk)
 		}
 	}
 	for _, tk := range []canonical.TxKind{canonical.TxKindPurchase,
 		canonical.TxKindRefund, canonical.TxKindCardPayment} {
-		if amx.Flow.IsExternal(tk) {
+		if amx.Flow.IsExternal(tk, false) {
 			t.Errorf("amex: %s must not count as owner capital", tk)
 		}
 	}
-	if amx.AccountsGrain != returns.AccountsGrainHidden {
-		t.Error("amex: AccountsGrain must be hidden (a card emits no return row)")
+	if amx.AccountsGrain != returns.AccountsGrainNormal {
+		t.Errorf("amex: AccountsGrain %v, want normal (the engine drops cards)", amx.AccountsGrain)
 	}
 
 	// synthetic: the generic kind cannot know which institution a source
@@ -202,12 +204,12 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 	if syn.Flow.Regime != returns.RegimeFlowComplete {
 		t.Errorf("synthetic: regime %v, want flow_complete", syn.Flow.Regime)
 	}
-	for _, tk := range returns.BankExternal() {
-		if !syn.Flow.IsExternal(tk) {
+	for _, tk := range capitalKinds() {
+		if !syn.Flow.IsExternal(tk, false) {
 			t.Errorf("synthetic: %s must be external", tk)
 		}
 	}
-	for _, tk := range returns.BankTransferLike() {
+	for _, tk := range nettableKinds() {
 		if !syn.Flow.IsTransferLike(tk) {
 			t.Errorf("synthetic: %s must be transfer-like", tk)
 		}
@@ -238,4 +240,26 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 			t.Errorf("%s: registers no policy, must fall to Known=false default", k)
 		}
 	}
+}
+
+// capitalKinds and nettableKinds are the kinds the one table marks capital
+// and nettable (canonical.CapitalKind).
+func capitalKinds() []canonical.TxKind {
+	var out []canonical.TxKind
+	for _, k := range canonical.TxKinds() {
+		if c, _ := canonical.CapitalKind(k); c {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func nettableKinds() []canonical.TxKind {
+	var out []canonical.TxKind
+	for _, k := range canonical.TxKinds() {
+		if _, n := canonical.CapitalKind(k); n {
+			out = append(out, k)
+		}
+	}
+	return out
 }

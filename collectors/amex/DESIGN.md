@@ -769,7 +769,7 @@ adapter (`wealthdb/internal/silver/bank`), as chase does. Each card is a
 `canonical.AccountKindCard`, and the bank adapter negates the owed
 balance into gold's canonical negative cash at exactly one point. Credit
 limit and available credit never become balance rows. Its
-`silver.Source` states `returns.CardIssuerPolicy()`, and fixture tests
+`silver.Source` states the bank returns policy, and fixture tests
 cover it. The merchant-category
 translation and the `card_spend` pairing are in
 [`wealthdb/docs/adapters/amex.md`](../../wealthdb/docs/adapters/amex.md).

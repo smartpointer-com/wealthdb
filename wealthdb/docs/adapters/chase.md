@@ -283,12 +283,12 @@ Three decisions of record:
 
 ## 7. Returns treatment
 
-The source registers `returns.DepositBankPolicy()` in its
-`silver.Source` (`internal/silver/chase/adapter.go`): regime `flow_complete`, the
-standard bank external-capital set, and `AccountsGrainHidden`.
+The source registers the bank policy in its `silver.Source`
+(`internal/silver/chase/adapter.go`): regime `flow_complete` and the
+standard bank external-capital set.
 
-`AccountsGrainHidden` governs the **deposit** accounts: they emit
-no per-account return rows at any grain — a deposit account is pure
+A **deposit** account is a `cash` account, which the engine hides on
+any source: it emits no per-account return rows at any grain — it is pure
 cash plumbing whose rows are noise (a drained-then-refunded account
 chains a permanent −100%) — while their balances and flows still
 enter every aggregate, where transfer legs against tracked sources

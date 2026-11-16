@@ -169,9 +169,8 @@ type Config struct {
 	// ReturnsPolicy, keyed by silver_sources[].id (NOT adapter kind — two
 	// sources sharing an adapter override independently). Partial: only the
 	// set fields change; every other knob keeps what the source's silver
-	// package registers. `flow_regime` replaces the whole flow
-	// classification with the named regime's canonical kind sets — the
-	// escape hatch for a deployment whose data completeness differs from
+	// package registers. `flow_regime` replaces the source's flow
+	// completeness with the named regime — the escape hatch for a deployment whose data completeness differs from
 	// the registered default (e.g. pin a flow-counting source back to
 	// "nav_only" when its silver carries no transaction history).
 	// `accounts_grain` sets the per-account display mode ("normal" |

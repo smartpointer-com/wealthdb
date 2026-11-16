@@ -55,8 +55,8 @@ const kindName = "relevate"
 
 // init registers the kind (silver.Source).
 //
-// Returns: flow-complete bank/pension, the standard bank external and
-// transfer-like sets, forward knobs defaulted (no-op).
+// Returns: flow-complete bank/pension (every capital kind counts),
+// forward knobs defaulted (no-op).
 func init() {
 	rp := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
 	silver.Register(silver.Source{

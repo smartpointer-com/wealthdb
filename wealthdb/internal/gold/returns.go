@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -154,8 +155,8 @@ func entityHidden(g *grain, members []*accountData, h *ReturnsHide) bool {
 // ReturnsPolicyOverride carries one source's config-side policy adjustments
 // (wealthdb.cfg `returns_policy_overrides`, translated by the CLI). Nil
 // pointer fields keep the registered policy's values. A FlowRegime override
-// replaces the whole flow classification with the regime's canonical kind
-// sets (returns.FlowPolicyForRegime); it also marks the policy Known — an
+// replaces the source's flow completeness (returns.NewFlowPolicy); it also
+// marks the policy Known — an
 // explicitly declared classification is not an unknown-adapter condition.
 type ReturnsPolicyOverride struct {
 	FlowRegime    *returns.Regime
@@ -829,15 +830,14 @@ func appendSeries(byKey map[string]*accountData, holdings *holdingsSpine, kinds,
 
 // applyPolicyOverride composes a source's config-side override (if any) on
 // top of its registered policy. A FlowRegime override swaps in the regime's
-// canonical FlowPolicy wholesale (kind sets included); unset fields leave the
-// registered values untouched.
+// FlowPolicy; unset fields leave the registered values untouched.
 func applyPolicyOverride(rp returns.ReturnsPolicy, ov map[string]ReturnsPolicyOverride, src string) returns.ReturnsPolicy {
 	o, ok := ov[src]
 	if !ok {
 		return rp
 	}
 	if o.FlowRegime != nil {
-		rp.Flow = returns.FlowPolicyForRegime(*o.FlowRegime)
+		rp.Flow = returns.NewFlowPolicy(*o.FlowRegime)
 	}
 	if o.AccountsGrain != nil {
 		rp.AccountsGrain = *o.AccountsGrain
@@ -1049,7 +1049,7 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 		a.cryptoExcluded = true
 		return false
 	}
-	if !a.policy.IsExternal(kind) {
+	if !a.policy.IsExternal(kind, strings.HasPrefix(txID, canonical.LedgerTransferIDPrefix)) {
 		return false
 	}
 	val, ok := parseFloatPtr(valueOut)

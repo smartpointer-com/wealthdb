@@ -73,8 +73,8 @@ const kindName = "fidelity"
 
 // init registers the kind (silver.Source).
 //
-// Returns: flow-complete bank/pension, the standard bank external and
-// transfer-like sets, forward knobs defaulted (no-op). The statements
+// Returns: flow-complete bank/pension (every capital kind counts),
+// forward knobs defaulted (no-op). The statements
 // and the API state a corporate action's cash signed, and the adapter
 // passes it through (canonical.CashSignedKinds); the svb families load
 // as this kind.

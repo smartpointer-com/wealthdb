@@ -30,8 +30,8 @@ import (
 // resolves it by adapter kind exactly as it resolves adapters (silver.Get), and
 // never enumerates sources itself.
 type ReturnsPolicy struct {
-	// Flow is the flow-classification policy (regime + external / transfer-like
-	// kind sets); ReturnsPolicyFor(kind).Flow exposes exactly this member.
+	// Flow is the flow-classification policy (the source's completeness);
+	// ReturnsPolicyFor(kind).Flow exposes exactly this member.
 	Flow FlowPolicy
 
 	// ---- consumed knobs ----

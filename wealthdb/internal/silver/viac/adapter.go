@@ -47,8 +47,8 @@ const kindName = "viac"
 
 // init registers the kind (silver.Source).
 //
-// Returns: flow-complete bank/pension, the standard bank external and
-// transfer-like sets, forward knobs defaulted (no-op).
+// Returns: flow-complete bank/pension (every capital kind counts),
+// forward knobs defaulted (no-op).
 // Lots: shadow at the average method. The source states an average cost
 // for its positions and no lots, so the replay fills nothing; `gains
 // check` compares its ledger with the stated cost (docs/LOTS.md §6, §9).

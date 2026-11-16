@@ -18,16 +18,13 @@ func TestReturnsPolicyForUnknownDefault(t *testing.T) {
 	if u.Known {
 		t.Error("unknown adapter must report Known=false")
 	}
-	// The default is the conservative bank set (differs from BankFlowPolicy only
-	// by Known=false).
-	for _, k := range BankExternal() {
-		if !u.IsExternal(k) {
-			t.Errorf("default fallback: %s must be external", k)
-		}
-	}
-	for _, k := range BankTransferLike() {
-		if !u.IsTransferLike(k) {
-			t.Errorf("default fallback: %s must be transfer-like", k)
+	// The default is the flow-complete regime (it differs from
+	// BankFlowPolicy only by Known=false): every capital kind counts.
+	for _, k := range canonical.TxKinds() {
+		capital, nettable := canonical.CapitalKind(k)
+		if u.IsExternal(k, false) != capital || u.IsTransferLike(k) != nettable {
+			t.Errorf("default fallback: %s external=%v transfer-like=%v, want %v %v",
+				k, u.IsExternal(k, false), u.IsTransferLike(k), capital, nettable)
 		}
 	}
 	if u.Regime != RegimeFlowComplete {
@@ -42,8 +39,9 @@ func TestBankFlowPolicyShape(t *testing.T) {
 	if !bank.Known {
 		t.Error("BankFlowPolicy must be Known")
 	}
-	for _, k := range BankExternal() {
-		if !bank.IsExternal(k) {
+	for _, k := range []canonical.TxKind{canonical.TxKindDeposit, canonical.TxKindWithdrawal,
+		canonical.TxKindTransferIn, canonical.TxKindTransferOut, canonical.TxKindJournal} {
+		if !bank.IsExternal(k, false) {
 			t.Errorf("bank: %s must be external", k)
 		}
 	}
@@ -121,6 +119,36 @@ func TestExternalKindSignsMatchCanonical(t *testing.T) {
 		}
 		if got := signed.Sign(); got != dir {
 			t.Errorf("%s: canonical sign=%d, want %d", k, got, dir)
+		}
+	}
+}
+
+// TestCompletenessCells pins what each regime counts: every capital kind
+// when complete, the fiat kinds (the capital kinds that never net) when
+// fiat only, and only the ledger's legs when none. No regime counts a kind
+// outside the table, and nettability is the table's alone.
+func TestCompletenessCells(t *testing.T) {
+	for _, k := range canonical.TxKinds() {
+		capital, nettable := canonical.CapitalKind(k)
+		for _, ledger := range []bool{false, true} {
+			cells := map[Regime]bool{
+				RegimeFlowComplete:  capital,
+				RegimeCryptoPartial: capital && !nettable,
+				RegimeNavOnly:       capital && ledger,
+			}
+			for r, want := range cells {
+				if got := NewFlowPolicy(r).IsExternal(k, ledger); got != want {
+					t.Errorf("%s %s ledger=%v: external %v, want %v", r, k, ledger, got, want)
+				}
+				if got := NewFlowPolicy(r).IsTransferLike(k); got != nettable {
+					t.Errorf("%s %s: transfer-like %v, want %v", r, k, got, nettable)
+				}
+			}
+		}
+	}
+	for _, k := range []canonical.TxKind{canonical.TxKindDeposit, canonical.TxKindWithdrawal} {
+		if c, n := canonical.CapitalKind(k); !c || n {
+			t.Errorf("%s: capital=%v nettable=%v, want capital and never netted", k, c, n)
 		}
 	}
 }

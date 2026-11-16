@@ -169,8 +169,8 @@ series at any grain**.
 [../RETURNS-NOTES.md](../RETURNS-NOTES.md#credit-cards-are-returns-invisible)
 says why, and why the cash leg that pays the card is a real outflow.
 
-The source still registers a `ReturnsPolicy`
-(`returns.CardIssuerPolicy`). A source without one falls to a
+The source still registers a `ReturnsPolicy` (the bank policy). A
+source without one falls to a
 conservative default and is reported as `unknown_adapter_policy`.
 
 ## 7. Spending — where this source earns its keep

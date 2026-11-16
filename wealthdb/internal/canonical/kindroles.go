@@ -121,6 +121,12 @@ type TxKindRow struct {
 	// SpendFloor is the same for the spending side, where it does not
 	// depend on the account (spend_txn_categories).
 	SpendFloor string
+	// Capital is a kind that moves owner capital across a returns
+	// boundary: an external flow, where the account's source counts it
+	// (returns.Regime). Nettable is a capital kind the returns netter may
+	// pair; a deposit or withdrawal never nets by heuristic, because two
+	// of one size can be two real movements.
+	Capital, Nettable bool
 }
 
 // txKindRows are the transaction kinds, in the order of their
@@ -138,8 +144,8 @@ var txKindRows = []TxKindRow{
 	{Kind: TxKindDistribution, Income: SideAny, IncomeFloor: IncomeDetailedCapitalReturn},
 	{Kind: TxKindFee, Spending: SideAny},
 	{Kind: TxKindTax, Spending: SideAny, SpendFloor: SpendDetailedWithholdingTax},
-	{Kind: TxKindDeposit, Income: SideAny, MatcherPool: true},
-	{Kind: TxKindWithdrawal, Spending: SideAny, MatcherPool: true},
+	{Kind: TxKindDeposit, Income: SideAny, MatcherPool: true, Capital: true},
+	{Kind: TxKindWithdrawal, Spending: SideAny, MatcherPool: true, Capital: true},
 	{Kind: TxKindPurchase, Spending: SideAny},
 	{Kind: TxKindRefund, Spending: SideAny},
 	{Kind: TxKindCardPayment, MatcherPool: true},
@@ -148,14 +154,37 @@ var txKindRows = []TxKindRow{
 	{Kind: TxKindFxForward, Unsigned: true},
 	{Kind: TxKindFxSwap, Unsigned: true},
 	{Kind: TxKindCorporateAction, Unsigned: true},
-	{Kind: TxKindTransferIn, MatcherPool: true},
-	{Kind: TxKindTransferOut, MatcherPool: true},
-	{Kind: TxKindJournal, Unsigned: true},
+	{Kind: TxKindTransferIn, MatcherPool: true, Capital: true, Nettable: true},
+	{Kind: TxKindTransferOut, MatcherPool: true, Capital: true, Nettable: true},
+	{Kind: TxKindJournal, Unsigned: true, Capital: true, Nettable: true},
 	{Kind: TxKindOther, Unsigned: true},
 }
 
 // TxKindRows returns the transaction kind table. A copy.
 func TxKindRows() []TxKindRow { return slices.Clone(txKindRows) }
+
+// capitalKinds maps each capital kind to whether it is nettable.
+var capitalKinds = func() map[TxKind]bool {
+	out := map[TxKind]bool{}
+	for _, r := range txKindRows {
+		if r.Capital {
+			out[r.Kind] = r.Nettable
+		}
+	}
+	return out
+}()
+
+// CapitalKind reports whether a kind moves owner capital (TxKindRow.Capital),
+// and whether the returns netter may pair it (TxKindRow.Nettable).
+func CapitalKind(k TxKind) (capital, nettable bool) {
+	nettable, capital = capitalKinds[k]
+	return capital, nettable
+}
+
+// LedgerTransferIDPrefix starts the transaction id of every leg the
+// equity-transfer ledger asserts (docs/DESIGN.md §13.9): a hand-stated row,
+// no collected one.
+const LedgerTransferIDPrefix = "xfer:"
 
 // kindsWhere are the kinds whose row has the role, in table order.
 func kindsWhere(role func(TxKindRow) bool) []TxKind {

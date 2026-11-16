@@ -1,7 +1,6 @@
 package manual
 
 import (
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
@@ -12,24 +11,18 @@ import (
 // the value series, its MWR stays n/a, and the regime's honesty tags stay
 // on.
 //
-// The external set admits the two equity-transfer-ledger kinds, and only
-// those: value can reach this book from another tracked vehicle with no
-// bank in between, and the ledger row that supplies the cash half of
-// such a move lands here as a transfer_in or transfer_out (docs/DESIGN.md
-// §13.9; the runbook is collectors/manual/DESIGN.md §6). A sell is the
-// internal half of an exit, whose cash the banks book, so it is no flow.
-// No transfer-like set: a ledger leg has nothing on this source to net
-// against.
+// Under that regime only the equity-transfer ledger's legs count: value
+// can reach this book from another tracked vehicle with no bank in
+// between, and the ledger row that supplies the cash half of such a move
+// lands here as a transfer_in or transfer_out (docs/DESIGN.md §13.9; the
+// runbook is collectors/manual/DESIGN.md §6). A sell is the internal half
+// of an exit, whose cash the banks book, so it is no flow.
 //
 // Closure is ledger-exact, as on the other sources whose flows are
 // hand-dated: a release leg dated the day a claim is marked to zero is a
 // real exit, not a stray to be subsumed into a closing tail.
 func returnsPolicy() *returns.ReturnsPolicy {
-	p := returns.DefaultReturnsPolicy(
-		returns.NewFlowPolicy(returns.RegimeNavOnly,
-			[]canonical.TxKind{canonical.TxKindTransferIn, canonical.TxKindTransferOut},
-			nil),
-	)
+	p := returns.DefaultReturnsPolicy(returns.NewFlowPolicy(returns.RegimeNavOnly))
 	p.ClosureScope = returns.ClosureLedgerExact
 	return &p
 }

@@ -87,15 +87,14 @@ func TestPolicyOverrideFlowRegime(t *testing.T) {
 	}
 }
 
-// TestPolicyOverrideAccountsGrain pins the accounts_grain override in the
-// restoring direction: chase registers hidden plumbing by default (see
-// internal/silver/chase/policy.go), so its rows are absent everywhere — and
-// the "normal" override brings back an account the policy hid. It cannot
-// bring back a cash account, which hides whatever the policy says.
+// TestPolicyOverrideAccountsGrain pins the accounts_grain override both
+// ways: "hidden" takes a source's accounts out of every grain, and "normal"
+// brings them back. Neither brings back a cash account, which hides whatever
+// the policy says.
 func TestPolicyOverrideAccountsGrain(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	seedReturnsSource(t, db, ctx, "chx", "chase")
+	seedReturnsSource(t, db, ctx, "chx", "schwab")
 
 	a, b := dy(2024, time.January, 2), dy(2024, time.December, 30)
 	seedAcct(t, db, ctx, "chx", "SWEEP", canonical.AccountKindBrokerage, nil,
@@ -104,16 +103,18 @@ func TestPolicyOverrideAccountsGrain(t *testing.T) {
 		[]snap{{a, 900}, {b, 950}}, nil)
 	end := eod(2024, time.December, 30)
 
-	rows, err := RunReturns(ctx, db, params("accounts", 0, end))
+	hidden := returns.AccountsGrainHidden
+	p := params("accounts", 0, end)
+	p.PolicyOverrides = map[string]ReturnsPolicyOverride{"chx": {AccountsGrain: &hidden}}
+	rows, err := RunReturns(ctx, db, p)
 	if err != nil {
 		t.Fatalf("RunReturns: %v", err)
 	}
 	if _, ok := summaryFor(rows, "SWEEP"); ok {
-		t.Fatal("hidden plumbing must emit no accounts row without the override")
+		t.Fatal("the hidden override must leave no accounts row")
 	}
 
 	normal := returns.AccountsGrainNormal
-	p := params("accounts", 0, end)
 	p.PolicyOverrides = map[string]ReturnsPolicyOverride{"chx": {AccountsGrain: &normal}}
 	rows, err = RunReturns(ctx, db, p)
 	if err != nil {
@@ -159,7 +160,7 @@ func TestPolicyOverrideMultiLoader(t *testing.T) {
 	if acct == nil {
 		t.Fatal("multi loader missing man/RE")
 	}
-	if acct.policy.Regime != returns.RegimeFlowComplete || !acct.policy.IsExternal(canonical.TxKindDeposit) {
+	if acct.policy.Regime != returns.RegimeFlowComplete || !acct.policy.IsExternal(canonical.TxKindDeposit, false) {
 		t.Errorf("multi loader must apply the override (regime=%v)", acct.policy.Regime)
 	}
 }

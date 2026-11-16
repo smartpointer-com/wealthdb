@@ -59,10 +59,10 @@ SELECT MIN(t), MAX(t) FROM (
 var adapter = bank.New(bank.Source{
 	Kind:            kindName,
 	DefaultCurrency: "USD",
-	// See returns.CardIssuerPolicy for why a card contributes nothing to
-	// returns at any grain, and gold.returnsInvisibleKind for where they
-	// are dropped.
-	Returns: returns.CardIssuerPolicy(),
+	// The bank policy, declared so the source is no unknown adapter. A
+	// card contributes nothing to returns at any grain: the engine drops
+	// it at load (gold.returnsInvisibleKind).
+	Returns: returns.DefaultReturnsPolicy(returns.BankFlowPolicy()),
 	// The shared load clock (silver.LoadClock): this source has no change
 	// feed of its own, so a loaded dump is the trigger and a full re-emit
 	// is the response.

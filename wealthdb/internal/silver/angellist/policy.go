@@ -1,7 +1,6 @@
 package angellist
 
 import (
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
@@ -10,22 +9,14 @@ import (
 // contribution/distribution are INTERNAL (funding wallet <-> tracked deals) and
 // are deliberately NOT external.
 //
-// transfer_in/transfer_out are external and transfer-like. The adapter never
-// emits them; only the equity-transfer ledger does (docs/DESIGN.md §13.9),
+// transfer_in/transfer_out are external and nettable, as on every
+// flow-complete source. The adapter never emits them; only the
+// equity-transfer ledger does (docs/DESIGN.md §13.9),
 // for an exit paid in shares: the vehicle's out-leg, dated and valued as the
 // receiving brokerage's in-leg, so the vehicle realizes its gain on the day
 // the shares leave and the pair nets in every aggregate holding both
 // accounts. Forward knobs defaulted.
 func returnsPolicy() *returns.ReturnsPolicy {
-	p := returns.DefaultReturnsPolicy(
-		returns.NewFlowPolicy(
-			returns.RegimeFlowComplete,
-			[]canonical.TxKind{
-				canonical.TxKindDeposit, canonical.TxKindWithdrawal,
-				canonical.TxKindTransferIn, canonical.TxKindTransferOut,
-			},
-			[]canonical.TxKind{canonical.TxKindTransferIn, canonical.TxKindTransferOut},
-		),
-	)
+	p := returns.DefaultReturnsPolicy(returns.BankFlowPolicy())
 	return &p
 }

@@ -22,8 +22,8 @@ const kindName = "schwab"
 
 // init registers the kind (silver.Source).
 //
-// Returns: flow-complete bank/pension, the standard bank external and
-// transfer-like sets, forward knobs defaulted (no-op). The API states a
+// Returns: flow-complete bank/pension (every capital kind counts),
+// forward knobs defaulted (no-op). The API states a
 // corporate action's cash signed, and the adapter passes it through
 // (canonical.CashSignedKinds).
 func init() {

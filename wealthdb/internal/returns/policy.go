@@ -6,24 +6,28 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// Regime classifies how much of an entity's return is recoverable from flows.
+// Regime is a source's flow completeness: which of its collected rows of
+// the capital kinds (canonical.CapitalKind) are owner capital. A leg the
+// equity-transfer ledger asserts is hand-stated, not collected, and counts
+// under every regime but crypto's.
 type Regime int
 
 const (
-	// RegimeFlowComplete: real external flows exist (banks, pension, angellist);
-	// TWR and MWR are both valid.
+	// RegimeFlowComplete: the ledger is complete; every capital kind counts
+	// (banks, pension, the private-market ledgers). TWR and MWR are both
+	// valid.
 	RegimeFlowComplete Regime = iota
-	// RegimeCryptoPartial: only fiat flows are usable; crypto transfer legs are
-	// an unclassifiable mix (internal moves + airdrops/gifts) and are excluded
-	// (cointracking). TWR from the value series + fiat flows; MWR partial.
+	// RegimeCryptoPartial: fiat only. Deposits and withdrawals count; crypto
+	// transfer legs are an unclassifiable mix (internal moves and
+	// airdrops/gifts) and are excluded (cointracking). TWR from the value
+	// series and the fiat flows; MWR partial.
 	RegimeCryptoPartial
-	// RegimeNavOnly: no collected external flows (manual — its wires are
-	// already captured by the bank collectors). Returns from the NAV / value
-	// series; MWR = n/a on the source alone; TWR reliable only while capital
-	// is static after onboarding (nav_only_capital_call_risk). The regime
-	// does not force the kind sets empty: a source may still admit the
-	// hand-asserted ledger kinds (transfer_in / transfer_out) for value that
-	// moved in from another tracked vehicle rather than from a bank.
+	// RegimeNavOnly: none. No collected row counts (manual — its wires are
+	// already captured by the bank collectors); only the ledger's legs do,
+	// for value that moved in from another tracked vehicle rather than from
+	// a bank. Returns from the NAV / value series; MWR = n/a on the source
+	// alone; TWR reliable only while capital is static after onboarding
+	// (nav_only_capital_call_risk).
 	RegimeNavOnly
 )
 
@@ -39,144 +43,73 @@ func (r Regime) String() string {
 	return "unknown"
 }
 
-// FlowPolicy is the per-adapter rule for turning transactions into return flows.
-// Verified against every transaction-bearing adapter's kindmap (see
-// RETURNS-NOTES.md).
+// FlowPolicy is the per-adapter rule for turning transactions into return
+// flows: the source's completeness. Which kinds move capital, and which of
+// them net, is one table for every source (canonical.CapitalKind).
 type FlowPolicy struct {
 	Regime Regime
 	// Known is false for an unrecognised adapter kind; the caller surfaces
-	// unknown_adapter_policy and falls back to the conservative bank set.
+	// unknown_adapter_policy and falls back to the flow-complete regime.
 	Known bool
-	// external is the set of TxKinds that count as external owner capital for
-	// this adapter. The adapter has already encoded distinctions like
-	// fiat-vs-crypto into the kind (cointracking: fiat→deposit, crypto→
-	// transfer_in), so a kind-level set suffices.
-	external map[canonical.TxKind]bool
-	// transferLike is the subset that participates in coarse-grain netting.
-	transferLike map[canonical.TxKind]bool
 }
 
-// IsExternal reports whether a kind is an external owner-capital flow under this
-// policy.
-func (p FlowPolicy) IsExternal(k canonical.TxKind) bool { return p.external[k] }
+// IsExternal reports whether a row of kind k is an external owner-capital
+// flow under this policy. ledger marks a leg the equity-transfer ledger
+// asserts.
+func (p FlowPolicy) IsExternal(k canonical.TxKind, ledger bool) bool {
+	capital, nettable := canonical.CapitalKind(k)
+	switch {
+	case !capital:
+		return false
+	case p.Regime == RegimeCryptoPartial:
+		return !nettable
+	case p.Regime == RegimeNavOnly:
+		return ledger
+	}
+	return true
+}
 
 // IsTransferLike reports whether a kind participates in coarse-grain netting.
-func (p FlowPolicy) IsTransferLike(k canonical.TxKind) bool { return p.transferLike[k] }
-
-func set(ks ...canonical.TxKind) map[canonical.TxKind]bool {
-	m := make(map[canonical.TxKind]bool, len(ks))
-	for _, k := range ks {
-		m[k] = true
-	}
-	return m
+func (p FlowPolicy) IsTransferLike(k canonical.TxKind) bool {
+	_, nettable := canonical.CapitalKind(k)
+	return nettable
 }
 
-// NewFlowPolicy constructs a FlowPolicy from the given regime and external /
-// transfer-like kind sets. It is the exported constructor silver packages use to
-// declare their co-located policy (the external/transferLike sets are unexported
-// map fields, so a constructor is required to build byte-identical sets from
-// outside the package). Known is set true — a registered policy is by definition
-// a recognised adapter; the Known=false shape is reserved for the ReturnsPolicyFor
-// miss-fallback (see defaultFlowPolicy).
-func NewFlowPolicy(regime Regime, external, transferLike []canonical.TxKind) FlowPolicy {
-	return FlowPolicy{
-		Regime:       regime,
-		Known:        true,
-		external:     set(external...),
-		transferLike: set(transferLike...),
-	}
+// NewFlowPolicy is the registered flow policy of a source of the given
+// completeness. Known is set true — a registered policy is by definition a
+// recognised adapter; the Known=false shape is reserved for the
+// ReturnsPolicyFor miss-fallback (see defaultFlowPolicy). A config-side regime
+// override replaces a source's policy with this one too.
+func NewFlowPolicy(regime Regime) FlowPolicy {
+	return FlowPolicy{Regime: regime, Known: true}
 }
 
-// BankExternal is the standard flow-complete external kind set. Including kinds
-// an adapter never emits (e.g. a deposit bank emits no journal) is harmless — no
-// such transactions exist — and keeps the policy robust to adapter evolution.
-// Exported as BankFlowPolicy's building block and for the policy-shape tests.
-func BankExternal() []canonical.TxKind {
-	return []canonical.TxKind{
-		canonical.TxKindDeposit, canonical.TxKindWithdrawal,
-		canonical.TxKindTransferIn, canonical.TxKindTransferOut,
-		canonical.TxKindJournal,
-	}
-}
-
-// BankTransferLike is the standard flow-complete transfer-like (netting) subset.
-func BankTransferLike() []canonical.TxKind {
-	return []canonical.TxKind{
-		canonical.TxKindTransferIn, canonical.TxKindTransferOut, canonical.TxKindJournal,
-	}
-}
-
-// BankFlowPolicy is the flow policy shared by the flow-complete banks/pension
-// (ubs, schwab, swissquote, fidelity, relevate, viac). relevate (P2) and viac
-// (P3a) map pension contributions to `deposit`, not `contribution`, so the bank
-// set covers them, as it does fidelity's wires, transfers and journals.
-func BankFlowPolicy() FlowPolicy {
-	return NewFlowPolicy(RegimeFlowComplete, BankExternal(), BankTransferLike())
-}
-
-// DepositBankPolicy is the shared policy of the flow-complete deposit-bank
-// collectors (checking / savings / money-market conduits). The ledger is the
-// complete cash history, so the standard bank external set applies (such
-// adapters emit only deposit/withdrawal/interest/fee; the set's unused
-// transfer/journal kinds are harmless). AccountsGrainHidden: a deposit
-// account is pure cash plumbing — money passes through it between other
-// sources — so its rows are noise at every grain (a drained-then-refunded
-// account chains a permanent −100%) and none are emitted; the balances and
-// flows still enter every aggregate, where transfer legs against tracked
-// sources cancel. The engine hides a cash account on any source
-// (gold.hiddenConstituent); the policy says it for the whole source, so it
-// holds for an account of another kind such a source ever emits.
-func DepositBankPolicy() ReturnsPolicy {
-	p := DefaultReturnsPolicy(BankFlowPolicy())
-	p.AccountsGrain = AccountsGrainHidden
-	return p
-}
-
-// CardIssuerPolicy is the shared policy of the card-only collectors — a
-// source whose every account is a revolving-credit or charge card.
-//
-// It changes no return figure and cannot: the engine drops `card` accounts at
-// the loader (gold.returnsInvisibleKind), because a card's balance swings are
-// purchases and payments, and running them through TWR/MWR would report
-// shopping as performance. The policy exists so the source DECLARES that
-// rather than falling through to the unknown-adapter default, which is
-// reported as a data-quality warning. AccountsGrainHidden states the same
-// thing a second way, and holds if a card-only source ever also emits a
-// non-card account.
-func CardIssuerPolicy() ReturnsPolicy {
-	p := DefaultReturnsPolicy(BankFlowPolicy())
-	p.AccountsGrain = AccountsGrainHidden
-	return p
-}
+// BankFlowPolicy is the flow-complete policy the banks, the pensions and the
+// deposit and card collectors register.
+func BankFlowPolicy() FlowPolicy { return NewFlowPolicy(RegimeFlowComplete) }
 
 // PrivateMarketLedgerPolicy is the shared policy of private-market collectors
 // whose cash-flow ledger is complete double-entry on the custody account: the
 // deposit/withdrawal legs are real dated cash crossings of the source
 // boundary, so they count as external capital, while
 // buy/sell/contribution/distribution are the internal halves of those pairs
-// and must NOT count — marking both legs external would cancel every event to
-// a net-0 flow. No transfer-like set: deposit/withdrawal never participate in
-// netting. CapitalCallRisk keeps the nav_only_capital_call_risk tag on any
-// window that observes no flows (a positions-only silver), so value-growth
+// and are no capital kind. CapitalCallRisk keeps the
+// nav_only_capital_call_risk tag on any window that observes no flows (a positions-only silver), so value-growth
 // returns stay flagged when the ledger is absent. ClosureLedgerExact: an
 // exit's withdrawal legs are the realized proceeds, dated on the exit day
 // itself (the adapter emits a zero snapshot there), so a full-portfolio
 // closure books the real proceeds and the realized-vs-last-mark delta shows
 // as return.
 func PrivateMarketLedgerPolicy() ReturnsPolicy {
-	p := DefaultReturnsPolicy(NewFlowPolicy(
-		RegimeFlowComplete,
-		[]canonical.TxKind{canonical.TxKindDeposit, canonical.TxKindWithdrawal},
-		nil,
-	))
+	p := DefaultReturnsPolicy(BankFlowPolicy())
 	p.CapitalCallRisk = true
 	p.ClosureScope = ClosureLedgerExact
 	return p
 }
 
-// defaultFlowPolicy is the ReturnsPolicyFor miss-fallback: the conservative bank
-// set with Known=false so the caller surfaces unknown_adapter_policy. It differs
-// from BankFlowPolicy ONLY by Known=false.
+// defaultFlowPolicy is the ReturnsPolicyFor miss-fallback: the flow-complete
+// regime with Known=false so the caller surfaces unknown_adapter_policy. It
+// differs from BankFlowPolicy ONLY by Known=false.
 func defaultFlowPolicy() FlowPolicy {
 	p := BankFlowPolicy()
 	p.Known = false
@@ -195,24 +128,4 @@ func ParseRegime(s string) (Regime, error) {
 		return RegimeNavOnly, nil
 	}
 	return 0, fmt.Errorf("unknown flow regime %q (want flow_complete, crypto_partial, or nav_only)", s)
-}
-
-// FlowPolicyForRegime returns the named regime's bare FlowPolicy:
-// flow_complete → the bank sets, crypto_partial → fiat deposit/withdrawal
-// external with no netting set (cointracking's shape), nav_only → no
-// counted kinds. A source's registered default may be wider than its
-// regime's bare shape — manual is nav_only and still admits the two
-// ledger kinds — and an override does not carry that: a config-side
-// regime override REPLACES a source's whole flow classification with
-// this shape, because swapping only the enum would leave the old kind
-// sets attached, a hybrid no regime defines.
-func FlowPolicyForRegime(r Regime) FlowPolicy {
-	switch r {
-	case RegimeCryptoPartial:
-		return NewFlowPolicy(RegimeCryptoPartial,
-			[]canonical.TxKind{canonical.TxKindDeposit, canonical.TxKindWithdrawal}, nil)
-	case RegimeNavOnly:
-		return NewFlowPolicy(RegimeNavOnly, nil, nil)
-	}
-	return BankFlowPolicy()
 }

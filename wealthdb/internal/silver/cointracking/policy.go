@@ -1,7 +1,6 @@
 package cointracking
 
 import (
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
@@ -9,7 +8,7 @@ import (
 // deposit/withdrawal are real external capital. Crypto transfer_in/out are an
 // unclassifiable mix (wallet-to-wallet internal + airdrops/gifts which are
 // return) with no discriminator surviving to gold -> excluded (flag
-// crypto_unclassified_transfers). No transfer-like set.
+// crypto_unclassified_transfers). Deposits and withdrawals never net.
 //
 // Two source-scoped knobs depart from the defaults:
 //   - OnboardScope=OnboardNone: cold-storage wallets debut mid-window funded by
@@ -21,13 +20,7 @@ import (
 //     with TWR/MWR blanked; the portfolios grain and up stay valid, so returns
 //     are reported per portfolio and above.
 func returnsPolicy() *returns.ReturnsPolicy {
-	p := returns.DefaultReturnsPolicy(
-		returns.NewFlowPolicy(
-			returns.RegimeCryptoPartial,
-			[]canonical.TxKind{canonical.TxKindDeposit, canonical.TxKindWithdrawal},
-			nil,
-		),
-	)
+	p := returns.DefaultReturnsPolicy(returns.NewFlowPolicy(returns.RegimeCryptoPartial))
 	p.OnboardScope = returns.OnboardNone
 	p.AccountsGrain = returns.AccountsGrainBlanked
 	return &p

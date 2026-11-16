@@ -4,9 +4,8 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
-// returnsPolicy is the kind's ReturnsPolicy: flow_complete on the
-// shared bank external and transfer-like sets, every other knob at its
-// default.
+// returnsPolicy is the kind's ReturnsPolicy: flow_complete, so every
+// capital kind counts, every other knob at its default.
 //
 // A generic kind cannot know which institution a source models — one
 // synthetic silver may stand for a bank, the next for a broker, a crypto
