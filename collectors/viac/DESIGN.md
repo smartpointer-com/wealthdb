@@ -254,7 +254,11 @@ same `positions` / `cash_balances` tables as the live scrapes,
 tagged `source = 'report:<docid>'` and keyed on the as-of date
 (which never collides with the live scrape timestamps). Re-parsing
 the same stable report across successive dumps converges
-(`INSERT OR REPLACE`). Reconstructed rows reconcile to the cent
+(`INSERT OR REPLACE`), and each report's earlier rows are dropped
+first. Each read is recorded with its parser generation
+(`document_derivations`). After the dumps, `load` reads every indexed
+report the current generation has not read, from its stored PDF, so a
+parser change reaches the whole archive at the next load. Reconstructed rows reconcile to the cent
 against each report's printed "Balance in CHF". Instruments held
 only historically (a fund merged away, for example) enter the
 `instruments` catalogue through this path, and live instruments
@@ -288,7 +292,7 @@ creates no run dir. The viac specifics:
 
 ## 6. Silver schema
 
-Materialised in [`migrations/`](migrations/) (0001 to 0005);
+Materialised in [`migrations/`](migrations/) (0001 to 0006);
 read those files for column-level commentary, this section for
 the overview.
 
@@ -303,7 +307,7 @@ the overview.
 | `transactions` | `transaction_external_id` | One row per event from `/p3a/portfolio/transactions`. `transaction_external_id` synthesised per §3.3. `kind` is the canonical mapping (`buy`, `sell`, `dividend`, `interest`, `fee`, `deposit`, `corporate_action`, `other`). `instrument_external_id` (migration 0005) is the ISIN of the one instrument whose `name` equals the transaction's `description`; NULL when no name or several match. |
 | `wealth_history` | `(snapshot_at, value_date)` | Customer-level daily NAV from `/wealth/summary`. Zips `dailyWealth` + `dailyPerformance` + `dailyInvestedAmounts` by date. A scalar arrives either wrapped as `{"__type": "VIAC_DECIMAL", "__value": "<decimal string>"}` or as a bare JSON number; the loader reads both. Customer-level **by choice**: the same response carries a per-portfolio series under `p3aSummary` / `pvbSummary` → `portfolioWealthSummaries`, which the loader does not read. |
 | `documents` | `content_sha256` | Content-deduped PDF index. Promotes `viac_doc_id`, `doc_type`, `doc_subtype`, `timestamp`, `product`. `bronze_path` is relative to bronze root. |
-| `parser_generations` | `scope` | Which generation of the Reporting-PDF parsing logic produced the rows a pass is holding (`collectorkit.srcfp` fingerprint). A moved generation drops them before the pass re-derives, so a re-parse replaces rather than accumulates. |
+| `document_derivations` | `(content_sha256, scope)` | Which generation of the Reporting-PDF parsing logic (`collectorkit.srcfp` fingerprint) read each report, and how many rows it wrote (migration 0006). A load reads every indexed report without a row under the current generation, so a re-parse reaches the whole archive. |
 
 The loader runs pending migrations on every invocation. An
 applied migration is never rewritten; a change is a new file.

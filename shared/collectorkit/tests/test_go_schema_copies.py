@@ -91,7 +91,7 @@ COPIES = {
         "portfolio_performance": UNREAD}),
     "ubs-web": Copy(("ubs/testdata/web_silver_schema.sql",)),
     "viac": Copy(("viac/testdata/silver_schema.sql",), {
-        "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
+        "schema_meta": VERSION, "document_derivations": BOOKKEEPING,
         "documents": UNREAD, "wealth_history": UNREAD}),
 }
 

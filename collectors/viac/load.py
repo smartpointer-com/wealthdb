@@ -4,9 +4,10 @@ VIAC bronze -> silver loader.
 
 Walks a bronze directory tree (as produced by download.py), applies
 any pending schema migrations, then loads each not-yet-ingested
-dump into a SQLite silver database. One dump = one transaction; the
-`dump_runs` row is the last INSERT before COMMIT, so failures
-mid-load roll the whole dump back and re-runs retry idempotently.
+dump into a SQLite silver database through the shared load frame
+(collectorkit.loader): one dump = one transaction, the `dump_runs`
+row last, so a failure mid-load rolls the whole dump back and a re-run
+retries it.
 
 Usage:
     load.py [--silver-db PATH] [--bronze-dir PATH] [-v]
@@ -22,12 +23,13 @@ import hashlib
 import json
 import logging
 import sqlite3
-import sys
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from collectorkit import bronze, cli, documents, parse, silver, srcfp
+from collectorkit import (
+    bronze, derivations, documents, loader, parse, silver, srcfp,
+)
 from collectorkit.silver import canonical_json
 
 import pdf_parsers
@@ -38,13 +40,14 @@ logger = logging.getLogger("load")
 # but every component is a regex capture off the page, so moving the as-of
 # date, the portfolio anchor or the ISIN token re-lands a whole quarter
 # under a different key while the old rows stay. What stops that is the
-# per-document delete in `load_historical_reports_phase`: re-parsing a
-# report replaces its own rows, whatever keys they land under.
+# per-document delete in `derive_report`: re-parsing a report replaces its
+# own rows, whatever keys they land under.
 #
-# `parser_generations` (migration 0004) records which generation produced
-# them, so silver can be asked in plain SQL. It is a record, not a gate —
-# the pass walks one dump's index, so it cannot re-derive a report the dump
-# does not carry, and `load --force` is what re-reads the whole archive.
+# `document_derivations` (migration 0006) records which generation read
+# each report. Each dump's pass reads the reports it carries; after the
+# dumps, `load_underived_reports` reads every indexed report this
+# generation has not, from its stored PDF. So a parser change re-derives
+# the whole archive at the next load.
 REPORT_GENERATION_SCOPE = "reports"
 REPORT_GENERATION = srcfp.parser_fingerprint([pdf_parsers], ("pypdfium2",))
 
@@ -87,17 +90,6 @@ VIAC_TX_KIND_MAP: dict[str, str] = {
     "FUSION_NEW_FONDS":      "corporate_action",
     "FUSION_FONDS_RESET":    "corporate_action",
 }
-
-
-# ============================================================
-# DB plumbing
-# ============================================================
-
-# Silver DB plumbing (open_db + schema versioning + the migration runner)
-# lives in collectorkit.silver. VIAC uses the manual-transaction model
-# (isolation_level=None; explicit BEGIN/COMMIT per dump) that silver.open_db
-# provides, so it shares that opener directly.
-open_db = silver.open_db
 
 
 # ============================================================
@@ -595,6 +587,25 @@ def load_wealth_history_phase(
 # one share the same "Securities overview" layout.
 REPORT_SUBTYPES = ("INVESTMENT_REPORTING", "MANUAL_INVESTMENT_REPORTING")
 
+# The indexed reports, one row per report: its content sha256 (the
+# derivation key), its document number and its path under the bronze root.
+# A document number with more than one content stands for its newest, the
+# one the latest dump carried, so its rows come from that content alone.
+# Oldest first, the order the dumps carried them in.
+_SUBTYPES_SQL = ", ".join(f"'{t}'" for t in REPORT_SUBTYPES)
+REPORT_DOCUMENTS = f"""
+SELECT d.content_sha256, d.viac_doc_id, d.bronze_path
+  FROM documents d
+ WHERE d.doc_subtype IN ({_SUBTYPES_SQL})
+   AND NOT EXISTS (
+       SELECT 1 FROM documents n
+        WHERE n.viac_doc_id = d.viac_doc_id
+          AND n.doc_subtype IN ({_SUBTYPES_SQL})
+          AND (n.last_seen_at, n.first_seen_at, n.content_sha256)
+            > (d.last_seen_at, d.first_seen_at, d.content_sha256))
+ ORDER BY d.last_seen_at, d.first_seen_at, d.content_sha256
+"""
+
 
 def _upsert_report_instrument(
     conn: sqlite3.Connection, pos: pdf_parsers.ReportPosition, seen_at: int,
@@ -635,6 +646,102 @@ def _upsert_report_instrument(
     )
 
 
+def derive_report(conn: sqlite3.Connection, doc_id: str,
+                  pdf_path: Path) -> tuple[int, int] | None:
+    """Parse one Reporting PDF and replace its rows: its positions and
+    cash balances, tagged source='report:<docid>' and keyed on the
+    report's as-of date, and the instruments it names. Returns the
+    (position, cash) row counts, or None for a report that yields
+    nothing (logged; its earlier rows stay).
+
+    snapshot_at is the report as-of date, NOT the dump time — the rows
+    are independent of the per-dump snapshot_at the live phases use, so
+    historical and live snapshots coexist in the same tables. INSERT OR
+    REPLACE makes re-parsing the same stable report converge."""
+    try:
+        parsed = pdf_parsers.parse_investment_report(pdf_path)
+    except Exception as e:  # noqa: BLE001 — one bad PDF mustn't fail the dump
+        logger.warning("report %s parse failed: %s", doc_id, e)
+        return None
+    as_of = parse.iso_date_to_epoch(parsed.as_of_date)
+    if as_of is None:
+        logger.warning("report %s: no parseable as-of date — skipping", doc_id)
+        return None
+    if not parsed.positions:
+        logger.warning("report %s: no positions parsed — skipping", doc_id)
+        return None
+    source = f"report:{doc_id}"
+    # Drop what this report wrote last time before writing it again.
+    # Per DOCUMENT, because a document is the unit a pass re-derives: a
+    # dump's pass walks that dump's own index, so a scope-wide purge there
+    # would delete every other dump's reports and refill none of them. The
+    # `source` tag (migration 0003) names a document's rows exactly; the
+    # live REST rows carry their own tag and are untouched.
+    for table in ("positions", "cash_balances"):
+        conn.execute(f"DELETE FROM {table} WHERE source = ?", (source,))
+    for p in parsed.positions:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO positions (
+                snapshot_at, account_external_id, instrument_external_id,
+                asset_class, viac_asset_class, sub_asset_class,
+                currency_code, name,
+                quantity, ratio, market_value_chf,
+                acquisition_price, asset_price, rate_of_return,
+                source, payload
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                as_of, p.account_external_id, p.isin,
+                p.asset_class, p.viac_section, p.sub_asset_class,
+                p.currency_code, p.name,
+                p.quantity, p.ratio, p.market_value_chf,
+                p.acquisition_price, p.asset_price, p.rate_of_return,
+                source,
+                canonical_json({
+                    "doc_id": doc_id, "as_of": parsed.as_of_date,
+                    "name": p.name, "fx": p.currency_code,
+                    "quantity": p.quantity,
+                    "market_value_chf": p.market_value_chf,
+                    "initial_price": p.acquisition_price,
+                    "price": p.asset_price,
+                    "return_pct": p.rate_of_return,
+                    "section": p.viac_section,
+                    "sub_asset_class": p.sub_asset_class,
+                }),
+            ),
+        )
+        _upsert_report_instrument(conn, p, as_of)
+    for cb in parsed.cash:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO cash_balances (
+                snapshot_at, account_external_id, currency,
+                balance_kind, amount, source, payload
+            ) VALUES (?,?,?,?,?,?,?)
+            """,
+            (
+                as_of, cb.account_external_id, cb.currency,
+                "cash", cb.amount, source,
+                canonical_json({
+                    "doc_id": doc_id, "as_of": parsed.as_of_date,
+                    "source_field": "3a_account_liquidity",
+                }),
+            ),
+        )
+    return len(parsed.positions), len(parsed.cash)
+
+
+def _record_report(conn: sqlite3.Connection, content_sha256: str,
+                   counts: tuple[int, int] | None) -> None:
+    """Record a report as read by this generation. One that yields
+    nothing is recorded with no rows: the same parser reads the same
+    bytes the same way, so only a new generation reads it again."""
+    derivations.record_derivation(
+        conn, content_sha256, REPORT_GENERATION_SCOPE, REPORT_GENERATION,
+        sum(counts) if counts else 0)
+
+
 def load_historical_reports_phase(
     conn: sqlite3.Connection,
     run_dir: Path,
@@ -647,15 +754,8 @@ def load_historical_reports_phase(
     history. Each one is a period-end statement covering every
     portfolio under the contract, so parsing it yields one positions
     snapshot — plus one cash balance per portfolio — as of the report
-    date, going back to the contract's first year.
-
-    Rows are tagged source='report:<docid>' and keyed on the report's
-    as-of date (which never collides with the live scrape timestamps),
-    so historical and live snapshots coexist in the same tables.
-    INSERT OR REPLACE makes re-parsing the same stable report across
-    successive dumps converge. snapshot_at is the report as-of date,
-    NOT the dump time — this phase is deliberately independent of the
-    per-dump snapshot_at the live phases use."""
+    date, going back to the contract's first year. Each report is
+    replaced by `derive_report` and recorded under this generation."""
     index_path = run_dir / "documents" / "index.json"
     if not index_path.is_file():
         return
@@ -675,85 +775,42 @@ def load_historical_reports_phase(
             # --lookback window, or its fetch failed. A dump whose
             # window covers it carries it; skip here.
             continue
-        try:
-            parsed = pdf_parsers.parse_investment_report(pdf_path)
-        except Exception as e:  # noqa: BLE001 — one bad PDF mustn't fail the dump
-            logger.warning("report %s parse failed: %s", doc_id, e)
+        counts = derive_report(conn, doc_id, pdf_path)
+        _record_report(conn, bronze.sha256_file(pdf_path)[0], counts)
+        if counts is None:
             continue
-        as_of = parse.iso_date_to_epoch(parsed.as_of_date)
-        if as_of is None:
-            logger.warning("report %s: no parseable as-of date — skipping", doc_id)
-            continue
-        if not parsed.positions:
-            logger.warning("report %s: no positions parsed — skipping", doc_id)
-            continue
-        source = f"report:{doc_id}"
-        # Drop what this report wrote last time before writing it again.
-        # Per DOCUMENT, because a document is the only unit this pass can
-        # re-derive: it walks `run_dir`'s own index, so a scope-wide purge
-        # here would delete every other dump's reports and refill none of
-        # them. The `source` tag (migration 0003) names a document's rows
-        # exactly; the live REST rows carry their own tag and are untouched.
-        for table in ("positions", "cash_balances"):
-            conn.execute(f"DELETE FROM {table} WHERE source = ?", (source,))
-        for p in parsed.positions:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO positions (
-                    snapshot_at, account_external_id, instrument_external_id,
-                    asset_class, viac_asset_class, sub_asset_class,
-                    currency_code, name,
-                    quantity, ratio, market_value_chf,
-                    acquisition_price, asset_price, rate_of_return,
-                    source, payload
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    as_of, p.account_external_id, p.isin,
-                    p.asset_class, p.viac_section, p.sub_asset_class,
-                    p.currency_code, p.name,
-                    p.quantity, p.ratio, p.market_value_chf,
-                    p.acquisition_price, p.asset_price, p.rate_of_return,
-                    source,
-                    canonical_json({
-                        "doc_id": doc_id, "as_of": parsed.as_of_date,
-                        "name": p.name, "fx": p.currency_code,
-                        "quantity": p.quantity,
-                        "market_value_chf": p.market_value_chf,
-                        "initial_price": p.acquisition_price,
-                        "price": p.asset_price,
-                        "return_pct": p.rate_of_return,
-                        "section": p.viac_section,
-                        "sub_asset_class": p.sub_asset_class,
-                    }),
-                ),
-            )
-            n_positions += 1
-            _upsert_report_instrument(conn, p, as_of)
-        for cb in parsed.cash:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO cash_balances (
-                    snapshot_at, account_external_id, currency,
-                    balance_kind, amount, source, payload
-                ) VALUES (?,?,?,?,?,?,?)
-                """,
-                (
-                    as_of, cb.account_external_id, cb.currency,
-                    "cash", cb.amount, source,
-                    canonical_json({
-                        "doc_id": doc_id, "as_of": parsed.as_of_date,
-                        "source_field": "3a_account_liquidity",
-                    }),
-                ),
-            )
-            n_cash += 1
         n_reports += 1
+        n_positions += counts[0]
+        n_cash += counts[1]
     if n_reports:
         logger.info(
             "  historical reports phase: %d report(s), %d position(s), %d cash row(s)",
             n_reports, n_positions, n_cash,
         )
+
+
+def load_underived_reports(conn: sqlite3.Connection,
+                           load: loader.Load) -> None:
+    """After the dumps: derive every indexed report this generation has
+    not read, from its stored PDF (`documents.bronze_path`), in one
+    transaction. A routine load finds none; the first load under a new
+    parser generation reads them all."""
+    pending = derivations.pending_derivations(
+        conn, REPORT_GENERATION_SCOPE, REPORT_GENERATION, REPORT_DOCUMENTS)
+    if not pending:
+        return
+    n_reports = 0
+    with silver.transaction(conn):
+        for content_sha256, doc_id, bronze_path in pending:
+            pdf_path = load.bronze_dir / bronze_path
+            if not pdf_path.is_file():
+                logger.warning("report %s: PDF missing on disk — skipping",
+                               doc_id)
+                continue
+            counts = derive_report(conn, doc_id, pdf_path)
+            _record_report(conn, content_sha256, counts)
+            n_reports += counts is not None
+    logger.info("  stored reports: %d of %d derived", n_reports, len(pending))
 
 
 def load_documents_phase(
@@ -799,109 +856,59 @@ def load_documents_phase(
     )
 
 
-def load_one_dump(
-    conn: sqlite3.Connection,
-    run_dir: Path,
-    schema_version: int,
-) -> None:
-    """Load one bronze run dir into silver in a single transaction.
-    Idempotency: caller has already checked dump_runs."""
-    name = run_dir.name
-    snapshot_at = bronze.parse_run_ts(name)
-    logger.info("loading dump %s (snapshot_at=%d)", name, snapshot_at)
-
-    run_json_path = run_dir / "run.json"
-    if not run_json_path.is_file():
-        raise RuntimeError(f"no run.json in {run_dir} — refusing to load")
-    run_manifest = json.loads(run_json_path.read_text(encoding="utf-8"))
-    docs_counts = run_manifest.get("documents") or {}
+def load_run(conn: sqlite3.Connection, run: loader.Run) -> None:
+    """Load one bronze run dir into silver, inside the frame's
+    transaction for the run."""
+    logger.info("loading dump %s (snapshot_at=%d)", run.dir.name,
+                run.snapshot_at)
     # Transactions window comes from the bronze run's windows block
     # (set by download.py's resolve_lookback). A missing or unparseable
     # bound is no bound; a dump without the block loads everything.
-    windows = run_manifest.get("windows") or {}
+    windows = run.manifest.get("windows") or {}
     tx_since = parse.iso_date(windows.get("since"))
     tx_until = parse.iso_date(windows.get("until"))
 
-    with silver.transaction(conn):
-        portfolios = load_accounts_phase(conn, snapshot_at, run_dir)
-        load_positions_phase(conn, snapshot_at, run_dir, portfolios)
-        load_transactions_phase(conn, snapshot_at, run_dir,
-                                since=tx_since, until=tx_until)
-        load_wealth_history_phase(conn, snapshot_at, run_dir)
-        load_documents_phase(conn, snapshot_at, run_dir)
-        # Historical holdings reconstructed from the Reporting PDFs.
-        # snapshot_at-independent (keyed on each report's as-of date),
-        # so it runs after the live phases and outside their per-dump
-        # snapshot grain.
-        load_historical_reports_phase(conn, run_dir)
-        silver.stamp_generation(conn, REPORT_GENERATION_SCOPE,
-                                REPORT_GENERATION)
-
-        # dump_runs row last → a failure mid-load rolls everything
-        # back and the dump remains "not yet loaded" on re-run.
-        conn.execute(
-            """
-            INSERT INTO dump_runs (
-                snapshot_at, silver_schema_version, run_dir,
-                dry_run, with_transaction_documents,
-                bronze_docs_total, bronze_docs_fetched,
-                bronze_docs_linked, bronze_docs_skipped,
-                bronze_docs_errors,
-                payload
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                snapshot_at, schema_version, str(run_dir),
-                1 if run_manifest.get("dry_run") else 0,
-                1 if run_manifest.get("with_transaction_documents") else 0,
-                int(docs_counts.get("total", 0)),
-                # "fetched" column = every doc that hit the network: a plain
-                # fetch plus both fetch-verify outcomes (verified/changed also
-                # download, then dedup or keep). Only "linked" avoids the fetch.
-                # A manifest without verified/changed counts plain fetches
-                # only. The full per-outcome breakdown lives in `payload`.
-                int(docs_counts.get("fetched", 0))
-                + int(docs_counts.get("verified", 0))
-                + int(docs_counts.get("changed", 0)),
-                int(docs_counts.get("linked", 0)),
-                int(docs_counts.get("skipped", 0)),
-                int(docs_counts.get("errors", 0)),
-                canonical_json(run_manifest),
-            ),
-        )
+    portfolios = load_accounts_phase(conn, run.snapshot_at, run.dir)
+    load_positions_phase(conn, run.snapshot_at, run.dir, portfolios)
+    load_transactions_phase(conn, run.snapshot_at, run.dir,
+                            since=tx_since, until=tx_until)
+    load_wealth_history_phase(conn, run.snapshot_at, run.dir)
+    load_documents_phase(conn, run.snapshot_at, run.dir)
+    # Historical holdings reconstructed from the Reporting PDFs.
+    # snapshot_at-independent (keyed on each report's as-of date),
+    # so it runs after the live phases and outside their per-dump
+    # snapshot grain.
+    load_historical_reports_phase(conn, run.dir)
 
 
-# ============================================================
-# Orchestration
-# ============================================================
-
-def list_pending_dumps(
-    conn: sqlite3.Connection, bronze_dir: Path,
-) -> list[Path]:
-    """Return run dirs under bronze_dir that haven't been loaded
-    yet, in chronological order, leaving out a dump whose walk never
-    completed (bronze.pending_run_dirs)."""
-    return bronze.pending_run_dirs(conn, bronze_dir, log=logger)
-
-
-def do_load(args: argparse.Namespace) -> int:
-    conn = open_db(args.silver_db)
-    try:
-        version = silver.apply_migrations(conn, MIGRATIONS_DIR)
-        logger.info("silver schema at version %d", version)
-        pending = list_pending_dumps(conn, args.bronze_dir)
-        if not pending:
-            logger.info("no pending dumps under %s", args.bronze_dir)
-            return 0
-        logger.info("loading %d pending dump(s)", len(pending))
-        for d in pending:
-            load_one_dump(conn, d, version)
-        return 0
-    finally:
-        conn.close()
+def run_columns(run: loader.Run) -> dict:
+    """The run's `dump_runs` row."""
+    manifest = run.manifest
+    docs_counts = manifest.get("documents") or {}
+    return {
+        "snapshot_at": run.snapshot_at,
+        "silver_schema_version": run.version,
+        "run_dir": str(run.dir),
+        "dry_run": 1 if manifest.get("dry_run") else 0,
+        "with_transaction_documents":
+            1 if manifest.get("with_transaction_documents") else 0,
+        "bronze_docs_total": int(docs_counts.get("total", 0)),
+        # "fetched" column = every doc that hit the network: a plain
+        # fetch plus both fetch-verify outcomes (verified/changed also
+        # download, then dedup or keep). Only "linked" avoids the fetch.
+        # A manifest without verified/changed counts plain fetches
+        # only. The full per-outcome breakdown lives in `payload`.
+        "bronze_docs_fetched": int(docs_counts.get("fetched", 0))
+        + int(docs_counts.get("verified", 0))
+        + int(docs_counts.get("changed", 0)),
+        "bronze_docs_linked": int(docs_counts.get("linked", 0)),
+        "bronze_docs_skipped": int(docs_counts.get("skipped", 0)),
+        "bronze_docs_errors": int(docs_counts.get("errors", 0)),
+        "payload": canonical_json(manifest),
+    }
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="VIAC bronze -> silver loader.",
     )
@@ -916,16 +923,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "(default: %(default)s)."
         ),
     )
-    cli.add_standard_args(p, verb="load")
-    return p.parse_args(argv)
+    return p
+
+
+# A run dir without a run.json, or one whose walk never completed, is not
+# pending (bronze.pending_run_dirs); a run.json that cannot be read ends
+# the load.
+SPEC = loader.LoaderSpec(
+    name="viac", schema=MIGRATIONS_DIR, load_run=load_run, parser=_parser,
+    run_columns=run_columns, after_runs=load_underived_reports,
+    manifest=loader.MANIFEST_REQUIRED)
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
-    cli.configure_logging(args.verbose)
-    if args.force:
-        silver.reset(args.silver_db)
-    return do_load(args)
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":

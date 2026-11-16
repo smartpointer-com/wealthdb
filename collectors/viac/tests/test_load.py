@@ -8,6 +8,7 @@ portfolio numbers / ISINs / amounts only.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -65,15 +66,23 @@ def _seed_bronze(root: Path) -> Path:
 
 
 def _fresh_db(tmp_path: Path):
-    conn = loader.open_db(tmp_path / "viac.db")
+    conn = silver.open_db(tmp_path / "viac.db")
     version = silver.apply_migrations(conn, loader.MIGRATIONS_DIR)
     return conn, version
 
 
+def _load(tmp_path: Path, bronze_root: Path):
+    """Run the loader over `bronze_root` into tmp_path/viac.db and
+    return a connection to the silver."""
+    db = tmp_path / "viac.db"
+    assert loader.main(["--silver-db", str(db),
+                        "--bronze-dir", str(bronze_root)]) == 0
+    return silver.open_db(db)
+
+
 def test_load_accounts_positions_cash(tmp_path):
-    run_dir = _seed_bronze(tmp_path / "bronze")
-    conn, version = _fresh_db(tmp_path)
-    loader.load_one_dump(conn, run_dir, version)
+    _seed_bronze(tmp_path / "bronze")
+    conn = _load(tmp_path, tmp_path / "bronze")
 
     # Account: product_code '3' (p3a), automated, CHF.
     acct = conn.execute(
@@ -130,19 +139,20 @@ def test_parse_account_id_product_split(tmp_path):
 
 
 # ============================================================
-# Dump selection: run.json status gate (list_pending_dumps)
+# Dump selection: run.json status gate
 # ============================================================
 
 def _seed_manifest(root: Path, slug: str, manifest: dict) -> Path:
     """Write only a run.json under <root>/<slug> — enough for
-    list_pending_dumps to classify the dump."""
+    the pending-dump gate to classify the dump."""
     d = root / slug
     _write_json(d / "run.json", manifest)
     return d
 
 
 def _pending_names(root: Path, conn) -> set[str]:
-    return {d.name for d in loader.list_pending_dumps(conn, root)}
+    return {d.name for d in loader.SPEC.pending(
+        conn, root, log=logging.getLogger())}
 
 
 def test_list_pending_skips_in_progress_and_dry_run(tmp_path):
@@ -199,11 +209,12 @@ def test_a_dump_load_does_not_wipe_another_dumps_reports(tmp_path):
     # every other dump's report rows and refill none of them — the dump
     # being loaded here carries no documents at all, which is the worst
     # case of exactly that.
-    run_dir = _seed_bronze(tmp_path / "bronze")
-    conn, version = _fresh_db(tmp_path)
+    _seed_bronze(tmp_path / "bronze")
+    conn, _ = _fresh_db(tmp_path)
     _seed_position(conn, "report:D1")
+    conn.close()
 
-    loader.load_one_dump(conn, run_dir, version)
+    conn = _load(tmp_path, tmp_path / "bronze")
 
     assert conn.execute(
         "SELECT COUNT(*) FROM positions WHERE source = 'report:D1'"
@@ -377,15 +388,118 @@ def test_the_raised_message_never_carries_the_value():
 
 def test_a_dump_that_raises_mid_load_rolls_back_whole(tmp_path):
     # A non-SQL error (here an unknown decimal shape) must roll the dump's
-    # transaction back too: no half-written rows, no open transaction left
-    # on the connection, and no dump_runs row, so the dump stays pending.
+    # transaction back too: no half-written rows and no dump_runs row, so
+    # the dump stays pending.
     run_dir = _seed_bronze(tmp_path / "bronze")
     _write_json(run_dir / "wealth" / "summary.json", _wealth_summary(
         lambda s: {"__type": "VIAC_MONEY", "__value": s}))
-    conn, version = _fresh_db(tmp_path)
+    db = tmp_path / "viac.db"
     with pytest.raises(ValueError):
-        loader.load_one_dump(conn, run_dir, version)
-    assert not conn.in_transaction
+        loader.main(["--silver-db", str(db),
+                     "--bronze-dir", str(tmp_path / "bronze")])
+    conn = silver.open_db(db)
     for table in ("accounts", "positions", "dump_runs"):
         assert conn.execute(
             f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+# ============================================================
+# Derivations: each report is read once per parser generation
+# ============================================================
+
+REPORT_TEXT = """\
+Reporting as of 31.12.2099
+Reporting date 31.12.2099 Portfolio 3.111.222.333.01 "Synthetic Portfolio A"
+Equity
+Switzerland CHF 2.50 Synthetic SMI Fund CH0000000011 1000.00 1200.00 20.00% 57.00% {value}
+"""
+
+
+def _report_dump(root: Path, slug: str, docs: dict[str, str | None]) -> Path:
+    """A dump that carries Reporting PDFs: doc id -> market value printed
+    (None: bytes that do not parse). The stand-in PDF holds the text."""
+    d = root / slug
+    _write_json(d / "run.json", {"utc": slug, "status": "complete"})
+    _write_json(d / "documents" / "index.json", [
+        {"documentNumber": doc_id, "type": "REPORT",
+         "subType": "INVESTMENT_REPORTING"} for doc_id in docs])
+    for doc_id, value in docs.items():
+        body = "not a report" if value is None else REPORT_TEXT.format(value=value)
+        (d / "documents" / f"{doc_id}.pdf").write_text(body, encoding="utf-8")
+    return d
+
+
+def _counting_parser(monkeypatch) -> list:
+    """Parse the stand-in PDFs' text, recording each call."""
+    calls: list = []
+
+    def parse(path):
+        calls.append(path.name)
+        text = path.read_text(encoding="utf-8")
+        if not text.startswith("Reporting"):
+            raise ValueError("not a report")
+        return loader.pdf_parsers.parse_investment_report_text(text)
+
+    monkeypatch.setattr(loader.pdf_parsers, "parse_investment_report", parse)
+    return calls
+
+
+def _report_values(conn) -> list:
+    return [tuple(r) for r in conn.execute(
+        "SELECT source, market_value_chf FROM positions "
+        "WHERE source LIKE 'report:%' ORDER BY source")]
+
+
+def test_a_second_load_calls_no_parser(tmp_path, monkeypatch):
+    calls = _counting_parser(monkeypatch)
+    _report_dump(tmp_path / "bronze", RUN_SLUG, {"D1": "1200.00"})
+    _load(tmp_path, tmp_path / "bronze").close()
+    assert calls == ["D1.pdf"]
+    calls.clear()
+    _load(tmp_path, tmp_path / "bronze").close()
+    assert calls == []
+
+
+def test_a_new_generation_reads_every_stored_report_again(
+        tmp_path, monkeypatch):
+    calls = _counting_parser(monkeypatch)
+    _report_dump(tmp_path / "bronze", RUN_SLUG, {"D1": "1200.00"})
+    _load(tmp_path, tmp_path / "bronze").close()
+    calls.clear()
+
+    monkeypatch.setattr(loader, "REPORT_GENERATION", "g2")
+    conn = _load(tmp_path, tmp_path / "bronze")
+    assert calls == ["D1.pdf"]
+    assert _report_values(conn) == [("report:D1", 1200.0)]
+    assert [tuple(r) for r in conn.execute(
+        "SELECT scope, generation, row_count FROM document_derivations")] == [
+            ("reports", "g2", 1)]
+    conn.close()
+
+
+def test_a_restated_report_is_read_from_its_newest_copy(
+        tmp_path, monkeypatch):
+    calls = _counting_parser(monkeypatch)
+    _report_dump(tmp_path / "bronze", "20240101T000000Z", {"D1": "1200.00"})
+    _report_dump(tmp_path / "bronze", "20240201T000000Z", {"D1": "1250.00"})
+    _load(tmp_path, tmp_path / "bronze").close()
+    calls.clear()
+
+    monkeypatch.setattr(loader, "REPORT_GENERATION", "g2")
+    conn = _load(tmp_path, tmp_path / "bronze")
+    assert calls == ["D1.pdf"]
+    assert _report_values(conn) == [("report:D1", 1250.0)]
+    conn.close()
+
+
+def test_a_report_that_does_not_parse_is_not_read_at_every_load(
+        tmp_path, monkeypatch):
+    calls = _counting_parser(monkeypatch)
+    _report_dump(tmp_path / "bronze", RUN_SLUG, {"D1": "1200.00", "D3": None})
+    _load(tmp_path, tmp_path / "bronze").close()
+    assert calls == ["D1.pdf", "D3.pdf"]
+    calls.clear()
+    conn = _load(tmp_path, tmp_path / "bronze")
+    assert calls == []
+    assert _report_values(conn) == [("report:D1", 1200.0)]
+    conn.close()
