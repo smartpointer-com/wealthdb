@@ -1020,19 +1020,19 @@ Example config file:
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow completeness with a named regime (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
 | `lots` | object | Optional. The lot engine (docs/LOTS.md §7): `method` (`fifo` default, `lifo`, `hifo`, `lofo`, `average`), the global method; `missing_basis` (`ignore` default, `zero`), the readers' default reading of a missing cost basis; `sources` keyed by `silver_source_id` with `method`, `mode` (`fill` \| `shadow` \| `stated` \| `off`) and `grain` (`account` \| `portfolio`) overriding the source kind's policy; `portfolios` and `accounts` keyed by `silver_source_id` to an external id to `{"method": …}`; `basis`, a list of `{ "source", "account"?, "instrument", "per_unit", "acquired"?, "note"? }`, the cost basis of an instrument's lots the engine opens without one (a seed, a receipt nothing pairs, a transfer in with no ledger cost), at quantity × `per_unit` with `acquired` as the acquisition date. The method in force for a key is its account's, else its portfolio's, else its source's, else the kind's own, else the global one. Every source id must name a configured source; a bad value fails the load. Absent ⇒ fifo and each kind's registered policy. |
-| `returns_transfer_matching` | object | Optional, off by default. `enabled` (bool) makes returns read the transfer pairs the load stores: a pair nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. `window_days` and `tolerance_pct` are accepted and ignored, and the load says so: the load's matcher pairs the legs under `spending.internal_transfer_matching`. See §5.8. |
+| `returns_transfer_matching` | object | Optional, off by default. `enabled` (bool) makes returns read the transfer pairs the load stores: a pair nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. `window_days` and `tolerance_pct` are accepted and ignored. Where either is set, the CLI prints a notice naming them. The load's matcher pairs the legs under `spending.internal_transfer_matching`. See §5.8. |
 | `cashflow` | object | Optional. Groups the cash flow statement's knobs: the pool's exclusions, the wrapper boundaries, and the cash flow projection's look-back. It is deliberately small: cashflow adds no tier and buys nothing from a model, so the rules, pins and transfer overrides that decide what a row IS are the two families' — a verdict written there is what cashflow reads. See docs/CASHFLOW.md §7. |
 | `cashflow.accounts` | object | Optional. The cash POOL, and the only account gate cashflow applies. **Exclusion only** — `{"exclude": {"<source>": ["<account-id>"]}}` — because every account is pooled by default, so an `include` could fence nothing and the loader refuses the unknown field rather than ignoring it. It inherits neither family's scope on purpose: an account a family drops is not thereby outside the household's cash. |
 | `cashflow.wrappers` | object | Optional. Moves a tax wrapper across the household boundary, `{"<wrapper>": "<destination>"}`, where the destination is `household` (no crossing at all), `retirement`, `education`, `health`, `trusts` or `giving`. Per WRAPPER, not per account — an account a source mis-labelled is fixed with the per-account `tax_wrapper` override, so every consumer agrees whose money it is. An unknown wrapper or destination fails the load naming the entry. Re-stamped by every enrichment pass. |
 | `cashflow.projection` | object | Optional. The cash flow projection's look-back: `lookback_months`, 1 to 36, default 12. See docs/CASHFLOW.md §7 and §12. |
 | `income` | object | Optional. Groups the income feature's per-deployment knobs — `accounts`, `rules[]`, `pins`, `categorization` — in `spending`'s shapes. Two blocks spending has are deliberately absent: there is one internal-transfer matcher and one transfer-override ledger, and both families read them (docs/INCOME.md §1). Absent ⇒ every account counts, no rules and no pins apply, and the model tier inherits `spending.categorization`. |
 | `income.accounts` | object | Optional. The income account scope, in `spending.accounts`' shape and stamped into gold's `income_account_scope`. Its own table on purpose: an account excluded from spending because its outflows double-count something is not thereby an account whose inflows are not income. |
-| `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. So does a spelling the vocabulary retired, and the error names the value to write instead (docs/INCOME.md §2). Its optional `asset_class` is admitted only where `type` is `capital_return`, and its optional `far` only where `type` is `internal_transfer`; the far account of an inbound leg is linked from the spending family's row in `transfer_links` (docs/CASHFLOW.md §4). |
+| `income.rules[]` | array | Optional, default empty. As `spending.rules[]`, with the value field named **`type`** and validated against the INCOME vocabulary — a spending value here fails the load naming `income.rules[i].type`. So does a spelling the vocabulary retired, and the error names the value to write instead (docs/INCOME.md §2). Its optional `asset_class` is admitted only where `type` is `capital_return`, and its optional `far` only where `type` is `internal_transfer` (docs/CASHFLOW.md §4). |
 | `income.pins` | string | Optional. Path to the income pins ledger: the spending ledger's format with an `income_detailed` column. See §13.10. |
 | `income.categorization` | object | Optional. As `spending.categorization`, `fence_person_names` included. **Absent ⇒ inherits `spending.categorization` whole** — one household, one local model, one answer to what may leave the machine. Whole-block rather than per-field: a half-inherited endpoint is a configuration nobody wrote down, and a half-inherited fence would be one that quietly turned itself off. `context` additionally accepts `payer`, the income spelling of the narrowest level. |
 | `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
 | `spending.accounts` | object | Optional. Account-scope overrides, keyed by `silver_source_id` in the `returns_exclude` shape, with `include` / `exclude` lists of account ids. An account may not appear in both. Stamped into gold's `spend_account_scope` by every enrichment pass, so removing an entry removes its effect. An entry naming an account gold does not hold scopes nothing; the pass counts such entries and the load summary reports how many. Which way round the overrides bite is the scope rule — see docs/SPENDING.md §1. |
-| `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Returns reads the pairs this matcher stores, so one matching core and one banding serve every family. Both bound the matcher's banded passes only: a pair the override ledger states, or one a source asserts — by stamping a reference on both legs, or by describing one leg's currency and figure on the other — is not a guess and is not banded. `names` (list of `{source, account?, match}`, each `match` a regular expression) says which narratives name which account as the other side of a movement; a leg that names one pairs with nothing else, and named pairs are claimed before the amount pass. See docs/SPENDING.md §3. |
+| `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). With `returns_transfer_matching` enabled, returns reads the pairs this matcher stores, so one matching core and one banding serve every family. Both bound the matcher's banded passes only: a pair the override ledger states, or one a source asserts — by stamping a reference on both legs, or by describing one leg's currency and figure on the other — is not a guess and is not banded. `names` (list of `{source, account?, match}`, each `match` a regular expression) says which narratives name which account as the other side of a movement; a leg that names one pairs with nothing else, and named pairs are claimed before the amount pass. See docs/SPENDING.md §3. |
 | `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed>, "scope"?, "asset_class"?, "far"? }`. `match` is compiled case-insensitively and tested against `counterparty`, the full `description` and `provider_category`; among config rules the first written wins. `category` may be any valid `spend_detailed` value, vendored or delta. `scope` narrows a rule to a `source`, `portfolio` or `account` and an inclusive `from`/`to` date range. `asset_class` is admitted only beside `investment` and `far` (a `declared_accounts` id) only beside `internal_transfer` ([CASHFLOW.md §4 and §7](CASHFLOW.md)). An invalid pattern, one matching the empty string, or an unknown value fails the load naming `spending.rules[i]`. Deployment-specific: lives in the config, never in the repository. [SPENDING.md §3](SPENDING.md), *Config-supplied rules*, owns the semantics. |
 | `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, asset_class, note` and no others — an unknown header fails the parse, and `asset_class` is optional; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.10. |
 | `spending.transfer_overrides` | string | Optional. Path to a CSV ledger of manual match and unmatch decisions for the internal-transfer matcher, for a pair the data cannot settle, and of `reimburse` lines that link a repayment to its outflow. Expanded as above; a missing file is a no-op. Both families read it. See [SPENDING.md §3](SPENDING.md), *The override ledger* and *Reimbursements*. |
@@ -1152,11 +1152,10 @@ silver holding positions but no transaction history).
   override also marks the policy known, so `unknown_adapter_policy` clears.
 - **`accounts_grain`** (`"normal"` | `"blanked"` | `"hidden"`) replaces the
   per-account display mode: full rows, rows with TWR/MWR blanked to n/a +
-  `accounts_grain_meaningless`, or no rows at all (plumbing — values and
-  flows still enter every aggregate; the deposit-bank conduit sources
-  register `hidden` as their default). Overriding to `"normal"` is how a
-  deployment re-surfaces a hidden source's rows — all but its cash
-  accounts, which stay hidden whatever this says (§5.7).
+  `accounts_grain_meaningless`, or no rows at all (plumbing: values and
+  flows still enter every aggregate). No registered policy hides a
+  source, so `"hidden"` is how a deployment hides one, and `"normal"`
+  undoes it. Every cash account stays hidden whatever this says (§5.7).
 - **Partial semantics:** unset fields keep the registered policy's values;
   code-side knobs without a config field (onboarding scope, conduit kinds,
   inception mode, …) are never touched.
@@ -1216,11 +1215,18 @@ aggregate containing BOTH accounts double-represents the move (the
 ```
 
 - **The pairs** are the links the load's enrichment pass stores in
-  `transfer_links`: one matcher, under `spending.internal_transfer_matching`'s
-  window and tolerance, with the override ledger applied, for every family
-  (docs/SPENDING.md §3). Returns pairs nothing itself and reads no ledger, so a
-  movement is internal in every report or in none. A ledger edit reaches
-  returns with the next load.
+  `transfer_links`. Two roads write them:
+  - one matcher for every family, under
+    `spending.internal_transfer_matching`'s window and tolerance, with the
+    override ledger applied (docs/SPENDING.md §3);
+  - the equity-transfer ledger (§13.9). The pairs it states (measure
+    `in_kind`) replace the matcher's for their legs.
+
+  With the block enabled, returns pairs nothing itself and reads no ledger
+  directly, so a movement is internal in every report or in none. A ledger
+  edit reaches returns with the next load. The block's own `window_days`
+  and `tolerance_pct` are ignored, and the CLI prints a notice naming
+  them. With the block off, returns reads no stored pair.
 - **Which pairs bind:** every pair whose two legs are external flows of the
   currency's dataset, across sources and inside one. A leg whose partner is no
   flow (a card's, one with no FX path) stays a plain flow. The transferLike
@@ -1749,8 +1755,9 @@ is documented where it is used:
   `spend_categories` carries both vocabularies, told apart by its
   `family` column. Beside it the derived set stamps `account_kinds` and
   `txn_kind_roles`, the roles of each account kind and transaction
-  kind; the flow macros read them through the predicates at the head
-  of `derived/40_flows.sql`.
+  kind. Scalar predicates restate them: `account_is_debt` in
+  `derived/30_holdings.sql`, and the kind predicates at the head of
+  `derived/40_flows.sql`. A test holds each one to the stamped rows.
 
 ```sql
 -- ============================================================
@@ -4432,9 +4439,13 @@ known transfer; the loader turns every row into a canonical
 `transfer_in` / `transfer_out` transaction at load time, so the
 returns engine books it as an ordinary flow with no special-casing
 and it shows in the transactions report. Columns:
-`silver_source_id, account, occurred_at (YYYY-MM-DD), direction
-(in|out), quantity, cost_basis, value, currency, instrument, note,
-to_silver_source_id, to_account`. The last two are optional (below).
+
+- required: `silver_source_id, account, occurred_at (YYYY-MM-DD),
+  direction (in|out), value, currency`;
+- optional: `quantity, cost_basis, instrument, note,
+  to_silver_source_id, to_account`. The last two state a whole move
+  (below).
+
 `value` is the market value at transfer — the capital flow;
 `cost_basis` (the pre-transfer basis) rides along in the payload for
 reference and is not used by the returns math. `account` accepts

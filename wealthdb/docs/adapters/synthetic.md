@@ -296,7 +296,8 @@ wallet or a book of private holdings.
 
 So the kind registers the bank-style default,
 `DefaultReturnsPolicy(BankFlowPolicy())`: regime `flow_complete`, so
-every capital kind counts, every other knob at its default. A deployment states each source's own regime with config
+every capital kind counts, every other knob at its default. A
+deployment states each source's own regime with config
 `returns_policy_overrides` ([../DESIGN.md](../DESIGN.md) §5.6). Its
 keys are source ids, so two synthetic sources override independently.
 The demo household overrides two of its sources this way: one to

@@ -40,7 +40,7 @@ a refund (§3, *Reimbursements*).
 The taxonomy carries only what this side may assign. It drops five of
 Plaid's primaries: `TRANSFER_IN`, `TRANSFER_OUT`, `LOAN_PAYMENTS`,
 `LOAN_DISBURSEMENTS` and `OTHER` (§2). Plaid's `INCOME` primary is
-vendored for the income family (migration 0069). Investment fees stay
+vendored for the income family. Investment fees stay
 in: they are money leaving, and they have a value of their own (§2).
 
 The population is layered in SQL, each layer narrower
@@ -605,10 +605,11 @@ wording on either (a refunded fee, a cancelled or returned wire, a
 `STORNO`). A payment out and a credit that merely share an account and
 a size stay two rows. A reversal pair's legs read `internal_transfer`,
 with their own account as the far account, so they leave income and
-spending and the cash flow reads them as internal. Returns counts such a
-pair as two boundary flows at the accounts grain and nets it above. A
-`match` line pairs what it names, and an `unmatch` line keeps a leg
-out.
+spending and the cash flow reads them as internal. With
+`returns_transfer_matching` enabled, returns counts a reversal pair of
+deposit and withdrawal legs as two flows at the accounts grain and nets
+it above (DESIGN.md §5.8). A `match` line pairs what it names, and an
+`unmatch` line keeps a leg out.
 
 The kind set below excludes `purchase` and `refund`, so a card
 purchase and its refund never reach the matcher at all. When a
@@ -658,8 +659,7 @@ credit in two currencies when all of these hold:
 The name is what makes it safe. A size and a day across a currency
 pair are far more often a coincidence than a conversion, so the name
 is required. Where no narrative names the pair, the override ledger's
-`match` line is the declared pair (below). The returns caller does not
-run this phase.
+`match` line is the declared pair (below).
 
 Two further bounds close what those leave open, because amount and day
 proximity alone are only ever a coincidence of size, never evidence
@@ -774,7 +774,7 @@ cash flow statement draws a linked repayment on the outflow's side
 ([CASHFLOW.md](CASHFLOW.md) §4). An insurance payout is income, not a
 repayment ([INCOME.md](INCOME.md) §2).
 
-The matcher and the returns engine skip a `reimburse` line.
+The matcher skips a `reimburse` line.
 
 ### The reference road
 
@@ -1080,11 +1080,11 @@ never fires — a scope that can admit nothing is a typo every time.
 `far`, the id of a `declared_accounts` entry: the holder's own account
 at an institution the product does not collect, declared with the
 kind and wrapper it would carry if it were. The row's link in
-`transfer_links` then names the declaration, and the cash flow statement places the move by
-that wrapper instead of drawing it as a move to a destination nothing
-identifies (CASHFLOW.md §4). `far` is refused beside any other
-category — only an own-account move has a far side — and where it
-names no declaration.
+`transfer_links` then names the declaration. The cash flow statement
+places the move by that wrapper instead of drawing it as a move to a
+destination nothing identifies (CASHFLOW.md §4). `far` is refused
+beside any other category, because only an own-account move has a far
+side. It is also refused where it names no declaration.
 
 Config rules exist for three populations neither the matcher nor the
 model can ever reach. One is own-money movement whose receiving side is booked
@@ -2135,14 +2135,15 @@ every figure on them is this view's over any window.
 | `spend_reimbursement_pairs` | (silver_source_id, transaction_external_id) of the repayment | derived; rewritten whole by every pass from the ledger's `reimburse` lines (§3, *Reimbursements*) |
 | `transfer_links` | (silver_source_id, transaction_external_id) of the leg | derived; rewritten whole by every pass: the far account, partner leg and evidence of each row whose far side the pass knows, and both legs of each move one equity-transfer ledger row states (DESIGN.md §13.9; evidence `equity-ledger`, measure `in_kind`) |
 
-`transfer_links` holds the far side of a spending row, which only the
-cash flow statement reads. A row links the first of these that exists:
+`transfer_links` holds each move's far side. Three readers use it:
 
-- the partner leg's account, for a matched row;
-- the account the SOURCE itself named, where no pairing exists: a
-  counter account in the row's payload, resolved against the accounts
-  gold holds;
-- the declared account a rule's `far` names.
+- the cash flow statement places a move by it
+  ([CASHFLOW.md](CASHFLOW.md) §4, which lists the roads to a far
+  account);
+- returns nets its pairs when `returns_transfer_matching` is enabled
+  (DESIGN.md §5.8);
+- the lot engine pairs its `in_kind` links first
+  ([LOTS.md](LOTS.md) §3.4).
 
 `reset <source>` clears THAT source's enrichment rows only. The
 surviving leg of a cross-source matcher pair keeps its
@@ -2188,7 +2189,7 @@ Each decision points to the section that argues it.
   ([CASHFLOW.md](CASHFLOW.md)).
 - **Plaid PFC version 2, vendored verbatim**, plus extensions and
   deltas (§2). A revision arrives as a diff. One dimension carries both
-  families, told apart by a `family` column (migration 0069). The two
+  families, told apart by a `family` column. The two
   vocabularies are fenced from each other by predicate, so a spending
   rule cannot place an income value.
 - **A rewards credit is income, not an offset against card spend**
@@ -2261,12 +2262,13 @@ Each decision points to the section that argues it.
   verdict but never override one.
 - **Deterministic enrichment is folded into `load`**; the model tier
   is only ever explicit (§6).
-- **The matcher's window defaults to 5 days.** Returns reads the pairs it
-  stores, so a movement is internal in every report or in none.
+- **The matcher's window defaults to 5 days.** With
+  `returns_transfer_matching` enabled, returns reads the pairs it stores
+  (DESIGN.md §5.8).
 - **Two legs of one account pair only as a reversal, last** (§3). A
   leg with a partner on another account keeps it; a leg still unpaired
   pairs with its own account's leg that reads as its reversal (one
-  signature, or reversal wording). Returns reads the same pairs.
+  signature, or reversal wording).
 - **The catch-all kinds (`other`, `journal`) are outside the
   population.** Neither carries a reliable sign. `wealthdb status -v`
   counts the in-scope rows of either kind, so the gap is visible.

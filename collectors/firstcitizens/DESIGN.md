@@ -15,9 +15,10 @@ the runtime (§4).
   the twin for a US retail deposit bank. This collector starts from
   chase and diverges only where the source differs.
 - **Deposit accounts are not investments.** Their transactions matter for
-  cross-source money-flow tracking. Their own return rows are noise, so
-  the ReturnsPolicy its `silver.Source` registers
-  (`internal/silver/firstcitizens/adapter.go`) hides them, as chase's does.
+  cross-source money-flow tracking. Their own return rows are noise.
+  They are `cash` accounts, which the returns engine hides on any source
+  ([docs/adapters/chase.md](../../wealthdb/docs/adapters/chase.md) §7).
+  Their balances and flows still enter every aggregate.
 - **The data surface is a Q2 REST API.** The digital banking runs on a
   **Q2 white-label platform** at
   `digitalbanking.firstcitizens.com/FCBTCOnline/`. Every datum arrives

@@ -23,10 +23,11 @@ The README holds the quick start, the bronze layout and the silver tables.
   the provider) is out of scope in code and docs, as is any other product
   the same login may expose. See the §4 scope note for the decision.
 - **Deposit accounts are not investments.** Their transactions matter for
-  cross-source money-flow tracking. Their own return rows are
-  noise, so the registered ReturnsPolicy hides them while the coarse grains
-  keep their balances and flows. The credit cards are not deposit accounts. They
-  are revolving-credit liabilities, and gold keeps every `card` account out
+  cross-source money-flow tracking. Their own return rows are noise. A
+  deposit account is a `cash` account, which the returns engine hides on
+  any source, while the coarse grains keep its balances and flows. The
+  credit cards are not deposit accounts. They are revolving-credit
+  liabilities, and gold keeps every `card` account out
   of returns altogether. The gold side is
   [docs/adapters/chase.md](../../wealthdb/docs/adapters/chase.md) §7.
 - **No self-service retail API.** Akoya is partner-gated. The
@@ -709,10 +710,10 @@ account, `card` for a credit card. Neither product carries an instrument,
 so it emits cash balances, not positions, plus the whole transaction
 ledger keyed on silver's content-derived `fitid`. Silver keeps every card
 figure the provider's way, and the adapter turns the sign exactly once: a
-card's owed balance becomes gold's negative cash. The registered
-ReturnsPolicy hides the deposit accounts' own return rows; cards never
-enter returns. The mapping, the balance sources and the returns
-treatment are in
+card's owed balance becomes gold's negative cash. The returns engine
+hides the deposit accounts' own return rows, as it hides every cash
+account. Cards never enter returns. The mapping, the balance sources
+and the returns treatment are in
 [docs/adapters/chase.md](../../wealthdb/docs/adapters/chase.md).
 
 ### Scope decision: credit cards — reads in, management out
@@ -739,7 +740,7 @@ never will be without a fresh written opt-in. Cards cost separate
 card-activity / card-statement endpoints to capture, a liability
 `account_kind` and revolving-credit shape in the adapter. They need **no
 returns policy of their own**: gold keeps card accounts out of returns by
-their kind, not by the deposit accounts' policy.
+their kind, as it hides the deposit accounts by theirs.
 
 ## 5. Operation & status
 

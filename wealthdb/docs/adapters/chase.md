@@ -284,8 +284,8 @@ Three decisions of record:
 ## 7. Returns treatment
 
 The source registers the bank policy in its `silver.Source`
-(`internal/silver/chase/adapter.go`): regime `flow_complete` and the
-standard bank external-capital set.
+(`internal/silver/chase/adapter.go`): regime `flow_complete`, so every
+capital kind counts as an external flow.
 
 A **deposit** account is a `cash` account, which the engine hides on
 any source: it emits no per-account return rows at any grain — it is pure

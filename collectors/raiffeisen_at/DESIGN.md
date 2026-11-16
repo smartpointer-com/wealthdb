@@ -22,11 +22,10 @@ runtime (§4), and operating notes (§5). The layout follows
   as documents, cash accounts kept out of returns in gold. This collector starts
   from them and diverges only where the source differs.
 - **Deposit accounts are not investments.** Their transactions matter for
-  cross-source money-flow tracking. Their own return rows are noise, so the
-  ReturnsPolicy its `silver.Source` registers
-  (`internal/silver/raiffeisen_at/adapter.go`, the shared deposit-bank
-  policy) hides them at every grain. Their
-  balances and flows still enter every aggregate.
+  cross-source money-flow tracking. Their own return rows are noise.
+  They are `cash` accounts, which the returns engine hides on any source
+  ([docs/adapters/chase.md](../../wealthdb/docs/adapters/chase.md) §7).
+  Their balances and flows still enter every aggregate.
 - **2FA is pushTAN** (§A). The login is confirmed in the Raiffeisen app;
   nothing is typed. The completion signal is a plain REST poll. The
   browser shows a 4-character Vergleichswert, which the run announces in

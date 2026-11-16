@@ -249,12 +249,12 @@ Guards: `TestBridgeReadsTheCommonCases`,
   still unshown. Such a row is tagged `rolled_forward`. The per-period
   rows read the carried values too. Guard: `TestMWRReadsTheChainsValues`.
 - **Onboarding books the debut value.** A staggered constituent's real
-  debut-region flows take no flow first (the pre-debut region, `fateOf`),
-  then synthetic onboarding books the first-snapshot value, less the
-  pre-debut legs netting cancelled. Under per-entity-once it books the
-  group's step (`groupOnboardStep`), which offsets the same legs and is
-  floored at zero. A per-constituent amount reduced by such legs can be
-  negative ("Staggered-inception subsumption").
+  pre-debut flows are dropped first (their fate in the pre-debut region,
+  `fateOf`), then synthetic onboarding books the first-snapshot value,
+  less the pre-debut legs netting cancelled. Under per-entity-once it
+  books the group's step (`groupOnboardStep`), which offsets the same
+  legs and is floored at zero. A per-constituent amount reduced by such
+  legs can be negative ("Staggered-inception subsumption").
 - **XIRR:** Newton-Raphson (analytic derivative) from a 10% guess, with a
   bisection fallback scanning `[−0.9999, 100]` at 0.01 resolution for the
   first sign-change bracket. The rate is floored at −0.9999 (never worse
@@ -319,9 +319,11 @@ macro of its own:
   ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar days;
   FX-normalized via `value_outccy`; named constants.
 - **Stored transfer pairs** (opt-in, DESIGN.md §5.8) are the one
-  sanctioned crossing of that deposit/withdrawal line: a pair the load's
-  matcher stored nets in entities containing both legs live — tagged `cross_source_netted=N` — because the stored evidence is
-  exactly what the within-entity heuristic lacks. Dropped legs are
+  sanctioned crossing of that deposit/withdrawal line. A pair the load
+  stored nets in entities that hold both legs live: the matcher's pairs
+  and the equity-transfer ledger's `in_kind` pairs alike. Such an entity
+  is tagged `cross_source_netted=N`. The stored evidence is exactly what
+  the within-entity heuristic lacks. Dropped legs are
   withheld from `netTransfers`' candidate pool, and `--netting off`
   disables the drops along with the heuristic netter. Off ⇒
   byte-identical.
@@ -517,7 +519,7 @@ source.
 
   | knob | default | effect |
   |---|---|---|
-  | `Flow` | per source | the regime and the kinds that count as external flows and as transfer-like (netting) flows |
+  | `Flow` | per source | the completeness regime: which collected rows of the capital kinds count (`canonical.CapitalKind` says which kinds those are) |
   | `OnboardScope` | per constituent | `OnboardPerEntityOnce` books one step-up per entity (`groupOnboardStep`); `OnboardNone` books no onboarding |
   | `AccountsGrain` | normal | `blanked` shows values with TWR/MWR n/a + `accounts_grain_meaningless`; `hidden` emits no rows, while values and flows still aggregate |
   | `CapitalCallRisk` | off | keeps `nav_only_capital_call_risk` on a window where the source's own accounts observed no external flow |

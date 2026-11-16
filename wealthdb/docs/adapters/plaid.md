@@ -416,7 +416,8 @@ trigger, and a full re-emit is the response.
 ## 9. Returns policy
 
 `DefaultReturnsPolicy(BankFlowPolicy())`, as for the synthetic kind:
-flow_complete on the shared bank sets, every other knob at its default.
+regime `flow_complete`, so every capital kind counts, and every other
+knob at its default.
 One Item may be a bank, a broker or a card issuer. The engine already
 treats each account by its kind:
 
