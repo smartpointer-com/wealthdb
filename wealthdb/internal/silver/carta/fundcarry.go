@@ -145,14 +145,14 @@ func (l fundLedger) acquisitionDate(eid int64) *time.Time {
 // on or before t. It runs after appendFundAt, whose NAV positions it never
 // duplicates. Its book value is the capital called, less the basis
 // distributed in kind by t (inKind).
-func appendFundCarryAt(t int64, acct string, ledger fundLedger, inKind *silver.InKind, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
+func appendFundCarryAt(t int64, acct string, ledger fundLedger, inKind *silver.InKind, h *held) error {
 	ids := make([]int64, 0, len(ledger))
 	for eid := range ledger {
 		ids = append(ids, eid)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, eid := range ids {
-		if _, placed := active[eid]; placed {
+		if _, placed := h.active[eid]; placed {
 			continue
 		}
 		b := ledger[eid]
@@ -190,10 +190,10 @@ func appendFundCarryAt(t int64, acct string, ledger fundLedger, inKind *silver.I
 			Payload:              silver.PayloadWith(string(payload), extra),
 		}
 		pos.SetBookValue(reduced, basis)
-		batch.Positions = append(batch.Positions, pos)
-		active[eid] = b.ccy
-		classesNew[eid] = canonical.AssetClassPrivateEquity
-		vehicles[eid] = canonical.VehicleFund
+		h.batch.Positions = append(h.batch.Positions, pos)
+		h.active[eid] = b.ccy
+		h.classesNew[eid] = canonical.AssetClassPrivateEquity
+		h.vehicles[eid] = canonical.VehicleFund
 	}
 	return nil
 }

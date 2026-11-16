@@ -291,10 +291,7 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
 // date of the latest delta or NAV it is built from; a fund carried at its
 // called capital is valued at t.
 func emit(t int64, held []silver.Holding, meta map[int64]entInfo, acct string, ledger fundLedger, inKind *silver.InKind, removals silver.Removals) (canonical.SnapshotBatch, error) {
-	var batch canonical.SnapshotBatch
-	active := make(map[int64]string)                   // entity id -> holdings currency
-	classesNew := make(map[int64]canonical.AssetClass) // entity id -> exposure (asset_class)
-	vehicles := make(map[int64]canonical.Vehicle)      // entity id -> vehicle
+	h := newHeld()
 
 	var lots []lotState
 	var funds []fundState
@@ -320,20 +317,20 @@ func emit(t int64, held []silver.Holding, meta map[int64]entInfo, acct string, l
 	})
 	sort.Slice(funds, func(i, j int) bool { return funds[i].rowid < funds[j].rowid })
 
-	if err := appendCapTableAt(t, acct, lots, &batch, active, classesNew, vehicles); err != nil {
-		return batch, err
+	if err := appendCapTableAt(t, acct, lots, h); err != nil {
+		return h.batch, err
 	}
-	appendFundAt(t, acct, ledger, inKind, funds, &batch, active, classesNew, vehicles)
-	if err := appendFundCarryAt(t, acct, ledger, inKind, &batch, active, classesNew, vehicles); err != nil {
-		return batch, err
+	appendFundAt(t, acct, ledger, inKind, funds, h)
+	if err := appendFundCarryAt(t, acct, ledger, inKind, h); err != nil {
+		return h.batch, err
 	}
-	dropRemoved(t, &batch, active, removals)
-	if len(active) == 0 {
-		return batch, nil // nothing held at t
+	dropRemoved(t, &h.batch, h.active, removals)
+	if len(h.active) == 0 {
+		return h.batch, nil // nothing held at t
 	}
 
-	ids := make([]int64, 0, len(active))
-	for id := range active {
+	ids := make([]int64, 0, len(h.active))
+	for id := range h.active {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
@@ -342,8 +339,8 @@ func emit(t int64, held []silver.Holding, meta map[int64]entInfo, acct string, l
 		info := meta[eid]
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: instrumentID(eid),
-			AssetClass:           classesNew[eid], // 2-D taxonomy: same pair its position carries
-			Vehicle:              vehicles[eid],
+			AssetClass:           h.classesNew[eid], // 2-D taxonomy: same pair its position carries
+			Vehicle:              h.vehicles[eid],
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
 			Payload:              json.RawMessage(info.payload),
@@ -352,9 +349,27 @@ func emit(t int64, held []silver.Holding, meta map[int64]entInfo, acct string, l
 			n := info.name
 			inst.Name = &n
 		}
-		batch.Instruments = append(batch.Instruments, inst)
+		h.batch.Instruments = append(h.batch.Instruments, inst)
 	}
-	return batch, nil
+	return h.batch, nil
+}
+
+// held is what the append functions build for one date: the batch, and for
+// each entity placed in it its holdings currency, exposure (asset_class)
+// and vehicle, which the instruments carry.
+type held struct {
+	batch      canonical.SnapshotBatch
+	active     map[int64]string
+	classesNew map[int64]canonical.AssetClass
+	vehicles   map[int64]canonical.Vehicle
+}
+
+func newHeld() *held {
+	return &held{
+		active:     make(map[int64]string),
+		classesNew: make(map[int64]canonical.AssetClass),
+		vehicles:   make(map[int64]canonical.Vehicle),
+	}
 }
 
 // dropRemoved takes the funds carried for companies the portal had stopped
@@ -468,8 +483,9 @@ func exerciseValue(quantity, fmv sql.NullFloat64) (decimal.Decimal, bool) {
 	return decimal.NewFromFloat(quantity.Float64).Mul(decimal.NewFromFloat(fmv.Float64)), true
 }
 
-// appendCapTableAt aggregates the lots held at t into ONE position per
-// company: each held lot's latest delta on/before t, summed. Quantity is the share count
+// appendCapTableAt emits the lots held at t as ONE position per
+// company: each held lot's latest delta on/before t, summed
+// (aggregateCapTable). Quantity is the share count
 // (share-type lots only — an unexercised option is a different unit and would
 // also double-count the certificates it became, so it stays a 0-value lot in
 // the payload). MarketValue sums every held lot's per-date FMV valuation
@@ -482,89 +498,8 @@ func exerciseValue(quantity, fmv sql.NullFloat64) (decimal.Decimal, bool) {
 // sums: exerciseValueBasis where a value at exercise is in it, else its
 // lots' cost where every costed line is a share certificate (shareBasis),
 // else the cash paid (cashPaidBasis).
-func appendCapTableAt(t int64, acct string, held []lotState, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) error {
-	// The sums are decimal so that a position's quantity and book value are
-	// exactly the sums of its share lots'.
-	type agg struct {
-		ccy                         string
-		shareQty, mv, book          decimal.Decimal
-		hasShareQty, hasMV, hasBook bool
-		atExercise                  bool  // book counts a value at exercise
-		hasEquity                   bool  // any non-convertible lot (share/option/…)
-		hasStockLike                bool  // any real share-settled lot (share/rsu/rsa/piu/equity_grant)
-		costsOther                  bool  // a costed line that is no share certificate
-		acquiredUnix                int64 // earliest date among the lines that are no share lot
-		hasAcquired                 bool
-		valuedAt                    int64 // the latest delta the position is built from
-		lots                        []lot
-		shareLots                   []canonical.PositionLotChange
-	}
-	aggs := make(map[int64]*agg)
-	var order []int64
-	for _, r := range held {
-		a := aggs[r.entityID]
-		if a == nil {
-			a = &agg{ccy: normCcy(r.ccy)}
-			aggs[r.entityID] = a
-			order = append(order, r.entityID)
-		}
-		a.valuedAt = max(a.valuedAt, r.at)
-		if r.secType != "convertible" {
-			a.hasEquity = true // a SAFE/note is a convertible_note only until real equity appears
-		}
-		if isStockVehicleType(r.secType) {
-			a.hasStockLike = true // share-settled ownership → stock vehicle (vs option/warrant/sar)
-		}
-		if r.secType == "share" {
-			if r.quantity.Valid {
-				a.shareQty = a.shareQty.Add(decimal.NewFromFloat(r.quantity.Float64))
-				a.hasShareQty = true
-			}
-			a.shareLots = append(a.shareLots, shareLot(r.secID, r.quantity, r.cost, r.mv, r.acquired, r.exType, r.exDate, r.exFMV))
-		}
-		if r.mv.Valid {
-			a.mv = a.mv.Add(decimal.NewFromFloat(r.mv.Float64))
-			a.hasMV = true
-		}
-		if v, ok := exerciseValue(r.quantity, r.exFMV); ok && r.secType == "share" {
-			a.book, a.hasBook, a.atExercise = a.book.Add(v), true, true
-		} else if r.cost.Valid {
-			a.book, a.hasBook = a.book.Add(decimal.NewFromFloat(r.cost.Float64)), true
-			a.costsOther = a.costsOther || r.secType != "share"
-		}
-		l := lot{SecurityType: r.secType, SecurityID: r.secID, Label: r.label,
-			IssueDate: r.issueDate, AcquiredOn: r.acquired}
-		// A holding without a dated share lot is acquired on the EARLIEST
-		// date its other held lines carry. A convertible is not re-issued
-		// on a split or transfer the way a certificate is, so where Carta
-		// states no acquisition date its issue date is the day it was
-		// bought.
-		acquired := r.acquired
-		if acquired == "" && r.secType == "convertible" {
-			acquired = r.issueDate
-		}
-		if acq, ok := sourceDateUnix(acquired); ok && r.secType != "share" && (!a.hasAcquired || acq < a.acquiredUnix) {
-			a.acquiredUnix, a.hasAcquired = acq, true
-		}
-		if r.quantity.Valid {
-			v := r.quantity.Float64
-			l.Quantity = &v
-		}
-		if r.cost.Valid {
-			v := r.cost.Float64
-			l.Cost = &v
-		}
-		if r.mv.Valid {
-			v := r.mv.Float64
-			l.MarketValue = &v
-		}
-		if r.strike.Valid {
-			v := r.strike.Float64
-			l.ExercisePrice = &v
-		}
-		a.lots = append(a.lots, l)
-	}
-
+func appendCapTableAt(t int64, acct string, lots []lotState, h *held) error {
+	order, aggs := aggregateCapTable(lots)
 	for _, eid := range order {
 		a := aggs[eid]
 		payload, err := json.Marshal(struct {
@@ -610,17 +545,111 @@ func appendCapTableAt(t int64, acct string, held []lotState, batch *canonical.Sn
 			change.AcquisitionDate = silver.DatePtrFromNullUnix(
 				sql.NullInt64{Int64: a.acquiredUnix, Valid: true})
 		}
-		batch.Positions = append(batch.Positions, change)
+		h.batch.Positions = append(h.batch.Positions, change)
 		for _, l := range a.shareLots {
 			l.SnapshotAt, l.AccountExternalID, l.PositionKey = t, acct, change.PositionKey
 			l.InstrumentExternalID, l.Currency = &instKey, a.ccy
-			batch.PositionLots = append(batch.PositionLots, l)
+			h.batch.PositionLots = append(h.batch.PositionLots, l)
 		}
-		active[eid] = a.ccy
-		classesNew[eid] = classNew
-		vehicles[eid] = vehicle
+		h.active[eid] = a.ccy
+		h.classesNew[eid] = classNew
+		h.vehicles[eid] = vehicle
 	}
 	return nil
+}
+
+// capTableAgg is one company's held lots at a date, summed. The sums are
+// decimal so that a position's quantity and book value are exactly the
+// sums of its share lots'.
+type capTableAgg struct {
+	ccy                         string
+	shareQty, mv, book          decimal.Decimal
+	hasShareQty, hasMV, hasBook bool
+	atExercise                  bool  // book counts a value at exercise
+	hasEquity                   bool  // any non-convertible lot (share/option/…)
+	hasStockLike                bool  // any real share-settled lot (share/rsu/rsa/piu/equity_grant)
+	costsOther                  bool  // a costed line that is no share certificate
+	acquiredUnix                int64 // earliest date among the lines that are no share lot
+	hasAcquired                 bool
+	valuedAt                    int64 // the latest delta the position is built from
+	lots                        []lot
+	shareLots                   []canonical.PositionLotChange
+}
+
+// aggregateCapTable sums the lots by company, the companies in the order
+// their first lot comes in.
+func aggregateCapTable(lots []lotState) ([]int64, map[int64]*capTableAgg) {
+	aggs := make(map[int64]*capTableAgg)
+	var order []int64
+	for _, r := range lots {
+		a := aggs[r.entityID]
+		if a == nil {
+			a = &capTableAgg{ccy: normCcy(r.ccy)}
+			aggs[r.entityID] = a
+			order = append(order, r.entityID)
+		}
+		a.valuedAt = max(a.valuedAt, r.at)
+		if r.secType != "convertible" {
+			a.hasEquity = true // a SAFE/note is a convertible_note only until real equity appears
+		}
+		if isStockVehicleType(r.secType) {
+			a.hasStockLike = true // share-settled ownership → stock vehicle (vs option/warrant/sar)
+		}
+		if r.secType == "share" {
+			if r.quantity.Valid {
+				a.shareQty = a.shareQty.Add(decimal.NewFromFloat(r.quantity.Float64))
+				a.hasShareQty = true
+			}
+			a.shareLots = append(a.shareLots, shareLot(r.secID, r.quantity, r.cost, r.mv, r.acquired, r.exType, r.exDate, r.exFMV))
+		}
+		if r.mv.Valid {
+			a.mv = a.mv.Add(decimal.NewFromFloat(r.mv.Float64))
+			a.hasMV = true
+		}
+		if v, ok := exerciseValue(r.quantity, r.exFMV); ok && r.secType == "share" {
+			a.book, a.hasBook, a.atExercise = a.book.Add(v), true, true
+		} else if r.cost.Valid {
+			a.book, a.hasBook = a.book.Add(decimal.NewFromFloat(r.cost.Float64)), true
+			a.costsOther = a.costsOther || r.secType != "share"
+		}
+		// A holding without a dated share lot is acquired on the EARLIEST
+		// date its other held lines carry. A convertible is not re-issued
+		// on a split or transfer the way a certificate is, so where Carta
+		// states no acquisition date its issue date is the day it was
+		// bought.
+		acquired := r.acquired
+		if acquired == "" && r.secType == "convertible" {
+			acquired = r.issueDate
+		}
+		if acq, ok := sourceDateUnix(acquired); ok && r.secType != "share" && (!a.hasAcquired || acq < a.acquiredUnix) {
+			a.acquiredUnix, a.hasAcquired = acq, true
+		}
+		a.lots = append(a.lots, readLot(r))
+	}
+	return order, aggs
+}
+
+// readLot is one held line as the position payload lists it.
+func readLot(r lotState) lot {
+	l := lot{SecurityType: r.secType, SecurityID: r.secID, Label: r.label,
+		IssueDate: r.issueDate, AcquiredOn: r.acquired}
+	if r.quantity.Valid {
+		v := r.quantity.Float64
+		l.Quantity = &v
+	}
+	if r.cost.Valid {
+		v := r.cost.Float64
+		l.Cost = &v
+	}
+	if r.mv.Valid {
+		v := r.mv.Float64
+		l.MarketValue = &v
+	}
+	if r.strike.Valid {
+		v := r.strike.Float64
+		l.ExercisePrice = &v
+	}
+	return l
 }
 
 // appendFundAt emits the fund LP positions held at t: each fund's latest
@@ -628,8 +657,8 @@ func appendCapTableAt(t int64, acct string, held []lotState, batch *canonical.Sn
 // net_asset_value (the NAV at that quarter), BookValue = capital_contributed
 // less the basis distributed in kind by t (inKind), AcquisitionDate = the
 // fund's first capital call. Money arrives as decimal strings, parsed exactly.
-func appendFundAt(t int64, acct string, ledger fundLedger, inKind *silver.InKind, held []fundState, batch *canonical.SnapshotBatch, active map[int64]string, classesNew map[int64]canonical.AssetClass, vehicles map[int64]canonical.Vehicle) {
-	for _, f := range held {
+func appendFundAt(t int64, acct string, ledger fundLedger, inKind *silver.InKind, funds []fundState, h *held) {
+	for _, f := range funds {
 		ccy := normCcy(f.ccy)
 		instKey := instrumentID(f.entityID)
 		// 2-D taxonomy: a fund LP interest is private_equity exposure held via
@@ -655,9 +684,9 @@ func appendFundAt(t int64, acct string, ledger fundLedger, inKind *silver.InKind
 			change.SetBookValue(book, basis)
 			change.Payload = silver.PayloadWith(f.payload, extra)
 		}
-		batch.Positions = append(batch.Positions, change)
-		active[f.entityID] = ccy
-		classesNew[f.entityID] = canonical.AssetClassPrivateEquity
-		vehicles[f.entityID] = canonical.VehicleFund
+		h.batch.Positions = append(h.batch.Positions, change)
+		h.active[f.entityID] = ccy
+		h.classesNew[f.entityID] = canonical.AssetClassPrivateEquity
+		h.vehicles[f.entityID] = canonical.VehicleFund
 	}
 }
