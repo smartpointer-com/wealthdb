@@ -208,12 +208,11 @@ def parse_1099b_xml(xml_text: str) -> dict:
 
     Returns {"tax_year": int|None, "lots": [row, ...]}. A 1099 with
     no 1099-B section (e.g. interest/dividends only) yields an empty
-    lot list. Each lot is one `PROCDET_V100` (proceeds detail)."""
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError as e:
-        log.warning("1099 XML parse error: %s", e)
-        return {"tax_year": None, "lots": []}
+    lot list. Each lot is one `PROCDET_V100` (proceeds detail). XML
+    that does not parse raises ET.ParseError: a broken copy is a
+    failed parse, not a form without lots, so the loader reads the
+    form from another copy."""
+    root = ET.fromstring(xml_text)
 
     b = next(iter(root.iter("TAX1099B_V100")), None)
     if b is None:

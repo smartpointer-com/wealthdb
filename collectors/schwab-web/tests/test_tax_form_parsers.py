@@ -9,7 +9,10 @@ OFX-2.x XML (the preferred source) and the multi-section composite CSV
 from __future__ import annotations
 
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -149,6 +152,12 @@ class TestParse1099bXml:
                "</TAX1099MSGSRSV1></OFX>")
         out = tf.parse_1099b_xml(xml)
         assert out == {"tax_year": None, "lots": []}
+
+    def test_xml_that_does_not_parse_raises(self):
+        # A broken copy is a failed parse, not a form without lots, so
+        # the loader tries the form's next copy.
+        with pytest.raises(ET.ParseError):
+            tf.parse_1099b_xml(_make_1099b_xml("2021")[:200])
 
     def test_tax_year_derived_from_content_when_absent(self):
         xml = _make_1099b_xml("2021").replace(

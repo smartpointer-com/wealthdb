@@ -2083,6 +2083,31 @@ class TestForm1099bLoad:
         ).fetchone()[0]
         assert n == 2
 
+    def test_a_broken_first_copy_is_read_from_a_later_one(self, tmp_path):
+        import argparse
+        doc = {"date": "02/15/2022", "type": "Tax Forms",
+               "document": "1099 Composite and Year-End Summary - 2021",
+               "filename": "XXXX-X999.XML"}
+        bronze_dir = tmp_path / "bronze"
+        _make_doc_bronze(bronze_dir, "20260520T120000Z", "999", [
+            {**doc, "content": _MINI_1099B_XML[:150]}])
+        _make_doc_bronze(bronze_dir, "20260521T120000Z", "999", [
+            {**doc, "content": _MINI_1099B_XML}])
+        db = tmp_path / "silver.db"
+        args = argparse.Namespace(
+            silver_db=db, bronze_dir=bronze_dir,
+            migrations_dir=MIGRATIONS_DIR, reparse=False, workers=1,
+            verbose=False, force=False,
+        )
+        assert load.run_load(args) == 0
+        conn = sqlite3.connect(str(db))
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM transactions"
+                             " WHERE source = 'form_1099b'").fetchone()[0]
+        finally:
+            conn.close()
+        assert n == 2
+
     def test_reparse_parse_failure_preserves_prior_rows(
             self, monkeypatch, migrated, tmp_path):
         """A parse that fails during --reparse must NOT drop the prior
