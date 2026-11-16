@@ -66,8 +66,8 @@ func TestTheFarSideMovesIntoTheLinks(t *testing.T) {
 			Provenance: "matcher", FarSource: "cf", FarAccount: "IRA", FarTxn: "L-PAIR-IN", FarEvidence: "amount"},
 		enrichtest.Spend{Source: "cf", Txn: "L-PAIR-IN", Signature: "sig", Detailed: "internal_transfer",
 			Provenance: "matcher", FarSource: "cf", FarAccount: "CASH", FarTxn: "L-PAIR-OUT", FarEvidence: "amount"},
-		enrichtest.Spend{Source: "cf", Txn: "L-MORT", Signature: "sig", Detailed: "internal_transfer",
-			Provenance: "rule", FarClass: "mortgage"},
+		enrichtest.Spend{Source: "cf", Txn: "L-MORT", Signature: "sig", Detailed: "mortgage_transfer",
+			Provenance: "rule"},
 		enrichtest.Spend{Source: "cf", Txn: "L-DECL", Signature: "sig", Detailed: "internal_transfer",
 			Provenance: "rule", FarSource: "declared", FarAccount: "DECL1"},
 		enrichtest.Spend{Source: "cf", Txn: "L-STATED", Signature: "sig",
@@ -99,7 +99,8 @@ func TestTheFarSideMovesIntoTheLinks(t *testing.T) {
 		t.Errorf("migrated links = %v, want %v", got, want)
 	}
 
-	// The overlay's shape is a fresh gold's.
+	// The overlay's shape is a fresh gold's, and so is what the later
+	// migrations make of it.
 	if err := Migrate(ctx, old); err != nil {
 		t.Fatal(err)
 	}

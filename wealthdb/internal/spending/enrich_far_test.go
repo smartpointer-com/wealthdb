@@ -20,21 +20,20 @@ import (
 // fact about the OVERLAY and, just as deliberately, that the two
 // families' reports did not move.
 
-// farOf reads the far side the pass linked for one transaction. Each
-// part comes back as the empty string where the pass linked none, which
-// is what "no far account" and "no class" both look like to a reader.
-func farOf(t *testing.T, db *sql.DB, ctx context.Context, source, id string) (farSource, farAccount, farClass string) {
+// farOf reads the far account the pass linked for one transaction. Each
+// part comes back as the empty string where the pass linked none.
+func farOf(t *testing.T, db *sql.DB, ctx context.Context, source, id string) (farSource, farAccount string) {
 	t.Helper()
-	var s, a, c sql.NullString
+	var s, a sql.NullString
 	if err := db.QueryRowContext(ctx, `
-        SELECT l.far_silver_source_id, l.far_account_external_id, l.far_class
+        SELECT l.far_silver_source_id, l.far_account_external_id
           FROM spend_txn_enrichment e
           LEFT JOIN transfer_links l USING (silver_source_id, transaction_external_id)
          WHERE e.silver_source_id = ? AND e.transaction_external_id = ?`,
-		source, id).Scan(&s, &a, &c); err != nil {
+		source, id).Scan(&s, &a); err != nil {
 		t.Fatalf("read the far side of %s/%s: %v", source, id, err)
 	}
-	return s.String, a.String, c.String
+	return s.String, a.String
 }
 
 // TestMatcherRecordsBothEndsOfAPair is the core of the change: each leg
@@ -52,14 +51,14 @@ func TestMatcherRecordsBothEndsOfAPair(t *testing.T) {
 	)
 	runPass(t, db, ctx, Options{})
 
-	if src, acct, class := farOf(t, db, ctx, "bank", "T-OUT"); src != "other-bank" || acct != "CASH2" || class != "" {
-		t.Errorf("outgoing leg far = (%q, %q, %q), want (other-bank, CASH2, \"\")", src, acct, class)
+	if src, acct := farOf(t, db, ctx, "bank", "T-OUT"); src != "other-bank" || acct != "CASH2" {
+		t.Errorf("outgoing leg far = (%q, %q), want (other-bank, CASH2)", src, acct)
 	}
 	// The receiving leg is outside the spending population and gets its
 	// row anyway (emitOutsidePopulation) — which is the only reason a
 	// fact about it can be recorded at all.
-	if src, acct, class := farOf(t, db, ctx, "other-bank", "T-IN"); src != "bank" || acct != "CASH1" || class != "" {
-		t.Errorf("incoming leg far = (%q, %q, %q), want (bank, CASH1, \"\")", src, acct, class)
+	if src, acct := farOf(t, db, ctx, "other-bank", "T-IN"); src != "bank" || acct != "CASH1" {
+		t.Errorf("incoming leg far = (%q, %q), want (bank, CASH1)", src, acct)
 	}
 	for _, id := range []string{"T-OUT", "T-IN"} {
 		src := "bank"
@@ -85,31 +84,25 @@ func TestSameSourceCardBillRecordsTheCard(t *testing.T) {
 	)
 	runPass(t, db, ctx, Options{})
 
-	if src, acct, _ := farOf(t, db, ctx, "bank", "T-PAY"); src != "bank" || acct != "CARD1" {
+	if src, acct := farOf(t, db, ctx, "bank", "T-PAY"); src != "bank" || acct != "CARD1" {
 		t.Errorf("the bill's far account = (%q, %q), want (bank, CARD1)", src, acct)
 	}
-	if src, acct, _ := farOf(t, db, ctx, "bank", "T-RCPT"); src != "bank" || acct != "CASH1" {
+	if src, acct := farOf(t, db, ctx, "bank", "T-RCPT"); src != "bank" || acct != "CASH1" {
 		t.Errorf("the receipt's far account = (%q, %q), want (bank, CASH1)", src, acct)
-	}
-	// The card rule would have placed `card_spend` and labelled the
-	// bill; the matcher outranks it and clears the label. Nothing about
-	// the far side changes that contract.
-	if _, _, class := farOf(t, db, ctx, "bank", "T-PAY"); class != "" {
-		t.Errorf("a paired bill carries far_class %q; the account itself is better than a stand-in", class)
 	}
 }
 
-// TestMortgageRuleRecordsItsClass pins the one rule that carries a
-// class. It matches a NARRATIVE, so it fires whether or not the lender
-// is tracked — and where the lender is not, nothing else on the row
-// says where the money went.
-func TestMortgageRuleRecordsItsClass(t *testing.T) {
+// TestTheMortgageRulePlacesItsValue pins the one built-in rule that
+// places an own money movement. It matches a NARRATIVE, so it fires
+// whether or not the lender is tracked, and its value reaches
+// financing · Mortgage with no far account at all.
+func TestTheMortgageRulePlacesItsValue(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
 		txn{source: "bank", id: "T-MORT", account: "CASH1", kind: "withdrawal",
 			occurredAt: day(30), amount: -1800, description: "MORTGAGE PAYMENT"},
-		// A rule-placed own-account move with no class of its own: a
-		// wire the config names as the holder's own account elsewhere.
+		// A rule-placed own-account move: a wire the config names as the
+		// holder's own account elsewhere.
 		txn{source: "bank", id: "T-OWN", account: "CASH1", kind: "withdrawal",
 			occurredAt: day(31), amount: -900, description: "WIRE TO OWN ACCOUNT"},
 		// An ordinary purchase: no rule, no pairing, nothing to record.
@@ -121,31 +114,27 @@ func TestMortgageRuleRecordsItsClass(t *testing.T) {
 		Category: canonical.SpendDetailedInternalTransfer,
 	}}})
 
-	if src, acct, class := farOf(t, db, ctx, "bank", "T-MORT"); class != string(canonical.ClassMortgage) || src != "" || acct != "" {
-		t.Errorf("mortgage payment far = (%q, %q, %q), want (\"\", \"\", mortgage)", src, acct, class)
+	if detailed, prov := verdictOf(t, db, ctx, "bank", "T-MORT"); detailed != canonical.DetailedMortgageTransfer ||
+		prov != ProvenanceRule {
+		t.Errorf("mortgage payment = (%q, %q), want the rule tier's mortgage_transfer", detailed, prov)
 	}
-	if detailed, prov := verdictOf(t, db, ctx, "bank", "T-MORT"); detailed != internalTransfer || prov != ProvenanceRule {
-		t.Errorf("mortgage payment = (%q, %q), want the rule tier's own-account verdict", detailed, prov)
-	}
-	// A config rule places the move and says nothing about where it
-	// went, which is exactly the hole the untracked-accounts node
-	// exists to show rather than to swallow.
-	if src, acct, class := farOf(t, db, ctx, "bank", "T-OWN"); src != "" || acct != "" || class != "" {
-		t.Errorf("config-rule move far = (%q, %q, %q), want all empty", src, acct, class)
-	}
-	if src, acct, class := farOf(t, db, ctx, "bank", "T-SHOP"); src != "" || acct != "" || class != "" {
-		t.Errorf("purchase far = (%q, %q, %q), want all empty", src, acct, class)
+	// Nothing names where any of the three went, which is exactly the
+	// hole the untracked-accounts node exists to show for the config
+	// rule's move rather than to swallow.
+	for _, id := range []string{"T-MORT", "T-OWN", "T-SHOP"} {
+		if src, acct := farOf(t, db, ctx, "bank", id); src != "" || acct != "" {
+			t.Errorf("%s far = (%q, %q), want none", id, src, acct)
+		}
 	}
 }
 
-// TestATierAboveTheRuleClearsTheFarClass pins the same contract the
-// issuer label has: the class describes the verdict the rule placed, so
-// a tier that replaces the verdict takes it with them.
-func TestATierAboveTheRuleClearsTheFarClass(t *testing.T) {
+// TestATierAboveTheMortgageRuleReplacesItsValue: a pairing and a pin
+// both outrank the rule's value.
+func TestATierAboveTheMortgageRuleReplacesItsValue(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
 		// A mortgage payment whose lender IS tracked: the rule places
-		// the class, the matcher then pairs the legs and outranks it.
+		// its value, the matcher then pairs the legs and outranks it.
 		txn{source: "bank", id: "T-MORT-PAID", account: "CASH1", kind: "withdrawal",
 			occurredAt: day(40), amount: -1800, description: "MORTGAGE PAYMENT"},
 		txn{source: "bank", id: "T-MORT-RCVD", account: "BRK1", kind: "deposit",
@@ -160,11 +149,12 @@ func TestATierAboveTheRuleClearsTheFarClass(t *testing.T) {
 		Detailed: canonical.SpendDetailedDebtRepayment,
 	}}})
 
-	if src, acct, class := farOf(t, db, ctx, "bank", "T-MORT-PAID"); class != "" || src != "bank" || acct != "BRK1" {
-		t.Errorf("paired mortgage far = (%q, %q, %q), want (bank, BRK1, \"\")", src, acct, class)
+	if src, acct := farOf(t, db, ctx, "bank", "T-MORT-PAID"); src != "bank" || acct != "BRK1" {
+		t.Errorf("paired mortgage far = (%q, %q), want (bank, BRK1)", src, acct)
 	}
-	if _, _, class := farOf(t, db, ctx, "bank", "T-MORT-PIN"); class != "" {
-		t.Errorf("pinned row keeps far_class %q; the rule's verdict is gone", class)
+	if detailed, prov := verdictOf(t, db, ctx, "bank", "T-MORT-PAID"); detailed != internalTransfer ||
+		prov != ProvenanceMatcher {
+		t.Errorf("paired mortgage = (%q, %q), want the matcher's own-account move", detailed, prov)
 	}
 	if detailed, prov := verdictOf(t, db, ctx, "bank", "T-MORT-PIN"); detailed != canonical.SpendDetailedDebtRepayment || prov != ProvenanceManual {
 		t.Errorf("pinned row = (%q, %q), want the pin's verdict", detailed, prov)
@@ -184,13 +174,13 @@ func TestFarColumnsAreRewrittenEveryPass(t *testing.T) {
 			occurredAt: day(11), amount: 2500, description: "INCOMING TRANSFER"},
 	)
 	runPass(t, db, ctx, Options{})
-	if _, acct, _ := farOf(t, db, ctx, "bank", "T-OUT"); acct != "CASH2" {
+	if _, acct := farOf(t, db, ctx, "bank", "T-OUT"); acct != "CASH2" {
 		t.Fatalf("far account after the first pass = %q, want CASH2", acct)
 	}
 
 	// The same pass again is idempotent.
 	runPass(t, db, ctx, Options{})
-	if _, acct, _ := farOf(t, db, ctx, "bank", "T-OUT"); acct != "CASH2" {
+	if _, acct := farOf(t, db, ctx, "bank", "T-OUT"); acct != "CASH2" {
 		t.Errorf("far account after a re-run = %q, want CASH2", acct)
 	}
 
@@ -200,7 +190,7 @@ func TestFarColumnsAreRewrittenEveryPass(t *testing.T) {
 		A: gold.TransferOverrideSelector{Source: "bank", Account: "CASH1",
 			Day: day(10), Amount: -2500, Currency: "USD"},
 	}}})
-	if src, acct, _ := farOf(t, db, ctx, "bank", "T-OUT"); src != "" || acct != "" {
+	if src, acct := farOf(t, db, ctx, "bank", "T-OUT"); src != "" || acct != "" {
 		t.Errorf("far account survives an unmatch: (%q, %q)", src, acct)
 	}
 }
@@ -333,8 +323,8 @@ func TestASourceStatedCounterAccountIsTheFarAccount(t *testing.T) {
 	seedCounterAccount(t, db, ctx, "bank", "T-STATED", "BRK1")
 	runPass(t, db, ctx, Options{})
 
-	if src, acct, class := farOf(t, db, ctx, "bank", "T-STATED"); src != "bank" || acct != "BRK1" || class != "" {
-		t.Errorf("stated far = (%q, %q, %q), want (bank, BRK1, \"\")", src, acct, class)
+	if src, acct := farOf(t, db, ctx, "bank", "T-STATED"); src != "bank" || acct != "BRK1" {
+		t.Errorf("stated far = (%q, %q), want (bank, BRK1)", src, acct)
 	}
 }
 
@@ -382,7 +372,7 @@ func TestAStatedCounterAccountResolvesInAnotherSourceOnlyWhenUnique(t *testing.T
 		"T-AMBIGUOUS":  {"", ""},
 		"T-ITSELF":     {"", ""},
 	} {
-		if src, acct, _ := farOf(t, db, ctx, "bank", id); src != want[0] || acct != want[1] {
+		if src, acct := farOf(t, db, ctx, "bank", id); src != want[0] || acct != want[1] {
 			t.Errorf("%s: far = (%q, %q), want (%q, %q)", id, src, acct, want[0], want[1])
 		}
 	}
@@ -402,8 +392,8 @@ func TestAStatedCounterAccountGoldDoesNotHoldIsIgnored(t *testing.T) {
 	seedCounterAccount(t, db, ctx, "bank", "T-THIRD-PARTY", "AN-ACCOUNT-GOLD-DOES-NOT-HOLD")
 	runPass(t, db, ctx, Options{})
 
-	if src, acct, class := farOf(t, db, ctx, "bank", "T-THIRD-PARTY"); src != "" || acct != "" || class != "" {
-		t.Errorf("far = (%q, %q, %q), want all empty: a third party is not a destination", src, acct, class)
+	if src, acct := farOf(t, db, ctx, "bank", "T-THIRD-PARTY"); src != "" || acct != "" {
+		t.Errorf("far = (%q, %q), want none: a third party is not a destination", src, acct)
 	}
 }
 
@@ -425,7 +415,7 @@ func TestAPairingOutranksAStatedCounterAccount(t *testing.T) {
 	seedCounterAccount(t, db, ctx, "bank", "T-PAIRED-OUT", "BRK1")
 	runPass(t, db, ctx, Options{})
 
-	if src, acct, _ := farOf(t, db, ctx, "bank", "T-PAIRED-OUT"); src != "other-bank" || acct != "CASH2" {
+	if src, acct := farOf(t, db, ctx, "bank", "T-PAIRED-OUT"); src != "other-bank" || acct != "CASH2" {
 		t.Errorf("far = (%q, %q), want the matcher's partner (other-bank, CASH2)", src, acct)
 	}
 }

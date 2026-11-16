@@ -68,15 +68,9 @@ type enrichmentRow struct {
 	// on a row a later tier re-categorises — nothing reads them unless
 	// the surviving verdict says the money stayed the holder's.
 	farSource, farAccount string
-	// farClass is the cashflow class a rule stands for where it placed
-	// an own-account move without pairing anything — the mortgage
-	// rule's alone today. It describes the verdict the rule placed
-	// rather than the row, exactly as merchantLabel does, so a tier
-	// above the rule clears it with the category it replaces.
-	farClass string
 	// statedAssetClass is what the holder said the capital went INTO,
 	// carried beside an investing verdict by a config rule or a pin
-	// (migration 0102). Like farClass and merchantLabel it describes
+	// (migration 0102). Like merchantLabel it describes
 	// the VERDICT rather than the row, so it travels with the verdict:
 	// written by the tier that placed one, cleared when the matcher
 	// replaces the verdict with `internal_transfer` — an exposure on an
@@ -209,7 +203,7 @@ func assignCategories(
 			} else if drift {
 				counts.UnmappedProviderCategories++
 			}
-			if detailed, label, farClass, ok := fam.builtinRule(builtinFacts{
+			if detailed, label, ok := fam.builtinRule(builtinFacts{
 				kind: r.kind, accountKind: r.accountKind,
 				signature: row.signature, counterparty: r.counterparty, description: r.description,
 				providerCategory: r.providerCategory, filed: row.providerDetailed,
@@ -217,9 +211,6 @@ func assignCategories(
 				row.detailed, row.provenance = detailed, ProvenanceRule
 				if fam.labelCol != "" {
 					row.merchantLabel = label
-				}
-				if fam.linksFar {
-					row.farClass, row.farEvidence = farClass, evidenceRule
 				}
 			} else if placement, ok := ConfigRuleCategory(rules, r.ruleRow()); ok {
 				row.detailed, row.provenance = placement.Category, ProvenanceRule
@@ -237,20 +228,16 @@ func assignCategories(
 			row.farSource, row.farAccount = canonical.DeclaredSourceID, placement.Far
 			row.farEvidence = evidenceRule
 		}
-		// A tier above the rule clears the label and the far class with
-		// the verdict it replaces. The label says which issuer a card
-		// bill was paid to, which is only true of a row this pass filed
-		// as a card bill: on a bill whose card the matcher paired, or
-		// on a row the holder pinned as something else, it would name
-		// an issuer on a line that is no longer a card bill at all. The
-		// far class is the same shape of claim — a rule's word for
-		// where an unpaired move went — and a row the matcher DID pair
-		// has the far account itself, which is better than any stand-in.
+		// A tier above the rule clears the label with the verdict it
+		// replaces. The label says which issuer a card bill was paid to,
+		// which is only true of a row this pass filed as a card bill: on
+		// a bill whose card the matcher paired, or on a row the holder
+		// pinned as something else, it would name an issuer on a line
+		// that is no longer a card bill at all.
 		if partner, ok := matched[r.key]; ok {
 			row.detailed = internalTransfer
 			row.provenance = ProvenanceMatcher
 			row.merchantLabel = ""
-			row.farClass = ""
 			row.statedAssetClass = ""
 			if fam.linksFar {
 				row.farSource, row.farAccount = partner.Group, partner.Owner
@@ -261,17 +248,15 @@ func assignCategories(
 			// Only the ACCOUNT is taken: the verdict stays whatever the
 			// tiers decided, because "where it went" and "what it was"
 			// are different questions and this evidence answers only the
-			// first. A rule's far CLASS is a stand-in for exactly this
-			// and gives way to it, the way it gives way to a pairing.
+			// first.
 			row.farSource, row.farAccount = far.source, far.account
-			row.farClass, row.farEvidence = "", evidenceStatedAccount
+			row.farEvidence = evidenceStatedAccount
 			counts.StatedFarAccounts++
 		}
 		if p, ok := pinned[r.key]; ok {
 			row.detailed = p.detailed
 			row.provenance = ProvenanceManual
 			row.merchantLabel = ""
-			row.farClass = ""
 			row.statedAssetClass = p.assetClass
 		}
 		out = append(out, row)
@@ -388,7 +373,7 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 }
 
 // writeTransferLinks rewrites transfer_links from the spending family's
-// rows: one link per row whose far account or far class is known. A
+// rows: one link per row whose far account is known. A
 // leg of a pair links to its partner leg, with the pair's phase as its
 // evidence; any other row links to its far account alone.
 //
@@ -405,16 +390,16 @@ func writeTransferLinks(ctx context.Context, tx *sql.Tx, rows []enrichmentRow, p
 	}
 	links := make([]*enrichmentRow, 0, len(pairs)*2)
 	for i := range rows {
-		if rows[i].farAccount != "" || rows[i].farClass != "" {
+		if rows[i].farAccount != "" {
 			links = append(links, &rows[i])
 		}
 	}
 	return gold.InsertChunked(ctx, tx, "spending: write transfer links", `
         INSERT INTO transfer_links (silver_source_id, transaction_external_id,
                                     far_silver_source_id, far_account_external_id,
-                                    far_transaction_external_id, far_class,
+                                    far_transaction_external_id,
                                     evidence, measure) VALUES `,
-		"(?, ?, ?, ?, ?, ?, ?, ?)", len(links),
+		"(?, ?, ?, ?, ?, ?, ?)", len(links),
 		func(i int, args []any) []any {
 			r := links[i]
 			evidence := r.farEvidence
@@ -423,7 +408,7 @@ func writeTransferLinks(ctx context.Context, tx *sql.Tx, rows []enrichmentRow, p
 			}
 			return append(args, r.key.source, r.key.txID,
 				nullableString(r.farSource), nullableString(r.farAccount),
-				nullableString(r.farTxID), nullableString(r.farClass),
+				nullableString(r.farTxID),
 				evidence, measureCash)
 		})
 }

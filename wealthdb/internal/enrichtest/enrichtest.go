@@ -28,9 +28,8 @@ type Spend struct {
 	Stated                 string // stated_asset_class
 	// The far side of the move, where the pass knows it: a link with
 	// evidence `rule`, or FarEvidence, and the partner leg FarTxn.
-	FarSource, FarAccount, FarClass string
-	FarTxn, FarEvidence             string
-	At                              int64
+	FarSource, FarAccount, FarTxn, FarEvidence string
+	At                                         int64
 }
 
 // Income is one row of the income overlay as a pass would write it, on
@@ -55,7 +54,7 @@ func SeedSpend(t testing.TB, db Execer, rows ...Spend) {
 		    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.Source, r.Txn, text(r.Signature), version(r.Version), text(r.Detailed), r.Provenance,
 			text(r.Label), text(r.Provider), text(r.Stated), at(r.At))
-		if r.FarAccount == "" && r.FarClass == "" {
+		if r.FarAccount == "" {
 			continue
 		}
 		evidence := r.FarEvidence
@@ -63,10 +62,10 @@ func SeedSpend(t testing.TB, db Execer, rows ...Spend) {
 			evidence = "rule"
 		}
 		exec(t, db, `INSERT INTO transfer_links (silver_source_id, transaction_external_id,
-		        far_silver_source_id, far_account_external_id, far_transaction_external_id, far_class,
+		        far_silver_source_id, far_account_external_id, far_transaction_external_id,
 		        evidence, measure)
-		    VALUES (?, ?, ?, ?, ?, ?, ?, 'cash')`,
-			r.Source, r.Txn, text(r.FarSource), text(r.FarAccount), text(r.FarTxn), text(r.FarClass), evidence)
+		    VALUES (?, ?, ?, ?, ?, ?, 'cash')`,
+			r.Source, r.Txn, text(r.FarSource), text(r.FarAccount), text(r.FarTxn), evidence)
 	}
 }
 

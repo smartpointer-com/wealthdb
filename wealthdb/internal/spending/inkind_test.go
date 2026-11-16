@@ -110,7 +110,7 @@ func TestAStatedPairUnpairsTheMatchersThirdLeg(t *testing.T) {
 		prov != ProvenanceMatcher {
 		t.Fatalf("the matcher did not pair X with the departure: (%q, %q)", detailed, prov)
 	}
-	if src, acct, _ := farOf(t, db, ctx, "other-bank", "X"); src != "" || acct != "" {
+	if src, acct := farOf(t, db, ctx, "other-bank", "X"); src != "" || acct != "" {
 		t.Errorf("X keeps a far side (%q, %q); its partner is the ledger's", src, acct)
 	}
 	got := scanPairs(t, db, `

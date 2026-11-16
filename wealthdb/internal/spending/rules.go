@@ -68,16 +68,6 @@ type spendRule struct {
 	// it, its patterns say less than the filing does. Nil yields to
 	// nothing, and a row with no translation meets no yield at all.
 	yieldsTo func(filed string) bool
-	// farClass is the cashflow class this rule stands for when it
-	// places an own-account move it did not pair. A rule that matches a
-	// NARRATIVE fires whether or not the far account is tracked, so the
-	// pairing the matcher would have made is sometimes unavailable —
-	// and without a word from the rule the move would read as a
-	// crossing to an untracked account rather than as what the rule
-	// already knew it was. Empty on every rule but the mortgage one,
-	// and read only where the verdict survives to the overlay: a tier
-	// above clears it with the category it replaces.
-	farClass string
 }
 
 // cardIssuer is one row of the card-payment rule's issuer table
@@ -337,13 +327,14 @@ var builtinRules = []spendRule{
 	cashWithdrawalRule,
 	{
 		// mortgage: a NARRATIVE rule, so it fires whether or not the
-		// lender is tracked. It records the class it stands for
-		// (farClass), which the cash flow statement reads as debt
-		// service, and places the payment whole: the statement derives
-		// the interest/principal split from the mortgage balance
-		// (cashflow_lines_base).
-		detailed: canonical.SpendDetailedInternalTransfer,
-		farClass: string(canonical.ClassMortgage),
+		// lender is tracked. It places `mortgage_transfer`, which the
+		// cash flow statement reads as debt service with or without a
+		// far account, and places the payment whole: the statement
+		// derives the interest/principal split from the mortgage
+		// balance where a far account names it (cashflow_lines_base).
+		// The matcher outranks it: a payment to a mortgage gold holds
+		// pairs as an own-account move.
+		detailed: canonical.DetailedMortgageTransfer,
 		tokens:   []string{"MORTGAGE", "HYPOTHEK", "HYPOTHEKARZINS"},
 		phrases:  []string{"HOME LOAN", "MORTGAGE PAYMENT"},
 	},
@@ -413,15 +404,15 @@ var builtinRules = []spendRule{
 // the opposite move: it lets the tier below, which owns that filing,
 // have the row.
 //
-// One function so the three are read from ONE match: two entry points
-// running the rule table separately is exactly how a label and a class
+// One function so the two are read from ONE match: two entry points
+// running the rule table separately is exactly how a value and a label
 // would come to disagree about which rule fired.
-func rulePlacement(rules []spendRule, signature, counterparty, description, providerCategory, filed string) (detailed, label, farClass string, ok bool) {
+func rulePlacement(rules []spendRule, signature, counterparty, description, providerCategory, filed string) (detailed, label string, ok bool) {
 	r, fields, ok := matchRuleIn(rules, signature, counterparty, description, providerCategory, filed)
 	if !ok {
-		return "", "", "", false
+		return "", "", false
 	}
-	return r.detailed, r.label(fields), r.farClass, true
+	return r.detailed, r.label(fields), true
 }
 
 // IncomeRuleCategory is the income family's narrative built-in, one of

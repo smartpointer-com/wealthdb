@@ -70,8 +70,8 @@ func seedMortgagePayment(t *testing.T, db *sql.DB, ctx context.Context,
 		id, int64(day)*mortDay, amount, id); err != nil {
 		t.Fatalf("seed payment %s: %v", id, err)
 	}
-	far := enrichtest.Spend{Source: "cf", Txn: id, Signature: "sig", Detailed: "internal_transfer",
-		Provenance: "rule", FarAccount: farAccount, FarClass: "mortgage"}
+	far := enrichtest.Spend{Source: "cf", Txn: id, Signature: "sig", Detailed: "mortgage_transfer",
+		Provenance: "rule", FarAccount: farAccount}
 	if farAccount != "" {
 		far.FarSource = "cf"
 	}

@@ -42,7 +42,7 @@ func TestPassRuleNamesADeclaredAccount(t *testing.T) {
 		},
 	})
 
-	if s, a, _ := farOf(t, db, ctx, "bank", "T-OUT"); s != canonical.DeclaredSourceID || a != "savings-bank" {
+	if s, a := farOf(t, db, ctx, "bank", "T-OUT"); s != canonical.DeclaredSourceID || a != "savings-bank" {
 		t.Errorf("T-OUT far = (%q, %q), want the declared account", s, a)
 	}
 	if d, p := verdictOf(t, db, ctx, "bank", "T-OUT"); d != canonical.SpendDetailedInternalTransfer || p != ProvenanceRule {
@@ -50,7 +50,7 @@ func TestPassRuleNamesADeclaredAccount(t *testing.T) {
 	}
 	// The inbound leg: the income overlay carries the verdict, the
 	// spending overlay the far account.
-	if s, a, _ := farOf(t, db, ctx, "bank", "T-IN"); s != canonical.DeclaredSourceID || a != "savings-bank" {
+	if s, a := farOf(t, db, ctx, "bank", "T-IN"); s != canonical.DeclaredSourceID || a != "savings-bank" {
 		t.Errorf("T-IN far = (%q, %q), want the declared account on the spending overlay", s, a)
 	}
 	var incomeDetailed, incomeProv string
@@ -89,7 +89,7 @@ func TestPassRuleNamesADeclaredAccount(t *testing.T) {
 	// Without the far, the same rules link no far side.
 	bare := Rule{Match: far.Match, Category: far.Category}
 	runPass(t, db, ctx, Options{Rules: []Rule{bare}, Income: IncomeOptions{Rules: []Rule{bare}}})
-	if s, a, _ := farOf(t, db, ctx, "bank", "T-OUT"); s != "" || a != "" {
+	if s, a := farOf(t, db, ctx, "bank", "T-OUT"); s != "" || a != "" {
 		t.Errorf("a rule without far still wrote (%q, %q)", s, a)
 	}
 	if err := db.QueryRowContext(ctx, `
@@ -127,7 +127,7 @@ func TestPassScopedFarRuleReachesThePool(t *testing.T) {
 		Scope: RuleScope{Source: "bank", Account: "CASH1", Portfolio: "PF1", From: day(70)}}
 	runPass(t, db, ctx, Options{Rules: []Rule{far}, Income: IncomeOptions{Rules: []Rule{far}}})
 
-	if s, a, _ := farOf(t, db, ctx, "bank", "T-IN"); s != canonical.DeclaredSourceID || a != "savings-bank" {
+	if s, a := farOf(t, db, ctx, "bank", "T-IN"); s != canonical.DeclaredSourceID || a != "savings-bank" {
 		t.Errorf("T-IN far = (%q, %q), want the declared account through the scoped rule", s, a)
 	}
 	var n int
@@ -186,7 +186,7 @@ func TestPassScopedFarRuleReachesASpendingPin(t *testing.T) {
 			if _, ok := spendingBaseIDs(t, db, ctx)["T-IN"]; ok {
 				t.Fatal("the deposit is in the spending population; the test needs it outside")
 			}
-			if s, a, _ := farOf(t, db, ctx, "bank", "T-IN"); s != canonical.DeclaredSourceID || a != "savings-bank" {
+			if s, a := farOf(t, db, ctx, "bank", "T-IN"); s != canonical.DeclaredSourceID || a != "savings-bank" {
 				t.Errorf("T-IN far = (%q, %q), want the declared account", s, a)
 			}
 			if d, p := verdictOf(t, db, ctx, "bank", "T-IN"); d != canonical.SpendDetailedInternalTransfer || p != ProvenanceManual {
@@ -196,7 +196,7 @@ func TestPassScopedFarRuleReachesASpendingPin(t *testing.T) {
 			if tc.earlyFar {
 				want = "savings-bank"
 			}
-			if _, a, _ := farOf(t, db, ctx, "bank", "T-IN-EARLY"); a != want {
+			if _, a := farOf(t, db, ctx, "bank", "T-IN-EARLY"); a != want {
 				t.Errorf("T-IN-EARLY far account = %q, want %q", a, want)
 			}
 		})

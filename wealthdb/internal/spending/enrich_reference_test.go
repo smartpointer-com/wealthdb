@@ -73,7 +73,7 @@ func TestPassPairsACrossCurrencyMoveOnItsSourcesOwnReference(t *testing.T) {
 			prov != ProvenanceMatcher {
 			t.Errorf("%s = (%q, %q), want the matcher's own-account verdict", c.id, detailed, prov)
 		}
-		if src, acct, _ := farOf(t, db, ctx, "bank", c.id); src != "bank" || acct != c.farAccount {
+		if src, acct := farOf(t, db, ctx, "bank", c.id); src != "bank" || acct != c.farAccount {
 			t.Errorf("%s far = (%q, %q), want (bank, %s)", c.id, src, acct, c.farAccount)
 		}
 	}

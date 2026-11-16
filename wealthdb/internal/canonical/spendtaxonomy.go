@@ -273,13 +273,12 @@ const (
 // one — a car loan or a credit line, drawn as `loans`, with no split
 // because nothing in the data separates the two halves.
 //
-// It exists because `financing · Mortgage` was otherwise reachable
-// only through a far account of kind `mortgage` or a `far_class` only
-// the built-in tier may write. A servicer whose narrative is its own
-// legal entity — personal text that cannot go in a tracked built-in —
-// had no road to that node at all. A payment to a mortgage gold DOES
-// hold is an own-account move and pairs; this is for the one it does
-// not.
+// The built-in mortgage rule places it on a mortgage-worded row, and a
+// rule or a pin on a servicer whose narrative is its own legal entity
+// (personal text that cannot go in a tracked built-in). A far account
+// the source names beside it, a mortgage gold holds, lets the
+// statement split the instalment. A payment the matcher pairs with a
+// mortgage gold holds is an own-account move instead.
 //
 // The direction is the ROW's, as for the crossings: an outflow is an
 // instalment and an inflow is a drawdown, and `cashflow_lines_base`

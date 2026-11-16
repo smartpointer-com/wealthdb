@@ -102,7 +102,6 @@ type line struct {
 	spend       string // spend_detailed, "" for none
 	income      string // income_detailed, "" for none
 	farAccount  string // the matcher's partner, "" for none
-	farClass    string // a rule's own word, "" for none
 	spendClass  string // stated_asset_class on the spending overlay, "" for none
 	incomeClass string // stated_asset_class on the income overlay, "" for none
 	want        string // "section.class.group", or "" for not a line
@@ -125,9 +124,9 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
 			l.id, l.account, nullIfEmpty(l.instrument), l.kind, l.amount, l.id); err != nil {
 			t.Fatalf("seed transaction %s: %v", l.id, err)
 		}
-		if l.spend != "" || l.farAccount != "" || l.farClass != "" || l.spendClass != "" {
+		if l.spend != "" || l.farAccount != "" || l.spendClass != "" {
 			far := enrichtest.Spend{Source: "cf", Txn: l.id, Signature: "sig", Detailed: l.spend,
-				Provenance: "rule", FarAccount: l.farAccount, FarClass: l.farClass, Stated: l.spendClass}
+				Provenance: "rule", FarAccount: l.farAccount, Stated: l.spendClass}
 			if l.farAccount != "" {
 				far.FarSource = "cf"
 			}
@@ -455,8 +454,8 @@ func TestTheBoundaryTableInBothDirections(t *testing.T) {
 			spend: "internal_transfer", want: "vehicles.unpaired.unnamed",
 			why: "no far account at all: a finding, visible rather than lost to the residual"},
 		line{id: "W-RULE-MORT", account: "CASH", kind: "withdrawal", amount: -1800,
-			spend: "internal_transfer", farClass: "mortgage", want: "financing.mortgage.mortgage",
-			why: "the mortgage rule's own word, for the lender the product does not track"},
+			spend: "mortgage_transfer", want: "financing.mortgage.mortgage",
+			why: "the mortgage rule's own value, for the lender the product does not track"},
 	)
 	check(t, seedLines(t, db, ctx, lines), lines)
 }
@@ -563,11 +562,10 @@ func TestEveryCrossingLandsOnItsPool(t *testing.T) {
 // TestAMortgageServicerNeedsNoFarAccount pins the verdict that reaches
 // `financing · Mortgage` on its own.
 //
-// Both other roads to that node read the far side — a far account of
-// kind `mortgage`, or `far_class`, which only the built-in tier may
-// write — so a servicer gold holds no account for fell through to the
-// untracked residual. `mortgage_transfer` is tested here with NEITHER
-// far signal set, because needing neither is the whole of the point;
+// The other road to that node reads the far side — a far account of
+// kind `mortgage` — so a servicer gold holds no account for would fall
+// through to the untracked residual. `mortgage_transfer` is tested here
+// with no far account, because needing none is the whole of the point;
 // and on both legs, since a drawdown arrives the other way.
 //
 // `debt_repayment` is asserted beside it unchanged: the two values
@@ -708,7 +706,7 @@ func TestNodeLabelsReadAsVocabulary(t *testing.T) {
 		{id: "L-WAGE", account: "CASH", kind: "deposit", amount: 100, income: "INCOME_SALARY"},
 		{id: "L-BUY", account: "BROK", kind: "buy", amount: -100, instrument: "PE"},
 		{id: "L-MORT", account: "CASH", kind: "withdrawal", amount: -100,
-			spend: "internal_transfer", farClass: "mortgage"},
+			spend: "mortgage_transfer"},
 		{id: "L-UNTRACKED", account: "CASH", kind: "withdrawal", amount: -100,
 			spend: "internal_transfer"},
 		{id: "L-DAF", account: "CASH", kind: "withdrawal", amount: -100,

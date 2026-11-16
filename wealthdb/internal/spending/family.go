@@ -64,10 +64,8 @@ type family struct {
 
 	// builtinRule is the engine's own rule tier: structural facts
 	// about the product's account graph that no provider can know. It
-	// returns the value it places, a label describing the counterparty
-	// of that verdict where the family has one, and the cashflow class
-	// the rule stands for where it placed an own-account move without
-	// pairing anything.
+	// returns the value it places, and a label describing the
+	// counterparty of that verdict where the family has one.
 	//
 	// It reads the row's facts (builtinFacts): the narrative, and what
 	// the narrative cannot say, the transaction kind and the account it
@@ -75,7 +73,7 @@ type family struct {
 	// narrative may only speak for the one kind the floor does not
 	// (rules.go, IncomeRuleCategory). Spending's are ungated — an
 	// outflow's kind says how money left, never what it bought.
-	builtinRule func(f builtinFacts) (detailed, label, farClass string, ok bool)
+	builtinRule func(f builtinFacts) (detailed, label string, ok bool)
 
 	// providerCategory translates the source's own filing of a row,
 	// and providerClaims says whether that translation is a verdict or
@@ -86,10 +84,9 @@ type family struct {
 	providerClaims   func(silverKind, accountKind, detailed string) bool
 
 	// linksFar says whether the family records the OTHER end of an
-	// own-account move — the partner leg and its account, and the class
-	// a rule stands for where it placed the move without pairing
-	// anything. The pass writes it to transfer_links from this family's
-	// rows (writeTransferLinks).
+	// own-account move — the partner leg and its account, or the
+	// account a rule or the source names. The pass writes it to
+	// transfer_links from this family's rows (writeTransferLinks).
 	//
 	// Spending's alone, for the same reason emitOutsidePopulation is:
 	// it writes a row for every matched leg whether or not the leg is
@@ -230,18 +227,17 @@ type builtinFacts struct {
 // card bill is a card bill whether the adapter kinded it `card_payment`
 // or `withdrawal`, and gating them would make the rule tier depend on
 // how well each source kinds its rows.
-func spendingBuiltinRule(f builtinFacts) (detailed, label, farClass string, ok bool) {
+func spendingBuiltinRule(f builtinFacts) (detailed, label string, ok bool) {
 	return rulePlacement(builtinRules, f.signature, f.counterparty, f.description, f.providerCategory, f.filed)
 }
 
 // incomeBuiltinRule is the inflow side's built-in tier: the custody
 // deposit (custodyDepositCategory), then IncomeRuleCategory's narrative
-// rule. It places no label and no far class: the label column is the
-// card rule's alone, and neither rule names an own-account move.
-func incomeBuiltinRule(f builtinFacts) (detailed, label, farClass string, ok bool) {
+// rule. It places no label: the label column is the card rule's alone.
+func incomeBuiltinRule(f builtinFacts) (detailed, label string, ok bool) {
 	if detailed, ok = custodyDepositCategory(f.kind, f.accountKind); ok {
-		return detailed, "", "", true
+		return detailed, "", true
 	}
 	detailed, ok = IncomeRuleCategory(f.kind, f.signature, f.counterparty, f.description, f.providerCategory)
-	return detailed, "", "", ok
+	return detailed, "", ok
 }

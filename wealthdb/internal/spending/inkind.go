@@ -74,9 +74,9 @@ const (
 	insertStatedLinks = `
         INSERT INTO transfer_links (silver_source_id, transaction_external_id,
                                     far_silver_source_id, far_account_external_id,
-                                    far_transaction_external_id, far_class,
+                                    far_transaction_external_id,
                                     evidence, measure)
         SELECT silver_source_id, transaction_external_id, far_silver_source_id,
-               far_account_external_id, far_transaction_external_id, NULL, ?, ?
+               far_account_external_id, far_transaction_external_id, ?, ?
           FROM (` + statedMoveLegs + `)`
 )

@@ -11,7 +11,7 @@ import (
 // RuleCategory applies the built-in spending rules with no provider
 // translation in hand, and returns the category and the issuer label.
 func RuleCategory(signature, counterparty, description, providerCategory string) (detailed, label string, ok bool) {
-	detailed, label, _, ok = rulePlacement(builtinRules, signature, counterparty, description, providerCategory, "")
+	detailed, label, ok = rulePlacement(builtinRules, signature, counterparty, description, providerCategory, "")
 	return detailed, label, ok
 }
 
@@ -73,12 +73,12 @@ func TestRuleCategory(t *testing.T) {
 		{"WITHDRAWAL AT COUNTER", canonical.SpendDetailedCashWithdrawal},
 		{"CASH DISBURSEMENT AT COUNTER", canonical.SpendDetailedCashWithdrawal},
 
-		// Mortgage: an own-account move because the mortgage is itself
-		// a tracked account.
-		{"MORTGAGE PAYMENT", canonical.SpendDetailedInternalTransfer},
-		{"HYPOTHEK ZINS", canonical.SpendDetailedInternalTransfer},
-		{"HYPOTHEKARZINS QUARTAL", canonical.SpendDetailedInternalTransfer},
-		{"HOME LOAN SERVICING", canonical.SpendDetailedInternalTransfer},
+		// Mortgage: debt service, whether or not the mortgage is a
+		// tracked account.
+		{"MORTGAGE PAYMENT", canonical.DetailedMortgageTransfer},
+		{"HYPOTHEK ZINS", canonical.DetailedMortgageTransfer},
+		{"HYPOTHEKARZINS QUARTAL", canonical.DetailedMortgageTransfer},
+		{"HOME LOAN SERVICING", canonical.DetailedMortgageTransfer},
 	}
 	for _, tc := range cases {
 		t.Run(tc.signature, func(t *testing.T) {
@@ -263,7 +263,7 @@ func TestRuleCategoryReadsNarrative(t *testing.T) {
 		{"an ATM in the description behind a place-name signature",
 			"MAIN STREET BRANCH", "", "ATM withdrawal Main Street branch", canonical.SpendDetailedCashWithdrawal},
 		{"a mortgage in the description behind the bank's name",
-			"EXAMPLE BANK AG", "Example Bank AG", "Hypothek Zins 1. Quartal", canonical.SpendDetailedInternalTransfer},
+			"EXAMPLE BANK AG", "Example Bank AG", "Hypothek Zins 1. Quartal", canonical.DetailedMortgageTransfer},
 		{"rule order outranks field order",
 			"MORTGAGE PAYMENT", "", "CITI CREDIT CARD PAYMENT", canonical.SpendDetailedCardSpend},
 	}
@@ -572,7 +572,7 @@ func TestCardRuleYieldsOnlyToAnotherProviderFiling(t *testing.T) {
 		{"RENT_AND_UTILITIES_GAS_AND_ELECTRICITY", false},
 		{"RENT_AND_UTILITIES_OTHER_UTILITIES", false},
 	} {
-		detailed, _, _, ok := rulePlacement(builtinRules, narrative, "", "", "", tc.filed)
+		detailed, _, ok := rulePlacement(builtinRules, narrative, "", "", "", tc.filed)
 		if ok != tc.fires || (ok && detailed != canonical.SpendDetailedCardSpend) {
 			t.Errorf("filed %q: fired=%v (→ %q), want fired=%v", tc.filed, ok, detailed, tc.fires)
 		}
@@ -620,7 +620,7 @@ func TestCashRuleYieldsToAFeeOrDebtPaymentFiling(t *testing.T) {
 			maskedPAN, maskedPAN, "ATM WITHDRAWAL EXAMPLETOWN", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			detailed, _, _, ok := rulePlacement(builtinRules, tc.signature, tc.counterparty, tc.description, "", tc.filed)
+			detailed, _, ok := rulePlacement(builtinRules, tc.signature, tc.counterparty, tc.description, "", tc.filed)
 			if ok != tc.fires || (ok && detailed != canonical.SpendDetailedCashWithdrawal) {
 				t.Errorf("filed %q: fired=%v (→ %q), want the cash rule fired=%v", tc.filed, ok, detailed, tc.fires)
 			}
@@ -671,7 +671,7 @@ func TestFeeRulesYieldToANamedFee(t *testing.T) {
 		{"a management fee filed under an unrelated value", "MANAGEMENT FEE Q1", "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", canonical.SpendDetailedInvestmentFees},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			detailed, _, _, ok := rulePlacement(builtinRules, tc.signature, "", "", "", tc.filed)
+			detailed, _, ok := rulePlacement(builtinRules, tc.signature, "", "", "", tc.filed)
 			if got := map[bool]string{true: detailed}[ok]; got != tc.want {
 				t.Errorf("%q filed %q → %q (fired=%v), want %q", tc.signature, tc.filed, got, ok, tc.want)
 			}

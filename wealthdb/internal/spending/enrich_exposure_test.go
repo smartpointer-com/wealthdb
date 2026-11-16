@@ -12,7 +12,7 @@ import (
 // What the holder said the capital went INTO (migration 0102).
 //
 // The column describes the VERDICT, not the row, exactly as
-// merchantLabel and farClass do — so the whole of its contract is where
+// merchantLabel does — so the whole of its contract is where
 // it travels when a tier above replaces the verdict it was written
 // beside. These tests pin the four transitions; the resolution's half,
 // which turns the word into a node, is in internal/gold.
@@ -116,12 +116,10 @@ func TestTheIncomeFamilyCarriesAnExposureToo(t *testing.T) {
 	}
 }
 
-// TestAStatedFarAccountKeepsTheExposure pins the one place this column
-// departs from farClass on purpose. The source naming the counter
+// TestAStatedFarAccountKeepsTheExposure: the source naming the counter
 // account answers WHERE the money went and never WHAT the movement was,
-// so the verdict it was written beside is still standing — where
-// farClass, which is a stand-in for that same account, correctly gives
-// way to it.
+// so the verdict the column was written beside is still standing, and
+// so is the column.
 func TestAStatedFarAccountKeepsTheExposure(t *testing.T) {
 	db, ctx := openGold(t)
 	seedTxns(t, db, ctx,
@@ -140,7 +138,7 @@ func TestAStatedFarAccountKeepsTheExposure(t *testing.T) {
 
 	// Without this the test passes when the stated-far road never runs,
 	// since an untouched exposure survives either way.
-	if _, acct, _ := farOf(t, db, ctx, "bank", "T-STATED"); acct != "BRK1" {
+	if _, acct := farOf(t, db, ctx, "bank", "T-STATED"); acct != "BRK1" {
 		t.Fatalf("far account = %q, want BRK1 — the stated-far road did not fire, so this proves nothing", acct)
 	}
 	if got := exposureOf(t, db, ctx, "spend_txn_enrichment", "bank", "T-STATED"); got != "private_equity" {

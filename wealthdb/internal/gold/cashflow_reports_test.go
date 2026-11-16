@@ -47,7 +47,7 @@ func seedReportFixture(t *testing.T, db *sql.DB, ctx context.Context) {
 		{id: "R-DIST", account: "BROK", kind: "distribution", amount: 700, instrument: "PE"},
 		// Financing and a vehicle crossing.
 		{id: "R-MORT", account: "CASH", kind: "withdrawal", amount: -1800,
-			spend: "internal_transfer", farClass: "mortgage"},
+			spend: "mortgage_transfer"},
 		{id: "R-RET", account: "CASH", kind: "withdrawal", amount: -500, spend: "retirement_transfer"},
 		// Two rows the statement never draws.
 		{id: "R-INTERNAL", account: "CASH", kind: "withdrawal", amount: -100,

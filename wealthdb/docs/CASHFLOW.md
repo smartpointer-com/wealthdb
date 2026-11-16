@@ -356,8 +356,7 @@ already holds:
 That road answers **where the money went and nothing else**. What the
 movement was stays the tiers' question. A stated counter account places
 no verdict, so a row still needs a matcher, a rule or a pin to be
-called an own-account move. Where neither road knows a far account, the
-rules that place the verdict can carry a class instead (`far_class`).
+called an own-account move.
 
 The ladder is ordered, and the first match wins. **The wrapper is
 asked before the kind**: any account kind can sit inside any wrapper,
@@ -377,15 +376,13 @@ and the wrapper says whose money moved.
 3. The far account is kind `mortgage` → `financing · Mortgage`, either
    direction. A drawdown is an inflow.
 4. The far account is **in the pool** → invisible.
-5. The rule recorded `far_class` `mortgage` (the built-in mortgage rule
-   does) → `financing · Mortgage`.
-6. Anything else → `vehicles · Unpaired transfers`. At group grain the
+5. Anything else → `vehicles · Unpaired transfers`. At group grain the
    node splits by what is missing:
    - **No far account** (`unnamed`): nothing paired the row.
    - **Fenced-out account** (`out_of_pool`): the far account is one
      gold holds, which `cashflow.accounts` excluded from the pool.
 
-Step 6 closes a hole the rule tier opens. A config rule exists to place
+Step 5 closes a hole the rule tier opens. A config rule exists to place
 a wire to the holder's own account at a bank the product does not
 track. That money **leaves the pool**. Drawn as invisible, it would
 vanish into the residual. Drawn as `Unpaired transfers`, it is visible
@@ -686,12 +683,13 @@ is a distribution.
 
 `mortgage_transfer` is also family **both**, but it is not a crossing.
 It reaches `financing · Mortgage`, where the interest/principal split
-applies, not the vehicles section. Without it that node has two roads
-in, and both read the far side: a far account of kind `mortgage`, or
-`far_class`, which only the built-in tier writes. A servicer whose
-narrative is its own legal entity cannot go in a tracked built-in. So
-an instalment to one has no other road and would fall to
-`vehicles · Unpaired transfers`. `debt_repayment` stays the value for
+applies, not the vehicles section. The built-in mortgage rule places
+it on a mortgage-worded row, and a rule or a pin on a servicer whose
+narrative is its own legal entity, which cannot go in a tracked
+built-in. Its other road reads the far side: a far account of kind
+`mortgage`, which a payment the matcher pairs reaches. Where the source
+names the mortgage account beside the value, the instalment splits as
+a paired one does. `debt_repayment` stays the value for
 every other untracked lender, because a mortgage is split into interest
 and principal and a car loan is not. A servicer with no balance series
 in gold has no principal to apportion against, so its instalments draw
@@ -707,11 +705,9 @@ value, the far-account ladder would draw it as `vehicles · Unpaired
 transfers`, the node for a destination nothing identifies. This
 destination is identified on every row.
 
-It is a verdict rather than a far account for a reason. `far_class`
-lives on the spending overlay, which holds the outflow leg and not the
-return. That road would name the money going in and leave the money
-coming back anonymous. A verdict can be placed by either family, so
-both legs carry it.
+It is a verdict rather than a far account for a reason. Nothing names
+an account for the product, so no link can. A verdict can be placed by
+either family, so both legs carry it.
 
 Two things it does not change:
 

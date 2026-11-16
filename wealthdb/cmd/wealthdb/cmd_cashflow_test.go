@@ -106,8 +106,8 @@ func setupCashflowGold(t *testing.T) string {
 			Detailed: "FOOD_AND_DRINK_GROCERIES", Provenance: "signature-only", At: 1},
 		enrichtest.Spend{Source: "bank", Txn: "T-TAX", Detailed: "GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT",
 			Provenance: "rule", At: 1},
-		enrichtest.Spend{Source: "bank", Txn: "T-MORT", Signature: "MORTGAGE", Detailed: "internal_transfer",
-			Provenance: "rule", FarClass: "mortgage", At: 1},
+		enrichtest.Spend{Source: "bank", Txn: "T-MORT", Signature: "MORTGAGE", Detailed: "mortgage_transfer",
+			Provenance: "rule", At: 1},
 		enrichtest.Spend{Source: "bank", Txn: "T-RET", Signature: "PLAN", Detailed: "retirement_transfer",
 			Provenance: "rule", At: 1})
 	if err := db.Close(); err != nil {

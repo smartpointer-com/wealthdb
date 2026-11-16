@@ -406,7 +406,7 @@ func TestCardRuleStandsDownForAProviderFiling(t *testing.T) {
 		{"T-LOAN", canonical.SpendDetailedDebtRepayment, ProvenanceProvider},
 		{"T-POWER", "RENT_AND_UTILITIES_GAS_AND_ELECTRICITY", ProvenanceProvider},
 		{"T-CITY", "", ProvenanceSignatureOnly},
-		{"T-HOME", canonical.SpendDetailedInternalTransfer, ProvenanceRule},
+		{"T-HOME", canonical.DetailedMortgageTransfer, ProvenanceRule},
 		{"T-CARD", canonical.SpendDetailedCardSpend, ProvenanceRule},
 		{"T-UNSURE", canonical.SpendDetailedCardSpend, ProvenanceRule},
 	} {

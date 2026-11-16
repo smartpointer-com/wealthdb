@@ -1375,9 +1375,8 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                COALESCE(i.name, i.symbol) AS instrument_name,
                sc.spend_detailed, sc.merchant_name, sc.provenance AS spend_provenance,
                ic.income_detailed, ic.payer_name, ic.provenance AS income_provenance,
-               -- Where the money went: the far account and the partner
-               -- leg the pass linked, or the class a rule stands for.
-               fl.far_silver_source_id, fl.far_account_external_id, fl.far_class,
+               -- Where the money went: the far account the pass linked.
+               fl.far_silver_source_id, fl.far_account_external_id,
                -- The holder's word for what the capital went INTO, one
                -- column per family. Read off the raw overlay, not its
                -- resolution macro: it describes a verdict rather than
@@ -1482,11 +1481,10 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
     -- default the pool macro applies, reached by the same rule rather
     -- than by accident.
     --
-    -- The last three arms are where a move lands that no wrapper and no
-    -- pool membership could place. The mortgage rule's own word first.
-    -- Then a far account gold HOLDS, on the household's side, that the
-    -- `cashflow.accounts` scope fenced out of the pool — a setting, and
-    -- named as one. Last, no far account at all: a rule or a pin placed
+    -- The last two arms are where a move lands that no wrapper and no
+    -- pool membership could place. A far account gold HOLDS, on the
+    -- household's side, that the `cashflow.accounts` scope fenced out of
+    -- the pool — a setting, and named as one. Last, no far account at all: a rule or a pin placed
     -- the verdict and nothing paired it, which under the closed world
     -- the statement assumes is a finding — a counter-leg gold should
     -- hold, or a declaration not yet written. Drawn as invisible that
@@ -1501,7 +1499,6 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                    WHEN v.far_side = 'giving'                       THEN 'giving_in'
                    WHEN v.far_account_kind = 'mortgage'             THEN 'mortgage'
                    WHEN v.far_pooled                                THEN 'internal'
-                   WHEN v.far_class = 'mortgage'                    THEN 'mortgage'
                    WHEN v.far_known                                 THEN 'out_of_pool'
                    ELSE 'unnamed'
                END AS far_place
