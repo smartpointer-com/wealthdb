@@ -45,7 +45,10 @@ inverse of silver's. The loader converts, exactly as it does for the activity
 JSON. Balances are the printed positive amount owed, matching the roster's.
 
 The text parsing is pure and unit-tested; `parse_card_statement_pdf` feeds it
-a PDF's text through `collectorkit.pdftotext`.
+a PDF's text through `collectorkit.pdftotext`. The summary reader and the
+two gates are built from `collectorkit.statement`, the card vocabulary chase
+shares; the tables, the row pattern and the number reader are this
+parser's own.
 """
 from __future__ import annotations
 
@@ -55,7 +58,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from collectorkit import pdftotext
+from collectorkit import pdftotext, statement
 
 # Section heading → the `kind` its rows are stamped with. Stamping the section
 # is what keeps the statement era from collapsing to one unmapped kind: the
@@ -212,13 +215,10 @@ def _summary(text: str) -> dict:
     that appears followed by an amount before the summary does, since the
     first `<label> <amount>` in the document wins.
     """
-    blob = _norm(text)
-    out: dict = {}
-    for field_name, label in CARD_SUMMARY_LABELS.items():
-        pattern = re.escape(label) + r"\s+(" + _SUMMARY_AMOUNT + r")"
-        m = re.search(pattern, blob)
-        out[field_name] = _dec(m.group(1)) if m else None
-    return out
+    found = statement.labelled_amounts(_norm(text), CARD_SUMMARY_LABELS,
+                                       _SUMMARY_AMOUNT)
+    return {name: None if raw is None else _dec(raw)
+            for name, raw in found.items()}
 
 
 def _row_date(mm: int, dd: int, yy: int) -> date | None:
@@ -317,16 +317,12 @@ def _row_description(rest: str, members: set[str]) -> str:
 def summary_reconciles(parsed: ParsedCardStatement) -> bool:
     """The printed summary adds up: previous + the four addends == new balance,
     with the signs as printed. A statement whose own summary does not add up
-    was mis-read, and nothing from it may be imported."""
-    if parsed.previous_balance is None or parsed.new_balance is None:
-        return False
-    total = parsed.previous_balance
-    for field_name in CARD_SUMMARY_ADDENDS:
-        value = getattr(parsed, field_name)
-        if value is None:
-            return False
-        total += value
-    return total == parsed.new_balance
+    was mis-read, and nothing from it may be imported. A figure that did not
+    parse cannot agree with anything."""
+    terms = [parsed.previous_balance,
+             *(getattr(parsed, name) for name in CARD_SUMMARY_ADDENDS)]
+    return not statement.identity_problems("summary", terms,
+                                           parsed.new_balance)
 
 
 def rows_reconcile(parsed: ParsedCardStatement) -> bool:
@@ -340,19 +336,10 @@ def rows_reconcile(parsed: ParsedCardStatement) -> bool:
     """
     if not summary_reconciles(parsed):
         return False
-    sums: dict[str, Decimal] = {}
-    for txn in parsed.transactions:
-        target = CARD_SECTION_TOTALS.get(txn.kind)
-        if target is None:
-            return False        # a kind with no summary figure to check
-        sums[target] = sums.get(target, Decimal(0)) + txn.amount
-    for target in set(CARD_SECTION_TOTALS.values()):
-        printed = getattr(parsed, target)
-        if printed is None:
-            return False
-        if sums.get(target, Decimal(0)) != printed:
-            return False
-    return True
+    stated = {name: getattr(parsed, name)
+              for name in CARD_SECTION_TOTALS.values()}
+    return not statement.section_problems(parsed.transactions,
+                                          CARD_SECTION_TOTALS, stated)
 
 
 def parse_card_statement_pdf(path: Path) -> ParsedCardStatement:

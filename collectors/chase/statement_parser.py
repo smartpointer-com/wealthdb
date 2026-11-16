@@ -3,7 +3,9 @@
 
 Two layouts live here, one per product, sharing only the `pdftotext -layout`
 extraction, the `StatementTxn` row and the amount parse; each dates its MM/DD
-rows its own way (`_row_date`, `_card_row_date`). `parse_statement_text`
+rows its own way (`_row_date`, `_card_row_date`). The card reader's summary
+figures, row dates and gates are built from `collectorkit.statement`, the
+card vocabulary amex shares. `parse_statement_text`
 reads the **deposit** statement, `parse_card_statement_text` the
 **credit-card** one; see the card section below for why neither can read the
 other's document.
@@ -65,7 +67,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from collectorkit import pdftotext
+from collectorkit import pdftotext, statement
 
 _MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july",
@@ -202,22 +204,24 @@ def _select_balances(begins: list[Decimal], ends: list[Decimal],
 
 def _row_date(mm: int, dd: int, start: date | None, end: date | None) -> date | None:
     """Date the MM/DD row: pick the candidate year whose date falls in the
-    statement period (handles a December row in a January statement)."""
-    years = []
-    if end:
-        years.append(end.year)
-    if start and (not end or start.year != end.year):
+    statement period (handles a December row in a January statement).
+    None when the statement states no period: the row then has no year, and
+    `load` refuses such a statement anyway."""
+    if start is None or end is None:
+        return None
+    years = [end.year]
+    if start.year != end.year:
         years.append(start.year)
-    for y in years or [date.today().year]:
+    for y in years:
         try:
             d = date(y, mm, dd)
         except ValueError:
             continue
-        if not start or not end or start <= d <= end:
+        if start <= d <= end:
             return d
     # No candidate landed in-period (a stray/edge row); fall back to end year.
     try:
-        return date((end or start or date.today()).year, mm, dd)
+        return date(end.year, mm, dd)
     except ValueError:
         return None
 
@@ -555,9 +559,9 @@ def _card_summary_blob(lines: list[str]) -> str:
 def _card_labelled(blob: str, label: str) -> Decimal | None:
     """The figure printed against `label` in the summary blob, or None when
     the label carries no figure (the next token is not an amount)."""
-    m = re.search(re.escape(label) + r"\s+(" + _CARD_SUMMARY_AMOUNT + r")",
-                  blob)
-    return _dec(m.group(1).replace("+", "")) if m else None
+    raw = statement.labelled_amounts(blob, {label: label},
+                                     _CARD_SUMMARY_AMOUNT)[label]
+    return None if raw is None else _dec(raw.replace("+", ""))
 
 
 def _card_row_date(mm: int, dd: int, start: date, end: date) -> date | None:
@@ -567,18 +571,8 @@ def _card_row_date(mm: int, dd: int, start: date, end: date) -> date | None:
     closest to the period wins. That resolves the December-in-January wrap
     (12/20 on a Dec-Jan statement is last year's) and the ordinary
     just-before-the-period row (06/28 on a 06/29-07/28 statement is this
-    year's) with one rule."""
-    best: tuple[int, date] | None = None
-    for y in {start.year - 1, start.year, end.year}:
-        try:
-            d = date(y, mm, dd)
-        except ValueError:
-            continue                            # 02/29 in a non-leap year
-        dist = 0 if start <= d <= end else \
-            min(abs((d - start).days), abs((d - end).days))
-        if best is None or dist < best[0]:
-            best = (dist, d)
-    return best[1] if best else None
+    year's) with one rule: `collectorkit.statement.row_date`."""
+    return statement.row_date(mm, dd, start, end)
 
 
 def _card_period(lines: list[str], blob: str) -> tuple[date | None, date | None]:
@@ -659,9 +653,7 @@ def card_summary_reconciles(stmt: ParsedCardStatement) -> bool:
     False when any of those figures is missing — a summary that did not parse
     is not a summary that agrees."""
     parts = [getattr(stmt, f) for f in _CARD_SUMMARY_ADDENDS]
-    if any(p is None for p in parts) or stmt.new_balance is None:
-        return False
-    return sum(parts, Decimal(0)) == stmt.new_balance
+    return not statement.identity_problems("summary", parts, stmt.new_balance)
 
 
 def card_rows_reconcile(stmt: ParsedCardStatement) -> bool:
@@ -690,15 +682,14 @@ def card_rows_reconcile(stmt: ParsedCardStatement) -> bool:
               *_CARD_UNMAPPED_SUMMARY_FIELDS)
     if any(getattr(stmt, f) is None for f in fields):
         return False
-    net = sum((t.amount for t in stmt.transactions), Decimal(0))
-    if net != stmt.new_balance - stmt.previous_balance:
+    if statement.identity_problems(
+            "period", (t.amount for t in stmt.transactions),
+            stmt.new_balance - stmt.previous_balance):
         return False
-    for kind, fieldname in CARD_SECTION_TOTALS.items():
-        section = sum((t.amount for t in stmt.transactions if t.kind == kind),
-                      Decimal(0))
-        if section != getattr(stmt, fieldname):
-            return False
-    return all(getattr(stmt, f) == 0 for f in _CARD_UNMAPPED_SUMMARY_FIELDS)
+    stated = {f: getattr(stmt, f) for f in fields}
+    return not statement.section_problems(
+        stmt.transactions, CARD_SECTION_TOTALS, stated,
+        _CARD_UNMAPPED_SUMMARY_FIELDS)
 
 
 def parse_card_statement_pdf(path: Path) -> ParsedCardStatement:

@@ -185,6 +185,15 @@ December 18, 2025 through January 21, 2026
         ["2025-12-20", "2026-01-15"]
 
 
+def test_a_statement_without_a_period_dates_no_row():
+    # An MM/DD row has no year without the period line, so it is not dated
+    # by the day the parse ran: the parse is the document's alone.
+    s = sp.parse_statement_text(STATEMENT.split("\n", 1)[1])
+    assert (s.period_start, s.period_end) == (None, None)
+    assert [t for seg in s.segments for t in seg.transactions] == []
+    assert s.segments[0].beginning_balance == Decimal("1000.00")
+
+
 def test_section_sign_classifies_by_keyword():
     assert sp._section_sign("deposits and additions") == 1
     assert sp._section_sign("electronic withdrawal") == -1
