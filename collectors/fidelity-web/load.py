@@ -300,6 +300,12 @@ def main(argv=None):
 
         pending = [d for d in dumps if not already_loaded(conn, d)]
         dumps_1099, rederive_1099s = _dumps_for_1099s(conn, dumps, pending)
+        dumps_529, rederive_529 = _dumps_to_derive(
+            conn, STATEMENT_GENERATION_SCOPE, _STATEMENT_PARSER_VERSION,
+            dumps, pending)
+        dumps_daf, rederive_daf = _dumps_to_derive(
+            conn, DAF_GENERATION_SCOPE, _DAF_STATEMENT_PARSER_VERSION,
+            dumps, pending)
 
         cache_dir = (args.parse_cache_dir
                      or parsecache.default_dir("fidelity-web"))
@@ -322,13 +328,14 @@ def main(argv=None):
                         coord.sha_for(path),
                         _CONSOLIDATED_1099_IDENTITY_VERSION,
                         _read_1099_identity_worker, str(path))
-            for dump in pending:
+            for dump in dumps_529:
                 for path in _statement_pdf_candidates(dump):
                     sha = coord.sha_for(path)
                     coord.enqueue(
                         sha, _STATEMENT_PARSER_VERSION,
                         _parse_statement_pdf_worker,
                         _job(path, sha, extract_dir))
+            for dump in dumps_daf:
                 for path in _daf_statement_pdf_candidates(dump):
                     sha = coord.sha_for(path)
                     coord.enqueue(
@@ -343,6 +350,15 @@ def main(argv=None):
                     _parse_supplied_statement_pdf_worker,
                     (*_job(path, sha, extract_dir), signature))
             coord.dispatch()
+
+            # The dumps loaded before keep their statement rows until the
+            # parser that wrote them changes; then they are re-derived
+            # here, oldest first, ahead of the dumps this run loads.
+            loaded_before = [d for d in dumps if d not in pending]
+            _rederive_statements(
+                conn, loaded_before if rederive_529 else [],
+                loaded_before if rederive_daf else [], coord,
+                extract_dir=extract_dir)
 
             loaded = 0
             for dump in pending:
@@ -629,7 +645,7 @@ def _load_daf_historical(conn, dump_dir, coord=None, *, extract_dir=None):
             if not desc:
                 continue
             instrument_key = _crosswalk_description_to_instrument(
-                conn, aid, desc)
+                conn, aid, desc, ts_from_dir(dump_dir.name))
             conn.execute(
                 "INSERT OR REPLACE INTO historical_position_snapshots ("
                 "as_of_date, account_external_id, description, "
@@ -766,11 +782,51 @@ def _load_historical_from_pdfs(conn, dump_dir, coord=None, *,
             )
             continue
         _drop_document_holdings(conn, sha)
-        inserted += _insert_historical_rows(conn, path, result, sha)
+        inserted += _insert_historical_rows(
+            conn, path, result, sha, ts_from_dir(dump_dir.name))
     if inserted:
         silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
                                 _STATEMENT_PARSER_VERSION)
     return inserted
+
+
+def _rederive_statements(conn, statement_dumps, daf_dumps, coord=None, *,
+                         extract_dir=None):
+    """Re-derive the 529 statements of ``statement_dumps`` and the DAF
+    statements of ``daf_dumps``: dumps loaded before, whose rows the
+    parser now in use did not write. Each document's rows are replaced
+    by the passes `load_dump` runs (`_load_historical_from_pdfs`,
+    `_load_daf_historical`), dump by dump in the order given, so the
+    last writer of a row is the one a `load --force` has, and each pass
+    stamps its generation once it has written a row.
+
+    Only dumps that hold such a statement are read, so a silver with
+    none re-derives nothing. In its own transaction: a failure rolls
+    back and leaves the rows and the stale stamp in place, for the next
+    load to try again."""
+    statement_dumps = [d for d in statement_dumps
+                       if _statement_pdf_candidates(d)]
+    daf_dumps = [d for d in daf_dumps if _daf_statement_pdf_candidates(d)]
+    if not statement_dumps and not daf_dumps:
+        return
+    coord = coord or _transient_coordinator()
+    try:
+        conn.execute("BEGIN")
+        if statement_dumps:
+            log.info("historical: re-deriving the statements of %d dump(s) "
+                     "for this parser generation", len(statement_dumps))
+        for dump in statement_dumps:
+            _load_historical_from_pdfs(conn, dump, coord,
+                                       extract_dir=extract_dir)
+        if daf_dumps:
+            log.info("daf historical: re-deriving the statements of %d "
+                     "dump(s) for this parser generation", len(daf_dumps))
+        for dump in daf_dumps:
+            _load_daf_historical(conn, dump, coord, extract_dir=extract_dir)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        log.exception("statement re-derivation failed; rolled back")
 
 
 def _parse_supplied_statement_pdf_worker(args):
@@ -957,16 +1013,22 @@ def _1099_copies(dumps, coord):
     return copies
 
 
-def _dumps_for_1099s(conn, dumps, pending):
-    """Which dumps the 1099 pass reads, and whether it re-derives:
+def _dumps_to_derive(conn, scope, generation, dumps, pending):
+    """Which dumps a document pass reads, and whether it re-derives:
     ``(dumps, rederive)``. It reads the dumps this run loads, or every
     dump in bronze when its generation is stale: its parser has changed
-    since the lots silver holds were written, or no generation is
-    stamped (none was yet, or migration 0013 dropped it)."""
-    if silver.stale_generation(conn, CONSOLIDATED_1099_GENERATION_SCOPE,
-                               _CONSOLIDATED_1099_PARSER_VERSION):
+    since the rows silver holds were written, or no generation is
+    stamped (none was yet, or a migration dropped it)."""
+    if silver.stale_generation(conn, scope, generation):
         return list(dumps), True
     return list(pending), False
+
+
+def _dumps_for_1099s(conn, dumps, pending):
+    """`_dumps_to_derive` for the 1099 pass, whose generation migration
+    0013 dropped."""
+    return _dumps_to_derive(conn, CONSOLIDATED_1099_GENERATION_SCOPE,
+                            _CONSOLIDATED_1099_PARSER_VERSION, dumps, pending)
 
 
 def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None,

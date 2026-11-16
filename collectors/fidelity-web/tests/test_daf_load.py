@@ -324,3 +324,47 @@ def test_daf_historical_from_statements(migrated, tmp_path, monkeypatch):
     # Cross-walked to the live pool's instrument key via the matching
     # positions.description written by the same dump's pool load.
     assert ikey == POOL_ID
+
+
+def test_a_new_daf_parser_re_derives_the_dumps_loaded_before(
+        tmp_path, monkeypatch):
+    """When the DAF statement parser changes, the next load re-derives
+    the statements of every dump loaded before, with no new dump in
+    bronze, and stamps the generation in use."""
+    import sqlite3
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze = tmp_path / "bronze"
+    _write_daf_dump(bronze, "20260101T120000Z")
+    db = tmp_path / "silver.db"
+
+    def run(quantity, cache):
+        monkeypatch.setattr(load, "_parse_daf_statement_pdf_worker", lambda job: {
+            "as_of_date": "2001-03-31", "ending_value": 50000.0,
+            "reconciled": True, "reconcile_error": None,
+            "pools": [{"description": "Example Growth Pool",
+                       "quantity": quantity, "price": 100.0,
+                       "market_value": 50000.0}]})
+        assert load.main(["--silver-db", str(db), "--bronze-dir", str(bronze),
+                          "--parse-cache-dir", str(tmp_path / cache)]) == 0
+        conn = sqlite3.connect(db)
+        try:
+            return conn.execute(
+                "SELECT quantity FROM historical_position_snapshots").fetchall()
+        finally:
+            conn.close()
+
+    assert run(500.0, "pc1") == [(500.0,)]
+    conn = sqlite3.connect(db)
+    load.silver.stamp_generation(conn, load.DAF_GENERATION_SCOPE,
+                                 "an-earlier-parser")
+    conn.commit()
+    conn.close()
+    assert run(400.0, "pc2") == [(400.0,)]
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute(
+            "SELECT generation FROM parser_generations WHERE scope = ?",
+            (load.DAF_GENERATION_SCOPE,)).fetchone()[0] == \
+            load._DAF_STATEMENT_PARSER_VERSION
+    finally:
+        conn.close()

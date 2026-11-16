@@ -74,11 +74,12 @@ def _statement_pdf_candidates(dump_dir):
     return sorted(docs_dir.glob("Statement*.pdf"))
 
 
-def _insert_historical_rows(conn, pdf_path, parsed, sha):
+def _insert_historical_rows(conn, pdf_path, parsed, sha, snapshot_at=None):
     """Insert one ``historical_position_snapshots`` row per
     holding in the parsed statement. Cross-walks the human-
     readable fund description to an `instrument_key` when a
-    matching `positions.description` exists in silver; leaves
+    matching `positions.description` exists in silver, as of the
+    dump ``snapshot_at`` that holds the statement; leaves
     `instrument_key` NULL otherwise (gold can resolve)."""
     period_end = parsed.get("period_end")
     if not period_end:
@@ -99,7 +100,7 @@ def _insert_historical_rows(conn, pdf_path, parsed, sha):
             if not desc:
                 continue
             instrument_key = _crosswalk_description_to_instrument(
-                conn, aid, desc,
+                conn, aid, desc, snapshot_at,
             )
             try:
                 conn.execute(
@@ -128,18 +129,24 @@ def _insert_historical_rows(conn, pdf_path, parsed, sha):
 
 
 def _crosswalk_description_to_instrument(conn, account_external_id,
-                                          description):
+                                          description, snapshot_at=None):
     """Look the description up against any live ``positions.description``
     for the same account; return the matching ``instrument_key``
     when there's exactly one. NULL when the description never
     appears (e.g. fund was sold before any live snapshot ran) or
-    when it's ambiguous."""
+    when it's ambiguous.
+
+    With ``snapshot_at``, only the positions of dumps up to that one
+    count: the positions a load of that dump had seen. So a statement
+    re-derived on a later load cross-walks as it did when its dump was
+    loaded, and as a `load --force` does."""
     cur = conn.execute(
         "SELECT DISTINCT instrument_key FROM positions "
         " WHERE account_external_id = ? AND description = ? "
         "   AND instrument_key IS NOT NULL "
+        "   AND (? IS NULL OR snapshot_at <= ?) "
         " LIMIT 2",
-        (account_external_id, description),
+        (account_external_id, description, snapshot_at, snapshot_at),
     )
     hits = [r[0] for r in cur.fetchall()]
     if len(hits) == 1:

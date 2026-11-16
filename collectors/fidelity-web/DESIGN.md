@@ -657,6 +657,11 @@ grain that family of rows can be named at:
   residual: a row whose last writer was a statement since removed
   from bronze keeps that statement's sha, so the statement still
   present will not delete it. `load --force` is the repair.
+  When the 529 or the DAF statement parser changes, the next load
+  re-parses that pass's statements in every dump loaded before, oldest
+  first, and the supplied pass re-parses its statements on every load.
+  A statement cross-walks to the positions its own dump's load had
+  seen, so a re-derived row is the row `load --force` writes.
 - **Closed lots** — by `document_kind`, which names the pass that
   wrote them. The supplied pass drops its `statement` rows together
   with its activity rows, under the same held purge. The 1099 pass

@@ -772,6 +772,63 @@ def test_a_parse_failure_is_never_cached(migrated, tmp_path, monkeypatch):
     assert not list((tmp_path / "pc").glob("*.json"))
 
 
+def _generation(db, scope):
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute("SELECT generation FROM parser_generations "
+                            "WHERE scope = ?", (scope,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_a_new_statement_parser_re_derives_the_dumps_loaded_before(
+        tmp_path, monkeypatch):
+    """When the 529 parser changes, the next load re-derives the
+    statements of every dump loaded before, with no new dump in bronze,
+    and stamps the generation in use."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze = tmp_path / "bronze"
+    _write_dump(bronze, "20260401T000000Z")
+    db = tmp_path / "silver.db"
+
+    def run(quantity, cache):
+        parsed = json.loads(json.dumps(_PARSED))
+        parsed["accounts"][0]["holdings"][0]["quantity"] = quantity
+        _counting_parser(monkeypatch, parsed)
+        assert load.main(["--silver-db", str(db), "--bronze-dir", str(bronze),
+                          "--parse-cache-dir", str(tmp_path / cache)]) == 0
+        conn = sqlite3.connect(db)
+        try:
+            return _holdings(conn)
+        finally:
+            conn.close()
+
+    assert [r[2] for r in run(1.5, "pc1")] == [1.5]
+    conn = sqlite3.connect(db)
+    load.silver.stamp_generation(conn, load.STATEMENT_GENERATION_SCOPE,
+                                 "an-earlier-parser")
+    conn.commit()
+    conn.close()
+    # The earlier parser's namespace held the old result; the new one
+    # parses again.
+    assert [r[2] for r in run(2.5, "pc2")] == [2.5]
+    assert _generation(db, load.STATEMENT_GENERATION_SCOPE) == \
+        load._STATEMENT_PARSER_VERSION
+
+
+def test_the_crosswalk_reads_the_positions_a_dumps_load_had_seen(migrated):
+    for snapshot_at, key in ((100, "TICK1"), (200, "TICK2")):
+        migrated.execute(
+            "INSERT INTO positions (snapshot_at, account_external_id, "
+            "instrument_key, description, payload) "
+            "VALUES (?, '100000001', ?, 'PLACEHOLDER FUND', '{}')",
+            (snapshot_at, key))
+    crosswalk = load._crosswalk_description_to_instrument
+    assert crosswalk(migrated, "100000001", "PLACEHOLDER FUND", 100) == "TICK1"
+    assert crosswalk(migrated, "100000001", "PLACEHOLDER FUND", 200) is None
+    assert crosswalk(migrated, "100000001", "PLACEHOLDER FUND") is None
+
+
 def test_supplied_parser_version_depends_on_signature_without_leaking_it():
     v_none = load._supplied_parser_version(None)
     v_a = load._supplied_parser_version("PLACEHOLDER REGISTRATION")
