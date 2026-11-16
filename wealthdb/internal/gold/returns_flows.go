@@ -399,8 +399,10 @@ func (m *movedLegs) onboarding(flows []returns.Flow, assets []*accountData, w da
 	// w.from (the common case once the window is anchored at the first real
 	// snapshot) NO account debuts after w.from, so nothing is onboarded: the
 	// inception value is the opening base V0, external deposits add capital, and
-	// internal churn is nothing — capital counted exactly once.
-	for _, grp := range perEntityGroups {
+	// internal churn is nothing — capital counted exactly once. The groups are
+	// booked by source id, so same-day steps reach the day sort in one order.
+	for _, src := range slices.Sorted(maps.Keys(perEntityGroups)) {
+		grp := perEntityGroups[src]
 		for _, day := range groupDebutDays(grp, w.from, w.to) {
 			step := groupOnboardStep(grp, day, m)
 			if of, ok := returns.OnboardingFlow(day, step); ok {
