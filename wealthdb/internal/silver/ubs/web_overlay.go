@@ -3,7 +3,6 @@ package ubs
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"sort"
 	"strings"
 
@@ -90,9 +89,9 @@ type webTxTextKey struct {
 // transfer's two legs share the reference and are two bookings.
 func (r *webReader) buildSeamBankRefs(ctx context.Context, psn *psnReader) (map[webTxTextKey]bool, error) {
 	out := map[webTxTextKey]bool{}
-	err := psn.eachCashMovement(ctx, "ubs-psn buildSeamBankRefs", func(row psnCashRow) error {
-		var m cashMovementPayload
-		if err := json.Unmarshal([]byte(row.payload), &m); err != nil || m.BankRef == "" {
+	err := psn.eachCashMovement(ctx, func(row *feedRow) error {
+		m := row.pl
+		if !row.decoded || m.BankRef == "" {
 			return nil
 		}
 		acct := row.account
@@ -133,15 +132,14 @@ func (r *webReader) transactionTextByKey(ctx context.Context) (map[webTxTextKey]
 	// order is a fold that changes under a silver rewrite.
 	out := map[webTxTextKey]webTxText{}
 	won := map[webTxTextKey]string{}
-	err := r.eachWebTx(ctx, "ubs-web transactionTextByKey", "", nil, func(row webTxRow) error {
+	err := r.eachWebRow(ctx, func(row *webRow) error {
 		key := webTxTextKey{account: row.account, txnNo: webTxNumber(row.txID)}
 		if held, taken := won[key]; taken {
 			if held == key.txnNo || (row.txID != key.txnNo && row.txID > held) {
 				return nil
 			}
 		}
-		p, pdfBackfill := decodeWebTxEra(row.payload)
-		text, _, _ := projectWebTxText(row.counterparty.String, row.descKind.String, p, pdfBackfill)
+		text, _, _ := projectWebTxText(row.counterparty.String, row.descKind.String, row.pl, row.pdfBackfill)
 		out[key], won[key] = text, row.txID
 		return nil
 	})
@@ -369,15 +367,14 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 	}
 	statements := map[bookingKey][]foldRow{}
 	exports := map[bookingKey][]foldRow{}
-	err = r.eachWebTx(ctx, "ubs-web buildEraFold", "", nil, func(row webTxRow) error {
+	err = r.eachWebRow(ctx, func(row *webRow) error {
 		if cut.excludes(row.account, row.valueDate) {
 			return nil
 		}
 		// Classified by the same hint the transaction pass uses, so the
 		// key carries the cash the row is emitted with: a dividend's
 		// amount credited, before any gross.
-		hint := webKindHint(row.descKind, row.counterparty)
-		kind, _, net := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
+		kind, net := row.kind, row.signed
 		k, ok := newBookingKey(row.account, row.valueDate, net, row.currency)
 		if !ok {
 			return nil
@@ -389,14 +386,13 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 			return nil
 		}
 		// A statement row and an export copy of a cash leg leave their text.
-		p, pdfBackfill := decodeWebTxEra(row.payload)
-		f.text, _, _ = projectWebTxText(row.counterparty.String, row.descKind.String, p, pdfBackfill)
+		f.text, _, _ = projectWebTxText(row.counterparty.String, row.descKind.String, row.pl, row.pdfBackfill)
 		if !exported {
 			statements[k] = append(statements[k], f)
 			return nil
 		}
 		// The gross the export pass books the copy at (exportGross).
-		_, f.grossed = exportGross(kind, p, pdfBackfill, row.currency, net)
+		_, f.grossed = exportGross(kind, row.pl, row.pdfBackfill, row.currency, net)
 		exports[k] = append(exports[k], f)
 		return nil
 	})
@@ -425,9 +421,9 @@ func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut
 	}
 
 	feed := map[bookingKey][]string{}
-	err = psn.eachCashMovement(ctx, "ubs-psn buildEraFold", func(row psnCashRow) error {
+	err = psn.eachCashMovement(ctx, func(row *feedRow) error {
 		// The cash the line moves, as the stream projects it
-		// (psnCashRow.project).
+		// (feedRow.project).
 		tx, _, ok := row.project()
 		if !ok {
 			return nil

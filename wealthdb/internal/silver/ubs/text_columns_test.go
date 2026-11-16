@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/spending"
 )
 
@@ -133,6 +134,20 @@ func emitPSNText(t *testing.T) map[string]canonical.TransactionChange {
 	}
 	defer stream.Close()
 	return drainTx(t, stream)
+}
+
+// connTransactions is the transaction stream of a connection over the
+// given feeds (either may be nil) and relationships, over every day.
+func connTransactions(t *testing.T, web *webReader, psn *psnReader, rels []RelationshipPair) silver.TransactionStream {
+	t.Helper()
+	conn := &Connection{web: web, psn: psn, relationships: rels}
+	stream, err := conn.Transactions(context.Background(),
+		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true})
+	if err != nil {
+		t.Fatalf("Transactions: %v", err)
+	}
+	t.Cleanup(func() { stream.Close() })
+	return stream
 }
 
 func drainTx(t *testing.T, stream interface {

@@ -33,6 +33,8 @@ type webReader struct {
 	// its cash coverage: the cash pass, the portfolio pass and the
 	// realized lots each resolve against it.
 	valors silver.Lazy[map[string]string]
+	// rows is the ledger, read once (ledger).
+	rows silver.Lazy[[]webRow]
 
 	// parts is the file's optional schema (schema).
 	parts silver.Lazy[webSchema]
@@ -318,7 +320,10 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	// and folding against it would lose the trade from both rails.
 	settled := map[settledDayKey]int{}
 	summaries, folded := 0, 0
-	err = r.eachWebTx(ctx, "ubs-web Transactions", "WHERE value_date BETWEEN ? AND ?", []any{w.Start, w.End}, func(row webTxRow) error {
+	err = r.eachWebRow(ctx, func(row *webRow) error {
+		if row.valueDate < w.Start || row.valueDate > w.End {
+			return nil
+		}
 		e, skip, err := pass.emit(row)
 		switch {
 		case err != nil:
@@ -443,17 +448,21 @@ func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []Rel
 // (buildSeamBankRefs) drops a web row the MT940 feed's first statements
 // reach back over, where the cut excludes neither copy. Both are counted
 // so the drop is visible on the load summary.
-func (p *webTxPass) foldedAway(row webTxRow) bool {
+func (p *webTxPass) foldedAway(row *webRow) bool {
 	return p.fold.drop[row.emittedID()] ||
 		p.seam[webTxTextKey{account: row.account, txnNo: webTxNumber(row.txID)}]
 }
 
-// project turns one web row, its payload decoded (decodeWebTxEra), into
-// the transaction gold holds before any gross (emit), or reports false
-// for a statement's period summary, which is not a booking.
-func (p *webTxPass) project(row webTxRow, pl webTxPayload, pdfBackfill bool) (canonical.TransactionChange, bool) {
-	hint := webKindHint(row.descKind, row.counterparty)
-	kind, net, netAmount := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
+// project turns one web row into the transaction gold holds before any
+// gross (emit), or reports false for a statement's period summary, which
+// is not a booking.
+func (p *webTxPass) project(row *webRow) (canonical.TransactionChange, bool) {
+	pl, pdfBackfill, hint := row.pl, row.pdfBackfill, row.hint
+	kind, net := row.kind, row.net
+	// The row's own amount, so the transaction shares no value with the
+	// ledger every pass reads.
+	signed := *row.signed
+	netAmount := &signed
 	netPtr := net
 
 	// A statement's period summary is not a booking. The "Turnover
@@ -466,7 +475,7 @@ func (p *webTxPass) project(row webTxRow, pl webTxPayload, pdfBackfill bool) (ca
 	// docs/adapters/ubs.md §7). The CSV feed prints the same close as a
 	// zero-amount service-price row with no booking type.
 	//
-	// decodeWebTxEra reads an undecodable payload as a PDF backfill,
+	// newWebRow reads an undecodable payload as a PDF backfill,
 	// which routes the row through pdfCashIsExternal (INTERNAL on the
 	// zero value) rather than letting it skip the gate and keep its
 	// deposit/withdrawal kind.
@@ -589,7 +598,7 @@ type webEmission struct {
 // the cut, else a fold. webEmitted where neither drops it. emit and the
 // offset veto's web half (webOffsetLegs) both read it, so the veto counts
 // no row the stream drops.
-func (p *webTxPass) skip(row webTxRow) webSkip {
+func (p *webTxPass) skip(row *webRow) webSkip {
 	switch {
 	case p.cut.excludes(row.account, row.valueDate):
 		return webCut
@@ -603,17 +612,16 @@ func (p *webTxPass) skip(row webTxRow) webSkip {
 // (skip), the projection, and an export dividend's gross. The stream and
 // the record of grosses (recordExportGrosses) both read it, so they agree
 // on every row.
-func (p *webTxPass) emit(row webTxRow) (webEmission, webSkip, error) {
+func (p *webTxPass) emit(row *webRow) (webEmission, webSkip, error) {
 	if skip := p.skip(row); skip != webEmitted {
 		return webEmission{}, skip, nil
 	}
-	pl, pdfBackfill := decodeWebTxEra(row.payload)
-	tx, ok := p.project(row, pl, pdfBackfill)
+	tx, ok := p.project(row)
 	if !ok {
 		return webEmission{}, webSummary, nil
 	}
 	e := webEmission{tx: tx}
-	gross, ok := exportGross(tx.Kind, pl, pdfBackfill, tx.Currency, tx.NetAmount)
+	gross, ok := exportGross(tx.Kind, row.pl, row.pdfBackfill, tx.Currency, tx.NetAmount)
 	if !ok {
 		return e, webEmitted, nil
 	}
@@ -630,7 +638,7 @@ func (p *webTxPass) emit(row webTxRow) (webEmission, webSkip, error) {
 // rest are not projected. It needs the cut and the folds, not the offset
 // veto: the veto changes only deposits and withdrawals.
 func (r *webReader) recordExportGrosses(ctx context.Context, p *webTxPass) error {
-	return r.eachWebTx(ctx, "ubs-web recordExportGrosses", "", nil, func(row webTxRow) error {
+	return r.eachWebRow(ctx, func(row *webRow) error {
 		net, ok := row.dividendCredit()
 		if !ok {
 			return nil
@@ -689,7 +697,7 @@ func (p *webTxPass) resolveCounterAccount(pl *webTxPayload) (statedMortgage stri
 // "Is this owner capital crossing the boundary?" (returns) and "is this
 // a spending row?" (the spending population selects on kind) are two
 // questions: a card purchase is not owner capital, and it is spending.
-func (p *webTxPass) returnsInternal(row webTxRow, kind canonical.TxKind, pl webTxPayload, pdfBackfill bool) bool {
+func (p *webTxPass) returnsInternal(row *webRow, kind canonical.TxKind, pl webTxPayload, pdfBackfill bool) bool {
 	if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
 		return false
 	}
@@ -699,8 +707,8 @@ func (p *webTxPass) returnsInternal(row webTxRow, kind canonical.TxKind, pl webT
 		pdfBackfill && !pdfCashIsExternal(pl, p.ownIBANs, kind == canonical.TxKindWithdrawal, railEra)
 }
 
-// webTxRow is one row of the web silver's transactions table, as every
-// pass over it reads the row.
+// webTxRow is the columns of one row of the web silver's transactions
+// table, which webRow carries decoded.
 type webTxRow struct {
 	txID, account, currency, payload string
 	valueDate                        int64
@@ -718,29 +726,11 @@ func (row webTxRow) emittedID() string { return row.txID + "@" + row.account }
 // dividendCredit is the cash a web row credits where its projection
 // (webProjectedNet) reads it as a dividend that credits; false for any
 // other row.
-func (row webTxRow) dividendCredit() (*canonical.Decimal, bool) {
-	hint := webKindHint(row.descKind, row.counterparty)
-	kind, _, net := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
-	if kind != canonical.TxKindDividend || net == nil || !net.IsPositive() {
+func (row *webRow) dividendCredit() (*canonical.Decimal, bool) {
+	if row.kind != canonical.TxKindDividend || row.signed == nil || !row.signed.IsPositive() {
 		return nil, false
 	}
-	return net, true
-}
-
-// eachWebTx calls fn on each row of the web transactions table that
-// `where` (a WHERE clause over it, or "") selects.
-func (r *webReader) eachWebTx(ctx context.Context, what, where string, args []any, fn func(webTxRow) error) error {
-	return silver.ScanRows(ctx, r.db, what, `
-SELECT transaction_external_id, value_date, account_external_id, currency_iso,
-       amount_debit, amount_credit, counterparty, description_kind, payload
-  FROM transactions `+where, func(rows *sql.Rows) error {
-		var row webTxRow
-		if err := rows.Scan(&row.txID, &row.valueDate, &row.account, &row.currency,
-			&row.debit, &row.credit, &row.counterparty, &row.descKind, &row.payload); err != nil {
-			return fmt.Errorf("%s scan: %w", what, err)
-		}
-		return fn(row)
-	}, args...)
+	return row.signed, true
 }
 
 // psnCut is the hard cut at each banking relationship's PSN start: a
@@ -1372,7 +1362,7 @@ func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, 
 // deposit/withdrawal row the transaction pass emits.
 func (r *webReader) webOffsetLegs(ctx context.Context, p *webTxPass) ([]offsetLeg, error) {
 	var legs []offsetLeg
-	err := r.eachWebTx(ctx, "buildSameDayOffsetVeto (web)", "", nil, func(row webTxRow) error {
+	err := r.eachWebRow(ctx, func(row *webRow) error {
 		// A row the cut or a fold drops is not in the ledger: its booking
 		// is represented by the row that kept it, and letting the dropped
 		// copy stand here would let one booking consume two mirrors.
@@ -1385,14 +1375,13 @@ func (r *webReader) webOffsetLegs(ctx context.Context, p *webTxPass) ([]offsetLe
 		// resolves them (the rule `bookingKey` names for the era fold).
 		// Differencing the raw columns would read every export-era
 		// withdrawal as a positive figure, where it could mirror nothing.
-		hint := webKindHint(row.descKind, row.counterparty)
-		kind, _, netAmount := webProjectedNet(hint, isStatementEraID(row.txID), row.debit, row.credit)
+		kind, netAmount := row.kind, row.signed
 		if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal || netAmount == nil {
 			return nil
 		}
 		statedCcy, statedAmt := "", ""
-		if decoded, ok := decodeWebTxPayload(row.payload); ok {
-			statedCcy, statedAmt = counterLegFromNarrative(decoded)
+		if row.decoded {
+			statedCcy, statedAmt = counterLegFromNarrative(row.pl)
 		}
 		legs = append(legs, offsetLeg{
 			vetoKey: row.emittedID(), txID: row.txID, acct: row.account,
@@ -1410,9 +1399,9 @@ func (r *webReader) webOffsetLegs(ctx context.Context, p *webTxPass) ([]offsetLe
 // (creditReversal), so it is not one.
 func (r *psnReader) offsetLegs(ctx context.Context, dividends *dividendSecurities) ([]offsetLeg, error) {
 	var legs []offsetLeg
-	err := r.eachCashMovement(ctx, "buildSameDayOffsetVeto (psn)", func(row psnCashRow) error {
+	err := r.eachCashMovement(ctx, func(row *feedRow) error {
 		// The cash the line moves, as the stream projects it
-		// (psnCashRow.project), a reversal's included.
+		// (feedRow.project), a reversal's included.
 		tx, p, ok := row.project()
 		if !ok || tx.Kind != canonical.TxKindDeposit && tx.Kind != canonical.TxKindWithdrawal {
 			return nil
@@ -2006,18 +1995,6 @@ func decodeWebTxPayload(payload string) (webTxPayload, bool) {
 		return webTxPayload{}, false
 	}
 	return p, true
-}
-
-// decodeWebTxEra decodes a row's payload and reports whether it is to be
-// read as a PDF backfill. It pairs the two questions every caller asks
-// together, because the conservative rule that joins them —
-// AN UNDECODABLE PAYLOAD IS TREATED AS A BACKFILL — belongs in one
-// place: re-spelled per call site it is one edit away from a caller
-// that decodes, ignores the failure, and takes the permissive branch on
-// the classifier that keeps owner capital from being fabricated.
-func decodeWebTxEra(payload string) (webTxPayload, bool) {
-	p, decoded := decodeWebTxPayload(payload)
-	return p, !decoded || isPDFCashBackfill(p)
 }
 
 // isPDFCashBackfill reports whether a transaction came from the

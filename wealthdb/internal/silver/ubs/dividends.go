@@ -578,9 +578,9 @@ func (r *psnReader) buildDividendConfirmations(ctx context.Context, ibans map[st
 		return out, nil
 	}
 	lines := map[bookingKey][]string{}
-	err = r.eachCashMovement(ctx, "ubs buildDividendConfirmations", func(row psnCashRow) error {
+	err = r.eachCashMovement(ctx, func(row *feedRow) error {
 		// The cash the line credits, as the stream projects it
-		// (psnCashRow.project).
+		// (feedRow.project).
 		tx, _, ok := row.dividendCredit()
 		if !ok {
 			return nil
@@ -797,7 +797,7 @@ func (d *dividendSecurities) matchReversals(ctx context.Context, r *psnReader) e
 		keyed, says bool
 	}
 	var reversals []reversal
-	err := r.eachCashMovement(ctx, "ubs matchReversals", func(row psnCashRow) error {
+	err := r.eachCashMovement(ctx, func(row *feedRow) error {
 		tx, p, ok := row.project()
 		if !ok {
 			return nil
@@ -904,7 +904,7 @@ func (d *dividendSecurities) addFeedCredits(ctx context.Context, r *psnReader) e
 			d.addCredit(railConfirmation, c.isin, cashIBAN(ibans, c.move.cashAccount), c.move.postedCcy, c.move.posted, c.move.paymentDay)
 		}
 	}
-	return r.eachCashMovement(ctx, "ubs addFeedCredits", func(row psnCashRow) error {
+	return r.eachCashMovement(ctx, func(row *feedRow) error {
 		tx, p, ok := row.dividendCredit()
 		if !ok {
 			return nil
@@ -923,7 +923,7 @@ func (d *dividendSecurities) addWebCredits(ctx context.Context, r *webReader) er
 	if r == nil || r.db == nil {
 		return nil
 	}
-	return r.eachWebTx(ctx, "ubs-web addWebCredits", "", nil, func(row webTxRow) error {
+	return r.eachWebRow(ctx, func(row *webRow) error {
 		net, ok := row.dividendCredit()
 		if !ok {
 			return nil
@@ -932,8 +932,7 @@ func (d *dividendSecurities) addWebCredits(ctx context.Context, r *webReader) er
 		if isStatementEraID(row.txID) {
 			rail = railStatement
 		}
-		pl, pdfBackfill := decodeWebTxEra(row.payload)
-		if id, _ := d.webDividendSecurity(row.account, pl, pdfBackfill); id != nil {
+		if id, _ := d.webDividendSecurity(row.account, row.pl, row.pdfBackfill); id != nil {
 			d.addCredit(rail, *id, row.account, row.currency, *net, row.valueDate)
 		}
 		return nil
@@ -1024,7 +1023,7 @@ func (d psnDividends) addFeedGrosses(ctx context.Context, r *psnReader, coverage
 	if len(d.confirmations) == 0 {
 		return nil
 	}
-	return r.eachCashMovement(ctx, "ubs addFeedGrosses", func(row psnCashRow) error {
+	return r.eachCashMovement(ctx, func(row *feedRow) error {
 		if c, ok := d.confirmations[row.eventID]; !ok || !c.stands {
 			return nil
 		}

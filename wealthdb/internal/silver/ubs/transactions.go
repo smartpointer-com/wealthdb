@@ -61,24 +61,20 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 		return nil, err
 	}
 
-	const q = `
-SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, payload
-  FROM events
- WHERE timestamp BETWEEN ? AND ?`
-
+	feed, err := r.feed(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := canonical.TransactionBatch{}
 	mirrored, grossed := 0, 0
-	if err := silver.ScanRows(ctx, r.db, "ubs Transactions", q, func(rows *sql.Rows) error {
-		var (
-			eventID, extID, kind, payload string
-			currencyISO                   *string
-			occurredAt                    int64
-		)
-		if err := rows.Scan(&eventID, &occurredAt, &extID, &kind, &currencyISO, &payload); err != nil {
-			return fmt.Errorf("ubs Transactions scan: %w", err)
+	emit := func(row *feedRow) error {
+		eventID, extID, kind, payload, occurredAt := row.eventID, row.account, row.kind, row.payload, row.at
+		var currencyISO *string
+		if row.currency.Valid {
+			c := row.currency.String
+			currencyISO = &c
 		}
-
-		if settled.covers(kind, extID, currencyISO, occurredAt, payload) {
+		if settled.covers(row) {
 			return nil
 		}
 
@@ -97,10 +93,7 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 		)
 		if kind == "cash_movement" {
 			// The payload decodes: buildTransaction read it above.
-			var p cashMovementPayload
-			if err := json.Unmarshal([]byte(payload), &p); err != nil {
-				return fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
-			}
+			p := row.pl
 			var reversed bool
 			if tax, taxed, reversed, err = dividends.reverse(&tx); err != nil {
 				return fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
@@ -141,8 +134,13 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 			grossed++
 		}
 		return nil
-	}, w.Start, w.End); err != nil {
-		return nil, err
+	}
+	for i := range feed.events {
+		if row := &feed.events[i]; row.at >= w.Start && row.at <= w.End {
+			if err := emit(row); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if grossed > 0 {
 		log.Printf("ubs adapter: booked %d MT940 dividend line(s) or reversal(s) at the gross, a tax row beside each", grossed)
@@ -282,28 +280,26 @@ func newSettlementKey(account, currency string, amount *canonical.Decimal, settl
 }
 
 // buildSettlementFold reads every trade confirmation the silver holds
-// and records the cash leg each one settles.
+// and records the cash leg each one settles. Each caller spends a fold
+// of its own (covers).
 func (r *psnReader) buildSettlementFold(ctx context.Context, ibans map[string]string) (*settlementFold, error) {
 	out := &settlementFold{unpaired: map[settlementKey]int{}, ibans: ibans}
-	if r == nil || r.db == nil {
-		return out, nil
+	feed, err := r.feed(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if err := silver.ScanRows(ctx, r.db, "ubs buildSettlementFold", `
-SELECT currency_iso, payload FROM events WHERE kind = 'trade_confirmation'`, func(rows *sql.Rows) error {
-		var (
-			currencyISO *string
-			payload     string
-		)
-		if err := rows.Scan(&currencyISO, &payload); err != nil {
-			return fmt.Errorf("ubs buildSettlementFold scan: %w", err)
+	for i := range feed.events {
+		row := &feed.events[i]
+		if row.kind != "trade_confirmation" {
+			continue
 		}
 		var p tradeConfirmationPayload
-		if err := json.Unmarshal([]byte(payload), &p); err != nil {
-			return fmt.Errorf("ubs buildSettlementFold payload: %w", err)
+		if err := json.Unmarshal([]byte(row.payload), &p); err != nil {
+			return nil, fmt.Errorf("ubs buildSettlementFold payload: %w", err)
 		}
 		currency := p.NetCurrency
-		if currency == "" && currencyISO != nil {
-			currency = *currencyISO
+		if currency == "" && row.currency.Valid {
+			currency = row.currency.String
 		}
 		key, ok := newSettlementKey(
 			cashIBAN(ibans, p.CashAccountExternalID), currency,
@@ -311,9 +307,6 @@ SELECT currency_iso, payload FROM events WHERE kind = 'trade_confirmation'`, fun
 		if ok {
 			out.unpaired[key]++
 		}
-		return nil
-	}); err != nil {
-		return nil, err
 	}
 	return out, nil
 }
@@ -324,28 +317,25 @@ SELECT currency_iso, payload FROM events WHERE kind = 'trade_confirmation'`, fun
 // survives and reaches gold on its own classification. That is the
 // conservative direction — a duplicate row is visible and fixable, a
 // vanished booking is not.
-func (f *settlementFold) covers(kind, account string, currencyISO *string, occurredAt int64, payload string) bool {
-	if f == nil || len(f.unpaired) == 0 || kind != "cash_movement" {
+func (f *settlementFold) covers(row *feedRow) bool {
+	if f == nil || len(f.unpaired) == 0 || row.kind != "cash_movement" || !row.decoded {
 		return false
 	}
-	var p cashMovementPayload
-	if err := json.Unmarshal([]byte(payload), &p); err != nil {
-		return false
-	}
+	p := row.pl
 	switch strings.ToUpper(strings.TrimSpace(p.TxnType)) {
 	case "NSEC", "NMSC":
 	default:
 		return false
 	}
-	acct := account
+	acct := row.account
 	if p.Account != "" {
 		acct = p.Account
 	}
 	currency := p.Funds
-	if currency == "" && currencyISO != nil {
-		currency = *currencyISO
+	if currency == "" && row.currency.Valid {
+		currency = row.currency.String
 	}
-	key, ok := newSettlementKey(cashIBAN(f.ibans, acct), currency, p.Amount, occurredAt)
+	key, ok := newSettlementKey(cashIBAN(f.ibans, acct), currency, p.Amount, row.at)
 	if !ok || f.unpaired[key] == 0 {
 		return false
 	}

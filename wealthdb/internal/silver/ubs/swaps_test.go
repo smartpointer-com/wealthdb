@@ -139,6 +139,10 @@ func newSwapFixture(t *testing.T, statement ...[3]string) (*webReader, *psnReade
 	    VALUES (1, 'R1', ?, ?, '{}'), (1, 'R1', ?, ?, '{}')`, swapCHF, swapPortfolio, swapUSD, swapPortfolio); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO safekeeping_accounts (snapshot_at, relationship_id, account_external_id, portfolio_external_id, payload)
+	    VALUES (1, 'R1', ?, ?, ?)`, swapSafekeeping, swapPortfolio, `{"PrtflId":"`+swapPortfolio+`"}`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`INSERT INTO forward_contracts (snapshot_at, relationship_id, contract_external_id, payload)
 	    VALUES (?, 'R1', 'QC-01', '{}'), (?, 'R1', 'QC-01', '{}')`, swapDay(2033, 11, 15)+3600, swapDay(2033, 11, 16)); err != nil {
 		t.Fatal(err)
@@ -146,21 +150,13 @@ func newSwapFixture(t *testing.T, statement ...[3]string) (*webReader, *psnReade
 	return web, &psnReader{db: db}
 }
 
-// inferredForwardRecords runs the statement stream over the fixture and
-// returns its forward records as text, per day.
+// inferredForwardRecords runs the connection's snapshot stream over the
+// fixture and returns its forward records as text, per day.
 func inferredForwardRecords(t *testing.T, web *webReader, psn *psnReader) map[string][]string {
 	t.Helper()
 	ctx := context.Background()
-	forwards, err := (&Connection{web: web, psn: psn, source: "test-ubs"}).inferredForwards(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	w := canonical.Window{Start: 0, End: swapDay(2040, 1, 1), HasChanges: true}
-	stream, err := web.snapshotsHistorical(ctx, w, map[string]string{swapPortfolio: swapSafekeeping}, nil, nil, forwards)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
+	stream := connSnapshots(t, &Connection{web: web, psn: psn, source: "test-ubs"}, w)
 	got := map[string][]string{}
 	for {
 		batch, more, err := stream.Next(ctx)

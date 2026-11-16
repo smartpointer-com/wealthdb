@@ -223,9 +223,9 @@ func (r *psnReader) readConversionMirrors(ctx context.Context, coverage psnCashC
 	if err != nil {
 		return nil, err
 	}
-	err = r.eachCashMovement(ctx, "ubs-psn conversionMirrors", func(row psnCashRow) error {
-		var p cashMovementPayload
-		if err := json.Unmarshal([]byte(row.payload), &p); err != nil || p.Amount == nil {
+	err = r.eachCashMovement(ctx, func(row *feedRow) error {
+		p := row.pl
+		if !row.decoded || p.Amount == nil {
 			return nil
 		}
 		// A reversal is marked RC / RD; its sign is not the movement's,

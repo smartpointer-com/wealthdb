@@ -1,9 +1,6 @@
 package ubs
 
-import (
-	"context"
-	"encoding/json"
-)
+import "context"
 
 // The statement rail — the MT940 feed — is delivered per account: an
 // account is in scope for statements or it is not, and one that is not
@@ -43,11 +40,10 @@ func (r *psnReader) cashCoverage(ctx context.Context) (psnCashCoverage, error) {
 	}
 	return r.coverage.Get(func() (psnCashCoverage, error) {
 		out := psnCashCoverage{}
-		err := r.eachCashMovement(ctx, "ubs-psn cashCoverage", func(row psnCashRow) error {
+		err := r.eachCashMovement(ctx, func(row *feedRow) error {
 			acct := row.account
-			var p cashMovementPayload
-			if err := json.Unmarshal([]byte(row.payload), &p); err == nil && p.Account != "" {
-				acct = p.Account
+			if row.decoded && row.pl.Account != "" {
+				acct = row.pl.Account
 			}
 			if start, ok := out[acct]; !ok || row.at < start {
 				out[acct] = row.at

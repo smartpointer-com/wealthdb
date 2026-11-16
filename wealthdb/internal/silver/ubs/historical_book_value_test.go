@@ -8,17 +8,13 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// historicalPositions runs the statement stream over a full window and
-// keys its positions by ISIN.
+// historicalPositions runs the connection's snapshot stream over a full
+// window and keys its positions by ISIN.
 func historicalPositions(t *testing.T, web *webReader) map[string]canonical.PositionChange {
 	t.Helper()
 	ctx := context.Background()
 	w := canonical.Window{Start: 0, End: 2000, HasChanges: true}
-	stream, err := web.snapshotsHistorical(ctx, w, nil, map[string]int64{}, map[string]int64{}, inferredForwards{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
+	stream := connSnapshots(t, &Connection{web: web}, w)
 	got := map[string]canonical.PositionChange{}
 	for {
 		batch, more, err := stream.Next(ctx)

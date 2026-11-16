@@ -91,11 +91,7 @@ func seedWebTxRaw(t *testing.T, r *webReader, txID, acct string, day int64, ccy 
 // TransactionExternalID → kind.
 func emittedKinds(t *testing.T, r *webReader, psn *psnReader) map[string]canonical.TxKind {
 	t.Helper()
-	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, psn, nil)
-	if err != nil {
-		t.Fatalf("transactionsBeforePSNStart: %v", err)
-	}
+	stream := connTransactions(t, r, psn, nil)
 	out := map[string]canonical.TxKind{}
 	for {
 		batch, more, err := stream.Next(context.Background())
@@ -118,11 +114,7 @@ func emittedKinds(t *testing.T, r *webReader, psn *psnReader) map[string]canonic
 // supermarket payment vanished from spending along with the flow.
 func emittedInternal(t *testing.T, r *webReader, psn *psnReader) map[string]bool {
 	t.Helper()
-	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, psn, nil)
-	if err != nil {
-		t.Fatalf("transactionsBeforePSNStart: %v", err)
-	}
+	stream := connTransactions(t, r, psn, nil)
 	out := map[string]bool{}
 	for {
 		batch, more, err := stream.Next(context.Background())
@@ -411,12 +403,8 @@ func TestOffsetVetoProbeSkipsSuppressedWebRows(t *testing.T) {
 	// of its own, too small to pair with anything.
 	_, psnDB := newFixtureSilver(t)
 	seedPSNCashAmount(t, psnDB, "COVER-B", vetoAcctB, "1", "D", "CHF", "FEE", vetoDay1-86400)
-	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{db: psnDB},
+	stream := connTransactions(t, r, &psnReader{db: psnDB},
 		[]RelationshipPair{{WebID: "REL1", PSNStartOverride: vetoDay1 - 86400}})
-	if err != nil {
-		t.Fatalf("transactionsBeforePSNStart: %v", err)
-	}
 	kinds := map[string]canonical.TxKind{}
 	for {
 		batch, more, err := stream.Next(context.Background())
@@ -662,12 +650,8 @@ func TestAnAccountTheFeedNeverReachesKeepsItsExportRows(t *testing.T) {
 	_, psnDB := newFixtureSilver(t)
 	// The feed speaks for some other account of the relationship, not B.
 	seedPSNCashAmount(t, psnDB, "COVER-C", "CH0000000000000000CCC", "1", "D", "CHF", "FEE", vetoDay1-86400)
-	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{db: psnDB},
+	stream := connTransactions(t, r, &psnReader{db: psnDB},
 		[]RelationshipPair{{WebID: "REL1", PSNStartOverride: vetoDay1 - 86400}})
-	if err != nil {
-		t.Fatalf("transactionsBeforePSNStart: %v", err)
-	}
 	got := drainTx(t, stream)
 	credit, ok := got["T2@"+vetoAcctB]
 	if !ok {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
@@ -30,6 +31,39 @@ CREATE TABLE historical_mortgages (
     collateral_description TEXT, source_doc_token TEXT, payload TEXT);`
 	_, db := silvertest.NewDB(t, schema)
 	return &webReader{db: db}
+}
+
+// liveWebTables are the live tables of the web silver that a
+// connection's snapshot stream reads beside the statement tables, made
+// empty where a fixture does not hold them.
+const liveWebTables = `
+CREATE TABLE IF NOT EXISTS dump_runs (snapshot_at INTEGER PRIMARY KEY, run_dir TEXT);
+CREATE TABLE IF NOT EXISTS portfolios (
+    snapshot_at INTEGER, portfolio_external_id TEXT, banking_relationship_id TEXT,
+    description TEXT, payload TEXT);
+CREATE TABLE IF NOT EXISTS accounts (
+    snapshot_at INTEGER, account_external_id TEXT, kind TEXT, currency_iso TEXT,
+    banking_relationship_id TEXT, portfolio_external_id TEXT, description TEXT, payload TEXT);
+CREATE TABLE IF NOT EXISTS positions (
+    snapshot_at INTEGER, instrument_isin TEXT, currency_iso TEXT, description TEXT, payload TEXT);
+CREATE TABLE IF NOT EXISTS transactions (
+    transaction_external_id TEXT, account_external_id TEXT, value_date INTEGER,
+    currency_iso TEXT, amount_debit REAL, amount_credit REAL, description_kind TEXT,
+    payload TEXT);`
+
+// connSnapshots is the snapshot stream of the connection over w, its
+// web silver given the live tables it lacks (liveWebTables).
+func connSnapshots(t *testing.T, conn *Connection, w canonical.Window) silver.SnapshotStream {
+	t.Helper()
+	if _, err := conn.web.db.Exec(liveWebTables); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := conn.Snapshots(context.Background(), w)
+	if err != nil {
+		t.Fatalf("Snapshots: %v", err)
+	}
+	t.Cleanup(func() { stream.Close() })
+	return stream
 }
 
 // TestHistoricalMortgageAnchoring: a historical mortgage row is
@@ -65,11 +99,7 @@ func TestHistoricalMortgageAnchoring(t *testing.T) {
 	}
 
 	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
-	stream, err := r.snapshotsHistorical(ctx, w, nil, nil, nil, inferredForwards{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
+	stream := connSnapshots(t, &Connection{web: r}, w)
 
 	// Collect every position keyed by snapshot_at.
 	posBySnap := map[int64][]canonical.PositionChange{}
@@ -139,15 +169,16 @@ func TestHistoricalSecuritiesSafekeepingRepointing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only portfolio …02 has a 1:1 safekeeping mapping; …09 does not.
-	mapping := map[string]string{"0999AAAAAAAA02": "0999 AAAAAAAA.MMM SK1"}
-
-	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
-	stream, err := r.snapshotsHistorical(ctx, w, mapping, nil, nil, inferredForwards{})
-	if err != nil {
+	// Only portfolio …02 has a 1:1 safekeeping account; …09 does not.
+	_, psnDB := newFixtureSilver(t)
+	if _, err := psnDB.Exec(`
+        INSERT INTO safekeeping_accounts(snapshot_at, relationship_id, account_external_id, payload)
+        VALUES (1, 'R1', '0999 AAAAAAAA.MMM SK1', '{"PrtflId":"0999AAAAAAAA02"}')`); err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+
+	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
+	stream := connSnapshots(t, &Connection{web: r, psn: &psnReader{db: psnDB}}, w)
 
 	var positions []canonical.PositionChange
 	var accounts []canonical.AccountChange
@@ -231,11 +262,7 @@ func TestHistoricalSyntheticISIN(t *testing.T) {
 	}
 
 	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
-	stream, err := r.snapshotsHistorical(ctx, w, nil, nil, nil, inferredForwards{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
+	stream := connSnapshots(t, &Connection{web: r}, w)
 
 	var positions []canonical.PositionChange
 	var instruments []canonical.InstrumentChange
@@ -313,11 +340,7 @@ func TestHistoricalPreciousMetalsDedup(t *testing.T) {
 	}
 
 	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
-	stream, err := r.snapshotsHistorical(ctx, w, nil, nil, nil, inferredForwards{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
+	stream := connSnapshots(t, &Connection{web: r}, w)
 
 	mvByKey := map[string]*canonical.Decimal{}
 	for {

@@ -19,13 +19,7 @@ func emitWebStream(t *testing.T, r *webReader) interface {
 	Next(context.Context) (canonical.TransactionBatch, bool, error)
 } {
 	t.Helper()
-	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, nil, nil)
-	if err != nil {
-		t.Fatalf("transactionsBeforePSNStart: %v", err)
-	}
-	t.Cleanup(func() { stream.Close() })
-	return stream
+	return connTransactions(t, r, nil, nil)
 }
 
 func pdfTurnoverPayload(bookingType string, continuation ...string) string {

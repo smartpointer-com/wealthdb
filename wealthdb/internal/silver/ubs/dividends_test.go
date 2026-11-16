@@ -556,13 +556,7 @@ func TestAStatementDividendLinksByItsValor(t *testing.T) {
 		statementPayload("DIVIDEND", "VN 7654321 XXXXXXS9", "UNKNOWN AG"))
 	seedWebTxRaw(t, r, divStmtTwo, divIBAN, divDay+3*86400, "CHF", 130, "DIVIDEND",
 		statementPayload("DIVIDEND", "VN 2222222 XXXXXXS9", "TWOFOLD AG"))
-	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{db: psnDB}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	got := drainTx(t, stream)
+	got := drainTx(t, connTransactions(t, r, &psnReader{db: psnDB}, nil))
 
 	for _, tc := range []struct {
 		id, isin, hint string
@@ -649,13 +643,7 @@ func TestAnExportDividendReadsTheGrossItStates(t *testing.T) {
 	// keys both on the amount credited.
 	seedWebTxRaw(t, r, divStmt, divIBAN, divDay, "CHF", 650, "DIVIDEND",
 		statementPayload("DIVIDEND", "VN "+divValor+" XXXXXXS9", "EXAMPLE AG"))
-	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	got := drainTx(t, stream)
+	got := drainTx(t, connTransactions(t, r, nil, nil))
 
 	for _, tc := range []struct {
 		id, net, tax string
@@ -1512,13 +1500,7 @@ func TestAForeignExportDividendReadsItsConvertedGross(t *testing.T) {
 		divIBAN, divDay+20*86400, exportPayload(d1, "Dividend;Reversal", stated("-100.00 USD", "0.85"))); err != nil {
 		t.Fatal(err)
 	}
-	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, &psnReader{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	got := drainTx(t, stream)
+	got := drainTx(t, connTransactions(t, r, nil, nil))
 	want := []struct{ id, net, tax string }{{"AW00000KE0000025", "-85", "12.75"}}
 	for _, row := range rows {
 		want = append(want, struct{ id, net, tax string }{row.id, row.net, row.tax})

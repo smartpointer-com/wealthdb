@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // The counter account, and the one thing the EXPORT era never said out
@@ -115,11 +113,7 @@ func TestTheDerivedCounterAccountReachesThePayload(t *testing.T) {
 // TransactionExternalID → the payload gold would keep.
 func emittedPayloads(t *testing.T, r *webReader) map[string]string {
 	t.Helper()
-	stream, _, err := r.transactionsBeforePSNStart(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, nil, nil)
-	if err != nil {
-		t.Fatalf("transactionsBeforePSNStart: %v", err)
-	}
+	stream := connTransactions(t, r, nil, nil)
 	out := map[string]string{}
 	for {
 		batch, more, err := stream.Next(context.Background())

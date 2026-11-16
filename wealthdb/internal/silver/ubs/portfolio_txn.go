@@ -218,23 +218,22 @@ func (r *webReader) portfolioSettledDays(ctx context.Context, psn *psnReader, we
 	if err != nil {
 		return nil, err
 	}
-	const q = `
-SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, payload
-  FROM events
- WHERE kind IN ('trade_confirmation', 'cash_movement')`
-	if err := silver.ScanRows(ctx, psn.db, "ubs portfolioSettledDays", q, func(rows *sql.Rows) error {
-		var (
-			eventID, account, kind, payload string
-			currencyISO                     *string
-			occurredAt                      int64
-		)
-		if err := rows.Scan(&eventID, &occurredAt, &account, &kind, &currencyISO, &payload); err != nil {
-			return fmt.Errorf("ubs portfolioSettledDays scan: %w", err)
+	feed, err := psn.feed(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range feed.events {
+		row := &feed.events[i]
+		var currencyISO *string
+		if row.currency.Valid {
+			c := row.currency.String
+			currencyISO = &c
 		}
-		if kind == "trade_confirmation" {
+		switch row.kind {
+		case "trade_confirmation":
 			var p tradeConfirmationPayload
-			if err := json.Unmarshal([]byte(payload), &p); err != nil {
-				return nil
+			if err := json.Unmarshal([]byte(row.payload), &p); err != nil {
+				continue
 			}
 			currency := p.NetCurrency
 			if currency == "" && currencyISO != nil {
@@ -245,22 +244,19 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 			// that shares a day with the list's value date.
 			at := p.SettlementDateUnix
 			if at == 0 {
-				at = occurredAt
+				at = row.at
 			}
 			out[newSettledDayKey(cashIBAN(ibans, p.CashAccountExternalID), currency, at)]++
-			return nil
+		case "cash_movement":
+			if settled.covers(row) {
+				continue
+			}
+			tx, err := buildTransaction(row.eventID, row.at, row.account, row.kind, currencyISO, row.payload, ibans)
+			if err != nil || (tx.Kind != canonical.TxKindBuy && tx.Kind != canonical.TxKindSell) {
+				continue
+			}
+			out[newSettledDayKey(tx.AccountExternalID, tx.Currency, tx.OccurredAt)]++
 		}
-		if settled.covers(kind, account, currencyISO, occurredAt, payload) {
-			return nil
-		}
-		tx, err := buildTransaction(eventID, occurredAt, account, kind, currencyISO, payload, ibans)
-		if err != nil || (tx.Kind != canonical.TxKindBuy && tx.Kind != canonical.TxKindSell) {
-			return nil
-		}
-		out[newSettledDayKey(tx.AccountExternalID, tx.Currency, tx.OccurredAt)]++
-		return nil
-	}); err != nil {
-		return nil, err
 	}
 	return out, nil
 }
