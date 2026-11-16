@@ -371,9 +371,10 @@ per document kind, parses these into `transactions`:
   CSV / XML twins are sha256-keyed into `documents` for traceability
   but not re-parsed — the JSON carries the same set plus Schwab's
   `AcctgRuleCd`. A row's id is stable across exports of overlapping
-  windows (§2.2). If `more-details.json` is present, the loader merges
-  each record into the matching transaction's `payload` under `_more`
-  (keyed by `_tx_history_row_key`).
+  windows (§2.2). If `more-details.json` is present, the loader parses
+  each record's dialog text (`more_detail.py`) into the matching
+  transaction's `payload` under `_more` (keyed by
+  `_tx_history_row_key`). See §6.0.
 - **1099-Composite XML / CSV** → `source='form_1099b'` (the 1099-B
   sale lots; see §6a). XML preferred over the CSV twin. The lots also
   land in `closed_lots` (§9.2).
@@ -386,6 +387,34 @@ statement pass writes `open_lots` (§9.1), and the realized-lot reports
 (the Year-End Summary, inside the 1099 Composite PDF or on its own,
 and the Gain/Loss Report) fill `closed_lots` and `cost_basis_methods`
 (§9.2, §9.3).
+
+### 6.0 The More detail in silver
+
+Each `more-details.json` record holds the dialog's whole text as
+`raw_text`. The loader parses that text. It ignores the record's
+`fields`, which the download leaves empty.
+
+- The dialog prints each label on its own line and the value on the
+  next line. Labels match without regard to case, so the older
+  "Trade Transaction Details" dialog and the newer "More Details"
+  dialog give the same keys.
+- The keys: `trade_date`, `settle_date`, `action`, `quantity`,
+  `price`, `principal`, `commission`, `industry_fee`,
+  `accrued_interest`, `total`, `order_id`, `description`.
+- `security_lines` holds the unlabeled security block (the name
+  first) verbatim. `cusip` holds its last line when that is a CUSIP
+  with a valid check digit.
+- Values are stored as printed. The loader converts nothing.
+- A label the newer dialog prints twice is stored once when both
+  values agree, and as a list of both, in order, when they differ.
+- The newer dialog's line after `Print` is stored as `action` when no
+  `Action` label is printed.
+- A line that is not one of the labels is never read as one. A wire
+  or deposit dialog holds none, so its row gets no `_more`.
+
+A row keeps the first detail it gets. A later export of the same row
+fills `_more` only when the row holds none, or an empty one. A
+`load --force` rebuild gives every row the detail its sidecars hold.
 
 ### 6a. 1099-B sale lots (`source='form_1099b'`)
 

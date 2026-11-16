@@ -61,6 +61,7 @@ from pathlib import Path
 from collectorkit import bronze, cli, silver, srcfp
 from collectorkit.parse import iso_date_to_epoch
 
+import more_detail
 import pdf_parsers as pp
 import tax_form_parsers as tf
 from numparse import parse_amount
@@ -948,7 +949,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
             continue
         # Optional per-account More-detail sidecar (written by
         # download.py's default per-row detail pass, unless
-        # --no-more-detail). Its fields are merged into matching
+        # --no-more-detail). Its parsed dialogs go into matching
         # transactions' payload.
         more_details = _load_more_details(acct_dir)
         for export in acct.get("exports", []):
@@ -1009,14 +1010,16 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
 
 
 def _load_more_details(acct_dir: Path) -> dict:
-    """Return a {row_key: detail_dict} map of "More"-modal scrape
-    results for this tx-history account, or {} when the sidecar
-    is absent.
+    """Return a {row_key: detail_dict} map of the "More" dialogs of
+    this tx-history account that parse to a non-empty dict, or {} when
+    the sidecar is absent.
 
     download.py's per-row detail pass (default; --no-more-detail skips)
     writes `<acct_dir>/more-details.json` as a list of
-    `{"row_key": "...", "fields": {...}}` records. row_key is a
-    deterministic SHA-256 prefix over the row's promoted columns
+    `{"row_key", "row_cells", "fields", "raw_text"}` records. The
+    dialog is parsed here from `raw_text` (more_detail.parse); the
+    download's `fields` is not read. row_key is a deterministic SHA-256
+    prefix over the row's promoted columns
     (date|amount|description|symbol|action) that the loader can
     re-derive from the JSON export to merge details in. See
     download._scrape_more_details for the row_key derivation.
@@ -1033,8 +1036,11 @@ def _load_more_details(acct_dir: Path) -> dict:
     out = {}
     for entry in entries:
         key = entry.get("row_key")
-        fields = entry.get("fields")
-        if key and isinstance(fields, dict):
+        raw_text = entry.get("raw_text")
+        if not key or not isinstance(raw_text, str):
+            continue
+        fields = more_detail.parse(raw_text)
+        if fields:
             out[key] = fields
     log.info("loaded %d more-detail record(s) from %s", len(out), path)
     return out
@@ -1079,10 +1085,12 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
     delete all rows for a logical export without touching other
     sources.
 
-    If `more_details[row_key]` exists for a row, its key-value
-    pairs are merged into the row's `payload` JSON under a
-    nested `_more` key — silver consumers can pluck e.g.
-    `json_extract(payload, '$._more.Settle Date')`.
+    If `more_details[row_key]` exists for a row, the parsed dialog is
+    stored in the row's `payload` JSON under a nested `_more` key —
+    silver consumers can pluck e.g.
+    `json_extract(payload, '$._more.settle_date')`. A row an earlier
+    export already loaded takes the dialog when it holds none (no
+    `_more`, or an empty one); a row that holds one keeps it.
 
     The ordinal in the activity_id counts only the earlier rows of the
     export that share the row's hashed fields (date, amount,
@@ -1092,6 +1100,7 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
     them while two genuine same-day twins stay apart.
     """
     inserted = 0
+    filled = 0
     ordinals: dict[tuple, int] = {}
     for idx, tx in enumerate(transactions):
         date_str = tx.get("Date") or ""
@@ -1118,16 +1127,42 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
         )
         # Merge any matching More-modal detail into payload.
         payload_dict = dict(tx)
-        row_key = _tx_history_row_key(tx)
-        if row_key in more_details:
-            payload_dict["_more"] = more_details[row_key]
-        inserted += _insert_transaction(conn, (
+        detail = more_details.get(_tx_history_row_key(tx))
+        if detail:
+            payload_dict["_more"] = detail
+        n = _insert_transaction(conn, (
             activity_id, timestamp, account_external_id,
             tx.get("Action") or "Unknown", tx.get("Symbol") or None,
             "tx_history_json", source_sha256, logical_doc_key,
             canonical_json(payload_dict),
         ))
+        inserted += n
+        if not n and detail:
+            filled += _fill_more_detail(conn, activity_id, detail)
+    if filled:
+        log.info("filled More detail on %d earlier row(s)", filled)
     return inserted
+
+
+def _fill_more_detail(conn: sqlite3.Connection, activity_id: str,
+                      detail: dict) -> int:
+    """Store `detail` as `_more` on the stored tx-history row
+    `activity_id` when that row holds no detail (no `_more`, or an
+    empty one). Returns 1 when the row was filled, else 0."""
+    row = conn.execute(
+        "SELECT payload FROM transactions"
+        " WHERE activity_id = ? AND source = 'tx_history_json'",
+        (activity_id,),
+    ).fetchone()
+    if row is None:
+        return 0
+    payload = json.loads(row[0])
+    if payload.get("_more"):
+        return 0
+    payload["_more"] = detail
+    conn.execute("UPDATE transactions SET payload = ? WHERE activity_id = ?",
+                 (canonical_json(payload), activity_id))
+    return 1
 
 
 def _insert_transaction(conn: sqlite3.Connection, row: tuple) -> int:

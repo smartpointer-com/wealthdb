@@ -232,7 +232,7 @@ the web feed is and is not carrying:
 | --- | --- |
 | pdf_parsers occasionally returns `amount=None` on Sale rows | Some Sale rows lose their amount; gold can detect the gap with a row-count sanity check |
 | Overlapping transaction sources (`statement_pdf` + `tx_history_json` + `form_1099b`) | Same logical event can land more than once with different synthetic `activity_id`s. Gold dedupes statement↔tx-history by (account, timestamp, amount, ±description) preferring `tx_history_json`, and leaves `form_1099b` out of its transactions (§8.1) |
-| Per-row "More"-modal data may be absent | Captured by default (~1 click/transaction); `--no-more-detail` opts out. When the sidecar is present, silver merges it into `payload._more` (Settle Date, CUSIP, Principal, Commission, Industry Fee) |
+| Per-row "More"-modal data may be absent | Captured by default (~1 click/transaction); `--no-more-detail` opts out. When the sidecar is present, silver parses each dialog into `payload._more` (`settle_date`, `cusip`, `principal`, `commission`, `industry_fee` and more; values as printed, see DESIGN.md §6.0) |
 | `form_1099b` lots have no ticker/CUSIP — `security_name` only | Gold reads the name as a ticker or an option contract and bridges it like any web key (§8.1) |
 | `third_party_distribution` cash transfers may overlap a statement cash debit | Gold dedupes cash distributions against external flows; securities distributions are new data (§8) |
 | `account_number_full` is absent for accounts with no parseable (or conflicting) statement headers | Gold falls back to suffix matching for those accounts (see §1) |

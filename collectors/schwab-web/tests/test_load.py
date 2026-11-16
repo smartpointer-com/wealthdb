@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+import more_detail  # noqa: E402
 from collectorkit import bronze  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
@@ -651,40 +652,91 @@ class TestTxHistoryIngest:
                                   tzinfo=timezone.utc).timestamp())
         assert "as of 05/10/2024" in payload
 
-    def test_more_detail_sidecar_merged_into_payload(
+    _TX = {"Date": "05/12/2024", "Action": "Buy", "Symbol": "ABC",
+           "Description": "ACME CORP", "Quantity": "10",
+           "Price": "$10.00", "Fees & Comm": "$0.01",
+           "Amount": "-$100.01"}
+
+    @staticmethod
+    def _dialog(settle="05/14/2024"):
+        return "\n".join([
+            "Trade Transaction Details", "Print", "Transactions",
+            "Trade Details", "Trade Date", "05/12/2024",
+            "Settle Date", settle, "ACME CORP", "Action", "Buy",
+            "Quantity", "10", "Principal", "$100.00", "Total", "$100.01"])
+
+    def _sidecar(self, raw_text, fields=None):
+        return [{"row_key": load._tx_history_row_key(self._TX),
+                 "row_cells": ["05/12/2024", "-$100.01", "ACME CORP",
+                               "ABC", "Buy"],
+                 "fields": fields or {}, "raw_text": raw_text}]
+
+    def _more(self, conn):
+        rows = conn.execute("SELECT payload FROM transactions").fetchall()
+        assert len(rows) == 1
+        return json.loads(rows[0][0]).get("_more")
+
+    def test_the_dialog_text_is_parsed_into_the_payload(
             self, migrated, tmp_path):
-        import json as _json
-        # One transaction whose row_key matches a sidecar record.
-        tx = {"Date": "05/12/2024", "Action": "Buy", "Symbol": "ABC",
-              "Description": "ACME CORP", "Quantity": "10",
-              "Price": "$10.00", "Fees & Comm": "$0.01",
-              "Amount": "-$100.01"}
-        row_key = load._tx_history_row_key(tx)
-        sidecar = [{
-            "row_key": row_key,
-            "row_cells": ["05/12/2024", "-$100.01", "ACME CORP",
-                          "ABC", "Buy"],
-            "fields": {
-                "Settle Date": "05/14/2024",
-                "CUSIP #": "000000000",
-                "Principal": "$100.00",
-                "Commission": "$0.00",
-                "Industry Fee": "$0.01",
-            },
-            "raw_text": "Trade Date  05/12/2024\nSettle Date  05/14/2024",
-        }]
         run = _make_tx_history_bronze(
-            tmp_path, "20260520T120000Z", "000",
-            transactions=[tx], more_details=sidecar,
-        )
+            tmp_path, "20260520T120000Z", "000", transactions=[self._TX],
+            more_details=self._sidecar(self._dialog(),
+                                       {"Settle Date": "ignored"}))
         load.load_run(migrated, run)
         migrated.commit()
-        row = migrated.execute(
-            "SELECT payload FROM transactions"
-        ).fetchone()
-        payload = _json.loads(row[0])
-        assert payload.get("_more", {}).get("Settle Date") == "05/14/2024"
-        assert payload.get("_more", {}).get("Principal") == "$100.00"
+        more = self._more(migrated)
+        assert more["settle_date"] == "05/14/2024"
+        assert more["principal"] == "$100.00"
+        assert more["security_lines"] == ["ACME CORP"]
+        assert "Settle Date" not in more
+
+    def test_a_dialog_with_no_data_stores_nothing(self, migrated, tmp_path):
+        run = _make_tx_history_bronze(
+            tmp_path, "20260520T120000Z", "000", transactions=[self._TX],
+            more_details=self._sidecar("Wire Transaction Details\nLoading"))
+        load.load_run(migrated, run)
+        migrated.commit()
+        assert self._more(migrated) is None
+
+    @pytest.mark.parametrize("first", [None, "Deposit Details\nSome text"])
+    def test_a_later_run_fills_a_row_without_detail(
+            self, migrated, tmp_path, first):
+        """No sidecar, or one whose dialog holds no data, then a run whose
+        sidecar holds the detail."""
+        load.load_run(migrated, _make_tx_history_bronze(
+            tmp_path, "20260520T120000Z", "000", [self._TX],
+            more_details=None if first is None else self._sidecar(first)))
+        load.load_run(migrated, _make_tx_history_bronze(
+            tmp_path, "20260521T120000Z", "000", [self._TX],
+            more_details=self._sidecar(self._dialog())))
+        migrated.commit()
+        assert self._more(migrated)["settle_date"] == "05/14/2024"
+
+    def test_a_stored_empty_detail_is_filled(self, migrated, tmp_path):
+        load.load_run(migrated, _make_tx_history_bronze(
+            tmp_path, "20260520T120000Z", "000", [self._TX]))
+        payload = json.loads(migrated.execute(
+            "SELECT payload FROM transactions").fetchone()[0])
+        migrated.execute("UPDATE transactions SET payload = ?",
+                         (load.canonical_json({**payload, "_more": {}}),))
+        load.load_run(migrated, _make_tx_history_bronze(
+            tmp_path, "20260521T120000Z", "000", [self._TX],
+            more_details=self._sidecar(self._dialog())))
+        migrated.commit()
+        stored = migrated.execute(
+            "SELECT payload FROM transactions").fetchone()[0]
+        assert stored == load.canonical_json(
+            {**payload, "_more": more_detail.parse(self._dialog())})
+
+    def test_a_row_with_detail_keeps_it(self, migrated, tmp_path):
+        load.load_run(migrated, _make_tx_history_bronze(
+            tmp_path, "20260520T120000Z", "000", [self._TX],
+            more_details=self._sidecar(self._dialog())))
+        load.load_run(migrated, _make_tx_history_bronze(
+            tmp_path, "20260521T120000Z", "000", [self._TX],
+            more_details=self._sidecar(self._dialog(settle="05/15/2024"))))
+        migrated.commit()
+        assert self._more(migrated)["settle_date"] == "05/14/2024"
 
     def test_overlapping_exports_share_ids(self, migrated, tmp_path):
         """A transaction in two exports of overlapping windows is one row,
