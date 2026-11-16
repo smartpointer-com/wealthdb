@@ -14,7 +14,7 @@ import (
 // that joins (or leaves) the aggregate value spine mid-window has its pre-debut
 // funding (or closure drain) SUBSUMED by the synthetic onboarding (or closure)
 // amount, never double-counted. Subsumption (accountData.region
-// in returns_compute.go) covers the whole pre-debut region at any distance from
+// in returns_flows.go) covers the whole pre-debut region at any distance from
 // debut — an account fed by month-end snapshots can be funded months before its
 // first one — so every fixture below dates the real funding well before debut, far outside
 // the ±nettingWindowDay transfer-netting window. All data synthetic (AGENTS.md §4).

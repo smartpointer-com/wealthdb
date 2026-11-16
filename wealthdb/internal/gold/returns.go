@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"iter"
 	"math"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -244,13 +242,6 @@ func (o *InceptionOverrides) resolve(level, src, portfolio, acct string) (int64,
 	}
 	return 0, false
 }
-
-// netting tolerances.
-const (
-	nettingEpsFloor  = 1.00  // absolute floor, output currency
-	nettingEpsRel    = 0.005 // 0.5% of the larger leg
-	nettingWindowDay = 3     // ±3 calendar days
-)
 
 // returnsDataset is the loaded, currency-specific input to computeReturns: the
 // per-account daily value spine and external flows in one output currency, plus
@@ -559,83 +550,6 @@ func (a *accountData) valuedOn(day int64) int64 {
 		return 0
 	}
 	return a.snapDays[i]
-}
-
-// valueBefore is a's value at the valuation before day, nothing before its first.
-func (a *accountData) valueBefore(day int64) float64 {
-	i := sort.Search(len(a.snapDays), func(k int) bool { return a.snapDays[k] >= day })
-	if i == 0 {
-		return 0
-	}
-	v, _ := a.valueAt(a.snapDays[i-1])
-	return v
-}
-
-// confirms reports whether a's valuation on `on` shows moves, the flows and legs
-// of the gap that ends there. It does if the value change matches what moved, to
-// within half of that, and the moves never take the account below zero. Money can
-// also leave an account by a path no flow records, such as a purchase, and a flow
-// can be dated after the valuation that shows it. The value then says the account
-// never held what the flows imply. A gap that nets to nothing says nothing either
-// way. Flows past winTo are in the value change, so they count towards what moved.
-func (a *accountData) confirms(on, winTo int64, moves []returns.Flow) bool {
-	net := sumFlows(moves)
-	if on > winTo {
-		net += a.netIn(winTo, on)
-	}
-	v, _ := a.valueAt(on)
-	before := a.valueBefore(on)
-	if math.Abs(net) <= valueTol || math.Abs(v-before-net) >= math.Abs(net)/2 {
-		return false
-	}
-	byDay := slices.Clone(moves)
-	sort.SliceStable(byDay, func(i, j int) bool { return byDay[i].Day < byDay[j].Day })
-	held := before
-	for i, f := range byDay {
-		held += f.Amount
-		if held < -valueTol && (i+1 == len(byDay) || byDay[i+1].Day != f.Day) {
-			return false
-		}
-	}
-	return true
-}
-
-// unshownAt is a's flows on or before day that its value does not show yet, those
-// after its last valuation, each with the valuation that will show it. Nil where
-// no valuation comes before day or after it.
-func (a *accountData) unshownAt(day int64) []returns.Flow {
-	i := sort.Search(len(a.snapDays), func(k int) bool { return a.snapDays[k] > day })
-	if i == 0 || i == len(a.snapDays) {
-		return nil
-	}
-	var out []returns.Flow
-	for f := range a.legs(a.snapDays[i-1], day) {
-		f.ValuedOn = a.snapDays[i]
-		out = append(out, f)
-	}
-	return out
-}
-
-// legs yields a's flows dated in (from, to], with whether the netter may pair
-// each: its deposits and withdrawals first, then its transfer-like legs, each in
-// ledger order. The flow series and every float sum over them keep this order.
-func (a *accountData) legs(from, to int64) iter.Seq2[returns.Flow, bool] {
-	return func(yield func(returns.Flow, bool) bool) {
-		for i, flows := range [2][]returns.Flow{a.nonTransfer, a.transferLike} {
-			for _, f := range flows {
-				if f.Day > from && f.Day <= to && !yield(f, i == 1) {
-					return
-				}
-			}
-		}
-	}
-}
-
-// netIn is the signed sum of a's flows dated in (from, to]. Its deposits and
-// withdrawals and its transfer-like legs are summed apart and then added, the
-// order the tables are pinned by.
-func (a *accountData) netIn(from, to int64) float64 {
-	return sumFlowsIn(a.nonTransfer, from, to) + sumFlowsIn(a.transferLike, from, to)
 }
 
 // isConduit reports whether this account is a conduit (plumbing) under its

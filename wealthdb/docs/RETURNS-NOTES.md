@@ -428,7 +428,7 @@ sub-period would carry the whole chain.
   carries the same tag. Where the USD figures cannot be loaded, the
   reporting currency decides alone.
 - The two shares are `residueShare` (1%) and `exitOutflowShare` (90%),
-  beside `residueCurrency`, in `internal/gold/returns_compute.go`.
+  beside `residueCurrency`, in `internal/gold/returns_chain.go`.
 
 A known edge: a withdrawal of 90% and a market fall that leave less
 than 1% read as an exit, within one sub-period or across a run. A small

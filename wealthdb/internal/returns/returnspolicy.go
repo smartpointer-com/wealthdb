@@ -12,12 +12,12 @@ import (
 // pluggable per-source knobs (see docs/RETURNS-NOTES.md, "Pluggable per-source
 // policy").
 //
-// The engine consumes these knobs: OnboardScope (returns_compute.go,
+// The engine consumes these knobs: OnboardScope (returns_flows.go,
 // per-entity-once onboarding), Inception (entityWindow, first-real-snapshot
 // anchor), ConduitKinds via IsConduit (returns.go), ExternalOnly
 // (attachOneFlow in returns.go), AccountsGrain (returns.go, blanking
 // or hiding the per-account display for sweep/conduit sources),
-// CapitalCallRisk (regimeFlags in returns_compute.go, tagging flow-less
+// CapitalCallRisk (regimeFlags in returns_flags.go, tagging flow-less
 // windows), and ClosureScope (entityFlows, ledger-exact vs subsumed
 // closures). Every knob defaults to the engine's baseline behavior, so
 // DefaultReturnsPolicy() is a strict no-op: a source without a registered
