@@ -9,7 +9,8 @@ number and caption on one line and its amount below or beside it, flush to
 the column's right edge.
 
 `pdftotext -layout` folds those columns into one another wherever a line is
-dense, so this module reads word boxes instead (`pdftotext -bbox`). A word
+dense, so this module reads word boxes instead: a document as
+``collectorkit.extract.pdftotext_bbox`` extracts it. A word
 belongs to the column its left edge falls in, and to the box whose caption
 is the nearest one above it in that column. An item-L amount belongs to the
 caption line nearest it vertically.
@@ -34,37 +35,24 @@ reference to an attached statement, is None.
 A fiscal year's dates are kept as YYYY-MM-DD. The form for a fiscal year is
 the edition of the year the fiscal year begins in, so that year is the
 form's tax year.
+
+The module reads an ``Extracted`` and imports ``collectorkit.words`` only:
+the caller extracts. Imported as ``from collectorkit import k1``; it is not
+imported by the package itself.
 """
 from __future__ import annotations
 
 import datetime as dt
-import html
 import re
-import subprocess
-from pathlib import Path
-from typing import NamedTuple
 
-from collectorkit import pdftotext
-
-
-class Word(NamedTuple):
-    """One word box from `pdftotext -bbox`, in PDF points (y grows down)."""
-    x0: float
-    y0: float
-    x1: float
-    text: str
-
-
-_PAGE = re.compile(r"<page\b[^>]*>(.*?)</page>", re.S)
-_WORD = re.compile(r'<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" '
-                   r'yMax="[\d.]+">(.*?)</word>')
+from collectorkit.words import Extracted, Word, rows
 # A printed amount: digits with optional thousands separators and decimals,
 # a leading minus or wrapping parentheses, an optional dollar sign.
 _AMOUNT = re.compile(r"^\(?-?\$?\d[\d,]*(?:\.\d*)?\)?$")
 _BOX_NUMBER = re.compile(r"^\d{1,2}[a-c]?$")
 
 # Geometry, in PDF points.
-# Words on one printed line differ in yMin by a fraction of a point.
+# Words on one printed line differ in their top by a fraction of a point.
 _SAME_LINE = 2.0
 # A box's codes print a little left of its number, so a column boundary
 # sits this far before the column's box numbers.
@@ -102,22 +90,9 @@ _BOXES = {"8": "short_term_gain", "9a": "long_term_gain"}
 _DISTRIBUTION_CODES = {"A": "cash_distributions", "C": "property_distributions"}
 
 
-def bbox_pages(xhtml: str) -> list[list[Word]]:
-    """`pdftotext -bbox` output as one list of words per page."""
-    return [[Word(float(x0), float(y0), float(x1), html.unescape(t))
-             for x0, y0, x1, t in _WORD.findall(body)]
-            for body in _PAGE.findall(xhtml)]
-
-
-def _lines(words: list[Word]) -> list[list[Word]]:
+def _lines(words) -> list[list[Word]]:
     """Words grouped into printed lines, top to bottom, each left to right."""
-    out: list[list[Word]] = []
-    for w in sorted(words, key=lambda w: (w.y0, w.x0)):
-        if out and abs(out[-1][0].y0 - w.y0) <= _SAME_LINE:
-            out[-1].append(w)
-        else:
-            out.append([w])
-    return [sorted(line, key=lambda w: w.x0) for line in out]
+    return [list(row.words) for row in rows(words, _SAME_LINE, "first")]
 
 
 def _norm(text: str) -> str:
@@ -148,7 +123,7 @@ def _decimal(raw: str, *, magnitude: bool = False) -> str | None:
     return digits if magnitude or not neg else "-" + digits
 
 
-def is_face_page(words: list[Word]) -> bool:
+def is_face_page(words) -> bool:
     """Whether a page is the federal Schedule K-1 (Form 1065) face page."""
     text = " ".join(w.text for w in words)
     lines = _lines(words)
@@ -156,7 +131,7 @@ def is_face_page(words: list[Word]) -> bool:
             and _find(lines, "Ordinary business income") is not None)
 
 
-def parse_face_page(words: list[Word]) -> dict | None:
+def parse_face_page(words) -> dict | None:
     """The figures the face page prints, or None when the page lacks the
     form's column anchors. Keys: `tax_year` (int or None: the heading's
     calendar year, or the year a fiscal year begins in), `period_start` and
@@ -218,7 +193,7 @@ def _tax_period(lines: list[list[Word]], mid: float) -> dict[str, str]:
     out: dict[str, list[str]] = {"period_start": [], "period_end": []}
     for line in lines:
         for w in line:
-            if (abs(w.y0 - b.y0) > _PERIOD_REACH
+            if (abs(w.top - b.top) > _PERIOD_REACH
                     or not re.search(r"\d|^[A-Za-z]{3,9}\.?$", w.text)
                     or w in (b, e)):
                 continue
@@ -281,8 +256,8 @@ def _item_l_amounts(lines: list[list[Word]], mid: float) -> dict[str, str]:
         for w in line:
             if w.x0 >= mid or _decimal(w.text) is None or not captions:
                 continue
-            col, cap = min(captions.items(), key=lambda kv: abs(kv[1].y0 - w.y0))
-            if abs(cap.y0 - w.y0) <= _ITEM_L_REACH and w.x0 > cap.x1:
+            col, cap = min(captions.items(), key=lambda kv: abs(kv[1].top - w.top))
+            if abs(cap.top - w.top) <= _ITEM_L_REACH and w.x0 > cap.x1:
                 out.setdefault(col, w.text)
     return out
 
@@ -339,29 +314,12 @@ def _coded_amount(box_lines: list[list[Word]], code: str,
     return None
 
 
-def parse_bbox(xhtml: str) -> dict | None:
+def parse(extracted: Extracted) -> dict | None:
     """The first federal face page of a K-1 package, parsed; None for a
-    document that has none (a 1042-S, a state-only schedule)."""
-    for words in bbox_pages(xhtml):
+    document that has none (a 1042-S, a state-only schedule). `extracted`
+    holds each page's word boxes, as ``pdftotext -bbox`` reads them."""
+    for page in extracted.pages:
+        words = page.words()
         if is_face_page(words):
             return parse_face_page(words)
     return None
-
-
-def bbox_xhtml(path: Path | str, *, timeout: float | None = None) -> str:
-    """One PDF as `pdftotext -bbox` XHTML. Raises the same errors as
-    collectorkit.pdftotext.layout_text."""
-    try:
-        proc = subprocess.run(["pdftotext", "-bbox", str(path), "-"],
-                              capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise pdftotext.ExtractionError(
-            f"pdftotext timed out after {timeout:g}s") from exc
-    except OSError as exc:
-        raise pdftotext.ToolMissing(
-            f"pdftotext (poppler-utils) cannot be run: {exc}") from exc
-    if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip()[:200]
-        raise pdftotext.ExtractionError(
-            f"pdftotext exited {proc.returncode}: {detail}")
-    return proc.stdout.decode("utf-8", errors="replace")

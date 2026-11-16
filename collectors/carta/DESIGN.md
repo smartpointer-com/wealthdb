@@ -549,8 +549,8 @@ columns, so the statement lines stay when that run carries no statements
 (`download --no-documents`).
 
 **K-1 tax capital.** Each tax document is searched for the federal Schedule
-K-1 (Form 1065) face page; a 1042-S has none and yields no row. `k1.py`
-reads the page from `pdftotext -bbox` word boxes, because `-layout` folds the
+K-1 (Form 1065) face page; a 1042-S has none and yields no row. The
+fleet's K-1 reader (`collectorkit.k1`) reads the page from `pdftotext -bbox` word boxes, because `-layout` folds the
 form's three columns into each other on dense lines. A word belongs to the
 column its left edge falls in, and to the box whose caption is nearest above
 it. An item-L amount belongs to the caption line nearest it vertically.

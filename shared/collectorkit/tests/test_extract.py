@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import functools
 import gzip
+import html
 import json
+import re
 import subprocess
 import sys
 import types
@@ -255,17 +257,45 @@ BBOX = ('<html><body><doc><page width="612" height="792">'
         '</page><page width="612" height="792"></page></doc></body></html>')
 
 
+# carta's K-1 extraction before collectorkit.extract, as it was.
+_LEGACY_PAGE = re.compile(r"<page\b[^>]*>(.*?)</page>", re.S)
+_LEGACY_WORD = re.compile(r'<word xMin="([\d.]+)" yMin="([\d.]+)" '
+                          r'xMax="([\d.]+)" yMax="[\d.]+">(.*?)</word>')
+
+
+def _legacy_bbox_xhtml(path, *, timeout=None) -> str:
+    try:
+        proc = subprocess.run(["pdftotext", "-bbox", str(path), "-"],
+                              capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise pdftotext.ExtractionError(
+            f"pdftotext timed out after {timeout:g}s") from exc
+    except OSError as exc:
+        raise pdftotext.ToolMissing(
+            f"pdftotext (poppler-utils) cannot be run: {exc}") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()[:200]
+        raise pdftotext.ExtractionError(
+            f"pdftotext exited {proc.returncode}: {detail}")
+    return proc.stdout.decode("utf-8", errors="replace")
+
+
+def _legacy_bbox_pages(xhtml: str) -> list[list[tuple]]:
+    return [[(float(x0), float(y0), float(x1), html.unescape(t))
+             for x0, y0, x1, t in _LEGACY_WORD.findall(body)]
+            for body in _LEGACY_PAGE.findall(xhtml)]
+
+
 def test_pdftotext_bbox_is_cartas(monkeypatch, tmp_path):
-    carta = collector_modules.load("carta", "k1")
     seen: list = []
     monkeypatch.setattr(subprocess, "run", _fake_run(BBOX.encode(), seen=seen))
-    legacy = carta.bbox_pages(carta.bbox_xhtml(tmp_path / "a.pdf", timeout=60))
+    legacy = _legacy_bbox_pages(_legacy_bbox_xhtml(tmp_path / "a.pdf", timeout=60))
     doc = extract.pdftotext_bbox(tmp_path / "a.pdf", timeout=60)
     assert seen[0] == seen[1]
     assert [[(w.x0, w.top, w.x1, w.text) for w in p.words()]
             for p in doc.pages] == [[tuple(w) for w in page] for page in legacy]
     assert [p.text for p in doc.pages] == \
-        [" ".join(w.text for w in page) for page in legacy]
+        [" ".join(w[3] for w in page) for page in legacy]
     assert doc.pages[0].words()[0].bottom == 28.0
 
 
@@ -276,10 +306,9 @@ def test_pdftotext_bbox_is_cartas(monkeypatch, tmp_path):
      pdftotext.ExtractionError),
 ])
 def test_pdftotext_bbox_fails_as_carta_does(monkeypatch, tmp_path, fake, error):
-    carta = collector_modules.load("carta", "k1")
     monkeypatch.setattr(subprocess, "run", fake)
     with pytest.raises(error) as theirs:
-        carta.bbox_xhtml(tmp_path / "a.pdf", timeout=5)
+        _legacy_bbox_xhtml(tmp_path / "a.pdf", timeout=5)
     with pytest.raises(error) as ours:
         extract.pdftotext_bbox(tmp_path / "a.pdf", timeout=5)
     assert str(ours.value) == str(theirs.value)

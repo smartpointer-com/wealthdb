@@ -1,6 +1,6 @@
 """A fund's documents: the document index, the capital-account statements
 and the capital-call and distribution notices read as text, the fund's
-ledger they give, and the Schedule K-1 face pages (k1.py)."""
+ledger they give, and the Schedule K-1 face pages (collectorkit.k1)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -9,9 +9,8 @@ import json
 import re
 from pathlib import Path
 
-from collectorkit import bronze, derivations, docdedup, extract, pdftotext
+from collectorkit import bronze, derivations, docdedup, extract, k1, pdftotext
 
-import k1
 from common import (_cj, _date_ts, _insert_cash_flow, _read_json,
                     _read_transactions_csv, _s, log)
 
@@ -129,6 +128,10 @@ def load_documents(conn, snap: int, run_name: str, docs_dir: Path) -> int:
 
 # How statements and notices are read: `pdftotext -layout`.
 _LAYOUT = functools.partial(extract.pdftotext_layout, timeout=30)
+
+
+# How a tax document is read: `pdftotext -bbox` word boxes (collectorkit.k1).
+_BBOX = functools.partial(extract.pdftotext_bbox, timeout=60)
 
 
 def _extract_dir() -> Path:
@@ -396,7 +399,7 @@ def load_statement_nav(conn, docs_dir: Path, fund_eid) -> int:
     return n
 
 
-# k1_capital_accounts money columns, in k1.parse_face_page's keys.
+# k1_capital_accounts money columns, in collectorkit.k1.parse_face_page's keys.
 _K1_COLUMNS = ("beginning_capital", "contributions", "net_income",
                "other_change", "distributions", "cash_distributions",
                "property_distributions", "ending_capital", "short_term_gain",
@@ -404,16 +407,16 @@ _K1_COLUMNS = ("beginning_capital", "contributions", "net_income",
 
 
 # The K-1 face page reader's scope in document_derivations, and the
-# generation of what it reads. A change to k1.py that changes its results
-# raises the generation, and the next run that holds a tax document derives
-# it again.
+# generation of what it reads. A change to collectorkit.k1 that changes its
+# results raises the generation, and the next run that holds a tax document
+# derives it again.
 K1_SCOPE = "k1"
 K1_GENERATION = "1"
 
 
 def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
     """Parse each tax document's federal Schedule K-1 face page into a
-    k1_capital_accounts row (k1.py), keyed on the PDF's sha256 like
+    k1_capital_accounts row (collectorkit.k1), keyed on the PDF's sha256 like
     `documents`. The fund it belongs to is the index row's `fund_id`, which
     is the fund entity's id. The tax year and period are the form's own
     (k1.parse_face_page); the index's `tax_year` fills in only when the
@@ -441,7 +444,7 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
         if sha not in pending:
             continue
         try:
-            parsed = k1.parse_bbox(k1.bbox_xhtml(pdf, timeout=60))
+            parsed = k1.parse(extract.cached(_BBOX, pdf, sha, _extract_dir()))
         except pdftotext.ExtractionError as exc:
             log.warning("pdftotext -bbox failed on %s: %s", pdf.name, exc)
             continue

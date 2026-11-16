@@ -46,14 +46,13 @@ Bronze → silver mapping (schema in migrations/):
                                   names it: capital-account statements ->
                                   its fund_metrics quarterly NAV history;
                                   statements + notices -> its cash_flows.
-                                  K-1s -> k1_capital_accounts (k1.py),
-                                  read once per document
-                                  (document_derivations)
+                                  K-1s -> k1_capital_accounts
+                                  (collectorkit.k1)
 
 SQLite + JSON1 (the repo default — no DuckDB need here; this is shape
-transformation, not a window-function replay). collectorkit.loader is the
-load frame: the command line, the migrations, the pending runs, one
-transaction per run and its `dump_runs` row.
+transformation, not a window-function replay). collectorkit.silver provides
+the migration runner + dump_runs idempotency; collectorkit.bronze provides
+run-dir discovery + snapshot timestamp parsing.
 """
 from __future__ import annotations
 

@@ -17,7 +17,6 @@ from collectorkit.words import Extracted, Page, Word, cell_of, columns, rows
 
 ubs = collector_modules.load("ubs-web", "pdf_parsers", ("pdfplumber",))
 fidelity = collector_modules.load("fidelity-web", "pdf_parsers_1099")
-carta = collector_modules.load("carta", "k1")
 schwab = collector_modules.load("schwab-web", "tax_form_parsers")
 
 
@@ -69,13 +68,24 @@ def test_rows_is_fidelity_1099s_line_reader():
         assert ours == theirs, seed
 
 
+def _cartas_k1_lines(words, same_line=2.0):
+    """The line reader carta's K-1 reader had before collectorkit.k1, as
+    it was: sort by (top, x0), join a line within `same_line` of its first
+    word, each line left to right."""
+    out = []
+    for w in sorted(words, key=lambda w: (w.top, w.x0)):
+        if out and abs(out[-1][0].top - w.top) <= same_line:
+            out[-1].append(w)
+        else:
+            out.append([w])
+    return [sorted(line, key=lambda w: w.x0) for line in out]
+
+
 def test_rows_is_cartas_k1_line_reader():
     for seed in SEEDS:
         words = _page(random.Random(seed))
-        theirs = carta._lines([carta.Word(w.x0, w.top, w.x1, w.text)
-                               for w in words])
-        ours = [[carta.Word(w.x0, w.top, w.x1, w.text) for w in r.words]
-                for r in rows(words, carta._SAME_LINE)]
+        theirs = _cartas_k1_lines(words)
+        ours = [list(r.words) for r in rows(words, 2.0)]
         assert ours == theirs, seed
 
 

@@ -3,8 +3,8 @@ Unit tests for the cost-basis facts silver carries (migrations 0004, 0005).
 
 Covers the exercise detail matched to the certificate it produced, the
 capital-account statement's inception-to-date lines, the fund's accepted
-date, the federal Schedule K-1 face page and a fiscal year's period, the
-migrations' effect on rows loaded before them, and one bronze run loaded
+date, the K-1 rows of each tax document (collectorkit.k1 reads the
+face page; its tests cover the reader), the migrations' effect on rows loaded before them, and one bronze run loaded
 end to end. Synthetic data only: invented ids, labels, dates and figures.
 """
 from __future__ import annotations
@@ -15,10 +15,9 @@ import sqlite3
 import zipfile
 from pathlib import Path
 
-import k1
 import fund_documents
 import load
-from collectorkit import silver
+from collectorkit import extract, silver
 from conftest import MIGRATIONS_DIR, docs_dir, load_one
 
 
@@ -290,10 +289,6 @@ def _phrase(x0: float, y0: float, phrase: str) -> list[str]:
 _K1_CAPTIONS = {"heading": "Partner's Capital Account Analysis",
                 "net_income": "Current year net income (loss)",
                 "withdrawals": "Withdrawals and distributions"}
-# Item L as forms before 2020 print it.
-_K1_CAPTIONS_PRE_2020 = {"heading": "Partner's capital account analysis:",
-                         "net_income": "Current year increase (decrease)",
-                         "withdrawals": "Withdrawals &amp; distributions"}
 
 
 def _k1_face(captions: dict[str, str] = _K1_CAPTIONS) -> list[str]:
@@ -345,63 +340,6 @@ def _bbox(*pages: list[str]) -> str:
 _COVER = _phrase(36, 100, "Attached is your Schedule K-1 package.")
 
 
-def test_k1_face_page_reads_item_l_gains_and_distributions():
-    got = k1.parse_bbox(_bbox(_COVER, _k1_face()))
-    assert {k: v for k, v in got.items() if k != "printed"} == {
-        "tax_year": 2098,
-        "period_start": None,          # a calendar-year form
-        "period_end": None,
-        "beginning_capital": "104286",
-        "contributions": "51374",
-        "net_income": "-3127",
-        "other_change": None,          # left blank on the form
-        "distributions": "3618",       # inside the form's own parentheses
-        "ending_capital": "148915",
-        "short_term_gain": "-1247",
-        "long_term_gain": "12483",
-        "cash_distributions": "1529",
-        "property_distributions": "2089",
-    }
-    assert got["printed"]["short_term_gain"] == "(1,247.)"
-
-
-def _item_l(got: dict) -> tuple:
-    return tuple(got[c] for c in ("beginning_capital", "contributions",
-                                  "net_income", "distributions",
-                                  "ending_capital"))
-
-
-def test_a_face_page_from_before_2020_reads_its_item_l():
-    got = k1.parse_bbox(_bbox(_COVER, _k1_face(_K1_CAPTIONS_PRE_2020)))
-    assert _item_l(got) == ("104286", "51374", "-3127", "3618", "148915")
-
-
-def test_a_typographic_apostrophe_marks_the_face_page_too():
-    captions = dict(_K1_CAPTIONS, heading="Partner\u2019s Capital Account Analysis")
-    got = k1.parse_bbox(_bbox(_COVER, _k1_face(captions)))
-    assert _item_l(got) == ("104286", "51374", "-3127", "3618", "148915")
-
-
-def test_k1_caption_numbers_are_not_amounts():
-    lines = k1._lines(k1.bbox_pages(_bbox(_k1_face()))[0])
-    boxes = k1._boxes(lines, 329, 446)
-    assert k1._first_amount(boxes.get(("mid", "9c"), [])) is None
-    assert k1._first_amount(boxes.get(("mid", "9b"), [])) is None
-    assert k1._first_amount(boxes[("mid", "1")]) == "389."
-
-
-def test_a_document_with_no_federal_face_page_yields_nothing():
-    assert k1.parse_bbox(_bbox(_COVER)) is None
-
-
-def test_k1_decimal():
-    assert k1._decimal("1,234.") == "1234"
-    assert k1._decimal("(1,234.50)") == "-1234.50"
-    assert k1._decimal("-$12.") == "-12"
-    assert k1._decimal("(9.)", magnitude=True) == "9"
-    assert k1._decimal("STMT") is None
-
-
 def test_k1_rows_load_once_per_document(migrated, tmp_path, monkeypatch,
                                         caplog):
     docs = docs_dir(tmp_path, [
@@ -415,7 +353,7 @@ def test_k1_rows_load_once_per_document(migrated, tmp_path, monkeypatch,
         calls.append(pdf.name)
         return _bbox(_COVER, _k1_face()) if pdf.name == "doc_1.pdf" else _bbox(_COVER)
 
-    monkeypatch.setattr(k1, "bbox_xhtml", fake_bbox)
+    monkeypatch.setattr(extract, "_bbox_xhtml", fake_bbox)
     assert load.load_k1_capital_accounts(migrated, docs) == 1
     assert calls == ["doc_1.pdf", "doc_2.pdf"]   # statements are not tax documents
     row = migrated.execute(
@@ -447,14 +385,14 @@ def test_a_new_k1_generation_derives_the_tax_documents_again(
         calls.append(pdf.name)
         return _bbox(_COVER, _k1_face()) if pdf.name == "doc_1.pdf" else _bbox(_COVER)
 
-    monkeypatch.setattr(k1, "bbox_xhtml", fake_bbox)
+    monkeypatch.setattr(extract, "_bbox_xhtml", fake_bbox)
     load.load_k1_capital_accounts(migrated, docs)
     before = migrated.execute("SELECT * FROM k1_capital_accounts").fetchall()
     calls.clear()
     monkeypatch.setattr(fund_documents, "K1_GENERATION", "next")
     with caplog.at_level("INFO"):
         assert load.load_k1_capital_accounts(migrated, docs) == 1
-    assert calls == ["doc_1.pdf", "doc_2.pdf"]
+    assert calls == []        # the words are cached; only the reader runs
     assert "k1: deriving 2 document(s) under parser generation next" in (
         caplog.messages)
     assert migrated.execute("SELECT * FROM k1_capital_accounts").fetchall() == before
@@ -467,7 +405,7 @@ def test_a_k1_without_its_year_takes_the_index_year(migrated, tmp_path,
     docs = docs_dir(tmp_path, [{"id": 1, "document_type": "Tax", "fund_id": 9,
                              "tax_year": "2097"}])
     face = [w for w in _k1_face() if 'yMin="84.' not in w]   # the year line
-    monkeypatch.setattr(k1, "bbox_xhtml", lambda pdf, timeout=None: _bbox(face))
+    monkeypatch.setattr(extract, "_bbox_xhtml", lambda pdf, timeout=None: _bbox(face))
     load.load_k1_capital_accounts(migrated, docs)
     assert migrated.execute(
         "SELECT tax_year FROM k1_capital_accounts").fetchone() == (2097,)
@@ -477,7 +415,7 @@ def test_a_k1_typed_document_without_a_face_page_warns(migrated, tmp_path,
                                                       monkeypatch, caplog):
     docs = docs_dir(tmp_path, [{"id": 1, "document_type": "Tax - Schedule K-1",
                              "fund_id": 9}])
-    monkeypatch.setattr(k1, "bbox_xhtml", lambda pdf, timeout=None: _bbox(_COVER))
+    monkeypatch.setattr(extract, "_bbox_xhtml", lambda pdf, timeout=None: _bbox(_COVER))
     assert load.load_k1_capital_accounts(migrated, docs) == 0
     assert any("doc_1.pdf" in m and "no federal K-1 face page" in m
                for m in caplog.messages)
@@ -486,7 +424,7 @@ def test_a_k1_typed_document_without_a_face_page_warns(migrated, tmp_path,
 def test_a_reissued_k1_replaces_the_row_for_its_document(migrated, tmp_path,
                                                          monkeypatch):
     docs = docs_dir(tmp_path, [{"id": 1, "document_type": "Tax", "fund_id": 9}])
-    monkeypatch.setattr(k1, "bbox_xhtml",
+    monkeypatch.setattr(extract, "_bbox_xhtml",
                         lambda pdf, timeout=None: _bbox(_k1_face()))
     load.load_k1_capital_accounts(migrated, docs)
     first = (docs / "doc_1.pdf").read_bytes()
@@ -509,7 +447,7 @@ def test_a_tax_document_that_is_not_a_pdf_is_not_parsed(migrated, tmp_path,
                              "fund_id": 9}])
     (docs / "doc_1.pdf").write_text('{"url": "https://cdn.example/doc_1"}')
     calls = []
-    monkeypatch.setattr(k1, "bbox_xhtml",
+    monkeypatch.setattr(extract, "_bbox_xhtml",
                         lambda pdf, timeout=None: calls.append(pdf.name))
     assert load.load_k1_capital_accounts(migrated, docs) == 0
     assert calls == []
@@ -529,25 +467,6 @@ def _heading_period(start: str | None = None, end: str | None = None) -> list[st
     return p
 
 
-def test_a_fiscal_year_k1_states_its_period():
-    got = k1.parse_bbox(_bbox(_COVER, _k1_face()
-                              + _heading_period("07/01/2098", "06/30/2099")))
-    assert (got["tax_year"], got["period_start"], got["period_end"]) == (
-        2098, "2098-07-01", "2099-06-30")
-    assert got["printed"]["period_end"] == "06/30/2099"
-    assert _item_l(got) == ("104286", "51374", "-3127", "3618", "148915")
-
-
-def test_a_calendar_year_k1_leaves_its_period_blank():
-    # Blank fields, or only the year the form edition preprints in them.
-    for face in (_k1_face() + _heading_period(),
-                 _k1_face() + _heading_period("2098", "20")):
-        got = k1.parse_bbox(_bbox(face))
-        assert (got["tax_year"], got["period_start"], got["period_end"]) == (
-            2098, None, None)
-        assert "period_start" not in got["printed"]
-
-
 def test_a_fiscal_year_k1_takes_the_tax_year_its_period_begins_in(
         migrated, tmp_path, monkeypatch):
     # The index files the form under the year the fiscal year ends in, and
@@ -557,21 +476,13 @@ def test_a_fiscal_year_k1_takes_the_tax_year_its_period_begins_in(
                              "tax_year": "2099"}])
     face = [w for w in _k1_face() if 'yMin="84.' not in w]   # the year line
     face += _heading_period("07/01/2098", "06/30/2099")
-    monkeypatch.setattr(k1, "bbox_xhtml", lambda pdf, timeout=None: _bbox(face))
+    monkeypatch.setattr(extract, "_bbox_xhtml", lambda pdf, timeout=None: _bbox(face))
     load.load_k1_capital_accounts(migrated, docs)
     assert migrated.execute(
         "SELECT tax_year, period_start, period_end, "
         "json_extract(payload, '$.period_start') "
         "FROM k1_capital_accounts").fetchone() == (
             2098, "2098-07-01", "2099-06-30", "07/01/2098")
-
-
-def test_k1_date():
-    for raw in ("07/01/2098", "7/1/98", "07 / 01 / 2098", "07/01 2098",
-                "07-01-2098", "2098-07-01", "July 1, 2098", "Jul. 1, 2098"):
-        assert k1._date(raw) == "2098-07-01", raw
-    for raw in ("2098", "/ / 20", "13/01/2098", "07/01/298", "STMT 1"):
-        assert k1._date(raw) is None, raw
 
 
 # ---- migration 0004 backfill ------------------------------------------------
@@ -645,7 +556,7 @@ def test_a_run_loads_every_cost_basis_fact(tmp_path, monkeypatch):
     (run / "run.json").write_text(json.dumps(
         {"status": "complete", "individual_id": "ind-1"}))
     monkeypatch.setattr(fund_documents, "_pdf_text", lambda pdf: _STATEMENT)
-    monkeypatch.setattr(k1, "bbox_xhtml",
+    monkeypatch.setattr(extract, "_bbox_xhtml",
                         lambda pdf, timeout=None: _bbox(_k1_face()))
 
     conn = silver.open_db(tmp_path / "carta.db")
