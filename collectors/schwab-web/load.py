@@ -626,10 +626,11 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
     set) a direct call keeps a per-run scope.
 
     A logical doc is added to `seen_logical_docs` when a pass takes it
-    up, before this run's inserts commit. run_load owns the rollback: it
-    snapshots the set before the run and restores it if the run fails, so
-    a rolled-back run never leaves a doc seen (which would wrongly skip it
-    on every later run)."""
+    up, before this run's inserts commit. A pass takes it out again when
+    the parse fails, so a later copy is parsed in its place. run_load owns
+    the rollback: it snapshots the set before the run and restores it if
+    the run fails, so a rolled-back run never leaves a doc seen (which
+    would wrongly skip it on every later run)."""
     snapshot_at = parse_snapshot_at(run_dir.name)
     stats = {
         "snapshot_at": snapshot_at,
@@ -828,6 +829,9 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
                     job["pdf_path"], parsed["_error"],
                 )
                 stats["pdf_parse_errors"] += 1
+                # A failed copy leaves the statement unseen, so a later
+                # copy of it is parsed in its place.
+                seen_logical_docs.discard((job["ldk"], "statement"))
                 continue
 
             reg = parsed.get("account_registration")
@@ -1303,6 +1307,7 @@ def _load_distribution_letters(conn: sqlite3.Connection, run_dir: Path,
         except Exception as e:
             log.warning("distribution parse failed for %s: %s", path, e)
             stats["distribution_parse_errors"] += 1
+            seen_logical_docs.discard(seen_key)
             continue
         # Delete only after a successful parse, so a failure can't
         # drop the prior rows with no replacement.
@@ -1379,6 +1384,7 @@ def _load_1099b_forms(conn: sqlite3.Connection, run_dir: Path,
         except Exception as e:
             log.warning("1099-B parse failed for %s: %s", path, e)
             stats["form_1099b_parse_errors"] += 1
+            seen_logical_docs.discard(seen_key)
             continue
         sha256 = doc.get("sha256") or ""
         # Delete only after a successful parse, so a failure can't
@@ -1493,6 +1499,7 @@ def _load_realized_reports(conn: sqlite3.Connection, run_dir: Path,
             log.warning("realized-lot report parse failed for %s: %s",
                         path, e)
             stats["realized_report_parse_errors"] += 1
+            seen_logical_docs.discard(seen_key)
             continue
         sha256 = doc.get("sha256") or ""
         if parsed["incomplete"]:

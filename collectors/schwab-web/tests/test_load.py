@@ -1804,6 +1804,80 @@ class TestRollbackDoesNotPoisonSeenSet:
         assert n_pos == 1
 
 
+class TestFailedCopyLeavesDocUnseen:
+    """A logical document whose first copy fails to parse is taken from a
+    later copy in the same invocation. Each document pass marks the doc
+    seen before it parses it; a failed parse takes the mark back, so the
+    later copy is not skipped as a duplicate of a copy that yielded
+    nothing."""
+
+    # (marker kind, manifest doc, patched module, parser name, result)
+    CASES = {
+        "statement": (
+            {"date": "02/28/2026", "type": "Statements",
+             "document": "Brokerage Statement",
+             "filename": "Brokerage-Statement_2026-02-28_NNN.PDF"},
+            "pp", "parse_statement_pdf",
+            TestRollbackDoesNotPoisonSeenSet.PARSED),
+        "third_party_distribution": (
+            {"date": "01/23/2024", "type": "Letters",
+             "document": "3rd Party Distribution",
+             "filename": "3rd-Party-Distribution_2024-01-23_NNN.PDF"},
+            "pp", "parse_distribution_pdf", []),
+        "form_1099b": (
+            {"date": "02/09/2022", "type": "Tax Forms",
+             "document": "1099 Composite and Year-End Summary - 2021",
+             "filename": "XXXX-X999.XML"},
+            "tf", "parse_1099b", {"lots": []}),
+        "gain_loss_report": (
+            {"date": "01/26/2022", "type": "Tax Forms",
+             "document": "Year End Gain Loss Reporting - 2021",
+             "filename": "Year-End-Gain-Loss-Reporting---2021_2022-01-26_NNN.PDF"},
+            "tf", "parse_realized_report_pdf",
+            {"lots": [], "incomplete": 0, "methods": [], "tax_year": 2021}),
+    }
+
+    @pytest.mark.parametrize("kind", list(CASES))
+    def test_a_later_copy_replaces_a_failed_first_copy(
+            self, monkeypatch, tmp_path, kind):
+        import argparse
+        doc, module, name, result = self.CASES[kind]
+        bronze_dir = tmp_path / "bronze"
+        for ts in ("20260301T000000Z", "20260302T000000Z"):
+            _make_doc_bronze(bronze_dir, ts, "NNN", [
+                {**doc, "content": f"%PDF-1.4 stub {doc['filename']}\n"}])
+
+        calls: list[str] = []
+
+        def _first_fails(path, *a, **k):
+            calls.append(str(path))
+            if len(calls) == 1:
+                raise ValueError("synthetic parse failure")
+            return json.loads(json.dumps(result))
+
+        monkeypatch.setattr(getattr(load, module), name, _first_fails)
+        db = tmp_path / "silver.db"
+        args = argparse.Namespace(
+            silver_db=db, bronze_dir=bronze_dir,
+            migrations_dir=MIGRATIONS_DIR, reparse=False, workers=1,
+            verbose=False, force=False,
+        )
+        assert load.run_load(args) == 0
+        conn = sqlite3.connect(str(db))
+        try:
+            markers = conn.execute(
+                "SELECT COUNT(*) FROM parsed_documents"
+                " WHERE document_kind = ?", (kind,)).fetchone()[0]
+            n_pos = conn.execute(
+                "SELECT COUNT(*) FROM historical_position_snapshots"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert len(calls) == 2
+        assert markers == 1
+        assert n_pos == (1 if kind == "statement" else 0)
+
+
 # ============================================================
 # 1099-B + 3rd-Party-Distribution load integration
 # ============================================================
