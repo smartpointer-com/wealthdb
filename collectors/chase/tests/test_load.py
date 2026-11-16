@@ -25,7 +25,9 @@ account's balances at all.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
+import shutil
 import sqlite3
 import sys
 from datetime import date, datetime, timezone
@@ -37,7 +39,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
-from collectorkit import silver  # noqa: E402
+from collectorkit import loader, silver  # noqa: E402
 import statement_parser as sp  # noqa: E402
 
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
@@ -383,6 +385,26 @@ def _make_run(root: Path, slug: str, *, status="complete", card=False,
     return d
 
 
+@pytest.fixture(autouse=True)
+def parse_cache(tmp_path, monkeypatch):
+    """Each test's own parse cache, so no parse leaks between tests."""
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("WEALTHDB_CACHE_DIR", str(cache))
+    return cache / "parse-cache"
+
+
+def load_run(conn, run_dir: Path) -> bool:
+    """Load one run dir as the frame loads each pending run: in one
+    transaction, its dump_runs row written last. False when the frame
+    passes over it (already loaded, or not loadable). No pass runs."""
+    spec = dataclasses.replace(load.SPEC, pending=lambda c, bronze_dir, log: [
+        d for d in load.SPEC.pending(c, bronze_dir, log=log) if d == run_dir])
+    one = loader.Load(args=None, silver_db=Path(), bronze_dir=run_dir.parent,
+                      log=load.log, version=silver.current_schema_version(conn))
+    loader.load_runs(spec, conn, one)
+    return one.loaded == 1
+
+
 def _conn():
     # Manual transaction control, as `silver.open_db` opens the real DB.
     c = sqlite3.connect(":memory:", isolation_level=None)
@@ -396,7 +418,7 @@ def test_load_run_populates_all_tables():
         root = Path(tmp)
         run = _make_run(root, "20260801T120000Z")
         conn = _conn()
-        assert load.load_run(conn, run) is True
+        assert load_run(conn, run) is True
         assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 4
         assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
@@ -416,8 +438,8 @@ def test_load_run_is_idempotent():
         root = Path(tmp)
         run = _make_run(root, "20260801T120000Z")
         conn = _conn()
-        assert load.load_run(conn, run) is True
-        assert load.load_run(conn, run) is False       # already loaded
+        assert load_run(conn, run) is True
+        assert load_run(conn, run) is False       # already loaded
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 4
 
 
@@ -434,13 +456,13 @@ def test_failed_load_run_leaves_silver_unchanged(tmp_path, monkeypatch):
 
     monkeypatch.setattr(load, "_insert_document", boom)
     with pytest.raises(OSError):
-        load.load_run(conn, run)
+        load_run(conn, run)
     for table in ("accounts", "transactions", "documents", "dump_runs"):
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
     assert load._post_passes_pending(conn) is False
 
     monkeypatch.undo()
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 4
     assert load._post_passes_pending(conn) is True
 
@@ -451,7 +473,7 @@ def test_load_run_skips_in_progress():
         root = Path(tmp)
         run = _make_run(root, "20260801T120000Z", status="in-progress")
         conn = _conn()
-        assert load.load_run(conn, run) is False
+        assert load_run(conn, run) is False
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
 
 
@@ -579,22 +601,26 @@ def test_a_load_walks_the_tree_for_its_card_set_once(tmp_path, monkeypatch):
     assert walks == [root]
 
 
-def _interrupt_when_the_first_run_returns(monkeypatch):
-    """Let the first run land for real, then interrupt the instant it
-    returns — the narrowest window there is between a run being committed
+def _interrupt_when_the_next_run_starts(monkeypatch):
+    """Let the first run land for real, then interrupt as the next one
+    starts — the narrowest window there is between a run being committed
     and the loop moving on."""
-    real = load.load_run
+    real = load.SPEC.load_run
+    calls = []
 
-    def flaky(conn, run_dir):
-        real(conn, run_dir)
-        raise RuntimeError("interrupted")
-    monkeypatch.setattr(load, "load_run", flaky)
+    def flaky(conn, run):
+        calls.append(run)
+        if len(calls) > 1:
+            raise RuntimeError("interrupted")
+        return real(conn, run)
+    monkeypatch.setattr(load, "SPEC",
+                        dataclasses.replace(load.SPEC, load_run=flaky))
 
 
 def test_the_pending_flag_is_raised_by_the_run_that_lands(tmp_path,
                                                           monkeypatch):
-    # `load_run` commits its own `dump_runs` row, so a flag written after it
-    # returns — even one statement later — leaves a window: an interrupt in
+    # A run's transaction commits its own `dump_runs` row, so a flag written
+    # after it — even one statement later — leaves a window: an interrupt in
     # that window strands the run permanently ingested with the tree-wide
     # passes never owed and nothing left able to notice. Raising the flag
     # INSIDE the run's own transaction closes it, and the interrupt that
@@ -607,7 +633,7 @@ def test_the_pending_flag_is_raised_by_the_run_that_lands(tmp_path,
     db = tmp_path / "chase.db"
     args = ["--bronze-dir", str(root), "--silver-db", str(db)]
 
-    _interrupt_when_the_first_run_returns(monkeypatch)
+    _interrupt_when_the_next_run_starts(monkeypatch)
     try:
         load.main(args)
         raise AssertionError("the interrupt must propagate")
@@ -688,7 +714,7 @@ def test_load_run_names_the_account_whose_csv_parsed_to_nothing(
         CARD_CSV.replace("Post Date", "Settled"))
     conn = _conn()
     with caplog.at_level("WARNING"):
-        assert load.load_run(conn, run) is True
+        assert load_run(conn, run) is True
     assert any(CARD_EXT in r.getMessage() and "date format has drifted" in
                r.getMessage() for r in caplog.records)
     # The QFX still lands the rows, without what only the CSV carries.
@@ -857,7 +883,7 @@ def test_card_ids_are_stable_across_reparses(tmp_path):
 def test_load_run_ingests_cards_alongside_deposits(tmp_path):
     run = _make_run(tmp_path, "20260801T120000Z", card=True)
     conn = _conn()
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     assert dict(conn.execute(
         "SELECT account_external_id, product FROM accounts")) == \
         {EXT: "dda", CARD_EXT: "card"}
@@ -881,11 +907,11 @@ def test_load_run_ingests_cards_alongside_deposits(tmp_path):
 def test_load_run_with_cards_is_idempotent(tmp_path):
     run = _make_run(tmp_path, "20260801T120000Z", card=True)
     conn = _conn()
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     n = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     # A second bronze run with identical exports must converge, not duplicate.
     run2 = _make_run(tmp_path, "20260901T120000Z", card=True)
-    assert load.load_run(conn, run2) is True
+    assert load_run(conn, run2) is True
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == n
 
 
@@ -896,7 +922,7 @@ def test_record_without_product_key_loads_as_deposit(tmp_path):
     run = _make_run(tmp_path, "20260801T120000Z")
     assert "product" not in json.loads((run / "accounts.json").read_text())[0]
     conn = _conn()
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
     assert conn.execute("SELECT product FROM accounts").fetchone()[0] == "dda"
     assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 4
@@ -1022,7 +1048,7 @@ def test_a_failed_statement_pass_still_publishes_the_balances(tmp_path):
     run = _make_run(tmp_path, "20260801T120000Z", card=True,
                     coverage=_PARTIAL_COVERAGE)
     conn = _conn()
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     assert dict(conn.execute(
         "SELECT account_external_id, balance FROM accounts")) == \
         {EXT: 2257.50, CARD_EXT: 431.00}
@@ -1036,7 +1062,7 @@ def test_a_products_rows_never_land_without_its_roster_row(tmp_path):
     run = _make_run(tmp_path, "20260801T120000Z", card=True,
                     coverage=_PARTIAL_COVERAGE)
     conn = _conn()
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     assert conn.execute(
         "SELECT COUNT(*) FROM transactions t WHERE NOT EXISTS "
         "(SELECT 1 FROM accounts a "
@@ -1050,10 +1076,10 @@ def test_coverage_block_does_not_change_what_is_ingested(tmp_path):
     # Whatever run.json scores, silver ingests the same rows: the flag is
     # gold's input, not a silver gate.
     conn_partial, conn_none = _conn(), _conn()
-    load.load_run(conn_partial, _make_run(tmp_path / "a", "20260801T120000Z",
+    load_run(conn_partial, _make_run(tmp_path / "a", "20260801T120000Z",
                                           card=True,
                                           coverage=_PARTIAL_COVERAGE))
-    load.load_run(conn_none, _make_run(tmp_path / "b", "20260801T120000Z",
+    load_run(conn_none, _make_run(tmp_path / "b", "20260801T120000Z",
                                        card=True))
     def _dump(c):
         return (sorted(c.execute("SELECT account_external_id, product, balance "
@@ -1068,7 +1094,7 @@ def test_card_landing_csv_only_converges_when_the_pair_arrives(tmp_path):
     # the same ids — a format-dependent key re-inserted every row under a
     # second id and permanently doubled the card's ledger and its net spend.
     conn = _conn()
-    assert load.load_run(conn, _make_run(tmp_path, "20260801T120000Z",
+    assert load_run(conn, _make_run(tmp_path, "20260801T120000Z",
                                          card=True, card_formats=("csv",))) is True
     before = sorted(r[0] for r in conn.execute(
         "SELECT fitid FROM transactions WHERE account_external_id=?",
@@ -1077,7 +1103,7 @@ def test_card_landing_csv_only_converges_when_the_pair_arrives(tmp_path):
                        "WHERE account_external_id=?", (CARD_EXT,)).fetchone()[0]
     assert len(before) == CARD_ROWS
 
-    assert load.load_run(conn, _make_run(tmp_path, "20260901T120000Z",
+    assert load_run(conn, _make_run(tmp_path, "20260901T120000Z",
                                          card=True)) is True
     after = sorted(r[0] for r in conn.execute(
         "SELECT fitid FROM transactions WHERE account_external_id=?",
@@ -1112,11 +1138,11 @@ def test_a_card_row_landed_csv_only_is_repaired_by_the_pair(tmp_path):
     # `load --force` undid it. The QFX is authoritative for the descriptor,
     # so the pair repairs the stored row in place.
     conn = _conn()
-    load.load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True,
+    load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True,
                                   card_formats=("csv",)))
     assert _card_row(conn, "EXAMPLE MERCHANT%")[0] == "EXAMPLE MERCHANT  INC"
 
-    load.load_run(conn, _make_run(tmp_path, "20260901T120000Z", card=True))
+    load_run(conn, _make_run(tmp_path, "20260901T120000Z", card=True))
     merchant, category, txn_date, kind, source = \
         _card_row(conn, "EXAMPLE MERCHANT%")
     assert merchant == "EXAMPLE MERCHANT, INC"          # the QFX spelling
@@ -1133,13 +1159,13 @@ def test_a_card_row_landed_qfx_only_is_repaired_by_the_pair(tmp_path):
     # kind — which the gold adapter maps to `other`, which the spending
     # population excludes. Every one of those is the CSV's to supply.
     conn = _conn()
-    load.load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True,
+    load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True,
                                   card_formats=("qfx",)))
     merchant, category, txn_date, kind, _ = _card_row(conn, "EXAMPLE CAFE")
     assert merchant == "EXAMPLE CAFE"
     assert (category, txn_date, kind) == (None, None, "DEBIT")
 
-    load.load_run(conn, _make_run(tmp_path, "20260901T120000Z", card=True))
+    load_run(conn, _make_run(tmp_path, "20260901T120000Z", card=True))
     merchant, category, txn_date, kind, _ = _card_row(conn, "EXAMPLE CAFE")
     assert merchant == "EXAMPLE CAFE"
     assert category == "Food & Drink"
@@ -1155,14 +1181,14 @@ def test_repairing_a_card_row_keeps_its_derived_balance(tmp_path):
     # repair merges the payload key by key instead of replacing the blob —
     # and never touches `balance`, which no card export carries.
     conn = _conn()
-    load.load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True,
+    load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True,
                                   card_formats=("qfx",)))
     fitid = conn.execute(
         "SELECT fitid FROM transactions WHERE account_external_id=? "
         "AND merchant='EXAMPLE CAFE' LIMIT 1", (CARD_EXT,)).fetchone()[0]
     load._apply_derived_balances(conn, {fitid: 12345})
 
-    load.load_run(conn, _make_run(tmp_path, "20260901T120000Z", card=True))
+    load_run(conn, _make_run(tmp_path, "20260901T120000Z", card=True))
     balance, payload = conn.execute(
         "SELECT balance, payload FROM transactions WHERE fitid=?",
         (fitid,)).fetchone()
@@ -1179,20 +1205,20 @@ def test_a_renamed_csv_column_never_blanks_what_is_already_stored(tmp_path):
     # paid model backlog. The repair is additive: an absent value states
     # nothing, so it never wins over a stored one.
     conn = _conn()
-    load.load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True))
+    load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True))
     assert _card_row(conn, "EXAMPLE CAFE")[1] == "Food & Drink"
 
     run = _make_run(tmp_path, "20260901T120000Z", card=True)
     (run / "transactions" / f"{CARD_EXT}.csv").write_text(
         CARD_CSV.replace(",Category,", ",Grouping,"))
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     assert _card_row(conn, "EXAMPLE CAFE")[1] == "Food & Drink"
 
     # The transaction date is the same story in the other column.
     run = _make_run(tmp_path, "20261001T120000Z", card=True)
     (run / "transactions" / f"{CARD_EXT}.csv").write_text(
         CARD_CSV.replace("Transaction Date,", "Trade Date,"))
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     assert _card_row(conn, "EXAMPLE CAFE")[2] == _epoch(2026, 7, 14)
 
 
@@ -1200,12 +1226,12 @@ def test_a_blanked_category_cell_never_blanks_the_stored_one(tmp_path):
     # The same hazard with no header drift at all: the export simply
     # re-issues a row with its `Category` cell empty.
     conn = _conn()
-    load.load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True))
+    load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True))
     run = _make_run(tmp_path, "20260901T120000Z", card=True)
     (run / "transactions" / f"{CARD_EXT}.csv").write_text(
         CARD_CSV.replace("EXAMPLE CAFE,Food & Drink,Sale",
                          "EXAMPLE CAFE,,Sale"))
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     assert _card_row(conn, "EXAMPLE CAFE")[1] == "Food & Drink"
 
 
@@ -1215,7 +1241,7 @@ def test_a_card_csv_row_with_a_blank_type_still_repairs_its_columns(tmp_path):
     # category and transaction date the very same row did carry, leaving the
     # column NULL while the payload blob held the value.
     conn = _conn()
-    load.load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True,
+    load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True,
                                   card_formats=("qfx",)))
     assert _card_row(conn, "EXAMPLE CAFE")[1] is None
 
@@ -1223,7 +1249,7 @@ def test_a_card_csv_row_with_a_blank_type_still_repairs_its_columns(tmp_path):
     (run / "transactions" / f"{CARD_EXT}.csv").write_text(
         CARD_CSV.replace("EXAMPLE CAFE,Food & Drink,Sale",
                          "EXAMPLE CAFE,Food & Drink,"))
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     _, category, txn_date, kind, _ = _card_row(conn, "EXAMPLE CAFE")
     assert category == "Food & Drink"
     assert txn_date == _epoch(2026, 7, 14)
@@ -1240,14 +1266,14 @@ def test_a_renamed_type_column_never_overwrites_the_stored_kinds(tmp_path):
     # the spending base. The stated cell in the payload is what says whether
     # the CSV had a kind to offer.
     conn = _conn()
-    load.load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True))
+    load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True))
     before = _card_kinds(conn)
     assert before == {"Adjustment": 1, "Payment": 1, "Sale": 3}
 
     run = _make_run(tmp_path, "20260901T120000Z", card=True)
     (run / "transactions" / f"{CARD_EXT}.csv").write_text(
         CARD_CSV.replace(",Type,", ",Classification,"))
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     assert _card_kinds(conn) == before
 
 
@@ -1256,12 +1282,12 @@ def test_a_blanked_type_cell_never_overwrites_the_stored_kind(tmp_path):
     # empty `Type` cell. The row is still CSV-backed and still repairs the
     # columns it does carry.
     conn = _conn()
-    load.load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True))
+    load_run(conn, _make_run(tmp_path, "20260801T120000Z", card=True))
     run = _make_run(tmp_path, "20260901T120000Z", card=True)
     (run / "transactions" / f"{CARD_EXT}.csv").write_text(
         CARD_CSV.replace("EXAMPLE CAFE,Food & Drink,Sale",
                          "EXAMPLE CAFE,Coffee,"))
-    assert load.load_run(conn, run) is True
+    assert load_run(conn, run) is True
     _, category, _, kind, _ = _card_row(conn, "EXAMPLE CAFE")
     assert kind == "Sale"           # no `Type` stated; the stored kind stands
     assert category == "Coffee"     # the columns it did state still repair
@@ -1274,7 +1300,7 @@ def test_deposit_landing_csv_only_converges_when_the_pair_arrives(tmp_path):
     # posted row under a second id — the ledger that feeds the spending base
     # doubled and never converged.
     conn = _conn()
-    assert load.load_run(conn, _make_run(tmp_path, "20260801T120000Z",
+    assert load_run(conn, _make_run(tmp_path, "20260801T120000Z",
                                          deposit_formats=("csv",))) is True
     before = sorted(r[0] for r in conn.execute(
         "SELECT fitid FROM transactions WHERE account_external_id=?", (EXT,)))
@@ -1282,7 +1308,7 @@ def test_deposit_landing_csv_only_converges_when_the_pair_arrives(tmp_path):
                        "WHERE account_external_id=?", (EXT,)).fetchone()[0]
     assert len(before) == 4                    # 3 posted + the pending row
 
-    assert load.load_run(conn, _make_run(tmp_path, "20260901T120000Z")) is True
+    assert load_run(conn, _make_run(tmp_path, "20260901T120000Z")) is True
     assert sorted(r[0] for r in conn.execute(
         "SELECT fitid FROM transactions WHERE account_external_id=?",
         (EXT,))) == before                     # identical ids, no new rows
@@ -2602,8 +2628,6 @@ def test_a_moved_parser_drops_the_statement_rows_and_nothing_else():
     conn = _conn()
     _seed_export(conn, [(_epoch(2026, 1, 1), 20.0)])
     _seed_statement_row(conn)
-    load.silver.stamp_generation(
-        conn, load.STATEMENT_GENERATION_SCOPE, "an older parser")
 
     conn.execute(
         "INSERT INTO statement_balances (account_external_id, period_start, "
@@ -2622,10 +2646,8 @@ def test_a_moved_parser_drops_the_statement_rows_and_nothing_else():
 
 
 def test_an_unmoved_parser_drops_nothing():
-    # Whether the generation moved is the caller's verdict now; what this
-    # pins is that a negative one is an early return, not a no-op delete.
-    # (`stale_generation` itself — including an absent stamp reading as
-    # stale — is pinned in collectorkit's own tests.)
+    # Whether the generation moved is the caller's verdict; what this pins
+    # is that a negative one is an early return, not a no-op delete.
     conn = _conn()
     _seed_statement_row(conn)
 
@@ -2645,14 +2667,24 @@ def _load_once(tmp_path):
     return db, args
 
 
-def _age_the_stamp(db):
-    """Seed what an older parser wrote, and the stamp it left behind."""
+def _age_the_records(db):
+    """Seed what an older parser wrote, and the records it left behind."""
     conn = sqlite3.connect(db)
     _seed_statement_row(conn)
-    load.silver.stamp_generation(
-        conn, load.STATEMENT_GENERATION_SCOPE, "an older parser")
+    conn.execute("UPDATE document_derivations SET generation = ?",
+                 ("an older parser",))
     conn.commit()
     conn.close()
+
+
+def _generations(db) -> list[str]:
+    conn = sqlite3.connect(db)
+    try:
+        return [r[0] for r in conn.execute(
+            "SELECT DISTINCT generation FROM document_derivations WHERE "
+            "scope = ?", (load.STATEMENT_GENERATION_SCOPE,))]
+    finally:
+        conn.close()
 
 
 def test_a_moved_parser_re_derives_without_a_new_bronze_run(tmp_path):
@@ -2661,7 +2693,7 @@ def test_a_moved_parser_re_derives_without_a_new_bronze_run(tmp_path):
     # gate, or silver goes on holding rows no parser in the tree produces
     # while the re-keyed ones pile up beside them.
     db, args = _load_once(tmp_path)
-    _age_the_stamp(db)
+    _age_the_records(db)
 
     assert load.main(args) == 0          # nothing new in bronze
 
@@ -2672,28 +2704,19 @@ def test_a_moved_parser_re_derives_without_a_new_bronze_run(tmp_path):
     conn.close()
 
 
-def test_a_short_re_derivation_is_not_stamped_so_the_next_load_retries(tmp_path):
+def test_a_short_re_derivation_is_not_recorded_so_the_next_load_retries(
+        tmp_path):
     # The seeded row cannot come back: the fixture's statement PDF is a stub,
     # so the re-derivation returns fewer rows than silver held. Committing
     # that as the new truth would bury a parser that had broken.
     db, args = _load_once(tmp_path)
-    _age_the_stamp(db)
+    _age_the_records(db)
     assert load.main(args) == 0
-
-    conn = sqlite3.connect(db)
-    assert conn.execute(
-        "SELECT generation FROM parser_generations WHERE scope = ?",
-        (load.STATEMENT_GENERATION_SCOPE,)).fetchone()[0] == "an older parser"
-    conn.close()
+    assert _generations(db) == ["an older parser"]
 
     # One retry, which has nothing better to compare against, settles it.
     assert load.main(args) == 0
-    conn = sqlite3.connect(db)
-    assert conn.execute(
-        "SELECT generation FROM parser_generations WHERE scope = ?",
-        (load.STATEMENT_GENERATION_SCOPE,)).fetchone()[0] == \
-        load.STATEMENT_GENERATION
-    conn.close()
+    assert _generations(db) == [load.STATEMENT_GENERATION]
 
 
 # ============================================================
@@ -2823,3 +2846,191 @@ def test_the_cheque_pass_leaves_a_card_accounts_rows_alone(tmp_path,
     assert load.annotate_export_cheques(conn, tree) == 0
     assert calls == []
     assert _cheque_row(conn) == ("CHECK 2002", {"memo": None})
+
+
+# ============================================================
+# The parse cache
+# ============================================================
+
+def _counting_parsers(monkeypatch, *, fail=()):
+    """Count both parsers' calls; each parse reads the synthetic text the
+    "PDF" holds."""
+    calls = []
+
+    def counted(parse_text):
+        def parse(path):
+            calls.append(Path(path).parent.name)
+            if Path(path).parent.name in fail:
+                raise OSError("synthetic extraction failure")
+            return parse_text(Path(path).read_text())
+        return parse
+    monkeypatch.setattr(sp, "parse_statement_pdf",
+                        counted(sp.parse_statement_text))
+    monkeypatch.setattr(sp, "parse_card_statement_pdf",
+                        counted(sp.parse_card_statement_text))
+    return calls
+
+
+def _statement_run(root: Path, slug: str) -> Path:
+    from test_statement_parser import CARD_STATEMENT, STATEMENT
+    run = _make_run(root, slug, card=True)
+    (run / "statements" / EXT / "2026-07-31-statement.pdf").write_text(
+        STATEMENT)
+    (run / "statements" / CARD_EXT / "2026-07-31-statement.pdf").write_text(
+        CARD_STATEMENT)
+    return run
+
+
+def test_a_load_after_a_new_run_parses_no_statement_again(tmp_path,
+                                                          monkeypatch):
+    # Every run carries the statements again, and every run owes the
+    # tree-wide passes. They read each document's parse from the cache.
+    calls = _counting_parsers(monkeypatch)
+    root = tmp_path / "bronze"
+    _statement_run(root, "20260801T120000Z")
+    db = tmp_path / "chase.db"
+    args = ["--bronze-dir", str(root), "--silver-db", str(db)]
+    assert load.main(args) == 0
+    assert sorted(calls) == [EXT, CARD_EXT]
+    _statement_run(root, "20260901T120000Z")
+    calls.clear()
+    assert load.main(args) == 0
+    assert calls == []
+
+
+def test_a_parse_that_raised_is_parsed_again(tmp_path, monkeypatch):
+    calls = _counting_parsers(monkeypatch, fail={CARD_EXT})
+    root = tmp_path / "bronze"
+    _statement_run(root, "20260801T120000Z")
+    args = ["--bronze-dir", str(root), "--silver-db", str(tmp_path / "chase.db")]
+    assert load.main(args) == 0
+    _statement_run(root, "20260901T120000Z")
+    calls.clear()
+    assert load.main(args) == 0
+    assert calls == [CARD_EXT]
+
+
+def test_a_moved_parser_reads_none_of_the_old_entries(tmp_path, monkeypatch,
+                                                      parse_cache):
+    calls = _counting_parsers(monkeypatch)
+    root = tmp_path / "bronze"
+    _statement_run(root, "20260801T120000Z")
+    args = ["--bronze-dir", str(root), "--silver-db", str(tmp_path / "chase.db")]
+    assert load.main(args) == 0
+    for name, prefix in (("DEPOSIT_CACHE_NAMESPACE", "deposit-statement"),
+                         ("CARD_CACHE_NAMESPACE", "card-statement")):
+        monkeypatch.setattr(load, name, f"{prefix}-a-newer-parser")
+    monkeypatch.setattr(load, "STATEMENT_GENERATION", "a-newer-parser")
+    calls.clear()
+    assert load.main(args) == 0
+    assert sorted(calls) == [EXT, CARD_EXT]
+    assert sorted(p.name.split(".")[1] for p in parse_cache.iterdir()) == [
+        "card-statement-a-newer-parser", "deposit-statement-a-newer-parser"]
+
+
+# ============================================================
+# Document derivations
+# ============================================================
+
+def test_every_document_is_recorded_once_the_passes_finish(tmp_path):
+    db, args = _load_once(tmp_path)
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute(
+            "SELECT d.sha256, r.scope, r.generation, r.row_count "
+            "FROM documents d JOIN document_derivations r "
+            "ON r.content_sha256 = d.sha256").fetchall() == [
+                (conn.execute("SELECT sha256 FROM documents").fetchone()[0],
+                 "statement", load.STATEMENT_GENERATION, 0)]
+    finally:
+        conn.close()
+
+
+def test_a_new_document_is_not_a_moved_parser(tmp_path, monkeypatch):
+    # A run that brings a statement no record names owes the passes, and
+    # purges nothing: the rows already derived stand.
+    db, args = _load_once(tmp_path)
+    conn = sqlite3.connect(db)
+    _seed_statement_row(conn)
+    conn.close()
+    purged = []
+    real = load._purge_stale_statement_rows
+    monkeypatch.setattr(load, "_purge_stale_statement_rows",
+                        lambda conn, stale: (purged.append(stale),
+                                             real(conn, stale))[1])
+    run = _make_run(Path(args[1]), "20260901T120000Z")
+    (run / "statements" / EXT / "2026-08-31-statement.pdf").write_bytes(
+        b"%PDF-1.4 another fake")
+    assert load.main(args) == 0
+    assert purged == [False]
+    assert _generations(db) == [load.STATEMENT_GENERATION]
+    conn = sqlite3.connect(db)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 2
+    conn.close()
+
+
+def _migrated_to(tmp_path, version: int):
+    """A silver migrated up to `version` only, with two documents."""
+    older = tmp_path / "older-migrations"
+    older.mkdir()
+    for f in sorted(MIGRATIONS.glob("*.sql"))[:version]:
+        shutil.copy(f, older / f.name)
+    conn = sqlite3.connect(tmp_path / "chase.db")
+    silver.apply_migrations(conn, older)
+    conn.executemany(
+        "INSERT INTO documents (sha256, snapshot_at, account_external_id, "
+        "doc_date, doc_kind, file_format, filename, size_bytes, payload) "
+        "VALUES (?, 1, ?, NULL, 'statement', 'pdf', 'x.pdf', 1, '{}')",
+        [("aa", EXT), ("bb", CARD_EXT)])
+    return conn
+
+
+def test_the_migration_seeds_every_document_under_the_stamp(tmp_path):
+    conn = _migrated_to(tmp_path, 5)
+    silver.stamp_generation(conn, load.STATEMENT_GENERATION_SCOPE, "gen-1")
+    silver.apply_migrations(conn, MIGRATIONS)
+    assert conn.execute(
+        "SELECT content_sha256, scope, generation, row_count "
+        "FROM document_derivations ORDER BY 1").fetchall() == [
+            ("aa", "statement", "gen-1", 0), ("bb", "statement", "gen-1", 0)]
+    assert conn.execute("SELECT COUNT(*) FROM sqlite_master "
+                        "WHERE name = 'parser_generations'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_without_a_stamp_the_migration_seeds_a_moved_parser(tmp_path):
+    # No stamp read as stale; a record under no generation reads the same.
+    conn = _migrated_to(tmp_path, 5)
+    silver.apply_migrations(conn, MIGRATIONS)
+    assert conn.execute(
+        "SELECT DISTINCT generation FROM document_derivations").fetchall() == \
+        [("",)]
+    assert load._derived_under_another_generation(conn)
+    conn.close()
+
+
+# ============================================================
+# Loads stay incremental
+# ============================================================
+
+def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path,
+                                                           monkeypatch):
+    # The later run carries the statements again, a card statement for a
+    # period before its export (so its rows import), and an export cheque
+    # no statement covers yet. A third run never finished.
+    from collectorkit import incremental
+    from test_statement_parser import CARD_YEAR_WRAP
+    _counting_parsers(monkeypatch)
+    fixture = tmp_path / "fixture"
+    first = _statement_run(fixture, "20260801T120000Z")
+    second = _statement_run(fixture, "20260901T120000Z")
+    (second / "statements" / CARD_EXT / "2026-01-21-statement.pdf").write_text(
+        CARD_YEAR_WRAP)
+    qfx = second / "transactions" / f"{EXT}.qfx"
+    qfx.write_text(qfx.read_text().replace("<NAME>CHECK<CHECKNUM>",
+                                           "<NAME>CHECK 1088<CHECKNUM>"))
+    unfinished = _make_run(fixture, "20260902T120000Z", status="in_progress")
+    incremental.check(load.main, lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze)],
+        [first, second, unfinished], tmp_path / "work")

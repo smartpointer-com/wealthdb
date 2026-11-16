@@ -457,11 +457,12 @@ rows.
 - A statement row's id hashes the **description the parser read**, and
   `_insert_transaction` is `INSERT OR IGNORE`, so editing the parser re-keys
   the rows and the next load would insert the new ones beside the old — a
-  silent, permanent double-count of those outflows. `parser_generations`
-  (migration 0005) records which generation of `statement_parser` produced
-  the rows silver is holding; when it has moved, every `source='statement'`
-  row **and every period anchor** is dropped before the passes re-derive
-  them, so a re-parse REPLACES. The anchors go too because
+  silent, permanent double-count of those outflows. `document_derivations`
+  (migration 0006) records, per document, which generation of
+  `statement_parser` produced the rows silver is holding; when one has
+  moved, every `source='statement'` row **and every period anchor** is
+  dropped before the passes re-derive them, so a re-parse REPLACES. A
+  document with no record yet is new, not moved, and purges nothing. The anchors go too because
   `statement_balances` is keyed on the period the parser READ, so a shifted
   period mints a new anchor and orphans the old one — and
   `_card_balance_anchors` takes every anchor an account has, so the orphan
@@ -473,12 +474,19 @@ rows.
 - A moved generation **raises the post-pass gate by itself**. A parser-only
   change lands no bronze run, so `post_passes_pending` stays down and
   nothing else would ever run the passes again. Two guards bound what a
-  re-derivation can do: the stamp is written only once all three passes
-  return, so a pass that dies leaves the older generation stored; and a
-  re-derivation that comes back with FEWER rows than silver held is not
-  stamped at all, so the next load tries again rather than committing the
+  re-derivation can do: the documents are recorded only once all three
+  passes return, so a pass that dies leaves the older generation stored;
+  and a re-derivation that comes back with FEWER rows than silver held is
+  not recorded at all, so the next load tries again rather than committing the
   shortfall. That settles after one retry, which has nothing better to
   compare against, and warns each time.
+- Every statement parse is **cached by content**: a parse result is stored
+  under the document's hash and the parser generation, one namespace per
+  document kind, in the collector's parse cache
+  (`~/.cache/wealthdb/chase/parse-cache/`). The passes a new run owes read
+  every document they have read before from there, so `pdftotext` runs
+  only on new bytes. A parse that raises is never stored, and a new
+  generation reads none of the old entries; each load sweeps them.
 - The export reduces a cheque to `CHECK <n>`, while the statement prints one
   the payee converted to an electronic debit as `Check # <n> <payee> Payment
   Arc ID: …` — the only place its payee appears. `annotate_export_cheques`

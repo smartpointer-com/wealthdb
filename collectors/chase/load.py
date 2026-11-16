@@ -3,7 +3,9 @@
 
 Parses each bronze run dir (see download.py for the layout) into the silver
 schema (migrations/): the account roster, the transaction ledger, and the
-statement inventory. Idempotent — an already-loaded dump is skipped; the
+statement inventory. The kit's load frame (`collectorkit.loader`) drives the
+runs, and the tree-wide passes below run after them. Idempotent — an
+already-loaded dump is skipped; the
 deposit, statement and document ledgers INSERT OR IGNORE on their stable id,
 and the card ledger goes through `_upsert_card_transaction`, which inserts a
 new id and otherwise only fills columns the export that first landed the row
@@ -90,7 +92,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, documents, silver, srcfp
+from collectorkit import (bronze, channels, derivations, documents, loader,
+                          parsecache, silver, srcfp)
 from collectorkit.money import parse_money
 from collectorkit.parse import date_in_name, epoch_day
 
@@ -109,10 +112,10 @@ EXPORT_SOURCES = (SOURCE_QFX, SOURCE_CSV)
 
 # The statement passes' rows are re-derived from the PDFs every time they
 # run, and their ids hash the description the parser read, so an edit to the
-# parser re-keys them. `parser_generations` (migration 0005) records which
-# generation produced the rows silver is holding; when it has moved, the
-# statement rows are dropped before the passes re-derive them, so a re-parse
-# replaces rather than accumulates.
+# parser re-keys them. `document_derivations` (migration 0006) records, per
+# document, which generation produced the rows silver is holding; when one
+# has moved, the statement rows are dropped before the passes re-derive
+# them, so a re-parse replaces rather than accumulates.
 #
 # The extraction side is the `pdftotext` BINARY rather than a Python
 # distribution, so it is pinned by the version it reports rather than by an
@@ -122,6 +125,13 @@ EXPORT_SOURCES = (SOURCE_QFX, SOURCE_CSV)
 STATEMENT_GENERATION_SCOPE = "statement"
 STATEMENT_GENERATION = srcfp.parser_fingerprint(
     [statement_parser], extra_tools=(("pdftotext", "-v"),))
+# The parse cache's namespaces, one per document kind. Each holds the
+# generation, so a moved parser or pdftotext reads none of the old entries.
+DEPOSIT_CACHE_NAMESPACE = f"deposit-statement-{STATEMENT_GENERATION}"
+CARD_CACHE_NAMESPACE = f"card-statement-{STATEMENT_GENERATION}"
+
+# Every document the statement passes may read.
+_DOCUMENTS_SQL = "SELECT sha256 FROM documents ORDER BY sha256"
 
 # transactions.payload marker for a balance this loader computed rather than
 # read off the provider's own file. EXACTLY ONE balance in silver is
@@ -927,11 +937,8 @@ def _export_seams(conn) -> dict[str, int]:
     every account at the deepest one's seam and silently discard the shallower
     account's whole pre-export statement history. With one product and one
     account the per-account seam is that same global minimum, so the deposit
-    ledger is unaffected."""
-    return {ext: seam for ext, seam in conn.execute(
-        "SELECT account_external_id, MIN(posted_at) FROM transactions "
-        f"WHERE {_EXPORT_SOURCES_SQL} GROUP BY account_external_id",
-        EXPORT_SOURCES) if seam is not None}
+    ledger is unaffected. `channels.seams` reads it."""
+    return channels.seams(conn, "transactions", "posted_at", EXPORT_SOURCES)
 
 
 def _cents(x) -> int:
@@ -1046,6 +1053,24 @@ def _chain_segments(conn, account_external_id: str, parsed_stmts: list) -> list:
 _STATEMENT_SPAN = 45 * 86400
 
 
+def _parse_cache() -> parsecache.ParseCache:
+    """The collector's parse cache (`parsecache.default_dir`)."""
+    return parsecache.ParseCache(parsecache.default_dir("chase"))
+
+
+def _cached_parse(cache: parsecache.ParseCache, namespace: str, kind,
+                  parse, pdf: Path, sha: str):
+    """`parse(pdf)`, read from the parse cache when this document was parsed
+    by this generation before. A parse that raises is not cached, so it is
+    tried again next load."""
+    cached = cache.get(sha, namespace)
+    if cached is not None:
+        return parsecache.from_json(cached, kind)
+    parsed = parse(pdf)
+    cache.put(sha, namespace, parsecache.to_json(parsed))
+    return parsed
+
+
 def _loadable_runs(bronze_dir: Path):
     """The run dirs under `bronze_dir` that `load_run` reads
     (`bronze.run_is_loadable`), oldest first. The tree-wide passes walk these
@@ -1056,7 +1081,8 @@ def _loadable_runs(bronze_dir: Path):
 
 
 def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
-                                wanted) -> dict:
+                                wanted, cache: parsecache.ParseCache | None
+                                = None) -> dict:
     """Parse the deposit statement PDFs of the loadable runs
     (`_loadable_runs`) into {period_end: parsed}, RELATIONSHIP-WIDE.
 
@@ -1076,7 +1102,13 @@ def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
 
     `wanted(name_date)` says which statements are worth parsing, by the
     period-end date in the file's name (None when the name carries none,
-    which is always parsed): a PDF it turns down is skipped unparsed."""
+    which is always parsed): a PDF it turns down is skipped unparsed.
+
+    Each parse comes through `cache` (by default the collector's parse
+    cache), so a document read by this generation before is not parsed
+    again."""
+    if cache is None:
+        cache = _parse_cache()
     pool: dict = {}
     seen: set[str] = set()
     cards_seen: set[str] = set()
@@ -1097,7 +1129,10 @@ def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
                     continue
                 seen.add(sha)
                 try:
-                    parsed = statement_parser.parse_statement_pdf(pdf)
+                    parsed = _cached_parse(
+                        cache, DEPOSIT_CACHE_NAMESPACE,
+                        statement_parser.ParsedStatement,
+                        statement_parser.parse_statement_pdf, pdf, sha)
                 except Exception as exc:            # pragma: no cover — env/poppler
                     log.warning("statement %s: parse failed (%r); skipping",
                                 pdf.name, exc)
@@ -1138,18 +1173,18 @@ def _purge_stale_statement_rows(conn: sqlite3.Connection, stale: bool) -> int:
 
     Deliberately not wrapped in a transaction of its own. `post_passes_pending`
     is this loader's recovery mechanism: a crash between the purge and the
-    re-import leaves the flag raised and the generation unstamped, so the next
-    load purges and re-derives in full. That is the window a crash part-way
-    through an import already had.
+    re-import leaves the flag raised and the older generation recorded, so
+    the next load purges and re-derives in full. That is the window a crash
+    part-way through an import already had.
 
     This drops BEFORE the re-parse rather than after, so a load on which the
     statements stopped parsing at all — poppler gone, the PDFs unreadable —
     leaves silver short of its statement rows until the next good load. The
     caller's row-count check is what makes that loud and temporary: a
-    re-derivation that comes back short is not stamped, so the next load
+    re-derivation that comes back short is not recorded, so the next load
     tries again. Deferring the purge until a statement has actually parsed
     would close that window, but it would also let a load where nothing
-    parsed stamp the new generation over rows the old parser wrote — which
+    parsed record the new generation over rows the old parser wrote — which
     re-arms the very duplication this exists to stop.
     """
     if not stale:
@@ -1515,7 +1550,9 @@ def _card_parse_rank(parsed) -> tuple[bool, bool]:
             statement_parser.card_rows_reconcile(parsed))
 
 
-def _card_statements_in_tree(bronze_dir: Path, card_ids: set[str]) -> dict:
+def _card_statements_in_tree(bronze_dir: Path, card_ids: set[str],
+                             cache: parsecache.ParseCache | None = None
+                             ) -> dict:
     """Parse every card statement PDF of the loadable runs
     (`_loadable_runs`), deduped.
 
@@ -1534,7 +1571,12 @@ def _card_statements_in_tree(bronze_dir: Path, card_ids: set[str]) -> dict:
     card statement is a per-card document that is never combined (DESIGN.md
     §C): one sha under two card directories would be two cards' statements,
     not one document seen twice, and a pool-wide skip would give the second
-    card no anchors at all."""
+    card no anchors at all.
+
+    Each parse comes through `cache` (by default the collector's parse
+    cache), as in `_deposit_statements_in_tree`."""
+    if cache is None:
+        cache = _parse_cache()
     out: dict[str, dict] = {}
     seen: set[tuple[str, str]] = set()
     for run_dir in _loadable_runs(bronze_dir):
@@ -1554,7 +1596,10 @@ def _card_statements_in_tree(bronze_dir: Path, card_ids: set[str]) -> dict:
                     continue
                 seen.add((acct_dir.name, sha))
                 try:
-                    parsed = statement_parser.parse_card_statement_pdf(pdf)
+                    parsed = _cached_parse(
+                        cache, CARD_CACHE_NAMESPACE,
+                        statement_parser.ParsedCardStatement,
+                        statement_parser.parse_card_statement_pdf, pdf, sha)
                 except Exception as exc:        # pragma: no cover — env/poppler
                     log.warning("card statement %s: parse failed (%r); "
                                 "skipping", pdf.name, exc)
@@ -1636,19 +1681,24 @@ def load_card_statements(conn: sqlite3.Connection, bronze_dir: Path,
                             "recorded", stmt.period_end)
                 skipped_summary += 1
                 continue
-            if seam is None:
+            # No reach bounds the gate above: a period past the newest
+            # export row is still the export's.
+            decision = channels.period_decision(
+                epoch_day(stmt.period_start), epoch_day(stmt.period_end),
+                seam, None, None)
+            if decision == channels.UNBOUNDED:
                 # Nothing marks where the export's own rows would begin, so
                 # importing here would double every row the first export
                 # lands (see the section comment).
                 covered = False
-            elif epoch_day(stmt.period_end) >= seam:
+            elif decision != channels.IMPORT:
                 # The export owns this period's rows — unless the period also
                 # OPENED before the seam, in which case its pre-seam days
                 # belong to neither source. That hole is the price of gating
                 # per period rather than per row (see the section comment): it
                 # is one period per card and cannot grow, but it is invisible
                 # unless said out loud.
-                covered = epoch_day(stmt.period_start) >= seam
+                covered = decision == channels.COVERED
                 if not covered:
                     given_up = sum(1 for t in stmt.transactions
                                    if epoch_day(t.posted_at) < seam)
@@ -1978,23 +2028,12 @@ def card_account_ids_in_tree(bronze_dir: Path,
     return ids
 
 
-def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
-    """Load one bronze run dir. Returns True if ingested, False if skipped
-    (no manifest, non-complete dump, or already loaded). Idempotent."""
-    if not bronze.run_is_loadable(run_dir):
-        run_json = run_dir / "run.json"
-        log.info("skip %s (%s)", run_dir.name,
-                 f"status={bronze.run_status(run_json)}"
-                 if run_json.is_file() else "no run.json")
-        return False
-    try:
-        snapshot_at = bronze.parse_run_ts(run_dir.name)
-    except ValueError:
-        log.warning("skip %s (unparseable run slug)", run_dir.name)
-        return False
-    if snapshot_at in silver.loaded_snapshots(conn):
-        return False
-
+def load_run(conn: sqlite3.Connection, run: loader.Run) -> int:
+    """Load one pending bronze run dir (`bronze.pending_run_dirs`) and return
+    the accounts its roster listed. The frame makes the run one
+    transaction, so a failure part-way leaves silver as it was, with no
+    dump_runs row, and the next load retries the whole dump."""
+    run_dir, snapshot_at = run.dir, run.snapshot_at
     # EVERY roster record is ingested, including one from a run whose
     # run.json scores its product's coverage short. There is deliberately no
     # coverage gate here, for two reasons:
@@ -2026,59 +2065,52 @@ def load_run(conn: sqlite3.Connection, run_dir: Path) -> bool:
     # observation wins, absence never wins). run.json's `coverage` block only
     # records which product fell short; nothing gates on it.
     accounts = _read_accounts(run_dir)
-    # One transaction per dump: a failure part-way leaves silver as it was,
-    # with no dump_runs row, so the next load retries the whole dump.
-    with silver.transaction(conn):
-        for acct in accounts:
-            _insert_account(conn, snapshot_at, acct)
+    for acct in accounts:
+        _insert_account(conn, snapshot_at, acct)
 
-        tx_dir = run_dir / "transactions"
-        drifted: list[str] = []
-        if tx_dir.is_dir():
-            for ext_id, qfx_text, csv_text in _export_pairs(tx_dir):
-                if is_card_export(qfx_text, csv_text):
-                    csv_rows = parse_card_csv(csv_text)
-                    # The card ledger's own writer: each export is authoritative
-                    # over columns the other does not carry, so a row already in
-                    # silver is repaired rather than ignored.
-                    for tx in merge_card_transactions(ext_id, parse_qfx(qfx_text),
-                                                      csv_rows):
-                        _upsert_card_transaction(conn, ext_id, tx)
-                else:
-                    csv_rows = parse_csv(csv_text)
-                    for tx in merge_transactions(ext_id, parse_qfx(qfx_text),
-                                                 csv_rows):
-                        _insert_transaction(conn, ext_id, tx)
-                if _csv_yielded_nothing(csv_text, csv_rows):
-                    # Not "the header has drifted": a value-level drift — a post
-                    # date printed DD/MM/YYYY — parses to nothing just the same,
-                    # off a header that is perfectly good.
-                    log.warning("%s: the export CSV carries data lines but parsed "
-                                "to no rows — its header or its date format has "
-                                "drifted, so this run's ledger for it is QFX-only",
-                                ext_id)
-                    drifted.append(ext_id)
+    tx_dir = run_dir / "transactions"
+    drifted: list[str] = []
+    if tx_dir.is_dir():
+        for ext_id, qfx_text, csv_text in _export_pairs(tx_dir):
+            if is_card_export(qfx_text, csv_text):
+                csv_rows = parse_card_csv(csv_text)
+                # The card ledger's own writer: each export is authoritative
+                # over columns the other does not carry, so a row already in
+                # silver is repaired rather than ignored.
+                for tx in merge_card_transactions(ext_id, parse_qfx(qfx_text),
+                                                  csv_rows):
+                    _upsert_card_transaction(conn, ext_id, tx)
+            else:
+                csv_rows = parse_csv(csv_text)
+                for tx in merge_transactions(ext_id, parse_qfx(qfx_text),
+                                             csv_rows):
+                    _insert_transaction(conn, ext_id, tx)
+            if _csv_yielded_nothing(csv_text, csv_rows):
+                # Not "the header has drifted": a value-level drift — a post
+                # date printed DD/MM/YYYY — parses to nothing just the same,
+                # off a header that is perfectly good.
+                log.warning("%s: the export CSV carries data lines but parsed "
+                            "to no rows — its header or its date format has "
+                            "drifted, so this run's ledger for it is QFX-only",
+                            ext_id)
+                drifted.append(ext_id)
 
-        stmt_dir = run_dir / "statements"
-        if stmt_dir.is_dir():
-            for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
-                for pdf in sorted(acct_dir.glob("*.pdf")):
-                    _insert_document(conn, snapshot_at, acct_dir.name, pdf)
+    stmt_dir = run_dir / "statements"
+    if stmt_dir.is_dir():
+        for acct_dir in sorted(p for p in stmt_dir.iterdir() if p.is_dir()):
+            for pdf in sorted(acct_dir.glob("*.pdf")):
+                _insert_document(conn, snapshot_at, acct_dir.name, pdf)
 
-        # "This run is ingested" and "the tree-wide post passes are owed" commit
-        # TOGETHER. The passes are owed by a single flag rather than a marker per
-        # run, and a flag written after this commit — even one statement later —
-        # leaves a window in which an interrupt strands a run permanently
-        # ingested with the passes never owed and nothing left able to notice.
-        _write_post_passes_pending(conn, True)
-        conn.execute(
-            "INSERT OR REPLACE INTO dump_runs (snapshot_at, silver_schema_version,"
-            " run_dir) VALUES (?,?,?)",
-            (snapshot_at, silver.current_schema_version(conn), str(run_dir)))
-    log.info("loaded %s (%d accounts%s)", run_dir.name, len(accounts),
-             f", {len(drifted)} export CSV(s) parsed to no rows"
-             if drifted else "")
-    return True
+    # "This run is ingested" and "the tree-wide post passes are owed" commit
+    # TOGETHER. The passes are owed by a single flag rather than a marker per
+    # run, and a flag written after this commit — even one statement later —
+    # leaves a window in which an interrupt strands a run permanently
+    # ingested with the passes never owed and nothing left able to notice.
+    _write_post_passes_pending(conn, True)
+    if drifted:
+        log.info("%s: %d export CSV(s) parsed to no rows", run_dir.name,
+                 len(drifted))
+    return len(accounts)
 
 
 def _read_accounts(run_dir: Path) -> list[dict]:
@@ -2159,97 +2191,122 @@ def _set_post_passes_pending(conn, pending: bool) -> None:
     conn.commit()
 
 
-def main(argv: list[str]) -> int:
+def _derived_under_another_generation(conn) -> bool:
+    """Whether a document's statement rows were derived by a parser
+    generation other than this one: the statement parser has moved. A
+    document with no record is new, not moved."""
+    return conn.execute(
+        "SELECT 1 FROM document_derivations WHERE scope = ? "
+        "AND generation != ? LIMIT 1",
+        (STATEMENT_GENERATION_SCOPE, STATEMENT_GENERATION)).fetchone() \
+        is not None
+
+
+def _run_columns(run: loader.Run) -> dict:
+    """The run's `dump_runs` row; its `run_dir` is the path as given."""
+    return {"snapshot_at": run.snapshot_at,
+            "silver_schema_version": run.version, "run_dir": str(run.dir)}
+
+
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--bronze-dir", type=Path, required=True,
                    help="Bronze tree root (holds the <UTC-ts>/ run dirs).")
     p.add_argument("--silver-db", type=Path, default=None,
                    help="Silver SQLite path. Default: <bronze-dir>/chase.db.")
-    cli.add_standard_args(p, verb="load")
-    args = p.parse_args(argv)
-    cli.configure_logging(args.verbose)
+    return p
 
-    db_path = args.silver_db or (args.bronze_dir / "chase.db")
-    if args.force:
-        silver.reset(db_path)
-    conn = silver.open_db(db_path)
-    try:
-        silver.apply_migrations(conn, MIGRATIONS_DIR)
-        _refuse_pre_0002_ids(conn, db_path)
-        # The three tree-wide post passes below are owed by a single flag
-        # rather than a marker per run, and `load_run` raises it in the same
-        # transaction that lands the run — so there is no instant at which a
-        # run is ingested and the passes are not yet owed, whichever run an
-        # interrupt lands on.
-        loaded = 0
-        for run_dir in bronze.iter_run_dirs(args.bronze_dir):
-            if load_run(conn, run_dir):
-                loaded += 1
-        # After the export runs are in, backfill the pre-export tail from the
-        # statement PDFs (seam anchored to the export rows just loaded), then
-        # reconstruct the card running balance from the anchors that pass
-        # just recorded.
-        #
-        # The flag is cleared only once all three have returned, so a load
-        # that dies inside one of them — a poppler failure, an interrupt —
-        # re-runs them on the next ordinary load, even one with nothing new
-        # to ingest; gating them on `loaded` alone would leave silver
-        # permanently without its pre-export backfill and its reconstructed
-        # card balances. A clean load leaves the flag down, so a no-op reload
-        # still skips the PDF parsing they cost.
-        # A moved statement parser owes the passes a run just as an
-        # unfinished load does, and it is the case nothing else would raise:
-        # a parser-only change lands no bronze run, so the pending flag stays
-        # down and silver would go on holding rows no parser in the tree
-        # produces.
-        reparse = silver.stale_generation(conn, STATEMENT_GENERATION_SCOPE,
-                                          STATEMENT_GENERATION)
-        card_ids = None
-        if _post_passes_pending(conn) or reparse:
-            if reparse:
-                log.info("the statement parser has changed since silver was "
-                         "written; re-deriving the statement rows")
-            elif not loaded:
-                log.info("the previous load's post passes did not finish; "
-                         "re-running them")
-            before = _statement_row_count(conn)
-            _purge_stale_statement_rows(conn, reparse)
-            # Bronze does not change during a load, so the card sets every
-            # pass reads are walked for once.
-            card_export_ids = card_export_ids_in_tree(args.bronze_dir)
-            card_ids = card_account_ids_in_tree(args.bronze_dir,
-                                                card_export_ids)
-            load_statement_transactions(conn, args.bronze_dir, card_ids)
-            load_card_statements(conn, args.bronze_dir, card_ids)
-            derive_card_balances(conn, args.bronze_dir, card_export_ids)
-            after = _statement_row_count(conn)
-            if reparse and after < before:
-                # The re-derivation came back short: a PDF that no longer
-                # parses, a segment that stopped reconciling, a bronze tree
-                # thinned since. Leaving the generation unstamped is what
-                # makes the NEXT load try again instead of committing the
-                # shortfall as the new truth — and it settles after that one
-                # retry, which has nothing better to compare against.
-                log.warning(
-                    "statements: re-derivation produced %d row(s) where "
-                    "silver held %d; not stamping the parser generation, so "
-                    "the next load re-derives again", after, before)
-            else:
-                # Stamped only once all three have returned, so a pass that
-                # dies leaves the older generation stored and the next load
-                # re-derives.
-                silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
-                                        STATEMENT_GENERATION)
-            _set_post_passes_pending(conn, False)
-        # On every load, not only when the passes above are owed: a cheque
-        # can reach the export before the statement that names its payee
-        # does, and the pass reads nothing once every cheque is settled.
-        annotate_export_cheques(conn, args.bronze_dir, card_ids)
-        log.info("done: %d run(s) ingested into %s", loaded, db_path)
-    finally:
-        conn.close()
-    return 0
+
+def _paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    return args.silver_db or (args.bronze_dir / "chase.db"), args.bronze_dir
+
+
+def _before_runs(conn: sqlite3.Connection, load: loader.Load) -> None:
+    _refuse_pre_0002_ids(conn, load.silver_db)
+
+
+def _post_passes(conn: sqlite3.Connection, load: loader.Load) -> None:
+    """The tree-wide passes, after the export runs are in: backfill the
+    pre-export tail from the statement PDFs (seam anchored to the export
+    rows just loaded), then reconstruct the card running balance from the
+    anchors that pass just recorded.
+
+    They are owed by a single flag rather than a marker per run, and
+    `load_run` raises it in the same transaction that lands the run — so
+    there is no instant at which a run is ingested and the passes are not
+    yet owed, whichever run an interrupt lands on. The flag is cleared only
+    once all three have returned, so a load that dies inside one of them —
+    a poppler failure, an interrupt — re-runs them on the next ordinary
+    load, even one with nothing new to ingest; gating them on the runs
+    loaded alone would leave silver permanently without its pre-export
+    backfill and its reconstructed card balances. A clean load leaves the
+    flag down, so a no-op reload still skips the PDF parsing they cost.
+
+    A moved statement parser owes the passes a run just as an unfinished
+    load does, and it is the case nothing else would raise: a parser-only
+    change lands no bronze run, so the pending flag stays down and silver
+    would go on holding rows no parser in the tree produces."""
+    bronze_dir = load.bronze_dir
+    reparse = _derived_under_another_generation(conn)
+    card_ids = None
+    if _post_passes_pending(conn) or reparse:
+        documents_pending = derivations.pending_derivations(
+            conn, STATEMENT_GENERATION_SCOPE, STATEMENT_GENERATION,
+            _DOCUMENTS_SQL)
+        if reparse:
+            log.info("the statement parser has changed since silver was "
+                     "written; re-deriving the statement rows")
+        elif not load.loaded:
+            log.info("the previous load's post passes did not finish; "
+                     "re-running them")
+        before = _statement_row_count(conn)
+        _purge_stale_statement_rows(conn, reparse)
+        # Bronze does not change during a load, so the card sets every
+        # pass reads are walked for once.
+        card_export_ids = card_export_ids_in_tree(bronze_dir)
+        card_ids = card_account_ids_in_tree(bronze_dir, card_export_ids)
+        load_statement_transactions(conn, bronze_dir, card_ids)
+        load_card_statements(conn, bronze_dir, card_ids)
+        derive_card_balances(conn, bronze_dir, card_export_ids)
+        after = _statement_row_count(conn)
+        if reparse and after < before:
+            # The re-derivation came back short: a PDF that no longer
+            # parses, a segment that stopped reconciling, a bronze tree
+            # thinned since. Leaving the older generation recorded is what
+            # makes the NEXT load try again instead of committing the
+            # shortfall as the new truth — and it settles after that one
+            # retry, which has nothing better to compare against.
+            log.warning(
+                "statements: re-derivation produced %d row(s) where "
+                "silver held %d; not recording the parser generation, so "
+                "the next load re-derives again", after, before)
+        else:
+            # Recorded only once all three have returned, so a pass that
+            # dies leaves the older generation stored and the next load
+            # re-derives.
+            with silver.transaction(conn):
+                for (sha,) in documents_pending:
+                    derivations.record_derivation(
+                        conn, sha, STATEMENT_GENERATION_SCOPE,
+                        STATEMENT_GENERATION, 0)
+        _set_post_passes_pending(conn, False)
+    # On every load, not only when the passes above are owed: a cheque
+    # can reach the export before the statement that names its payee
+    # does, and the pass reads nothing once every cheque is settled.
+    annotate_export_cheques(conn, bronze_dir, card_ids)
+    # The entries of an older parser generation are never read again.
+    _parse_cache().sweep({DEPOSIT_CACHE_NAMESPACE, CARD_CACHE_NAMESPACE})
+
+
+SPEC = loader.LoaderSpec(
+    name="chase", schema=MIGRATIONS_DIR, load_run=load_run, parser=_parser,
+    counts=("accounts",), defaults=_paths, before_runs=_before_runs,
+    after_runs=_post_passes, run_columns=_run_columns)
+
+
+def main(argv: list[str] | None = None) -> int:
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

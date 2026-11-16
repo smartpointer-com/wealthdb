@@ -54,7 +54,7 @@ COPIES = {
     "carta": Copy(("carta/testdata/silver_schema.sql",), {
         "k1_capital_accounts": "read; basis_test.go creates it inline"}),
     "chase": Copy(("chase/testdata/silver_schema.sql",), {
-        "loader_state": BOOKKEEPING, "parser_generations": BOOKKEEPING}),
+        "loader_state": BOOKKEEPING, "document_derivations": BOOKKEEPING}),
     "curves": Copy(("curves/testdata/silver_schema.sql",), {
         "schema_meta": VERSION}),
     "equityzen": Copy(("equityzen/testdata/silver_schema.sql",), {
