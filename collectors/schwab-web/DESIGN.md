@@ -122,13 +122,14 @@ those rows.
 | `account_balances` | `historical_cash_balances` | api has live per-dump balances; web parses the monthly statement cash-flow summary (opening/closing) and the rate the cash earns (migration 0011; see §3.1) into `historical_cash_balances` |
 | `positions` | `historical_position_snapshots` | api has live per-dump positions; web parses the monthly/quarterly statement holdings block into `historical_position_snapshots` |
 | `open_orders` | — | api-only |
-| `transactions` | `transactions` | Same column shape. Different `activity_id` value space — see §2.2 |
+| `transactions` | `transactions` | Same column shape. Different `activity_id` value space — see §2.2. web also states each row's amount, quantity and price as decimal text, and its description and action as printed, in columns of their own (migration 0014), whatever the payload's dialect |
 | `instruments` | — | api-only (present unless `--no-instruments`) |
 | — | `documents` | web-only. One row per downloaded PDF/XML/CSV, sha256-deduped |
 | — | `open_lots` | web-only. One row per tax lot a statement prints under a holding; see §9.1 |
 | — | `closed_lots` | web-only. One row per realized lot a year-end tax document prints; see §9.2 |
 | — | `cost_basis_methods` | web-only. The cost-basis methods a Gain/Loss Report prints; see §9.3 |
 | — | `parsed_documents` | web-only. The logical documents parsed under the current parser generation; see §4.4 |
+| — | `rebuild_level` | web-only. The rebuild advice level the silver was built at; see §6.0 |
 
 ### 3.1 The cash's interest rate
 

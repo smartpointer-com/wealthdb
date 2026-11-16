@@ -3173,3 +3173,75 @@ class TestRebuildAdvice:
             "--migrations-dir", str(MIGRATIONS_DIR), "--workers", "1",
             "--force"]) == 0
         assert self._load(args, caplog) == []
+
+
+# ---------------------------------------------------------------------------
+# A transaction's figures and words as columns (migration 0014)
+# ---------------------------------------------------------------------------
+
+_DIALECTS = [
+    # statement rows
+    {"date": "2026-02-03", "category": "Sale", "action": None,
+     "symbol": "ABC", "description": "ACME CORP", "quantity": 10.0,
+     "price": 12.5, "amount": 125.0, "raw_lines": []},
+    {"date": "2026-02-03", "category": "Unknown", "action": " Journal ",
+     "description": "  ", "quantity": None, "price": None,
+     "amount": -0.30000000000000004},
+    {"amount": 1e-07, "quantity": 5, "price": 1.2345678901234567e+20},
+    # tx-history rows
+    {"Date": "05/12/2024", "Action": "Buy", "Symbol": "ABC",
+     "Description": "ACME CORP", "Quantity": "1,000", "Price": "$10.00",
+     "Fees & Comm": "$0.01", "Amount": "-$100.01",
+     "_more": {"amount": "x"}},
+    {"Action": "Unknown", "Amount": "($1,234.56)", "Quantity": "",
+     "Price": " $ 2.5 "},
+    {"Amount": "(-$5.00)", "Quantity": ".5", "Price": "5."},
+    {"Amount": "$", "Quantity": "1.2.3", "Price": "1e3", "Description": 7},
+    {"Amount": " $3.00　", "Action": "\tSell\n"},
+    {"Action": " ", "action": "unknown", "category": "Fee"},
+    {"action": 5, "category": "UNKNOWN"},
+    # distribution letters
+    {"amount": None, "market_value": 1250.0, "quantity": 12.5,
+     "description": "Securities transfer out to SYNTH TRUST"},
+    {"cash_amount": 3141.59, "description": "Cash transfer out"},
+    # payloads the figures cannot be read from
+    {"amount": "1.00", "Quantity": "2"},
+    {"Amount": 5, "quantity": 1.0},
+    {"amount": True},
+    {},
+]
+
+
+def test_the_backfill_writes_what_the_loader_writes(tmp_path):
+    early = tmp_path / "m"
+    early.mkdir()
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if int(path.name[:4]) < 14:
+            (early / path.name).write_text(path.read_text())
+    conn = sqlite3.connect(":memory:")
+    load.silver.apply_migrations(conn, early)
+    conn.executemany(
+        "INSERT INTO transactions (activity_id, timestamp,"
+        " account_external_id, kind, source, source_sha256, payload)"
+        " VALUES (?, 0, 'NNN', 'Unknown', 'statement_pdf', 'sha', ?)",
+        [(str(i), load.canonical_json(p)) for i, p in enumerate(_DIALECTS)])
+    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+    got = {aid: tuple(rest) for aid, *rest in conn.execute(
+        "SELECT activity_id, amount, quantity, price, description, action"
+        " FROM transactions")}
+    for i, payload in enumerate(_DIALECTS):
+        assert got[str(i)] == load._transaction_columns(payload), payload
+
+
+def test_the_columns_of_the_three_dialects():
+    cols = [load._transaction_columns(p) for p in _DIALECTS]
+    assert cols[0] == ("125.0", "10.0", "12.5", "ACME CORP", "Sale")
+    assert cols[1] == ("-0.30000000000000004", None, None, None, "Journal")
+    assert cols[3] == ("-100.01", "1000", "10.00", "ACME CORP", "Buy")
+    assert cols[4] == ("-1234.56", None, "2.5", None, None)
+    assert cols[5][:3] == ("5.00", ".5", "5.")
+    assert cols[6] == (None, None, None, None, None)
+    assert cols[8][4] == "Fee" and cols[9][4] is None
+    assert cols[10][:3] == ("1250.0", "12.5", None)
+    assert cols[11][0] == "3141.59"
+    assert cols[12][:3] == cols[13][:3] == cols[14][:3] == (None, None, None)

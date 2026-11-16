@@ -1235,8 +1235,7 @@ def _insert_tx_history_transactions(conn: sqlite3.Connection,
             activity_id, timestamp, account_external_id,
             tx.get("Action") or "Unknown", tx.get("Symbol") or None,
             "tx_history_json", source_sha256, logical_doc_key,
-            canonical_json(payload_dict),
-        ))
+        ), payload_dict)
         inserted += n
         if not n and detail:
             filled += _fill_more_detail(conn, activity_id, detail)
@@ -1267,16 +1266,106 @@ def _fill_more_detail(conn: sqlite3.Connection, activity_id: str,
     return 1
 
 
-def _insert_transaction(conn: sqlite3.Connection, row: tuple) -> int:
+def _insert_transaction(conn: sqlite3.Connection, row: tuple,
+                        payload: dict) -> int:
     """INSERT OR IGNORE one `transactions` row: (activity_id, timestamp,
     account_external_id, kind, instrument_key, source, source_sha256,
-    logical_doc_key, payload). Returns 1 when it was inserted, else 0."""
+    logical_doc_key), its payload and the payload's columns
+    (_transaction_columns). Returns 1 when it was inserted, else 0."""
     return conn.execute(
         "INSERT OR IGNORE INTO transactions"
         " (activity_id, timestamp, account_external_id, kind,"
         "  instrument_key, source, source_sha256, logical_doc_key,"
-        "  payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", row,
+        "  payload, amount, quantity, price, description, action)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (*row, canonical_json(payload), *_transaction_columns(payload)),
     ).rowcount
+
+
+# Whitespace as Go's strings.TrimSpace reads it: the gold adapter read
+# these figures and words out of the payload, and the columns hold what it
+# read.
+_GO_SPACE = ("\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004"
+             "\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f"
+             "\u205f\u3000")
+_NUMBER_KEYS = ("amount", "quantity", "price", "market_value", "cash_amount")
+_STRING_KEYS = ("Amount", "Quantity", "Price")
+_DECIMAL_RE = re.compile(r"(?=.*[0-9])[0-9]*\.?[0-9]*")
+
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _number_text(v) -> str | None:
+    """A JSON number as the payload's JSON prints it."""
+    return json.dumps(v) if _is_number(v) else None
+
+
+def _figure_text(v) -> str | None:
+    """A tx-history export's figure ("$1,000.00", "-$5.00", "($1.00)")
+    as decimal text: the "$", the thousands commas and the spaces taken
+    off, parentheses or a leading minus made one minus; None for a figure
+    that is then no decimal."""
+    if not isinstance(v, str):
+        return None
+    s = v.strip(_GO_SPACE)
+    negative = len(s) >= 2 and s[0] == "(" and s[-1] == ")"
+    if negative:
+        s = s[1:-1]
+    s = s.replace("$", "").replace(",", "").replace(" ", "")
+    if s.startswith("-"):
+        negative = not negative
+        s = s[1:]
+    if not _DECIMAL_RE.fullmatch(s):
+        return None
+    return f"-{s}" if negative else s
+
+
+def _word(payload: dict, key: str) -> str | None:
+    v = payload.get(key)
+    return (v.strip(_GO_SPACE) or None) if isinstance(v, str) else None
+
+
+def _transaction_columns(payload: dict) -> tuple:
+    """(amount, quantity, price, description, action) of a transactions
+    row, from its payload in any of the three dialects: the statement's
+    numbers (`amount`), the tx-history export's strings (`Amount`), a
+    distribution letter's `market_value` or `cash_amount` where it states
+    no amount. Figures are decimal text, words as printed, trimmed. The
+    action is the movement the row states (see below).
+
+    A payload whose figure keys hold another JSON type has no figures,
+    and one whose description keys do, no description: migration 0014
+    backfills the same values from the stored payload."""
+    typed = (all(payload.get(k) is None or _is_number(payload[k])
+                  for k in _NUMBER_KEYS)
+             and all(payload.get(k) is None or isinstance(payload[k], str)
+                     for k in _STRING_KEYS))
+    amount = quantity = price = None
+    if typed:
+        amount = next((t for t in (
+            _number_text(payload.get("amount")),
+            _figure_text(payload.get("Amount")),
+            _number_text(payload.get("market_value")),
+            _number_text(payload.get("cash_amount"))) if t is not None), None)
+        quantity = (_number_text(payload.get("quantity"))
+                    or _figure_text(payload.get("Quantity")))
+        price = (_number_text(payload.get("price"))
+                 or _figure_text(payload.get("Price")))
+    description = None
+    if all(payload.get(k) is None or isinstance(payload[k], str)
+           for k in ("description", "Description")):
+        description = _word(payload, "description") or _word(payload,
+                                                              "Description")
+    # The movement the row states: the export's `Action`, a statement
+    # row's `action`, else its `category`. "Unknown" is the statement
+    # parser's word for a row whose category did not read: no movement.
+    action = next((w for w in (_word(payload, "Action"),
+                               _word(payload, "action"),
+                               _word(payload, "category"))
+                   if w and w.encode("utf-8").lower() != b"unknown"), None)
+    return amount, quantity, price, description, action
 
 
 def _insert_statement_transactions(conn: sqlite3.Connection,
@@ -1319,8 +1408,7 @@ def _insert_statement_transactions(conn: sqlite3.Connection,
             activity_id, timestamp, account_external_id,
             tx.get("category") or "Unknown", tx.get("symbol"),
             "statement_pdf", source_sha256, logical_doc_key,
-            canonical_json(tx),
-        ))
+        ), tx)
     return inserted
 
 
@@ -1352,8 +1440,8 @@ def _insert_parsed_transactions(conn: sqlite3.Connection,
             _synthesize_activity_id(account_external_id, row, idx),
             timestamp, account_external_id, row.get("kind") or "Unknown",
             row.get("instrument_key"), source, source_sha256,
-            logical_doc_key, canonical_json(row),
-        ))
+            logical_doc_key,
+        ), row)
     return inserted
 
 
