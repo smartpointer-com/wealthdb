@@ -58,11 +58,16 @@ from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver, srcfp
+from collectorkit import bronze, cli, extract, silver, srcfp
 from collectorkit.parse import iso_date_to_epoch
 
+import extraction
+import form_1099b
+import letters
 import more_detail
 import pdf_parsers as pp
+import realized_reports
+import stmt_parse
 import tax_form_parsers as tf
 from numparse import parse_amount
 
@@ -73,11 +78,17 @@ from numparse import parse_amount
 # purge of the statement snapshot tables, which have no delete path of their
 # own, and of the parse markers, which vouch for the old generation.
 #
-# One fingerprint over both parsers rather than one each: they are edited
-# together as often as not, a false purge costs a re-parse of an archive the
-# run is walking anyway, and a missed one costs a duplicated row.
+# One generation over every document kind rather than one each: they are
+# edited together as often as not, a false purge costs a re-parse of an
+# archive the run is walking anyway, and a missed one costs a duplicated
+# row. A kind's fingerprint is its code alone; the extraction keys carry
+# the engine's version.
 DOCUMENT_GENERATION_SCOPE = "documents"
-DOCUMENT_GENERATION = srcfp.parser_fingerprint([pp, tf], ("pypdfium2",))
+DOCUMENT_GENERATION = hashlib.sha256("\n".join([
+    srcfp.parser_fingerprint(
+        [stmt_parse, letters, form_1099b, realized_reports], python=False),
+    *(extract.extraction_key(e) for e in extraction.EXTRACTORS),
+]).encode("utf-8")).hexdigest()[:32]
 
 # Written exclusively by the statement passes, and keyed on parser output
 # (`as_of_date` / `period_end`, `instrument_key`), so a moved capture

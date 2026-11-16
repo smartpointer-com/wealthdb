@@ -23,7 +23,10 @@ import pytest
 # in the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import letters  # noqa: E402
 import pdf_parsers as pp  # noqa: E402
+import stmt_parse  # noqa: E402
+from collectorkit.words import Extracted, Page  # noqa: E402
 
 
 # ============================================================
@@ -993,15 +996,15 @@ class TestParseCashInterestRate:
                 "average Schwab One interest rate paid on 12 days.\n")
         assert pp.parse_cash_interest_rate(text) is None
 
-    def test_parse_statement_pdf_puts_it_on_the_cash_summary(self, monkeypatch):
+    def test_the_statement_puts_it_on_the_cash_summary(self):
         summary = ("Transactions - Summary\n"
                    "BeginningCash + Deposits ... = EndingCash\n"
                    "$1.00 $0.00 $0.00 $0.00 $0.00 $1.00 $0.00 $2.00\n"
                    "Transaction Details\n")
         rate = self._table(self.SWEEP + "1.00 2.00 1.00 2.41% <1%\n")
         for text, want in ((summary + rate, 2.41), (summary, None)):
-            monkeypatch.setattr(pp, "_extract_pdf_text", lambda _p, t=text: t)
-            cash = pp.parse_statement_pdf("x.pdf", 2026)["cash_summary"]
+            cash = stmt_parse.parse(Extracted("pdfium", (Page(text),)),
+                                    2026)["cash_summary"]
             assert cash["interest_rate"] == want
             assert (cash["interest_rate_line"] is None) == (want is None)
 
@@ -2278,3 +2281,28 @@ class TestParseDistributionText:
         assert len(rows) == 2
         assert {r["symbol"] for r in rows} == {"VTI", "SPY"}
         assert all(r["transfer_kind"] == "securities" for r in rows)
+
+    def test_an_extracted_letter_reads_as_its_text(self):
+        extracted = Extracted("pdfium", (Page(self._CASH_SCHWAB),))
+        name = "3rd-Party-Distribution_2024-06-17_999.PDF"
+        assert letters.parse(extracted, filename=name) == \
+            pp.parse_distribution_text(self._CASH_SCHWAB, filename=name)
+
+
+# ============================================================
+# The layout a statement's headings name
+# ============================================================
+
+class TestDetectEra:
+    @pytest.mark.parametrize("heading,era", [
+        ("Positions - Equities", "2025"),
+        ("Transaction Details", "2025"),
+        ("Investment Detail - Equities", "2020"),
+        ("Investment Detail", "2017"),
+        ("Account Summary", None),
+    ])
+    def test_the_heading_names_the_layout(self, heading, era):
+        assert pp.detect_era(f"{PERIOD_HEADER}  {heading}  \nTotal\n") == era
+
+    def test_the_newest_layout_wins(self):
+        assert pp.detect_era("Investment Detail\nPositions - Equities\n") == "2025"

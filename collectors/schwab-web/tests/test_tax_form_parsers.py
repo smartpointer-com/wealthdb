@@ -16,7 +16,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import realized_reports  # noqa: E402
 import tax_form_parsers as tf  # noqa: E402
+from collectorkit.words import Extracted, Page  # noqa: E402
 
 
 # ============================================================
@@ -524,6 +526,15 @@ class TestGainLossReport:
     def test_report_without_lots(self):
         assert tf.parse_gain_loss_report_text("2022 Year-End Schwab Gain/Loss Report\n") == {
             "tax_year": 2022, "lots": [], "incomplete": 0, "methods": []}
+
+    def test_an_extracted_report_reads_as_its_text(self):
+        extracted = Extracted("pdfium", (Page(_GLR_TEXT),))
+        assert realized_reports.parse(extracted, "gain_loss_report") == \
+            tf.parse_gain_loss_report_text(_GLR_TEXT)
+
+    def test_an_unknown_report_kind_raises(self):
+        with pytest.raises(ValueError):
+            realized_reports.parse(Extracted("pdfium", (Page(""),)), "other")
 
 
 # ============================================================

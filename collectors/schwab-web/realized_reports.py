@@ -1,0 +1,630 @@
+"""The realized-lot reports: the Year-End Summary (alone, or inside the
+1099 Composite PDF) and the Gain/Loss Report.
+
+:func:`parse` reads the text PDFium extracts from a report
+(``collectorkit.extract.pdfium``), and for a Year-End Summary also its
+words.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from datetime import datetime
+
+from collectorkit.words import Extracted, Word, cell_of
+from form_1099b import _modal_year, _to_float
+from numparse import parse_amount
+
+
+# ============================================================
+# Realized-lot reports: Year-End Summary and Gain/Loss Report
+# ============================================================
+#
+# Two PDF reports list every realized lot of a tax year, the ones the
+# 1099-B leaves out included: sales in accounts that get no 1099-B, and
+# lots "not reported on Form 1099-B" whose basis the 1099-B omits.
+#
+#   * The Year-End Summary, on its own or as the second half of the
+#     1099 Composite PDF, has "Short-Term / Long-Term Realized Gain or
+#     (Loss)" sections. A section's subtitle says whether its lots are
+#     covered and which Form 8949 box they belong in. A lot prints as
+#       [DESCRIPTION] [CUSIP] QTY ACQUIRED SOLD $ PROCEEDS $ COST
+#           (-- | $ WASH) [$ MARKET DISCOUNT] $ GAIN
+#     where the description can wrap onto the lines above, an option
+#     prints its contract ("XMPL 01/16/2026 50.00 C") instead, and the
+#     amounts after the cost can wrap onto the next line.
+#   * The Gain/Loss Report has one "Realized Gain or (Loss)" section with
+#     Short-Term and Long-Term parts, headed by the account's cost-basis
+#     methods ("Mutual Funds: First In First Out"). A lot prints as
+#       [DESCRIPTION: TICKER] QTY ACQUIRED SOLD $PROCEEDS $COST $GAIN
+#
+# Both print endnote letters among the amounts, glued to one ("$ 100.00t",
+# "t($5.00)") or standing alone, and an "S" beside a short sale's
+# quantity. Page furniture (the holder block, page numbers) sits between
+# the pages of a section and is skipped.
+
+_REPORT_LOT_RE = re.compile(
+    r"^(?P<head>.*?)\s*(?P<qty>[\d,]*\.\d+)\s*(?P<short>S?)\s*"
+    r"(?P<acq>\d{2}/\d{2}/\d{2}|Various|VARIOUS)\s+(?P<sold>\d{2}/\d{2}/\d{2})"
+    r"\s+(?P<cells>[A-Za-z]?[($].*)$")
+# One amount cell: "$ 1,234.56", "$1,234.56", "($12.00)", "$ (12.00)",
+# with an endnote letter glued before or after; or a dash / "Missing"
+# where the report prints no amount. An endnote letter can also stand
+# alone among the cells.
+_REPORT_CELL_RE = re.compile(
+    r"(?P<pre>[A-Za-z]?)(?P<amt>\(?\$\s*\(?[\d,]+\.\d{2}\)?)(?P<post>[A-Za-z]{0,2})"
+    r"|(?P<none>--|Missing)|(?<!\S)(?P<mark>[A-Za-z])(?!\S)")
+# A line of nothing but the pieces of amount cells ("$", "1,234.56 $",
+# "--", an endnote letter): what an unreadable lot line scatters after it.
+_FRAGMENT_PIECE = r"(?:\$|--|Missing|[A-Za-z]?\(?[\d,]+\.\d{2}\)?[A-Za-z]{0,2}|[A-Za-z])"
+_REPORT_FRAGMENT_RE = re.compile(rf"^{_FRAGMENT_PIECE}(?:\s+{_FRAGMENT_PIECE})*$")
+_REPORT_CUSIP_RE = re.compile(r"^[A-Z0-9]{8}\d$")
+_REPORT_OPTION_RE = re.compile(
+    r"^(?P<under>[A-Z][A-Z0-9./]*)\s+(?P<exp>\d{2}/\d{2}/\d{4})\s+"
+    r"(?P<strike>[\d,]*\.\d+)\s+(?P<cp>[CP])$")
+_REPORT_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9./]*$")
+# An option's OCC symbol, as a Gain/Loss Report prints it after the
+# underlying: "XMPL 260116C00050000" (expiry YYMMDD, call or put, strike
+# in thousandths).
+_REPORT_OCC_RE = re.compile(
+    r"^(?P<under>[A-Z][A-Z0-9./]*) (?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})"
+    r"(?P<cp>[CP])(?P<strike>\d{8})$")
+_YES_HEADER_RE = re.compile(
+    r"^(?P<term>Short|Long)-Term Realized Gain or \(Loss\)(?: \(continued\))?$")
+_YES_TOTAL_RE = re.compile(r"^Total (?:Short|Long)-Term\b")
+_YES_TAX_YEAR_RE = re.compile(r"^TAX YEAR (\d{4})\b", re.M)
+_GLR_HEADER_RE = re.compile(r"^Realized Gain or \(Loss\)(?: \(continued\))?$")
+_GLR_TERM_RE = re.compile(
+    r"^(?P<term>Short|Long)-Term(?: \(continued\))? Quantity/Par$")
+_GLR_METHOD_RE = re.compile(r"^(?P<cls>[A-Z][\w ]*?):\s*(?P<method>\S.*?)\s*$")
+_GLR_TAX_YEAR_RE = re.compile(r"^(\d{4}) Year-End Schwab Gain/Loss Report\b", re.M)
+_PAGE_RE = re.compile(r"^Page \d+ of \d+$")
+_BOX_RE = re.compile(r"\bBox ([A-F])\b")
+
+
+def _report_cells(text: str) -> tuple[list[float | None], list[str]] | None:
+    """The amount cells of `text` in print order, plus the endnote letters
+    among them; None when `text` holds anything else."""
+    cells: list[float | None] = []
+    marks: list[str] = []
+    pos = 0
+    for m in _REPORT_CELL_RE.finditer(text):
+        if text[pos:m.start()].strip():
+            return None
+        pos = m.end()
+        if m["mark"]:
+            marks.append(m["mark"])
+            continue
+        if m["none"]:
+            cells.append(None)
+            continue
+        cells.append(parse_amount(m["amt"].replace("$", "").replace(" ", "")))
+        marks.extend(x for x in (m["pre"], m["post"]) if x)
+    if not cells or text[pos:].strip():
+        return None
+    return cells, marks
+
+
+def _report_iso(token: str) -> str | None:
+    """A report's MM/DD/YY date as ISO; 'Various' as printed."""
+    if token.lower() == "various":
+        return "Various"
+    try:
+        return datetime.strptime(token, "%m/%d/%y").date().isoformat()
+    except ValueError:
+        return None
+
+
+class _ReportLots:
+    """Collects the lots of one realized-lot report as its lines go by.
+
+    A lot line may arrive with its amounts cut short; the amount-only
+    lines after it complete it. A lot still short when another kind of
+    line arrives, or one with more amounts than a lot prints, is dropped
+    and counted in `incomplete`.
+
+    A lot line whose amounts do not read as cells at all keeps its place
+    in print order with `cells` None and the `anchor` that finds its row
+    on the page (quantity, acquired and sold dates as printed, and how
+    many lot lines with that anchor came before it). The amount fragments
+    the text extractor scatters after it are kept as its raw lines.
+    `resolve` fills its amounts from the page layout, or counts it in
+    `incomplete`."""
+
+    def __init__(self, n_cells: tuple[int, ...]):
+        self.n_cells = n_cells     # the cell counts a complete lot prints
+        self.lots: list[dict] = []
+        self.incomplete = 0
+        self.desc: list[str] = []
+        self.pending: dict | None = None
+        self.scattered: dict | None = None   # the lot whose fragments follow
+        self.anchors: Counter = Counter()
+
+    def drop_pending(self) -> None:
+        if self.pending is not None:
+            self.incomplete += 1
+            self.pending = None
+
+    def _new_lot(self, m: re.Match, cells: list | None, marks: list[str],
+                 raw: str, section: dict) -> dict:
+        self.drop_pending()
+        self.scattered = None
+        head = " ".join([*self.desc, m["head"]]).split()
+        self.desc = []
+        anchor = (m["qty"], m["acq"], m["sold"])
+        self.anchors[anchor] += 1
+        return {
+            "head": head, "quantity": _to_float(m["qty"]),
+            "acquired_date": _report_iso(m["acq"]),
+            "disposed_date": _report_iso(m["sold"]),
+            "cells": cells, "footnotes": (["S"] if m["short"] else []) + marks,
+            "raw_lines": [raw], **section,
+            "anchor": (*anchor, self.anchors[anchor] - 1),
+        }
+
+    def lot_line(self, m: re.Match, cells: list, marks: list[str],
+                 raw: str, **section) -> None:
+        self.pending = self._new_lot(m, cells, marks, raw, section)
+        self._maybe_emit()
+
+    def amount_line(self, cells: list, marks: list[str], raw: str) -> None:
+        """Extend a pending lot with an amount-only line. Without one the
+        line is a subtotal's amounts, and is ignored."""
+        if self.pending is None:
+            return
+        self.pending["cells"] += cells
+        self.pending["footnotes"] += marks
+        self.pending["raw_lines"].append(raw)
+        self._maybe_emit()
+
+    def text_line(self, line: str) -> None:
+        self.drop_pending()
+        self.scattered = None
+        self.desc.append(line)
+
+    def unreadable_lot_line(self, m: re.Match, raw: str, **section) -> None:
+        """A lot line whose amounts do not read as amount cells."""
+        self.scattered = self._new_lot(m, None, [], raw, section)
+        self.lots.append(self.scattered)
+
+    def scattered_fragment(self, line: str) -> bool:
+        """Keep `line` with the unreadable lot before it when it is one of
+        the amount fragments that lot scatters."""
+        if self.scattered is None or not _REPORT_FRAGMENT_RE.match(line):
+            return False
+        self.scattered["raw_lines"].append(line)
+        return True
+
+    def reset_description(self) -> None:
+        self.drop_pending()
+        self.scattered = None
+        self.desc = []
+
+    def resolve(self, read) -> None:
+        """Fill each unreadable lot's amounts with `read(anchor)`, which
+        returns the lot's amount fields or None; a lot it cannot read,
+        or every one when `read` is None, is dropped and counted."""
+        lots = []
+        for lot in self.lots:
+            anchor = lot.pop("anchor")
+            if lot["cells"] is None:
+                amounts = read(anchor) if read else None
+                if amounts is None:
+                    self.incomplete += 1
+                    continue
+                lot["footnotes"] += amounts.pop("footnotes")
+                lot.update(amounts)
+            lots.append(lot)
+        self.lots = lots
+
+    def _maybe_emit(self) -> None:
+        n = len(self.pending["cells"])
+        if n < min(self.n_cells):
+            return
+        if n not in self.n_cells:
+            self.drop_pending()
+            return
+        self.lots.append(self.pending)
+        self.pending = None
+
+
+def _report_line(acc: _ReportLots, line: str, **section) -> None:
+    """Feed one line of a realized section's body to `acc`: a lot line,
+    an amount fragment of an unreadable lot, an amount-only line, or
+    description text."""
+    if acc.scattered_fragment(line):
+        return
+    m_lot = _REPORT_LOT_RE.match(line)
+    if m_lot:
+        parsed = _report_cells(m_lot["cells"])
+        if parsed is None:
+            acc.unreadable_lot_line(m_lot, raw=line, **section)
+        else:
+            acc.lot_line(m_lot, *parsed, raw=line, **section)
+    elif (parsed := _report_cells(line)) is not None:
+        acc.amount_line(*parsed, raw=line)
+    else:
+        acc.text_line(line)
+
+
+def _finish_report(acc: _ReportLots, lots: list[dict], year_re: re.Pattern,
+                   text: str) -> dict:
+    """Stamp every lot with the report's tax year: the one it prints, or
+    else the year most of its lots were sold in."""
+    m = year_re.search(text)
+    tax_year = int(m[1]) if m else _modal_year([lot["disposed_date"] for lot in lots])
+    for lot in lots:
+        lot["footnotes"] = lot["footnotes"] or None
+        lot["tax_year"] = tax_year
+    return {"tax_year": tax_year, "lots": lots, "incomplete": acc.incomplete}
+
+
+def _year_end_summary_lot(lot: dict) -> dict:
+    """A Year-End Summary lot in the closed-lot shape."""
+    cells = lot.pop("cells")
+    head = lot.pop("head")
+    cusip = None
+    if head and _REPORT_CUSIP_RE.match(head[-1]):
+        cusip = head.pop()
+    elif (head and len(head[-1]) > 9 and head[-1][:-9].isalpha()
+          and _REPORT_CUSIP_RE.match(head[-1][-9:])
+          and sum(ch.isdigit() for ch in head[-1][-9:]) >= 3):
+        # The description's last word glued to the CUSIP ("CLASS A" +
+        # CUSIP prints as "A" + CUSIP).
+        head[-1], cusip = head[-1][:-9], head[-1][-9:]
+    name = " ".join(head) or None
+    m = _REPORT_OPTION_RE.match(name or "")
+    return {
+        "security_name": name, "cusip": cusip,
+        "instrument_key": (f"{m['under']} {m['exp']} {m['strike']} {m['cp']}"
+                           if m else cusip),
+        "proceeds": cells[0], "cost_basis": cells[1],
+        "wash_sale_disallowed": cells[2],
+        "accrued_market_discount": cells[3] if len(cells) == 5 else None,
+        "realized_gain_loss": cells[-1], **lot,
+    }
+
+
+def _yes_subtitle(text: str) -> dict:
+    """Covered flag and Form 8949 boxes from a realized section's
+    subtitle. A section of lots not reported on the 1099-B says neither
+    covered nor noncovered."""
+    low = text.lower()
+    covered = 0 if "noncovered" in low else 1 if "covered securities" in low else None
+    boxes = dict.fromkeys(_BOX_RE.findall(text))
+    return {"covered": covered, "form_8949_box": ",".join(boxes) or None}
+
+
+# Year-End Summary lots read by their place on the page.
+#
+# A bond lot with an adjusted basis prints two rows of amounts under one
+# set of column headings. The first row holds the proceeds, the cost
+# basis, the wash sale and the gain. The row below holds the adjusted
+# basis (under "Adjusted"), the market discount (under "(-)Market
+# Discount", in the wash sale's column) and the adjusted gain (under
+# "Adjusted"). The text extractor interleaves the two rows, so the lot
+# line reads short and its other amounts arrive as loose fragments. Such
+# a lot is read from the page's words instead: an amount belongs to the
+# column whose heading it is right-aligned under, and to the row it sits
+# on. PDFium measures a word's box up from the page's bottom, so a
+# word's `top` is the larger number.
+
+_WORD_DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{2}$")
+_WORD_QTY_RE = re.compile(r"^(?P<qty>[\d,]*\.\d+)S?$")
+_WORD_AMOUNT_RE = re.compile(
+    r"^(?P<pre>[A-Za-z]?)(?P<amt>\(?[\d,]+\.\d{2}\)?)(?P<post>[A-Za-z]{0,2})$")
+# Amount fields by (column, row): the first row of amounts is 0, the row
+# a bond lot prints below it is 1. The market discount has a column of
+# its own on some layouts and shares the wash sale's on others.
+_YES_LAYOUT_FIELDS = {
+    ("proceeds", 0): "proceeds",
+    ("cost", 0): "cost_basis",
+    ("cost", 1): "adjusted_cost_basis",
+    ("wash", 0): "wash_sale_disallowed",
+    ("wash", 1): "accrued_market_discount",
+    ("discount", 0): "accrued_market_discount",
+    ("gain", 0): "realized_gain_loss",
+    ("gain", 1): "adjusted_gain_loss",
+}
+# The heading word whose right edge marks each amount column.
+_YES_HEADING_WORDS = {
+    "proceeds": "Proceeds", "cost": "Basis", "wash": "Disallowed",
+    "discount": "Discount", "gain": "(Loss)",
+}
+# How far an amount's right edge may sit from its heading's, in points.
+_YES_COLUMN_SLACK = 12.0
+
+
+def _same_row(words: list[Word], word: Word) -> list[Word]:
+    """The words whose middle lies within `word`'s height, left to right."""
+    return sorted((w for w in words if word.bottom <= w.mid <= word.top),
+                  key=lambda w: w.x0)
+
+
+def _yes_headings(words: list[Word]) -> list[tuple[float, dict[str, float]]]:
+    """Each realized section's column headings on a page: the bottom of
+    its "Total Proceeds" and the right edge of every amount column. The
+    other headings stack within a few lines of "Total Proceeds"."""
+    out = []
+    for w in words:
+        if w.text != "Proceeds":
+            continue
+        row = _same_row(words, w)
+        at = row.index(w)
+        if at == 0 or row[at - 1].text != "Total":
+            continue
+        block = [h for h in words if w.bottom - 12 <= h.mid <= w.top + 30]
+        cols = {"proceeds": w.x1}
+        for col, label in _YES_HEADING_WORDS.items():
+            edges = [h.x1 for h in block if h.text == label and h.x0 > w.x1]
+            if edges:
+                cols[col] = min(edges)
+        if {"cost", "wash", "gain"} <= cols.keys():
+            if abs(cols.get("discount", -1e9) - cols["wash"]) < _YES_COLUMN_SLACK:
+                del cols["discount"]       # stacked under the wash sale
+            out.append((w.bottom, cols))
+    return out
+
+
+def _yes_lot_rows(pages: list[list[Word]]) -> dict[tuple, list]:
+    """Every lot row under a realized section's headings, in print order,
+    by its anchor: (quantity, acquired, sold) as printed. A lot row is a
+    sold date after an acquired date (or "Various") and a quantity, with
+    a short sale's "S" glued on or apart."""
+    rows: dict[tuple, list] = {}
+    for words in pages:
+        headings = _yes_headings(words)
+        if not headings:
+            continue
+        found = []
+        for sold in words:
+            above = [h for h in headings if h[0] > sold.top]
+            if not above or not _WORD_DATE_RE.match(sold.text):
+                continue
+            cols = min(above, key=lambda h: h[0])[1]
+            texts = [w.text for w in _same_row(words, sold) if w.x1 <= sold.x1]
+            if len(texts) >= 4 and texts[-3] == "S":
+                del texts[-3]
+            if len(texts) < 3 or not (_WORD_DATE_RE.match(texts[-2])
+                                      or texts[-2].lower() == "various"):
+                continue
+            qty = _WORD_QTY_RE.match(texts[-3])
+            if qty and sold.x1 < cols["proceeds"]:
+                found.append(((qty["qty"], texts[-2], sold.text), sold, cols))
+        # Top of the page first: the order the text lists the lots in.
+        for key, sold, cols in sorted(found, key=lambda f: -f[1].top):
+            rows.setdefault(key, []).append((words, sold, cols))
+    return rows
+
+
+def _yes_lot_amounts(words: list[Word], sold: Word,
+                     cols: dict[str, float]) -> dict | None:
+    """The amount fields of the lot whose sold date is `sold`, from its
+    row and the row below, down to the next lot, subtotal, total or the
+    page's endnote line. None when a word there is not an amount, an
+    amount fits no column, a column holds two, or the proceeds, cost
+    basis or gain is missing."""
+    below = sorted((w for w in words if w.top < sold.bottom), key=lambda w: -w.top)
+    stop = next((w.top for w in below
+                 if (w.x0 < sold.x1 and w.x1 > sold.x0)
+                 or w.text in ("Security", "Total", "Please")), -1e9)
+    band = [w for w in words
+            if w.x0 > sold.x1 and stop < w.mid and w.bottom <= sold.top]
+    second = [w.mid for w in band if w.top < sold.bottom]
+    if second and max(second) - min(second) > sold.top - sold.bottom:
+        return None                     # more than one row below
+    fields: dict = {"footnotes": []}
+    for w in band:
+        if w.text == "$":
+            continue
+        if len(w.text) == 1 and w.text.isalpha():
+            fields["footnotes"].append(w.text)
+            continue
+        m = _WORD_AMOUNT_RE.match(w.text)
+        if m is None and w.text not in ("--", "Missing"):
+            return None
+        col = cell_of(w, cols, _YES_COLUMN_SLACK)
+        field = _YES_LAYOUT_FIELDS.get((col, 0 if w.top >= sold.bottom else 1))
+        if col is None or field is None or field in fields:
+            return None
+        fields[field] = parse_amount(m["amt"]) if m else None
+        if m:
+            fields["footnotes"] += [x for x in (m["pre"], m["post"]) if x]
+    if not {"proceeds", "cost_basis", "realized_gain_loss"} <= fields.keys():
+        return None
+    return fields
+
+
+class _YesLayout:
+    """The words of an extracted Year-End Summary, laid out the first
+    time a lot needs them."""
+
+    def __init__(self, extracted: Extracted):
+        self.extracted = extracted
+        self._rows: dict[tuple, list] | None = None
+
+    def read(self, anchor: tuple) -> dict | None:
+        """The amounts of the lot at `anchor` (quantity, acquired, sold,
+        and how many lot lines with those came before it), in a text-read
+        lot's shape: `cells` (proceeds, cost basis, wash sale, market
+        discount, gain) and `footnotes`, plus the adjusted basis and gain.
+        None when the pages hold no such lot or its amounts do not
+        read."""
+        if self._rows is None:
+            self._rows = _yes_lot_rows([list(p.words())
+                                        for p in self.extracted.pages])
+        *key, occurrence = anchor
+        found = self._rows.get(tuple(key), [])
+        if occurrence >= len(found):
+            return None
+        fields = _yes_lot_amounts(*found[occurrence])
+        if fields is None:
+            return None
+        return {
+            "cells": [fields.get(f) for f in (
+                "proceeds", "cost_basis", "wash_sale_disallowed",
+                "accrued_market_discount", "realized_gain_loss")],
+            "footnotes": fields["footnotes"],
+            "adjusted_cost_basis": fields.get("adjusted_cost_basis"),
+            "adjusted_gain_loss": fields.get("adjusted_gain_loss"),
+        }
+
+
+def parse_year_end_summary_text(text: str, layout: _YesLayout | None = None) -> dict:
+    """The realized lots of a Year-End Summary, standalone or inside a
+    1099 Composite PDF.
+
+    Returns {"tax_year", "lots", "incomplete"}: one dict per lot with
+    security_name, cusip, instrument_key, quantity, acquired_date,
+    disposed_date, proceeds, cost_basis, wash_sale_disallowed,
+    accrued_market_discount, realized_gain_loss, term, covered,
+    form_8949_box, footnotes, raw_lines and tax_year; and the count of
+    lot lines whose amounts could not be read.
+
+    A lot line whose amounts the text does not hold in order is read from
+    `layout`, the words of the same PDF by their place on the page. Such a
+    lot also carries `adjusted_cost_basis` and `adjusted_gain_loss`, None
+    where not printed. Without a layout the lot is left out and
+    counted."""
+    acc = _ReportLots(n_cells=(4, 5))
+    mode = "out"   # out | subtitle | columns | data
+    term = None
+    subtitle: list[str] = []
+    section: dict = {"covered": None, "form_8949_box": None}
+    for raw in text.split("\n"):
+        line = raw.strip()
+        m_head = _YES_HEADER_RE.match(line)
+        if m_head:
+            acc.reset_description()
+            term = m_head["term"].upper()
+            mode, subtitle = "subtitle", []
+            continue
+        if mode == "out" or not line:
+            continue
+        if mode == "subtitle":
+            if line.startswith("Description OR"):
+                if subtitle:
+                    section = _yes_subtitle(" ".join(subtitle))
+                mode = "columns"
+            else:
+                subtitle.append(line)
+            continue
+        if mode == "columns":
+            if line == "Gain or (Loss)":
+                mode = "data"
+            continue
+        if line == "Adjusted" and not acc.desc and acc.pending is None:
+            continue        # the column headings' last line, on some layouts
+        if _YES_TOTAL_RE.match(line) or line.startswith("Please see the"):
+            # A section's end, or the page's: furniture until the next
+            # section header.
+            acc.reset_description()
+            mode = "out"
+            continue
+        if line.startswith("Security Subtotal"):
+            acc.reset_description()
+            continue
+        _report_line(acc, line, term=term, **section)
+    acc.drop_pending()
+    acc.resolve(layout.read if layout else None)
+    return _finish_report(acc, [_year_end_summary_lot(lot) for lot in acc.lots],
+                          _YES_TAX_YEAR_RE, text)
+
+
+def _report_symbol_key(symbol: str) -> str | None:
+    """The instrument key of a Gain/Loss Report symbol: the ticker, or an
+    option's contract in the statements' form ("XMPL 01/16/2026 50.00 C")
+    so it matches the holding's key."""
+    if _REPORT_TICKER_RE.match(symbol):
+        return symbol
+    m = _REPORT_OCC_RE.match(symbol)
+    if m:
+        return (f"{m['under']} {m['mm']}/{m['dd']}/20{m['yy']} "
+                f"{int(m['strike']) / 1000:.2f} {m['cp']}")
+    return None
+
+
+def _gain_loss_report_lot(lot: dict) -> dict:
+    """A Gain/Loss Report lot in the closed-lot shape. Its description
+    ends in ": TICKER"."""
+    proceeds, cost, gain = lot.pop("cells")
+    name, colon, symbol = " ".join(lot.pop("head")).rpartition(":")
+    symbol = symbol.strip()
+    if not colon:
+        name, symbol = symbol, ""
+    return {
+        "security_name": name.strip() or None, "cusip": None,
+        "instrument_key": _report_symbol_key(symbol),
+        "proceeds": proceeds, "cost_basis": cost,
+        "wash_sale_disallowed": None, "accrued_market_discount": None,
+        "realized_gain_loss": gain, "covered": None, "form_8949_box": None,
+        **lot,
+    }
+
+
+def parse_gain_loss_report_text(text: str) -> dict:
+    """The realized lots and cost-basis methods of a Gain/Loss Report.
+
+    Returns {"tax_year", "lots", "methods", "incomplete"}: lots in the
+    shape parse_year_end_summary_text returns (a Gain/Loss Report prints
+    no wash sale, market discount, covered flag or Form 8949 box), and
+    the methods as printed, one {"asset_class", "method"} per line of
+    the report's "Accounting Method" block."""
+    acc = _ReportLots(n_cells=(3,))
+    methods: dict[str, str] = {}
+    mode = "out"   # out | methods | columns | data
+    term = None
+    for raw in text.split("\n"):
+        line = raw.strip()
+        m_term = _GLR_TERM_RE.match(line)
+        if m_term:
+            acc.reset_description()
+            term = m_term["term"].upper()
+            mode = "columns"
+            continue
+        if _GLR_HEADER_RE.match(line):
+            acc.reset_description()
+            mode = "out"
+            continue
+        if line == "Accounting Method":
+            mode = "methods"
+            continue
+        if mode == "methods":
+            if m := _GLR_METHOD_RE.match(line):
+                methods.setdefault(m["cls"], m["method"])
+            else:
+                mode = "out"    # the block ends at its first other line
+            continue
+        if mode == "columns":
+            if line == "Gain or (Loss)":
+                mode = "data"
+            continue
+        if mode != "data" or not line:
+            continue
+        if _PAGE_RE.match(line) or line.startswith("Total "):
+            acc.reset_description()
+            mode = "out"
+            continue
+        if line.startswith("Security Subtotal"):
+            acc.reset_description()
+            continue
+        _report_line(acc, line, term=term)
+    acc.drop_pending()
+    acc.resolve(None)
+    result = _finish_report(acc, [_gain_loss_report_lot(lot) for lot in acc.lots],
+                            _GLR_TAX_YEAR_RE, text)
+    result["methods"] = [{"asset_class": k, "method": v} for k, v in methods.items()]
+    return result
+
+
+def parse(extracted: Extracted, kind: str) -> dict:
+    """An extracted realized-lot report: `kind` is 'year_end_summary' (a
+    Year-End Summary or 1099 Composite PDF, extracted with its words) or
+    'gain_loss_report'."""
+    text = extracted.text()
+    if kind == "year_end_summary":
+        return parse_year_end_summary_text(text, _YesLayout(extracted))
+    if kind == "gain_loss_report":
+        return parse_gain_loss_report_text(text)
+    raise ValueError(f"unsupported realized-lot report: {kind!r}")

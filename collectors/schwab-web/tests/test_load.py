@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import load  # noqa: E402
 import more_detail  # noqa: E402
 from collectorkit import bronze  # noqa: E402
+from collectorkit.words import Extracted, Page, params_key  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 _HEAD_VERSION = int(max(MIGRATIONS_DIR.glob("[0-9]*.sql")).name[:4])
@@ -1934,6 +1935,15 @@ class TestFailedCopyLeavesDocUnseen:
 # 1099-B + 3rd-Party-Distribution load integration
 # ============================================================
 
+def _pdf_text(text):
+    """A stand-in for extraction.pdfium: every PDF reads as `text`, or as
+    what `text(path)` returns, on one page that holds no words."""
+    def pdfium(path, *_, **__):
+        page = text(path) if callable(text) else text
+        return Extracted("pdfium", (Page(page, ((params_key({}), ()),)),))
+    return pdfium
+
+
 def _make_doc_bronze(root: Path, run_ts: str, suffix: str,
                      docs: list[dict]) -> Path:
     """Bronze run whose statements area holds arbitrary documents.
@@ -2152,7 +2162,7 @@ class TestForm1099bLoad:
             self, monkeypatch, migrated, tmp_path):
         # The PDF is named apart from its XML twin; the manifest row they
         # share (date and document) pairs them.
-        monkeypatch.setattr(load.tf, "extract_text_pdfium", lambda path: "")
+        monkeypatch.setattr(load.extraction, "pdfium", _pdf_text(""))
         pdf = "1099-Composite-and-Year-End-Summary---2021_2022-02-15_999.PDF"
         run = _make_doc_bronze(tmp_path, "20260520T120000Z", "999", [
             {"date": "02/15/2022", "type": "Tax Forms",
@@ -2538,8 +2548,8 @@ def test_a_silver_loaded_before_open_lots_gains_them_on_the_next_load(
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(load.pp, "_extract_pdf_text",
-                        lambda path: _LEGACY_STATEMENT_TEXT)
+    monkeypatch.setattr(load.extraction, "pdfium",
+                        _pdf_text(_LEGACY_STATEMENT_TEXT))
     assert load.run_load(args) == 0
 
     conn = sqlite3.connect(str(args.silver_db))
@@ -2624,7 +2634,7 @@ class TestClosedLotsLoad:
                 calls.append(Path(path).name)
             return (_MINI_GLR_TEXT if "Gain-Loss" in str(path)
                     else _MINI_YES_TEXT)
-        monkeypatch.setattr(load.tf, "extract_text_pdfium", text)
+        monkeypatch.setattr(load.extraction, "pdfium", _pdf_text(text))
 
     def test_a_1099b_lot_lands_in_transactions_and_closed_lots(
             self, monkeypatch, migrated, tmp_path):
@@ -2680,9 +2690,9 @@ class TestClosedLotsLoad:
     def test_unreadable_lots_are_counted(self, monkeypatch, migrated, tmp_path):
         broken = _MINI_YES_TEXT.replace(
             "$ 80.00 $ 20.00 -- $ 60.00 \n", "$ 80.00 $\n")
-        monkeypatch.setattr(load.tf, "extract_text_pdfium", lambda path: broken)
-        # The page layout does not hold the lot either.
-        monkeypatch.setattr(load.tf, "_pdf_words", lambda path: [])
+        monkeypatch.setattr(load.extraction, "pdfium", _pdf_text(broken))
+        # The page layout does not hold the lot either: _pdf_text's
+        # pages carry no words.
         stats = load.load_run(migrated, self._bronze(tmp_path), workers=1)
         assert stats["realized_lots_unreadable"] == 1
 
@@ -2769,7 +2779,7 @@ class TestReportsWithoutRows:
             return orig_1099b(path, fmt)
 
         orig_1099b = load.tf.parse_1099b
-        monkeypatch.setattr(load.tf, "extract_text_pdfium", text)
+        monkeypatch.setattr(load.extraction, "pdfium", _pdf_text(text))
         monkeypatch.setattr(load.tf, "parse_1099b", parse_1099b)
         return calls
 
