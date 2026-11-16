@@ -42,7 +42,7 @@ def render(spec):
         "account_overrides": spec["config"]["account_overrides"],
         "declared_accounts": spec["declared"],
         "returns_policy_overrides": spec["config"]["returns_policy_overrides"],
-        "returns_transfer_matching": {"enabled": True, "tolerance_pct": 0},
+        "returns_transfer_matching": {"enabled": True},
         "inception_overrides": spec["config"]["inception_overrides"],
         "lots": spec["config"]["lots"],
         "equity_transfers": "overrides/equity_transfers.csv",

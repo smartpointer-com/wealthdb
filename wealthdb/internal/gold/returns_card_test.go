@@ -86,11 +86,11 @@ func seedCardFixture(t *testing.T, db *sql.DB, ctx context.Context, withCard boo
 				{tMid, canonical.TxKindInterest, -12},
 				{tMid, canonical.TxKindFee, -95},
 				{tMid, canonical.TxKindReward, 10},
-				// The counter-leg of CHK1's -200 payment: same day, same
-				// native amount, a different source ⇒ a cross-source match
-				// candidate but for the card seam.
+				// The counter-leg of CHK1's -200 payment, stored as its
+				// link: a cross-source pair but for the card seam.
 				{tMid, canonical.TxKindTransferIn, 200},
 			})
+		seedTransferLink(t, db, ctx, "bank", "CHK1-tx0", "cardco", "CARD1-tx4")
 	}
 
 	seedFX(t, db, dy(2024, time.January, 1), "USD", "CHF", "1.10")
@@ -98,10 +98,10 @@ func seedCardFixture(t *testing.T, db *sql.DB, ctx context.Context, withCard boo
 	return time.Date(2024, time.July, 2, 23, 59, 59, 0, time.UTC).Unix()
 }
 
-// cardTestMatching is deliberately ON in every card test: cross-source matching
-// is the path a card leg could do the most damage on (netting away a real
-// checking withdrawal), so the comparisons run with it enabled.
-var cardTestMatching = &TransferMatching{WindowDays: 3, TolerancePct: 1}
+// cardTestMatching is deliberately ON in every card test: a stored link is the
+// path a card leg could do the most damage on (netting away a real checking
+// withdrawal), so the comparisons run with the links read.
+var cardTestMatching = &TransferMatching{}
 
 // renderReturnRows serializes a returns result to a comparable string, every
 // field included, in the engine's own row order.

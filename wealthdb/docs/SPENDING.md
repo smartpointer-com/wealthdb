@@ -605,8 +605,8 @@ wording on either (a refunded fee, a cancelled or returned wire, a
 `STORNO`). A payment out and a credit that merely share an account and
 a size stay two rows. A reversal pair's legs read `internal_transfer`,
 with their own account as the far account, so they leave income and
-spending and the cash flow reads them as internal. The returns matcher
-does not run this phase: it reads such a pair as two boundary flows. A
+spending and the cash flow reads them as internal. Returns counts such a
+pair as two boundary flows at the accounts grain and nets it above. A
 `match` line pairs what it names, and an `unmatch` line keeps a leg
 out.
 
@@ -2261,14 +2261,12 @@ Each decision points to the section that argues it.
   verdict but never override one.
 - **Deterministic enrichment is folded into `load`**; the model tier
   is only ever explicit (§6).
-- **The matcher's window defaults to 5 days**, the same as the returns
-  matcher. One matching core and one banding keep a movement from being
-  internal in one report and external in the other.
+- **The matcher's window defaults to 5 days.** Returns reads the pairs it
+  stores, so a movement is internal in every report or in none.
 - **Two legs of one account pair only as a reversal, last** (§3). A
   leg with a partner on another account keeps it; a leg still unpaired
   pairs with its own account's leg that reads as its reversal (one
-  signature, or reversal wording). The returns matcher does not pair
-  legs of one account.
+  signature, or reversal wording). Returns reads the same pairs.
 - **The catch-all kinds (`other`, `journal`) are outside the
   population.** Neither carries a reliable sign. `wealthdb status -v`
   counts the in-scope rows of either kind, so the gap is visible.

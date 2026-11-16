@@ -13,11 +13,11 @@ func leg(group, owner, id string, day int64, amt float64) TransferLeg {
 	return TransferLeg{Group: group, Owner: owner, ID: id, Day: day, Ccy: "USD", Amt: amt}
 }
 
-// TestMatchCrossTransfersIndexesTransferLike pins the returns wrapper's SECOND
+// TestBindStoredLinksIndexesTransferLike pins the returns binding's SECOND
 // side effect: linking an account must also index its transferLike slice, or
 // crossMatchedDrops silently reads every linked leg as a nonTransfer one and
 // applies the wrong subsumption rule. Accounts without links stay unindexed.
-func TestMatchCrossTransfersIndexesTransferLike(t *testing.T) {
+func TestBindStoredLinksIndexesTransferLike(t *testing.T) {
 	t.Parallel()
 	byKey := map[string]*accountData{
 		acctKey("s1", "A"): {src: "s1", acct: "A", transferLike: []returns.Flow{
@@ -31,10 +31,8 @@ func TestMatchCrossTransfersIndexesTransferLike(t *testing.T) {
 			{Day: 100, Amount: 42, ID: "unlinked"},
 		}},
 	}
-	matchCrossTransfers([]crossCandidate{
-		{src: "s1", acct: "A", txID: "t1", day: 100, ccy: "USD", amt: -5000},
-		{src: "s2", acct: "B", txID: "t2", day: 102, ccy: "USD", amt: 5000},
-	}, &TransferMatching{WindowDays: 5, TolerancePct: 0.5}, byKey)
+	bindStoredLinks([]storedTransferLink{{src: "s1", txID: "t1", farSrc: "s2", farTxID: "t2"}},
+		attachedFlows{{"s1", "t1"}: {acct: "A", day: 100}, {"s2", "t2"}: {acct: "B", day: 102}}, byKey)
 
 	want := map[string]bool{"t1": true, "fee": true}
 	if got := byKey[acctKey("s1", "A")].transferLikeIDs; !reflect.DeepEqual(got, want) {
@@ -51,8 +49,7 @@ func TestMatchCrossTransfersIndexesTransferLike(t *testing.T) {
 	}
 }
 
-// TestMatchTransferLegsWithinGroup pins the knob the returns path never sets:
-// two accounts of the SAME group pair; CrossGroupOnly forbids it.
+// TestMatchTransferLegsWithinGroup: two accounts of the SAME group pair.
 func TestMatchTransferLegsWithinGroup(t *testing.T) {
 	t.Parallel()
 	legs := []TransferLeg{
@@ -63,13 +60,9 @@ func TestMatchTransferLegsWithinGroup(t *testing.T) {
 	if len(got) != 1 || got[0].Debit.ID != "out" || got[0].Credit.ID != "in" {
 		t.Errorf("within-group pair = %+v, want out→in", got)
 	}
-	if got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, CrossGroupOnly: true}); len(got) != 0 {
-		t.Errorf("CrossGroupOnly must reject the same-group pair, got %+v", got)
-	}
 }
 
-// TestSameAccountLegsNeverPair is the returns caller's matcher, without the
-// reversal phase: an out and a back of one size on one account, days apart
+// TestSameAccountLegsNeverPair is the matcher without the reversal phase: an out and a back of one size on one account, days apart
 // and inside the window, stay two legs. A credit on the debit's own account
 // is no candidate in any cross-account phase, so it neither wins a tie nor
 // beats a far partner by being exact.
@@ -445,9 +438,7 @@ func TestSharedReferenceRefusesWhatItCannotResolve(t *testing.T) {
 
 // A reference is an identity only inside one source's id space. Two banks can
 // mint the same string, so a pair drawn across the seam would be a
-// coincidence wearing the clothes of a fact — and under CrossGroupOnly, which
-// forbids same-group pairing outright, the phase has nothing left to do at
-// all.
+// coincidence wearing the clothes of a fact.
 func TestSharedReferenceNeverCrossesSources(t *testing.T) {
 	t.Parallel()
 	legs := []TransferLeg{
@@ -456,14 +447,6 @@ func TestSharedReferenceNeverCrossesSources(t *testing.T) {
 	}
 	if got := MatchTransferLegs(append([]TransferLeg(nil), legs...), TransferMatchOpts{}); len(got) != 0 {
 		t.Errorf("a bare reference must not pair across sources, got %+v", got)
-	}
-	sameSource := []TransferLeg{
-		refLeg("checking", "out", 100, "USD", -500, "TXN-8"),
-		refLeg("savings", "in", 100, "CHF", 440, "TXN-8"),
-	}
-	if got := MatchTransferLegs(append([]TransferLeg(nil), sameSource...),
-		TransferMatchOpts{CrossGroupOnly: true}); len(got) != 0 {
-		t.Errorf("CrossGroupOnly must leave the reference phase with nothing to pair, got %+v", got)
 	}
 }
 

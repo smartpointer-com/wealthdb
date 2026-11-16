@@ -1020,7 +1020,7 @@ Example config file:
 | `returns_policy_overrides` | object | Optional. Per-source adjustments to the registered ReturnsPolicy, keyed by `silver_source_id` (not adapter kind). `flow_regime` replaces the source's flow classification with a named regime's canonical kind sets (`"flow_complete"` \| `"crypto_partial"` \| `"nav_only"`); `accounts_grain` sets the per-account display mode (`"normal"` \| `"blanked"` \| `"hidden"`). Unset fields keep the registered policy's values. See §5.6. |
 | `returns_hide` | object | Optional. Suppresses accounts' or portfolios' OWN return rows at every grain while their values and flows keep contributing to every aggregate — the display mirror of `returns_exclude`. Same grain-keyed shape (`portfolios`, `accounts` per `silver_source_id`). See §5.7. |
 | `lots` | object | Optional. The lot engine (docs/LOTS.md §7): `method` (`fifo` default, `lifo`, `hifo`, `lofo`, `average`), the global method; `missing_basis` (`ignore` default, `zero`), the readers' default reading of a missing cost basis; `sources` keyed by `silver_source_id` with `method`, `mode` (`fill` \| `shadow` \| `stated` \| `off`) and `grain` (`account` \| `portfolio`) overriding the source kind's policy; `portfolios` and `accounts` keyed by `silver_source_id` to an external id to `{"method": …}`; `basis`, a list of `{ "source", "account"?, "instrument", "per_unit", "acquired"?, "note"? }`, the cost basis of an instrument's lots the engine opens without one (a seed, a receipt nothing pairs, a transfer in with no ledger cost), at quantity × `per_unit` with `acquired` as the acquisition date. The method in force for a key is its account's, else its portfolio's, else its source's, else the kind's own, else the global one. Every source id must name a configured source; a bad value fails the load. Absent ⇒ fifo and each kind's registered policy. |
-| `returns_transfer_matching` | object | Optional, off by default. Enables the cross-source transfer matcher: an external leg whose counterparty leg exists in ANOTHER source (opposite sign, same native currency, equal amount within `tolerance_pct`, within `window_days`) nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. Fields: `enabled` (bool), `window_days` (0–30, default 5), `tolerance_pct` (0–5, default 0.5). See §5.8. |
+| `returns_transfer_matching` | object | Optional, off by default. `enabled` (bool) makes returns read the transfer pairs the load stores: a pair nets out of every return aggregate containing BOTH legs, while finer grains keep counting each leg. `window_days` and `tolerance_pct` are accepted and ignored, and the load says so: the load's matcher pairs the legs under `spending.internal_transfer_matching`. See §5.8. |
 | `cashflow` | object | Optional. Groups the cash flow statement's knobs: the pool's exclusions, the wrapper boundaries, and the cash flow projection's look-back. It is deliberately small: cashflow adds no tier and buys nothing from a model, so the rules, pins and transfer overrides that decide what a row IS are the two families' — a verdict written there is what cashflow reads. See docs/CASHFLOW.md §7. |
 | `cashflow.accounts` | object | Optional. The cash POOL, and the only account gate cashflow applies. **Exclusion only** — `{"exclude": {"<source>": ["<account-id>"]}}` — because every account is pooled by default, so an `include` could fence nothing and the loader refuses the unknown field rather than ignoring it. It inherits neither family's scope on purpose: an account a family drops is not thereby outside the household's cash. |
 | `cashflow.wrappers` | object | Optional. Moves a tax wrapper across the household boundary, `{"<wrapper>": "<destination>"}`, where the destination is `household` (no crossing at all), `retirement`, `education`, `health`, `trusts` or `giving`. Per WRAPPER, not per account — an account a source mis-labelled is fixed with the per-account `tax_wrapper` override, so every consumer agrees whose money it is. An unknown wrapper or destination fails the load naming the entry. Re-stamped by every enrichment pass. |
@@ -1032,7 +1032,7 @@ Example config file:
 | `income.categorization` | object | Optional. As `spending.categorization`, `fence_person_names` included. **Absent ⇒ inherits `spending.categorization` whole** — one household, one local model, one answer to what may leave the machine. Whole-block rather than per-field: a half-inherited endpoint is a configuration nobody wrote down, and a half-inherited fence would be one that quietly turned itself off. `context` additionally accepts `payer`, the income spelling of the narrowest level. |
 | `spending` | object | Optional. Groups the spending feature's per-deployment knobs. Absent ⇒ every account counts, the internal-transfer matcher runs on its defaults, no rules and no pins apply, and `wealthdb categorize` refuses for want of a model. See docs/SPENDING.md. |
 | `spending.accounts` | object | Optional. Account-scope overrides, keyed by `silver_source_id` in the `returns_exclude` shape, with `include` / `exclude` lists of account ids. An account may not appear in both. Stamped into gold's `spend_account_scope` by every enrichment pass, so removing an entry removes its effect. An entry naming an account gold does not hold scopes nothing; the pass counts such entries and the load summary reports how many. Which way round the overrides bite is the scope rule — see docs/SPENDING.md §1. |
-| `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Deliberately the same defaults as `returns_transfer_matching` — one matching core, one banding. Both bound the matcher's banded passes only: a pair the override ledger states, or one a source asserts — by stamping a reference on both legs, or by describing one leg's currency and figure on the other — is not a guess and is not banded. `names` (list of `{source, account?, match}`, each `match` a regular expression) says which narratives name which account as the other side of a movement; a leg that names one pairs with nothing else, and named pairs are claimed before the amount pass. See docs/SPENDING.md §3. |
+| `spending.internal_transfer_matching` | object | Optional. Knobs for the matcher that pairs the two legs of an own-account move so neither counts as spending: `window_days` (0–30, default 5) and `tolerance_pct` (0–5, default 0.5). Returns reads the pairs this matcher stores, so one matching core and one banding serve every family. Both bound the matcher's banded passes only: a pair the override ledger states, or one a source asserts — by stamping a reference on both legs, or by describing one leg's currency and figure on the other — is not a guess and is not banded. `names` (list of `{source, account?, match}`, each `match` a regular expression) says which narratives name which account as the other side of a movement; a leg that names one pairs with nothing else, and named pairs are claimed before the amount pass. See docs/SPENDING.md §3. |
 | `spending.rules[]` | array | Optional, default empty. The deployment's own entries in the rule tier, each `{ "match": <regex>, "category": <spend_detailed>, "scope"?, "asset_class"?, "far"? }`. `match` is compiled case-insensitively and tested against `counterparty`, the full `description` and `provider_category`; among config rules the first written wins. `category` may be any valid `spend_detailed` value, vendored or delta. `scope` narrows a rule to a `source`, `portfolio` or `account` and an inclusive `from`/`to` date range. `asset_class` is admitted only beside `investment` and `far` (a `declared_accounts` id) only beside `internal_transfer` ([CASHFLOW.md §4 and §7](CASHFLOW.md)). An invalid pattern, one matching the empty string, or an unknown value fails the load naming `spending.rules[i]`. Deployment-specific: lives in the config, never in the repository. [SPENDING.md §3](SPENDING.md), *Config-supplied rules*, owns the semantics. |
 | `spending.pins` | string | Optional. Filesystem path to a CSV ledger of per-transaction category pins — the top of the precedence lattice, for the row nothing else can classify. Columns `silver_source_id, account, occurred_at (YYYY-MM-DD), amount, currency, spend_detailed, asset_class, note` and no others — an unknown header fails the parse, and `asset_class` is optional; `account` is a gold `account_external_id` or a nickname, resolved as `equity_transfers` resolves it; `spend_detailed` may be any valid value, vendored or delta; `note` is free text kept for the ledger's own readability and is not carried into gold. `~` / `$HOME` / `${VAR}` expanded, a relative path resolved against the config file's directory; a missing file is a no-op. Re-stamped by every enrichment pass, so removing a row removes its effect. See §13.10. |
 | `spending.transfer_overrides` | string | Optional. Path to a CSV ledger of manual match and unmatch decisions for the internal-transfer matcher, for a pair the data cannot settle, and of `reimburse` lines that link a repayment to its outflow. Expanded as above; a missing file is a no-op. Both families read it. See [SPENDING.md §3](SPENDING.md), *The override ledger* and *Reimbursements*. |
@@ -1201,7 +1201,7 @@ an entity from the coarse-grain math instead.
 - **Returns only.** Holdings / net-worth views are unaffected.
 - Absent ⇒ nothing hidden beyond the cash accounts and policy.
 
-### 5.8 Cross-source transfer matching (opt-in)
+### 5.8 Transfer pairs in returns (opt-in)
 
 Per-source flow classification can never pair the two legs of a
 cross-custodian move: the sending source books a real withdrawal/journal, the
@@ -1212,42 +1212,38 @@ aggregate containing BOTH accounts double-represents the move (the
 
 ```json
 "returns_transfer_matching": {
-    "enabled": true,
-    "window_days": 5,
-    "tolerance_pct": 0.5
+    "enabled": true
 }
 ```
 
-- **Matching** links opposite-sign external legs across DIFFERENT sources —
-  same native currency, equal amount within `tolerance_pct` of the larger leg
-  (absolute floor 0.01, so `0` means exact-to-a-cent; the default 0.5% covers
-  wire fees deducted in transit), within `window_days` — 1:1 greedy,
-  deterministic, ranked by (amount gap, day distance) so an exact-amount
-  partner beats a nearer-day coincidence. Native amounts (not output-currency
-  conversions) drive the match, so the three materialized currency partitions
-  derive identical pairs whenever their attached-flow universes coincide (a
-  leg whose FX is unresolved in a partition is a candidate only where it
-  attached and can shift greedy pairings there). Same-source pairs are out of scope: within a source
-  the silver classifier and the transferLike netter own internality.
-  Equity-transfer ledger legs (`xfer:` ids) are exempt — an intentionally
-  recorded pair the transferLike netter already handles.
+- **The pairs** are the links the load's enrichment pass stores in
+  `transfer_links`: one matcher, under `spending.internal_transfer_matching`'s
+  window and tolerance, with the override ledger applied, for every family
+  (docs/SPENDING.md §3). Returns pairs nothing itself and reads no ledger, so a
+  movement is internal in every report or in none. A ledger edit reaches
+  returns with the next load.
+- **Which pairs bind:** every pair whose two legs are external flows of the
+  currency's dataset, across sources and inside one. A leg whose partner is no
+  flow (a card's, one with no FX path) stays a plain flow. The transferLike
+  netter keeps the legs no pair dropped (journal legs, which the matcher does
+  not pair, among them).
 - **Netting is per entity**: a linked pair nets only in aggregates where BOTH
   legs are live members of the window — both accounts in the entity (post
   `returns_exclude`), both days inside it, neither leg in a subsumption
   region (a pre-debut or closure-drain leg is represented by its synthetic
-  onboarding/closure amount, so its live partner keeps counting). The
-  sources/portfolios grains therefore keep counting each leg as the real
-  boundary flow it is for them; typically only global nets.
-- **Quality:** entities that netted pairs tag `cross_source_netted=N`;
-  their `unmatched_transfers` count shrinks accordingly. Cross-source
-  netting obeys `--netting off` like the heuristic netter — the diagnostic
-  view shows every raw leg.
-- **Off by default.** Absent block or `enabled: false` ⇒ the matcher never
-  runs; output is byte-identical to the per-source heuristics alone. A
-  matched-nothing run is also byte-identical.
-- **Limitations:** same-native-currency pairs only (a CHF→USD
-  cross-source wire never matches); one-to-one only (a split wire — one
-  withdrawal, two deposits — pairs at most one deposit).
+  onboarding/closure amount, so its live partner keeps counting). A pair
+  across sources therefore keeps counting each leg at the sources and
+  portfolios grains, the real boundary flow it is for them; a pair inside one
+  source nets there too. The accounts grain nets no pair.
+- **Quality:** entities that netted pairs tag `cross_source_netted=N`, the
+  pairs inside one source among them; their `unmatched_transfers` count
+  shrinks accordingly. The pairs obey `--netting off` like the heuristic
+  netter — the diagnostic view shows every raw leg.
+- **Off by default.** Absent block or `enabled: false` ⇒ no pair is read;
+  output is byte-identical to the per-source heuristics alone. A run that
+  binds no pair is also byte-identical.
+- **Limitations:** the matcher's own (docs/SPENDING.md §3); one-to-one only
+  (a split wire — one withdrawal, two deposits — pairs at most one deposit).
 
 ## 6. Plugin / adapter architecture
 

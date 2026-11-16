@@ -194,11 +194,11 @@ type SpendingMatchName struct {
 // Pattern is Match compiled; nil until Validate has run.
 func (n SpendingMatchName) Pattern() *regexp.Regexp { return n.re }
 
-// Defaults for the spending matcher's knobs, deliberately equal to
-// DefaultTransferMatchWindowDays / DefaultTransferMatchTolerancePct.
+// Defaults for the spending matcher's knobs: cross-border wires settle
+// within a business week, and 0.5% covers wire fees deducted in transit.
 const (
-	DefaultSpendMatchWindowDays   = DefaultTransferMatchWindowDays
-	DefaultSpendMatchTolerancePct = DefaultTransferMatchTolerancePct
+	DefaultSpendMatchWindowDays   = 5
+	DefaultSpendMatchTolerancePct = 0.5
 )
 
 // SpendingCategorization is the `spending.categorization` block: the

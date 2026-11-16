@@ -12,10 +12,11 @@ import (
 // deposit on the receiving one — and left unpaired, the outgoing leg reads
 // as spending.
 //
-// What this caller decides differently from the returns engine, each
-// argued in docs/SPENDING.md §3 ("The matcher"):
+// The pass stores its pairs in transfer_links, which every family reads,
+// returns included. What this caller decides, each argued in
+// docs/SPENDING.md §3 ("The matcher"):
 //
-//   - same-source pairing is allowed (CrossGroupOnly=false);
+//   - legs pair across sources and inside one;
 //   - a leg no cross-account phase paired pairs with its reversal on its
 //     own account (SameAccountReversals, with TransferLeg.Signature and
 //     Reversal from reversalRe);
@@ -94,7 +95,6 @@ func matchTransferPairs(legs []gold.TransferLeg, windowDays int, tolerancePct fl
 		WindowDays:            windowDays,
 		TolerancePct:          tolerancePct,
 		ToleranceMaxAbs:       gold.DefaultTransferFeeCap,
-		CrossGroupOnly:        false,
 		Overrides:             overrides,
 		SameAccountReversals:  true,
 		Rate:                  rates.Direct,

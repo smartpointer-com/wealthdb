@@ -178,8 +178,8 @@ func (m *movedLegs) left(a *accountData, f returns.Flow) {
 
 func (m *movedLegs) add(a *accountData, f returns.Flow) { m.moves[a] = append(m.moves[a], f) }
 
-// settle applies the fate of a leg no pair claims, or of a cross-source pair's
-// leg (fateInside), and returns flows with the leg appended where it is a flow.
+// settle applies the fate of a leg no pair claims, or of a stored pair's leg
+// (fateInside), and returns flows with the leg appended where it is a flow.
 func (m *movedLegs) settle(flows []returns.Flow, l flowLeg, f fate) []returns.Flow {
 	switch f {
 	case fateFlow:
@@ -253,9 +253,9 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 // change it causes (RETURNS-NOTES §"staggered inception"):
 //
 //  1. every leg is classified once: its region in its account's life;
-//  2. legs pair: a cross-source matched pair whose both legs would be flows on
-//     their own drops (crossMatchedDrops), and the netter cancels opposite
-//     transfer-like legs. It runs over every transfer-like leg, pre-debut and
+//  2. legs pair: a stored pair whose both legs would be flows on their own
+//     drops (crossMatchedDrops), and the netter cancels opposite transfer-like
+//     legs no such pair dropped. It runs over every such leg, pre-debut and
 //     zero-tail legs included, so an internal pair whose other leg sits on a
 //     live account still cancels. A deposit or withdrawal never nets by
 //     heuristic (RETURNS-NOTES);
@@ -272,8 +272,8 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, aggregate bool) ([]returns.Flow, []string, []returns.Flow) {
 	if !aggregate {
 		// Accounts grain, single constituent: every policy-external flow is exact.
-		// (Cross-source links never net here: the partner is by definition in
-		// another source, so it can't be a member of a single-account entity.)
+		// (Links never net here: each leg is a boundary flow of its account,
+		// even where a stored pair keeps both legs on one account.)
 		var flows []returns.Flow
 		for f := range assets[0].legs(winFrom, winTo) {
 			flows = append(flows, f)
@@ -282,8 +282,8 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 	}
 	w := daySpan{winFrom, winTo}
 
-	// Cross-source matched pairs obey the same --netting switch as the
-	// heuristic netter: netting off is the diagnostic view of every raw leg.
+	// Stored pairs obey the same --netting switch as the heuristic netter:
+	// netting off is the diagnostic view of every raw leg.
 	var tags []string
 	var crossDrop map[string]bool
 	if p.Netting {
@@ -570,8 +570,8 @@ func groupOnboardStep(grp []*accountData, day int64, moved *movedLegs) float64 {
 	return step
 }
 
-// crossMatchedDrops resolves the cross-source transfer links (crossLinks,
-// written by matchCrossTransfers) against THIS entity window: a linked pair
+// crossMatchedDrops resolves the stored transfer links (crossLinks, bound
+// by bindStoredLinks) against THIS entity window: a linked pair
 // nets — both legs dropped — strictly when BOTH legs are live members, i.e.
 // the partner's account is in the entity, both legs' days are inside
 // (winFrom, winTo], and each leg would be a flow on its own (fateOf): a

@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -159,30 +158,12 @@ func ClearMaterializeKey(ctx context.Context, db *sql.DB, scope string) error {
 	return nil
 }
 
-// HashInputs is the sha256 of the config's bytes and of each other
-// file a materialize reads, named in order. The whole config is the
+// HashInputs is the sha256 of the config's bytes. The whole config is the
 // input: a key that does not affect a table still changes the hash, and
 // the run materializes again. A hash of only the keys a phase reads
-// would skip a run it should not. Another file that is absent hashes
-// apart from an empty one; an empty name is no file.
-func HashInputs(config []byte, files ...string) (string, error) {
-	h := sha256.New()
-	h.Write(config)
-	for _, path := range files {
-		if path == "" {
-			continue
-		}
-		fmt.Fprintf(h, "\x00%s\x00", path)
-		b, err := os.ReadFile(path)
-		switch {
-		case os.IsNotExist(err):
-			h.Write([]byte("absent"))
-		case err != nil:
-			return "", fmt.Errorf("hash %s: %w", path, err)
-		default:
-			fmt.Fprintf(h, "%d\x00", len(b))
-			h.Write(b)
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+// would skip a run it should not. What a load writes, the ledgers' effects
+// among it, the load key stamps.
+func HashInputs(config []byte) string {
+	h := sha256.Sum256(config)
+	return hex.EncodeToString(h[:])
 }

@@ -12,145 +12,74 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
-// tmParams returns CLI-default params with the cross-source transfer matcher
-// enabled at the documented defaults.
+// tmParams returns CLI-default params with the stored transfer links read.
 func tmParams(level string, from, to int64) ReturnParams {
 	p := params(level, from, to)
-	p.TransferMatching = &TransferMatching{WindowDays: 5, TolerancePct: 0.5}
+	p.TransferMatching = &TransferMatching{}
 	return p
 }
 
-// TestMatchCrossTransfers pins the pure matcher: cross-source only, same
-// native currency, amount within tolerance, day window, (amount gap, day
-// distance)-ranked greedy, one-to-one, deterministic.
-func TestMatchCrossTransfers(t *testing.T) {
+// TestBindStoredLinks pins which stored links bind: both legs attached
+// flows, across sources and inside one.
+func TestBindStoredLinks(t *testing.T) {
 	t.Parallel()
-	mk := func() map[string]*accountData {
-		return map[string]*accountData{
-			acctKey("s1", "A"): {src: "s1", acct: "A"},
-			acctKey("s2", "B"): {src: "s2", acct: "B"},
-			acctKey("s2", "C"): {src: "s2", acct: "C"},
-		}
+	links := []storedTransferLink{
+		{src: "s1", txID: "out", farSrc: "s2", farTxID: "in"},
+		{src: "s2", txID: "in", farSrc: "s1", farTxID: "out"},
+		{src: "s1", txID: "w", farSrc: "s1", farTxID: "d"},
+		{src: "s1", txID: "lone", farSrc: "s2", farTxID: "card"},
 	}
-	tm := &TransferMatching{WindowDays: 5, TolerancePct: 0.5}
-	cand := func(src, acct, txID string, day int64, amt float64) crossCandidate {
-		return crossCandidate{src: src, acct: acct, txID: txID, day: day, ccy: "USD", amt: amt}
+	flows := attachedFlows{
+		{"s1", "out"}:  {acct: "A", day: 100},
+		{"s2", "in"}:   {acct: "B", day: 102},
+		{"s1", "w"}:    {acct: "A", day: 110},
+		{"s1", "d"}:    {acct: "C", day: 110},
+		{"s1", "lone"}: {acct: "A", day: 120},
 	}
-
-	t.Run("basic pair links both accounts", func(t *testing.T) {
-		byKey := mk()
-		matchCrossTransfers([]crossCandidate{
-			cand("s1", "A", "t1", 100, -5000),
-			cand("s2", "B", "t2", 102, 5000),
-		}, tm, byKey)
-		a, b := byKey[acctKey("s1", "A")], byKey[acctKey("s2", "B")]
-		if l, ok := a.crossLinks["t1"]; !ok || l.src != "s2" || l.acct != "B" || l.txID != "t2" || l.day != 102 {
-			t.Errorf("debit link = %+v, %v", l, ok)
-		}
-		if l, ok := b.crossLinks["t2"]; !ok || l.txID != "t1" {
-			t.Errorf("credit link = %+v, %v", l, ok)
-		}
-	})
-
-	// Equal amounts on both candidates: the gap ties, so day distance decides.
-	t.Run("prefers the nearest-day credit", func(t *testing.T) {
-		byKey := mk()
-		matchCrossTransfers([]crossCandidate{
-			cand("s1", "A", "t1", 100, -5000),
-			cand("s2", "B", "far", 104, 5000),
-			cand("s2", "C", "near", 101, 5000),
-		}, tm, byKey)
-		if l := byKey[acctKey("s1", "A")].crossLinks["t1"]; l.txID != "near" {
-			t.Errorf("picked %q, want the nearest-day credit", l.txID)
-		}
-	})
-
-	t.Run("tolerance admits a wire fee, not more", func(t *testing.T) {
-		byKey := mk()
-		matchCrossTransfers([]crossCandidate{
-			cand("s1", "A", "t1", 100, -10000),
-			cand("s2", "B", "fee", 100, 9960), // 0.4% short: within 0.5%
-		}, tm, byKey)
-		if _, ok := byKey[acctKey("s1", "A")].crossLinks["t1"]; !ok {
-			t.Error("0.4% fee gap must still match")
-		}
-		byKey = mk()
-		matchCrossTransfers([]crossCandidate{
-			cand("s1", "A", "t1", 100, -10000),
-			cand("s2", "B", "off", 100, 9900), // 1% short: beyond tolerance
-		}, tm, byKey)
-		if len(byKey[acctKey("s1", "A")].crossLinks) != 0 {
-			t.Error("1% amount gap must not match at 0.5% tolerance")
-		}
-	})
-
-	t.Run("guards: window, source, currency", func(t *testing.T) {
-		byKey := mk()
-		matchCrossTransfers([]crossCandidate{
-			cand("s1", "A", "t1", 100, -5000),
-			cand("s2", "B", "late", 106, 5000), // 6 days: outside the 5-day window
-			{src: "s1", acct: "A", txID: "same-src", day: 100, ccy: "USD", amt: 5000},
-			{src: "s2", acct: "C", txID: "chf", day: 100, ccy: "CHF", amt: 5000},
-		}, tm, byKey)
-		if n := len(byKey[acctKey("s1", "A")].crossLinks); n != 0 {
-			t.Errorf("no candidate should have matched, got %d links", n)
-		}
-	})
-
-	t.Run("one-to-one", func(t *testing.T) {
-		byKey := mk()
-		matchCrossTransfers([]crossCandidate{
-			cand("s1", "A", "d1", 100, -5000),
-			cand("s1", "A", "d2", 100, -5000),
-			cand("s2", "B", "c1", 100, 5000),
-		}, tm, byKey)
-		links := 0
-		for _, id := range []string{"d1", "d2"} {
-			if _, ok := byKey[acctKey("s1", "A")].crossLinks[id]; ok {
-				links++
-			}
-		}
-		if links != 1 {
-			t.Errorf("one credit must satisfy exactly one debit, got %d", links)
-		}
-	})
-
-	t.Run("nil config is inert", func(t *testing.T) {
-		byKey := mk()
-		matchCrossTransfers([]crossCandidate{
-			cand("s1", "A", "t1", 100, -5000),
-			cand("s2", "B", "t2", 100, 5000),
-		}, nil, byKey)
-		if byKey[acctKey("s1", "A")].crossLinks != nil {
-			t.Error("nil TransferMatching must produce no links")
-		}
-	})
+	byKey := map[string]*accountData{
+		acctKey("s1", "A"): {src: "s1", acct: "A"},
+		acctKey("s2", "B"): {src: "s2", acct: "B"},
+		acctKey("s1", "C"): {src: "s1", acct: "C"},
+	}
+	bindStoredLinks(links, flows, byKey)
+	if got, want := byKey[acctKey("s1", "A")].crossLinks, map[string]crossLink{
+		"out": {src: "s2", acct: "B", txID: "in", day: 102},
+		"w":   {src: "s1", acct: "C", txID: "d", day: 110},
+	}; !reflect.DeepEqual(got, want) {
+		t.Errorf("A: %+v; want %+v", got, want)
+	}
+	if got := byKey[acctKey("s2", "B")].crossLinks["in"]; got != (crossLink{src: "s1", acct: "A", txID: "out", day: 100}) {
+		t.Errorf("B: %+v", got)
+	}
+	if got := byKey[acctKey("s1", "C")].crossLinks["d"]; got != (crossLink{src: "s1", acct: "A", txID: "w", day: 110}) {
+		t.Errorf("C: %+v; a link inside one source binds too", got)
+	}
+	if _, ok := byKey[acctKey("s1", "A")].crossLinks["lone"]; ok {
+		t.Error("a link whose partner is no flow is not bound")
+	}
+	if byKey[acctKey("s1", "A")].transferLikeIDs == nil {
+		t.Error("a linked account is indexed")
+	}
 }
 
-// TestAppendCrossCandidate pins the candidate filters: equity-transfer ledger
-// legs and zero/valueless amounts never enter the pool.
-func TestAppendCrossCandidate(t *testing.T) {
-	t.Parallel()
-	amt := "5000.00"
-	zero := "0"
-	if got := appendCrossCandidate(nil, "s", "a", "xfer:abc", "USD", 86400, &amt); len(got) != 0 {
-		t.Error("xfer: ledger leg must be skipped")
-	}
-	if got := appendCrossCandidate(nil, "s", "a", "t1", "USD", 86400, nil); len(got) != 0 {
-		t.Error("nil amount must be skipped")
-	}
-	if got := appendCrossCandidate(nil, "s", "a", "t1", "USD", 86400, &zero); len(got) != 0 {
-		t.Error("zero amount must be skipped")
-	}
-	got := appendCrossCandidate(nil, "s", "a", "t1", "USD", 2*86400, &amt)
-	if len(got) != 1 || got[0].day != 2 || got[0].amt != 5000 {
-		t.Errorf("candidate = %+v", got)
+// seedTransferLink stores the transfer pair (src, tx) and (farSrc, farTx),
+// one row per leg, as the load's enrichment pass does.
+func seedTransferLink(t *testing.T, db *sql.DB, ctx context.Context, src, tx, farSrc, farTx string) {
+	t.Helper()
+	for _, l := range [][4]string{{src, tx, farSrc, farTx}, {farSrc, farTx, src, tx}} {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO transfer_links (silver_source_id, transaction_external_id,
+			    far_silver_source_id, far_transaction_external_id, evidence, measure)
+			VALUES (?, ?, ?, ?, 'amount', 'cash')`, l[0], l[1], l[2], l[3]); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 // seedCrossPair seeds two flow-complete sources: s1/A1 sends a 10000 journal
 // out on Mar 1, s2/B1 books a 10000 deposit on Mar 3 — the classic one-sided
-// cross-custodian move that per-source heuristics can never pair.
+// cross-custodian move that per-source heuristics can never pair — and the
+// link the load stores between the two legs.
 func seedCrossPair(t *testing.T, db *sql.DB, ctx context.Context, b1FirstSnap int64) {
 	t.Helper()
 	seedReturnsSource(t, db, ctx, "s1", "schwab")
@@ -161,11 +90,12 @@ func seedCrossPair(t *testing.T, db *sql.DB, ctx context.Context, b1FirstSnap in
 	seedAcct(t, db, ctx, "s2", "B1", canonical.AccountKindBrokerage, nil,
 		[]snap{{b1FirstSnap, 50000}, {dy(2024, time.December, 2), 61000}},
 		[]txn{{dy(2024, time.March, 3), canonical.TxKindDeposit, 10000}})
+	seedTransferLink(t, db, ctx, "s1", "A1-tx0", "s2", "B1-tx0")
 }
 
-// TestRunReturnsCrossSourceNetting drives the matcher end to end: the pair
+// TestRunReturnsCrossSourceNetting drives the links end to end: the pair
 // nets at global (both legs inside), stays counted at the sources grain (one
-// leg each), and the whole feature is a no-op when the amounts can't pair.
+// leg each).
 func TestRunReturnsCrossSourceNetting(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -185,7 +115,7 @@ func TestRunReturnsCrossSourceNetting(t *testing.T) {
 		t.Errorf("baseline flags = %v; want unmatched_transfers=1 and no cross tag", gBase.Quality)
 	}
 
-	// Matching on: the pair nets at global — tag flips, unmatched count clears.
+	// Links read: the pair nets at global — tag flips, unmatched count clears.
 	on, err := RunReturns(ctx, db, tmParams("global", 0, end))
 	if err != nil {
 		t.Fatalf("matching: %v", err)
@@ -219,8 +149,8 @@ func TestRunReturnsCrossSourceNetting(t *testing.T) {
 }
 
 // TestCrossSourceNettingNoPairIsByteIdentical pins the off-equivalence: with
-// matching enabled but no eligible pair, output equals the baseline rows
-// exactly.
+// the links read but none stored, output equals the baseline rows exactly,
+// even where the amounts would nearly pair.
 func TestCrossSourceNettingNoPairIsByteIdentical(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -306,7 +236,7 @@ func TestCrossMatchingMultiSingleParity(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedCrossPair(t, db, ctx, dy(2024, time.January, 2))
-	tm := &TransferMatching{WindowDays: 5, TolerancePct: 0.5}
+	tm := &TransferMatching{}
 
 	fx, err := loadFxBounds(ctx, db)
 	if err != nil {
@@ -354,26 +284,6 @@ func TestCrossSourceNettingObeysNettingSwitch(t *testing.T) {
 	}
 }
 
-// TestMatchCrossTransfersPrefersExactAmount pins the greedy rank: within the
-// tolerance, an exact-amount partner beats a nearer-day coincidence.
-func TestMatchCrossTransfersPrefersExactAmount(t *testing.T) {
-	t.Parallel()
-	byKey := map[string]*accountData{
-		acctKey("s1", "A"): {src: "s1", acct: "A"},
-		acctKey("s2", "B"): {src: "s2", acct: "B"},
-		acctKey("s2", "C"): {src: "s2", acct: "C"},
-	}
-	tm := &TransferMatching{WindowDays: 5, TolerancePct: 0.5}
-	matchCrossTransfers([]crossCandidate{
-		{src: "s1", acct: "A", txID: "t1", day: 100, ccy: "USD", amt: -10000},
-		{src: "s2", acct: "B", txID: "near", day: 100, ccy: "USD", amt: 9970}, // same day, fee-sized gap
-		{src: "s2", acct: "C", txID: "exact", day: 103, ccy: "USD", amt: 10000},
-	}, tm, byKey)
-	if l := byKey[acctKey("s1", "A")].crossLinks["t1"]; l.txID != "exact" {
-		t.Errorf("picked %q, want the exact-amount partner over the nearer-day one", l.txID)
-	}
-}
-
 // TestCrossMatchedDropsOnboardNoneTransferLike pins the per-slice liveness
 // rule directly: a pre-debut TRANSFER-LIKE leg is subsumed unconditionally
 // (even under OnboardNone, unlike the nonTransfer slice), so its pair must
@@ -383,7 +293,7 @@ func TestMatchCrossTransfersPrefersExactAmount(t *testing.T) {
 func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
 	t.Parallel()
 	winFrom, winTo := int64(100), int64(300)
-	// matchCrossTransfers indexes every linked account's transferLike slice;
+	// bindStoredLinks indexes every linked account's transferLike slice;
 	// direct construction must uphold that invariant.
 	sender := &accountData{
 		src: "s1", acct: "A",
@@ -417,105 +327,62 @@ func TestCrossMatchedDropsOnboardNoneTransferLike(t *testing.T) {
 	}
 }
 
-// TestMatchCrossTransfersHonoursOverrideRules pins TransferMatching.Rules —
-// the field that carries the holder's manual decisions from the same ledger
-// the spending pass reads — through the matcher. Without it the field could
-// be dropped on the floor and every test here would still pass.
-func TestMatchCrossTransfersHonoursOverrideRules(t *testing.T) {
+// seedStoredLinkWorld seeds a cross-source pair and a deposit and
+// withdrawal pair inside s1, and stores both as links.
+func seedStoredLinkWorld(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	seedReturnsSource(t, db, ctx, "s1", "schwab")
+	seedReturnsSource(t, db, ctx, "s2", "schwab")
+	seedAcct(t, db, ctx, "s1", "A1", canonical.AccountKindBrokerage, nil,
+		[]snap{{dy(2024, time.January, 2), 100000}, {dy(2024, time.June, 3), 86000}, {dy(2024, time.December, 2), 87000}},
+		[]txn{{dy(2024, time.March, 1), canonical.TxKindWithdrawal, -10000},
+			{dy(2024, time.April, 2), canonical.TxKindWithdrawal, -4000}})
+	seedAcct(t, db, ctx, "s1", "A2", canonical.AccountKindBrokerage, nil,
+		[]snap{{dy(2024, time.January, 2), 20000}, {dy(2024, time.June, 3), 24100}, {dy(2024, time.December, 2), 24500}},
+		[]txn{{dy(2024, time.April, 3), canonical.TxKindDeposit, 4000}})
+	seedAcct(t, db, ctx, "s2", "B1", canonical.AccountKindBrokerage, nil,
+		[]snap{{dy(2024, time.January, 2), 50000}, {dy(2024, time.December, 2), 61000}},
+		[]txn{{dy(2024, time.March, 3), canonical.TxKindDeposit, 10000}})
+	seedTransferLink(t, db, ctx, "s1", "A1-tx0", "s2", "B1-tx0")
+	seedTransferLink(t, db, ctx, "s1", "A1-tx1", "s1", "A2-tx0")
+}
+
+// TestRunReturnsStoredLinks drives the links end to end: both pairs net at
+// global, the pair inside s1 also at the sources grain, the accounts grain
+// reads every leg, and with the block off no link is read.
+func TestRunReturnsStoredLinks(t *testing.T) {
 	t.Parallel()
-	mk := func() map[string]*accountData {
-		return map[string]*accountData{
-			acctKey("s1", "A"): {src: "s1", acct: "A"},
-			acctKey("s2", "B"): {src: "s2", acct: "B"},
+	db, ctx := openMigrated(t)
+	seedStoredLinkWorld(t, db, ctx)
+	end := eod(2024, time.December, 2)
+	run := func(p ReturnParams) []ReturnRow {
+		t.Helper()
+		rows, err := RunReturns(ctx, db, p)
+		if err != nil {
+			t.Fatalf("%s: %v", p.Level, err)
 		}
+		return rows
 	}
-	// Selectors name a leg by day in Unix seconds; legs carry epoch days.
-	sel := func(src, acct string, day int64, amt float64) TransferOverrideSelector {
-		return TransferOverrideSelector{Source: src, Account: acct,
-			Day: day * SecondsPerDay, Amount: amt, Currency: "USD"}
+	if on, off := run(tmParams("accounts", 0, end)), run(params("accounts", 0, end)); !reflect.DeepEqual(on, off) {
+		t.Error("the accounts grain moved with the links read")
 	}
-	debit := crossCandidate{src: "s1", acct: "A", txID: "out", day: 100, ccy: "USD", amt: -5000}
-	nearCredit := crossCandidate{src: "s2", acct: "B", txID: "in", day: 102, ccy: "USD", amt: 5000}
-	farCredit := crossCandidate{src: "s2", acct: "B", txID: "in", day: 130, ccy: "USD", amt: 5000}
-	linked := func(byKey map[string]*accountData) string {
-		return byKey[acctKey("s1", "A")].crossLinks["out"].txID
+	rows := run(tmParams("global", 0, end))
+	if g, _ := summaryFor(rows, ""); !qualityHas(g, "cross_source_netted=2") {
+		t.Errorf("global flags = %v; want cross_source_netted=2", g.Quality)
 	}
-
-	tm := func(rules ...TransferOverrideRule) *TransferMatching {
-		return &TransferMatching{WindowDays: 5, TolerancePct: 0.5, Rules: rules}
+	if nf := netFlowOf(t, rows, ""); math.Abs(nf) > 0.01 {
+		t.Errorf("global net flow = %v, want 0", nf)
 	}
-
-	t.Run("no rules, the pair links", func(t *testing.T) {
-		byKey := mk()
-		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(), byKey)
-		if got := linked(byKey); got != "in" {
-			t.Fatalf("control: linked %q, want the ordinary match", got)
-		}
-	})
-
-	t.Run("unmatch forbids just that pairing", func(t *testing.T) {
-		byKey := mk()
-		b := sel("s2", "B", 102, 5000)
-		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(TransferOverrideRule{
-			Verb: "unmatch", A: sel("s1", "A", 100, -5000), B: &b,
-		}), byKey)
-		if got := linked(byKey); got != "" {
-			t.Errorf("linked %q; the holder forbade this pairing", got)
-		}
-	})
-
-	t.Run("unmatch with one leg isolates it", func(t *testing.T) {
-		byKey := mk()
-		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(TransferOverrideRule{
-			Verb: "unmatch", A: sel("s1", "A", 100, -5000),
-		}), byKey)
-		if got := linked(byKey); got != "" {
-			t.Errorf("linked %q; an isolated leg pairs with nothing", got)
-		}
-	})
-
-	t.Run("match reaches past the day window", func(t *testing.T) {
-		byKey := mk()
-		b := sel("s2", "B", 130, 5000)
-		rule := TransferOverrideRule{Verb: "match", A: sel("s1", "A", 100, -5000), B: &b}
-		// Control: 30 days apart, so the window alone never pairs them.
-		matchCrossTransfers([]crossCandidate{debit, farCredit}, tm(), byKey)
-		if got := linked(byKey); got != "" {
-			t.Fatalf("control: linked %q outside a 5-day window", got)
-		}
-		byKey = mk()
-		matchCrossTransfers([]crossCandidate{debit, farCredit}, tm(rule), byKey)
-		if got := linked(byKey); got != "in" {
-			t.Errorf("linked %q, want the forced pair", got)
-		}
-		// Orientation is read off the amounts, not off the rule's order.
-		if l := byKey[acctKey("s2", "B")].crossLinks["in"]; l.txID != "out" {
-			t.Errorf("credit side links %q, want the debit leg", l.txID)
-		}
-	})
-
-	t.Run("a rule naming no leg leaves the matcher alone", func(t *testing.T) {
-		byKey := mk()
-		b := sel("s2", "B", 102, 4200)
-		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(TransferOverrideRule{
-			Verb: "unmatch", A: sel("s1", "A", 100, -4200), B: &b,
-		}), byKey)
-		if got := linked(byKey); got != "in" {
-			t.Errorf("linked %q; a stale rule is reported by the caller, not obeyed", got)
-		}
-	})
-
-	t.Run("a contradictory ledger overrides nothing", func(t *testing.T) {
-		// Isolated and forced at once: ResolveTransferOverrides errors, and
-		// the matcher runs unoverridden rather than taking down the run.
-		byKey := mk()
-		b := sel("s2", "B", 102, 5000)
-		matchCrossTransfers([]crossCandidate{debit, nearCredit}, tm(
-			TransferOverrideRule{Verb: "unmatch", A: sel("s1", "A", 100, -5000)},
-			TransferOverrideRule{Verb: "match", A: sel("s1", "A", 100, -5000), B: &b},
-		), byKey)
-		if got := linked(byKey); got != "in" {
-			t.Errorf("linked %q; a malformed ledger must fall back to the plain match", got)
-		}
-	})
+	rows = run(tmParams("sources", 0, end))
+	// The window holds both legs of the pair inside s1, so its net flow is
+	// the cross leg whether the pair nets or not.
+	if s1, _ := summaryFor(rows, "s1"); !qualityHas(s1, "cross_source_netted=1") {
+		t.Errorf("s1 flags = %v; the pair inside one source nets", s1.Quality)
+	}
+	if nf := netFlowOf(t, rows, "s1"); math.Abs(nf+10000) > 0.01 {
+		t.Errorf("s1 net flow = %v, want the cross leg alone", nf)
+	}
+	if g, _ := summaryFor(run(params("global", 0, end)), ""); qualityHas(g, "cross_source_netted=1") {
+		t.Errorf("with transfer matching off a link was read: %v", g.Quality)
+	}
 }

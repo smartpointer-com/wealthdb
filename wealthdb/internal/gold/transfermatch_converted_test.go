@@ -99,7 +99,7 @@ func TestTheConvertedPhase(t *testing.T) {
 	}
 	opts.SameAccountReversals = false
 
-	// Without a Rate the phase is off: the returns caller's matching.
+	// Without a Rate the phase is off.
 	opts.Rate = nil
 	if got := byPhase([]TransferLeg{
 		{Group: "broker", Owner: "USD1", ID: "OUT", Day: 10, Ccy: "USD", Amt: -1000, Names: named},

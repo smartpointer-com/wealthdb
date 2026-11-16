@@ -136,44 +136,23 @@ type ReturnsPolicyOverride struct {
 }
 
 // ReturnsTransferMatching is the `returns_transfer_matching` block of
-// wealthdb.cfg. Pointer fields distinguish "not set" (use the default) from
-// an explicit value.
+// wealthdb.cfg.
 type ReturnsTransferMatching struct {
-	// Enabled turns the matcher on. False (or an absent block) keeps returns
-	// byte-identical to the per-source heuristics alone.
+	// Enabled nets the transfer pairs the load stores out of the return
+	// aggregates that hold both legs. False (or an absent block) reads no
+	// pair.
 	Enabled bool `json:"enabled"`
-	// WindowDays is the max day distance between the two legs of a pair
-	// (default 5: cross-border wires settle within a business week; wider
-	// windows raise the false-pair risk).
-	WindowDays *int `json:"window_days,omitempty"`
-	// TolerancePct is the relative amount tolerance in percent of the larger
-	// leg (default 0.5; an absolute floor of 0.01 always applies, so 0 means
-	// exact-to-a-cent). Covers wire fees deducted in transit.
+	// WindowDays and TolerancePct are accepted and ignored: the load's
+	// matcher pairs the legs, under spending.internal_transfer_matching's
+	// knobs. Load says so where either is set.
+	WindowDays   *int     `json:"window_days,omitempty"`
 	TolerancePct *float64 `json:"tolerance_pct,omitempty"`
 }
 
-// Defaults for the returns_transfer_matching knobs when the block is enabled
-// with fields omitted.
-const (
-	DefaultTransferMatchWindowDays   = 5
-	DefaultTransferMatchTolerancePct = 0.5
-)
-
-// Window returns the effective day window.
-func (m *ReturnsTransferMatching) Window() int {
-	if m == nil || m.WindowDays == nil {
-		return DefaultTransferMatchWindowDays
-	}
-	return *m.WindowDays
-}
-
-// Tolerance returns the effective relative tolerance in percent.
-func (m *ReturnsTransferMatching) Tolerance() float64 {
-	if m == nil || m.TolerancePct == nil {
-		return DefaultTransferMatchTolerancePct
-	}
-	return *m.TolerancePct
-}
+// ignoredKnobsNotice is what Load prints where the block sets a knob that
+// no longer applies.
+const ignoredKnobsNotice = "config: returns_transfer_matching: window_days and tolerance_pct no longer apply; " +
+	"returns nets the transfer pairs the load stores"
 
 // Regime returns the FlowRegime Validate parsed and whether one is set.
 // A nil receiver, or one never validated, reports unset.
@@ -194,8 +173,7 @@ func (o *ReturnsPolicyOverride) AccountsGrainMode() (returns.AccountsGrainMode, 
 }
 
 // validateReturns checks the returns blocks: inception_overrides,
-// supersession, returns_exclude / returns_hide, returns_policy_overrides and
-// returns_transfer_matching.
+// supersession, returns_exclude / returns_hide and returns_policy_overrides.
 func (c *Config) validateReturns(seenIDs map[string]bool) error {
 	if o := c.InceptionOverrides; o != nil {
 		if err := o.compile(seenIDs); err != nil {
@@ -256,10 +234,5 @@ func (c *Config) validateReturns(seenIDs map[string]bool) error {
 		}
 	}
 
-	if m := c.ReturnsTransferMatching; m != nil {
-		if err := validateMatchKnobs("returns_transfer_matching", m.WindowDays, m.TolerancePct); err != nil {
-			return err
-		}
-	}
 	return nil
 }

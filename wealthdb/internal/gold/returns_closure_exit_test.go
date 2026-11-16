@@ -30,8 +30,8 @@ func TestFinalDayClosureBooksWhatIsLeft(t *testing.T) {
 		{"no drain", []snap{{start, 6000}, {today, 0}}, nil, false, -6000},
 		{"a drain a valuation shows before the zeroing", []snap{{start, 6000}, {shown, 4000}, {today, 0}},
 			[]txn{{drain, wd, -2000}}, false, -6000},
-		// The matcher drops both legs of a wire to another source, so the money
-		// stays inside at the global grain and the closure books nothing.
+		// A stored link drops both legs of a wire to another source, so the
+		// money stays inside at the global grain and the closure books nothing.
 		{"a matched drain to another source", []snap{{start, 6000}, {today, 0}}, []txn{{drain, wd, -6000}}, true, 0},
 	}
 	for _, c := range cases {
@@ -46,6 +46,7 @@ func TestFinalDayClosureBooksWhatIsLeft(t *testing.T) {
 				seedReturnsSource(t, db, ctx, "bankx", "fidelity")
 				seedAcct(t, db, ctx, "bankx", "PEER", canonical.AccountKindBrokerage, nil,
 					[]snap{{start, 1000}, {drain, 7000}, {today, 7000}}, []txn{{drain, canonical.TxKindDeposit, 6000}})
+				seedTransferLink(t, db, ctx, "fidx", "OLD-tx0", "bankx", "PEER-tx0")
 				level, entity = "global", ""
 				p = tmParams(level, 0, eod(now.Year()+1, time.January, 1))
 			}

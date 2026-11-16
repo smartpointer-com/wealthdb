@@ -51,11 +51,11 @@ downstream stage follows from that absence:
 
 - `attachOneFlow`'s nil-account gate drops every card flow — purchases,
   refunds, card payments, interest charges, rewards;
-- cross-source transfer-match candidacy requires a flow to have attached,
-  so a card leg can never pair with a real transfer and net it away;
+- a stored transfer pair binds only where both legs attached, so a card
+  leg can never pair with a real transfer and net it away;
 - snapshot-day loading, grouping and the materializer need no change of
   their own: they only ever walk the map, and `loadSnapshotDays` /
-  `matchCrossTransfers` already skip accounts they do not find.
+  `bindStoredLinks` already skip accounts they do not find.
 
 **Deliberately not a `ReturnsPolicy` knob.** Policies are keyed by adapter
 kind and default to a strict no-op, so a card arriving from a source with
@@ -318,16 +318,12 @@ macro of its own:
   deterministic — `netTransfers` sorts stably by `(|amount|, day, id)`.
   ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar days;
   FX-normalized via `value_outccy`; named constants.
-- **Cross-source transfer matching** (opt-in, DESIGN.md §5.8) is the one
-  sanctioned crossing of that deposit/withdrawal line: a pair explicitly
-  matched ACROSS sources (opposite sign, same native currency, equal
-  amount within tolerance, day window) nets in entities containing both
-  legs live — tagged `cross_source_netted=N` — because the cross-source
-  evidence is exactly what the within-entity heuristic lacks. Matched
-  legs are withheld from `netTransfers`' candidate pool, matching
-  operates on native amounts (partitions derive identical pairs whenever
-  their attached-flow universes coincide), and `--netting off` disables
-  cross-source drops along with the heuristic netter. Off ⇒
+- **Stored transfer pairs** (opt-in, DESIGN.md §5.8) are the one
+  sanctioned crossing of that deposit/withdrawal line: a pair the load's
+  matcher stored nets in entities containing both legs live — tagged `cross_source_netted=N` — because the stored evidence is
+  exactly what the within-entity heuristic lacks. Dropped legs are
+  withheld from `netTransfers`' candidate pool, and `--netting off`
+  disables the drops along with the heuristic netter. Off ⇒
   byte-identical.
 - **Explicit closure** is detected only when an account's value series ends
   in a ~0 carry tail (`|v| < valueTol`) — mere staleness never triggers it.

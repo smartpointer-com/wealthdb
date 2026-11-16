@@ -82,3 +82,14 @@ func TestRunReturnsExclude(t *testing.T) {
 		t.Error("KEEP portfolio missing")
 	}
 }
+
+// TestGrainNamedPanicsOnAnUnknownName: only code names a grain.
+func TestGrainNamedPanicsOnAnUnknownName(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if recover() == nil {
+			t.Error("an unknown grain name must panic")
+		}
+	}()
+	grainNamed("owners")
+}

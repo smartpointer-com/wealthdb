@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"testing"
-
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
 // The reference road: the far account arriving as an IDENTITY rather than as
@@ -207,21 +205,6 @@ func TestTheMatcherPoolCarriesTheReference(t *testing.T) {
 	}
 	if len(pairs) != 1 {
 		t.Errorf("the audit surface saw %d pair(s), want 1", len(pairs))
-	}
-}
-
-// The returns engine offers no reference and forbids same-source pairing, so
-// the phase has nothing to act on there whatever a leg happens to carry.
-func TestTheReturnsCallersSettingsLeaveTheReferencePhaseInert(t *testing.T) {
-	legs := []gold.TransferLeg{
-		{Group: "bank", Owner: "CASH1", ID: "out", Day: 10, Ccy: "USD", Amt: -1000, Ref: "TXNO-7"},
-		{Group: "bank", Owner: "BRK1", ID: "in", Day: 10, Ccy: "CHF", Amt: 987.65, Ref: "TXNO-7"},
-	}
-	got := gold.MatchTransferLegs(legs, gold.TransferMatchOpts{
-		WindowDays: 5, TolerancePct: 0.5, CrossGroupOnly: true,
-	})
-	if len(got) != 0 {
-		t.Errorf("the returns caller's options paired a same-source reference twin: %+v", got)
 	}
 }
 

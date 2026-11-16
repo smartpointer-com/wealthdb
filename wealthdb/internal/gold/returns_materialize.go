@@ -276,7 +276,7 @@ func everyCurrency() spineSource {
 		   FROM report_accounts_history_multi()
 		  ORDER BY silver_source_id, account_external_id, as_of_day`,
 		transactions: `SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
-		        r.currency, r.transaction_external_id, ` + multiColumns("r.value") + `,
-		        CAST(r.net_amount AS VARCHAR)` + fmt.Sprintf(flowTxnJoin, "report_transactions_multi(?, ?)"),
+		        r.currency, r.transaction_external_id, ` + multiColumns("r.value") +
+			fmt.Sprintf(flowTxnJoin, "report_transactions_multi(?, ?)"),
 		transactionsArgs: []any{int64(0), MaxEpoch}, decimal: nullStringToPtr}
 }

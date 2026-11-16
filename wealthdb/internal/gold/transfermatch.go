@@ -19,17 +19,14 @@ import (
 // then among the rest. On request it also pairs across two currencies at the
 // day's rate where a narrative names the pair, and a booking with its
 // reversal on one account. It knows nothing about returns, spending, or
-// accounts; it takes legs and hands back pairs. Callers own what a leg IS,
-// which legs are offered, and what a pair MEANS:
-//
-//   - the returns engine (matchCrossTransfers) offers only attached external
-//     flows, restricts pairing to legs from DIFFERENT sources, and reads a
-//     pair as potential internality — netted only where an entity window holds
-//     both legs live;
-//   - a spending caller offers the transfer-eligible kinds on every account —
-//     the pool is narrowed upstream, by the spend_matcher_pool macro, so no
-//     kind filter is passed here — permits same-source pairing (own-account
-//     moves inside one bank), and reads a pair as "not spending".
+// accounts; it takes legs and hands back pairs. Its caller, the load's
+// enrichment pass, owns what a leg IS, which legs are offered, and what a pair
+// MEANS: it offers the transfer-eligible kinds on every account — the pool is
+// narrowed upstream, by the spend_matcher_pool macro, so no kind filter is
+// passed here — pairs across sources and inside one, and stores each pair in
+// transfer_links. Spending reads a pair as "not spending"; returns reads it as
+// potential internality, netted only where an entity window holds both legs
+// live.
 //
 // No cross-account phase pairs two legs of one account: a debit and a credit
 // of one size on one account may be two unrelated movements, and a leg with a
@@ -40,15 +37,13 @@ import (
 //
 // Group and Owner name the leg's account in two levels so pairing can be
 // scoped: two legs of the SAME account pair only as a forced pair or a
-// reversal (TransferMatchOpts.SameAccountReversals), and
-// CrossGroupOnly can forbid pairing inside one group altogether. A leg never
-// pairs with itself — the sign split puts every leg on exactly one side of
-// the matching — whatever the knobs say. The returns engine maps
-// Group→silver_source_id, Owner→account_external_id, ID→
-// transaction_external_id; the matcher treats all three as opaque and returns
-// them untouched on the pair.
+// reversal (TransferMatchOpts.SameAccountReversals). A leg never pairs with
+// itself — the sign split puts every leg on exactly one side of the matching —
+// whatever the knobs say. The enrichment pass maps Group→silver_source_id,
+// Owner→account_external_id, ID→transaction_external_id; the matcher treats
+// all three as opaque and returns them untouched on the pair.
 type TransferLeg struct {
-	Group string // pairing scope (returns: silver_source_id)
+	Group string // pairing scope (the pass: silver_source_id)
 	Owner string // the account holding the leg, within Group
 	ID    string // leg identity, unique within (Group, Owner)
 
@@ -64,8 +59,8 @@ type TransferLeg struct {
 	// whatever vocabulary the caller uses; empty when the narrative announces
 	// none, which is the common case. RailPartner is the rail this leg
 	// DEMANDS of whatever it pairs with, and is what actually constrains the
-	// matching (railsCompatible). A caller that fills neither — the returns
-	// engine — matches on amount, day and the other fields alone. The two are
+	// matching (railsCompatible). A leg that fills neither matches on
+	// amount, day and the other fields alone. The two are
 	// separate because the demand is one-directional: a card receipt demands
 	// a card payment, while the paying side often names no rail
 	// (docs/SPENDING.md §3, "The matcher").
@@ -75,7 +70,7 @@ type TransferLeg struct {
 	// Ref is the reference the SOURCE stamped on BOTH halves of one movement
 	// — a bank's own transaction number, written once and printed on the
 	// debit and on the credit alike. Empty when the source stamped none,
-	// which is the common case and the only case the returns engine has.
+	// which is the common case.
 	//
 	// It is a different KIND of evidence from everything else on this
 	// struct. Amount, day and rail are a guess that two rows describe one
@@ -97,8 +92,8 @@ type TransferLeg struct {
 
 	// CounterCcy and CounterAmt are the OTHER leg as the source DESCRIBES
 	// it: the currency and the figure the movement became, or came from.
-	// Both empty when the source describes none, which is the common case
-	// and the only case the returns engine has.
+	// Both empty when the source describes none, which is the common
+	// case.
 	//
 	// It is a weaker claim than Ref and a stronger one than an amount. A
 	// reference NAMES the movement, so it needs no corroboration; a
@@ -165,19 +160,14 @@ type TransferMatchOpts struct {
 	WindowDays int
 	// TolerancePct is the permitted amount gap as a percent of the larger
 	// leg, floored at TransferMatchMinEps absolute — so 0 means
-	// exact-to-a-cent, and the returns default of 0.5 covers a wire fee
-	// deducted in transit.
+	// exact-to-a-cent, and the default of 0.5 covers a wire fee deducted in
+	// transit.
 	TolerancePct float64
 	// ToleranceMaxAbs caps the tolerance in absolute currency units, whatever
 	// TolerancePct works out to; zero leaves it uncapped. A transit fee is
 	// flat, so an uncapped percentage of a large sum reaches coincidences
 	// (docs/SPENDING.md §3, "The matcher").
 	ToleranceMaxAbs float64
-	// CrossGroupOnly forbids pairing two legs of the same group. The returns
-	// engine sets it (a same-source pair is the silver classifier's business,
-	// not the matcher's); a spending caller pairing own-account moves inside
-	// one bank leaves it false.
-	CrossGroupOnly bool
 	// Overrides are the holder's manual decisions about particular legs and
 	// particular pairs, applied ahead of and around the greedy pass
 	// (transferoverride.go). The zero value overrides nothing.
@@ -187,9 +177,7 @@ type TransferMatchOpts struct {
 	// window and the tolerance, where the two read as a booking and its
 	// reversal (TransferLeg.Signature, TransferLeg.Reversal): a wire
 	// returned, a charge refunded. It runs after every cross-account phase,
-	// so a leg that has a partner on another account keeps it. The spending
-	// caller sets it; the returns caller does not, since it reads such a
-	// pair as two boundary flows.
+	// so a leg that has a partner on another account keeps it.
 	SameAccountReversals bool
 	// Rate converts one unit of a currency into another as of an epoch
 	// day: fx_daily's direct pair, at or before the day (DailyRates.Direct).
@@ -197,7 +185,7 @@ type TransferMatchOpts struct {
 	// currencies, inside the window, whose amounts agree at the debit's
 	// day's rate within ConvertedTolerancePct, where one leg's narrative
 	// names the other's account and each is the other's only such
-	// candidate. Nil leaves the phase off, as the returns caller does.
+	// candidate. Nil leaves the phase off.
 	Rate func(from, to string, day int64) (float64, bool)
 	// ConvertedTolerancePct is the converted phase's amount gap, as a
 	// percent of the credit: a bank's conversion spread.
@@ -706,8 +694,7 @@ func assertedPairHolds(d, c TransferLeg, creditUsed bool, maxDays int64, opts Tr
 // (docs/SPENDING.md §3, "The reference road"):
 //
 //   - both legs are in the same group: a reference is an identity only
-//     within one source's id space, so under CrossGroupOnly the phase does
-//     nothing;
+//     within one source's id space;
 //   - they sit on different accounts: one account's two rows under one
 //     reference are the bank's own bookkeeping;
 //   - the reference names exactly one debit and one credit among the legs
@@ -721,9 +708,6 @@ func assertedPairHolds(d, c TransferLeg, creditUsed bool, maxDays int64, opts Tr
 // whole pool before anything is claimed, so the result does not depend on
 // order.
 func matchSharedReferences(debits, credits []TransferLeg, used, claimed []bool, opts TransferMatchOpts, claim func(di, ci int, by TransferMatchPhase)) {
-	if opts.CrossGroupOnly {
-		return
-	}
 	type refKey struct{ group, ref string }
 	// One census entry per reference: how many legs carry it on each side,
 	// and the last credit index seen. The counts are what the uniqueness test
@@ -805,9 +789,6 @@ func matchSharedReferences(debits, credits []TransferLeg, used, claimed []bool, 
 // description first and, failing that, asks whether any credit describes the
 // debit. The result is the same pair either way.
 func matchStatedCounters(debits, credits []TransferLeg, used, claimed []bool, opts TransferMatchOpts, claim func(di, ci int, by TransferMatchPhase)) {
-	if opts.CrossGroupOnly {
-		return
-	}
 	// A leg's own identity as a description would state it, and the
 	// description it carries. Both are (group, day, currency, figure) — the
 	// same shape, so one answers the other by equality.
@@ -877,8 +858,7 @@ func matchStatedCounters(debits, credits []TransferLeg, used, claimed []bool, op
 
 // pairableLegs reports whether two legs may pair at all, before amount and day
 // are considered: the rail each leg demands of its partner and the account it
-// names (namesCompatible), then under CrossGroupOnly never two legs of the
-// same group, and never two legs of the same account.
+// names (namesCompatible), then never two legs of the same account.
 func pairableLegs(d, c TransferLeg, opts TransferMatchOpts) bool {
 	if opts.Overrides.blocks(d, c) {
 		return false
@@ -886,7 +866,7 @@ func pairableLegs(d, c TransferLeg, opts TransferMatchOpts) bool {
 	if !railsCompatible(d, c) || !namesCompatible(d, c) {
 		return false
 	}
-	return c.Group != d.Group || (!opts.CrossGroupOnly && !sameAccount(d, c))
+	return !sameAccount(d, c)
 }
 
 // sameOwnerRoundTrip reports whether two legs of one account read as one
@@ -911,8 +891,8 @@ func namesCompatible(d, c TransferLeg) bool {
 
 // railsCompatible enforces the partner rail a leg demands, in both
 // directions. A leg that demands nothing (RailPartner empty) constrains
-// nothing, so a caller that classifies no leg — the returns engine — is not
-// constrained by rails at all, and the silent side of a movement stays free
+// nothing, so a leg no caller classified is not constrained by rails at
+// all, and the silent side of a movement stays free
 // to pair (TransferLeg.Rail).
 func railsCompatible(d, c TransferLeg) bool {
 	if d.RailPartner != "" && d.RailPartner != c.Rail {

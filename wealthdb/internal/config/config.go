@@ -178,14 +178,10 @@ type Config struct {
 	// "blanked" | "hidden"). Absent block ⇒ registered policies apply
 	// unchanged. See docs/DESIGN.md §5.6 and internal/gold newAccountData.
 	ReturnsPolicyOverrides map[string]*ReturnsPolicyOverride `json:"returns_policy_overrides,omitempty"`
-	// ReturnsTransferMatching enables the opt-in cross-source transfer
-	// matcher: an unmatched external leg whose counterparty leg exists in
-	// another source (opposite sign, same native currency, equal amount
-	// within the tolerance, within the day window) nets out of every return
-	// aggregate that contains BOTH legs, while finer grains keep counting
-	// each leg. Absent block or enabled=false ⇒ the matcher never runs and
-	// returns are byte-identical to the per-source heuristics alone. See
-	// docs/DESIGN.md §5.8.
+	// ReturnsTransferMatching nets the transfer pairs the load stores
+	// (transfer_links) out of every return aggregate that contains BOTH
+	// legs, while finer grains keep counting each leg. Absent block or enabled=false ⇒ returns reads no
+	// pair. See docs/DESIGN.md §5.8.
 	ReturnsTransferMatching *ReturnsTransferMatching `json:"returns_transfer_matching,omitempty"`
 	// Spending groups the per-deployment knobs of the spending
 	// feature: which accounts spending counts, and how hard the
@@ -300,6 +296,9 @@ func Load(path string) (*Config, error) {
 
 	if err := c.Validate(); err != nil {
 		return nil, err
+	}
+	if m := c.ReturnsTransferMatching; m != nil && (m.WindowDays != nil || m.TolerancePct != nil) {
+		fmt.Fprintln(os.Stderr, ignoredKnobsNotice)
 	}
 	return &c, nil
 }

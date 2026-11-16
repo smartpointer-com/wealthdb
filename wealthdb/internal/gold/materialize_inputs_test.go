@@ -1,8 +1,6 @@
 package gold
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -134,47 +132,6 @@ func TestLoadKeyReadsAnAbsentTable(t *testing.T) {
 	}
 	if without == with || !strings.Contains(without, "absent") {
 		t.Fatalf("load key without the table = %q, with it = %q", without, with)
-	}
-}
-
-func TestHashInputsCoversEveryFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	ledger := filepath.Join(dir, "transfer-overrides.csv")
-	write := func(path, body string) {
-		t.Helper()
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var config []byte
-	hash := func(files ...string) string {
-		t.Helper()
-		h, err := HashInputs(config, files...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return h
-	}
-	config = []byte(`{}`)
-	alone := hash()
-	if hash() != alone {
-		t.Fatal("one config hashed twice gave two hashes")
-	}
-	if hash("") != alone {
-		t.Fatal("an empty file name changed the hash")
-	}
-	absent := hash(ledger)
-	write(ledger, "")
-	empty := hash(ledger)
-	write(ledger, "verb\n")
-	edited := hash(ledger)
-	if absent == alone || empty == absent || edited == empty {
-		t.Fatalf("hashes alone %s absent %s empty %s edited %s", alone, absent, empty, edited)
-	}
-	config = []byte(`{"x": 1}`)
-	if hash(ledger) == edited {
-		t.Fatal("a config edit kept the hash")
 	}
 }
 

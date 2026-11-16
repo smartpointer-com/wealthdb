@@ -76,11 +76,7 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		return err
 	}
 	defer lock.unlock()
-	hash, err := gold.HashInputs(raw, returnsCfgFiles(cfg)...)
-	if err != nil {
-		return err
-	}
-	key := gold.MaterializeKey{ConfigHash: hash, EngineVersion: engineVersion(),
+	key := gold.MaterializeKey{ConfigHash: gold.HashInputs(raw), EngineVersion: engineVersion(),
 		AsOf: anchorToDay(g.clock().UTC(), true).Unix()}
 	same, err := materializeInputsSame(ctx, cfg, key)
 	if err != nil {

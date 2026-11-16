@@ -7,7 +7,6 @@ import (
 	"math"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -59,7 +58,7 @@ type ReturnParams struct {
 	Method    string // twr | mwr | both
 	Period    string // monthly | quarterly | annual | total
 	Annualize string // auto | always | never
-	Netting   bool   // net internal transfers at coarse grains (heuristic netter + cross-source matched pairs)
+	Netting   bool   // net internal transfers at coarse grains (heuristic netter + stored pairs)
 	Inception string // full | strict
 	ReturnsSettings
 }
@@ -85,10 +84,9 @@ type ReturnsSettings struct {
 	// returns_policy_overrides block, keyed by silver_source_id. Nil/absent ⇒
 	// registered policies apply unchanged. See newAccountData.
 	PolicyOverrides map[string]ReturnsPolicyOverride
-	// TransferMatching enables the opt-in cross-source transfer matcher from
-	// wealthdb.cfg's returns_transfer_matching block. Nil (the default) ⇒ the
-	// matcher never runs and output is byte-identical to a build without it.
-	// See matchCrossTransfers.
+	// TransferMatching is wealthdb.cfg's returns_transfer_matching block,
+	// where it is enabled: returns nets the transfer pairs the load stored.
+	// Nil (the default) ⇒ no link is read. See bindStoredLinks.
 	TransferMatching *TransferMatching
 }
 
@@ -101,23 +99,13 @@ func (s ReturnsSettings) defaultRun(level, period, ccy string, from, to int64) R
 		ReturnsSettings: s}
 }
 
-// TransferMatching configures the cross-source transfer matcher: an unmatched
-// external leg (deposit/withdrawal/transfer/journal) whose counterparty leg
-// exists in ANOTHER source — opposite sign, same native currency, equal amount
-// within the tolerance, within the day window — is linked to it, and entities
-// containing BOTH legs net the pair out (the money never left the entity)
-// while finer grains keep counting each leg as the real boundary flow it is
-// for them. See docs/DESIGN.md §5.8.
-type TransferMatching struct {
-	WindowDays   int     // max |day distance| between the two legs
-	TolerancePct float64 // relative amount tolerance, percent of the larger leg
-	// Rules are the holder's manual match / unmatch decisions, read from
-	// the same ledger the spending pass reads. The matcher is shared, so a
-	// pair the holder has settled must be settled the same way in both
-	// reports; a movement called internal in one and external in the other
-	// is worse than either answer alone.
-	Rules []TransferOverrideRule
-}
+// TransferMatching turns on the transfer links in returns: the pairs the
+// load's enrichment pass stored in transfer_links, with the override
+// ledger applied. A pair nets out of the entities that hold both legs live
+// (the money never left the entity), while finer grains keep counting each
+// leg as the real boundary flow it is for them. It has no knobs: the pass pairs once, for every
+// family. See docs/DESIGN.md §5.8.
+type TransferMatching struct{}
 
 // ReturnsHide holds the source-keyed membership sets of accounts and
 // portfolios whose OWN rows are suppressed at every grain while their values
@@ -189,8 +177,7 @@ type ReturnsExclude struct {
 // and global grains, both an excluded account and any account of an excluded
 // portfolio drop out. A nil receiver excludes nothing.
 func (e *ReturnsExclude) excluded(level, src, portfolio, acct string) bool {
-	g := grainNamed(level)
-	return g != nil && g.excludes(e, src, portfolio, acct)
+	return grainNamed(level).excludes(e, src, portfolio, acct)
 }
 
 // excludes is excluded at the grain g.
@@ -219,11 +206,10 @@ type InceptionOverrides struct {
 // source. The global grain is never anchored. (0,false) ⇒ no override. A nil
 // receiver always returns (0,false), so the default path is untouched.
 func (o *InceptionOverrides) resolve(level, src, portfolio, acct string) (int64, bool) {
-	g := grainNamed(level)
-	if o == nil || g == nil {
+	if o == nil {
 		return 0, false
 	}
-	for _, scope := range g.inception {
+	for _, scope := range grainNamed(level).inception {
 		var d int64
 		var ok bool
 		switch scope {
@@ -316,23 +302,31 @@ func loadReturnsDatasets(ctx context.Context, db *sql.DB, src spineSource, fx fx
 	if err != nil {
 		return nil, err
 	}
-	// Transfer-match candidates are collected per currency (the attached
-	// universe can differ where FX is unresolved) but carry NATIVE amounts, so
-	// every currency derives the same pairings for the legs it holds.
+	// A link binds where both its legs are flows of a currency's dataset,
+	// and the attached flows can differ by currency where FX is unresolved.
 	tm := s.TransferMatching
-	cands := map[string][]crossCandidate{}
+	flows := map[string]attachedFlows{}
 	for _, t := range txns {
 		for i, ccy := range src.currencies {
 			attached := attachOneFlow(byCcy[ccy], fx, ccy, t.src, t.acct, canonical.TxKind(t.kind),
 				t.occurredAt, t.txID, t.ccy, t.values[i], t.returnsInternal)
 			if attached && tm != nil {
-				cands[ccy] = appendCrossCandidate(cands[ccy], t.src, t.acct, t.txID, t.ccy, t.occurredAt, t.netAmt)
+				if flows[ccy] == nil {
+					flows[ccy] = attachedFlows{}
+				}
+				flows[ccy][txRef{t.src, t.txID}] = attachedFlow{acct: t.acct, day: EpochDay(t.occurredAt)}
 			}
+		}
+	}
+	var links []storedTransferLink
+	if tm != nil {
+		if links, err = loadStoredTransferLinks(ctx, db); err != nil {
+			return nil, err
 		}
 	}
 	out := make(map[string]*returnsDataset, len(src.currencies))
 	for _, ccy := range src.currencies {
-		matchCrossTransfers(cands[ccy], tm, byCcy[ccy])
+		bindStoredLinks(links, flows[ccy], byCcy[ccy])
 		ds := &returnsDataset{accts: byCcy[ccy], holdings: holdings[ccy], fx: fx}
 		ds.finalize()
 		out[ccy] = ds
@@ -395,9 +389,6 @@ func computeReturns(ds *returnsDataset, p ReturnParams) []ReturnRow {
 
 	ds.ensureTwins()
 	g := grainNamed(p.Level)
-	if g == nil {
-		return nil
-	}
 	var out []ReturnRow
 	for _, e := range ds.entities(g, p.ReturnsExclude, p.ReturnsHide) {
 		// Mortgage / liability accounts: excluded from coarse rollups; on the
@@ -519,16 +510,16 @@ type accountData struct {
 
 	policy         returns.FlowPolicy    // the Flow member (classification) — hot path
 	rpolicy        returns.ReturnsPolicy // full per-source policy incl. the consumed engine knobs (OnboardScope/Inception/ConduitKinds/ExternalOnly)
-	nonTransfer    []returns.Flow        // external deposit/withdrawal — never heuristically netted; a cross-source-matched pair may drop (crossLinks)
+	nonTransfer    []returns.Flow        // external deposit/withdrawal — never heuristically netted; a stored pair may drop (crossLinks)
 	transferLike   []returns.Flow        // transfer_in/out/journal — netting candidates at coarse grains
 	journalPresent bool
 	cryptoExcluded bool
 	hasClampedFlow bool // a flow was valued at fx_daily's day-0 floor rate
 	droppedNonzero bool // left the spine (superseded, or past its carry horizon) while still holding value
 
-	// crossLinks maps a flow's transaction id to its cross-source counterparty
-	// leg, filled by matchCrossTransfers when transfer matching is enabled
-	// (nil otherwise). Consumed per entity in entityFlows: a linked pair nets
+	// crossLinks maps a flow's transaction id to its linked partner leg, filled
+	// from the stored links when transfer matching is enabled (bindStoredLinks;
+	// nil otherwise). Consumed per entity in entityFlows: a linked pair nets
 	// only where both legs are live members of the same entity window.
 	// transferLikeIDs indexes the transferLike slice for accounts with links,
 	// so per-window liveness checks resolve a partner leg's slice in O(1).
@@ -565,8 +556,7 @@ func (c *residueCache) get(key string, compute func() map[int64]bool) map[int64]
 	return v
 }
 
-// crossLink identifies the counterparty leg of a cross-source-matched
-// transfer pair.
+// crossLink identifies the partner leg of a stored transfer pair.
 type crossLink struct {
 	src, acct, txID string
 	day             int64
@@ -940,7 +930,6 @@ type flowTxnRow struct {
 	ccy        string
 	txID       string
 	values     []*string // the net amount in each currency of the load
-	netAmt     *string   // native-currency net amount (transfer matching)
 	// returnsInternal is the adapter's own verdict that this row is
 	// conduit churn rather than owner capital — read only under the
 	// policy's ExternalOnly (see attachOneFlow).
@@ -964,16 +953,15 @@ func loadFlowTxns(ctx context.Context, db *sql.DB, src spineSource) ([]flowTxnRo
 	}
 	defer rows.Close()
 	var (
-		out    []flowTxnRow
-		cur    flowTxnRow
-		netAmt sql.NullString
+		out []flowTxnRow
+		cur flowTxnRow
 	)
 	vals := make([]sql.NullString, len(src.currencies))
 	dest := []any{&cur.src, &cur.acct, &cur.occurredAt, &cur.kind, &cur.ccy, &cur.txID}
 	for i := range vals {
 		dest = append(dest, &vals[i])
 	}
-	dest = append(dest, &netAmt, &cur.returnsInternal)
+	dest = append(dest, &cur.returnsInternal)
 	for rows.Next() {
 		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("%s transactions scan: %w", src.op, err)
@@ -983,7 +971,6 @@ func loadFlowTxns(ctx context.Context, db *sql.DB, src spineSource) ([]flowTxnRo
 		for i, v := range vals {
 			r.values[i] = src.decimal(v)
 		}
-		r.netAmt = src.decimal(netAmt)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -1011,7 +998,7 @@ type spineSource struct {
 }
 
 // flowTxnJoin is the part of a transactions query after its value columns:
-// the native net amount and the adapter's conduit verdict.
+// the adapter's conduit verdict.
 const flowTxnJoin = `,
 	        COALESCE(t.payload ->> '` + canonical.PayloadReturnsFlow + `' = 'internal', FALSE) AS returns_internal
 	   FROM %s r
@@ -1029,7 +1016,7 @@ func oneCurrency(ccy string) spineSource {
 		  ORDER BY silver_source_id, account_external_id, as_of_day`,
 		historyArgs: []any{ccy},
 		transactions: `SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
-		        r.currency, r.transaction_external_id, r.value_outccy, r.net_amount` +
+		        r.currency, r.transaction_external_id, r.value_outccy` +
 			fmt.Sprintf(flowTxnJoin, "report_transactions(?, ?, ?)"),
 		transactionsArgs: []any{int64(0), MaxEpoch, ccy},
 		// The amounts read as the transactions view shows them.
@@ -1085,96 +1072,91 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 	return true
 }
 
-// crossCandidate is one attached external flow in the transfer matcher's
-// candidate pool, carrying the transaction's NATIVE currency and amount:
-// native amounts are identical across the output-currency datasets, so
-// every currency partition derives the same pairings (matching on converted
-// amounts would let day-gap FX drift pair differently per partition).
-type crossCandidate struct {
-	src, acct, txID string
-	day             int64
-	ccy             string
-	amt             float64
+// txRef names one transaction.
+type txRef struct{ src, txID string }
+
+// attachedFlow is where one attached flow sits: its account and day.
+type attachedFlow struct {
+	acct string
+	day  int64
 }
 
-// appendCrossCandidate adds an attached flow to the matcher's candidate pool.
-// Skipped: equity-transfer ledger legs (`xfer:` ids — an intentionally
-// recorded pair the transferLike netter already handles), rows with no native
-// amount, and zero amounts (nothing to pair).
-func appendCrossCandidate(cands []crossCandidate, src, acct, txID, ccy string, occurredAt int64, netAmt *string) []crossCandidate {
-	if strings.HasPrefix(txID, "xfer:") {
-		return cands
-	}
-	amt, ok := parseFloatPtr(netAmt)
-	if !ok || amt == 0 {
-		return cands
-	}
-	return append(cands, crossCandidate{
-		src: src, acct: acct, txID: txID, day: EpochDay(occurredAt), ccy: ccy, amt: amt,
-	})
+// attachedFlows indexes a dataset's attached flows by transaction.
+type attachedFlows map[txRef]attachedFlow
+
+// storedTransferLink is one leg's transfer_links row that names a partner leg.
+type storedTransferLink struct {
+	src, txID, farSrc, farTxID string
 }
 
-// matchCrossTransfers links opposite-sign external legs across DIFFERENT
-// sources — same native currency, equal amount within the tolerance, within
-// the day window — writing symmetric crossLink entries onto both owning
-// accounts. The pairing itself is MatchTransferLegs (see transfermatch.go for
-// the ranking and determinism guarantees); this is the returns binding of it,
-// and it owns two side effects the engine depends on: the crossLink
-// bookkeeping, and the transferLikeIDs index that crossMatchedDrops reads.
-//
-// Same-source pairs are out of scope (CrossGroupOnly): within a source the
-// silver classifier and the transferLike netter own internality. Every
-// attached flow is eligible, so no kind filter is passed — appendCrossCandidate
-// has already shaped the pool. Candidates carry NATIVE amounts, so the currency
-// partitions derive identical pairs whenever their attached-flow universes
-// coincide (a leg whose FX is unresolved in some partition is a candidate only
-// where it attached and can shift greedy pairings there).
+// loadStoredTransferLinks reads the transfer_links rows that name a partner
+// leg, in key order. A gold without the table holds no links.
+func loadStoredTransferLinks(ctx context.Context, q querier) ([]storedTransferLink, error) {
+	ok, err := hasTable(ctx, q, "transfer_links")
+	if err != nil || !ok {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `
+		SELECT silver_source_id, transaction_external_id,
+		       far_silver_source_id, far_transaction_external_id
+		  FROM transfer_links
+		 WHERE far_transaction_external_id IS NOT NULL
+		   AND far_silver_source_id IS NOT NULL
+		 ORDER BY silver_source_id, transaction_external_id`)
+	if err != nil {
+		return nil, fmt.Errorf("returns transfer links: %w", err)
+	}
+	defer rows.Close()
+	var out []storedTransferLink
+	for rows.Next() {
+		var l storedTransferLink
+		if err := rows.Scan(&l.src, &l.txID, &l.farSrc, &l.farTxID); err != nil {
+			return nil, fmt.Errorf("returns transfer links scan: %w", err)
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// bindStoredLinks writes each stored link whose two legs are both attached
+// flows as symmetric crossLink entries on the owning accounts, and indexes the linked accounts' transfer-like legs
+// (indexLinkedTransferLike). A leg whose partner is no flow of the dataset (a
+// card's, an excluded kind's, one with no FX path) stays a plain flow.
 //
 // The links are only POTENTIAL internality: entityFlows nets a pair strictly
 // when both legs are live members of the same entity window, so finer grains
 // keep counting each leg as the boundary flow it is for them.
-func matchCrossTransfers(cands []crossCandidate, tm *TransferMatching, byKey map[string]*accountData) {
-	if tm == nil || len(cands) < 2 {
-		return
-	}
-	legs := make([]TransferLeg, len(cands))
-	for i, c := range cands {
-		legs[i] = TransferLeg{Group: c.src, Owner: c.acct, ID: c.txID, Day: c.day, Ccy: c.ccy, Amt: c.amt}
-	}
-	// link records `to` as the counterparty of `from`'s leg. Accounts the
-	// returns engine never loaded (a card, an excluded kind) are silently
-	// skipped — a leg can be a candidate without its account being present.
-	link := func(from, to TransferLeg) {
-		acc := byKey[acctKey(from.Group, from.Owner)]
-		if acc == nil {
-			return
+func bindStoredLinks(links []storedTransferLink, flows attachedFlows, byKey map[string]*accountData) {
+	for _, l := range links {
+		from, ok := flows[txRef{l.src, l.txID}]
+		if !ok {
+			continue
 		}
-		if acc.crossLinks == nil {
-			acc.crossLinks = map[string]crossLink{}
+		to, ok := flows[txRef{l.farSrc, l.farTxID}]
+		if !ok {
+			continue
 		}
-		acc.crossLinks[from.ID] = crossLink{src: to.Group, acct: to.Owner, txID: to.ID, day: to.Day}
-	}
-	overrides, _, err := ResolveTransferOverrides(tm.Rules, legs)
-	if err != nil {
-		// A malformed ledger is the caller's to report; here it simply
-		// overrides nothing rather than taking down a returns run.
-		overrides = TransferOverrides{}
-	}
-	for _, m := range MatchTransferLegs(legs, TransferMatchOpts{
-		WindowDays:      tm.WindowDays,
-		TolerancePct:    tm.TolerancePct,
-		ToleranceMaxAbs: DefaultTransferFeeCap,
-		CrossGroupOnly:  true,
-		Overrides:       overrides,
-	}) {
-		link(m.Debit, m.Credit)
-		link(m.Credit, m.Debit)
+		linkLeg(byKey, l.src, from.acct, l.txID, crossLink{src: l.farSrc, acct: to.acct, txID: l.farTxID, day: to.day})
+		linkLeg(byKey, l.farSrc, to.acct, l.farTxID, crossLink{src: l.src, acct: from.acct, txID: l.txID, day: from.day})
 	}
 	indexLinkedTransferLike(byKey)
 }
 
+// linkLeg records `to` as the partner of the leg txID on the account (src,
+// acct), where the returns engine loaded that account.
+func linkLeg(byKey map[string]*accountData, src, acct, txID string, to crossLink) {
+	acc := byKey[acctKey(src, acct)]
+	if acc == nil {
+		return
+	}
+	if acc.crossLinks == nil {
+		acc.crossLinks = map[string]crossLink{}
+	}
+	acc.crossLinks[txID] = to
+}
+
 // indexLinkedTransferLike indexes the transferLike slice of every account that
-// carries cross-source links, so the per-window liveness check in
+// carries links, so the per-window liveness check in
 // crossMatchedDrops can tell which slice a partner's leg lives in without
 // scanning it. Accounts without links stay unindexed (the map is sparse), and
 // an existing index is left alone.
@@ -1276,14 +1258,16 @@ func portfolioIdent(a *accountData) (string, string) {
 	return a.portfolio, a.portfolio
 }
 
-// grainNamed is the grain of that name, nil for none.
+// grainNamed is the grain of that name. Only code names a grain (the
+// front ends offer the grains' own names), so an unknown name is a
+// programming error and panics.
 func grainNamed(name string) *grain {
 	for _, g := range returnsGrains {
 		if g.name == name {
 			return g
 		}
 	}
-	return nil
+	panic(fmt.Sprintf("gold: no returns grain named %q", name))
 }
 
 // grainNames are the grains' names, finest first.
@@ -1313,14 +1297,10 @@ func ReturnsGrains() []ReturnsGrain {
 }
 
 // groupAccounts groups accts into the entities of the grain named level,
-// each entity's members sorted, and returns the entity keys in order. An
-// unknown level groups nothing.
+// each entity's members sorted, and returns the entity keys in order.
 func groupAccounts(level string, accts map[string]*accountData, excl *ReturnsExclude) (map[string][]*accountData, []string) {
 	groups := map[string][]*accountData{}
 	g := grainNamed(level)
-	if g == nil {
-		return groups, nil
-	}
 	for _, a := range accts {
 		if g.excludes(excl, a.src, a.portfolio, a.acct) {
 			continue // omitted from this (higher) grain; still shown at its own grain

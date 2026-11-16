@@ -197,24 +197,6 @@ func checkReturnsBenchmark(view, benchmark string) error {
 	return nil
 }
 
-// returnsCfgFiles are the files returnsCfgSettings reads beside the
-// config. A refresh's input key hashes them with it.
-func returnsCfgFiles(cfg *config.Config) []string {
-	if m, ledger := transferMatching(cfg); m != nil {
-		return []string{ledger}
-	}
-	return nil
-}
-
-// transferMatching is the returns transfer-matching block and the
-// override ledger it reads, or nil when matching is off.
-func transferMatching(cfg *config.Config) (*config.ReturnsTransferMatching, string) {
-	if m := cfg.ReturnsTransferMatching; m != nil && m.Enabled {
-		return m, cfg.SpendTransferOverrides()
-	}
-	return nil, ""
-}
-
 // withReturnsCfg is p with the config's returns settings
 // (returnsCfgSettings), so every report runner applies the same ones.
 func withReturnsCfg(cfg *config.Config, p gold.ReturnParams) gold.ReturnParams {
@@ -257,15 +239,10 @@ func returnsCfgSettings(cfg *config.Config) gold.ReturnsSettings {
 		}
 		s.PolicyOverrides = policyOv
 	}
-	if m, ledger := transferMatching(cfg); m != nil {
-		// A malformed ledger overrides nothing here rather than taking down
-		// a returns run: `load` and `categorize` both read the same file and
-		// both fail loudly on it, so the error is reported where it can be
-		// acted on, and this read cannot be the first to see it in practice.
-		overrideRules, _ := gold.ParseTransferOverrideLedger(ledger)
-		s.TransferMatching = &gold.TransferMatching{
-			WindowDays: m.Window(), TolerancePct: m.Tolerance(), Rules: overrideRules,
-		}
+	// The pairs come from the links the load stored, which applied the
+	// override ledger when it paired, so returns reads no file of its own.
+	if m := cfg.ReturnsTransferMatching; m != nil && m.Enabled {
+		s.TransferMatching = &gold.TransferMatching{}
 	}
 	return s
 }

@@ -229,7 +229,7 @@ func TestChainRollsAnAccountForward(t *testing.T) {
 }
 
 // TestChainRollsACrossMatchedPair: a wire from a month-end account in one source
-// to a daily account in another. The matcher drops both legs, so neither is a
+// to a daily account in another. Its stored link drops both legs, so neither is a
 // flow, and the daily account shows the money at once. Unrolled, the entity reads
 // the money twice until the month's end. That alone telescopes away, as a chain of
 // value ratios does, but a real deposit while it lasts is read against the wrong
@@ -246,6 +246,7 @@ func TestChainRollsACrossMatchedPair(t *testing.T) {
 	seedAcct(t, db, ctx, "bank2", "DAILY", canonical.AccountKindBrokerage, nil,
 		dailyFrom(from(6000, [2]int64{10, 9000}, [2]int64{20, 12000})),
 		[]txn{{wire, canonical.TxKindDeposit, 3000}, {dy(2023, time.February, 20), canonical.TxKindDeposit, 3000}})
+	seedTransferLink(t, db, ctx, "bank1", "MONTHLY-tx0", "bank2", "DAILY-tx0")
 
 	rows, err := RunReturns(ctx, db, tmParams("global", 0, eod(2023, time.February, 28)))
 	if err != nil {

@@ -948,24 +948,22 @@ func TestLoadReturnsHide(t *testing.T) {
 func TestLoadReturnsTransferMatching(t *testing.T) {
 	base := `{"gold_db":"/tmp/x","default_currency":"USD","silver_sources":[{"id":"sq","kind":"swissquote","path":"/tmp/sq.db"}],`
 
-	// Enabled with explicit knobs.
-	c, err := Load(writeConfig(t, base+`"returns_transfer_matching":{"enabled":true,"window_days":3,"tolerance_pct":1.5}}`))
+	c, err := Load(writeConfig(t, base+`"returns_transfer_matching":{"enabled":true}}`))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	m := c.ReturnsTransferMatching
-	if m == nil || !m.Enabled || m.Window() != 3 || m.Tolerance() != 1.5 {
-		t.Errorf("explicit knobs: got %+v (window %d, tol %g)", m, m.Window(), m.Tolerance())
+	if m := c.ReturnsTransferMatching; m == nil || !m.Enabled {
+		t.Errorf("enabled block: got %+v", m)
 	}
 
-	// Enabled with knobs omitted: the documented defaults apply.
-	c2, err := Load(writeConfig(t, base+`"returns_transfer_matching":{"enabled":true}}`))
-	if err != nil {
-		t.Fatalf("Load defaults: %v", err)
-	}
-	m2 := c2.ReturnsTransferMatching
-	if m2.Window() != DefaultTransferMatchWindowDays || m2.Tolerance() != DefaultTransferMatchTolerancePct {
-		t.Errorf("defaults: window %d tol %g", m2.Window(), m2.Tolerance())
+	// The two knobs no longer apply: any value is accepted and ignored.
+	for _, block := range []string{
+		`"returns_transfer_matching":{"enabled":true,"window_days":3,"tolerance_pct":1.5}}`,
+		`"returns_transfer_matching":{"enabled":false,"window_days":99,"tolerance_pct":-1}}`,
+	} {
+		if _, err := Load(writeConfig(t, base+block)); err != nil {
+			t.Errorf("%s: %v", block, err)
+		}
 	}
 
 	// Absent block: nil (feature off).
@@ -975,26 +973,6 @@ func TestLoadReturnsTransferMatching(t *testing.T) {
 	}
 	if c3.ReturnsTransferMatching != nil {
 		t.Error("absent block must stay nil")
-	}
-
-	// Nil-receiver accessors report the defaults (safe on the absent block).
-	var nilM *ReturnsTransferMatching
-	if nilM.Window() != DefaultTransferMatchWindowDays || nilM.Tolerance() != DefaultTransferMatchTolerancePct {
-		t.Error("nil receiver must yield the defaults")
-	}
-
-	// Out-of-range knobs fail the load — even when the block is disabled.
-	cases := map[string]string{
-		"window too wide":    `"returns_transfer_matching":{"enabled":true,"window_days":31}}`,
-		"window negative":    `"returns_transfer_matching":{"enabled":true,"window_days":-1}}`,
-		"tolerance too big":  `"returns_transfer_matching":{"enabled":true,"tolerance_pct":6}}`,
-		"tolerance negative": `"returns_transfer_matching":{"enabled":true,"tolerance_pct":-0.1}}`,
-		"disabled but bad":   `"returns_transfer_matching":{"enabled":false,"window_days":99}}`,
-	}
-	for name, block := range cases {
-		if _, err := Load(writeConfig(t, base+block)); err == nil {
-			t.Errorf("%s: Load should have failed", name)
-		}
 	}
 }
 
@@ -1018,14 +996,13 @@ func TestLoadSpending(t *testing.T) {
 		t.Errorf("knobs = (window %d, tol %g)", m.Window(), m.Tolerance())
 	}
 
-	// Omitted knobs take the defaults, which are deliberately the same
-	// as the returns matcher's — one matching core, one banding.
+	// Omitted knobs take the defaults.
 	c2, err := Load(writeConfig(t, base+`"spending":{}}`))
 	if err != nil {
 		t.Fatalf("Load empty block: %v", err)
 	}
-	if m := c2.SpendMatching(); m.Window() != DefaultTransferMatchWindowDays ||
-		m.Tolerance() != DefaultTransferMatchTolerancePct {
+	if m := c2.SpendMatching(); m.Window() != DefaultSpendMatchWindowDays ||
+		m.Tolerance() != DefaultSpendMatchTolerancePct {
 		t.Errorf("defaults = (window %d, tol %g)", m.Window(), m.Tolerance())
 	}
 
