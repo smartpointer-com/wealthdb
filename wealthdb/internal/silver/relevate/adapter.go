@@ -96,11 +96,13 @@ func (c *Connection) Close() error { return silver.CloseDB(&c.db) }
 type schema struct {
 	historicalPositions bool // the Quartalsbericht snapshots (silver migration 0002)
 	historicalCash      bool // their cash balances (silver migration 0002)
+	runStamp            bool // transactions.run_snapshot_at (silver migration 0005)
 }
 
 func (s *schema) optional() []silver.Optional {
 	return []silver.Optional{
 		{Table: "historical_position_snapshots", Version: 2, Has: &s.historicalPositions},
 		{Table: "historical_cash_balances", Version: 2, Has: &s.historicalCash},
+		{Table: "transactions", Columns: []string{"run_snapshot_at"}, Version: 5, Has: &s.runStamp},
 	}
 }

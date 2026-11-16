@@ -536,7 +536,10 @@ def load_credit_note_transactions(
     document id, so a document derived again collapses to the same row.
     `snapshot_at` is the newest dump_runs snapshot, rewritten on every
     load for every credit note this generation derived
-    (`_restamp_credit_notes`). Runs inside the caller's transaction.
+    (`_restamp_credit_notes`). `run_snapshot_at` is the dump that first
+    indexed the PDF's content (`documents.first_seen_at`), so gold's
+    change window reaches a credit note dated before every snapshot it
+    holds. Runs inside the caller's transaction.
     """
     if not pending:
         return []
@@ -584,8 +587,10 @@ def load_credit_note_transactions(
                 transaction_external_id, snapshot_at, occurred_at,
                 account_external_id, instrument_external_id,
                 kind, currency, gross_amount, net_amount,
-                quantity, price, source, payload
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                quantity, price, source, payload, run_snapshot_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,
+                (SELECT first_seen_at FROM documents
+                  WHERE content_sha256 = ?))
             """,
             (
                 _credit_note_id(doc_id), latest, parsed["occurred_at"],
@@ -595,6 +600,7 @@ def load_credit_note_transactions(
                 None, None,
                 "credit_note_pdf",
                 canonical_json(payload),
+                content_sha256,
             ),
         )
         derived.append((content_sha256, 1))

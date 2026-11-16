@@ -63,7 +63,10 @@ CREATE TABLE transactions (
     price                   REAL,
     source                  TEXT    NOT NULL
         CHECK (source IN ('deposits_endpoint', 'credit_note_pdf', 'manual')),
-    payload                 TEXT    NOT NULL
+    payload                 TEXT    NOT NULL,
+    -- 0005: the dump that brought the row's PDF (dump_runs.snapshot_at);
+    -- NULL on a row written before 0005. Probed at open (schema.optional).
+    run_snapshot_at         INTEGER
 );
 
 -- 0002_historical_snapshots.sql: the quarterly reports' holdings and cash.

@@ -506,3 +506,18 @@ def test_the_migration_seeds_the_stamped_generation(
         "SELECT 1 FROM sqlite_master WHERE name = 'parser_generations'"
     ).fetchone() is None
     conn.close()
+
+
+def test_a_credit_note_names_the_dump_that_brought_it(tmp_path, monkeypatch):
+    # The PDF pass runs after the dumps; the stamp is the dump that first
+    # indexed the document, so later dumps leave it as it is.
+    _counting_parsers(monkeypatch, [])
+    bronze_root = tmp_path / "bronze"
+    _seed_pdf_dump(bronze_root, FIRST_RUN)
+    _seed_pdf_dump(bronze_root, SECOND_RUN)
+    conn = _load(tmp_path, bronze_root)
+    assert conn.execute(
+        "SELECT run_snapshot_at FROM transactions "
+        "WHERE source = 'credit_note_pdf'").fetchone()[0] == \
+        bronze.parse_run_ts(FIRST_RUN)
+    conn.close()

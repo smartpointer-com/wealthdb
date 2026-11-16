@@ -103,3 +103,40 @@ func TestHistoricalSnapshotsProjectTheReportDate(t *testing.T) {
 		t.Errorf("cash balances = %+v, want one current balance of 102.5", batch.CashBalances)
 	}
 }
+
+// A dump past the watermark brings a credit note dated before every
+// snapshot: the window reaches back to it, so the load's windowed delete
+// and re-insert cover it. A silver without the run stamp opens the
+// window its other rows allow, from the earliest report date.
+func TestChangeWindowCoversACreditNoteBeforeTheFirstSnapshot(t *testing.T) {
+	for _, stamped := range []bool{true, false} {
+		path, db := newFixtureSilver(t)
+		silvertest.Exec(t, db, `
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES
+            (5000, 5, '/x/1'), (6000, 5, '/x/2');
+        INSERT INTO historical_cash_balances(snapshot_at, account_external_id, currency,
+            balance_kind, amount, source_sha256, payload) VALUES
+            (1000, 'ACC1', 'CHF', 'cash', 100, 'h', '{}');
+        INSERT INTO transactions(transaction_external_id, snapshot_at, occurred_at,
+            account_external_id, kind, currency, gross_amount, net_amount, source,
+            payload, run_snapshot_at) VALUES
+            ('credit_note:1', 6000, 4000, 'ACC1', 'contribution', 'CHF', 1, 1,
+             'credit_note_pdf', '{}', 5000),
+            ('credit_note:2', 6000, 500, 'ACC1', 'contribution', 'CHF', 2, 2,
+             'credit_note_pdf', '{}', 6000);
+    `)
+		want := int64(500)
+		if !stamped {
+			silvertest.Exec(t, db, `ALTER TABLE transactions DROP COLUMN run_snapshot_at`)
+			want = 1000
+		}
+		w, err := openAdapter(t, path).ChangeWindow(context.Background(), 5000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !w.HasChanges || w.Start != want || w.End != 6000 {
+			t.Errorf("stamped=%v: window = %+v, want changes over [%d, 6000]",
+				stamped, w, want)
+		}
+	}
+}
