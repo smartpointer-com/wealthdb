@@ -57,7 +57,8 @@ def _value_set(src: str, var: str, consts: dict[str, str]) -> set[str]:
         m = re.search(rf"var {var} = \[\]\w+\{{(.*?)\n\}}",
                       KINDROLES_GO.read_text(), re.DOTALL)
         assert m, f"{var} not found in {ENUMS_GO.name} or {KINDROLES_GO.name}"
-        idents = re.findall(r"\{Kind:\s*(\w+)", m.group(1))
+        idents = re.findall(r"\bKind:\s*(\w+)", m.group(1))
+    assert idents, f"{var}: no values read; the reader's pattern no longer matches"
     missing = [i for i in idents if i not in consts]
     assert not missing, f"{var} names constants with no string literal: {missing}"
     return {consts[i] for i in idents}

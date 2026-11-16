@@ -813,6 +813,10 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0203: its flow, income, fee, holdings, exposure and yield views
+  predate the vocabulary's roles (`spend_categories` columns,
+  `account_kinds`), the far side in `transfer_links`, the debt predicate
+  and the currency conversion macros they read;
 - 0191: its exposure and yield views read a fund line's coupon kind
   from a list in the macro body, not from the label table;
 - 0187: its gains, exposure, income and yield views predate the
@@ -845,8 +849,9 @@ these schema versions falls short of the cards:
   the tax withheld on them;
 - 0138: it lacks the yield views and the exposure of the debt.
 
-The by-name probe finds each of these. An older one also reads wrong in
-ways no probe by name sees:
+The version check catches each of these. The by-name probe catches only
+the entries that lack a view. An older snapshot also reads wrong in ways
+no probe by name sees:
 
 - before 0132, it lacks the serving tables the models read and the tax
   wrapper and asset class columns the tiles filter on;

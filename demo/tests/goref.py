@@ -9,8 +9,8 @@ which the engine validates or reads by name. Reading them from the Go
 files rather than restating them here means a value renamed in the
 engine fails these tests instead of
 silently becoming an uncategorised row in gold, or a figure gold
-ignores. web/test_provision.py reads Go through go_consts and go_slice
-too.
+ignores. web/test_provision.py reads Go through go_consts, go_slice and
+category_roles too.
 """
 
 import datetime as dt
@@ -33,13 +33,17 @@ def go_consts(text, type_name):
 def _set_values(text, var, consts):
     """The values of a `var = map[T]struct{}{A: {}, B: {}}` set."""
     body = re.search(rf"var {var} = map\[\w+\]struct\{{\}}\{{(.*?)\n\}}", text, re.S).group(1)
-    return {consts[name] for name in re.findall(r"(\w+):\s*\{\}", body)}
+    names = re.findall(r"(\w+):\s*\{\}", body)
+    assert names, f"{var}: no members read; the reader's pattern no longer matches"
+    return {consts[name] for name in names}
 
 
 def _table_kinds(text, var, consts):
     """The `Kind:` values of a `var = []Row{{Kind: A, ...}, ...}` table."""
     body = re.search(rf"var {var} = \[\]\w+\{{(.*?)\n\}}", text, re.S).group(1)
-    return {consts[name] for name in re.findall(r"\{Kind:\s*(\w+)", body)}
+    names = re.findall(r"\bKind:\s*(\w+)", body)
+    assert names, f"{var}: no rows read; the reader's pattern no longer matches"
+    return {consts[name] for name in names}
 
 
 def account_kinds():
@@ -99,6 +103,33 @@ def spend_categories():
         return tok.strip('"') if tok.startswith('"') else consts[tok]
 
     return {value(d): fam for _, d, fam in rows}
+
+
+def _canonical_package():
+    """The source of package canonical, its tests left out, so a
+    declaration is found in whichever file holds it."""
+    return "\n".join(f.read_text() for f in sorted(CANONICAL.glob("*.go")) if not f.name.endswith("_test.go"))
+
+
+def category_roles(field):
+    """{detailed value: token} for each row of canonical's categoryRoles
+    that sets `field`, the token as the Go source writes it (`true`, a
+    constant's name). A row keyed by a constant is read through its
+    value. A row built by a helper call states its fields in the helper,
+    so it names none here."""
+    src = _canonical_package()
+    body = re.search(r"var categoryRoles = map\[string\]CategoryRoles\{(.*?)\n\}", src, re.S).group(1)
+    rows = re.findall(r'^\s*("\w+"|\w+):\s*(\{[^}\n]*\}|\w+\([^)\n]*\)),', body, re.M)
+    assert rows and len(rows) == len(re.findall(r'^\s*"?\w+"?:', body, re.M)), \
+        "categoryRoles: a row the reader's pattern does not match"
+    consts = dict(re.findall(r'^\s*(\w+)(?:\s+\w+)?\s*=\s*"([^"]*)"', src, re.M))
+    out = {}
+    for key, value in rows:
+        m = re.search(rf"\b{field}:\s*(\w+)", value)
+        if m:
+            out[key.strip('"') if key.startswith('"') else consts[key]] = m.group(1)
+    assert out, f"categoryRoles: no row sets {field}"
+    return out
 
 
 def spending_values():

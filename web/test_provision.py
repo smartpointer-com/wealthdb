@@ -3255,20 +3255,10 @@ for _t, _ds in income.INCOME_DETAILED_TYPES.items():
         _py_map.setdefault(_d, set()).add(_t)
 check("the label-to-type map is the engine's incomeTypeSQL",
       _py_map == _go_map, (_py_map, _go_map))
-def _projected_income():
-    """The income values the engine's vocabulary marks ProjectedIncome
-    (canonical/spendtaxonomy.go), a row keyed by a literal or a constant."""
-    src = open(os.path.join(_REPO, "wealthdb", "internal", "canonical", "spendtaxonomy.go"),
-               encoding="utf-8").read()
-    consts = dict(re.findall(r'(\w+)\s*=\s*"(INCOME_\w+)"', src))
-    keys = re.findall(r'^\s*"?(\w+)"?:\s*\{[^}\n]*ProjectedIncome: true', src, re.M)
-    return {consts.get(k, k) for k in keys}
-
-
 check("...each of the six types reached by a label, and only those the cash flow projection projects",
       set(income.INCOME_DETAILED_TYPES) == set(income.INCOME_TYPE_COLORS)
       and all(income.INCOME_DETAILED_TYPES.values())
-      and set(_py_map) == _projected_income(),
+      and set(_py_map) == {d for d, v in goref.category_roles("ProjectedIncome").items() if v == "true"},
       _py_map)
 check("...and a label of any other type mapping to none",
       "INCOME_SALARY" not in _py_map and "INCOME_OTHER" not in _py_map)
@@ -3281,21 +3271,16 @@ check("...and a label of any other type mapping to none",
 # the projected types are left to the holdings' cards.
 _in_case = re.search(r"WHEN 'in' THEN\s*CASE(.*?)\bEND\b",
                      _latest_definition("cashflow_txn_nodes"), re.S).group(1)
-_canonical_dir = os.path.join(_REPO, "wealthdb", "internal", "canonical")
-_taxonomy_go = open(os.path.join(_canonical_dir, "spendtaxonomy.go"), encoding="utf-8").read()
-_class_consts = dict(re.findall(r'(\w+)\s+CashflowClass\s*=\s*"(\w+)"',
-                                open(os.path.join(_canonical_dir, "cashflow.go"), encoding="utf-8").read()))
-_detailed_consts = dict(re.findall(r'(\w+)\s*=\s*"(INCOME_\w+)"', _taxonomy_go))
-_sql_classes = {_detailed_consts.get(_d, _d): _class_consts[_c] for _d, _c in re.findall(
-    r'^\s*"?(\w+)"?:\s*\{[^}\n]*FlowClassIn: (\w+)', _taxonomy_go, re.M)}
+_class_consts = goref.go_consts(_canonical_go, "CashflowClass")
+_vocab_classes = {_d: _class_consts[_c] for _d, _c in goref.category_roles("FlowClassIn").items()}
 _py_classes = {d: c for c, ds in income.INCOME_LINE_CLASSES.items() for d in ds}
 check("the other lines' classes are the statement's operating-in classes, the projected types aside",
-      _py_classes == {d: c for d, c in _sql_classes.items() if d not in income.PROJECTED_DETAILED}
-      and set(income.PROJECTED_DETAILED) <= set(_sql_classes)
+      _py_classes == {d: c for d, c in _vocab_classes.items() if d not in income.PROJECTED_DETAILED}
+      and set(income.PROJECTED_DETAILED) <= set(_vocab_classes)
       and f"p.verdict_class_in, '{income.OTHER_RECEIPTS}')" in _in_case
       and f"THEN '{income.UNCATEGORIZED_CLASS}'" in _in_case
       and set(income.INCOME_CLASS_BANDS) == {*income.INCOME_LINE_CLASSES, income.OTHER_RECEIPTS, income.UNCATEGORIZED_CLASS},
-      (_py_classes, _sql_classes))
+      (_py_classes, _vocab_classes))
 
 section("every tile names the pickers that miss it")
 
@@ -5516,8 +5501,10 @@ check("a card with a window reads the benchmark's rows in the picked currency",
       all("currency IN (SELECT currency FROM report_returns WHERE TRUE\n     AND {{currency}})" in sql_of(CARDS[n][2])
           for n in ("Monthly returns (TWR)", "Cumulative return (TWR)", "Returns by source",
                     "Benchmark return (TWR)", "Money-weighted return over time")))
+_clipped = re.search(r'\bbenchmarkStartClipped\s*=\s*"(\w+)"', _gold_go)
 check("the cumulative line leaves out the windows the benchmark clips, and starts on the portfolio's level",
-      "quality NOT LIKE '%benchmark_start_clipped%'" in sql_of(CARDS["Cumulative return (TWR)"][2])
+      _clipped is not None
+      and f"quality NOT LIKE '%{_clipped.group(1)}%'" in sql_of(CARDS["Cumulative return (TWR)"][2])
       and "(1 + o.level) * first_value(1 + twr) OVER (ORDER BY yr) / (1 + twr) - 1"
       in sql_of(CARDS["Cumulative return (TWR)"][2]))
 _b_figures = {"Benchmark return (TWR)": "benchmark_return", "Benchmark return (MWR)": "benchmark_mwr",
