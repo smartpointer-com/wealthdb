@@ -208,7 +208,9 @@ transaction, and already-loaded dumps are skipped.
   window reaches a restated row whatever its date. It is NULL on a row
   written before migration 0009.
 - **Documents** are indexed in `documents` by content sha256 and
-  Swissquote's document id. The PDF stays on disk. The `payload` keeps
+  Swissquote's document id. A later copy of an indexed id with other
+  bytes is skipped with a warning; the first copy stays. The PDF stays
+  on disk. The `payload` keeps
   the file name, document type, contract number, date and target user
   from the download URL. Only Portfolio Performance PDFs are parsed;
   Account Statement PDFs are cash ledgers and are indexed only.

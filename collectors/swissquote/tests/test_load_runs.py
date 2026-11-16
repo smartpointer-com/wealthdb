@@ -215,3 +215,30 @@ def test_statement_rows_of_a_silver_before_derivations_are_parsed_once(tmp_path)
         assert load.main(argv(db, bronze)) == 0
     assert parse.call_count == 2
     assert _statement_rows(db) == before
+
+
+def test_a_document_downloaded_again_with_other_bytes_keeps_the_first(tmp_path, caplog):
+    # A later dump holds a document under an id silver already indexed,
+    # rendered anew. The first copy stays indexed and parsed; the later
+    # one is skipped with a warning, and the load goes on.
+    bronze = tmp_path / "bronze"
+    write_dump(bronze, "20260105T120000Z", tx_rows=[],
+               statements={"doc-0001": statement_page("100")})
+    write_dump(bronze, "20260106T120000Z", tx_rows=[],
+               statements={"doc-0001": statement_page("100") + "\n",
+                           "doc-0002": statement_page("120", "2024-12-31")})
+    db = tmp_path / "swissquote.db"
+    with caplog.at_level("WARNING", logger=load.log.name):
+        assert load.main(argv(db, bronze)) == 0
+    assert "doc-0001.pdf" in caplog.text
+    conn = load.open_db(db)
+    try:
+        assert [tuple(r) for r in conn.execute(
+            "SELECT swissquote_doc_id, first_seen_at FROM documents "
+            "ORDER BY swissquote_doc_id")] == [
+            ("doc-0001", load.bronze.parse_run_ts("20260105T120000Z")),
+            ("doc-0002", load.bronze.parse_run_ts("20260106T120000Z"))]
+        assert len(load.silver.loaded_snapshots(conn)) == 2
+    finally:
+        conn.close()
+    assert [r[0] for r in _statement_rows(db)] == ["pp:doc-0001", "pp:doc-0002"]

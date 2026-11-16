@@ -571,7 +571,11 @@ def index_documents(
     bronze_root: Path,
     run_meta: dict,
 ) -> int:
-    """Insert any not-yet-seen PDFs from <run_dir>/documents/ into documents."""
+    """Insert any not-yet-seen PDFs from <run_dir>/documents/ into documents.
+
+    A document id names one document. A later copy under an id silver
+    holds, with other bytes, is a re-rendering: the first copy stays
+    indexed (and parsed), and the later one is skipped with a warning."""
     docs_dir = run_dir / "documents"
     if not docs_dir.is_dir():
         return 0
@@ -591,6 +595,13 @@ def index_documents(
         if already:
             continue
         doc_id = pdf.stem
+        if conn.execute(
+            "SELECT 1 FROM documents WHERE swissquote_doc_id = ?;",
+            (doc_id,),
+        ).fetchone():
+            log.warning("%s: document %s is indexed already from other "
+                        "bytes; keeping the first copy", run_dir.name, pdf.name)
+            continue
         meta = meta_by_id.get(doc_id, {})
         doc_type = meta.get("doc_type")
         payload = canonical_json({
