@@ -1728,8 +1728,9 @@ func populateCutoffMap(
 // the magnitude from the figure (canonical.ApplyCanonicalSign) — never from
 // abs(), which would erase the difference between a payment and its
 // reversal. A kind with no pinned direction (interest, fx, `other`) keeps
-// the source's sign, so there the two eras can still disagree and such a
-// pair simply does not fold: the fold never guesses.
+// the source's sign: signedCells says the cells state it (the export),
+// where the debit cell is added as signed rather than subtracted as a
+// printed figure.
 //
 // Reversal rows (webReversal) bypass the sign helper, which would otherwise
 // mask the bank's correction by forcing the amount back to the base kind's
@@ -1737,12 +1738,15 @@ func populateCutoffMap(
 // not a correction, it is a SECOND COPY of the thing it cancels. Their kind
 // still maps to the underlying canonical kind so they net against the
 // originals when summed.
-func webProjectedNet(descKind string, statementEra bool, debit, credit sql.NullFloat64) (canonical.TxKind, canonical.Decimal, *canonical.Decimal) {
+func webProjectedNet(descKind string, statementEra, signedCells bool, debit, credit sql.NullFloat64) (canonical.TxKind, canonical.Decimal, *canonical.Decimal) {
 	var net canonical.Decimal
 	if credit.Valid {
 		net = net.Add(canonical.NewDecimalFromFloat(credit.Float64))
 	}
-	if debit.Valid {
+	switch {
+	case debit.Valid && signedCells:
+		net = net.Add(canonical.NewDecimalFromFloat(debit.Float64))
+	case debit.Valid:
 		net = net.Sub(canonical.NewDecimalFromFloat(debit.Float64))
 	}
 	kind := webKind(descKind, debit.Valid, credit.Valid)

@@ -174,9 +174,13 @@ func TestWebProjectedNetKeepsAStatementReversal(t *testing.T) {
 		// booking type is where its reversals are named.
 		{"an export payment", "e-banking payment order", false, debit(-100), none, -100},
 		{"an export reversal", "Dividend;Reversal", false, none, debit(-100), -100},
+		// A kind with no pinned direction keeps the cell's sign.
+		{"an export interest charge", "Interest", false, debit(-100), none, -100},
+		{"an export currency sale", "Sale FX spot", false, debit(-100), none, -100},
+		{"a statement interest charge", "INTEREST", true, debit(100), none, -100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, got := webProjectedNet(tc.descKind, tc.statementEra, tc.debit, tc.credit)
+			_, _, got := webProjectedNet(tc.descKind, tc.statementEra, !tc.statementEra, tc.debit, tc.credit)
 			if got == nil {
 				t.Fatalf("webProjectedNet(%q) returned no signed amount", tc.descKind)
 			}

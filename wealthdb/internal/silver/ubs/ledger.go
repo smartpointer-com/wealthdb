@@ -52,9 +52,17 @@ func newWebRow(row webTxRow) webRow {
 	out.pl, out.decoded = decodeWebTxPayload(row.payload)
 	out.pdfBackfill = !out.decoded || isPDFCashBackfill(out.pl)
 	out.hint = webKindHint(row.descKind, row.counterparty)
-	out.kind, out.net, out.signed = webProjectedNet(out.hint, isStatementEraID(row.txID), row.debit, row.credit)
+	statementEra := isStatementEraID(row.txID)
+	out.kind, out.net, out.signed = webProjectedNet(out.hint, statementEra, exportCells(statementEra, out.pdfBackfill),
+		row.debit, row.credit)
 	return out
 }
+
+// exportCells reports whether a row's amount cells are the export's,
+// signed by the sheet: a row neither reconstructed from a statement nor
+// read from a printed document, whose figures are as printed (an
+// advice's among them, which carries the backfill's source marker).
+func exportCells(statementEra, pdfBackfill bool) bool { return !statementEra && !pdfBackfill }
 
 // ledger is the web ledger, read on the first call; later calls return
 // the same rows. A reader with no silver behind it has none.
