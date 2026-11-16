@@ -85,6 +85,34 @@ func TestStatusTransactionExtrema(t *testing.T) {
 	}
 }
 
+// A silver older than migration 0007 states its cash flows without their
+// days: it yields no transactions and no transaction range, and the load
+// names the column.
+func TestASilverWithoutFlowAtStatesNoLedger(t *testing.T) {
+	path, db := newFixtureSilver(t)
+	seed(t, db)
+	silvertest.Exec(t, db, `DROP TRIGGER cash_flows_flow_at;
+        ALTER TABLE cash_flows DROP COLUMN flow_at;
+        INSERT INTO schema_meta (silver_schema_version, applied_at) VALUES (6, 0)`)
+	conn := openAdapter(t, path)
+
+	s, err := conn.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.OldestTransactionAt != -1 || s.LatestTransactionAt != -1 {
+		t.Errorf("tx extrema = [%d,%d], want none", s.OldestTransactionAt, s.LatestTransactionAt)
+	}
+	if txs := silvertest.Transactions(t, conn, silvertest.WindowSince0(t, conn)); len(txs) != 0 {
+		t.Errorf("transactions = %d, want none", len(txs))
+	}
+	notes := conn.(silver.SchemaAdviser).SchemaAdvice()
+	if len(notes) != 1 || notes[0].Version != 6 || len(notes[0].Missing) != 1 ||
+		notes[0].Missing[0] != "cash_flows.flow_at" {
+		t.Errorf("advice = %+v, want one note at version 6 naming cash_flows.flow_at", notes)
+	}
+}
+
 func TestSnapshotsEmitCustodyAccountOnly(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)

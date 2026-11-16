@@ -3,6 +3,7 @@ package carta
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -20,33 +21,20 @@ SELECT MIN(snapshot_at), MAX(snapshot_at) FROM (
     UNION ALL SELECT snapshot_at FROM fund_metrics
 )`
 
-// transactionExtrema is the MIN/MAX cash-flow date — the transaction ledger
-// (transactions.go). flow_date is mixed-format TEXT, so it is parsed in Go
-// (flowDateUnix) rather than via strftime. A fund's calls can precede its
-// first statement, so these dates can fall outside the content span: the
-// transaction range Status reports.
+// transactionExtrema is the MIN/MAX cash-flow day (flow_at) — the
+// transaction ledger (transactions.go). A fund's calls can precede its
+// first statement, so these days can fall outside the content span: the
+// transaction range Status reports. A silver without flow_at states no
+// ledger.
 func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int64, ok bool, err error) {
-	if err := silver.ScanRows(ctx, c.db, "carta transactionExtrema", `SELECT flow_date FROM cash_flows WHERE flow_date IS NOT NULL`, func(rows *sql.Rows) error {
-		var d string
-		if err := rows.Scan(&d); err != nil {
-			return err
-		}
-		ts, parsed := flowDateUnix(d)
-		if !parsed {
-			return nil
-		}
-		if !ok || ts < oldest {
-			oldest = ts
-		}
-		if !ok || ts > latest {
-			latest = ts
-		}
-		ok = true
-		return nil
-	}); err != nil {
-		return 0, 0, false, err
+	if !c.schema.flowAt {
+		return 0, 0, false, nil
 	}
-	return oldest, latest, ok, nil
+	var lo, hi sql.NullInt64
+	if err := c.db.QueryRowContext(ctx, `SELECT MIN(flow_at), MAX(flow_at) FROM cash_flows`).Scan(&lo, &hi); err != nil {
+		return 0, 0, false, fmt.Errorf("carta transactionExtrema: %w", err)
+	}
+	return lo.Int64, hi.Int64, lo.Valid, nil
 }
 
 // clock: a new download, any dump past the watermark, re-emits the whole

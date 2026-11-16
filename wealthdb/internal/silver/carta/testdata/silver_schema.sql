@@ -161,7 +161,19 @@ CREATE TABLE cash_flows (
     price_per_share       REAL,                           -- per-share price (exercise = strike; exit = proceeds/share); NULL for fund flows
     currency              TEXT    NOT NULL DEFAULT 'USD',
     description           TEXT,                           -- generic event label (no PII)
-    payload               TEXT    NOT NULL
+    payload               TEXT    NOT NULL,
+    flow_at               INTEGER                         -- flow_date at UTC midnight, unix seconds (migration 0007)
 );
 CREATE INDEX idx_cash_flows_entity ON cash_flows(entity_external_id);
 CREATE INDEX idx_cash_flows_date   ON cash_flows(flow_date);
+-- The loader writes flow_at with every row. This trigger does the same for
+-- the rows a test inserts, by migration 0007's rule.
+CREATE TRIGGER cash_flows_flow_at AFTER INSERT ON cash_flows BEGIN
+    UPDATE cash_flows SET flow_at = CAST(strftime('%s', CASE
+        WHEN NEW.flow_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+            THEN NEW.flow_date
+        WHEN NEW.flow_date GLOB '[0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]'
+            THEN substr(NEW.flow_date, 7, 4) || '-' || substr(NEW.flow_date, 1, 2)
+                 || '-' || substr(NEW.flow_date, 4, 2) END) AS INTEGER)
+     WHERE rowid = NEW.rowid;
+END;

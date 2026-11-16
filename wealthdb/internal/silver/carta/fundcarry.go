@@ -43,22 +43,21 @@ type fundLedger map[int64]*fundBook
 
 func (c *Connection) loadFundLedger(ctx context.Context) (fundLedger, error) {
 	ledger := fundLedger{}
+	if !c.schema.flowAt {
+		return ledger, nil
+	}
 	if err := silver.ScanRows(ctx, c.db, "loadFundLedger", `
-SELECT entity_external_id, flow_date, kind, amount, COALESCE(currency, 'USD')
+SELECT entity_external_id, flow_at, kind, amount, COALESCE(currency, 'USD')
   FROM cash_flows
  WHERE kind IN ('capital_call', 'distribution')
-   AND flow_date IS NOT NULL AND amount IS NOT NULL`, func(rows *sql.Rows) error {
+   AND flow_at IS NOT NULL AND amount IS NOT NULL`, func(rows *sql.Rows) error {
 		var (
-			eid             int64
-			date, kind, ccy string
-			amount          float64
+			eid, at   int64
+			kind, ccy string
+			amount    float64
 		)
-		if err := rows.Scan(&eid, &date, &kind, &amount, &ccy); err != nil {
+		if err := rows.Scan(&eid, &at, &kind, &amount, &ccy); err != nil {
 			return err
-		}
-		at, ok := flowDateUnix(date)
-		if !ok {
-			return nil
 		}
 		if kind == "distribution" {
 			amount = -amount

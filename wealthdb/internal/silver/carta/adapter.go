@@ -69,6 +69,7 @@ type schema struct {
 	exercise    bool // securities.exercise_fmv: the exercise facts (silver migration 0004)
 	k1          bool // the k1_capital_accounts table
 	k1PeriodEnd bool // k1_capital_accounts.period_end
+	flowAt      bool // cash_flows.flow_at: the cash-flow ledger's days (silver migration 0007)
 }
 
 func (s *schema) optional() []silver.Optional {
@@ -76,6 +77,7 @@ func (s *schema) optional() []silver.Optional {
 		{Table: "securities", Columns: []string{"exercise_fmv"}, Version: 4, Has: &s.exercise},
 		{Table: "k1_capital_accounts", Version: 4, Has: &s.k1},
 		{Table: "k1_capital_accounts", Columns: []string{"period_end"}, Version: 5, Has: &s.k1PeriodEnd},
+		{Table: "cash_flows", Columns: []string{"flow_at"}, Version: 7, Has: &s.flowAt},
 	}
 }
 

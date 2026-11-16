@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/shopspring/decimal"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -400,6 +401,19 @@ type lot struct {
 	ExercisePrice *float64 `json:"exercise_price,omitempty"`
 }
 
+// sourceDateUnix parses a date as the carta silver states it on a
+// security (acquired, issue date) to a UTC-midnight unix timestamp,
+// accepting both the ISO 'YYYY-MM-DD' and US 'MM/DD/YYYY' shapes. Returns
+// false if neither layout matches.
+func sourceDateUnix(s string) (int64, bool) {
+	for _, layout := range []string{"2006-01-02", "01/02/2006"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().Unix(), true
+		}
+	}
+	return 0, false
+}
+
 // shareLot is a held share certificate as an open lot of its company's
 // position, keyed by the certificate's id: its shares, the cash paid for
 // them as its book value, its per-date value and the date the holder
@@ -422,7 +436,7 @@ func shareLot(secID int64, quantity, cost, mv sql.NullFloat64, acquired string,
 	if l.BookValue != nil {
 		l.BasisOrigin = canonical.BasisStated
 	}
-	if acq, ok := flowDateUnix(acquired); ok {
+	if acq, ok := sourceDateUnix(acquired); ok {
 		l.AcquisitionDate = silver.DatePtrFromNullUnix(sql.NullInt64{Int64: acq, Valid: true})
 	}
 	ex := map[string]any{}
@@ -529,7 +543,7 @@ func appendCapTableAt(t int64, acct string, held []lotState, batch *canonical.Sn
 		if acquired == "" && r.secType == "convertible" {
 			acquired = r.issueDate
 		}
-		if acq, ok := flowDateUnix(acquired); ok && r.secType != "share" && (!a.hasAcquired || acq < a.acquiredUnix) {
+		if acq, ok := sourceDateUnix(acquired); ok && r.secType != "share" && (!a.hasAcquired || acq < a.acquiredUnix) {
 			a.acquiredUnix, a.hasAcquired = acq, true
 		}
 		if r.quantity.Valid {
