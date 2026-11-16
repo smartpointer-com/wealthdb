@@ -72,9 +72,9 @@ type naturalKey struct {
 // matchNaturalKeys reads every transaction each key describes, in one
 // query: the keys are a VALUES list joined to transactions. The result
 // holds one list per key, in key order, each in transaction_external_id
-// order, with the narrative a pinned row is signed by and the scope
-// facts (account, portfolio, date) a far rule reads on a pinned row
-// outside the population.
+// order, with the narrative a pinned row is signed by, and the
+// provider's filing and the scope facts (account, portfolio, date) a far
+// rule reads on a pinned row outside the population.
 func matchNaturalKeys(ctx context.Context, tx querier, keys []naturalKey) ([][]candidate, error) {
 	out := make([][]candidate, len(keys))
 	if len(keys) == 0 {
@@ -90,7 +90,7 @@ func matchNaturalKeys(ctx context.Context, tx querier, keys []naturalKey) ([][]c
 	args = append(args, pinAmountEps)
 	rows, err := tx.QueryContext(ctx, `
 SELECT k.i, t.transaction_external_id, COALESCE(t.counterparty, ''), COALESCE(t.description, ''),
-       t.occurred_at, COALESCE(a.portfolio_external_id, '')
+       COALESCE(t.provider_category, ''), t.occurred_at, COALESCE(a.portfolio_external_id, '')
   FROM (VALUES `+strings.Join(values, ", ")+`) AS k(i, source, account, currency, day_from, day_to, amount)
   JOIN transactions t
     ON t.silver_source_id = k.source AND t.account_external_id = k.account AND t.currency = k.currency
@@ -107,7 +107,7 @@ SELECT k.i, t.transaction_external_id, COALESCE(t.counterparty, ''), COALESCE(t.
 		var i int
 		var row candidate
 		if err := rows.Scan(&i, &row.key.txID, &row.counterparty, &row.description,
-			&row.occurredAt, &row.portfolio); err != nil {
+			&row.providerCategory, &row.occurredAt, &row.portfolio); err != nil {
 			return nil, err
 		}
 		row.key.source, row.account = keys[i].source, keys[i].account

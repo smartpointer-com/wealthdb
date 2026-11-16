@@ -326,8 +326,9 @@ func assignCategories(
 	}
 	// Pinned rows outside both: a pin describes a row by what a
 	// statement shows, and the holder may name a row on any account.
-	// Each carries the scope facts matchNaturalKeys read for it, so a
-	// scoped far rule tests it as it tests any other row.
+	// Each carries the scope facts and the provider's filing
+	// matchNaturalKeys read for it, so a far rule tests it as it tests
+	// any other row.
 	for _, key := range sortedTxKeys(pinned) {
 		emit(pinned[key].row, false)
 	}

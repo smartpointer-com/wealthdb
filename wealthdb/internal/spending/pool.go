@@ -319,15 +319,16 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 // for what it is. Nothing leaks and nothing is orphaned: the next
 // pass deletes every derived row before re-asserting.
 func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName, evidence passEvidence) ([]gold.TransferLeg, map[txKey]candidate, error) {
-	// The scope facts ride along with the narrative: a far rule is
-	// tested against a pool row exactly as against a population row
-	// (farRuleReaches), and a rule scoped to an account, a portfolio or
-	// a date range would otherwise admit nothing it reaches here.
+	// The scope facts and the provider's filing ride along with the
+	// narrative: a far rule is tested against a pool row exactly as
+	// against a population row (farRuleReaches), and a rule scoped to
+	// an account, a portfolio or a date range, or one that matches the
+	// filing, would otherwise admit nothing it reaches here.
 	rows, err := tx.QueryContext(ctx, `
         SELECT p.silver_source_id, p.account_external_id, p.transaction_external_id,
                p.occurred_at, p.currency, CAST(p.net_amount AS DOUBLE),
                COALESCE(p.counterparty, ''), COALESCE(p.description, ''),
-               COALESCE(a.portfolio_external_id, '')
+               COALESCE(p.provider_category, ''), COALESCE(a.portfolio_external_id, '')
           FROM spend_matcher_pool(?, ?) p
           LEFT JOIN accounts a
             ON a.silver_source_id = p.silver_source_id
@@ -348,7 +349,7 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName, 
 			row        candidate
 		)
 		if err := rows.Scan(&leg.Group, &leg.Owner, &leg.ID, &occurredAt,
-			&leg.Ccy, &amount, &row.counterparty, &row.description, &row.portfolio); err != nil {
+			&leg.Ccy, &amount, &row.counterparty, &row.description, &row.providerCategory, &row.portfolio); err != nil {
 			return nil, nil, fmt.Errorf("spending: scan matcher pool: %w", err)
 		}
 		row.account, row.occurredAt = leg.Owner, occurredAt

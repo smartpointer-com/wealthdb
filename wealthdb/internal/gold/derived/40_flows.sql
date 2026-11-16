@@ -187,7 +187,7 @@ CREATE MACRO spend_period_bucket(p_period, p_at) AS (
 CREATE MACRO spend_matcher_pool(p_from, p_to) AS TABLE (
     SELECT t.silver_source_id, t.transaction_external_id, t.occurred_at,
            t.account_external_id, t.kind, t.currency, t.net_amount,
-           t.description, t.counterparty
+           t.description, t.counterparty, t.provider_category
       FROM transactions t
      WHERE t.occurred_at BETWEEN p_from AND p_to
        AND kind_in_matcher_pool(t.kind)

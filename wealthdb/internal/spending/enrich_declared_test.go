@@ -202,3 +202,35 @@ func TestPassScopedFarRuleReachesASpendingPin(t *testing.T) {
 		})
 	}
 }
+
+// A far rule may match a row by its provider category alone, and it
+// reaches a row outside the spending population, and a pinned one, as
+// it reaches a population row: the rule reads the same fields on each.
+func TestAFarRuleMatchesTheProviderCategoryEverywhere(t *testing.T) {
+	db, ctx := openGold(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO accounts (silver_source_id, account_external_id, account_kind,
+                              tax_wrapper, display_name, first_seen_at, last_seen_at)
+             VALUES (?, 'savings-bank', 'cash', 'taxable_personal', 'Example Savings', 1, 1)`,
+		canonical.DeclaredSourceID); err != nil {
+		t.Fatalf("declare accounts: %v", err)
+	}
+	seedTxns(t, db, ctx,
+		txn{"bank", "T-OUT", "CASH1", "withdrawal", day(70), -3000, "", "Standing order 17", "SAVINGS SWEEP"},
+		txn{"bank", "T-IN", "CASH1", "deposit", day(75), 2000, "", "Credit 18", "SAVINGS SWEEP"},
+		txn{"bank", "T-IN-PINNED", "CASH1", "deposit", day(76), 500, "", "Credit 19", "SAVINGS SWEEP"},
+	)
+	far := Rule{Match: regexp.MustCompile(`(?i)^SAVINGS SWEEP$`),
+		Category: canonical.SpendDetailedInternalTransfer, Far: "savings-bank"}
+	runPass(t, db, ctx, Options{
+		Rules: []Rule{far},
+		Pins: []Pin{{Source: "bank", Account: "CASH1", Day: day(76), Amount: 500,
+			Currency: "USD", Detailed: canonical.SpendDetailedInternalTransfer}},
+		Income: IncomeOptions{Rules: []Rule{far}},
+	})
+	for _, id := range []string{"T-OUT", "T-IN", "T-IN-PINNED"} {
+		if s, a := farOf(t, db, ctx, "bank", id); s != canonical.DeclaredSourceID || a != "savings-bank" {
+			t.Errorf("%s far = (%q, %q), want the declared account", id, s, a)
+		}
+	}
+}
