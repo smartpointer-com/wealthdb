@@ -41,6 +41,7 @@ Mounted into the container:
   <TMP>/w-chase/home/.secrets  ->  /secrets
   <TMP>/w-chase/xdgdata/wealthdb/chase     ->  /data
   <TMP>/w-chase/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-chase/xdgcache/wealthdb/chase  ->  /cache/collector
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase    ->  /debug
 
 Override mounts via env:
@@ -97,6 +98,7 @@ Mounted into the container:
   <TMP>/w-chase/home/.secrets  ->  /secrets
   <TMP>/w-chase/xdgdata/wealthdb/chase     ->  /data
   <TMP>/w-chase/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-chase/xdgcache/wealthdb/chase  ->  /cache/collector
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase    ->  /debug
 
 Override mounts via env:
@@ -170,6 +172,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
   <TMP>/w-chase/tree/collectors/chase:/app
@@ -223,6 +229,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
   <TMP>/w-chase/tree/collectors/chase:/app
@@ -268,6 +278,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
   <TMP>/w-chase/tree/collectors/chase:/app
@@ -312,6 +326,10 @@ docker
   <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
@@ -377,6 +395,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
   <TMP>/w-chase/tree/collectors/chase:/app
@@ -421,6 +443,10 @@ docker
   <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
@@ -467,6 +493,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
   <TMP>/w-chase/tree/collectors/chase:/app
@@ -511,6 +541,10 @@ docker
   <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
@@ -557,6 +591,10 @@ docker
   <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
@@ -605,6 +643,10 @@ docker
   <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-chase/silver:/silver
   -v
@@ -655,6 +697,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-chase/silver:/silver
   -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
@@ -704,6 +750,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
   <TMP>/w-chase/tree/collectors/chase:/app
@@ -748,6 +798,10 @@ docker
   <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
@@ -794,6 +848,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
   <TMP>/w-chase/tree/collectors/chase:/app
@@ -839,6 +897,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v
   <TMP>/w-chase/tree/collectors/chase:/app
@@ -883,6 +945,10 @@ docker
   <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
   -v

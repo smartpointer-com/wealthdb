@@ -4,6 +4,8 @@
 #     startupCache, and WEALTHDB_STARTUPCACHE_DIR points the container at
 #     it, so Firefox's regenerable compiled-bytecode cache lands there
 #     instead of next to the session cookie under /secrets;
+#   - the collector's own cache dir is mounted at /cache/collector, made
+#     0700 when missing, and WEALTHDB_CACHE_DIR names it in the container;
 #   - every mount source is an absolute host path, since `docker run -v`
 #     reads a bare relative source as a named volume;
 #   - the VNC port is forwarded only for the VNC_SUBCOMMANDS, on the first
@@ -75,6 +77,23 @@ if [[ -d "$cache" ]]; then
     ok "host cache dir created"
 else
     bad "host cache dir not created"
+fi
+
+echo "wrapper-lib collector cache mount:"
+own="$TMP/xdgcache/wealthdb/testcol"
+has_item "mounts the collector's XDG cache dir at /cache/collector" "$own:/cache/collector" "$out"
+has_item "container env names the collector's cache root" "WEALTHDB_CACHE_DIR=/cache/collector" "$out"
+if [[ -d "$own" && "$(ls -ld "$own" | cut -c1-10)" == "drwx------" ]]; then
+    ok "collector cache dir created 0700"
+else
+    bad "collector cache dir not created 0700"
+fi
+chmod 750 "$own"
+docker_argv >/dev/null
+if [[ "$(ls -ld "$own" | cut -c1-10)" == "drwxr-x---" ]]; then
+    ok "an existing collector cache dir keeps its mode"
+else
+    bad "an existing collector cache dir was changed"
 fi
 
 echo "wrapper-lib relative mount sources:"

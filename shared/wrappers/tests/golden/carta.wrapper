@@ -55,6 +55,7 @@ Mounted into the container:
   <TMP>/w-carta/home/.secrets  ->  /secrets
   <TMP>/w-carta/xdgdata/wealthdb/carta     ->  /data
   <TMP>/w-carta/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-carta/xdgcache/wealthdb/carta  ->  /cache/collector
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta    ->  /debug
 
 Override mounts via env:
@@ -127,6 +128,7 @@ Mounted into the container:
   <TMP>/w-carta/home/.secrets  ->  /secrets
   <TMP>/w-carta/xdgdata/wealthdb/carta     ->  /data
   <TMP>/w-carta/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-carta/xdgcache/wealthdb/carta  ->  /cache/collector
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta    ->  /debug
 
 Override mounts via env:
@@ -212,6 +214,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
   <TMP>/w-carta/tree/collectors/carta:/app
@@ -259,6 +265,10 @@ docker
   <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
@@ -308,6 +318,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
   <TMP>/w-carta/tree/collectors/carta:/app
@@ -355,6 +369,10 @@ docker
   <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
@@ -415,6 +433,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
   <TMP>/w-carta/tree/collectors/carta:/app
@@ -462,6 +484,10 @@ docker
   <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
@@ -511,6 +537,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
   <TMP>/w-carta/tree/collectors/carta:/app
@@ -559,6 +589,10 @@ docker
   <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
@@ -610,6 +644,10 @@ docker
   <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-carta/silver:/silver
   -v
@@ -663,6 +701,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-carta/silver:/silver
   -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
@@ -715,6 +757,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
   <TMP>/w-carta/tree/collectors/carta:/app
@@ -762,6 +808,10 @@ docker
   <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
@@ -811,6 +861,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
   <TMP>/w-carta/tree/collectors/carta:/app
@@ -859,6 +913,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v
   <TMP>/w-carta/tree/collectors/carta:/app
@@ -906,6 +964,10 @@ docker
   <TMP>/w-carta/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-carta/xdgcache/wealthdb/carta:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta:/debug
   -v

@@ -161,6 +161,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-schwab-api/xdgcache/wealthdb/schwab-api:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-schwab-api/xdgcache/wealthdb/debug/schwab-api:/debug
   wealthdb/schwab-api:latest
   login
@@ -217,6 +221,10 @@ docker
   <TMP>/w-schwab-api/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-api/xdgcache/wealthdb/schwab-api:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-schwab-api/xdgcache/wealthdb/debug/schwab-api:/debug
   wealthdb/schwab-api:latest
@@ -328,6 +336,10 @@ docker
   <TMP>/w-schwab-api/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-schwab-api/xdgcache/wealthdb/schwab-api:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-schwab-api/xdgcache/wealthdb/debug/schwab-api:/debug
   wealthdb/schwab-api:latest

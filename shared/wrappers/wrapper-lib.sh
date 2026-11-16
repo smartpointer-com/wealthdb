@@ -55,7 +55,7 @@
 #
 # wrapper_init POPULATES (for the caller and the helpers below):
 #   HOST_SECRETS, HOST_DATA, HOST_DEBUG (when HAS_DEBUG=1),
-#   HOST_STARTUPCACHE, CONTAINER_NAME, IMAGE.
+#   HOST_STARTUPCACHE, HOST_CACHE, CONTAINER_NAME, IMAGE.
 #
 # bash 3.2 compatibility: this lib avoids namerefs and associative
 # arrays so it runs on Apple's /bin/bash. Indirect expansion (${!var})
@@ -147,6 +147,12 @@ wrapper_init() {
     # (keeping launches fast) yet is plainly non-sensitive; one generic dir,
     # not per-profile — the container keys per-profile subdirs itself.
     HOST_STARTUPCACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/startupcache"
+
+    # The collector's own cache dir (collectorkit.extract.cache_root): the
+    # parse and extraction caches a load replays. The container runs with
+    # HOME=/tmp, so without this mount the cache would end with the
+    # container.
+    HOST_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/$NAME"
 }
 
 # wrapper_verb_takes_silver — is `$1` a subcommand that consumes the silver
@@ -257,6 +263,7 @@ wrapper_mounts_help() {
     echo "  $HOST_SECRETS  ->  /secrets"
     echo "  $HOST_DATA     ->  /data"
     echo "  $HOST_STARTUPCACHE  ->  /cache/startupcache"
+    echo "  $HOST_CACHE  ->  /cache/collector"
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         echo "  $HOST_DEBUG    ->  /debug"
     fi
@@ -378,6 +385,11 @@ wrapper_check_mounts() {
     mkdir -p "$HOST_STARTUPCACHE"
     chmod 700 "$HOST_STARTUPCACHE"
     HOST_STARTUPCACHE="$(_abs_dir "$HOST_STARTUPCACHE")"
+    if [[ ! -d "$HOST_CACHE" ]]; then
+        mkdir -p "$HOST_CACHE"
+        chmod 700 "$HOST_CACHE"
+    fi
+    HOST_CACHE="$(_abs_dir "$HOST_CACHE")"
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         mkdir -p "$HOST_DEBUG"
         HOST_DEBUG="$(_abs_dir "$HOST_DEBUG")"
@@ -536,6 +548,9 @@ wrapper_main() {
         # — a pointer, not data (see collectorkit.launch.redirect_startup_cache).
         -v "$HOST_STARTUPCACHE:/cache/startupcache"
         -e "WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache"
+        # The collector's cache root, kept on the host across runs.
+        -v "$HOST_CACHE:/cache/collector"
+        -e "WEALTHDB_CACHE_DIR=/cache/collector"
         ${SILVER_MOUNT[@]+"${SILVER_MOUNT[@]}"}
     )
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then

@@ -20,6 +20,7 @@ Mounted into the container:
   <TMP>/w-swissquote/home/.secrets  ->  /secrets
   <TMP>/w-swissquote/xdgdata/wealthdb/swissquote     ->  /data
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote  ->  /cache/collector
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote    ->  /debug
 
 Override mounts via env:
@@ -53,6 +54,7 @@ Mounted into the container:
   <TMP>/w-swissquote/home/.secrets  ->  /secrets
   <TMP>/w-swissquote/xdgdata/wealthdb/swissquote     ->  /data
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote  ->  /cache/collector
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote    ->  /debug
 
 Override mounts via env:
@@ -112,6 +114,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
   login
@@ -144,6 +150,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
   download
@@ -175,6 +185,10 @@ docker
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
@@ -219,6 +233,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
   sh
@@ -250,6 +268,10 @@ docker
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
@@ -283,6 +305,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
   login
@@ -315,6 +341,10 @@ docker
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
@@ -350,6 +380,10 @@ docker
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/silver:/silver
   -v
@@ -387,6 +421,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-swissquote/silver:/silver
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
@@ -423,6 +461,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
   load
@@ -454,6 +496,10 @@ docker
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
@@ -487,6 +533,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
   download
@@ -519,6 +569,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest
   download
@@ -550,6 +604,10 @@ docker
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-swissquote/xdgcache/wealthdb/swissquote:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
   wealthdb/swissquote:latest

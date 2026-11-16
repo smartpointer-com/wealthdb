@@ -419,9 +419,17 @@ _warned_dirs: set[Path] = set()
 
 
 def cache_root(collector: str) -> Path:
-    """A collector's cache root: ``$XDG_CACHE_HOME`` (or ``~/.cache``)
-    ``/wealthdb/<collector>``. Derived data, kept outside bronze and
-    outside the secrets directory."""
+    """A collector's cache root: ``$WEALTHDB_CACHE_DIR`` when set, else
+    ``$XDG_CACHE_HOME`` (or ``~/.cache``) ``/wealthdb/<collector>``.
+    Derived data, kept outside bronze and outside the secrets directory.
+
+    ``WEALTHDB_CACHE_DIR`` names the root itself. The Docker wrappers set
+    it to the in-container mount of the collector's host cache dir, the
+    same ``~/.cache/wealthdb/<collector>``, so a cache outlives the
+    container."""
+    override = os.environ.get("WEALTHDB_CACHE_DIR")
+    if override:
+        return Path(override)
     base = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
     return Path(base) / "wealthdb" / collector
 

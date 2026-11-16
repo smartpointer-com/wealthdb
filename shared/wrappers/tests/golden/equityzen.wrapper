@@ -52,6 +52,7 @@ Mounted into the container:
   <TMP>/w-equityzen/home/.secrets  ->  /secrets
   <TMP>/w-equityzen/xdgdata/wealthdb/equityzen     ->  /data
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen  ->  /cache/collector
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen    ->  /debug
 
 Override mounts via env:
@@ -120,6 +121,7 @@ Mounted into the container:
   <TMP>/w-equityzen/home/.secrets  ->  /secrets
   <TMP>/w-equityzen/xdgdata/wealthdb/equityzen     ->  /data
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen  ->  /cache/collector
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen    ->  /debug
 
 Override mounts via env:
@@ -204,6 +206,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
   <TMP>/w-equityzen/tree/collectors/equityzen:/app
@@ -251,6 +257,10 @@ docker
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
@@ -300,6 +310,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
   <TMP>/w-equityzen/tree/collectors/equityzen:/app
@@ -347,6 +361,10 @@ docker
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
@@ -407,6 +425,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
   <TMP>/w-equityzen/tree/collectors/equityzen:/app
@@ -454,6 +476,10 @@ docker
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
@@ -503,6 +529,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
   <TMP>/w-equityzen/tree/collectors/equityzen:/app
@@ -551,6 +581,10 @@ docker
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
@@ -602,6 +636,10 @@ docker
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-equityzen/silver:/silver
   -v
@@ -655,6 +693,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-equityzen/silver:/silver
   -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
@@ -707,6 +749,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
   <TMP>/w-equityzen/tree/collectors/equityzen:/app
@@ -754,6 +800,10 @@ docker
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
@@ -803,6 +853,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
   <TMP>/w-equityzen/tree/collectors/equityzen:/app
@@ -851,6 +905,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v
   <TMP>/w-equityzen/tree/collectors/equityzen:/app
@@ -898,6 +956,10 @@ docker
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-equityzen/xdgcache/wealthdb/equityzen:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen:/debug
   -v

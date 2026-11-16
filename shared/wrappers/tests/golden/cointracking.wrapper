@@ -79,6 +79,7 @@ Mounted into the container:
   <TMP>/w-cointracking/home/.secrets  ->  /secrets
   <TMP>/w-cointracking/xdgdata/wealthdb/cointracking     ->  /data
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking  ->  /cache/collector
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking    ->  /debug
 
 Override mounts via env:
@@ -183,6 +184,7 @@ Mounted into the container:
   <TMP>/w-cointracking/home/.secrets  ->  /secrets
   <TMP>/w-cointracking/xdgdata/wealthdb/cointracking     ->  /data
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking  ->  /cache/collector
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking    ->  /debug
 
 Override mounts via env:
@@ -270,6 +272,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
   <TMP>/w-cointracking/tree/collectors/cointracking:/app
@@ -320,6 +326,10 @@ docker
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
@@ -372,6 +382,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
   <TMP>/w-cointracking/tree/collectors/cointracking:/app
@@ -422,6 +436,10 @@ docker
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
@@ -485,6 +503,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
   <TMP>/w-cointracking/tree/collectors/cointracking:/app
@@ -544,6 +566,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
   <TMP>/w-cointracking/tree/collectors/cointracking:/app
@@ -594,6 +620,10 @@ docker
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
@@ -646,6 +676,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
   <TMP>/w-cointracking/tree/collectors/cointracking:/app
@@ -696,6 +730,10 @@ docker
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
@@ -748,6 +786,10 @@ docker
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
@@ -802,6 +844,10 @@ docker
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-cointracking/silver:/silver
   -v
@@ -858,6 +904,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-cointracking/silver:/silver
   -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
@@ -913,6 +963,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
   <TMP>/w-cointracking/tree/collectors/cointracking:/app
@@ -963,6 +1017,10 @@ docker
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
@@ -1015,6 +1073,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
   <TMP>/w-cointracking/tree/collectors/cointracking:/app
@@ -1066,6 +1128,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v
   <TMP>/w-cointracking/tree/collectors/cointracking:/app
@@ -1116,6 +1182,10 @@ docker
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-cointracking/xdgcache/wealthdb/cointracking:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking:/debug
   -v

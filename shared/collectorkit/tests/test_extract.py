@@ -421,8 +421,17 @@ def test_no_or_a_refused_directory_is_a_plain_call(tmp_path, counted,
 
 
 def test_the_cache_root_is_xdg(monkeypatch, tmp_path):
+    monkeypatch.delenv("WEALTHDB_CACHE_DIR", raising=False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     assert extract.cache_root("ubs-web") == tmp_path / "wealthdb" / "ubs-web"
+
+
+def test_the_wrappers_cache_dir_is_the_cache_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WEALTHDB_CACHE_DIR", str(tmp_path / "mounted"))
+    assert extract.cache_root("ubs-web") == tmp_path / "mounted"
+    monkeypatch.setenv("WEALTHDB_CACHE_DIR", "")
+    assert extract.cache_root("ubs-web") == tmp_path / "xdg" / "wealthdb" / "ubs-web"
 
 
 def test_measure_counts_and_writes_nothing(tmp_path, counted):

@@ -24,6 +24,7 @@ Mounted into the container:
   <TMP>/w-ubs-web/home/.secrets  ->  /secrets
   <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web     ->  /data
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web  ->  /cache/collector
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web    ->  /debug
 
 Override mounts via env:
@@ -64,6 +65,7 @@ Mounted into the container:
   <TMP>/w-ubs-web/home/.secrets  ->  /secrets
   <TMP>/w-ubs-web/xdgdata/wealthdb/ubs-web     ->  /data
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web  ->  /cache/collector
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web    ->  /debug
 
 Override mounts via env:
@@ -124,6 +126,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
   login
@@ -153,6 +159,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
   download
@@ -181,6 +191,10 @@ docker
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
@@ -218,6 +232,10 @@ docker
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
@@ -259,6 +277,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
   sh
@@ -287,6 +309,10 @@ docker
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
@@ -317,6 +343,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
   login
@@ -346,6 +376,10 @@ docker
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
@@ -378,6 +412,10 @@ docker
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-ubs-web/silver:/silver
   -v
@@ -412,6 +450,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-ubs-web/silver:/silver
   -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
@@ -445,6 +487,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
   load
@@ -473,6 +519,10 @@ docker
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
@@ -503,6 +553,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
   download
@@ -532,6 +586,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest
   download
@@ -560,6 +618,10 @@ docker
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web:/debug
   wealthdb/ubs-web:latest

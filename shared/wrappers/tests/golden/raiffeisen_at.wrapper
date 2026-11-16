@@ -41,6 +41,7 @@ Mounted into the container:
   <TMP>/w-raiffeisen_at/home/.secrets  ->  /secrets
   <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at     ->  /data
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at  ->  /cache/collector
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at    ->  /debug
 
 Override mounts via env:
@@ -98,6 +99,7 @@ Mounted into the container:
   <TMP>/w-raiffeisen_at/home/.secrets  ->  /secrets
   <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at     ->  /data
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at  ->  /cache/collector
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at    ->  /debug
 
 Override mounts via env:
@@ -174,6 +176,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
   <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
@@ -221,6 +227,10 @@ docker
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
@@ -278,6 +288,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
   <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
@@ -325,6 +339,10 @@ docker
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
@@ -393,6 +411,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
   <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
@@ -440,6 +462,10 @@ docker
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
@@ -489,6 +515,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
   <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
@@ -536,6 +566,10 @@ docker
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
@@ -585,6 +619,10 @@ docker
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
@@ -636,6 +674,10 @@ docker
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-raiffeisen_at/silver:/silver
   -v
@@ -689,6 +731,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-raiffeisen_at/silver:/silver
   -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
@@ -741,6 +787,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
   <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
@@ -788,6 +838,10 @@ docker
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
@@ -837,6 +891,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
   <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
@@ -885,6 +943,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v
   <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
@@ -932,6 +994,10 @@ docker
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
   -v

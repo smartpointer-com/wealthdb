@@ -46,6 +46,7 @@ Mounted into the container:
   <TMP>/w-amex/home/.secrets  ->  /secrets
   <TMP>/w-amex/xdgdata/wealthdb/amex     ->  /data
   <TMP>/w-amex/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-amex/xdgcache/wealthdb/amex  ->  /cache/collector
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex    ->  /debug
 
 Override mounts via env:
@@ -109,6 +110,7 @@ Mounted into the container:
   <TMP>/w-amex/home/.secrets  ->  /secrets
   <TMP>/w-amex/xdgdata/wealthdb/amex     ->  /data
   <TMP>/w-amex/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-amex/xdgcache/wealthdb/amex  ->  /cache/collector
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex    ->  /debug
 
 Override mounts via env:
@@ -184,6 +186,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
   <TMP>/w-amex/tree/collectors/amex:/app
@@ -237,6 +243,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
   <TMP>/w-amex/tree/collectors/amex:/app
@@ -288,6 +298,10 @@ docker
   <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
@@ -341,6 +355,10 @@ docker
   <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
@@ -398,6 +416,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
   <TMP>/w-amex/tree/collectors/amex:/app
@@ -442,6 +464,10 @@ docker
   <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
@@ -488,6 +514,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
   <TMP>/w-amex/tree/collectors/amex:/app
@@ -533,6 +563,10 @@ docker
   <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
@@ -581,6 +615,10 @@ docker
   <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-amex/silver:/silver
   -v
@@ -631,6 +669,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-amex/silver:/silver
   -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
@@ -680,6 +722,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
   <TMP>/w-amex/tree/collectors/amex:/app
@@ -724,6 +770,10 @@ docker
   <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
@@ -770,6 +820,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
   <TMP>/w-amex/tree/collectors/amex:/app
@@ -815,6 +869,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v
   <TMP>/w-amex/tree/collectors/amex:/app
@@ -859,6 +917,10 @@ docker
   <TMP>/w-amex/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-amex/xdgcache/wealthdb/amex:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex:/debug
   -v

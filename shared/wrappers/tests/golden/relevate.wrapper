@@ -36,6 +36,7 @@ Mounted into the container:
   <TMP>/w-relevate/home/.secrets  ->  /secrets
   <TMP>/w-relevate/xdgdata/wealthdb/relevate     ->  /data
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate  ->  /cache/collector
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate    ->  /debug
 
 Override mounts via env (or in <TMP>/w-relevate/xdgconfig/relevate.cfg):
@@ -95,6 +96,7 @@ Mounted into the container:
   <TMP>/w-relevate/home/.secrets  ->  /secrets
   <TMP>/w-relevate/xdgdata/wealthdb/relevate     ->  /data
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate  ->  /cache/collector
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate    ->  /debug
 
 Override mounts via env (or in <TMP>/w-relevate/xdgconfig/relevate.cfg):
@@ -175,6 +177,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
   login
@@ -218,6 +224,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
   download
@@ -260,6 +270,10 @@ docker
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
@@ -315,6 +329,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
   sh
@@ -357,6 +375,10 @@ docker
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
@@ -401,6 +423,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
   login
@@ -444,6 +470,10 @@ docker
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
@@ -490,6 +520,10 @@ docker
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-relevate/silver:/silver
   -v
@@ -538,6 +572,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-relevate/silver:/silver
   -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
@@ -585,6 +623,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
   load
@@ -627,6 +669,10 @@ docker
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
@@ -671,6 +717,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
   download
@@ -714,6 +764,10 @@ docker
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
   -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
+  -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
   download
@@ -756,6 +810,10 @@ docker
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache:/cache/startupcache
   -e
   WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
+  -v
+  <TMP>/w-relevate/xdgcache/wealthdb/relevate:/cache/collector
+  -e
+  WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate:/debug
   wealthdb/relevate:latest
