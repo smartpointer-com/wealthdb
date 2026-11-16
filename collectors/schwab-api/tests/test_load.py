@@ -366,8 +366,164 @@ def test_migration_0005_backfills_rows_loaded_before_it(tmp_path):
              for key, pos in _COST_POSITIONS.items()],
         )
 
-    assert silver.apply_migrations(conn, loader.MIGRATIONS_DIR) == 5
+    assert silver.apply_migrations(conn, loader.MIGRATIONS_DIR) == 6
     assert _cost_columns(conn) == _COST_EXPECTED
+
+
+# ============================================================
+# Promoted position fields and transaction legs (migration 0006)
+# ============================================================
+#
+# Codes verbatim, numbers as decimal text with the payload's digits,
+# the maturity as the day it names. Invented figures only.
+
+def _numbers_position(symbol: str, value) -> dict:
+    return {"instrument": {"symbol": symbol, "assetType": "EQUITY"},
+            "longQuantity": value, "marketValue": value}
+
+
+# A number the payload states, and the text the column holds for it.
+_NUMBERS = {
+    "INT": (10, "10"),
+    "FLOAT": (2500.0, "2500.0"),
+    "LONGFLOAT": (0.30000000000000004, "0.30000000000000004"),
+    "SMALL": (1e-05, "0.00001"),
+    "SMALLER": (-2.5e-07, "-0.00000025"),
+    "LARGE": (1.2345e+16, "12345000000000000"),
+    "NEGZERO": (-0.0, "-0.0"),
+    "BIGINT": (12345678901234567890, "12345678901234567890"),
+    "TEXT": ("10", None),
+    "BOOL": (True, None),
+    "NULL": (None, None),
+}
+
+_FIELD_POSITIONS = [
+    {"instrument": {"symbol": "912796ZZ9", "cusip": "912796ZZ9",
+                    "assetType": "FIXED_INCOME", "description": "US T-BILL",
+                    "maturityDate": "2099-09-09T05:00:00.000+00:00",
+                    "variableRate": 4.125},
+     "longQuantity": 10000, "shortQuantity": 0, "marketValue": 9950.5},
+    {"instrument": {"symbol": "VTI", "cusip": "", "type": "EXCHANGE_TRADED_FUND",
+                    "assetType": "COLLECTIVE_INVESTMENT",
+                    "maturityDate": "2099-02-30", "variableRate": 0}},
+    {"instrument": {"symbol": "BADDAY", "maturityDate": "2099-9-09T00:00:00"}},
+    {"instrument": {"symbol": "NOINST", "description": 5}, "shortQuantity": 2},
+    *(_numbers_position(sym, v) for sym, (v, _) in _NUMBERS.items()),
+]
+
+_FIELD_COLUMNS = ("instrument_key, asset_type, instrument_type, cusip, symbol, "
+                  "description, maturity_date, variable_rate, long_quantity, "
+                  "short_quantity, market_value")
+
+_FIELD_EXPECTED = {
+    ("912796ZZ9", "FIXED_INCOME", None, "912796ZZ9", "912796ZZ9", "US T-BILL",
+     4092595200, "4.125", "10000", "0", "9950.5"),
+    ("VTI", "COLLECTIVE_INVESTMENT", "EXCHANGE_TRADED_FUND", "", "VTI", None,
+     None, "0", None, None, None),
+    ("BADDAY", None, None, None, "BADDAY", None, None, None, None, None, None),
+    ("NOINST", None, None, None, "NOINST", None, None, None, None, "2", None),
+    *((sym, "EQUITY", None, None, sym, None, None, None, text, None, text)
+      for sym, (_, text) in _NUMBERS.items()),
+}
+
+_LEG_TXN = {
+    "activityId": "990000000001", "time": "2024-02-01T12:00:00+0000",
+    "type": "TRADE", "netAmount": -1505.0,
+    "transferItems": [
+        {"instrument": {"assetType": "EQUITY", "cusip": "999999999",
+                        "symbol": "VTI"},
+         "amount": 10, "cost": -1500.0, "price": 150.0},
+        {"instrument": {"assetType": "CURRENCY", "symbol": "CURRENCY_USD"},
+         "amount": -1505.0, "cost": -1.5e-05},
+        {"instrument": None, "amount": "3", "price": None},
+    ],
+}
+
+_LEG_EXPECTED = {
+    ("990000000001", 0, "EQUITY", "999999999", "VTI", "10", "-1500.0", "150.0"),
+    ("990000000001", 1, "CURRENCY", None, "CURRENCY_USD", "-1505.0",
+     "-0.000015", None),
+    ("990000000001", 2, None, None, None, None, None, None),
+}
+
+
+def _seed_field_bronze(root: Path) -> Path:
+    dump = _seed_bronze(root)
+    (dump / "accounts_positions.json").write_text(json.dumps([
+        {"securitiesAccount": {"accountNumber": ACCT_PLAIN, "type": "MARGIN",
+                               "positions": _FIELD_POSITIONS}},
+    ]), encoding="utf-8")
+    (dump / "transactions_000.json").write_text(json.dumps({
+        "account_hash": ACCT_HASH, "window_start": "2024-01-01",
+        "window_end": "2024-03-31", "transactions": [
+            _LEG_TXN,
+            {"activityId": "990000000002", "time": "2024-02-02T12:00:00+0000",
+             "type": "JOURNAL"},
+        ]}), encoding="utf-8")
+    return dump
+
+
+def _rows(conn, sql: str) -> set:
+    return {tuple(r) for r in conn.execute(sql)}
+
+
+def test_load_writes_the_promoted_position_fields(tmp_path):
+    _seed_field_bronze(tmp_path / "bronze")
+    db = tmp_path / "schwab-api.db"
+    assert _load(db, tmp_path / "bronze") == 0
+    assert _rows(_open(db), f"SELECT {_FIELD_COLUMNS} FROM positions"
+                 ) == _FIELD_EXPECTED
+
+
+def test_load_writes_every_leg_at_its_place(tmp_path):
+    _seed_field_bronze(tmp_path / "bronze")
+    db = tmp_path / "schwab-api.db"
+    assert _load(db, tmp_path / "bronze") == 0
+    assert _rows(_open(db), "SELECT * FROM transaction_legs") == _LEG_EXPECTED
+
+
+def test_a_replaced_window_replaces_its_legs(tmp_path):
+    bronze = tmp_path / "bronze"
+    db = tmp_path / "schwab-api.db"
+    _seed_field_bronze(bronze)
+    assert _load(db, bronze) == 0
+    # The later dump states the window again without the trade.
+    _seed_with_txns(bronze, "20240402T000000Z", window_start="2024-01-01",
+                    window_end="2024-03-31",
+                    txn_specs=[("990000000003", "2024-02-03T12:00:00+0000")])
+    assert _load(db, bronze) == 0
+    assert _count(_open(db), "transaction_legs") == 0
+
+
+def test_migration_0006_fills_what_the_loader_writes(tmp_path):
+    """A silver at schema 0005, holding the rows a load writes, gets from
+    the migration exactly the fields a fresh load of the same bronze
+    writes."""
+    _seed_field_bronze(tmp_path / "bronze")
+    fresh = tmp_path / "fresh.db"
+    assert _load(fresh, tmp_path / "bronze") == 0
+
+    pre = tmp_path / "migrations-0005"
+    pre.mkdir()
+    for f in sorted(loader.MIGRATIONS_DIR.glob("000[1-5]_*.sql")):
+        (pre / f.name).write_text(f.read_text(encoding="utf-8"),
+                                  encoding="utf-8")
+    old = tmp_path / "old.db"
+    conn = loader.open_db(old)
+    assert silver.apply_migrations(conn, pre) == 5
+    conn.execute("ATTACH DATABASE ? AS fresh", (str(fresh),))
+    with conn:
+        for table in _BRONZE_TABLES:
+            if table == "transaction_legs":
+                continue
+            cols = ", ".join(r[1] for r in conn.execute(
+                f"PRAGMA main.table_info({table})"))
+            conn.execute(f"INSERT INTO main.{table} ({cols}) "
+                         f"SELECT {cols} FROM fresh.{table}")
+    conn.execute("DETACH DATABASE fresh")
+    assert silver.apply_migrations(conn, loader.MIGRATIONS_DIR) == 6
+    conn.close()
+    assert _dump_tables(old) == _dump_tables(fresh)
 
 
 # ============================================================
@@ -387,7 +543,8 @@ def test_migration_0005_backfills_rows_loaded_before_it(tmp_path):
 # (migration timestamps) are deliberately excluded from the comparison.
 _BRONZE_TABLES = (
     "accounts", "user_preference", "account_balances",
-    "positions", "open_orders", "transactions", "instruments",
+    "positions", "open_orders", "transactions", "transaction_legs",
+    "instruments",
 )
 
 

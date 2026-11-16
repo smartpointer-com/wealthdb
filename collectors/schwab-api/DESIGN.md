@@ -273,8 +273,9 @@ For Schwab silver:
 - `positions`: `(snapshot_at, account_external_id, instrument_key)`
 - `transactions`: `(activity_id)` PK + secondary index on
   `(account_external_id, timestamp)`
-- everything else is in `payload` — instrument descriptions, prices,
-  fee types, transaction subtypes, etc.
+- everything else is in `payload` — prices, fee types, transaction
+  subtypes, etc. — except the fields below that an adapter reads on
+  every row.
 
 `positions` also carries two cost-basis columns. They hold Schwab's
 adjusted tax-lot basis, so an adapter reads it without a
@@ -290,6 +291,19 @@ no per-asset-class scale. The header of
 [migrations/0005_position_cost.sql](migrations/0005_position_cost.sql)
 gives the price convention of `average_cost`, the meaning of zero and
 NULL, and why `averageLongPrice` stays in `payload`.
+
+Migration 0006 promotes what a reader needs of each holding and each
+trade leg. `positions` gains the instrument (`asset_type`,
+`instrument_type`, `cusip`, `symbol`, `description`, `maturity_date`,
+`variable_rate`) and the figures (`long_quantity`, `short_quantity`,
+`market_value`). `transaction_legs` holds one row per element of a
+transaction's `transferItems`: its instrument's `asset_type`, `cusip`
+and `symbol`, and its `amount`, `cost` and `price`. The loader
+classifies nothing. A code is the source's text. A number is decimal
+text with the payload's digits, so a reader parses the same decimal
+from the column as from the payload. A date is unix seconds at 00:00
+UTC of the day the stamp names. The migration fills the rows loaded
+before it from `payload` by the same rules.
 
 **Why not promote more columns?** Because the upstream's schema
 evolves. Schwab adds new fields all the time; UBS varies what each

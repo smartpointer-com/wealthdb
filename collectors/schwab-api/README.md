@@ -245,17 +245,18 @@ the whole dump back, and the next run retries it.
 
 ### Silver tables
 
-Every table except `dump_runs` keeps the source record as canonical JSON
-in `payload`. `account_external_id` is always the Schwab account hash.
+Every table except `dump_runs` and `transaction_legs` keeps the source
+record as canonical JSON in `payload`. `account_external_id` is always the Schwab account hash.
 
 | Table | Rows | Key | Promoted columns |
 | --- | --- | --- | --- |
 | `accounts` | one per account, when its metadata changes | `snapshot_at`, `account_external_id` | `account_number` (plaintext), `account_type` (`CASH` / `MARGIN`), `preference_type`, `nickname` |
 | `user_preference` | one per dump, when the preferences change | `snapshot_at` | — |
 | `account_balances` | one per account and balance block per dump | `snapshot_at`, `account_external_id`, `balance_kind` (`initial` / `current` / `projected` / `aggregated`) | — |
-| `positions` | one per holding per dump | `snapshot_at`, `account_external_id`, `instrument_key` (CUSIP, else symbol) | `average_cost`, `unrealized_gain_loss` |
+| `positions` | one per holding per dump | `snapshot_at`, `account_external_id`, `instrument_key` (CUSIP, else symbol) | `average_cost`, `unrealized_gain_loss`, `asset_type`, `instrument_type`, `cusip`, `symbol`, `description`, `maturity_date`, `variable_rate`, `long_quantity`, `short_quantity`, `market_value` |
 | `open_orders` | one per open order per dump | `snapshot_at`, `account_external_id`, `order_external_id` | `status` |
 | `transactions` | one per Schwab activity | `activity_id` | `timestamp`, `account_external_id`, `kind` |
+| `transaction_legs` | one per element of a transaction's `transferItems` | `activity_id`, `leg` | `asset_type`, `cusip`, `symbol`, `amount`, `cost`, `price` |
 | `instruments` | one per symbol, when its record changes | `snapshot_at`, `symbol` | — |
 | `dump_runs` | one per loaded dump | `snapshot_at` | `silver_schema_version`, `run_dir` |
 

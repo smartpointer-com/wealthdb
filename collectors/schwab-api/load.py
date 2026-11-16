@@ -26,6 +26,7 @@ import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import _txartefacts
@@ -71,6 +72,36 @@ def parse_iso_date_end_of_day(s: str) -> int:
         tzinfo=timezone.utc, hour=23, minute=59, second=59,
     )
     return int(dt.timestamp())
+
+
+def decimal_text(value) -> str | None:
+    """A JSON number as decimal text: the digits the payload states,
+    written out without an exponent (``1e-05`` is ``0.00001``), so a
+    reader parses the same decimal from either. None for anything but a
+    number. Migration 0006 writes the same text in SQL."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return format(Decimal(repr(value)), "f")
+
+
+def code_text(value) -> str | None:
+    """A code or a name as the source states it; None unless text."""
+    return value if isinstance(value, str) else None
+
+
+_DAY_PREFIX = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def stamped_day(value) -> int | None:
+    """The day a stamp such as ``2099-09-09T05:00:00.000+00:00`` begins
+    with, as unix seconds at 00:00 UTC. None where it names no real day.
+    Migration 0006 reads it the same way in SQL."""
+    if not isinstance(value, str) or not _DAY_PREFIX.match(value):
+        return None
+    try:
+        return parse_iso_date_start_of_day(value[:10])
+    except ValueError:
+        return None
 
 
 def canonical_json(obj) -> str:
@@ -249,6 +280,22 @@ def _open_profit_loss(pos: dict) -> float | None:
     return pos.get("longOpenProfitLoss")
 
 
+def _position_fields(pos: dict) -> tuple:
+    """The instrument and the figures migration 0006 promotes, in its
+    column order."""
+    inst = pos.get("instrument") or {}
+    return (
+        code_text(inst.get("assetType")), code_text(inst.get("type")),
+        code_text(inst.get("cusip")), code_text(inst.get("symbol")),
+        code_text(inst.get("description")),
+        stamped_day(inst.get("maturityDate")),
+        decimal_text(inst.get("variableRate")),
+        decimal_text(pos.get("longQuantity")),
+        decimal_text(pos.get("shortQuantity")),
+        decimal_text(pos.get("marketValue")),
+    )
+
+
 def load_accounts_positions(
     conn, snapshot_at: int, wrappers: list[dict] | None,
     acct_map: dict[str, str],
@@ -290,7 +337,7 @@ def load_accounts_positions(
             pos_rows.append((
                 snapshot_at, acct_hash, instrument_key,
                 pos.get("averagePrice"), _open_profit_loss(pos),
-                canonical_json(pos),
+                *_position_fields(pos), canonical_json(pos),
             ))
 
     if bal_rows:
@@ -304,11 +351,29 @@ def load_accounts_positions(
         conn.executemany(
             "INSERT INTO positions"
             "(snapshot_at, account_external_id, instrument_key, "
-            " average_cost, unrealized_gain_loss, payload) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            " average_cost, unrealized_gain_loss, asset_type, "
+            " instrument_type, cusip, symbol, description, maturity_date, "
+            " variable_rate, long_quantity, short_quantity, market_value, "
+            " payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             pos_rows,
         )
     return len(pos_rows), len(bal_rows)
+
+
+def _leg_rows(aid: str, txn: dict) -> list[tuple]:
+    """A transaction's transferItems as transaction_legs rows, each at
+    its place in the array."""
+    rows = []
+    for leg, item in enumerate(txn.get("transferItems") or []):
+        inst = item.get("instrument") or {}
+        rows.append((
+            aid, leg, code_text(inst.get("assetType")),
+            code_text(inst.get("cusip")), code_text(inst.get("symbol")),
+            decimal_text(item.get("amount")), decimal_text(item.get("cost")),
+            decimal_text(item.get("price")),
+        ))
+    return rows
 
 
 def load_transactions(conn, windows: list[dict]) -> int:
@@ -325,7 +390,8 @@ def load_transactions(conn, windows: list[dict]) -> int:
     re-fetch would PK-collide on `activity_id`. The exact activity_ids
     about to be inserted are therefore deleted too, which preserves the
     window-DELETE-as-removal-detection semantics for in-window rows and
-    avoids the boundary collision."""
+    avoids the boundary collision. A transaction's legs go with it (the
+    foreign key cascades)."""
     total = 0
     for data in windows:
         acct_hash = data["account_hash"]
@@ -339,6 +405,7 @@ def load_transactions(conn, windows: list[dict]) -> int:
         )
 
         rows = []
+        legs: list[tuple] = []
         ids_to_replace: list[str] = []
         for txn in data.get("transactions") or []:
             aid = str(txn["activityId"])
@@ -350,6 +417,7 @@ def load_transactions(conn, windows: list[dict]) -> int:
                 txn["type"],
                 canonical_json(txn),
             ))
+            legs += _leg_rows(aid, txn)
 
         # Clear any stragglers the window DELETE missed because Schwab
         # returned them with a `time` outside the declared window.
@@ -368,6 +436,13 @@ def load_transactions(conn, windows: list[dict]) -> int:
                 "(activity_id, timestamp, account_external_id, kind, payload) "
                 "VALUES (?, ?, ?, ?, ?)",
                 rows,
+            )
+        if legs:
+            conn.executemany(
+                "INSERT INTO transaction_legs"
+                "(activity_id, leg, asset_type, cusip, symbol, amount, cost, "
+                " price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                legs,
             )
         total += len(rows)
     return total
