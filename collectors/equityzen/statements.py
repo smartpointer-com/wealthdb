@@ -6,13 +6,15 @@ Text is extracted with `pdftotext -layout` (poppler-utils). The capital-
 account statement is a clean label/value table and parses reliably (the
 "Net Ending [Net] Capital Account Balance" line is the fund NAV). The K-1 is
 an IRS Form-1065 grid: its Item L capital-account analysis ("Ending capital
-account") parses cleanly and is the valuable tax-basis NAV; the Part III box
-amounts sit in a form grid a naive scan misreads, so they are not extracted,
-and the full K-1 text is not retained (it carries SSN/EIN/address) — see
+account") is the valuable tax-basis NAV. It is read from the text, and a
+figure the text misses is read from the face page's word boxes by the
+fleet's K-1 reader (collectorkit.k1). The Part III box amounts are not
+kept, and neither is the full K-1 text (it carries SSN/EIN/address) — see
 `parse_k1`.
 
-All functions are pure (text in, dict out) except `pdf_text` which shells to
-pdftotext. No values are hard-coded; nothing here carries source data.
+All functions are pure (text or word boxes in, dict out) except `pdf_text`
+which shells to pdftotext. No values are hard-coded; nothing here carries
+source data.
 """
 from __future__ import annotations
 
@@ -20,7 +22,8 @@ import datetime as dt
 import re
 from pathlib import Path
 
-from collectorkit import pdftotext
+from collectorkit import k1, pdftotext
+from collectorkit.words import Extracted
 
 
 def pdf_text(path: Path) -> str:
@@ -114,21 +117,77 @@ def _tax_year(text: str) -> int | None:
     return None
 
 
-def parse_k1(text: str) -> dict:
-    """Extract the reliable part of a K-1: the tax year and Item L — the
-    partner's capital-account analysis, whose `ending_capital` is the
-    tax-basis NAV. The Part III box amounts (income / gains / distributions)
-    are NOT extracted: in `pdftotext` output they sit in a form grid and a
-    naive label→value scan grabs adjacent box *numbers*, not amounts (e.g.
-    "14"/"15"). Rather than store wrong figures they are left out; they can be
-    re-parsed from the bronze PDF when a grid-aware extractor exists. The full
-    K-1 text is deliberately NOT kept either (it carries SSN/EIN/address)."""
-    return {
+# A K-1 amount after its caption: wrapped in parentheses, digits with an
+# optional minus sign printed against them, or a bare dash (zero).
+_K1_AMOUNT = re.compile(r"\(\s*[\d.]+\s*\)|-?[\d][\d.]*|(?<=\s)-(?=\s|$)")
+
+
+def _k1_field(text: str, label_regex: str) -> float | None:
+    """The amount after the first line matching `label_regex`, as `_field`
+    reads it, except that a printed minus sign (`-3,127.`) is kept."""
+    for line in text.splitlines():
+        m = re.search(label_regex, line)
+        if m:
+            rest = line[m.end():].replace("$", " ").replace(",", "")
+            n = _K1_AMOUNT.search(rest)
+            if not n:
+                return None
+            t = n.group(0).replace(" ", "")
+            if t == "-":
+                return 0.0
+            try:
+                return (-float(t.strip("()")) if t.startswith("(")
+                        else float(t))
+            except ValueError:
+                return None
+    return None
+
+
+def _figure(raw: str | None, *, negate: bool = False) -> float | None:
+    """A K-1 figure as collectorkit.k1 reads it (a decimal string) as a
+    float, negated where the text reading gives it a minus sign."""
+    if raw is None:
+        return None
+    return -float(raw) if negate else float(raw)
+
+
+# Item L as read from the text, and the collectorkit.k1 figure that fills
+# each one the text leaves empty: (key, caption, k1 column, negated).
+_ITEM_L = (
+    ("beginning_capital", r"Beginning capital account",
+     "beginning_capital", False),
+    ("current_year_income",
+     r"Current year (?:net income \(loss\)|increase \(decrease\))",
+     "net_income", False),
+    ("withdrawals_distributions", r"Withdrawals and distributions",
+     "distributions", True),
+    ("ending_capital", r"Ending capital account", "ending_capital", False),
+)
+
+
+def parse_k1(text: str, boxes: Extracted | None) -> dict:
+    """Extract the reliable part of a K-1: the tax year, the final-K-1 mark
+    and Item L — the partner's capital-account analysis, whose
+    `ending_capital` is the tax-basis NAV.
+
+    Item L is read from the text first: the first amount after each
+    caption, a printed minus sign kept. Where a preparer prints the amount
+    off its caption's line, the text leaves that field empty, and the face
+    page's word boxes fill it (`boxes`, as `pdftotext -bbox` extracts the
+    PDF; None when it cannot): collectorkit.k1 places an amount on the
+    caption line nearest it. The withdrawals line, which the form prints
+    inside parentheses, is negative either way. The Part III box amounts
+    (income / gains / distributions) are not kept, and the full K-1 text is
+    deliberately NOT kept either (it carries SSN/EIN/address)."""
+    out = {
         "tax_year": _tax_year(text),
         "is_final": bool(re.search(r"Final\s+K-?1\s*\n?\s*X", text, re.I)),
-        "beginning_capital": _field(text, r"Beginning capital account"),
-        "current_year_income": _field(
-            text, r"Current year (?:net income \(loss\)|increase \(decrease\))"),
-        "withdrawals_distributions": _field(text, r"Withdrawals and distributions"),
-        "ending_capital": _field(text, r"Ending capital account"),
     }
+    face = None
+    for key, caption, column, negate in _ITEM_L:
+        out[key] = _k1_field(text, caption)
+        if out[key] is None and boxes is not None:
+            if face is None:
+                face = k1.parse(boxes) or {}
+            out[key] = _figure(face.get(column), negate=negate)
+    return out

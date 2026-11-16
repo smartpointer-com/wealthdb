@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, extract, pdftotext, silver
 
 import statements  # PDF parsers for capital-account statements + K-1s
 
@@ -246,7 +246,7 @@ def _cash_flow_rows(snapshot_at: int, node: dict) -> list[tuple]:
 # bronze.sha256_file memoizes the hash by file identity, and the parse is
 # cached here by that hash.
 
-_PARSE_CACHE: dict[str, dict] = {}            # sha256 hex -> {kind, cap, k1}
+_PARSE_CACHE: dict[str, dict] = {}            # sha256 hex -> {kind, cap, text[, k1]}
 
 
 def _content_hash(blob: Path) -> str:
@@ -257,20 +257,34 @@ def _content_hash(blob: Path) -> str:
 
 def _parse_pdf(blob: Path, chash: str) -> dict:
     """Extract, classify, and parse a PDF once per content hash. Returns
-    {"kind", "cap", "k1"} — the text classification plus both parsers'
-    output. All three are pure functions of the extracted text, so the
-    cached result equals a fresh parse; the caller selects cap vs k1 by
-    document type."""
+    {"kind", "cap", "text"} — the text classification, the statement
+    parser's output and the text the K-1 parser reads (_parse_k1). Both are
+    pure functions of the extracted text, so the cached result equals a
+    fresh parse; the caller selects cap vs k1 by document type."""
     cached = _PARSE_CACHE.get(chash)
     if cached is None:
         text = statements.pdf_text(blob)
         cached = {
             "kind": statements.classify(text),
             "cap": statements.parse_capital_account(text),
-            "k1": statements.parse_k1(text),
+            "text": text,
         }
         _PARSE_CACHE[chash] = cached
     return cached
+
+
+def _parse_k1(blob: Path, chash: str) -> dict:
+    """statements.parse_k1 over a PDF the parse cache holds, once per
+    content hash: its text, and its word boxes (`pdftotext -bbox`; None
+    when they cannot be extracted)."""
+    cached = _PARSE_CACHE[chash]
+    if "k1" not in cached:
+        try:
+            boxes = extract.pdftotext_bbox(blob, timeout=120)
+        except pdftotext.ExtractionError:
+            boxes = None
+        cached["k1"] = statements.parse_k1(cached["text"], boxes)
+    return cached["k1"]
 
 
 def _pdf_blobs(run_dir: Path, nodes: dict) -> list[tuple[Path, str]]:
@@ -345,7 +359,7 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
                                "period_end": p["period_end"],
                                "ending_nav": p["ending_nav"]})
         elif dtype == "K1" or kind == "k1":
-            k = parse["k1"]
+            k = _parse_k1(blob, chash)
             k1_rows.append((
                 did, deal_id, k["tax_year"], 1 if k["is_final"] else 0,
                 k["beginning_capital"], k["current_year_income"],
