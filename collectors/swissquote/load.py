@@ -149,8 +149,10 @@ def load_transactions_csv(
     conn: sqlite3.Connection,
     customer_id: str,
     csv_path: Path,
+    run_snapshot_at: int,
 ) -> int:
-    """Span-DELETE-then-INSERT for one transactions CSV.
+    """Span-DELETE-then-INSERT for one transactions CSV of the dump at
+    `run_snapshot_at`, which every row it writes names.
 
     The DELETE clears every row of this account whose occurred_at
     falls between the CSV's own first and last row, inclusive. The
@@ -206,15 +208,15 @@ def load_transactions_csv(
             " account_external_id, occurred_at, transaction_type,"
             " order_num, isin, symbol, currency, net_amount,"
             " quantity, unit_price, price_quote, fees, accrued_interest,"
-            " payload) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            " payload, run_snapshot_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
             (
                 customer_id, occurred_at, r["Transaction"].strip(),
                 order_num, isin, symbol, currency, net_amount,
                 _csv_number(r["Quantity"]), unit_price, price_quote,
                 _csv_number(r["Costs"]),
                 _csv_number(r["Accrued Interest"]),
-                payload,
+                payload, run_snapshot_at,
             ),
         )
         n += 1
@@ -762,7 +764,7 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> None:
     # transactions (one CSV per requested window)
     for entry in run_meta.get("transactions", []) or []:
         csv_path = run_dir / entry["file"]
-        n = load_transactions_csv(conn, customer_id, csv_path)
+        n = load_transactions_csv(conn, customer_id, csv_path, snapshot_at)
         log.info("  +%d transactions for window %s..%s (%s)",
                  n, entry["window_start"], entry["window_end"],
                  entry["file"])

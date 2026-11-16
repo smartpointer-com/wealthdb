@@ -61,5 +61,8 @@ CREATE TABLE transactions (
     symbol              TEXT,
     currency            TEXT    NOT NULL,
     net_amount          REAL    NOT NULL,
-    payload             TEXT    NOT NULL
+    payload             TEXT    NOT NULL,
+    -- swissquote v9: the dump that wrote the row (dump_runs.snapshot_at);
+    -- NULL on a row written before v9. Probed at open (schema.optional).
+    run_snapshot_at     INTEGER
 );

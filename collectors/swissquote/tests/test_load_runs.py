@@ -203,8 +203,11 @@ def test_statement_rows_of_a_silver_before_derivations_are_parsed_once(tmp_path)
     assert load.main(argv(db, bronze)) == 0
     before = _statement_rows(db)
     conn = load.open_db(db)
-    conn.executescript("DROP TABLE document_derivations;"
-                       "DELETE FROM schema_meta WHERE silver_schema_version = 8;")
+    conn.executescript(
+        "DROP TABLE document_derivations;"
+        "DROP INDEX transactions_run_snapshot_at;"
+        "ALTER TABLE transactions DROP COLUMN run_snapshot_at;"
+        "DELETE FROM schema_meta WHERE silver_schema_version >= 8;")
     conn.close()
     with mock.patch.object(load, "parse_portfolio_performance",
                            wraps=read_statement) as parse:

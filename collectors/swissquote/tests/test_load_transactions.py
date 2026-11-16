@@ -60,9 +60,27 @@ class LoadTransactionsCsvTests(unittest.TestCase):
         self.conn.close()
         self._tmp.cleanup()
 
-    def _load(self, name: str, rows: list[str]) -> int:
+    def _load(self, name: str, rows: list[str], run: int = 1000) -> int:
         return load.load_transactions_csv(
-            self.conn, ACCOUNT, _write_csv(self.tmp / name, rows))
+            self.conn, ACCOUNT, _write_csv(self.tmp / name, rows), run)
+
+    def test_each_row_names_the_dump_that_wrote_it(self):
+        # A later export restates its own span, so its rows name the later
+        # dump; a row outside that span keeps the dump that wrote it.
+        self._load("a.csv", [
+            _row("05-01-2026 10:00:00", "Credit", "100.00", "100.00"),
+            _row("12-02-2026 09:30:00", "Fees", "-5.00", "95.00"),
+        ], run=1000)
+        self._load("b.csv", [
+            _row("12-02-2026 09:30:00", "Fees", "-5.00", "95.00"),
+            _row("10-03-2026 14:00:00", "Interest", "1.00", "96.00"),
+        ], run=2000)
+        got = [tuple(r) for r in self.conn.execute(
+            "SELECT json_extract(payload, '$.date_raw'), run_snapshot_at "
+            "FROM transactions ORDER BY occurred_at;")]
+        self.assertEqual(got, [("05-01-2026 10:00:00", 1000),
+                               ("12-02-2026 09:30:00", 2000),
+                               ("10-03-2026 14:00:00", 2000)])
 
     def test_narrower_export_keeps_rows_outside_its_span(self):
         # The first export covers three months; the second was requested

@@ -102,6 +102,11 @@ Any other value lands as `other`, with the raw type in the payload
   (`MIN` and `MAX` of `positions.snapshot_at`). So the loader's
   window-DELETE covers the historical gold rows before they are
   re-inserted.
+- The window also spans the transactions a dump past the watermark
+  wrote (`transactions.run_snapshot_at`, silver v9). A dump's export
+  restates its span of the ledger, and that span can lie before every
+  position snapshot. A row from before v9 names no dump and opens no
+  window.
 - Historical dates never move the change number, so an idle reload is a
   no-op. They do widen `Status`'s snapshot range.
 - Each run reads the holdings and the ledger, so both observed

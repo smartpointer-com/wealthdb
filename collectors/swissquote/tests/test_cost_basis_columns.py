@@ -132,7 +132,7 @@ class _DbCase(unittest.TestCase):
         csv_path = self.tmp / "transactions.csv"
         csv_path.write_text("\n".join([CSV_HEADER, *TX_ROWS]) + "\n",
                             encoding="utf-8")
-        load.load_transactions_csv(self.conn, ACCOUNT, csv_path)
+        load.load_transactions_csv(self.conn, ACCOUNT, csv_path, SNAPSHOT_AT)
         xls_path = write_xls(self.tmp / "positions.xls",
                               [load.POSITIONS_EXPECTED_HEADER,
                                *POSITIONS_BODY])

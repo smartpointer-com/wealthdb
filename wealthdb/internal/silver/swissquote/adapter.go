@@ -67,6 +67,7 @@ type schema struct {
 	averageCost     bool // positions.average_cost
 	priceQuote      bool // positions.price_quote
 	accruedInterest bool // positions.accrued_interest_chf
+	runStamp        bool // transactions.run_snapshot_at (silver v9)
 }
 
 func (s *schema) optional() []silver.Optional {
@@ -81,5 +82,6 @@ func (s *schema) optional() []silver.Optional {
 		{Table: "positions", Columns: []string{"average_cost"}, Version: 6, Has: &s.averageCost},
 		{Table: "positions", Columns: []string{"price_quote"}, Version: 6, Has: &s.priceQuote},
 		{Table: "positions", Columns: []string{"accrued_interest_chf"}, Version: 7, Has: &s.accruedInterest},
+		{Table: "transactions", Columns: []string{"run_snapshot_at"}, Version: 9, Has: &s.runStamp},
 	}
 }

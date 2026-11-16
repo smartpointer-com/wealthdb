@@ -179,7 +179,7 @@ there on each run.
 
 ## Silver
 
-The schema is `migrations/0001` to `0008`. Each dump loads in one
+The schema is `migrations/0001` to `0009`. Each dump loads in one
 transaction, and already-loaded dumps are skipped.
 
 - **Snapshots** (`accounts`, `positions`, `currency_balances`) are
@@ -204,6 +204,9 @@ transaction, and already-loaded dumps are skipped.
   runs from the CSV's first row to its last, not over the requested
   window, because an export can hold fewer days than requested. A reload
   converges on Swissquote's current data.
+  `run_snapshot_at` names the dump that wrote each row, so gold's change
+  window reaches a restated row whatever its date. It is NULL on a row
+  written before migration 0009.
 - **Documents** are indexed in `documents` by content sha256 and
   Swissquote's document id. The PDF stays on disk. The `payload` keeps
   the file name, document type, contract number, date and target user

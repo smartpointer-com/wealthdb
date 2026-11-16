@@ -509,3 +509,41 @@ func TestTransactionsCarryANarrative(t *testing.T) {
 		}
 	}
 }
+
+// TestChangeWindowCoversARestatedTransactionBeforeTheFirstSnapshot pins
+// a dump past the watermark whose export holds a row dated before every
+// position snapshot: the window reaches back to it, so the load's
+// windowed delete and re-insert cover it. A silver without the run stamp
+// opens the window its rows allow, from the first snapshot.
+func TestChangeWindowCoversARestatedTransactionBeforeTheFirstSnapshot(t *testing.T) {
+	for _, stamped := range []bool{true, false} {
+		path, seed := newFixtureSilver(t)
+		if _, err := seed.Exec(`
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES
+            (1000, 9, '/x/1'), (2000, 9, '/x/2');
+        INSERT INTO positions(snapshot_at, account_external_id, symbol, currency, payload) VALUES
+            (500, '1234567', 'IUSQ', 'USD', '{}'), (1000, '1234567', 'IUSQ', 'USD', '{}');
+        INSERT INTO transactions(account_external_id, occurred_at, transaction_type, currency,
+                                 net_amount, payload, run_snapshot_at) VALUES
+            ('1234567', 900, 'Credit', 'CHF', 1.00, '{}', 1000),
+            ('1234567', 100, 'Credit', 'CHF', 2.00, '{}', 2000);
+    `); err != nil {
+			t.Fatal(err)
+		}
+		want := int64(100)
+		if !stamped {
+			if _, err := seed.Exec(`ALTER TABLE transactions DROP COLUMN run_snapshot_at`); err != nil {
+				t.Fatal(err)
+			}
+			want = 500
+		}
+		w, err := openAdapter(t, path).ChangeWindow(context.Background(), 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !w.HasChanges || w.Start != want || w.End != 2000 || w.NewChangeNumber != 2000 {
+			t.Errorf("stamped=%v: window = %+v, want changes over [%d, 2000] to 2000",
+				stamped, w, want)
+		}
+	}
+}

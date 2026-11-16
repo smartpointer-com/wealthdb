@@ -15,30 +15,49 @@ import (
 // snapshot, so the loader's windowed delete covers the historical gold
 // rows before they are re-inserted. The change number is the latest dump,
 // so an idle reload is a no-op even with historical positions present.
-var clock = silver.Clock{
-	Kind: "swissquote",
-	Runs: silver.LatestDump,
-	Snapshot: []string{
-		silver.Range("dump_runs", "snapshot_at"),
-		silver.Range("positions", "snapshot_at"),
-		silver.Range("currency_balances", "snapshot_at"),
-	},
-	Ledger: []string{silver.Range("transactions", "occurred_at")},
-	Pin:    true,
-	Mode: silver.Incremental{
-		New: []string{
-			silver.RangePast("dump_runs", "snapshot_at"),
-			silver.RangePast("transactions", "occurred_at"),
+//
+// A dump's export restates its span of the ledger, which can reach back
+// past every position snapshot. Each row names the dump that wrote it
+// (transactions.run_snapshot_at, silver v9), so the window also spans
+// the rows a dump past the watermark wrote. A row written before v9
+// names none and opens no window; it was in silver before every dump
+// the stamp names.
+func clock(runStamp bool) silver.Clock {
+	newRows := []string{
+		silver.RangePast("dump_runs", "snapshot_at"),
+		silver.RangePast("transactions", "occurred_at"),
+	}
+	if runStamp {
+		newRows = append(newRows, restatedRows)
+	}
+	return silver.Clock{
+		Kind: "swissquote",
+		Runs: silver.LatestDump,
+		Snapshot: []string{
+			silver.Range("dump_runs", "snapshot_at"),
+			silver.Range("positions", "snapshot_at"),
+			silver.Range("currency_balances", "snapshot_at"),
 		},
-		Widen: []string{silver.Range("positions", "snapshot_at")},
-	},
+		Ledger: []string{silver.Range("transactions", "occurred_at")},
+		Pin:    true,
+		Mode: silver.Incremental{
+			New:   newRows,
+			Widen: []string{silver.Range("positions", "snapshot_at")},
+		},
+	}
 }
+
+// restatedRows is the range of the transactions a dump past the
+// watermark wrote, the one argument it binds.
+const restatedRows = `SELECT
+    (SELECT MIN(occurred_at) FROM transactions WHERE run_snapshot_at > ?1),
+    (SELECT MAX(occurred_at) FROM transactions WHERE run_snapshot_at > ?1)`
 
 // Status and ChangeWindow are the clock's (silver.Clock).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {
-	return clock.Status(ctx, c.db)
+	return clock(c.schema.runStamp).Status(ctx, c.db)
 }
 
 func (c *Connection) ChangeWindow(ctx context.Context, since int64) (canonical.Window, error) {
-	return clock.ChangeWindow(ctx, c.db, since)
+	return clock(c.schema.runStamp).ChangeWindow(ctx, c.db, since)
 }
