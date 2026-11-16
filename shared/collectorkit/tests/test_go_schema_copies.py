@@ -75,7 +75,7 @@ COPIES = {
         "run_windows": BOOKKEEPING}),
     "refdata": Copy(("refdata/testdata/silver_schema.sql",)),
     "relevate": Copy(("relevate/testdata/silver_schema.sql",), {
-        "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
+        "schema_meta": VERSION, "document_derivations": BOOKKEEPING,
         "documents": UNREAD, "performance_points": UNREAD}),
     "schwab-api": Copy(("schwab/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "open_orders": UNREAD, "user_preference": UNREAD}),

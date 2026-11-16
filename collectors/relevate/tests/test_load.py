@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -64,15 +65,23 @@ def _seed_bronze(root: Path) -> Path:
 
 
 def _fresh_db(tmp_path: Path):
-    conn = loader.open_db(tmp_path / "relevate.db")
+    conn = silver.open_db(tmp_path / "relevate.db")
     version = silver.apply_migrations(conn, loader.MIGRATIONS_DIR)
     return conn, version
 
 
+def _load(tmp_path: Path, bronze_root: Path):
+    """Run the loader over `bronze_root` into tmp_path/relevate.db and
+    return a connection to the silver."""
+    db = tmp_path / "relevate.db"
+    assert loader.main(["--silver-db", str(db),
+                        "--bronze-dir", str(bronze_root)]) == 0
+    return silver.open_db(db)
+
+
 def test_load_accounts_positions_cash(tmp_path):
-    run_dir = _seed_bronze(tmp_path / "bronze")
-    conn, version = _fresh_db(tmp_path)
-    loader.load_one_dump(conn, run_dir, version)
+    _seed_bronze(tmp_path / "bronze")
+    conn = _load(tmp_path, tmp_path / "bronze")
 
     # Account row from investment-overview.
     acct = conn.execute(
@@ -113,8 +122,7 @@ def test_state_minted_at_keeps_the_time_of_day(tmp_path):
     run_dir = _seed_bronze(tmp_path / "bronze")
     _write_json(run_dir / "run.json", {
         "utc": RUN_SLUG, "state_minted_at": "2024-01-01T12:34:56+00:00"})
-    conn, version = _fresh_db(tmp_path)
-    loader.load_one_dump(conn, run_dir, version)
+    conn = _load(tmp_path, tmp_path / "bronze")
     minted = conn.execute(
         "SELECT state_minted_at FROM dump_runs").fetchone()[0]
     assert minted == 1704112496
@@ -122,23 +130,23 @@ def test_state_minted_at_keeps_the_time_of_day(tmp_path):
 
 def test_a_dump_that_raises_mid_load_rolls_back_whole(tmp_path):
     # A non-SQL error must roll the dump's transaction back too: no
-    # half-written rows, no transaction left open on the connection, and
-    # no dump_runs row, so the dump stays pending.
+    # half-written rows and no dump_runs row, so the dump stays pending.
     run_dir = _seed_bronze(tmp_path / "bronze")
     slug = bronze.short_token(ACC)
     (run_dir / "portfolios" / slug / "performance.json").write_text(
         "{not json", encoding="utf-8")
-    conn, version = _fresh_db(tmp_path)
+    db = tmp_path / "relevate.db"
     with pytest.raises(json.JSONDecodeError):
-        loader.load_one_dump(conn, run_dir, version)
-    assert not conn.in_transaction
+        loader.main(["--silver-db", str(db),
+                     "--bronze-dir", str(tmp_path / "bronze")])
+    conn = silver.open_db(db)
     for table in ("accounts", "positions", "dump_runs"):
         assert conn.execute(
             f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
 
 # ============================================================
-# list_pending_dumps: skip dumps the walk never finished
+# Pending dumps: skip dumps the walk never finished
 # ============================================================
 
 def _dump_with_status(root: Path, slug: str, status) -> Path:
@@ -168,7 +176,7 @@ def test_list_pending_skips_unfinished_dumps(tmp_path):
     _dump_with_status(bronze, "20240105T000000Z", "incomplete")
 
     conn, _ = _fresh_db(tmp_path)
-    pending = loader.list_pending_dumps(conn, bronze)
+    pending = loader.SPEC.pending(conn, bronze, log=logging.getLogger())
 
     names = {p.name for p in pending}
     # complete + statusless-legacy are loadable; the unfinished dumps
@@ -182,7 +190,7 @@ def test_list_pending_skips_dir_without_run_json(tmp_path):
     _write_json(d / "accounts" / "investment-overview.json",
                 {"portfolios": []})
     conn, _ = _fresh_db(tmp_path)
-    assert loader.list_pending_dumps(conn, bronze) == []
+    assert loader.SPEC.pending(conn, bronze, log=logging.getLogger()) == []
 
 
 # ============================================================
@@ -251,12 +259,9 @@ def test_a_restated_document_supersedes_the_row_it_restates(tmp_path):
     # id the insert violated UNIQUE(relevate_doc_id) — taking down the
     # whole dump, which then stayed pending forever.
     bronze_root = tmp_path / "bronze"
-    first = _seed_document_dump(bronze_root, FIRST_RUN, b"%PDF-1.4 original")
-    restated = _seed_document_dump(bronze_root, RESTATED_RUN, b"%PDF-1.4 restated")
-
-    conn, version = _fresh_db(tmp_path)
-    loader.load_one_dump(conn, first, version)
-    loader.load_one_dump(conn, restated, version)
+    _seed_document_dump(bronze_root, FIRST_RUN, b"%PDF-1.4 original")
+    _seed_document_dump(bronze_root, RESTATED_RUN, b"%PDF-1.4 restated")
+    conn = _load(tmp_path, bronze_root)
 
     rows = conn.execute(
         "SELECT content_sha256, relevate_doc_id, bronze_path FROM documents"
@@ -276,16 +281,228 @@ def test_unchanged_content_refreshes_rather_than_superseding(tmp_path):
     # the one row and advance last_seen_at. Guards a supersede that fires
     # too eagerly and resets first_seen_at on every load.
     bronze_root = tmp_path / "bronze"
-    first = _seed_document_dump(bronze_root, FIRST_RUN, b"%PDF-1.4 original")
-    again = _seed_document_dump(bronze_root, RESTATED_RUN, b"%PDF-1.4 original")
-
-    conn, version = _fresh_db(tmp_path)
-    loader.load_one_dump(conn, first, version)
-    loader.load_one_dump(conn, again, version)
+    _seed_document_dump(bronze_root, FIRST_RUN, b"%PDF-1.4 original")
+    _seed_document_dump(bronze_root, RESTATED_RUN, b"%PDF-1.4 original")
+    conn = _load(tmp_path, bronze_root)
 
     rows = conn.execute(
         "SELECT first_seen_at, last_seen_at FROM documents").fetchall()
     assert len(rows) == 1
     assert rows[0][0] == bronze.parse_run_ts(FIRST_RUN)
     assert rows[0][1] == bronze.parse_run_ts(RESTATED_RUN)
+    conn.close()
+
+
+# ============================================================
+# Parse cache: a load parses a PDF once per parser generation
+# ============================================================
+
+def _counting_parsers(monkeypatch, calls: list):
+    """Stand-ins for the two PDF parsers that record each call and
+    return a synthetic result shaped like the real one."""
+    def quarterly(pdf, sha):
+        calls.append(("quarterly", pdf.name))
+        return {"as_of_date": 1700000000, "account_external_id": "1000.100000.1",
+                "currency": "CHF", "source_sha256": sha,
+                "positions": [{"isin": "XX0000000001", "security_name": "Example Fund",
+                               "currency": "CHF", "units": 1.5,
+                               "allocation_pct": 0.25, "market_value": 10.0,
+                               "asset_class": "Stocks"}],
+                "cash": [{"balance_kind": "cash", "currency": "CHF", "amount": 2.0}]}
+
+    def credit_note(pdf, sha):
+        calls.append(("credit_note", pdf.name))
+        return {"occurred_at": 1700000000, "account_external_id": "1000.100000.1",
+                "currency": "CHF", "amount": 3.5, "kind": "contribution",
+                "source_sha256": sha}
+
+    monkeypatch.setattr(loader, "parse_quarterly_report", quarterly)
+    monkeypatch.setattr(loader, "parse_credit_note", credit_note)
+
+
+def _seed_pdf_dump(root: Path, slug: str) -> Path:
+    d = root / slug
+    _write_json(d / "run.json", {"tool": "relevate.download", "status": "complete"})
+    _write_json(d / "accounts" / "investment-overview.json", {"portfolios": []})
+    _write_json(d / "documents" / "index.json", {"documents": [
+        {"id": 1, "fileName": "Quartalsbericht.pdf"},
+        {"id": 2, "fileName": "Gutschriftsanzeige.pdf"}]})
+    (d / "documents" / "1.pdf").write_bytes(b"%PDF-1.4 report")
+    (d / "documents" / "2.pdf").write_bytes(b"%PDF-1.4 credit note")
+    return d
+
+
+def test_a_second_load_calls_no_parser(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    calls: list = []
+    _counting_parsers(monkeypatch, calls)
+    bronze_root = tmp_path / "bronze"
+    _seed_pdf_dump(bronze_root, FIRST_RUN)
+
+    _load(tmp_path, bronze_root).close()
+    assert sorted(calls) == [("credit_note", "2.pdf"), ("quarterly", "1.pdf")]
+    calls.clear()
+    conn = _load(tmp_path, bronze_root)
+    assert calls == []
+    assert loader._pdf_pass_row_count(conn) == 3
+    conn.close()
+
+
+def test_a_rebuild_reads_the_parse_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    calls: list = []
+    _counting_parsers(monkeypatch, calls)
+    bronze_root = tmp_path / "bronze"
+    _seed_pdf_dump(bronze_root, FIRST_RUN)
+    _load(tmp_path, bronze_root).close()
+    calls.clear()
+
+    db = tmp_path / "relevate.db"
+    assert loader.main(["--silver-db", str(db), "--bronze-dir",
+                        str(bronze_root), "--force"]) == 0
+    assert calls == []
+
+
+# ============================================================
+# Derivations: a document is derived once per parser generation
+# ============================================================
+
+SECOND_RUN = "20240201T000000Z"
+
+
+def test_a_second_load_derives_nothing_even_without_the_cache(
+        tmp_path, monkeypatch):
+    calls: list = []
+    _counting_parsers(monkeypatch, calls)
+    bronze_root = tmp_path / "bronze"
+    _seed_pdf_dump(bronze_root, FIRST_RUN)
+    _load(tmp_path, bronze_root).close()
+    calls.clear()
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "other-cache"))
+    _load(tmp_path, bronze_root).close()
+    assert calls == []
+
+
+def test_a_new_document_is_the_only_one_parsed(tmp_path, monkeypatch):
+    calls: list = []
+    _counting_parsers(monkeypatch, calls)
+    bronze_root = tmp_path / "bronze"
+    _seed_pdf_dump(bronze_root, FIRST_RUN)
+    _load(tmp_path, bronze_root).close()
+    calls.clear()
+
+    d = _seed_pdf_dump(bronze_root, SECOND_RUN)
+    _write_json(d / "documents" / "index.json", {"documents": [
+        {"id": 1, "fileName": "Quartalsbericht.pdf"},
+        {"id": 2, "fileName": "Gutschriftsanzeige.pdf"},
+        {"id": 3, "fileName": "Quartalsbericht.pdf"}]})
+    (d / "documents" / "3.pdf").write_bytes(b"%PDF-1.4 next report")
+    _load(tmp_path, bronze_root).close()
+    assert calls == [("quarterly", "3.pdf")]
+
+
+def test_a_credit_note_takes_the_newest_dump_at_every_load(
+        tmp_path, monkeypatch):
+    _counting_parsers(monkeypatch, [])
+    bronze_root = tmp_path / "bronze"
+    _seed_pdf_dump(bronze_root, FIRST_RUN)
+    _load(tmp_path, bronze_root).close()
+
+    d = bronze_root / SECOND_RUN
+    _write_json(d / "run.json", {"tool": "relevate.download", "status": "complete"})
+    _write_json(d / "accounts" / "investment-overview.json", {"portfolios": []})
+    conn = _load(tmp_path, bronze_root)
+    assert conn.execute(
+        "SELECT snapshot_at FROM transactions WHERE source = 'credit_note_pdf'"
+    ).fetchone()[0] == bronze.parse_run_ts(SECOND_RUN)
+    conn.close()
+
+
+def test_a_moved_generation_derives_every_document_again(
+        tmp_path, monkeypatch):
+    calls: list = []
+    _counting_parsers(monkeypatch, calls)
+    bronze_root = tmp_path / "bronze"
+    _seed_pdf_dump(bronze_root, FIRST_RUN)
+    _load(tmp_path, bronze_root).close()
+    calls.clear()
+
+    _move_generation(monkeypatch)
+    conn = _load(tmp_path, bronze_root)
+    assert sorted(calls) == [("credit_note", "2.pdf"), ("quarterly", "1.pdf")]
+    assert loader._pdf_pass_row_count(conn) == 3
+    assert {r[0] for r in conn.execute(
+        "SELECT generation FROM document_derivations")} == {"g2"}
+    conn.close()
+
+
+def _move_generation(monkeypatch):
+    monkeypatch.setattr(loader, "PDF_GENERATION", "g2")
+    monkeypatch.setattr(loader, "QUARTERLY_NAMESPACE", "quarterly-g2")
+    monkeypatch.setattr(loader, "CREDIT_NOTE_NAMESPACE", "credit-note-g2")
+
+
+def test_a_short_re_derivation_is_not_recorded(tmp_path, monkeypatch):
+    # Fewer rows than before: the rows are replaced and the new generation
+    # is not recorded, so the next load drops and derives them again; that
+    # one comes up whole and is recorded.
+    calls: list = []
+    _counting_parsers(monkeypatch, calls)
+    bronze_root = tmp_path / "bronze"
+    _seed_pdf_dump(bronze_root, FIRST_RUN)
+    conn = _load(tmp_path, bronze_root)
+    # A row the old parser wrote under a key the new one no longer reads.
+    conn.execute(
+        "INSERT INTO historical_cash_balances (snapshot_at, "
+        "account_external_id, currency, balance_kind, amount, source_sha256, "
+        "payload) VALUES (1600000000, '1000.100000.1', 'CHF', 'cash', 1.0, "
+        "'sha0', '{}')")
+    conn.close()
+
+    _move_generation(monkeypatch)
+    for recorded in (False, True):
+        conn = _load(tmp_path, bronze_root)
+        assert loader._pdf_pass_row_count(conn) == 3
+        assert ("g2" in {r[0] for r in conn.execute(
+            "SELECT generation FROM document_derivations")}) == recorded
+        conn.close()
+
+
+def _version_3_silver(tmp_path: Path, stamp: str | None) -> Path:
+    """A silver migrated to version 3, holding one derived report."""
+    db = tmp_path / "relevate.db"
+    conn = silver.open_db(db)
+    conn.executescript("\n".join(
+        (loader.MIGRATIONS_DIR / name).read_text(encoding="utf-8")
+        for name in ("0001_initial.sql", "0002_historical_snapshots.sql",
+                     "0003_parser_generations.sql")))
+    conn.execute(
+        "INSERT INTO documents (content_sha256, relevate_doc_id, file_name, "
+        "file_size, doc_kind, bronze_path, first_seen_at, last_seen_at, "
+        "payload) VALUES ('sha1', 1, 'Quartalsbericht.pdf', 1, "
+        "'quarterly_report', 'x/documents/1.pdf', 1, 1, '{}')")
+    _seed_pdf_pass_rows(conn)
+    conn.execute(
+        "UPDATE historical_position_snapshots SET source_sha256 = 'sha1'")
+    if stamp is not None:
+        conn.execute(
+            "INSERT INTO parser_generations VALUES ('pdf_reports', ?, 1)",
+            (stamp,))
+    conn.close()
+    return db
+
+
+@pytest.mark.parametrize("stamp, generation", [("g1", "g1"), (None, "")])
+def test_the_migration_seeds_the_stamped_generation(
+        tmp_path, stamp, generation):
+    db = _version_3_silver(tmp_path, stamp)
+    conn = silver.open_db(db)
+    silver.apply_migrations(conn, loader.MIGRATIONS_DIR)
+    assert [tuple(r) for r in conn.execute(
+        "SELECT content_sha256, scope, generation, row_count "
+        "FROM document_derivations")] == [("sha1", "pdf_reports", generation, 1)]
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'parser_generations'"
+    ).fetchone() is None
     conn.close()

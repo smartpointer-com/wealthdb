@@ -19,7 +19,6 @@ install (no native deps in the Docker image), and adequate speed
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 from datetime import datetime, timezone
@@ -143,14 +142,6 @@ def _read_plain_text(pdf_path: Path) -> str:
     reader = pypdf.PdfReader(str(pdf_path))
     chunks = [p.extract_text() or "" for p in reader.pages]
     return "\n".join(chunks)
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _quarter_end_epoch(date_str: str) -> int:
@@ -345,7 +336,7 @@ def _parse_quarterly_report_text(text: str, source_sha256: str) -> dict:
     }
 
 
-def parse_quarterly_report(pdf_path: Path) -> dict:
+def parse_quarterly_report(pdf_path: Path, source_sha256: str) -> dict:
     """
     Parse one Quartalsbericht PDF into structured data.
 
@@ -381,12 +372,14 @@ def parse_quarterly_report(pdf_path: Path) -> dict:
           ],
         }
 
+    `source_sha256` is the hex digest of the PDF's bytes, which the
+    loader already holds.
+
     Raises ValueError when page-1 metadata (Reference no.,
     Valuation date) is missing — the loader catches that and skips
     the file.
     """
     text = _read_layout_text(pdf_path)
-    source_sha256 = _sha256_file(pdf_path)
     return _parse_quarterly_report_text(text, source_sha256)
 
 
@@ -483,13 +476,13 @@ def _parse_credit_note_text(text: str, source_sha256: str) -> dict:
     }
 
 
-def parse_credit_note(pdf_path: Path) -> dict:
+def parse_credit_note(pdf_path: Path, source_sha256: str) -> dict:
     """Parse one Gutschriftsanzeige PDF into a contribution event.
 
-    See `_parse_credit_note_text` for the return shape. Uses the
-    default (non-layout) pypdf extraction since layout-mode loses
-    the value column on these two-column documents.
+    See `_parse_credit_note_text` for the return shape; `source_sha256`
+    is the hex digest of the PDF's bytes, which the loader already
+    holds. Uses the default (non-layout) pypdf extraction since
+    layout-mode loses the value column on these two-column documents.
     """
     text = _read_plain_text(pdf_path)
-    source_sha256 = _sha256_file(pdf_path)
     return _parse_credit_note_text(text, source_sha256)
