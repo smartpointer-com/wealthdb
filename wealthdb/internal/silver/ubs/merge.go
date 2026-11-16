@@ -107,9 +107,11 @@ func (c *Connection) inferredForwards(ctx context.Context) (inferredForwards, er
 	if f.swaps, err = c.web.inferredSwaps(ctx, f.until); err != nil {
 		return inferredForwards{}, err
 	}
-	if f.portfolioOf, err = c.psn.portfolioByCashAccount(ctx); err != nil {
+	roster, err := c.psn.roster(ctx)
+	if err != nil {
 		return inferredForwards{}, err
 	}
+	f.portfolioOf = roster.portfolioByCashAccount()
 	return f, nil
 }
 

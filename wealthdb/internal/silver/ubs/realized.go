@@ -119,17 +119,11 @@ func newRealizedAccounts(ctx context.Context, psn *psnReader) (realizedAccounts,
 	if psn == nil || psn.db == nil {
 		return out, nil
 	}
-	if err := silver.ScanRows(ctx, psn.db, "ubs psn safekeeping accounts", `SELECT DISTINCT account_external_id FROM safekeeping_accounts`, func(rows *sql.Rows) error {
-		var account string
-		if err := rows.Scan(&account); err != nil {
-			return fmt.Errorf("ubs psn safekeeping accounts scan: %w", err)
-		}
-		out.known[account] = true
-		return nil
-	}); err != nil {
+	roster, err := psn.roster(ctx)
+	if err != nil {
 		return out, err
 	}
-	var err error
+	out.known = roster.knownCustody()
 	out.byPortfolio, err = psn.safekeepingByPortfolio(ctx)
 	return out, err
 }

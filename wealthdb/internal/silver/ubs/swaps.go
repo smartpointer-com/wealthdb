@@ -420,23 +420,3 @@ func (r *psnReader) firstForwardDay(ctx context.Context) (int64, error) {
 	}
 	return utcDay(first.Int64), nil
 }
-
-// portfolioByCashAccount maps each cash account to the portfolio its
-// latest snapshot names.
-func (r *psnReader) portfolioByCashAccount(ctx context.Context) (map[string]string, error) {
-	out := map[string]string{}
-	if err := silver.ScanRows(ctx, r.db, "psn portfolioByCashAccount", `
-SELECT account_external_id, portfolio_external_id FROM cash_accounts
- WHERE portfolio_external_id <> ''
- ORDER BY snapshot_at`, func(rows *sql.Rows) error {
-		var account, portfolio string
-		if err := rows.Scan(&account, &portfolio); err != nil {
-			return err
-		}
-		out[account] = portfolio
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return out, nil
-}

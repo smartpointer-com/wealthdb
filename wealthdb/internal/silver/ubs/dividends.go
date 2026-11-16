@@ -456,11 +456,11 @@ func buildDividendSecurities(ctx context.Context, psn *psnReader, web *webReader
 	if err := web.addCustodyTickers(ctx, d); err != nil {
 		return nil, err
 	}
-	portfolioOf, err := psn.portfolioOfCashAccount(ctx)
+	roster, err := psn.roster(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for account, portfolio := range portfolioOf {
+	for account, portfolio := range roster.portfolioOfCashAccount() {
 		d.addPortfolio(account, portfolio)
 	}
 	// The credits resolve their security by the roads above, so they
@@ -890,10 +890,11 @@ func (d *dividendSecurities) addFeedCredits(ctx context.Context, r *psnReader) e
 	if r == nil || r.db == nil {
 		return nil
 	}
-	ibans, err := r.cashAccountIBANs(ctx)
+	roster, err := r.roster(ctx)
 	if err != nil {
 		return err
 	}
+	ibans := roster.cashAccountIBANs()
 	confirmations, err := r.cashConfirmations(ctx)
 	if err != nil {
 		return err

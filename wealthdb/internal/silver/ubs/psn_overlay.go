@@ -3,7 +3,6 @@ package ubs
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -73,48 +72,23 @@ func (r *psnReader) taxPairByISIN(ctx context.Context) (map[string]taxPair, erro
 // ambiguous — one continuous series cut in two, with a seam on a date
 // where nothing happened to the holding.
 //
-// Built from the latest roster snapshot (the portfolio↔safekeeping
+// Built from the newest roster snapshot (the portfolio↔safekeeping
 // relationship is long-lived; today's structure applies
 // retroactively to the historical PDFs).
 func (r *psnReader) safekeepingByPortfolio(ctx context.Context) (map[string]string, error) {
 	if r == nil {
 		return nil, nil
 	}
-	var latest sql.NullInt64
-	if err := r.db.QueryRowContext(ctx,
-		`SELECT MAX(snapshot_at) FROM safekeeping_accounts`,
-	).Scan(&latest); err != nil {
-		return nil, fmt.Errorf("psn safekeepingByPortfolio latest: %w", err)
+	roster, err := r.roster(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if !latest.Valid {
+	accountsPerPortfolio, ok := roster.custodyByPortfolio()
+	if !ok {
 		return nil, nil
 	}
 	holdsSecurities, err := r.safekeepingAccountsWithHoldings(ctx)
 	if err != nil {
-		return nil, err
-	}
-	const q = `
-SELECT account_external_id, payload
-  FROM safekeeping_accounts
- WHERE snapshot_at = ?
- ORDER BY account_external_id`
-	accountsPerPortfolio := map[string][]string{}
-	if err := silver.ScanRows(ctx, r.db, "psn safekeepingByPortfolio", q, func(rows *sql.Rows) error {
-		var acctID, payload string
-		if err := rows.Scan(&acctID, &payload); err != nil {
-			return err
-		}
-		var p struct {
-			PrtflId string `json:"PrtflId"`
-		}
-		_ = json.Unmarshal([]byte(payload), &p)
-		if p.PrtflId == "" {
-			return nil
-		}
-		accountsPerPortfolio[p.PrtflId] = append(
-			accountsPerPortfolio[p.PrtflId], acctID)
-		return nil
-	}, latest.Int64); err != nil {
 		return nil, err
 	}
 	out := make(map[string]string, len(accountsPerPortfolio))

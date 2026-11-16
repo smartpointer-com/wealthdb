@@ -2,14 +2,12 @@ package ubs
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // A currency conversion between two of the relationship's own cash
@@ -110,60 +108,6 @@ func normalizeHolderName(s string) string {
 	return strings.ToUpper(strings.Join(strings.Fields(s), " "))
 }
 
-// holderNames reads the names the relationship is held under, as the
-// master-data feed states them. A conversion between own accounts names
-// the holder on both sides; a payment abroad in a foreign currency,
-// which carries the same subfield, names someone else.
-func (r *psnReader) holderNames(ctx context.Context) (map[string]bool, error) {
-	out := map[string]bool{}
-	if r == nil || r.db == nil {
-		return out, nil
-	}
-	if err := silver.ScanRows(ctx, r.db, "ubs holderNames", `
-SELECT DISTINCT json_extract(payload, '$.FrstSurNm') FROM account_holders`, func(rows *sql.Rows) error {
-		var name sql.NullString
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("ubs holderNames scan: %w", err)
-		}
-		if n := normalizeHolderName(name.String); n != "" {
-			out[n] = true
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// portfolioOfCashAccount maps each cash account onto the portfolio it
-// belongs to, from the account master data's latest snapshot — the
-// other half of portfolioCashKey for a row the feed booked on a cash
-// account.
-func (r *psnReader) portfolioOfCashAccount(ctx context.Context) (map[string]string, error) {
-	out := map[string]string{}
-	if r == nil || r.db == nil {
-		return out, nil
-	}
-	if err := silver.ScanRows(ctx, r.db, "ubs portfolioOfCashAccount", `
-SELECT account_external_id,
-       COALESCE(portfolio_external_id, json_extract(payload, '$.PrtflId'))
-  FROM cash_accounts
- WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM cash_accounts)`, func(rows *sql.Rows) error {
-		var account string
-		var portfolio sql.NullString
-		if err := rows.Scan(&account, &portfolio); err != nil {
-			return fmt.Errorf("ubs portfolioOfCashAccount scan: %w", err)
-		}
-		if portfolio.String != "" {
-			out[account] = portfolio.String
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // mirrorPayload is what a mirror's payload states: the feed row it was
 // read from, and the other leg — which is the feed row's own account,
 // currency and figure — under the keys every consumer of a counter
@@ -208,21 +152,15 @@ func (r *psnReader) readConversionMirrors(ctx context.Context, coverage psnCashC
 	if r == nil || r.db == nil {
 		return out, nil
 	}
-	holders, err := r.holderNames(ctx)
+	roster, err := r.roster(ctx)
 	if err != nil {
 		return nil, err
 	}
+	holders := roster.holderNames()
 	if len(holders) == 0 {
 		return out, nil
 	}
-	portfolioOf, err := r.portfolioOfCashAccount(ctx)
-	if err != nil {
-		return nil, err
-	}
-	cashOf, err := r.portfolioCashAccounts(ctx)
-	if err != nil {
-		return nil, err
-	}
+	portfolioOf, cashOf := roster.portfolioOfCashAccount(), roster.portfolioCashAccounts()
 	err = r.eachCashMovement(ctx, func(row *feedRow) error {
 		p := row.pl
 		if !row.decoded || p.Amount == nil {

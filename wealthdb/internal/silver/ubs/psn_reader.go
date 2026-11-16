@@ -19,12 +19,14 @@ type psnReader struct {
 	// scoped by.
 	source string
 
-	// events, coverage, mirrors and confirmations keep what feed,
-	// cashCoverage, conversionMirrors and cashConfirmations read. Each
-	// reads the whole silver, unwindowed, and a connection serves one
-	// load over a silver that does not change under it, so each is read
-	// once per connection however many passes ask for it (silver.Lazy).
+	// events, accounts, coverage, mirrors and confirmations keep what
+	// feed, roster, cashCoverage, conversionMirrors and
+	// cashConfirmations read. Each reads the whole silver, unwindowed,
+	// and a connection serves one load over a silver that does not
+	// change under it, so each is read once per connection however many
+	// passes ask for it (silver.Lazy).
 	events        silver.Lazy[psnFeed]
+	accounts      silver.Lazy[*psnRoster]
 	coverage      silver.Lazy[psnCashCoverage]
 	mirrors       silver.Lazy[*conversionMirrors]
 	confirmations silver.Lazy[[]cashConfirmation]

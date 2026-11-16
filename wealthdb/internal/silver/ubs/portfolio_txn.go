@@ -65,99 +65,6 @@ type portfolioCashKey struct {
 	currency  string
 }
 
-// portfolioCashAccounts maps (portfolio, currency) onto the cash
-// account gold keys by.
-//
-// The export names the custody account the securities moved in and the
-// currency the cash moved in, never the cash account itself. A managed
-// portfolio holds one cash account per currency, so the pair
-// determines it — through the bank's own account master data, which is
-// the sibling feed's: the web collector's account rows carry the
-// banking relationship and whichever scope a positions export was
-// taken under, not the numbered portfolio.
-//
-// A pair naming more than one account is dropped rather than guessed
-// at. Two accounts of one currency under one portfolio is a dormant
-// account beside a live one, and settling a trade against the wrong
-// one would move a balance that never moved.
-func (r *psnReader) portfolioCashAccounts(ctx context.Context) (map[portfolioCashKey]string, error) {
-	if r == nil || r.db == nil {
-		return nil, nil
-	}
-	// The portfolio from the promoted column, falling back to the
-	// payload the collector promoted it from: the column is empty on
-	// snapshots taken before it existed, and the roster is long-lived
-	// enough that an old snapshot can still be the latest one.
-	const q = `
-SELECT COALESCE(portfolio_external_id, json_extract(payload, '$.PrtflId')),
-       json_extract(payload, '$.AcctCcyIsoCd'),
-       account_external_id
-  FROM cash_accounts
- WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM cash_accounts)`
-	accounts := map[portfolioCashKey][]string{}
-	if err := silver.ScanRows(ctx, r.db, "ubs portfolioCashAccounts", q, func(rows *sql.Rows) error {
-		var portfolio, currency, account sql.NullString
-		if err := rows.Scan(&portfolio, &currency, &account); err != nil {
-			return fmt.Errorf("ubs portfolioCashAccounts scan: %w", err)
-		}
-		if portfolio.String == "" || currency.String == "" || account.String == "" {
-			return nil
-		}
-		k := portfolioCashKey{
-			portfolio: portfolio.String,
-			currency:  bookingCurrency(currency.String),
-		}
-		accounts[k] = append(accounts[k], account.String)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	out := make(map[portfolioCashKey]string, len(accounts))
-	for k, accts := range accounts {
-		if len(accts) == 1 {
-			out[k] = accts[0]
-		}
-	}
-	return out, nil
-}
-
-// portfolioOfSafekeeping maps a custody account onto the portfolio it
-// belongs to — the half of portfolioCashKey the export does not state
-// in a form the rest of the adapter shares.
-//
-// The list names the portfolio in a column of its own, and that column
-// is not this: the two identifier spaces look alike and pad
-// differently, and one scope of the list (a consolidated view) reports
-// a booking under an id that names no portfolio at all. The custody
-// account it moved in is stated the same way by both feeds, and it
-// belongs to exactly one portfolio, so it answers for every row
-// whichever scope reported it.
-func (r *psnReader) portfolioOfSafekeeping(ctx context.Context) (map[string]string, error) {
-	if r == nil || r.db == nil {
-		return nil, nil
-	}
-	const q = `
-SELECT account_external_id,
-       COALESCE(portfolio_external_id, json_extract(payload, '$.PrtflId'))
-  FROM safekeeping_accounts
- WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM safekeeping_accounts)`
-	out := map[string]string{}
-	if err := silver.ScanRows(ctx, r.db, "ubs portfolioOfSafekeeping", q, func(rows *sql.Rows) error {
-		var account string
-		var portfolio sql.NullString
-		if err := rows.Scan(&account, &portfolio); err != nil {
-			return fmt.Errorf("ubs portfolioOfSafekeeping scan: %w", err)
-		}
-		if portfolio.String != "" {
-			out[account] = portfolio.String
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // settledDayKey identifies "a securities settlement the ledger already
 // holds": one cash account, one currency, one settlement day.
 //
@@ -210,10 +117,11 @@ func (r *webReader) portfolioSettledDays(ctx context.Context, psn *psnReader, we
 	if psn == nil || psn.db == nil {
 		return out, nil
 	}
-	ibans, err := psn.cashAccountIBANs(ctx)
+	roster, err := psn.roster(ctx)
 	if err != nil {
 		return nil, err
 	}
+	ibans := roster.cashAccountIBANs()
 	settled, err := psn.buildSettlementFold(ctx, ibans)
 	if err != nil {
 		return nil, err
@@ -376,10 +284,11 @@ func (r *webReader) portfolioTransactions(ctx context.Context, w canonical.Windo
 	if err != nil || !ok {
 		return out, err
 	}
-	cashAccounts, err := psn.portfolioCashAccounts(ctx)
+	roster, err := psn.roster(ctx)
 	if err != nil {
 		return out, err
 	}
+	cashAccounts := roster.portfolioCashAccounts()
 	if len(cashAccounts) == 0 {
 		var n int
 		if err := r.db.QueryRowContext(ctx,
@@ -391,10 +300,7 @@ func (r *webReader) portfolioTransactions(ctx context.Context, w canonical.Windo
 		}
 		return out, nil
 	}
-	portfolioOf, err := psn.portfolioOfSafekeeping(ctx)
-	if err != nil {
-		return out, err
-	}
+	portfolioOf := roster.portfolioOfSafekeeping()
 	valorToISIN, err := r.valorIndex(ctx, psn)
 	if err != nil {
 		return out, err

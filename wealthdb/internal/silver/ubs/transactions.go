@@ -2,7 +2,6 @@ package ubs
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -36,10 +35,11 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 		return silver.NewTransactionStream(canonical.TransactionBatch{}), nil
 	}
 
-	ibans, err := r.cashAccountIBANs(ctx)
+	roster, err := r.roster(ctx)
 	if err != nil {
 		return nil, err
 	}
+	ibans := roster.cashAccountIBANs()
 	settled, err := r.buildSettlementFold(ctx, ibans)
 	if err != nil {
 		return nil, err
@@ -341,33 +341,6 @@ func (f *settlementFold) covers(row *feedRow) bool {
 	}
 	f.unpaired[key]--
 	return true
-}
-
-// cashAccountIBANs maps the bank's internal cash-account id onto the
-// IBAN the rest of the adapter — and gold's account registry — is keyed
-// by. The master-data feed states both, and the MT940 feed already
-// names accounts by IBAN; only the MT515 confirmation uses the internal
-// form, so without the map its rows name an account nothing else does.
-func (r *psnReader) cashAccountIBANs(ctx context.Context) (map[string]string, error) {
-	out := map[string]string{}
-	if r == nil || r.db == nil {
-		return out, nil
-	}
-	if err := silver.ScanRows(ctx, r.db, "ubs cashAccountIBANs", `
-SELECT DISTINCT json_extract(payload, '$.AcctId'), account_external_id
-  FROM cash_accounts`, func(rows *sql.Rows) error {
-		var acctID, iban *string
-		if err := rows.Scan(&acctID, &iban); err != nil {
-			return fmt.Errorf("ubs cashAccountIBANs scan: %w", err)
-		}
-		if acctID != nil && iban != nil && *acctID != "" && *iban != "" {
-			out[*acctID] = *iban
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // isSellSide reports whether a trade confirmation's side is the one

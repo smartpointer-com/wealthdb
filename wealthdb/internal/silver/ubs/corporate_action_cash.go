@@ -621,10 +621,11 @@ type cashLegRef struct {
 // states, not the gross the leg reads. The era fold folds such a record
 // into its leg (buildEraFold).
 func (r *psnReader) cashLegKeys(ctx context.Context, coverage psnCashCoverage) (map[bookingKey][]cashLegRef, error) {
-	ibans, err := r.cashAccountIBANs(ctx)
+	roster, err := r.roster(ctx)
 	if err != nil {
 		return nil, err
 	}
+	ibans := roster.cashAccountIBANs()
 	confirmations, err := r.cashConfirmations(ctx)
 	if err != nil {
 		return nil, err
