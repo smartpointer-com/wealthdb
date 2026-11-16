@@ -7,11 +7,11 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// TestPassRuleNamesADeclaredAccount: a rule's `far` writes the declared
-// account onto the row's far columns in both directions. The outbound
-// leg is the spending family's own row; the inbound leg is the income
-// family's verdict, and the spending pass carries its far account onto
-// the one overlay that has a column for it. A pin on such an inbound
+// TestPassRuleNamesADeclaredAccount: a rule's `far` links the row to the
+// declared account in both directions. The outbound leg is the spending
+// family's own row; the inbound leg is the income family's verdict, and
+// the spending pass links its far account from its own rows, the ones
+// transfer_links is written from. A pin on such an inbound
 // row outranks the rule, and the boundary block counts the
 // declarations off the dimension.
 func TestPassRuleNamesADeclaredAccount(t *testing.T) {
@@ -66,7 +66,7 @@ func TestPassRuleNamesADeclaredAccount(t *testing.T) {
 	// A pinned inbound row is the pin's, not the far rule's.
 	var n int
 	if err := db.QueryRowContext(ctx, `
-        SELECT COUNT(*) FROM spend_txn_enrichment
+        SELECT COUNT(*) FROM transfer_links
          WHERE transaction_external_id = 'T-IN-PINNED' AND far_account_external_id IS NOT NULL`).
 		Scan(&n); err != nil || n != 0 {
 		t.Errorf("the pinned inbound row took the rule's far account (n=%d err=%v)", n, err)
@@ -86,7 +86,7 @@ func TestPassRuleNamesADeclaredAccount(t *testing.T) {
 			res.Cashflow.DeclaredAccounts, res.Cashflow.DeclaredPooled, res.Cashflow.UnusedDeclarations)
 	}
 
-	// Without the far, the same rules leave the far columns empty.
+	// Without the far, the same rules link no far side.
 	bare := Rule{Match: far.Match, Category: far.Category}
 	runPass(t, db, ctx, Options{Rules: []Rule{bare}, Income: IncomeOptions{Rules: []Rule{bare}}})
 	if s, a, _ := farOf(t, db, ctx, "bank", "T-OUT"); s != "" || a != "" {

@@ -30,21 +30,23 @@ import (
 // frozenSnapshot is enrichmentSnapshot plus every other column the
 // pass writes: the oracle's contract is to cover all of them, and a
 // column outside it is a column a change could move in silence. The
-// three far columns and the stated exposure are inside it.
+// far side the pass links for each row and the stated exposure are
+// inside it.
 func frozenSnapshot(t *testing.T, db *sql.DB, ctx context.Context) string {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, `
-        SELECT silver_source_id, transaction_external_id,
-               COALESCE(merchant_signature, '(null)'), signature_version,
-               COALESCE(spend_detailed, '(null)'), provenance,
-               COALESCE(merchant_label, '(null)'),
-               COALESCE(far_silver_source_id, '(null)'),
-               COALESCE(far_account_external_id, '(null)'),
-               COALESCE(far_class, '(null)'),
-               COALESCE(stated_asset_class, '(null)'),
-               COALESCE(provider_spend_detailed, '(null)')
-          FROM spend_txn_enrichment
-         ORDER BY silver_source_id, transaction_external_id`)
+        SELECT e.silver_source_id, e.transaction_external_id,
+               COALESCE(e.merchant_signature, '(null)'), e.signature_version,
+               COALESCE(e.spend_detailed, '(null)'), e.provenance,
+               COALESCE(e.merchant_label, '(null)'),
+               COALESCE(l.far_silver_source_id, '(null)'),
+               COALESCE(l.far_account_external_id, '(null)'),
+               COALESCE(l.far_class, '(null)'),
+               COALESCE(e.stated_asset_class, '(null)'),
+               COALESCE(e.provider_spend_detailed, '(null)')
+          FROM spend_txn_enrichment e
+          LEFT JOIN transfer_links l USING (silver_source_id, transaction_external_id)
+         ORDER BY e.silver_source_id, e.transaction_external_id`)
 	if err != nil {
 		t.Fatalf("read overlay: %v", err)
 	}
@@ -434,23 +436,17 @@ swiss/I-PIN far=bank/CASH1 tx=I-PIN-PAIR class=(null) by=amount measure=cash
 `
 
 // assertLinksAreTheOverlay holds transfer_links to the spending overlay
-// it is written from: every link is an overlay row's far account or
-// class, and back.
+// rows they are written from: every link is the far side of a row the
+// pass wrote there.
 func assertLinksAreTheOverlay(t *testing.T, db *sql.DB) {
 	t.Helper()
-	overlay := scanPairs(t, db, `
-        SELECT silver_source_id || '/' || transaction_external_id,
-               COALESCE(far_silver_source_id, '(null)') || '/' ||
-               COALESCE(far_account_external_id, '(null)') || ' ' || COALESCE(far_class, '(null)')
-          FROM spend_txn_enrichment
-         WHERE far_account_external_id IS NOT NULL OR far_class IS NOT NULL`)
-	links := scanPairs(t, db, `
-        SELECT silver_source_id || '/' || transaction_external_id,
-               COALESCE(far_silver_source_id, '(null)') || '/' ||
-               COALESCE(far_account_external_id, '(null)') || ' ' || COALESCE(far_class, '(null)')
-          FROM transfer_links`)
-	if fmt.Sprint(links) != fmt.Sprint(overlay) {
-		t.Errorf("links hold %v, the overlay %v", links, overlay)
+	orphans := scanPairs(t, db, `
+        SELECT l.silver_source_id || '/' || l.transaction_external_id, l.evidence
+          FROM transfer_links l
+          LEFT JOIN spend_txn_enrichment e USING (silver_source_id, transaction_external_id)
+         WHERE e.silver_source_id IS NULL`)
+	if len(orphans) > 0 {
+		t.Errorf("links with no spending row: %v", orphans)
 	}
 }
 

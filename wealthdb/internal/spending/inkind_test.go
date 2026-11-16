@@ -87,9 +87,9 @@ func TestStatedMoveLegsLinkEachOther(t *testing.T) {
 }
 
 // Where the matcher paired a stated leg with a third leg, the ledger's
-// pair wins and the third leg loses its link with it: it reads as a
-// leg the matcher never paired. Its overlay row keeps the far account
-// the matcher gave it; the links alone answer for the pair.
+// pair wins and the third leg loses its link with it: it reads as an
+// own-account move with no far account. Its overlay row keeps the
+// matcher's verdict; the links alone answer for the pair.
 func TestAStatedPairUnpairsTheMatchersThirdLeg(t *testing.T) {
 	db, ctx := openGold(t)
 	// The stated receipt's value differs from the departure's, so the
@@ -106,8 +106,12 @@ func TestAStatedPairUnpairsTheMatchersThirdLeg(t *testing.T) {
 		t.Fatal(err)
 	}
 	runPass(t, db, ctx, Options{})
-	if src, acct, _ := farOf(t, db, ctx, "other-bank", "X"); src != "bank" || acct != "BRK1" {
-		t.Fatalf("the matcher did not pair X with the departure: far (%q, %q)", src, acct)
+	if detailed, prov := verdictOf(t, db, ctx, "other-bank", "X"); detailed != internalTransfer ||
+		prov != ProvenanceMatcher {
+		t.Fatalf("the matcher did not pair X with the departure: (%q, %q)", detailed, prov)
+	}
+	if src, acct, _ := farOf(t, db, ctx, "other-bank", "X"); src != "" || acct != "" {
+		t.Errorf("X keeps a far side (%q, %q); its partner is the ledger's", src, acct)
 	}
 	got := scanPairs(t, db, `
         SELECT silver_source_id || '/' || transaction_external_id,

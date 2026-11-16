@@ -58,6 +58,9 @@ type enrichmentRow struct {
 	// disagreement is a number rather than a silent overwrite. Empty
 	// where the issuer published nothing this build translates.
 	providerDetailed string
+	// The far side of the move, which the pass links rather than
+	// writes to the overlay (writeTransferLinks).
+	//
 	// farSource and farAccount identify the account on the OTHER side
 	// of an own-account move: the matcher's partner leg, and the one
 	// thing the matcher has always known and never written down. They
@@ -86,8 +89,7 @@ type enrichmentRow struct {
 	statedAssetClass string
 	// farTxID is the partner leg of a pair, and farEvidence the road
 	// that named the far side of a one-legged move: a rule or the
-	// source's stated counter account. Neither is an overlay column:
-	// transfer_links carries them, and a pair's evidence is its phase
+	// source's stated counter account. A pair's evidence is its phase
 	// (writeTransferLinks).
 	farTxID, farEvidence string
 }
@@ -216,13 +218,13 @@ func assignCategories(
 				if fam.labelCol != "" {
 					row.merchantLabel = label
 				}
-				if len(fam.farCols) > 0 {
+				if fam.linksFar {
 					row.farClass, row.farEvidence = farClass, evidenceRule
 				}
 			} else if placement, ok := ConfigRuleCategory(rules, r.ruleRow()); ok {
 				row.detailed, row.provenance = placement.Category, ProvenanceRule
 				row.statedAssetClass = placement.AssetClass
-				if placement.Far != "" && len(fam.farCols) > 0 {
+				if placement.Far != "" && fam.linksFar {
 					row.farSource, row.farAccount = canonical.DeclaredSourceID, placement.Far
 					row.farEvidence = evidenceRule
 				}
@@ -250,11 +252,11 @@ func assignCategories(
 			row.merchantLabel = ""
 			row.farClass = ""
 			row.statedAssetClass = ""
-			if len(fam.farCols) > 0 {
+			if fam.linksFar {
 				row.farSource, row.farAccount = partner.Group, partner.Owner
 				row.farTxID = partner.ID
 			}
-		} else if far, ok := stated[r.key]; ok && len(fam.farCols) > 0 {
+		} else if far, ok := stated[r.key]; ok && fam.linksFar {
 			// No pairing, but the source named the far account itself.
 			// Only the ACCOUNT is taken: the verdict stays whatever the
 			// tiers decided, because "where it went" and "what it was"
@@ -317,7 +319,7 @@ func assignCategories(
 		}
 		// The legs the other family's far-naming rules reach — an
 		// inbound move from a declared account — for the same reason:
-		// the far account has a column on this overlay alone. A row
+		// the far side is linked from this family's rows alone. A row
 		// this family pinned is skipped here because the pin loop below
 		// emits it: the far rules reach it there, with its own account,
 		// portfolio and date, and the pin then sets the verdict. A row
@@ -366,7 +368,6 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 	if fam.labelCol != "" {
 		cols = append(cols, fam.labelCol)
 	}
-	cols = append(cols, fam.farCols...)
 	cols = append(cols, "stated_asset_class", fam.providerCol, "assigned_at")
 
 	head := "INSERT INTO " + fam.overlayTable + " (" + strings.Join(cols, ", ") + ") VALUES "
@@ -381,20 +382,15 @@ func insertEnrichment(ctx context.Context, tx *sql.Tx, fam family, rows []enrich
 			if fam.labelCol != "" {
 				args = append(args, nullableString(r.merchantLabel))
 			}
-			if len(fam.farCols) > 0 {
-				args = append(args, nullableString(r.farSource),
-					nullableString(r.farAccount), nullableString(r.farClass))
-			}
 			args = append(args, nullableString(r.statedAssetClass))
 			return append(args, nullableString(r.providerDetailed), now)
 		})
 }
 
-// writeTransferLinks rewrites transfer_links from the spending overlay's
-// rows: one link per row whose far account or far class is known, with
-// the same far account and class the overlay holds. A leg of a pair
-// links to its partner leg, with the pair's phase as its evidence; any
-// other row links to its far account alone.
+// writeTransferLinks rewrites transfer_links from the spending family's
+// rows: one link per row whose far account or far class is known. A
+// leg of a pair links to its partner leg, with the pair's phase as its
+// evidence; any other row links to its far account alone.
 //
 // It goes through the same gold.InsertChunked batching as
 // insertEnrichment.

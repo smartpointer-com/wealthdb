@@ -459,9 +459,8 @@ type IncomeRule struct {
 	Type  string             `json:"type"`
 	Scope *SpendingRuleScope `json:"scope,omitempty"`
 	// Far is SpendingRule.Far for the inbound leg: the declared account
-	// the money came FROM. The income overlay has no far columns, so
-	// the spending pass carries it onto its own overlay for the row
-	// (docs/CASHFLOW.md §4).
+	// the money came FROM. The spending pass links it from its own row,
+	// as it links every far side (docs/CASHFLOW.md §4).
 	Far string `json:"far,omitempty"`
 	// AssetClass is SpendingRule.AssetClass for the return leg, stated
 	// only where the rule places `capital_return`.

@@ -191,7 +191,7 @@ type FamilyResult struct {
 	UnstatedInvesting int
 	// StatedFarAccounts counts the rows whose far account came from the
 	// SOURCE naming it rather than from a pairing. It is the spending
-	// family's alone — the income overlay has no far columns — and it is
+	// family's alone — the income family links no far side — and it is
 	// the observable that says how much of "where the money went" the
 	// product now knows about movements it collects only one side of.
 	StatedFarAccounts int
@@ -300,9 +300,8 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	if err != nil {
 		return nil, err
 	}
-	// The links hold what the spending overlay's far columns hold, so
-	// they are written from its rows, and the pair counters are read
-	// back off them.
+	// The links are written from the spending family's rows, and the
+	// pair counters are read back off them.
 	if err := writeTransferLinks(ctx, tx, spendRows, pairs); err != nil {
 		return nil, err
 	}
@@ -337,8 +336,8 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	if err := stampCashflowBoundary(ctx, tx, opts.Cashflow, held.ids, &res.Cashflow); err != nil {
 		return nil, err
 	}
-	// Carried across from the spending family, which is where the far
-	// columns live: the boundary block is where a reader looks to learn
+	// Carried across from the spending family, which links the far
+	// sides: the boundary block is where a reader looks to learn
 	// whether the pass knows enough to resolve an own-account move.
 	res.Cashflow.StatedFarAccounts = res.FamilyResult.StatedFarAccounts
 	if err := countDeclaredAccounts(ctx, tx, &res.Cashflow); err != nil {

@@ -20,18 +20,19 @@ import (
 // fact about the OVERLAY and, just as deliberately, that the two
 // families' reports did not move.
 
-// farOf reads the three far columns for one transaction. Each comes
-// back as the empty string where the pass wrote NULL, which is what
-// "no far account" and "no class" both look like to a reader.
+// farOf reads the far side the pass linked for one transaction. Each
+// part comes back as the empty string where the pass linked none, which
+// is what "no far account" and "no class" both look like to a reader.
 func farOf(t *testing.T, db *sql.DB, ctx context.Context, source, id string) (farSource, farAccount, farClass string) {
 	t.Helper()
 	var s, a, c sql.NullString
 	if err := db.QueryRowContext(ctx, `
-        SELECT far_silver_source_id, far_account_external_id, far_class
-          FROM spend_txn_enrichment
-         WHERE silver_source_id = ? AND transaction_external_id = ?`,
+        SELECT l.far_silver_source_id, l.far_account_external_id, l.far_class
+          FROM spend_txn_enrichment e
+          LEFT JOIN transfer_links l USING (silver_source_id, transaction_external_id)
+         WHERE e.silver_source_id = ? AND e.transaction_external_id = ?`,
 		source, id).Scan(&s, &a, &c); err != nil {
-		t.Fatalf("read far columns for %s/%s: %v", source, id, err)
+		t.Fatalf("read the far side of %s/%s: %v", source, id, err)
 	}
 	return s.String, a.String, c.String
 }
@@ -92,7 +93,7 @@ func TestSameSourceCardBillRecordsTheCard(t *testing.T) {
 	}
 	// The card rule would have placed `card_spend` and labelled the
 	// bill; the matcher outranks it and clears the label. Nothing about
-	// the far columns changes that contract.
+	// the far side changes that contract.
 	if _, _, class := farOf(t, db, ctx, "bank", "T-PAY"); class != "" {
 		t.Errorf("a paired bill carries far_class %q; the account itself is better than a stand-in", class)
 	}
@@ -204,30 +205,26 @@ func TestFarColumnsAreRewrittenEveryPass(t *testing.T) {
 	}
 }
 
-// TestTheIncomeOverlayHasNoFarColumns pins the family split. The far
-// record belongs to the overlay that writes a row for every matched
+// TestOnlyTheSpendingFamilyLinksFarSides pins the family split. The far
+// record belongs to the family that writes a row for every matched
 // leg; the income one holds its own population plus pins, so a card
 // bill's own leg — a pair's far side as often as not — has no row there
-// to carry the fact.
-func TestTheIncomeOverlayHasNoFarColumns(t *testing.T) {
-	if len(spendingFamily.farCols) != 3 {
-		t.Errorf("the spending family writes %d far columns, want 3", len(spendingFamily.farCols))
-	}
-	if len(incomeFamily.farCols) != 0 {
-		t.Errorf("the income family writes far columns: %v", incomeFamily.farCols)
+// to carry the fact. Neither overlay holds it: transfer_links does.
+func TestOnlyTheSpendingFamilyLinksFarSides(t *testing.T) {
+	if !spendingFamily.linksFar || incomeFamily.linksFar {
+		t.Errorf("links far sides: spending %v, income %v; want spending alone",
+			spendingFamily.linksFar, incomeFamily.linksFar)
 	}
 	db, ctx := openGold(t)
-	for _, col := range spendingFamily.farCols {
-		var n int
-		if err := db.QueryRowContext(ctx, `
-            SELECT COUNT(*) FROM duckdb_columns()
-             WHERE table_name = 'income_txn_enrichment' AND column_name = ?`,
-			col).Scan(&n); err != nil {
-			t.Fatalf("inspect income overlay: %v", err)
-		}
-		if n != 0 {
-			t.Errorf("income_txn_enrichment carries %s", col)
-		}
+	var n int
+	if err := db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM duckdb_columns()
+         WHERE table_name IN ('spend_txn_enrichment', 'income_txn_enrichment')
+           AND column_name LIKE 'far\_%' ESCAPE '\'`).Scan(&n); err != nil {
+		t.Fatalf("inspect the overlays: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("the overlays carry %d far columns", n)
 	}
 }
 
@@ -253,10 +250,8 @@ func TestFarAccountChangesNoReport(t *testing.T) {
 	runPass(t, db, ctx, Options{})
 
 	before := reportShape(t, db, ctx)
-	if _, err := db.ExecContext(ctx, `
-        UPDATE spend_txn_enrichment
-           SET far_silver_source_id = NULL, far_account_external_id = NULL, far_class = NULL`); err != nil {
-		t.Fatalf("blank the far columns: %v", err)
+	if _, err := db.ExecContext(ctx, `DELETE FROM transfer_links`); err != nil {
+		t.Fatalf("drop the far sides: %v", err)
 	}
 	after := reportShape(t, db, ctx)
 	if len(before) != len(after) {

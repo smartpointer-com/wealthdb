@@ -320,8 +320,9 @@ joined on one of:
 - a reference the source stamped on both halves;
 - the other leg the source described on one of them.
 
-Each leg then names the other's account (`far_silver_source_id`,
-`far_account_external_id`, migration 0079).
+Each leg then names the other's account and leg in `transfer_links`
+(`far_silver_source_id`, `far_account_external_id`,
+`far_transaction_external_id`).
 
 The joins are not interchangeable. A pairing on amount is an inference,
 so its two legs agree in currency and nearly in size. A pairing on a
@@ -421,9 +422,9 @@ A declaration is how the holder opens the closed world, one account at
 a time. A move to an undeclared, untracked account is income or
 spending. Nothing the product measures can contradict a declaration, so
 the load prints how many sit inside the pool. The inbound leg is the
-income family's verdict. Its far account is written onto the spending
-overlay, the one overlay with far columns, so both directions place
-alike.
+income family's verdict. Its far account is linked from the spending
+family's row in `transfer_links`, as the outbound leg's is, so both
+directions place alike.
 
 **The investing class has three roads, in order:**
 

@@ -1079,8 +1079,8 @@ never fires — a scope that can admit nothing is a typo every time.
 **Naming the far side.** A rule placing `internal_transfer` may carry
 `far`, the id of a `declared_accounts` entry: the holder's own account
 at an institution the product does not collect, declared with the
-kind and wrapper it would carry if it were. The row's far columns then
-hold the declaration, and the cash flow statement places the move by
+kind and wrapper it would carry if it were. The row's link in
+`transfer_links` then names the declaration, and the cash flow statement places the move by
 that wrapper instead of drawing it as a move to a destination nothing
 identifies (CASHFLOW.md §4). `far` is refused beside any other
 category — only an own-account move has a far side — and where it
@@ -2133,11 +2133,10 @@ every figure on them is this view's over any window.
 | `spend_merchant_categories` | merchant_signature | GLOBAL and paid for; survives `reset`, and `reload -a` carries it across the fresh-file swap because nothing could regenerate it; a row leaves only by `categorizations --forget` |
 | `spend_account_scope` | (silver_source_id, account_external_id) | configuration stamped into gold; re-stamped whole every pass |
 | `spend_reimbursement_pairs` | (silver_source_id, transaction_external_id) of the repayment | derived; rewritten whole by every pass from the ledger's `reimburse` lines (§3, *Reimbursements*) |
-| `transfer_links` | (silver_source_id, transaction_external_id) of the leg | derived; rewritten whole by every pass: the far account, partner leg and evidence of each row whose far columns are set, and both legs of each move one equity-transfer ledger row states (DESIGN.md §13.9; evidence `equity-ledger`, measure `in_kind`) |
+| `transfer_links` | (silver_source_id, transaction_external_id) of the leg | derived; rewritten whole by every pass: the far account, partner leg and evidence of each row whose far side the pass knows, and both legs of each move one equity-transfer ledger row states (DESIGN.md §13.9; evidence `equity-ledger`, measure `in_kind`) |
 
-`spend_txn_enrichment` also carries the far-account columns of
-migration 0079, which only the cash flow statement reads. They hold the
-first of these that exists:
+`transfer_links` holds the far side of a spending row, which only the
+cash flow statement reads. A row links the first of these that exists:
 
 - the partner leg's account, for a matched row;
 - the account the SOURCE itself named, where no pairing exists: a

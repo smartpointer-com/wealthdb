@@ -389,8 +389,8 @@ The tiers, where income differs:
   to say something the data does not.
 - **Config rules.** `income.rules[]` takes the shape of
   `spending.rules`, scope and `far` included, with the value field
-  named `type`. The far account an income rule names is written onto
-  the spending overlay, the one overlay with far columns. So the inbound
+  named `type`. The far account an income rule names is linked from
+  the spending family's row in `transfer_links`. So the inbound
   leg of a move to a declared account places like its outbound leg
   ([CASHFLOW.md](CASHFLOW.md) §4).
 - **Provider tier.** A bank's booking type can say "salary",

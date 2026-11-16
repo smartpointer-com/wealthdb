@@ -185,29 +185,6 @@ func TestDebtRepaymentIsSeededAndNotSpend(t *testing.T) {
 	}
 }
 
-// TestEnrichmentHoldsTheFarClass: the enrichment overlay carries the far
-// account's class.
-func TestEnrichmentHoldsTheFarClass(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	seedCashflowTaxonomyFixture(t, db, ctx)
-	if _, err := db.ExecContext(ctx, `
-        UPDATE spend_txn_enrichment SET far_class = 'mortgage'
-         WHERE transaction_external_id = 'T-LOAN-OUT'`); err != nil {
-		t.Fatalf("seed a far class: %v", err)
-	}
-
-	var class sql.NullString
-	if err := db.QueryRowContext(ctx, `
-        SELECT far_class FROM spend_txn_enrichment
-         WHERE transaction_external_id = 'T-LOAN-OUT'`).Scan(&class); err != nil {
-		t.Fatalf("read far class: %v", err)
-	}
-	if class.String != "mortgage" {
-		t.Errorf("far_class = %q, want mortgage", class.String)
-	}
-}
-
 // TestCashflowPoolHoldsTheHouseholdSide: of two accounts, the pool holds
 // the one whose wrapper is on the household side.
 func TestCashflowPoolHoldsTheHouseholdSide(t *testing.T) {

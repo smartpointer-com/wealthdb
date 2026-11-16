@@ -1375,12 +1375,14 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                COALESCE(i.name, i.symbol) AS instrument_name,
                sc.spend_detailed, sc.merchant_name, sc.provenance AS spend_provenance,
                ic.income_detailed, ic.payer_name, ic.provenance AS income_provenance,
-               e.far_silver_source_id, e.far_account_external_id, e.far_class,
+               -- Where the money went: the far account and the partner
+               -- leg the pass linked, or the class a rule stands for.
+               fl.far_silver_source_id, fl.far_account_external_id, fl.far_class,
                -- The holder's word for what the capital went INTO, one
-               -- column per family. Read off the raw overlay for
-               -- the reason the far account is: it describes a verdict
-               -- rather than belonging to either family's vocabulary,
-               -- and no report of theirs reads it. Safe against a
+               -- column per family. Read off the raw overlay, not its
+               -- resolution macro: it describes a verdict rather than
+               -- belonging to either family's vocabulary, and no
+               -- report of theirs reads it. Safe against a
                -- replaced verdict, because the store and the kind floor
                -- that `spend_txn_categories()` coalesces over only ever
                -- fill a NULL — where the overlay wrote a verdict, that
@@ -1412,12 +1414,14 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
           LEFT JOIN income_txn_categories() ic
                  ON ic.silver_source_id        = t.silver_source_id
                 AND ic.transaction_external_id = t.transaction_external_id
-          -- The overlay itself, not its resolution macro: the far
-          -- account is a raw fact about a pairing rather than part of
-          -- the spending vocabulary.
           LEFT JOIN spend_txn_enrichment e
                  ON e.silver_source_id        = t.silver_source_id
                 AND e.transaction_external_id = t.transaction_external_id
+          -- The far side is a raw fact about a move rather than part of
+          -- either family's vocabulary.
+          LEFT JOIN transfer_links fl
+                 ON fl.silver_source_id        = t.silver_source_id
+                AND fl.transaction_external_id = t.transaction_external_id
           LEFT JOIN income_txn_enrichment ie
                  ON ie.silver_source_id        = t.silver_source_id
                 AND ie.transaction_external_id = t.transaction_external_id
@@ -1429,19 +1433,19 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
                  ON rb.silver_source_id        = t.silver_source_id
                 AND rb.transaction_external_id = t.transaction_external_id
           LEFT JOIN accounts fa
-                 ON fa.silver_source_id    = e.far_silver_source_id
-                AND fa.account_external_id = e.far_account_external_id
+                 ON fa.silver_source_id    = fl.far_silver_source_id
+                AND fa.account_external_id = fl.far_account_external_id
           -- The far account's wrapper and pool membership as of the
           -- row's day: a dated wrapper override applies from its
           -- day on.
           LEFT JOIN account_wrapper_spans() fws
-                 ON fws.silver_source_id    = e.far_silver_source_id
-                AND fws.account_external_id = e.far_account_external_id
+                 ON fws.silver_source_id    = fl.far_silver_source_id
+                AND fws.account_external_id = fl.far_account_external_id
                 AND t.occurred_at >= fws.from_at AND t.occurred_at < fws.until_at
           LEFT JOIN cashflow_wrapper_sides fw ON fw.tax_wrapper = fws.tax_wrapper
           LEFT JOIN cashflow_pool_spans() fp
-                 ON fp.silver_source_id    = e.far_silver_source_id
-                AND fp.account_external_id = e.far_account_external_id
+                 ON fp.silver_source_id    = fl.far_silver_source_id
+                AND fp.account_external_id = fl.far_account_external_id
                 AND t.occurred_at >= fp.from_at AND t.occurred_at < fp.until_at
          WHERE t.occurred_at BETWEEN p_from AND p_to
     ),

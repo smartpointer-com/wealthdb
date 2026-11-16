@@ -816,7 +816,7 @@ func TestPassPairsASameAccountReversal(t *testing.T) {
 	for id, want := range map[string]string{"T-WIRE-OUT": "CASH1", "T-WIRE-BACK": "CASH1", "T-MOVE-OUT": "CARD1"} {
 		var far string
 		if err := db.QueryRowContext(ctx, `
-            SELECT far_account_external_id FROM spend_txn_enrichment
+            SELECT far_account_external_id FROM transfer_links
              WHERE silver_source_id = 'bank' AND transaction_external_id = ?`, id).Scan(&far); err != nil {
 			t.Fatalf("read %s far account: %v", id, err)
 		}

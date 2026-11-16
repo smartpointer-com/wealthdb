@@ -1903,7 +1903,7 @@ func TestCategorizeStampsTheConfigBeforeThePass(t *testing.T) {
             WHERE silver_source_id = '`+canonical.DeclaredSourceID+`' AND account_external_id = 'DECL0001'`); n != 1 {
 		t.Errorf("declared account rows after categorize = %d, want 1 (stamped before the pass)", n)
 	}
-	if n := countGold(t, goldPath, `SELECT COUNT(*) FROM spend_txn_enrichment
+	if n := countGold(t, goldPath, `SELECT COUNT(*) FROM transfer_links
             WHERE transaction_external_id = 'T-OUT' AND far_account_external_id = 'DECL0001'`); n != 1 {
 		t.Errorf("rows the rule placed on DECL0001 = %d, want 1", n)
 	}

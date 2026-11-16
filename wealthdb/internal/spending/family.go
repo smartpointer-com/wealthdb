@@ -85,18 +85,18 @@ type family struct {
 	providerCategory func(silverKind, accountKind, providerCategory string) (detailed string, ok, drift bool)
 	providerClaims   func(silverKind, accountKind, detailed string) bool
 
-	// farCols are the columns recording the OTHER end of an own-account
-	// move — the partner leg's account, and the class a rule stands for
-	// where it placed the move without pairing anything. Empty on the
-	// family that does not write them, exactly as an empty labelCol is
-	// a column that family does not have.
+	// linksFar says whether the family records the OTHER end of an
+	// own-account move — the partner leg and its account, and the class
+	// a rule stands for where it placed the move without pairing
+	// anything. The pass writes it to transfer_links from this family's
+	// rows (writeTransferLinks).
 	//
 	// Spending's alone, for the same reason emitOutsidePopulation is:
 	// it writes a row for every matched leg whether or not the leg is
 	// in its own population, so a card bill's own leg — a pair's far
 	// side as often as not — has a row here to carry the fact and none
 	// on the income overlay.
-	farCols []string
+	linksFar bool
 
 	// investingValue is this family's one verdict whose cash flow
 	// section is `investing`, and so the only one an exposure may
@@ -139,9 +139,7 @@ var spendingFamily = family{
 	investingValue:    canonical.SpendDetailedInvestment,
 	providerCategory:  ProviderCategory,
 	providerClaims:    ProviderCategoryClaims,
-	farCols: []string{
-		"far_silver_source_id", "far_account_external_id", "far_class",
-	},
+	linksFar:          true,
 
 	emitOutsidePopulation: true,
 }
@@ -153,11 +151,11 @@ type familyInput struct {
 	include, exclude map[string][]string
 	rules            []Rule
 	// farRules are the OTHER family's rules that name a far account,
-	// handed to the family that owns the far columns: an inbound leg
-	// an income rule places to a declared account is that family's
-	// verdict, but where it came from is written on the spending
-	// overlay, which is the one overlay a far account has a column on.
-	// Empty for the family without far columns.
+	// handed to the family that links far sides: an inbound leg an
+	// income rule places to a declared account is that family's
+	// verdict, but where it came from is linked from the spending
+	// family's rows, the ones transfer_links is written from. Empty for
+	// the family that links none.
 	farRules []Rule
 	// pinned are this family's pins resolved onto gold's transactions,
 	// and unmatchedPins how many of them described none. otherPinned are
@@ -189,8 +187,8 @@ type familyInput struct {
 // cash paid in, and a custody account's deposit.
 // A matched leg outside the population earns no row, because this
 // family's half of every pair is already in its population — and for
-// that same reason there are no far-account columns: the overlay that
-// holds every matched leg is the one that can record where each went.
+// that same reason it links no far side: the family that holds every
+// matched leg is the one that records where each went.
 var incomeFamily = family{
 	name:              "income",
 	populationMacro:   "income_enrichment_population",

@@ -52,15 +52,15 @@ type CashflowResult struct {
 	// pass began — the state between applying the cashflow migrations
 	// and running the first load. In it the statement is not merely
 	// incomplete, it is wrong in a way that looks like a finding: the
-	// pool is every account, no enrichment row carries a far account,
+	// pool is every account, no row is linked to a far account,
 	// and every matched own-account move therefore resolves to
 	// `vehicles · Unpaired transfers`. A reader who opens the
 	// dashboard in that window sees one enormous node and has no way
 	// to tell it from a data problem, so the load that ends the state
 	// says that it did.
 	FirstPass bool
-	// FarAccounts is how many enrichment rows this pass wrote a far
-	// account onto — the other half of what the resolution needs, and
+	// FarAccounts is how many rows this pass linked to a far account —
+	// the other half of what the resolution needs, and
 	// a plain counter once the first pass is past. StatedFarAccounts is
 	// the subset the SOURCE named rather than the matcher paired, which
 	// is the only road that reaches a movement the product collects one
@@ -176,7 +176,7 @@ func stampCashflowBoundary(ctx context.Context, tx *sql.Tx, opts CashflowOptions
 		return err
 	}
 	if err := tx.QueryRowContext(ctx, `
-        SELECT COUNT(*) FROM spend_txn_enrichment
+        SELECT COUNT(*) FROM transfer_links
          WHERE far_silver_source_id IS NOT NULL`).Scan(&out.FarAccounts); err != nil {
 		return fmt.Errorf("cashflow: count far accounts: %w", err)
 	}
@@ -243,17 +243,17 @@ func stampWrapperSides(ctx context.Context, tx *sql.Tx, overrides map[string]str
 }
 
 // countDeclaredAccounts reads the declarations off the accounts
-// dimension and the pool macro, and the ones no far column names off
-// the spending overlay, so each number says what the statement will
-// draw rather than what the config meant.
+// dimension and the pool macro, and the ones no link names off
+// transfer_links, so each number says what the statement will draw
+// rather than what the config meant.
 func countDeclaredAccounts(ctx context.Context, tx *sql.Tx, out *CashflowResult) error {
 	if err := tx.QueryRowContext(ctx, `
         SELECT COUNT(*),
                COUNT(*) FILTER (WHERE p.account_external_id IS NOT NULL),
                COUNT(*) FILTER (WHERE NOT EXISTS (
-                   SELECT 1 FROM spend_txn_enrichment e
-                    WHERE e.far_silver_source_id    = a.silver_source_id
-                      AND e.far_account_external_id = a.account_external_id))
+                   SELECT 1 FROM transfer_links l
+                    WHERE l.far_silver_source_id    = a.silver_source_id
+                      AND l.far_account_external_id = a.account_external_id))
           FROM accounts a
           LEFT JOIN cashflow_pool_accounts() p
                  ON p.silver_source_id    = a.silver_source_id

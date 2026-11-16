@@ -568,7 +568,7 @@ type Rule struct {
 	// Far names the declared account (canonical.DeclaredSourceID) on the
 	// other side of the move a rule places, set only beside
 	// internal_transfer. Config validates that pairing; the pass only
-	// carries it onto the row's far columns.
+	// links the row to it.
 	Far string
 	// AssetClass is what the capital went into, set only on a rule
 	// whose Category is this family's one investing verdict. Config
