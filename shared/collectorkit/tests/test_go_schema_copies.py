@@ -82,7 +82,7 @@ COPIES = {
     "schwab-web": Copy(("schwab/testdata/web_silver_schema.sql",), {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
         "parsed_documents": BOOKKEEPING, "documents": UNREAD,
-        "cost_basis_methods": UNREAD}),
+        "cost_basis_methods": UNREAD, "rebuild_level": BOOKKEEPING}),
     "swissquote": Copy(("swissquote/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "documents": UNREAD,
         "document_derivations": BOOKKEEPING}),

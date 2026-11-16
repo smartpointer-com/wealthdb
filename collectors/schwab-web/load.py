@@ -57,7 +57,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, extract, parsecache, silver, srcfp
+from collectorkit import (
+    bronze, cli, extract, parsecache, rebuild, silver, srcfp,
+)
 from collectorkit.parse import iso_date_to_epoch
 
 import extraction
@@ -109,6 +111,14 @@ GENERATIONS = {
         srcfp.parser_fingerprint([realized_reports], python=False),
         extraction.TEXT, extraction.WORDS),
 }
+
+# What a `load --force` fills that an incremental load leaves empty in
+# rows loaded before: (level, what) pairs, extended by hand in the change
+# that leaves such rows (collectorkit.rebuild.rebuild_advice).
+REBUILD_ADVICE = (
+    (1, "the More dialog's detail on its tx-history rows"),
+)
+REBUILD_COMMAND = "schwab-web load --force"
 
 # Written exclusively by the statement passes, and keyed on parser output
 # (`as_of_date` / `period_end`, `instrument_key`), so a moved capture
@@ -1251,7 +1261,8 @@ def _fill_more_detail(conn: sqlite3.Connection, activity_id: str,
     if payload.get("_more"):
         return 0
     payload["_more"] = detail
-    conn.execute("UPDATE transactions SET payload = ? WHERE activity_id = ?",
+    conn.execute("UPDATE transactions SET payload = ?"
+                 " WHERE activity_id = ? AND source = 'tx_history_json'",
                  (canonical_json(payload), activity_id))
     return 1
 
@@ -2068,6 +2079,7 @@ def run_load(args: argparse.Namespace) -> int:
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         silver.apply_migrations(conn, migrations_dir)
+        rebuild.rebuild_advice(conn, REBUILD_ADVICE, REBUILD_COMMAND)
 
         # A moved walk owes the archive a re-read, and `--reparse` is the
         # lever that already delivers one: it opens the run gate, the

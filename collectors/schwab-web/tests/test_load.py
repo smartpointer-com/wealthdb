@@ -3129,3 +3129,47 @@ def test_runs_loaded_one_at_a_time_give_the_silver_of_one_force(tmp_path):
                                 str(bronze_dir), "--migrations-dir",
                                 str(MIGRATIONS_DIR), "--workers", "1"],
         runs, tmp_path / "work")
+
+
+# ---------------------------------------------------------------------------
+# Rebuild advice
+# ---------------------------------------------------------------------------
+
+class TestRebuildAdvice:
+    LINE = "schwab-web load --force"
+
+    def _load(self, args, caplog):
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="collectorkit.rebuild"):
+            assert load.run_load(args) == 0
+        return [r.getMessage() for r in caplog.records
+                if r.name == "collectorkit.rebuild"]
+
+    def test_an_empty_silver_records_its_level_and_is_not_advised(
+            self, tmp_path, caplog):
+        args = _generation_args(tmp_path)
+        _make_tx_history_bronze(args.bronze_dir, "20260520T120000Z", "000",
+                                [TestTxHistoryIngest._TX])
+        assert self._load(args, caplog) == []
+        assert self._load(args, caplog) == []
+
+    def test_an_older_silver_is_advised_at_every_load_until_a_rebuild(
+            self, tmp_path, caplog):
+        args = _generation_args(tmp_path)
+        _make_tx_history_bronze(args.bronze_dir, "20260520T120000Z", "000",
+                                [TestTxHistoryIngest._TX])
+        assert load.run_load(args) == 0
+        conn = sqlite3.connect(str(args.silver_db))
+        conn.execute("DELETE FROM rebuild_level")     # built before it
+        conn.commit()
+        conn.close()
+        for _ in range(2):
+            lines = self._load(args, caplog)
+            assert len(lines) == 1 and self.LINE in lines[0]
+            assert "More dialog" in lines[0]
+        assert load.main([
+            "--silver-db", str(args.silver_db),
+            "--bronze-dir", str(args.bronze_dir),
+            "--migrations-dir", str(MIGRATIONS_DIR), "--workers", "1",
+            "--force"]) == 0
+        assert self._load(args, caplog) == []

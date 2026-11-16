@@ -433,6 +433,10 @@ Each `more-details.json` record holds the dialog's whole text as
 A row keeps the first detail it gets. A later export of the same row
 fills `_more` only when the row holds none, or an empty one. A
 `load --force` rebuild gives every row the detail its sidecars hold.
+A silver built before the dialog was parsed holds rows without it; each
+load of such a silver says so in one line, naming `load --force`, and
+goes on (`REBUILD_ADVICE` in `load.py`, the `rebuild_level` table of
+migration 0013).
 
 ### 6a. 1099-B sale lots (`source='form_1099b'`)
 
