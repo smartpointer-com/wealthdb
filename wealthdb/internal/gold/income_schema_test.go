@@ -821,7 +821,7 @@ func TestIncomeOverlayAnswersAndMovesTheReward(t *testing.T) {
 		"income_detailed", "income_primary", "income_label",
 		"income_primary_label", "provenance", "provider_income_detailed",
 		"provider_income_primary", "provider_income_label",
-		"provider_income_primary_label")
+		"provider_income_primary_label", "in_pool")
 
 	got := macroTxnIDs(t, db, ctx, "spend_enrichment_population", 0, 5000)
 	for id, why := range map[string]string{

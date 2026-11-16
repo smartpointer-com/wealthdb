@@ -21,21 +21,6 @@ import (
 // families' spend and refund columns are; the net and section columns
 // are signed, the Cash row included.
 
-// poolSpanJoin keeps a cashflow_txn_nodes row n where its own account is
-// in the pool on the row's day (poolSpanOn), as
-// cashflow_lines_base applies the test, so a row on a dated wrapper
-// override's day reads the override's wrapper.
-var poolSpanJoin = "\n      JOIN cashflow_pool_spans() p ON " + poolSpanOn("n")
-
-// poolSpanOn is the half-open span test of cashflow_pool_spans p that
-// holds the row of alias a on its own day: the span of its source and
-// account that covers its occurred_at.
-func poolSpanOn(a string) string {
-	return "p.silver_source_id = " + a + ".silver_source_id" +
-		"\n           AND p.account_external_id = " + a + ".account_external_id" +
-		"\n           AND " + a + ".occurred_at >= p.from_at AND " + a + ".occurred_at < p.until_at"
-}
-
 // CashflowSummaryRow is one period bucket of the statement.
 //
 // OperatingIn and OperatingOut are positive MAGNITUDES — the two halves

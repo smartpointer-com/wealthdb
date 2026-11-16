@@ -23,11 +23,12 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 ENUMS_GO = REPO / "wealthdb/internal/canonical/enums.go"
+KINDROLES_GO = REPO / "wealthdb/internal/canonical/kindroles.go"
 MANUAL_LOAD = REPO / "collectors/manual/load.py"
 
 # (Go value-set var, Go const type, Python set name)
 MIRRORS = [
-    ("accountKindValues", "AccountKind", "ACCOUNT_KINDS"),
+    ("accountKinds", "AccountKind", "ACCOUNT_KINDS"),
     ("taxWrapperValues", "TaxWrapper", "TAX_WRAPPERS"),
     ("managementStyleValues", "ManagementStyle", "MANAGEMENT_STYLES"),
 ]
@@ -45,11 +46,18 @@ def _const_strings(src: str, go_type: str) -> dict[str, str]:
 
 
 def _value_set(src: str, var: str, consts: dict[str, str]) -> set[str]:
-    """The string values a `var <name> = map[...]struct{}{...}` admits."""
+    """The string values a `var <name> = map[...]struct{}{...}` set in
+    enums.go admits, or the `Kind:` values of a `var <name> = []Row{...}`
+    table in kindroles.go."""
     m = re.search(rf"var {var} = map\[[^\]]+\]struct\{{\}}\{{(.*?)\n\}}",
                   src, re.DOTALL)
-    assert m, f"{var} not found in {ENUMS_GO.name}"
-    idents = re.findall(r"(\w+):\s*\{\}", m.group(1))
+    if m:
+        idents = re.findall(r"(\w+):\s*\{\}", m.group(1))
+    else:
+        m = re.search(rf"var {var} = \[\]\w+\{{(.*?)\n\}}",
+                      KINDROLES_GO.read_text(), re.DOTALL)
+        assert m, f"{var} not found in {ENUMS_GO.name} or {KINDROLES_GO.name}"
+        idents = re.findall(r"\{Kind:\s*(\w+)", m.group(1))
     missing = [i for i in idents if i not in consts]
     assert not missing, f"{var} names constants with no string literal: {missing}"
     return {consts[i] for i in idents}

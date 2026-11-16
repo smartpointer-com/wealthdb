@@ -582,8 +582,11 @@ CREATE MACRO income_txn_categories() AS TABLE (
              ON pc.spend_detailed = e.provider_income_detailed
 );
 
--- cashflow_pool_accounts: the household's cash pool — every scoped
--- account whose tax wrapper is on the household side.
+-- cashflow_pool_spans: the household's cash pool, dated — every span
+-- of a scoped account's tax wrapper (account_wrapper_spans) whose
+-- wrapper is on the household side. A dated wrapper override applies
+-- from its day on, so an account can be in the pool on one day and out
+-- of it on another. This is the one statement of "in the pool".
 --
 -- An UNSET wrapper reads as household, which is the render-time
 -- default gold applies everywhere else and the safe direction: nothing
@@ -599,18 +602,30 @@ CREATE MACRO income_txn_categories() AS TABLE (
 -- wrapper, so an account carrying a wrapper the stamped table does not
 -- hold — a database migrated ahead of its binary — reads as household
 -- too, by the same rule and not by accident.
+CREATE MACRO cashflow_pool_spans() AS TABLE (
+    SELECT w.silver_source_id, w.account_external_id, w.from_at, w.until_at
+      FROM account_wrapper_spans() w
+      LEFT JOIN cashflow_account_scope s
+             ON s.silver_source_id    = w.silver_source_id
+            AND s.account_external_id = w.account_external_id
+      LEFT JOIN cashflow_wrapper_sides ws
+             ON ws.tax_wrapper = w.tax_wrapper
+     WHERE COALESCE(s.mode, 'include') = 'include'
+       AND COALESCE(ws.side, 'household') = 'household'
+);
+
+-- cashflow_pool_accounts: the pool today — every account whose span
+-- that is current, the one with no end, is in the pool. That span
+-- carries the account's own tax wrapper (account_wrapper_spans).
 CREATE MACRO cashflow_pool_accounts() AS TABLE (
     SELECT a.silver_source_id, a.account_external_id, a.account_kind,
            a.display_name, a.nickname, a.account_category,
            a.portfolio_external_id, a.tax_wrapper
       FROM accounts a
-      LEFT JOIN cashflow_account_scope s
-             ON s.silver_source_id    = a.silver_source_id
-            AND s.account_external_id = a.account_external_id
-      LEFT JOIN cashflow_wrapper_sides w
-             ON w.tax_wrapper = a.tax_wrapper
-     WHERE COALESCE(s.mode, 'include') = 'include'
-       AND COALESCE(w.side, 'household') = 'household'
+      JOIN cashflow_pool_spans() p
+        ON p.silver_source_id    = a.silver_source_id
+       AND p.account_external_id = a.account_external_id
+       AND p.until_at = CAST(9223372036854775807 AS BIGINT)
 );
 
 CREATE MACRO cashflow_section_rank(p_section) AS (
@@ -724,6 +739,9 @@ CREATE MACRO cashflow_period_end(p_period, p_start, p_to) AS (
     END
 );
 
+-- income_lines_base: the income lines. in_pool says whether the line's
+-- account is in the cash pool on the line's own day
+-- (cashflow_pool_spans).
 CREATE MACRO income_lines_base(p_from, p_to) AS TABLE (
     SELECT p.silver_source_id, p.transaction_external_id, p.occurred_at,
            p.account_external_id, p.account_kind, p.display_name,
@@ -734,11 +752,16 @@ CREATE MACRO income_lines_base(p_from, p_to) AS TABLE (
            c.income_primary, c.income_label, c.income_primary_label,
            c.provenance,
            c.provider_income_detailed, c.provider_income_primary,
-           c.provider_income_label, c.provider_income_primary_label
+           c.provider_income_label, c.provider_income_primary_label,
+           (ps.silver_source_id IS NOT NULL) AS in_pool
       FROM income_enrichment_population(p_from, p_to) p
       LEFT JOIN income_txn_categories() c
              ON c.silver_source_id        = p.silver_source_id
             AND c.transaction_external_id = p.transaction_external_id
+      LEFT JOIN cashflow_pool_spans() ps
+             ON ps.silver_source_id    = p.silver_source_id
+            AND ps.account_external_id = p.account_external_id
+            AND p.occurred_at >= ps.from_at AND p.occurred_at < ps.until_at
      WHERE detailed_stays_in_income(c.income_detailed)
      ORDER BY p.occurred_at, p.silver_source_id, p.transaction_external_id
 );
@@ -1335,18 +1358,6 @@ CREATE MACRO report_spending_transactions_multi(p_from, p_to) AS TABLE (
      ORDER BY occurred_at, silver_source_id, transaction_external_id
 );
 
-CREATE MACRO cashflow_pool_spans() AS TABLE (
-    SELECT w.silver_source_id, w.account_external_id, w.from_at, w.until_at
-      FROM account_wrapper_spans() w
-      LEFT JOIN cashflow_account_scope s
-             ON s.silver_source_id    = w.silver_source_id
-            AND s.account_external_id = w.account_external_id
-      LEFT JOIN cashflow_wrapper_sides ws
-             ON ws.tax_wrapper = w.tax_wrapper
-     WHERE COALESCE(s.mode, 'include') = 'include'
-       AND COALESCE(ws.side, 'household') = 'household'
-);
-
 CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
     WITH joined AS (
         SELECT t.silver_source_id, t.transaction_external_id, t.occurred_at,
@@ -1815,6 +1826,19 @@ CREATE MACRO cashflow_txn_nodes(p_from, p_to) AS TABLE (
              ON gp.spend_primary = g.grp
 );
 
+-- cashflow_pool_nodes: the nodes of the rows whose own account is in
+-- the pool on the row's own day (cashflow_pool_spans), so a row on a
+-- dated wrapper override's day reads the override's wrapper. What the
+-- statement's lines, the projection's look-back and `status` count.
+CREATE MACRO cashflow_pool_nodes(p_from, p_to) AS TABLE (
+    SELECT n.*
+      FROM cashflow_txn_nodes(p_from, p_to) n
+      JOIN cashflow_pool_spans() p
+             ON p.silver_source_id    = n.silver_source_id
+            AND p.account_external_id = n.account_external_id
+            AND n.occurred_at >= p.from_at AND n.occurred_at < p.until_at
+);
+
 -- ============================================================
 -- report_transactions: the ledger, and what a trade was looked up BY.
 --
@@ -1957,12 +1981,7 @@ CREATE MACRO cashflow_lines_base(p_from, p_to) AS TABLE (
                -- draws no edge either way, and naming it here costs
                -- nothing and keeps the leaf rule structural.
                (n.class = 'mortgage' AND n.net_amount >= 0) AS borrowed
-          FROM cashflow_txn_nodes(p_from, p_to) n
-          -- In the pool on the row's own day.
-          JOIN cashflow_pool_spans() p
-                 ON p.silver_source_id    = n.silver_source_id
-                AND p.account_external_id = n.account_external_id
-                AND n.occurred_at >= p.from_at AND n.occurred_at < p.until_at
+          FROM cashflow_pool_nodes(p_from, p_to) n
           LEFT JOIN alloc a
                  ON a.silver_source_id        = n.silver_source_id
                 AND a.transaction_external_id = n.transaction_external_id

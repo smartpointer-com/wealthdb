@@ -139,7 +139,7 @@ mortgages AS (
      GROUP BY ALL),
 hist AS MATERIALIZED (
     SELECT n.occurred_at, n.class, n.net_amount, n.far_silver_source_id, n.far_account_external_id
-      FROM cashflow_txn_nodes(0, ?2) n` + poolSpanJoin + `
+      FROM cashflow_pool_nodes(0, ?2) n
      WHERE n.disposition = 'line'),
 firsts AS (
     SELECT h.far_silver_source_id AS src, h.far_account_external_id AS acct, MIN(h.occurred_at) AS first
@@ -267,26 +267,18 @@ var planIncomeClassSQL = func() string {
 	return b.String() + " ELSE '" + string(canonical.ClassOtherReceipts) + "' END"
 }()
 
-// outsidePool keeps an income line b off the pool on its own day: no
-// span of cashflow_pool_spans holds it (poolSpanOn), so a line on a
-// dated wrapper override's day reads the override's wrapper, as
-// poolSpanJoin does for the statement's lines.
-func outsidePool(b string) string {
-	return "NOT EXISTS (SELECT 1 FROM cashflow_pool_spans() p WHERE " + poolSpanOn(b) + ")"
-}
-
-// planIncomeSQL sums the window's income lines by side of the pool,
-// class and account, the projected types aside, with an account's first
-// income line outside the pool ever, of any type (NULL for one that has
-// none).
+// planIncomeSQL sums the window's income lines by side of the pool on
+// the line's own day (in_pool), class and account, the projected types
+// aside, with an account's first income line outside the pool ever, of
+// any type (NULL for one that has none).
 var planIncomeSQL = `
 WITH firsts AS (
     SELECT b.silver_source_id, b.account_external_id, MIN(b.occurred_at) AS first
       FROM income_lines_base(0, ?2) b
-     WHERE ` + outsidePool("b") + `
+     WHERE NOT b.in_pool
      GROUP BY ALL),
 lines AS (
-    SELECT w.*, ` + outsidePool("w") + ` AS outside
+    SELECT w.*, NOT w.in_pool AS outside
       FROM income_lines_outccy(?1, ?2, ?3) w
      WHERE NOT list_contains(?4, COALESCE(w.income_detailed, '')))
 SELECT w.outside, ` + planIncomeClassSQL + ` AS class, w.silver_source_id, w.account_external_id,

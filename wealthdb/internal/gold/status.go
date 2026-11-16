@@ -311,9 +311,10 @@ func statusBase(ctx context.Context, db *sql.DB, silverSourceID string, includeD
 // answers for spending's, and an account only income scopes in
 // contributes nothing to it.
 //
-// The cash flow counters read the pool's span join (poolSpanJoin,
-// shared with the plan), so a change to what the pool holds or to what
-// the resolution declines moves the numbers with it. The first two join
+// The cash flow counters read the pool's nodes (cashflow_pool_nodes,
+// shared with the plan and the statement's lines), so a change to what
+// the pool holds or to what the resolution declines moves the numbers
+// with it. The first two join
 // the pool: a vehicle's own FX legs are not the household's, and
 // counting them would make the number permanently large and therefore
 // unreadable.
@@ -347,7 +348,7 @@ func driftCounts(ctx context.Context, db *sql.DB, byID map[string]*SourceStatus)
 			[]any{ids}, func(s *SourceStatus) *int { return &s.ExcludedUnmappedCount }},
 		{"cashflow excluded by kind", `
         SELECT n.silver_source_id, COUNT(*)
-          FROM cashflow_txn_nodes(?, ?) n` + poolSpanJoin + `
+          FROM cashflow_pool_nodes(?, ?) n
          WHERE ` + in("n.silver_source_id") + ` AND n.disposition = 'excluded' GROUP BY 1`,
 			[]any{int64(0), MaxEpoch, ids}, func(s *SourceStatus) *int { return &s.CashflowExcludedByKindCount }},
 		{"cashflow wrapper coverage", `

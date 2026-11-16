@@ -36,9 +36,14 @@ def _set_values(text, var, consts):
     return {consts[name] for name in re.findall(r"(\w+):\s*\{\}", body)}
 
 
+def _table_kinds(text, var, consts):
+    """The `Kind:` values of a `var = []Row{{Kind: A, ...}, ...}` table."""
+    body = re.search(rf"var {var} = \[\]\w+\{{(.*?)\n\}}", text, re.S).group(1)
+    return {consts[name] for name in re.findall(r"\{Kind:\s*(\w+)", body)}
+
+
 def account_kinds():
-    t = _read("enums.go")
-    return _set_values(t, "accountKindValues", go_consts(t, "AccountKind"))
+    return _table_kinds(_read("kindroles.go"), "accountKinds", go_consts(_read("enums.go"), "AccountKind"))
 
 
 def tax_wrappers():
@@ -52,8 +57,7 @@ def management_styles():
 
 
 def tx_kinds():
-    t = _read("enums.go")
-    return _set_values(t, "txKindValues", go_consts(t, "TxKind"))
+    return _table_kinds(_read("kindroles.go"), "txKindRows", go_consts(_read("enums.go"), "TxKind"))
 
 
 def composition_bases():
