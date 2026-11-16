@@ -21,6 +21,29 @@ CREATE MACRO account_wrapper(w) AS COALESCE(w, 'taxable_personal');
 CREATE MACRO account_style(s) AS COALESCE(s, 'self_directed');
 
 -- ===========================================================================
+-- FX: one line's value in another currency
+-- ===========================================================================
+
+-- fx_pick: `p_amt` in currency `p_ccy`, valued in `p_tgt`, as a DOUBLE.
+--
+--   * The first path that has a rate wins: the same currency, the direct
+--     rate `p_d`, then via CHF (`p_c1` * `p_c2`), then via USD
+--     (`p_u1` * `p_u2`). With no path it reads NULL.
+--   * The rates are the `rate` columns of the five ASOF joins on
+--     `fx_daily` that each caller keeps. The products run left to right,
+--     so a value is the same to the bit at every caller.
+--
+-- A scalar macro, so it expands in place and a statement keeps its plan.
+-- A caller that reads a zero amount as zero in every currency puts that
+-- arm in front, in a COALESCE. A CASE around the call would hide the
+-- repeated cast from the planner's common-subexpression pass and change
+-- the plan.
+CREATE MACRO fx_pick(p_amt, p_ccy, p_tgt, p_d, p_c1, p_c2, p_u1, p_u2) AS
+    COALESCE(CASE WHEN p_ccy = p_tgt THEN p_amt::DOUBLE END,
+        p_amt::DOUBLE * p_d, p_amt::DOUBLE * p_c1 * p_c2,
+        p_amt::DOUBLE * p_u1 * p_u2);
+
+-- ===========================================================================
 -- PORTFOLIOS: shared buckets/taxonomy + line base + single + multi
 -- ===========================================================================
 
@@ -126,9 +149,8 @@ CREATE MACRO hist_acct_lines_base() AS TABLE (
         SELECT src, snap, acct, ccy, amt, TRUE FROM cash_all)
     SELECT l.src, l.snap, l.acct, l.ccy, l.amt, l.is_cash, a.base_currency,
            CASE WHEN a.base_currency IS NULL THEN NULL ELSE
-               CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE WHEN l.ccy = a.base_currency THEN l.amt::DOUBLE END,
-                   l.amt::DOUBLE * b0.rate, l.amt::DOUBLE * b1.rate * b2.rate,
-                   l.amt::DOUBLE * b3.rate * b4.rate) AS DECIMAL(28,4)) END AS base_val
+               CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE END, fx_pick(l.amt, l.ccy, a.base_currency,
+                   b0.rate, b1.rate, b2.rate, b3.rate, b4.rate)) AS DECIMAL(28,4)) END AS base_val
       FROM lines l
       LEFT JOIN accounts a ON l.src = a.silver_source_id AND l.acct = a.account_external_id
       ASOF LEFT JOIN fx_daily b0 ON b0.from_ccy = l.ccy AND b0.to_ccy = a.base_currency AND b0.day <= (l.snap // 86400)
@@ -143,9 +165,8 @@ CREATE MACRO hist_acct_lines_base() AS TABLE (
 CREATE MACRO report_accounts_history(p_ccy) AS TABLE (
     WITH conv AS (
         SELECT l.src, l.snap, l.acct, l.ccy, l.is_cash, l.base_currency, l.base_val,
-               CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE WHEN l.ccy = p_ccy THEN l.amt::DOUBLE END,
-                   l.amt::DOUBLE * o0.rate, l.amt::DOUBLE * o1.rate * o2.rate,
-                   l.amt::DOUBLE * o3.rate * o4.rate) AS DECIMAL(28,4)) AS out_val
+               CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE END, fx_pick(l.amt, l.ccy, p_ccy,
+                   o0.rate, o1.rate, o2.rate, o3.rate, o4.rate)) AS DECIMAL(28,4)) AS out_val
           FROM hist_acct_lines_base() l
           ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = l.ccy AND o0.to_ccy = p_ccy AND o0.day <= (l.snap // 86400)
           ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = l.ccy AND o1.to_ccy = 'CHF' AND o1.day <= (l.snap // 86400)
@@ -372,8 +393,8 @@ CREATE MACRO report_portfolios_history_multi() AS TABLE (
                CAST(CASE WHEN l.amt = 0 THEN 0::DOUBLE ELSE fx_reporting_value(l.amt, l.ccy, 'EUR', fxl, fxb) END AS DECIMAL(28,4)) AS out_eur,
                CAST(CASE WHEN l.amt = 0 THEN 0::DOUBLE ELSE fx_reporting_value(l.amt, l.ccy, 'GBP', fxl, fxb) END AS DECIMAL(28,4)) AS out_gbp,
                CASE WHEN bk.base_currency IS NULL THEN NULL ELSE
-                   CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE WHEN l.ccy = bk.base_currency THEN l.amt::DOUBLE END,
-                       l.amt::DOUBLE * b0.rate, l.amt::DOUBLE * b1.rate * b2.rate, l.amt::DOUBLE * b3.rate * b4.rate) AS DECIMAL(28,4)) END AS base_val
+                   CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE END, fx_pick(l.amt, l.ccy, bk.base_currency,
+                       b0.rate, b1.rate, b2.rate, b3.rate, b4.rate)) AS DECIMAL(28,4)) END AS base_val
           FROM lines l
           JOIN portfolio_buckets() bk ON bk.src = l.src AND bk.pid = l.pid
           ASOF LEFT JOIN fx_reporting_legs fxl    ON fxl.from_ccy = l.ccy AND fxl.day <= (l.snap // 86400)
@@ -460,8 +481,8 @@ CREATE MACRO report_sources_history_multi() AS TABLE (
                CAST(CASE WHEN l.amt = 0 THEN 0::DOUBLE ELSE fx_reporting_value(l.amt, l.ccy, 'EUR', fxl, fxb) END AS DECIMAL(28,4)) AS out_eur,
                CAST(CASE WHEN l.amt = 0 THEN 0::DOUBLE ELSE fx_reporting_value(l.amt, l.ccy, 'GBP', fxl, fxb) END AS DECIMAL(28,4)) AS out_gbp,
                CASE WHEN bk.base_currency IS NULL THEN NULL ELSE
-                   CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE WHEN l.ccy = bk.base_currency THEN l.amt::DOUBLE END,
-                       l.amt::DOUBLE * b0.rate, l.amt::DOUBLE * b1.rate * b2.rate, l.amt::DOUBLE * b3.rate * b4.rate) AS DECIMAL(28,4)) END AS base_val
+                   CAST(COALESCE(CASE WHEN l.amt = 0 THEN 0::DOUBLE END, fx_pick(l.amt, l.ccy, bk.base_currency,
+                       b0.rate, b1.rate, b2.rate, b3.rate, b4.rate)) AS DECIMAL(28,4)) END AS base_val
           FROM lines l
           JOIN source_buckets() bk ON bk.src = l.src
           ASOF LEFT JOIN fx_reporting_legs fxl    ON fxl.from_ccy = l.ccy AND fxl.day <= (l.snap // 86400)
@@ -729,9 +750,8 @@ CREATE MACRO account_lines_base(p_asof) AS TABLE (
           FROM cash_chosen(p_asof))
     SELECT l.src, l.acct, l.ccy, l.amt, l.snap, l.is_cash, a.base_currency,
            CASE WHEN a.base_currency IS NULL THEN NULL ELSE
-               CAST(COALESCE(CASE WHEN l.ccy = a.base_currency THEN l.amt::DOUBLE END,
-                   l.amt::DOUBLE * b0.rate, l.amt::DOUBLE * b1.rate * b2.rate,
-                   l.amt::DOUBLE * b3.rate * b4.rate) AS DECIMAL(28,4)) END AS base_val
+               CAST(fx_pick(l.amt, l.ccy, a.base_currency,
+                   b0.rate, b1.rate, b2.rate, b3.rate, b4.rate) AS DECIMAL(28,4)) END AS base_val
       FROM lines l
       LEFT JOIN accounts a ON l.src = a.silver_source_id AND l.acct = a.account_external_id
       ASOF LEFT JOIN fx_daily b0 ON b0.from_ccy = l.ccy AND b0.to_ccy = a.base_currency AND b0.day <= (l.snap // 86400)
@@ -746,9 +766,8 @@ CREATE MACRO account_lines_base(p_asof) AS TABLE (
 CREATE MACRO report_accounts(p_asof, p_ccy) AS TABLE (
     WITH conv AS (
         SELECT l.src, l.acct, l.base_currency, l.snap, l.is_cash, l.base_val,
-               CAST(COALESCE(CASE WHEN l.ccy = p_ccy THEN l.amt::DOUBLE END,
-                   l.amt::DOUBLE * o0.rate, l.amt::DOUBLE * o1.rate * o2.rate,
-                   l.amt::DOUBLE * o3.rate * o4.rate) AS DECIMAL(28,4)) AS out_val
+               CAST(fx_pick(l.amt, l.ccy, p_ccy,
+                   o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(28,4)) AS out_val
           FROM account_lines_base(p_asof) l
           ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = l.ccy AND o0.to_ccy = p_ccy AND o0.day <= (l.snap // 86400)
           ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = l.ccy AND o1.to_ccy = 'CHF' AND o1.day <= (l.snap // 86400)
@@ -900,9 +919,8 @@ CREATE MACRO portfolio_lines_base(p_asof) AS TABLE (
           FROM cash_chosen(p_asof) cc JOIN acct_port ap ON ap.src = cc.silver_source_id AND ap.acct = cc.account_external_id)
     SELECT l.src, l.pid, l.ccy, l.amt, l.snap, l.is_cash, bk.base_currency,
            CASE WHEN bk.base_currency IS NULL THEN NULL ELSE
-               CAST(COALESCE(CASE WHEN l.ccy = bk.base_currency THEN l.amt::DOUBLE END,
-                   l.amt::DOUBLE * b0.rate, l.amt::DOUBLE * b1.rate * b2.rate,
-                   l.amt::DOUBLE * b3.rate * b4.rate) AS DECIMAL(28,4)) END AS base_val
+               CAST(fx_pick(l.amt, l.ccy, bk.base_currency,
+                   b0.rate, b1.rate, b2.rate, b3.rate, b4.rate) AS DECIMAL(28,4)) END AS base_val
       FROM lines l
       JOIN portfolio_buckets() bk ON bk.src = l.src AND bk.pid = l.pid
       ASOF LEFT JOIN fx_daily b0 ON b0.from_ccy = l.ccy AND b0.to_ccy = bk.base_currency AND b0.day <= (l.snap // 86400)
@@ -917,9 +935,8 @@ CREATE MACRO portfolio_lines_base(p_asof) AS TABLE (
 CREATE MACRO report_portfolios(p_asof, p_ccy) AS TABLE (
     WITH conv AS (
         SELECT l.src, l.pid, l.snap, l.is_cash, l.base_currency, l.base_val,
-               CAST(COALESCE(CASE WHEN l.ccy = p_ccy THEN l.amt::DOUBLE END,
-                   l.amt::DOUBLE * o0.rate, l.amt::DOUBLE * o1.rate * o2.rate,
-                   l.amt::DOUBLE * o3.rate * o4.rate) AS DECIMAL(28,4)) AS out_val
+               CAST(fx_pick(l.amt, l.ccy, p_ccy,
+                   o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(28,4)) AS out_val
           FROM portfolio_lines_base(p_asof) l
           ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = l.ccy AND o0.to_ccy = p_ccy AND o0.day <= (l.snap // 86400)
           ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = l.ccy AND o1.to_ccy = 'CHF' AND o1.day <= (l.snap // 86400)
@@ -1032,9 +1049,8 @@ CREATE MACRO source_lines_base(p_asof) AS TABLE (
           FROM cash_chosen(p_asof))
     SELECT l.src, l.ccy, l.amt, l.snap, l.valued, l.is_cash, bk.base_currency,
            CASE WHEN bk.base_currency IS NULL THEN NULL ELSE
-               CAST(COALESCE(CASE WHEN l.ccy = bk.base_currency THEN l.amt::DOUBLE END,
-                   l.amt::DOUBLE * b0.rate, l.amt::DOUBLE * b1.rate * b2.rate,
-                   l.amt::DOUBLE * b3.rate * b4.rate) AS DECIMAL(28,4)) END AS base_val
+               CAST(fx_pick(l.amt, l.ccy, bk.base_currency,
+                   b0.rate, b1.rate, b2.rate, b3.rate, b4.rate) AS DECIMAL(28,4)) END AS base_val
       FROM lines l
       JOIN accounts a ON a.silver_source_id = l.src AND a.account_external_id = l.acct
       JOIN source_buckets() bk ON bk.src = l.src
@@ -1050,9 +1066,8 @@ CREATE MACRO source_lines_base(p_asof) AS TABLE (
 CREATE MACRO report_sources(p_asof, p_ccy) AS TABLE (
     WITH conv AS (
         SELECT l.src, l.snap, l.valued, l.is_cash, l.base_currency, l.base_val,
-               CAST(COALESCE(CASE WHEN l.ccy = p_ccy THEN l.amt::DOUBLE END,
-                   l.amt::DOUBLE * o0.rate, l.amt::DOUBLE * o1.rate * o2.rate,
-                   l.amt::DOUBLE * o3.rate * o4.rate) AS DECIMAL(28,4)) AS out_val
+               CAST(fx_pick(l.amt, l.ccy, p_ccy,
+                   o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(28,4)) AS out_val
           FROM source_lines_base(p_asof) l
           ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = l.ccy AND o0.to_ccy = p_ccy AND o0.day <= (l.snap // 86400)
           ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = l.ccy AND o1.to_ccy = 'CHF' AND o1.day <= (l.snap // 86400)
@@ -1355,9 +1370,8 @@ CREATE MACRO report_marks(p_ccy) AS TABLE (
         SELECT l.day,
                l.day - COALESCE(l.valued_at, l.snapshot_at) // 86400 <= 5 AS marked,
                CAST(fx_reporting_value(l.market_value, l.currency, 'USD', fxl, fxb) AS DECIMAL(38,10)) AS usd,
-               CAST(COALESCE(CASE WHEN l.currency = p_ccy THEN l.market_value::DOUBLE END,
-                             l.market_value::DOUBLE * o0.rate, l.market_value::DOUBLE * o1.rate * o2.rate,
-                             l.market_value::DOUBLE * o3.rate * o4.rate) AS DECIMAL(38,10)) AS out_val
+               CAST(fx_pick(l.market_value, l.currency, p_ccy,
+                             o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(38,10)) AS out_val
           FROM lines l
           ASOF LEFT JOIN fx_reporting_legs fxl    ON fxl.from_ccy = l.currency AND fxl.day <= (l.snapshot_at // 86400)
           ASOF LEFT JOIN fx_reporting_bridges fxb ON fxb.day <= (l.snapshot_at // 86400)
