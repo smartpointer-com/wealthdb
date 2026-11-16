@@ -45,8 +45,50 @@ CREATE TABLE positions (
     account_external_id TEXT    NOT NULL,
     instrument_key      TEXT    NOT NULL,
     payload             TEXT    NOT NULL,
+    -- v6 promoted columns, filled from payload by the trigger below.
+    asset_type          TEXT,
+    instrument_type     TEXT,
+    cusip               TEXT,
+    symbol              TEXT,
+    description         TEXT,
+    maturity_date       INTEGER,
+    variable_rate       TEXT,
+    long_quantity       TEXT,
+    short_quantity      TEXT,
+    market_value        TEXT,
     PRIMARY KEY (snapshot_at, account_external_id, instrument_key)
 );
+
+-- A fixture states a holding once, in its payload. The trigger fills
+-- the v6 columns from it by the collector's rules: a code's text, a
+-- number's literal, the day a maturity stamp names at 00:00 UTC.
+CREATE TRIGGER positions_promote AFTER INSERT ON positions BEGIN
+    UPDATE positions SET
+        asset_type = CASE WHEN json_type(payload, '$.instrument.assetType') = 'text'
+            THEN json_extract(payload, '$.instrument.assetType') END,
+        instrument_type = CASE WHEN json_type(payload, '$.instrument.type') = 'text'
+            THEN json_extract(payload, '$.instrument.type') END,
+        cusip = CASE WHEN json_type(payload, '$.instrument.cusip') = 'text'
+            THEN json_extract(payload, '$.instrument.cusip') END,
+        symbol = CASE WHEN json_type(payload, '$.instrument.symbol') = 'text'
+            THEN json_extract(payload, '$.instrument.symbol') END,
+        description = CASE WHEN json_type(payload, '$.instrument.description') = 'text'
+            THEN json_extract(payload, '$.instrument.description') END,
+        maturity_date = (SELECT CASE
+            WHEN d GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+             AND substr(d, 1, 4) <> '0000' AND date(d) = d
+            THEN CAST(strftime('%s', d) AS INTEGER) END
+            FROM (SELECT substr(json_extract(payload, '$.instrument.maturityDate'), 1, 10) AS d)),
+        variable_rate = CASE WHEN json_type(payload, '$.instrument.variableRate') IN ('integer', 'real')
+            THEN payload -> '$.instrument.variableRate' END,
+        long_quantity = CASE WHEN json_type(payload, '$.longQuantity') IN ('integer', 'real')
+            THEN payload -> '$.longQuantity' END,
+        short_quantity = CASE WHEN json_type(payload, '$.shortQuantity') IN ('integer', 'real')
+            THEN payload -> '$.shortQuantity' END,
+        market_value = CASE WHEN json_type(payload, '$.marketValue') IN ('integer', 'real')
+            THEN payload -> '$.marketValue' END
+     WHERE rowid = NEW.rowid;
+END;
 
 CREATE TABLE transactions (
     activity_id         TEXT    NOT NULL PRIMARY KEY,
@@ -54,4 +96,18 @@ CREATE TABLE transactions (
     account_external_id TEXT    NOT NULL,
     kind                TEXT    NOT NULL,
     payload             TEXT    NOT NULL
+);
+
+-- v6. The adapter reads a transaction's legs from its payload; the
+-- table is here so the copy states every table the collector writes.
+CREATE TABLE transaction_legs (
+    activity_id TEXT    NOT NULL,
+    leg         INTEGER NOT NULL,
+    asset_type  TEXT,
+    cusip       TEXT,
+    symbol      TEXT,
+    amount      TEXT,
+    cost        TEXT,
+    price       TEXT,
+    PRIMARY KEY (activity_id, leg)
 );

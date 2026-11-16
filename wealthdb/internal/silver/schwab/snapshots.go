@@ -263,8 +263,9 @@ func canonicalBalanceKind(silverKind string) canonical.BalanceKind {
 	}
 }
 
-// schwabInstrument is the embedded instrument descriptor that
-// appears under both positions and transactions[].transferItems[].
+// schwabInstrument is the instrument descriptor of an instruments row
+// and of transactions[].transferItems[]; a position states its own in
+// columns (apiHolding).
 type schwabInstrument struct {
 	AssetType   string `json:"assetType"`
 	Type        string `json:"type"`
@@ -276,16 +277,6 @@ type schwabInstrument struct {
 	// percent: the schwab-api collector reads it so.
 	MaturityDate string   `json:"maturityDate"`
 	VariableRate *float64 `json:"variableRate"`
-}
-
-// schwabPositionPayload covers the fields read from each
-// positions row.
-type schwabPositionPayload struct {
-	LongQuantity  canonical.Decimal  `json:"longQuantity"`
-	ShortQuantity canonical.Decimal  `json:"shortQuantity"`
-	AveragePrice  *canonical.Decimal `json:"averagePrice"`
-	MarketValue   *canonical.Decimal `json:"marketValue"`
-	Instrument    schwabInstrument   `json:"instrument"`
 }
 
 // appendPositions emits InstrumentChange + PositionChange for each
@@ -312,10 +303,14 @@ func (c *apiReader) appendPositions(ctx context.Context, byTime map[int64]*canon
 		return err
 	}
 	openPLCol := silver.ColumnOr(s.unrealizedGain, "unrealized_gain_loss")
+	holding, err := c.holdingRead(ctx)
+	if err != nil {
+		return err
+	}
 	q := fmt.Sprintf(`
-SELECT snapshot_at, account_external_id, instrument_key, payload, %s
+SELECT snapshot_at, account_external_id, instrument_key, payload, %s, %s
   FROM positions
- ORDER BY snapshot_at, account_external_id, instrument_key`, openPLCol)
+ ORDER BY snapshot_at, account_external_id, instrument_key`, openPLCol, holding.selectList())
 
 	// The first pass reads every position and feeds the mark guard; the
 	// second emits the window's rows with the guard's fixes.
@@ -324,7 +319,7 @@ SELECT snapshot_at, account_external_id, instrument_key, payload, %s
 		extID, posKey string
 		payload       string
 		openPL        sql.NullFloat64
-		pp            schwabPositionPayload
+		pp            apiHolding
 		cash          bool
 		assetClass    canonical.AssetClass
 		vehicle       canonical.Vehicle
@@ -334,12 +329,15 @@ SELECT snapshot_at, account_external_id, instrument_key, payload, %s
 	guard := newMarkGuard(c.marks)
 	read, err := silver.Query(ctx, c.db, "appendPositions", q, func(rows *sql.Rows) (apiPosition, error) {
 		var r apiPosition
-		if err := rows.Scan(&r.snap, &r.extID, &r.posKey, &r.payload, &r.openPL); err != nil {
+		h := holding.scan()
+		if err := rows.Scan(append([]any{&r.snap, &r.extID, &r.posKey, &r.payload, &r.openPL}, h.dest()...)...); err != nil {
 			return apiPosition{}, fmt.Errorf("appendPositions scan: %w", err)
 		}
-		if err := json.Unmarshal([]byte(r.payload), &r.pp); err != nil {
+		pp, err := h.holding()
+		if err != nil {
 			return apiPosition{}, fmt.Errorf("appendPositions row (snap=%d, key=%s): %w", r.snap, r.posKey, err)
 		}
+		r.pp = pp
 		guard.snapshot(r.snap)
 		// Cash-like assetType → cash_balances, not positions.
 		r.cash = isCashAssetType(r.pp.Instrument.AssetType)
@@ -434,7 +432,7 @@ SELECT snapshot_at, account_external_id, instrument_key, payload, %s
 // side's when the position is short. A row long and short at once
 // states the P/L of its short side only, which says nothing of the
 // whole; it carries no basis.
-func apiBookValue(pp schwabPositionPayload, openPL sql.NullFloat64) *canonical.Decimal {
+func apiBookValue(pp apiHolding, openPL sql.NullFloat64) *canonical.Decimal {
 	long, short := pp.LongQuantity.IsPositive(), pp.ShortQuantity.IsPositive()
 	if long && short {
 		return nil

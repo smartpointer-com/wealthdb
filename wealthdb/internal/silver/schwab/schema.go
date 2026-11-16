@@ -12,6 +12,7 @@ type apiSchema struct {
 	instruments    bool // the instruments table (--with-instruments)
 	nickname       bool // accounts.nickname
 	unrealizedGain bool // positions.unrealized_gain_loss
+	holdings       bool // the instrument and figures of positions (holdingRead)
 }
 
 func (s *apiSchema) optional() []silver.Optional {
@@ -19,6 +20,9 @@ func (s *apiSchema) optional() []silver.Optional {
 		{Table: "instruments", Version: 2, Has: &s.instruments},
 		{Table: "accounts", Columns: []string{"nickname"}, Version: 3, Has: &s.nickname},
 		{Table: "positions", Columns: []string{"unrealized_gain_loss"}, Version: 5, Has: &s.unrealizedGain},
+		// An older silver states them in the payload, which is read in
+		// their place: nothing loads empty, so nothing is advised.
+		{Table: "positions", Columns: holdingColumns, Has: &s.holdings},
 	}
 }
 

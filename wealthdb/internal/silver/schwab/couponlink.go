@@ -64,22 +64,25 @@ type heldBond struct {
 }
 
 // readHeldBonds reads, per account, every bond its positions name at any
-// snapshot, the newest payload of each: a bond's last coupon comes with
+// snapshot, the newest row of each: a bond's last coupon comes with
 // its maturity, when it has left the positions. The maturity and the
 // coupon are the API's, else its description's.
 func (c *apiReader) readHeldBonds(ctx context.Context) (map[string][]heldBond, error) {
 	out := map[string][]heldBond{}
 	seen := map[[2]string]bool{}
-	if err := silver.ScanRows(ctx, c.db, "schwab held bonds", `SELECT account_external_id, payload FROM positions
+	holding, err := c.holdingRead(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := silver.ScanRows(ctx, c.db, "schwab held bonds", `SELECT account_external_id, `+holding.selectList()+` FROM positions
 	    ORDER BY snapshot_at DESC, account_external_id, instrument_key`, func(rows *sql.Rows) error {
-		var acct, payload string
-		if err := rows.Scan(&acct, &payload); err != nil {
+		var acct string
+		h := holding.scan()
+		if err := rows.Scan(append([]any{&acct}, h.dest()...)...); err != nil {
 			return err
 		}
-		var p struct {
-			Instrument schwabInstrument `json:"instrument"`
-		}
-		if json.Unmarshal([]byte(payload), &p) != nil || isCashAssetType(p.Instrument.AssetType) {
+		p, err := h.holding()
+		if err != nil || isCashAssetType(p.Instrument.AssetType) {
 			return nil
 		}
 		key := preferredInstrumentKey(p.Instrument)

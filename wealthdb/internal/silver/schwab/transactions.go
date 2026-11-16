@@ -50,19 +50,18 @@ func (c *apiReader) buildDescriptionToInstrumentKey(ctx context.Context) (map[st
 // or the "" sentinel when two positions state it under different keys
 // (possible across ticker reuse).
 func (c *apiReader) scanPositionDescriptions(ctx context.Context, out map[string]string) error {
-	const q = `SELECT DISTINCT payload FROM positions`
+	holding, err := c.holdingRead(ctx)
+	if err != nil {
+		return err
+	}
+	q := `SELECT DISTINCT ` + holding.selectList() + ` FROM positions`
 	return silver.ScanRows(ctx, c.db, "schwab descToInstrument positions", q, func(rows *sql.Rows) error {
-		var payload string
-		if err := rows.Scan(&payload); err != nil {
+		h := holding.scan()
+		if err := rows.Scan(h.dest()...); err != nil {
 			return err
 		}
-		var p struct {
-			Instrument schwabInstrument `json:"instrument"`
-		}
-		if err := json.Unmarshal([]byte(payload), &p); err != nil {
-			return nil
-		}
-		if p.Instrument.Description == "" {
+		p, err := h.holding()
+		if err != nil || p.Instrument.Description == "" {
 			return nil
 		}
 		key := preferredInstrumentKey(p.Instrument)
