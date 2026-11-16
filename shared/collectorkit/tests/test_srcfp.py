@@ -147,6 +147,26 @@ def test_parser_fingerprint_folds_dists_and_python(tmp_path, monkeypatch):
     sys.modules.pop("solo", None)
 
 
+def test_python_false_leaves_the_python_version_out(tmp_path, monkeypatch):
+    """A document kind's fingerprint is its code alone: no Python version.
+    The default keeps it, so every existing fingerprint stays as it is."""
+    _write(tmp_path / "kind.py", "def parse(extracted):\n    return 1\n")
+    root = _import_from(tmp_path, "kind")
+
+    monkeypatch.setattr(srcfp.platform, "python_version", lambda: "3.12.1")
+    default = srcfp.parser_fingerprint([root])
+    assert default == srcfp.parser_fingerprint([root], python=True)
+    alone = srcfp.parser_fingerprint([root], python=False)
+    assert alone != default
+    monkeypatch.setattr(srcfp.platform, "python_version", lambda: "3.12.2")
+    assert srcfp.parser_fingerprint([root]) != default
+    assert srcfp.parser_fingerprint([root], python=False) == alone
+
+    _write(tmp_path / "kind.py", "def parse(extracted):\n    return 2\n")
+    assert srcfp.parser_fingerprint([root], python=False) != alone
+    sys.modules.pop("kind", None)
+
+
 def test_fingerprint_is_hex_and_stable(tmp_path):
     _write(tmp_path / "stable.py", "def parse():\n    return 42\n")
     root = _import_from(tmp_path, "stable")

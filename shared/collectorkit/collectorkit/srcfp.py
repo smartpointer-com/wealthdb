@@ -25,7 +25,9 @@ naive keys fall short:
   imports are not followed (they can't be meaningfully AST-hashed);
 * folds in the installed versions of the declared third-party extraction
   dependencies and the running Python version, since either can shift
-  extraction for identical input bytes;
+  extraction for identical input bytes. A parser that reads an already
+  extracted document (``collectorkit.words``) leaves all three out: they
+  belong to the extraction's own key (``collectorkit.extract``);
 * folds in the self-reported version of any declared extraction BINARY.
   A collector that shells out to `pdftotext` has no Python distribution to
   pin, so without this a poppler upgrade that re-renders a column would
@@ -195,16 +197,21 @@ def parser_fingerprint(
     roots: list[ModuleType],
     extra_dists: tuple[str, ...] = (),
     extra_tools: tuple[tuple[str, ...], ...] = (),
+    *,
+    python: bool = True,
 ) -> str:
     """A 32-hex-char fingerprint of the parsing logic rooted at ``roots``:
     the normalised source of their first-party import closure, plus the
     installed versions of ``extra_dists`` (the third-party extraction
     stack), the self-reported version of each argv in ``extra_tools`` (the
     extraction BINARIES, for collectors that shell out rather than import),
-    and the running Python version. Suitable as a cache-key /
-    sidecar-filename component (hex only). Location-independent: only file
-    *contents* feed the hash, never their paths, so the same code in two
-    checkouts fingerprints identically."""
+    and, with ``python``, the running Python version. Suitable as a
+    cache-key / sidecar-filename component (hex only). Location-independent:
+    only file *contents* feed the hash, never their paths, so the same code
+    in two checkouts fingerprints identically.
+
+    A document kind that parses an ``Extracted`` passes ``python=False``
+    and no dists or tools, so its fingerprint is its code alone."""
     parts = ["src:" + h for h in sorted(
         normalized_source_hash(f) for f in _closure_files(roots)
     )]
@@ -215,5 +222,6 @@ def parser_fingerprint(
             parts.append(f"dist:{dist}=unavailable")
     for tool in extra_tools:
         parts.append(f"tool:{tool[0]}={_tool_version(tool)}")
-    parts.append("py:" + platform.python_version())
+    if python:
+        parts.append("py:" + platform.python_version())
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
