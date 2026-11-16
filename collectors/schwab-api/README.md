@@ -240,7 +240,7 @@ the whole dump back, and the next run retries it.
 
 ```sh
 ./schwab-api load           # load new dumps
-./schwab-api load --force   # delete silver and rebuild it from all bronze
+./schwab-api load --force   # rebuild silver from all bronze
 ```
 
 ### Silver tables

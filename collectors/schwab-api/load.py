@@ -29,11 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import _txartefacts
-from collectorkit import bronze, cli, compress, parse, prune, silver
+from collectorkit import bronze, cli, compress, loader, parse, prune, silver
 
 from prune import CONFIG as PRUNE_CONFIG
 
-log = logging.getLogger("schwab-load")
+log = logging.getLogger("schwab-api.load")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
@@ -122,10 +122,9 @@ def transaction_files(dump_dir: Path) -> list[Path]:
 # Database / migrations
 # --------------------------------------------------------------------------
 
-# open_db + schema versioning + the migration runner live in
-# collectorkit.silver. schwab-api wraps each dump in `with conn:` for per-dump
-# atomicity, so it shares silver's default-isolation opener (mkdir + connect +
-# foreign_keys, no row_factory/WAL) rather than keeping its own copy.
+# Silver's default-isolation opener: foreign keys and WAL, no row_factory,
+# so rows read positionally. The load frame wraps each dump in one
+# explicit transaction.
 open_db = silver.open_db_default_isolation
 
 
@@ -586,11 +585,9 @@ def load_open_orders(
 # Driver
 # --------------------------------------------------------------------------
 
-def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
-    """Load a single dump directory. Returns a stats dict.
-
-    Atomic: if any step raises, the entire dump is rolled back and
-    dump_runs is *not* written. Re-running will retry the dump.
+def pending_dumps(conn: sqlite3.Connection, bronze_dir: Path, *,
+                  log: logging.Logger) -> list[Path]:
+    """The dumps under `bronze_dir` silver has not loaded, oldest first.
 
     A dump `prune` classifies non-complete is skipped and left pending:
     an "in-progress" marker from a crashed or still-running download, or
@@ -601,17 +598,34 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
     predicate keeps the two in step: a dump load skips is one prune
     reclaims, and a legacy dump prune keeps (no manifest, terminal
     artefact present) still loads."""
-    name = dump_dir.name
-    snapshot_at = bronze.parse_run_ts(name)
+    if not bronze_dir.is_dir():
+        raise SystemExit(f"Bronze directory not found: {bronze_dir}")
+    dumps = list(bronze.iter_run_dirs(bronze_dir))
+    log.info("Found %d dump directory(s) under %s", len(dumps), bronze_dir)
+    loaded = silver.loaded_snapshots(conn)
+    pending: list[Path] = []
+    for dump_dir in dumps:
+        if bronze.parse_run_ts(dump_dir.name) in loaded:
+            log.info("  %s: skipped (already loaded)", dump_dir.name)
+            continue
+        state, reason = prune.classify(dump_dir, PRUNE_CONFIG)
+        if state == prune.NON_COMPLETE:
+            log.info("  %s: skipped (%s)", dump_dir.name, reason)
+            continue
+        pending.append(dump_dir)
+    return pending
 
-    if silver.snapshot_loaded(conn, snapshot_at):
-        return {"name": name, "skipped": True, "reason": "already loaded"}
 
-    state, reason = prune.classify(dump_dir, PRUNE_CONFIG)
-    if state == prune.NON_COMPLETE:
-        return {"name": name, "skipped": True, "reason": reason}
+# The counts `load_run` returns, in order, as the log names them.
+COUNTS = ("accounts", "user preferences", "positions", "balances",
+          "transactions", "open orders", "instruments")
 
-    log.info("Loading dump %s (snapshot_at=%d)", name, snapshot_at)
+
+def load_run(conn: sqlite3.Connection, run: loader.Run) -> tuple[int, ...]:
+    """Load one dump inside the frame's transaction and return its
+    counts (COUNTS)."""
+    dump_dir, snapshot_at = run.dir, run.snapshot_at
+    log.info("Loading dump %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
     # accounts list is needed up-front to translate plaintext accountNumber
     # to hashValue for the other artefacts.
@@ -637,37 +651,22 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path) -> dict:
         accounts_data, positions_wrappers, user_preference,
     )
 
-    stats: dict = {"name": name, "snapshot_at": snapshot_at, "skipped": False}
-
-    # Python sqlite3 connection-as-context-manager: BEGIN on entry,
-    # COMMIT on clean exit, ROLLBACK on exception.
-    with conn:
-        stats["accounts"] = load_accounts(conn, snapshot_at, merged_accounts)
-        stats["user_preference"] = load_user_preference(
-            conn, snapshot_at, user_preference)
-        pos, bal = load_accounts_positions(
-            conn, snapshot_at, positions_wrappers, acct_map)
-        stats["positions"] = pos
-        stats["balances"] = bal
-        stats["transactions"] = load_transactions(conn, windows)
-        stats["open_orders"] = load_open_orders(
-            conn, snapshot_at, open_orders, acct_map)
-        stats["instruments"] = (
-            load_instruments(conn, snapshot_at, instruments)
-            + load_synthesized_instruments(conn, snapshot_at, instruments,
-                                           windows)
-        )
-
-        # dump_runs at the END so a mid-load failure leaves no trace.
-        conn.execute(
-            "INSERT INTO dump_runs"
-            "(snapshot_at, silver_schema_version, run_dir) VALUES (?, ?, ?)",
-            (snapshot_at, silver.current_schema_version(conn), str(dump_dir.resolve())),
-        )
-    return stats
+    accounts = load_accounts(conn, snapshot_at, merged_accounts)
+    prefs = load_user_preference(conn, snapshot_at, user_preference)
+    positions, balances = load_accounts_positions(
+        conn, snapshot_at, positions_wrappers, acct_map)
+    transactions = load_transactions(conn, windows)
+    orders = load_open_orders(conn, snapshot_at, open_orders, acct_map)
+    instrument_rows = (
+        load_instruments(conn, snapshot_at, instruments)
+        + load_synthesized_instruments(conn, snapshot_at, instruments,
+                                       windows)
+    )
+    return (accounts, prefs, positions, balances, transactions, orders,
+            instrument_rows)
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument(
         "--silver-db", type=Path,
@@ -681,43 +680,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Directory containing snapshot subdirectories. "
              "Default: $XDG_DATA_HOME/wealthdb/schwab-api.",
     )
-    cli.add_standard_args(p, verb="load")
-    return p.parse_args(argv)
+    return p
+
+
+# Each dump loads in one transaction, its dump_runs row written last, so
+# a dump that fails leaves no trace and loads again next time.
+SPEC = loader.LoaderSpec(
+    name="schwab-api", schema=MIGRATIONS_DIR, load_run=load_run,
+    parser=_parser, counts=COUNTS, pending=pending_dumps, open_db=open_db)
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
-    cli.configure_logging(args.verbose)
-
-    if args.force:
-        silver.reset(args.silver_db)
-
-    conn = open_db(args.silver_db)
-    silver.apply_migrations(conn, MIGRATIONS_DIR)
-
-    if not args.bronze_dir.is_dir():
-        raise SystemExit(f"Bronze directory not found: {args.bronze_dir}")
-
-    dumps = list(bronze.iter_run_dirs(args.bronze_dir))
-    log.info("Found %d dump directory(s) under %s", len(dumps), args.bronze_dir)
-
-    for d in dumps:
-        stats = load_dump(conn, d)
-        if stats.get("skipped"):
-            log.info("  %s: skipped (%s)", stats["name"], stats["reason"])
-        else:
-            log.info(
-                "  %s: accounts=%d user_pref=%d positions=%d balances=%d "
-                "transactions=%d open_orders=%d instruments=%d",
-                stats["name"],
-                stats["accounts"], stats["user_preference"],
-                stats["positions"], stats["balances"],
-                stats["transactions"], stats["open_orders"],
-                stats["instruments"],
-            )
-
-    conn.close()
-    return 0
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":
