@@ -29,10 +29,26 @@ func taxWrapperFor(productCode string) canonical.TaxWrapper {
 // an equity index fund.
 var listedPrivateEquityRe = regexp.MustCompile(`(?i)private\s+equity`)
 
+// reportSectionClass maps a Reporting-PDF section, as the report prints
+// it, to the class string the live rows carry. Silver's report rows hold
+// the printed section in `asset_class`; its live rows hold the class the
+// loader mapped from the API's key (EQUITIES → equity). A report row
+// written before the section was stored as printed holds the mapped
+// class already, which passes through unchanged. A section not listed
+// here (Alternative Investments, or none) reads as 'other'.
+var reportSectionClass = map[string]string{
+	"Liquidity":   "money_market",
+	"Equity":      "equity",
+	"Equities":    "equity",
+	"Bonds":       "bond",
+	"Real Estate": "fund",
+	"Commodities": "metal",
+}
+
 // taxonomyFor derives the 2-D taxonomy pair (exposure, vehicle) — see
 // docs/TAXONOMY.md — from silver's `asset_class` plus the instrument
-// name. Silver translates VIAC's raw section to its own class string
-// (EQUITIES → equity); the switch below reads that string.
+// name. A report row's printed section is first read as a class
+// (reportSectionClass); the switch below reads the class string.
 //
 // A VIAC holding reads as an institutional index fund that is not
 // exchange-traded, so its vehicle is `fund`, unless its name marks a
@@ -48,6 +64,9 @@ func taxonomyFor(rawClass, name string) (canonical.AssetClass, canonical.Vehicle
 	if listedPrivateEquityRe.MatchString(name) {
 		return canonical.AssetClassPrivateEquity, canonical.VehicleETF
 	}
+	if class, ok := reportSectionClass[rawClass]; ok {
+		rawClass = class
+	}
 	switch rawClass {
 	case "equity":
 		// CSIF equity index funds.
@@ -56,7 +75,7 @@ func taxonomyFor(rawClass, name string) (canonical.AssetClass, canonical.Vehicle
 		// CSIF bond index funds.
 		return canonical.AssetClassFixedIncome, canonical.VehicleFund
 	case "fund":
-		// Silver maps VIAC's REAL_ESTATE section to 'fund': a
+		// VIAC's REAL_ESTATE class (Real Estate section) is 'fund': a
 		// property CSIF is real-estate exposure in a fund wrapper.
 		return canonical.AssetClassRealEstate, canonical.VehicleFund
 	case "metal":

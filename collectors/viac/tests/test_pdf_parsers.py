@@ -74,7 +74,7 @@ def test_equity_row_fields():
     assert p.market_value_chf == 1200.00
     assert p.rate_of_return == 20.00
     assert abs(p.ratio - 0.57) < 1e-9
-    assert p.asset_class == "equity"
+    assert p.viac_section == "Equity"
     assert p.sub_asset_class == "Switzerland"
 
 
@@ -87,12 +87,12 @@ def test_multiword_name_and_subclass_and_foreign_ccy():
     assert p.market_value_chf == 660.00
 
 
-def test_section_header_drives_asset_class():
+def test_each_row_carries_its_printed_section():
     res = pdf_parsers.parse_investment_report_text(SYNTHETIC)
     bond = next(p for p in res.positions if p.isin == "CH0000000033")
-    # 'Switzerland' sub-class under the 'Bonds' section → bond, not
-    # equity (the section header, not the sub-class, decides).
-    assert bond.asset_class == "bond"
+    # 'Switzerland' sub-class under the 'Bonds' section: the section
+    # header, not the sub-class, places the row.
+    assert bond.viac_section == "Bonds"
     assert bond.sub_asset_class == "Switzerland"
 
 

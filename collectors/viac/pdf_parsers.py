@@ -31,10 +31,11 @@ anchored on the ISIN (a strong [A-Z]{2}[A-Z0-9]{9}[0-9] token in the
 middle) and the three-letter FX code (the left boundary between the
 sub-class and the quantity). Numerics are parsed from the right end,
 so multi-word sub-classes and fund names don't shift the columns.
-Asset class comes from the section header (Liquidity / Equity /
-Bonds / Real Estate / Commodities / Alternative Investments) that
-precedes each block — the sub-class column alone is ambiguous
-("Switzerland" appears under both Equity and Real Estate).
+Each row carries the section header (Liquidity / Equity / Bonds /
+Real Estate / Commodities / Alternative Investments) that precedes
+its block, as printed — the sub-class column alone is ambiguous
+("Switzerland" appears under both Equity and Real Estate). What a
+section means is the gold adapter's call.
 
 The cash position (VIAC's "3a Account" liquidity row, no ISIN) is
 returned separately so the loader can route it to ``cash_balances``.
@@ -69,19 +70,7 @@ _PORTFOLIO_ANCHOR_RE = re.compile(
 # `Reporting as of DD.MM.YYYY` — the report's period-end (as-of) date.
 _ASOF_RE = re.compile(r"Reporting as of\s+(\d{2})\.(\d{2})\.(\d{4})")
 
-# Asset-class section headers, mapped to the canonical asset_class
-# the silver layer uses (same target values as load.py's
-# VIAC_ASSET_CLASS_MAP, keyed here by the report's own English
-# section labels rather than the live API's SCREAMING_CASE keys).
-_SECTION_CANON: dict[str, str] = {
-    "liquidity": "money_market",
-    "equity": "equity",
-    "equities": "equity",
-    "bonds": "bond",
-    "real estate": "fund",
-    "commodities": "metal",
-    "alternative investments": "other",
-}
+# Asset-class section headers, as the report prints them.
 _SECTION_HEADERS = {
     "Liquidity", "Equity", "Equities", "Bonds",
     "Real Estate", "Commodities", "Alternative Investments",
@@ -106,8 +95,7 @@ class ReportPosition:
     asset_price: float | None            # per-unit market price, CHF ("Price")
     rate_of_return: float | None         # since inception, percent
     ratio: float | None                  # fraction of portfolio NAV (0..1)
-    asset_class: str                     # canonical (equity/bond/fund/…)
-    viac_section: str                    # raw section header (Equity/Bonds/…)
+    viac_section: str                    # section header as printed (Equity/Bonds/…)
     sub_asset_class: str                 # sub-class column (Switzerland/…)
 
 
@@ -226,7 +214,6 @@ def _parse_security_row(
     fx = before[fx_idx]
     sub_class = " ".join(before[:fx_idx])
     name = " ".join(before[fx_idx + 2:])
-    canonical = _SECTION_CANON.get((section or "").lower(), "other")
     return ReportPosition(
         account_external_id=account,
         instrument_external_id=toks[isin_idx],
@@ -239,7 +226,6 @@ def _parse_security_row(
         asset_price=price,
         rate_of_return=ret,
         ratio=share / 100.0,
-        asset_class=canonical,
         viac_section=section or "",
         sub_asset_class=sub_class,
     )

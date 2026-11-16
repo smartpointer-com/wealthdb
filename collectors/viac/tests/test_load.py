@@ -503,3 +503,52 @@ def test_a_report_that_does_not_parse_is_not_read_at_every_load(
     assert calls == []
     assert _report_values(conn) == [("report:D1", 1200.0)]
     conn.close()
+
+
+# ============================================================
+# Report rows hold their section as printed
+# ============================================================
+
+def test_a_report_row_holds_its_printed_section(tmp_path, monkeypatch):
+    _counting_parser(monkeypatch)
+    _report_dump(tmp_path / "bronze", RUN_SLUG, {"D1": "1200.00"})
+    conn = _load(tmp_path, tmp_path / "bronze")
+    assert [tuple(r) for r in conn.execute(
+        "SELECT asset_class, viac_asset_class FROM positions")] == [
+            ("Equity", "Equity")]
+    assert [tuple(r) for r in conn.execute(
+        "SELECT asset_class, json_extract(payload, '$.asset_class') "
+        "FROM instruments")] == [("Equity", "Equity")]
+    conn.close()
+
+
+def test_the_migration_rewrites_report_rows_to_the_printed_section(tmp_path):
+    conn = silver.open_db(tmp_path / "viac.db")
+    for f in sorted(loader.MIGRATIONS_DIR.glob("000[1-6]_*.sql")):
+        conn.executescript(f.read_text(encoding="utf-8"))
+    conn.executescript(
+        """
+        INSERT INTO positions (snapshot_at, account_external_id,
+            instrument_external_id, asset_class, viac_asset_class, source,
+            payload) VALUES
+            (1, 'P1', 'CH0000000044', 'fund', 'Real Estate', 'report:D1', '{}'),
+            (2, 'P1', 'CH0000000044', 'equity', 'EQUITIES', 'live', '{}');
+        INSERT INTO instruments (instrument_external_id, isin, name,
+            asset_class, viac_asset_class, first_seen_at, last_seen_at,
+            payload) VALUES
+            ('CH0000000044', 'CH0000000044', 'Fund', 'fund', 'Real Estate',
+             1, 1, '{"asset_class":"fund","isin":"CH0000000044","name":"Fund","source":"report"}'),
+            ('CH0000000011', 'CH0000000011', 'Live', 'equity', 'EQUITIES',
+             1, 1, '{"name":"Live"}');
+        """)
+    silver.apply_migrations(conn, loader.MIGRATIONS_DIR)
+    assert [tuple(r) for r in conn.execute(
+        "SELECT source, asset_class FROM positions ORDER BY snapshot_at")] == [
+            ("report:D1", "Real Estate"), ("live", "equity")]
+    assert [tuple(r) for r in conn.execute(
+        "SELECT asset_class, payload FROM instruments "
+        "ORDER BY instrument_external_id")] == [
+            ("equity", '{"name":"Live"}'),
+            ("Real Estate", '{"asset_class":"Real Estate","isin":"CH0000000044",'
+                            '"name":"Fund","source":"report"}')]
+    conn.close()

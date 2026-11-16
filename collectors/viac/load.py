@@ -617,7 +617,11 @@ def _upsert_report_instrument(
     older report row. This is how an ISIN held only in the past (sold
     before the first live scrape) enters the catalogue, while a
     still-held instrument keeps its live metadata and gains an earlier
-    first_seen_at."""
+    first_seen_at.
+
+    A report row's asset_class is its section as printed (an empty one
+    when the row has none); the gold adapter maps it. An empty class
+    counts as filled, so a later report does not replace it."""
     conn.execute(
         """
         INSERT INTO instruments (
@@ -628,7 +632,7 @@ def _upsert_report_instrument(
         ON CONFLICT(instrument_external_id) DO UPDATE SET
             name             = COALESCE(instruments.name, excluded.name),
             currency_code    = COALESCE(instruments.currency_code, excluded.currency_code),
-            asset_class      = COALESCE(NULLIF(instruments.asset_class, ''), excluded.asset_class),
+            asset_class      = COALESCE(instruments.asset_class, excluded.asset_class),
             viac_asset_class = COALESCE(instruments.viac_asset_class, excluded.viac_asset_class),
             sub_asset_class  = COALESCE(instruments.sub_asset_class, excluded.sub_asset_class),
             first_seen_at    = MIN(instruments.first_seen_at, excluded.first_seen_at),
@@ -636,11 +640,11 @@ def _upsert_report_instrument(
         """,
         (
             pos.isin, pos.isin, pos.name, pos.currency_code,
-            pos.asset_class, pos.viac_section, pos.sub_asset_class, None,
+            pos.viac_section, pos.viac_section, pos.sub_asset_class, None,
             seen_at, seen_at,
             canonical_json({
                 "isin": pos.isin, "name": pos.name,
-                "source": "report", "asset_class": pos.asset_class,
+                "source": "report", "asset_class": pos.viac_section,
             }),
         ),
     )
@@ -657,7 +661,8 @@ def derive_report(conn: sqlite3.Connection, doc_id: str,
     snapshot_at is the report as-of date, NOT the dump time — the rows
     are independent of the per-dump snapshot_at the live phases use, so
     historical and live snapshots coexist in the same tables. INSERT OR
-    REPLACE makes re-parsing the same stable report converge."""
+    REPLACE makes re-parsing the same stable report converge. A row's
+    asset_class is its section as printed; the gold adapter maps it."""
     try:
         parsed = pdf_parsers.parse_investment_report(pdf_path)
     except Exception as e:  # noqa: BLE001 — one bad PDF mustn't fail the dump
@@ -693,7 +698,7 @@ def derive_report(conn: sqlite3.Connection, doc_id: str,
             """,
             (
                 as_of, p.account_external_id, p.isin,
-                p.asset_class, p.viac_section, p.sub_asset_class,
+                p.viac_section, p.viac_section, p.sub_asset_class,
                 p.currency_code, p.name,
                 p.quantity, p.ratio, p.market_value_chf,
                 p.acquisition_price, p.asset_price, p.rate_of_return,
