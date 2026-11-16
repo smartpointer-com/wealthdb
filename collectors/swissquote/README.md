@@ -179,7 +179,7 @@ there on each run.
 
 ## Silver
 
-The schema is `migrations/0001` to `0007`. Each dump loads in one
+The schema is `migrations/0001` to `0008`. Each dump loads in one
 transaction, and already-loaded dumps are skipped.
 
 - **Snapshots** (`accounts`, `positions`, `currency_balances`) are
@@ -196,6 +196,10 @@ transaction, and already-loaded dumps are skipped.
     Those PDFs are the year-end statements, and they give silver its
     historical snapshots. Re-parsing one replaces its rows. Cash lines in
     them are skipped; cash belongs in `currency_balances`.
+    `pp_parser.py` reads them. `document_derivations` records each PDF
+    parsed and the parser generation that parsed it: the fingerprint of
+    `pp_parser.py` and pypdf. A load parses only new PDFs. A change to
+    either parses them all again.
 - **Transactions** load per account and CSV as a span replace. The span
   runs from the CSV's first row to its last, not over the requested
   window, because an export can hold fewer days than requested. A reload

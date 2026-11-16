@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import load  # noqa: E402
+import pp_parser  # noqa: E402
 from tests.helpers import write_xls  # noqa: E402
 
 MIGRATIONS = ROOT / "migrations"
@@ -110,7 +111,7 @@ def _statement(_pdf_path: Path) -> dict:
     return {
         "snapshot_date": "2025-12-31",
         "account_external_id": ACCOUNT,
-        "positions": load._pp_parse_asset_allocation(
+        "positions": pp_parser._pp_parse_asset_allocation(
             STATEMENT_PAGE, Path("synthetic.pdf")),
     }
 
@@ -332,10 +333,13 @@ class AccruedMigrationTests(_DbCase):
         self.load_fixtures()
         before = self.conn.execute(
             "SELECT COUNT(*) FROM positions WHERE source = 'live';").fetchone()[0]
+        # A silver that runs 0007 records no statement yet: 0008 creates
+        # document_derivations after it.
         self.conn.executescript(
             (MIGRATIONS / "0007_accrued_interest.sql").read_text()
             .replace("ALTER TABLE positions ADD COLUMN accrued_interest_chf REAL;", "")
-            .replace("VALUES (7,", "VALUES (70,"))
+            .replace("VALUES (7,", "VALUES (70,")
+            + "DELETE FROM document_derivations;")
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM positions WHERE source LIKE 'pp:%';").fetchone()[0], 0)
         self.assertEqual(self.conn.execute(

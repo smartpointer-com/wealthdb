@@ -84,7 +84,8 @@ COPIES = {
         "parsed_documents": BOOKKEEPING, "documents": UNREAD,
         "cost_basis_methods": UNREAD}),
     "swissquote": Copy(("swissquote/testdata/silver_schema.sql",), {
-        "schema_meta": VERSION, "documents": UNREAD}),
+        "schema_meta": VERSION, "documents": UNREAD,
+        "document_derivations": BOOKKEEPING}),
     "ubs-psn": Copy(("ubs/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "cash_account_pricing": UNREAD,
         "portfolio_performance": UNREAD}),

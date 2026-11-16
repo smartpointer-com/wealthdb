@@ -29,7 +29,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, derivations, loader, silver, srcfp
+
+import pp_parser
+from pp_parser import parse_portfolio_performance
 
 log = logging.getLogger("swissquote.load")
 
@@ -359,266 +362,40 @@ def parse_position_details(path: Path) -> dict[tuple[str, str | None], dict]:
 
 
 # ============================================================
-# Portfolio Performance PDF parser
-#
-# Each Portfolio Performance PDF is an annual snapshot — its page-2
-# "Asset allocation" table lists every held position at year-end
-# (date in the title: "Portfolio performance at DD.MM.YYYY") with
-# quantity, ISIN, average cost, market price, and CHF valuation.
-# It is parsed into a `pp:<doc_id>`-tagged set of `positions` rows
-# so the silver `positions` table also covers historical year-ends
-# rather than only the cluster of recent live snapshots.
-#
-# Cash rows are intentionally skipped — cash belongs in
-# `currency_balances` (silver). Securities-only here, matching the
-# `positions` table's existing scope.
+# Portfolio Performance positions (parsed by pp_parser.py)
 # ============================================================
 
-_PP_ISIN_RE = re.compile(r"\b([A-Z]{2}[A-Z0-9]{10})\b")
-_PP_DATE_RE = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{4})\b")
-_PP_TITLE_DATE_RE = re.compile(
-    r"Portfolio performance at\s+(\d{2})\.(\d{2})\.(\d{4})"
-)
-_PP_ACCOUNT_RE = re.compile(r"Account(?:\s*number)?\s+(\d{6,10})")
-# Section header on the asset-allocation page: "Bonds in CHF",
-# "Funds in CHF", "Equities in CHF", "Metals in CHF", etc.
-_PP_SECTION_RE = re.compile(
-    r"^\s*(Bonds|Funds|Equities|Metals|Structured products|Options|Other)\s+in\s+([A-Z]{3})\s*$"
-)
+# The generation of the Portfolio Performance parser: the fingerprint of
+# pp_parser.py and the pypdf that extracts the text. A new generation
+# parses every statement again at the next load.
+PP_SCOPE = "portfolio_performance"
+PP_GENERATION = srcfp.parser_fingerprint([pp_parser], ("pypdf",))
 
-
-# A line holding nothing but one Swiss-locale amount: a bond's accrued
-# interest under its row.
-_PP_LONE_NUMBER_RE = re.compile(r"^-?[\d']+\.\d+$")
-
-
-def _pp_to_number(s: str) -> float:
-    """Parse a Swiss-locale number like "1'234'567.89" or "106.150%"."""
-    return float(s.replace("'", "").rstrip("%").strip())
-
-
-def parse_portfolio_performance(pdf_path: Path) -> dict:
-    """Parse a Portfolio Performance PDF into a snapshot dict.
-
-    Returns: {
-        "snapshot_date":        "YYYY-MM-DD",       # as-of date from title
-        "account_external_id":  "<customer id>",
-        "positions":            [{
-            "asset_class":    "Bonds" | "Funds" | ...,
-            "currency":       "CHF",
-            "name":           "<security description>",
-            "isin":           "<ISIN>",
-            "quantity":       <float>,
-            "avg_price":      <float>,
-            "market_price":   <float>,
-            "price_quote":    "unit" | "percent",   # "%" on the prices
-            "price_date":     "YYYY-MM-DD",
-            "valuation_chf":  <float>,
-            "account_pct":    <float>,
-        }, ...]
-    }
-
-    Raises SystemExit on structural surprises (missing title, no
-    asset-allocation page, unparseable row, etc.) — the goal is to
-    fail loud rather than silently drop data.
-    """
-    import pypdf  # local import — only this code path needs it
-
-    reader = pypdf.PdfReader(str(pdf_path))
-
-    # Title + account ID can appear on any page; grep across all.
-    snapshot_date = account_id = None
-    for page in reader.pages:
-        t = page.extract_text()
-        if not snapshot_date:
-            m = _PP_TITLE_DATE_RE.search(t)
-            if m:
-                snapshot_date = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
-        if not account_id:
-            m = _PP_ACCOUNT_RE.search(t)
-            if m:
-                account_id = m.group(1)
-    if not snapshot_date:
-        raise SystemExit(
-            f"{pdf_path}: no 'Portfolio performance at <date>' title found"
-        )
-    if not account_id:
-        raise SystemExit(f"{pdf_path}: no 'Account <number>' field found")
-
-    # The asset-allocation table is on a single page; layout-mode
-    # extraction keeps columns aligned enough for line-based parse.
-    # Multiple pages may match the surface "Asset allocation" text
-    # (the Table of Contents on page 0 includes it). Every candidate
-    # is tried and the first that yields rows is returned; the TOC will
-    # parse to zero rows and quietly skip.
-    positions: list[dict] = []
-    for page in reader.pages:
-        layout = page.extract_text(extraction_mode="layout")
-        if "Asset allocation" not in layout:
-            continue
-        rows = _pp_parse_asset_allocation(layout, pdf_path)
-        if rows:
-            positions = rows
-            break
-    if not positions:
-        raise SystemExit(
-            f"{pdf_path}: no asset-allocation page yielded any "
-            "positions — PDF layout may have shifted."
-        )
-
-    return {
-        "snapshot_date": snapshot_date,
-        "account_external_id": account_id,
-        "positions": positions,
-    }
-
-
-def _pp_parse_asset_allocation(layout_text: str, pdf_path: Path) -> list[dict]:
-    """Walk the asset-allocation page's text lines, emit one dict per
-    securities row. Cash rows are skipped (they belong in
-    currency_balances). Section context comes from "<Class> in <CCY>"
-    header lines preceding each block.
-    """
-    out: list[dict] = []
-    current_class: str | None = None
-    current_currency: str | None = None
-    # A bond's row is followed by a line holding one figure, its accrued
-    # interest, right under the valuation column ("Valuation in CHF incl.
-    # accrued interests"): a CHF amount on top of the row's valuation,
-    # which is the clean quantity × price. The section total adds the
-    # two.
-    accrual_due: dict | None = None
-    for raw_line in layout_text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if accrual_due is not None:
-            due, accrual_due = accrual_due, None
-            if _PP_LONE_NUMBER_RE.match(line):
-                due["accrued_interest_chf"] = _pp_to_number(line)
-                continue
-
-        # Section header? Sets context for following rows.
-        m = _PP_SECTION_RE.match(line)
-        if m:
-            current_class, current_currency = m.group(1), m.group(2)
-            continue
-        # Plain "Cash" header — skip section entirely; cash is not a
-        # security and goes elsewhere in silver.
-        if line == "Cash":
-            current_class, current_currency = "Cash", None
-            continue
-        # Total / subtotal / header rows — not positions.
-        if line.lower().startswith("total "):
-            continue
-        if "Currency" in line and "Reference" in line:
-            continue
-        if "Quantity" in line and "Security" in line:
-            continue
-        if "incl. accrued interests" in line:
-            continue
-
-        # Skip cash-section content rows.
-        if current_class == "Cash":
-            continue
-
-        # A securities row contains an ISIN. The line layout is
-        # quantity | security | ISIN | avg price | market price |
-        # price date | valuation_chf | %. Numbers are Swiss-locale.
-        m = _PP_ISIN_RE.search(line)
-        if not m:
-            continue
-        isin = m.group(1)
-        before, after = line.split(isin, 1)
-        # `before` is "<quantity><whitespace><security text>" — the
-        # PDF layout extraction collapses inner whitespace so the
-        # quantity is the leading token.
-        before_tokens = before.split()
-        if not before_tokens:
-            continue
-        try:
-            quantity = _pp_to_number(before_tokens[0])
-        except ValueError:
-            continue
-        name = " ".join(before_tokens[1:]).strip()
-
-        # The tail has 5 tokens: avg, market, date, valuation, %.
-        # A bond's accrued interest follows on a line of its own
-        # (accrual_due, above).
-        tail_tokens = after.split()
-        if len(tail_tokens) < 5:
-            raise SystemExit(
-                f"{pdf_path}: positions row for {isin} has only "
-                f"{len(tail_tokens)} tail tokens, expected 5+: {line!r}"
-            )
-        avg_price_raw, market_price_raw, price_date_raw = tail_tokens[:3]
-        valuation_raw, pct_raw = tail_tokens[3], tail_tokens[4]
-
-        # A price printed with "%" is in percent of nominal (a bond).
-        # The two prices of a row share one quote.
-        percent = avg_price_raw.endswith("%")
-        if percent != market_price_raw.endswith("%"):
-            raise SystemExit(
-                f"{pdf_path}: average and market price of {isin} are "
-                f"quoted differently: {line!r}"
-            )
-
-        md = _PP_DATE_RE.match(price_date_raw)
-        if not md:
-            raise SystemExit(
-                f"{pdf_path}: unparseable price date {price_date_raw!r}"
-                f" in row {line!r}"
-            )
-        price_date = f"{md.group(3)}-{md.group(2)}-{md.group(1)}"
-
-        out.append({
-            "asset_class": current_class,
-            "currency": current_currency,
-            "name": name,
-            "isin": isin,
-            "quantity": quantity,
-            "avg_price": _pp_to_number(avg_price_raw),
-            "market_price": _pp_to_number(market_price_raw),
-            "price_quote": "percent" if percent else "unit",
-            "price_date": price_date,
-            "valuation_chf": _pp_to_number(valuation_raw),
-            "account_pct": _pp_to_number(pct_raw),
-        })
-        if percent:
-            accrual_due = out[-1]
-
-    return out
+_PP_DOCUMENTS_SQL = (
+    "SELECT content_sha256, swissquote_doc_id, account_external_id,"
+    " bronze_path FROM documents "
+    "WHERE document_type = 'Portfolio performance' "
+    "  AND swissquote_doc_id IS NOT NULL")
 
 
 def load_portfolio_performance_docs(
     conn: sqlite3.Connection, bronze_root: Path,
 ) -> int:
-    """Parse every not-yet-ingested Portfolio Performance doc and
-    insert source-tagged positions rows.
+    """Parse every Portfolio Performance doc the current parser
+    generation has not read, and write its source-tagged positions rows.
 
-    A doc is "already ingested" if any positions row has
-    source='pp:<doc_id>'. Re-parses are idempotent: a DELETE then an
-    INSERT under that source tag, in a transaction.
+    A doc's rows carry the tag `pp:<doc_id>`. A parse replaces them, a
+    DELETE then an INSERT under that tag, and records the doc under the
+    generation, in one transaction. A doc whose parse fails keeps its
+    rows and is parsed again at the next load.
 
     Returns the number of newly-loaded docs.
     """
-    docs = list(conn.execute(
-        "SELECT swissquote_doc_id, account_external_id, bronze_path "
-        "FROM documents "
-        "WHERE document_type = 'Portfolio performance' "
-        "  AND swissquote_doc_id IS NOT NULL"
-    ))
+    docs = derivations.pending_derivations(
+        conn, PP_SCOPE, PP_GENERATION, _PP_DOCUMENTS_SQL)
     loaded = 0
     for r in docs:
-        doc_id = r["swissquote_doc_id"]
-        source_tag = f"pp:{doc_id}"
-        already = conn.execute(
-            "SELECT 1 FROM positions WHERE source = ? LIMIT 1;",
-            (source_tag,),
-        ).fetchone()
-        if already:
-            continue
-
+        source_tag = f"pp:{r['swissquote_doc_id']}"
         pdf_path = bronze_root / r["bronze_path"]
         log.info("Parsing Portfolio Performance: %s", pdf_path.name)
         try:
@@ -665,6 +442,9 @@ def load_portfolio_performance_docs(
                      pos["price_quote"], pos.get("accrued_interest_chf"),
                      canonical_json(fields), source_tag),
                 )
+            derivations.record_derivation(
+                conn, r["content_sha256"], PP_SCOPE, PP_GENERATION,
+                len(result["positions"]))
         loaded += 1
     return loaded
 
@@ -912,15 +692,13 @@ def upsert_account(
 # Per-dump orchestration
 # ============================================================
 
-def load_one_dump(
-    conn: sqlite3.Connection,
-    run_dir: Path,
-    run_meta: dict,
-    bronze_root: Path,
-    schema_version: int,
-) -> None:
-    """Load the dump in `run_dir`, whose parsed run.json is `run_meta`."""
-    snapshot_at = bronze.parse_run_ts(run_dir.name)
+def load_run(conn: sqlite3.Connection, run: loader.Run) -> None:
+    """Load the dump in `run.dir`, whose parsed run.json is
+    `run.manifest`. The frame makes the dump one transaction and writes
+    its `dump_runs` row last."""
+    # A run dir sits directly under the bronze root.
+    run_dir, run_meta, snapshot_at = run.dir, run.manifest, run.snapshot_at
+    bronze_root = run_dir.parent
     log.info("Loading dump %s (snapshot_at=%d)", run_dir.name, snapshot_at)
 
     customer_id = run_meta.get("customer_id")
@@ -946,123 +724,100 @@ def load_one_dump(
             {"account_external_id": customer_id, "account_product": ""},
         ]
 
-    with silver.transaction(conn):
-        # accounts (content-dedup per (external_id, product))
-        for entry in account_entries:
-            product = (
-                entry.get("account_product")
-                or entry.get("account_type")  # legacy bronze key
-                or ""
-            )
-            upsert_account(
-                conn, snapshot_at,
-                entry["account_external_id"], product,
-            )
-
-        # currency_balances (list_of_assets.xls)
-        loa_path = run_dir / "list_of_assets.xls"
-        if loa_path.is_file():
-            n = load_list_of_assets(conn, snapshot_at, customer_id, loa_path)
-            log.info("  +%d currency_balances", n)
-        else:
-            log.info("  no list_of_assets.xls")
-
-        # positions (positions.xls + position_details.json sidecar)
-        pos_path = run_dir / "positions.xls"
-        details_path = run_dir / "position_details.json"
-        if pos_path.is_file():
-            n = load_positions(
-                conn, snapshot_at, customer_id, pos_path,
-                details_path if details_path.is_file() else None,
-            )
-            log.info(
-                "  +%d positions (details: %s)",
-                n, "present" if details_path.is_file() else "absent",
-            )
-        else:
-            log.info("  no positions.xls")
-
-        # transactions (one CSV per requested window)
-        for entry in run_meta.get("transactions", []) or []:
-            csv_path = run_dir / entry["file"]
-            n = load_transactions_csv(conn, customer_id, csv_path)
-            log.info("  +%d transactions for window %s..%s (%s)",
-                     n, entry["window_start"], entry["window_end"],
-                     entry["file"])
-
-        # documents
-        n = index_documents(
-            conn, snapshot_at, customer_id, run_dir, bronze_root, run_meta,
+    # accounts (content-dedup per (external_id, product))
+    for entry in account_entries:
+        product = (
+            entry.get("account_product")
+            or entry.get("account_type")  # legacy bronze key
+            or ""
         )
-        log.info("  +%d documents indexed (auto)", n)
-
-        # dump_runs LAST — its presence is the "fully loaded" marker
-        conn.execute(
-            "INSERT INTO dump_runs("
-            " snapshot_at, silver_schema_version, run_dir) "
-            "VALUES (?, ?, ?);",
-            (snapshot_at, schema_version, str(run_dir)),
+        upsert_account(
+            conn, snapshot_at,
+            entry["account_external_id"], product,
         )
+
+    # currency_balances (list_of_assets.xls)
+    loa_path = run_dir / "list_of_assets.xls"
+    if loa_path.is_file():
+        n = load_list_of_assets(conn, snapshot_at, customer_id, loa_path)
+        log.info("  +%d currency_balances", n)
+    else:
+        log.info("  no list_of_assets.xls")
+
+    # positions (positions.xls + position_details.json sidecar)
+    pos_path = run_dir / "positions.xls"
+    details_path = run_dir / "position_details.json"
+    if pos_path.is_file():
+        n = load_positions(
+            conn, snapshot_at, customer_id, pos_path,
+            details_path if details_path.is_file() else None,
+        )
+        log.info(
+            "  +%d positions (details: %s)",
+            n, "present" if details_path.is_file() else "absent",
+        )
+    else:
+        log.info("  no positions.xls")
+
+    # transactions (one CSV per requested window)
+    for entry in run_meta.get("transactions", []) or []:
+        csv_path = run_dir / entry["file"]
+        n = load_transactions_csv(conn, customer_id, csv_path)
+        log.info("  +%d transactions for window %s..%s (%s)",
+                 n, entry["window_start"], entry["window_end"],
+                 entry["file"])
+
+    # documents
+    n = index_documents(
+        conn, snapshot_at, customer_id, run_dir, bronze_root, run_meta,
+    )
+    log.info("  +%d documents indexed (auto)", n)
 
 
 # ============================================================
 # Entry point
 # ============================================================
 
-def run(args: argparse.Namespace) -> int:
+def _check_bronze_dir(args: argparse.Namespace) -> None:
     if not args.bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir not found: {args.bronze_dir}")
 
-    here = Path(__file__).resolve().parent
-    migrations_dir = here / "migrations"
 
-    if args.force:
-        silver.reset(args.silver_db)
-
-    conn = open_db(args.silver_db)
-    try:
-        silver.apply_migrations(conn, migrations_dir)
-        schema_version = silver.current_schema_version(conn)
-
-        # Only complete dumps load: a dir with no run.json, or one still
-        # carrying the in-progress marker, is a crashed, interrupted or
-        # still-running download, and its partial artefacts would leak a
-        # partial snapshot into silver. It is skipped without a dump_runs
-        # row, so it loads once its walk finalises.
-        pending = bronze.pending_run_dirs(conn, args.bronze_dir, log=log)
-        log.info("%d pending dump(s) to load", len(pending))
-        for run_dir in pending:
-            # A run.json that cannot be read skips its dump with a warning
-            # and no dump_runs row, so the dumps after it still load and
-            # the next load retries it. prune keeps such a dir.
-            run_meta = bronze.read_manifest(run_dir / "run.json")
-            if run_meta is None:
-                log.warning("skipping %s — run.json cannot be read",
-                            run_dir.name)
-                continue
-            load_one_dump(conn, run_dir, run_meta, args.bronze_dir,
-                          schema_version)
-
-        # Manual dir is scanned every invocation, regardless of new dumps.
-        n_manual = ingest_manual_dir(conn, args.bronze_dir)
-        if n_manual:
-            log.info("Indexed %d new manual document(s)", n_manual)
-
-        # Portfolio Performance docs may now be in the documents table
-        # but not yet parsed into positions snapshots. Same call is
-        # idempotent — re-parses replace under their `pp:<doc_id>` tag.
-        n_pp = load_portfolio_performance_docs(conn, args.bronze_dir)
-        if n_pp:
-            log.info(
-                "Reconstructed positions from %d Portfolio Performance "
-                "PDF(s)", n_pp,
-            )
-    finally:
-        conn.close()
-    return 0
+def _pending(conn: sqlite3.Connection, bronze_dir: Path, *, log) -> list[Path]:
+    """Only complete dumps load: a dir with no run.json, or one still
+    carrying the in-progress marker, is a crashed, interrupted or
+    still-running download, and its partial artefacts would leak a
+    partial snapshot into silver. It is skipped without a dump_runs row,
+    so it loads once its walk finalises."""
+    pending = bronze.pending_run_dirs(conn, bronze_dir, log=log)
+    log.info("%d pending dump(s) to load", len(pending))
+    return pending
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def _run_columns(run: loader.Run) -> dict:
+    """The run's `dump_runs` row; its `run_dir` is the path as given."""
+    return {"snapshot_at": run.snapshot_at,
+            "silver_schema_version": run.version, "run_dir": str(run.dir)}
+
+
+def _document_passes(conn: sqlite3.Connection, load: loader.Load) -> None:
+    # Manual dir is scanned every invocation, regardless of new dumps.
+    n_manual = ingest_manual_dir(conn, load.bronze_dir)
+    if n_manual:
+        log.info("Indexed %d new manual document(s)", n_manual)
+
+    # Portfolio Performance docs may now be in the documents table
+    # but not yet parsed into positions snapshots. Same call is
+    # idempotent — re-parses replace under their `pp:<doc_id>` tag.
+    n_pp = load_portfolio_performance_docs(conn, load.bronze_dir)
+    if n_pp:
+        log.info(
+            "Reconstructed positions from %d Portfolio Performance "
+            "PDF(s)", n_pp,
+        )
+
+
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument("--silver-db", type=Path,
                    default=Path("/data/swissquote.db"),
@@ -1072,14 +827,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--bronze-dir", type=Path, default=Path("/data"),
                    help="Directory containing bronze dump subdirectories and "
                         "the manual/ subdirectory (default: %(default)s).")
-    cli.add_standard_args(p, verb="load")
-    return p.parse_args(argv)
+    return p
+
+
+# A run.json that cannot be read skips its dump with a warning and no
+# dump_runs row, so the dumps after it still load and the next load
+# retries it. prune keeps such a dir.
+SPEC = loader.LoaderSpec(
+    name="swissquote", schema=Path(__file__).resolve().parent / "migrations",
+    load_run=load_run, parser=_parser, preflight=_check_bronze_dir,
+    after_runs=_document_passes, pending=_pending, run_columns=_run_columns,
+    open_db=open_db, manifest=loader.MANIFEST_SKIP)
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
-    cli.configure_logging(args.verbose)
-    return run(args)
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":

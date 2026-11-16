@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import load  # noqa: E402
+import pp_parser  # noqa: E402
 
 
 # Synthetic asset-allocation page text. The whitespace mimics what
@@ -58,7 +58,7 @@ SYNTHETIC_ASSET_ALLOCATION = """\
 
 class PortfolioPerformanceParserTests(unittest.TestCase):
     def test_basic_layout(self):
-        rows = load._pp_parse_asset_allocation(
+        rows = pp_parser._pp_parse_asset_allocation(
             SYNTHETIC_ASSET_ALLOCATION, Path("synthetic.pdf"),
         )
         # 1 bond + 3 funds = 4 securities; cash row is intentionally
@@ -82,7 +82,7 @@ class PortfolioPerformanceParserTests(unittest.TestCase):
         self.assertEqual(fund["valuation_chf"], 600_000.0)
 
     def test_non_ascii_name_round_trip(self):
-        rows = load._pp_parse_asset_allocation(
+        rows = pp_parser._pp_parse_asset_allocation(
             SYNTHETIC_ASSET_ALLOCATION, Path("synthetic.pdf"),
         )
         by_isin = {r["isin"]: r for r in rows}
@@ -90,7 +90,7 @@ class PortfolioPerformanceParserTests(unittest.TestCase):
         self.assertEqual(by_isin["XX0000000003"]["name"], "Fonds Société Fictive €")
 
     def test_price_quote_from_percent_marker(self):
-        rows = load._pp_parse_asset_allocation(
+        rows = pp_parser._pp_parse_asset_allocation(
             SYNTHETIC_ASSET_ALLOCATION, Path("synthetic.pdf"),
         )
         quotes = {r["isin"]: r["price_quote"] for r in rows}
@@ -101,10 +101,10 @@ class PortfolioPerformanceParserTests(unittest.TestCase):
         # One price in percent, the other per unit: the row is not read.
         text = SYNTHETIC_ASSET_ALLOCATION.replace("101.000%", "101.000")
         with self.assertRaises(SystemExit):
-            load._pp_parse_asset_allocation(text, Path("synthetic.pdf"))
+            pp_parser._pp_parse_asset_allocation(text, Path("synthetic.pdf"))
 
     def test_a_bond_reads_its_accrued_interest(self):
-        rows = {r["isin"]: r for r in load._pp_parse_asset_allocation(
+        rows = {r["isin"]: r for r in pp_parser._pp_parse_asset_allocation(
             SYNTHETIC_ASSET_ALLOCATION, Path("synthetic.pdf"))}
         self.assertEqual(rows["XX0000000001"]["accrued_interest_chf"], 500.0)
         self.assertNotIn("accrued_interest_chf", rows["XX0000000002"])
@@ -112,12 +112,12 @@ class PortfolioPerformanceParserTests(unittest.TestCase):
     def test_a_bond_without_an_accrual_line_reads_none(self):
         text = SYNTHETIC_ASSET_ALLOCATION.replace(
             "\n                                                                                                                                                                       500.00\n", "\n")
-        rows = {r["isin"]: r for r in load._pp_parse_asset_allocation(text, Path("synthetic.pdf"))}
+        rows = {r["isin"]: r for r in pp_parser._pp_parse_asset_allocation(text, Path("synthetic.pdf"))}
         self.assertNotIn("accrued_interest_chf", rows["XX0000000001"])
         self.assertEqual(len(rows), 4)
 
     def test_cash_rows_excluded(self):
-        rows = load._pp_parse_asset_allocation(
+        rows = pp_parser._pp_parse_asset_allocation(
             SYNTHETIC_ASSET_ALLOCATION, Path("synthetic.pdf"),
         )
         for r in rows:
@@ -125,9 +125,9 @@ class PortfolioPerformanceParserTests(unittest.TestCase):
 
     def test_swiss_number_parser(self):
         # Apostrophe thousand separators, decimal point, %.
-        self.assertEqual(load._pp_to_number("1'234'567.89"), 1234567.89)
-        self.assertEqual(load._pp_to_number("106.150%"), 106.15)
-        self.assertEqual(load._pp_to_number("0.00"), 0.0)
+        self.assertEqual(pp_parser._pp_to_number("1'234'567.89"), 1234567.89)
+        self.assertEqual(pp_parser._pp_to_number("106.150%"), 106.15)
+        self.assertEqual(pp_parser._pp_to_number("0.00"), 0.0)
 
 
 if __name__ == "__main__":
