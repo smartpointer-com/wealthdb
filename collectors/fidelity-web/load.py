@@ -47,11 +47,13 @@ import os
 import re
 import sqlite3
 import sys
-from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, compress, silver, srcfp
+from collectorkit import (
+    bronze, channels, cli, compress, parsecache, silver, srcfp,
+)
+from collectorkit.parsecache import ParseCache, ParsePool
 from collectorkit.parse import iso_date_to_epoch
 
 import lot_parsers
@@ -294,8 +296,8 @@ def main(argv=None):
         dumps_1099, rederive_1099s = _dumps_for_1099s(conn, dumps, pending)
 
         cache = ParseCache(
-            args.parse_cache_dir or _default_parse_cache_dir())
-        with PdfParseCoordinator(cache, os.cpu_count() or 1) as coord:
+            args.parse_cache_dir or parsecache.default_dir("fidelity-web"))
+        with ParsePool(cache, os.cpu_count() or 1) as coord:
             # Enqueue every pending dump's statement PDFs and the
             # supplied PDFs, deduplicated by content, then dispatch once so all
             # unique parses run across a single pool (workers import
@@ -1925,9 +1927,9 @@ def _load_daf_historical(conn, dump_dir, coord=None):
 #      flag, no orchestration change.
 #
 # PDF text extraction is CPU-bound, so both paths route their PDFs
-# through the run's shared PdfParseCoordinator (one ProcessPool + a
+# through the run's shared ParsePool (one process pool + a
 # content-addressed parse cache) and insert the resulting rows
-# serially. See the coordinator section below.
+# serially. See the parse cache section below.
 
 def _parse_statement_pdf_worker(path):
     """ProcessPoolExecutor target: parse one PDF and return its
@@ -1941,175 +1943,24 @@ def _parse_statement_pdf_worker(path):
 
 
 # ------------------------------------------------------------
-# Content-addressed parse cache + shared parse pool
+# The parse cache and the parse pool
 # ------------------------------------------------------------
 #
-# PDF text extraction is the load's dominant cost. Two mechanisms
-# cut it without changing what silver contains:
-#
-#   * A parse cache keyed on (content_sha256, parser_version).
-#     Each unique PDF content is parsed once and its parsed dict
-#     replayed on every later sighting — across dumps within one
-#     `--force` rebuild (in-process) and across separate load runs
-#     (a JSON sidecar), so a nightly reload never re-extracts an
-#     unchanged supplied statement. The cache stores exactly the
-#     parser's output, so a replayed insert is byte-identical to a
-#     fresh parse.
-#
-#   * One ProcessPoolExecutor per load run. Every unique PDF is
-#     submitted once as the dumps are scanned and resolved at each
-#     dump's insertion point, so workers import pdfplumber once and
-#     all cores stay busy — versus a fresh pool per dump (and
-#     single-PDF dumps parsed serially in the parent) before.
-
-def _default_parse_cache_dir():
-    """Persistent parse-cache location: ``$XDG_CACHE_HOME`` (or
-    ``~/.cache``)``/wealthdb/fidelity-web/parse-cache``. A derived
-    cache — not source data — so it sits outside the bronze tree
-    and outside ``~/.secrets``; content-addressed, so a stale entry
-    is never mistaken for a different PDF."""
-    base = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
-    return Path(base) / "wealthdb" / "fidelity-web" / "parse-cache"
-
-
-class ParseCache:
-    """Maps ``(content_sha256, parser_version)`` to a parsed dict via
-    an in-process map plus an optional JSON sidecar directory
-    (``<dir>/<sha>.<version>.json``).
-
-    ``get`` checks memory then the sidecar; ``put`` writes both.
-    Sidecar I/O failures degrade to memory-only (logged at debug),
-    so a missing or read-only cache directory never fails a load.
-    Bumping a parser's version changes the key, leaving older
-    entries unreachable (harmless — they are simply never read)."""
-
-    def __init__(self, sidecar_dir=None):
-        self._mem = {}
-        self._dir = Path(sidecar_dir) if sidecar_dir is not None else None
-        self._dir_ready = None
-
-    def _sidecar_path(self, sha, version):
-        if self._dir is None:
-            return None
-        return self._dir / f"{sha}.{version}.json"
-
-    def get(self, sha, version):
-        key = (sha, version)
-        cached = self._mem.get(key)
-        if cached is not None:
-            return cached
-        path = self._sidecar_path(sha, version)
-        if path is None or not path.is_file():
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as e:
-            log.debug("parse-cache: unreadable %s: %s", path, e)
-            return None
-        self._mem[key] = data
-        return data
-
-    def put(self, sha, version, parsed):
-        self._mem[(sha, version)] = parsed
-        path = self._sidecar_path(sha, version)
-        if path is None or not self._ensure_dir():
-            return
-        tmp = path.with_name(path.name + ".tmp")
-        try:
-            tmp.write_text(json.dumps(parsed, ensure_ascii=False),
-                           encoding="utf-8")
-            tmp.replace(path)
-        except OSError as e:
-            log.debug("parse-cache: could not write %s: %s", path, e)
-            tmp.unlink(missing_ok=True)
-
-    def _ensure_dir(self):
-        if self._dir_ready is None:
-            try:
-                self._dir.mkdir(parents=True, exist_ok=True)
-                self._dir_ready = True
-            except OSError as e:
-                log.debug("parse-cache: disabled (cannot create %s): %s",
-                          self._dir, e)
-                self._dir_ready = False
-        return self._dir_ready
-
-
-class PdfParseCoordinator:
-    """One ProcessPool + one ParseCache shared across a whole load run.
-
-    Lifecycle: ``enqueue`` every PDF as the dumps are scanned, call
-    ``dispatch`` once, then ``resolve`` each PDF at its insertion
-    point. Cache hits are never enqueued; work is deduplicated by
-    (sha, version); with fewer than two misses no pool is created —
-    a tiny corpus or a fully-warm cache parses inline. Used as a
-    context manager so the pool is always shut down.
-
-    Direct callers (unit tests) may skip enqueue/dispatch and call
-    ``resolve`` straight away — it parses inline when a content has
-    neither a cache entry nor a submitted future."""
-
-    def __init__(self, cache, max_workers):
-        self._cache = cache
-        self._max_workers = max(1, max_workers)
-        self._work = {}       # (sha, version) -> (worker, arg)
-        self._futures = {}    # (sha, version) -> Future
-        self._sha_by_path = {}
-        self._pool = None
-
-    def sha_for(self, path):
-        """sha256 of a PDF, memoized by path so the same file is
-        hashed once across enqueue, resolve and the row insert."""
-        key = str(path)
-        sha = self._sha_by_path.get(key)
-        if sha is None:
-            sha = bronze.sha256_file(path)[0]
-            self._sha_by_path[key] = sha
-        return sha
-
-    def enqueue(self, sha, version, worker, arg):
-        if self._cache.get(sha, version) is not None:
-            return
-        self._work.setdefault((sha, version), (worker, arg))
-
-    def dispatch(self):
-        if len(self._work) < 2:
-            return  # serial fallback: resolve() parses inline
-        workers = min(len(self._work), self._max_workers)
-        self._pool = ProcessPoolExecutor(max_workers=workers)
-        for key, (worker, arg) in self._work.items():
-            self._futures[key] = self._pool.submit(worker, arg)
-
-    def resolve(self, sha, version, worker, arg):
-        cached = self._cache.get(sha, version)
-        if cached is not None:
-            return cached
-        future = self._futures.get((sha, version))
-        result = future.result() if future is not None else worker(arg)
-        # Never cache an error dict — a parse failure or signature
-        # mismatch must be re-evaluated on the next run, not pinned.
-        if not (isinstance(result, dict) and "_error" in result):
-            self._cache.put(sha, version, result)
-        return result
-
-    def close(self):
-        if self._pool is not None:
-            self._pool.shutdown()
-            self._pool = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
-
+# PDF text extraction is the load's dominant cost. The kit's
+# `collectorkit.parsecache` cuts it without changing what silver holds:
+# a ParseCache keyed on (content_sha256, parser_version), whose JSON
+# sidecar replays a parsed dict on every later sighting of the same
+# bytes (within one run, across runs, and across a `--force` rebuild),
+# and one ParsePool per load run that parses every unique miss once
+# across all cores. The sidecar is `<sha>.<version>.json`, so a cache
+# stays warm across a change of the code around it. An error result is
+# never cached.
 
 def _transient_coordinator():
-    """A pool-less, sidecar-less coordinator for direct callers of
-    the loader functions (unit tests): ``resolve`` parses inline and
-    nothing persists to disk."""
-    return PdfParseCoordinator(ParseCache(sidecar_dir=None), max_workers=1)
+    """A pool-less, sidecar-less parse pool for direct callers of the
+    loader functions (unit tests): ``resolve`` parses inline and nothing
+    persists to disk."""
+    return ParsePool(ParseCache(), 1)
 
 
 def _statement_pdf_candidates(dump_dir):
@@ -2376,7 +2227,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, *,
         inserted = skipped = activity = activity_dup = sales = 0
         # One ledger for the whole walk: a feed row absorbed by one
         # statement must not be absorbed again by the next.
-        claims = _FeedClaims()
+        claims = {}
         for path in candidates:
             sha = coord.sha_for(path)
             result = coord.resolve(
@@ -2436,95 +2287,86 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, *,
 
 
 # How far a statement row's date may sit from a scraped row's and
-# still be the same event. The two describe one payment from either
-# side of the settlement, so a day or two of drift is ordinary; three
-# is generous without being loose enough for two genuinely different
-# payments of the same amount on one account to collide.
-_ACTIVITY_MATCH_WINDOW = 3 * 86400
+# still be the same event, in days. The two describe one payment from
+# either side of the settlement, so a day or two of drift is ordinary;
+# three is generous without being loose enough for two genuinely
+# different payments of the same amount on one account to collide.
+_ACTIVITY_MATCH_DAYS = 3
 
 # A fee is the exception. The statement dates it when it is assessed and the
 # feed when the cash is debited, so the two can sit further apart than other
 # payments, and the window is wider for that reason. Two different fees of one
 # signed amount, to the cent, on one account inside the window are left to the
 # one-to-one claim to settle.
-_FEE_MATCH_WINDOW = 14 * 86400
+_FEE_MATCH_DAYS = 14
 
 
-class _FeedClaims:
-    """One-to-one bookkeeping for the statement-to-feed match, held for
-    the whole supplied pass.
-
-    Without it the match is many-to-one: two statement rows sharing an
-    account, an amount and the window both resolve to the single feed
-    row that carries one of them, and the other payment is dropped with
-    nothing in the log to say so. Two payments can share an account, a
-    day and an amount and still be different payments, telling apart
-    only by a reference and a payee the scraped feed does not carry.
-
-    Only rows the feed ABSORBED are recorded. A row that found no feed
-    match is simply inserted, and its id converges on a re-sighting
-    through INSERT OR REPLACE, so the ledger can never
-    suppress an insert.
-    """
-
-    def __init__(self):
-        self._by_statement = {}   # statement activity_id -> feed activity_id
-        self._taken = set()       # feed activity_ids already absorbed
-
-    def claimed_for(self, statement_id):
-        return self._by_statement.get(statement_id)
-
-    def claim(self, statement_id, feed_id):
-        self._by_statement[statement_id] = feed_id
-        self._taken.add(feed_id)
-
-    def is_taken(self, feed_id):
-        return feed_id in self._taken
-
-
-def _unclaimed_feed_match(conn, account_external_id, amount, ts, claims,
-                          window=_ACTIVITY_MATCH_WINDOW):
-    """The SCRAPED feed row that already carries this payment, or None.
-
-    The statement and the feed number their rows differently and
-    cannot be joined on an id, so the match is the only thing both
-    agree on: one account, the same signed amount to the cent, within
-    `window` (`_ACTIVITY_MATCH_WINDOW`, or `_FEE_MATCH_WINDOW` for a fee). Signed, not absolute — a core
+def _same_amount(statement, feed):
+    """One signed amount to the cent. Signed, not absolute: a core
     redemption of +450.00 raises the cash that the -450.00 fee then
-    spends, and those two must not cancel each other out.
+    spends, and those two must not cancel each other out."""
+    return abs(feed - statement) < 0.005
 
-    Statement-derived rows are excluded from the comparison. They
-    converge on their own content-derived id instead, which is what
-    lets the monthly and year-end statements both carry a row (the
-    year-end repeats the whole year) without inserting it twice.
 
-    Only a feed row nothing has claimed yet counts. The match is a
+def _match_window_days(leg):
+    return _FEE_MATCH_DAYS if leg.kind == "FEE" else _ACTIVITY_MATCH_DAYS
+
+
+def _feed_legs(conn):
+    """The SCRAPED feed rows a statement row may match, by account.
+
+    Statement-derived rows are left out. They converge on their own
+    content-derived id instead, which is what lets the monthly and
+    year-end statements both carry a row (the year-end repeats the whole
+    year) without inserting it twice."""
+    feed = {}
+    for activity_id, account, ts, amount in conn.execute(
+        "SELECT activity_id, account_external_id, timestamp, amount "
+        "FROM transactions "
+        "WHERE activity_id NOT LIKE 'stmt\\_%' ESCAPE '\\' "
+        "  AND timestamp IS NOT NULL AND amount IS NOT NULL",
+    ):
+        feed.setdefault(account, []).append(
+            channels.Leg(activity_id, account, ts, amount))
+    return feed
+
+
+def _claim_feed_match(leg, feed, claims):
+    """The scraped feed row that already carries the statement row
+    ``leg``, or None. A match is claimed in ``claims``.
+
+    The statement and the feed number their rows differently and cannot
+    be joined on an id, so the match is the only thing both agree on:
+    `collectorkit.channels.pair_one_to_one` with one account, the same
+    signed amount to the cent, and a window of `_ACTIVITY_MATCH_DAYS`,
+    or `_FEE_MATCH_DAYS` for a fee.
+
+    Only a feed row nothing has claimed counts. The match is a
     resemblance rather than an identity, so unclaimed, the one feed row
     carrying one of a same-day same-amount pair would absorb both and
-    the payment the feed never carried would vanish.
+    the payment the feed never carried would vanish. Candidates come
+    closest-in-time first, then by id, because with claiming the pick
+    is not arbitrary: which row is taken decides what the next statement
+    row can still find.
 
-    Candidates come back closest-in-time first, then by id, because
-    with claiming the pick is not arbitrary: which row is taken
-    decides what the next statement row can still find.
-    """
-    for (feed_id,) in conn.execute(
-        "SELECT activity_id FROM transactions "
-        "WHERE account_external_id = ? "
-        "  AND activity_id NOT LIKE 'stmt\\_%' ESCAPE '\\' "
-        "  AND ABS(amount - ?) < 0.005 "
-        "  AND ABS(timestamp - ?) <= ? "
-        "ORDER BY ABS(timestamp - ?), activity_id",
-        (account_external_id, amount, ts, window, ts),
-    ):
-        if claims.is_taken(feed_id):
-            log.info(
-                "supplied-statements: feed row %s already absorbed another "
-                "statement row; %s %+.2f keeps looking",
-                feed_id, bronze.log_id(account_external_id), amount,
-            )
-            continue
-        return feed_id
-    return None
+    The match is taken one candidate at a time, so that each feed row
+    passed over because another statement row claimed it is logged."""
+    taken = set(claims.values())
+    offered = feed.get(leg.account, [])
+    while True:
+        pick = channels.pair_one_to_one(
+            [leg], offered, _same_amount, _match_window_days).get(leg.id)
+        if pick is None or pick not in taken:
+            break
+        log.info(
+            "supplied-statements: feed row %s already absorbed another "
+            "statement row; %s %+.2f keeps looking",
+            pick, bronze.log_id(leg.account), leg.amount,
+        )
+        offered = [r for r in offered if r.id != pick]
+    if pick is not None:
+        claims[leg.id] = pick
+    return pick
 
 
 def _occurrence_id(prefix, identity, occurrence):
@@ -2543,10 +2385,16 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
     ``transactions`` — the money in and out, and the account fees.
 
     Returns ``(inserted, skipped)``. Skipped rows are the ones the
-    scraped feed already carries; see `_unclaimed_feed_match`. `claims`
-    is the pass-wide one-to-one ledger; a caller that omits it gets a
-    private one, which is right for a single statement read in
-    isolation and wrong for a walk (the walk threads its own).
+    scraped feed already carries; see `_claim_feed_match`. `claims`
+    is the pass-wide one-to-one ledger, ``{statement row id: feed row
+    id}``; a caller that omits it gets a private one, which is right
+    for a single statement read in isolation and wrong for a walk (the
+    walk threads its own).
+
+    Only rows the feed ABSORBED are claimed. A row that found no feed
+    match is simply inserted, and its id converges on a re-sighting
+    through INSERT OR REPLACE, so the ledger can never suppress an
+    insert.
 
     The id is derived from the row's own content plus an occurrence
     index within the PDF, on the same reasoning as
@@ -2557,7 +2405,8 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
     rows.
     """
     inserted = skipped = 0
-    claims = _FeedClaims() if claims is None else claims
+    claims = {} if claims is None else claims
+    feed = _feed_legs(conn)
     occurrence: dict[str, int] = {}
     for account in parsed.get("accounts", []):
         aid = account.get("account_external_id")
@@ -2578,14 +2427,13 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
             # payment may be offered again later in the pass and hashes
             # the same both times. The second sighting re-uses the claim
             # the first made rather than reaching for a second feed row.
-            absorbed_by = claims.claimed_for(activity_id)
+            absorbed_by = claims.get(activity_id)
             if absorbed_by is None:
-                window = (_FEE_MATCH_WINDOW if row.get("section") == "FEE"
-                          else _ACTIVITY_MATCH_WINDOW)
-                absorbed_by = _unclaimed_feed_match(
-                    conn, aid, amount, ts, claims, window)
+                absorbed_by = _claim_feed_match(
+                    channels.Leg(activity_id, aid, ts, amount,
+                                 row.get("section")),
+                    feed, claims)
                 if absorbed_by is not None:
-                    claims.claim(activity_id, absorbed_by)
                     # The description stays out of the line: on a wire it
                     # names the beneficiary. The account, date, section,
                     # signed amount and feed id locate the row.

@@ -709,75 +709,67 @@ _PARSED = {
 }
 
 
-def test_parse_cache_mem_and_sidecar_round_trip(tmp_path):
-    cache = load.ParseCache(sidecar_dir=tmp_path / "pc")
-    assert cache.get("abc", "v1") is None
-    cache.put("abc", "v1", _PARSED)
-    # Memory hit, and the sidecar is written under the versioned name.
-    assert cache.get("abc", "v1") == _PARSED
-    assert (tmp_path / "pc" / "abc.v1.json").is_file()
-    # A fresh instance (mimicking a later process) reads the sidecar…
-    reopened = load.ParseCache(sidecar_dir=tmp_path / "pc")
-    assert reopened.get("abc", "v1") == _PARSED
-    # …but a different version key is a miss (invalidation on version bump).
-    assert reopened.get("abc", "v2") is None
+def _statement_dump(tmp_path):
+    dump = tmp_path / "20260401T000000Z"
+    (dump / "documents").mkdir(parents=True)
+    pdf = dump / "documents" / "Statement3312026.pdf"
+    pdf.write_bytes(b"%PDF-1.4 placeholder statement\n")
+    return dump, load.bronze.sha256_file(pdf)[0]
 
 
-def test_parse_cache_memory_only_when_no_sidecar():
-    cache = load.ParseCache(sidecar_dir=None)
-    cache.put("s", "v", {"ok": 1})
-    assert cache.get("s", "v") == {"ok": 1}
-
-
-def test_coordinator_resolve_parses_inline_then_caches(tmp_path):
-    """Without enqueue/dispatch (a transient coordinator, as tests
-    and tiny corpora use), resolve parses inline the first time and
-    serves the cache thereafter — the worker runs exactly once."""
+def _counting_parser(monkeypatch, result):
     calls = []
 
-    def worker(arg):
-        calls.append(arg)
-        return {"value": arg}
-
-    coord = load.PdfParseCoordinator(
-        load.ParseCache(sidecar_dir=tmp_path / "pc"), max_workers=1)
-    r1 = coord.resolve("sha1", "v1", worker, "A")
-    r2 = coord.resolve("sha1", "v1", worker, "A")
-    assert r1 == r2 == {"value": "A"}
-    assert calls == ["A"]
+    def parse(path):
+        calls.append(path)
+        return result
+    monkeypatch.setattr(load.pdf_parsers, "parse_statement_pdf", parse)
+    return calls
 
 
-def test_coordinator_never_caches_error_results(tmp_path):
-    """A parse failure / signature mismatch must be re-evaluated
-    every run, never pinned in the cache."""
-    calls = []
-
-    def worker(arg):
-        calls.append(arg)
-        return {"_error": "boom"}
-
-    coord = load.PdfParseCoordinator(
-        load.ParseCache(sidecar_dir=tmp_path / "pc"), max_workers=1)
-    coord.resolve("sha1", "v1", worker, "A")
-    coord.resolve("sha1", "v1", worker, "A")
-    assert calls == ["A", "A"]
-    assert not (tmp_path / "pc" / "sha1.v1.json").exists()
+def _holdings(conn):
+    return conn.execute(
+        "SELECT account_external_id, description, quantity, source_sha256 "
+        "FROM historical_position_snapshots ORDER BY description").fetchall()
 
 
-def test_coordinator_sha_for_memoizes(tmp_path, monkeypatch):
-    pdf = tmp_path / "x.pdf"
-    pdf.write_bytes(b"%PDF-1.4 placeholder\n")
-    coord = load.PdfParseCoordinator(load.ParseCache(None), max_workers=1)
-    real = load.bronze.sha256_file
-    calls = []
+def test_a_cache_written_by_an_earlier_loader_is_replayed(
+        migrated, tmp_path, monkeypatch):
+    """The sidecar layout is `<sha>.<parser version>.json` holding the
+    parsed dict, so a cache written before stays warm: its entry is
+    replayed and the parser is never called."""
+    dump, sha = _statement_dump(tmp_path)
+    cache_dir = tmp_path / "pc"
+    cache_dir.mkdir()
+    (cache_dir / f"{sha}.{load._STATEMENT_PARSER_VERSION}.json").write_text(
+        json.dumps(_PARSED, ensure_ascii=False), encoding="utf-8")
+    calls = _counting_parser(monkeypatch, {"_error": "must not parse"})
+    pool = load.ParsePool(load.ParseCache(cache_dir), 1)
+    assert load._load_historical_from_pdfs(migrated, dump, pool) == 1
+    assert calls == []
+    assert _holdings(migrated) == [("100000001", "PLACEHOLDER FUND", 1.5, sha)]
 
-    def counting(path, *a, **k):
-        calls.append(str(path))
-        return real(path, *a, **k)
 
-    monkeypatch.setattr(load.bronze, "sha256_file", counting)
-    assert coord.sha_for(pdf) == coord.sha_for(pdf)
-    assert len(calls) == 1  # hashed once, memoized by path
+def test_a_second_load_calls_no_parser(migrated, tmp_path, monkeypatch):
+    dump, sha = _statement_dump(tmp_path)
+    calls = _counting_parser(monkeypatch, _PARSED)
+    for _ in range(2):
+        pool = load.ParsePool(load.ParseCache(tmp_path / "pc"), 1)
+        load._load_historical_from_pdfs(migrated, dump, pool)
+    assert len(calls) == 1
+    assert (tmp_path / "pc" / f"{sha}.{load._STATEMENT_PARSER_VERSION}.json"
+            ).is_file()
+
+
+def test_a_parse_failure_is_never_cached(migrated, tmp_path, monkeypatch):
+    """A failed parse is parsed again by the next load, never pinned."""
+    dump, _ = _statement_dump(tmp_path)
+    calls = _counting_parser(monkeypatch, {"_error": "boom"})
+    for _ in range(2):
+        pool = load.ParsePool(load.ParseCache(tmp_path / "pc"), 1)
+        assert load._load_historical_from_pdfs(migrated, dump, pool) == 0
+    assert len(calls) == 2
+    assert not list((tmp_path / "pc").glob("*.json"))
 
 
 def test_supplied_parser_version_depends_on_signature_without_leaking_it():
@@ -809,20 +801,6 @@ def test_parser_logic_fingerprint_in_cache_namespaces():
     # the supplied key folds the signature hash on top of its namespace
     assert load._supplied_parser_version(
         "PLACEHOLDER REGISTRATION").startswith(supplied + ".")
-
-
-def test_changed_parser_version_misses_cache(tmp_path):
-    """An entry written under one parser-version namespace is not served under
-    another — a parser or library change forces a re-parse rather than replaying
-    stale text."""
-    cache = load.ParseCache(sidecar_dir=tmp_path / "pc")
-    v_old = "stmt529.v1." + "a" * 32
-    v_new = "stmt529.v1." + "b" * 32
-    cache.put("sha", v_old, {"ok": 1})
-    assert cache.get("sha", v_old) == {"ok": 1}
-    assert cache.get("sha", v_new) is None
-    reopened = load.ParseCache(sidecar_dir=tmp_path / "pc")
-    assert reopened.get("sha", v_new) is None
 
 
 # ============================================================
@@ -1116,7 +1094,7 @@ def test_a_repeat_sighting_does_not_claim_a_second_feed_row(migrated):
             "'USD', 'sha', '{}')",
             (f"scraped-wire-{i}", load.iso_date_to_epoch("2026-01-06")),
         )
-    claims = load._FeedClaims()
+    claims = {}
     first = load._insert_supplied_activity_rows(
         migrated, Path("Placeholder 1.26 Statement.PDF"), _PARSED_ACTIVITY,
         "sha0", claims=claims)
@@ -1130,6 +1108,29 @@ def test_a_repeat_sighting_does_not_claim_a_second_feed_row(migrated):
     assert migrated.execute(
         "SELECT COUNT(*) FROM transactions WHERE amount = -1650.0"
     ).fetchone()[0] == 2
+
+
+def test_a_feed_row_claimed_before_is_passed_over_and_logged(
+        migrated, caplog):
+    # Two same-amount wires: the nearer feed row is claimed by the first
+    # statement row, so the second takes the farther one, and the log
+    # says which feed row it passed over.
+    for i, day in ((1, "2026-01-06"), (2, "2026-01-07")):
+        migrated.execute(
+            "INSERT INTO transactions (activity_id, timestamp, "
+            "account_external_id, kind, amount, currency, source_sha256, "
+            "payload) VALUES (?, ?, '100000001', 'withdrawal', -1650.0, "
+            "'USD', 'sha', '{}')",
+            (f"scraped-wire-{i}", load.iso_date_to_epoch(day)),
+        )
+    claims = {}
+    with caplog.at_level("INFO", logger="fidelity-web.load"):
+        load._insert_supplied_activity_rows(
+            migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0", claims=claims)
+    assert sorted(claims.values()) == ["scraped-wire-1", "scraped-wire-2"]
+    passed = [r.getMessage() for r in caplog.records
+              if "already absorbed another statement row" in r.getMessage()]
+    assert len(passed) == 1 and "scraped-wire-1" in passed[0]
 
 
 # ============================================================
