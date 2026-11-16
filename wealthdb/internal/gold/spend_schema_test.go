@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // TestSpendOverlayAnswers: each overlay table answers, and so does the
@@ -172,13 +173,9 @@ func TestAStorePlacedLineReadsModel(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedSpendingFixture(t, db, ctx)
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                                          merchant_signature, signature_version,
-                                          spend_detailed, provenance, assigned_at)
-        VALUES ('test-src', 'T-BACKLOG', 'sig-unknown', 1, NULL, 'signature-only', 100)`); err != nil {
-		t.Fatalf("seed the backlog row: %v", err)
-	}
+	enrichtest.SeedSpend(t, db,
+		enrichtest.Spend{Source: "test-src", Txn: "T-BACKLOG", Signature: "sig-unknown", Provenance: "signature-only"},
+	)
 	want := map[string]string{
 		// The store answered a row the pass could not place.
 		"T-BY-MERCHANT": "model",
@@ -741,21 +738,17 @@ func TestProviderSpendColumns(t *testing.T) {
 func TestProviderViewRecordsWithoutDeciding(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-              merchant_signature, signature_version, spend_detailed, provenance,
-              provider_spend_detailed, assigned_at) VALUES
-            -- the issuer said something specific, and it decided
-            ('s', 'T-SPECIFIC', 'SIG-A', 1, 'FOOD_AND_DRINK_GROCERIES', 'provider',
-             'FOOD_AND_DRINK_GROCERIES', 1),
-            -- the issuer said only "somewhere in general merchandise": recorded,
-            -- but the row is left for a tier that can read the merchant name
-            ('s', 'T-CATCHALL', 'SIG-B', 1, NULL, 'signature-only',
-             'GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE', 1),
-            -- the issuer said nothing at all: NULL, which is not the same
-            ('s', 'T-SILENT', 'SIG-C', 1, NULL, 'signature-only', NULL, 1)`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	enrichtest.SeedSpend(t, db,
+		// the issuer said something specific, and it decided
+		enrichtest.Spend{Source: "s", Txn: "T-SPECIFIC", Signature: "SIG-A", Detailed: "FOOD_AND_DRINK_GROCERIES",
+			Provenance: "provider", Provider: "FOOD_AND_DRINK_GROCERIES", At: 1},
+		// the issuer said only "somewhere in general merchandise": recorded,
+		// but the row is left for a tier that can read the merchant name
+		enrichtest.Spend{Source: "s", Txn: "T-CATCHALL", Signature: "SIG-B", Provenance: "signature-only",
+			Provider: "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE", At: 1},
+		// the issuer said nothing at all: NULL, which is not the same
+		enrichtest.Spend{Source: "s", Txn: "T-SILENT", Signature: "SIG-C", Provenance: "signature-only", At: 1},
+	)
 	type got struct{ ours, theirs, theirPrim sql.NullString }
 	for id, want := range map[string]got{
 		"T-SPECIFIC": {ours: sql.NullString{String: "FOOD_AND_DRINK_GROCERIES", Valid: true},
@@ -958,14 +951,10 @@ func TestMigration0111MovesEveryStoredVerdictToItsSuccessor(t *testing.T) {
 	}
 	// Two rows the renames must leave alone: a current value, and a row
 	// with neither column set.
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
-                payer_signature, signature_version, income_detailed, provenance,
-                provider_income_detailed, assigned_at) VALUES
-            ('s', 'T-KEEP', 'sig-keep', 1, 'INCOME_INTEREST_EARNED', 'rule', 'INCOME_INTEREST_EARNED', 100),
-            ('s', 'T-NONE', 'sig-none', 1, NULL, 'signature-only', NULL, 100)`); err != nil {
-		t.Fatalf("seed the controls: %v", err)
-	}
+	enrichtest.SeedIncome(t, db,
+		enrichtest.Income{Source: "s", Txn: "T-KEEP", Signature: "sig-keep", Detailed: "INCOME_INTEREST_EARNED", Provenance: "rule", Provider: "INCOME_INTEREST_EARNED"},
+		enrichtest.Income{Source: "s", Txn: "T-NONE", Signature: "sig-none", Provenance: "signature-only"},
+	)
 
 	verify := func(when string) {
 		t.Helper()

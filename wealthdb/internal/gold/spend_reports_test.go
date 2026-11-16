@@ -6,6 +6,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // seedSpendingReportFixture lays down two months of spending across
@@ -1038,14 +1040,10 @@ func TestSpendingWronglyMatchedTransferStaysVisible(t *testing.T) {
 		dy(2026, time.January, 10), dy(2026, time.January, 12)); err != nil {
 		t.Fatalf("seed look-alike pair: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                                          merchant_signature, signature_version,
-                                          spend_detailed, provenance, assigned_at) VALUES
-            ('test-src', 'T-LOOKALIKE-BUY',  'sig-furniture', 1, 'HOME_IMPROVEMENT_FURNITURE', 'provider', 100),
-            ('test-src', 'T-LOOKALIKE-CASH', 'sig-counter',   1, 'cash_withdrawal',            'rule',     100)`); err != nil {
-		t.Fatalf("seed look-alike enrichment: %v", err)
-	}
+	enrichtest.SeedSpend(t, db,
+		enrichtest.Spend{Source: "test-src", Txn: "T-LOOKALIKE-BUY", Signature: "sig-furniture", Detailed: "HOME_IMPROVEMENT_FURNITURE", Provenance: "provider"},
+		enrichtest.Spend{Source: "test-src", Txn: "T-LOOKALIKE-CASH", Signature: "sig-counter", Detailed: "cash_withdrawal", Provenance: "rule"},
+	)
 
 	// auditMagnitude is what the enrichment population says was taken
 	// out of spending by the matcher: the layer before the exclusion,

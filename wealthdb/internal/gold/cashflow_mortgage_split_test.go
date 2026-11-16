@@ -8,6 +8,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // A mortgage instalment is interest AND principal, and no bank prints
@@ -68,18 +70,12 @@ func seedMortgagePayment(t *testing.T, db *sql.DB, ctx context.Context,
 		id, int64(day)*mortDay, amount, id); err != nil {
 		t.Fatalf("seed payment %s: %v", id, err)
 	}
-	var far any
+	far := enrichtest.Spend{Source: "cf", Txn: id, Signature: "sig", Detailed: "internal_transfer",
+		Provenance: "rule", FarAccount: farAccount, FarClass: "mortgage"}
 	if farAccount != "" {
-		far = farAccount
+		far.FarSource = "cf"
 	}
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                merchant_signature, signature_version, spend_detailed, provenance,
-                far_silver_source_id, far_account_external_id, far_class, assigned_at)
-             VALUES ('cf', ?, 'sig', 1, 'internal_transfer', 'rule', ?, ?, 'mortgage', 100)`,
-		id, map[bool]any{true: "cf", false: nil}[farAccount != ""], far); err != nil {
-		t.Fatalf("seed overlay %s: %v", id, err)
-	}
+	enrichtest.SeedSpend(t, db, far)
 }
 
 // mortgageShares reads the split back: transaction id → group → amount.
@@ -335,14 +331,8 @@ func seedFarMortgageRow(t *testing.T, db *sql.DB, ctx context.Context,
 		id, int64(day)*mortDay, amount, id); err != nil {
 		t.Fatalf("seed %s: %v", id, err)
 	}
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                merchant_signature, signature_version, spend_detailed, provenance,
-                far_silver_source_id, far_account_external_id, assigned_at)
-             VALUES ('cf', ?, 'sig', 1, ?, 'manual', 'cf', 'MORT', 100)`,
-		id, detailed); err != nil {
-		t.Fatalf("seed overlay %s: %v", id, err)
-	}
+	enrichtest.SeedSpend(t, db, enrichtest.Spend{Source: "cf", Txn: id, Signature: "sig", Detailed: detailed,
+		Provenance: "manual", FarSource: "cf", FarAccount: "MORT"})
 }
 
 // TestTheSplitDoesNotDependOnTheWindowAsked is the defect that reached

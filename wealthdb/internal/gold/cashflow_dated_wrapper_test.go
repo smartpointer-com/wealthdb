@@ -3,6 +3,8 @@ package gold
 import (
 	"slices"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // TestADatedWrapperMovesTheBoundaryOnItsDay covers a dated wrapper: an account
@@ -30,18 +32,18 @@ func TestADatedWrapperMovesTheBoundaryOnItsDay(t *testing.T) {
 		     ('cf', 'D-OWN-AFTER',  ?, 'TRUST', 'purchase', 'USD', -50, 'trust expense'),
 		     ('cf', 'D-OWN-ON',     ?, 'TRUST', 'purchase', 'USD', -60, 'trust expense')`,
 			[]any{change - 10*day, change + 10*day, change - 5*day, change + 5*day, change}},
-		{`INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id, merchant_signature,
-		         signature_version, spend_detailed, provenance, far_silver_source_id, far_account_external_id,
-		         assigned_at) VALUES
-		     ('cf', 'D-IN-BEFORE', 'sig', 1, 'internal_transfer', 'rule', 'cf', 'TRUST', 100),
-		     ('cf', 'D-IN-AFTER',  'sig', 1, 'internal_transfer', 'rule', 'cf', 'TRUST', 100),
-		     ('cf', 'D-OWN-BEFORE', 'sig', 1, 'GENERAL_SERVICES_OTHER_GENERAL_SERVICES', 'rule', NULL, NULL, 100),
-		     ('cf', 'D-OWN-AFTER',  'sig', 1, 'GENERAL_SERVICES_OTHER_GENERAL_SERVICES', 'rule', NULL, NULL, 100),
-		     ('cf', 'D-OWN-ON',     'sig', 1, 'GENERAL_SERVICES_OTHER_GENERAL_SERVICES', 'rule', NULL, NULL, 100)`, nil},
 	} {
 		if _, err := db.ExecContext(ctx, q.sql, q.args...); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
+	}
+	for _, id := range []string{"D-IN-BEFORE", "D-IN-AFTER"} {
+		enrichtest.SeedSpend(t, db, enrichtest.Spend{Source: "cf", Txn: id, Signature: "sig",
+			Detailed: "internal_transfer", Provenance: "rule", FarSource: "cf", FarAccount: "TRUST"})
+	}
+	for _, id := range []string{"D-OWN-BEFORE", "D-OWN-AFTER", "D-OWN-ON"} {
+		enrichtest.SeedSpend(t, db, enrichtest.Spend{Source: "cf", Txn: id, Signature: "sig",
+			Detailed: "GENERAL_SERVICES_OTHER_GENERAL_SERVICES", Provenance: "rule"})
 	}
 	check := func(when string) {
 		t.Helper()

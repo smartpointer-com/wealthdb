@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // TestADeclaredAccountPlacesTheMoveByItsWrapper: a rule-placed
@@ -45,15 +46,12 @@ func TestADeclaredAccountPlacesTheMoveByItsWrapper(t *testing.T) {
 			r.id, r.kind, r.amount, r.id); err != nil {
 			t.Fatalf("seed %s: %v", r.id, err)
 		}
-		if _, err := db.ExecContext(ctx, `
-            INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                    merchant_signature, signature_version, spend_detailed, provenance,
-                    far_silver_source_id, far_account_external_id, assigned_at)
-                 VALUES ('cf', ?, 'sig', 1, 'internal_transfer', 'rule', ?, ?, 100)`,
-			r.id, nullIfEmpty(map[bool]string{true: canonical.DeclaredSourceID, false: ""}[r.far != ""]),
-			nullIfEmpty(r.far)); err != nil {
-			t.Fatalf("seed overlay for %s: %v", r.id, err)
+		far := enrichtest.Spend{Source: "cf", Txn: r.id, Signature: "sig", Detailed: "internal_transfer",
+			Provenance: "rule", FarAccount: r.far}
+		if r.far != "" {
+			far.FarSource = canonical.DeclaredSourceID
 		}
+		enrichtest.SeedSpend(t, db, far)
 		if r.kind == "deposit" {
 			if _, err := db.ExecContext(ctx, `
                 INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,

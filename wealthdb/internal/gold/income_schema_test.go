@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // seedIncomeFixture lays down the accounts, instruments, transactions
@@ -617,19 +619,17 @@ func TestIncomePayerResolution(t *testing.T) {
 func TestIncomeProviderViewRecordsWithoutDeciding(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO income_txn_enrichment (silver_source_id, transaction_external_id,
-              payer_signature, signature_version, income_detailed, provenance,
-              provider_income_detailed, assigned_at) VALUES
-            -- the bank's booking type said something specific, and it decided
-            ('s', 'T-SPECIFIC', 'SIG-A', 1, 'INCOME_SALARY', 'provider', 'INCOME_SALARY', 1),
-            -- it said only "somewhere in income": recorded, but the row is
-            -- left for a tier that can read the payer
-            ('s', 'T-CATCHALL', 'SIG-B', 1, NULL, 'signature-only', 'INCOME_OTHER', 1),
-            -- it said nothing at all: NULL, which is not the same
-            ('s', 'T-SILENT', 'SIG-C', 1, NULL, 'signature-only', NULL, 1)`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	enrichtest.SeedIncome(t, db,
+		// the bank's booking type said something specific, and it decided
+		enrichtest.Income{Source: "s", Txn: "T-SPECIFIC", Signature: "SIG-A", Detailed: "INCOME_SALARY",
+			Provenance: "provider", Provider: "INCOME_SALARY", At: 1},
+		// it said only "somewhere in income": recorded, but the row is
+		// left for a tier that can read the payer
+		enrichtest.Income{Source: "s", Txn: "T-CATCHALL", Signature: "SIG-B", Provenance: "signature-only",
+			Provider: "INCOME_OTHER", At: 1},
+		// it said nothing at all: NULL, which is not the same
+		enrichtest.Income{Source: "s", Txn: "T-SILENT", Signature: "SIG-C", Provenance: "signature-only", At: 1},
+	)
 	type got struct{ ours, theirs, theirPrim, theirLabel sql.NullString }
 	str := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
 	for id, want := range map[string]got{

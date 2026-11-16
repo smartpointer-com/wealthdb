@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 )
 
 // The resolution's pins. Two table-driven walks, each over one of the
@@ -125,17 +126,12 @@ func seedLines(t *testing.T, db *sql.DB, ctx context.Context, lines []line) map[
 			t.Fatalf("seed transaction %s: %v", l.id, err)
 		}
 		if l.spend != "" || l.farAccount != "" || l.farClass != "" || l.spendClass != "" {
-			if _, err := db.ExecContext(ctx, `
-                INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                        merchant_signature, signature_version, spend_detailed, provenance,
-                        far_silver_source_id, far_account_external_id, far_class,
-                        stated_asset_class, assigned_at)
-                     VALUES ('cf', ?, 'sig', 1, ?, 'rule', ?, ?, ?, ?, 100)`,
-				l.id, nullIfEmpty(l.spend),
-				nullIfEmpty(map[bool]string{true: "cf", false: ""}[l.farAccount != ""]),
-				nullIfEmpty(l.farAccount), nullIfEmpty(l.farClass), nullIfEmpty(l.spendClass)); err != nil {
-				t.Fatalf("seed spending overlay for %s: %v", l.id, err)
+			far := enrichtest.Spend{Source: "cf", Txn: l.id, Signature: "sig", Detailed: l.spend,
+				Provenance: "rule", FarAccount: l.farAccount, FarClass: l.farClass, Stated: l.spendClass}
+			if l.farAccount != "" {
+				far.FarSource = "cf"
 			}
+			enrichtest.SeedSpend(t, db, far)
 		}
 		if l.income != "" || l.incomeClass != "" {
 			if _, err := db.ExecContext(ctx, `
@@ -944,13 +940,9 @@ func TestAStatedExposureYieldsToEveryRoadAboveIt(t *testing.T) {
              VALUES ('cf', 'X-FEED', 1728000, 'CASH', 'withdrawal', 'USD', -1000, 'metal')`); err != nil {
 		t.Fatalf("seed feed-stated row: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, `
-        INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
-                merchant_signature, signature_version, spend_detailed, provenance,
-                stated_asset_class, assigned_at)
-             VALUES ('cf', 'X-FEED', 'sig', 1, 'investment', 'rule', 'real_estate', 100)`); err != nil {
-		t.Fatalf("seed feed-stated overlay: %v", err)
-	}
+	enrichtest.SeedSpend(t, db,
+		enrichtest.Spend{Source: "cf", Txn: "X-FEED", Signature: "sig", Detailed: "investment", Provenance: "rule", Stated: "real_estate"},
+	)
 	lines := []line{
 		// A named instrument whose dimension row is MISSING must still
 		// fall to `other`. gold's instruments.asset_class is NOT NULL,

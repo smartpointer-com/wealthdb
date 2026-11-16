@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/output"
@@ -925,11 +926,6 @@ func setupTypedLabelGold(t *testing.T) string {
 		 ('bank', 'B-DIV', NULL, 1, NULL, 'signature-only', 1),
 		 ('bank', 'C-INT', NULL, 1, NULL, 'signature-only', 1),
 		 ('wallets', 'W-INT', NULL, 1, NULL, 'signature-only', 1)`,
-		`INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id, merchant_signature, signature_version,
-		 spend_detailed, provenance, far_silver_source_id, far_account_external_id, far_class, assigned_at) VALUES
-		 ('bank', 'C-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1),
-		 ('wallets', 'W-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1),
-		 ('linked', 'P-SHOP', 'CORNER MARKET', 1, 'FOOD_AND_DRINK_GROCERIES', 'signature-only', NULL, NULL, NULL, 1)`,
 		`INSERT INTO stated_periods (silver_source_id, account_external_id, as_of, period_start, currency,
 		 ending_value, net_additions, source_sha256) VALUES
 		 ('bank', 'BRK000001234', $t1, $jun01, 'USD', 12000, 0, 'doc'),
@@ -938,6 +934,10 @@ func setupTypedLabelGold(t *testing.T) string {
 		if _, err := db.ExecContext(ctx, at.Replace(q)); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
+	}
+	for _, src := range []struct{ source, txn string }{{"bank", "C-SHOP"}, {"wallets", "W-SHOP"}, {"linked", "P-SHOP"}} {
+		enrichtest.SeedSpend(t, db, enrichtest.Spend{Source: src.source, Txn: src.txn, Signature: "CORNER MARKET",
+			Detailed: "FOOD_AND_DRINK_GROCERIES", Provenance: "signature-only", At: 1})
 	}
 	if _, err := gold.RebuildLots(ctx, db, gold.LotsOptions{Config: lots.Config{}}); err != nil {
 		t.Fatal(err)
