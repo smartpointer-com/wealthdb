@@ -76,7 +76,7 @@ from fund_documents import (_fund_cash_flows, _warn_unowned_fund_documents,
 
 # The loader's tests name these through `load`.
 from captable import _fmv_as_of, _held_market_value  # noqa: F401
-from common import _read_transactions_csv  # noqa: F401
+from common import _flow_at, _insert_cash_flow, _read_transactions_csv  # noqa: F401
 from exercises import _parse_exercise_xlsx  # noqa: F401
 from fund_documents import (  # noqa: F401
     K1_GENERATION, _document_pdf, _parse_notice, _parse_statement_flows,

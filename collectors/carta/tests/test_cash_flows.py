@@ -11,6 +11,8 @@ holdings or figures.
 from __future__ import annotations
 
 import json
+import shutil
+import sqlite3
 from pathlib import Path
 
 import fund_documents
@@ -650,3 +652,53 @@ def test_a_row_with_only_a_uuid_names_its_blob_by_the_uuid(migrated, tmp_path):
     assert migrated.execute(
         "SELECT doc_id, uuid, file_size, bronze_path FROM documents").fetchall() == [
             ("u-0001", "u-0001", 19, "20990101T000000Z/documents/doc_u-0001.pdf")]
+
+
+# ============================================================
+# flow_at: the flow date as unix seconds (migration 0007)
+# ============================================================
+
+# Each shape a flow date takes, and the near misses of each.
+_FLOW_DATES = [
+    "06/15/2098", "2099-06-30", "02/29/2096", "2096-02-29", "2000-02-29",
+    "0000-01-01", "9999-12-31", "12/31/1969", "01/01/1970",
+    "02/29/2098", "2100-02-29", "02/30/2098", "13/01/2098", "00/10/2098",
+    "2098-00-10", "2098-01-00", "2098-1-05", "6/15/2098", " 2098-01-05",
+    "2098-01-05 ", "2098/01/05", "06-15-2098", "2098-01-05T00:00:00",
+    "June 15, 2098", "", "٢٠٩٨-01-05", None]
+
+
+def test_flow_at_is_the_day_at_utc_midnight():
+    assert load._flow_at("06/15/2098") == load._date_ts("06/15/2098")
+    assert load._flow_at("2099-06-30") == load._date_ts("2099-06-30")
+    assert load._flow_at("01/01/1970") == 0
+    assert load._flow_at("0000-01-01") == -62167219200
+    for raw in ("02/30/2098", "2098-1-05", " 2098-01-05", "June 15, 2098", None):
+        assert load._flow_at(raw) is None, raw
+
+
+def test_migration_0007_backfills_flow_at_by_the_loaders_rule(tmp_path):
+    older = tmp_path / "migrations"
+    older.mkdir()
+    for f in MIGRATIONS_DIR.glob("000[1-6]_*.sql"):
+        shutil.copy(f, older)
+    c = sqlite3.connect(":memory:")
+    silver.apply_migrations(c, older)
+    c.executemany(
+        "INSERT INTO cash_flows (cash_flow_external_id, entity_external_id, "
+        "snapshot_at, kind, flow_date, payload) VALUES (?, 7, 0, 'exit', ?, '{}')",
+        [(f"cf{i}", raw) for i, raw in enumerate(_FLOW_DATES)])
+    c.commit()
+    silver.apply_migrations(c, MIGRATIONS_DIR)
+    got = dict(c.execute("SELECT flow_date, flow_at FROM cash_flows "
+                         "WHERE flow_date IS NOT NULL"))
+    assert got == {raw: load._flow_at(raw) for raw in _FLOW_DATES
+                   if raw is not None}
+    assert sum(v is not None for v in got.values()) == 9
+
+
+def test_the_loader_writes_flow_at(migrated):
+    load._insert_cash_flow(migrated, "exit:7", 7, 0, "exit", "2099-06-30",
+                           0.0, 10.0, 0.0, "acquisition / exit")
+    assert migrated.execute("SELECT flow_at FROM cash_flows").fetchone() == (
+        load._date_ts("2099-06-30"),)
