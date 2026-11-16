@@ -114,17 +114,12 @@ func cmdWebMaterialize(ctx context.Context, g globalFlags, _ []string, _ io.Read
 		return err
 	}
 
-	inceptionOv, exclude, hide, policyOv, matching := returnsCfgSettings(cfg)
 	// One computed_at for every phase that stamps it.
 	p := gold.MaterializeParams{
-		ToEpoch:            key.AsOf,
-		ComputedAt:         time.Now().Unix(),
-		InceptionOverrides: inceptionOv,
-		ReturnsExclude:     exclude,
-		ReturnsHide:        hide,
-		PolicyOverrides:    policyOv,
-		TransferMatching:   matching,
-		CashflowLookback:   cfg.CashflowLookback(),
+		ToEpoch:          key.AsOf,
+		ComputedAt:       time.Now().Unix(),
+		ReturnsSettings:  returnsCfgSettings(cfg),
+		CashflowLookback: cfg.CashflowLookback(),
 	}
 	if err := runMaterializePhases(ctx, stderr, db, p, webMaterializePhases); err != nil {
 		return err

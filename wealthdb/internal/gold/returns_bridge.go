@@ -188,11 +188,11 @@ func computeBridge(in bridgeInput, p ReturnParams) []BridgeRow {
 }
 
 // bridgeRunParams is p as the since-inception global run the months come
-// from: the run `returns global` makes with its default settings.
+// from: the default run, its rates by time and never annualized.
 func bridgeRunParams(p ReturnParams) ReturnParams {
-	p.Level, p.FromEpoch, p.Method, p.Period, p.Annualize = grainGlobal.name, 0, "twr", "monthly", "never"
-	p.Netting, p.Inception = true, "full"
-	return p
+	run := p.defaultRun(grainGlobal.name, "monthly", p.OutCcy, 0, p.ToEpoch)
+	run.Method, run.Annualize = "twr", "never"
+	return run
 }
 
 // months computes the history's months from one since-inception run of the
@@ -469,10 +469,8 @@ func computeMaterialBridge(ctx context.Context, db *sql.DB, datasets map[string]
 		if err != nil {
 			return nil, err
 		}
-		out[ccy] = computeBridge(bridgeInput{ds: datasets[ccy], debts: debts, rates: rates}, ReturnParams{
-			ToEpoch: p.ToEpoch, OutCcy: ccy, Period: "monthly",
-			InceptionOverrides: p.InceptionOverrides, ReturnsExclude: p.ReturnsExclude, ReturnsHide: p.ReturnsHide,
-		})
+		out[ccy] = computeBridge(bridgeInput{ds: datasets[ccy], debts: debts, rates: rates},
+			p.defaultRun(grainGlobal.name, "monthly", ccy, 0, p.ToEpoch))
 	}
 	return out, nil
 }

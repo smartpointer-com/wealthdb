@@ -258,10 +258,8 @@ func (l feeLine) newEntity(portfolioNames map[string]string, ds *returnsDataset)
 func feeMonths(ds *returnsDataset, p ReturnParams) map[string][]ReturnRow {
 	out := map[string][]ReturnRow{}
 	for _, g := range []*grain{grainPortfolios, grainAccounts} {
-		w := p
-		w.Level, w.Method, w.Period, w.Annualize = g.name, "twr", "monthly", "auto"
-		w.Netting, w.Inception = true, "full"
-		w.FromEpoch, w.ToEpoch = 0, ds.globalMax*SecondsPerDay
+		w := p.defaultRun(g.name, "monthly", p.OutCcy, 0, ds.globalMax*SecondsPerDay)
+		w.Method = "twr"
 		for _, r := range computeReturns(ds, w) {
 			if !r.IsSummary {
 				key := acctKey(r.SilverSourceID, g.entity+"\x00"+r.EntityID)

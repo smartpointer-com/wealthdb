@@ -218,7 +218,7 @@ func transferMatching(cfg *config.Config) (*config.ReturnsTransferMatching, stri
 // withReturnsCfg is p with the config's returns settings
 // (returnsCfgSettings), so every report runner applies the same ones.
 func withReturnsCfg(cfg *config.Config, p gold.ReturnParams) gold.ReturnParams {
-	p.InceptionOverrides, p.ReturnsExclude, p.ReturnsHide, p.PolicyOverrides, p.TransferMatching = returnsCfgSettings(cfg)
+	p.ReturnsSettings = returnsCfgSettings(cfg)
 	return p
 }
 
@@ -226,25 +226,22 @@ func withReturnsCfg(cfg *config.Config, p gold.ReturnParams) gold.ReturnParams {
 // hide, policy-override, and transfer-matching settings from wealthdb.cfg.
 // Shared by `returns` and the hidden `web-materialize` so a materialized
 // partition carries exactly the settings a CLI run applies.
-func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.ReturnsExclude, *gold.ReturnsHide, map[string]gold.ReturnsPolicyOverride, *gold.TransferMatching) {
-	var inceptionOv *gold.InceptionOverrides
+func returnsCfgSettings(cfg *config.Config) gold.ReturnsSettings {
+	var s gold.ReturnsSettings
 	if cfg.InceptionOverrides != nil {
-		s, p, a := cfg.InceptionOverrides.Epochs()
-		inceptionOv = &gold.InceptionOverrides{Sources: s, Portfolios: p, Accounts: a}
+		src, pf, ac := cfg.InceptionOverrides.Epochs()
+		s.InceptionOverrides = &gold.InceptionOverrides{Sources: src, Portfolios: pf, Accounts: ac}
 	}
-	var exclude *gold.ReturnsExclude
 	if cfg.ReturnsExclude != nil {
 		pf, ac := cfg.ReturnsExclude.Sets()
-		exclude = &gold.ReturnsExclude{Portfolios: pf, Accounts: ac}
+		s.ReturnsExclude = &gold.ReturnsExclude{Portfolios: pf, Accounts: ac}
 	}
-	var hide *gold.ReturnsHide
 	if cfg.ReturnsHide != nil {
 		pf, ac := cfg.ReturnsHide.Sets()
-		hide = &gold.ReturnsHide{Portfolios: pf, Accounts: ac}
+		s.ReturnsHide = &gold.ReturnsHide{Portfolios: pf, Accounts: ac}
 	}
-	var policyOv map[string]gold.ReturnsPolicyOverride
 	if len(cfg.ReturnsPolicyOverrides) > 0 {
-		policyOv = make(map[string]gold.ReturnsPolicyOverride, len(cfg.ReturnsPolicyOverrides))
+		policyOv := make(map[string]gold.ReturnsPolicyOverride, len(cfg.ReturnsPolicyOverrides))
 		for id, ov := range cfg.ReturnsPolicyOverrides {
 			if ov == nil {
 				continue
@@ -258,19 +255,19 @@ func returnsCfgSettings(cfg *config.Config) (*gold.InceptionOverrides, *gold.Ret
 			}
 			policyOv[id] = g
 		}
+		s.PolicyOverrides = policyOv
 	}
-	var matching *gold.TransferMatching
 	if m, ledger := transferMatching(cfg); m != nil {
 		// A malformed ledger overrides nothing here rather than taking down
 		// a returns run: `load` and `categorize` both read the same file and
 		// both fail loudly on it, so the error is reported where it can be
 		// acted on, and this read cannot be the first to see it in practice.
 		overrideRules, _ := gold.ParseTransferOverrideLedger(ledger)
-		matching = &gold.TransferMatching{
+		s.TransferMatching = &gold.TransferMatching{
 			WindowDays: m.Window(), TolerancePct: m.Tolerance(), Rules: overrideRules,
 		}
 	}
-	return inceptionOv, exclude, hide, policyOv, matching
+	return s
 }
 
 // parseReturnsWindow defaults a bare invocation to since-inception → today

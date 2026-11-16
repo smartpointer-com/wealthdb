@@ -75,10 +75,7 @@ func benchmarksInCurrency(benchmarks []*Benchmark, ccy string, ds *returnsDatase
 			if year > 0 {
 				from = time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
 			}
-			row, w := benchmarkTotal(windows, b, ReturnParams{
-				FromEpoch: from, ToEpoch: p.ToEpoch, OutCcy: ccy, Annualize: "auto", Netting: true, Inception: "full",
-				InceptionOverrides: p.InceptionOverrides, ReturnsExclude: p.ReturnsExclude, ReturnsHide: p.ReturnsHide,
-			}, year)
+			row, w := benchmarkTotal(windows, b, p.defaultRun(grainGlobal.name, "total", ccy, from, p.ToEpoch), year)
 			if row.EndDay > 0 {
 				out.returns = append(out.returns, row)
 			}

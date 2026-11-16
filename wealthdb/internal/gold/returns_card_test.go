@@ -212,7 +212,7 @@ func TestMaterializeReturnsCardInvisible(t *testing.T) {
 	withCard, cctx := openMigrated(t)
 	seedCardFixture(t, withCard, cctx, true)
 
-	mp := MaterializeParams{ToEpoch: end, ComputedAt: 1000, TransferMatching: cardTestMatching}
+	mp := MaterializeParams{ToEpoch: end, ComputedAt: 1000, ReturnsSettings: ReturnsSettings{TransferMatching: cardTestMatching}}
 	nBase, err := MaterializeReturns(bctx, base, mp)
 	if err != nil {
 		t.Fatalf("materialize baseline: %v", err)

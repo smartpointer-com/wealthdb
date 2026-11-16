@@ -58,7 +58,7 @@ func TestLoadFlowTransactionsMatchesTransactionsBetween(t *testing.T) {
 			if l.src != w.SilverSourceID || l.acct != w.AccountExternalID ||
 				l.occurredAt != w.OccurredAt || l.kind != w.Kind ||
 				l.ccy != w.Currency || l.txID != w.TransactionExternalID ||
-				!strEq(l.valueOut, w.ValueOutCcy) {
+				!strEq(l.values[0], w.ValueOutCcy) {
 				t.Errorf("%s row %d differs:\n wide %+v\n lean %+v", outCcy, i, w, l)
 			}
 		}

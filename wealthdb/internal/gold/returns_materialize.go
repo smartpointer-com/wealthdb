@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
 // materializeCurrencies is the output-currency set report_returns carries —
@@ -47,18 +45,14 @@ var (
 // it, and each reads the fields it needs. ToEpoch is the window end
 // (Unix seconds; inception → ToEpoch, the CLI's default window);
 // ComputedAt is stamped on every row so readers can tell how fresh the
-// run is. The returns fields carry the same wealthdb.cfg returns
-// settings a CLI run applies (returnsCfgSettings). CashflowLookback is
+// run is. ReturnsSettings are the same wealthdb.cfg returns settings a
+// CLI run applies (returnsCfgSettings). CashflowLookback is
 // the cash flow projection's look-back in months (MaterializeYield).
 type MaterializeParams struct {
-	ToEpoch            int64
-	ComputedAt         int64
-	InceptionOverrides *InceptionOverrides
-	ReturnsExclude     *ReturnsExclude
-	ReturnsHide        *ReturnsHide
-	PolicyOverrides    map[string]ReturnsPolicyOverride
-	TransferMatching   *TransferMatching
-	CashflowLookback   int
+	ToEpoch    int64
+	ComputedAt int64
+	ReturnsSettings
+	CashflowLookback int
 }
 
 // beginTx begins a transaction of db and returns the function that
@@ -132,7 +126,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 	if err != nil {
 		return 0, fmt.Errorf("MaterializeReturns fx: %w", err)
 	}
-	datasets, err := loadReturnsDatasetsMulti(ctx, db, fx, p.PolicyOverrides, p.TransferMatching)
+	datasets, err := loadReturnsDatasets(ctx, db, everyCurrency(), fx, p.ReturnsSettings)
 	if err != nil {
 		return 0, err
 	}
@@ -144,14 +138,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 		ds := datasets[ccy]
 		for _, grain := range materializeGrains {
 			for _, period := range materializePeriods {
-				rows := computeReturns(ds, ReturnParams{
-					Level: grain, FromEpoch: 0, ToEpoch: p.ToEpoch, OutCcy: ccy,
-					Method: "both", Period: period, Annualize: "auto",
-					Netting: true, Inception: "full",
-					InceptionOverrides: p.InceptionOverrides,
-					ReturnsExclude:     p.ReturnsExclude,
-					ReturnsHide:        p.ReturnsHide,
-				})
+				rows := computeReturns(ds, p.defaultRun(grain, period, ccy, 0, p.ToEpoch))
 				parts = append(parts, returnsPartition{grain: grain, granularity: period, currency: ccy, rows: rows})
 			}
 		}
@@ -167,14 +154,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 		for _, grain := range materializeGrains {
 			for y := minYear; y <= maxYear; y++ {
 				from := time.Date(y, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
-				rows := computeReturns(ds, ReturnParams{
-					Level: grain, FromEpoch: from, ToEpoch: p.ToEpoch, OutCcy: ccy,
-					Method: "both", Period: "total", Annualize: "auto",
-					Netting: true, Inception: "full",
-					InceptionOverrides: p.InceptionOverrides,
-					ReturnsExclude:     p.ReturnsExclude,
-					ReturnsHide:        p.ReturnsHide,
-				})
+				rows := computeReturns(ds, p.defaultRun(grain, "total", ccy, from, p.ToEpoch))
 				parts = append(parts, returnsPartition{grain: grain, granularity: "total", currency: ccy, windowFromYear: y, rows: rows})
 			}
 		}
@@ -280,173 +260,23 @@ func datasetYearRange(datasets map[string]*returnsDataset, toEpoch int64) (int, 
 }
 
 // loadReturnsDatasetsMulti loads every materialized currency's dataset in a
-// single pass over each `_multi` macro: one scan of
+// single pass over each `_multi` macro (loadReturnsDatasets): one scan of
 // report_accounts_history_multi for the daily value spines and one of
 // report_transactions_multi for the flows, versus one scan per currency of
-// each. Currency-independent inputs (snapshot days, source kinds, portfolio
-// names, fx) are read once and shared. The per-currency result is
-// bit-identical to loadReturnsDataset(ccy).
+// each. The per-currency result is bit-identical to loadReturnsDataset(ccy).
 func loadReturnsDatasetsMulti(ctx context.Context, db *sql.DB, fx fxBounds, ov map[string]ReturnsPolicyOverride, tm *TransferMatching) (map[string]*returnsDataset, error) {
-	kinds, err := SourceKinds(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	pfNames, err := loadPortfolioNames(ctx, db)
-	if err != nil {
-		return nil, err
-	}
+	return loadReturnsDatasets(ctx, db, everyCurrency(), fx, ReturnsSettings{PolicyOverrides: ov, TransferMatching: tm})
+}
 
-	byCcy := make(map[string]map[string]*accountData, len(materializeCurrencies))
-	holdings := make(map[string]*holdingsSpine, len(materializeCurrencies))
-	for _, ccy := range materializeCurrencies {
-		byCcy[ccy] = map[string]*accountData{}
-		holdings[ccy] = newHoldingsSpine()
-	}
-
-	// The daily value spine in every currency at once. The row set is
-	// currency-independent (shared spine); only the value columns and their
-	// NULL-ness differ per currency, so appendSeries' skip-if-NULL reproduces
-	// each single-currency series exactly.
-	rows, err := db.QueryContext(ctx,
-		`SELECT as_of_day, silver_source_id, account_external_id, account_kind,
-		        display_name, base_currency, portfolio_external_id, `+multiColumns("total_value")+`
+// everyCurrency reads the `_multi` macros, in every materialized currency.
+func everyCurrency() spineSource {
+	return spineSource{currencies: materializeCurrencies, op: "MaterializeReturns",
+		history: `SELECT as_of_day, silver_source_id, account_external_id, account_kind,
+		        display_name, base_currency, portfolio_external_id, ` + multiColumns("total_value") + `
 		   FROM report_accounts_history_multi()
-		  ORDER BY silver_source_id, account_external_id, as_of_day`)
-	if err != nil {
-		return nil, fmt.Errorf("MaterializeReturns history: %w", err)
-	}
-	var (
-		asOf            int64
-		src, acct, kind string
-		label, base, pf sql.NullString
-	)
-	tots := make([]sql.NullString, len(materializeCurrencies))
-	dest := []any{&asOf, &src, &acct, &kind, &label, &base, &pf}
-	for i := range tots {
-		dest = append(dest, &tots[i])
-	}
-	for rows.Next() {
-		if err := rows.Scan(dest...); err != nil {
-			_ = rows.Close()
-			return nil, fmt.Errorf("MaterializeReturns history scan: %w", err)
-		}
-		day := EpochDay(asOf)
-		for i, ccy := range materializeCurrencies {
-			appendSeries(byCcy[ccy], holdings[ccy], kinds, pfNames, ov, src, acct, kind, label, base, pf, day, tots[i])
-		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-
-	// Snapshot days are currency-independent: one scan, distributed to every
-	// currency's map.
-	maps := make([]map[string]*accountData, 0, len(materializeCurrencies))
-	for _, ccy := range materializeCurrencies {
-		maps = append(maps, byCcy[ccy])
-	}
-	if err := loadSnapshotDays(ctx, db, maps...); err != nil {
-		return nil, err
-	}
-
-	// Flows in every currency at once, distributed per currency exactly as
-	// attachFlows would for each.
-	txns, err := loadTransactionsMulti(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	// Transfer-match candidates are collected per currency (the attached
-	// universe can differ where FX is unresolved) but carry NATIVE amounts, so
-	// every partition derives the same pairings for the legs it holds.
-	cands := map[string][]crossCandidate{}
-	collect := func(ccy string, attached bool, t txnMultiRow) {
-		if attached && tm != nil {
-			cands[ccy] = appendCrossCandidate(cands[ccy], t.src, t.acct, t.txID, t.ccy, t.occurredAt, t.netAmt)
-		}
-	}
-	for _, t := range txns {
-		for i, ccy := range materializeCurrencies {
-			collect(ccy, attachOneFlow(byCcy[ccy], fx, ccy, t.src, t.acct, t.kind, t.occurredAt, t.txID, t.ccy, t.vals[i], t.returnsInternal), t)
-		}
-	}
-	for _, ccy := range materializeCurrencies {
-		matchCrossTransfers(cands[ccy], tm, byCcy[ccy])
-	}
-
-	out := make(map[string]*returnsDataset, len(materializeCurrencies))
-	for _, ccy := range materializeCurrencies {
-		ds := &returnsDataset{accts: byCcy[ccy], holdings: holdings[ccy], fx: fx}
-		ds.finalize()
-		out[ccy] = ds
-	}
-	for ccy, ds := range out {
-		if dec := out[residueCurrency]; dec != nil && ccy != residueCurrency {
-			linkResidueTwins(ds, dec)
-		}
-	}
-	return out, nil
-}
-
-// txnMultiRow is one transaction with its net amount converted to every
-// materialized currency in a single pass (report_transactions_multi), for the
-// multi-currency flow loader. Only the fields attachOneFlow and the transfer
-// matcher read are carried.
-type txnMultiRow struct {
-	src, acct, txID, ccy string
-	kind                 canonical.TxKind
-	occurredAt           int64
-	vals                 []*string // in materializeCurrencies order
-	netAmt               *string   // native-currency net amount (transfer matching)
-	// returnsInternal: the adapter's conduit verdict, as in flowTxnRow.
-	returnsInternal bool
-}
-
-// loadTransactionsMulti loads every transaction once with its net amount in
-// every materialized currency, ordered like report_transactions so
-// per-currency flow append order matches the single-currency attachFlows.
-func loadTransactionsMulti(ctx context.Context, db *sql.DB) ([]txnMultiRow, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
-		        r.currency, r.transaction_external_id, `+multiColumns("r.value")+`,
-		        CAST(r.net_amount AS VARCHAR),
-		        COALESCE(t.payload ->> '`+canonical.PayloadReturnsFlow+`' = 'internal', FALSE) AS returns_internal
-		   FROM report_transactions_multi(?, ?) r
-		   LEFT JOIN transactions t
-		          ON t.silver_source_id        = r.silver_source_id
-		         AND t.transaction_external_id = r.transaction_external_id
-		  ORDER BY r.occurred_at, r.silver_source_id, r.transaction_external_id`, int64(0), MaxEpoch)
-	if err != nil {
-		return nil, fmt.Errorf("MaterializeReturns transactions: %w", err)
-	}
-	defer rows.Close()
-	var (
-		out    []txnMultiRow
-		cur    txnMultiRow
-		kind   string
-		netAmt sql.NullString
-	)
-	vals := make([]sql.NullString, len(materializeCurrencies))
-	dest := []any{&cur.src, &cur.acct, &cur.occurredAt, &kind, &cur.ccy, &cur.txID}
-	for i := range vals {
-		dest = append(dest, &vals[i])
-	}
-	dest = append(dest, &netAmt, &cur.returnsInternal)
-	for rows.Next() {
-		if err := rows.Scan(dest...); err != nil {
-			return nil, fmt.Errorf("MaterializeReturns transactions scan: %w", err)
-		}
-		r := cur
-		r.kind = canonical.TxKind(kind)
-		r.vals = make([]*string, len(vals))
-		for i, v := range vals {
-			r.vals[i] = nullStringToPtr(v)
-		}
-		r.netAmt = nullStringToPtr(netAmt)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+		  ORDER BY silver_source_id, account_external_id, as_of_day`,
+		transactions: `SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
+		        r.currency, r.transaction_external_id, ` + multiColumns("r.value") + `,
+		        CAST(r.net_amount AS VARCHAR)` + fmt.Sprintf(flowTxnJoin, "report_transactions_multi(?, ?)"),
+		transactionsArgs: []any{int64(0), MaxEpoch}, decimal: nullStringToPtr}
 }
