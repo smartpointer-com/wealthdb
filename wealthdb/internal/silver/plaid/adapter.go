@@ -11,7 +11,7 @@
 // dump_runs.snapshot_at: gold reads a source's current state from its
 // single latest snapshot time. Each run restates every account, and each
 // run that read the holdings restates every holding. Only a run that read
-// the holdings, or found none to read, carries snapshots (snapshots.go),
+// the holdings, or found none to read, carries snapshots (runs.go),
 // so no fact goes missing from that instant.
 //
 // The source has no change feed. A loaded run is the trigger, and a full
