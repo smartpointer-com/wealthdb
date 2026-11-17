@@ -9,9 +9,10 @@ SQLite database defined by `migrations/`.
 Load semantics
 --------------
 - Bronze dumps are identified by their `YYYYMMDDTHHMMSSZ` subdir
-  names. Each dump is loaded atomically (one transaction); on
-  failure the partial dump is rolled back and the loader can retry
-  on the next run.
+  names. Each dump is loaded atomically (one transaction). A dump that
+  fails is rolled back and logged, the later dumps still load, and the
+  load exits non-zero. The next load runs the failed dump again; it
+  adds the rows silver lacks and overwrites no row a newer dump wrote.
 - A dump is loaded when its run.json status is `complete` or `partial`
   (a `download --only` pass), or when it is a statusless legacy
   manifest; any other dump is skipped (see `skip_reason`).
@@ -345,6 +346,27 @@ def portfolio_external_id_from_full(full: str | None) -> str | None:
 def normalize_payload(data: dict) -> str:
     """Canonical JSON for embedding in payload columns."""
     return json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+
+
+# A dump that failed to load is loaded again by a later load, after dumps
+# newer than it. It then adds the rows silver lacks and leaves every row a
+# newer dump wrote as that dump wrote it: a table that stamps the dump that
+# wrote a row compares the stamps (`_written_by_a_newer_dump`, and the
+# `WHERE` of the `transactions` upserts); the card ledger, whose stamp is
+# the first dump that saw a row, updates no row once a newer dump is
+# loaded.
+_NEWER_DUMP_LOADED = ("EXISTS (SELECT 1 FROM dump_runs "
+                      "WHERE dump_runs.snapshot_at > excluded.snapshot_at)")
+
+
+def _written_by_a_newer_dump(conn: sqlite3.Connection, table: str,
+                             key: dict, snapshot_at: int) -> bool:
+    """Whether `table` holds the row `key` names, stamped by a dump newer
+    than `snapshot_at`."""
+    where = " AND ".join(f"{col} = ?" for col in key)
+    return conn.execute(
+        f"SELECT 1 FROM {table} WHERE {where} AND snapshot_at > ?",
+        (*key.values(), snapshot_at)).fetchone() is not None
 
 
 # ============================================================
@@ -932,6 +954,10 @@ def _ingest_portfolio_txn_row(conn: sqlite3.Connection, snapshot_at: int,
     if not account or value_date is None or not booking_type:
         return 0
     txn_id = portfolio_txn_id(account, row)
+    if _written_by_a_newer_dump(conn, "portfolio_transactions", {
+            "transaction_external_id": txn_id,
+            "safekeeping_account_external_id": account}, snapshot_at):
+        return 0
     # The same booking is published under every scope that covers it, so
     # a consolidated copy arrives keyed identically to the real
     # portfolio's own. Whichever lands second would otherwise win and
@@ -1205,12 +1231,15 @@ _TXN_INSERT = (
     ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
     "ON CONFLICT(transaction_external_id, account_external_id) "
 )
+# The condition of the eras that update: no dump older than the row's
+# writer overwrites it.
+_TXN_NOT_OLDER = "WHERE excluded.snapshot_at >= transactions.snapshot_at"
 
 
 def _upsert_export_transaction(conn: sqlite3.Connection, snapshot_at: int,
                                txn_id: str, row: dict) -> None:
     """Write one parsed export row under the id `_assign_export_txn_ids`
-    gave it."""
+    gave it. A row a newer dump wrote stays as it is."""
     conn.execute(
         _TXN_INSERT +
         "DO UPDATE SET "
@@ -1223,7 +1252,8 @@ def _upsert_export_transaction(conn: sqlite3.Connection, snapshot_at: int,
         "amount_credit = excluded.amount_credit, "
         "counterparty = excluded.counterparty, "
         "description_kind = excluded.description_kind, "
-        "payload = excluded.payload",
+        "payload = excluded.payload "
+        + _TXN_NOT_OLDER,
         (
             txn_id, row["account_external_id"], snapshot_at,
             row["trade_date"], row["booking_date"], row["value_date"],
@@ -1479,7 +1509,9 @@ def _insert_card_transactions(conn: sqlite3.Connection, snapshot_at: int,
 
     `snapshot_at` is deliberately left out of the update clause: the
     column means "the dump that first captured this row", and a later
-    dump re-observing it must not rewrite that.
+    dump re-observing it must not rewrite that. So it cannot tell which
+    dump wrote a row last, and a dump loaded after a newer one updates
+    none.
     """
     for row in rows:
         conn.execute(
@@ -1503,7 +1535,8 @@ def _insert_card_transactions(conn: sqlite3.Connection, snapshot_at: int,
             "merchant_group_code=excluded.merchant_group_code, "
             "card_number=excluded.card_number, "
             "settled_in_invoice=excluded.settled_in_invoice, "
-            "payload=excluded.payload",
+            "payload=excluded.payload "
+            f"WHERE NOT {_NEWER_DUMP_LOADED}",
             (row["transaction_external_id"], row["account_external_id"],
              snapshot_at, row["transaction_date"], row["value_date"],
              row["amount"], row["currency_iso"], row["original_amount"],
@@ -1541,6 +1574,10 @@ def _insert_card_invoices(conn: sqlite3.Connection, snapshot_at: int,
     count = 0
     for rows in invoices.values():
         for row in rows:
+            if _written_by_a_newer_dump(conn, "card_invoices", {
+                    "account_external_id": row["account_external_id"],
+                    "period_end": row["period_end"]}, snapshot_at):
+                continue
             conn.execute(
                 "INSERT OR REPLACE INTO card_invoices ("
                 "account_external_id, period_end, period_start, "
@@ -1586,6 +1623,9 @@ def _insert_card_statements(conn: sqlite3.Connection, snapshot_at: int,
         if meta is None:
             log.warning("card statement %s… has no invoice attribution; "
                         "not indexed", pdf.name[:12])
+            continue
+        if _written_by_a_newer_dump(conn, "card_statements",
+                                    {"content_sha256": pdf.stem}, snapshot_at):
             continue
         conn.execute(
             "INSERT OR REPLACE INTO card_statements ("
@@ -2303,7 +2343,8 @@ def _insert_hist_transactions(conn: sqlite3.Connection, snapshot_at: int,
                 "amount_credit = excluded.amount_credit, "
                 "counterparty = excluded.counterparty, "
                 "description_kind = excluded.description_kind, "
-                "payload = excluded.payload",
+                "payload = excluded.payload "
+                + _TXN_NOT_OLDER,
                 (
                     txn_id, account, snapshot_at,
                     None,  # trade_date: no statement equivalent
@@ -2511,10 +2552,11 @@ def _parse_doc_label(label: str) -> tuple[str | None, int | None]:
 
 def _derive_documents_without_a_new_dump(
         conn: sqlite3.Connection, dumps: list[Path], parses: DocumentParses,
-        *, supplied: int = 0) -> None:
+        *, supplied: int = 0) -> bool:
     """Derive the document-backed slice when no dump loaded this run
     walked the archive — because the PARSERS have changed, or because a
-    supplied document was indexed this run.
+    supplied document was indexed this run. Returns False when the derive
+    failed (it is rolled back and logged), else True.
 
     The archive walk lives inside the per-dump load, because a dump is
     what indexes its own PDFs. What the walk DERIVES, though, is the
@@ -2539,11 +2581,11 @@ def _derive_documents_without_a_new_dump(
     """
     newest = next((d for d in reversed(dumps) if (d / "documents").is_dir()), None)
     if newest is None:
-        return
+        return True
     stale = silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
                                     _document_generation())
     if not stale and not supplied:
-        return
+        return True
     log.info("%s and no loaded dump walked the archive; deriving it "
              "against %s",
              "the document parsers have changed" if stale
@@ -2558,9 +2600,10 @@ def _derive_documents_without_a_new_dump(
     except Exception:  # noqa: BLE001 — log + rollback, as the dump loop does
         conn.execute("ROLLBACK")
         log.exception("re-deriving the document archive failed")
-        return
+        return False
     log.info("re-derived from documents: positions=%d cash_balances=%d "
              "mortgages=%d transactions=%d", pos, cash, mort, txn)
+    return True
 
 
 def main(argv: list[str]) -> int:
@@ -2587,6 +2630,7 @@ def main(argv: list[str]) -> int:
     # supplied rows — which is what makes a `--force` rebuild pick them up
     # with no special handling. Its own transaction: an index of files on
     # disk should survive a dump that fails to load.
+    failed = 0
     try:
         conn.execute("BEGIN")
         n_supplied = _load_supplied_documents(conn, args.supplied_documents_dir)
@@ -2595,6 +2639,7 @@ def main(argv: list[str]) -> int:
         conn.execute("ROLLBACK")
         log.exception("indexing the supplied documents failed")
         n_supplied = 0
+        failed += 1
 
     n_loaded = n_skipped = 0
     # Whether a loaded dump ran the archive walk, which only a dump with
@@ -2624,13 +2669,19 @@ def main(argv: list[str]) -> int:
         except Exception:  # noqa: BLE001 — log + rollback + continue
             conn.execute("ROLLBACK")
             log.exception("load failed for %s; skipped", dump_dir.name)
-    if not walked:
-        _derive_documents_without_a_new_dump(conn, dumps, parses,
-                                             supplied=n_supplied)
+            failed += 1
+    if not walked and not _derive_documents_without_a_new_dump(
+            conn, dumps, parses, supplied=n_supplied):
+        failed += 1
     parses.close()
     conn.close()
     log.info("done: %d dumps loaded, %d already-loaded skipped",
              n_loaded, n_skipped)
+    if failed:
+        # The failed passes were rolled back and run again at the next
+        # load, which leaves every row a newer dump wrote as it is.
+        log.error("%d pass(es) failed; the next load runs them again", failed)
+        return 1
     return 0
 
 

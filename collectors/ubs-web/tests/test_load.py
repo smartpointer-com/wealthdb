@@ -1831,3 +1831,73 @@ def test_runs_loaded_one_at_a_time_build_the_silver_of_one_rebuild(tmp_path):
         lambda db, bronze_dir: ["--silver-db", str(db),
                                 "--bronze-dir", str(bronze_dir)],
         bronze_fixture.write_runs(tmp_path / "runs"), tmp_path / "work")
+
+
+# ============================================================
+# A dump that fails to load
+# ============================================================
+#
+# The load carries on with the later dumps, so the failed one is loaded
+# again by the next load, after dumps newer than it.
+
+def _export_dump(root: Path, slug: str, name: str) -> Path:
+    dump = root / slug
+    (dump / "transactions").mkdir(parents=True)
+    (dump / "transactions" / "cash_x.csv").write_text(_txn_csv([
+        _txn_row("07-12", "", "100.00", "100.00", "GZ00000YQ0000009", name,
+                 "Credit")]), encoding="utf-8")
+    (dump / "run.json").write_text('{"status": "complete"}')
+    return dump
+
+
+def test_a_failed_dump_fails_the_load_and_its_retry_keeps_newer_rows(
+        tmp_path, monkeypatch):
+    # The bank restated the booking's text between the two exports.
+    root = tmp_path / "bronze"
+    older = _export_dump(root, "20980101T000000Z", "Example Old Name")
+    newer = _export_dump(root, "20980102T000000Z", "Example New Name")
+    argv = ["--silver-db", str(tmp_path / "ubs-web.db"),
+            "--bronze-dir", str(root)]
+    real = loader._load_rates
+
+    def fails_once(conn, snapshot_at, dump_dir):
+        if dump_dir == older:
+            raise RuntimeError("synthetic failure")
+        return real(conn, snapshot_at, dump_dir)
+
+    monkeypatch.setattr(loader, "_load_rates", fails_once)
+    assert loader.main(argv) == 1
+    monkeypatch.setattr(loader, "_load_rates", real)
+    assert loader.main(argv) == 0
+
+    conn = sqlite3.connect(tmp_path / "ubs-web.db")
+    (snapshot_at, payload), = conn.execute(
+        "SELECT snapshot_at, payload FROM transactions").fetchall()
+    loaded = [r[0] for r in conn.execute("SELECT snapshot_at FROM dump_runs")]
+    conn.close()
+    assert sorted(loaded) == [bronze.parse_run_ts(older.name),
+                              bronze.parse_run_ts(newer.name)]
+    assert snapshot_at == bronze.parse_run_ts(newer.name)
+    assert "Example New Name" in payload
+
+
+def test_a_dump_loaded_after_a_newer_one_updates_no_card_row(tmp_path):
+    # The card ledger stamps the dump that first saw a row, not the one
+    # that wrote it last, so the newer dump being loaded is what says so.
+    import test_card_load as cards
+    conn = fresh_db(tmp_path)
+    # The newer dump saw the purchase settled; the older one, pending.
+    for snapshot_at, settled in ((2000, True), (1000, False)):
+        conn.execute("INSERT INTO dump_runs (snapshot_at, "
+                     "silver_schema_version, run_dir) VALUES (?, 17, 'x')",
+                     (snapshot_at,))
+        dump = cards._write_bronze(
+            tmp_path / str(snapshot_at), roster=cards._roster(
+                cards._account_node()),
+            pages=[cards._page([cards._booked(
+                "ROW-1", "2026-01-05", "-42.50", settledInInvoice=settled)])])
+        loader._load_cards(conn, snapshot_at, dump)
+    assert [tuple(r) for r in conn.execute(
+        "SELECT snapshot_at, settled_in_invoice FROM card_transactions")] == [
+        (2000, 1)]
+    conn.close()
