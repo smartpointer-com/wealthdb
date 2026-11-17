@@ -1047,8 +1047,19 @@ sources, even turning a gain into a spurious loss. The windowed TWRs
 use the engine's snapshot-aligned chain, so the chart is correct and is
 built from the same figures the scalars and table show — at the cost
 of annual granularity (a finer curve would need per-month windows).
-The last point is the start of the current year, so the stretch from
-then to today is not drawn.
+Each line ends on its windows' last day with `TWR_since_Y0` itself, the
+figure the Return tile shows, so the stretch since the current year
+began is drawn too.
+
+The scalars follow the Source picker as far as the stored rows reach.
+With nothing picked they read the global grain; with one source picked,
+that source's row. Returns are kept per source and for the whole
+portfolio only, so several picked sources read no figure. The benchmark
+tables are kept for the whole household alone. So the figures and lines
+that set the benchmark against the household (Benchmark return (MWR),
+the three Excess tiles, the money-weighted and value charts) read no row
+while a source is picked, and hide. The benchmark's own return and
+annualized return stay, as no source changes them.
 
 **Gains** are materialized too, into `report_gains` (migration 0117),
 for a different reason. The gains figures are SQL (`gains_windows`), so

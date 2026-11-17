@@ -5161,21 +5161,72 @@ if duckdb is not None:
           _run("Return year to date (TWR)") == [(0.05, _year)] and _run("Return year to date (MWR)") == [(0.04, _year)]
           and _run("Return year to date (TWR)", currency="CHF") == [(0.03, _year)],
           (_run("Return year to date (TWR)"), _run("Return year to date (MWR)")))
-    check("'Return (MWR)' reads the global summary of the start year in the picked currency, and that figure alone",
-          _run("Return (MWR)", start_year=_year, currency=["CHF"]) == [(0.02,)]
-          and _run("Return (MWR)", start_year=_year - 1, currency=["USD"]) == [(0.10,)]
-          and _output_columns(sql_of(CARDS["Return (MWR)"][2])) == ["max"]
-          and "source_ff" not in CARDS["Return (MWR)"][2]["native"]["template-tags"],
-          _run("Return (MWR)", start_year=_year, currency=["CHF"]))
     _db.execute("DELETE FROM report_returns WHERE window_from_year = ? AND currency = 'USD'", [_year])
     check("...and last year's where no refresh has read this one yet",
           _run("Return year to date (TWR)") == [(0.20, _year - 1)], _run("Return year to date (TWR)"))
-    check("'Return (TWR)' reads the global summary of the start year in the picked currency, and that figure alone",
-          _run("Return (TWR)", start_year=_year - 1, currency=["USD"]) == [(0.20,)]
-          and _run("Return (TWR)", start_year=_year, currency=["CHF"]) == [(0.03,)]
-          and _output_columns(sql_of(CARDS["Return (TWR)"][2])) == ["max"]
-          and "source_ff" not in CARDS["Return (TWR)"][2]["native"]["template-tags"],
-          _run("Return (TWR)", start_year=_year - 1, currency=["USD"]))
+
+    # The Returns tiles and the cumulative line on a book of their own:
+    # the whole portfolio and two sources, windows since 2024 and 2025,
+    # all ending on 30 June 2025, and a benchmark over the same windows.
+    _rt = duckdb.connect()
+    _end = int(dt.datetime(2025, 6, 30, tzinfo=dt.timezone.utc).timestamp())
+    _rt.execute("CREATE TABLE report_returns (grain TEXT, granularity TEXT, is_summary BOOLEAN, currency TEXT,"
+                " silver_source_id TEXT, window_from_year INTEGER, end_day BIGINT, twr DOUBLE,"
+                " twr_annualized DOUBLE, mwr DOUBLE)")
+    _rt.executemany("INSERT INTO report_returns VALUES (?, 'total', TRUE, ?, ?, ?, ?, ?, ?, ?)", [
+        ("global", "USD", None, 2024, _end, 0.25, 0.12, 0.24), ("global", "CHF", None, 2024, _end, 0.20, 0.10, 0.19),
+        ("global", "USD", None, 2025, _end, 0.10, None, 0.09),
+        ("sources", "USD", "src-a", 2024, _end, -0.29, -0.16, -0.27),
+        ("sources", "USD", "src-b", 2024, _end, 0.40, 0.18, 0.41),
+        ("sources", "USD", "src-a", 2025, _end, -0.15, None, -0.13),
+        ("sources", "USD", "src-b", 2025, _end, 0.30, None, 0.31)])
+    _rt.execute("CREATE TABLE benchmark_returns (benchmark TEXT, currency TEXT, granularity TEXT,"
+                " window_from_year INTEGER, period TEXT, start_day BIGINT, end_day BIGINT, twr DOUBLE,"
+                " twr_annualized DOUBLE, excess DOUBLE, excess_annualized DOUBLE, mwr DOUBLE, portfolio_mwr DOUBLE,"
+                " quality TEXT)")
+    _rt.executemany("INSERT INTO benchmark_returns VALUES ('Mix', 'USD', 'total', ?, 'total', 0, ?, ?, NULL,"
+                    " 0.05, NULL, 0.2, 0.24, '')", [(2024, _end, 0.20), (2025, _end, 0.05)])
+    _rt.execute("CREATE TABLE benchmark_mwr (benchmark TEXT, currency TEXT, window_from_year INTEGER, series TEXT,"
+                " end_day BIGINT, value DOUBLE, mwr DOUBLE, quality TEXT)")
+    _rt.execute("INSERT INTO benchmark_mwr VALUES ('Mix', 'USD', 2024, 'portfolio', ?, 100, 0.1, '')", [_end])
+
+    def _rr(name, **values):
+        return _rt.execute(_render(CARDS[name][2], {"currency": ["USD"], "start_year": 2024, "benchmark": "Mix",
+                                                    **values})).fetchall()
+
+    check("a Return tile reads the whole portfolio with no source picked, in the picked currency",
+          _rr("Return (TWR)") == [(0.25,)] and _rr("Return (MWR)") == [(0.24,)]
+          and _rr("Annualized return (TWR)") == [(0.12,)]
+          and _rr("Return (TWR)", currency=["CHF"]) == [(0.20,)]
+          and _rr("Return (TWR)", start_year=2025) == [(0.10,)], _rr("Return (TWR)"))
+    check("...the picked source's with one source picked",
+          _rr("Return (TWR)", source_ff=["src-a"]) == [(-0.29,)] and _rr("Return (MWR)", source_ff=["src-a"]) == [(-0.27,)]
+          and _rr("Annualized return (TWR)", source_ff=["src-b"]) == [(0.18,)], _rr("Return (TWR)", source_ff=["src-a"]))
+    check("...and none with several picked, which no stored row answers",
+          _rr("Return (TWR)", source_ff=["src-a", "src-b"]) == [(None,)], _rr("Return (TWR)", source_ff=["src-a", "src-b"]))
+    check("...each one figure that the Source picker reaches",
+          all("source_ff" in CARDS[n][2]["native"]["template-tags"] and _output_columns(sql_of(CARDS[n][2])) == ["max"]
+              for n in ("Return (TWR)", "Return (MWR)", "Annualized return (TWR)")))
+    check("a whole-portfolio benchmark figure and line read nothing while a source is picked",
+          _rr("Excess return (TWR)") == [(5.0,)] and _rr("Excess return (TWR)", source_ff=["src-a"]) == []
+          and _rr("Benchmark return (MWR)", source_ff=["src-a"]) == []
+          and len(_rr("Money-weighted return over time")) == 1
+          and _rr("Money-weighted return over time", source_ff=["src-a"]) == [], _rr("Excess return (TWR)"))
+    check("...while the benchmark's own return stays",
+          _rr("Benchmark return (TWR)", source_ff=["src-a"]) == [(0.20,)], _rr("Benchmark return (TWR)", source_ff=["src-a"]))
+    _cum = {(s, str(d)): round(v, 6) for s, d, v in _rr("Cumulative return (TWR)", source_ff=["src-a"])}
+    check("the cumulative line starts at 0, steps to each year's start and ends on the window's day "
+          "with the Return tile's figure",
+          _cum == {("src-a", "2024-01-01"): 0.0, ("src-a", "2025-01-01"): round(0.71 / 0.85 - 1, 6),
+                   ("src-a", "2025-06-30"): -0.29,
+                   (sqlkit.ALL_SOURCES_SERIES, "2024-01-01"): 0.0,
+                   (sqlkit.ALL_SOURCES_SERIES, "2025-01-01"): round(1.25 / 1.10 - 1, 6),
+                   (sqlkit.ALL_SOURCES_SERIES, "2025-06-30"): 0.25,
+                   (sqlkit.BENCHMARK_SERIES, "2024-01-01"): 0.0,
+                   (sqlkit.BENCHMARK_SERIES, "2025-01-01"): round(1.20 / 1.05 - 1, 6),
+                   (sqlkit.BENCHMARK_SERIES, "2025-06-30"): 0.20}, _cum)
+    check("...and with no benchmark picked, no benchmark point",
+          all(s != sqlkit.BENCHMARK_SERIES for s, _d, _v in _rr("Cumulative return (TWR)", benchmark="None")))
 
     # A benchmark's figures: its window of the start year, in the picked
     # currency. Under None, no row.
@@ -5242,10 +5293,14 @@ if duckdb is not None:
           == [("Benchmark", None), ("Benchmark", 0.2), ("Portfolio", None), ("Portfolio", 0.1)]
           and VIZ["Money-weighted return over time"]["line.missing"] == "none"
           and VIZ["Money-weighted return over time"]["graph.x_axis.scale"] == "ordinal")
-    check("a benchmark's own Returns tiles say the Source picker does not reach them",
+    check("a benchmark's own Returns tiles say the Source picker does not reach them; "
+          "the whole-portfolio ones take it, to hide",
           all("source_ff" not in CARDS[n][2]["native"]["template-tags"]
-              for n in ("Benchmark return (TWR)", "Money-weighted return over time", "Value against the benchmark",
-                        "Value against the benchmark (privacy)")))
+              for n in ("Benchmark return (TWR)", "Benchmark annualized return (TWR)"))
+          and all("source_ff" in CARDS[n][2]["native"]["template-tags"]
+                  for n in ("Benchmark return (MWR)", "Excess return (TWR)", "Excess return (MWR)",
+                            "Excess annualized return (TWR)", "Money-weighted return over time",
+                            "Value against the benchmark", "Value against the benchmark (privacy)")))
     _db.execute("DELETE FROM report_returns WHERE twr = 0 AND window_from_year = 2024")
 
     # The gains twins: each gain over the cost basis it is a gain on. A
@@ -5432,10 +5487,13 @@ for _d in _b_dashes:
 _b_grid = {t[0]: t[1:5] for t in DEFS["Returns"][3]}
 _b_top = ("Return (TWR)", "Return (MWR)", "Annualized return (TWR)")
 _ann = sql_of(CARDS["Annualized return (TWR)"][2])
-check("'Annualized return (TWR)' reads the global summary of the start year, and that figure alone",
-      "max(twr_annualized) AS max" in _ann and "grain = 'global' AND granularity = 'total'" in _ann
+check("'Annualized return (TWR)' reads the start year's summary of the global grain or the picked source, "
+      "and that figure alone",
+      "max(twr_annualized)" in _ann and "grain = 'global' AND granularity = 'total'" in _ann
+      and "grain = 'sources' AND granularity = 'total'" in _ann
       and "window_from_year = {{start_year}}" in _ann and _output_columns(_ann) == ["max"]
-      and set(CARDS["Annualized return (TWR)"][2]["native"]["template-tags"]) == {"currency", "start_year"}, _ann)
+      and set(CARDS["Annualized return (TWR)"][2]["native"]["template-tags"]) == {"currency", "start_year", "source_ff"},
+      _ann)
 for _names in (("Benchmark return (TWR)", "Benchmark return (MWR)", "Benchmark annualized return (TWR)"),
                ("Excess return (TWR)", "Excess return (MWR)", "Excess annualized return (TWR)")):
     check(f"'{_names[0]}' and its row stand in the top row's columns, in its order",
