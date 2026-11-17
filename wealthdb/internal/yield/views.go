@@ -37,7 +37,7 @@ func (b *Book) Funds() []FundRow {
 	var order []string
 	var ps = map[string][]Position{}
 	for _, p := range b.Positions {
-		if p.Kind != KindBondFund && p.Kind != KindMoneyMarket && p.Kind != KindEquityFund && p.Kind != KindMultiAsset {
+		if !kinds[p.Kind].fund {
 			continue
 		}
 		key := p.Key
@@ -100,7 +100,7 @@ type CashRow struct {
 func (b *Book) Cash() []CashRow {
 	var out []CashRow
 	for _, p := range b.Positions {
-		if p.Kind != KindDeposit && p.Kind != KindTermDeposit && p.Kind != KindMoneyMarket {
+		if !kinds[p.Kind].cash {
 			continue
 		}
 		r := CashRow{Position: p}
@@ -151,13 +151,8 @@ type CurveRow struct {
 // HeldIn is what holds a holding of kind k in the curve view: funds,
 // liabilities, cash or bonds.
 func HeldIn(k Kind) string {
-	switch k {
-	case KindBondFund, KindMoneyMarket, KindMultiAsset:
-		return HeldInFunds
-	case KindLiability:
-		return HeldInLiabilities
-	case KindDeposit, KindTermDeposit:
-		return HeldInCash
+	if s, ok := kinds[k]; ok {
+		return s.heldIn
 	}
 	return HeldInBonds
 }
@@ -506,34 +501,56 @@ func (b *Book) unknownReceiving() map[HoldingKey]bool {
 }
 
 // missingOf names what a holding lacks that a ledger record could
-// state. A bond in default reads unknown, but no terms record clears a
-// default: it lacks no terms.
+// state, as its kind reads it (kindSpec.missing).
 func missingOf(p Position) []string {
-	var out []string
-	unknown := p.Tags[TagUnknown]
-	switch p.Kind {
-	case KindBond, KindBill, KindFloating, KindNote, KindLiability:
-		if unknown && !p.Tags[TagDefault] {
+	if missing := kinds[p.Kind].missing; missing != nil {
+		return missing(p)
+	}
+	return nil
+}
+
+// missingTermsOf is what a bond, a note or a liability lacks: terms where
+// it reads unknown, and with rating a rating where it has none. A bond in
+// default reads unknown, but no terms record clears a default: it lacks
+// no terms.
+func missingTermsOf(rating bool) func(p Position) []string {
+	return func(p Position) []string {
+		var out []string
+		if p.Tags[TagUnknown] && !p.Tags[TagDefault] {
 			out = append(out, missingTerms)
 		}
-		if p.Kind != KindLiability && p.Kind != KindNote && p.Rating == "" {
+		if rating && p.Rating == "" {
 			out = append(out, missingRating)
 		}
-	case KindDeposit, KindTermDeposit:
-		// A card takes no rate (YIELD.md §3).
-		if p.Stated == nil && p.Amount > 0 && p.Account.Kind != string(canonical.AccountKindCard) {
-			out = append(out, missingRate)
-		}
-	case KindBondFund, KindMoneyMarket:
-		if unknown {
-			out = append(out, missingFigures)
-		}
-	case KindStock, KindEquityFund, KindMultiAsset:
-		if unknown {
-			out = append(out, missingDividend)
-		}
+		return out
 	}
-	return out
+}
+
+// missingRateOf is what a deposit lacks: a rate where it has a balance.
+// A card takes no rate (YIELD.md §3).
+func missingRateOf(p Position) []string {
+	if p.Stated == nil && p.Amount > 0 && p.Account.Kind != string(canonical.AccountKindCard) {
+		return []string{missingRate}
+	}
+	return nil
+}
+
+// missingFiguresOf is what a bond or money-market fund lacks: figures
+// where it reads unknown.
+func missingFiguresOf(p Position) []string {
+	if p.Tags[TagUnknown] {
+		return []string{missingFigures}
+	}
+	return nil
+}
+
+// missingDividendOf is what a stock, an equity or a multi-asset fund
+// lacks: a dividend where it reads unknown.
+func missingDividendOf(p Position) []string {
+	if p.Tags[TagUnknown] {
+		return []string{missingDividend}
+	}
+	return nil
 }
 
 // skeletonOf is the record that fills a holding's gap: its terms, the

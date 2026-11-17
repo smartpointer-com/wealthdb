@@ -107,6 +107,17 @@ type Measures struct {
 	// Spread is the holding's own rate over its currency's benchmark,
 	// which the projection keeps along the rate path.
 	Spread *float64
+	// received is the income of the twelve months to the instant, in the
+	// output currency; daily the holding's amount on each of their days.
+	// A row's realized yield pools both (Position.RealizedParts).
+	received float64
+	daily    Daily
+}
+
+// working is a holding's figures while Compute measures and projects it,
+// and what the projection reads of how they were read.
+type working struct {
+	Measures
 	// bondEquivalent is a bill's yield in the convention of the curve it
 	// is compared with.
 	bondEquivalent *float64
@@ -115,12 +126,8 @@ type Measures struct {
 	// statedDividend says the dividend yield is the one a fund's page
 	// states, which the projection pays.
 	statedDividend bool
-	// received is the income of the twelve months to the instant, in the
-	// output currency; daily the holding's amount on each of their days.
-	received float64
-	daily    Daily
 	// dividend is the holding's indicated dividend, once dividendRead
-	// says it was read (Measures.indicatedDividend).
+	// says it was read (working.indicatedDividend).
 	dividend     *dividend
 	dividendRead bool
 }
@@ -282,34 +289,14 @@ func dayCountOf(t Terms) canonical.DayCount {
 }
 
 // measure computes one holding's figures, all but the projected income.
-func measure(in *Inputs, h Holding) Measures {
-	m := Measures{Kind: classify(in, h), Tags: map[Tag]bool{}}
+func measure(in *Inputs, h Holding) working {
+	m := working{Measures: Measures{Kind: classify(in, h), Tags: map[Tag]bool{}}}
 	terms := in.Terms[InstrumentKey{h.Source, h.Instrument}]
 	m.Rating = terms.Rating
 	if h.Quantity != nil && *h.Quantity != 0 && !h.IsCash {
 		m.Price = ptr(h.Amount / *h.Quantity)
 	}
-	switch m.Kind {
-	case KindDeposit, KindTermDeposit:
-		measureDeposit(in, h, &m)
-	case KindBond, KindBill, KindFloating, KindNote:
-		measureBond(in, h, terms, &m)
-	case KindMoneyMarket, KindBondFund:
-		measureFund(in, h, terms, &m)
-	case KindMultiAsset:
-		measureMultiAsset(in, h, terms, &m)
-	case KindEquityFund:
-		measureEquityFund(in, h, &m)
-	case KindStock:
-		measureStock(in, h, &m)
-	case KindLiability:
-		measureLiability(in, h, terms, &m)
-	case KindOther:
-		// What it pays repeats last year's; paid nothing, it is unknown.
-		if !in.paidWithinYear(in.Payments[h.HoldingKey]) {
-			m.Tags[TagUnknown] = true
-		}
-	}
+	kinds[m.Kind].measure(in, h, terms, &m)
 	if c := in.Curves[h.Currency]; c != nil {
 		m.Benchmark = ptr(c.Benchmark)
 		if y := gapYield(&m); y != nil {
@@ -330,20 +317,28 @@ func measure(in *Inputs, h Holding) Measures {
 	return m
 }
 
-// gapYield is the yield a holding's gap compares with its benchmark: a
-// bill's bond-equivalent yield, else the implied yield, else the stated
-// rate. A stock and an equity fund have none: their yields are no rate. A
-// multi-asset fund's stated rate is a dividend yield, so only its implied
-// yield compares.
-func gapYield(m *Measures) *float64 {
-	switch m.Kind {
-	case KindStock, KindEquityFund:
-		return nil
-	case KindMultiAsset:
-		return m.Implied
+// measureOther: what it pays repeats last year's; paid nothing, it is
+// unknown.
+func measureOther(in *Inputs, h Holding, _ Terms, m *working) {
+	if !in.paidWithinYear(in.Payments[h.HoldingKey]) {
+		m.Tags[TagUnknown] = true
 	}
-	return first(m.bondEquivalent, m.Implied, m.Stated)
 }
+
+// gapYield is the yield a holding's gap compares with its benchmark, as
+// its kind reads it (kindSpec.gap).
+func gapYield(m *working) *float64 { return kinds[m.Kind].gap(m) }
+
+// rateGap is a bill's bond-equivalent yield, else the implied yield, else
+// the stated rate.
+func rateGap(m *working) *float64 { return first(m.bondEquivalent, m.Implied, m.Stated) }
+
+// noGap is a stock's and an equity fund's: their yields are no rate.
+func noGap(*working) *float64 { return nil }
+
+// impliedGap is a multi-asset fund's: its stated rate is a dividend
+// yield, so only its implied yield compares.
+func impliedGap(m *working) *float64 { return m.Implied }
 
 // first is the first of vs that is not nil, nil where none is.
 func first[T any](vs ...*T) *T {
@@ -365,7 +360,7 @@ func dv01(value, modified float64) *float64 {
 // term deposit lasts to its end. A card's balance takes no rate and no
 // tag: the bill is paid in full, so it earns and costs nothing, and no
 // rate is missing.
-func measureDeposit(in *Inputs, h Holding, m *Measures) {
+func measureDeposit(in *Inputs, h Holding, m *working) {
 	m.Duration, m.Maturity, m.DV01 = ptr(0), ptr(0), ptr(0)
 	if onCard(in, h) {
 		return
@@ -397,7 +392,7 @@ func readingTag(declared bool) Tag {
 // measureBond: a fixed bond yields what its price implies, to its call
 // where it trades above par and a call is known; a bill its discount; a
 // floating note its coupon, with no implied yield; a note its coupon.
-func measureBond(in *Inputs, h Holding, t Terms, m *Measures) {
+func measureBond(in *Inputs, h Holding, t Terms, m *working) {
 	m.Coupon, m.MaturityDate, m.CouponKind = t.Coupon, t.Maturity, t.CouponKind
 	m.Stated, m.rateDeclared = t.Coupon, t.CouponDeclared
 	if t.CouponDeclared || t.MaturityDeclared {
@@ -514,7 +509,7 @@ func measureBond(in *Inputs, h Holding, t Terms, m *Measures) {
 
 // setRisk stores a risk per 100 face as the holding's: its duration and
 // convexity, and its DV01 scaled to its value in the output currency.
-func setRisk(m *Measures, h Holding, r fixedincome.Risk) {
+func setRisk(m *working, h Holding, r fixedincome.Risk) {
 	if math.IsNaN(r.Modified) {
 		return
 	}
@@ -536,7 +531,7 @@ func scaleBuckets(b map[string]float64, k float64) map[string]float64 {
 // lines imply, else what its page or filing states; it moves with rates
 // as fundRisk says. A money-market fund yields its seven-day yield and
 // lasts its weighted average maturity.
-func measureFund(in *Inputs, h Holding, t Terms, m *Measures) {
+func measureFund(in *Inputs, h Holding, t Terms, m *working) {
 	f := fundOf(in, h)
 	if m.Kind == KindMoneyMarket {
 		switch {
@@ -594,7 +589,7 @@ func measureFund(in *Inputs, h Holding, t Terms, m *Measures) {
 // does (fundRisk), and earns what an equity fund does (equityIncome). Its
 // implied yield is a ledger record's, else the yield its page or filing
 // states. Its lines imply none: their yield is its debt's alone.
-func measureMultiAsset(in *Inputs, h Holding, t Terms, m *Measures) {
+func measureMultiAsset(in *Inputs, h Holding, t Terms, m *working) {
 	f := fundOf(in, h)
 	switch {
 	case t.Yield != nil:
@@ -629,7 +624,7 @@ func termsDay(t Terms) time.Time {
 
 // figure reads a fund's figure: it tags the reading, and names the day
 // and the source the fund's figures come from.
-func figure(m *Measures, d Dated, declared bool, from string) *float64 {
+func figure(m *working, d Dated, declared bool, from string) *float64 {
 	m.Tags[readingTag(declared)] = true
 	if !d.Day.IsZero() {
 		m.FiguresAsOf = &d.Day
@@ -648,7 +643,7 @@ func figure(m *Measures, d Dated, declared bool, from string) *float64 {
 // negative duration: an inverse or rate-hedged fund's filing reads in
 // that sign. A fund is floating where floatingFund says so, and in
 // default where any line is.
-func fundRisk(h Holding, f *Fund, t Terms, m *Measures) {
+func fundRisk(h Holding, f *Fund, t Terms, m *working) {
 	if floatingFund(h, f) {
 		m.Tags[TagFloating] = true
 	}
@@ -753,7 +748,7 @@ func fundBuckets(f *Fund, h Holding) map[string]map[string]float64 {
 
 // measureEquityFund: an equity fund's earnings yield is the inverse of
 // the P/E ratio its page states; its dividend yield is equityIncome's.
-func measureEquityFund(in *Inputs, h Holding, m *Measures) {
+func measureEquityFund(in *Inputs, h Holding, m *working) {
 	f := in.Funds[h.SecurityID]
 	if f != nil && f.PriceEarnings != nil && f.PriceEarnings.Value > 0 {
 		m.EarningsYield = ptr(100 / f.PriceEarnings.Value)
@@ -764,7 +759,7 @@ func measureEquityFund(in *Inputs, h Holding, m *Measures) {
 // equityIncome gives a fund its dividend yield: its own distributions'
 // (dividendReading), else the yield its page states (statedYield); else
 // it paid nothing (paidNothing).
-func equityIncome(in *Inputs, h Holding, f *Fund, m *Measures) {
+func equityIncome(in *Inputs, h Holding, f *Fund, m *working) {
 	if dividendReading(in, h, m) {
 		return
 	}
@@ -782,24 +777,30 @@ func equityIncome(in *Inputs, h Holding, f *Fund, m *Measures) {
 // fund's Stated, its distribution or SEC yield, else its DividendYield,
 // its trailing yield, as measureFund sets them and the projection reads
 // them. nil for any other holding, and where none is stated.
-func statedYield(m *Measures, f *Fund) *float64 {
-	switch m.Kind {
-	case KindEquityFund, KindMultiAsset:
-		if f == nil {
-			return nil
-		}
-		if d := first(f.TrailingYield, f.DistributionYield); d != nil {
-			return &d.Value
-		}
-	case KindBondFund:
-		return first(m.Stated, m.DividendYield)
+func statedYield(m *working, f *Fund) *float64 {
+	if stated := kinds[m.Kind].stated; stated != nil {
+		return stated(m, f)
 	}
 	return nil
 }
 
+// statedEquityFund is statedYield of an equity or a multi-asset fund.
+func statedEquityFund(_ *working, f *Fund) *float64 {
+	if f == nil {
+		return nil
+	}
+	if d := first(f.TrailingYield, f.DistributionYield); d != nil {
+		return &d.Value
+	}
+	return nil
+}
+
+// statedBondFund is statedYield of a bond fund.
+func statedBondFund(m *working, _ *Fund) *float64 { return first(m.Stated, m.DividendYield) }
+
 // dividendReading sets a holding's dividend yield from its indicated
 // dividend over its price; false where none is known.
-func dividendReading(in *Inputs, h Holding, m *Measures) bool {
+func dividendReading(in *Inputs, h Holding, m *working) bool {
 	d := m.indicatedDividend(in, h)
 	if d == nil || m.Price == nil || *m.Price <= 0 {
 		return false
@@ -822,7 +823,7 @@ func dividendReading(in *Inputs, h Holding, m *Measures) bool {
 // quantity is known for it, or no price compares with it). Any other
 // paid nothing the dividends tell, and yields zero on that record
 // (realized).
-func paidNothing(in *Inputs, h Holding, m *Measures) {
+func paidNothing(in *Inputs, h Holding, m *working) {
 	if (h.Acquired != nil && in.withinYear(*h.Acquired)) || in.paidWithinYear(in.instrumentPayments(h)) {
 		m.Tags[TagUnknown] = true
 		return
@@ -834,7 +835,7 @@ func paidNothing(in *Inputs, h Holding, m *Measures) {
 // measureStock: a stock's earnings yield is its trailing twelve months'
 // earnings per share over its price, its dividend yield its indicated
 // dividend over its price.
-func measureStock(in *Inputs, h Holding, m *Measures) {
+func measureStock(in *Inputs, h Holding, m *working) {
 	f := in.Securities[h.SecurityID]
 	price := m.Price
 	if price != nil && *price > 0 && (f.Currency == "" || f.Currency == h.Currency) {
@@ -870,7 +871,7 @@ func ratios(f Facts) (payout, dividendGrowth, earningsGrowth, coverage *float64)
 // risk runs to the end of its fixed period, and it nets against the
 // assets' with its negative value. Terms that state no fixed period fix
 // the rate to maturity, unless the coupon floats.
-func measureLiability(in *Inputs, h Holding, t Terms, m *Measures) {
+func measureLiability(in *Inputs, h Holding, t Terms, m *working) {
 	m.Coupon, m.MaturityDate = t.Coupon, t.Maturity
 	if t.Coupon != nil {
 		m.Stated, m.Implied, m.rateDeclared = t.Coupon, t.Coupon, t.CouponDeclared
@@ -904,7 +905,7 @@ func measureLiability(in *Inputs, h Holding, t Terms, m *Measures) {
 // and carries partial where that is not every day; a cash balance its own
 // income over its mean daily value. A thin holding has none, and carries
 // thin.
-func realized(in *Inputs, h Holding, m *Measures) {
+func realized(in *Inputs, h Holding, m *working) {
 	m.received = in.Income[h.HoldingKey].Total()
 	if h.IsCash {
 		m.received += in.AccountIncome[AccountCurrency{AccountKey{h.Source, h.Account}, h.Currency}][TypeInterest]

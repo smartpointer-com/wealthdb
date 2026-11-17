@@ -288,7 +288,7 @@ func (pj *projector) monthOf(d time.Time) int {
 
 // project computes the projection of the holdings, given each holding's
 // measures (its spread, its yields, its kind).
-func project(in *Inputs, measures map[HoldingKey]*Measures) *Projection {
+func project(in *Inputs, measures map[HoldingKey]*working) *Projection {
 	out := &Projection{Start: monthStart(in.Day), From: in.Day.AddDate(0, 0, 1), Withholding: map[HoldingKey]float64{},
 		Currency: map[HoldingKey]string{}, FX: map[HoldingKey]float64{}}
 	pj := &projector{in: in, out: out, cash: map[AccountCurrency]Holding{}}
@@ -416,7 +416,7 @@ func (pj *projector) unknown(h Holding, typ IncomeType) {
 // floating adds the income of a principal that earns a floating rate
 // (floatingPart), accrued to until (nil for the projection's end);
 // unknown where no rate is known.
-func (pj *projector) floating(h Holding, m *Measures, rate *float64, typ IncomeType, basis Basis, principal float64,
+func (pj *projector) floating(h Holding, m *working, rate *float64, typ IncomeType, basis Basis, principal float64,
 	until *time.Time) {
 	if rate == nil {
 		pj.unknown(h, typ)
@@ -428,7 +428,7 @@ func (pj *projector) floating(h Holding, m *Measures, rate *float64, typ IncomeT
 // floatingPart is a month's income of a principal that earns a floating
 // rate: the benchmark plus the holding's spread to it, which the holding
 // keeps (Measures.Spread).
-func (pj *projector) floatingPart(h Holding, m *Measures, rate float64, typ IncomeType, basis Basis,
+func (pj *projector) floatingPart(h Holding, m *working, rate float64, typ IncomeType, basis Basis,
 	principal float64) Part {
 	bench := 0.0
 	if c := pj.in.Curves[h.Currency]; c != nil {
@@ -447,79 +447,103 @@ func (pj *projector) fixed(h Holding, typ IncomeType, basis Basis, principal, ra
 	pj.accrue(p, pj.out.From, until)
 }
 
-func (pj *projector) holding(h Holding, m *Measures) {
-	terms := pj.in.Terms[InstrumentKey{h.Source, h.Instrument}]
-	switch m.Kind {
-	case KindBond, KindBill, KindFloating, KindNote:
-		if terms.InDefault {
-			// A bond in default pays what nobody can say.
-			pj.unknown(h, TypeCoupons)
-			return
-		}
+// holding adds a holding's income to the projection, as its kind
+// projects it (kindSpec.project).
+func (pj *projector) holding(h Holding, m *working) {
+	if project := kinds[m.Kind].project; project != nil {
+		project(pj, h, pj.in.Terms[InstrumentKey{h.Source, h.Instrument}], m)
 	}
-	switch m.Kind {
-	case KindDeposit:
-		switch {
-		case h.Amount <= 0, onCard(pj.in, h):
-		case m.Stated != nil:
-			pj.floating(h, m, m.Stated, TypeInterest, basisOf(m), h.Amount, nil)
-		case !pj.repeatInterest(h):
-			pj.unknown(h, TypeInterest)
-		}
-	case KindTermDeposit:
-		pj.fixed(h, TypeInterest, basisOf(m), h.Amount, *m.Stated, m.MaturityDate)
-		pj.matures(h, m, *m.MaturityDate, h.Amount, TypeInterest)
-	case KindMoneyMarket:
-		pj.floating(h, m, m.Stated, TypeDistributions, basisOf(m), h.Amount, nil)
-	case KindFloating:
-		if h.Quantity == nil {
+}
+
+// unlessDefault is project, but a bond in default pays what nobody can
+// say.
+func unlessDefault(project func(pj *projector, h Holding, t Terms, m *working)) func(pj *projector, h Holding,
+	t Terms, m *working) {
+	return func(pj *projector, h Holding, t Terms, m *working) {
+		if t.InDefault {
 			pj.unknown(h, TypeCoupons)
 			return
 		}
-		pj.floating(h, m, terms.Coupon, TypeCoupons, BasisStated, *h.Quantity, m.MaturityDate)
-		if m.MaturityDate != nil {
-			pj.matures(h, m, *m.MaturityDate, *h.Quantity, TypeCoupons)
-		}
-	case KindBond:
-		pj.bond(h, m, terms)
-	case KindBill:
-		pj.discount(h, m)
-	case KindNote:
-		// A loan held pays its interest monthly; a convertible note pays
-		// nothing.
-		if h.Vehicle != "loan" {
-			return
-		}
-		if m.Stated == nil {
-			pj.unknown(h, TypeInterest)
-			return
-		}
-		pj.fixed(h, TypeInterest, basisOf(m), h.Amount, *m.Stated, m.MaturityDate)
-		if m.MaturityDate != nil {
-			pj.matures(h, m, *m.MaturityDate, h.Amount, TypeInterest)
-		}
-	case KindBondFund:
-		switch {
-		case m.Tags[TagFloating]:
-			pj.floatingFundIncome(h, m)
-		case pj.indicated(h, m, TypeDistributions):
-		case m.Stated != nil:
-			pj.fixed(h, TypeDistributions, basisOf(m), h.Amount, *m.Stated, nil)
-		case m.DividendYield != nil:
-			pj.fixed(h, TypeDistributions, BasisStated, h.Amount, *m.DividendYield, nil)
-		default:
-			pj.unknown(h, TypeDistributions)
-		}
-	case KindEquityFund, KindMultiAsset:
-		if !pj.indicated(h, m, TypeDistributions) && m.statedDividend {
-			pj.fixed(h, TypeDistributions, BasisStated, h.Amount, *m.DividendYield, nil)
-		}
-	case KindStock:
-		pj.indicated(h, m, TypeDividends)
-	case KindOther:
-		if !pj.realizedPattern(h) {
-			pj.unknown(h, TypeDistributions)
-		}
+		project(pj, h, t, m)
+	}
+}
+
+func (pj *projector) projectDeposit(h Holding, _ Terms, m *working) {
+	switch {
+	case h.Amount <= 0, onCard(pj.in, h):
+	case m.Stated != nil:
+		pj.floating(h, m, m.Stated, TypeInterest, basisOf(m), h.Amount, nil)
+	case !pj.repeatInterest(h):
+		pj.unknown(h, TypeInterest)
+	}
+}
+
+func (pj *projector) projectTermDeposit(h Holding, _ Terms, m *working) {
+	pj.fixed(h, TypeInterest, basisOf(m), h.Amount, *m.Stated, m.MaturityDate)
+	pj.matures(h, m, *m.MaturityDate, h.Amount, TypeInterest)
+}
+
+func (pj *projector) projectMoneyMarket(h Holding, _ Terms, m *working) {
+	pj.floating(h, m, m.Stated, TypeDistributions, basisOf(m), h.Amount, nil)
+}
+
+func (pj *projector) projectFloating(h Holding, terms Terms, m *working) {
+	if h.Quantity == nil {
+		pj.unknown(h, TypeCoupons)
+		return
+	}
+	pj.floating(h, m, terms.Coupon, TypeCoupons, BasisStated, *h.Quantity, m.MaturityDate)
+	if m.MaturityDate != nil {
+		pj.matures(h, m, *m.MaturityDate, *h.Quantity, TypeCoupons)
+	}
+}
+
+func (pj *projector) projectBond(h Holding, terms Terms, m *working) { pj.bond(h, m, terms) }
+
+func (pj *projector) projectBill(h Holding, _ Terms, m *working) { pj.discount(h, m) }
+
+// projectNote: a loan held pays its interest monthly; a convertible note
+// pays nothing.
+func (pj *projector) projectNote(h Holding, _ Terms, m *working) {
+	if h.Vehicle != "loan" {
+		return
+	}
+	if m.Stated == nil {
+		pj.unknown(h, TypeInterest)
+		return
+	}
+	pj.fixed(h, TypeInterest, basisOf(m), h.Amount, *m.Stated, m.MaturityDate)
+	if m.MaturityDate != nil {
+		pj.matures(h, m, *m.MaturityDate, h.Amount, TypeInterest)
+	}
+}
+
+func (pj *projector) projectBondFund(h Holding, _ Terms, m *working) {
+	switch {
+	case m.Tags[TagFloating]:
+		pj.floatingFundIncome(h, m)
+	case pj.indicated(h, m, TypeDistributions):
+	case m.Stated != nil:
+		pj.fixed(h, TypeDistributions, basisOf(m), h.Amount, *m.Stated, nil)
+	case m.DividendYield != nil:
+		pj.fixed(h, TypeDistributions, BasisStated, h.Amount, *m.DividendYield, nil)
+	default:
+		pj.unknown(h, TypeDistributions)
+	}
+}
+
+// projectEquityFund is an equity or a multi-asset fund's.
+func (pj *projector) projectEquityFund(h Holding, _ Terms, m *working) {
+	if !pj.indicated(h, m, TypeDistributions) && m.statedDividend {
+		pj.fixed(h, TypeDistributions, BasisStated, h.Amount, *m.DividendYield, nil)
+	}
+}
+
+func (pj *projector) projectStock(h Holding, _ Terms, m *working) { pj.indicated(h, m, TypeDividends) }
+
+func (pj *projector) projectOther(h Holding, _ Terms, _ *working) {
+	if !pj.realizedPattern(h) {
+		pj.unknown(h, TypeDistributions)
 	}
 }
 
@@ -541,7 +565,7 @@ func (pj *projector) holding(h Holding, m *Measures) {
 // as they come (payDividend), at no floating rate: a fraction of the
 // year's, floating, would sit far below the benchmark and could fall
 // below zero. Else it is unknown.
-func (pj *projector) floatingFundIncome(h Holding, m *Measures) {
+func (pj *projector) floatingFundIncome(h Holding, m *working) {
 	d := m.indicatedDividend(pj.in, h)
 	whole := d != nil && d.wholeYear()
 	var rate *float64
@@ -590,7 +614,7 @@ func (pj *projector) payAccrued(p Part, d *dividend) {
 
 // basisOf is the basis of a holding's stated rate: declared where a
 // ledger record states the rate.
-func basisOf(m *Measures) Basis {
+func basisOf(m *working) Basis {
 	if m.rateDeclared {
 		return BasisDeclared
 	}
@@ -599,7 +623,7 @@ func basisOf(m *Measures) Basis {
 
 // bond adds a fixed bond's coupons on its coupon dates, then its
 // maturity.
-func (pj *projector) bond(h Holding, m *Measures, t Terms) {
+func (pj *projector) bond(h Holding, m *working, t Terms) {
 	if h.Quantity == nil || m.MaturityDate == nil || (t.Coupon == nil && t.CouponKind != canonical.CouponZero) {
 		pj.unknown(h, TypeCoupons)
 		return
@@ -627,7 +651,7 @@ func (pj *projector) bond(h Holding, m *Measures, t Terms) {
 
 // discount adds a bill's or a zero's income: its face less its price,
 // at maturity, then its maturity.
-func (pj *projector) discount(h Holding, m *Measures) {
+func (pj *projector) discount(h Holding, m *working) {
 	if m.MaturityDate == nil || h.Quantity == nil {
 		pj.unknown(h, TypeInterest)
 		return
@@ -647,7 +671,7 @@ func (pj *projector) discount(h Holding, m *Measures) {
 // its own current yield (roll_own) where it implies none, and cash
 // (roll_cash) where it has no yield at all. typ is the income type the
 // holding earns, which a roll keeps.
-func (pj *projector) matures(h Holding, m *Measures, day time.Time, principal float64, typ IncomeType) {
+func (pj *projector) matures(h Holding, m *working, day time.Time, principal float64, typ IncomeType) {
 	// A holding a source still lists on or after its maturity returns
 	// its principal the next day.
 	day = later(day, pj.out.From)
@@ -669,7 +693,7 @@ func (pj *projector) matures(h Holding, m *Measures, day time.Time, principal fl
 	case c == nil || c.Zero == nil:
 		pj.rollAt(h, day, principal, *own, typ, RungRollConstant)
 	default:
-		pj.rollCurve(h, c, day, pj.term(h, m, day), principal, *own, typ)
+		pj.rollCurve(h, c, day, pj.term(h, &m.Measures, day), principal, *own, typ)
 	}
 }
 
@@ -757,7 +781,7 @@ func (pj *projector) rollCurve(h Holding, c *Curve, first time.Time, term int, p
 // last paid on: its instrument's indicated dividend (indicatedDividend) on
 // the holding's own quantity, on its next pay days (payDividend). Only
 // their months are known. false where none is.
-func (pj *projector) indicated(h Holding, m *Measures, typ IncomeType) bool {
+func (pj *projector) indicated(h Holding, m *working, typ IncomeType) bool {
 	return pj.payDividend(h, m.indicatedDividend(pj.in, h), typ)
 }
 
@@ -854,7 +878,7 @@ func (d *dividend) wholeYear() bool { return !d.oneMonth && !d.partial }
 // the twelve months (oneMonth), pays its one payment once a year, though
 // the fund may pay more often: where its page states a yield (statedYield), that
 // wins, and the fund has no indicated dividend. A stock keeps its own.
-func (m *Measures) indicatedDividend(in *Inputs, h Holding) *dividend {
+func (m *working) indicatedDividend(in *Inputs, h Holding) *dividend {
 	if !m.dividendRead {
 		m.dividend, m.dividendRead = indicatedDividend(in, h), true
 		if d := m.dividend; d != nil && d.oneMonth && statedYield(m, in.Funds[h.SecurityID]) != nil {

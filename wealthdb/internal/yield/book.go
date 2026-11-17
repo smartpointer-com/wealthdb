@@ -29,7 +29,7 @@ type Book struct {
 // to rates, under DefaultAssumptions.
 func Compute(in *Inputs) *Book {
 	in.Index()
-	measures := make(map[HoldingKey]*Measures, len(in.Holdings))
+	measures := make(map[HoldingKey]*working, len(in.Holdings))
 	for _, h := range in.Holdings {
 		m := measure(in, h)
 		measures[h.HoldingKey] = &m
@@ -73,7 +73,7 @@ func Compute(in *Inputs) *Book {
 			m.Tags[TagUnknown] = true
 		}
 		b.Positions = append(b.Positions, Position{Holding: h, Account: in.Accounts[AccountKey{h.Source, h.Account}],
-			Measures: *m})
+			Measures: m.Measures})
 	}
 	return b
 }
