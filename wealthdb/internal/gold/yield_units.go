@@ -57,7 +57,7 @@ type unitChange struct {
 // holds what after found.
 type yieldUnits struct {
 	points   map[unitKey][]unitPoint
-	trades   map[unitKey][]unitTrade
+	trades   map[unitKey][]yield.UnitTrade
 	snaps    map[accountKey][]int64
 	late     map[unitKey]map[int64]bool
 	accounts map[yield.InstrumentKey][]string
@@ -128,7 +128,7 @@ account_grid AS (
 // at (unitPoint). Between two such snapshots, the key's trades, read
 // as the source kind's lot policy reads them (lots.PolicyFor) and keyed
 // by tradeKey, and its quantity and value tell a change of units
-// (unitStep.change). Every account's changes are the instrument's
+// (yield.UnitStep.Change). Every account's changes are the instrument's
 // (addChange).
 func readYieldUnits(ctx context.Context, db querier, in *yield.Inputs, paid map[yield.InstrumentKey]bool,
 	from, asOf int64) (*yieldUnits, error) {
@@ -146,7 +146,7 @@ func readYieldUnits(ctx context.Context, db querier, in *yield.Inputs, paid map[
 	type stepAt struct {
 		key      unitKey
 		prev, at int64
-		step     unitStep
+		step     yield.UnitStep
 	}
 	var steps []stepAt
 	if err := scanAll(ctx, db, unitWindowCTE+unitAccountsCTE+`,
@@ -199,8 +199,8 @@ SELECT silver_source_id, account_external_id, instrument_external_id, snapshot_a
 		u.points[k] = append(u.points[k], unitPoint{at: at, prev: prev.Int64, qty: nullFloatToPtr(qty)})
 		u.last[k.src] = last
 		if prev.Valid && prevQty.Valid && qty.Valid {
-			steps = append(steps, stepAt{key: k, prev: prev.Int64, at: at, step: unitStep{before: prevQty.Float64,
-				after: qty.Float64, valueBefore: nullFloatToPtr(prevValue), valueAfter: nullFloatToPtr(value)}})
+			steps = append(steps, stepAt{key: k, prev: prev.Int64, at: at, step: yield.UnitStep{Before: prevQty.Float64,
+				After: qty.Float64, ValueBefore: nullFloatToPtr(prevValue), ValueAfter: nullFloatToPtr(value)}})
 		}
 		return nil
 	}, srcs, iids, from, asOf); err != nil {
@@ -228,7 +228,7 @@ SELECT silver_source_id, account_external_id, snapshot_at FROM account_grid ORDE
 	if err != nil {
 		return nil, err
 	}
-	trades := map[unitKey][]unitTrade{}
+	trades := map[unitKey][]yield.UnitTrade{}
 	for _, b := range booked {
 		k := u.tradeKey(in, b)
 		trades[k] = append(trades[k], b.trade)
@@ -236,12 +236,12 @@ SELECT silver_source_id, account_external_id, snapshot_at FROM account_grid ORDE
 	u.trades = trades
 	for _, s := range steps {
 		for _, t := range trades[s.key] {
-			if (t.at > s.prev && t.at < s.at) || (t.at == s.prev && u.after(s.key, s.prev)) ||
-				(t.at == s.at && !u.after(s.key, s.at)) {
-				s.step.trades = append(s.step.trades, t)
+			if (t.At > s.prev && t.At < s.at) || (t.At == s.prev && u.after(s.key, s.prev)) ||
+				(t.At == s.at && !u.after(s.key, s.at)) {
+				s.step.Trades = append(s.step.Trades, t)
 			}
 		}
-		if k, ok := s.step.change(); k != 1 || !ok {
+		if k, ok := s.step.Change(); k != 1 || !ok {
 			u.addChange(yield.InstrumentKey{Source: s.key.src, Instrument: s.key.iid}, unitChange{at: s.at, k: k, ok: ok})
 		}
 	}
@@ -302,7 +302,7 @@ func (u *yieldUnits) covered(ik yield.InstrumentKey, end int64) bool {
 type bookedTrade struct {
 	key   unitKey
 	iid   string
-	trade unitTrade
+	trade yield.UnitTrade
 }
 
 // tradeKey is the key a trade moves the quantity of: its booking
@@ -342,11 +342,11 @@ func (u *yieldUnits) tradeKey(in *yield.Inputs, b bookedTrade) unitKey {
 // holdsAt says key k holds its instrument as trade t happens: its newest
 // point at or before the trade holds some, or, for a buy, the first after
 // it does.
-func (u *yieldUnits) holdsAt(k unitKey, t unitTrade) bool {
+func (u *yieldUnits) holdsAt(k unitKey, t yield.UnitTrade) bool {
 	ps := u.points[k]
-	i := sort.Search(len(ps), func(i int) bool { return ps[i].at > t.at })
+	i := sort.Search(len(ps), func(i int) bool { return ps[i].at > t.At })
 	holds := func(p unitPoint) bool { return p.qty != nil && *p.qty > lots.Tolerance(*p.qty) }
-	return (i > 0 && holds(ps[i-1])) || (t.qty > 0 && i < len(ps) && holds(ps[i]))
+	return (i > 0 && holds(ps[i-1])) || (t.Qty > 0 && i < len(ps) && holds(ps[i]))
 }
 
 // readUnitTrades reads the transactions that move a quantity over the
@@ -390,7 +390,7 @@ SELECT t.silver_source_id, t.account_external_id, t.k, t.instrument_external_id,
 			return err
 		}
 		if move, corp := unitMove(lotClassify(kind, qty, action), qty); move != 0 {
-			out = append(out, bookedTrade{key: k, iid: iid, trade: unitTrade{at: at, qty: move, corp: corp}})
+			out = append(out, bookedTrade{key: k, iid: iid, trade: yield.UnitTrade{At: at, Qty: move, Corp: corp}})
 		}
 		return nil
 	}, srcs, iids, from, asOf)
@@ -537,8 +537,8 @@ func (u *yieldUnits) span(keys []unitKey, from, to int64) (least, most *float64)
 			}
 		}
 		for _, t := range u.trades[k] {
-			if t.at >= from && t.at < to {
-				at = append(at, t.at+1)
+			if t.At >= from && t.At < to {
+				at = append(at, t.At+1)
 			}
 		}
 	}
@@ -604,8 +604,8 @@ func (u *yieldUnits) heldOn(k unitKey, at int64) *float64 {
 	}
 	v := *q
 	for _, t := range u.trades[k] {
-		if !t.corp && t.at < at && (t.at > s || (t.at == s && u.after(k, s))) {
-			v += t.qty
+		if !t.Corp && t.At < at && (t.At > s || (t.At == s && u.after(k, s))) {
+			v += t.Qty
 		}
 	}
 	return &v
@@ -642,11 +642,11 @@ func (u *yieldUnits) after(k unitKey, s int64) bool {
 		between, same := 0.0, 0.0
 		for _, t := range u.trades[k] {
 			switch {
-			case t.corp:
-			case t.at == s:
-				same += t.qty
-			case t.at > prev && t.at < s, t.at == prev && u.after(k, prev):
-				between += t.qty
+			case t.Corp:
+			case t.At == s:
+				same += t.Qty
+			case t.At > prev && t.At < s, t.At == prev && u.after(k, prev):
+				between += t.Qty
 			}
 		}
 		if qs != nil && qp != nil {
@@ -659,144 +659,4 @@ func (u *yieldUnits) after(k unitKey, s int64) bool {
 	}
 	u.late[k][s] = late
 	return late
-}
-
-// unitTrade is a transaction that moves a key's quantity (unitMove).
-type unitTrade struct {
-	at   int64
-	qty  float64
-	corp bool
-}
-
-// unitStep is a key's quantity and value at two consecutive snapshots of
-// its source, and the transactions between them, oldest first.
-type unitStep struct {
-	before, after           float64
-	valueBefore, valueAfter *float64
-	trades                  []unitTrade
-}
-
-// unitChangeMin is the least change of units, either way, that a price
-// or a corporate action tells from a trade: a three-for-two split. A
-// smaller corporate delivery, such as a scrip dividend, is a trade.
-const unitChangeMin = 1.5
-
-// change is the change of units a step shows: each old unit became k new
-// ones, 1 where its trades explain its quantities. A change they do not
-// explain is one of units where a corporate action's leg names it, or
-// where the price per unit moved by its inverse (priced); else it is a
-// trade no transaction records, and k is 1. Its factor is the quantities'
-// (wholeFactor), with the step's trades before the change or after it.
-// The legs count once each, as the lot engine dedupes them (LOTS.md
-// §3.5), and must state the change: their sum is the units delivered, or
-// a leg states the new total. ok is false where no whole factor fits, or
-// the legs state another change.
-func (s unitStep) change() (k float64, ok bool) {
-	if !(s.before > lots.Tolerance(s.before)) || !(s.after > lots.Tolerance(s.after)) {
-		// A position opened or closed tells nothing of its units.
-		return 1, true
-	}
-	traded := 0.0
-	var legs []float64
-	for _, t := range s.trades {
-		switch {
-		case !t.corp:
-			traded += t.qty
-		case !slices.Contains(legs, t.qty):
-			legs = append(legs, t.qty)
-		}
-	}
-	if math.Abs(s.after-s.before-traded) <= lots.Tolerance(s.after) {
-		return 1, true
-	}
-	small := false
-	for _, q := range [][2]float64{{s.before + traded, s.after}, {s.before, s.after - traded}} {
-		if q[0] <= 0 || q[1] <= 0 {
-			continue
-		}
-		r := q[1] / q[0]
-		small = small || (r < unitChangeMin && r > 1/unitChangeMin)
-		k, whole := wholeFactor(q[0], r)
-		switch {
-		case !whole:
-		case len(legs) > 0 && stated(legs, q[0], q[1]):
-			return k, true
-		case len(legs) == 0 && s.priced(k):
-			return k, true
-		}
-	}
-	switch {
-	case small:
-		return 1, true
-	case len(legs) > 0:
-		return 1, false
-	}
-	if k := s.after / (s.before + traded); k >= unitChangeMin || k <= 1/unitChangeMin {
-		return 1, !s.priced(k)
-	}
-	return 1, true
-}
-
-// stated says corporate action legs state the change of a quantity from
-// before to after: they sum to the units delivered, or one states the new
-// total, short at most of a fraction paid in cash.
-func stated(legs []float64, before, after float64) bool {
-	near := func(a, b float64) bool { return math.Abs(a-b) < 1+lots.Tolerance(b) }
-	sum := 0.0
-	for _, l := range legs {
-		sum += l
-	}
-	return near(sum, after-before) || slices.ContainsFunc(legs, func(l float64) bool { return l > 0 && near(l, after) })
-}
-
-// priced says the price per unit moved by the inverse of k between the
-// step's snapshots: in ratio, nearer to k than to staying put. false
-// where a value is unknown.
-func (s unitStep) priced(k float64) bool {
-	if s.valueBefore == nil || s.valueAfter == nil || !(*s.valueBefore > 0) || !(*s.valueAfter > 0) {
-		return false
-	}
-	moved := (*s.valueBefore / s.before) / (*s.valueAfter / s.after)
-	return math.Abs(math.Log(moved/k)) < math.Abs(math.Log(moved))
-}
-
-// wholeFactorMost bounds the factors wholeFactor tries: past it, so many
-// fit that none tells.
-const wholeFactorMost = 1000
-
-// wholeFactor reads ratio, what each of before units became, as a whole
-// number n of at least two new units for each old one, or as one new
-// unit for n old ones: the new quantity is n·before, or before/n, exactly
-// or short of the fraction of a unit paid in cash. false where neither
-// fits, or where more than one does, as on a small position whose new
-// quantity rounds down to the same whole units under several.
-func wholeFactor(before, ratio float64) (float64, bool) {
-	if !(before > 0) || !(ratio > 0) {
-		return 0, false
-	}
-	after := before * ratio
-	fits := func(target float64) bool {
-		tol := lots.Tolerance(target)
-		return math.Abs(after-target) <= tol || math.Abs(after-math.Floor(target)) <= tol
-	}
-	var found []float64
-	try := func(lo, hi float64, factor, target func(n float64) float64) bool {
-		if hi-lo > wholeFactorMost {
-			return false
-		}
-		for n := max(lo, 2); n <= hi; n++ {
-			if fits(target(n)) {
-				found = append(found, factor(n))
-			}
-		}
-		return true
-	}
-	if !try(math.Floor(after/before), math.Ceil((after+1)/before),
-		func(n float64) float64 { return n }, func(n float64) float64 { return n * before }) ||
-		!try(math.Floor(before/(after+1)), math.Ceil(before/after),
-			func(n float64) float64 { return 1 / n }, func(n float64) float64 { return before / n }) ||
-		len(found) != 1 {
-		return 0, false
-	}
-	return found[0], true
 }

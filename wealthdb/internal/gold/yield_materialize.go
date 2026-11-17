@@ -37,7 +37,8 @@ func yieldInstants(toEpoch int64) []int64 {
 // endings and spans, through the transaction (rewriteTables).
 func MaterializeYield(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
 	return rewriteTables(ctx, db, "MaterializeYield", beginPinned, yieldMaterialized, func(tx *sql.Tx) (int, error) {
-		return fillYield(ctx, tx, p.ToEpoch, p.ComputedAt, p.CashflowLookback)
+		return materializeYield(ctx, tx, yieldInstants(p.ToEpoch), materializeCurrencies, p.ComputedAt,
+			p.CashflowLookback)
 	})
 }
 
@@ -46,8 +47,15 @@ var yieldMaterialized = []string{"report_yield_positions", "report_yield_buckets
 	"report_yield_rates", "report_yield_events", "report_yield_received", "report_cashflow_plan",
 	"benchmark_yield"}
 
-// fillYield writes MaterializeYield's rows.
-func fillYield(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64, lookback int) (int, error) {
+// materializeYield writes MaterializeYield's rows for the books of each
+// instant of instants, oldest first, in each currency of currencies. The
+// last instant is today: its books give the projection, the income
+// received and the cash flow plan, and its inputs the benchmarks of
+// every instant of yieldInstants. A test passes one instant or one
+// currency to assert one table.
+func materializeYield(ctx context.Context, tx *sql.Tx, instants []int64, currencies []string, computedAt int64,
+	lookback int) (int, error) {
+	toEpoch := instants[len(instants)-1]
 	m := yieldMaterializer{ctx: ctx, tx: tx, computedAt: computedAt}
 	mix, err := readBenchmarkMix(ctx, tx)
 	if err != nil {
@@ -57,13 +65,13 @@ func fillYield(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64, lookb
 	// What depends on neither the currency nor the instant is read once.
 	shared := &yieldShared{}
 	var now *yield.Inputs
-	for _, at := range yieldInstants(toEpoch) {
+	for _, at := range instants {
 		// What does not depend on the currency is read once an instant.
 		base, err := readYieldBase(ctx, tx, at, shared)
 		if err != nil {
 			return 0, fmt.Errorf("MaterializeYield: %w", err)
 		}
-		for _, ccy := range materializeCurrencies {
+		for _, ccy := range currencies {
 			in, err := base.inputs(ctx, tx, ccy)
 			if err != nil {
 				return 0, fmt.Errorf("MaterializeYield: %w", err)

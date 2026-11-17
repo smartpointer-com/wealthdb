@@ -11,97 +11,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
-// A whole factor is n new units for each old one, or one for n old ones,
-// exactly or short of a fraction paid in cash; anything else is none, and
-// so is a quantity several factors round to.
-func TestAWholeFactor(t *testing.T) {
-	t.Parallel()
-	for _, c := range []struct {
-		before, after, want float64
-	}{
-		{33, 660, 20},
-		{100, 1000, 10},
-		{10.5, 31, 3},
-		{105, 10, 0.1},
-		{1000, 50, 0.05},
-		{100, 150, 0},
-		{10, 19, 0},
-		{0.05, 0.08, 0},
-		{100, 100, 0},
-		{7, 1, 0},
-		{0.5, 1, 0},
-	} {
-		k, ok := wholeFactor(c.before, c.after/c.before)
-		if ok != (c.want != 0) || (ok && math.Abs(k-c.want) > 1e-12) {
-			t.Errorf("%v to %v: %v %v, want %v", c.before, c.after, k, ok, c.want)
-		}
-	}
-}
-
-// A step's trades explain its quantities, or its change is one of units:
-// a corporate action's leg names it, or the price per unit moved by its
-// inverse. A change neither names is a trade no transaction records, and
-// so is a small delivery. The quantities give the factor; the legs count
-// once each and must state it. A change of units no whole factor
-// explains, or one the legs state otherwise, is not ok.
-func TestAChangeOfUnits(t *testing.T) {
-	t.Parallel()
-	v := func(x float64) *float64 { return &x }
-	for _, c := range []struct {
-		what  string
-		s     unitStep
-		k     float64
-		units bool
-	}{
-		{"a buy", unitStep{before: 100, after: 120, trades: []unitTrade{{at: 1, qty: 20}}}, 1, false},
-		{"a 20-for-1 change with its leg", unitStep{before: 100, after: 2000,
-			trades: []unitTrade{{at: 1, qty: 1900, corp: true}}}, 20, false},
-		{"a leg that states the new total", unitStep{before: 100, after: 2000,
-			trades: []unitTrade{{at: 1, qty: 2000, corp: true}}}, 20, false},
-		{"a 2-for-1 leg stated twice", unitStep{before: 100, after: 200,
-			trades: []unitTrade{{at: 1, qty: 100, corp: true}, {at: 1, qty: 100, corp: true}}}, 2, false},
-		{"a buy at the leg's second, sorted first", unitStep{before: 100, after: 250,
-			trades: []unitTrade{{at: 1, qty: 50}, {at: 1, qty: 100, corp: true}}}, 2, false},
-		{"a 2-for-1 leg, then a buy", unitStep{before: 100, after: 250,
-			trades: []unitTrade{{at: 1, qty: 100, corp: true}, {at: 2, qty: 50}}}, 2, false},
-		{"a 1-for-10 change as one net leg", unitStep{before: 100, after: 10,
-			trades: []unitTrade{{at: 1, qty: -90, corp: true}}}, 0.1, false},
-		{"a leg that states another change", unitStep{before: 100, after: 200,
-			trades: []unitTrade{{at: 1, qty: 300, corp: true}}}, 1, true},
-		{"a scrip dividend", unitStep{before: 100, after: 102, trades: []unitTrade{{at: 1, qty: 2, corp: true}}}, 1,
-			false},
-		{"a reverse split of a small position", unitStep{before: 7, after: 1,
-			trades: []unitTrade{{at: 1, qty: -7, corp: true}, {at: 1, qty: 1, corp: true}}}, 1, true},
-		{"a reverse split as two legs", unitStep{before: 105, after: 10,
-			trades: []unitTrade{{at: 1, qty: -105, corp: true}, {at: 1, qty: 10, corp: true}}}, 0.1, false},
-		{"a buy before a 2-for-1 leg", unitStep{before: 100, after: 240,
-			trades: []unitTrade{{at: 1, qty: 20}, {at: 2, qty: 120, corp: true}}}, 2, false},
-		{"a 3-for-2 split with its leg", unitStep{before: 100, after: 150,
-			trades: []unitTrade{{at: 1, qty: 50, corp: true}}}, 1, true},
-		{"a 10-for-1 change the price shows", unitStep{before: 200, after: 2000, valueBefore: v(10000),
-			valueAfter: v(10460)}, 10, false},
-		{"a buy, then a 10-for-1 change", unitStep{before: 200, after: 2200, valueBefore: v(10000),
-			valueAfter: v(10460), trades: []unitTrade{{at: 1, qty: 20}}}, 10, false},
-		{"a 10-for-1 change, then a buy", unitStep{before: 200, after: 2020, valueBefore: v(10000),
-			valueAfter: v(10460), trades: []unitTrade{{at: 1, qty: 20}}}, 10, false},
-		{"a 1-for-10 change the price shows", unitStep{before: 2000, after: 200, valueBefore: v(10000),
-			valueAfter: v(9800)}, 0.1, false},
-		{"a buy no transaction records", unitStep{before: 100, after: 200, valueBefore: v(5000),
-			valueAfter: v(10100)}, 1, false},
-		{"a doubling with no price", unitStep{before: 100, after: 200}, 1, false},
-		{"a 3-for-2 change the price shows", unitStep{before: 100, after: 150, valueBefore: v(3000),
-			valueAfter: v(3100)}, 1, true},
-		{"a sale no transaction records", unitStep{before: 100, after: 90, valueBefore: v(3000),
-			valueAfter: v(2600)}, 1, false},
-		{"a position opened", unitStep{before: 0, after: 100}, 1, false},
-	} {
-		k, ok := c.s.change()
-		if math.Abs(k-c.k) > 1e-12 || ok == c.units {
-			t.Errorf("%s: %v %v, want %v units %v", c.what, k, ok, c.k, c.units)
-		}
-	}
-}
-
 // A transaction moves its key's quantity as the lot policy reads it: a
 // trade by its quantity, cash in lieu that names one as a sale, a
 // corporate action's leg as a delivery.
@@ -226,12 +135,12 @@ func TestAQuantityBetweenSnapshots(t *testing.T) {
 			corp:  {{at: 10, qty: q(100)}, {at: 50, prev: 10, qty: q(1030)}},
 			gone:  {{at: 10, qty: q(100)}, {at: 60, prev: 50, qty: q(0)}},
 		},
-		trades: map[unitKey][]unitTrade{
-			out:   {{at: 20, qty: 50}},
-			in:    {{at: 20, qty: 50}},
-			stray: {{at: 15, qty: 5}},
-			corp:  {{at: 20, qty: 30}, {at: 40, qty: 900, corp: true}},
-			gone:  {{at: 62, qty: 1}},
+		trades: map[unitKey][]yield.UnitTrade{
+			out:   {{At: 20, Qty: 50}},
+			in:    {{At: 20, Qty: 50}},
+			stray: {{At: 15, Qty: 5}},
+			corp:  {{At: 20, Qty: 30}, {At: 40, Qty: 900, Corp: true}},
+			gone:  {{At: 62, Qty: 1}},
 		},
 		late: map[unitKey]map[int64]bool{},
 	}

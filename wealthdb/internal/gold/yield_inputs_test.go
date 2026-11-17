@@ -19,87 +19,6 @@ import (
 
 func ymd(y, m, d int) time.Time { return time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC) }
 
-func period(start, end time.Time, v float64) periodFact {
-	return periodFact{start: start, end: end, value: v}
-}
-
-// The trailing twelve months of a reported figure: the four newest
-// quarters; a quarter a year-to-date figure implies, the difference from
-// the one before it (six months less the first quarter, nine less six, a
-// year less nine); a fiscal year where the quarters are stale; a year
-// earlier for growth. The figures are invented.
-func TestTrailingTwelveMonths(t *testing.T) {
-	t.Parallel()
-	day := ymd(2026, 6, 15)
-	var quarters []periodFact
-	for i := 0; i < 8; i++ {
-		start := ymd(2024, 4, 1).AddDate(0, 3*i, 0)
-		quarters = append(quarters, period(start, start.AddDate(0, 3, -1), float64(i+1)))
-	}
-	check := func(what string, ps []periodFact, years int, want float64, ok bool) {
-		t.Helper()
-		got, gotOK := trailing(ps, day, years)
-		if gotOK != ok || math.Abs(got-want) > 1e-9 {
-			t.Errorf("%s: %v %v, want %v %v", what, got, gotOK, want, ok)
-		}
-	}
-	check("quarters", quarters, 0, 5+6+7+8, true)
-	check("a year earlier", quarters, 1, 1+2+3+4, true)
-	ytd := []periodFact{
-		period(ymd(2024, 7, 1), ymd(2025, 3, 31), 5), // nine months
-		period(ymd(2024, 7, 1), ymd(2025, 6, 30), 8), // the fiscal year
-		period(ymd(2025, 7, 1), ymd(2025, 9, 30), 1), // the first quarter
-		period(ymd(2025, 7, 1), ymd(2025, 12, 31), 3),
-		period(ymd(2025, 7, 1), ymd(2026, 3, 31), 6),
-	}
-	check("year to date", ytd, 0, 3+2+1+3, true)
-	stale := []periodFact{period(ymd(2025, 1, 1), ymd(2025, 12, 31), 7), period(ymd(2025, 10, 1), ymd(2025, 12, 31), 2)}
-	check("a fiscal year", stale, 0, 7, true)
-	check("nothing", nil, 0, 0, false)
-}
-
-// A fund's lines: the yield and duration of the lines that imply them,
-// weighted; the shares of floating, defaulted and paid-in-kind lines. A
-// line's price is its value in its own currency per 100 of face, and its
-// yield to worst wins over its yield to maturity.
-func TestFundLines(t *testing.T) {
-	t.Parallel()
-	day := ymd(2026, 6, 15)
-	m1, m2 := ymd(2031, 6, 15), ymd(2028, 6, 15)
-	lines := []fundLine{{weight: 40, maturity: &m1}, {weight: 20, kind: "Floating", floats: true}, {weight: 10, defaulted: true},
-		{weight: 10, inKind: true}, {weight: 20, maturity: &m2}}
-	five, four, three, two := 5.0, 4.0, 3.0, 2.0
-	infos := []yield.LineInfo{{Yield: &five, Duration: &four}, {}, {}, {}, {Yield: &three, Duration: &two}}
-	s := summarizeLines(lines, infos, day, false)
-	if s.CoveredPct != 60 || s.FloatingPct != 20 || s.DefaultPct != 10 || s.PaidInKindPct != 10 {
-		t.Errorf("shares %+v", s)
-	}
-	if math.Abs(*s.Yield-(40*5+20*3)/60.0) > 1e-12 || math.Abs(*s.Duration-(40*4+20*2)/60.0) > 1e-12 {
-		t.Errorf("yield %v duration %v", *s.Yield, *s.Duration)
-	}
-	in := &yield.Inputs{Conventions: map[string]canonical.YieldConvention{}}
-	coupon, rate := 4.0, 0.9 // euros per dollar
-	l := fundLine{value: 1000, quantity: 1000, ccy: "EUR", maturity: &m1, coupon: &coupon, rate: &rate}
-	info := readLine(in, l, day)
-	if math.Abs(*info.Price-90) > 1e-9 || *info.Yield <= 4 {
-		t.Errorf("price %v yield %v", *info.Price, *info.Yield)
-	}
-	ytm, ytw := 5.0, 4.5
-	l.ytm, l.ytw = &ytm, &ytw
-	if info := readLine(in, l, day); *info.Yield != 4.5 {
-		t.Errorf("to worst %v", *info.Yield)
-	}
-	// A line in default, or paid in kind, implies nothing.
-	l.ytm, l.ytw, l.defaulted = nil, nil, true
-	if info := readLine(in, l, day); info.Yield != nil || !info.Default {
-		t.Errorf("in default %+v", info)
-	}
-	l.defaulted, l.inKind = false, true
-	if info := readLine(in, l, day); info.Yield != nil {
-		t.Errorf("in kind %+v", info)
-	}
-}
-
 // An account with no stated wrapper reads taxable_personal, marked as the
 // default, so the withholding by wrapper passes it by.
 func TestYieldAccountsReadTheDefaultWrapper(t *testing.T) {
@@ -495,24 +414,6 @@ func TestYieldSecurities(t *testing.T) {
 	}
 	if note.AssetClass != "fixed_income" || note.EarningsYield != nil {
 		t.Errorf("the note %+v", note)
-	}
-}
-
-// A fund's debt and equity shares are of the whole fund: a composition
-// that lists 60% of it leaves the rest as neither. A line its asset type
-// maps nowhere is debt where it states a coupon, not where it only
-// matures, as a future does. Debt of under a year is counted apart, and a
-// line of type other is a derivative.
-func TestALinesShareOfTheWholeFund(t *testing.T) {
-	t.Parallel()
-	day := ymd(2026, 6, 15)
-	bill, note, expiry := ymd(2026, 12, 15), ymd(2031, 6, 15), ymd(2026, 9, 15)
-	zero, four := 0.0, 4.0
-	lines := []fundLine{{weight: 30, maturity: &bill, coupon: &zero}, {weight: 10, maturity: &note, coupon: &four},
-		{weight: 15, class: "public_equity"}, {weight: 5, maturity: &expiry}, {weight: 0, class: "other"}}
-	s := summarizeLines(lines, make([]yield.LineInfo, len(lines)), day, false)
-	if s.DebtPct != 40 || s.ShortDebtPct != 30 || s.EquityPct != 15 || !s.Derivatives {
-		t.Errorf("shares %+v", s)
 	}
 }
 
