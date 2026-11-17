@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -53,7 +54,7 @@ func newWebRow(row webTxRow) webRow {
 	out.pdfBackfill = !out.decoded || isPDFCashBackfill(out.pl)
 	out.hint = webKindHint(row.descKind, row.counterparty)
 	statementEra := isStatementEraID(row.txID)
-	out.kind, out.net, out.signed = webProjectedNet(out.hint, statementEra, exportCells(statementEra, out.pdfBackfill),
+	out.kind, out.net, out.signed = webProjectedNet(out.hint, statementEra, exportCells(statementEra, row.payload),
 		row.debit, row.credit)
 	return out
 }
@@ -61,8 +62,21 @@ func newWebRow(row webTxRow) webRow {
 // exportCells reports whether a row's amount cells are the export's,
 // signed by the sheet: a row neither reconstructed from a statement nor
 // read from a printed document, whose figures are as printed (an
-// advice's among them, which carries the backfill's source marker).
-func exportCells(statementEra, pdfBackfill bool) bool { return !statementEra && !pdfBackfill }
+// advice's among them). It reads the source marker off the raw payload,
+// not the backfill flag: that flag also covers a payload that does not
+// decode, which is conservative for the external gate but says nothing
+// of how the cells are signed.
+func exportCells(statementEra bool, payload string) bool {
+	return !statementEra && !pdfSourced(payload)
+}
+
+// pdfSourced reports whether a raw payload carries the PDF archive's
+// source marker (a statement or an advice, in either silver's spelling).
+// It reads the text, so a payload that does not decode still says where
+// it came from.
+func pdfSourced(payload string) bool {
+	return strings.Contains(payload, sourceStatementPDF) || strings.Contains(payload, sourceAdvicePDF)
+}
 
 // ledger is the web ledger, read on the first call; later calls return
 // the same rows. A reader with no silver behind it has none.

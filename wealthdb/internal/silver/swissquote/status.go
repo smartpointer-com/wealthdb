@@ -28,7 +28,7 @@ func clock(runStamp bool) silver.Clock {
 		silver.RangePast("transactions", "occurred_at"),
 	}
 	if runStamp {
-		newRows = append(newRows, restatedRows)
+		newRows = append(newRows, silver.RangeStampedPast("transactions", "occurred_at", "run_snapshot_at"))
 	}
 	return silver.Clock{
 		Kind: "swissquote",
@@ -46,12 +46,6 @@ func clock(runStamp bool) silver.Clock {
 		},
 	}
 }
-
-// restatedRows is the range of the transactions a dump past the
-// watermark wrote, the one argument it binds.
-const restatedRows = `SELECT
-    (SELECT MIN(occurred_at) FROM transactions WHERE run_snapshot_at > ?1),
-    (SELECT MAX(occurred_at) FROM transactions WHERE run_snapshot_at > ?1)`
 
 // Status and ChangeWindow are the clock's (silver.Clock).
 func (c *Connection) Status(ctx context.Context) (canonical.Status, error) {

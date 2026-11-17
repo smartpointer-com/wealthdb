@@ -45,8 +45,8 @@ func TestRegisteredFlowPolicies(t *testing.T) {
 		"amex": bank, "angellist": bank, "chase": bank, "fidelity": bank, "firstcitizens": bank,
 		"raiffeisen_at": bank, "relevate": bank, "schwab": bank, "swissquote": bank, "viac": bank,
 		// A crypto tracker's coin transfer legs count as every source's
-		// transfers do: a pair the load stored nets, an unpaired leg is a
-		// flow.
+		// transfers do: a pair nets as any source's does; an unpaired leg
+		// is a flow.
 		"cointracking": bank,
 		// The generic kinds cannot know which institution a source models;
 		// returns_policy_overrides states a source's own regime.

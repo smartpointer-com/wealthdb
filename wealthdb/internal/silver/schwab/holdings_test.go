@@ -10,8 +10,8 @@ import (
 )
 
 // holdingSeed is a schwab-api silver's rows, its holdings stated in the
-// payload: a fund with a name a dividend matches, a bond with its terms,
-// cash, a short option.
+// payload: a fund with a name a dividend matches, a bond with its terms
+// and an interest line that names them, cash, a short option.
 const holdingSeed = `
 INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 5, '/x/1'), (2000, 5, '/x/2');
 INSERT INTO positions(snapshot_at, account_external_id, instrument_key, payload) VALUES
@@ -28,7 +28,9 @@ INSERT INTO positions(snapshot_at, account_external_id, instrument_key, payload)
        "symbol":"SPX   990119C09990000","description":"SPX 01/19/2099 999 C"}}');
 INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, payload) VALUES
     ('A1', 1500, 'ACC1', 'DIVIDEND_OR_INTEREST',
-     '{"netAmount":5.00,"description":"EXAMPLE TOTAL MARKET ETF","transferItems":[]}');`
+     '{"netAmount":5.00,"description":"EXAMPLE TOTAL MARKET ETF","transferItems":[]}'),
+    ('A2', 1600, 'ACC1', 'DIVIDEND_OR_INTEREST',
+     '{"netAmount":206.25,"description":"US TREASU NT 4.125% UST NOTE DUE 09/09/2099","transferItems":[]}');`
 
 // A silver older than migration 0006 states a holding in its payload
 // alone, and reads as the same records as the silver the migration
@@ -60,6 +62,10 @@ func TestASilverOlderThanTheHoldingColumnsReadsTheSame(t *testing.T) {
 	}
 	if !strings.Contains(want, "912796ZZ9") || !strings.Contains(want, `"interest_rate"`) {
 		t.Errorf("records lack the bond and its terms:\n%s", want)
+	}
+	// The interest line reaches the bond through the held-bond read.
+	if !strings.Contains(want, `"InstrumentExternalID":"912796ZZ9","InstrumentHint":"","Kind":"interest"`) {
+		t.Errorf("the bill's interest line names no bond:\n%s", want)
 	}
 }
 

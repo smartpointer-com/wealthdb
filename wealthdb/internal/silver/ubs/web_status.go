@@ -8,14 +8,9 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// webReader reads from the ubs-web silver SQLite. It owns
-// the splice cutoff: every record passed downstream has either no
-// known PSN counterpart (no cutoff) or a value/snapshot timestamp
-// strictly less than PSN-start for its banking relationship.
-//
-// PSN-start per relationship is derived per Snapshots/Transactions
-// call from the configured RelationshipPair list and the *psnReader
-// handle (buildPSNStartByWebRel).
+// webReader reads from the ubs-web silver SQLite. The web cash pass
+// applies the PSN cut (psnCut), and the statement history stops at the
+// same PSN start (buildHistoricalCutoffs).
 type webReader struct {
 	db *sql.DB
 

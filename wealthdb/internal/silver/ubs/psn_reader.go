@@ -6,9 +6,8 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// psnReader reads from the ubs-psn silver SQLite. Methods are
-// spread across snapshots.go / transactions.go / status.go — this
-// file defines the type and its lifecycle.
+// psnReader reads from the ubs-psn silver SQLite. This file defines the
+// type and its lifecycle; each pass lives in the file of its job.
 type psnReader struct {
 	db *sql.DB
 	// parts is the file's optional schema (schema).

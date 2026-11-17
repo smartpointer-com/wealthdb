@@ -537,25 +537,16 @@ func isDepositProductBooking(bookingType string) bool {
 // classification of the entry — "Third-Party Charges", "Dividend",
 // "Custody Price".
 //
-// webKind already carries that vocabulary, and reading it there keeps
-// one list rather than two that drift: with neither direction set, a
-// booking type it names resolves to a kind, while anything else falls
-// past the switch to the direction fallback and, with no direction, to
-// TxKindOther. So "resolves to something" is exactly "is a booking
-// type", and a type added to the classifier is recognised here for
-// free.
+// It asks webKind with no direction set. A type bookingTypes gives a
+// kind or a trade resolves to it; anything else, with no direction to
+// fall back on, resolves to TxKindOther. A type added to the table is
+// recognised here for free.
 //
-// ONE BLIND SPOT, and it is structural rather than an oversight: a
-// booking type whose kind comes from the DIRECTION — every payment
-// order, "ORDER" among them — resolves to TxKindOther when asked with
-// no direction, so this returns false for it. Such a type is a booking
-// type by any other measure, and the callers are written to survive
-// the answer: webKindHint returns the booking type unchanged when
-// neither text is recognised, the payee refusal in text.go only
-// declines to blank a payee it would have blanked, and isFiledBooking
-// consults the booking's rail beside it. Widening the probe is not the
-// fix: asked WITH a direction the fallback answers for every string,
-// and then nothing is not a booking type.
+// A type whose kind the direction decides (every payment order, `ORDER`
+// among them) has no kind in bookingTypes, so this returns false for it.
+// Callers survive that: webKindHint returns the type unchanged, the payee
+// refusal in projectWebTxText only declines to blank a payee, and
+// isFiledBooking also asks the type's rail.
 func isBookingType(s string) bool {
 	return strings.TrimSpace(s) != "" &&
 		webKind(s, false, false) != canonical.TxKindOther

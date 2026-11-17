@@ -61,7 +61,7 @@ func seedWebTx(t *testing.T, r *webReader, txID, acct string, day int64, ccy str
 	t.Helper()
 	payload, kind := `{}`, ""
 	if pdfRail {
-		payload = `{"source":"account_statement_pdf","booking_type":"E-BANKING PAYMENT ORDER","internal_transfer":false,"counter_account":null}`
+		payload = `{"source":"account_statement_pdf","booking_type":"E-BANKING PAYMENT ORDER","counter_account":null}`
 		kind = "E-BANKING PAYMENT ORDER"
 	}
 	seedWebTxRaw(t, r, txID, acct, day, ccy, amt, kind, payload)
@@ -483,7 +483,7 @@ func TestConduitVerdictLeavesTheRowSpendable(t *testing.T) {
 	seedWebTxRaw(t, r, "CARD", vetoAcctA, vetoDay1, "CHF", -111.11,
 		"DEBIT CARD PAYMENT",
 		`{"source":"account_statement_pdf","booking_type":"DEBIT CARD PAYMENT",`+
-			`"internal_transfer":false,"counter_account":null,"continuation":[]}`)
+			`"counter_account":null,"continuation":[]}`)
 
 	kinds := emittedKinds(t, r, nil)
 	internal := emittedInternal(t, r, nil)

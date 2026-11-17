@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -153,22 +152,29 @@ func securitiesSide(hasDebit, hasCredit bool) canonical.TxKind {
 }
 
 // mt940FeedStart returns the earliest value_date carried by the MT940/CSV
-// feed (rows without the PDF archive's source markers), or 0 when the silver
-// holds no MT940 rows at all. This is the era boundary for the classifier's
-// rail promotion: from this day on, PDF rows are per-account gap-fills inside
-// an era whose arrivals the MT940 feed counts, so they adopt MT940 semantics;
-// before it, the deep backfill era stays conservative (see pdfCashIsExternal).
-// A PDF-only silver (no MT940 coverage yet) therefore never promotes.
+// feed (rows without the PDF archive's source marker, pdfSourced), or 0
+// when the silver holds no MT940 rows at all. This is the era boundary
+// for the classifier's rail promotion: from this day on, PDF rows are
+// per-account gap-fills inside an era whose arrivals the MT940 feed
+// counts, so they adopt MT940 semantics; before it, the deep backfill era
+// stays conservative (see pdfCashIsExternal). A PDF-only silver (no MT940
+// coverage yet) therefore never promotes.
 func (r *webReader) mt940FeedStart(ctx context.Context) (int64, error) {
-	var start sql.NullInt64
-	err := r.db.QueryRowContext(ctx, `
-SELECT MIN(value_date) FROM transactions
- WHERE payload NOT LIKE '%account_statement_pdf%'
-   AND payload NOT LIKE '%payment_advice_pdf%'`).Scan(&start)
+	rows, err := r.ledger(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("mt940FeedStart: %w", err)
+		return 0, err
 	}
-	return start.Int64, nil
+	var start int64
+	found := false
+	for i := range rows {
+		if pdfSourced(rows[i].payload) {
+			continue
+		}
+		if !found || rows[i].valueDate < start {
+			start, found = rows[i].valueDate, true
+		}
+	}
+	return start, nil
 }
 
 // webTxPayload is every field the per-row helpers read out of a web

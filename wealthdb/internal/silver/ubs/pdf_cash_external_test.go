@@ -33,46 +33,6 @@ func pdfPayload(t *testing.T, counter, bookingType string, continuation []string
 	return p
 }
 
-// TestPdfCashIsExternalInternalTransferVeto is the CAPITAL-FABRICATION regression.
-// A mandate-funding / book-transfer row whose continuation carries one of the
-// name-free markers, whose counter_account is a non-own CH/LI IBAN ABSENT from
-// the relationship's `accounts` set, and whose booking_type carries none of the
-// guard tokens (HYPOTHEK/MATURITY/CLOSING — the mandate markers live on the
-// continuation lines, not booking_type), satisfies all four legacy EXTERNAL
-// conditions. Classified EXTERNAL it fabricates owner capital on an
-// intra-relationship conduit move. The marker must VETO external BEFORE the
-// IBAN promotion.
-func TestPdfCashIsExternalInternalTransferVeto(t *testing.T) {
-	// A CH IBAN that is NOT in the own set — an own mandate/portfolio destination
-	// the markers recognise but that never made it into `accounts`, so own-IBAN
-	// membership can't demote it.
-	const unknownCH = "CH00 0000 0000 0000 0000 0"
-	own := map[string]bool{} // deliberately empty: the destination is absent
-
-	// A marker ⇒ INTERNAL despite passing every IBAN/booking check.
-	pInternal := pdfPayload(t, unknownCH, "CREDIT", mandateFunding)
-	if pdfCashIsExternal(pInternal, own, false, true) {
-		t.Fatalf("FABRICATION: mandate-funding move to a non-own absent CH IBAN "+
-			"classified EXTERNAL; the marker must veto. payload=%+v", pInternal)
-	}
-
-	// Control: the SAME row without the marker DOES promote to external via the
-	// IBAN path — proving the veto (not some other guard) is what flipped it.
-	pExternal := pdfPayload(t, unknownCH, "CREDIT", []string{"SOME EXTERNAL BANK"})
-	if !pdfCashIsExternal(pExternal, own, false, true) {
-		t.Errorf("control: non-own CH IBAN, no marker, no guard token should be EXTERNAL; payload=%+v", pExternal)
-	}
-
-	// The marker also vetoes the outbound payment-rail promotion: a payment
-	// order whose continuation identifies an intra-relationship move must stay
-	// INTERNAL even though its booking type is in the rail set.
-	pRailInternal := pdfPayload(t, "", "E-BANKING PAYMENT ORDER", []string{"UEBERTRAG", "REDUKTION US EQUITY MANDAT"})
-	if pdfCashIsExternal(pRailInternal, own, true, true) {
-		t.Fatalf("FABRICATION: mandate-reducing payment order classified EXTERNAL "+
-			"via the rail promotion; the marker must veto. payload=%+v", pRailInternal)
-	}
-}
-
 // TestPdfInternalTransfer pins the rule's two readings: a statement row's
 // markers count under a cash-moving booking type only, and an advice's purpose
 // lines count with no booking type at all, in either silver's spelling of an
@@ -113,6 +73,14 @@ func TestPdfInternalTransfer(t *testing.T) {
 // TestPdfCashIsExternalDecisionMatrix pins the full classifier so the veto sits
 // correctly relative to the existing IBAN / booking-type rules and nothing else
 // regressed.
+//
+// The first rows are the CAPITAL-FABRICATION regression. A mandate-funding or
+// book-transfer row whose continuation carries a name-free marker, whose
+// counter is a CH IBAN absent from the own set, and whose booking type carries
+// no guard token passes every other EXTERNAL condition. Classified EXTERNAL it
+// fabricates owner capital on an intra-relationship move, so the marker vetoes
+// external before the IBAN and the rail promotions. The same row without the
+// marker is external, which proves the veto is what decides.
 func TestPdfCashIsExternalDecisionMatrix(t *testing.T) {
 	const ownCH = "CH11 1111 1111 1111 1111 1"
 	const extCH = "CH22 2222 2222 2222 2222 2"
@@ -130,6 +98,7 @@ func TestPdfCashIsExternalDecisionMatrix(t *testing.T) {
 	}{
 		{"an internal transfer vetoes external", extCH, "CREDIT", true, false, true, false},
 		{"an internal transfer vetoes the rail promotion", "", "PAYMENT ORDER", true, true, true, false},
+		{"the same transfer without the marker is external", extCH, "CREDIT", false, false, true, true},
 		{"external CH counterparty", extCH, "SALE", false, false, true, true},
 		{"external CH counterparty, deep era", extCH, "SALE", false, false, false, true},
 		{"own CH counterparty is internal", ownCH, "SALE", false, false, true, false},
@@ -220,7 +189,7 @@ func TestUndecodablePayloadStaysGated(t *testing.T) {
 	seedRailEraAnchor(t, r)
 
 	const rail = `"source":"account_statement_pdf",` +
-		`"booking_type":"E-BANKING PAYMENT ORDER","internal_transfer":false`
+		`"booking_type":"E-BANKING PAYMENT ORDER"`
 	// Control: a readable payment-order row promotes to EXTERNAL on the
 	// rail evidence and keeps its withdrawal kind.
 	seedWebTxRaw(t, r, "RAIL-READABLE", vetoAcctA, vetoDay1, "CHF", -40,

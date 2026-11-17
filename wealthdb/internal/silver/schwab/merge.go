@@ -251,26 +251,35 @@ func (c *Connection) ensureSymbolBridge(ctx context.Context) (map[string]string,
 			// keeps its own key, as the historical positions do.
 			return map[string]string{}, nil
 		}
-		return buildSymbolToCUSIPBridge(ctx, c.api.db)
+		return c.api.symbolToCUSIPBridge(ctx)
 	})
 }
 
-// buildSymbolToCUSIPBridge scans schwab-api silver positions for
-// (symbol, cusip) pairs. When a symbol maps unambiguously to one
-// CUSIP, it's added to the bridge. Symbol→CUSIP conflicts (the
-// same ticker reused by Schwab for different securities over
-// time, which is rare but possible) are skipped — the web side
+// symbolToCUSIPBridge scans schwab-api silver positions for
+// (symbol, cusip) pairs: in the columns of migration 0006, or in the
+// payload of an older silver (holdingRead). When a symbol maps
+// unambiguously to one CUSIP, it's added to the bridge. Symbol→CUSIP
+// conflicts (the same ticker reused by Schwab for different securities
+// over time, which is rare but possible) are skipped — the web side
 // then falls back to the ticker, leaving the symbol column
 // blank rather than mismapping.
-func buildSymbolToCUSIPBridge(ctx context.Context, api *sql.DB) (map[string]string, error) {
-	const q = `
-SELECT DISTINCT json_extract(payload,'$.instrument.symbol') AS sym,
-                json_extract(payload,'$.instrument.cusip')  AS cusip
+func (c *apiReader) symbolToCUSIPBridge(ctx context.Context) (map[string]string, error) {
+	holding, err := c.holdingRead(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pair := `symbol AS sym, cusip`
+	if !holding.columns {
+		pair = `json_extract(payload,'$.instrument.symbol') AS sym,
+                json_extract(payload,'$.instrument.cusip')  AS cusip`
+	}
+	q := `
+SELECT DISTINCT ` + pair + `
   FROM positions
  WHERE sym  IS NOT NULL AND sym  != ''
    AND cusip IS NOT NULL AND cusip != ''`
 	candidates := map[string]map[string]struct{}{}
-	if err := silver.ScanRows(ctx, api, "schwab symbol bridge", q, func(rows *sql.Rows) error {
+	if err := silver.ScanRows(ctx, c.db, "schwab symbol bridge", q, func(rows *sql.Rows) error {
 		var sym, cusip string
 		if err := rows.Scan(&sym, &cusip); err != nil {
 			return err

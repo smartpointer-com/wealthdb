@@ -498,9 +498,10 @@ double-count. Guard: `TestStaggeredJournalFundedNoPhantom`.
 *(referenced by DESIGN.md §10.9 and `internal/returns/returnspolicy.go`)*
 
 Source economics differ: NAV-only tiny bases, drained closures, conduit
-cash. A single hardcoded model is wrong for most sources. Per-source `if` branches in shared engine code would leak one
-source's behaviour into another, because at the global grain every
-constituent merges into one entity. So the engine reads a declarative
+cash. A single hardcoded model is wrong for most sources. Per-source
+`if` branches in shared engine code would leak one source's behaviour
+into another, because at the global grain every constituent merges into
+one entity. So the engine reads a declarative
 `ReturnsPolicy` per source instead, and the returns calculation names no
 source.
 
@@ -564,10 +565,11 @@ source.
     sparse cash-only pre-history, so a tiny opening base cannot inflate
     the return.
 - **cointracking** registers the default policy. A coin's transfer legs
-  count as any source's transfers do. A move between two wallets is a pair
-  the load stores, and it nets where a grain holds both wallets. A wallet
-  that debuts funded by such a move onboards only what the move did not
-  bring in. A leg nothing pairs is a flow at the day's rate.
+  count as any source's transfers do. A move between two wallets nets
+  where a grain holds both wallets: the netter pairs its legs by value,
+  and with `returns_transfer_matching` on, the pair the load stores nets
+  too. A wallet that debuts funded by such a move onboards only what the
+  move did not bring in. A leg nothing pairs is a flow at the day's rate.
 - **Config overrides.** wealthdb.cfg can adjust a source's registered
   policy (`returns_policy_overrides`, DESIGN.md §5.6), keyed by
   silver_source_id. The override applies at the engine's single

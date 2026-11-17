@@ -39,8 +39,7 @@ func (c psnCut) excludes(account string, at int64) bool {
 
 // buildAccountToRelMap returns a web account_external_id → web
 // banking_relationship_id lookup, taking the latest snapshot per
-// account. Used by Transactions to find each row's relationship
-// for the cutoff filter.
+// account. Used by the cut (psnCut.relOfAccount).
 func (r *webReader) buildAccountToRelMap(ctx context.Context) (map[string]string, error) {
 	const q = `
 SELECT a.account_external_id, a.banking_relationship_id
@@ -71,15 +70,22 @@ SELECT a.account_external_id, a.banking_relationship_id
 //
 // Resolution order per relationship:
 //  1. RelationshipPair.PSNStartOverride if non-zero.
-//  2. MIN(snapshot_at) in PSN for the paired PSNID, otherwise.
+//  2. The paired PSNID's earliest cash-account snapshot, otherwise
+//     (psnRoster.firstSnapshotByRelationship).
 //
-// A relationship with no PSN counterpart (PSNID empty, or empty
-// MIN) gets cutoff=0 → no filter applied to its web rows.
+// A relationship with no PSN counterpart (PSNID empty, or no cash
+// account in the roster) gets cutoff=0 → no filter applied to its web
+// rows.
 func buildPSNStartByWebRel(ctx context.Context, psn *psnReader, rels []RelationshipPair) (map[string]int64, error) {
 	out := make(map[string]int64, len(rels))
 	if psn == nil {
 		return out, nil
 	}
+	ro, err := psn.roster(ctx)
+	if err != nil {
+		return nil, err
+	}
+	first := ro.firstSnapshotByRelationship()
 	for _, p := range rels {
 		if p.WebID == "" {
 			continue
@@ -91,16 +97,8 @@ func buildPSNStartByWebRel(ctx context.Context, psn *psnReader, rels []Relations
 		if p.PSNID == "" {
 			continue
 		}
-		var minSnap sql.NullInt64
-		err := psn.db.QueryRowContext(ctx, `
-            SELECT MIN(snapshot_at)
-              FROM cash_accounts
-             WHERE relationship_id = ?`, p.PSNID).Scan(&minSnap)
-		if err != nil {
-			return nil, fmt.Errorf("PSN-start lookup for %q: %w", p.PSNID, err)
-		}
-		if minSnap.Valid {
-			out[p.WebID] = minSnap.Int64
+		if at, ok := first[p.PSNID]; ok {
+			out[p.WebID] = at
 		}
 	}
 	return out, nil

@@ -169,11 +169,13 @@ CREATE INDEX idx_cash_flows_date   ON cash_flows(flow_date);
 -- The loader writes flow_at with every row. This trigger does the same for
 -- the rows a test inserts, by migration 0007's rule.
 CREATE TRIGGER cash_flows_flow_at AFTER INSERT ON cash_flows BEGIN
-    UPDATE cash_flows SET flow_at = CAST(strftime('%s', CASE
-        WHEN NEW.flow_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
-            THEN NEW.flow_date
-        WHEN NEW.flow_date GLOB '[0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]'
-            THEN substr(NEW.flow_date, 7, 4) || '-' || substr(NEW.flow_date, 1, 2)
-                 || '-' || substr(NEW.flow_date, 4, 2) END) AS INTEGER)
+    UPDATE cash_flows SET flow_at = (SELECT CASE WHEN date(d) = d
+            THEN CAST(strftime('%s', d) AS INTEGER) END
+        FROM (SELECT CASE
+            WHEN NEW.flow_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                THEN NEW.flow_date
+            WHEN NEW.flow_date GLOB '[0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]'
+                THEN substr(NEW.flow_date, 7, 4) || '-' || substr(NEW.flow_date, 1, 2)
+                     || '-' || substr(NEW.flow_date, 4, 2) END AS d))
      WHERE rowid = NEW.rowid;
 END;

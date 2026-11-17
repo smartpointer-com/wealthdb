@@ -235,7 +235,7 @@ func TestAStatementCopyFoldsOntoTheCounterLeg(t *testing.T) {
 	seedRailEraAnchor(t, r)
 	seedWebAccount(t, r, mirrorJPYIBAN)
 	seedWebTxRaw(t, r, "stmt:0000000000000001", mirrorJPYIBAN, mirrorDay, "JPY", 12000000, "CREDIT",
-		`{"source":"account_statement_pdf","booking_type":"CREDIT","internal_transfer":false,"counter_account":null}`)
+		`{"source":"account_statement_pdf","booking_type":"CREDIT","counter_account":null}`)
 	got := mergedText(t, r, newMirrorSilver(t))
 	if _, ok := got["stmt:0000000000000001@"+mirrorJPYIBAN]; ok {
 		t.Error("the statement copy of the booking was emitted beside the counter-leg")

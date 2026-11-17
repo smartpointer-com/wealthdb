@@ -2,7 +2,7 @@ The returns quality column gives the reason for every n/a and tags every approxi
 - since_data_inception: the return runs from the entity's first snapshot, not from when the account opened.
 - configured_inception: the window starts at an inception date set in the config.
 - staggered_inception: the entity's parts began on different dates.
-- accounts_grain_meaningless: a return for this one account is noise (a single crypto wallet, say); read a coarser view.
+- accounts_grain_meaningless: this source's accounts are set to show values without returns (config returns_policy_overrides); read a coarser view.
 - empty_bucket, carried_forward: no snapshot fell in the bucket; the value is carried from before it.
 - boundary_same_snapshot: the bucket starts and ends on the same snapshot.
 - stale_snapshot: the end value rests on a snapshot much older than the entity's usual gap; the feed may have stopped.

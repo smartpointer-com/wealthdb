@@ -18,12 +18,13 @@ const offsetVetoEps = 0.01
 // offsetLeg is one deposit/withdrawal-kinded cash row in the same-day offset
 // probe. vetoKey carries the leg's emitted TransactionExternalID form —
 // txID@acct for web rows, the event id for PSN rows — routed to the matching
-// feed's veto map on a pair. Legs the classifier already demotes (parser
-// internal flag, deep era, non-rail shape) still participate: an internal
-// leg's same-day mirror on another own account is genuinely internal too
-// (the parser-flagged UEBERTRAG orders whose receiving legs land in the
-// MT940 feed are the live proof), and since a pair always drops on BOTH
-// sides, even a coincidental false pair costs only a net-zero same-day pair.
+// feed's veto map on a pair. Legs the classifier already demotes (an
+// internal transfer, deep era, non-rail shape) still participate: an
+// internal leg's same-day mirror on another own account is genuinely
+// internal too (an UEBERTRAG order pdfInternalTransfer reads as internal
+// has its receiving leg in the MT940 feed), and
+// since a pair always drops on BOTH sides, even a coincidental false pair
+// costs only a net-zero same-day pair.
 type offsetLeg struct {
 	vetoKey string
 	psnLeg  bool

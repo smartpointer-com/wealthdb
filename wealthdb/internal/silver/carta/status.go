@@ -2,8 +2,6 @@ package carta
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -21,50 +19,31 @@ SELECT MIN(snapshot_at), MAX(snapshot_at) FROM (
     UNION ALL SELECT snapshot_at FROM fund_metrics
 )`
 
-// transactionExtrema is the MIN/MAX cash-flow day (flow_at) — the
-// transaction ledger (transactions.go). A fund's calls can precede its
-// first statement, so these days can fall outside the content span: the
-// transaction range Status reports. A silver without flow_at states no
-// ledger.
-func (c *Connection) transactionExtrema(ctx context.Context) (oldest, latest int64, ok bool, err error) {
-	if !c.schema.flowAt {
-		return 0, 0, false, nil
-	}
-	var lo, hi sql.NullInt64
-	if err := c.db.QueryRowContext(ctx, `SELECT MIN(flow_at), MAX(flow_at) FROM cash_flows`).Scan(&lo, &hi); err != nil {
-		return 0, 0, false, fmt.Errorf("carta transactionExtrema: %w", err)
-	}
-	return lo.Int64, hi.Int64, lo.Valid, nil
-}
-
 // clock: a new download, any dump past the watermark, re-emits the whole
 // history (silver.FullSpan), so every reconstructed delta and every
 // ledger row reaches gold. The snapshot range spans the
 // event-dated content, the days a fund's carried value changes
 // (fundcarry.go), and the removals and K-1 period ends (snapshots.go);
-// the transaction range is the cash-flow ledger (transactions.go). The
-// change number is the newest dump, one row per ingested bronze run, so
-// an idle reload is a no-op.
+// the transaction range is the cash-flow days (flow_at) of the ledger
+// (transactions.go). A fund's calls can precede its first statement, so
+// those days can fall outside the content span. A silver without flow_at
+// states no ledger. The change number is the newest dump, one row per
+// ingested bronze run, so an idle reload is a no-op.
 func (c *Connection) clock() silver.Clock {
+	var ledger []string
+	if c.schema.flowAt {
+		ledger = []string{silver.Range("cash_flows", "flow_at")}
+	}
 	return silver.Clock{
-		Kind:        "carta",
-		Runs:        silver.LatestDump,
-		Snapshot:    []string{contentSpan},
-		Extra:       c.snapshotDates,
-		LedgerExtra: c.flowDates,
-		Observed:    silver.Observed{Runs: `SELECT MAX(snapshot_at) FROM dump_runs WHERE dry_run = 0`},
-		Pin:         true,
-		Mode:        silver.FullSpan{},
+		Kind:     "carta",
+		Runs:     silver.LatestDump,
+		Snapshot: []string{contentSpan},
+		Extra:    c.snapshotDates,
+		Ledger:   ledger,
+		Observed: silver.Observed{Runs: `SELECT MAX(snapshot_at) FROM dump_runs WHERE dry_run = 0`},
+		Pin:      true,
+		Mode:     silver.FullSpan{},
 	}
-}
-
-// flowDates are the cash-flow dates (transactionExtrema).
-func (c *Connection) flowDates(ctx context.Context) (lo, hi int64, err error) {
-	lo, hi, ok, err := c.transactionExtrema(ctx)
-	if err != nil || !ok {
-		return -1, -1, err
-	}
-	return lo, hi, nil
 }
 
 // reach is the latest removal and K-1 period end, -1 where there is none.

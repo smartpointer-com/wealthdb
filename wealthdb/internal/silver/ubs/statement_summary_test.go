@@ -31,7 +31,7 @@ func pdfTurnoverPayload(bookingType string, continuation ...string) string {
 		lines += `"` + c + `"`
 	}
 	return `{"source":"account_statement_pdf","booking_type":"` + bookingType +
-		`","internal_transfer":false,"counter_account":null,"continuation":[` + lines + `]}`
+		`","counter_account":null,"continuation":[` + lines + `]}`
 }
 
 func seedStatementSummaryRows(t *testing.T, r *webReader) {

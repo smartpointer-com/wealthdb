@@ -34,7 +34,7 @@ func statementPayload(bookingType string, continuation ...string) string {
 		lines += `"` + c + `"`
 	}
 	return `{"source":"account_statement_pdf","booking_type":"` + bookingType +
-		`","internal_transfer":false,"counter_account":null,"continuation":[` + lines + `]}`
+		`","counter_account":null,"continuation":[` + lines + `]}`
 }
 
 // exportPayload is one account-statement-export row's payload: the CSV feed's
@@ -345,6 +345,36 @@ func TestEraFoldPairsAcrossTheSignConventions(t *testing.T) {
 	}
 	if survivor.Kind != canonical.TxKindWithdrawal {
 		t.Errorf("survivor Kind = %q, want withdrawal", survivor.Kind)
+	}
+}
+
+// TestEraFoldPairsAnUnsignedKind: interest pins no direction, so each era's
+// row keeps the sign it states. The statement's debit is a printed figure
+// and is subtracted; the export's debit cell is signed and is added. Both
+// land on one negative amount, and the pair folds.
+func TestEraFoldPairsAnUnsignedKind(t *testing.T) {
+	const day = 455 * 86400
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	seedWebTextRow(t, r, foldStmtA, day, 100.0, nil, nil, "INTEREST",
+		statementPayload("INTEREST"))
+	seedWebTextRow(t, r, "E1", day, -100.0, nil, nil, "Interest",
+		exportPayload("", "Interest", ""))
+
+	got := drainTx(t, emitWebStream(t, r))
+	if _, ok := got[foldStmtA+"@"+textAcct]; ok {
+		t.Error("the statement's interest debit must fold into the export's")
+	}
+	survivor, ok := got["E1@"+textAcct]
+	if !ok {
+		t.Fatal("the export's row must keep the booking")
+	}
+	if n := countOnDay(got, day); n != 1 {
+		t.Errorf("rows on the booking's value day = %d, want 1", n)
+	}
+	if survivor.NetAmount == nil || survivor.NetAmount.String() != "-100" {
+		t.Errorf("survivor NetAmount = %v, want -100", survivor.NetAmount)
 	}
 }
 

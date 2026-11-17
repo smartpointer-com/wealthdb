@@ -32,7 +32,7 @@ func multiLegPayload(index, count int, continuation ...string) string {
 		lines += `"` + c + `"`
 	}
 	return `{"source":"account_statement_pdf","booking_type":"MULTI E-BANKING ORDER",` +
-		`"internal_transfer":false,"counter_account":null,"continuation":[` + lines + `],` +
+		`"counter_account":null,"continuation":[` + lines + `],` +
 		`"multi_leg":{"index":` + strconv.Itoa(index) + `,"count":` + strconv.Itoa(count) +
 		`,"rail":"E-Banking CHF domestic"}}`
 }

@@ -268,7 +268,9 @@ type Optional struct {
 	Columns []string
 	// Version is the silver schema version that adds the part: the
 	// number of the collector migration that creates it. 0 marks a part
-	// a silver of any version may lack, which no load adds.
+	// the adapter never advises: one a silver of any version may lack,
+	// which no load adds, or one it reads in full without (a payload
+	// fallback).
 	Version int
 	// Has is set to whether the silver holds the part.
 	Has *bool

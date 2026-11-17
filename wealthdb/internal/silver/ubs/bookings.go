@@ -19,6 +19,11 @@ type bookingFacts struct {
 	// rail is the payment rail the type moves money on, where it names
 	// one (pdfCashIsExternal).
 	rail paymentRail
+	// transfer marks a type that moves cash, under which a move between
+	// own accounts can book (pdfInternalTransfer). A securities
+	// settlement, a dividend or a fee referencing a portfolio is not a
+	// flow at all, so it is never one.
+	transfer bool
 	// deposit marks a type that moves a deposit product's principal
 	// (isDepositProductBooking).
 	deposit bool
@@ -166,20 +171,20 @@ var bookingTypes = map[string]bookingFacts{
 	// standing), e-bill (PayNet), direct debit (LSV), QR-bill, ATM cash,
 	// card and TWINT debits. These pay a beneficiary OUTSIDE the
 	// relationship by construction — moves between own accounts book as
-	// transfer forms that the collector's internal markers flag, carry
-	// an own counter IBAN, or mirror on the receiving own account and
+	// transfer forms the internal-transfer rule reads (pdfInternalTransfer),
+	// carry an own counter IBAN, or mirror on the receiving own account and
 	// fall to the same-day offset veto — so a debit with one of these
 	// types that survives those checks is a boundary-crossing payment
 	// even when the statement records no counter IBAN (it usually
 	// doesn't: the beneficiary appears in free text only).
-	"E-BANKING PAYMENT ORDER":    {rail: railOut},
-	"MULTI E-BANKING ORDER":      {rail: railOut},
-	"PAYMENT ORDER":              {rail: railOut},
-	"SPECIAL PAYMENT ORDER":      {rail: railOut},
-	"PAYMENT ORDER BY TELEPHONE": {rail: railOut},
+	"E-BANKING PAYMENT ORDER":    {rail: railOut, transfer: true},
+	"MULTI E-BANKING ORDER":      {rail: railOut, transfer: true},
+	"PAYMENT ORDER":              {rail: railOut, transfer: true},
+	"SPECIAL PAYMENT ORDER":      {rail: railOut, transfer: true},
+	"PAYMENT ORDER BY TELEPHONE": {rail: railOut, transfer: true},
 	"VARIOUS STANDING ORDERS":    {rail: railOut},
-	"PAYNET ORDER":               {rail: railOut},
-	"MULTI PAYNET ORDER":         {rail: railOut},
+	"PAYNET ORDER":               {rail: railOut, transfer: true},
+	"MULTI PAYNET ORDER":         {rail: railOut, transfer: true},
 	"DIRECT DEBIT":               {rail: railOut},
 	"QR-BILL (INSTANT PAYMENT)":  {rail: railOut},
 	"ATM WITHDRAWAL":             {rail: railOut},
@@ -195,9 +200,12 @@ var bookingTypes = map[string]bookingFacts{
 	// fabricate return. Own-product cash parkings (the deposit products
 	// below) deliberately stay off the rails: they settle an own product
 	// inside the relationship.
-	"CREDIT":           {rail: railIn},
-	"E-BANKING CREDIT": {rail: railIn},
+	"CREDIT":           {rail: railIn, transfer: true},
+	"E-BANKING CREDIT": {rail: railIn, transfer: true},
 	"SALARY PAYMENT":   {rail: railIn},
+	// The statement's bare debit: no rail of its own (its direction
+	// decides the kind), but cash moves under it.
+	"DEBIT": {transfer: true},
 
 	// Mobile payments cross the relationship boundary like a card
 	// payment, on the rails of both directions: a payment made, and a

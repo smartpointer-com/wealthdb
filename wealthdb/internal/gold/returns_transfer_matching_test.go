@@ -251,8 +251,7 @@ func TestCrossSourceNettingObeysNettingSwitch(t *testing.T) {
 // TestLinkedDropsKeepsAPreDebutLeg pins the liveness rule directly: a leg
 // before its account's debut is subsumed by the debut's onboarding, so its
 // pair must not net through the link: dropping the partner's live leg would
-// count the capital asymmetrically. The netter pairs such a leg instead, and
-// the funding leaves the onboarding.
+// count the capital asymmetrically.
 func TestLinkedDropsKeepsAPreDebutLeg(t *testing.T) {
 	t.Parallel()
 	winFrom, winTo := int64(100), int64(300)

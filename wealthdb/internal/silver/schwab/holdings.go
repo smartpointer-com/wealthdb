@@ -21,12 +21,14 @@ var holdingColumns = []string{
 	"maturity_date", "variable_rate", "long_quantity", "short_quantity", "market_value",
 }
 
-// apiHolding is a positions row's instrument and figures.
+// apiHolding is a positions row's instrument and figures. The tags are
+// the payload's names, which a silver older than migration 0006 states
+// the holding in (preV6Holding).
 type apiHolding struct {
-	LongQuantity  canonical.Decimal
-	ShortQuantity canonical.Decimal
-	MarketValue   *canonical.Decimal
-	Instrument    schwabInstrument
+	LongQuantity  canonical.Decimal  `json:"longQuantity"`
+	ShortQuantity canonical.Decimal  `json:"shortQuantity"`
+	MarketValue   *canonical.Decimal `json:"marketValue"`
+	Instrument    schwabInstrument   `json:"instrument"`
 }
 
 // holdingRead is how a silver's positions state their holdings: in the
@@ -77,25 +79,14 @@ func (s *holdingScan) holding() (apiHolding, error) {
 	return s.fromColumns()
 }
 
-// preV6Position is the payload of a positions row as a silver older
-// than migration 0006 states it, with the fields its reader decodes.
-type preV6Position struct {
-	LongQuantity  canonical.Decimal  `json:"longQuantity"`
-	ShortQuantity canonical.Decimal  `json:"shortQuantity"`
-	AveragePrice  *canonical.Decimal `json:"averagePrice"`
-	MarketValue   *canonical.Decimal `json:"marketValue"`
-	Instrument    schwabInstrument   `json:"instrument"`
-}
-
 // preV6Holding reads a holding from the payload of a silver older than
 // migration 0006, which states it there alone.
 func preV6Holding(payload string) (apiHolding, error) {
-	var p preV6Position
-	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+	var h apiHolding
+	if err := json.Unmarshal([]byte(payload), &h); err != nil {
 		return apiHolding{}, err
 	}
-	return apiHolding{LongQuantity: p.LongQuantity, ShortQuantity: p.ShortQuantity,
-		MarketValue: p.MarketValue, Instrument: p.Instrument}, nil
+	return h, nil
 }
 
 // fromColumns is the holding the columns state. A quantity silver states

@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -18,11 +17,14 @@ import (
 //
 // The loader writes a master-data row per (relationship, account) only
 // when its payload changed, so each table holds an account's row at the
-// snapshots where it changed. A lookup's "current" is one of two
+// snapshots where it changed. A lookup's "current" is one of three
 // readings of that:
 //
-//   - each account at its latest row (current, portfolioByCashAccount);
-//   - any row the table holds (cashAccountIBANs, knownCustody, holders).
+//   - each account at its latest row (current);
+//   - each account at its latest row that names a portfolio
+//     (portfolioByCashAccount);
+//   - any row the table holds (cashAccountIBANs, knownCustody, holders,
+//     firstSnapshotByRelationship).
 type psnRoster struct {
 	// cash and custody are every row of cash_accounts and
 	// safekeeping_accounts, in the table's row order.
@@ -41,7 +43,6 @@ type rosterRow struct {
 	portfolio            sql.NullString // the promoted portfolio_external_id
 	payloadPortfolio     sql.NullString // payload PrtflId
 	currency, internalID sql.NullString // payload AcctCcyIsoCd and AcctId (cash)
-	payload              string         // custody
 }
 
 // portfolioOf is the portfolio the row names: the promoted column, else
@@ -86,12 +87,12 @@ SELECT snapshot_at, relationship_id, account_external_id, portfolio_external_id,
 	}
 	if err := silver.ScanRows(ctx, r.db, "ubs-psn safekeeping accounts", `
 SELECT snapshot_at, relationship_id, account_external_id, portfolio_external_id,
-       json_extract(payload, '$.PrtflId'), payload
+       json_extract(payload, '$.PrtflId')
   FROM safekeeping_accounts
  ORDER BY rowid`, func(rows *sql.Rows) error {
 		var row rosterRow
 		if err := rows.Scan(&row.snapshot, &row.relationship, &row.account, &row.portfolio,
-			&row.payloadPortfolio, &row.payload); err != nil {
+			&row.payloadPortfolio); err != nil {
 			return fmt.Errorf("ubs-psn safekeeping accounts scan: %w", err)
 		}
 		out.custody = append(out.custody, row)
@@ -285,14 +286,22 @@ func (ro *psnRoster) custodyByPortfolio() (map[string][]string, bool) {
 	slices.SortStableFunc(rows, func(a, b rosterRow) int { return cmp.Compare(a.account, b.account) })
 	out := map[string][]string{}
 	for _, row := range rows {
-		var p struct {
-			PrtflId string `json:"PrtflId"`
+		if p := row.payloadPortfolio.String; p != "" {
+			out[p] = append(out[p], row.account)
 		}
-		_ = json.Unmarshal([]byte(row.payload), &p)
-		if p.PrtflId == "" {
-			continue
-		}
-		out[p.PrtflId] = append(out[p.PrtflId], row.account)
 	}
 	return out, true
+}
+
+// firstSnapshotByRelationship maps each relationship onto the earliest
+// snapshot of its cash accounts, over every row: the day the feed starts
+// to cover it (buildPSNStartByWebRel).
+func (ro *psnRoster) firstSnapshotByRelationship() map[string]int64 {
+	out := map[string]int64{}
+	for _, row := range ro.cash {
+		if first, ok := out[row.relationship]; !ok || row.snapshot < first {
+			out[row.relationship] = row.snapshot
+		}
+	}
+	return out
 }

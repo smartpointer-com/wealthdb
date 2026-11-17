@@ -115,14 +115,11 @@ func (r *webReader) appendHistoricalSecurities(
 	safekeepingByPortfolio map[string]string,
 	portfolioCutoff map[string]int64,
 ) error {
-	suppress, err := r.suppressMetalDetail(ctx, w)
-	if err != nil {
-		return err
-	}
 	holdings, err := r.statementHoldings(ctx, w)
 	if err != nil {
 		return err
 	}
+	suppress := suppressMetalDetail(holdings)
 	// One PortfolioChange and one AccountChange per (snapshot,
 	// portfolio), not one per holding.
 	emitted := map[snapshotKey]bool{}
@@ -167,7 +164,7 @@ func (r *webReader) statementHoldings(ctx context.Context, w canonical.Window) (
 	// silver states none.
 	s, err := r.schema(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("appendHistoricalSecurities: %w", err)
+		return nil, fmt.Errorf("statementHoldings: %w", err)
 	}
 	costBasisCol := silver.ColumnOr(s.historicalCost, "cost_basis")
 	q := `
@@ -176,9 +173,10 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
        cost_price, ` + costBasisCol + `, accrued_interest, description, payload
   FROM historical_position_snapshots
  WHERE instrument_isin IS NOT NULL
-   AND as_of_date BETWEEN ? AND ?`
+   AND as_of_date BETWEEN ? AND ?
+ ORDER BY as_of_date, portfolio_external_id, instrument_isin, account_external_id`
 	var out []statementHolding
-	err = silver.ScanRows(ctx, r.db, "appendHistoricalSecurities", q, func(rows *sql.Rows) error {
+	err = silver.ScanRows(ctx, r.db, "statementHoldings", q, func(rows *sql.Rows) error {
 		var h statementHolding
 		if err := rows.Scan(&h.asOf, &h.portID, &h.isin, &h.ccy, &h.units, &h.mv, &h.mvCcy,
 			&h.costPrice, &h.costBasis, &h.accrued, &h.descr, &h.payload); err != nil {
@@ -191,11 +189,10 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		return nil, err
 	}
 	metals, err := r.preciousMetalsTotals(ctx, w)
-	if err != nil || len(metals) == 0 {
-		return out, err
+	if err != nil {
+		return nil, err
 	}
-	// In the order the rows of the table's key come back in, where an
-	// older silver holds the precious-metals positions too.
+	// Both shapes in one order: date, portfolio, instrument.
 	out = append(out, metals...)
 	slices.SortStableFunc(out, func(a, b statementHolding) int {
 		return cmp.Or(cmp.Compare(a.asOf, b.asOf), cmp.Compare(a.portID, b.portID),
@@ -211,6 +208,10 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 // which gold converts at query time. A total printed only in another
 // currency's copy gives no position.
 const preciousMetalsCurrency = "USD"
+
+// preciousMetalsKeyPrefix opens the instrument key of a portfolio's
+// overview precious-metals position, "PM-<portfolio>".
+const preciousMetalsKeyPrefix = "PM-"
 
 // preciousMetalsTotals returns the overview's precious-metals totals in
 // the window, each as the holding it becomes: one per (as_of_date,
@@ -245,7 +246,7 @@ SELECT as_of_date, portfolio_external_id, currency_iso, market_value, payload
 		if err := rows.Scan(&h.asOf, &h.portID, &h.ccy, &h.mv, &h.payload); err != nil {
 			return err
 		}
-		h.isin = "PM-" + h.portID
+		h.isin = preciousMetalsKeyPrefix + h.portID
 		h.mvCcy = h.ccy
 		h.descr = sql.NullString{String: "Precious metals & commodities", Valid: true}
 		out = append(out, h)
@@ -259,24 +260,25 @@ SELECT as_of_date, portfolio_external_id, currency_iso, market_value, payload
 //
 // A year-end Statement of Assets can print a per-instrument gold-bar
 // detail line for a precious-metals overlay portfolio that the
-// quarterly statements omit. The adapter also synthesises a single
-// overview precious-metals position (PM-<portfolio>) for such a
-// portfolio from the sibling reporting-currency statement
-// (preciousMetalsTotals), so
-// emitting the detail line too would double-count the metal at
-// every year-end (the two reach gold under distinct position
-// keys). Suppress the detail line whenever its overview sibling
-// exists for the same (as_of_date, portfolio): the overview row
-// is continuous across all quarters and reported in clean USD.
-func (r *webReader) suppressMetalDetail(ctx context.Context, w canonical.Window) (func(statementHolding) bool, error) {
-	pmOverview, err := r.preciousMetalsOverviewKeys(ctx, w)
-	if err != nil {
-		return nil, err
+// quarterly statements omit. The adapter also emits a single overview
+// precious-metals position (PM-<portfolio>) for such a portfolio
+// (preciousMetalsTotals), so emitting the detail line too would
+// double-count the metal at every year-end (the two reach gold under
+// distinct position keys). The detail line is suppressed whenever its
+// overview sibling is among the holdings for the same (as_of_date,
+// portfolio): the overview row is continuous across all quarters and
+// reported in clean USD.
+func suppressMetalDetail(holdings []statementHolding) func(statementHolding) bool {
+	pmOverview := map[snapshotKey]bool{}
+	for _, h := range holdings {
+		if strings.HasPrefix(h.isin, preciousMetalsKeyPrefix) {
+			pmOverview[snapshotKey{h.asOf, h.portID}] = true
+		}
 	}
 	return func(h statementHolding) bool {
 		return looksLikeISIN(h.isin) && pmOverview[snapshotKey{h.asOf, h.portID}] &&
 			isPreciousMetalsLine(h.descr.String, h.payload)
-	}, nil
+	}
 }
 
 // statementDimensions emits the portfolio and the account of a
@@ -408,38 +410,6 @@ func statementSecuritiesAccount(safekeepingByPortfolio map[string]string, portfo
 type snapshotKey struct {
 	at int64
 	id string
-}
-
-// preciousMetalsOverviewKeys returns the (as_of_date, portfolio)
-// pairs in the window that carry an overview precious-metals position
-// (preciousMetalsTotals; an older silver's rows keyed 'PM-%'). Used to
-// suppress the duplicate year-end gold-bar detail line for those
-// portfolios.
-func (r *webReader) preciousMetalsOverviewKeys(
-	ctx context.Context, w canonical.Window,
-) (map[snapshotKey]bool, error) {
-	const q = `
-SELECT DISTINCT as_of_date, portfolio_external_id
-  FROM historical_position_snapshots
- WHERE instrument_isin LIKE 'PM-%'
-   AND as_of_date BETWEEN ? AND ?`
-	set := map[snapshotKey]bool{}
-	if err := silver.ScanRows(ctx, r.db, "preciousMetalsOverviewKeys", q, func(rows *sql.Rows) error {
-		var asOf int64
-		var port string
-		if err := rows.Scan(&asOf, &port); err != nil {
-			return err
-		}
-		set[snapshotKey{asOf, port}] = true
-		return nil
-	}, w.Start, w.End); err != nil {
-		return nil, err
-	}
-	metals, err := r.preciousMetalsTotals(ctx, w)
-	for _, h := range metals {
-		set[snapshotKey{h.asOf, h.portID}] = true
-	}
-	return set, err
 }
 
 // isPreciousMetalsLine reports whether a historical_position_snapshots

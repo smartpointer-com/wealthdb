@@ -64,8 +64,8 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		Extra:    append(append(ledger.carryDates(), inKind.PeriodEnds()...), entityDates...),
 		Removals: removals,
 		Account:  func(t int64) canonical.AccountChange { return custodyAccount(acct, t) },
-		Emit: func(t int64, held []silver.Holding) (canonical.SnapshotBatch, error) {
-			return emit(t, held, meta, acct, ledger, inKind, removals)
+		Emit: func(t int64, holdings []silver.Holding) (canonical.SnapshotBatch, error) {
+			return emit(t, holdings, meta, acct, ledger, inKind, removals)
 		},
 		Closure: true,
 	}.Batches(w)
@@ -290,13 +290,13 @@ SELECT entity_external_id, is_fund_investment, COALESCE(legal_name, ''), payload
 // its carried value is dropped (dropRemoved). Each position is valued at the
 // date of the latest delta or NAV it is built from; a fund carried at its
 // called capital is valued at t.
-func emit(t int64, held []silver.Holding, meta map[int64]entInfo, acct string, ledger fundLedger, inKind *silver.InKind, removals silver.Removals) (canonical.SnapshotBatch, error) {
+func emit(t int64, holdings []silver.Holding, meta map[int64]entInfo, acct string, ledger fundLedger, inKind *silver.InKind, removals silver.Removals) (canonical.SnapshotBatch, error) {
 	h := newHeld()
 
 	var lots []lotState
 	var funds []fundState
-	for _, h := range held {
-		switch r := h.Row.(type) {
+	for _, x := range holdings {
+		switch r := x.Row.(type) {
 		case lotState:
 			lots = append(lots, r)
 		case fundState:
@@ -339,7 +339,7 @@ func emit(t int64, held []silver.Holding, meta map[int64]entInfo, acct string, l
 		info := meta[eid]
 		inst := canonical.InstrumentChange{
 			InstrumentExternalID: instrumentID(eid),
-			AssetClass:           h.classesNew[eid], // 2-D taxonomy: same pair its position carries
+			AssetClass:           h.classes[eid], // 2-D taxonomy: same pair its position carries
 			Vehicle:              h.vehicles[eid],
 			FirstSeenAt:          t,
 			LastSeenAt:           t,
@@ -358,18 +358,27 @@ func emit(t int64, held []silver.Holding, meta map[int64]entInfo, acct string, l
 // each entity placed in it its holdings currency, exposure (asset_class)
 // and vehicle, which the instruments carry.
 type held struct {
-	batch      canonical.SnapshotBatch
-	active     map[int64]string
-	classesNew map[int64]canonical.AssetClass
-	vehicles   map[int64]canonical.Vehicle
+	batch    canonical.SnapshotBatch
+	active   map[int64]string
+	classes  map[int64]canonical.AssetClass
+	vehicles map[int64]canonical.Vehicle
 }
 
 func newHeld() *held {
 	return &held{
-		active:     make(map[int64]string),
-		classesNew: make(map[int64]canonical.AssetClass),
-		vehicles:   make(map[int64]canonical.Vehicle),
+		active:   make(map[int64]string),
+		classes:  make(map[int64]canonical.AssetClass),
+		vehicles: make(map[int64]canonical.Vehicle),
 	}
+}
+
+// place adds an entity's position to the batch, with the currency,
+// exposure and vehicle its instrument carries.
+func (h *held) place(eid int64, ccy string, class canonical.AssetClass, v canonical.Vehicle, pos canonical.PositionChange) {
+	h.batch.Positions = append(h.batch.Positions, pos)
+	h.active[eid] = ccy
+	h.classes[eid] = class
+	h.vehicles[eid] = v
 }
 
 // dropRemoved takes the funds carried for companies the portal had stopped
@@ -509,14 +518,14 @@ func appendCapTableAt(t int64, acct string, lots []lotState, h *held) error {
 			return fmt.Errorf("appendCapTableAt payload: %w", err)
 		}
 		instKey := instrumentID(eid)
-		classNew, vehicle := capTableTaxonomy(a.hasEquity, a.hasStockLike)
+		class, vehicle := capTableTaxonomy(a.hasEquity, a.hasStockLike)
 		change := canonical.PositionChange{
 			SnapshotAt:           t,
 			ValuedAt:             a.valuedAt,
 			AccountExternalID:    acct,
 			PositionKey:          positionKey(eid),
 			InstrumentExternalID: &instKey,
-			AssetClass:           classNew,
+			AssetClass:           class,
 			Vehicle:              vehicle,
 			Currency:             a.ccy,
 			Payload:              json.RawMessage(payload),
@@ -545,15 +554,12 @@ func appendCapTableAt(t int64, acct string, lots []lotState, h *held) error {
 			change.AcquisitionDate = silver.DatePtrFromNullUnix(
 				sql.NullInt64{Int64: a.acquiredUnix, Valid: true})
 		}
-		h.batch.Positions = append(h.batch.Positions, change)
+		h.place(eid, a.ccy, class, vehicle, change)
 		for _, l := range a.shareLots {
 			l.SnapshotAt, l.AccountExternalID, l.PositionKey = t, acct, change.PositionKey
 			l.InstrumentExternalID, l.Currency = &instKey, a.ccy
 			h.batch.PositionLots = append(h.batch.PositionLots, l)
 		}
-		h.active[eid] = a.ccy
-		h.classesNew[eid] = classNew
-		h.vehicles[eid] = vehicle
 	}
 	return nil
 }
@@ -684,9 +690,6 @@ func appendFundAt(t int64, acct string, ledger fundLedger, inKind *silver.InKind
 			change.SetBookValue(book, basis)
 			change.Payload = silver.PayloadWith(f.payload, extra)
 		}
-		h.batch.Positions = append(h.batch.Positions, change)
-		h.active[f.entityID] = ccy
-		h.classesNew[f.entityID] = canonical.AssetClassPrivateEquity
-		h.vehicles[f.entityID] = canonical.VehicleFund
+		h.place(f.entityID, ccy, canonical.AssetClassPrivateEquity, canonical.VehicleFund, change)
 	}
 }

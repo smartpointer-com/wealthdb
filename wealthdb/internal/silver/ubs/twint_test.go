@@ -21,15 +21,15 @@ func seedTwintRows(t *testing.T, r *webReader) {
 	seedRailEraAnchor(t, r)
 	// A merchant payment: payee, street, town.
 	seedWebTextRow(t, r, "TW1", 200*86400, 12.5, nil, "EXAMPLE CHOCOLATIER AG", "PAYMENT UBS TWINT",
-		`{"source":"account_statement_pdf","booking_type":"PAYMENT UBS TWINT","internal_transfer":false,"counter_account":null,"continuation":["EXAMPLE CHOCOLATIER AG","EXAMPLE STREET 1","CH EXAMPLETOWN 9999"]}`)
+		`{"source":"account_statement_pdf","booking_type":"PAYMENT UBS TWINT","counter_account":null,"continuation":["EXAMPLE CHOCOLATIER AG","EXAMPLE STREET 1","CH EXAMPLETOWN 9999"]}`)
 	// A person-to-person payment: payee, phone number, TWINT reference.
 	seedWebTextRow(t, r, "TW2", 201*86400, 20.0, nil, "EXAMPLE, PERSON", "DEBIT UBS TWINT",
-		`{"source":"account_statement_pdf","booking_type":"DEBIT UBS TWINT","internal_transfer":false,"counter_account":null,"continuation":["EXAMPLE, PERSON","+41 00 000 00 00","TWINT-EXAMPLE"]}`)
+		`{"source":"account_statement_pdf","booking_type":"DEBIT UBS TWINT","counter_account":null,"continuation":["EXAMPLE, PERSON","+41 00 000 00 00","TWINT-EXAMPLE"]}`)
 	// A payment received, and a merchant payment reversed.
 	seedWebTextRow(t, r, "TW3", 202*86400, nil, 30.0, "EXAMPLE, PERSON", "CREDIT UBS TWINT",
-		`{"source":"account_statement_pdf","booking_type":"CREDIT UBS TWINT","internal_transfer":false,"counter_account":null,"continuation":["EXAMPLE, PERSON","+41 00 000 00 00","TWINT-EXAMPLE"]}`)
+		`{"source":"account_statement_pdf","booking_type":"CREDIT UBS TWINT","counter_account":null,"continuation":["EXAMPLE, PERSON","+41 00 000 00 00","TWINT-EXAMPLE"]}`)
 	seedWebTextRow(t, r, "TW4", 203*86400, nil, 12.5, "EXAMPLE CHOCOLATIER AG", "REVERSAL UBS TWINT",
-		`{"source":"account_statement_pdf","booking_type":"REVERSAL UBS TWINT","internal_transfer":false,"counter_account":null,"continuation":["EXAMPLE CHOCOLATIER AG","EXAMPLE STREET 1","CH EXAMPLETOWN 9999"]}`)
+		`{"source":"account_statement_pdf","booking_type":"REVERSAL UBS TWINT","counter_account":null,"continuation":["EXAMPLE CHOCOLATIER AG","EXAMPLE STREET 1","CH EXAMPLETOWN 9999"]}`)
 }
 
 // TestTwintMovesMoney pins the kinds and signed amounts the statement era's

@@ -66,15 +66,23 @@ func TestTheExportNarrativeYieldsItsCounterAccount(t *testing.T) {
 
 // TestAStatedCounterAccountIsNotOverwritten pins the precedence between
 // the two eras' carriers. The statement parser's field is the parser's
-// answer; a value derived from free text must never replace it.
+// answer; a value derived from free text must never replace it. The
+// collector writes its payloads with Python's default separators, so the
+// spaced spelling is the one silver holds.
 func TestAStatedCounterAccountIsNotOverwritten(t *testing.T) {
-	const stated = `{"counter_account":"CH0000000000000000DDD","Description3":"Account no. IBAN: CH0000000000000000CCC;"}`
-	got := string(withCounterAccount(json.RawMessage(stated), "CH0000000000000000CCC"))
-	if !strings.Contains(got, "CH0000000000000000DDD") {
-		t.Fatalf("the stated counter account was lost: %s", got)
-	}
-	if strings.Count(got, "counter_account") != 1 {
-		t.Errorf("payload carries the key twice: %s", got)
+	for _, tc := range []struct{ name, stated string }{
+		{"compact", `{"counter_account":"CH0000000000000000DDD","Description3":"Account no. IBAN: CH0000000000000000CCC;"}`},
+		{"spaced", `{"booking_type": "TRANSFER", "counter_account": "CH0000000000000000DDD", "continuation": ["Account no. IBAN: CH0000000000000000CCC;"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(withCounterAccount(json.RawMessage(tc.stated), "CH0000000000000000CCC"))
+			if got != tc.stated {
+				t.Errorf("the stated payload was rewritten: %s", got)
+			}
+			if strings.Count(got, "counter_account") != 1 {
+				t.Errorf("payload carries the key twice: %s", got)
+			}
+		})
 	}
 }
 
@@ -201,7 +209,7 @@ func TestTheOffsetVetoPairsAcrossTheTwoEraConventions(t *testing.T) {
 	// into B.
 	seedExportEraDebit(t, r, "EXPORT-OUT", vetoAcctA, vetoDay1, "CHF", 5000)
 	seedWebTxRaw(t, r, statementIDPrefix+"IN", vetoAcctB, vetoDay1, "CHF", 5000, "CREDIT",
-		`{"source":"account_statement_pdf","booking_type":"CREDIT","internal_transfer":false}`)
+		`{"source":"account_statement_pdf","booking_type":"CREDIT"}`)
 
 	internal := emittedInternal(t, r, nil)
 	if !internal["EXPORT-OUT@"+vetoAcctA] {

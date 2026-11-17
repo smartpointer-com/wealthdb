@@ -65,8 +65,14 @@ func Range(table, column string) string {
 
 // RangePast is Range over the values past the one argument it binds.
 func RangePast(table, column string) string {
-	return fmt.Sprintf(`SELECT (SELECT MIN(%[2]s) FROM %[1]s WHERE %[2]s > ?1), `+
-		`(SELECT MAX(%[2]s) FROM %[1]s WHERE %[2]s > ?1)`, table, column)
+	return RangeStampedPast(table, column, column)
+}
+
+// RangeStampedPast is Range of column over the rows whose stamp is past
+// the one argument it binds: the rows a run past a watermark wrote.
+func RangeStampedPast(table, column, stamp string) string {
+	return fmt.Sprintf(`SELECT (SELECT MIN(%[2]s) FROM %[1]s WHERE %[3]s > ?1), `+
+		`(SELECT MAX(%[2]s) FROM %[1]s WHERE %[3]s > ?1)`, table, column, stamp)
 }
 
 // Dates reads a set of dates in Go: their earliest and latest, -1 each

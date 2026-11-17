@@ -48,35 +48,53 @@ func (c *apiReader) buildDescriptionToInstrumentKey(ctx context.Context) (map[st
 
 // scanPositionDescriptions records each position description's key,
 // or the "" sentinel when two positions state it under different keys
-// (possible across ticker reuse).
+// (possible across ticker reuse). Only the instrument is read: the
+// columns of migration 0006 where silver has them, one row per
+// instrument; an older silver's payloads otherwise.
 func (c *apiReader) scanPositionDescriptions(ctx context.Context, out map[string]string) error {
 	holding, err := c.holdingRead(ctx)
 	if err != nil {
 		return err
 	}
-	q := `SELECT DISTINCT ` + holding.selectList() + ` FROM positions`
-	return silver.ScanRows(ctx, c.db, "schwab descToInstrument positions", q, func(rows *sql.Rows) error {
-		h := holding.scan()
-		if err := rows.Scan(h.dest()...); err != nil {
-			return err
+	record := func(i schwabInstrument) {
+		key := preferredInstrumentKey(i)
+		if i.Description == "" || key == "" || isCashAssetType(i.AssetType) {
+			return
 		}
-		p, err := h.holding()
-		if err != nil || p.Instrument.Description == "" {
-			return nil
-		}
-		key := preferredInstrumentKey(p.Instrument)
-		if key == "" || isCashAssetType(p.Instrument.AssetType) {
-			return nil
-		}
-		norm := normalizeSchwabDescription(p.Instrument.Description)
+		norm := normalizeSchwabDescription(i.Description)
 		if norm == "" {
-			return nil
+			return
 		}
 		if existing, ok := out[norm]; ok && existing != key {
 			out[norm] = "" // ambiguous; sentinel
-			return nil
+			return
 		}
 		out[norm] = key
+	}
+	if holding.columns {
+		const q = `
+SELECT DISTINCT asset_type, cusip, symbol, description
+  FROM positions
+ WHERE description <> ''`
+		return silver.ScanRows(ctx, c.db, "schwab descToInstrument positions", q, func(rows *sql.Rows) error {
+			var assetType, cusip, symbol, description sql.NullString
+			if err := rows.Scan(&assetType, &cusip, &symbol, &description); err != nil {
+				return err
+			}
+			record(schwabInstrument{AssetType: assetType.String, CUSIP: cusip.String,
+				Symbol: symbol.String, Description: description.String})
+			return nil
+		})
+	}
+	const q = `SELECT DISTINCT payload FROM positions`
+	return silver.ScanRows(ctx, c.db, "schwab descToInstrument positions", q, func(rows *sql.Rows) error {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return err
+		}
+		if p, err := preV6Holding(payload); err == nil {
+			record(p.Instrument)
+		}
 		return nil
 	})
 }

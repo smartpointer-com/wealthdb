@@ -60,8 +60,9 @@ CREATE TABLE positions (
 );
 
 -- A fixture states a holding once, in its payload. The trigger fills
--- the v6 columns from it by the collector's rules: a code's text, a
--- number's literal, the day a maturity stamp names at 00:00 UTC.
+-- the v6 columns from it: a code's text, a number's JSON literal (no
+-- fixture states one with an exponent, which the collector writes out),
+-- the day a maturity stamp names at 00:00 UTC.
 CREATE TRIGGER positions_promote AFTER INSERT ON positions BEGIN
     UPDATE positions SET
         asset_type = CASE WHEN json_type(payload, '$.instrument.assetType') = 'text'
@@ -98,8 +99,8 @@ CREATE TABLE transactions (
     payload             TEXT    NOT NULL
 );
 
--- v6. The adapter reads a transaction's legs from its payload; the
--- table is here so the copy states every table the collector writes.
+-- v6. The adapter reads a transaction's legs from its payload, not from
+-- this table.
 CREATE TABLE transaction_legs (
     activity_id TEXT    NOT NULL,
     leg         INTEGER NOT NULL,

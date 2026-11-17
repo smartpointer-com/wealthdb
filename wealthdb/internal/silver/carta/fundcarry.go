@@ -190,10 +190,7 @@ func appendFundCarryAt(t int64, acct string, ledger fundLedger, inKind *silver.I
 			Payload:              silver.PayloadWith(string(payload), extra),
 		}
 		pos.SetBookValue(reduced, basis)
-		h.batch.Positions = append(h.batch.Positions, pos)
-		h.active[eid] = b.ccy
-		h.classesNew[eid] = canonical.AssetClassPrivateEquity
-		h.vehicles[eid] = canonical.VehicleFund
+		h.place(eid, b.ccy, canonical.AssetClassPrivateEquity, canonical.VehicleFund, pos)
 	}
 	return nil
 }

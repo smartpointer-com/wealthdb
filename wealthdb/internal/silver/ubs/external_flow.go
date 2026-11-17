@@ -113,23 +113,6 @@ func pdfCashIsExternal(p webTxPayload, own map[string]bool, outbound, railEra bo
 	return true
 }
 
-// statementFlowTypes are the Account-Statement booking types that MOVE cash
-// (deposits and withdrawals in gold). Only these can be an internal transfer:
-// a securities settlement, a dividend or a fee referencing a portfolio is not
-// a flow at all, so it must never be read as one.
-var statementFlowTypes = map[string]bool{
-	"CREDIT":                     true,
-	"DEBIT":                      true,
-	"E-BANKING PAYMENT ORDER":    true,
-	"E-BANKING CREDIT":           true,
-	"MULTI E-BANKING ORDER":      true,
-	"PAYMENT ORDER":              true,
-	"PAYMENT ORDER BY TELEPHONE": true,
-	"SPECIAL PAYMENT ORDER":      true,
-	"PAYNET ORDER":               true,
-	"MULTI PAYNET ORDER":         true,
-}
-
 // internalTransferMarkers are the name-free words of an INTRA-portfolio cash
 // move: funding or reducing a managed mandate, or an explicit book transfer.
 // They reshuffle cash between the holder's own UBS accounts and mandates, so
@@ -146,12 +129,12 @@ var internalTransferMarkers = []string{
 // intra-portfolio reshuffle (funding/reducing a managed mandate, or a book
 // transfer) rather than external capital, from the continuation lines the
 // payload carries: a marker of internalTransferMarkers anywhere in them,
-// upper-cased. A statement row qualifies only under a cash-moving booking
-// type (statementFlowTypes). An advice prints no booking type, and its lines
+// upper-cased. A statement row qualifies only under a booking type that
+// moves cash (bookingFacts.transfer). An advice prints no booking type, and its lines
 // are the purpose of the payment, which is written for exactly these moves
 // ("Uebertrag <portfolio>", "Increase <name> Mandate"), so it needs no gate.
 func pdfInternalTransfer(p webTxPayload) bool {
-	if !isPaymentAdvice(p) && !statementFlowTypes[p.BookingType] {
+	if !isPaymentAdvice(p) && !bookingOf(p.BookingType).transfer {
 		return false
 	}
 	blob := strings.ToUpper(strings.Join(p.Continuation, " "))

@@ -9,9 +9,12 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver/silvertest"
 )
 
-// newWebFixture builds an in-memory ubs-web silver with just the
-// historical tables snapshotsHistorical reads. Same "sqlite"
-// driver the PSN fixture uses.
+// newWebFixture builds an in-memory ubs-web silver of an older shape:
+// just the historical tables snapshotsHistorical reads, with no live
+// table, no cost_basis column (ubs-web migration 0013) and no
+// statement_overview_totals (0018). The tests that read an older silver
+// use it, and so do the ones whose rows any shape reads alike; the
+// current shape is webSilverSchemaSQL (TestPreciousMetalsTotalsOfTheCurrentShape).
 func newWebFixture(t *testing.T) *webReader {
 	t.Helper()
 	const schema = `
@@ -442,5 +445,60 @@ func TestStatusChangeNumberIgnoresHistoricalDates(t *testing.T) {
 	}
 	if w.NewChangeNumber != s.LatestChangeNumber {
 		t.Errorf("ChangeWindow advances to %d, Status reports %d", w.NewChangeNumber, s.LatestChangeNumber)
+	}
+}
+
+// TestPreciousMetalsTotalsOfTheCurrentShape reads the overview totals a
+// current silver holds in statement_overview_totals. Of two USD copies of
+// one (date, portfolio) total the last the document walk wrote is the
+// position; the total suppresses the year-end gold-bar detail line of its
+// portfolio; and a total dated past every other historical row widens the
+// historical span.
+func TestPreciousMetalsTotalsOfTheCurrentShape(t *testing.T) {
+	ctx := context.Background()
+	_, db := silvertest.NewDB(t, webSilverSchemaSQL)
+	silvertest.Exec(t, db, `
+INSERT INTO historical_position_snapshots(as_of_date, portfolio_external_id, account_external_id,
+    instrument_isin, currency_iso, units, market_value, market_value_currency,
+    description, source_doc_token, payload) VALUES
+    (1000, '0999AAAAAAAA01', '', 'CH0000000001', 'USD', 1000, 50000, 'CHF',
+     'Gold bar(s) fine weight', 'tok-ye', '{"headline":"1 000 Gold bar(s) fine weight USD ..."}'),
+    (1000, '0999AAAAAAAA01', '', 'CH0000000003', 'CHF', 100, 50000, 'CHF',
+     'Example Money Market Fund CHF', 'tok-ye', '{}');
+INSERT INTO statement_overview_totals(source_doc_token, portfolio_external_id, asset_class, as_of_date,
+    currency_iso, market_value, payload) VALUES
+    ('tok-a', '0999AAAAAAAA01', 'precious_metals', 1000, 'USD', 111111, '{}'),
+    ('tok-b', '0999AAAAAAAA01', 'precious_metals', 1000, 'USD', 222222, '{}'),
+    ('tok-c', '0999AAAAAAAA01', 'precious_metals', 5000, 'USD', 333333, '{}');`)
+	r := &webReader{db: db}
+
+	w := canonical.Window{Start: 0, End: 100000, HasChanges: true}
+	stream := connSnapshots(t, &Connection{web: r}, w)
+	mv := map[string]string{}
+	for {
+		batch, more, err := stream.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range batch.Positions {
+			if p.SnapshotAt == 1000 && p.MarketValue != nil {
+				mv[p.PositionKey] = p.MarketValue.String()
+			}
+		}
+		if !more {
+			break
+		}
+	}
+	if got := mv["PM-0999AAAAAAAA01"]; got != "222222" {
+		t.Errorf("precious-metals position = %q, want the last USD copy's 222222", got)
+	}
+	if _, ok := mv["CH0000000001"]; ok {
+		t.Error("the year-end gold-bar detail line reached gold beside the overview total")
+	}
+	if _, ok := mv["CH0000000003"]; !ok {
+		t.Error("a non-metal security in the portfolio was suppressed")
+	}
+	if lo, hi, err := r.historicalRange(ctx); err != nil || lo != 1000 || hi != 5000 {
+		t.Errorf("span = (%d, %d, %v), want (1000, 5000, nil)", lo, hi, err)
 	}
 }

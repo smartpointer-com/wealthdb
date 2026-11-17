@@ -26,7 +26,7 @@ func (c *Connection) clock() silver.Clock {
 		silver.RangePast("transactions", "occurred_at"),
 	}
 	if c.schema.runStamp {
-		newRows = append(newRows, broughtRows)
+		newRows = append(newRows, silver.RangeStampedPast("transactions", "occurred_at", "run_snapshot_at"))
 	}
 	return silver.Clock{
 		Kind:     "relevate",
@@ -41,12 +41,6 @@ func (c *Connection) clock() silver.Clock {
 		},
 	}
 }
-
-// broughtRows is the range of the transactions a dump past the
-// watermark brought, the one argument it binds.
-const broughtRows = `SELECT
-    (SELECT MIN(occurred_at) FROM transactions WHERE run_snapshot_at > ?1),
-    (SELECT MAX(occurred_at) FROM transactions WHERE run_snapshot_at > ?1)`
 
 // historicalStart is the earliest historical snapshot, the start a
 // window reaches back to: a rebuild from the same Quartalsbericht PDFs

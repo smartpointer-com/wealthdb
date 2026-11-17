@@ -137,7 +137,7 @@ func TestAWrappedPayeeReachesGoldWhole(t *testing.T) {
 		`{"Description1":"`+wrappedExport+`","Description2":"e-banking payment order","Description3":""}`)
 	seedRailEraAnchor(t, r)
 	seedWebTextRow(t, r, "WR2", 200*86400, 30.0, nil, wrappedHead, "E-BANKING PAYMENT ORDER",
-		`{"source":"account_statement_pdf","booking_type":"E-BANKING PAYMENT ORDER","internal_transfer":false,"counter_account":null,"continuation":["`+
+		`{"source":"account_statement_pdf","booking_type":"E-BANKING PAYMENT ORDER","counter_account":null,"continuation":["`+
 			wrappedHead+`","`+wrappedRemainder+`","EXAMPLE STREET 1","CH EXAMPLETOWN 9999"]}`)
 	got := drainTx(t, emitWebStream(t, r))
 	checkText(t, got, map[string]textCase{

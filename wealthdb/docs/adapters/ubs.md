@@ -70,6 +70,7 @@ Web silver:
 | `transactions` | `transactions` | §5, §7. |
 | `mortgages`, `historical_mortgages` | `accounts` (kind `mortgage`) + a negative `mortgage` position | No PSN cut: PSN carries no mortgages. |
 | `historical_position_snapshots`, `historical_cash_balances` | `positions`, `cash_balances` | §9. The positions also feed the valor index and road 3 of a dividend's security (§7). |
+| `statement_overview_totals` | `positions` | The USD copy's precious-metals total, one position per date and portfolio (§9). |
 | `card_accounts`, `card_invoices`, `card_transactions` | `accounts`, `cash_balances`, `transactions` | §10. |
 | `portfolio_transactions` | `transactions`; `realized_lots` | A managed portfolio's securities settlements, booked on the cash account that paid (§11). Its sales with a realized P/L are also realized lots (§12). |
 | `statement_trades` | `realized_lots` | The trade list a Statement of Assets prints (ubs-web DESIGN.md §3.10). Each sale is a realized lot with the cost it drew on (§12). |
@@ -232,8 +233,19 @@ on a statement stays negative. `ApplyCanonicalSign` orients the net
 amount by the kind, so a reversal keeps its inflow whichever column
 printed it.
 
-A statement-era deposit or withdrawal then passes the era-gated
-external-flow test (`pdfCashIsExternal`):
+A deposit or withdrawal read from the PDF archive then passes the
+external-flow test (`pdfCashIsExternal`). Such a row is a statement row
+or a payment advice (`source` `payment_advice_pdf`; an older silver
+marks the advice in `document`).
+
+First, a move between the relationship's own accounts and mandates is
+internal (`pdfInternalTransfer`). It is a statement row under a booking
+type that moves cash, or a payment advice, whose narrative lines carry
+one of the transfer or mandate words (`UEBERTRAG`, `UMBUCHUNG`,
+`MANDAT`, `MANAGE`, `PORTFOLIO`, `REDUK`, `REDUCTION`, `INCREAS`). No
+later rule can make it external.
+
+The rail promotion is era-gated:
 
 - In the MT940 era, the TWINT credit and reversal count as arrivals,
   beside `CREDIT`, `E-BANKING CREDIT` and `SALARY PAYMENT`. The TWINT
@@ -574,9 +586,10 @@ eras land on one signed number.
   equal and opposite on one day, and folding them would delete a real
   entry. A reversal row (`<base>;Reversal`) keeps its own sign for the
   same reason.
-- A kind with no pinned direction (interest, `fx`, `other`) passes the
-  source's sign through. There the eras can disagree, and the pair does
-  not fold. The fold never guesses.
+- A kind with no pinned direction (interest, `fx`, `other`) keeps the
+  sign the row states. The statement's debit column is a printed figure
+  and is subtracted. The export's debit cell is signed and is added. So
+  both eras land on one signed number for these kinds too.
 - No narrative enters the key: each era words the entry differently.
 - A zero amount never folds. It names no sum, and a day can carry
   several unrelated zero-amount period-close lines.
@@ -787,8 +800,10 @@ The readers:
 
 - **Returns.** In either era, a counter account the relationship owns
   makes the row internal (`buildOwnIBANSet`; also rule 2 of
-  `pdfCashIsExternal`'s decision order). This only demotes, as the conduit model requires: a known own
-  counter can take a row out of the flow series, never put one in.
+  `pdfCashIsExternal`'s decision order, after the internal-transfer
+  rule of §5). This only demotes, as the conduit model requires: a
+  known own counter can take a row out of the flow series, never put
+  one in.
 - **The far account.** Gold keeps the payload verbatim. The enrichment
   pass resolves the stated counter account against gold's accounts and
   records where an own-account move went, even where the far side has
@@ -1157,6 +1172,7 @@ the reports state the securities, the web feed the cash accounts
 | `historical_position_snapshots` | "Statement of Assets" | Quarterly | `positions` (securities); cash rows skipped, see below |
 | `historical_cash_balances` | "Account Statement" | Monthly | `cash_balances` (opening + closing) |
 | `historical_mortgages` | "Maturity Notice" | Quarterly | `accounts` (kind `mortgage`) + a negative `mortgage` position |
+| `statement_overview_totals` | "Statement of Assets" (overview) | Quarterly | `positions` (one precious-metals position per portfolio) |
 
 They cover the dates before PSN starts. A row on or after its
 portfolio's or account's PSN start is dropped, so PSN owns those days
@@ -1167,7 +1183,7 @@ streams, so gold fills oldest-first.
 ### Security positions
 
 These are the `historical_position_snapshots` rows with an
-`instrument_isin`. The PDFs do not state the safekeeping account
+`instrument_isin`, plus the precious-metals positions below. The PDFs do not state the safekeeping account
 reliably, so silver leaves `account_external_id` empty. The adapter
 attaches each position to the PSN safekeeping account its portfolio
 maps to, where exactly one can hold it (`statementSecuritiesAccount`).
@@ -1189,12 +1205,25 @@ row.
 | `description` | `instruments.name` |
 | `sector` | payload only |
 
-A year-end Statement of Assets can print a gold-bar detail line for a
-precious-metals portfolio that the quarterly statements omit. The
-adapter also emits one overview precious-metals position
-(`PM-<portfolio>`) for such a portfolio. Where the overview exists for
-the same date and portfolio, the detail line is suppressed, so the metal
-counts once.
+A portfolio held in precious-metals custody has no detailed positions
+page. Its overview total is one position (`preciousMetalsTotals`):
+
+- It is read from `statement_overview_totals`. The overview prints the
+  total once per valuation currency, and silver keeps every copy. The
+  adapter reads the USD copy only. The other copies are not read.
+- Where the document walk wrote several USD copies for one date and
+  portfolio, the last one is the position.
+- Its instrument key is `PM-<portfolio>`. The key is not ISIN-shaped,
+  so the instrument has no canonical ISIN. Its name is "Precious metals
+  & commodities".
+- An older silver holds the same position as a
+  `historical_position_snapshots` row under that key, and the adapter
+  reads it there.
+
+A year-end Statement of Assets can print a gold-bar detail line for
+such a portfolio that the quarterly statements omit. Where the overview
+position exists for the same date and portfolio, the detail line is
+suppressed, so the metal counts once.
 
 The PDFs carry no CFI or UAC code, so the pair comes from the
 description (`taxonomyPairForWebDescription`). UBS generates
@@ -1234,9 +1263,11 @@ not read as 0. Silver keeps NULL apart from a real zero.
 
 ### Mortgages
 
-A Maturity Notice states a mortgage's balance "as at" a date. The
-adapter emits it on the portfolio snapshot of that date, as the same
-account, instrument and position triple as a live mortgage. It only
+A Maturity Notice states a mortgage's balance "as at" a date. Silver
+holds the principal as printed. The adapter gives the position its
+negative sign (`liability`), whichever sign silver holds. It emits it
+on the portfolio snapshot of that date, as the same account,
+instrument and position triple as a live mortgage. It only
 joins a snapshot that already exists. UBS issues the next quarter's
 notice ahead of time. A mortgage-only snapshot at that future date
 would end every account last observed beside the mortgage

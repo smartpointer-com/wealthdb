@@ -18,25 +18,29 @@ import (
 
 // TestCointrackingSweepFundsColdDebut is the phantom-inflow guard: two
 // exchange wallets funded by fiat deposits sweep their coins into two
-// cold-storage wallets that debut on the sweep. Each sweep's in-leg funds its
-// wallet's debut, so the aggregate flow set holds only the fiat deposits, and
-// no onboarding of the debuting wallets, whether the load stored the sweep
-// pairs or the netter pairs them by value. A phantom inflow of the debut
-// value would inflate net_flow and drag the aggregate TWR negative.
+// cold-storage wallets that debut on the sweep. The netter pairs each sweep
+// by value, and its in-leg funds its wallet's debut, so the aggregate flow
+// set holds only the fiat deposits, and no onboarding of the debuting
+// wallets. A phantom inflow of the debut value would inflate net_flow and
+// drag the aggregate TWR negative.
+//
+// A stored link changes nothing here. The in-leg lands on its wallet's
+// debut, so linkedDrops leaves the link unused (a pre-debut leg), and the
+// netter pairs the legs as before: the moved price stays inside its
+// tolerance.
 func TestCointrackingSweepFundsColdDebut(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// in is the day the coin lands in cold storage, and inA and inB its
 		// value there: the day it left at the same price, or a day later at
-		// a moved one.
+		// a price moved inside the netter's tolerance.
 		in       int64
 		inA, inB int64
 		linked   bool
 	}{
 		{"same day, netted by value", dy(2023, time.June, 30), 12000, 8000, false},
-		{"same day, stored pairs", dy(2023, time.June, 30), 12000, 8000, true},
-		{"next day at a moved price, stored pairs", dy(2023, time.July, 1), 12030, 8020, true},
+		{"next day at a moved price, links stored", dy(2023, time.July, 1), 12030, 8020, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

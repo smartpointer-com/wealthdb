@@ -1153,9 +1153,10 @@ silver holding positions but no transaction history).
 - **`accounts_grain`** (`"normal"` | `"blanked"` | `"hidden"`) replaces the
   per-account display mode: full rows, rows with TWR/MWR blanked to n/a +
   `accounts_grain_meaningless`, or no rows at all (plumbing: values and
-  flows still enter every aggregate). No registered policy hides a
-  source, so `"hidden"` is how a deployment hides one, and `"normal"`
-  undoes it. Every cash account stays hidden whatever this says (§5.7).
+  flows still enter every aggregate). No registered policy blanks or
+  hides a source: `"blanked"` and `"hidden"` are how a deployment does,
+  and `"normal"` is the default. Every cash account stays hidden whatever
+  this says (§5.7).
 - **Partial semantics:** unset fields keep the registered policy's values;
   code-side knobs without a config field (onboarding scope, conduit kinds,
   inception mode, …) are never touched.

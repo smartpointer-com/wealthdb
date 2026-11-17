@@ -257,3 +257,47 @@ func TestStatementCashRateRidesOnTheClosingBalance(t *testing.T) {
 		t.Errorf("closing payload on a silver without the column = %s, want it unchanged", older[jan])
 	}
 }
+
+// A web silver older than migration 0014 states no transaction columns:
+// its transactions load with no amount, quantity or price, and the load
+// names the five columns. Every number in the fixture is invented.
+func TestAWebSilverOlderThanTheTransactionColumns(t *testing.T) {
+	path, web := silvertest.NewDB(t, webSilverSchemaSQL)
+	silvertest.Exec(t, web, `
+        CREATE TABLE schema_meta (silver_schema_version INTEGER NOT NULL, applied_at INTEGER NOT NULL);
+        INSERT INTO schema_meta VALUES (13, 0);
+        ALTER TABLE transactions DROP COLUMN amount;
+        ALTER TABLE transactions DROP COLUMN quantity;
+        ALTER TABLE transactions DROP COLUMN price;
+        ALTER TABLE transactions DROP COLUMN description;
+        ALTER TABLE transactions DROP COLUMN action;
+        INSERT INTO dump_runs(snapshot_at, silver_schema_version, run_dir) VALUES (1000, 13, '/x/1');
+        INSERT INTO accounts(snapshot_at, account_external_id, payload) VALUES
+            (1000, '5678', '{"account_number_full":"1111-5678"}');
+        INSERT INTO transactions(activity_id, timestamp, account_external_id, kind, instrument_key,
+            source, source_sha256, payload) VALUES
+            ('T1', 2000, '5678', 'Buy', 'VTI', 'statement_pdf', 'sha-stmt',
+             '{"amount":-100,"quantity":1,"price":100,"description":"VTI"}');`)
+	conn, err := (&Adapter{}).Open(context.Background(), silver.OpenSpec{Subsources: []silver.Subsource{
+		{Kind: "schwab-web", Path: path},
+	}})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	txs := silvertest.Transactions(t, conn, everything)
+	if len(txs) != 1 {
+		t.Fatalf("transactions = %d, want the one row", len(txs))
+	}
+	if x := txs[0]; x.NetAmount != nil || x.Quantity != nil || x.Price != nil {
+		t.Errorf("transaction = %+v, want no amount, quantity or price", x)
+	}
+	notes := conn.(silver.SchemaAdviser).SchemaAdvice()
+	want := "transactions.amount, transactions.quantity, transactions.price, " +
+		"transactions.description, transactions.action"
+	if len(notes) != 1 || notes[0].Version != 13 || notes[0].Reads != 14 ||
+		strings.Join(notes[0].Missing, "|") != want {
+		t.Errorf("advice = %+v, want one note at 13 reading 14 naming %s", notes, want)
+	}
+}

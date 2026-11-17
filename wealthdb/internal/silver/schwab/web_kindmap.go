@@ -1,6 +1,7 @@
 package schwab
 
 import (
+	"encoding/json"
 	"regexp"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -206,4 +207,18 @@ func webSigned(silverKind string, kind canonical.TxKind, amount *canonical.Decim
 		return amount
 	}
 	return signed
+}
+
+// distributionIsCash reports whether a third_party_distribution row is a cash
+// transfer (payload.transfer_kind == "cash"). Cash transfers may overlap a
+// statement cash debit and are deduped against it; securities transfers
+// (transfer_kind == "securities") are new data and are left untouched.
+func distributionIsCash(payload string) bool {
+	var p struct {
+		TransferKind string `json:"transfer_kind"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return false
+	}
+	return p.TransferKind == "cash"
 }

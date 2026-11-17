@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -156,3 +157,21 @@ const (
 	sourceFORM1099B              = "form_1099b"
 	sourceThirdPartyDistribution = "third_party_distribution"
 )
+
+// webNarrative is the row's narrative for gold: the movement, then the
+// security it concerns — the fidelity adapter's action-then-security
+// reading. The security alone cannot tell a dividend from the withholding
+// taken from it, or an ADR's pass-through fee from either: all three name
+// the same security. The movement is the row's action column: the
+// transaction history's `Action` ("NRA Tax Adj", "ADR Mgmt Fee"), or on a
+// statement row its `action` or `category`, where it states one.
+func webNarrative(movement string, security *string) *string {
+	sec := ""
+	if security != nil {
+		sec = *security
+	}
+	if movement != "" && strings.HasPrefix(strings.ToUpper(sec), strings.ToUpper(movement)) {
+		movement = "" // the narrative already leads with it
+	}
+	return silver.StrPtrIfNonEmpty(strings.TrimSpace(movement + " " + sec))
+}
