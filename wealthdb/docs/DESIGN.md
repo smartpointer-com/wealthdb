@@ -3471,10 +3471,14 @@ The macros:
   its issuer, the LEI from `fund_lines.lei`, which the load reads off
   the line's payload (migration 0137). A line that states no coupon
   kind takes its fund's filing's;
+- `exposure_labeled_leaves(asof, ccy, country)`: the leaves with each
+  one's buckets as the views name them (`unknown`, `(none)`) and the
+  security it counts under;
 - `exposure_yield_leaves(asof, ccy)`: the leaves with each one's
   maturity and its bucket, coupon kind, rating, cycle and issuer, a
-  holding's from its terms on the day; `exposure_credit_leaves` and
-  `exposure_maturity_leaves` split a leaf no rating or maturity
+  holding's from its terms on the day; `exposure_debt_buckets(asof,
+  ccy)` gives each leaf in the credit, maturity, coupon and cycle
+  dimensions, one row each, and splits a leaf no rating or maturity
   describes by its fund's page (`exposure_page_breakdown`). Their
   helpers read a label, a band, a maturity and a name, and give a
   leaf's bucket: `exposure_label_words`, `exposure_rating_label` and
@@ -3482,6 +3486,10 @@ The macros:
   `_upper` and `_bucket`, `exposure_issuer_text` and `_name`,
   `exposure_credit_bucket`, `exposure_credit_unknown` and
   `exposure_maturity_split`;
+- `exposure_credit_grade(bucket)`, `exposure_bucket_order(dimension,
+  bucket)` and `exposure_class_share(value, total)`: a credit bucket's
+  grade, a bucket's place in its dimension, and a bucket's share of
+  what its dimension describes;
 - `exposure_quality(flags, value)` and `exposure_situs_quality(basis,
   value)`: the aggregates behind the `quality` columns;
 - `exposure_divergence(asof)`: how far each fund read from a report lies

@@ -238,28 +238,28 @@ func TestExposureBucketClassShares(t *testing.T) {
 	}
 }
 
+// A bucket's class share is its share of what its dimension describes.
 // A dimension that describes nothing of the book, or whose rows sum to
-// zero or less, leaves every class share blank, and a value that is no
-// number fails the read.
-func TestSetClassShares(t *testing.T) {
+// less than zero, gives no bucket a class share.
+func TestExposureClassShare(t *testing.T) {
 	t.Parallel()
-	val := func(s string) *string { return &s }
-	for name, rows := range map[string][]ExposureBucketRow{
-		"a book of no debt": {{Bucket: "fixed", Value: val("0")}, {Bucket: "(none)", Value: val("6000")}},
-		"an overdraft beyond the debt": {{Bucket: "AAA", Value: val("10000")}, {Bucket: "cash", Value: val("-11000")},
-			{Bucket: "(none)", Value: val("6000")}},
+	db, ctx := openMigrated(t)
+	for name, c := range map[string]struct {
+		value, total float64
+		want         string
+	}{
+		"a quarter":                    {25, 100, "25.0"},
+		"a book of no debt":            {0, 0, "-"},
+		"an overdraft beyond the debt": {-11000, -1000, "-"},
 	} {
-		if err := setClassShares(rows); err != nil {
-			t.Fatalf("%s: %v", name, err)
+		var got string
+		if err := db.QueryRowContext(ctx, `SELECT COALESCE(CAST(exposure_class_share(?::DOUBLE, ?::DOUBLE) AS VARCHAR), '-')`,
+			c.value, c.total).Scan(&got); err != nil {
+			t.Fatal(err)
 		}
-		for _, r := range rows {
-			if r.ClassSharePct != nil {
-				t.Errorf("%s: %s has a class share of %v", name, r.Bucket, *r.ClassSharePct)
-			}
+		if got != c.want {
+			t.Errorf("%s: class share %s, want %s", name, got, c.want)
 		}
-	}
-	if err := setClassShares([]ExposureBucketRow{{Bucket: "fixed", Value: val("n/a")}}); err == nil {
-		t.Error("a value that is no number read")
 	}
 }
 

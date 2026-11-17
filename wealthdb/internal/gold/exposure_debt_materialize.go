@@ -25,10 +25,9 @@ const (
 // exposureDebtSQL is the instant's buckets of the four debt and equity
 // views (EXPOSURE.md §7) per reporting currency, source and tax wrapper:
 // a leaf's credit and maturity buckets split by its page fund's
-// breakdowns as exposure_credit_leaves and exposure_maturity_leaves
-// split them, its coupon kind and its cycle. Each dimension sums to the
-// instant's net worth. A breakdown's join carries its condition in the
-// key, so the join hashes.
+// breakdowns as exposure_debt_buckets splits them, its coupon kind and
+// its cycle. Each dimension sums to the instant's net worth. A
+// breakdown's join carries its condition in the key, so the join hashes.
 var exposureDebtSQL = `INSERT INTO report_exposure_debt BY NAME
 WITH ` + exposureScaledSQL + `,
 c AS (
@@ -89,8 +88,8 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
 // exposureSecuritiesSQL is the instant's report_exposure_securities rows
 // per reporting currency, cut by source, tax wrapper and the leaf's asset
 // class: a security's slices (migration 0165). A leaf's security is the
-// view's (report_exposure_securities, derived/60_exposure.sql): keep
-// the CASE and the direct split the same. Each label is its largest
+// view's (exposure_labeled_leaves, derived/60_exposure.sql): keep the
+// CASE and the direct split the same. Each label is its largest
 // leaf's that has one, the greater label on a tie, with that leaf's
 // absolute value as its weight, so a card that takes the label of the
 // heaviest slice gives the view's.

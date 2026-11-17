@@ -19,6 +19,75 @@ type ExposureShares struct {
 	SharePct, DirectPct, ViaFundsPct *float64
 }
 
+// exposureDimension is one aggregate view of the exposure report: the
+// op its errors name, its macro, the columns that key its rows, whether
+// they carry a class share, whether the macro takes a country reading,
+// and the ORDER BY its reader repeats, empty where the reader keeps the
+// macro's order as it comes.
+type exposureDimension struct {
+	op, macro, keys     string
+	classShare, country bool
+	order               string
+}
+
+// exposureDimensions are the aggregate views, by view name. Each row is
+// its keys, then its value, its shares and its quality (exposureRows).
+var exposureDimensions = map[string]exposureDimension{
+	"classes": {op: "ExposureClasses", macro: "report_exposure_classes", keys: "asset_class",
+		order: "value DESC, asset_class"},
+	"sectors": {op: "ExposureSectors", macro: "report_exposure_sectors", keys: "asset_class, sector", classShare: true},
+	"sizes":   {op: "ExposureSizes", macro: "report_exposure_sizes", keys: "asset_class, size", classShare: true},
+	"countries": {op: "ExposureCountries", macro: "report_exposure_countries", keys: "country, country_name, region",
+		country: true, order: "value DESC, country, region"},
+	"currencies": {op: "ExposureCurrencies", macro: "report_exposure_currencies", keys: "currency, currency_kind",
+		order: "value DESC, currency"},
+	"credit": {op: "ExposureCredit", macro: "report_exposure_credit", keys: "bucket, grade", classShare: true},
+	"maturities": {op: "ExposureMaturities", macro: "report_exposure_maturities", keys: "bucket, NULL",
+		classShare: true},
+	"coupons": {op: "ExposureCoupons", macro: "report_exposure_coupons", keys: "coupon_kind, NULL", classShare: true},
+	"cycles":  {op: "ExposureCycles", macro: "report_exposure_cycles", keys: "cycle, NULL", classShare: true},
+}
+
+// exposureCells are the scan targets an aggregate row shares: its value,
+// its shares, its class share (nil for a view without one) and its
+// quality.
+type exposureCells struct {
+	value      **string
+	shares     *ExposureShares
+	classShare **float64
+	quality    *string
+}
+
+// exposureRows runs the aggregate view at asOf in ccy, and country for
+// a view that takes one. keys gives a row's key targets, cells the rest.
+func exposureRows[T any](ctx context.Context, db *sql.DB, view string, asOf int64, ccy, country string,
+	keys func(*T) []any, cells func(*T) exposureCells) ([]T, error) {
+	d := exposureDimensions[view]
+	cols := "share_pct, "
+	if d.classShare {
+		cols += "class_share_pct, "
+	}
+	q := `SELECT ` + d.keys + `, CAST(value::DECIMAL(28,4) AS VARCHAR), ` + cols + `direct_pct, via_funds_pct, quality
+  FROM ` + d.macro + `(?, ?`
+	args := []any{asOf, ccy}
+	if d.country {
+		q += `, p_country := ?`
+		args = append(args, country)
+	}
+	q += `)`
+	if d.order != "" {
+		q += ` ORDER BY ` + d.order
+	}
+	return scanRows(ctx, db, d.op, q, args, func(r *T) []any {
+		c := cells(r)
+		out := append(keys(r), dec(c.value), flt(&c.shares.SharePct))
+		if d.classShare {
+			out = append(out, flt(c.classShare))
+		}
+		return append(out, flt(&c.shares.DirectPct), flt(&c.shares.ViaFundsPct), c.quality)
+	})
+}
+
 // ExposureClassRow is one asset class after look-through.
 type ExposureClassRow struct {
 	AssetClass string
@@ -29,12 +98,11 @@ type ExposureClassRow struct {
 
 // ExposureClasses runs report_exposure_classes.
 func ExposureClasses(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureClassRow, error) {
-	return scanRows(ctx, db, "ExposureClasses", `
-SELECT asset_class, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, direct_pct, via_funds_pct, quality
-  FROM report_exposure_classes(?, ?)
- ORDER BY value DESC, asset_class`, []any{asOf, ccy}, func(r *ExposureClassRow) []any {
-		return []any{&r.AssetClass, dec(&r.Value), flt(&r.SharePct), flt(&r.DirectPct), flt(&r.ViaFundsPct), &r.Quality}
-	})
+	return exposureRows(ctx, db, "classes", asOf, ccy, "",
+		func(r *ExposureClassRow) []any { return []any{&r.AssetClass} },
+		func(r *ExposureClassRow) exposureCells {
+			return exposureCells{value: &r.Value, shares: &r.ExposureShares, quality: &r.Quality}
+		})
 }
 
 // ExposureSectorRow is one sector of one asset class.
@@ -48,13 +116,11 @@ type ExposureSectorRow struct {
 
 // ExposureSectors runs report_exposure_sectors.
 func ExposureSectors(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureSectorRow, error) {
-	return scanRows(ctx, db, "ExposureSectors", `
-SELECT asset_class, sector, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, class_share_pct,
-       direct_pct, via_funds_pct, quality
-  FROM report_exposure_sectors(?, ?)`, []any{asOf, ccy}, func(r *ExposureSectorRow) []any {
-		return []any{&r.AssetClass, &r.Sector, dec(&r.Value), flt(&r.SharePct), flt(&r.ClassSharePct),
-			flt(&r.DirectPct), flt(&r.ViaFundsPct), &r.Quality}
-	})
+	return exposureRows(ctx, db, "sectors", asOf, ccy, "",
+		func(r *ExposureSectorRow) []any { return []any{&r.AssetClass, &r.Sector} },
+		func(r *ExposureSectorRow) exposureCells {
+			return exposureCells{value: &r.Value, shares: &r.ExposureShares, classShare: &r.ClassSharePct, quality: &r.Quality}
+		})
 }
 
 // ExposureSizeRow is one size of one asset class. A size applies to
@@ -69,13 +135,11 @@ type ExposureSizeRow struct {
 
 // ExposureSizes runs report_exposure_sizes.
 func ExposureSizes(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureSizeRow, error) {
-	return scanRows(ctx, db, "ExposureSizes", `
-SELECT asset_class, size, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, class_share_pct,
-       direct_pct, via_funds_pct, quality
-  FROM report_exposure_sizes(?, ?)`, []any{asOf, ccy}, func(r *ExposureSizeRow) []any {
-		return []any{&r.AssetClass, &r.Size, dec(&r.Value), flt(&r.SharePct), flt(&r.ClassSharePct),
-			flt(&r.DirectPct), flt(&r.ViaFundsPct), &r.Quality}
-	})
+	return exposureRows(ctx, db, "sizes", asOf, ccy, "",
+		func(r *ExposureSizeRow) []any { return []any{&r.AssetClass, &r.Size} },
+		func(r *ExposureSizeRow) exposureCells {
+			return exposureCells{value: &r.Value, shares: &r.ExposureShares, classShare: &r.ClassSharePct, quality: &r.Quality}
+		})
 }
 
 // ExposureCountryRow is one country, with its region.
@@ -91,14 +155,11 @@ type ExposureCountryRow struct {
 // ExposureCountries runs report_exposure_countries; country is risk or
 // domicile.
 func ExposureCountries(ctx context.Context, db *sql.DB, asOf int64, ccy, country string) ([]ExposureCountryRow, error) {
-	return scanRows(ctx, db, "ExposureCountries", `
-SELECT country, country_name, region, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, direct_pct,
-       via_funds_pct, quality
-  FROM report_exposure_countries(?, ?, p_country := ?)
- ORDER BY value DESC, country, region`, []any{asOf, ccy, country}, func(r *ExposureCountryRow) []any {
-		return []any{&r.Country, str(&r.CountryName), str(&r.Region), dec(&r.Value), flt(&r.SharePct),
-			flt(&r.DirectPct), flt(&r.ViaFundsPct), &r.Quality}
-	})
+	return exposureRows(ctx, db, "countries", asOf, ccy, country,
+		func(r *ExposureCountryRow) []any { return []any{&r.Country, str(&r.CountryName), str(&r.Region)} },
+		func(r *ExposureCountryRow) exposureCells {
+			return exposureCells{value: &r.Value, shares: &r.ExposureShares, quality: &r.Quality}
+		})
 }
 
 // ExposureCurrencyRow is one currency: a fiat currency, a metal (XAU)
@@ -112,12 +173,11 @@ type ExposureCurrencyRow struct {
 
 // ExposureCurrencies runs report_exposure_currencies.
 func ExposureCurrencies(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureCurrencyRow, error) {
-	return scanRows(ctx, db, "ExposureCurrencies", `
-SELECT currency, currency_kind, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, direct_pct, via_funds_pct, quality
-  FROM report_exposure_currencies(?, ?)
- ORDER BY value DESC, currency`, []any{asOf, ccy}, func(r *ExposureCurrencyRow) []any {
-		return []any{&r.Currency, &r.Kind, dec(&r.Value), flt(&r.SharePct), flt(&r.DirectPct), flt(&r.ViaFundsPct), &r.Quality}
-	})
+	return exposureRows(ctx, db, "currencies", asOf, ccy, "",
+		func(r *ExposureCurrencyRow) []any { return []any{&r.Currency, &r.Kind} },
+		func(r *ExposureCurrencyRow) exposureCells {
+			return exposureCells{value: &r.Value, shares: &r.ExposureShares, quality: &r.Quality}
+		})
 }
 
 // ExposureSitusRow is one legal situs: the country whose law a holding

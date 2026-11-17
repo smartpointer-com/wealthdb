@@ -3,8 +3,6 @@ package gold
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"strconv"
 )
 
 // ExposureBucketRow is one bucket of a debt or equity dimension after
@@ -24,78 +22,33 @@ type ExposureBucketRow struct {
 	Quality       string
 }
 
-// exposureNone is the bucket of what a dimension does not describe.
-const exposureNone = "(none)"
-
-// exposureBuckets runs one of the bucket views and gives each row its
-// class share (setClassShares); grade is the column that holds a credit
-// bucket's grade, NULL for the views that have none.
-func exposureBuckets(ctx context.Context, db *sql.DB, op, macro, bucket, grade string, asOf int64,
-	ccy string) ([]ExposureBucketRow, error) {
-	rows, err := scanRows(ctx, db, op, `
-SELECT `+bucket+`, `+grade+`, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, direct_pct, via_funds_pct, quality
-  FROM `+macro+`(?, ?)`, []any{asOf, ccy}, func(r *ExposureBucketRow) []any {
-		return []any{&r.Bucket, str(&r.Grade), dec(&r.Value), flt(&r.SharePct), flt(&r.DirectPct), flt(&r.ViaFundsPct),
-			&r.Quality}
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := setClassShares(rows); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
-	return rows, nil
-}
-
-// setClassShares gives each row but (none) its value's share of the sum
-// of their values. Where that sum is zero or less, a loan or an
-// overdraft outweighing the rest, no row has one: a share of it would
-// flip its sign or have none. It runs over the rows read rather than in
-// the view: the view orders its rows by bucket, and a window over them
-// need not keep that order.
-func setClassShares(rows []ExposureBucketRow) error {
-	values := make([]float64, len(rows))
-	total := 0.0
-	for i, r := range rows {
-		if r.Bucket == exposureNone || r.Value == nil {
-			continue
-		}
-		v, err := strconv.ParseFloat(*r.Value, 64)
-		if err != nil {
-			return fmt.Errorf("bucket %s: value %q: %w", r.Bucket, *r.Value, err)
-		}
-		values[i], total = v, total+v
-	}
-	if total <= 0 {
-		return nil
-	}
-	for i := range rows {
-		if rows[i].Bucket != exposureNone && rows[i].Value != nil {
-			share := 100 * values[i] / total
-			rows[i].ClassSharePct = &share
-		}
-	}
-	return nil
+// exposureBuckets runs one of the bucket views.
+func exposureBuckets(ctx context.Context, db *sql.DB, view string, asOf int64, ccy string) ([]ExposureBucketRow, error) {
+	return exposureRows(ctx, db, view, asOf, ccy, "",
+		func(r *ExposureBucketRow) []any { return []any{&r.Bucket, str(&r.Grade)} },
+		func(r *ExposureBucketRow) exposureCells {
+			return exposureCells{value: &r.Value, shares: &r.ExposureShares, classShare: &r.ClassSharePct, quality: &r.Quality}
+		})
 }
 
 // ExposureCredit runs report_exposure_credit.
 func ExposureCredit(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureBucketRow, error) {
-	return exposureBuckets(ctx, db, "ExposureCredit", "report_exposure_credit", "bucket", "grade", asOf, ccy)
+	return exposureBuckets(ctx, db, "credit", asOf, ccy)
 }
 
 // ExposureMaturities runs report_exposure_maturities.
 func ExposureMaturities(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureBucketRow, error) {
-	return exposureBuckets(ctx, db, "ExposureMaturities", "report_exposure_maturities", "bucket", "NULL", asOf, ccy)
+	return exposureBuckets(ctx, db, "maturities", asOf, ccy)
 }
 
 // ExposureCoupons runs report_exposure_coupons.
 func ExposureCoupons(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureBucketRow, error) {
-	return exposureBuckets(ctx, db, "ExposureCoupons", "report_exposure_coupons", "coupon_kind", "NULL", asOf, ccy)
+	return exposureBuckets(ctx, db, "coupons", asOf, ccy)
 }
 
 // ExposureCycles runs report_exposure_cycles.
 func ExposureCycles(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureBucketRow, error) {
-	return exposureBuckets(ctx, db, "ExposureCycles", "report_exposure_cycles", "cycle", "NULL", asOf, ccy)
+	return exposureBuckets(ctx, db, "cycles", asOf, ccy)
 }
 
 // ExposureIssuerRow is one issuer after look-through: its stock, bonds

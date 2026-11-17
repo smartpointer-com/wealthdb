@@ -269,6 +269,31 @@ CREATE MACRO exposure_credit_unknown(p_debt, p_rating, p_page_unknown) AS
 CREATE MACRO exposure_maturity_split(p_bucket, p_page) AS
     CASE WHEN p_bucket = 'unknown' AND p_page IS NOT NULL THEN p_page ELSE p_bucket END;
 
+-- exposure_credit_grade: the grade a credit bucket falls in: IG from AAA
+-- to BBB, HY for BB and B, NULL for any other bucket.
+CREATE MACRO exposure_credit_grade(p_bucket) AS
+    CASE WHEN p_bucket IN ('AAA', 'AA', 'A', 'BBB') THEN 'IG' WHEN p_bucket IN ('BB', 'B') THEN 'HY' END;
+
+-- exposure_bucket_order: the place of a bucket in its debt or equity
+-- dimension's order, as the views print them: p_dimension is credit,
+-- maturity, coupon or cycle, as report_exposure_debt names them. (none)
+-- comes last.
+CREATE MACRO exposure_bucket_order(p_dimension, p_bucket) AS
+    list_position(CASE p_dimension
+                       WHEN 'credit' THEN ['AAA', 'AA', 'A', 'BBB', 'BB', 'B', 'unrated', 'cash', '(none)']
+                       WHEN 'maturity' THEN ['under 1y', '1-3y', '3-5y', '5-10y', '10-20y', 'over 20y', 'perpetual',
+                                             'unknown', '(none)']
+                       WHEN 'coupon' THEN ['fixed', 'floating', 'inflation_linked', 'zero', 'unknown', '(none)']
+                       WHEN 'cycle' THEN ['cyclical', 'defensive', 'sensitive', 'unknown', '(none)'] END,
+                  p_bucket);
+
+-- exposure_class_share: a bucket's share, in percent, of the total of
+-- the buckets its dimension describes, every bucket but (none). Where
+-- that total is zero or less, a loan or an overdraft outweighing the
+-- rest, there is none: a share of it would flip its sign or have none.
+CREATE MACRO exposure_class_share(p_value, p_total) AS
+    100 * p_value / CASE WHEN p_total > 0 THEN p_total END;
+
 -- ============================================================
 -- exposure_key: a security key as the alias table resolves it. It binds
 -- its argument to the caller, wherever the caller passes it.
@@ -653,8 +678,8 @@ CREATE MACRO exposure_divergence(p_asof) AS TABLE (
 --     forward lines stay looked through. The depth, how and the flags
 --     of the legs are those of any depth-1 leaf, so coverage and
 --     quality describe them as they describe any line.
---   * exposure_credit_leaves and exposure_maturity_leaves pass direct
---     through; exposure_yield_leaves passes every column.
+--   * exposure_labeled_leaves and exposure_yield_leaves pass every
+--     column through; exposure_debt_buckets passes direct.
 --   * The views that split direct from via funds read direct:
 --     report_exposure_classes, _sectors, _sizes, _countries,
 --     _currencies, _coupons, _credit, _cycles, _maturities and
@@ -1000,6 +1025,33 @@ CREATE MACRO exposure_leaves(p_asof, p_ccy, p_country := 'risk') AS TABLE (
      WHERE c.value IS NOT NULL
 );
 
+-- exposure_labeled_leaves: exposure_leaves with each leaf's buckets as
+-- the views name them. A sector or a currency no source states is
+-- unknown. A country or a region is (none) for a metal or a coin, else
+-- unknown where none is known. A size is (none) outside public equity,
+-- else unknown where none is known. security is the row a leaf counts
+-- under in the securities view: a fund's remainder or leverage by its
+-- fund; cash no declaration or security names by its currency; a
+-- security by its key; a line no key names by its fund and its name; a
+-- holding no key names by its source and instrument.
+CREATE MACRO exposure_labeled_leaves(p_asof, p_ccy, p_country := 'risk') AS TABLE (
+    SELECT l.*,
+           COALESCE(l.sector, 'unknown') AS sector_bucket,
+           CASE WHEN l.country IS NOT NULL THEN l.country
+                WHEN l.asset_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END AS country_bucket,
+           COALESCE(l.region, CASE WHEN l.asset_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END)
+               AS region_bucket,
+           COALESCE(l.currency, 'unknown') AS currency_bucket,
+           CASE WHEN l.asset_class <> 'public_equity' THEN '(none)' ELSE COALESCE(l.size, 'unknown') END AS size_bucket,
+           CASE WHEN l.kind IN ('remainder', 'leverage') THEN '(' || l.kind || ') ' || l.fund_ref
+                WHEN l.asset_class = 'cash' AND NOT l.declared AND (l.key IS NULL OR l.key LIKE 'name:%')
+                     THEN 'cash:' || l.currency
+                WHEN l.key IS NOT NULL THEN l.key
+                WHEN l.depth > 0 THEN 'line:' || l.fund_ref || ':' || COALESCE(l.name, l.asset_type_raw, '')
+                ELSE 'holding:' || l.src || ':' || COALESCE(l.iid, l.position_key) END AS security
+      FROM exposure_leaves(p_asof, p_ccy, p_country := p_country) l
+);
+
 -- report_exposure_situs: one row per legal situs, a holding's whole
 -- value at its own: no fund is looked through. funds_pct is the share of
 -- the row's gross value held in pooled vehicles (vehicle etf or fund),
@@ -1288,29 +1340,40 @@ CREATE MACRO report_exposure_issuers(p_asof, p_ccy) AS TABLE (
      ORDER BY g.issuer_key = '(none)', g.value DESC, g.issuer_key
 );
 
--- exposure_credit_leaves: the debt leaves by credit bucket, passing
--- direct through.
-CREATE MACRO exposure_credit_leaves(p_asof, p_ccy) AS TABLE (
+-- exposure_debt_buckets: each leaf of exposure_yield_leaves in each of
+-- the four debt and equity dimensions (docs/EXPOSURE.md §7), one row per
+-- leaf and dimension, passing direct and the flags through:
+--
+--   * credit: its credit bucket; a debt leaf no rating describes split by
+--     its page fund's credit breakdown. unknown: no rating or known label
+--     describes it;
+--   * maturity: its maturity bucket; an unknown one split by its page
+--     fund's maturity breakdown;
+--   * coupon: its coupon kind;
+--   * cycle: its cycle.
+--
+-- Each dimension sums to the leaves' value.
+CREATE MACRO exposure_debt_buckets(p_asof, p_ccy) AS TABLE (
     WITH l AS MATERIALIZED (SELECT * FROM exposure_yield_leaves(p_asof, p_ccy))
-    SELECT l.src, l.acct, l.position_key, l.depth, l.direct, l.flags, l.value * COALESCE(b.share, 1) AS value,
+    SELECT l.src, l.acct, l.position_key, l.depth, l.direct, l.flags, 'credit' AS dimension,
            exposure_credit_bucket(l.asset_class, l.debt, l.rating, b.bucket) AS bucket,
-           exposure_credit_unknown(l.debt, l.rating, b.unknown) AS unknown
+           exposure_credit_unknown(l.debt, l.rating, b.unknown) AS unknown,
+           l.value * COALESCE(b.share, 1) AS value
       FROM l
       -- The condition is in the key, so the join hashes.
       LEFT JOIN exposure_page_breakdown(p_asof, 'credit_quality') b
              ON b.fund = CASE WHEN l.debt AND l.rating IS NULL THEN l.page_fund END
-);
-
--- exposure_maturity_leaves: the debt leaves by maturity bucket,
--- passing direct through.
-CREATE MACRO exposure_maturity_leaves(p_asof, p_ccy) AS TABLE (
-    WITH l AS MATERIALIZED (SELECT * FROM exposure_yield_leaves(p_asof, p_ccy))
-    SELECT l.src, l.acct, l.position_key, l.depth, l.direct, l.flags, l.value * COALESCE(b.share, 1) AS value,
-           exposure_maturity_split(l.maturity_bucket, b.bucket) AS bucket
+    UNION ALL
+    SELECT l.src, l.acct, l.position_key, l.depth, l.direct, l.flags, 'maturity',
+           exposure_maturity_split(l.maturity_bucket, b.bucket), FALSE, l.value * COALESCE(b.share, 1)
       FROM l
       -- The condition is in the key, so the join hashes.
       LEFT JOIN exposure_page_breakdown(p_asof, 'maturity_breakdown') b
              ON b.fund = CASE WHEN l.maturity_bucket = 'unknown' THEN l.page_fund END
+    UNION ALL
+    SELECT l.src, l.acct, l.position_key, l.depth, l.direct, l.flags, 'coupon', l.coupon_bucket, FALSE, l.value FROM l
+    UNION ALL
+    SELECT l.src, l.acct, l.position_key, l.depth, l.direct, l.flags, 'cycle', l.cycle, FALSE, l.value FROM l
 );
 
 -- report_exposure_classes: the leaves by asset class, split by direct.
@@ -1328,61 +1391,56 @@ CREATE MACRO report_exposure_classes(p_asof, p_ccy) AS TABLE (
 
 -- report_exposure_sectors: the leaves by sector, split by direct.
 CREATE MACRO report_exposure_sectors(p_asof, p_ccy) AS TABLE (
-    WITH l AS (SELECT * FROM exposure_leaves(p_asof, p_ccy)),
+    WITH l AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy)),
     t AS (SELECT SUM(value) AS total FROM l),
     c AS (SELECT asset_class, SUM(value) AS class_total FROM l GROUP BY 1)
-    SELECT l.asset_class, COALESCE(l.sector, 'unknown') AS sector, SUM(l.value) AS value,
+    SELECT l.asset_class, l.sector_bucket AS sector, SUM(l.value) AS value,
            100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
            100 * SUM(l.value) / NULLIF(c.class_total, 0) AS class_share_pct,
            100 * COALESCE(SUM(l.value) FILTER (WHERE l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
            100 * COALESCE(SUM(l.value) FILTER (WHERE NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(l.flags, l.value) AS quality
       FROM l JOIN c USING (asset_class), t
-     GROUP BY l.asset_class, COALESCE(l.sector, 'unknown'), t.total, c.class_total
+     GROUP BY l.asset_class, l.sector_bucket, t.total, c.class_total
      ORDER BY c.class_total DESC, l.asset_class, value DESC, sector
 );
 
 -- report_exposure_sizes: the equity leaves by company size, split by
 -- direct.
 CREATE MACRO report_exposure_sizes(p_asof, p_ccy) AS TABLE (
-    WITH l AS (
-        SELECT * REPLACE (CASE WHEN asset_class <> 'public_equity' THEN '(none)'
-                               ELSE COALESCE(size, 'unknown') END AS size)
-          FROM exposure_leaves(p_asof, p_ccy)),
+    WITH l AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy)),
     t AS (SELECT SUM(value) AS total FROM l),
     c AS (SELECT asset_class, SUM(value) AS class_total FROM l GROUP BY 1)
-    SELECT l.asset_class, l.size, SUM(l.value) AS value,
+    SELECT l.asset_class, l.size_bucket AS size, SUM(l.value) AS value,
            100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
            100 * SUM(l.value) / NULLIF(c.class_total, 0) AS class_share_pct,
            100 * COALESCE(SUM(l.value) FILTER (WHERE l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
            100 * COALESCE(SUM(l.value) FILTER (WHERE NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(l.flags, l.value) AS quality
       FROM l JOIN c USING (asset_class), t
-     GROUP BY l.asset_class, l.size, t.total, c.class_total
+     GROUP BY l.asset_class, l.size_bucket, t.total, c.class_total
      ORDER BY c.class_total DESC, l.asset_class,
-              CASE l.size WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 WHEN 'unknown' THEN 4 ELSE 5 END
+              CASE l.size_bucket WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 WHEN 'unknown' THEN 4 ELSE 5 END
 );
 
 -- report_exposure_countries: the leaves by country, split by direct.
 CREATE MACRO report_exposure_countries(p_asof, p_ccy, p_country := 'risk') AS TABLE (
-    WITH l AS (SELECT * FROM exposure_leaves(p_asof, p_ccy, p_country := p_country)),
+    WITH l AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy, p_country := p_country)),
     t AS (SELECT SUM(value) AS total FROM l)
-    SELECT CASE WHEN l.country IS NOT NULL THEN l.country
-                WHEN l.asset_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END AS country,
-           MAX(l.country_name) AS country_name, l.region, SUM(l.value) AS value,
+    SELECT l.country_bucket AS country, MAX(l.country_name) AS country_name, l.region, SUM(l.value) AS value,
            100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
            100 * COALESCE(SUM(l.value) FILTER (WHERE l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
            100 * COALESCE(SUM(l.value) FILTER (WHERE NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(l.flags, l.value) AS quality
-      FROM l, t GROUP BY 1, l.region, t.total
+      FROM l, t GROUP BY l.country_bucket, l.region, t.total
      ORDER BY value DESC, country, region
 );
 
 -- report_exposure_currencies: the leaves by currency, split by direct.
 CREATE MACRO report_exposure_currencies(p_asof, p_ccy) AS TABLE (
-    WITH l AS (SELECT * FROM exposure_leaves(p_asof, p_ccy)),
+    WITH l AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy)),
     t AS (SELECT SUM(value) AS total FROM l)
-    SELECT COALESCE(l.currency, 'unknown') AS currency, l.currency_kind, SUM(l.value) AS value,
+    SELECT l.currency_bucket AS currency, l.currency_kind, SUM(l.value) AS value,
            100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
            100 * COALESCE(SUM(l.value) FILTER (WHERE l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
            100 * COALESCE(SUM(l.value) FILTER (WHERE NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
@@ -1391,85 +1449,85 @@ CREATE MACRO report_exposure_currencies(p_asof, p_ccy) AS TABLE (
      ORDER BY value DESC, currency
 );
 
--- report_exposure_coupons: the debt leaves by coupon kind, split by
--- direct.
+-- ============================================================
+-- The four debt and equity views read exposure_debt_buckets, one
+-- dimension each, and share one shape: the rows of a dimension in
+-- exposure_bucket_order, each with its share of net worth, its share of
+-- what the dimension describes (class_share_pct, exposure_class_share)
+-- and its split by direct. What the dimension describes is every row
+-- but (none): the debt and the cash in credit and maturities, the debt
+-- in coupons, the public equity in cycles.
+-- ============================================================
+
+-- report_exposure_coupons: the leaves by coupon kind, split by direct.
 CREATE MACRO report_exposure_coupons(p_asof, p_ccy) AS TABLE (
-    WITH l AS (SELECT * FROM exposure_yield_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l)
-    SELECT coupon_bucket AS coupon_kind, SUM(value) AS value,
+    WITH l AS (SELECT * FROM exposure_debt_buckets(p_asof, p_ccy) WHERE dimension = 'coupon'),
+    t AS (SELECT SUM(value) AS total, SUM(value) FILTER (WHERE bucket <> '(none)') AS described FROM l)
+    SELECT bucket AS coupon_kind, SUM(value) AS value,
            100 * SUM(value) / NULLIF(t.total, 0) AS share_pct,
+           CASE WHEN bucket <> '(none)' THEN exposure_class_share(SUM(value), t.described) END AS class_share_pct,
            100 * COALESCE(SUM(value) FILTER (WHERE direct), 0) / NULLIF(t.total, 0) AS direct_pct,
            100 * COALESCE(SUM(value) FILTER (WHERE NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(flags, value) AS quality
       FROM l, t
-     GROUP BY coupon_bucket, t.total
-     ORDER BY list_position(['fixed', 'floating', 'inflation_linked', 'zero', 'unknown', '(none)'], coupon_bucket)
+     GROUP BY bucket, t.total, t.described
+     ORDER BY exposure_bucket_order('coupon', bucket)
 );
 
--- report_exposure_credit: the debt leaves by credit bucket, split by
--- direct.
+-- report_exposure_credit: the leaves by credit bucket, with its grade,
+-- split by direct.
 CREATE MACRO report_exposure_credit(p_asof, p_ccy) AS TABLE (
-    WITH c AS (SELECT * FROM exposure_credit_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM c)
-    SELECT bucket,
-           CASE WHEN bucket IN ('AAA', 'AA', 'A', 'BBB') THEN 'IG' WHEN bucket IN ('BB', 'B') THEN 'HY' END AS grade,
-           SUM(value) AS value,
+    WITH l AS (SELECT * FROM exposure_debt_buckets(p_asof, p_ccy) WHERE dimension = 'credit'),
+    t AS (SELECT SUM(value) AS total, SUM(value) FILTER (WHERE bucket <> '(none)') AS described FROM l)
+    SELECT bucket, exposure_credit_grade(bucket) AS grade, SUM(value) AS value,
            100 * SUM(value) / NULLIF(t.total, 0) AS share_pct,
+           CASE WHEN bucket <> '(none)' THEN exposure_class_share(SUM(value), t.described) END AS class_share_pct,
            100 * COALESCE(SUM(value) FILTER (WHERE direct), 0) / NULLIF(t.total, 0) AS direct_pct,
            100 * COALESCE(SUM(value) FILTER (WHERE NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            concat_ws(',', nullif(exposure_quality(flags, value), ''),
                      exposure_flag_share('unknown', SUM(abs(value)) FILTER (WHERE unknown), SUM(abs(value))))
                AS quality
-      FROM c, t
-     GROUP BY bucket, t.total
-     ORDER BY list_position(['AAA', 'AA', 'A', 'BBB', 'BB', 'B', 'unrated', 'cash', '(none)'], bucket)
+      FROM l, t
+     GROUP BY bucket, t.total, t.described
+     ORDER BY exposure_bucket_order('credit', bucket)
 );
 
--- report_exposure_cycles: the debt leaves by coupon cycle, split by
--- direct.
+-- report_exposure_cycles: the leaves by economic cycle, split by direct.
 CREATE MACRO report_exposure_cycles(p_asof, p_ccy) AS TABLE (
-    WITH l AS (SELECT * FROM exposure_yield_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l)
-    SELECT cycle, SUM(value) AS value,
+    WITH l AS (SELECT * FROM exposure_debt_buckets(p_asof, p_ccy) WHERE dimension = 'cycle'),
+    t AS (SELECT SUM(value) AS total, SUM(value) FILTER (WHERE bucket <> '(none)') AS described FROM l)
+    SELECT bucket AS cycle, SUM(value) AS value,
            100 * SUM(value) / NULLIF(t.total, 0) AS share_pct,
+           CASE WHEN bucket <> '(none)' THEN exposure_class_share(SUM(value), t.described) END AS class_share_pct,
            100 * COALESCE(SUM(value) FILTER (WHERE direct), 0) / NULLIF(t.total, 0) AS direct_pct,
            100 * COALESCE(SUM(value) FILTER (WHERE NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(flags, value) AS quality
       FROM l, t
-     GROUP BY cycle, t.total
-     ORDER BY list_position(['cyclical', 'defensive', 'sensitive', 'unknown', '(none)'], cycle)
+     GROUP BY bucket, t.total, t.described
+     ORDER BY exposure_bucket_order('cycle', bucket)
 );
 
--- report_exposure_maturities: the debt leaves by maturity bucket, split
--- by direct.
+-- report_exposure_maturities: the leaves by maturity bucket, split by
+-- direct.
 CREATE MACRO report_exposure_maturities(p_asof, p_ccy) AS TABLE (
-    WITH l AS (SELECT * FROM exposure_maturity_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l)
+    WITH l AS (SELECT * FROM exposure_debt_buckets(p_asof, p_ccy) WHERE dimension = 'maturity'),
+    t AS (SELECT SUM(value) AS total, SUM(value) FILTER (WHERE bucket <> '(none)') AS described FROM l)
     SELECT bucket, SUM(value) AS value,
            100 * SUM(value) / NULLIF(t.total, 0) AS share_pct,
+           CASE WHEN bucket <> '(none)' THEN exposure_class_share(SUM(value), t.described) END AS class_share_pct,
            100 * COALESCE(SUM(value) FILTER (WHERE direct), 0) / NULLIF(t.total, 0) AS direct_pct,
            100 * COALESCE(SUM(value) FILTER (WHERE NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(flags, value) AS quality
       FROM l, t
-     GROUP BY bucket, t.total
-     ORDER BY list_position(['under 1y', '1-3y', '3-5y', '5-10y', '10-20y', 'over 20y', 'perpetual', 'unknown',
-                             '(none)'], bucket)
+     GROUP BY bucket, t.total, t.described
+     ORDER BY exposure_bucket_order('maturity', bucket)
 );
 
 -- report_exposure_securities: the leaves by security, split by direct.
 -- A line's security keeps its name by depth.
 CREATE MACRO report_exposure_securities(p_asof, p_ccy, p_country := 'risk') AS TABLE (
-    WITH l AS (SELECT * FROM exposure_leaves(p_asof, p_ccy, p_country := p_country)),
-    t AS (SELECT SUM(value) AS total FROM l),
-    g AS (
-        SELECT l.*,
-               CASE WHEN l.kind IN ('remainder', 'leverage') THEN '(' || l.kind || ') ' || l.fund_ref
-                    WHEN l.asset_class = 'cash' AND NOT l.declared AND (l.key IS NULL OR l.key LIKE 'name:%')
-                         THEN 'cash:' || l.currency
-                    WHEN l.key IS NOT NULL THEN l.key
-                    WHEN l.depth > 0 THEN 'line:' || l.fund_ref || ':' || COALESCE(l.name, l.asset_type_raw, '')
-                    ELSE 'holding:' || l.src || ':' || COALESCE(l.iid, l.position_key) END AS security
-          FROM l)
+    WITH g AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy, p_country := p_country)),
+    t AS (SELECT SUM(value) AS total FROM g)
     SELECT g.security, MAX(g.name) AS name, MAX(g.ticker) AS ticker,
            arg_max(g.asset_class, (abs(g.value), g.asset_class)) AS asset_class,
            arg_max(g.sector, (abs(g.value), g.sector)) AS sector,
