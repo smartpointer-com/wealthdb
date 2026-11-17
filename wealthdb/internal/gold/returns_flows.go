@@ -261,8 +261,8 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 //
 // The flows are appended in a fixed order: each account's deposits and
 // withdrawals in member order, then the transfer-like legs pairing keeps, then
-// the synthetic flows. sortFlows is not stable, so that order fixes every float
-// sum over the series.
+// the synthetic flows. sortFlows is not stable, so that order fixes the
+// series' order; its sums are compensated and do not follow it.
 func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, aggregate bool) ([]returns.Flow, []string, []returns.Flow) {
 	if !aggregate {
 		// Accounts grain, single constituent: every policy-external flow is exact.
@@ -697,23 +697,25 @@ func flowsIn(flows []returns.Flow, from, to int64) []returns.Flow {
 	return out
 }
 
+// sumFlows is the flows' net amount, a compensated sum, so it does not
+// follow their order.
 func sumFlows(flows []returns.Flow) float64 {
-	var s float64
+	var s returns.Sum
 	for _, f := range flows {
-		s += f.Amount
+		s.Add(f.Amount)
 	}
-	return s
+	return s.Total()
 }
 
-// sumFlowsIn is sumFlows(flowsIn(flows, from, to)), summed in the same order.
+// sumFlowsIn is sumFlows(flowsIn(flows, from, to)).
 func sumFlowsIn(flows []returns.Flow, from, to int64) float64 {
-	var s float64
+	var s returns.Sum
 	for _, f := range flows {
 		if f.Day > from && f.Day <= to {
-			s += f.Amount
+			s.Add(f.Amount)
 		}
 	}
-	return s
+	return s.Total()
 }
 
 func sortFlows(flows []returns.Flow) {

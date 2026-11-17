@@ -144,14 +144,15 @@ func (w *exitWatch) residue(v0, v1 float64, flows []returns.Flow) bool {
 		}
 		w.residueBelow = 0
 	}
-	var in, out float64
+	var inSum, outSum returns.Sum
 	for _, f := range flows {
 		if f.Amount > 0 {
-			in += f.Amount
+			inSum.Add(f.Amount)
 		} else {
-			out -= f.Amount
+			outSum.Add(-f.Amount)
 		}
 	}
+	in, out := inSum.Total(), outSum.Total()
 	if in > out {
 		w.running = false
 		return false
@@ -232,12 +233,13 @@ func unvaluedAt(bounds []int64, moves []returns.Flow) []float64 {
 	}
 	sort.Slice(steps, func(i, j int) bool { return steps[i].day < steps[j].day })
 	out := make([]float64, len(bounds))
-	sum, next := 0.0, 0
+	var sum returns.Sum
+	next := 0
 	for i, b := range bounds {
 		for ; next < len(steps) && steps[next].day <= b; next++ {
-			sum += steps[next].amount
+			sum.Add(steps[next].amount)
 		}
-		out[i] = sum
+		out[i] = sum.Total()
 	}
 	return out
 }

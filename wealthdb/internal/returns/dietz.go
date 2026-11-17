@@ -29,17 +29,18 @@ func ModifiedDietz(v0, v1 float64, startDay, endDay int64, flows []Flow) (r floa
 		return 0, false
 	}
 
-	var sumF, weighted float64
+	// Compensated sums, so the result does not follow the flows' order.
+	var sumF, weighted Sum
 	for _, f := range flows {
 		di := float64(f.Day - startDay)
 		w := (d - di) / d
-		sumF += f.Amount
-		weighted += w * f.Amount
+		sumF.Add(f.Amount)
+		weighted.Add(w * f.Amount)
 	}
 
-	den := v0 + weighted
+	den := v0 + weighted.Total()
 	if den <= dietzDegenTol { // covers zero, sub-tolerance, and negative bases
 		return 0, false
 	}
-	return (v1 - v0 - sumF) / den, true
+	return (v1 - v0 - sumF.Total()) / den, true
 }

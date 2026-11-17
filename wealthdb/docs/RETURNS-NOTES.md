@@ -202,6 +202,12 @@ Guards: `TestBridgeReadsTheCommonCases`,
   gold→returns boundary and floated only here; XIRR is inherently
   iterative and Modified-Dietz an approximation. No precision claim beyond
   ~1e-7 on rates.
+- **No figure follows the order of its inputs.** Every sum over flows is
+  exact and rounded once (`returns.Sum`), and MWR reads a day's flows as
+  one cash flow. So a row reads the same whatever order a day's flows
+  arrive in, its `mwr_nonunique` tag included. Guards:
+  `TestSumIsExactInAnyOrder`,
+  `TestReturnsDoNotFollowTheOrderOfADaysFlows`.
 - **Snapshot-aligned headline.** The since-inception cumulative TWR chains
   Modified-Dietz over the entity's **actual valuation (snapshot) days**
   (`canonicalChainBounds`), not a fixed daily/monthly calendar grid
@@ -798,8 +804,7 @@ Each month end's solve starts from the rate of the one before, over the
 flows netted by day (`returns.FlowSeries`). The last one is solved from
 the engine's usual guess over the flows themselves, as the summary row
 is, so a line ends on its tile's number. A month end's `mwr_nonunique`
-reads the netted flows, so it can differ from the raw flows' on a day
-with flows both ways.
+reads the flows netted by day, as the summary row's does.
 
 `web refresh` writes both tables with `report_returns`, in one
 transaction, from the same datasets. `returns global --benchmark`

@@ -64,13 +64,27 @@ func XIRRFrom(guess, v0, v1 float64, startDay, endDay int64, flows []Flow) (floa
 // investorCFs assembles the investor cash-flow vector: pay in the opening value
 // (-v0), each capital-in flow is money out of pocket (-Amount), and receive the
 // terminal value (+v1). Shared by XIRR and MWRSignChanges so the two can't drift.
+// The vector holds one cash flow per day, ascending: a day's flows discount
+// alike, so they are one cash flow, netted by a compensated sum. Neither the
+// rate nor the count of sign changes then depends on the order of a day's
+// flows.
 func investorCFs(v0, v1 float64, startDay, endDay int64, flows []Flow) []datedCF {
-	cfs := make([]datedCF, 0, len(flows)+2)
-	cfs = append(cfs, datedCF{startDay, -v0})
+	raw := make([]datedCF, 0, len(flows)+2)
+	raw = append(raw, datedCF{startDay, -v0})
 	for _, f := range flows {
-		cfs = append(cfs, datedCF{f.Day, -f.Amount})
+		raw = append(raw, datedCF{f.Day, -f.Amount})
 	}
-	cfs = append(cfs, datedCF{endDay, v1})
+	raw = append(raw, datedCF{endDay, v1})
+	slices.SortStableFunc(raw, func(a, b datedCF) int { return cmp.Compare(a.day, b.day) })
+	cfs := make([]datedCF, 0, len(raw))
+	for i := 0; i < len(raw); {
+		var net Sum
+		day := raw[i].day
+		for ; i < len(raw) && raw[i].day == day; i++ {
+			net.Add(raw[i].amount)
+		}
+		cfs = append(cfs, datedCF{day, net.Total()})
+	}
 	return cfs
 }
 
@@ -195,11 +209,11 @@ func bisect(npv func(float64) float64, lo, hi float64) float64 {
 }
 
 // MWRSignChanges counts sign changes in the investor cash-flow vector
-// (-v0, -flows, +v1) ordered by day. More than one change means the IRR may be
-// non-unique (Descartes' rule of signs) — callers flag mwr_nonunique.
+// (-v0, -flows, +v1), one cash flow per day. More than one change means the
+// IRR may be non-unique (Descartes' rule of signs) — callers flag
+// mwr_nonunique.
 func MWRSignChanges(v0, v1 float64, startDay, endDay int64, flows []Flow) int {
 	cfs := investorCFs(v0, v1, startDay, endDay, flows)
-	slices.SortStableFunc(cfs, func(a, b datedCF) int { return cmp.Compare(a.day, b.day) })
 
 	changes := 0
 	prevSign := 0
@@ -231,19 +245,21 @@ type FlowSeries struct {
 	years []float64 // flows[i]'s time since start
 }
 
-// NewFlowSeries prepares flows, sorted by day, that fall after start.
+// NewFlowSeries prepares flows, sorted by day, that fall after start. A
+// day's net is an exact sum (Sum), as investorCFs nets it.
 func NewFlowSeries(start int64, flows []Flow) *FlowSeries {
 	s := &FlowSeries{start: start}
-	for _, f := range flows {
-		if f.Day <= start {
+	for i := 0; i < len(flows); {
+		day := flows[i].Day
+		var net Sum
+		for ; i < len(flows) && flows[i].Day == day; i++ {
+			net.Add(flows[i].Amount)
+		}
+		if day <= start {
 			continue
 		}
-		if n := len(s.flows); n > 0 && s.flows[n-1].Day == f.Day {
-			s.flows[n-1].Amount += f.Amount
-			continue
-		}
-		s.flows = append(s.flows, Flow{Day: f.Day, Amount: f.Amount})
-		s.years = append(s.years, float64(f.Day-start)/xirrDayBasis)
+		s.flows = append(s.flows, Flow{Day: day, Amount: net.Total()})
+		s.years = append(s.years, float64(day-start)/xirrDayBasis)
 	}
 	return s
 }
