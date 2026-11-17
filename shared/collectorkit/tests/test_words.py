@@ -15,7 +15,8 @@ import pytest
 from collectorkit import pdf as kitpdf
 from collectorkit.words import Extracted, Page, Word, cell_of, columns, rows
 
-ubs = collector_modules.load("ubs-web", "pdf_parsers", ("pdfplumber",))
+ubs_ledger = collector_modules.load("ubs-web", "account_statement")
+ubs_list = collector_modules.load("ubs-web", "soa_transaction_list")
 fidelity = collector_modules.load("fidelity-web", "pdf_parsers_1099")
 schwab = collector_modules.load("schwab-web", "tax_form_parsers")
 
@@ -36,36 +37,6 @@ def _page(rng: random.Random, n: int = 40) -> list[Word]:
 
 
 SEEDS = range(300)
-
-
-@pytest.mark.parametrize("ytol", [3.0, 1.0])
-def test_rows_is_ubs_webs_ledger_clusterer(ytol):
-    for seed in SEEDS:
-        words = _page(random.Random(seed))
-        theirs = ubs._stmt_cluster_rows(
-            [{"text": w.text, "x0": w.x0, "x1": w.x1, "top": w.top,
-              "bottom": w.bottom} for w in words], ytol)
-        ours = rows(words, ytol)
-        assert [(r.top, [w.text for w in r.words]) for r in ours] == \
-            [(r["top"], [w["text"] for w in r["words"]]) for r in theirs], seed
-
-
-class _Page:
-    def __init__(self, words):
-        self._words = words
-
-    def extract_words(self):
-        return [{"text": w.text, "x0": w.x0, "x1": w.x1, "top": w.top,
-                 "bottom": w.bottom} for w in self._words]
-
-
-def test_rows_is_fidelity_1099s_line_reader():
-    for seed in SEEDS:
-        words = _page(random.Random(seed))
-        theirs = fidelity._page_lines(_Page(words))
-        ours = [[fidelity.Word(w.text, w.x0, w.x1) for w in r.words]
-                for r in rows(words, fidelity._LINE_TOLERANCE)]
-        assert ours == theirs, seed
 
 
 def _cartas_k1_lines(words, same_line=2.0):
@@ -182,21 +153,15 @@ LEDGER_LABELS = {"Debits": "Debits", "Credits": "Credits",
                  "ValueDate": "Value", "Balance": "Balance"}
 
 
-def _dict(w: Word) -> dict:
-    return {"text": w.text, "x0": w.x0, "x1": w.x1, "top": w.top,
-            "bottom": w.bottom}
-
-
 def test_columns_and_cell_of_are_ubs_webs_ledger_rule():
-    anchors = ubs._stmt_find_header(
-        ubs._stmt_cluster_rows([_dict(w) for w in LEDGER_HEADER]))
+    anchors = ubs_ledger._stmt_find_header(rows(LEDGER_HEADER, 3.0))
     cols = columns(LEDGER_HEADER, LEDGER_LABELS, "centre")
     assert cols == {k: v for k, v in anchors.items() if k != "top"}
     for x in range(250, 620, 3):
         for width in (5, 20, 41):
             w = Word("1.00", x, x + width, 70.0, 78.0)
             assert cell_of(w, cols, by="centre") == \
-                ubs._stmt_assign_numeric(_dict(w), anchors), (x, width)
+                ubs_ledger._stmt_assign_numeric(w, anchors), (x, width)
 
 
 TL_HEADER = _row(("Trade", 10, 30), ("date", 32, 50), ("Booking", 60, 90),
@@ -212,10 +177,7 @@ TL_RIGHT = {"D": "Cost/Purchase price", "E": "Transaction price",
 
 def test_columns_and_cell_of_are_ubs_webs_transaction_list_rule():
     second = [Word("x", 10, 20, 61.0, 69.0)]
-    anchors = ubs._tl_anchors([{"top": 50.0, "words": [_dict(w) for w in
-                                                       TL_HEADER]},
-                               {"top": 61.0, "words": [_dict(w) for w in
-                                                       second]}])
+    anchors = ubs_list._tl_anchors(rows([*TL_HEADER, *second], 3.0))
     right = columns(TL_HEADER, TL_RIGHT, "right", ordered=True)
     assert right == anchors["right"]
     assert columns(TL_HEADER, {"n": "Number/Amount"})["n"] == \
@@ -229,8 +191,8 @@ def test_columns_and_cell_of_are_ubs_webs_transaction_list_rule():
     assert columns(TL_HEADER, TL_RIGHT, "right") == right
     for x1 in range(330, 720, 2):
         w = Word("1.00", x1 - 25, x1, 80.0, 88.0)
-        (col,) = ubs._tl_cells([_dict(w)], anchors)
-        assert cell_of(w, right, ubs._TL_SLACK, rule="first_reaching",
+        (col,) = ubs_list._tl_cells((w,), anchors)
+        assert cell_of(w, right, ubs_list._TL_SLACK, rule="first_reaching",
                        default="G") == col, x1
 
 
@@ -241,8 +203,7 @@ FIDELITY_HEADER = _row(("Action", 10, 40), ("Quantity", 50, 90),
 
 
 def test_columns_and_cell_of_are_fidelity_1099s_rule():
-    line = [fidelity.Word(w.text, w.x0, w.x1) for w in FIDELITY_HEADER]
-    starts = fidelity._column_starts(line)
+    starts = fidelity._column_starts(FIDELITY_HEADER)
     labels = {column: label for label, column in fidelity._COLUMN_LABELS}
     cols = columns(FIDELITY_HEADER, labels, "left")
     assert sorted((x, name) for name, x in cols.items()) == starts
@@ -252,7 +213,7 @@ def test_columns_and_cell_of_are_fidelity_1099s_rule():
         assert cell_of(w, ordered, rule="last_passed") == \
             fidelity._column_for(x1, starts), x1
     assert columns(FIDELITY_HEADER[:-1], labels, "left") is None
-    assert fidelity._column_starts(line[:-1]) is None
+    assert fidelity._column_starts(FIDELITY_HEADER[:-1]) is None
 
 
 def test_cell_of_is_schwabs_year_end_rule():

@@ -94,7 +94,10 @@ $XDG_DATA_HOME/wealthdb/<source>/
 **Docker mounts** (the containerised collectors): the wrapper
 bind-mounts `~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/<source> →
 /data`, so inside the container credentials are at
-`/secrets/<source>.env` and bronze/silver at `/data`.
+`/secrets/<source>.env` and bronze/silver at `/data`. A load keeps its
+parse cache on the host: the wrapper mounts
+`${XDG_CACHE_HOME:-~/.cache}/wealthdb/<source> → /cache/collector` and
+sets `WEALTHDB_CACHE_DIR` to it.
 
 **Session discipline:** `login --check` probes the stored session
 without a new MFA push. Where a session persists, `download --dry-run`
@@ -209,8 +212,8 @@ wrapper then calls `wrapper_init`, prints its help when
 runs `build`, and runs `prune` on the host through
 `wrapper_host_prune`; fidelity-web and schwab-api route `prune`
 themselves. The library bind-mounts
-`~/.secrets → /secrets` and `<data> → /data` (plus `/silver`, `/debug`,
-`/app` when applicable) and runs as `--user $(id -u):$(id -g)`.
+`~/.secrets → /secrets`, `<data> → /data` and the cache dir →
+`/cache/collector` (plus `/silver`, `/debug`, `/app` when applicable) and runs as `--user $(id -u):$(id -g)`.
 
 A **host-venv** wrapper (for tools that need no browser) sources
 [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh) and calls

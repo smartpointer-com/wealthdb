@@ -258,7 +258,7 @@ the account's coupons (YIELD.md §4).
 ### 5.1 Web transactions
 
 The web silver's `kind` is the word Schwab prints on statements and in
-the transaction-history export. `webKind` (`web_reader.go`) maps it:
+the transaction-history export. `webKind` (`web_kindmap.go`) maps it:
 
 | Web `kind` | Gold |
 | --- | --- |

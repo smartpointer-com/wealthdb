@@ -186,7 +186,7 @@ UBS's `silver.events.kind` maps to gold's `kind`:
 
 ### `ubs-web` booking types
 
-`webKind` (`web_reader.go`) classifies the web silver's
+`webKind` (`web_kind.go`) classifies the web silver's
 `description_kind`. That is the statement PDF's printed booking type,
 or the export's `Description2` label.
 

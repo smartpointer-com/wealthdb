@@ -214,17 +214,12 @@ def test_pair_one_to_one_is_fidelitys_feed_match(tmp_path):
     conn.executemany("INSERT INTO transactions VALUES (?,?,?,?)",
                      [(i, a, amt, T0 + int(d * DAY)) for i, a, d, amt in FEED])
 
-    claims = fidelity._FeedClaims()
+    claims = {}
+    feed = fidelity._feed_legs(conn)
     theirs = {}
     for sid, acct, d, amount, section in STATEMENT:
-        absorbed = claims.claimed_for(sid)
-        if absorbed is None:
-            window = (fidelity._FEE_MATCH_WINDOW if section == "FEE"
-                      else fidelity._ACTIVITY_MATCH_WINDOW)
-            absorbed = fidelity._unclaimed_feed_match(
-                conn, acct, amount, T0 + int(d * DAY), claims, window)
-            if absorbed is not None:
-                claims.claim(sid, absorbed)
+        absorbed = claims.get(sid) or fidelity._claim_feed_match(
+            Leg(sid, acct, T0 + int(d * DAY), amount, section), feed, claims)
         if absorbed is not None:
             theirs[sid] = absorbed
 
@@ -232,11 +227,10 @@ def test_pair_one_to_one_is_fidelitys_feed_match(tmp_path):
             for sid, acct, d, amount, section in STATEMENT]
     right = [Leg(i, a, T0 + int(d * DAY), amt) for i, a, d, amt in FEED
              if not i.startswith("stmt_")]
-    windows = {"FEE": fidelity._FEE_MATCH_WINDOW // DAY}
+    windows = {"FEE": fidelity._FEE_MATCH_DAYS}
     ours = pair_one_to_one(
         left, right, lambda a, b: abs(b - a) < 0.005,
-        lambda leg: windows.get(leg.kind,
-                                fidelity._ACTIVITY_MATCH_WINDOW // DAY))
+        lambda leg: windows.get(leg.kind, fidelity._ACTIVITY_MATCH_DAYS))
     assert ours == theirs
     assert ours == {"s1": "feed-1", "s2": "feed-2", "s4": "feed-3",
                     "s7": "feed-6", "s8": "feed-0"}

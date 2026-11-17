@@ -24,7 +24,7 @@ from collectorkit import extract
 from collectorkit import pdf as kitpdf
 from collectorkit import pdftotext
 from collectorkit import words
-from collectorkit.words import Extracted, Page, Word, rows
+from collectorkit.words import Extracted, Page, Word
 
 SHA = "ab" * 32
 
@@ -89,16 +89,11 @@ def test_pdfplumber_text_is_the_kits_legacy_text(plumber, tmp_path):
 
 
 def test_pdfplumber_is_ubs_webs_reads(plumber, tmp_path):
-    fake, calls = plumber
-    ubs = collector_modules.load("ubs-web", "pdf_parsers", ("pdfplumber",))
-    ubs.pdfplumber = fake
-    path = tmp_path / "a.pdf"
-    legacy = ubs._pdf_text(path)
-    first_two = ubs._pdf_text(path, 2)
-    calls.clear()
-    doc = extract.pdfplumber(path, **extract.UBS_WEB_PARAMS)
-    assert doc.text() == legacy
-    assert "\n".join(p.text for p in doc.pages[:2]) == first_two
+    _fake, calls = plumber
+    ubs = collector_modules.load("ubs-web", "pdf_parsers")
+    assert ubs.EXTRACTOR.func is extract.pdfplumber
+    assert ubs.EXTRACTOR.keywords == extract.UBS_WEB_PARAMS
+    doc = ubs.extracted(tmp_path / "a.pdf")
     assert ("text", {"x_tolerance": 2}) in calls
     assert ("words", {"x_tolerance": 2}) in calls
     assert ("words", {"x_tolerance": 1.5, "keep_blank_chars": False}) in calls
@@ -109,14 +104,13 @@ def test_pdfplumber_is_ubs_webs_reads(plumber, tmp_path):
 
 
 def test_pdfplumber_words_are_fidelity_1099s(plumber, tmp_path):
-    fidelity = collector_modules.load("fidelity-web", "pdf_parsers_1099")
+    """fidelity-web's 1099 reads extract_words() with no arguments."""
     doc = extract.pdfplumber(tmp_path / "a.pdf", word_params=({},))
     with sys.modules["pdfplumber"].open("x") as pdf:
-        legacy = [fidelity._page_lines(p) for p in pdf.pages]
-    mine = [[[fidelity.Word(w.text, w.x0, w.x1) for w in row.words]
-             for row in rows(page.words(), fidelity._LINE_TOLERANCE)]
-            for page in doc.pages]
-    assert mine == legacy
+        legacy = [tuple(Word(w["text"], w["x0"], w["x1"], w["top"],
+                             w["bottom"]) for w in p.extract_words())
+                  for p in pdf.pages]
+    assert [page.words() for page in doc.pages] == legacy
 
 
 # ------------------------------------------------------------------
