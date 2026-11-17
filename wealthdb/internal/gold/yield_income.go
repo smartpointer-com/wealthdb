@@ -106,7 +106,7 @@ func (b *yieldBase) attribution(in *yield.Inputs) *incomeAttribution {
 // else, where it names no instrument, to its account; and the payments
 // of the 24 months to the instant the same way, in the line's currency.
 // A dividend or a distribution comes with the quantities yield.Payment
-// documents, read under its account's keys (yieldUnits.keysOf, quantity,
+// documents, read under its account's keys (yield.Holders.KeysOf, quantity,
 // span, firstHeld), its record day the one the dividend calendar states
 // or derives, else the one its issuer's learned gap gives, else the one
 // its market's lag gives (yield.RecordOf, calendarOf, gapOf, lagOf).
@@ -130,7 +130,7 @@ func (b *yieldBase) attribute(in *yield.Inputs, ids []holdingID) *incomeAttribut
 			if paysPerShare(l.Type) {
 				start := day.Truncate(24 * time.Hour).Unix()
 				pay := time.Unix(start, 0).UTC()
-				keys := b.units.keysOf(in, l.Source, l.Account, l.Instrument)
+				keys := b.units.KeysOf(l.Source, l.Account, l.Instrument)
 				p.Quantity, p.Units = b.units.quantity(keys, start)
 				lag := b.lagOf(in, l)
 				events, share, market, security := b.calendarOf(in, l)
@@ -207,13 +207,13 @@ func (b *yieldBase) income(in *yield.Inputs, ci int) {
 
 // unitIDs are the instruments the units of the dividends and
 // distributions of lines read: each line's id folded under its account
-// and under each account of its portfolio (portfolioKeys).
+// and under each account of its portfolio (yield.Inputs.PortfolioKeys).
 func unitIDs(in *yield.Inputs, lines []incomeLine) map[yield.InstrumentKey]bool {
 	paid := map[yield.InstrumentKey]bool{}
 	for _, l := range lines {
 		if l.Instrument != "" && paysPerShare(l.Type) {
-			for _, k := range portfolioKeys(in, l.Source, l.Account, l.Instrument) {
-				paid[yield.InstrumentKey{Source: l.Source, Instrument: k.iid}] = true
+			for _, k := range in.PortfolioKeys(l.Source, l.Account, l.Instrument) {
+				paid[yield.InstrumentKey{Source: l.Source, Instrument: k.Instrument}] = true
 			}
 		}
 	}
@@ -222,27 +222,27 @@ func unitIDs(in *yield.Inputs, lines []incomeLine) map[yield.InstrumentKey]bool 
 
 // lagOf is the lag of the record day of the dividend a line pays
 // (yieldBase.lag), under the first id its instrument reads under that has
-// one (portfolioKeys).
+// one (yield.Inputs.PortfolioKeys).
 func (b *yieldBase) lagOf(in *yield.Inputs, l incomeLine) yield.Lag {
-	for _, k := range portfolioKeys(in, l.Source, l.Account, l.Instrument) {
-		if lag := b.lag[yield.InstrumentKey{Source: l.Source, Instrument: k.iid}]; lag.Days > 0 {
+	for _, k := range in.PortfolioKeys(l.Source, l.Account, l.Instrument) {
+		if lag := b.lag[yield.InstrumentKey{Source: l.Source, Instrument: k.Instrument}]; lag.Days > 0 {
 			return lag
 		}
 	}
 	return yield.Lag{}
 }
 
-// calendarOf is what the dividend calendar states of the security a line
-// pays (yieldBase.calendar), whether it is a share (yieldBase.share), the
-// market whose settlement cycle derives its record day
-// (yieldBase.market), and the security: each under the first id its
-// instrument reads under that has one (portfolioKeys), as lagOf reads its
-// lag. The security is the instrument's as a position names it
-// (yield.Inputs.HeldSecurity).
+// calendarOf is what the dividend calendar states of the security a
+// line pays (yieldBase.calendar), whether it is a share
+// (yieldBase.share), the market whose settlement cycle derives its
+// record day (yieldBase.market), and the security: each under the first
+// id its instrument reads under that has one
+// (yield.Inputs.PortfolioKeys), as lagOf reads its lag. The security is
+// the instrument's as a position names it (yield.Inputs.HeldSecurity).
 func (b *yieldBase) calendarOf(in *yield.Inputs, l incomeLine) (events []yield.CalendarEvent, share bool,
 	market, security string) {
-	for _, k := range portfolioKeys(in, l.Source, l.Account, l.Instrument) {
-		ik := yield.InstrumentKey{Source: l.Source, Instrument: k.iid}
+	for _, k := range in.PortfolioKeys(l.Source, l.Account, l.Instrument) {
+		ik := yield.InstrumentKey{Source: l.Source, Instrument: k.Instrument}
 		if security == "" {
 			security = in.HeldSecurity[ik]
 		}

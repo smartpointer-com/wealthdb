@@ -49,18 +49,17 @@ func TestAPaymentsUnits(t *testing.T) {
 		{Source: "src", Account: "CASH"}: {Portfolio: "P"}, {Source: "src", Account: "DEPOT"}: {Portfolio: "P"},
 		{Source: "src", Account: "GONE"}: {Portfolio: "P"}, {Source: "src", Account: "NEW"}: {Portfolio: "P"}}}
 	u := &yieldUnits{
-		points: map[unitKey][]unitPoint{
-			{"src", "DEPOT", "QSTK"}: {{at: 10, qty: q(100)}, {at: 30, prev: 20, qty: q(200)},
-				{at: 50, prev: 40, qty: q(2000)}},
-			{"src", "GONE", "QSTK"}: {{at: 10, qty: q(50)}, {at: 30, prev: 20, qty: q(0)}},
-			{"src", "NEW", "QSTK"}:  {{at: 50, qty: q(0)}},
-		},
+		Holders: &yield.Holders{In: in, Points: map[unitKey][]yield.UnitPoint{
+			{Source: "src", Account: "DEPOT", Instrument: "QSTK"}: {{At: 10, Qty: q(100)}, {At: 30, Prev: 20, Qty: q(200)},
+				{At: 50, Prev: 40, Qty: q(2000)}},
+			{Source: "src", Account: "GONE", Instrument: "QSTK"}: {{At: 10, Qty: q(50)}, {At: 30, Prev: 20, Qty: q(0)}},
+			{Source: "src", Account: "NEW", Instrument: "QSTK"}:  {{At: 50, Qty: q(0)}},
+		}, Accounts: map[yield.InstrumentKey][]string{ik: {"DEPOT", "GONE", "NEW"}}},
 		snaps: map[accountKey][]int64{{"src", "DEPOT"}: {10, 20, 30, 40, 50, 60},
 			{"src", "GONE"}: {10, 20, 30, 40, 50, 60}, {"src", "NEW"}: {50, 60}},
-		accounts: map[yield.InstrumentKey][]string{ik: {"DEPOT", "GONE", "NEW"}},
-		changes:  map[yield.InstrumentKey][]unitChange{},
-		read:     map[yield.InstrumentKey][][2]int64{},
-		last:     map[string]int64{"src": 60},
+		changes: map[yield.InstrumentKey][]unitChange{},
+		read:    map[yield.InstrumentKey][][2]int64{},
+		last:    map[string]int64{"src": 60},
 	}
 	u.addChange(ik, unitChange{at: 30, k: 2, ok: true})
 	u.addChange(ik, unitChange{at: 50, k: 10, ok: true})
@@ -78,37 +77,37 @@ func TestAPaymentsUnits(t *testing.T) {
 		{"GONE", 35, 0, false},
 		{"DEPOT", 5, 0, false},
 	} {
-		got, units := u.quantity(u.keysOf(in, "src", c.acct, "QSTK"), c.end)
+		got, units := u.quantity(u.KeysOf("src", c.acct, "QSTK"), c.end)
 		if (got == nil) != (c.want == 0) || (got != nil && *got != c.want) || units != c.units {
 			t.Errorf("%s at %d: %v %v, want %v %v", c.acct, c.end, fmtFloatPtr(got), units, c.want, c.units)
 		}
 	}
 	u.addChange(ik, unitChange{at: 50, k: 5, ok: true})
-	if _, units := u.quantity(u.keysOf(in, "src", "DEPOT", "QSTK"), 35); !units {
+	if _, units := u.quantity(u.KeysOf("src", "DEPOT", "QSTK"), 35); !units {
 		t.Error("two accounts that disagree at one snapshot")
 	}
 	// DEPOT states no quantity at 40: from 20 to 50 no account held it
 	// with its units read.
 	u.changes[ik] = nil
-	u.points[unitKey{"src", "DEPOT", "QSTK"}] = []unitPoint{{at: 10, qty: q(100)}, {at: 40, prev: 30, qty: nil},
-		{at: 50, prev: 40, qty: q(1000)}}
+	u.Points[unitKey{Source: "src", Account: "DEPOT", Instrument: "QSTK"}] = []yield.UnitPoint{{At: 10, Qty: q(100)}, {At: 40, Prev: 30, Qty: nil},
+		{At: 50, Prev: 40, Qty: q(1000)}}
 	u.read = map[yield.InstrumentKey][][2]int64{}
 	u.cover()
-	if _, units := u.quantity(u.keysOf(in, "src", "DEPOT", "QSTK"), 15); !units {
+	if _, units := u.quantity(u.KeysOf("src", "DEPOT", "QSTK"), 15); !units {
 		t.Error("a span no account held through")
 	}
-	if _, units := u.quantity(u.keysOf(in, "src", "DEPOT", "QSTK"), 55); units {
+	if _, units := u.quantity(u.KeysOf("src", "DEPOT", "QSTK"), 55); units {
 		t.Error("a payment after the span")
 	}
 	// A cash account of another portfolio reads the one account of its
 	// source that held the instrument; with two such accounts, none.
 	in.Accounts[yield.AccountKey{Source: "src", Account: "OTHER"}] = yield.Account{Portfolio: "Q"}
-	u.points[unitKey{"src", "DEPOT", "QONE"}] = []unitPoint{{at: 10, qty: q(40)}}
-	u.accounts[yield.InstrumentKey{Source: "src", Instrument: "QONE"}] = []string{"DEPOT"}
-	if got, _ := u.quantity(u.keysOf(in, "src", "OTHER", "QONE"), 15); got == nil || *got != 40 {
+	u.Points[unitKey{Source: "src", Account: "DEPOT", Instrument: "QONE"}] = []yield.UnitPoint{{At: 10, Qty: q(40)}}
+	u.Accounts[yield.InstrumentKey{Source: "src", Instrument: "QONE"}] = []string{"DEPOT"}
+	if got, _ := u.quantity(u.KeysOf("src", "OTHER", "QONE"), 15); got == nil || *got != 40 {
 		t.Errorf("the one account: %v", fmtFloatPtr(got))
 	}
-	if got, _ := u.quantity(u.keysOf(in, "src", "OTHER", "QSTK"), 15); got != nil {
+	if got, _ := u.quantity(u.KeysOf("src", "OTHER", "QSTK"), 15); got != nil {
 		t.Errorf("two accounts: %v", fmtFloatPtr(got))
 	}
 }
@@ -124,17 +123,17 @@ func TestAPaymentsUnits(t *testing.T) {
 func TestAQuantityBetweenSnapshots(t *testing.T) {
 	t.Parallel()
 	q := func(x float64) *float64 { return &x }
-	out, in, stray := unitKey{"src", "B1", "QOUT"}, unitKey{"src", "B1", "QIN"}, unitKey{"src", "B1", "QSTRAY"}
-	corp, gone := unitKey{"src", "B2", "QCORP"}, unitKey{"src", "B2", "QGONE"}
+	out, in, stray := unitKey{Source: "src", Account: "B1", Instrument: "QOUT"}, unitKey{Source: "src", Account: "B1", Instrument: "QIN"}, unitKey{Source: "src", Account: "B1", Instrument: "QSTRAY"}
+	corp, gone := unitKey{Source: "src", Account: "B2", Instrument: "QCORP"}, unitKey{Source: "src", Account: "B2", Instrument: "QGONE"}
 	u := &yieldUnits{
 		snaps: map[accountKey][]int64{{"src", "B1"}: {10, 20, 30, 40}, {"src", "B2"}: {10, 50, 60}},
-		points: map[unitKey][]unitPoint{
-			out:   {{at: 10, qty: q(100)}, {at: 30, prev: 20, qty: q(150)}},
-			in:    {{at: 10, qty: q(100)}, {at: 20, prev: 10, qty: q(150)}},
-			stray: {{at: 10, qty: q(100)}},
-			corp:  {{at: 10, qty: q(100)}, {at: 50, prev: 10, qty: q(1030)}},
-			gone:  {{at: 10, qty: q(100)}, {at: 60, prev: 50, qty: q(0)}},
-		},
+		Holders: &yield.Holders{Points: map[unitKey][]yield.UnitPoint{
+			out:   {{At: 10, Qty: q(100)}, {At: 30, Prev: 20, Qty: q(150)}},
+			in:    {{At: 10, Qty: q(100)}, {At: 20, Prev: 10, Qty: q(150)}},
+			stray: {{At: 10, Qty: q(100)}},
+			corp:  {{At: 10, Qty: q(100)}, {At: 50, Prev: 10, Qty: q(1030)}},
+			gone:  {{At: 10, Qty: q(100)}, {At: 60, Prev: 50, Qty: q(0)}},
+		}},
 		trades: map[unitKey][]yield.UnitTrade{
 			out:   {{At: 20, Qty: 50}},
 			in:    {{At: 20, Qty: 50}},
@@ -151,7 +150,7 @@ func TestAQuantityBetweenSnapshots(t *testing.T) {
 	}{{out, 25, 150}, {in, 25, 150}, {stray, 15, 100}, {stray, 17, 105}, {stray, 35, 100}, {corp, 45, 130},
 		{gone, 65, 0}} {
 		if got := u.heldOn(c.k, c.at); got == nil || *got != c.want {
-			t.Errorf("%s at %d: %v, want %v", c.k.iid, c.at, fmtFloatPtr(got), c.want)
+			t.Errorf("%s at %d: %v, want %v", c.k.Instrument, c.at, fmtFloatPtr(got), c.want)
 		}
 	}
 	if got := u.heldOn(corp, 5); got != nil {
