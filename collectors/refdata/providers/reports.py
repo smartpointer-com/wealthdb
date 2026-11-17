@@ -32,9 +32,11 @@ import os
 import re
 import unicodedata
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import NamedTuple
 
 from collectorkit import bronze
 
@@ -247,14 +249,10 @@ def parse_report(pages: list, fund_name: str, ref: str, *, provider: str) -> Par
     as_of = report_date(pages)
     if as_of is None:
         raise ProviderError("the report states no day")
-    if any(INVENTORY.search(p) for p in pages):
-        isin_lines = any(ISIN.match(ln.split(" ", 1)[0]) for p in pages if INVENTORY.search(p)
-                         for ln in p.splitlines() if " " in ln)
-        title, rows, mine = _isin_inventory(pages, fund_name) if isin_lines else _inventory(pages, fund_name)
-    elif any(SCHEDULE.search(p) for p in pages):
-        title, rows, mine = _schedule(pages, fund_name)
-    else:
+    layout = next((x for x in LAYOUTS if x.detect(pages)), None)
+    if layout is None:
         raise ProviderError("the report holds no inventory")
+    title, rows, mine = layout.read(pages, fund_name)
     if not rows:
         raise ProviderError(f"the report holds no inventory for {fund_name!r}")
     # A layout read in part (a bond inventory's lines, a fund line among
@@ -278,7 +276,7 @@ def parse_report(pages: list, fund_name: str, ref: str, *, provider: str) -> Par
 
 def _row_line(ln: str) -> bool:
     """Whether a line reads as a holding in any layout."""
-    return bool(HOLDING.match(ln) or INVENTORY_LINE.match(ln) or ISIN.match(ln.split(" ", 1)[0]))
+    return any(x.holding(ln) for x in LAYOUTS)
 
 
 def _lines(rows: list, ref: str, as_of: date) -> list:
@@ -449,3 +447,28 @@ def _isin_inventory(pages: list, fund_name: str) -> tuple:
             rows.append({"name": m.group("name"), "isin": m.group("isin"), "quantity": qty, "value": value,
                          "currency": m.group("ccy"), "pct": number(m.group("pct"), "."), "section": section})
     return own, rows, mine
+
+
+def _isin_pages(pages) -> bool:
+    """Whether a report holds an inventory whose lines start with an ISIN."""
+    return any(_isin_line(ln) for p in pages if INVENTORY.search(p) for ln in p.splitlines() if " " in ln)
+
+
+def _isin_line(ln: str) -> bool:
+    return bool(ISIN.match(ln.split(" ", 1)[0]))
+
+
+class Layout(NamedTuple):
+    """A report layout: whether a report's pages are in it, the reader of
+    the held fund's part of it ((sub-fund title, rows, its pages)), and
+    whether a line reads as one of its holdings."""
+    detect: Callable
+    read: Callable
+    holding: Callable
+
+
+# The layouts a report may be in; the first whose detect holds reads it.
+LAYOUTS = (Layout(_isin_pages, _isin_inventory, _isin_line),
+           Layout(lambda pages: any(INVENTORY.search(p) for p in pages), _inventory,
+                  lambda ln: bool(INVENTORY_LINE.match(ln))),
+           Layout(lambda pages: any(SCHEDULE.search(p) for p in pages), _schedule, lambda ln: bool(HOLDING.match(ln))))
