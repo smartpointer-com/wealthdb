@@ -895,3 +895,44 @@ def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
         "t1": None, "t2": "p1", "t3": "funding:exited-co", "t4": "pMa",
         "t5": "pMb"}
     c.close()
+
+
+def _without(node, *fields):
+    """node with fields absent, as a portal that stopped sending them."""
+    return {k: v for k, v in node.items() if k not in fields}
+
+
+def test_a_dump_that_drops_an_amount_keeps_the_one_stated_before(tmp_path):
+    """The later dump states no contributed, committed, realized or
+    unrealized amount for the position: the investment event keeps the
+    cost the earlier dump stated, a stated value still wins, and runs
+    loaded one at a time build what --force builds."""
+    fixture = tmp_path / "fixture"
+    dropped = ("contributedAmount", "commitmentAmount", "realizedValue", "unrealizedValue")
+    runs = [
+        write_run(fixture, "20240101T000000Z", [
+            positions_capture([pos_node("p1", "acme-co-s", contributed=50000, total=80000)]),
+            dashboard_capture()]),
+        write_run(fixture, "20240201T000000Z", [
+            positions_capture([_without(pos_node("p1", "acme-co-s", total=90000), *dropped)]),
+            dashboard_capture(timeseries=[
+                {"year": 2024, "month": 1, "day": 1, "totalValue": m(50000),
+                 "isApproximate": False}])]),
+    ]
+    work = tmp_path / "work"
+    incremental.check(load.main, lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze)], runs, work, ignore=IGNORE)
+
+    c = sqlite3.connect(work / "at-once.db")
+    assert c.execute(
+        "SELECT market_value_minor, valuation_basis, contributed_minor FROM position_snapshots "
+        "WHERE position_external_id = 'p1' AND event_type = 'investment'").fetchall() == [
+        (50000, "cost", 50000)]
+    assert c.execute(
+        "SELECT market_value_minor, contributed_minor, distributions_minor FROM position_snapshots "
+        "WHERE position_external_id = 'p1' AND event_type = 'valuation'").fetchall() == [
+        (90000, 50000, 0)]
+    assert c.execute(
+        "SELECT total_value_minor, total_invested_minor, realized_minor, unrealized_minor "
+        "FROM portfolio_timeseries").fetchall() == [(50000, 60000, 0, 50000)]
+    c.close()

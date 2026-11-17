@@ -91,17 +91,36 @@ def _year_of(unix_seconds):
 # position_snapshots writer
 # --------------------------------------------------------------------------
 
+# A restated event keeps each amount an earlier dump stated where the later
+# dump states none: the portal can stop sending a field, and its absence
+# says nothing about the amount. A later stated amount still wins.
+_KEEP_STATED = ", ".join(
+    f"{c} = CASE WHEN excluded.event_type = position_snapshots.event_type "
+    f"THEN COALESCE(excluded.{c}, position_snapshots.{c}) ELSE excluded.{c} END"
+    for c in ("market_value_minor", "contributed_minor", "distributions_minor"))
+
+
 def put_snapshot(conn, pid, as_of, event_type, currency, *, market, basis,
                  contributed, distributions, is_open, status, snapshot_at):
     """Upsert one per-position event into position_snapshots, keyed by
-    (position, as_of_date). Same-dated re-loads overwrite cleanly."""
+    (position, as_of_date). A same-dated reload restates the event, and an
+    amount the new dump does not state keeps the one stated before."""
     if not as_of:
         return
     conn.execute(
-        "INSERT OR REPLACE INTO position_snapshots "
+        "INSERT INTO position_snapshots "
         "(position_external_id, as_of_date, event_type, status, is_open, currency, "
         " market_value_minor, valuation_basis, contributed_minor, distributions_minor, "
-        " snapshot_at, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        " snapshot_at, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(position_external_id, as_of_date) DO UPDATE SET "
+        "valuation_basis = CASE WHEN excluded.event_type = position_snapshots.event_type "
+        " AND excluded.market_value_minor IS NULL "
+        " AND position_snapshots.market_value_minor IS NOT NULL "
+        " THEN position_snapshots.valuation_basis ELSE excluded.valuation_basis END, "
+        + _KEEP_STATED + ", "
+        "event_type = excluded.event_type, status = excluded.status, "
+        "is_open = excluded.is_open, currency = excluded.currency, "
+        "snapshot_at = excluded.snapshot_at, payload = excluded.payload",
         (pid, int(as_of), event_type, status, 1 if is_open else 0, currency,
          market, basis, contributed, distributions, int(snapshot_at), None))
 
@@ -283,11 +302,12 @@ def _load_summary(conn, summary: dict, acct_slug, snapshot_at: int) -> None:
             " offline_change_minor, is_approximate, snapshot_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(invest_account_slug, as_of_date) DO UPDATE SET "
-            "currency=excluded.currency, total_value_minor=excluded.total_value_minor, "
-            "total_invested_minor=excluded.total_invested_minor, "
-            "realized_minor=excluded.realized_minor, "
-            "unrealized_minor=excluded.unrealized_minor, "
-            "offline_change_minor=excluded.offline_change_minor, "
+            "currency=excluded.currency, "
+            "total_value_minor=COALESCE(excluded.total_value_minor, portfolio_timeseries.total_value_minor), "
+            "total_invested_minor=COALESCE(excluded.total_invested_minor, portfolio_timeseries.total_invested_minor), "
+            "realized_minor=COALESCE(excluded.realized_minor, portfolio_timeseries.realized_minor), "
+            "unrealized_minor=COALESCE(excluded.unrealized_minor, portfolio_timeseries.unrealized_minor), "
+            "offline_change_minor=COALESCE(excluded.offline_change_minor, portfolio_timeseries.offline_change_minor), "
             "is_approximate=excluded.is_approximate, snapshot_at=excluded.snapshot_at "
             "WHERE excluded.snapshot_at >= portfolio_timeseries.snapshot_at",
             (acct_slug, as_of, tcur, tsv, ti, rz, uz, oc,
