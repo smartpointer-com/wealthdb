@@ -14,12 +14,16 @@
 -- carrying the source's persisted priority rank. Both directions are
 -- emitted (direct = stored row; reciprocal = 1/mid_rate), so the macros
 -- never branch on direct-vs-reciprocal — a single nearest lookup per leg.
+-- recip marks the reciprocal edge, and the source id rides along, so
+-- fx_daily can break every tie the same way.
 CREATE VIEW fx_norm AS
     SELECT r.base_currency  AS to_ccy,
            r.quote_currency AS from_ccy,
            r.snapshot_at,
            CAST(r.mid_rate AS DOUBLE) AS rate,
-           COALESCE(s.fx_priority, 2147483647) AS pri
+           COALESCE(s.fx_priority, 2147483647) AS pri,
+           FALSE AS recip,
+           r.silver_source_id
       FROM fx_rates r
       LEFT JOIN silver_sources s USING (silver_source_id)
      WHERE r.mid_rate <> 0
@@ -28,12 +32,16 @@ CREATE VIEW fx_norm AS
            r.base_currency  AS from_ccy,
            r.snapshot_at,
            1.0 / CAST(r.mid_rate AS DOUBLE) AS rate,
-           COALESCE(s.fx_priority, 2147483647) AS pri
+           COALESCE(s.fx_priority, 2147483647) AS pri,
+           TRUE AS recip,
+           r.silver_source_id
       FROM fx_rates r
       LEFT JOIN silver_sources s USING (silver_source_id)
      WHERE r.mid_rate <> 0;
 
--- fx_daily: one rate a day per pair, by source priority, then newest.
+-- fx_daily: one rate a day per pair, by source priority, then newest,
+-- then a stored rate before a reciprocal, then the source id. The last
+-- two keys only break ties, so the winner never follows the plan.
 -- Each pair's EARLIEST rate also reaches back to day 0 through a floor
 -- row, so a line whose snapshot predates its currency's FX history (a
 -- holding older than the first rate of its pair) clamps to the earliest
@@ -50,7 +58,7 @@ CREATE VIEW fx_daily AS
             SELECT from_ccy, to_ccy, (snapshot_at // 86400) AS day, rate,
                    ROW_NUMBER() OVER (
                        PARTITION BY from_ccy, to_ccy, (snapshot_at // 86400)
-                       ORDER BY pri ASC, snapshot_at DESC
+                       ORDER BY pri ASC, snapshot_at DESC, recip ASC, silver_source_id ASC
                    ) AS rn
               FROM fx_norm
           )

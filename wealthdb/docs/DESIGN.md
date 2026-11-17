@@ -2835,7 +2835,8 @@ priority-less sources sort last).
 **`fx_daily` — one winner per pair per UTC day.** `fx_norm`'s edges are
 bucketed to the UTC day (`snapshot_at // 86400`). Within each
 `(from_ccy, to_ccy, day)`, a `ROW_NUMBER()` ordered by `fx_priority`
-ASC, then `snapshot_at` DESC picks a single winning rate. So a day two
+ASC, then `snapshot_at` DESC picks a single winning rate. Two more keys
+break ties: a stored rate before a reciprocal, then the source id. So a day two
 sources both cover goes to the higher-priority source; a day only one
 covers is filled by that one. (A reference source like `fred` thus
 keeps the deep historic tail an account source lacks, without

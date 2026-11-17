@@ -820,6 +820,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0207: its `fx_daily` can pick a reciprocal over a rate stored at the
+  same time, or one source over another of the same priority, by plan;
 - 0206: its exposure views sum in the order the rows arrive, so two
   refreshes of one gold can differ in the last bits;
 - 0205: it lacks `web_sources_observed`, `web_income`'s class and

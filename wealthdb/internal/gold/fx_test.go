@@ -215,3 +215,45 @@ func TestFxSourcePrecedence(t *testing.T) {
 		t.Fatalf("fred-preferred = %q, want 79.0000", v)
 	}
 }
+
+// TestFxDailyBreaksTiesTheSameWay: a source that stores both directions
+// of a pair at one snapshot gives fx_daily a stored rate and a
+// reciprocal of the same priority and time. The stored rate wins, in
+// both directions and whichever row the table holds first. Two sources
+// of the same priority at the same time fall to the source id.
+func TestFxDailyBreaksTiesTheSameWay(t *testing.T) {
+	t.Parallel()
+	for _, order := range [][2]string{{"CHF/USD", "USD/CHF"}, {"USD/CHF", "CHF/USD"}} {
+		db, _ := openMigrated(t)
+		for _, pair := range order {
+			if pair == "CHF/USD" {
+				seedFX(t, db, 0, "CHF", "USD", "0.8") // 1 USD = 0.8 CHF
+			} else {
+				seedFX(t, db, 0, "USD", "CHF", "1.3") // 1 CHF = 1.3 USD, not 1/0.8
+			}
+		}
+		if v, ok := fxConvert(t, db, 0, 100, "USD", "CHF"); !ok || v != "80.0000" {
+			t.Errorf("order %v: 100 USD→CHF = %q (ok=%v), want the stored 80.0000", order, v, ok)
+		}
+		if v, ok := fxConvert(t, db, 0, 100, "CHF", "USD"); !ok || v != "130.0000" {
+			t.Errorf("order %v: 100 CHF→USD = %q (ok=%v), want the stored 130.0000", order, v, ok)
+		}
+	}
+	for _, order := range [][2]string{{"src-a", "src-b"}, {"src-b", "src-a"}} {
+		db, _ := openMigrated(t)
+		for _, src := range order {
+			mid := "0.8"
+			if src == "src-b" {
+				mid = "0.9"
+			}
+			if _, err := db.Exec(`
+                INSERT INTO fx_rates(silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+                VALUES (?, 0, 'CHF', 'USD', CAST(? AS DECIMAL(20,10)))`, src, mid); err != nil {
+				t.Fatalf("seed %s: %v", src, err)
+			}
+		}
+		if v, ok := fxConvert(t, db, 0, 100, "USD", "CHF"); !ok || v != "80.0000" {
+			t.Errorf("order %v: 100 USD→CHF = %q (ok=%v), want src-a's 80.0000", order, v, ok)
+		}
+	}
+}
