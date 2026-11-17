@@ -7,7 +7,7 @@ page links, and the figures the page shows.
   UCITS funds; DWS publishes no product list a plain request can read.
 - Dates: none. The export is the current constituents.
 - Fetch: the export workbook for the fund's ISIN. The workbook states no
-  day, so the day of the fetch dates it. For a fund that wants
+  day, so the day of the fetch dates it. For a request that asks for
   characteristics or its dividend calendar, one more request: the page
   data the fund page reads (the site's pages are a script app), kept as
   page.json. The one answer serves both.
@@ -90,6 +90,7 @@ class Xtrackers(Provider):
     name = "xtrackers"
     serves_funds = True
     facts = frozenset({"characteristics", "dividend_calendar"})
+    claim_flags = {"characteristics": "characteristics", "dividend_calendar": "calendar"}
 
     def claim(self, fund, ctx):
         isin = ident(fund, "isin")

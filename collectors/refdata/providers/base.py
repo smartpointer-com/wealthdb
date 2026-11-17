@@ -361,6 +361,11 @@ class Provider:
     # A fund provider whose documents state a fund's facts and no holdings
     # (a money-market filing) is never offered a fund's compositions.
     serves_compositions = True
+    # The flags of a fund provider's claim that ask its fetch for the
+    # optional parts stating a fact (a fund page, its distributions), by
+    # fact. A request sets each to whether it asks for the fact: a page is
+    # fetched only where a fact it states is due.
+    claim_flags = {}
     # The fewest days between two security requests to the provider for
     # one security, whatever max_age_days says, a request that failed
     # counted too: a source that allows one a month.

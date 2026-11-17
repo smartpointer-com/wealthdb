@@ -437,7 +437,7 @@ fiscal year, so the P/E is not read. The figures of the fund's index are
 not read either. A UCITS page writes decimal commas. The page names its
 own number format, and its figures are read through it.
 
-For a fund that wants characteristics, a fetch makes one more request,
+For a request that asks for characteristics, a fetch makes one more request,
 for this page. Each figure carries the day its table states, else the
 day of the holdings file. A page without a table of the fund's figures
 is no fund page.
@@ -578,7 +578,7 @@ The fund page states figures for the fund as a whole:
 The weighted average maturity is kept in years. A page that states it
 in days is converted at 365.25 days a year.
 
-For a fund that wants characteristics, a US fetch makes one more
+For a request that asks for characteristics, a US fetch makes one more
 request, for this page. It keeps the fund's entry in the product list,
 which fills a figure the page lacks. A Swiss fetch keeps the page it
 already reads. Each figure carries the day the page or the entry states
@@ -627,7 +627,7 @@ and average coupon. It states no figure of an equity fund's own: the
 P/E and the dividend yield it shows are its index's. It shows no
 credit-quality or maturity breakdown.
 
-The page is a script app. For a fund that wants characteristics, a
+The page is a script app. For a request that asks for characteristics, a
 fetch makes one more request, for the data the page reads. Each figure
 carries the day the page states, else the day of the fetch. Data
 without the fund's key facts is no fund page's.
@@ -679,7 +679,7 @@ The forward P/E is a forecast, so it is not read. A UCITS fund's
 answers name a breakdown's parts by a key, such as `aA` or
 `5to10Years`. They are kept as named.
 
-For a fund that wants characteristics, a fetch makes two more requests:
+For a request that asks for characteristics, a fetch makes two more requests:
 the fund's characteristics and its yields. For a bond fund it makes two
 more, for the breakdowns. A view of the fund page makes more requests
 than these. Each figure carries the day its answer states, else the day
@@ -687,7 +687,7 @@ of the holdings. Answers of which none is an object are no fund page's.
 The answers name no asset class: a fund whose characteristics state a
 bond figure reads no P/E.
 
-For a fund that wants its dividend calendar, a fetch makes one more
+For a request that asks for its dividend calendar, a fetch makes one more
 request, for the fund's distributions:
 
 - A US fund's answer lists every distribution with its ex, record and
@@ -727,7 +727,7 @@ Swiss site.
   fund in `exposure.proxies`.
 
 For a fund that wants its dividend calendar, the same POST asks for
-the fund's dividend history too. So the calendar costs no request more.
+the fund's dividend history too, whatever its request asks for. So the calendar costs no request more.
 
 - The history states each dividend's amount and currency by one date,
   the ex day. It states no record or pay day. Gold derives the record

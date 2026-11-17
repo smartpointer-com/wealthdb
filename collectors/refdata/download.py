@@ -879,7 +879,8 @@ def execute(reqs, run: Path, ctx: Context, limit=None):
             if claim is None:
                 continue
             attempts += 1
-            status, error = _fetch(Request(r.kind, name, r.ref, r.as_of, claim), run, ctx, entry)
+            status, error = _fetch(Request(r.kind, name, r.ref, r.as_of, _told(REGISTRY[name], claim, r.facts)), run,
+                                   ctx, entry)
             if status == "ok":
                 entry["provider"] = name
                 if r.facts:
@@ -894,6 +895,16 @@ def execute(reqs, run: Path, ctx: Context, limit=None):
             entry["tried"] = tried
         results.append(entry)
     return results
+
+
+def _told(p, claim, facts):
+    """A fund claim told what the request asks: each of the provider's
+    claim_flags set where the request asks for its fact, cleared where it
+    does not. Any other claim as it is."""
+    if not p.claim_flags or not isinstance(claim, dict):
+        return claim
+    return {**claim, **{flag: bool(claim.get(flag)) and fact in facts for fact, flag in p.claim_flags.items()
+                        if flag in claim}}
 
 
 def _fetch(r: Request, run: Path, ctx: Context, entry: dict):

@@ -9,7 +9,7 @@ holdings, and the figures a page shows.
   request can read.
 - Dates: none. The API serves the current holdings.
 - Fetch, UCITS: the fund's holdings, its index's constituents and its
-  swap counterparties. US: the fund's holdings. For a fund that wants
+  swap counterparties. US: the fund's holdings. For a request that asks for
   characteristics, the answers its page reads its figures from: its
   characteristics and its yields, and for a fund whose characteristics
   are a bond portfolio's, its credit-quality and maturity breakdowns.
@@ -40,7 +40,7 @@ holdings, and the figures a page shows.
   day, else the holdings' day. Where no answer, or none of the API's
   layout (an object), came, meta.json names the characteristics in
   facts_missing (fundpage.due()).
-- Dividend calendar: for a fund that wants it, one more request, for
+- Dividend calendar: for a request that asks for it, one more request, for
   its distributions, kept as distributions.json. A US fund's answer
   lists every distribution with its ex, record and pay days, its amount
   per share and the ordinary income, short- and long-term capital
@@ -131,6 +131,7 @@ class Invesco(Provider):
     name = "invesco"
     serves_funds = True
     facts = frozenset({"characteristics", "dividend_calendar"})
+    claim_flags = {"characteristics": "characteristics", "dividend_calendar": "calendar"}
 
     def claim(self, fund, ctx):
         if not (ISSUER.search(fund.name or "") and ETF.search(fund.name or "")):

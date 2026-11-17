@@ -8,9 +8,9 @@ file each fund page links and the figures the page states.
   another UCITS fund. The fund's page address ends in the file's ticker.
 - Dates: none. The file is the current holdings, dated in its preamble.
 - Fetch: the holdings workbook, as the page's download link serves it.
-  A workbook with no holdings header or no day is refused. For a fund
-  that wants characteristics, one more request: the fund page, at the
-  address the finder states, kept as page.html. For a fund that wants
+  A workbook with no holdings header or no day is refused. For a request
+  that asks for characteristics, one more request: the fund page, at the
+  address the finder states, kept as page.html. For a request that asks for
   its dividend calendar, the region's distributions workbook, asked for
   once a run whichever number of funds want it.
 - Parse: every holding with its ISIN (UCITS) or CUSIP (US), name,
@@ -170,6 +170,7 @@ class Spdr(Provider):
     name = "spdr"
     serves_funds = True
     facts = frozenset({"characteristics", "dividend_calendar"})
+    claim_flags = {"characteristics": "characteristics", "dividend_calendar": "calendar"}
 
     def _index(self, ctx) -> dict:
         """identifier or ticker -> (region, fund entry), from both finders."""

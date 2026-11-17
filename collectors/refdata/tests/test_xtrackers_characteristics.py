@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import download
 from providers.base import Context, has_file, read_json, read_meta
 from providers.xtrackers import EXPORT, PAGE, Xtrackers, characteristics, fund_page
 from tests.helpers import FakeClient, characteristics_by_key, make_xlsx
@@ -120,6 +121,23 @@ def test_a_fund_that_wants_no_characteristics_asks_for_no_page(tmp_path, monkeyp
     assert client.urls() == [EXPORT.format(isin=ISIN)] and not has_file(tmp_path, "page.json")
     assert "facts_missing" not in read_meta(tmp_path)
     assert parsed.lines and parsed.characteristics == []
+
+
+@pytest.mark.parametrize("asked", [(), ("characteristics",)])
+def test_a_run_asks_for_the_page_only_where_its_request_asks_for_a_fact_it_states(tmp_path, monkeypatch, asked):
+    """A fund that wants characteristics, whose request asks for its
+    composition alone (its characteristics are fresh), fetches no page."""
+    monkeypatch.setattr("providers.xtrackers.today_utc", lambda: DAY)
+    client = site()
+    ctx = Context(client=client)
+    fund = Fund(ref="isin:XX0000000960", isin=ISIN, name="Xtrackers Example UCITS ETF",
+                wants=("characteristics", "dividend_calendar"))
+    claim = Xtrackers().claim(fund, ctx)
+    (entry,) = download.execute([download.Request("fund", "xtrackers", fund.ref, None, claim, facts=asked)],
+                                tmp_path, ctx)
+    assert entry["status"] == "ok"
+    assert client.urls() == [EXPORT.format(isin=ISIN), *([PAGE.format(isin=ISIN)] if asked else [])]
+    assert claim["characteristics"] and claim["calendar"]
 
 
 @pytest.mark.parametrize("page,kept,warning", [

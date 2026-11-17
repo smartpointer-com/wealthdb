@@ -56,13 +56,13 @@ characteristics each fund page serves. Two sites:
   (Parsed.events_complete); the rows of one id are one event
   (base.merge_events). The events are dated as the characteristics
   are.
-- Fetch: for a fund that wants characteristics or its calendar, a US
+- Fetch: for a request that asks for characteristics or its calendar, a US
   fetch makes one more request, for the page. For characteristics it
   also keeps the fund's product-list entry, which fills a figure the
   page lacks; the page's JSON-LD fills one neither states. A Swiss fetch
-  keeps the page it reads the holdings columns from, and for a fund that
-  wants its calendar the current fetch makes one more request, for the
-  distributions the page names. Where a fund wants a fact and the page
+  keeps the page it reads the holdings columns from, and where the
+  current fetch asks for the calendar it makes one more request, for the
+  distributions the page names. Where a fetch asks for a fact and the page
   or the distributions did not come, or the files state none, meta.json
   names it in facts_missing, so it stays due.
 
@@ -169,6 +169,7 @@ class IShares(Provider):
     name = "ishares"
     serves_funds = True
     facts = frozenset({"characteristics", "dividend_calendar"})
+    claim_flags = {"characteristics": "characteristics", "dividend_calendar": "calendar"}
     composition_facts = frozenset({"line_durations"})
 
     def _index(self, ctx) -> dict:
@@ -273,8 +274,8 @@ class IShares(Provider):
 
     def _us_page(self, claim, day, outdir: Path, ctx) -> list:
         """Asks for a US fund page and keeps it, and the fund's product-list
-        entry where it wants characteristics. Returns the facts the fund
-        wants that they leave missing: characteristics where neither
+        entry where it asks for characteristics. Returns the facts it asks
+        for that they leave missing: characteristics where neither
         states a figure, the calendar where the page states no
         distributions table, either where the page did not come."""
         if claim["characteristics"]:
