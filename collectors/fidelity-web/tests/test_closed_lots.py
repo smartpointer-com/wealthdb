@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import load  # noqa: E402
 from collectorkit import incremental  # noqa: E402
 import pdf_readers  # noqa: E402
+import silver_retail  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 ACCT = "100000001"
@@ -149,6 +150,25 @@ def test_runs_loaded_one_at_a_time_give_the_silver_of_one_force(
         sorted(src.iterdir()), tmp_path / "work")
 
 
+def test_a_failed_1099_pass_rolls_back(migrated, tmp_path, stub_1099,
+                                      monkeypatch):
+    d1 = _form(tmp_path / "20260301T000000Z", "Consolidated_Form_1099.pdf",
+               prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
+    load._load_consolidated_1099s(migrated, [d1], rederive=True)
+    before = _held(migrated), _documents(migrated)
+
+    d2 = _form(tmp_path / "20260501T000000Z",
+               "CORRECTED_Consolidated_Form_1099.pdf", prepared="2026-03-19",
+               lots=[_lot(100.0, 80.0)])
+
+    def breaks(conn, parsed, sha):
+        raise RuntimeError("lots break")
+    monkeypatch.setattr(load, "_replace_1099_lots", breaks)
+    load._load_consolidated_1099s(migrated, [d1, d2], rederive=True)
+
+    assert (_held(migrated), _documents(migrated)) == before
+
+
 def test_a_form_already_held_is_not_parsed_again(migrated, tmp_path, stub_1099):
     d1 = _form(tmp_path / "20260301T000000Z", "Consolidated_Form_1099.pdf",
                prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
@@ -260,15 +280,21 @@ def test_a_form_that_names_no_account_is_skipped(migrated, tmp_path, stub_1099):
     assert _held(migrated) == []
 
 
+def _dumps_for_1099s(conn, dumps, pending):
+    return load._dumps_to_derive(
+        conn, load.CONSOLIDATED_1099_GENERATION_SCOPE,
+        load._CONSOLIDATED_1099_PARSER_VERSION, dumps, pending)
+
+
 def test_the_pass_reads_every_dump_only_when_its_parser_moved(
         migrated, tmp_path, stub_1099):
     dumps, pending = ["d1", "d2"], ["d2"]
-    assert load._dumps_for_1099s(migrated, dumps, pending) == (dumps, True)
+    assert _dumps_for_1099s(migrated, dumps, pending) == (dumps, True)
 
     load.silver.stamp_generation(
         migrated, load.CONSOLIDATED_1099_GENERATION_SCOPE,
         load._CONSOLIDATED_1099_PARSER_VERSION)
-    assert load._dumps_for_1099s(migrated, dumps, pending) == (pending, False)
+    assert _dumps_for_1099s(migrated, dumps, pending) == (pending, False)
 
 
 def test_a_completed_pass_stamps_its_generation(migrated, tmp_path, stub_1099):
@@ -303,11 +329,11 @@ def test_both_namings_of_a_consolidated_1099_are_candidates(tmp_path):
 # ============================================================
 
 def test_every_1099_naming_is_filed_as_a_tax_form():
-    assert load._classify_documents_pdf("Consolidated_Form_1099__2.pdf") == {
+    assert silver_retail._classify_documents_pdf("Consolidated_Form_1099__2.pdf") == {
         "file_format": "pdf", "doc_kind": "tax_form"}
-    assert load._classify_documents_pdf(
+    assert silver_retail._classify_documents_pdf(
         "2025-Placeholder-0001-Consolidated-Form-1099.pdf")["tax_year"] == 2025
-    assert load._classify_documents_pdf(
+    assert silver_retail._classify_documents_pdf(
         "Statement_Jan_March_2026.pdf")["doc_kind"] == "statement"
 
 
@@ -338,8 +364,8 @@ def test_migration_0010_refiles_1099s_catalogued_as_statements(tmp_path):
 def _catalogue(conn, dump):
     """File each PDF of ``dump`` into `documents` the way a dump load does."""
     for path in sorted((dump / "documents").glob("*.pdf")):
-        load._ingest_document(conn, 1000, path,
-                              load._classify_documents_pdf(path.name))
+        silver_retail._ingest_document(conn, 1000, path,
+                              silver_retail._classify_documents_pdf(path.name))
     conn.commit()
 
 
@@ -411,7 +437,7 @@ def test_migration_0013_sends_the_1099_pass_over_every_dump(tmp_path):
 
     load.silver.apply_migrations(conn, MIGRATIONS_DIR)
 
-    assert load._dumps_for_1099s(conn, ["d1", "d2"], ["d2"]) == (
+    assert _dumps_for_1099s(conn, ["d1", "d2"], ["d2"]) == (
         ["d1", "d2"], True)
     assert conn.execute("SELECT scope FROM parser_generations").fetchall() == [
         (load.SUPPLIED_GENERATION_SCOPE,)]

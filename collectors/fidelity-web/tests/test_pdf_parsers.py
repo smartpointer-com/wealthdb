@@ -1,11 +1,10 @@
 """
 Unit tests for pdf_parsers.py — text-level parsers only.
 
-The PDF I/O entry-point (``parse_statement_pdf``) is exercised
-indirectly by the load tests when they call ``load.load_dump``
-against a tmp bronze tree carrying a stub PDF. The functions
-covered here are pure functions of strings, so the fixtures are
-synthetic statement text — no real PDF bytes or real values.
+The PDF entry point (``pdf_readers.parse_statement_pdf``) is tested
+in test_pdf_readers.py. The functions covered here are pure functions
+of strings, so the fixtures are synthetic statement text — no real
+PDF bytes or real values.
 """
 
 from __future__ import annotations

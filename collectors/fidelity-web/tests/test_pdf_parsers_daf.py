@@ -1,10 +1,11 @@
 """
 Unit tests for pdf_parsers_daf.py — text-level parsers only.
 
-The PDF I/O entry-point (``parse_daf_statement_pdf``) is a thin
-pdfplumber wrapper over these pure string functions, so the fixtures
-are synthetic statement text mirroring the observed layout — no real
-PDF bytes or real values (root AGENTS.md §4).
+The PDF entry point (``pdf_readers.parse_daf_statement_pdf``) is
+tested in test_pdf_readers.py. The functions covered here are pure
+functions of strings, so the fixtures are synthetic statement text
+in the statement's layout — no real PDF bytes or real values
+(root AGENTS.md §4).
 """
 
 from __future__ import annotations

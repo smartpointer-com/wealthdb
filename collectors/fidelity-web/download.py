@@ -2509,7 +2509,7 @@ def _doc_stem(label, tag):
     the silver loader's 529 historical path (which globs
     ``Statement*.pdf``) parses the householded Investment Report —
     a combined statement can carry EDUCATION (529) account sections,
-    which ``pdf_parsers.parse_statement_pdf`` extracts. Redundant
+    which ``pdf_parsers.parse`` reads. Redundant
     ``Statement`` / ``(pdf)`` tokens in the label are dropped first so
     the name stays readable."""
     base = re.sub(r"\(pdf\)", "", label, flags=re.I)

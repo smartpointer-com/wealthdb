@@ -523,9 +523,10 @@ Fund's Giving Account statements (`pdf_parsers_daf`; see §12.3):
 document center* exposes monthly / quarterly statement PDFs for the
 account groups it serves statements for, such as 529 plan accounts.
 `download.py` scrapes these into
-`<dump>/documents/Statement<MMDDYYYY>.pdf`, parsed by `pdf_parsers.parse()` and wired into
-`load.py` via a `ProcessPoolExecutor` worker pool (PDF text
-extraction is CPU-bound; SQLite insert stays on the main thread).
+`<dump>/documents/Statement<MMDDYYYY>.pdf`, parsed by `pdf_parsers.parse()`.
+`load.py` sends every statement through the run's parse pool
+(`collectorkit.parsecache.ParsePool`), because PDF text extraction is
+CPU-bound. The SQLite inserts stay on the main thread.
 The cross-walk from the human-readable fund description to an
 `instrument_key` queries the live `positions` table per (account,
 description); when the fund has not appeared in any live snapshot
@@ -595,9 +596,12 @@ Two rows for one event are avoided twice over. Within the statement
 archive an id derived from the row's own content converges the
 monthly and the year-end statement (the year-end repeats the whole
 year). Against the scraped feed, a statement row is dropped when the
-feed already carries the same account, the same **signed** amount to
-the cent, within three days — signed, because a `+450.00` redemption
-and the `-450.00` fee it funds are not the same event.
+feed already carries the same account and the same **signed** amount to
+the cent. The feed row must lie within three days, or fourteen for a
+fee. A fee is dated when it is assessed and debited later. Each feed row
+absorbs at most one statement row. The amount is signed because a
+`+450.00` redemption and the `-450.00` fee it funds are not the same
+event.
 
 > **Reproducible-from-bronze.** The supplied PDFs default to
 > **`<bronze-dir>/supplied-statements/`** — *under* the bronze tree —

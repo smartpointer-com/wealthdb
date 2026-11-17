@@ -18,6 +18,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from collectorkit import bronze, compress
+from collectorkit.parse import is_cusip
 
 log = logging.getLogger("fidelity-web.load")
 
@@ -450,68 +451,68 @@ def _ingest_activity_csv(conn, csv_path):
     # than the file sha256 + global CSV row index — is the dedup key.
     occ_counter: dict[str, int] = {}
     for row in reader:
-            # Case-insensitive lookups (_row_ci): a re-cased header
-            # must not read as an empty column (the positions export
-            # can change header casing).
-            # Values (which the activity identity hashes) are
-            # untouched, so ids are stable across header re-casings.
-            ci = _row_ci(row)
-            run_date = (ci.get("run date") or "").strip()
-            # Footer "Date downloaded..." rows surface as a single
-            # field that doesn't match Fidelity's data shape.
-            if not run_date or not re.match(r"^\d{2}/\d{2}/\d{4}$", run_date):
-                continue
-            account_ext = (ci.get("account number") or "").strip()
-            if not account_ext:
-                continue
-            ts = ts_from_mdy(run_date)
-            if ts is None:
-                continue
-            action = (ci.get("action") or "").strip()
-            kind = _classify_action(action)
-            symbol = (ci.get("symbol") or "").strip() or None
-            instrument_key = symbol or instrument_from_action(action)
-            quantity = parse_decimal(ci.get("quantity"))
-            price = parse_decimal(ci.get("price ($)"))
-            amount = parse_decimal(ci.get("amount ($)"))
-            settlement = ts_from_mdy(ci.get("settlement date"))
-            payload = normalize_payload(dict(row))
-            identity = _activity_identity(
-                account_ext, ts, kind, quantity, price, amount, settlement)
-            occ = occ_counter.get(identity, 0)
-            occ_counter[identity] = occ + 1
-            activity_id = _synthesise_activity_id(identity, occ)
-            if symbol is None and _stored_symbol(conn, activity_id):
-                # Another export printed this transaction's Symbol; that
-                # copy names the security the way the positions do, so it
-                # stays whatever order the exports load in.
-                #
-                # Limitation: the identity names no security, so two
-                # transactions with the same economics in one account on
-                # one day (say, two securities bought for the same
-                # quantity, price and amount) differ only by occurrence
-                # index, which follows print order. When export A prints
-                # them X, Y and a later export B prints Y, X with Y's
-                # Symbol blank, B's Y lands on X's id and is skipped
-                # here, and B's X then replaces A's Y under the other id.
-                # Silver keeps X twice and loses Y until an export that
-                # prints both Symbols loads after B.
-                continue
-            conn.execute(
-                "INSERT OR REPLACE INTO transactions ("
-                "activity_id, timestamp, account_external_id, kind, "
-                "instrument_key, quantity, price, amount, "
-                "settlement_date, source_sha256, payload, currency"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    activity_id, ts, account_ext, kind, instrument_key,
-                    quantity, price, amount, settlement,
-                    src_sha,
-                    payload,
-                    "USD",
-                ),
-            )
-            inserted += 1
+        # Case-insensitive lookups (_row_ci): a re-cased header
+        # must not read as an empty column (the positions export
+        # can change header casing).
+        # Values (which the activity identity hashes) are
+        # untouched, so ids are stable across header re-casings.
+        ci = _row_ci(row)
+        run_date = (ci.get("run date") or "").strip()
+        # Footer "Date downloaded..." rows surface as a single
+        # field that doesn't match Fidelity's data shape.
+        if not run_date or not re.match(r"^\d{2}/\d{2}/\d{4}$", run_date):
+            continue
+        account_ext = (ci.get("account number") or "").strip()
+        if not account_ext:
+            continue
+        ts = ts_from_mdy(run_date)
+        if ts is None:
+            continue
+        action = (ci.get("action") or "").strip()
+        kind = _classify_action(action)
+        symbol = (ci.get("symbol") or "").strip() or None
+        instrument_key = symbol or instrument_from_action(action)
+        quantity = parse_decimal(ci.get("quantity"))
+        price = parse_decimal(ci.get("price ($)"))
+        amount = parse_decimal(ci.get("amount ($)"))
+        settlement = ts_from_mdy(ci.get("settlement date"))
+        payload = normalize_payload(dict(row))
+        identity = _activity_identity(
+            account_ext, ts, kind, quantity, price, amount, settlement)
+        occ = occ_counter.get(identity, 0)
+        occ_counter[identity] = occ + 1
+        activity_id = _synthesise_activity_id(identity, occ)
+        if symbol is None and _stored_symbol(conn, activity_id):
+            # Another export printed this transaction's Symbol; that
+            # copy names the security the way the positions do, so it
+            # stays whatever order the exports load in.
+            #
+            # Limitation: the identity names no security, so two
+            # transactions with the same economics in one account on
+            # one day (say, two securities bought for the same
+            # quantity, price and amount) differ only by occurrence
+            # index, which follows print order. When export A prints
+            # them X, Y and a later export B prints Y, X with Y's
+            # Symbol blank, B's Y lands on X's id and is skipped
+            # here, and B's X then replaces A's Y under the other id.
+            # Silver keeps X twice and loses Y until an export that
+            # prints both Symbols loads after B.
+            continue
+        conn.execute(
+            "INSERT OR REPLACE INTO transactions ("
+            "activity_id, timestamp, account_external_id, kind, "
+            "instrument_key, quantity, price, amount, "
+            "settlement_date, source_sha256, payload, currency"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                activity_id, ts, account_ext, kind, instrument_key,
+                quantity, price, amount, settlement,
+                src_sha,
+                payload,
+                "USD",
+            ),
+        )
+        inserted += 1
     return inserted
 
 
@@ -528,28 +529,16 @@ _ACTION_BARE_CUSIP_RE = re.compile(
     re.IGNORECASE)
 
 
-def _cusip_check_digit_ok(cusip):
-    """Whether a 9-character CUSIP's last digit is its check digit
-    (the modulus-10 double-add-double over the first eight)."""
-    total = 0
-    for i, ch in enumerate(cusip[:8]):
-        value = int(ch) if ch.isdigit() else ord(ch) - ord("A") + 10
-        if i % 2:
-            value *= 2
-        total += value // 10 + value % 10
-    return (10 - total % 10) % 10 == int(cusip[8])
-
-
 def instrument_from_action(action):
     """The CUSIP an activity row's action text names, or None. In
     parentheses, the last valid one wins, since the security's CUSIP
     follows its name; otherwise a bare CUSIP right after the verb. A
     token whose check digit fails is not a CUSIP."""
     for token in reversed(_ACTION_CUSIP_RE.findall(action or "")):
-        if _cusip_check_digit_ok(token):
+        if is_cusip(token):
             return token
     m = _ACTION_BARE_CUSIP_RE.match((action or "").strip())
-    if m and _cusip_check_digit_ok(m.group(1).upper()):
+    if m and is_cusip(m.group(1).upper()):
         return m.group(1).upper()
     return None
 

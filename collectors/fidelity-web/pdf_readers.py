@@ -84,7 +84,12 @@ def parse_consolidated_1099_pdf(path, *, sha=None, cache_dir=None):
 
 def _plumber_pages(pdf):
     """Each page of an open pdfplumber document as ``FORM_1099_WORDS``
-    reads it, its words only, a page at a time."""
+    reads it, its words only, a page at a time.
+
+    The identity read does not go through ``FORM_1099_WORDS``, so its
+    extraction key does not cover this code: an edit here that changes
+    the words read must also move ``_CONSOLIDATED_1099_IDENTITY_VERSION``
+    in load.py (a new suffix), or the cached identities are replayed."""
     key = params_key({})
     for page in pdf.pages:
         yield Page("", ((key, tuple(

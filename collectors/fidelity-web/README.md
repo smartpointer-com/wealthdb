@@ -181,10 +181,11 @@ is different: it only adds DOM inventories along the scripted walk.
 ### Mounts
 
 The wrapper mounts `~/.secrets` as `/secrets` and the data dir as
-`/data` ([collectors/README.md](../README.md)). It adds two more:
+`/data` ([collectors/README.md](../README.md)). It adds three more:
 
 | Container path | Host path (default) | Purpose |
 | --- | --- | --- |
+| `/cache/collector` | `${XDG_CACHE_HOME:-~/.cache}/wealthdb/fidelity-web` | the parse and extraction caches a load replays |
 | `/debug` | `~/.cache/wealthdb/debug/fidelity-web` | opt-in screenshots and traces |
 | `/app` | the collector dir | code edits take effect on the next run, with no rebuild |
 

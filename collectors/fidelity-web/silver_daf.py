@@ -194,8 +194,7 @@ def _load_daf(conn, snapshot_at, dump_dir, *, skip_positions=False):
         master = _read_json_file(acct_dir / "account.json")
         if not isinstance(master, dict):
             continue
-        account_ext = str(master.get("accountNbr")
-                          or master.get("accountNumber") or "").strip()
+        account_ext = _daf_account_id(master)
         if not account_ext:
             continue
         if not portfolio_written:
@@ -356,6 +355,11 @@ def _daf_account_for_statement(path):
     master = _read_json_file(path.parents[1] / "account.json")
     if not isinstance(master, dict):
         return None
+    return _daf_account_id(master)
+
+
+def _daf_account_id(master):
+    """The giving-account id an ``account.json`` master names, or None."""
     aid = str(master.get("accountNbr") or master.get("accountNumber")
               or "").strip()
     return aid or None

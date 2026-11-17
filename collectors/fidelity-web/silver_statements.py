@@ -123,8 +123,37 @@ def _insert_historical_rows(conn, pdf_path, parsed, sha, snapshot_at=None):
             except sqlite3.IntegrityError as e:
                 log.debug(
                     "historical: insert skipped for %s @ %s: %s",
-                    aid, period_end, e,
+                    bronze.log_id(aid), period_end, e,
                 )
+    return inserted
+
+
+def _insert_daf_historical_rows(conn, aid, as_of, parsed, sha,
+                                snapshot_at=None):
+    """Insert one ``historical_position_snapshots`` row per pool of a
+    parsed DAF statement, at its period end ``as_of``, cross-walked as
+    `_insert_historical_rows` does. Returns the number of rows."""
+    inserted = 0
+    for pool in parsed.get("pools", []):
+        desc = (pool.get("description") or "").strip()
+        if not desc:
+            continue
+        instrument_key = _crosswalk_description_to_instrument(
+            conn, aid, desc, snapshot_at)
+        conn.execute(
+            "INSERT OR REPLACE INTO historical_position_snapshots ("
+            "as_of_date, account_external_id, description, "
+            "instrument_key, quantity, price, market_value, "
+            "percent_of_total, currency, source_sha256, payload"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'USD', ?, ?)",
+            (
+                as_of, aid, desc, instrument_key,
+                pool.get("quantity"), pool.get("price"),
+                pool.get("market_value"),
+                sha, normalize_payload(pool),
+            ),
+        )
+        inserted += 1
     return inserted
 
 
@@ -290,7 +319,8 @@ def _claim_feed_match(leg, feed, claims):
     return pick
 
 
-def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
+def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None,
+                                   feed=None):
     """Insert the statement's ACCOUNT-LEVEL activity into
     ``transactions`` — the money in and out, and the account fees.
 
@@ -299,7 +329,8 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
     is the pass-wide one-to-one ledger, ``{statement row id: feed row
     id}``; a caller that omits it gets a private one, which is right
     for a single statement read in isolation and wrong for a walk (the
-    walk threads its own).
+    walk threads its own). `feed` is `_feed_legs`, read here when
+    omitted; a walk reads it once and passes it to every statement.
 
     Only rows the feed ABSORBED are claimed. A row that found no feed
     match is simply inserted, and its id converges on a re-sighting
@@ -316,7 +347,7 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
     """
     inserted = skipped = 0
     claims = {} if claims is None else claims
-    feed = _feed_legs(conn)
+    feed = _feed_legs(conn) if feed is None else feed
     occurrence: dict[str, int] = {}
     for account in parsed.get("accounts", []):
         aid = account.get("account_external_id")
@@ -345,12 +376,13 @@ def _insert_supplied_activity_rows(conn, pdf_path, parsed, sha, *, claims=None):
                     feed, claims)
                 if absorbed_by is not None:
                     # The description stays out of the line: on a wire it
-                    # names the beneficiary. The account, date, section,
-                    # signed amount and feed id locate the row.
+                    # names the beneficiary. The masked account, date,
+                    # section, signed amount and feed id locate the row.
                     log.info(
                         "supplied-statements: %s %s %s %+.2f is already in "
                         "the scraped feed as %s; not deriving it from %s",
-                        aid, row["date"], row.get("section") or "other",
+                        bronze.log_id(aid), row["date"],
+                        row.get("section") or "other",
                         amount, absorbed_by, pdf_path.name,
                     )
             if absorbed_by is not None:
@@ -434,7 +466,7 @@ def _insert_supplied_historical_rows(conn, pdf_path, parsed, sha):
             except sqlite3.IntegrityError as e:
                 log.debug(
                     "supplied-statements: insert skipped for %s @ %s: %s",
-                    aid, period_end, e,
+                    bronze.log_id(aid), period_end, e,
                 )
     return inserted
 
@@ -507,10 +539,11 @@ SELECT h.account_external_id, MAX(h.as_of_date)
             log.info(
                 "supplied-statements: synthesised accounts master for "
                 "%s @ %s (absent from every live download)",
-                aid, latest_as_of,
+                bronze.log_id(aid), latest_as_of,
             )
         except sqlite3.IntegrityError as e:
             log.debug(
-                "supplied-statements: synthesise skipped for %s: %s", aid, e,
+                "supplied-statements: synthesise skipped for %s: %s",
+                bronze.log_id(aid), e,
             )
     return inserted

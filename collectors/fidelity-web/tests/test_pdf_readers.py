@@ -28,6 +28,20 @@ PLACEHOLDER FUND 100% $1,000.00 10.000 $100.00 $1,000.00
 Total Market Value $1,000.00
 """
 
+# A Giving Account statement whose two pools reconcile to its totals.
+_DAF_STATEMENT = """\
+Account Summary:
+Beginning Value as of April 1, 2025 $ 90,000.00
+Ending Value as of June 30, 2025 $ 100,000.00
+GivingAccount Pool Holdings:
+Units Price per Unit Total Value Total Value
+June 30, 2025 June 30, 2025 April 1, 2025 June 30, 2025
+Example Growth 1,000.000 $ 60.00 $ 54,000.00 $ 60,000.00
+Example Income 2,000.000 $ 20.00 $ 36,000.00 $ 40,000.00
+Total Value $ 90,000.00 $ 100,000.00
+Transaction Detail:
+"""
+
 
 def _words(text, top):
     out, x0 = [], 20.0
@@ -68,8 +82,12 @@ def plumber(monkeypatch):
     class _Doc:
         def __init__(self, path):
             name = Path(path).name
-            pages = ([_STATEMENT.splitlines()] if name.startswith("Statement")
-                     else _1099_PAGES)
+            if name.startswith("STATEMENT_"):
+                pages = [_DAF_STATEMENT.splitlines()]
+            elif name.startswith("Statement") or name.endswith(" Statement.pdf"):
+                pages = [_STATEMENT.splitlines()]
+            else:
+                pages = _1099_PAGES
             self.pages = [_Page(i, lines) for i, lines in enumerate(pages)]
 
         def __enter__(self):
@@ -104,6 +122,25 @@ def test_a_cached_extraction_is_parsed_without_opening_the_pdf(
     assert len(list((tmp_path / "extract").iterdir())) == 1
 
 
+def test_a_supplied_statement_is_read_with_its_signature(plumber, tmp_path):
+    path = tmp_path / "Placeholder 3.26 Statement.pdf"
+    doc = pdf_readers.parse_supplied_statement_pdf(
+        path, expected_signature="INVESTMENT REPORT")
+    assert "_error" not in doc
+    assert doc["period_end"] == "2026-03-31"
+    assert pdf_readers.parse_supplied_statement_pdf(
+        path, expected_signature="ANOTHER REGISTRATION") == {
+        "_error": "signature-mismatch",
+        "expected_signature": "ANOTHER REGISTRATION", "path": str(path)}
+
+
+def test_a_daf_statement_is_extracted_then_parsed(plumber, tmp_path):
+    doc = pdf_readers.parse_daf_statement_pdf(
+        tmp_path / "STATEMENT_2098_06_30.pdf")
+    assert (doc["as_of_date"], doc["reconciled"]) == ("2025-06-30", True)
+    assert [p["market_value"] for p in doc["pools"]] == [60000.0, 40000.0]
+
+
 def test_the_1099_identity_reads_only_the_pages_it_needs(plumber, tmp_path):
     ident = pdf_readers.read_consolidated_1099_identity(
         tmp_path / "Consolidated_Form_1099.pdf")
@@ -125,6 +162,19 @@ def test_the_runner_prints_what_one_kind_reads(plumber, tmp_path):
                              "--json-out", str(out)]) == 0
     [doc] = json.loads(out.read_text())
     assert doc["period_end"] == "2026-03-31"
+
+
+@pytest.mark.parametrize("kind, name, key, value", [
+    ("supplied", "Placeholder 3.26 Statement.pdf", "period_end", "2026-03-31"),
+    ("daf", "STATEMENT_2098_06_30.pdf", "as_of_date", "2025-06-30"),
+])
+def test_the_runner_reads_each_statement_kind(plumber, tmp_path, kind, name,
+                                              key, value):
+    out = tmp_path / "out.json"
+    assert pdf_readers.main([kind, str(tmp_path / name),
+                             "--json-out", str(out)]) == 0
+    [doc] = json.loads(out.read_text())
+    assert doc[key] == value
 
 
 def test_the_runner_refuses_an_unknown_kind(capsys):

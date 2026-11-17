@@ -32,8 +32,8 @@ extraction itself, and ``parse_statement_pdf(path)``, live in
 ``pdf_readers``, outside this module's fingerprint.
 
 Performance note: extraction stays on pdfplumber; see the note in
-``pdf_parsers_supplied``. The parse cache in load.py absorbs the cost
-on warm runs.
+``pdf_parsers_supplied``. The parse and extraction caches absorb the
+cost on warm runs.
 """
 
 from __future__ import annotations
@@ -43,25 +43,22 @@ from dataclasses import dataclass
 
 from collectorkit.words import Extracted
 
-from pdf_common import _ACCOUNT_HEADER_RE, parse_statement_period
+from pdf_common import (
+    _ACCOUNT_HEADER_RE, AccountBlock, _parse_number, parse_statement_period,
+)
 
 
 # ============================================================
 # Per-account blocks
 # ============================================================
 #
-# The statement period parser and the ``Account #`` header regex
-# (``_ACCOUNT_HEADER_RE``) are shared with the supplied-statement
-# parser — see pdf_common.
+# The statement period parser, the ``Account #`` header regex
+# (``_ACCOUNT_HEADER_RE``) and ``AccountBlock`` are shared with the
+# supplied-statement parser — see pdf_common.
 # ``parse_account_blocks`` below splits on
 # a fresh header per 529 account (one section per account); the next
-# header of the same shape ends it.
-
-
-@dataclass
-class AccountBlock:
-    account_external_id: str  # 9-digit canonical form, no dash
-    text: str                 # text from the header through the next header
+# header of the same shape ends it, so a block's text runs from its
+# header through the next header.
 
 
 def parse_account_blocks(text):
@@ -213,18 +210,6 @@ def _parse_holdings_line(line):
         market_value=market_value,
         percent_of_total=pct,
     )
-
-
-def _parse_number(tok):
-    if tok is None:
-        return None
-    cleaned = tok.lstrip("$").rstrip("%").replace(",", "")
-    if not cleaned:
-        return None
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
 
 
 def _parse_percent(tok):

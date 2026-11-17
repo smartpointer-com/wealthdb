@@ -24,6 +24,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+import silver_retail  # noqa: E402
+import silver_statements  # noqa: E402
+from collectorkit import incremental  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
@@ -209,19 +212,19 @@ def test_positions_merge_summary_and_dividend(migrated, tmp_path):
 
 
 def test_action_classifier_buy_sell_dividend():
-    assert load._classify_action(
+    assert silver_retail._classify_action(
         "YOU BOUGHT FOO (FOO) (Cash)") == "BUY"
-    assert load._classify_action(
+    assert silver_retail._classify_action(
         "YOU SOLD FOO (FOO) (Cash)") == "SELL"
-    assert load._classify_action(
+    assert silver_retail._classify_action(
         "DIVIDEND RECEIVED FOO (FOO) (Cash)") == "DIVIDEND"
-    assert load._classify_action(
+    assert silver_retail._classify_action(
         "PURCHASE INTO CORE ACCOUNT FOO") == "CASH_SWEEP_IN"
-    assert load._classify_action(
+    assert silver_retail._classify_action(
         "FOREIGN TAX WITHHELD FOO") == "TAX"
-    assert load._classify_action(
+    assert silver_retail._classify_action(
         "SHORT-TERM CAP GAIN FOO") == "DISTRIBUTION"
-    assert load._classify_action("") == "UNKNOWN"
+    assert silver_retail._classify_action("") == "UNKNOWN"
 
 
 def test_activity_id_stable_across_reload(migrated, tmp_path):
@@ -404,13 +407,13 @@ def test_validation_finds_no_unexpected_null_instrument_keys(
 
 
 def test_parse_decimal_handles_fidelity_formats():
-    assert load.parse_decimal("$1,234.56") == 1234.56
-    assert load.parse_decimal("+$5.00") == 5.0
-    assert load.parse_decimal("-$50") == -50.0
-    assert load.parse_decimal("+0.5%") == pytest.approx(0.005)
-    assert load.parse_decimal("--") is None
-    assert load.parse_decimal("") is None
-    assert load.parse_decimal(None) is None
+    assert silver_retail.parse_decimal("$1,234.56") == 1234.56
+    assert silver_retail.parse_decimal("+$5.00") == 5.0
+    assert silver_retail.parse_decimal("-$50") == -50.0
+    assert silver_retail.parse_decimal("+0.5%") == pytest.approx(0.005)
+    assert silver_retail.parse_decimal("--") is None
+    assert silver_retail.parse_decimal("") is None
+    assert silver_retail.parse_decimal(None) is None
 
 
 # ============================================================
@@ -461,40 +464,40 @@ def test_money_market_suffix_stripped_and_flagged(migrated, tmp_path):
 
 def test_asset_class_classifier_covers_known_shapes():
     # Money-market via is_core_position=1
-    assert load._classify_asset_class("CORE_X", "anything", 1) == "money_market"
+    assert silver_retail._classify_asset_class("CORE_X", "anything", 1) == "money_market"
     # CUSIP-shaped 9-char ticker → bond
-    assert load._classify_asset_class(
+    assert silver_retail._classify_asset_class(
         "000000AA1", "PLACEHOLDER MUNI BOND", 0,
     ) == "bond"
     # 3-letter + 6-digit Fidelity 529 plan-fund code
-    assert load._classify_asset_class(
+    assert silver_retail._classify_asset_class(
         "ABC123456", "STATE PLAN PORTFOLIO 2030", 0,
     ) == "plan_fund"
     # Industry mutual-fund convention: 5 chars ending in X
-    assert load._classify_asset_class(
+    assert silver_retail._classify_asset_class(
         "FXAIX", "FIDELITY 500 INDEX FUND", 0,
     ) == "mutual_fund"
     # Common stock — fall through to equity
-    assert load._classify_asset_class("AAPL", "APPLE INC", 0) == "equity"
+    assert silver_retail._classify_asset_class("AAPL", "APPLE INC", 0) == "equity"
     # ADR — 5-char ending in Y, not X → equity
-    assert load._classify_asset_class(
+    assert silver_retail._classify_asset_class(
         "ABCDY", "PLACEHOLDER ADR", 0,
     ) == "equity"
     # ETF — Fidelity groups ETFs with stocks, so the word "ETF" in
     # the description is the only signal
-    assert load._classify_asset_class("SPY", "S&P 500 ETF", 0) == "etf"
-    assert load._classify_asset_class(
+    assert silver_retail._classify_asset_class("SPY", "S&P 500 ETF", 0) == "etf"
+    assert silver_retail._classify_asset_class(
         "ABCD", "ISHARES TR PLACEHOLDER ETF", 0,
     ) == "etf"
     # Word boundary: N-ETF-LIX must not match
-    assert load._classify_asset_class("NFLX", "NETFLIX INC", 0) == "equity"
+    assert silver_retail._classify_asset_class("NFLX", "NETFLIX INC", 0) == "equity"
     # Name-shy exchange-traded products stay equity — that's what
     # the gold config's instrument_overrides are for
-    assert load._classify_asset_class(
+    assert silver_retail._classify_asset_class(
         "ABCD", "PLACEHOLDER TR METAL SHS", 0,
     ) == "equity"
     # Missing description never crashes the ETF check
-    assert load._classify_asset_class("ABCD", None, 0) == "equity"
+    assert silver_retail._classify_asset_class("ABCD", None, 0) == "equity"
 
 
 def test_dump_runs_no_balances_or_performance_columns(migrated, tmp_path):
@@ -537,8 +540,8 @@ def test_management_style_other_kind_is_null(migrated):
     """Anything that doesn't match the 529 / trust_managed kinds
     in PORTFOLIO_KIND falls through to NULL management_style — the
     silver loader doesn't guess for unknown group labels."""
-    assert load.MANAGEMENT_STYLE_BY_KIND.get("other") is None
-    assert load.MANAGEMENT_STYLE_BY_KIND.get(None) is None
+    assert silver_retail.MANAGEMENT_STYLE_BY_KIND.get("other") is None
+    assert silver_retail.MANAGEMENT_STYLE_BY_KIND.get(None) is None
 
 
 # ============================================================
@@ -582,19 +585,6 @@ def _seed_convergence_dump(root: Path, ts: str) -> Path:
     return dump
 
 
-def _dump_tables(db_path: Path) -> dict:
-    c = sqlite3.connect(str(db_path))
-    try:
-        return {
-            t: c.execute(f"SELECT * FROM {t} ORDER BY 1, 2, 3").fetchall()
-            for t in ("documents", "positions", "transactions",
-                      "accounts", "portfolios",
-                      "historical_position_snapshots")
-        }
-    finally:
-        c.close()
-
-
 # The compressible artefacts inside the seeded dump, relative to it.
 _COMPRESSIBLE = (
     "positions/positions_summary.csv",
@@ -616,7 +606,7 @@ def test_compressed_bronze_converges_to_identical_silver(tmp_path):
     db_plain = tmp_path / "plain.db"
     load.main(["--silver-db", str(db_plain), "--bronze-dir", str(bronze),
                "--parse-cache-dir", str(tmp_path / "cache")])
-    plain = _dump_tables(db_plain)
+    plain = incremental.silver_rows(db_plain)
 
     # 2) Compress every compressible artefact IN PLACE (same dir), so
     #    file_path converges too — PDFs and run.json stay untouched.
@@ -630,7 +620,7 @@ def test_compressed_bronze_converges_to_identical_silver(tmp_path):
     db_zst = tmp_path / "zst.db"
     load.main(["--silver-db", str(db_zst), "--bronze-dir", str(bronze),
                "--parse-cache-dir", str(tmp_path / "cache")])
-    zst = _dump_tables(db_zst)
+    zst = incremental.silver_rows(db_zst)
 
     # Every table identical — proves decompressed-hash + logical-name.
     assert zst == plain
@@ -823,7 +813,7 @@ def test_the_crosswalk_reads_the_positions_a_dumps_load_had_seen(migrated):
             "instrument_key, description, payload) "
             "VALUES (?, '100000001', ?, 'PLACEHOLDER FUND', '{}')",
             (snapshot_at, key))
-    crosswalk = load._crosswalk_description_to_instrument
+    crosswalk = silver_statements._crosswalk_description_to_instrument
     assert crosswalk(migrated, "100000001", "PLACEHOLDER FUND", 100) == "TICK1"
     assert crosswalk(migrated, "100000001", "PLACEHOLDER FUND", 200) is None
     assert crosswalk(migrated, "100000001", "PLACEHOLDER FUND") is None
@@ -1305,25 +1295,25 @@ def _bond_buy_row(symbol: str, cusip: str) -> str:
 
 
 def test_instrument_from_action_reads_a_valid_cusip_only():
-    assert load.instrument_from_action(
+    assert silver_retail.instrument_from_action(
         "YOU BOUGHT STUB BOND (000000AB5) (Cash)") == "000000AB5"
     # A token whose check digit fails is not a CUSIP.
-    assert load.instrument_from_action(
+    assert silver_retail.instrument_from_action(
         "YOU BOUGHT STUB BOND (000000AB4) (Cash)") is None
-    assert load.instrument_from_action("ADVISOR FEE DEDUCTED (Cash)") is None
-    assert load.instrument_from_action(None) is None
+    assert silver_retail.instrument_from_action("ADVISOR FEE DEDUCTED (Cash)") is None
+    assert silver_retail.instrument_from_action(None) is None
     # The last valid one wins.
-    assert load.instrument_from_action(
+    assert silver_retail.instrument_from_action(
         "EXCHANGE (999999ZZ1) FOR (000000AB5) (Cash)") == "000000AB5"
     # Bare, right after a trade or income verb.
-    assert load.instrument_from_action(
+    assert silver_retail.instrument_from_action(
         "YOU BOUGHT 000000AB5 (Cash)") == "000000AB5"
-    assert load.instrument_from_action(
+    assert silver_retail.instrument_from_action(
         "REVERSE SPLIT R/S TO 999999ZZ1#REOR M0000000000000") == "999999ZZ1"
     # A bare number anywhere else is not read, even when it would pass
     # the check digit.
-    assert load.instrument_from_action("CHECK PAID # 000000AB5") is None
-    assert load.instrument_from_action(
+    assert silver_retail.instrument_from_action("CHECK PAID # 000000AB5") is None
+    assert silver_retail.instrument_from_action(
         "YOU BOUGHT AVERAGE PRICE TRADE DETAILS ON REQUEST") is None
 
 
@@ -1338,10 +1328,10 @@ def test_a_blank_symbol_takes_the_cusip_without_moving_the_id(
         "SELECT activity_id, instrument_key FROM transactions").fetchone()
     assert instrument_key == "000000AB5"
     # The id hashes no security column, so reading the CUSIP moves none.
-    identity = load._activity_identity(
-        ACCT_TRUST, load.ts_from_mdy("03/04/2024"), "BUY", 1000.0,
-        99.5, -995.0, load.ts_from_mdy("03/06/2024"))
-    assert activity_id == load._synthesise_activity_id(identity, 0)
+    identity = silver_retail._activity_identity(
+        ACCT_TRUST, silver_retail.ts_from_mdy("03/04/2024"), "BUY", 1000.0,
+        99.5, -995.0, silver_retail.ts_from_mdy("03/06/2024"))
+    assert activity_id == silver_retail._synthesise_activity_id(identity, 0)
 
 
 def test_a_printed_symbol_wins_over_the_action_text(migrated, tmp_path):
@@ -1382,10 +1372,10 @@ def test_migration_0014_reloads_the_feed_onto_one_row_per_activity(
     # The bond buy as the old scheme filed it: one row per Symbol cell.
     def old_id(symbol):
         identity = json.dumps(
-            [ACCT_TRUST, load.ts_from_mdy("03/04/2024"), "BUY", symbol,
-             1000.0, 99.5, -995.0, load.ts_from_mdy("03/06/2024")],
+            [ACCT_TRUST, silver_retail.ts_from_mdy("03/04/2024"), "BUY", symbol,
+             1000.0, 99.5, -995.0, silver_retail.ts_from_mdy("03/06/2024")],
             separators=(",", ":"))
-        return load._synthesise_activity_id(identity, 0)
+        return silver_retail._synthesise_activity_id(identity, 0)
 
     for symbol in ("00000ZZ96", None):
         conn.execute(
@@ -1393,8 +1383,8 @@ def test_migration_0014_reloads_the_feed_onto_one_row_per_activity(
             "account_external_id, kind, instrument_key, quantity, price, "
             "amount, settlement_date, source_sha256, payload) "
             "VALUES (?, ?, ?, 'BUY', ?, 1000, 99.5, -995, ?, 'csv0', ?)",
-            (old_id(symbol), load.ts_from_mdy("03/04/2024"), ACCT_TRUST,
-             symbol or "000000AB5", load.ts_from_mdy("03/06/2024"),
+            (old_id(symbol), silver_retail.ts_from_mdy("03/04/2024"), ACCT_TRUST,
+             symbol or "000000AB5", silver_retail.ts_from_mdy("03/06/2024"),
              json.dumps({"Symbol": symbol or ""})))
     columns = ("activity_id, timestamp, account_external_id, kind, amount, "
                "currency, source_sha256, payload")
@@ -1414,7 +1404,7 @@ def test_migration_0014_reloads_the_feed_onto_one_row_per_activity(
 
     version = load.silver.current_schema_version(conn)
     for dump in dumps:
-        assert not load.already_loaded(conn, dump)
+        assert not load.silver.snapshot_loaded(conn, load.ts_from_dir(dump.name))
         load.load_dump(conn, dump, version)
 
     # One row per activity: the dividend and the 529 buy every dump
@@ -1425,11 +1415,11 @@ def test_migration_0014_reloads_the_feed_onto_one_row_per_activity(
         "WHERE activity_id NOT LIKE 'stmt\\_%' ESCAPE '\\' "
         "ORDER BY timestamp").fetchall()
     assert feed == [
-        (ACCT_TRUST, load.ts_from_mdy("03/04/2024"), "BUY", -995.0,
+        (ACCT_TRUST, silver_retail.ts_from_mdy("03/04/2024"), "BUY", -995.0,
          "00000ZZ96"),
-        (ACCT_TRUST, load.ts_from_mdy("06/01/2024"), "DIVIDEND", 12.5,
+        (ACCT_TRUST, silver_retail.ts_from_mdy("06/01/2024"), "DIVIDEND", 12.5,
          SYM_TRUST),
-        (ACCT_529, load.ts_from_mdy("06/02/2024"), "BUY", -50.0, SYM_529),
+        (ACCT_529, silver_retail.ts_from_mdy("06/02/2024"), "BUY", -50.0, SYM_529),
     ]
     assert conn.execute(
         f"SELECT {columns} FROM transactions WHERE activity_id LIKE "
@@ -1451,3 +1441,260 @@ def test_fill_instrument_keys_fills_rows_loaded_without_one(migrated):
     # A supplied-statement row keeps the instrument its own pass gave it.
     assert rows == {"feed1": "000000AB5", "stmt_1": None}
     assert load._fill_instrument_keys(migrated) == 0
+
+
+# ============================================================
+# Generation stamps, cache sweeps and rolled-back passes
+# ============================================================
+
+def _main(tmp_path, bronze, db, *extra):
+    return load.main(["--silver-db", str(db), "--bronze-dir", str(bronze),
+                      "--parse-cache-dir", str(tmp_path / "pc"), *extra])
+
+
+def _stale(db, scope, generation):
+    conn = sqlite3.connect(db)
+    try:
+        return load.silver.stale_generation(conn, scope, generation)
+    finally:
+        conn.close()
+
+
+def test_a_failed_re_derivation_leaves_the_generation_stale(
+        tmp_path, monkeypatch):
+    """A re-derivation that rolls back keeps the older parser's rows, and
+    the stamp a dump loaded in the same run writes is dropped again, so
+    the next load still re-derives."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    first = _write_dump(bronze, "20260401T000000Z")
+    _counting_parser(monkeypatch, _PARSED)
+    assert _main(tmp_path, bronze, db) == 0
+    conn = sqlite3.connect(db)
+    load.silver.stamp_generation(conn, load.STATEMENT_GENERATION_SCOPE,
+                                 "an-earlier-parser")
+    conn.commit()
+    conn.close()
+
+    second = _write_dump(bronze, "20260402T000000Z")
+    (second / "documents" / "Statement3312026.pdf").write_bytes(
+        b"%PDF-1.4 another statement\n")
+    insert = load._insert_historical_rows
+
+    def breaks_on_the_first_dump(conn, path, parsed, sha, snapshot_at=None):
+        if snapshot_at == load.ts_from_dir(first.name):
+            raise RuntimeError("re-derivation breaks")
+        return insert(conn, path, parsed, sha, snapshot_at)
+    monkeypatch.setattr(load, "_insert_historical_rows",
+                        breaks_on_the_first_dump)
+    assert _main(tmp_path, bronze, db) == 0
+
+    assert _stale(db, load.STATEMENT_GENERATION_SCOPE,
+                  load._STATEMENT_PARSER_VERSION)
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 2
+        # One holding key: the second dump's statement wrote it last.
+        assert [r[3] for r in _holdings(conn)] == [load.bronze.sha256_file(
+            second / "documents" / "Statement3312026.pdf")[0]]
+    finally:
+        conn.close()
+
+
+def test_a_statement_with_no_holdings_stamps_its_generation(
+        tmp_path, monkeypatch, caplog):
+    """A statement that parses to no row is read the same way by the
+    next load, so it stamps the generation and is not re-derived."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    _write_dump(bronze, "20260401T000000Z")
+    _counting_parser(monkeypatch, {"period_end": "2026-03-31", "accounts": []})
+    assert _main(tmp_path, bronze, db) == 0
+    assert _generation(db, load.STATEMENT_GENERATION_SCOPE) == \
+        load._STATEMENT_PARSER_VERSION
+    with caplog.at_level("INFO", logger="fidelity-web.load"):
+        assert _main(tmp_path, bronze, db) == 0
+    assert "re-deriving" not in caplog.text
+
+
+def test_a_load_sweeps_the_cache_entries_no_parser_reads(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    dump = _write_dump(bronze, "20260401T000000Z")
+    sha = load.bronze.sha256_file(
+        dump / "documents" / "Statement3312026.pdf")[0]
+    _counting_parser(monkeypatch, _PARSED)
+    pc = tmp_path / "pc"
+    (pc / "extract").mkdir(parents=True)
+    old_sidecar = pc / f"{'ab' * 32}.stmt529.{'0' * 32}.{'1' * 32}.json"
+    old_sidecar.write_text("{}")
+    key = load.extract.extraction_key(load.pdf_readers.STATEMENT_TEXT)
+    kept, old = (pc / "extract" / f"{'cd' * 32}.{k}.json.gz"
+                 for k in (key, "0" * 32))
+    for f in (kept, old):
+        f.write_bytes(b"")
+    other = pc / "extract" / "notes.txt"
+    other.write_text("not a cache entry")
+
+    assert _main(tmp_path, bronze, db) == 0
+
+    assert not old_sidecar.exists() and not old.exists()
+    assert kept.exists() and other.exists()
+    assert (pc / f"{sha}.{load._STATEMENT_PARSER_VERSION}.json").is_file()
+
+
+def test_the_supplied_pass_masks_account_numbers_in_its_log(migrated, caplog):
+    migrated.execute(
+        "INSERT INTO transactions (activity_id, timestamp, "
+        "account_external_id, kind, amount, currency, source_sha256, payload) "
+        "VALUES ('scraped-1', ?, '100000001', 'FEE', -4321.0, 'USD', "
+        "'sha', '{}')",
+        (load.iso_date_to_epoch("2026-01-11"),),
+    )
+    with caplog.at_level("DEBUG", logger="fidelity-web.load"):
+        load._insert_supplied_activity_rows(
+            migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
+        load._insert_supplied_historical_rows(
+            migrated, Path("p.PDF"), _PARSED_HOLDINGS, "sha0")
+        assert load._synthesize_missing_account_masters(migrated) == 1
+    assert "already in the scraped feed" in caplog.text
+    assert "synthesised accounts master" in caplog.text
+    assert "100000001" not in caplog.text
+    assert load.bronze.log_id("100000001") in caplog.text
+
+
+def _supplied_dir(root, parsed):
+    """One supplied statement PDF in ``root``, read as ``parsed``."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "Placeholder 1.26 Statement.pdf").write_bytes(
+        b"%PDF-1.4 placeholder supplied statement\n")
+    return root
+
+
+def _stub_supplied(monkeypatch, parsed):
+    monkeypatch.setattr(
+        load.pdf_readers, "parse_supplied_statement_pdf",
+        lambda path, **_kw: json.loads(json.dumps(parsed)) | {"path": path})
+
+
+def test_the_supplied_walk_reads_the_feed_once(migrated, tmp_path,
+                                               monkeypatch):
+    supplied = _supplied_dir(tmp_path / "supplied", _PARSED_ACTIVITY)
+    (supplied / "Placeholder 2.26 Statement.pdf").write_bytes(
+        b"%PDF-1.4 another supplied statement\n")
+    _stub_supplied(monkeypatch, _PARSED_ACTIVITY)
+    reads = []
+    feed_legs = load._feed_legs
+    monkeypatch.setattr(load, "_feed_legs",
+                        lambda conn: reads.append(1) or feed_legs(conn))
+    load._load_supplied_statements_oneshot(migrated, supplied)
+    assert len(reads) == 1
+    assert len(_activity_rows(migrated)) == 3
+
+
+def _silver(db):
+    return incremental.silver_rows(db)
+
+
+def test_a_failed_dump_load_rolls_back_that_dump(tmp_path, monkeypatch):
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    _write_dump(bronze, "20260401T000000Z")
+    _counting_parser(monkeypatch, _PARSED)
+    assert _main(tmp_path, bronze, db) == 0
+    before = _silver(db)
+
+    _write_dump(bronze, "20260402T000000Z")
+
+    def breaks(conn, dump_dir):
+        raise RuntimeError("activity breaks")
+    monkeypatch.setattr(load, "_load_transactions", breaks)
+    assert _main(tmp_path, bronze, db) == 0
+    assert _silver(db) == before
+
+
+def test_a_failed_supplied_pass_rolls_back(migrated, tmp_path, monkeypatch):
+    load._insert_supplied_activity_rows(
+        migrated, Path("p.PDF"), _PARSED_ACTIVITY, "sha0")
+    migrated.commit()
+    before = _activity_rows(migrated)
+    supplied = _supplied_dir(tmp_path / "supplied", _PARSED_HOLDINGS)
+    _stub_supplied(monkeypatch, _PARSED_HOLDINGS)
+
+    def breaks(conn, path, result, sha):
+        raise RuntimeError("holdings break")
+    monkeypatch.setattr(load, "_insert_supplied_historical_rows", breaks)
+    load._load_supplied_statements_oneshot(migrated, supplied)
+
+    assert _activity_rows(migrated) == before
+    assert migrated.execute(
+        "SELECT COUNT(*) FROM parser_generations").fetchone()[0] == 0
+
+
+def _daf_statement_dump(root, ts):
+    """A dump holding one Giving Account statement and its master."""
+    acct = root / ts / "daf" / "acct0"
+    (acct / "documents").mkdir(parents=True)
+    (acct / "account.json").write_text(json.dumps(
+        {"accountNbr": "9990001", "gaName": "Example Giving Account"}))
+    (acct / "documents" / f"STATEMENT_{ts[:4]}_03_31.pdf").write_bytes(
+        b"%PDF-1.4 " + ts.encode() + b"\n")
+    return root / ts
+
+
+def test_runs_with_every_statement_kind_loaded_one_at_a_time_give_one_force(
+        tmp_path, monkeypatch):
+    """The 529 statements cross-walk as of their own dump, a DAF
+    statement rides along, and the supplied statements match a feed
+    that grows from load to load. One at a time or in one `--force`,
+    silver comes out the same."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    src = tmp_path / "src"
+    dumps = [_write_dump(src, ts) for ts in (
+        "20260101T000000Z", "20260201T000000Z", "20260301T000000Z")]
+    holdings = {}
+    for i, dump in enumerate(dumps):
+        (dump / "documents" / "Statement3312026.pdf").write_bytes(
+            b"%PDF-1.4 statement " + dump.name.encode() + b"\n")
+        holdings[dump.name] = {
+            "period_end": f"2025-{10 + i:02d}-31",
+            "accounts": [{"account_external_id": ACCT_529, "holdings": [
+                {"description": "LATER PLACEHOLDER FUND", "quantity": 1.0 + i,
+                 "price": 10.0, "market_value": 10.0 * (1 + i)}]}]}
+    # Only the last dump holds the position the statements name.
+    summary = dumps[2] / "positions" / "positions_summary.csv"
+    summary.write_text(summary.read_text() + (
+        f"{ACCT_529},Beneficiary,PLAN00002,LATER PLACEHOLDER FUND,"
+        "3,$10.00,+$0.00,$30.00,+$0,+0%,+$0,+0%,20%,$30,$10.00,Cash,\n"))
+    # Only the last dump's feed carries the wire the statement states.
+    (dumps[2] / "activity" / "activity_20260101__20260131.csv").write_text(
+        _activity_csv(
+            f'01/06/2026,"Trust: Under Agreement","{ACCT_TRUST}",'
+            '"WIRE TRANSFER TO BANK (Cash)",,"WIRE",Cash,,0.000,,,,'
+            '-1650.00,\n'))
+    _daf_statement_dump(src, "20260201T000000Z")
+    monkeypatch.setattr(
+        load.pdf_readers, "parse_statement_pdf",
+        lambda path, **_kw: holdings[Path(path).parents[1].name])
+    monkeypatch.setattr(
+        load.pdf_readers, "parse_daf_statement_pdf", lambda path, **_kw: {
+            "as_of_date": "2025-12-31", "ending_value": 500.0,
+            "reconciled": True, "reconcile_error": None,
+            "pools": [{"description": "Example Growth Pool", "quantity": 5.0,
+                       "price": 100.0, "market_value": 500.0}]})
+    supplied_statement = {"period_end": "2026-01-31", "accounts": [{
+        "account_external_id": ACCT_TRUST, "holdings": [], "activity": [
+            {"date": "2026-01-06", "section": "WITHDRAWAL", "amount": -1650.0,
+             "description": "Wire Tfr To Bank WD00000001 A PLACEHOLDER"}]}]}
+    supplied = _supplied_dir(tmp_path / "supplied", supplied_statement)
+    _stub_supplied(monkeypatch, supplied_statement)
+
+    incremental.check(
+        load.main,
+        lambda db, bronze: ["--silver-db", str(db), "--bronze-dir",
+                            str(bronze), "--parse-cache-dir",
+                            str(tmp_path / "pc"), "--supplied-statements-dir",
+                            str(supplied)],
+        sorted(src.iterdir()), tmp_path / "work")

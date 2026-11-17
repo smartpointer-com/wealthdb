@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Statement-period and account-header helpers shared by the two
-statement parsers (``pdf_parsers`` for the 529 statements Fidelity
+"""Statement-period, account-header and number helpers shared by the
+two statement parsers (``pdf_parsers`` for the 529 statements Fidelity
 serves, ``pdf_parsers_supplied`` for statements supplied
 out-of-band).
 
@@ -11,12 +11,14 @@ account-header regex are identical across the two; the period is read
 by ``collectorkit.statement_period`` with this family's separator.
 The per-account *splitting* differs (the supplied-statement parser
 glues headers re-stamped on every page), so ``parse_account_blocks``
-stays in each parser module and only anchors on
-``_ACCOUNT_HEADER_RE`` from here.
+stays in each parser module; it anchors on ``_ACCOUNT_HEADER_RE`` and
+returns the ``AccountBlock`` from here. Both read a printed number with
+``_parse_number``.
 """
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from collectorkit import statement_period
 
@@ -36,3 +38,23 @@ def parse_statement_period(text):
 
 # ``Account # NNN-NNNNNN`` marks the start of a per-account section.
 _ACCOUNT_HEADER_RE = re.compile(r"Account\s+#\s+(?P<acct>\d{3}-\d{6})")
+
+
+@dataclass
+class AccountBlock:
+    account_external_id: str  # 9-digit canonical form, no dash
+    text: str                 # the account's section text, header first
+
+
+def _parse_number(tok):
+    """A printed number (``$1,234.56``, ``45%``) as a float, or None for
+    a dash, an empty cell or anything else that is not a number."""
+    if tok is None:
+        return None
+    cleaned = tok.lstrip("$").rstrip("%").replace(",", "")
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None

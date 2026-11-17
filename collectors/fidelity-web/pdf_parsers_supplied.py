@@ -88,23 +88,20 @@ from datetime import date as date_cls
 
 from collectorkit.words import Extracted
 
-from pdf_common import _ACCOUNT_HEADER_RE, parse_statement_period
+from pdf_common import (
+    _ACCOUNT_HEADER_RE, AccountBlock, _parse_number, parse_statement_period,
+)
 
 
 # ============================================================
 # Per-account blocks
 # ============================================================
 #
-# The statement period parser and the ``Account #`` header regex
-# (``_ACCOUNT_HEADER_RE``) are shared with the 529 parser — see
-# pdf_common. ``parse_account_blocks`` below glues the
-# header Fidelity re-stamps on every page of an account section.
-
-
-@dataclass
-class AccountBlock:
-    account_external_id: str  # 9-digit canonical form, no dash
-    text: str                 # glued text across all pages of this account
+# The statement period parser, the ``Account #`` header regex
+# (``_ACCOUNT_HEADER_RE``) and ``AccountBlock`` are shared with the 529
+# parser — see pdf_common. ``parse_account_blocks`` below glues the
+# header Fidelity re-stamps on every page of an account section, so a
+# block's text runs across all pages of its account.
 
 
 def parse_account_blocks(text):
@@ -918,18 +915,6 @@ def _trailing_numeric_count(tokens):
 def _extract_ticker(desc):
     m = _TICKER_RE.search(desc)
     return m.group(1) if m else None
-
-
-def _parse_number(tok):
-    if tok is None:
-        return None
-    cleaned = tok.lstrip("$").rstrip("%").replace(",", "")
-    if not cleaned or cleaned in ("-", "+", "--"):
-        return None
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
 
 
 # ============================================================

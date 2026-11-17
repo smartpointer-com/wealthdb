@@ -76,27 +76,14 @@ from silver_lots import (
 )
 from silver_retail import (
     _fill_instrument_keys, _load_documents, _load_master, _load_positions,
-    _load_transactions, _parse_positions, normalize_payload,
+    _load_transactions, _parse_positions,
 )
 from silver_statements import (
-    _crosswalk_description_to_instrument, _drop_document_holdings,
-    _drop_supplied_activity, _insert_historical_rows,
+    _drop_document_holdings, _drop_supplied_activity, _feed_legs,
+    _insert_daf_historical_rows, _insert_historical_rows,
     _insert_supplied_activity_rows, _insert_supplied_historical_rows,
     _read_signature_sidecar, _statement_pdf_candidates,
     _supplied_pdf_candidates, _synthesize_missing_account_masters,
-)
-
-# Names the tests, and the kit's comparisons against this collector,
-# read through `load`.
-from silver_daf import DAF_PORTFOLIO_LABEL  # noqa: F401
-from silver_retail import (  # noqa: F401
-    MANAGEMENT_STYLE_BY_KIND, _activity_identity, _classify_action,
-    _classify_asset_class, _classify_documents_pdf, _ingest_document,
-    _synthesise_activity_id, instrument_from_action, parse_decimal,
-    ts_from_mdy,
-)
-from silver_statements import (  # noqa: F401
-    _ACTIVITY_MATCH_DAYS, _FEE_MATCH_DAYS, _claim_feed_match, _feed_legs,
 )
 
 log = logging.getLogger("fidelity-web.load")
@@ -256,11 +243,15 @@ def parse_args(argv):
               "every parsed statement and Consolidated 1099, keyed by "
               "content hash + parser version, so a `--force` rebuild or "
               "nightly reload replays unchanged PDFs instead of "
-              "re-extracting them. "
-              "DEFAULT: `$XDG_CACHE_HOME/wealthdb/fidelity-web/"
-              "parse-cache` (falls back to `~/.cache/...`). A derived "
-              "cache, kept outside the bronze tree and outside "
-              "`~/.secrets`; safe to delete — it is rebuilt on demand."),
+              "re-parsing them. Its `extract/` directory keeps each "
+              "PDF's extracted text and words, so a parser edit "
+              "re-parses without opening a PDF. "
+              "DEFAULT: `parse-cache` under the cache root, which is "
+              "`$WEALTHDB_CACHE_DIR` when set, else "
+              "`$XDG_CACHE_HOME/wealthdb/fidelity-web` (or "
+              "`~/.cache/wealthdb/fidelity-web`). A derived cache, kept "
+              "outside the bronze tree and outside `~/.secrets`; safe to "
+              "delete — it is rebuilt on demand."),
     )
     cli.add_standard_args(p, verb="load")
     return p.parse_args(argv)
@@ -298,8 +289,11 @@ def main(argv=None):
         if signature is None and supplied_dir.is_dir():
             signature = _read_signature_sidecar(supplied_dir)
 
-        pending = [d for d in dumps if not already_loaded(conn, d)]
-        dumps_1099, rederive_1099s = _dumps_for_1099s(conn, dumps, pending)
+        loaded_at = silver.loaded_snapshots(conn)
+        pending = [d for d in dumps if ts_from_dir(d.name) not in loaded_at]
+        dumps_1099, rederive_1099s = _dumps_to_derive(
+            conn, CONSOLIDATED_1099_GENERATION_SCOPE,
+            _CONSOLIDATED_1099_PARSER_VERSION, dumps, pending)
         dumps_529, rederive_529 = _dumps_to_derive(
             conn, STATEMENT_GENERATION_SCOPE, _STATEMENT_PARSER_VERSION,
             dumps, pending)
@@ -355,7 +349,7 @@ def main(argv=None):
             # parser that wrote them changes; then they are re-derived
             # here, oldest first, ahead of the dumps this run loads.
             loaded_before = [d for d in dumps if d not in pending]
-            _rederive_statements(
+            not_rederived = _rederive_statements(
                 conn, loaded_before if rederive_529 else [],
                 loaded_before if rederive_daf else [], coord,
                 extract_dir=extract_dir)
@@ -371,6 +365,7 @@ def main(argv=None):
                 except Exception:
                     conn.rollback()
                     log.exception("load of %s failed; rolled back", dump.name)
+            _unstamp(conn, not_rederived)
             log.info("loaded=%d skipped=%d total=%d",
                      loaded, len(dumps) - len(pending), len(dumps))
             filled = _fill_instrument_keys(conn)
@@ -386,6 +381,16 @@ def main(argv=None):
                 conn, supplied_dir, signature=signature, coord=coord,
                 extract_dir=extract_dir,
             )
+        # A parser edit or an engine upgrade moves a namespace or an
+        # extraction key; the entries under the old one are never read
+        # again.
+        cache.sweep({
+            _STATEMENT_PARSER_VERSION, _DAF_STATEMENT_PARSER_VERSION,
+            supplied_version, _CONSOLIDATED_1099_PARSER_VERSION,
+            _CONSOLIDATED_1099_IDENTITY_VERSION})
+        extract.sweep(extract_dir, {
+            extract.extraction_key(pdf_readers.STATEMENT_TEXT),
+            extract.extraction_key(pdf_readers.FORM_1099_WORDS)})
         validate(conn)
     finally:
         conn.close()
@@ -423,7 +428,7 @@ def txn_staleness_days(latest_act_dump, latest_txn):
 
 def scan_bronze(bronze_dir):
     """The dumps worth loading: every run dir with a manifest that does
-    not say it is unfinished (`bronze.run_is_loadable`).
+    not say it is unfinished (`bronze.run_skip_reason`).
 
     A status other than `complete` marks a crashed or still-running
     dump whose partial artefacts must not be ingested. A manifest with
@@ -438,21 +443,12 @@ def scan_bronze(bronze_dir):
         raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
     keep = []
     for run_dir in bronze.iter_run_dirs(bronze_dir):
-        if not bronze.run_is_loadable(run_dir):
-            run_json = run_dir / "run.json"
-            if run_json.is_file():
-                log.info("skipping %s: status=%s", run_dir.name,
-                         bronze.run_status(run_json))
-            else:
-                log.info("skipping %s: no run.json (still writing?)",
-                         run_dir.name)
+        reason = bronze.run_skip_reason(run_dir)
+        if reason is not None:
+            log.info("skipping %s: %s", run_dir.name, reason)
             continue
         keep.append(run_dir)
     return keep
-
-
-def already_loaded(conn, dump_dir):
-    return silver.snapshot_loaded(conn, ts_from_dir(dump_dir.name))
 
 
 # ============================================================
@@ -610,7 +606,12 @@ def _load_daf_historical(conn, dump_dir, coord=None, *, extract_dir=None):
     period-end pool rows into ``historical_position_snapshots``. The
     reconciliation gate is enforced here: a statement whose pool sum
     doesn't tie out to its own stated ending value is skipped and
-    logged, never imported."""
+    logged, never imported.
+
+    The generation is stamped once a statement has parsed, whether or
+    not it wrote a row: a re-parse under the same parser reads it the
+    same way, and a statement that fails reconciliation keeps the rows
+    an earlier parse wrote, by design."""
     candidates = _daf_statement_pdf_candidates(dump_dir)
     if not candidates:
         return 0
@@ -618,6 +619,7 @@ def _load_daf_historical(conn, dump_dir, coord=None, *, extract_dir=None):
     log.info("daf historical: ingesting %d statement PDF(s) from %s",
              len(candidates), dump_dir.name)
     inserted = 0
+    parsed_any = False
     for path in candidates:
         sha = coord.sha_for(path)
         parsed = coord.resolve(
@@ -628,6 +630,7 @@ def _load_daf_historical(conn, dump_dir, coord=None, *, extract_dir=None):
             log.warning("daf historical: parse failed for %s: %s",
                         path.name, parsed["_error"])
             continue
+        parsed_any = True
         if not parsed.get("reconciled"):
             log.warning(
                 "daf historical: %s failed reconciliation (%s); skipped",
@@ -640,27 +643,9 @@ def _load_daf_historical(conn, dump_dir, coord=None, *, extract_dir=None):
                         "account master; skipped", path.name)
             continue
         _drop_document_holdings(conn, sha)
-        for pool in parsed.get("pools", []):
-            desc = (pool.get("description") or "").strip()
-            if not desc:
-                continue
-            instrument_key = _crosswalk_description_to_instrument(
-                conn, aid, desc, ts_from_dir(dump_dir.name))
-            conn.execute(
-                "INSERT OR REPLACE INTO historical_position_snapshots ("
-                "as_of_date, account_external_id, description, "
-                "instrument_key, quantity, price, market_value, "
-                "percent_of_total, currency, source_sha256, payload"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'USD', ?, ?)",
-                (
-                    as_of, aid, desc, instrument_key,
-                    pool.get("quantity"), pool.get("price"),
-                    pool.get("market_value"),
-                    sha, normalize_payload(pool),
-                ),
-            )
-            inserted += 1
-    if inserted:
+        inserted += _insert_daf_historical_rows(
+            conn, aid, as_of, parsed, sha, ts_from_dir(dump_dir.name))
+    if parsed_any:
         silver.stamp_generation(conn, DAF_GENERATION_SCOPE,
                                 _DAF_STATEMENT_PARSER_VERSION)
     return inserted
@@ -675,11 +660,12 @@ def _load_daf_historical(conn, dump_dir, coord=None, *, extract_dir=None):
 # archive. Three distinct PDF layouts feed three loader paths into
 # the same `historical_position_snapshots` table — the two below,
 # plus the DAF Giving Account statements (`_load_daf_historical`,
-# beside the other DAF loaders):
+# above):
 #
 #   1. 529 statements — quarterly + year-end PDFs that download.py
 #      scrapes into `<dump>/documents/Statement<MMDDYYYY>.pdf`.
-#      Text-level parsing in `pdf_parsers.py`. Runs once per dump.
+#      Text-level parsing in `pdf_parsers.py`. Runs once per dump,
+#      and again over every loaded dump when its parser changes.
 #
 #   2. Supplied statements — monthly PDFs obtained out-of-band
 #      (the web scraper doesn't surface them; see DESIGN.md §4.5).
@@ -733,7 +719,8 @@ def _parse_statement_pdf_worker(job):
 # Beneath it, `collectorkit.extract` caches each document's extracted text
 # and words, keyed on the content hash and the extraction key, in the
 # EXTRACT_CACHE_SUBDIR of the parse cache. A parser edit moves the parse
-# namespace and re-parses from there.
+# namespace and re-parses from there. After the load, `main` sweeps the
+# entries of both caches that no namespace or extraction key in use names.
 
 EXTRACT_CACHE_SUBDIR = "extract"
 
@@ -761,7 +748,12 @@ def _load_historical_from_pdfs(conn, dump_dir, coord=None, *,
     called without one (direct test callers), a transient inline
     coordinator is used. Rows are inserted in the sorted candidate
     order so the ``INSERT OR REPLACE`` keeping the last writer per
-    key is deterministic."""
+    key is deterministic.
+
+    The generation is stamped once a statement has parsed, whether or
+    not it wrote a row: a statement with no Holdings block reads the
+    same way under the same parser, so a re-derivation would change
+    nothing."""
     candidates = _statement_pdf_candidates(dump_dir)
     if not candidates:
         return 0
@@ -769,6 +761,7 @@ def _load_historical_from_pdfs(conn, dump_dir, coord=None, *,
     log.info("historical: ingesting %d statement PDF(s) from %s",
              len(candidates), dump_dir.name)
     inserted = 0
+    parsed_any = False
     for path in candidates:
         sha = coord.sha_for(path)
         result = coord.resolve(
@@ -781,10 +774,11 @@ def _load_historical_from_pdfs(conn, dump_dir, coord=None, *,
                 path.name, result["_error"],
             )
             continue
+        parsed_any = True
         _drop_document_holdings(conn, sha)
         inserted += _insert_historical_rows(
             conn, path, result, sha, ts_from_dir(dump_dir.name))
-    if inserted:
+    if parsed_any:
         silver.stamp_generation(conn, STATEMENT_GENERATION_SCOPE,
                                 _STATEMENT_PARSER_VERSION)
     return inserted
@@ -798,17 +792,19 @@ def _rederive_statements(conn, statement_dumps, daf_dumps, coord=None, *,
     by the passes `load_dump` runs (`_load_historical_from_pdfs`,
     `_load_daf_historical`), dump by dump in the order given, so the
     last writer of a row is the one a `load --force` has, and each pass
-    stamps its generation once it has written a row.
+    stamps its generation once a statement has parsed.
 
     Only dumps that hold such a statement are read, so a silver with
     none re-derives nothing. In its own transaction: a failure rolls
-    back and leaves the rows and the stale stamp in place, for the next
-    load to try again."""
+    back, leaves the rows in place and returns the generation scopes it
+    did not re-derive. A dump this run loads may stamp such a scope
+    again, so the caller drops their stamps once its dumps are in
+    (`_unstamp`), for the next load to try again."""
     statement_dumps = [d for d in statement_dumps
                        if _statement_pdf_candidates(d)]
     daf_dumps = [d for d in daf_dumps if _daf_statement_pdf_candidates(d)]
     if not statement_dumps and not daf_dumps:
-        return
+        return set()
     coord = coord or _transient_coordinator()
     try:
         conn.execute("BEGIN")
@@ -827,6 +823,18 @@ def _rederive_statements(conn, statement_dumps, daf_dumps, coord=None, *,
     except Exception:
         conn.rollback()
         log.exception("statement re-derivation failed; rolled back")
+        return ({STATEMENT_GENERATION_SCOPE} if statement_dumps else set()) | (
+            {DAF_GENERATION_SCOPE} if daf_dumps else set())
+    return set()
+
+
+def _unstamp(conn, scopes):
+    """Drop the generation stamps of ``scopes``, so the next load reads
+    them as stale (`silver.stale_generation`) and re-derives."""
+    for scope in sorted(scopes):
+        conn.execute("DELETE FROM parser_generations WHERE scope = ?",
+                     (scope,))
+    conn.commit()
 
 
 def _parse_supplied_statement_pdf_worker(args):
@@ -920,8 +928,11 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, *,
             conn, SUPPLIED_GENERATION_SCOPE, version)
         inserted = skipped = activity = activity_dup = sales = 0
         # One ledger for the whole walk: a feed row absorbed by one
-        # statement must not be absorbed again by the next.
+        # statement must not be absorbed again by the next. The walk
+        # writes only statement rows, which the feed leaves out, so the
+        # feed is read once.
         claims = {}
+        feed = _feed_legs(conn)
         for path in candidates:
             sha = coord.sha_for(path)
             result = coord.resolve(
@@ -956,7 +967,7 @@ def _load_supplied_statements_oneshot(conn, supplied_dir, *,
             _drop_document_holdings(conn, sha)
             inserted += _insert_supplied_historical_rows(conn, path, result, sha)
             act_in, act_dup = _insert_supplied_activity_rows(
-                conn, path, result, sha, claims=claims)
+                conn, path, result, sha, claims=claims, feed=feed)
             activity += act_in
             activity_dup += act_dup
             sales += _insert_supplied_closed_lots(conn, path, result, sha)
@@ -1022,13 +1033,6 @@ def _dumps_to_derive(conn, scope, generation, dumps, pending):
     if silver.stale_generation(conn, scope, generation):
         return list(dumps), True
     return list(pending), False
-
-
-def _dumps_for_1099s(conn, dumps, pending):
-    """`_dumps_to_derive` for the 1099 pass, whose generation migration
-    0013 dropped."""
-    return _dumps_to_derive(conn, CONSOLIDATED_1099_GENERATION_SCOPE,
-                            _CONSOLIDATED_1099_PARSER_VERSION, dumps, pending)
 
 
 def _load_consolidated_1099s(conn, dumps, *, rederive=False, coord=None,

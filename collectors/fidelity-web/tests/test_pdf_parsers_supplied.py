@@ -1,11 +1,10 @@
 """
 Unit tests for pdf_parsers_supplied.py — text-level parsers only.
 
-The PDF I/O entry-point (``parse_supplied_statement_pdf``) is
-exercised indirectly by integration tests; the functions covered
-here are pure functions of strings, so the fixtures are synthetic
-statement text — no real PDF bytes, no real account numbers, no
-real values. The placeholder account numbers follow the
+The PDF entry point (``pdf_readers.parse_supplied_statement_pdf``)
+is tested in test_pdf_readers.py. The functions covered here are pure
+functions of strings, so the fixtures are synthetic statement text —
+no real PDF bytes, no real account numbers, no real values. The placeholder account numbers follow the
 ``NNN-NNNNNN`` Fidelity shape; the placeholder tickers are
 deliberate synthetic strings (``ABCFX``, ``DEFGX``) that don't
 collide with widely-held real funds.

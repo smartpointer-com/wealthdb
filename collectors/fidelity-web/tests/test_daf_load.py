@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+import silver_daf  # noqa: E402
 
 
 # Synthetic ids — obviously fake, never a real DAF account/pool/grant.
@@ -87,13 +88,13 @@ def test_daf_portfolio_and_account(migrated, tmp_path):
     _load(migrated, _write_daf_dump(tmp_path, "20260101T120000Z"))
     kind = migrated.execute(
         "SELECT kind FROM portfolios WHERE portfolio_external_id = ?",
-        (load.DAF_PORTFOLIO_LABEL,)).fetchone()
+        (silver_daf.DAF_PORTFOLIO_LABEL,)).fetchone()
     assert kind == ("daf",)
     row = migrated.execute(
         "SELECT nickname, management_style, portfolio_external_id "
         "FROM accounts WHERE account_external_id = ?", (DAF_ACCT,)).fetchone()
     assert row == ("Example Giving Account", "automated",
-                   load.DAF_PORTFOLIO_LABEL)
+                   silver_daf.DAF_PORTFOLIO_LABEL)
 
 
 def test_daf_pools_become_positions(migrated, tmp_path):
@@ -368,3 +369,32 @@ def test_a_new_daf_parser_re_derives_the_dumps_loaded_before(
             load._DAF_STATEMENT_PARSER_VERSION
     finally:
         conn.close()
+
+
+def test_a_statement_that_fails_reconciliation_stamps_its_generation(
+        tmp_path, monkeypatch, caplog):
+    """A statement that fails the gate keeps the rows an earlier parse
+    wrote, by design, and a re-parse under the same parser reads it the
+    same way: the generation is stamped, and the next load re-derives
+    nothing."""
+    import sqlite3
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze = tmp_path / "bronze"
+    _write_daf_dump(bronze, "20260101T120000Z")
+    db = tmp_path / "silver.db"
+    monkeypatch.setattr(load, "_parse_daf_statement_pdf_worker", lambda job: {
+        "as_of_date": "2001-03-31", "ending_value": 50000.0,
+        "reconciled": False, "reconcile_error": "pool sum mismatch",
+        "pools": []})
+    argv = ["--silver-db", str(db), "--bronze-dir", str(bronze),
+            "--parse-cache-dir", str(tmp_path / "pc")]
+    assert load.main(argv) == 0
+    conn = sqlite3.connect(db)
+    try:
+        assert not load.silver.stale_generation(
+            conn, load.DAF_GENERATION_SCOPE, load._DAF_STATEMENT_PARSER_VERSION)
+    finally:
+        conn.close()
+    with caplog.at_level("INFO", logger="fidelity-web.load"):
+        assert load.main(argv) == 0
+    assert "re-deriving" not in caplog.text
