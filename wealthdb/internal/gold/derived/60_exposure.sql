@@ -337,14 +337,16 @@ CREATE MACRO exposure_attributes_at(p_asof) AS TABLE (
 -- exposure_page_breakdown: a fund's newest breakdown of one field on its
 -- page within the exposure's max_gap_days, its fund's cash left out: each
 -- bucket's share of the rest, and whether the bucket comes from a label
--- the map does not know (unknown).
+-- the map does not know (unknown). The values are summed as the decimals
+-- they are stored as, so a share never follows the order of the rows.
 CREATE MACRO exposure_page_breakdown(p_asof, p_field) AS TABLE (
-    SELECT fund, bucket, unknown, SUM(v) / SUM(SUM(v)) OVER (PARTITION BY fund) AS share
+    SELECT fund, bucket, unknown,
+           CAST(SUM(v) AS DOUBLE) / CAST(SUM(SUM(v)) OVER (PARTITION BY fund) AS DOUBLE) AS share
       FROM (SELECT exposure_key(f.fund_ref) AS fund,
                    CASE p_field WHEN 'credit_quality' THEN exposure_rating_label(f.label)
                                 ELSE exposure_maturity_label(f.label) END AS mapped,
                    COALESCE(mapped, CASE p_field WHEN 'credit_quality' THEN 'unrated' ELSE 'unknown' END) AS bucket,
-                   mapped IS NULL AS unknown, f.value::DOUBLE AS v
+                   mapped IS NULL AS unknown, f.value AS v
               FROM fund_characteristics f, exposure_settings_row() s
              WHERE f.field = p_field AND f.as_of <= p_asof
                AND (p_asof // 86400) - (f.as_of // 86400) <= s.max_gap_days

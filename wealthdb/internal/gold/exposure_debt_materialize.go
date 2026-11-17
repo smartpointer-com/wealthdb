@@ -47,7 +47,7 @@ c AS (
     UNION ALL
     SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionCycle + `', s.cycle, FALSE, s.value * s.k FROM s)
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, src AS silver_source_id,
-       wrapper AS tax_wrapper, dimension, bucket, unknown, SUM(value) AS value
+       wrapper AS tax_wrapper, dimension, bucket, unknown, ` + exposureSum("value") + ` AS value
   FROM c
  GROUP BY ALL`
 
@@ -58,30 +58,31 @@ const exposureIssuersShown = 100
 // exposureIssuersSQL is the instant's issuers per reporting currency as
 // the report_exposure_issuers macro ranks them: the largest
 // exposureIssuersShown and the (none) row; the running share counts
-// every issuer.
+// every issuer. The sums, the running one and the total among them, are
+// exact (exposureSum), so the ranks and shares never follow row order.
 var exposureIssuersSQL = `INSERT INTO report_exposure_issuer_ranks BY NAME
 WITH ` + exposureScaledSQL + `,
 g AS (
     SELECT out_ccy, COALESCE(issuer_key, '(none)') AS ik,
            CASE WHEN COALESCE(issuer_key, '(none)') = '(none)' THEN '(none)'
                 ELSE first(issuer_name ORDER BY name_rank DESC, abs(value) DESC, issuer_name) END AS issuer,
-           MIN(lei) AS lei, SUM(value * k) AS value,
-           SUM(value * k) FILTER (WHERE asset_class = 'public_equity') AS equity,
-           SUM(value * k) FILTER (WHERE debt) AS debt,
-           SUM(value * k) FILTER (WHERE deposit) AS cash
+           MIN(lei) AS lei, SUM(` + exposureDecimal("value * k") + `) AS d_value,
+           SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE asset_class = 'public_equity') AS d_equity,
+           SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE debt) AS d_debt,
+           SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE deposit) AS d_cash
       FROM s GROUP BY out_ccy, ik),
 r AS (
-    SELECT g.*, row_number() OVER w AS rank,
-           100 * g.value / NULLIF(sum(g.value) OVER (PARTITION BY g.out_ccy), 0) AS share_pct,
-           CASE WHEN g.ik <> '(none)' THEN 100 * sum(g.value) OVER (w ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-                / NULLIF(sum(g.value) OVER (PARTITION BY g.out_ccy), 0) END AS cumulative_share_pct
+    SELECT g.*, CAST(g.d_value AS DOUBLE) AS value, row_number() OVER w AS rank,
+           CAST(sum(g.d_value) OVER (PARTITION BY g.out_ccy) AS DOUBLE) AS total,
+           CAST(sum(g.d_value) OVER (w ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS DOUBLE) AS running
       FROM g
-    WINDOW w AS (PARTITION BY g.out_ccy ORDER BY g.ik = '(none)', g.value DESC, g.ik))
+    WINDOW w AS (PARTITION BY g.out_ccy ORDER BY g.ik = '(none)', g.d_value DESC, g.ik))
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, rank, issuer, lei, value,
-       share_pct, cumulative_share_pct,
-       100 * COALESCE(equity, 0) / NULLIF(value, 0) AS equity_pct,
-       100 * COALESCE(debt, 0) / NULLIF(value, 0) AS debt_pct,
-       100 * COALESCE(cash, 0) / NULLIF(value, 0) AS cash_pct
+       100 * value / NULLIF(total, 0) AS share_pct,
+       CASE WHEN ik <> '(none)' THEN 100 * running / NULLIF(total, 0) END AS cumulative_share_pct,
+       100 * COALESCE(CAST(d_equity AS DOUBLE), 0) / NULLIF(value, 0) AS equity_pct,
+       100 * COALESCE(CAST(d_debt AS DOUBLE), 0) / NULLIF(value, 0) AS debt_pct,
+       100 * COALESCE(CAST(d_cash AS DOUBLE), 0) / NULLIF(value, 0) AS cash_pct
   FROM r
  WHERE rank <= %d OR ik = '(none)'`
 
@@ -109,9 +110,10 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
        arg_max(sector, (w, sector)) AS sector, arg_max(country, (w, country)) AS country,
        MAX(w) AS class_weight, MAX(w) FILTER (WHERE sector IS NOT NULL) AS sector_weight,
        MAX(w) FILTER (WHERE country IS NOT NULL) AS country_weight,
-       MAX(market_cap) AS market_cap, MAX(size) AS size, SUM(value * k) AS value,
-       COALESCE(SUM(value * k) FILTER (WHERE direct), 0) AS direct_value,
-       COALESCE(SUM(value * k) FILTER (WHERE NOT direct), 0) AS via_funds_value,
+       MAX(market_cap) AS market_cap, MAX(size) AS size, ` + exposureSum("value * k") + ` AS value,
+       COALESCE(CAST(SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE direct) AS DOUBLE), 0) AS direct_value,
+       COALESCE(CAST(SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE NOT direct) AS DOUBLE), 0)
+           AS via_funds_value,
        COALESCE(list(DISTINCT top_key ORDER BY top_key) FILTER (WHERE NOT direct), []) AS funds
   FROM g
  GROUP BY out_ccy, src, wrapper, asset_class, security`

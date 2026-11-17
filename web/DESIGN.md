@@ -820,6 +820,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0206: its exposure views sum in the order the rows arrive, so two
+  refreshes of one gold can differ in the last bits;
 - 0205: it lacks `web_sources_observed`, `web_income`'s class and
   projected types, `web_yield`'s `is_cash` and `rate_sensitive`,
   `web_exposure_debt`'s `grade` and `bucket_order`, and the yield, fee

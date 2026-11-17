@@ -62,7 +62,8 @@ UPDATE securities SET size = CASE WHEN market_cap >= $1 THEN $3 WHEN market_cap 
 // one key counts once, its weights summed; two lines that name one share
 // by name alone rank apart (sizeByLineSQL). peers is how many stocks of
 // its country the fund lists, and market_pct the share of the market
-// before the stock.
+// before the stock. The weights are summed as the decimals they are
+// stored as, so no share follows the order of the lines.
 const sizeRanksSQL = `
 CREATE OR REPLACE TEMP TABLE exposure_size_ranks AS
 WITH f AS (
@@ -72,7 +73,7 @@ WITH f AS (
               FROM exposure_size_funds GROUP BY 1) sf USING (fund_ref)
    QUALIFY ROW_NUMBER() OVER (PARTITION BY c.fund_ref ORDER BY c.as_of DESC) = 1),
 lines AS (
-    SELECT f.fund_ref, f.coverage_pct, l.key AS k, SUM(l.weight)::DOUBLE AS w,
+    SELECT f.fund_ref, f.coverage_pct, l.key AS k, SUM(l.weight) AS w,
            MIN(COALESCE(lc.value, sec.risk_country, sec.domicile)) AS country
       FROM f
       JOIN (SELECT *, exposure_key(security_key) AS key FROM fund_lines) l
@@ -86,9 +87,9 @@ lines AS (
     HAVING SUM(l.weight) > 0),
 ranked AS (
     SELECT *,
-           100 * COALESCE(SUM(w) OVER (PARTITION BY fund_ref, country ORDER BY w DESC, k
-                                       ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0)
-               / SUM(w) OVER (PARTITION BY fund_ref, country) AS before_pct,
+           100 * CAST(COALESCE(SUM(w) OVER (PARTITION BY fund_ref, country ORDER BY w DESC, k
+                                            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS DOUBLE)
+               / CAST(SUM(w) OVER (PARTITION BY fund_ref, country) AS DOUBLE) AS before_pct,
            COUNT(*) OVER (PARTITION BY fund_ref, country) AS peers
       FROM lines WHERE country IS NOT NULL)
 SELECT k, fund_ref, coverage_pct, peers, market_pct,
