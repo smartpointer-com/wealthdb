@@ -143,7 +143,7 @@ closing cash balance. Two shapes print it:
 - before 2025, the note "Bank Sweep: Interest Rate as of ... was
   ...%". The first such note stands.
 
-A statement that prints no rate gives none. `pdf_parsers.py`
+A statement that prints no rate gives none. `stmt_parse.py`
 (`parse_cash_interest_rate`) has the line shapes.
 
 ## 4. Irreconcilable differences (and gold-layer mitigations)
@@ -209,7 +209,7 @@ schedule breakdown. The api emits only TRADE transactions; it
 does NOT expose the IRS-level tax categorisation.
 
 **As built**: the 1099-aware parser lives in silver
-(`tax_form_parsers.py`, §6a); sale lots land in `transactions`
+(`form_1099b.py`, §6a); sale lots land in `transactions`
 with `source='form_1099b'` and in `closed_lots`. Gold reads them
 from `closed_lots` as realized lots; the statement and history
 feeds book the sales themselves ([INTEROP.md](INTEROP.md) §8). The
@@ -269,7 +269,8 @@ hand, one scope per document kind and one for the walk itself.
 
 A load stamps the generations only when every run and the
 account-number reconcile pass committed. After a failure they stay
-unstamped, so the next load re-derives again.
+unstamped, so the next load re-derives again. A failed run is rolled
+back, the other runs still load, and the load exits 1.
 
 **Parse and extraction caches**: a load keeps each document's parse
 under the collector's cache root, keyed on the document's content and
@@ -407,6 +408,16 @@ statement pass writes `open_lots` (§9.1), and the realized-lot reports
 and the Gain/Loss Report) fill `closed_lots` and `cost_basis_methods`
 (§9.2, §9.3).
 
+Each kind has a parser module of its own:
+
+- [`stmt_parse.py`](stmt_parse.py): the statements;
+- [`letters.py`](letters.py): the distribution letters;
+- [`form_1099b.py`](form_1099b.py): the 1099-B;
+- [`realized_reports.py`](realized_reports.py): the realized-lot reports.
+
+[`pdf_parsers.py`](pdf_parsers.py) and
+[`tax_form_parsers.py`](tax_form_parsers.py) read a file and call them.
+
 ### 6.0 The More detail in silver
 
 Each `more-details.json` record holds the dialog's whole text as
@@ -445,14 +456,15 @@ The 1099 Composite is the **authoritative annual record of sales**,
 carrying cost basis and acquisition date per lot — data the
 statement parser cannot see when a sale prints only as a bare
 position delta rather than as an activity row. Parsed by
-[`tax_form_parsers.py`](tax_form_parsers.py).
+[`form_1099b.py`](form_1099b.py).
 
 - **Format precedence.** Schwab ships the form as a PDF and, where it
   offers them, as XML + CSV twins. The twins share one base filename;
   the PDF is named apart (§6). All three share the manifest row (date
   and document name). The loader prefers the **XML** (OFX-2.x, cleaner
   per-field structure, an explicit `DTVAR` "Various" flag, a
-  `TAXYEAR` element) and fall back to the **CSV**. The PDF's 1099-B
+  `TAXYEAR` element) and falls back to the **CSV**. The CSV is read
+  when the XML is not on disk or does not parse. The PDF's 1099-B
   pages are not read; its Year-End Summary half is (§9.2). The
   `logical_doc_key` keys on the **base filename without extension**,
   so the XML and CSV twins dedup to one set of rows (whichever is
@@ -480,7 +492,7 @@ These `Letters`-kind PDFs are the **only record of securities (and
 cash) moved out of an account to a third party** — gifts to people /
 DAFs, transfers to other custodians or accounts. The statements show
 such a move only as an unexplained position drop. Parsed by
-`pdf_parsers.parse_distribution_pdf`, with text from the same
+[`letters.py`](letters.py), with text from the same
 pypdfium2 extractor the statement parser uses.
 
 - Three known layout families, all outbound: a **wire** ("To the
@@ -552,7 +564,7 @@ the top of page 1, adjacent to the account number. Migration
 0003 promotes that label to a top-level column on `accounts`.
 
 The column carries the **raw** Schwab label, verbatim.
-`pdf_parsers.parse_account_registration` handles all three
+`stmt_header.parse_account_registration` handles all three
 layout eras (see §7). Each load sets the column on every row of an
 account, from the first label among the statements that load
 parsed. A later load that parses newer statements overwrites it. A
@@ -697,9 +709,9 @@ A holding with one lot prints no total, so its `cost_basis` in
 on the next page; its later lots and its total still belong to it.
 
 The statement passes write `open_lots` together with the holdings. A
-re-parse of a statement replaces its lots. A moved parser generation
-purges the table with the other statement tables (migration 0005), and
-the re-walk refills it.
+re-parse of a statement replaces its lots. A moved statement generation
+(§4.4) purges the table with the other statement tables, and the
+re-derive refills it.
 
 ### 9.2 Closed lots (migration 0007)
 

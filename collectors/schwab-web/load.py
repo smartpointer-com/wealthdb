@@ -29,8 +29,9 @@ Idempotency:
     filename, the `logical_doc_key`) parsed under the current parser
     generation, so re-downloads of the same logical document are
     skipped, whatever rows its parse yielded. Tx-history exports are
-    skipped once they have transaction rows. Use --reparse to force re-ingestion of a logical
-    document (deletes by logical_doc_key, then re-inserts).
+    skipped once they have transaction rows. Use --reparse to force
+    re-ingestion of a logical document (deletes by logical_doc_key, then
+    re-inserts).
   * The statement snapshot tables are keyed by account and the
     period end a statement prints; the first statement to write a
     key owns it (see _write_statement_snapshots).
@@ -597,7 +598,7 @@ def load_run(conn: sqlite3.Connection, run_dir: Path,
              derive_only: frozenset[str] | None = None) -> dict:
     """Load one bronze-run dir. Returns a stats dict for logging.
 
-    A run is read in four steps: its documents are indexed (the dump_runs
+    A run is read in three steps: its documents are indexed (the dump_runs
     row, the accounts, the documents table), the four document passes run
     in PASSES order, and the tx-history exports are loaded.
 
@@ -793,7 +794,9 @@ def _index_documents(conn: sqlite3.Connection, run: _Run) -> None:
 class Doc:
     """One logical document a pass parses: its account, its key, its
     parse-marker kind, the copy's file and manifest sha256, its date, and
-    what its parse takes besides the path."""
+    what its parse takes besides the path. `twin` is another copy of the
+    same logical document, in another format, that is read when this
+    one does not parse."""
     suffix: str
     ldk: str
     kind: str
@@ -801,6 +804,7 @@ class Doc:
     sha256: str
     doc_date: int
     args: tuple = ()
+    twin: Doc | None = None
 
 
 @dataclass(frozen=True)
@@ -817,9 +821,10 @@ class PassSpec:
     `_message`, its text).
 
     A `batch` pass parses every selected document through the pool before
-    it writes any, and calls `finish(conn, run)` once it has written
-    them. `dedup_stat` counts the copies the gate turns away because
-    the invocation took the document up already."""
+    it writes any. `finish(conn, run)` is called at the end of every
+    run's pass, whether or not a document was due. `dedup_stat` counts
+    the copies the gate turns away because the invocation took the
+    document up already."""
     kind: str
     marker_kinds: tuple[str, ...]
     select: Callable[[_Run, Callable[[str, str], bool]], Iterator[Doc]]
@@ -858,22 +863,24 @@ def run_pass(conn: sqlite3.Connection, run: _Run, spec: PassSpec) -> None:
         if spec.batch:
             selected.append(doc)
         else:
-            _derive(conn, run, spec, doc, _resolve(run, spec, doc))
-    if not selected:
-        return
-    log.info("parsing %d statement PDF(s)", len(selected))
-    t0 = time.monotonic()
-    for doc in selected:
-        run.pool.enqueue(*_parse_job(run, spec, doc))
-    run.pool.dispatch()
-    results = [_resolve(run, spec, doc) for doc in selected]
-    elapsed = time.monotonic() - t0
-    log.info(
-        "parsed %d PDF(s) in %.2fs (%.3fs/PDF wall)",
-        len(selected), elapsed, elapsed / max(1, len(selected)),
-    )
-    for doc, parsed in zip(selected, results, strict=True):
-        _derive(conn, run, spec, doc, parsed)
+            _derive(conn, run, spec, *_resolve(run, spec, doc))
+    if selected:
+        log.info("parsing %d %s document(s)", len(selected), spec.kind)
+        t0 = time.monotonic()
+        for doc in selected:
+            run.pool.enqueue(*_parse_job(run, spec, doc))
+        run.pool.dispatch()
+        results = [_resolve(run, spec, doc) for doc in selected]
+        elapsed = time.monotonic() - t0
+        log.info(
+            "parsed %d document(s) in %.2fs (%.3fs/document wall)",
+            len(selected), elapsed, elapsed / max(1, len(selected)),
+        )
+        for doc, parsed in results:
+            _derive(conn, run, spec, doc, parsed)
+    # Also when no document was due: a finish may read more than this
+    # run's parses (the statement pass's tax-form fallback reads the
+    # documents table).
     if spec.finish is not None:
         spec.finish(conn, run)
 
@@ -889,8 +896,15 @@ def _parse_job(run: _Run, spec: PassSpec, doc: Doc) -> tuple:
             (spec.kind, str(doc.path), doc.args, run.extract_dir))
 
 
-def _resolve(run: _Run, spec: PassSpec, doc: Doc) -> object:
-    return run.pool.resolve(*_parse_job(run, spec, doc))
+def _resolve(run: _Run, spec: PassSpec, doc: Doc) -> tuple[Doc, object]:
+    """The copy read and its parse: `doc`, or its twin when `doc` does
+    not parse."""
+    parsed = run.pool.resolve(*_parse_job(run, spec, doc))
+    if parsecache.is_error(parsed) and doc.twin is not None:
+        log.warning(spec.error_log + "; reading %s instead", doc.path,
+                    parsed[spec.error_field], doc.twin.path.name)
+        return _resolve(run, spec, doc.twin)
+    return doc, parsed
 
 
 def _derive(conn: sqlite3.Connection, run: _Run, spec: PassSpec, doc: Doc,
@@ -1542,11 +1556,12 @@ def _select_1099b_forms(run: _Run, gate) -> Iterator[Doc]:
     Schwab ships each logical form as a PDF plus, where it offers them,
     machine-readable XML and CSV twins. The twins share a base filename;
     the PDF is named apart. All three share the manifest row (date and
-    document name). The XML is preferred, the CSV is the fallback, and the
-    logical_doc_key is keyed on the **base filename (without extension)**
-    so the XML and CSV twins dedup to one set of rows. A PDF without an XML
-    or CSV on its manifest row is logged as a coverage gap (no
-    machine-readable lot detail to parse)."""
+    document name). The XML is preferred, and the CSV is read when the XML
+    is not on disk or does not parse. The logical_doc_key is keyed on the
+    **base filename (without extension)** so the XML and CSV twins dedup
+    to one set of rows. A PDF without an XML or CSV on its manifest row
+    is logged as a coverage gap (no machine-readable lot detail to
+    parse)."""
     stats = run.stats
     twins: dict[tuple[str, str], dict[str, dict]] = {}
     pdfs: list[tuple[str, dict]] = []
@@ -1571,9 +1586,8 @@ def _select_1099b_forms(run: _Run, gate) -> Iterator[Doc]:
             stats["form_1099b_pdf_only"] += 1
 
     for (suffix, base), by_fmt in twins.items():
-        fmt = "xml" if "xml" in by_fmt else "csv"
-        doc = by_fmt[fmt]
-        doc_date = _document_date(doc)
+        fmts = [f for f in ("xml", "csv") if f in by_fmt]
+        doc_date = _document_date(by_fmt[fmts[0]])
         if doc_date is None:
             continue
         # Format-independent key: the XML and CSV twins share `base`,
@@ -1581,11 +1595,17 @@ def _select_1099b_forms(run: _Run, gate) -> Iterator[Doc]:
         ldk = _logical_doc_key(suffix, doc_date, base)
         if not gate(ldk, "form_1099b"):
             continue
-        path = _bronze_file(run.dir, suffix, doc["filename"], stats)
-        if path is None:
-            continue
-        yield Doc(suffix, ldk, "form_1099b", path, doc.get("sha256") or "",
-                  doc_date, (fmt,))
+        # The XML, with the CSV as its twin; the CSV alone when the XML
+        # is not on disk.
+        form = None
+        for fmt in reversed(fmts):
+            doc = by_fmt[fmt]
+            path = _bronze_file(run.dir, suffix, doc["filename"], stats)
+            if path is not None:
+                form = Doc(suffix, ldk, "form_1099b", path,
+                           doc.get("sha256") or "", doc_date, (fmt,), form)
+        if form is not None:
+            yield form
 
 
 def _parse_1099b_form(path: str, fmt: str) -> dict:
@@ -2163,7 +2183,7 @@ def run_load(args: argparse.Namespace) -> int:
     conn = sqlite3.connect(str(args.silver_db))
     silver.own_only(args.silver_db)
     cache = parsecache.ParseCache(parsecache.default_dir("schwab-web"))
-    extraction.CACHE_DIR = extract.cache_root("schwab-web") / "extract"
+    extraction.CACHE_DIR = extract.default_dir("schwab-web")
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         silver.apply_migrations(conn, migrations_dir)
@@ -2219,7 +2239,8 @@ def run_load(args: argparse.Namespace) -> int:
         pinned_accounts: set[str] = set()
         # Any run or the reconcile pass rolled back: the generations are
         # then left unstamped, so the next load re-walks rather than
-        # skipping a run whose rows a purge removed.
+        # skipping a run whose rows a purge removed, and the load exits 1.
+        # The other runs still load.
         failed = False
         with _parse_pool(cache, args.workers) as pool:
             for run_dir in runs:
@@ -2308,22 +2329,28 @@ def run_load(args: argparse.Namespace) -> int:
             failed = True
             log.exception("account-number reconcile failed; rolled back")
 
-        if failed:
+        if failed and (walk_stale or stale):
             log.warning("parser generation left unstamped after a failure; "
-                        "the next load re-walks the archive")
+                        "the next load re-reads what it covers")
+        elif failed:
+            log.warning("a load step failed and was rolled back; "
+                        "the next load runs it again")
         else:
             silver.stamp_generation(conn, WALK_SCOPE, WALK_GENERATION)
             for kind, generation in GENERATIONS.items():
                 silver.stamp_generation(conn, kind, generation)
             conn.commit()
         cache.sweep(GENERATIONS.values())
+        extract.sweep(extraction.CACHE_DIR,
+                      {extract.extraction_key(e)
+                       for e in extraction.EXTRACTORS})
 
         _log_registration_histogram(conn)
         _log_account_number_coverage(conn)
     finally:
         extraction.CACHE_DIR = None
         conn.close()
-    return 0
+    return 1 if failed else 0
 
 
 def _log_registration_histogram(conn: sqlite3.Connection) -> None:

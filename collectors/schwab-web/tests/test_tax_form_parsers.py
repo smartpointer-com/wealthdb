@@ -1,4 +1,5 @@
-"""Unit tests for tax_form_parsers.py (the 1099-B parser).
+"""Unit tests for the tax-form parsers: ``form_1099b`` (the 1099-B) and
+``realized_reports`` (the realized-lot reports).
 
 Fully synthetic fixtures — invented security names, quantities, and
 dollar amounts. No real account data ever enters a tracked file
@@ -16,6 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import form_1099b  # noqa: E402
 import realized_reports  # noqa: E402
 import tax_form_parsers as tf  # noqa: E402
 from collectorkit.words import Extracted, Page  # noqa: E402
@@ -100,7 +102,7 @@ def _make_1099b_xml(tax_year: str = "2021") -> str:
 
 class TestParse1099bXml:
     def setup_method(self):
-        self.result = tf.parse_1099b_xml(_make_1099b_xml("2021"))
+        self.result = form_1099b.parse_1099b_xml(_make_1099b_xml("2021"))
         self.lots = self.result["lots"]
         self.by_name = {lot["security_name"]: lot for lot in self.lots}
 
@@ -152,19 +154,19 @@ class TestParse1099bXml:
         xml = ('<?xml version="1.0"?>\n<OFX><TAX1099MSGSRSV1>'
                "<TAX1099TRNRS><TAX1099RS></TAX1099RS></TAX1099TRNRS>"
                "</TAX1099MSGSRSV1></OFX>")
-        out = tf.parse_1099b_xml(xml)
+        out = form_1099b.parse_1099b_xml(xml)
         assert out == {"tax_year": None, "lots": []}
 
     def test_xml_that_does_not_parse_raises(self):
         # A broken copy is a failed parse, not a form without lots, so
         # the loader tries the form's next copy.
         with pytest.raises(ET.ParseError):
-            tf.parse_1099b_xml(_make_1099b_xml("2021")[:200])
+            form_1099b.parse_1099b_xml(_make_1099b_xml("2021")[:200])
 
     def test_tax_year_derived_from_content_when_absent(self):
         xml = _make_1099b_xml("2021").replace(
             "<TAXYEAR>2021</TAXYEAR>", "")
-        out = tf.parse_1099b_xml(xml)
+        out = form_1099b.parse_1099b_xml(xml)
         # all sold dates are in 2021 → modal year
         assert out["tax_year"] == 2021
 
@@ -228,7 +230,7 @@ def _make_1099b_csv() -> str:
 
 class TestParse1099bCsv:
     def setup_method(self):
-        self.result = tf.parse_1099b_csv(_make_1099b_csv())
+        self.result = form_1099b.parse_1099b_csv(_make_1099b_csv())
         self.lots = self.result["lots"]
         self.by_name = {lot["security_name"]: lot for lot in self.lots}
 
@@ -275,8 +277,8 @@ class TestXmlCsvAgree:
     rows, so divergence would be silently format-dependent)."""
 
     def test_overlapping_lots_match(self):
-        xml = tf.parse_1099b_xml(_make_1099b_xml("2021"))
-        csv = tf.parse_1099b_csv(_make_1099b_csv())
+        xml = form_1099b.parse_1099b_xml(_make_1099b_xml("2021"))
+        csv = form_1099b.parse_1099b_csv(_make_1099b_csv())
         assert xml["tax_year"] == csv["tax_year"]
         x = {lot["security_name"]: lot for lot in xml["lots"]}
         for name in ("SYNTH ALPHA CORP", "SYNTH BETA INC", "SYNTH GAMMA LLC"):
@@ -366,7 +368,7 @@ _YES_TEXT = (
 
 class TestYearEndSummary:
     def setup_method(self):
-        self.result = tf.parse_year_end_summary_text(_YES_TEXT)
+        self.result = realized_reports.parse_year_end_summary_text(_YES_TEXT)
         self.lots = self.result["lots"]
 
     def test_tax_year_and_lot_count(self):
@@ -419,17 +421,17 @@ class TestYearEndSummary:
         text = _YES_TEXT.replace(
             "$ 600.00 $ 650.00 $ 50.00 $ 0.00",
             "$ 600.00 $ 650.00 -- $ 5.00 $ (55.00)")
-        lot = tf.parse_year_end_summary_text(text)["lots"][1]
+        lot = realized_reports.parse_year_end_summary_text(text)["lots"][1]
         assert (lot["wash_sale_disallowed"], lot["accrued_market_discount"],
                 lot["realized_gain_loss"]) == (None, 5.0, -55.0)
 
     def test_subtitle_naming_two_boxes(self):
-        assert tf._yes_subtitle(
+        assert realized_reports._yes_subtitle(
             "The transactions in this section are not reported on Form 1099-B"
             " or to the IRS. Report on Form 8949, in either Part I with Box C"
             " checked or Part II with Box F checked, as appropriate.") == {
             "covered": None, "form_8949_box": "C,F"}
-        assert tf._yes_subtitle(
+        assert realized_reports._yes_subtitle(
             "This section is for noncovered securities and corresponds to"
             " transactions reported on your 1099-B as \"cost basis is available"
             " but not reported to the IRS.\" Report on Form 8949, Part II, with"
@@ -487,7 +489,7 @@ _GLR_TEXT = (
 
 class TestGainLossReport:
     def setup_method(self):
-        self.result = tf.parse_gain_loss_report_text(_GLR_TEXT)
+        self.result = realized_reports.parse_gain_loss_report_text(_GLR_TEXT)
         self.lots = self.result["lots"]
 
     def test_methods_as_printed(self):
@@ -524,13 +526,13 @@ class TestGainLossReport:
             1.0, "2022-05-02", ["S"])
 
     def test_report_without_lots(self):
-        assert tf.parse_gain_loss_report_text("2022 Year-End Schwab Gain/Loss Report\n") == {
+        assert realized_reports.parse_gain_loss_report_text("2022 Year-End Schwab Gain/Loss Report\n") == {
             "tax_year": 2022, "lots": [], "incomplete": 0, "methods": []}
 
     def test_an_extracted_report_reads_as_its_text(self):
         extracted = Extracted("pdfium", (Page(_GLR_TEXT),))
         assert realized_reports.parse(extracted, "gain_loss_report") == \
-            tf.parse_gain_loss_report_text(_GLR_TEXT)
+            realized_reports.parse_gain_loss_report_text(_GLR_TEXT)
 
     def test_an_unknown_report_kind_raises(self):
         with pytest.raises(ValueError):

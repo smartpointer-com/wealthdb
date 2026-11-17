@@ -11,9 +11,15 @@ Quantity and Price). Wire and deposit dialogs carry no labels.
 `parse` matches labels without regard to case against one vocabulary,
 so both trade layouts give the same keys. Values stay as printed. A
 line that is not a known label is never read as one.
+
+Stored rows keep the parse they were loaded with: a later load fills
+only a row that holds no detail. A change here that alters stored
+values adds an entry to `load.REBUILD_ADVICE`.
 """
 
 from __future__ import annotations
+
+from collectorkit.parse import is_cusip
 
 # The labels read, in lower case. A key is the label with underscores.
 LABELS = (
@@ -28,30 +34,6 @@ _LABELS = frozenset(LABELS)
 _BEFORE_SECURITY = frozenset(("settle date", "order id"))
 
 _NEWER_TITLE = "more details"
-
-_CUSIP_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ*@#"
-
-
-def cusip_check_digit(base: str) -> str | None:
-    """The check digit of an eight-character CUSIP base, or None when
-    the base is not eight CUSIP characters."""
-    if len(base) != 8:
-        return None
-    total = 0
-    for i, ch in enumerate(base):
-        v = _CUSIP_CHARS.find(ch)
-        if v < 0:
-            return None
-        if i % 2:
-            v *= 2
-        total += v // 10 + v % 10
-    return str((10 - total % 10) % 10)
-
-
-def is_cusip(s: str) -> bool:
-    """Whether `s` is nine CUSIP characters ending in a valid check
-    digit."""
-    return len(s) == 9 and cusip_check_digit(s[:8]) == s[8]
 
 
 def _label(line: str) -> str | None:

@@ -1,5 +1,6 @@
 """
-Unit tests for pdf_parsers.py.
+Unit tests for the statement and letter parsers: ``stmt_parse`` and the
+modules it reads with, and ``letters``.
 
 Hand-curated synthetic text mimics extracted statement text (both
 the pdfplumber-tight and pypdfium2-spaced shapes seen on real
@@ -19,13 +20,15 @@ from pathlib import Path
 
 import pytest
 
-# Import target under test. tests/ is a sibling of pdf_parsers.py
-# in the repo root.
+# The modules under test sit one directory up.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import letters  # noqa: E402
-import pdf_parsers as pp  # noqa: E402
+import stmt_2025  # noqa: E402
+import stmt_header  # noqa: E402
+import stmt_legacy  # noqa: E402
 import stmt_parse  # noqa: E402
+import stmt_tokens  # noqa: E402
 from collectorkit.words import Extracted, Page  # noqa: E402
 
 
@@ -41,27 +44,27 @@ class TestStatementPeriod:
             "StatementPeriod\n"
             "February 1-28, 2026\n"
         )
-        result = pp.parse_statement_period(text)
+        result = stmt_header.parse_statement_period(text)
         assert result == (date(2026, 2, 1), date(2026, 2, 28))
 
     def test_cross_month_period(self):
         text = "Period: January 30-February 5, 2025\n"
-        result = pp.parse_statement_period(text)
+        result = stmt_header.parse_statement_period(text)
         assert result == (date(2025, 1, 30), date(2025, 2, 5))
 
     def test_period_at_year_end(self):
         text = "December 1-31, 2023 footer noise\n"
-        result = pp.parse_statement_period(text)
+        result = stmt_header.parse_statement_period(text)
         assert result == (date(2023, 12, 1), date(2023, 12, 31))
 
     def test_no_period_returns_none(self):
         text = "Some statement without a parseable period header"
-        assert pp.parse_statement_period(text) is None
+        assert stmt_header.parse_statement_period(text) is None
 
     def test_period_with_spaces_after_hyphen(self):
         # Schwab is inconsistent about whitespace around hyphens.
         text = "March 1 - 31, 2024"
-        assert pp.parse_statement_period(text) == (date(2024, 3, 1), date(2024, 3, 31))
+        assert stmt_header.parse_statement_period(text) == (date(2024, 3, 1), date(2024, 3, 31))
 
 
 # ============================================================
@@ -104,7 +107,7 @@ class TestAccountRegistration:
             "Schwab One International® Account of Account Nickname\n"
             "Nickname Goes Here\n"
         )
-        assert pp.parse_account_registration(text) == (
+        assert stmt_header.parse_account_registration(text) == (
             "Schwab One International® Account"
         )
 
@@ -118,7 +121,7 @@ class TestAccountRegistration:
             "Contributory IRA of Account Nickname\n"
             "Nickname Goes Here\n"
         )
-        assert pp.parse_account_registration(text) == "Contributory IRA"
+        assert stmt_header.parse_account_registration(text) == "Contributory IRA"
 
     def test_2020_2024_format(self):
         # 2020-2024: "<LABEL> of" alone, followed by the
@@ -132,7 +135,7 @@ class TestAccountRegistration:
             "Statement Period\n"
             "June 1-30, 2024\n"
         )
-        assert pp.parse_account_registration(text) == (
+        assert stmt_header.parse_account_registration(text) == (
             "Schwab One® International Account"
         )
 
@@ -153,7 +156,7 @@ class TestAccountRegistration:
             "Account Number\n"
             "0000-0000\n"
         )
-        assert pp.parse_account_registration(text) == (
+        assert stmt_header.parse_account_registration(text) == (
             "Schwab One® Custodial Account (UTMA)"
         )
 
@@ -166,7 +169,7 @@ class TestAccountRegistration:
             "Account Number\n"
             "0000-0000\n"
         )
-        assert pp.parse_account_registration(text) == (
+        assert stmt_header.parse_account_registration(text) == (
             "Schwab One® Custodial Account (UGMA)"
         )
 
@@ -181,7 +184,7 @@ class TestAccountRegistration:
             "Account Number\n"
             "0000-0000\n"
         )
-        assert pp.parse_account_registration(text) == (
+        assert stmt_header.parse_account_registration(text) == (
             "Schwab One® Custodial Account"
         )
 
@@ -196,7 +199,7 @@ class TestAccountRegistration:
             "Account Number\n"
             "0000-0000\n"
         )
-        assert pp.parse_account_registration(text) == "Contributory IRA"
+        assert stmt_header.parse_account_registration(text) == "Contributory IRA"
 
     def test_2017_2019_format(self):
         # 2017-2019: bare label immediately above
@@ -209,7 +212,7 @@ class TestAccountRegistration:
             "Account Number: 0000-0000\n"
             "Statement Period: June 1, 2018 to June 30, 2018\n"
         )
-        assert pp.parse_account_registration(text) == "Schwab One® Account"
+        assert stmt_header.parse_account_registration(text) == "Schwab One® Account"
 
     def test_returns_none_when_no_header(self):
         # Random prose that doesn't contain any registration
@@ -219,7 +222,7 @@ class TestAccountRegistration:
             "Cost basis information is not a guarantee.\n"
             "Please see the disclosures section.\n"
         )
-        assert pp.parse_account_registration(text) is None
+        assert stmt_header.parse_account_registration(text) is None
 
     def test_internal_whitespace_normalised(self):
         # Multiple spaces inside the label collapse to one —
@@ -228,7 +231,7 @@ class TestAccountRegistration:
         text = (
             "Schwab    One®   International   Account of Account Nickname\n"
         )
-        assert pp.parse_account_registration(text) == (
+        assert stmt_header.parse_account_registration(text) == (
             "Schwab One® International Account"
         )
 
@@ -250,7 +253,7 @@ class TestAccountNumber:
             "1234-5678\n"
             "Schwab One International® Account of Account Nickname\n"
         )
-        assert pp.parse_account_number(text) == "1234-5678"
+        assert stmt_header.parse_account_number(text) == "1234-5678"
 
     def test_2020_2024_two_line_form(self):
         text = (
@@ -262,7 +265,7 @@ class TestAccountNumber:
             "Statement Period\n"
             "June 1-30, 2024\n"
         )
-        assert pp.parse_account_number(text) == "0000-0000"
+        assert stmt_header.parse_account_number(text) == "0000-0000"
 
     def test_2017_2019_inline_form(self):
         text = (
@@ -271,15 +274,15 @@ class TestAccountNumber:
             "Account Number: 1234-5678\n"
             "Statement Period: June 1, 2018 to June 30, 2018\n"
         )
-        assert pp.parse_account_number(text) == "1234-5678"
+        assert stmt_header.parse_account_number(text) == "1234-5678"
 
     def test_inline_form_without_colon(self):
         text = "Account Number 1234-5678\n"
-        assert pp.parse_account_number(text) == "1234-5678"
+        assert stmt_header.parse_account_number(text) == "1234-5678"
 
     def test_label_case_and_whitespace_tolerated(self):
         text = "  ACCOUNT  NUMBER:   1234-5678\n"
-        assert pp.parse_account_number(text) == "1234-5678"
+        assert stmt_header.parse_account_number(text) == "1234-5678"
 
     def test_value_after_one_intervening_line(self):
         # pypdfium2's line ordering occasionally interleaves an
@@ -290,7 +293,7 @@ class TestAccountNumber:
             "Statement Period\n"
             "1234-5678\n"
         )
-        assert pp.parse_account_number(text) == "1234-5678"
+        assert stmt_header.parse_account_number(text) == "1234-5678"
 
     def test_value_too_far_from_label_is_ignored(self):
         text = (
@@ -299,7 +302,7 @@ class TestAccountNumber:
             "February 1-28, 2026\n"
             "1234-5678\n"
         )
-        assert pp.parse_account_number(text) is None
+        assert stmt_header.parse_account_number(text) is None
 
     def test_undashed_value_not_matched(self):
         # Only the printed NNNN-NNNN form counts — a drifted
@@ -309,25 +312,25 @@ class TestAccountNumber:
             "Account Number\n"
             "12345678\n"
         )
-        assert pp.parse_account_number(text) is None
+        assert stmt_header.parse_account_number(text) is None
 
     def test_no_header_returns_none(self):
         text = (
             "This statement was provided by Schwab.\n"
             "Please see the disclosures section.\n"
         )
-        assert pp.parse_account_number(text) is None
+        assert stmt_header.parse_account_number(text) is None
 
     def test_bare_number_without_label_not_matched(self):
         # A NNNN-NNNN token elsewhere on the page (CUSIP fragment,
         # phone extension) must not be picked up without the
         # "Account Number" anchor.
         text = "Reference 1234-5678\n"
-        assert pp.parse_account_number(text) is None
+        assert stmt_header.parse_account_number(text) is None
 
     def test_header_beyond_first_80_lines_ignored(self):
         text = "\n" * 100 + "Account Number: 1234-5678\n"
-        assert pp.parse_account_number(text) is None
+        assert stmt_header.parse_account_number(text) is None
 
 
 class TestSaleRows:
@@ -335,7 +338,7 @@ class TestSaleRows:
         text = _wrap(
             "02/02 Sale SYN1 SYNTHETICONEFUND (100.0000) 100.0000 0.10 10,000.00 500.00,(ST)\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r.date == date(2026, 2, 2)
@@ -353,7 +356,7 @@ class TestSaleRows:
         text = _wrap(
             "03/15 Sale ABCD SOMECOMPANYINC (100.0000) 50.0000 0.05 5,000.00 (250.50),(LT)\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r.realized_gain_loss == pytest.approx(-250.50)
@@ -367,7 +370,7 @@ class TestSaleRows:
             "02/06 Sale 000000AA0 SYNTHETICBONDNT (100,000.0000) 95.0000 50.00 95,000.00 100.00,(ST)\n"
             "NOTE DUE12/31/99\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r.symbol == "000000AA0"  # CUSIP
@@ -382,7 +385,7 @@ class TestPurchaseRows:
         text = _wrap(
             "02/05 Purchase SYN1 SYNTHETICONEFUND 100.0000 100.0000 (10,000.00)\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r.category == "Purchase"
@@ -400,7 +403,7 @@ class TestPurchaseRows:
             "02/05 Purchase SYN1 SYNTHETICONEFUND 100.0000 100.0000 (10,000.00)\n"
             "Purchase SYN2 SYNTHETICTWOFUND 500.0000 50.0000 (25,000.00)\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 2
         assert rows[0].date == date(2026, 2, 5)
         assert rows[1].date == date(2026, 2, 5)  # inherited
@@ -412,7 +415,7 @@ class TestWithdrawalsAndDeposits:
         text = _wrap(
             "02/02 Withdrawal MoneyLinkTxn TfrSYNTHETIC-BANKNA,N/A (10,000.00)\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r.category == "Withdrawal"
@@ -426,7 +429,7 @@ class TestWithdrawalsAndDeposits:
         text = _wrap(
             "02/04 Deposit FundsReceived WIREDFUNDSRECEIVED 1,000,000.00\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r.category == "Deposit"
@@ -439,7 +442,7 @@ class TestDividendsAndInterest:
         text = _wrap(
             "02/05 Dividend CashDividend SYN3 SYNTHETICTHREEFUND 300.00\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r.category == "Dividend"
@@ -451,7 +454,7 @@ class TestDividendsAndInterest:
         text = _wrap(
             "02/05 Dividend NRATax SYN3 SYNTHETICTHREEFUND (45.00)\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r.category == "Dividend"
@@ -462,7 +465,7 @@ class TestDividendsAndInterest:
         text = _wrap(
             "02/27 Interest CreditInterest SCHWAB1INT01/01-01/31 1.00\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r.category == "Interest"
@@ -481,7 +484,7 @@ class TestSectionBoundaries:
             + "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
             + "TotalTransactions ($1) $2\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         assert rows[0].symbol == "SYN1"
 
@@ -489,7 +492,7 @@ class TestSectionBoundaries:
         text = _wrap(
             "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
         ) + "02/28 Purchase XXXX SHOULDNOTAPPEAR 1.0 1.0 (1.00)\n"
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
 
     def test_pending_open_activity_terminates(self):
@@ -501,7 +504,7 @@ class TestSectionBoundaries:
             + "Pending / Open Activity\n"
             + "Pending 02/27 Purchase SYN9 SYNTHETICULTRA 5.0 2.00 (10.00)\n"  # after terminator
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         assert rows[0].symbol == "SYN1"
 
@@ -523,7 +526,7 @@ class TestSectionBoundaries:
             + "Interest: For the Schwab One Interest, Bank Sweep ...\n"
             + "paid for a period that may differ from the Statement Period.\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         assert rows[0].symbol == "SYN1"
         assert "Interest" not in rows[0].description
@@ -540,7 +543,7 @@ class TestSectionBoundaries:
             + "Terms and Conditions\n"
             + "Interest: For the Schwab One Interest, Bank Sweep ...\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         assert "Bank Sweep" not in rows[0].description
 
@@ -559,7 +562,7 @@ class TestNumberParsing:
         (None, None),
     ])
     def test_parse_number(self, s, expected):
-        assert pp._parse_number(s) == expected
+        assert stmt_tokens._parse_number(s) == expected
 
 
 class TestRawLinesPreserved:
@@ -568,7 +571,7 @@ class TestRawLinesPreserved:
             "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
             "IndustryFee$0.01\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert len(rows) == 1
         r = rows[0]
         # raw_lines preserves the source for debugging / diff
@@ -582,7 +585,7 @@ class TestToDict:
         text = _wrap(
             "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         d = rows[0].to_dict()
         assert d["date"] == "2026-02-02"  # ISO string, not date object
         assert d["category"] == "Sale"
@@ -592,7 +595,7 @@ class TestToDict:
         text = _wrap(
             "02/04 Deposit FundsReceived WIREDFUNDSRECEIVED 1,000,000.00\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         d = rows[0].to_dict()
         assert d["quantity"] is None
         assert d["realized_gain_loss"] is None
@@ -615,7 +618,7 @@ class TestRowDates:
             "Commission $0.65; Industry Fee $0.01\n"
             "Sale SYN2 SYNTHETICTWO (10.0000) 10.0000 0.01 99.99 5.00,(ST)\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         assert [(r.date, r.amount) for r in rows] == [
             (date(2026, 2, 10), 99.34), (date(2026, 2, 10), 99.99)]
 
@@ -629,7 +632,7 @@ class TestRowDates:
             "01/02 12/30 Sold BETACORP INC: BETA (10.0000) 20.0000 200.00\n"
             "Total Account Value 0.00\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2019)
+        rows = stmt_parse.parse_transactions(text, statement_year=2019)
         assert [r.date for r in rows] == [date(2019, 12, 20), date(2020, 1, 2)]
 
     def test_the_printed_period_dates_the_rows_when_the_year_given_differs(self):
@@ -643,7 +646,7 @@ class TestRowDates:
             "01/15 Sale SYN1 SYNTHETICONE (10.0000) 10.0000 0.01 99.99 5.00,(ST)\n"
             "TotalTransactions ($1) $2\n"
         )
-        rows = pp.parse_transactions(january, statement_year=2025)
+        rows = stmt_parse.parse_transactions(january, statement_year=2025)
         assert [r.date for r in rows] == [date(2026, 1, 15)]
 
         # A December statement given the next year keeps its December
@@ -657,13 +660,13 @@ class TestRowDates:
             "01/02 12/30 Sold BETACORP INC: BETA (10.0000) 20.0000 200.00\n"
             "Total Account Value 0.00\n"
         )
-        rows = pp.parse_transactions(december, statement_year=2020)
+        rows = stmt_parse.parse_transactions(december, statement_year=2020)
         assert [r.date for r in rows] == [date(2019, 12, 20), date(2020, 1, 2)]
 
     def test_a_statement_without_a_period_keeps_the_year_it_is_given(self):
-        assert pp._row_date(1, 2, 2019, None) == date(2019, 1, 2)
-        assert pp._row_date(1, 2, 2019, date(2019, 3, 31)) == date(2019, 1, 2)
-        assert pp._row_date(1, 2, 2019, date(2019, 12, 31)) == date(2020, 1, 2)
+        assert stmt_tokens._row_date(1, 2, 2019, None) == date(2019, 1, 2)
+        assert stmt_tokens._row_date(1, 2, 2019, date(2019, 3, 31)) == date(2019, 1, 2)
+        assert stmt_tokens._row_date(1, 2, 2019, date(2019, 12, 31)) == date(2020, 1, 2)
 
 
 class TestStatementYear:
@@ -678,16 +681,16 @@ class TestStatementYear:
         text = _wrap(
             "02/02 Sale SYN1 SYNTHETICONE (100.0000) 100.0000 0.01 10,000.00 50.00,(ST)\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2099)
+        rows = stmt_parse.parse_transactions(text, statement_year=2099)
         assert rows[0].date == date(2026, 2, 2)
 
     def test_the_year_given_dates_a_statement_without_a_period(self):
-        rows = pp.parse_transactions(self._NO_PERIOD, statement_year=2099)
+        rows = stmt_parse.parse_transactions(self._NO_PERIOD, statement_year=2099)
         assert rows[0].date == date(2099, 2, 2)
 
     def test_missing_period_raises_without_a_year(self):
         with pytest.raises(ValueError, match="statement period"):
-            pp.parse_transactions(self._NO_PERIOD)
+            stmt_parse.parse_transactions(self._NO_PERIOD)
 
 
 # ============================================================
@@ -715,7 +718,7 @@ class TestParsePositions:
         text = _wrap_equities_block(
             "SYN1 SyntheticOneInc(M) 100.0000 50.00000 5,000.00 4,000.00 1,000.00 N/A N/A 1%\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r["instrument_key"] == "SYN1"
@@ -732,7 +735,7 @@ class TestParsePositions:
         text = _wrap_equities_block(
             "SYN2 SyntheticTwoCorp(M) 400.0000 10.00000 4,000.00 9,000.00 (5,000.00) N/A N/A <1%\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         r = rows[0]
         assert r["unrealized_gain_loss"] == -5000.0
         assert r["pct_of_acct"] == "<1%"
@@ -742,7 +745,7 @@ class TestParsePositions:
             "SYN1 SyntheticOne(M) 100.0000 50.00000 5,000.00 4,000.00 1,000.00 N/A N/A 1%\n"
             "SYN2 SyntheticTwo(M) 200.0000 25.00000 5,000.00 3,000.00 2,000.00 N/A N/A 1%\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert [r["instrument_key"] for r in rows] == ["SYN1", "SYN2"]
         assert rows[0]["quantity"] == 100.0
         assert rows[1]["quantity"] == 200.0
@@ -754,7 +757,7 @@ class TestParsePositions:
             "SPONSOREDADR\n"
             "1ADRREPS 0.2 ORDSHS\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert len(rows) == 1
         assert "SPONSOREDADR" in rows[0]["description"]
         assert "1ADRREPS" in rows[0]["description"]
@@ -767,7 +770,7 @@ class TestParsePositions:
             "SYN4 SyntheticETF(M), 1,000.0000 100.00000 100,000.00 95,000.00 5,000.00 1.00% 1,000.00 50%\n"
             "TotalExchangeTradedFunds $100,000.00 $95,000.00 $5,000.00 $1,000.00 50%\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert len(rows) == 1
         assert rows[0]["section"] == "Exchange Traded Funds"
         assert rows[0]["est_yield"] == "1.00%"
@@ -783,7 +786,7 @@ class TestParsePositions:
             "Cash and Cash Investments\n"
             "Cash 100.00 100.00 0.00 0.00 <1%\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert rows == []
 
     def test_cash_section_is_excluded(self):
@@ -797,7 +800,7 @@ class TestParsePositions:
             "Cash 1,000.00 800.00 (200.00) 0.00 <1%\n"
             "TotalCashandCashInvestments $1,000.00 $800.00 ($200.00) <1%\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert rows == []
 
     def test_missing_cost_basis_stays_none(self):
@@ -806,7 +809,7 @@ class TestParsePositions:
         text = _wrap_equities_block(
             "SYN5 SyntheticFive(M) 100.0000 50.00000 5,000.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         # The 3-column row should yield quantity / price /
         # market_value with cost_basis None.
         assert len(rows) == 1
@@ -818,11 +821,11 @@ class TestParsePositions:
         assert r["unrealized_gain_loss"] is None
 
     def test_empty_input_returns_empty_list(self):
-        assert pp.parse_positions("") == []
+        assert stmt_parse.parse_positions("") == []
 
     def test_no_positions_section_returns_empty(self):
         text = "Transaction Details\nsomething\nTotalTransactions $1 $2\n"
-        assert pp.parse_positions(text) == []
+        assert stmt_parse.parse_positions(text) == []
 
 
 # ============================================================
@@ -847,7 +850,7 @@ class TestParseCashSummary:
         )
 
     def test_extracts_all_eight_columns(self):
-        cash = pp.parse_cash_summary(self._wrap_cash_summary())
+        cash = stmt_parse.parse_cash_summary(self._wrap_cash_summary())
         assert cash is not None
         assert cash["opening_balance"] == 1000.00
         assert cash["closing_balance"] == 1110.00
@@ -860,31 +863,31 @@ class TestParseCashSummary:
         assert cash["currency_iso"] == "USD"
 
     def test_total_credits_and_debits_derived(self):
-        cash = pp.parse_cash_summary(self._wrap_cash_summary())
+        cash = stmt_parse.parse_cash_summary(self._wrap_cash_summary())
         # credits = deposits + sales_redemptions + dividends_interest
         assert cash["total_credits"] == pytest.approx(500 + 400 + 10)
         # debits = abs(withdrawals + purchases + expenses)
         assert cash["total_debits"] == pytest.approx(800.00)
 
     def test_other_activity_captured(self):
-        cash = pp.parse_cash_summary(self._wrap_cash_summary())
+        cash = stmt_parse.parse_cash_summary(self._wrap_cash_summary())
         assert cash["other_activity"] == 0.0
 
     def test_raw_line_preserved(self):
-        cash = pp.parse_cash_summary(self._wrap_cash_summary())
+        cash = stmt_parse.parse_cash_summary(self._wrap_cash_summary())
         assert "$1,000.00" in cash["raw_line"]
         assert "$1,110.00" in cash["raw_line"]
 
     def test_no_section_returns_none(self):
         text = "Account Summary\nSomething else\n"
-        assert pp.parse_cash_summary(text) is None
+        assert stmt_parse.parse_cash_summary(text) is None
 
     def test_data_line_with_seven_amounts_still_parses(self):
         # Edge: if Schwab ever ships a missing column, what's there
         # is still captured. Seven $-amounts (no
         # Expenses column).
         seven = "$100.00 $50.00 ($25.00) $0.00 $30.00 $5.00 $160.00\n"
-        cash = pp.parse_cash_summary(self._wrap_cash_summary(seven))
+        cash = stmt_parse.parse_cash_summary(self._wrap_cash_summary(seven))
         assert cash is not None
         assert cash["opening_balance"] == 100.00
         # The 8th slot is missing; closing_balance ends up None
@@ -902,7 +905,7 @@ class TestParseCashSummary:
             + six_line
             + "Transaction Details\n"
         )
-        cash = pp.parse_cash_summary(text)
+        cash = stmt_parse.parse_cash_summary(text)
         # Below the 7-amount threshold — parser returns None.
         assert cash is None
 
@@ -931,53 +934,53 @@ class TestParseCashInterestRate:
 
     def test_a_cash_row_with_a_rate(self):
         line = "Cash , 100.00 250.00 150.00 0.00 1.09% <1%"
-        assert pp.parse_cash_interest_rate(self._table(line + "\n")) == {
+        assert stmt_parse.parse_cash_interest_rate(self._table(line + "\n")) == {
             "interest_rate": 1.09, "interest_rate_line": line}
 
     def test_a_cash_row_without_a_rate_states_none(self):
         text = self._table("Cash , 100.00 250.00 150.00 0.00 <1%\n")
-        assert pp.parse_cash_interest_rate(text) is None
+        assert stmt_parse.parse_cash_interest_rate(text) is None
 
     def test_a_sweep_prints_its_figures_after_its_name(self):
         text = self._table(self.SWEEP + "1,000.00 2,000.00 1,000.00 2.41% 3%\n")
-        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 2.41
+        assert stmt_parse.parse_cash_interest_rate(text)["interest_rate"] == 2.41
 
     def test_a_table_without_the_acct_column(self):
         text = self._table(self.SWEEP + "1,000.00 2,000.00 1,000.00 2.41%\n")
-        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 2.41
+        assert stmt_parse.parse_cash_interest_rate(text)["interest_rate"] == 2.41
 
     def test_the_line_with_the_largest_ending_balance_wins(self):
         # The cash row prints no rate: the sweep's stands.
         text = self._table("Cash , 10.00 20.00 10.00 0.00 <1%\n" + self.SWEEP
                            + "1,000.00 2,000.00 1,000.00 2.41% 3%\n")
-        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 2.41
+        assert stmt_parse.parse_cash_interest_rate(text)["interest_rate"] == 2.41
         # Both print one: the larger ending balance's stands.
         text = self._table("Cash , 10.00 5,000.00 4,990.00 0.00 1.09% 8%\n"
                            + self.SWEEP
                            + "1,000.00 2,000.00 1,000.00 2.41% 3%\n")
-        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 1.09
+        assert stmt_parse.parse_cash_interest_rate(text)["interest_rate"] == 1.09
 
     def test_an_overdrawn_line_competes_by_magnitude(self):
         text = self._table("Cash , 10.00 (5,000.00) (5,010.00) 0.00 1.09% <1%\n"
                            + self.SWEEP
                            + "1,000.00 2,000.00 1,000.00 2.41% 3%\n")
-        assert pp.parse_cash_interest_rate(text)["interest_rate"] == 1.09
+        assert stmt_parse.parse_cash_interest_rate(text)["interest_rate"] == 1.09
 
     def test_a_cash_heading_without_the_table_columns_reads_the_note(self):
         note = "Bank Sweep: Interest Rate as of 06/30/21 was 2.41%."
         text = ("Cash and Cash Investments\nStarting Cash $1.00\n"
                 "Cash , 100.00 250.00 150.00 0.00 1.09% <1%\n" + note + "\n")
-        assert pp.parse_cash_interest_rate(text) == {
+        assert stmt_parse.parse_cash_interest_rate(text) == {
             "interest_rate": 2.41, "interest_rate_line": note}
 
     def test_the_acct_column_is_no_rate(self):
         text = self._table(self.SWEEP + "1,000.00 2,000.00 1,000.00 3%\n")
-        assert pp.parse_cash_interest_rate(text) is None
+        assert stmt_parse.parse_cash_interest_rate(text) is None
 
     def test_rows_past_the_total_are_not_read(self):
         text = (self._table("Cash , 100.00 250.00 150.00 0.00 <1%\n")
                 + "Cash , 100.00 250.00 150.00 0.00 1.09% <1%\n")
-        assert pp.parse_cash_interest_rate(text) is None
+        assert stmt_parse.parse_cash_interest_rate(text) is None
 
     @pytest.mark.parametrize("note", [
         "Bank Sweep: Interest Rate as of 06/30/21 was 2.41%. ",
@@ -988,13 +991,13 @@ class TestParseCashInterestRate:
     ])
     def test_the_legacy_note(self, note):
         text = "Cash Transactions Summary\nStarting Cash $1.00\n" + note + "\n"
-        assert pp.parse_cash_interest_rate(text) == {
+        assert stmt_parse.parse_cash_interest_rate(text) == {
             "interest_rate": 2.41, "interest_rate_line": note.strip()}
 
     def test_an_average_rate_is_no_rate(self):
         text = ("Interest Credited 03/02 through 03/31: $1.00 based on .500% "
                 "average Schwab One interest rate paid on 12 days.\n")
-        assert pp.parse_cash_interest_rate(text) is None
+        assert stmt_parse.parse_cash_interest_rate(text) is None
 
     def test_the_statement_puts_it_on_the_cash_summary(self):
         summary = ("Transactions - Summary\n"
@@ -1025,7 +1028,7 @@ class TestParsePositionsFootnoteMarker:
             "SYN1 SyntheticSpvInc(M) 300.0000 50.00000 15,000.00 "
             "12,000.00 e 3,000.00 N/A 0.00 2%\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r["instrument_key"] == "SYN1"
@@ -1050,7 +1053,7 @@ class TestParsePositionsFootnoteMarker:
             "300.0000 50.00000 15,000.00 12,000.00 e 3,000.00 N/A 0.00 2%\n"
             "TotalEquities $0.00 $0.00 $0.00 N/A 0%\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r["instrument_key"] == "SYN1"
@@ -1064,7 +1067,7 @@ class TestParsePositionsFootnoteMarker:
             "SYN2 SyntheticTrust 100.0000 40.00000 4,000.00 3,500.00 "
             "t 500.00 N/A 0.00 <1%\n"
         )
-        r = pp.parse_positions(text)[0]
+        r = stmt_parse.parse_positions(text)[0]
         assert r["quantity"] == 100.0
         assert r["market_value"] == 4000.0
         assert r["footnotes"] == ["t"]
@@ -1078,7 +1081,7 @@ class TestParsePositionsFootnoteMarker:
             "SYN3 Synthetic Holding Co CLASS A 100.0000 50.00000 "
             "5,000.00 4,000.00 1,000.00 N/A N/A 1%\n"
         )
-        r = pp.parse_positions(text)[0]
+        r = stmt_parse.parse_positions(text)[0]
         assert r["quantity"] == 100.0
         assert r["market_value"] == 5000.0
         assert "CLASS A" in r["description"]
@@ -1089,7 +1092,7 @@ class TestParsePositionsFootnoteMarker:
             "SYN4 SyntheticPlain(M) 100.0000 50.00000 5,000.00 "
             "4,000.00 1,000.00 N/A N/A 1%\n"
         )
-        assert pp.parse_positions(text)[0]["footnotes"] is None
+        assert stmt_parse.parse_positions(text)[0]["footnotes"] is None
 
     def test_marker_glued_to_parenthesised_negative(self):
         # pypdfium2 glues the marker to a parenthesised-negative column,
@@ -1099,7 +1102,7 @@ class TestParsePositionsFootnoteMarker:
             "SYN5 SyntheticTrust 200.0000 30.00000 6,000.00 7,000.00 "
             "t(1,000.00) N/A 5.00 3%\n"
         )
-        r = pp.parse_positions(text)[0]
+        r = stmt_parse.parse_positions(text)[0]
         assert r["quantity"] == 200.0
         assert r["market_value"] == 6000.0
         assert r["cost_basis"] == 7000.0
@@ -1126,7 +1129,7 @@ class TestSponsoredAdrSegmentation:
             "20.0000 75.00000 1,500.00 1,200.00 300.00 N/A 0.00 <1%\n"
             "TotalEquities $0.00 $0.00 $0.00 N/A 0%\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         keys = [r["instrument_key"] for r in rows]
         assert "SPONSORED" not in keys
         assert keys == ["SYN1"]
@@ -1184,7 +1187,7 @@ class TestParsePositionsWrappedColumns:
     def test_long_and_short_calls(self):
         text = (self.OPTIONS_HEAD + self.LONG_CALL + self.SHORT_CALL
                 + "Total Options $200.00 ($100.00) $300.00 $0.00 <1%\n")
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         by_key = {r["instrument_key"]: r for r in rows}
         assert sorted(by_key) == ["SYNX 06/18/2027 120.00 C",
                                   "XMPL 01/16/2026 50.00 C"]
@@ -1209,7 +1212,7 @@ class TestParsePositionsWrappedColumns:
         text = (self.OPTIONS_HEAD + self.SHORT_CALL
                 + "Total Options ($400.00) ($600.00) $200.00 $0.00A\n"
                 + self.TRAILER)
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert [r["instrument_key"] for r in rows] == ["SYNX 06/18/2027 120.00 C"]
 
     def test_fixed_income_columns_after_the_numbers_line(self):
@@ -1236,7 +1239,7 @@ class TestParsePositionsWrappedColumns:
             "Total Fixed Income 15,000.0000 $13,900.00 $14,300.00 ($400.00) $60.00 1%\n"
             "Total Adj Cost Basis $14,300.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         by_key = {r["instrument_key"]: r for r in rows}
         assert sorted(by_key) == ["000000AA0", "000000BB0"]
         a = by_key["000000AA0"]
@@ -1263,7 +1266,7 @@ class TestParsePositionsWrappedColumns:
             "100.00 2.20% 200.00 50.00\n"
             "Total Fixed Income 10,000.0000 $9,900.00 $9,800.00 $100.00 $50.00\n"
         )
-        (row,) = pp.parse_positions(text)
+        (row,) = stmt_parse.parse_positions(text)
         assert row["unrealized_gain_loss"] == 100.0
         assert row["accrued_interest"] == 50.0
         assert row["pct_of_acct"] is None
@@ -1303,7 +1306,7 @@ class TestParsePositionsLegacy:
             "SYMBOL: ALPH 50.0000 45.0000 2,250.00 02/20/22 125.00 760 Long-Term\n"
             "Cost Basis 4,000.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r["instrument_key"] == "ALPH"          # from SYMBOL: line
@@ -1322,7 +1325,7 @@ class TestParsePositionsLegacy:
             "SYMBOL: BETA\n"
             "Cost Basis 13,500.00 Accrued Dividend: 250.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert len(rows) == 1
         assert rows[0]["cost_basis"] == 13500.0
         assert rows[0]["accrued_interest"] == 250.0   # dividend → accrued_interest
@@ -1332,7 +1335,7 @@ class TestParsePositionsLegacy:
             "GAMMA CORP 25.0000 6.00000 150.00 <1% (5.00) N/A N/A\n"
             "SYMBOL: GAMM\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert rows[0]["unrealized_gain_loss"] == -5.0
         assert rows[0]["pct_of_acct"] == "<1%"
 
@@ -1345,7 +1348,7 @@ class TestParsePositionsLegacy:
             "SYMBOL: BETA\n"
             "Cost Basis 4,500.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert [r["instrument_key"] for r in rows] == ["ALPH", "BETA"]
         assert rows[0]["cost_basis"] == 4000.0
         assert rows[1]["cost_basis"] == 4500.0
@@ -1362,7 +1365,7 @@ class TestParsePositionsLegacy:
             "SYMBOL: ALPH 50.0000 45.0000 2,250.00 02/20/22 125.00 760 Long-Term\n"
             "Cost Basis 4,000.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert len(rows) == 1
         assert rows[0]["instrument_key"] == "ALPH"
 
@@ -1382,7 +1385,7 @@ class TestParsePositionsLegacy:
             "Cost Basis 4,000.00\n"
             "Total Investment Detail $5,000.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert [r["instrument_key"] for r in rows] == ["ALPH"]
 
     def test_continued_section_header_keeps_section(self):
@@ -1399,7 +1402,7 @@ class TestParsePositionsLegacy:
             "Cost Basis 4,500.00\n"
             "Total Investment Detail $10,000.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert [r["instrument_key"] for r in rows] == ["ALPH", "BETA"]
 
     def test_legacy_falls_back_only_when_new_format_absent(self):
@@ -1418,7 +1421,7 @@ class TestParsePositionsLegacy:
             "Cost Basis 9.00\n"
             "Total Investment Detail $20.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         # New-format wins; legacy is not consulted.
         assert [r["instrument_key"] for r in rows] == ["NEW1"]
 
@@ -1441,7 +1444,7 @@ class TestParseCashSummaryLegacy:
             "*Cash (includes any cash debit balance) ...\n"
             "Investment Detail - Cash\n"
         )
-        cash = pp.parse_cash_summary(text)
+        cash = stmt_parse.parse_cash_summary(text)
         assert cash is not None
         assert cash["opening_balance"] == 1000.0
         assert cash["closing_balance"] == 1540.0
@@ -1467,7 +1470,7 @@ class TestParseCashSummaryLegacy:
             "Ending Cash $ 1,115.00 $ 1,115.00\n"
             "Investment Detail - Equities\n"
         )
-        cash = pp.parse_cash_summary(text)
+        cash = stmt_parse.parse_cash_summary(text)
         # credits = 1000 + 500 + 25 = 1525
         assert cash["total_credits"] == pytest.approx(1525.0)
         # debits = abs(-200 + -300 + -10) = 510
@@ -1486,14 +1489,14 @@ class TestParseCashSummaryLegacy:
             "Ending Cash $ 1,125.00 $ 1,125.00\n"
             "Investment Detail - Equities\n"
         )
-        cash = pp.parse_cash_summary(text)
+        cash = stmt_parse.parse_cash_summary(text)
         assert cash["expenses"] is None
         # debits chain with a None input → None (NULL preservation)
         assert cash["total_debits"] is None
 
     def test_no_section_returns_none(self):
         text = "Some other content with no cash block\n"
-        assert pp.parse_cash_summary(text) is None
+        assert stmt_parse.parse_cash_summary(text) is None
 
     def test_new_format_takes_precedence(self):
         # Both anchors present → new format wins.
@@ -1506,7 +1509,7 @@ class TestParseCashSummaryLegacy:
             "Ending Cash $ 200.00 $ 200.00\n"
             "Investment Detail - Equities\n"
         )
-        cash = pp.parse_cash_summary(text)
+        cash = stmt_parse.parse_cash_summary(text)
         # New format: opening=1.00, closing=5.50
         assert cash["opening_balance"] == 1.0
         assert cash["closing_balance"] == 5.5
@@ -1540,7 +1543,7 @@ class TestParsePositionsLegacyRowShapes:
             "120.00 P\n"
             "Cost Basis (600.00)\n"
             "Total Options 1.0000 200.00 <1% 300.00\n"))
-        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        rows = {r["instrument_key"]: r for r in stmt_parse.parse_positions(text)}
         assert sorted(rows) == ["SYNX 06/18/2027 120.00 P", "XMPL 01/16/2026 50.00 C"]
         long = rows["XMPL 01/16/2026 50.00 C"]
         assert (long["quantity"], long["market_price"], long["market_value"],
@@ -1561,7 +1564,7 @@ class TestParsePositionsLegacyRowShapes:
             "SYNTHETIC INCOME FUND (M) 50.0000 20.00000 1,000.00 <1%\n"
             "SYMBOL: XMUN\n"
             "Total Bond Funds 150.0000 2,000.00 1,100.00 (100.00) 2%\n"))
-        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        rows = {r["instrument_key"]: r for r in stmt_parse.parse_positions(text)}
         assert (rows["XBND"]["market_value"], rows["XBND"]["cost_basis"],
                 rows["XBND"]["unrealized_gain_loss"], rows["XBND"]["pct_of_acct"]) == (
             1000.0, 1100.0, -100.0, "1%")
@@ -1580,7 +1583,7 @@ class TestParsePositionsLegacyRowShapes:
             "SYMBOL: XEIG\n"
             "SYNTHETIC SHORT CO (M) 100.0000 S 2.50000 (250.00) (10.00) N/A N/A\n"
             "SYMBOL: XSHO\n"))
-        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        rows = {r["instrument_key"]: r for r in stmt_parse.parse_positions(text)}
         assert sorted(rows) == ["XCOM", "XEIG", "XSHO", "XTRU"]
         assert rows["XCOM"]["market_value"] == 1000.0      # punctuated name
         assert (rows["XTRU"]["market_value"], rows["XTRU"]["unrealized_gain_loss"]) == (
@@ -1616,7 +1619,7 @@ class TestParseLegacyLots:
         text = self._section("Equities", (
             "EXAMPLE CORP (M) 10.0000 12.00000 120.00 1% 20.00 N/A N/A\n"
             "SYMBOL: XMPL 10.0000 10.0000 100.00 03/15/22 20.00 400 Long-Term\n"))
-        [row] = pp.parse_positions(text)
+        [row] = stmt_parse.parse_positions(text)
         assert row["cost_basis"] == 100.0
         assert [self._lot_fields(lt) for lt in row["lots"]] == [
             (10.0, 10.0, 100.0, "2022-03-15", 20.0, 400, "LONG", None)]
@@ -1628,7 +1631,7 @@ class TestParseLegacyLots:
             "SYMBOL: SYNH 15.0000 6.0000 90.00 t 06/01/22 (15.00) 120 Short-Term\n"
             "5.0000 10.0000 50.00 e 07/01/22 (25.00) 90 Short-Term\n"
             "Cost Basis 180.00\n"))
-        [row] = pp.parse_positions(text)
+        [row] = stmt_parse.parse_positions(text)
         assert row["instrument_key"] == "SYNH"
         assert row["description"] == "SYNTHETIC HLDGS"
         assert row["cost_basis"] == 180.0
@@ -1646,7 +1649,7 @@ class TestParseLegacyLots:
             "EXAMPLE AGGREGATE 2.0000 50.00000 100.00 <1% (2.00) N/A N/A\n"
             "BOND ETF 2.0000 51.0000 102.00 05/17/22 (2.00)\n"
             "SYMBOL: XTRS\n"))
-        [row] = pp.parse_positions(text)
+        [row] = stmt_parse.parse_positions(text)
         assert row["description"] == "EXAMPLE AGGREGATE"
         assert row["cost_basis"] == 102.0
         # A statement without the holding-period columns prints no term.
@@ -1659,7 +1662,7 @@ class TestParseLegacyLots:
             "SYMBOL: XINC 10.0000 9.5000 95.00 02/01/21 5.00 700 Long-Term\n"
             "2.0000 9.5000 r 19.00 1.00 Long-Term\n"
             "Cost Basis 114.00\n"))
-        [row] = pp.parse_positions(text)
+        [row] = stmt_parse.parse_positions(text)
         assert self._lot_fields(row["lots"][1]) == (
             2.0, 9.5, 19.0, None, 1.0, None, "LONG", ["r"])
 
@@ -1667,7 +1670,7 @@ class TestParseLegacyLots:
         text = self._section("Equities", (
             "SYNTHETIC WORKS 40.0000 2.00000 80.00 <1% N/A N/A N/A\n"
             "SYMBOL: XMIN 40.0000 N/A please provide 11/02/23 N/A 45 Short-Term\n"))
-        [row] = pp.parse_positions(text)
+        [row] = stmt_parse.parse_positions(text)
         assert row["cost_basis"] is None
         assert self._lot_fields(row["lots"][0]) == (
             40.0, None, None, "2023-11-02", None, 45, "SHORT", None)
@@ -1680,7 +1683,7 @@ class TestParseLegacyLots:
             "PUT SYNTHETIC INDS 1.0000 S4.00000 (400.00) 200.00\n"
             "$120 EXP 06/18/27 1.0000 S 6.0000 (600.00) 01/02/26 200.00 9 Short-Term\n"
             "SYMBOL: SYNX 06/18/2027 120.00 P\n"))
-        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        rows = {r["instrument_key"]: r for r in stmt_parse.parse_positions(text)}
         assert self._lot_fields(rows["XMPL 01/16/2026 50.00 C"]["lots"][0]) == (
             1.0, 2.5, 250.0, "2025-12-01", 50.0, 30, "SHORT", None)
         short = rows["SYNX 06/18/2027 120.00 P"]
@@ -1713,7 +1716,7 @@ class TestParseLegacyLots:
             "SYMBOL: SYNH 5.0000 1.8000 9.00 04/04/22 1.00 400 Long-Term\n"
             "Total Investment Detail $310.00\n"
         )
-        rows = {r["instrument_key"]: r for r in pp.parse_positions(text)}
+        rows = {r["instrument_key"]: r for r in stmt_parse.parse_positions(text)}
         assert sorted(rows) == ["SYNH", "XMPL"]
         assert rows["XMPL"]["description"] == "EXAMPLE CORP"
         assert rows["XMPL"]["cost_basis"] == 240.0
@@ -1732,28 +1735,28 @@ class TestParseLegacyLots:
             "EXP: 01/16/26",
             "10.0000 10.0000 100.00 02/30/22 20.00",
         ):
-            assert pp._parse_legacy_lot_line(line) is None, line
+            assert stmt_legacy._parse_legacy_lot_line(line) is None, line
 
     def test_other_layouts_print_no_lots(self):
         new = (
             "Positions - Equities\n"
             "SYN1 SyntheticOne(M) 10.0000 1.00000 10.00 8.00 2.00 N/A N/A 1%\n"
             "TotalEquities $10.00 $8.00 $2.00 N/A 1%\n")
-        assert "lots" not in pp.parse_positions(new)[0]
+        assert "lots" not in stmt_parse.parse_positions(new)[0]
 
 
 class TestParseAccountValue:
     def test_legacy_total(self):
-        assert pp.parse_account_value(
+        assert stmt_header.parse_account_value(
             "Total Assets Long $ 1,250.00\nTotal Account Value $ 1,000.00 100%\n") == 1000.0
 
     def test_2025_ending_value_is_this_periods(self):
-        assert pp.parse_account_value(
+        assert stmt_header.parse_account_value(
             "Beginning Account Value $900.00 $800.00\n"
             "Ending Account Value $1,000.00 $1,000.00\n") == 1000.0
 
     def test_absent(self):
-        assert pp.parse_account_value("no summary here") is None
+        assert stmt_header.parse_account_value("no summary here") is None
 
 
 class TestParseCashSummaryEarliest:
@@ -1767,7 +1770,7 @@ class TestParseCashSummaryEarliest:
             "ALPHACORP INC ALPH 100.0000 50.00000 5,000.00\n"
             "Total Account Value 10,000.00\n"
         )
-        cash = pp.parse_cash_summary(text)
+        cash = stmt_parse.parse_cash_summary(text)
         assert cash["closing_balance"] == 5000.0
         assert cash["opening_balance"] is None
 
@@ -1791,7 +1794,7 @@ class TestParsePositionsVeryOld:
 
     def test_basic_position_row(self):
         text = self._wrap("ALPHACORP INC ALPH 100.0000 50.00000 5,000.00\n")
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert len(rows) == 1
         r = rows[0]
         assert r["instrument_key"] == "ALPH"
@@ -1810,7 +1813,7 @@ class TestParsePositionsVeryOld:
             "CLASS A\n"
             "BETACORP HLDG BETA 50.0000 100.00000 5,000.00\n"
         )
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert [r["instrument_key"] for r in rows] == ["ALPH", "BETA"]
         assert "CLASS A" in rows[0]["description"]
 
@@ -1819,7 +1822,7 @@ class TestParsePositionsVeryOld:
         # NOT under "Investments". The position parser must not
         # see it as a position.
         text = self._wrap("ALPHACORP INC ALPH 100.0000 50.0 5,000.00\n")
-        rows = pp.parse_positions(text)
+        rows = stmt_parse.parse_positions(text)
         assert [r["instrument_key"] for r in rows] == ["ALPH"]
         # BANK is not a security ticker in this output.
         assert all(r["instrument_key"] != "BANK" for r in rows)
@@ -1838,7 +1841,7 @@ class TestParseCashSummaryVeryOld:
             "ALPHACORP INC ALPH 10.0000 1.00 10.00\n"
             "Total Account Value 2,110.00\n"
         )
-        cash = pp.parse_cash_summary(text)
+        cash = stmt_parse.parse_cash_summary(text)
         assert cash is not None
         # Multiple cash rows sum.
         assert cash["opening_balance"] == 1050.0
@@ -1853,10 +1856,10 @@ class TestParseCashSummaryVeryOld:
         assert cash["currency_iso"] == "USD"
 
     def test_no_section_returns_none(self):
-        assert pp.parse_cash_summary("nothing relevant\n") is None
+        assert stmt_parse.parse_cash_summary("nothing relevant\n") is None
 
 
-@pytest.mark.parametrize("pattern", [pp._NEW_TX_ROW_STOP_RE, pp._LEGACY_TX_ROW_STOP_RE])
+@pytest.mark.parametrize("pattern", [stmt_2025._NEW_TX_ROW_STOP_RE, stmt_legacy._LEGACY_TX_ROW_STOP_RE])
 @pytest.mark.parametrize("line", [
     "PLACEHOLDER UXXUTMA",
     "PLACEHOLDER UYYUGMA",
@@ -1872,7 +1875,7 @@ def test_a_custodial_marker_stops_a_row_for_any_state(pattern, line):
     assert pattern.match(line)
 
 
-@pytest.mark.parametrize("pattern", [pp._NEW_TX_ROW_STOP_RE, pp._LEGACY_TX_ROW_STOP_RE])
+@pytest.mark.parametrize("pattern", [stmt_2025._NEW_TX_ROW_STOP_RE, stmt_legacy._LEGACY_TX_ROW_STOP_RE])
 @pytest.mark.parametrize("line", ["Bank Interest PLACEHOLDER", "DIVIDEND EXAMPLE FUND"])
 def test_an_ordinary_description_line_does_not_stop_a_row(pattern, line):
     assert not pattern.match(line)
@@ -1900,7 +1903,7 @@ class TestParseTransactionsLegacy:
             "12/20 12/20 Qualified Dividend ALPHACORP INC: ALPH 5.60\n"
         )
         # No statement_year inferable — pass explicitly.
-        rows = pp.parse_transactions(text, statement_year=2019)
+        rows = stmt_parse.parse_transactions(text, statement_year=2019)
         assert len(rows) == 1
         r = rows[0]
         assert r.date == date(2019, 12, 20)
@@ -1914,7 +1917,7 @@ class TestParseTransactionsLegacy:
             "12/18 12/16 Bought ALPHACORP INC 100.0000 40.0000 (4,000.00)\n"
             "CLASS A: ALPH\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2019)
+        rows = stmt_parse.parse_transactions(text, statement_year=2019)
         assert len(rows) == 1
         r = rows[0]
         assert r.date == date(2019, 12, 18)
@@ -1930,7 +1933,7 @@ class TestParseTransactionsLegacy:
             "06/10/24 06/07/24 Bought BETACORP HLDG: BETA 6.0000 200.0000 0.00 (1,200.00)\n",
             with_category=True,
         )
-        rows = pp.parse_transactions(text, statement_year=2024)
+        rows = stmt_parse.parse_transactions(text, statement_year=2024)
         assert len(rows) == 1
         r = rows[0]
         assert r.date == date(2024, 6, 10)
@@ -1948,7 +1951,7 @@ class TestParseTransactionsLegacy:
             "Investments Activity\n"
             "12/30 12/30 Reinvested Shares ALPHACORP INC: ALPH 0.1033 100.0 (10.33)\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2019)
+        rows = stmt_parse.parse_transactions(text, statement_year=2019)
         assert len(rows) == 1
         assert rows[0].category == "Reinvest"
 
@@ -1963,7 +1966,7 @@ class TestParseTransactionsLegacy:
             "Cash, Bank Sweep, and Money Market Funds Activity\n"
             "12/15 12/16 Bank InterestX,Z BANK INT 111621-121521 1.15\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2021)
+        rows = stmt_parse.parse_transactions(text, statement_year=2021)
         assert len(rows) == 1
         assert rows[0].category == "Interest"
         assert rows[0].amount == 1.15
@@ -1975,7 +1978,7 @@ class TestParseTransactionsLegacy:
             "Investments Activity\n"
             "04/01 04/01 Margin InterestX INTEREST 03/01THRU 04/01 (4321.00)\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2021)
+        rows = stmt_parse.parse_transactions(text, statement_year=2021)
         assert len(rows) == 1
         assert rows[0].category == "Interest"
         assert rows[0].amount == -4321.00
@@ -1989,7 +1992,7 @@ class TestParseTransactionsLegacy:
             "Cash, Bank Sweep, and Money Market Funds Activity\n"
             "06/15 06/15 MoneyLink Deposit SYNTHETIC HOLDER 60,000.00\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2021)
+        rows = stmt_parse.parse_transactions(text, statement_year=2021)
         assert len(rows) == 1
         assert rows[0].category == "Deposit"
         assert rows[0].amount == 60000.00
@@ -2001,7 +2004,7 @@ class TestParseTransactionsLegacy:
             "Cash, Bank Sweep, and Money Market Funds Activity\n"
             "01/03 01/03 MoneyLink Return Tfr SYNTHETIC-BANK, N/A (2,000.00)\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2023)
+        rows = stmt_parse.parse_transactions(text, statement_year=2023)
         assert len(rows) == 1
         assert rows[0].category == "Transfer"
         assert rows[0].amount == -2000.00
@@ -2014,7 +2017,7 @@ class TestParseTransactionsLegacy:
             "Cash, Bank Sweep, and Money Market Funds Activity\n"
             "12/03 12/03 Auto TransferX BANK CREDIT FROM BROKERAGE 800.00 1,000.00\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2021)
+        rows = stmt_parse.parse_transactions(text, statement_year=2021)
         assert len(rows) == 1
         assert rows[0].category == "Transfer"
 
@@ -2025,7 +2028,7 @@ class TestParseTransactionsLegacy:
             "Investments Activity\n"
             "12/20 12/20 Qualified Dividend ALPHACORP INC: ALPH 5.60\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2019)
+        rows = stmt_parse.parse_transactions(text, statement_year=2019)
         assert rows[0].category == "Dividend"
 
     def test_description_does_not_absorb_page_chrome(self):
@@ -2048,7 +2051,7 @@ class TestParseTransactionsLegacy:
             "December 1-31, 2021\n"
             "Page 17 of 18\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2021)
+        rows = stmt_parse.parse_transactions(text, statement_year=2021)
         assert len(rows) == 1
         # Bank Sweep disclosure starts with "Bank Sweep:" which
         # is a row-stop marker; everything from there must NOT
@@ -2071,7 +2074,7 @@ class TestParseTransactionsLegacy:
             "The total withdrawals activity for the statement period was $0.00.\n"
             "Transaction Detail - Purchases & Sales (continued)\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2022)
+        rows = stmt_parse.parse_transactions(text, statement_year=2022)
         assert len(rows) == 1
         assert "total" not in rows[0].description.lower()
         assert "Transaction Detail" not in rows[0].description
@@ -2086,7 +2089,7 @@ class TestParseTransactionsLegacy:
             "10/29 10/29 Margin Interest INTEREST 09/30THRU 10/29 (0.25)\n"
             "The opening margin loan balance on 10/01 was $0.00.\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2021)
+        rows = stmt_parse.parse_transactions(text, statement_year=2021)
         assert len(rows) == 2
         assert rows[0].description.endswith("1 ADR REPS")
         assert "opening margin" not in rows[1].description
@@ -2103,7 +2106,7 @@ class TestParseTransactionsLegacy:
             "12/30 12/30 Reinvested Shares ALPHACORP INC: ALPH 0.1 100.0 (10.00)\n"
             + long_continuation + "\n"
         )
-        rows = pp.parse_transactions(text, statement_year=2019)
+        rows = stmt_parse.parse_transactions(text, statement_year=2019)
         assert len(rows) == 1
         # Cap is _LEGACY_TX_DESC_MAX_CHARS (200).
         assert len(rows[0].description) <= 200
@@ -2124,7 +2127,7 @@ class TestParseTransactionsLegacy:
             "12/20 12/20 Qualified Dividend FOO: FOOX 5.60\n"
             "Total Account Value 0.00\n"
         )
-        rows = pp.parse_transactions(text)
+        rows = stmt_parse.parse_transactions(text)
         # New-format rows only.
         assert all(t.symbol != "FOOX" for t in rows)
         assert any(t.category == "Deposit" for t in rows)
@@ -2152,13 +2155,13 @@ class TestStatementPdfReturnShape:
             "TotalEquities $10.00 $8.00 $2.00 N/A 1%\n"
         )
         # Each parser is callable in isolation.
-        period = pp.parse_statement_period(text)
+        period = stmt_header.parse_statement_period(text)
         assert period is not None
-        txs = pp.parse_transactions(text)
+        txs = stmt_parse.parse_transactions(text)
         assert any(t.category == "Deposit" for t in txs)
-        positions = pp.parse_positions(text)
+        positions = stmt_parse.parse_positions(text)
         assert positions and positions[0]["instrument_key"] == "SYN1"
-        cash = pp.parse_cash_summary(text)
+        cash = stmt_parse.parse_cash_summary(text)
         assert cash and cash["closing_balance"] == 5.50
 
 
@@ -2167,7 +2170,7 @@ class TestStatementPdfReturnShape:
 # ============================================================
 #
 # Synthetic text mimicking pypdfium2's one-row-per-line extraction of
-# the three observed layout families. Wholly invented counterparties /
+# the three known layout families. Wholly invented counterparties /
 # amounts; VTI is a widely-held example ticker (AGENTS.md §4).
 
 class TestParseDistributionText:
@@ -2206,7 +2209,7 @@ class TestParseDistributionText:
     )
 
     def test_securities_transfer(self):
-        rows = pp.parse_distribution_text(
+        rows = letters.parse_distribution_text(
             self._SECURITIES, filename="3rd-Party-Distribution_2024-01-23_999.PDF")
         assert len(rows) == 1
         r = rows[0]
@@ -2224,7 +2227,7 @@ class TestParseDistributionText:
         assert r["date"] == "2024-01-23"
 
     def test_wire_cash_transfer(self):
-        rows = pp.parse_distribution_text(
+        rows = letters.parse_distribution_text(
             self._WIRE, filename="3rd-Party-Distribution_2025-10-09_999.PDF")
         assert len(rows) == 1
         r = rows[0]
@@ -2240,7 +2243,7 @@ class TestParseDistributionText:
         assert r["date"] == "2025-10-09"
 
     def test_cash_to_schwab_third_party(self):
-        rows = pp.parse_distribution_text(
+        rows = letters.parse_distribution_text(
             self._CASH_SCHWAB, filename="3rd-Party-Distribution_2024-06-17_999.PDF")
         assert len(rows) == 1
         r = rows[0]
@@ -2255,12 +2258,12 @@ class TestParseDistributionText:
         text = ("Wire transfer(s)\n"
                 "To the account of SYNTH LP at Bank\n"
                 "Cash transfer amount requested: $1.00\n")
-        rows = pp.parse_distribution_text(
+        rows = letters.parse_distribution_text(
             text, filename="3rd-Party-Distribution_2022-03-04_999.PDF")
         assert rows[0]["date"] == "2022-03-04"
 
     def test_unrecognised_layout_emits_no_rows(self):
-        rows = pp.parse_distribution_text(
+        rows = letters.parse_distribution_text(
             "Some unrelated letter with no transfer block.\n",
             filename="3rd-Party-Distribution_2024-01-01_999.PDF")
         assert rows == []
@@ -2277,7 +2280,7 @@ class TestParseDistributionText:
             "SPY 2.00000 $200.00\n"
             "Total market value: $300.00\n"
         )
-        rows = pp.parse_distribution_text(text, filename="x_2024-03-01_100.PDF")
+        rows = letters.parse_distribution_text(text, filename="x_2024-03-01_100.PDF")
         assert len(rows) == 2
         assert {r["symbol"] for r in rows} == {"VTI", "SPY"}
         assert all(r["transfer_kind"] == "securities" for r in rows)
@@ -2286,23 +2289,4 @@ class TestParseDistributionText:
         extracted = Extracted("pdfium", (Page(self._CASH_SCHWAB),))
         name = "3rd-Party-Distribution_2024-06-17_999.PDF"
         assert letters.parse(extracted, filename=name) == \
-            pp.parse_distribution_text(self._CASH_SCHWAB, filename=name)
-
-
-# ============================================================
-# The layout a statement's headings name
-# ============================================================
-
-class TestDetectEra:
-    @pytest.mark.parametrize("heading,era", [
-        ("Positions - Equities", "2025"),
-        ("Transaction Details", "2025"),
-        ("Investment Detail - Equities", "2020"),
-        ("Investment Detail", "2017"),
-        ("Account Summary", None),
-    ])
-    def test_the_heading_names_the_layout(self, heading, era):
-        assert pp.detect_era(f"{PERIOD_HEADER}  {heading}  \nTotal\n") == era
-
-    def test_the_newest_layout_wins(self):
-        assert pp.detect_era("Investment Detail\nPositions - Equities\n") == "2025"
+            letters.parse_distribution_text(self._CASH_SCHWAB, filename=name)

@@ -5,10 +5,10 @@ dialect selected by flags:
 
   * ``load._parse_money``                    (money strings; leading $, -,
                                               and (parens) negatives)
-  * ``tax_form_parsers._to_float``           (1099 cells; $ + commas
+  * ``numparse.to_float``                    (tax-form cells; $ + commas
                                               stripped before paren check)
-  * ``pdf_parsers._parse_number``            (bare numbers; paren negatives)
-  * the cash-summary reader in ``pdf_parsers``
+  * ``stmt_tokens._parse_number``            (bare numbers; paren negatives)
+  * the cash-summary reader in ``stmt_2025``
                                              (cash cells; $ + paren negatives)
 
 The table pins the expected output for every input SHAPE each dialect
@@ -24,13 +24,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from numparse import parse_amount  # noqa: E402
+from numparse import modal_year, parse_amount, to_float  # noqa: E402
 
 
 # Config each call site passes to the consolidated parser.
 _CFG = {
     "money": dict(dollar=True, leading_minus=True),   # load._parse_money
-    "to_float": dict(dollar_first=True),              # _to_float
+    "to_float": dict(dollar_first=True),              # to_float
     "number": dict(),                                 # _parse_number
     "cash": dict(dollar=True),                        # cash summary
 }
@@ -92,3 +92,14 @@ def test_hardcoded_shapes():
                 f"parse_amount({inp!r}, {_CFG[name]}) -> {got!r}, "
                 f"expected {expected[name]!r} (shape={name})"
             )
+
+
+def test_to_float_is_the_tax_form_dialect():
+    for row in _TABLE:
+        assert _byte_same(to_float(row[0]), row[2]), row[0]
+
+
+def test_modal_year_is_the_most_common_year():
+    assert modal_year(["2021-10-01", None, "2020-01-02", "2021-06-15",
+                       "", "bad"]) == 2021
+    assert modal_year([None, ""]) is None

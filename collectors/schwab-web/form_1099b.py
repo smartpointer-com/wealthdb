@@ -28,12 +28,11 @@ import io
 import logging
 import re
 import xml.etree.ElementTree as ET
-from collections import Counter
 from datetime import datetime
 
-from numparse import parse_amount
+from numparse import modal_year, to_float
 
-log = logging.getLogger("schwab-web.tax_form_parsers")
+log = logging.getLogger("schwab-web.form_1099b")
 
 _YYYYMMDD_RE = re.compile(r"^\s*(\d{4})(\d{2})(\d{2})\s*$")
 _MDY_RE = re.compile(r"^\s*(\d{1,2})/(\d{1,2})/(\d{4})\s*$")
@@ -46,12 +45,6 @@ _TRUTHY = {"Y", "YES", "TRUE", "1", "X", "CHECKED"}
 # ============================================================
 # Small value helpers
 # ============================================================
-
-def _to_float(s) -> float | None:
-    """Parse a 1099 numeric cell to float. Returns None for
-    blank / non-numeric input. Strips $ and thousands commas."""
-    return parse_amount(s, dollar_first=True)
-
 
 def _iso_from_yyyymmdd(s: str | None) -> str | None:
     """OFX date `YYYYMMDD` → ISO `YYYY-MM-DD`. None on bad input."""
@@ -114,21 +107,7 @@ def _split_qty_name(desc: str) -> tuple[float | None, str]:
     m = _QTY_NAME_RE.match(desc)
     if not m:
         return None, desc.strip()
-    return _to_float(m.group(1)), m.group(2).strip()
-
-
-def _modal_year(iso_dates: list[str | None]) -> int | None:
-    """The dominant calendar year across a list of ISO dates — the
-    1099-B tax year derived from the form's *content* (every lot on a
-    1099-B for tax year N was sold in year N). Used when no explicit
-    TAXYEAR is available (CSV) or as a cross-check."""
-    years = Counter()
-    for d in iso_dates:
-        if d and len(d) >= 4 and d[:4].isdigit():
-            years[int(d[:4])] += 1
-    if not years:
-        return None
-    return years.most_common(1)[0][0]
+    return to_float(m.group(1)), m.group(2).strip()
 
 
 # ============================================================
@@ -228,23 +207,23 @@ def parse_1099b_xml(xml_text: str) -> dict:
         lots.append(_lot_row(
             security_name=(pd.findtext("SECNAME") or "").strip(),
             sale_description=(pd.findtext("SALEDESCRIPTION") or "").strip() or None,
-            quantity=_to_float(pd.findtext("NUMSHRS")),
-            proceeds=_to_float(pd.findtext("SALESPR")),
-            cost_basis_raw=_to_float(pd.findtext("COSTBASIS")),
+            quantity=to_float(pd.findtext("NUMSHRS")),
+            proceeds=to_float(pd.findtext("SALESPR")),
+            cost_basis_raw=to_float(pd.findtext("COSTBASIS")),
             basis_not_shown=bns,
             noncovered=nonc,
             acquired=acquired,
             date_sold=date_sold,
             term=_norm_term(pd.findtext("LONGSHORT")),
-            wash_sale=_to_float(pd.findtext("WASHSALELOSSDISALLOWED")),
-            accrued=_to_float(pd.findtext("ACCRUEDMKTDISCOUNT")),
+            wash_sale=to_float(pd.findtext("WASHSALELOSSDISALLOWED")),
+            accrued=to_float(pd.findtext("ACCRUEDMKTDISCOUNT")),
             form_8949_code=(pd.findtext("FORM8949CODE") or "").strip() or None,
             tax_year=tax_year,
             source_format="xml",
         ))
 
     # Fall back to (and cross-check against) the content-derived year.
-    derived = _modal_year([lot["date_sold"] for lot in lots])
+    derived = modal_year([lot["date_sold"] for lot in lots])
     if tax_year is None:
         tax_year = derived
         for lot in lots:
@@ -323,20 +302,20 @@ def parse_1099b_csv(csv_text: str) -> dict:
             security_name=name,
             sale_description=cell(r, "1a") or None,
             quantity=qty,
-            proceeds=_to_float(cell(r, "1d")),
-            cost_basis_raw=_to_float(cell(r, "1e")),
+            proceeds=to_float(cell(r, "1d")),
+            cost_basis_raw=to_float(cell(r, "1e")),
             basis_not_shown=basis_not_shown,
             noncovered=noncovered,
             acquired=acquired,
             date_sold=date_sold,
             term=_norm_term(cell(r, "2")),
-            wash_sale=_to_float(cell(r, "1g")),
-            accrued=_to_float(cell(r, "1f")),
+            wash_sale=to_float(cell(r, "1g")),
+            accrued=to_float(cell(r, "1f")),
             form_8949_code=None,
             tax_year=None,
             source_format="csv",
         ))
-    tax_year = _modal_year([lot["date_sold"] for lot in lots])
+    tax_year = modal_year([lot["date_sold"] for lot in lots])
     for lot in lots:
         lot["tax_year"] = tax_year
     return {"tax_year": tax_year, "lots": lots}

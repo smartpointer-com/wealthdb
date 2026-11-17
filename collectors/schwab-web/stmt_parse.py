@@ -17,9 +17,7 @@ the first page header, supplies the correct year.
 
 Three layouts exist, each read by its own module: ``stmt_2025``,
 ``stmt_legacy`` (2020-2024) and ``stmt_2017``. Each part of a
-statement is read by trying the layouts in turn. :func:`detect_era`
-names a statement's layout from its section headings; the parse does
-not depend on it.
+statement is read by trying the layouts in turn.
 """
 
 from __future__ import annotations
@@ -28,13 +26,10 @@ import re
 
 from collectorkit.words import Extracted
 from stmt_2017 import (
-    _VERY_OLD_INVDETAIL_RE,
     _parse_cash_summary_very_old,
     _parse_positions_very_old,
 )
 from stmt_2025 import (
-    _POSITIONS_HEADER_RE,
-    _TX_DETAILS_HEADER_RE,
     _parse_cash_summary_new,
     _parse_positions_new,
     _parse_transactions_new,
@@ -46,7 +41,6 @@ from stmt_header import (
     parse_statement_period,
 )
 from stmt_legacy import (
-    _LEGACY_POSITIONS_HEADER_RE,
     _parse_cash_summary_legacy,
     _parse_positions_legacy,
     _parse_transactions_legacy,
@@ -97,35 +91,6 @@ def parse(extracted: Extracted, statement_year: int | None = None) -> dict:
 # ============================================================
 # The layouts
 # ============================================================
-
-# Each layout's readers of the three parts: transactions, positions
-# and cash. The 2017-2019 layout prints its activity in the
-# "Transaction Detail" sections of 2020-2024.
-ERA_READERS = {
-    "2025": (_parse_transactions_new, _parse_positions_new,
-             _parse_cash_summary_new),
-    "2020": (_parse_transactions_legacy, _parse_positions_legacy,
-             _parse_cash_summary_legacy),
-    "2017": (_parse_transactions_legacy, _parse_positions_very_old,
-             _parse_cash_summary_very_old),
-}
-
-
-def detect_era(text: str) -> str | None:
-    """A statement's layout from its section headings: "2025" for a
-    "Positions - <Section>" or "Transaction Details" heading, "2020"
-    for "Investment Detail - <Section>", "2017" for a bare
-    "Investment Detail"; None when it prints none of them."""
-    lines = [ln.strip() for ln in text.split("\n")]
-    for era, found in (
-            ("2025", lambda ln: (_POSITIONS_HEADER_RE.match(ln)
-                                 or _TX_DETAILS_HEADER_RE.match(ln))),
-            ("2020", _LEGACY_POSITIONS_HEADER_RE.match),
-            ("2017", _VERY_OLD_INVDETAIL_RE.match)):
-        if any(found(ln) for ln in lines):
-            return era
-    return None
-
 
 def parse_transactions(text: str, statement_year: int | None = None) -> list[TransactionRow]:
     """Extract transaction rows from a statement's full-text.

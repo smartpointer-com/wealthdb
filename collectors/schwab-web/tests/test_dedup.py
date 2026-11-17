@@ -150,3 +150,27 @@ def test_dry_run_collapses_nothing(tmp_path, monkeypatch):
     dedup.main(["--bronze-dir", str(tmp_path), "--dry-run"])
     assert _ino(a / "statements/9999/stmt.pdf") == ia
     assert _ino(b / "statements/9999/stmt.pdf") == ib
+
+
+def test_sample_text_diff_prints_the_text_layer_diff(tmp_path, monkeypatch,
+                                                     capsys):
+    from collectorkit.words import Extracted, Page
+
+    def stub_text(path, *, words=False):
+        body = Path(path).read_bytes().decode()
+        return Extracted("pdfium", (Page(text=body.replace("|", "\n")),))
+
+    monkeypatch.setattr(pdf_parsers, "parse_statement_pdf", _stub_parse)
+    monkeypatch.setattr(dedup.extraction, "pdfium", stub_text)
+    _mk_run(tmp_path, OLD_A,
+            [("9999", "stmt.pdf", "Statements", "01/31/2024")],
+            {"statements/9999/stmt.pdf": b"JAN|render-old"})
+    _mk_run(tmp_path, OLD_B,
+            [("9999", "stmt.pdf", "Statements", "01/31/2024")],
+            {"statements/9999/stmt.pdf": b"JAN|render-new"})
+    _backdate(tmp_path)
+    assert dedup.main(["--bronze-dir", str(tmp_path), "--dry-run",
+                       "--sample-text-diff", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "-- text-layer diff for 9999/" in out
+    assert "   -render-old" in out and "   +render-new" in out

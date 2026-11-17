@@ -31,6 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pdf_parsers as pp  # noqa: E402
+import stmt_2025  # noqa: E402
 
 
 def _fixture_path() -> Path | None:
@@ -135,7 +136,7 @@ def test_categories_in_known_set(parsed):
     _CATEGORY_KEYWORDS."""
     if not parsed["transactions"]:
         pytest.skip("no transactions to validate")
-    known = set(pp._CATEGORY_KEYWORDS)
+    known = set(stmt_2025._CATEGORY_KEYWORDS)
     seen = {tx["category"] for tx in parsed["transactions"] if tx.get("category")}
     unknown = seen - known
     assert not unknown, (

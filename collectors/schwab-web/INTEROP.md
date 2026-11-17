@@ -37,7 +37,7 @@ that needs to converge them.
 Every Schwab statement PDF has the full account number printed
 in its first-page header (typically `Account Number:
 NNNN-NNNN`). The web loader parses that header
-(`pdf_parsers.parse_account_number` — both the 2017-2019 inline
+(`stmt_header.parse_account_number` — both the 2017-2019 inline
 form and the 2020+ label-and-value-on-consecutive-lines form)
 and writes the value into `accounts.payload` under
 **`account_number_full`**, on every snapshot row of the account.
@@ -230,7 +230,7 @@ the web feed is and is not carrying:
 
 | Gap | Impact on gold |
 | --- | --- |
-| pdf_parsers occasionally returns `amount=None` on Sale rows | Some Sale rows lose their amount; gold can detect the gap with a row-count sanity check |
+| The statement parser occasionally returns `amount=None` on Sale rows | Some Sale rows lose their amount; gold can detect the gap with a row-count sanity check |
 | Overlapping transaction sources (`statement_pdf` + `tx_history_json` + `form_1099b`) | Same logical event can land more than once with different synthetic `activity_id`s. Gold dedupes statement↔tx-history by (account, timestamp, amount, ±description) preferring `tx_history_json`, and leaves `form_1099b` out of its transactions (§8.1) |
 | Per-row "More"-modal data may be absent | Captured by default (~1 click/transaction); `--no-more-detail` opts out. When the sidecar is present, silver parses each dialog into `payload._more` (`settle_date`, `cusip`, `principal`, `commission`, `industry_fee` and more; values as printed, see DESIGN.md §6.0) |
 | `form_1099b` lots have no ticker/CUSIP — `security_name` only | Gold reads the name as a ticker or an option contract and bridges it like any web key (§8.1) |

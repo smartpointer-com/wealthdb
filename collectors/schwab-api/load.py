@@ -98,10 +98,18 @@ def stamped_day(value) -> int | None:
     Migration 0006 reads it the same way in SQL."""
     if not isinstance(value, str) or not _DAY_PREFIX.match(value):
         return None
-    try:
-        return parse_iso_date_start_of_day(value[:10])
-    except ValueError:
-        return None
+    return parse.iso_date_to_epoch(value)
+
+
+def _latest_payload(conn, table: str, key_col: str, key) -> str | None:
+    """The payload of `table`'s latest row for `key`, or None. A loader
+    inserts a row only when its canonical payload differs from this."""
+    row = conn.execute(
+        f"SELECT payload FROM {table} WHERE {key_col} = ? "
+        "ORDER BY snapshot_at DESC LIMIT 1",
+        (key,),
+    ).fetchone()
+    return None if row is None else row[0]
 
 
 def canonical_json(obj) -> str:
@@ -218,12 +226,8 @@ def load_accounts(conn, snapshot_at: int, merged_accounts: list[dict]) -> int:
     for acct in merged_accounts:
         external_id = acct["hashValue"]
         payload = canonical_json(acct)
-        row = conn.execute(
-            "SELECT payload FROM accounts WHERE account_external_id = ? "
-            "ORDER BY snapshot_at DESC LIMIT 1",
-            (external_id,),
-        ).fetchone()
-        if row is None or row[0] != payload:
+        if _latest_payload(conn, "accounts", "account_external_id",
+                           external_id) != payload:
             conn.execute(
                 "INSERT INTO accounts"
                 "(snapshot_at, account_external_id, account_number, "
@@ -466,12 +470,7 @@ def load_instruments(conn, snapshot_at: int, response: dict | None) -> int:
                         list(inst.keys()))
             continue
         payload = canonical_json(inst)
-        row = conn.execute(
-            "SELECT payload FROM instruments WHERE symbol = ? "
-            "ORDER BY snapshot_at DESC LIMIT 1",
-            (symbol,),
-        ).fetchone()
-        if row is None or row[0] != payload:
+        if _latest_payload(conn, "instruments", "symbol", symbol) != payload:
             conn.execute(
                 "INSERT INTO instruments(snapshot_at, symbol, payload) "
                 "VALUES (?, ?, ?)",
@@ -611,12 +610,7 @@ def load_synthesized_instruments(conn, snapshot_at: int,
                 "putCall": inst.get("putCall"),
             }
         payload = canonical_json(record)
-        row = conn.execute(
-            "SELECT payload FROM instruments WHERE symbol = ? "
-            "ORDER BY snapshot_at DESC LIMIT 1",
-            (sym,),
-        ).fetchone()
-        if row is None or row[0] != payload:
+        if _latest_payload(conn, "instruments", "symbol", sym) != payload:
             conn.execute(
                 "INSERT INTO instruments(snapshot_at, symbol, payload) "
                 "VALUES (?, ?, ?)",

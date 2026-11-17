@@ -495,6 +495,32 @@ def test_a_replaced_window_replaces_its_legs(tmp_path):
     assert _count(_open(db), "transaction_legs") == 0
 
 
+@pytest.mark.parametrize("value,expected", [
+    ("2099-09-09T05:00:00.000+00:00", 4092595200),
+    ("2099-09-09", 4092595200),
+    ("2099-02-30T00:00:00", None),
+    ("0000-01-01T00:00:00", None),
+    ("99-09-09", None),
+    (20990909, None),
+    (None, None),
+])
+def test_a_stamp_reads_as_the_day_it_begins_with(value, expected):
+    assert loader.stamped_day(value) == expected
+
+
+def test_a_payload_like_the_latest_adds_no_row(tmp_path):
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE instruments"
+                 "(snapshot_at INTEGER, symbol TEXT, payload TEXT)")
+    conn.executemany("INSERT INTO instruments VALUES (?, ?, ?)",
+                     [(1, "VTI", "old"), (2, "VTI", "new")])
+    assert loader._latest_payload(conn, "instruments", "symbol", "VTI") == "new"
+    assert loader._latest_payload(conn, "instruments", "symbol", "QQQ") is None
+    response = {"instruments": [{"symbol": "VTI"}, {"symbol": "QQQ"}]}
+    assert loader.load_instruments(conn, 3, response) == 2
+    assert loader.load_instruments(conn, 4, response) == 0
+
+
 def test_migration_0006_fills_what_the_loader_writes(tmp_path):
     """A silver at schema 0005, holding the rows a load writes, gets from
     the migration exactly the fields a fresh load of the same bronze

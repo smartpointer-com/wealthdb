@@ -20,36 +20,17 @@ statements.
 Each document kind reads an extracted document in a module of its own:
 `stmt_parse` the statement (with `stmt_header`, `stmt_tokens` and one
 module per layout: `stmt_2025`, `stmt_legacy`, `stmt_2017`), and
-`letters` the distribution letters. This module keeps the names the
-loader and the tests import, and the wrappers that take a PDF's path,
-extract it (`extraction`) and parse it.
+`letters` the distribution letters. This module holds the wrappers
+the loader and `dedup` call: each takes a PDF's path, extracts it
+(`extraction`) and parses it.
 """
 
 from __future__ import annotations
 
 import extraction
 import letters
+import stmt_header
 import stmt_parse
-from letters import parse_distribution_text  # noqa: F401
-from stmt_2025 import _CATEGORY_KEYWORDS, _NEW_TX_ROW_STOP_RE  # noqa: F401
-from stmt_header import (  # noqa: F401
-    parse_account_number,
-    parse_account_registration,
-    parse_account_value,
-    parse_statement_period,
-)
-from stmt_legacy import (  # noqa: F401
-    _LEGACY_TX_ROW_STOP_RE,
-    _parse_legacy_lot_line,
-)
-from stmt_parse import (  # noqa: F401
-    detect_era,
-    parse_cash_interest_rate,
-    parse_cash_summary,
-    parse_positions,
-    parse_transactions,
-)
-from stmt_tokens import TransactionRow, _parse_number, _row_date  # noqa: F401
 
 
 # ============================================================
@@ -80,13 +61,13 @@ def parse_statement_account_number(path) -> str | None:
     account-number parser existed, and to re-verify a freshly
     set key against every statement — without re-running the
     row parsers."""
-    return parse_account_number(extraction.pdfium(path).text())
+    return stmt_header.parse_account_number(extraction.pdfium(path).text())
 
 
 def parse_distribution_pdf(path) -> list[dict]:
     """Open a 3rd-Party-Distribution PDF and return normalised silver
-    rows. Thin wrapper over `parse_distribution_text` so the row logic
-    is unit-testable without a real PDF."""
+    rows. Thin wrapper over `letters.parse` so the row logic is
+    unit-testable without a real PDF."""
     name = str(path).rsplit("/", 1)[-1]
     return letters.parse(extraction.pdfium(path), filename=name)
 

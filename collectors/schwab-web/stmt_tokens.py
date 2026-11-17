@@ -96,10 +96,9 @@ def _as_num(s: str) -> float | None:
     """Coerce a trailing position-column token to a float, mapping the
     "N/A" / "<1%" placeholders (and a trailing "%" / ",") to None /
     a bare number. Shared by the position-block parsers."""
-    s = s.rstrip("%").rstrip(",")
     if s in ("N/A", "<1%"):
         return None
-    return _parse_number(s)
+    return _parse_number(s.rstrip("%").rstrip(","))
 
 
 def _is_trailing_col_token(s: str) -> bool:

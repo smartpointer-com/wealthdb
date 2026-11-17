@@ -166,13 +166,15 @@ a `load --force` rebuild must produce identical silver.
 
 Owns "parse bronze JSON, apply migrations, insert into SQLite".
 
-Three discipline points:
+`load.py` states its tables in a `collectorkit.loader.LoaderSpec`. The
+kit's load frame carries out the three points below.
 
 1. **Apply pending migrations on startup**, before any data load.
    Read `MAX(silver_schema_version) FROM schema_meta`, compare to
    the highest numbered file in `migrations/`, execute any forward
    migrations in order. Silver must always be at the latest schema;
-   no backward-compat in queries.
+   no backward-compat in queries. A silver whose schema is newer than
+   the code stops the load before anything is written.
 
 2. **One dump = one transaction.** Open a SQLite transaction at the
    start of loading a dump directory; record the dump in `dump_runs`
@@ -496,7 +498,8 @@ original for anyone who genuinely needs to trace a specific request.
   loader's "migration completed" marker.
 
 A crash mid-migration can leave a partial schema. The recovery is
-`load --force`, which deletes the silver DB and rebuilds it from bronze.
+`load --force`. It builds a fresh silver from bronze beside the old one
+and puts it in place only when the load succeeds.
 
 The loader:
 1. On startup, reads the maximum `silver_schema_version` from

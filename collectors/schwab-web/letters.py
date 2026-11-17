@@ -12,7 +12,7 @@ import re
 from collectorkit import statement_period
 from collectorkit.words import Extracted
 
-log = logging.getLogger("schwab-web.pdf_parsers")
+log = logging.getLogger("schwab-web.letters")
 
 
 # ============================================================

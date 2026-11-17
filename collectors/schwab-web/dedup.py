@@ -48,6 +48,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import extraction
 import pdf_parsers as pp
 from collectorkit import bronze, dedup, prune
 from load import (
@@ -130,8 +131,8 @@ def _text_layer_diff(canonical: Path, dup: Path, max_lines: int) -> list[str]:
     """Unified diff of the raw PDF text layers, truncated — the 'text-layer'
     half of the stratified equivalence check: confirms that two PARSE-equal
     copies differ, in their raw text, only in volatile render lines."""
-    a = pp._extract_pdf_text(str(canonical)).splitlines()
-    b = pp._extract_pdf_text(str(dup)).splitlines()
+    a = extraction.pdfium(canonical).text().splitlines()
+    b = extraction.pdfium(dup).text().splitlines()
     out = [ln for ln in difflib.unified_diff(
         a, b, fromfile="canonical", tofile="dup", lineterm="")
         if ln and ln[0] in "+-" and not ln.startswith(("+++", "---"))]

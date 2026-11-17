@@ -1,4 +1,5 @@
-"""One money/number-string parser for the schwab-web silver loader.
+"""One money/number-string parser for the schwab-web silver loader, and
+the small value helpers the tax-form kinds share.
 
 Schwab renders monetary and numeric cells in a handful of shapes across
 its statement PDFs, tax forms and web exports: bare numbers (``1234.56``),
@@ -7,8 +8,8 @@ leading-minus negatives (``-$5.00``), and parenthesised negatives
 (``($1.00)``). Blank / ``None`` / non-numeric input yields ``None``.
 
 This function is the single implementation the surface-specific helpers
-(``load._parse_money``, ``tax_form_parsers._to_float``,
-``pdf_parsers._parse_number`` and the cash-summary reader) delegate to.
+(``load._parse_money``, :func:`to_float`, ``stmt_tokens._parse_number``
+and ``stmt_2025``'s cash-summary reader) delegate to.
 Each surface enables only the shapes its source actually emits, via the
 keyword flags — the defaults handle the plain ``(neg)`` / comma / number
 case shared by all of them:
@@ -25,6 +26,8 @@ The result is advisory: silver keeps the raw string in its JSON payload;
 these floats feed ordering / arithmetic indexes only.
 """
 from __future__ import annotations
+
+from collections import Counter
 
 
 def parse_amount(
@@ -60,3 +63,23 @@ def parse_amount(
     except ValueError:
         return None
     return -v if neg else v
+
+
+def to_float(s) -> float | None:
+    """Parse a tax-form numeric cell to float. Returns None for
+    blank / non-numeric input. Strips $ and thousands commas."""
+    return parse_amount(s, dollar_first=True)
+
+
+def modal_year(iso_dates: list[str | None]) -> int | None:
+    """The dominant calendar year across a list of ISO dates — a tax
+    form's year derived from its *content* (every lot on a 1099-B for
+    tax year N was sold in year N). Used when no explicit tax year is
+    printed, or as a cross-check."""
+    years = Counter()
+    for d in iso_dates:
+        if d and len(d) >= 4 and d[:4].isdigit():
+            years[int(d[:4])] += 1
+    if not years:
+        return None
+    return years.most_common(1)[0][0]

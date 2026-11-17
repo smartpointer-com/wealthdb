@@ -13,8 +13,7 @@ from collections import Counter
 from datetime import datetime
 
 from collectorkit.words import Extracted, Word, cell_of
-from form_1099b import _modal_year, _to_float
-from numparse import parse_amount
+from numparse import modal_year, parse_amount, to_float
 
 
 # ============================================================
@@ -155,7 +154,7 @@ class _ReportLots:
         anchor = (m["qty"], m["acq"], m["sold"])
         self.anchors[anchor] += 1
         return {
-            "head": head, "quantity": _to_float(m["qty"]),
+            "head": head, "quantity": to_float(m["qty"]),
             "acquired_date": _report_iso(m["acq"]),
             "disposed_date": _report_iso(m["sold"]),
             "cells": cells, "footnotes": (["S"] if m["short"] else []) + marks,
@@ -253,7 +252,7 @@ def _finish_report(acc: _ReportLots, lots: list[dict], year_re: re.Pattern,
     """Stamp every lot with the report's tax year: the one it prints, or
     else the year most of its lots were sold in."""
     m = year_re.search(text)
-    tax_year = int(m[1]) if m else _modal_year([lot["disposed_date"] for lot in lots])
+    tax_year = int(m[1]) if m else modal_year([lot["disposed_date"] for lot in lots])
     for lot in lots:
         lot["footnotes"] = lot["footnotes"] or None
         lot["tax_year"] = tax_year
