@@ -385,10 +385,10 @@ wrapper_check_mounts() {
     mkdir -p "$HOST_STARTUPCACHE"
     chmod 700 "$HOST_STARTUPCACHE"
     HOST_STARTUPCACHE="$(_abs_dir "$HOST_STARTUPCACHE")"
-    if [[ ! -d "$HOST_CACHE" ]]; then
-        mkdir -p "$HOST_CACHE"
-        chmod 700 "$HOST_CACHE"
-    fi
+    # The collector cache holds extracted statement text and parsed rows,
+    # so it is kept 0700 like the data dir, whoever created it.
+    mkdir -p "$HOST_CACHE"
+    chmod 700 "$HOST_CACHE"
     HOST_CACHE="$(_abs_dir "$HOST_CACHE")"
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         mkdir -p "$HOST_DEBUG"

@@ -65,7 +65,7 @@ Subcommands:
   load [args...]      Ingest bronze snapshots into the SQLite silver:
                       offerings, positions, cash_flows, tax_documents,
                       capital_account_statements, k1_documents.
-                      --force deletes the silver DB and rebuilds from all bronze.
+                      --force rebuilds the silver from all bronze.
   prune [args...]     Reclaim bronze disk: delete non-complete dumps
                       (crashed downloads with no terminal run.json), and
                       strip screenshots/ (the download --debug captures)

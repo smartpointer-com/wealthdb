@@ -30,7 +30,7 @@ Subcommands:
   load        Ingest bronze snapshots into the SQLite silver: offerings,
               positions, cash_flows, tax_documents,
               capital_account_statements, k1_documents. Pass --force to
-              delete the silver DB and rebuild it from all bronze.
+              rebuild it from all bronze.
   prune       Delete non-complete dumps (crashed downloads with no
               terminal run.json) from the bronze tree, and strip
               screenshots/ (the download --debug captures) from complete
@@ -73,7 +73,7 @@ Subcommands:
   load        Ingest bronze snapshots into the SQLite silver: offerings,
               positions, cash_flows, tax_documents,
               capital_account_statements, k1_documents. Pass --force to
-              delete the silver DB and rebuild it from all bronze.
+              rebuild it from all bronze.
   prune       Delete non-complete dumps (crashed downloads with no
               terminal run.json) from the bronze tree, and strip
               screenshots/ (the download --debug captures) from complete

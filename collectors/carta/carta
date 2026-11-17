@@ -63,7 +63,7 @@ Subcommands:
                       vesting_events, fund_metrics, cap_calls,
                       capital_events, cash_flows, documents,
                       k1_capital_accounts.
-                      --force deletes the silver DB and rebuilds from all bronze.
+                      --force rebuilds the silver from all bronze.
   prune [args...]     Delete non-complete dumps (a crashed walk left
                       run.json status="in-progress", or a walk that crashed
                       before writing run.json left none) from the bronze

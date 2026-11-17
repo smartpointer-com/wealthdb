@@ -29,8 +29,8 @@ Subcommands:
   load        Ingest bronze snapshots into the SQLite silver: entities,
               securities, vesting_schedules + vesting_events,
               fund_metrics, cap_calls, capital_events, cash_flows,
-              documents, k1_capital_accounts. Pass --force to delete the
-              silver DB and rebuild it from all bronze.
+              documents, k1_capital_accounts. Pass --force to rebuild it
+              from all bronze.
   prune       Delete non-complete dumps (crashed walks) from the bronze
               tree, and strip screenshots/ (the download --debug captures)
               from complete dumps, whose load inputs are never touched.
@@ -72,8 +72,8 @@ Subcommands:
   load        Ingest bronze snapshots into the SQLite silver: entities,
               securities, vesting_schedules + vesting_events,
               fund_metrics, cap_calls, capital_events, cash_flows,
-              documents, k1_capital_accounts. Pass --force to delete the
-              silver DB and rebuild it from all bronze.
+              documents, k1_capital_accounts. Pass --force to rebuild it
+              from all bronze.
   prune       Delete non-complete dumps (crashed walks) from the bronze
               tree, and strip screenshots/ (the download --debug captures)
               from complete dumps, whose load inputs are never touched.

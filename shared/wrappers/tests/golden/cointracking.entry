@@ -38,8 +38,8 @@ Subcommands:
               portfolio_prices from overview.csv, reconcile final
               balances vs the balance.csv. Pass --replay-only to
               re-run the holdings replay without re-ingesting
-              bronze; --force to delete the silver DB and rebuild
-              it from all bronze. Missing prices are filled after
+              bronze; --force to rebuild it from all bronze.
+              Missing prices are filled after
               ingest by default, crypto from Binance and fiat from the
               ECB via Frankfurter; --no-fetch-prices skips it.
   fetch-prices Fetch prices for every held coin: crypto
@@ -105,8 +105,8 @@ Subcommands:
               portfolio_prices from overview.csv, reconcile final
               balances vs the balance.csv. Pass --replay-only to
               re-run the holdings replay without re-ingesting
-              bronze; --force to delete the silver DB and rebuild
-              it from all bronze. Missing prices are filled after
+              bronze; --force to rebuild it from all bronze.
+              Missing prices are filled after
               ingest by default, crypto from Binance and fiat from the
               ECB via Frankfurter; --no-fetch-prices skips it.
   fetch-prices Fetch prices for every held coin: crypto

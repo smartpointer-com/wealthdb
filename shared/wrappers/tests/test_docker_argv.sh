@@ -5,7 +5,7 @@
 #     it, so Firefox's regenerable compiled-bytecode cache lands there
 #     instead of next to the session cookie under /secrets;
 #   - the collector's own cache dir is mounted at /cache/collector, made
-#     0700 when missing, and WEALTHDB_CACHE_DIR names it in the container;
+#     kept 0700, and WEALTHDB_CACHE_DIR names it in the container;
 #   - every mount source is an absolute host path, since `docker run -v`
 #     reads a bare relative source as a named volume;
 #   - the VNC port is forwarded only for the VNC_SUBCOMMANDS, on the first
@@ -90,10 +90,10 @@ else
 fi
 chmod 750 "$own"
 docker_argv >/dev/null
-if [[ "$(ls -ld "$own" | cut -c1-10)" == "drwxr-x---" ]]; then
-    ok "an existing collector cache dir keeps its mode"
+if [[ "$(ls -ld "$own" | cut -c1-10)" == "drwx------" ]]; then
+    ok "an existing collector cache dir is made 0700"
 else
-    bad "an existing collector cache dir was changed"
+    bad "an existing collector cache dir was not made 0700"
 fi
 
 echo "wrapper-lib relative mount sources:"

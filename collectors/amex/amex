@@ -1,8 +1,9 @@
 #!/bin/bash
 # Host-side wrapper around `docker run` for the amex container. Mounts
 # ~/.secrets/ (RW; persistent Camoufox profile + env file), the bronze
-# tree (RW), and a /debug dir for the diagnostics explore and --debug
-# runs write. Single-writer:
+# tree (RW), a /debug dir for the diagnostics explore and --debug
+# runs write, and the collector cache dir, which holds the parse cache.
+# Single-writer:
 # the session cookie + 2FA prompts can't tolerate concurrent invocations,
 # and the safety guard refuses to evict a container hosting a live VNC
 # session.

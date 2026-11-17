@@ -45,7 +45,7 @@ case "${1:-help}" in
         #   --check  probe only; report whether the session is valid, never
         #            open Firefox (exit 1 if not).
         #   --fresh  skip the check and always re-login (the `load --force`
-        #            spelling is reserved for the delete-and-rebuild loader).
+        #            spelling is reserved for the loader's rebuild).
         # Otherwise launch a genuine, un-instrumented stock Firefox under
         # Xvfb + VNC so the login is cleared by hand; on a clean close,
         # lift the session from its plaintext cookies.sqlite.
@@ -193,7 +193,7 @@ Subcommands:
               event-sourced position_snapshots, vehicles, k1_capital_accounts,
               tax_documents, portfolio_summary / timeseries, commitments,
               funding_accounts + funding_transactions. Pass --force to
-              delete the silver DB and rebuild it from all bronze.
+              rebuild it from all bronze.
   prune       Delete non-complete dumps (crashed / interrupted downloads
               that never wrote a terminal run.json) from the bronze tree.
               --dry-run prints the plan first.

@@ -8,11 +8,11 @@
 
 # pypdfium2 ships Python bindings to Google's PDFium (the
 # renderer Chrome uses). Pure-C++ under the hood, an order of
-# magnitude faster than a pure-Python extractor — pdf_parsers.py
-# does text-only extraction across hundreds of monthly statement
-# PDFs. Apache/BSD-licensed, wheel-distributed. Capped below 5:
-# load.py puts the pypdfium2 version in its parser fingerprint, so a
-# bump re-parses every schwab-web statement.
+# magnitude faster than a pure-Python extractor, across hundreds of
+# statement PDFs (extraction.py, through collectorkit.extract).
+# Apache/BSD-licensed, wheel-distributed. Capped below 5: the
+# pypdfium2 version is part of each PDF kind's extraction key, so a
+# bump re-derives every statement, letter and realized-lot report.
 pypdfium2>=4.30,<5
 
 # pytest is bundled in the image: `make test-schwab-web` runs the suite there, on

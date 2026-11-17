@@ -1,7 +1,8 @@
 #!/bin/bash
 # Host-side wrapper around `docker run` for the swissquote container.
-# Mounts ~/.secrets/ (RW for the state-file write) and the bronze
-# directory (RW), and forwards all arguments to the container.
+# Mounts ~/.secrets/ (RW for the state-file write), the bronze
+# directory (RW) and a /debug dir for login.py's screenshots and
+# traces, and forwards all arguments to the container.
 # The common docker-run plumbing lives in
 # shared/wrappers/wrapper-lib.sh.
 

@@ -10,8 +10,9 @@ FROM wealthdb/base-camoufox:${WEALTHDB_IMAGE_TAG}
 
 WORKDIR /app
 
-# poppler-utils provides `pdftotext`, used by statements.py to parse the
-# capital-account-statement + K-1 PDFs (load step). Single apt layer.
+# poppler-utils provides `pdftotext`: its `-layout` text for the
+# capital-account statements and its `-bbox` word boxes for the K-1
+# (load step). Single apt layer.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends poppler-utils \
     && rm -rf /var/lib/apt/lists/*

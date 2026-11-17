@@ -12,7 +12,7 @@ playwright==1.65.2
 # and switch the loader to openpyxl.
 xlrd==1.2.0
 
-# pypdf is used by load.py to extract position snapshots from
+# pypdf is used by pp_parser.py to extract position snapshots from
 # Portfolio performance PDFs.
 pypdf>=6.19,<7
 

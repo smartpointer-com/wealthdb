@@ -70,7 +70,7 @@ Subcommands:
                       portfolio_summary / timeseries, commitments,
                       funding_accounts + funding_transactions,
                       k1_capital_accounts, tax_documents.
-                      --force deletes the silver DB and rebuilds from all bronze.
+                      --force rebuilds the silver from all bronze.
   prune [args...]     Delete non-complete dumps (crashed / interrupted
                       downloads that never wrote a terminal run.json)
                       from the bronze tree. Runs host-side (pure stdlib;
