@@ -121,8 +121,8 @@ canonicalisation rule changed, a `snapshot_at` derivation changed),
 the operationally-correct response is:
 
 1. Add a migration if the schema changes.
-2. Rebuild with `load --force`, which deletes the silver DB and
-   re-ingests all bronze.
+2. Rebuild with `load --force`, which builds a fresh silver DB from
+   all bronze and puts it in place of the old one.
 
 `dump_runs.snapshot_at` (= the dump-directory timestamp) provides
 idempotency on re-runs that do not change loader semantics, but for

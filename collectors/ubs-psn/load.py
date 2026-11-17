@@ -55,7 +55,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver
+from collectorkit import bronze, cli, loader, silver
 
 log = logging.getLogger("ubs-psn.load")
 
@@ -113,9 +113,9 @@ def file_snapshot_at(fname: str) -> int | None:
 # --------------------------------------------------------------------------
 
 # open_db + schema versioning + the migration runner live in
-# collectorkit.silver. ubs-psn wraps each dump in `with conn:` for per-dump
-# atomicity, so it shares silver's default-isolation opener (mkdir + connect +
-# foreign keys + WAL, no row_factory) rather than keeping its own copy.
+# collectorkit.silver. The load frame wraps each dump in one transaction
+# on a connection from silver's default-isolation opener (mkdir + connect +
+# foreign keys + WAL, no row_factory): the loaders read rows by position.
 open_db = silver.open_db_default_isolation
 
 
@@ -1408,82 +1408,95 @@ MT_LOADERS = {
 # Per-dump driver
 # --------------------------------------------------------------------------
 
-def load_dump(conn: sqlite3.Connection, dump_dir: Path,
-              relationship_id: str) -> dict:
-    name = dump_dir.name
-    snapshot_at = bronze.parse_run_ts(name)
+def load_dump(conn: sqlite3.Connection, dump_dir: Path, snapshot_at: int,
+              relationship_id: str) -> tuple[int, int, int, int]:
+    """Load one dump's zips inside the caller's transaction and return
+    its counts: (xml rows, MT balances, MT events, other MT rows)."""
+    log.info("Loading dump %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
-    if silver.snapshot_loaded(conn, snapshot_at):
-        return {"name": name, "skipped": True}
-
-    log.info("Loading dump %s (snapshot_at=%d)", name, snapshot_at)
-    stats: dict = {"name": name, "skipped": False}
-
-    with conn:  # BEGIN on entry, COMMIT on clean exit, ROLLBACK on exception
-        # Per-file snapshot_at: the file's as-of date from its 'YYYY-MM-DD_'
-        # filename prefix (see file_snapshot_at). Falls back to the dump
-        # directory's timestamp if the prefix is missing.
-        #
-        # 1. PSN XML containers (ZMD, ZME) — iterate every .xml entry
-        xml_rows = 0
-        for zip_path in sorted(dump_dir.glob("Z*.zip")):
-            for fname, blob in iter_zip_entries(zip_path, suffix=".xml"):
-                try:
-                    type_code, entities = parse_psn_xml(blob)
-                except ET.ParseError as e:
-                    log.warning("XML parse failed for %s: %s", fname, e)
-                    continue
-                if not entities:
-                    log.debug("Empty <Data> in %s (type %s) — skipping",
-                              fname, type_code)
-                    continue
-                loader = XML_LOADERS.get(type_code)
-                if loader is None:
-                    log.debug("No XML loader for type %s (%s) — skipping",
-                              type_code, fname)
-                    continue
-                file_at = file_snapshot_at(fname) or snapshot_at
-                xml_rows += loader(conn, file_at, relationship_id, entities)
-        stats["xml_rows"] = xml_rows
-
-        # 2. MT containers — iterate every .txt entry per zip's order type
-        #    (from the stem: 'ZAH' or a dated 'ZAH_20260601' both route to
-        #    the ZAH loader)
-        mt_balances = 0
-        mt_events = 0
-        mt_other = 0
-        for zip_path in sorted(dump_dir.glob("Z*.zip")):
-            m = _ZIP_STEM_RE.match(zip_path.stem.upper())
-            loader = MT_LOADERS.get(m.group(1)) if m else None
-            if loader is None:
+    # Per-file snapshot_at: the file's as-of date from its 'YYYY-MM-DD_'
+    # filename prefix (see file_snapshot_at). Falls back to the dump
+    # directory's timestamp if the prefix is missing.
+    #
+    # 1. PSN XML containers (ZMD, ZME) — iterate every .xml entry
+    xml_rows = 0
+    for zip_path in sorted(dump_dir.glob("Z*.zip")):
+        for fname, blob in iter_zip_entries(zip_path, suffix=".xml"):
+            try:
+                type_code, entities = parse_psn_xml(blob)
+            except ET.ParseError as e:
+                log.warning("XML parse failed for %s: %s", fname, e)
                 continue
-            for fname, blob in iter_zip_entries(zip_path, suffix=".txt"):
-                text = blob.decode("utf-8", errors="replace")
-                file_at = file_snapshot_at(fname) or snapshot_at
-                result = loader(conn, file_at, relationship_id, text)
-                if isinstance(result, tuple):
-                    mt_balances += result[0]
-                    mt_events += result[1]
-                else:
-                    mt_other += result
-        stats["mt_balances"] = mt_balances
-        stats["mt_events"] = mt_events
-        stats["mt_other"] = mt_other
+            if not entities:
+                log.debug("Empty <Data> in %s (type %s) — skipping",
+                          fname, type_code)
+                continue
+            loader_fn = XML_LOADERS.get(type_code)
+            if loader_fn is None:
+                log.debug("No XML loader for type %s (%s) — skipping",
+                          type_code, fname)
+                continue
+            file_at = file_snapshot_at(fname) or snapshot_at
+            xml_rows += loader_fn(conn, file_at, relationship_id, entities)
 
-        # 3. dump_runs LAST so a mid-load failure leaves no trace.
-        conn.execute(
-            "INSERT INTO dump_runs"
-            "(snapshot_at, silver_schema_version, run_dir) VALUES (?, ?, ?)",
-            (snapshot_at, silver.current_schema_version(conn), str(dump_dir.resolve())),
-        )
-    return stats
+    # 2. MT containers — iterate every .txt entry per zip's order type
+    #    (from the stem: 'ZAH' or a dated 'ZAH_20260601' both route to
+    #    the ZAH loader)
+    mt_balances = 0
+    mt_events = 0
+    mt_other = 0
+    for zip_path in sorted(dump_dir.glob("Z*.zip")):
+        m = _ZIP_STEM_RE.match(zip_path.stem.upper())
+        loader_fn = MT_LOADERS.get(m.group(1)) if m else None
+        if loader_fn is None:
+            continue
+        for fname, blob in iter_zip_entries(zip_path, suffix=".txt"):
+            text = blob.decode("utf-8", errors="replace")
+            file_at = file_snapshot_at(fname) or snapshot_at
+            result = loader_fn(conn, file_at, relationship_id, text)
+            if isinstance(result, tuple):
+                mt_balances += result[0]
+                mt_events += result[1]
+            else:
+                mt_other += result
+    return xml_rows, mt_balances, mt_events, mt_other
+
+
+def pending_dumps(conn: sqlite3.Connection, bronze_dir: Path, *,
+                  log: logging.Logger) -> list[Path]:
+    """The dumps under `bronze_dir` silver has not loaded, oldest first.
+
+    Every timestamped run dir is a dump, whatever its run.json status:
+    a fetched queue zip exists nowhere else, so a dump whose walk did not
+    finish still loads what it holds."""
+    dumps = list(bronze.iter_run_dirs(bronze_dir))
+    log.info("Found %d dump directory(s) under %s", len(dumps), bronze_dir)
+    loaded = silver.loaded_snapshots(conn)
+    pending: list[Path] = []
+    for d in dumps:
+        if bronze.parse_run_ts(d.name) in loaded:
+            log.info("  %s: skipped (already loaded)", d.name)
+            continue
+        pending.append(d)
+    return pending
+
+
+def _backfill_cost_fields(conn: sqlite3.Connection,
+                          load: loader.Load) -> None:
+    """The cost fields of rows loaded before migration 0005, before the
+    runs (`backfill_cost_fields`)."""
+    with silver.transaction(conn):
+        filled = backfill_cost_fields(conn)
+    if any(filled):
+        log.info("Filled cost fields on %d holding(s) and %d trade "
+                 "confirmation(s) loaded before migration 0005", *filled)
 
 
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip())
     p.add_argument("--silver-db", type=Path,
                    default=cli.default_data_root() / "ubs-psn" / "ubs-psn.db",
@@ -1497,45 +1510,38 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="UBS Server ID for the banking relationship the "
                         "bronze dumps belong to (e.g. SFTPCH01, SFTPCH02). "
                         "Default: SFTPCH01.")
-    cli.add_standard_args(p, verb="load")
-    return p.parse_args(argv)
+    return p
+
+
+class _Load:
+    """One call of `load`: the frame's hooks, holding the flag every run
+    reads. The frame hands `load_run` no flags, so `preflight` keeps
+    `--relationship-id` for it."""
+
+    def __init__(self) -> None:
+        self.relationship_id: str | None = None
+
+    def preflight(self, args: argparse.Namespace) -> None:
+        if not args.bronze_dir.is_dir():
+            raise SystemExit(f"Bronze directory not found: {args.bronze_dir}")
+        self.relationship_id = args.relationship_id
+
+    def load_run(self, conn: sqlite3.Connection,
+                 run: loader.Run) -> tuple[int, int, int, int]:
+        return load_dump(conn, run.dir, run.snapshot_at, self.relationship_id)
+
+
+COUNTS = ("xml rows", "mt balances", "mt events", "other mt rows")
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
-    cli.configure_logging(args.verbose)
-
-    if not args.bronze_dir.is_dir():
-        raise SystemExit(f"Bronze directory not found: {args.bronze_dir}")
-
-    if args.force:
-        silver.reset(args.silver_db)
-
-    conn = open_db(args.silver_db)
-    silver.apply_migrations(conn, MIGRATIONS_DIR)
-    with conn:
-        filled = backfill_cost_fields(conn)
-    if any(filled):
-        log.info("Filled cost fields on %d holding(s) and %d trade "
-                 "confirmation(s) loaded before migration 0005", *filled)
-
-    dumps = list(bronze.iter_run_dirs(args.bronze_dir))
-    log.info("Found %d dump directory(s) under %s", len(dumps), args.bronze_dir)
-
-    for d in dumps:
-        stats = load_dump(conn, d, args.relationship_id)
-        if stats.get("skipped"):
-            log.info("  %s: skipped (already loaded)", stats["name"])
-        else:
-            log.info(
-                "  %s: xml_rows=%d mt_balances=%d mt_events=%d mt_other=%d",
-                stats["name"], stats["xml_rows"],
-                stats["mt_balances"], stats["mt_events"],
-                stats["mt_other"],
-            )
-
-    conn.close()
-    return 0
+    hooks = _Load()
+    spec = loader.LoaderSpec(
+        name="ubs-psn", schema=MIGRATIONS_DIR, load_run=hooks.load_run,
+        parser=_parser, counts=COUNTS, preflight=hooks.preflight,
+        before_runs=_backfill_cost_fields, pending=pending_dumps,
+        open_db=open_db)
+    return loader.main(spec, argv)
 
 
 if __name__ == "__main__":

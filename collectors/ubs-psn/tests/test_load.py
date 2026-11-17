@@ -38,7 +38,7 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import load as loader  # noqa: E402
-from collectorkit import silver  # noqa: E402
+from collectorkit import bronze, incremental, silver  # noqa: E402
 
 REL = "SFTPCH99"
 
@@ -387,6 +387,13 @@ def _write_zip(dump_dir: Path, name: str, entries: dict[str, str]) -> None:
             zf.writestr(ename, data)
 
 
+def _load_dump(conn, dump: Path) -> None:
+    """One dump through the loader's per-dump pass, in a transaction of
+    its own, as the load frame runs it."""
+    with conn:
+        loader.load_dump(conn, dump, bronze.parse_run_ts(dump.name), REL)
+
+
 def _rows(conn, table: str) -> list[tuple]:
     cur = conn.execute(f"SELECT * FROM {table}")
     return sorted(tuple(r) for r in cur.fetchall())
@@ -400,8 +407,7 @@ def test_dated_zip_routes_to_order_type_loader(tmp_path):
     conn = _fresh_db(tmp_path)
     dump = tmp_path / "20260601T120000Z"
     _write_zip(dump, "ZAH_20260528.zip", {"2026-05-28_ZAH_synthetic.txt": MT535})
-    stats = loader.load_dump(conn, dump, REL)
-    assert stats["skipped"] is False
+    _load_dump(conn, dump)
     rows = conn.execute(
         "SELECT safekeeping_external_id, isin, snapshot_at "
         "FROM holdings").fetchall()
@@ -431,13 +437,13 @@ def test_redelivered_content_converges(tmp_path):
     _write_zip(recovered, "ZAH_20260531.zip", mt_inner)
 
     tables = ("fx_rates", "forward_contracts", "holdings")
-    assert loader.load_dump(conn, original, REL)["skipped"] is False
+    _load_dump(conn, original)
     before = {t: _rows(conn, t) for t in tables}
     assert len(before["fx_rates"]) == 2          # USD + EUR quotes
     assert len(before["forward_contracts"]) == 1
     assert len(before["holdings"]) == 1
 
-    assert loader.load_dump(conn, recovered, REL)["skipped"] is False
+    _load_dump(conn, recovered)
     after = {t: _rows(conn, t) for t in tables}
     assert after == before
 
@@ -485,7 +491,7 @@ def test_master_data_recover_replay_converges(tmp_path):
     for run, inner, xml in pulls:
         dump = tmp_path / run
         _write_zip(dump, "ZMD.zip", {inner: xml})
-        assert loader.load_dump(conn, dump, REL)["skipped"] is False
+        _load_dump(conn, dump)
 
     before = _rows(conn, "cash_accounts")
     assert [r["snapshot_at"] for r in conn.execute(
@@ -498,7 +504,7 @@ def test_master_data_recover_replay_converges(tmp_path):
     for _, inner, xml in pulls:
         stamp = inner[:10].replace("-", "")
         _write_zip(recovered, f"ZMD_{stamp}.zip", {inner: xml})
-    assert loader.load_dump(conn, recovered, REL)["skipped"] is False
+    _load_dump(conn, recovered)
     assert _rows(conn, "cash_accounts") == before
 
 
@@ -1129,3 +1135,37 @@ def test_load_reads_only_timestamped_run_dirs(tmp_path):
     finally:
         conn.close()
     assert [Path(r).name for r in runs] == ["20260601T120000Z"]
+
+
+# --------------------------------------------------------------------------
+# Loads are incremental: run by run gives the silver of one --force
+# --------------------------------------------------------------------------
+
+def test_runs_loaded_one_at_a_time_build_the_silver_of_one_rebuild(tmp_path):
+    # Master data that stays, then changes; a holding statement; an MT940
+    # statement per run, whose account resolves through the master data
+    # an earlier run delivered; and a later run re-delivering the first
+    # run's holdings as a dated archive copy.
+    sdca = SDCA_XML_TMPL.format
+    movement = "9811131113D100,00NTRFNONREF//TESTBANKREF001"
+    runs = tmp_path / "runs"
+    first, second, third = (runs / "20260601T120000Z",
+                            runs / "20260608T120000Z",
+                            runs / "20260615T120000Z")
+    _write_zip(first, "ZMD.zip",
+               {"2026-06-01_SDCA_synthetic.xml": sdca(book_bal="100.00")})
+    _write_zip(first, "ZAH.zip", {"2026-06-01_ZAH_synthetic.txt": MT535})
+    _write_zip(second, "ZMD.zip",
+               {"2026-06-08_SDCA_synthetic.xml": sdca(book_bal="100.00")})
+    _write_zip(second, "Z40.zip", {"2026-06-08_Z40_synthetic.txt": _mt940(
+        "7/1", "981113", "981113", [(movement, "TRANSFER")],
+        acct="CH99XXXX0000000000001")})
+    _write_zip(third, "ZMD.zip",
+               {"2026-06-15_SDCA_synthetic.xml": sdca(book_bal="200.00")})
+    _write_zip(third, "ZAH_20260601.zip",
+               {"2026-06-01_ZAH_synthetic.txt": MT535})
+    incremental.check(
+        loader.main,
+        lambda db, bronze_dir: ["--silver-db", str(db),
+                                "--bronze-dir", str(bronze_dir)],
+        [first, second, third], tmp_path / "work")
