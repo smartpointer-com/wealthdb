@@ -509,6 +509,10 @@ MATURING_RULES = ("cash", "idle", "roll")
 
 HORIZONS = ("12", "24", "36")
 
+# The arguments the projection's table macros take (income_window,
+# cashflow_projection): the picked currency and the four assumptions.
+PROJECTION_ARGS = "{{currency}}, {{rates}}, {{maturing}}, {{shift}}, " + HORIZON_MONTHS
+
 
 # The four variables every card with an expected figure reads. The shift
 # is a number of basis points, below zero to lower the rates. The horizon

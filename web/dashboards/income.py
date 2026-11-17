@@ -1,8 +1,8 @@
 """The Income dashboard's cards and its twin's. Part of provision.py."""
 
-from sqlkit import (AFTER_THIS_MONTH, _ccy_case, currency_tag, _donut, EARNING_VALUE, HORIZON_MONTHS, Link,
-                    _month_cte, native_tags, _native_where, OCCURRED_MONTH, PART_INCOME, PARTS_FROM, PEAK,
-                    PEAK_CTE, _peak_cte, PEAK_DIV, _percent_viz, PRIVACY_DESC, PROJECTION_TAGS,
+from sqlkit import (_ccy_case, currency_tag, _donut, EARNING_VALUE, HORIZON_MONTHS, Link,
+                    _month_cte, native_tags, _native_where, OCCURRED_MONTH, PEAK,
+                    PEAK_CTE, _peak_cte, PEAK_DIV, _percent_viz, PRIVACY_DESC, PROJECTION_ARGS, PROJECTION_TAGS,
                     range_filters, _series_order, _share_viz, _sql_list, STACKED_VIZ, twin_name,
                     UNCATEGORIZED, view_tags)
 
@@ -172,21 +172,13 @@ INTEREST_TYPES = ("interest", "coupons")
 
 DIVIDEND_TYPES = ("dividends", "distributions")
 
-# Each operating-in class of an income line no holding pays
-# (web_income.income_class), its band on the by-month chart, and its
-# colour: received in it, its run-rate in a lighter shade. A greyer
+# The colour of each band an income line no holding pays draws in on the
+# by-month chart (gold macro income_class_band, by its operating-in
+# class): received in it, its run-rate in a lighter shade. A greyer
 # palette than the six types', so the holdings' bands stay the ones that
 # read first.
-INCOME_CLASS_BANDS = {"earnings": "salary and earnings", "yield": "other yield", "benefits": "benefits",
-                      "other_receipts": "other receipts", "(uncategorized)": "uncategorized"}
-
-INCOME_CLASS_COLORS = {"earnings": "#6f4fd8", "yield": "#0b8aa8", "benefits": "#8c5a3c",
-                       "other_receipts": "#6b6b6b", "(uncategorized)": "#a3a3a3"}
-
-
-def _class_band(col):
-    """The SQL of the band of class `col` (INCOME_CLASS_BANDS)."""
-    return "CASE " + " ".join(f"WHEN {col} = '{c}' THEN '{b}'" for c, b in INCOME_CLASS_BANDS.items()) + " END"
+INCOME_CLASS_COLORS = {"salary and earnings": "#6f4fd8", "other yield": "#0b8aa8", "benefits": "#8c5a3c",
+                       "other receipts": "#6b6b6b", "uncategorized": "#a3a3a3"}
 
 
 # The keys the engine gives a cash balance (`cash:<ccy>`) and an
@@ -211,8 +203,8 @@ def _tint(color, share=0.55):
 
 def income_projected_cards(f):
     """The Income dashboard's cards of received and expected income, or
-    on the twin their privacy variants. Native SQL over four sources, each a row set per
-    reporting currency or a rate to it:
+    on the twin their privacy variants. Native SQL over the four arms of
+    gold's income_window, a macro each, in the picked currency:
 
     - the six types the holdings receive (web_yield_received), each under
       its holding, else its account;
@@ -291,104 +283,41 @@ def income_projected_cards(f):
     # The rest of the current month, as a share of its days.
     month_rest = ("(SELECT (day(last_day(max(day))) - day(max(day))) / day(last_day(max(day)))"
                   " FROM web_income_days)")
-    # The current month's first day, and the lines no holding pays
-    # received from it to today, by class and account, whatever the Time
-    # range.
-    this_month = "(SELECT CAST(date_trunc('month', max(day)) AS DATE) FROM web_income_days)"
-    this_month_got = ("mg AS (\n"
-                      "  SELECT income_class AS class, silver_source_id, account_external_id,\n"
-                      f"         sum({_ccy_case('value')}) AS got\n"
-                      f"    FROM web_income\n   WHERE CAST(occurred_at AS DATE) >= {this_month}\n"
-                      "     AND CAST(occurred_at AS DATE) <= (SELECT max(day) FROM web_income_days)\n"
-                      "     AND income_class IS NOT NULL\n"
-                      "   GROUP BY ALL)")
-
-    # Each part's income in its holding's currency and its rate to the
-    # picked one, over the horizon; a payment of an estimated day reads
-    # its month.
-    def expected(typed=True):
-        return ("ex AS (\n"
-                "  SELECT p.type, p.month_start, p.month AS m, CASE WHEN NOT p.month_only THEN p.day END AS day,\n"
-                f"         p.holding_currency, ({PART_INCOME}) AS amount,\n"
-                f"         {_ccy_case('p.fx')} AS fx, p.withholding_pct,\n"
-                "         p.basis, p.reinvested, p.silver_source_id, p.account_external_id, p.position_key,\n"
-                "         p.account_label, p.vehicle, p.symbol, p.name\n" + PARTS_FROM +
-                "\n   WHERE p.rule = {{maturing}}\n     AND p.month <= " + HORIZON_MONTHS + kept("p.", typed) + ")")
-
-    def received(typed=True):
-        return ("rx AS (\n  SELECT * FROM web_yield_received\n   WHERE currency = {{currency}}\n"
-                f"     AND day IN ({days})" + kept(typed=typed) + ")")
-
-    # Every other income line received, by its account and class.
-    def other(typed=True):
-        return ("ox AS (\n"
-                "  SELECT CAST(occurred_at AS DATE) AS day, income_class AS class,\n"
-                f"         silver_source_id, account_external_id, account_label, {_ccy_case('value')} AS value\n"
-                "    FROM web_income\n   WHERE income_class IS NOT NULL" + line_days
-                + kept(typed=False) + ("\n     [[AND {{type}}]]" if typed else "") + ")")
-
-    # The other income's run-rate over the horizon's months. A salary
-    # arrives on a pay day, so the current month expects the monthly
-    # figure less what its class and account received so far, never
-    # below 0, rather than a share of its days.
-    def run_rate(typed=True):
-        keep = kept(typed=False, by_account=True) + (
-            f"\n     [[AND class IN ({picked_classes})]]" if typed else "")
-        # An account whose wrapper changed in the look-back holds a row
-        # of each part: one figure per class, account and month.
-        return ("pl AS (\n"
-                "  SELECT c.month, c.class, c.silver_source_id, c.account_external_id,\n"
-                "         any_value(c.month_start) AS month_start, sum(c.value) AS value,\n"
-                "         account_label(ac.display_name, c.account_external_id, c.silver_source_id, ac.account_kind)"
-                " AS account_label\n"
-                "    FROM web_cashflow_plan c\n"
-                "    LEFT JOIN accounts ac ON ac.silver_source_id = c.silver_source_id"
-                " AND ac.account_external_id = c.account_external_id\n"
-                f"   WHERE c.part IN ({_sql_list(RUN_RATE_PARTS)})\n     AND c.currency = {{{{currency}}}}\n"
-                "   GROUP BY ALL),\n"
-                + this_month_got + ",\n"
-                "px AS (\n"
-                "  SELECT month AS m, month_start, class, silver_source_id, account_external_id, account_label, value\n"
-                "    FROM pl\n   WHERE month" + AFTER_THIS_MONTH + keep + "\n"
-                "  UNION ALL\n"
-                f"  SELECT 0, {this_month}, class,\n"
-                "         silver_source_id, account_external_id, account_label, GREATEST(0, value - coalesce(mg.got, 0))\n"
-                "    FROM pl\n    LEFT JOIN mg USING (class, silver_source_id, account_external_id)\n"
-                f"   WHERE month = 1\n     AND {this_month} IS NOT NULL" + keep + ")")
-
     keys = "silver_source_id, account_external_id, position_key, account_label, vehicle, symbol, name"
-    lined = ("silver_source_id, account_external_id, 'class:' || class AS position_key, account_label,\n"
-             f"           NULL AS vehicle, NULL AS symbol, {_class_band('class')} AS name")
-    arms = {"expected": (expected,
-                         "SELECT 'expected' AS status, type, month_start, m, day, holding_currency, amount,\n"
-                         "           amount * fx AS value, amount * fx * withholding_pct / 100 AS withheld,\n"
-                         f"           {keys}\n      FROM ex"),
-            "received": (received,
-                         "SELECT 'received' AS status, type, CAST(date_trunc('month', day) AS DATE) AS month_start,\n"
-                         "           NULL AS m, day, NULL AS holding_currency, NULL AS amount, value,\n"
-                         f"           NULL AS withheld, {keys}\n      FROM rx"),
-            "other": (other,
-                      "SELECT 'received' AS status, class AS type, CAST(date_trunc('month', day) AS DATE) AS month_start,\n"
-                      "           NULL AS m, day, NULL AS holding_currency, NULL AS amount, value, NULL AS withheld,\n"
-                      f"           {lined}\n      FROM ox"),
-            "run_rate": (run_rate,
-                         "SELECT 'expected' AS status, class AS type, month_start, m, NULL AS day,\n"
-                         "           NULL AS holding_currency, NULL AS amount, value, NULL AS withheld,\n"
-                         f"           {lined}\n      FROM px")}
     # The holdings' halves, every line's received, every line's expected,
-    # and the four.
+    # and the four (income_window's arms).
     holdings = ("expected", "received")
     got, due = ("received", "other"), ("expected", "run_rate")
     every = (*got, *due)
 
+    def window_kept(typed=True):
+        """The optional clauses keeping an income_window row whose source,
+        account, tax wrapper and type the pickers select. An other line
+        keeps its label, a run-rate its class and a holding's row its
+        type the picked labels map to. With `typed` False, every type."""
+        out = [f"{col} IN (SELECT {col} FROM {view} WHERE {{{{{k}}}}})" for k, (view, col) in selection.items()]
+        if typed:
+            out.append("CASE arm WHEN 'other' THEN label IN (SELECT income_label FROM web_income WHERE {{type}})\n"
+                       f"                    WHEN 'run_rate' THEN type IN ({picked_classes})\n"
+                       f"                    ELSE type IN ({picked_types}) END")
+        return "".join(f"\n     [[AND {c}]]" for c in out)
+
+    # Each arm's gold macro.
+    arm_of = {"received": "income_received({{currency}})", "other": "income_other({{currency}})",
+              "expected": f"income_expected({PROJECTION_ARGS})",
+              "run_rate": "income_run_rate({{currency}}, " + HORIZON_MONTHS + ")"}
+
     def rows(parts, *extra, typed=True):
         """The CTEs a card reads, ending with `a`, then the `extra` ones:
-        each amount of the `parts` (arms) in the picked currency, an
-        expected one of a holding with what the withholding table
-        withholds from it; with `typed` False, of every type."""
-        ctes = [arms[x][0](typed) for x in parts]
-        ctes.append("a AS (\n    " + "\n    UNION ALL\n    ".join(arms[x][1] for x in parts) + ")")
-        return "WITH " + ",\n".join(ctes + list(extra)) + "\n"
+        each amount of the `parts` (the arms of gold's income_window) in
+        the picked currency, an expected one of a holding with what the
+        withholding table withholds from it, a received one on the days
+        the Time range selects; with `typed` False, of every type."""
+        days_kept = ("\n     [[AND (status = 'expected' OR day IN (SELECT day FROM web_income_days WHERE {{time_range}}))]]"
+                     if set(parts) & set(got) else "")
+        union = "\n    UNION ALL\n".join(f"    SELECT * FROM {arm_of[x]}" for x in parts)
+        a = "a AS (\n  SELECT * FROM (\n" + union + ")\n   WHERE TRUE" + window_kept(typed) + days_kept + ")"
+        return "WITH " + ",\n".join([a, *extra]) + "\n"
 
     # The months the figures cover: each day received its share of its
     # month, and the horizon's months with the rest of this one.
@@ -495,11 +424,11 @@ def income_projected_cards(f):
     # holding's type and status, and per class of the other lines, the
     # expected one a run-rate.
     series = (f"CASE WHEN type IN ({_sql_list(INCOME_TYPE_COLORS)}) THEN type || ' (' || status || ')'\n"
-              f"            ELSE {_class_band('type')} || CASE WHEN status = 'received' THEN ' (received)'"
+              "            ELSE income_class_band(type) || CASE WHEN status = 'received' THEN ' (received)'"
               " ELSE ' (expected, run-rate)' END END AS series")
     colors = {**{f"{t} ({s})": {"color": c if s == "received" else _tint(c)}
                  for t, c in INCOME_TYPE_COLORS.items() for s in ("received", "expected")},
-              **{f"{INCOME_CLASS_BANDS[k]} ({s})": {"color": c if s == "received" else _tint(c)}
+              **{f"{k} ({s})": {"color": c if s == "received" else _tint(c)}
                  for k, c in INCOME_CLASS_COLORS.items() for s in ("received", "expected, run-rate")}}
     month_desc = ("Income per month by type, received in full colour, expected lighter. A run-rate band "
                   "expects the rest of this month. It ignores the Rate path, Maturing and Shift.")
@@ -601,7 +530,7 @@ def income_projected_cards(f):
     # the name the twin shows, so a click on (unnamed) lists every
     # unnamed position's payments.
     picked = "{{position}} IN (symbol, name, position_key" + (f", {TWIN_POSITION_NAME}" if privacy else "") + ")"
-    cal = ("WITH " + expected() + ",\ncal AS (\n"
+    cal = ("WITH ex AS (\n  SELECT * FROM " + arm_of["expected"] + "\n   WHERE TRUE" + window_kept() + "),\ncal AS (\n"
            "  SELECT month_start, day, account_label, symbol, name, type, 'income' AS kind, basis, reinvested,\n"
            "         holding_currency, silver_source_id, account_external_id, position_key,\n"
            "         sum(amount) AS amount, sum(amount * fx) AS value\n"
@@ -634,13 +563,6 @@ def income_projected_cards(f):
              "  FROM cal\n ORDER BY month_start, day IS NULL, day, account, symbol, name, kind, type, basis, position_key",
              {}, tags=calendar_tags)
 
-
-# The parts of web_cashflow_plan the Income cards' run-rate reads: the
-# income lines on a day their account sits in the cash pool and
-# every other income line. So the run-rate reads the lines the
-# received half reads. The cash flow projection reads the statement's
-# other_income instead.
-RUN_RATE_PARTS = ("pool_income", "outside_income")
 
 # The Income filters. `type` binds to income_label rather than to the
 # primary label its spending twin uses: the income taxonomy has ONE

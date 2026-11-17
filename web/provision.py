@@ -376,7 +376,7 @@ def missing_web_views(client, db_id):
 # The oldest gold schema the cards can read. A test holds it at or above
 # the newest schema version that defines a view or table a card reads.
 # DESIGN.md §6 says what each older snapshot lacks.
-MIN_GOLD_SCHEMA = 207
+MIN_GOLD_SCHEMA = 208
 
 # main()'s exit status for a snapshot older than MIN_GOLD_SCHEMA; every
 # other failure exits 1. web/web tells the two apart, because only

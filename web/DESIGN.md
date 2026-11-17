@@ -542,8 +542,11 @@ fees read as shares of the window's fees.
 The **Income** dashboard also puts what was received beside what is
 expected, as `wealthdb income`'s forward views do
 ([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md) §12), but over
-every income line. A figure counts every line unless the Type picker
-leaves its type out:
+every income line. Gold's `income_window` states these figures: an arm
+each, and a macro each (`income_received`, `income_other`,
+`income_expected`, `income_run_rate`). A card reads the arms it shows
+and keeps the rows its pickers select. A figure counts every line
+unless the Type picker leaves its type out:
 
 - received: the six types the holdings receive, each under its holding
   (`web_yield_received`), and every other line, wages and gifts among
@@ -684,7 +687,8 @@ statement. It shows `wealthdb cashflow projection`
 ([wealthdb/docs/CASHFLOW.md](../wealthdb/docs/CASHFLOW.md) §12): the
 household's expected income against its expected outflows, month by
 month over the Horizon. It starts with the month after the current
-one. Two cards make it, both full width:
+one. Gold's `cashflow_projection` states each month's parts. Two cards
+make it, both full width:
 
 - *Cash flow projection by month*: stacked bars by month. What comes
   in sits above the axis: the investment income, the other income, the
@@ -820,6 +824,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0208: it lacks `income_window` and its arms, and
+  `cashflow_projection`, which the Income and Cash Flow cards read;
 - 0207: its `fx_daily` can pick a reciprocal over a rate stored at the
   same time, or one source over another of the same priority, by plan;
 - 0206: its exposure views sum in the order the rows arrive, so two

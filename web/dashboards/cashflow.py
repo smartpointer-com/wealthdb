@@ -1,9 +1,8 @@
 """The Cash Flow dashboard's cards and its twin's. Part of provision.py."""
 
-from sqlkit import (AFTER_THIS_MONTH, BENCHMARK_COLOR, _ccy_case, currency_tag, _month_cte, native_tags,
-                    _native_where, OCCURRED_MONTH, PART_INCOME, PARTS_AHEAD, PARTS_FROM, PEAK, PEAK_DIV,
-                    _percent_viz, PRIVACY_DESC, PROJECTION_TAGS, range_filters, _series_order, _share_viz,
-                    STACKED_VIZ)
+from sqlkit import (BENCHMARK_COLOR, _ccy_case, currency_tag, _month_cte, native_tags, _native_where,
+                    OCCURRED_MONTH, PEAK, PEAK_DIV, _percent_viz, PRIVACY_DESC, PROJECTION_ARGS, PROJECTION_TAGS,
+                    range_filters, _series_order, _share_viz, STACKED_VIZ)
 
 
 # The Cash Flow dashboard's investing grain. Required with a `whole`
@@ -328,21 +327,12 @@ PLAN_INCOME_PARTS = ("investment_income", "other_income", "principal_returned", 
 
 PLAN_OUTFLOW_PARTS = ("operating_out", "debt_service")
 
-# Whether a projected part's account is in the cash pool: _pool_join
-# finds it in web_cashflow_pool, and _POOL selects the flag.
-_POOL = "pl.silver_source_id IS NOT NULL AS pool"
-
-
-def _pool_join(a):
-    return ("\n    LEFT JOIN web_cashflow_pool pl ON pl.silver_source_id = " + a + ".silver_source_id"
-            " AND pl.account_external_id = " + a + ".account_external_id")
-
-
 def cashflow_plan_cards(f):
     """The Cash Flow dashboard's projection cards and the Wealth
     Overview's projected net, or on the twin their privacy variants.
     `wealthdb cashflow projection` month by month over the Horizon
-    (docs/CASHFLOW.md §12): the income projection's investment income and
+    (docs/CASHFLOW.md §12), as gold's cashflow_projection gives it: the
+    income projection's investment income and
     the principal its maturities return, read from today's projection
     (web_yield_parts, web_yield_rates, web_yield_events) under the four
     projection pickers as the Income cards read them, and split by the
@@ -365,38 +355,9 @@ def cashflow_plan_cards(f):
             else " Its look-back averages ignore window, source, section and grain.")
     card = f.using(tags=tags, tail=tail).card
 
-    # Each month of the horizon: the projection's income and principal,
-    # on the pool's accounts and on the others, and the look-back's
-    # parts, every month of which the view holds. The principal counts
-    # towards the net unless it rolls, buying its successor; the
-    # vehicles' income never does.
-    lookback = ",\n".join(f"         coalesce(sum(value) FILTER (WHERE part = '{x}'), 0) AS {x}"
-                          for x in PLAN_LOOKBACK_PARTS)
-    plan = ("WITH ex AS (\n"
-            f"  SELECT p.month AS m, {_POOL}, sum(({PART_INCOME}) * {_ccy_case('p.fx')}) AS v\n" + PARTS_FROM +
-            _pool_join("p") + PARTS_AHEAD + "\n   GROUP BY 1, 2),\n"
-            "pr AS (\n"
-            f"  SELECT e.month AS m, {_POOL}, sum(e.amount * {_ccy_case('e.fx')}) AS v\n"
-            "    FROM web_yield_events e" + _pool_join("e") + "\n"
-            "   WHERE e.rule = {{maturing}}\n     AND e.month" + AFTER_THIS_MONTH + "\n   GROUP BY 1, 2),\n"
-            "lb AS (\n  SELECT month AS m, any_value(month_start) AS month_start,\n" + lookback +
-            ",\n         any_value(quality) AS quality\n    FROM web_cashflow_plan\n"
-            "   WHERE currency = {{currency}}\n     AND month" + AFTER_THIS_MONTH + "\n   GROUP BY 1),\n"
-            "j AS (\n"
-            "  SELECT CAST(lb.month_start AS TIMESTAMP) AS month, coalesce(ex.v, 0) AS investment_income,\n"
-            "         coalesce(pr.v, 0) AS principal_returned,\n"
-            "         CASE WHEN {{maturing}} = 'roll' THEN 0 ELSE coalesce(pr.v, 0) END AS principal_counted,\n"
-            "         coalesce(xv.v, 0) + coalesce(rv.v, 0) AS vehicles_income,\n"
-            "         coalesce(ex.v, 0) + coalesce(xv.v, 0) AS expected,\n"
-            "         " + ", ".join(f"lb.{x}" for x in PLAN_LOOKBACK_PARTS) + ",\n"
-            "         trim('projected ' || lb.quality) AS quality\n"
-            "    FROM lb\n"
-            "    LEFT JOIN ex ON ex.m = lb.m AND ex.pool\n    LEFT JOIN pr ON pr.m = lb.m AND pr.pool\n"
-            "    LEFT JOIN ex xv ON xv.m = lb.m AND NOT xv.pool\n"
-            "    LEFT JOIN pr rv ON rv.m = lb.m AND NOT rv.pool),\n"
-            "proj AS (\n"
-            "  SELECT *, investment_income + principal_counted + other_income - operating_out - debt_service\n"
-            "            + vehicles AS net\n    FROM j)")
+    # Each month of the horizon: the projection's income and principal
+    # beside the look-back's parts (gold macro cashflow_projection).
+    plan = "WITH proj AS (SELECT * FROM cashflow_projection(" + PROJECTION_ARGS + "))"
     # The twin's denominator: all the income the projection expects over
     # the horizon, on every account, where it expects some.
     plan += (",\nd AS (SELECT CASE WHEN sum(expected) > 0 THEN sum(expected) END AS total\n"

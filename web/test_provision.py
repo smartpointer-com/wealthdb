@@ -3058,28 +3058,36 @@ _EVERY_LINE = {n + s for n in ("Withholding", "Income after withholding") for s 
 _HOLDINGS_ONLY = {"Expected payments", "Expected payments (privacy)", _YIELD_TWIN}
 # The income received holds a row set per currency, a part its rate to
 # each: the one is held to the picked currency, the other picks its rate.
+# Each arm is a gold macro of income_window, in the picked currency.
+_ARM = {"received": "income_received({{currency}})", "other": "income_other({{currency}})",
+        "expected": "income_expected(" + sqlkit.PROJECTION_ARGS + ")",
+        "run_rate": "income_run_rate({{currency}}, CAST({{horizon}} AS INTEGER))"}
 check("every card reads the income received where it shows a received figure, every other line and "
       "the run-rate beside the holdings', and today's parts where it shows an expected one, each in "
       "the picked currency",
-      all(("FROM web_yield_received\n   WHERE currency = {{currency}}" in q) == (n not in _EXPECTED_ONLY | _EVERY_LINE)
-          and ("FROM web_yield_received" in q) == (n not in _EXPECTED_ONLY | _EVERY_LINE)
-          and ("FROM web_income\n   WHERE income_class IS NOT NULL" in q)
-          == (n not in _EXPECTED_ONLY | _EVERY_LINE and n != _YIELD_TWIN)
+      all((_ARM["received"] in q) == (n not in _EXPECTED_ONLY | _EVERY_LINE)
+          and (_ARM["other"] in q) == (n not in _EXPECTED_ONLY | _EVERY_LINE and n != _YIELD_TWIN)
           and ("FROM web_income\n   WHERE TRUE" in q) == (n in _EVERY_LINE)
-          and ("FROM web_cashflow_plan c" in q) == (n not in _RECEIVED_ONLY | _HOLDINGS_ONLY)
-          and ("AS got" in q) == ("FROM web_cashflow_plan c" in q)
-          and ("FROM web_yield_parts" in q) == (n not in _RECEIVED_ONLY)
-          and ("p.rule = {{maturing}}" in q) == (n not in _RECEIVED_ONLY)
-          and ("CASE {{currency}} WHEN 'USD' THEN p.fx_usd" in q) == (n not in _RECEIVED_ONLY)
+          and (_ARM["run_rate"] in q) == (n not in _RECEIVED_ONLY | _HOLDINGS_ONLY)
+          and (_ARM["expected"] in q) == (n not in _RECEIVED_ONLY)
+          and "FROM web_yield_parts p\n" not in q and "FROM web_cashflow_plan" not in q
           for n, q in _in_sql.items()),
-      [n for n, q in _in_sql.items() if ("FROM web_yield_parts" in q) == (n in _RECEIVED_ONLY)
-       or ("FROM web_yield_received" in q) == (n in _EXPECTED_ONLY | _EVERY_LINE)])
+      [n for n, q in _in_sql.items() if (_ARM["expected"] in q) == (n in _RECEIVED_ONLY)
+       or (_ARM["received"] in q) == (n in _EXPECTED_ONLY | _EVERY_LINE)])
 _KEPT_DAYS = "day IN (SELECT day FROM web_income_days [[WHERE {{time_range}}]])"
+_PICKED_DAYS = "[[AND (status = 'expected' OR day IN (SELECT day FROM web_income_days WHERE {{time_range}}))]]"
 check("...the received rows those of the days the Time range selects, the parts those of the horizon",
-      all((_KEPT_DAYS in q) == (n not in _EXPECTED_ONLY)
-          and ("AND p.month <= CAST({{horizon}} AS INTEGER)" in q) == (n not in _RECEIVED_ONLY)
-          for n, q in _in_sql.items()),
-      [n for n, q in _in_sql.items() if (_KEPT_DAYS in q) == (n in _EXPECTED_ONLY)])
+      all((_KEPT_DAYS in q or _PICKED_DAYS in q) == (n not in _EXPECTED_ONLY) for n, q in _in_sql.items()),
+      [n for n, q in _in_sql.items() if (_KEPT_DAYS in q or _PICKED_DAYS in q) == (n in _EXPECTED_ONLY)])
+_arm_defs = {x: _latest_definition(f"income_{x}") for x in ("expected", "received", "other", "run_rate")}
+check("...each arm gold's: the received to today, the parts to the horizon, every other line by its class, "
+      "the run-rate less what this month received",
+      "AND day <= income_today()" in _arm_defs["received"] and "WHERE currency = p_ccy" in _arm_defs["received"]
+      and "WHERE p.rule = p_maturing\n           AND p.month <= p_horizon" in _arm_defs["expected"]
+      and "WHERE income_class IS NOT NULL" in _arm_defs["other"]
+      and "GREATEST(0, value - coalesce(mg.got, 0))" in _arm_defs["run_rate"]
+      and all(f"SELECT * FROM income_{x}(" in _latest_definition("income_window") for x in _arm_defs),
+      _arm_defs)
 _tr = [CARDS[n][2]["native"]["template-tags"].get("time_range") for n in _in_all if n not in _EXPECTED_ONLY]
 check("...through a Time range field filter on the days the income received covers",
       bool(_tr) and all(t and t["dimension"] == ("field", "web_income_days", "day")
@@ -3142,7 +3150,7 @@ for _n in ("Withholding", "Income after withholding"):
               "Horizon, 0 where neither withholds",
               "FROM web_income_withheld" in _in_sql[_name] and _KEPT_DAYS in _in_sql[_name]
               and "coalesce((SELECT withheld FROM tx), 0) + coalesce(sum(withheld), 0)" in _in_sql[_name]
-              and "amount * fx * withholding_pct / 100 AS withheld" in _in_sql[_name])
+              and "amount * fx * withholding_pct / 100 AS withheld" in _arm_defs["expected"])
 check("...set against every income line received and the income expected, of any type",
       all("FROM web_income\n   WHERE TRUE\n     [[AND CAST(occurred_at AS DATE) IN"
           " (SELECT day FROM web_income_days WHERE {{time_range}})]]" in _in_sql[n]
@@ -3164,11 +3172,9 @@ check("the by-month chart stacks a series per type and status, and per class of 
       _month_viz["graph.dimensions"] == ["month", "series"]
       and set(_month_viz["series_settings"]) == {f"{t} ({s})" for t in income.INCOME_TYPE_COLORS
                                                 for s in ("received", "expected")}
-      | {f"{income.INCOME_CLASS_BANDS[c]} ({s})" for c in income.INCOME_CLASS_COLORS
-         for s in ("received", "expected, run-rate")}
-      and set(income.INCOME_CLASS_COLORS) == set(income.INCOME_CLASS_BANDS)
-      and all(_month_viz["series_settings"][f"{income.INCOME_CLASS_BANDS[c]} (expected, run-rate)"]["color"]
-              == income._tint(v) for c, v in income.INCOME_CLASS_COLORS.items())
+      | {f"{b} ({s})" for b in income.INCOME_CLASS_COLORS for s in ("received", "expected, run-rate")}
+      and all(_month_viz["series_settings"][f"{b} (expected, run-rate)"]["color"]
+              == income._tint(v) for b, v in income.INCOME_CLASS_COLORS.items())
       and all(_month_viz["series_settings"][f"{t} (expected)"]["color"] == income._tint(c) != c
               and _month_viz["series_settings"][f"{t} (received)"]["color"] == c
               for t, c in income.INCOME_TYPE_COLORS.items()))
@@ -3242,8 +3248,9 @@ check("...and the tax booked reaching it through its account",
 # both maps, and the engine's tests hold them to the vocabulary and to
 # the projection's typing (wealthdb/internal/gold/web_macros_test.go).
 check("the holdings' and the run-rate's cards map a picked label through web_income's columns",
-      any("type IN (SELECT unnest(projected_types) FROM web_income WHERE {{type}})" in q for q in _in_sql.values())
-      and any("class IN (SELECT income_class FROM web_income WHERE {{type}})" in q for q in _in_sql.values())
+      any("ELSE type IN (SELECT unnest(projected_types) FROM web_income WHERE {{type}})" in q for q in _in_sql.values())
+      and any("WHEN 'run_rate' THEN type IN (SELECT income_class FROM web_income WHERE {{type}})" in q
+              for q in _in_sql.values())
       and not any("income_detailed" in q for q in _in_sql.values()),
       [n for n, q in _in_sql.items() if "income_detailed" in q])
 _view_inc = _view_body("web_income")
@@ -3255,7 +3262,8 @@ _classes = set(re.findall(r"(?:THEN|ELSE) '([^']+)'", _latest_definition("income
 _types = set(re.findall(r"'(\w+)'", "".join(re.findall(r"\[([^\]]*)\]",
                                                         _latest_definition("income_projected_types")))))
 check("...each class with its band and colour, each projected type with its colour",
-      _classes == set(income.INCOME_CLASS_BANDS) == set(income.INCOME_CLASS_COLORS)
+      _classes == set(re.findall(r"WHEN '([^']+)' THEN", _latest_definition("income_class_band")))
+      and set(re.findall(r"THEN '([^']+)'", _latest_definition("income_class_band"))) == set(income.INCOME_CLASS_COLORS)
       and _types == set(income.INCOME_TYPE_COLORS), (_classes, _types))
 
 section("every tile names the pickers that miss it")
@@ -3422,23 +3430,26 @@ _plan_sql = {n: sql_of(CARDS[n][2]) for n in _plan_all}
 # The investment income is the Income cards' expected income, part by
 # part, over the months after this one; the principal is the events' of
 # the rule; the rest is the look-back's, in the picked currency.
-check("every projection card sums the income projection's parts under the pickers, months 1 to the Horizon",
-      all(f"sum(({sqlkit.PART_INCOME}) * " + sqlkit._ccy_case("p.fx") + ")" in q and sqlkit.PARTS_FROM in q
-          and "p.rule = {{maturing}}\n     AND p.month BETWEEN 1 AND CAST({{horizon}} AS INTEGER)" in q
-          for q in _plan_sql.values()), [n for n, q in _plan_sql.items() if sqlkit.PARTS_FROM not in q])
+_cfp_def = _latest_definition("cashflow_projection")
+check("every projection card reads gold's cashflow_projection under the pickers",
+      all("FROM cashflow_projection(" + sqlkit.PROJECTION_ARGS + ")" in q for q in _plan_sql.values()),
+      [n for n, q in _plan_sql.items() if "cashflow_projection(" not in q])
+check("...which sums the income projection's parts, months 1 to the Horizon",
+      "yield_part_income(p.fixed, p.principal, p.spread, COALESCE(rt.rate_pct, 0)" in _cfp_def
+      and "WHERE p.rule = p_maturing\n           AND p.month BETWEEN 1 AND p_horizon" in _cfp_def, _cfp_def[:400])
 check("...the principal maturities return under the rule, in the picked currency",
-      all("FROM web_yield_events e" in q and "WHERE e.rule = {{maturing}}\n     AND e.month BETWEEN 1 AND" in q
-          and "sum(e.amount * " + sqlkit._ccy_case("e.fx") + ")" in q for q in _plan_sql.values()))
+      "FROM web_yield_events e" in _cfp_def and "WHERE e.rule = p_maturing\n           AND e.month BETWEEN 1 AND" in _cfp_def
+      and "sum(e.amount * CASE p_ccy WHEN 'USD' THEN e.fx_usd" in _cfp_def)
 check("...both split by the cash pool's accounts, the rest the vehicles' income",
-      all(cashflow._pool_join("p") in q and cashflow._pool_join("e") in q and "GROUP BY 1, 2" in q
-          and "coalesce(xv.v, 0) + coalesce(rv.v, 0) AS vehicles_income" in q for q in _plan_sql.values()))
-_net_of = {n: re.search(r"SELECT \*, (.*?) AS net\n", q, re.S) for n, q in _plan_sql.items()}
+      all(f"LEFT JOIN web_cashflow_pool pl ON pl.silver_source_id = {a}.silver_source_id" in _cfp_def for a in "pe")
+      and "GROUP BY 1, 2" in _cfp_def and "coalesce(xv.v, 0) + coalesce(rv.v, 0) AS vehicles_income" in _cfp_def)
+_net_of = re.search(r"SELECT \*, (.*?) AS net\n", _cfp_def, re.S)
 check("...and the net is the pool's: it leaves the vehicles' income out",
-      all(m and "+ vehicles" in m[1] and "vehicles_income" not in m[1] and "expected" not in m[1]
-          for m in _net_of.values()), {n: m and m[1] for n, m in _net_of.items()})
+      _net_of and "+ vehicles" in _net_of[1] and "vehicles_income" not in _net_of[1] and "expected" not in _net_of[1],
+      _net_of and _net_of[1])
 check("...and the look-back's parts, held to the picked currency",
-      all("FROM web_cashflow_plan\n   WHERE currency = {{currency}}" in q
-          and all(f"part = '{x}'" in q for x in cashflow.PLAN_LOOKBACK_PARTS) for q in _plan_sql.values()))
+      "FROM web_cashflow_plan\n         WHERE currency = p_ccy" in _cfp_def
+      and all(f"part = '{x}'" in _cfp_def for x in cashflow.PLAN_LOOKBACK_PARTS))
 # The projection cards take the currency and the projection's four, and none
 # of the dashboard's own pickers: the look-back is fixed at the refresh.
 for _n in _plan_all:
@@ -3496,8 +3507,8 @@ check("no projection twin carries an amount: shares, the month and the quality a
       not any(_plan_money.values()), _plan_money)
 check("...each a share of the horizon's expected income, blank where there is none",
       all("CASE WHEN sum(expected) > 0 THEN sum(expected) END AS total" in _plan_sql[n]
-          and "coalesce(ex.v, 0) + coalesce(xv.v, 0) AS expected" in _plan_sql[n]
-          and "/ (SELECT total FROM d)" in _plan_sql[n] for n in _plan_money))
+          and "/ (SELECT total FROM d)" in _plan_sql[n] for n in _plan_money)
+      and "coalesce(ex.v, 0) + coalesce(xv.v, 0) AS expected" in _cfp_def)
 
 section("the Wealth Overview and Allocation read the chosen currency")
 
@@ -3605,11 +3616,12 @@ check("the projection cards read the look-back parts the engine writes, in its o
 _income_parts = [m.group(1) if m else None for m in (
     re.search(rf'\b{c}\s*=\s*"([^"]*)"', _cfp) for c in ("PlanPoolPart", "PlanOutsidePart"))]
 check("the Income run-rate reads the engine's income-line parts",
-      _income_parts == list(income.RUN_RATE_PARTS), _income_parts)
+      "c.part IN (" + ", ".join(f"'{x}'" for x in _income_parts) + ")" in _latest_definition("income_run_rate"),
+      _income_parts)
 _projected = re.search(r'\bPlanProjected\s*=\s*"([^"]*)"', _cfp)
 check("...and re-add the tag it strips from the quality",
       _projected is not None and re.search(r"TrimPrefix\(r\.Quality, PlanProjected\)", _ym) is not None
-      and all(f"trim('{_projected.group(1)} ' || lb.quality) AS quality" in q for q in _plan_sql.values()),
+      and f"trim('{_projected.group(1)} ' || lb.quality) AS quality" in _latest_definition("cashflow_projection"),
       _projected and _projected.group(0))
 # The Exposure cards compare against labels web_exposure renders and
 # vocabularies the engine defines. A label respelt on either side would
@@ -4075,7 +4087,8 @@ def _book():
                "CREATE TABLE web_income_lines (occurred_at TIMESTAMP, silver_source_id TEXT, account_external_id TEXT,"
                " account_label TEXT, tax_wrapper TEXT, income_detailed TEXT, income_label TEXT,"
                " value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE);"
-               + "".join(_latest_definition(m) for m in ("income_projected_types", "income_line_class",
+               + "".join(_latest_definition(m) for m in ("income_class_band",
+                                                         "income_projected_types", "income_line_class",
                                                          "yield_rate", "yield_earning_value", "yield_part_income",
                                                          "exposure_credit_grade", "exposure_bucket_order",
                                                          "exposure_class_share")) +
@@ -4086,7 +4099,11 @@ def _book():
     # the pool's accounts the Cash Flow checks below define for themselves.
     db.execute("CREATE MACRO cashflow_pool_accounts() AS TABLE"
                " SELECT silver_source_id, account_external_id FROM accounts")
-    db.execute(_migration_objects(138, 146, 149, 169))
+    # income_today reads a table, so it is created once its table is.
+    db.execute(_migration_objects(138, 146, 149, 169).replace(
+        "CREATE OR REPLACE VIEW web_income_days", _latest_definition("income_today") + "CREATE OR REPLACE VIEW web_income_days"))
+    db.execute("".join(_latest_definition(m) for m in ("income_expected", "income_received", "income_other",
+                                                       "income_run_rate", "cashflow_projection")))
 
     def insert(table, rows):
         for r in rows:
