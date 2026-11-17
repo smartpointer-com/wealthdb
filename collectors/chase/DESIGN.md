@@ -462,12 +462,12 @@ rows.
   `statement_parser` produced the rows silver is holding; when one has
   moved, every `source='statement'` row **and every period anchor** is
   dropped before the passes re-derive them, so a re-parse REPLACES. A
-  document with no record yet is new, not moved, and purges nothing. The anchors go too because
-  `statement_balances` is keyed on the period the parser READ, so a shifted
-  period mints a new anchor and orphans the old one — and
-  `_card_balance_anchors` takes every anchor an account has, so the orphan
-  lands in the span walk `derive_card_balances` rolls between. Both
-  statement passes share one generation and one purge: they both write
+  document with no record yet is new, not moved, and purges nothing. The
+  anchors go too because `statement_balances` is keyed on the period the
+  parser READ, so a shifted period mints a new anchor and orphans the old
+  one — and `_card_balance_anchors` takes every anchor an account has, so
+  the orphan lands in the span walk `derive_card_balances` rolls between.
+  Both statement passes share one generation and one purge: they both write
   `source='statement'` and nothing on a row separates a deposit statement's
   from a card's. The export ledgers are untouched — migration 0002 moved
   them onto structural ids that carry no parsed text.
@@ -568,7 +568,7 @@ login and scrape run in one browser lifetime, and `login` folds into
 ### load — silver
 
 `load.py` parses each bronze run into the silver schema
-(`migrations/0001` … `0005`): accounts (content-deduped per snapshot), the
+(`migrations/0001` … `0006`): accounts (content-deduped per snapshot), the
 transaction ledger, and the statement inventory. The ledger is the
 **CSV↔QFX join** (§E). The QFX row is the row of record, and the CSV
 running balance joins on **(post date, amount)**. The check number is a

@@ -826,14 +826,16 @@ def test_a_period_is_parsed_once_however_many_runs_hold_it(db, tmp_path,
                                                            monkeypatch):
     # Every run re-fetches the same statements, so a tree with N runs holds N
     # copies of each period — and each parse costs a pdftotext subprocess.
+    # Each copy has bytes of its own, so no parse cache hit stands in.
     import datetime
     import statement_parser as sp
     root = tmp_path / "bronze"
     parses = []
     for slug in ("20260301T000000Z", "20260401T000000Z", "20260501T000000Z"):
-        run = write_run(root, slug,
-                        activity={KEY_A: _activity([_tx(1, post="2026-02-10")])})
-        _write_pdfs(run, KEY_A, ["2025-12-12.pdf"])
+        write_run(root, slug,
+                  activity={KEY_A: _activity([_tx(1, post="2026-02-10")])},
+                  statements={KEY_A: {"2025-12-12.pdf":
+                                      b"%PDF-1.4 synthetic " + slug.encode()}})
     monkeypatch.setattr(sp, "rows_reconcile", lambda p: True)
     monkeypatch.setattr(sp, "parse_card_statement_pdf",
                         lambda path: (parses.append(path),
@@ -1059,6 +1061,27 @@ def test_a_parser_that_fails_on_everything_leaves_the_deep_era_standing(
                             ("statement", "statement")).fetchone()) == before
 
 
+def test_a_force_whose_every_parse_fails_keeps_the_old_silver(
+        tmp_path, monkeypatch, parse_cache):
+    # The fresh silver of a --force holds no statement periods yet, so the
+    # tooling-fault guard cannot lean on them: every parse raising stops
+    # the load, and the old silver stays in place.
+    calls = _counting_parse(monkeypatch)
+    args = _one_statement_tree(tmp_path)
+    db_path = tmp_path / "amex.db"
+    assert load.main(args) == 0
+    before = _statement_era(db_path)
+    assert before[0] and before[1]
+    old_bytes = db_path.read_bytes()
+
+    failing = _counting_parse(monkeypatch, fail={"2025-12-12.pdf"})
+    shutil.rmtree(parse_cache)
+    assert load.main([*args, "--force"]) == 1
+    assert calls == failing == ["2025-12-12.pdf"]
+    assert db_path.read_bytes() == old_bytes
+    assert _statement_era(db_path) == before
+
+
 def test_one_unreadable_document_still_lets_the_others_land(db, tmp_path,
                                                             monkeypatch):
     # A single bad PDF stays a per-document skip; only a total failure is
@@ -1229,23 +1252,6 @@ def test_each_statement_document_is_recorded_with_its_rows(tmp_path,
         (sha, "statement", load.STATEMENT_GENERATION, 2)]
 
 
-def test_a_run_owes_the_rebuild_even_with_no_new_document(tmp_path,
-                                                          monkeypatch):
-    # The seam moves with the activity, so a run that carries the same
-    # statements again still rebuilds the era, from the cache.
-    calls = _counting_parse(monkeypatch)
-    args = _one_statement_tree(tmp_path)
-    assert load.main(args) == 0
-    ran = []
-    real = load.rebuild_statements
-    monkeypatch.setattr(load, "rebuild_statements",
-                        lambda *a, **k: (ran.append(1), real(*a, **k))[1])
-    root = Path(args[1])
-    shutil.copytree(root / "20260312T000000Z", root / "20260413T000000Z")
-    assert load.main(args) == 0
-    assert ran == [1] and calls == ["2025-12-12.pdf"]
-
-
 def _migrated_to(tmp_path, version: int):
     """A silver migrated up to `version` only."""
     older = tmp_path / "older-migrations"
@@ -1338,10 +1344,10 @@ def _statement_text(closing: str) -> str:
     return statement(closing=closing, payment_rows=PAY, charge_rows=BUY)
 
 
-def test_a_load_after_a_new_run_parses_no_statement_again(tmp_path,
-                                                          monkeypatch):
-    # Every run carries the whole statement archive again. The rebuild a new
-    # run owes reads each document's parse from the cache.
+def test_a_new_run_rebuilds_the_era_from_the_cache(tmp_path, monkeypatch):
+    # Every run carries the whole statement archive again. The seam moves
+    # with the activity, so a new run owes the rebuild even with no new
+    # document, and the rebuild reads each document's parse from the cache.
     calls = _counting_parse(monkeypatch)
     root = tmp_path / "bronze"
     stmts = {KEY_A: {"2025-12-12.pdf": _statement_text("12/12/25").encode(),
@@ -1358,8 +1364,12 @@ def test_a_load_after_a_new_run_parses_no_statement_again(tmp_path,
     write_run(root, "20260413T000000Z", statements=stmts,
               activity={KEY_A: _activity([_tx(2, post="2026-03-10")])})
     calls.clear()
+    ran = []
+    real = load.rebuild_statements
+    monkeypatch.setattr(load, "rebuild_statements",
+                        lambda *a, **k: (ran.append(1), real(*a, **k))[1])
     assert load.main(args) == 0
-    assert calls == []
+    assert ran == [1] and calls == []
     # The cached parse is the parse: the statement era is what it was.
     assert _statement_era(db_path) == first
 

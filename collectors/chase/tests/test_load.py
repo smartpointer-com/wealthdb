@@ -3006,7 +3006,8 @@ def test_without_a_stamp_the_migration_seeds_a_moved_parser(tmp_path):
     assert conn.execute(
         "SELECT DISTINCT generation FROM document_derivations").fetchall() == \
         [("",)]
-    assert load._derived_under_another_generation(conn)
+    assert load.derivations.generation_moved(
+        conn, load.STATEMENT_GENERATION_SCOPE, load.STATEMENT_GENERATION)
     conn.close()
 
 

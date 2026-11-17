@@ -407,12 +407,6 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> int:
     return len(accounts)
 
 
-def _run_columns(run: loader.Run) -> dict:
-    """The run's `dump_runs` row; its `run_dir` is the path as given."""
-    return {"snapshot_at": run.snapshot_at,
-            "silver_schema_version": run.version, "run_dir": str(run.dir)}
-
-
 # ============================================================
 # Supplied transaction listings (DESIGN.md §I)
 # ============================================================
@@ -498,7 +492,7 @@ def _insert_windows(conn, snapshot_at: int, windows) -> None:
 def _backfill_windows(conn, bronze_dir: Path) -> None:
     """Record the windows of runs loaded before `run_windows` existed, once.
 
-    It reads only a run dir `load_run` would read (`bronze.run_is_loadable`):
+    It reads only a run dir the load would load (`bronze.run_is_loadable`):
     one without a manifest, or whose download did not finish, is `prune`'s
     to reclaim and records no window."""
     have = {r[0] for r in conn.execute("SELECT DISTINCT snapshot_at FROM run_windows")}
@@ -947,7 +941,7 @@ SPEC = loader.LoaderSpec(
     name="raiffeisen_at", schema=MIGRATIONS_DIR, load_run=load_run,
     parser=_parser, counts=("account(s)",), defaults=_paths,
     before_runs=_backfill_listings, after_runs=_stitch_supplied,
-    run_columns=_run_columns)
+    run_columns=loader.given_run_columns)
 
 
 def main(argv: list[str] | None = None) -> int:

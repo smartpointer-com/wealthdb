@@ -146,7 +146,7 @@ AMEX_PASSWORD='...'
 ./amex login --check          # is this device registered? (profile cookie, no sign-in)
 
 ./amex load                   # bronze → silver SQLite
-./amex load --force           # delete the silver DB and rebuild from all bronze
+./amex load --force           # rebuild silver from all bronze; the old one stays until the new one is complete
 
 ./amex prune --dry-run        # preview what prune would reclaim
 ./amex explore                # discovery harness over VNC

@@ -85,7 +85,7 @@ confirmations, statements, fee notes).
 ./swissquote download                    # last ~90 days (the fleet default)
 ./swissquote download --lookback 2y      # wider backfill
 ./swissquote load                        # parse new dumps into silver
-./swissquote load --force                # delete silver, rebuild from all bronze
+./swissquote load --force                # rebuild silver from all bronze; swapped in once complete
 ./swissquote prune --dry-run             # preview the bronze disk reclaim
 ```
 
@@ -198,8 +198,8 @@ transaction, and already-loaded dumps are skipped.
     them are skipped; cash belongs in `currency_balances`.
     `pp_parser.py` reads them. `document_derivations` records each PDF
     parsed and the parser generation that parsed it: the fingerprint of
-    `pp_parser.py` and pypdf. A load parses only new PDFs. A change to
-    either parses them all again.
+    `pp_parser.py`, pypdf and the Python version. A load parses only new
+    PDFs. A change to any of them parses them all again.
 - **Transactions** load per account and CSV as a span replace. The span
   runs from the CSV's first row to its last, not over the requested
   window, because an export can hold fewer days than requested. A reload
@@ -216,7 +216,8 @@ transaction, and already-loaded dumps are skipped.
   Account Statement PDFs are cash ledgers and are indexed only.
   `account_overview.pdf` changes every run and is not indexed.
 - **`manual/` files** are indexed with `source = 'manual'` when their
-  sha256 is new.
+  sha256 is new, first seen at the file's modification time. A dump PDF
+  with the same bytes takes over the row as an `auto` document.
 
 Every position and transaction carries its own `currency`. Transaction
 times are Europe/Zurich wall-clock in the CSV and stored as UTC epoch;

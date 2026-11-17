@@ -392,6 +392,14 @@ def _rates(conn):
         " apy_earned, apy FROM statement_rates ORDER BY period_end")]
 
 
+def _row_counts(conn):
+    """The derivation row counts of the statement documents, in the order
+    their runs landed."""
+    return [r[0] for r in conn.execute(
+        "SELECT x.row_count FROM documents d JOIN document_derivations x"
+        " ON x.content_sha256 = d.sha256 ORDER BY d.snapshot_at")]
+
+
 def test_a_statement_rate_lands_in_silver(tmp_path, monkeypatch):
     bronze_dir = tmp_path / "bronze"
     _write_bronze_run(bronze_dir, "20260801T120000Z")
@@ -449,6 +457,8 @@ def test_a_copy_with_other_rates_is_kept_out(tmp_path, monkeypatch, caplog):
         conn = _main(tmp_path, bronze_dir)
     assert "another copy states other rates" in caplog.text
     assert [r[3] for r in _rates(conn)] == [3.07]
+    # Both copies are read; only the first one derived a row.
+    assert _row_counts(conn) == [1, 0]
 
 
 def test_a_copy_with_the_same_rates_writes_nothing(tmp_path, monkeypatch, caplog):
@@ -461,7 +471,7 @@ def test_a_copy_with_the_same_rates_writes_nothing(tmp_path, monkeypatch, caplog
         conn = _main(tmp_path, bronze_dir)
     assert len(read) == 2 and caplog.text == ""
     assert [r[3] for r in _rates(conn)] == [3.07]
-    assert conn.execute("SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 2
+    assert _row_counts(conn) == [1, 0]
 
 
 def test_the_sentence_form_yield_is_checked(tmp_path, monkeypatch, caplog):

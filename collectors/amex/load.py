@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from collectorkit import (bronze, channels, derivations, documents, loader,
-                          parsecache, silver, srcfp)
+                          parsecache, rebuild, silver, srcfp)
 from collectorkit.money import parse_money
 from collectorkit.parse import date_in_name, epoch_day
 
@@ -521,19 +521,6 @@ def _pending_total(payload: dict) -> float | None:
     return _money2(parse_money(charges.get("amount")))
 
 
-def _parse_statement(cache: parsecache.ParseCache, pdf: Path,
-                     sha: str) -> statement_parser.ParsedCardStatement:
-    """One statement's parse, read from the parse cache when this document
-    was parsed by this generation before. A parse that raises is not
-    cached, so it is tried again next load."""
-    cached = cache.get(sha, STATEMENT_CACHE_NAMESPACE)
-    if cached is not None:
-        return parsecache.from_json(cached, statement_parser.ParsedCardStatement)
-    parsed = statement_parser.parse_card_statement_pdf(pdf)
-    cache.put(sha, STATEMENT_CACHE_NAMESPACE, parsecache.to_json(parsed))
-    return parsed
-
-
 def _parse_statements(copies_by_name: dict,
                       cache: parsecache.ParseCache) -> tuple[dict, int]:
     """Parse one usable copy of each period, newest run first.
@@ -566,8 +553,13 @@ def _parse_statements(copies_by_name: dict,
             digest, _ = bronze.sha256_file(pdf)
             if index and digest in refused:
                 continue
+            # A parse that raises is not cached, so the next statement
+            # rebuild parses it again.
             try:
-                parsed = _parse_statement(cache, pdf, digest)
+                parsed = parsecache.cached(
+                    cache, digest, STATEMENT_CACHE_NAMESPACE,
+                    statement_parser.parse_card_statement_pdf, pdf,
+                    kind=statement_parser.ParsedCardStatement)
             except Exception as exc:        # noqa: BLE001 — any parse failure
                 log.warning("statement %s (run %s): parse failed (%r); "
                             "skipped", name, slug, exc)
@@ -751,7 +743,8 @@ def _import_statements(conn, account_external_id: str,
 
 
 def rebuild_statements(conn, bronze_dir: Path,
-                       cache: parsecache.ParseCache | None = None) -> None:
+                       cache: parsecache.ParseCache | None = None, *,
+                       fresh: bool = False) -> None:
     """Rebuild every statement-sourced row in silver, from every run
     `load_run` reads (`_statement_copies`).
 
@@ -787,7 +780,9 @@ def rebuild_statements(conn, bronze_dir: Path,
     * **A tooling fault is not a rebuild.** If every parse RAISED and silver
       already holds statement periods, this raises instead of rebuilding —
       that shape is a broken `pdftotext`, not bronze losing its documents. A
-      single unreadable document stays a per-document skip.
+      `fresh` silver (`load --force`) holds no periods yet, so there every
+      parse raising is refused on its own. A single unreadable document
+      stays a per-document skip.
     """
     if cache is None:
         cache = parsecache.ParseCache(parsecache.default_dir("amex"))
@@ -801,13 +796,13 @@ def rebuild_statements(conn, bronze_dir: Path,
         errors += failed
         if parsed_by_end:
             parsed_by_account[acct_id] = parsed_by_end
-    if errors and not parsed_by_account and _statement_period_count(conn):
+    if errors and not parsed_by_account and (
+            fresh or _statement_period_count(conn)):
         raise RuntimeError(
-            f"every statement parse failed ({errors} document(s)) while "
-            f"silver already holds statement-sourced periods. Refusing to "
-            f"rebuild: that shape is a parse-tooling fault, not bronze "
+            f"every statement parse failed ({errors} document(s)). Refusing "
+            f"to rebuild: that shape is a parse-tooling fault, not bronze "
             f"losing its documents, and rebuilding would drop the deep era. "
-            f"Check `pdftotext`, then re-run `load --force`.")
+            f"Check `pdftotext`, then re-run the load.")
 
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -917,12 +912,6 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> int:
     return len(accounts)
 
 
-def _run_columns(run: loader.Run) -> dict:
-    """The run's `dump_runs` row; its `run_dir` is the path as given."""
-    return {"snapshot_at": run.snapshot_at,
-            "silver_schema_version": run.version, "run_dir": str(run.dir)}
-
-
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--bronze-dir", type=Path, required=True,
@@ -950,28 +939,28 @@ def _require_pdftotext(args: argparse.Namespace) -> int | None:
     return None
 
 
-def _statement_pass(conn: sqlite3.Connection, load: loader.Load) -> int | None:
+def _statement_pass(conn: sqlite3.Connection, load: loader.Load) -> None:
     """Rebuild the statement era when it is owed: after a run, and when a
     statement document has no record under the current generation. That
     is a moved statement parser (a parser-only change lands no run), or an
     ingested run whose rebuild has not committed yet (`load_run` clears
     the records). Only after every run is in: the seam this depends on is
-    the MIN over all of them together."""
+    the MIN over all of them together. A refused rebuild stops the load
+    (`rebuild.LoadStop`), so under `--force` the old silver stays."""
     if load.loaded or derivations.pending_derivations(
             conn, STATEMENT_GENERATION_SCOPE, STATEMENT_GENERATION,
             _STATEMENT_DOCUMENTS_SQL):
         try:
-            rebuild_statements(conn, load.bronze_dir)
+            rebuild_statements(conn, load.bronze_dir, fresh=load.args.force)
         except RuntimeError as exc:
-            log.error("%s", exc)
-            return 1
+            raise rebuild.LoadStop(str(exc)) from exc
     return None
 
 
 SPEC = loader.LoaderSpec(
     name="amex", schema=MIGRATIONS_DIR, load_run=load_run, parser=_parser,
     counts=("accounts",), defaults=_paths, preflight=_require_pdftotext,
-    after_runs=_statement_pass, run_columns=_run_columns)
+    after_runs=_statement_pass, run_columns=loader.given_run_columns)
 
 
 def main(argv: list[str] | None = None) -> int:

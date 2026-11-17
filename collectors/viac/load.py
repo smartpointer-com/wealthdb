@@ -46,8 +46,9 @@ logger = logging.getLogger("load")
 # `document_derivations` (migration 0006) records which generation read
 # each report. Each dump's pass reads the reports it carries; after the
 # dumps, `load_underived_reports` reads every indexed report this
-# generation has not, from its stored PDF. So a parser change re-derives
-# the whole archive at the next load.
+# generation has not, from its stored PDF. The generation is the
+# fingerprint of `pdf_parsers`, pypdfium2 and the Python version, so a
+# change to any of them re-derives the whole archive at the next load.
 REPORT_GENERATION_SCOPE = "reports"
 REPORT_GENERATION = srcfp.parser_fingerprint([pdf_parsers], ("pypdfium2",))
 

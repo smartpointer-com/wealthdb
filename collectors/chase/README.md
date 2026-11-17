@@ -96,7 +96,7 @@ liability ([adapter doc](../../wealthdb/docs/adapters/chase.md)).
 
 # 4. Load the bronze into silver.
 ./chase load                     # or: wealthdb-collect chase load
-./chase load --force             # delete silver and rebuild from all bronze
+./chase load --force             # rebuild silver from all bronze; the old one stays until the new one is complete
 ```
 
 `--lookback` bounds only the statement pass. The activity export always

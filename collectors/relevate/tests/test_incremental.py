@@ -2,7 +2,8 @@
 silver one `load --force` builds.
 
 Three tiny synthetic dumps: a report and a credit note, a second report
-beside the first, then a restated report and a PDF that does not parse.
+beside the first, then a restatement of the first report under another
+valuation date and a PDF that does not parse.
 Synthetic ids, ISINs and amounts only.
 """
 from __future__ import annotations
@@ -84,9 +85,7 @@ def _credit_note(amount: str, date: str) -> bytes:
     return pdf_bytes(CREDIT_NOTE.format(amount=amount, date=date).splitlines())
 
 
-def test_dumps_loaded_one_at_a_time_build_the_rebuilt_silver(
-        tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+def test_dumps_loaded_one_at_a_time_build_the_rebuilt_silver(tmp_path):
     src = tmp_path / "src"
     q1 = ("11", "Quartalsbericht Q1.pdf")
     runs = [
@@ -97,7 +96,7 @@ def test_dumps_loaded_one_at_a_time_build_the_rebuilt_silver(
             (*q1, _report("31.03.2099", "45.00")),
             ("12", "Quartalsbericht Q2.pdf", _report("30.06.2099", "44.00"))]),
         _dump(src, "20240701T000000Z", 3.0, [
-            (*q1, _report("31.03.2099", "46.00")),
+            (*q1, _report("30.04.2099", "46.00")),
             ("13", "Quartalsbericht Q3.pdf", b"%PDF-1.4 does not parse")]),
     ]
     incremental.check(

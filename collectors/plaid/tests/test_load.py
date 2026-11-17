@@ -621,6 +621,21 @@ def test_an_older_run_found_later_stops_its_item(tree, caplog):
     assert load_tree(tree) == 0
 
 
+def test_a_silver_newer_than_the_code_stops_its_item(tree, caplog):
+    write_run(tree, "20260130T070000Z", transactions=[tx(1)])
+    load_tree(tree)
+    conn = sqlite3.connect(tree / "bank.db")
+    conn.execute("INSERT INTO schema_meta (silver_schema_version, applied_at) "
+                 "VALUES (99, 0)")
+    conn.commit()
+    conn.close()
+    before = (tree / "bank.db").read_bytes()
+    write_run(tree, "20260131T070000Z", transactions=[tx(2)])
+    assert load_tree(tree) == 1
+    assert (tree / "bank.db").read_bytes() == before
+    assert "silver is at schema version 99, newer than the 1" in caplog.text
+
+
 def test_an_older_run_stops_only_its_own_item(tmp_path):
     root = tmp_path / "plaid"
     write_run(root / "bank", "20260131T070000Z", transactions=[tx(2)])

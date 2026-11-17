@@ -1058,19 +1058,6 @@ def _parse_cache() -> parsecache.ParseCache:
     return parsecache.ParseCache(parsecache.default_dir("chase"))
 
 
-def _cached_parse(cache: parsecache.ParseCache, namespace: str, kind,
-                  parse, pdf: Path, sha: str):
-    """`parse(pdf)`, read from the parse cache when this document was parsed
-    by this generation before. A parse that raises is not cached, so it is
-    tried again next load."""
-    cached = cache.get(sha, namespace)
-    if cached is not None:
-        return parsecache.from_json(cached, kind)
-    parsed = parse(pdf)
-    cache.put(sha, namespace, parsecache.to_json(parsed))
-    return parsed
-
-
 def _loadable_runs(bronze_dir: Path):
     """The run dirs under `bronze_dir` that `load_run` reads
     (`bronze.run_is_loadable`), oldest first. The tree-wide passes walk these
@@ -1128,11 +1115,13 @@ def _deposit_statements_in_tree(bronze_dir: Path, card_ids: set[str],
                 if sha in seen:
                     continue
                 seen.add(sha)
+                # A parse that raises is not cached, so the next run of
+                # the passes parses it again.
                 try:
-                    parsed = _cached_parse(
-                        cache, DEPOSIT_CACHE_NAMESPACE,
-                        statement_parser.ParsedStatement,
-                        statement_parser.parse_statement_pdf, pdf, sha)
+                    parsed = parsecache.cached(
+                        cache, sha, DEPOSIT_CACHE_NAMESPACE,
+                        statement_parser.parse_statement_pdf, pdf,
+                        kind=statement_parser.ParsedStatement)
                 except Exception as exc:            # pragma: no cover — env/poppler
                     log.warning("statement %s: parse failed (%r); skipping",
                                 pdf.name, exc)
@@ -1595,11 +1584,13 @@ def _card_statements_in_tree(bronze_dir: Path, card_ids: set[str],
                 if (acct_dir.name, sha) in seen:
                     continue
                 seen.add((acct_dir.name, sha))
+                # A parse that raises is not cached, so the next run of
+                # the passes parses it again.
                 try:
-                    parsed = _cached_parse(
-                        cache, CARD_CACHE_NAMESPACE,
-                        statement_parser.ParsedCardStatement,
-                        statement_parser.parse_card_statement_pdf, pdf, sha)
+                    parsed = parsecache.cached(
+                        cache, sha, CARD_CACHE_NAMESPACE,
+                        statement_parser.parse_card_statement_pdf, pdf,
+                        kind=statement_parser.ParsedCardStatement)
                 except Exception as exc:        # pragma: no cover — env/poppler
                     log.warning("card statement %s: parse failed (%r); "
                                 "skipping", pdf.name, exc)
@@ -2191,23 +2182,6 @@ def _set_post_passes_pending(conn, pending: bool) -> None:
     conn.commit()
 
 
-def _derived_under_another_generation(conn) -> bool:
-    """Whether a document's statement rows were derived by a parser
-    generation other than this one: the statement parser has moved. A
-    document with no record is new, not moved."""
-    return conn.execute(
-        "SELECT 1 FROM document_derivations WHERE scope = ? "
-        "AND generation != ? LIMIT 1",
-        (STATEMENT_GENERATION_SCOPE, STATEMENT_GENERATION)).fetchone() \
-        is not None
-
-
-def _run_columns(run: loader.Run) -> dict:
-    """The run's `dump_runs` row; its `run_dir` is the path as given."""
-    return {"snapshot_at": run.snapshot_at,
-            "silver_schema_version": run.version, "run_dir": str(run.dir)}
-
-
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--bronze-dir", type=Path, required=True,
@@ -2247,7 +2221,8 @@ def _post_passes(conn: sqlite3.Connection, load: loader.Load) -> None:
     change lands no bronze run, so the pending flag stays down and silver
     would go on holding rows no parser in the tree produces."""
     bronze_dir = load.bronze_dir
-    reparse = _derived_under_another_generation(conn)
+    reparse = derivations.generation_moved(
+        conn, STATEMENT_GENERATION_SCOPE, STATEMENT_GENERATION)
     card_ids = None
     if _post_passes_pending(conn) or reparse:
         documents_pending = derivations.pending_derivations(
@@ -2301,7 +2276,7 @@ def _post_passes(conn: sqlite3.Connection, load: loader.Load) -> None:
 SPEC = loader.LoaderSpec(
     name="chase", schema=MIGRATIONS_DIR, load_run=load_run, parser=_parser,
     counts=("accounts",), defaults=_paths, before_runs=_before_runs,
-    after_runs=_post_passes, run_columns=_run_columns)
+    after_runs=_post_passes, run_columns=loader.given_run_columns)
 
 
 def main(argv: list[str] | None = None) -> int:

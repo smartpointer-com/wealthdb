@@ -525,17 +525,21 @@ transaction:
 Each pass derives only the documents the current `pdf_parsers`
 generation has not derived (`document_derivations`, migration 0004,
 through `collectorkit.derivations`). So a load with no new document
-parses nothing, and a new document is parsed once. A PDF that fails to
-parse is logged and skipped, and the next load tries it again. A parse
-result is also cached per document and parser generation
-(`collectorkit.parsecache`, under the collector's cache root), so a
-`load --force` parses nothing it parsed before. A failed parse is not
-cached.
+parses nothing, and a new document is parsed once. A document derived
+again first loses the rows it derived before, so a restated report
+leaves nothing of its older content. A PDF that fails to parse is
+logged and recorded with no rows, so only a parser change reads it
+again. A PDF missing on disk is not recorded, so the next load tries
+it again. A parse result is also cached per document and parser
+generation (`collectorkit.parsecache`, under the collector's cache
+root), so a `load --force` parses nothing it parsed before. A failed
+parse is not cached.
 
-When the `pdf_parsers` fingerprint changes, `load` first drops the
-rows both passes wrote and derives every document again, so a
-re-parse replaces them. If the re-parse yields fewer rows than before,
-the new generation is not recorded and the next load tries again.
+The generation is the fingerprint of `pdf_parsers`, pypdf and the
+Python version. When it changes, `load` first drops the rows both
+passes wrote and derives every document again, so a re-parse replaces
+them. If the re-parse yields fewer rows than before, the new
+generation is recorded one load later, after one more re-parse.
 
 `load --force` builds a fresh silver from all bronze beside the old
 one and puts it in place once every dump is in. A failed rebuild

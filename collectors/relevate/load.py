@@ -47,6 +47,7 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 # documents this generation has not. When the generation has moved, both
 # passes' rows are dropped and every document is derived again. One scope
 # for both passes: they share `pdf_parsers`, so one fingerprint moves both.
+# The fingerprint covers `pdf_parsers`, pypdf and the Python version.
 PDF_GENERATION_SCOPE = "pdf_reports"
 PDF_GENERATION = srcfp.parser_fingerprint([pdf_parsers], ("pypdf",))
 
@@ -416,17 +417,6 @@ def run_columns(run: loader.Run) -> dict:
 # Orchestration
 # ============================================================
 
-def _parsed(cache: parsecache.ParseCache, namespace: str, parse_pdf,
-            content_sha256: str, pdf: Path) -> dict:
-    """`parse_pdf(pdf, content_sha256)`, from `cache` when this generation
-    parsed the document before. A parse that raises stores nothing."""
-    result = cache.get(content_sha256, namespace)
-    if result is None:
-        result = parse_pdf(pdf, content_sha256)
-        cache.put(content_sha256, namespace, result)
-    return result
-
-
 def load_historical_snapshots(
     conn: sqlite3.Connection, bronze_root: Path,
     cache: parsecache.ParseCache, pending: list,
@@ -438,10 +428,14 @@ def load_historical_snapshots(
     return each derived document's sha256 and row count.
 
     Both target tables are keyed on (snapshot_at, account_external_id,
-    isin or balance_kind) — the dimensions parsed from the PDF — not on
-    document_id, so a document derived again lands on its own rows. One
-    PDF parse error doesn't kill the loop; logged and skipped, and the
-    next `load` attempt will retry. Runs inside the caller's transaction.
+    isin or balance_kind), the dimensions parsed from the PDF, not on
+    document_id. So the rows a document derived before are deleted by
+    its document_id first: a restatement that drops a row or moves the
+    valuation date leaves none behind. A PDF that fails to parse is
+    logged and recorded with no rows, so only a parser change reads it
+    again. A PDF missing on disk, or one that cannot be read, is left
+    unrecorded and tried at the next load. Runs inside the caller's
+    transaction.
     """
     if not pending:
         return []
@@ -449,6 +443,7 @@ def load_historical_snapshots(
         "historical: parsing %d Quartalsbericht PDF(s)", len(pending),
     )
     derived: list[tuple[str, int]] = []
+    n_failed = 0
     n_positions = 0
     n_cash = 0
     for content_sha256, doc_id, bronze_path in pending:
@@ -459,14 +454,26 @@ def load_historical_snapshots(
                 doc_id,
             )
             continue
+        for table in ("historical_position_snapshots",
+                      "historical_cash_balances"):
+            conn.execute(f"DELETE FROM {table} WHERE document_id = ?",
+                         (doc_id,))
         try:
-            parsed = _parsed(cache, QUARTERLY_NAMESPACE,
-                             parse_quarterly_report, content_sha256, pdf_abs)
+            parsed = parsecache.cached(
+                cache, content_sha256, QUARTERLY_NAMESPACE,
+                parse_quarterly_report, pdf_abs, content_sha256)
+        except OSError as exc:
+            logger.warning(
+                "historical: cannot read doc_id=%s: %s", doc_id, exc,
+            )
+            continue
         except Exception as exc:  # noqa: BLE001 — best-effort batch
             logger.warning(
                 "historical: parse failed for doc_id=%s: %s",
                 doc_id, exc,
             )
+            derived.append((content_sha256, 0))
+            n_failed += 1
             continue
 
         snapshot_at = parsed["as_of_date"]
@@ -517,7 +524,7 @@ def load_historical_snapshots(
             (content_sha256, len(parsed["positions"]) + len(parsed["cash"])))
     logger.info(
         "historical: parsed %d/%d PDF(s); %d position rows, %d cash rows",
-        len(derived), len(pending), n_positions, n_cash,
+        len(derived) - n_failed, len(pending), n_positions, n_cash,
     )
     return derived
 
@@ -539,7 +546,9 @@ def load_credit_note_transactions(
     (`_restamp_credit_notes`). `run_snapshot_at` is the dump that first
     indexed the PDF's content (`documents.first_seen_at`), so gold's
     change window reaches a credit note dated before every snapshot it
-    holds. Runs inside the caller's transaction.
+    holds. A document's earlier row is deleted before its parse, and a
+    PDF that fails to parse is recorded with no rows, as in
+    `load_historical_snapshots`. Runs inside the caller's transaction.
     """
     if not pending:
         return []
@@ -555,6 +564,7 @@ def load_credit_note_transactions(
         "credit_note: parsing %d Gutschriftsanzeige PDF(s)", len(pending),
     )
     derived: list[tuple[str, int]] = []
+    n_failed = 0
     for content_sha256, doc_id, bronze_path in pending:
         pdf_abs = bronze_root / bronze_path
         if not pdf_abs.is_file():
@@ -563,14 +573,25 @@ def load_credit_note_transactions(
                 doc_id,
             )
             continue
+        conn.execute(
+            "DELETE FROM transactions WHERE transaction_external_id = ?",
+            (_credit_note_id(doc_id),))
         try:
-            parsed = _parsed(cache, CREDIT_NOTE_NAMESPACE,
-                             parse_credit_note, content_sha256, pdf_abs)
+            parsed = parsecache.cached(
+                cache, content_sha256, CREDIT_NOTE_NAMESPACE,
+                parse_credit_note, pdf_abs, content_sha256)
+        except OSError as exc:
+            logger.warning(
+                "credit_note: cannot read doc_id=%s: %s", doc_id, exc,
+            )
+            continue
         except Exception as exc:  # noqa: BLE001 — best-effort batch
             logger.warning(
                 "credit_note: parse failed for doc_id=%s: %s",
                 doc_id, exc,
             )
+            derived.append((content_sha256, 0))
+            n_failed += 1
             continue
 
         payload = {
@@ -605,7 +626,8 @@ def load_credit_note_transactions(
         )
         derived.append((content_sha256, 1))
     logger.info(
-        "credit_note: parsed %d/%d PDF(s)", len(derived), len(pending),
+        "credit_note: parsed %d/%d PDF(s)", len(derived) - n_failed,
+        len(pending),
     )
     return derived
 
@@ -633,15 +655,17 @@ def _restamp_credit_notes(conn: sqlite3.Connection, bronze_root: Path,
     latest = _latest_dump(conn)
     if not latest:
         return
-    rows = conn.execute(
-        CREDIT_NOTE_DOCUMENTS + " AND content_sha256 IN ("
-        "SELECT content_sha256 FROM document_derivations "
-        "WHERE scope = ? AND generation = ?)",
-        (PDF_GENERATION_SCOPE, PDF_GENERATION)).fetchall()
-    ids = {doc_id for sha, doc_id, path in conn.execute(CREDIT_NOTE_DOCUMENTS)
-           if sha in derived_now}
-    ids |= {doc_id for _, doc_id, path in rows
-            if (bronze_root / path).is_file()}
+    notes = conn.execute(
+        "SELECT d.content_sha256, d.relevate_doc_id, d.bronze_path, "
+        "r.content_sha256 IS NOT NULL FROM documents d "
+        "LEFT JOIN document_derivations r "
+        "ON r.content_sha256 = d.content_sha256 "
+        "AND r.scope = ? AND r.generation = ? "
+        "WHERE d.doc_kind = 'credit_note'",
+        (PDF_GENERATION_SCOPE, PDF_GENERATION))
+    ids = {doc_id for sha, doc_id, path, recorded in notes
+           if sha in derived_now
+           or (recorded and (bronze_root / path).is_file())}
     for doc_id in sorted(ids, key=str):
         conn.execute(
             "UPDATE transactions SET snapshot_at = ? "
@@ -666,7 +690,8 @@ def load_pdf_passes(conn: sqlite3.Connection, load: loader.Load) -> None:
         "DELETE FROM document_derivations WHERE scope = ? AND "
         "content_sha256 NOT IN (SELECT content_sha256 FROM documents)",
         (PDF_GENERATION_SCOPE,))
-    moved = _generation_moved(conn)
+    moved = derivations.generation_moved(
+        conn, PDF_GENERATION_SCOPE, PDF_GENERATION)
     reports = derivations.pending_derivations(
         conn, PDF_GENERATION_SCOPE, PDF_GENERATION, QUARTERLY_DOCUMENTS)
     notes = derivations.pending_derivations(
@@ -685,14 +710,15 @@ def load_pdf_passes(conn: sqlite3.Connection, load: loader.Load) -> None:
                               {sha for sha, _ in derived_notes})
         after = _pdf_pass_row_count(conn) if moved else 0
         if moved and after < before:
-            # The re-derivation came back short — a PDF that no longer
-            # parses, a document gone from the archive. Not recording is
-            # what makes the next load try again rather than commit the
-            # shortfall.
+            # The re-derivation came back short: a PDF that no longer
+            # parses, a document gone from the archive. Leaving the older
+            # generation recorded makes the next load derive once more,
+            # which helps when the fault was transient; it settles after
+            # that retry, which has nothing better to compare against.
             logger.warning(
                 "re-derivation produced %d row(s) where silver held %d; not "
                 "recording the parser generation, so the next load "
-                "re-derives again", after, before)
+                "derives once more", after, before)
         else:
             for sha, n in derived + derived_notes:
                 derivations.record_derivation(
@@ -703,14 +729,6 @@ def load_pdf_passes(conn: sqlite3.Connection, load: loader.Load) -> None:
                 "WHERE scope = ? AND generation != ?",
                 (PDF_GENERATION_SCOPE, PDF_GENERATION))
     cache.sweep({QUARTERLY_NAMESPACE, CREDIT_NOTE_NAMESPACE})
-
-
-def _generation_moved(conn: sqlite3.Connection) -> bool:
-    """Whether a document was derived by another parser generation."""
-    return conn.execute(
-        "SELECT 1 FROM document_derivations WHERE scope = ? "
-        "AND generation != ? LIMIT 1",
-        (PDF_GENERATION_SCOPE, PDF_GENERATION)).fetchone() is not None
 
 
 def _pdf_pass_row_count(conn: sqlite3.Connection) -> int:

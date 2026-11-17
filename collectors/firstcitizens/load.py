@@ -501,12 +501,6 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> int:
     return len(accounts)
 
 
-def _run_columns(run: loader.Run) -> dict:
-    """The run's `dump_runs` row; its `run_dir` is the path as given."""
-    return {"snapshot_at": run.snapshot_at,
-            "silver_schema_version": run.version, "run_dir": str(run.dir)}
-
-
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     p.add_argument("--bronze-dir", type=Path, required=True,
@@ -536,7 +530,7 @@ SPEC = loader.LoaderSpec(
     name="firstcitizens", schema=MIGRATIONS_DIR, load_run=load_run,
     parser=_parser, counts=("accounts",), defaults=_paths,
     before_runs=_backfill_listings, after_runs=_statement_pass,
-    run_columns=_run_columns)
+    run_columns=loader.given_run_columns)
 
 
 def main(argv: list[str] | None = None) -> int:

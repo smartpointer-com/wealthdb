@@ -25,7 +25,7 @@ import logging
 import re
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -368,8 +368,8 @@ def parse_position_details(path: Path) -> dict[tuple[str, str | None], dict]:
 # ============================================================
 
 # The generation of the Portfolio Performance parser: the fingerprint of
-# pp_parser.py and the pypdf that extracts the text. A new generation
-# parses every statement again at the next load.
+# pp_parser.py, the pypdf that extracts the text and the Python version.
+# A new generation parses every statement again at the next load.
 PP_SCOPE = "portfolio_performance"
 PP_GENERATION = srcfp.parser_fingerprint([pp_parser], ("pypdf",))
 
@@ -389,7 +389,8 @@ def load_portfolio_performance_docs(
     A doc's rows carry the tag `pp:<doc_id>`. A parse replaces them, a
     DELETE then an INSERT under that tag, and records the doc under the
     generation, in one transaction. A doc whose parse fails keeps its
-    rows and is parsed again at the next load.
+    rows and is recorded with none, so only a parser change reads it
+    again.
 
     Returns the number of newly-loaded docs.
     """
@@ -406,6 +407,9 @@ def load_portfolio_performance_docs(
             # One bad PDF shouldn't kill the whole load; record the
             # parse failure and continue. -v surfaces the detail.
             log.error("Skip %s — parser failed: %s", pdf_path.name, e)
+            with silver.transaction(conn):
+                derivations.record_derivation(
+                    conn, r["content_sha256"], PP_SCOPE, PP_GENERATION, 0)
             continue
 
         # Anchor snapshot_at to end-of-day in Europe/Zurich on the
@@ -575,7 +579,11 @@ def index_documents(
 
     A document id names one document. A later copy under an id silver
     holds, with other bytes, is a re-rendering: the first copy stays
-    indexed (and parsed), and the later one is skipped with a warning."""
+    indexed (and parsed), and the later one is skipped with a warning.
+
+    A PDF whose bytes silver holds as a manual file takes over that row,
+    so it is indexed as a `load --force` indexes it, the dump read before
+    the manual dir."""
     docs_dir = run_dir / "documents"
     if not docs_dir.is_dir():
         return 0
@@ -588,11 +596,11 @@ def index_documents(
     n = 0
     for pdf in sorted(docs_dir.glob("*.pdf")):
         digest = bronze.sha256_file(pdf)[0]
-        already = conn.execute(
-            "SELECT 1 FROM documents WHERE content_sha256 = ?;",
+        held = conn.execute(
+            "SELECT source FROM documents WHERE content_sha256 = ?;",
             (digest,),
         ).fetchone()
-        if already:
+        if held and held["source"] != "manual":
             continue
         doc_id = pdf.stem
         if conn.execute(
@@ -612,6 +620,9 @@ def index_documents(
             "date": meta.get("date"),
             "target_user": meta.get("target_user"),
         })
+        if held:
+            conn.execute("DELETE FROM documents WHERE content_sha256 = ?;",
+                         (digest,))
         conn.execute(
             "INSERT INTO documents("
             " content_sha256, source, swissquote_doc_id,"
@@ -628,11 +639,13 @@ def index_documents(
 
 
 def ingest_manual_dir(conn: sqlite3.Connection, bronze_root: Path) -> int:
-    """Scan <bronze-root>/manual/ for new files; insert into documents."""
+    """Scan <bronze-root>/manual/ for new files; insert into documents.
+
+    A manual file is first seen at its modification time, a fact of the
+    file, so the row is the same whichever load indexes it."""
     manual = bronze_root / "manual"
     if not manual.is_dir():
         return 0
-    now = int(datetime.now(timezone.utc).timestamp())
     n = 0
     with silver.transaction(conn):
         for f in sorted(manual.rglob("*")):
@@ -655,7 +668,8 @@ def ingest_manual_dir(conn: sqlite3.Connection, bronze_root: Path) -> int:
                 " account_external_id, document_type,"
                 " first_seen_at, bronze_path, payload) "
                 "VALUES (?, 'manual', NULL, NULL, NULL, ?, ?, ?);",
-                (digest, now, str(f.relative_to(bronze_root)), payload),
+                (digest, int(f.stat().st_mtime),
+                 str(f.relative_to(bronze_root)), payload),
             )
             n += 1
     return n
@@ -796,32 +810,14 @@ def _check_bronze_dir(args: argparse.Namespace) -> None:
         raise SystemExit(f"--bronze-dir not found: {args.bronze_dir}")
 
 
-def _pending(conn: sqlite3.Connection, bronze_dir: Path, *, log) -> list[Path]:
-    """Only complete dumps load: a dir with no run.json, or one still
-    carrying the in-progress marker, is a crashed, interrupted or
-    still-running download, and its partial artefacts would leak a
-    partial snapshot into silver. It is skipped without a dump_runs row,
-    so it loads once its walk finalises."""
-    pending = bronze.pending_run_dirs(conn, bronze_dir, log=log)
-    log.info("%d pending dump(s) to load", len(pending))
-    return pending
-
-
-def _run_columns(run: loader.Run) -> dict:
-    """The run's `dump_runs` row; its `run_dir` is the path as given."""
-    return {"snapshot_at": run.snapshot_at,
-            "silver_schema_version": run.version, "run_dir": str(run.dir)}
-
-
 def _document_passes(conn: sqlite3.Connection, load: loader.Load) -> None:
     # Manual dir is scanned every invocation, regardless of new dumps.
     n_manual = ingest_manual_dir(conn, load.bronze_dir)
     if n_manual:
         log.info("Indexed %d new manual document(s)", n_manual)
 
-    # Portfolio Performance docs may now be in the documents table
-    # but not yet parsed into positions snapshots. Same call is
-    # idempotent — re-parses replace under their `pp:<doc_id>` tag.
+    # Parse the Portfolio Performance docs this parser generation has not
+    # read; a parse replaces the doc's pp:<doc_id> rows.
     n_pp = load_portfolio_performance_docs(conn, load.bronze_dir)
     if n_pp:
         log.info(
@@ -849,7 +845,7 @@ def _parser() -> argparse.ArgumentParser:
 SPEC = loader.LoaderSpec(
     name="swissquote", schema=Path(__file__).resolve().parent / "migrations",
     load_run=load_run, parser=_parser, preflight=_check_bronze_dir,
-    after_runs=_document_passes, pending=_pending, run_columns=_run_columns,
+    after_runs=_document_passes, run_columns=loader.given_run_columns,
     open_db=open_db, manifest=loader.MANIFEST_SKIP)
 
 

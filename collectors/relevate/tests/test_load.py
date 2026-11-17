@@ -333,7 +333,6 @@ def _seed_pdf_dump(root: Path, slug: str) -> Path:
 
 
 def test_a_second_load_calls_no_parser(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     calls: list = []
     _counting_parsers(monkeypatch, calls)
     bronze_root = tmp_path / "bronze"
@@ -349,7 +348,6 @@ def test_a_second_load_calls_no_parser(tmp_path, monkeypatch):
 
 
 def test_a_rebuild_reads_the_parse_cache(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     calls: list = []
     _counting_parsers(monkeypatch, calls)
     bronze_root = tmp_path / "bronze"
@@ -379,7 +377,7 @@ def test_a_second_load_derives_nothing_even_without_the_cache(
     _load(tmp_path, bronze_root).close()
     calls.clear()
 
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "other-cache"))
+    monkeypatch.setenv("WEALTHDB_CACHE_DIR", str(tmp_path / "other-cache"))
     _load(tmp_path, bronze_root).close()
     assert calls == []
 
@@ -445,8 +443,9 @@ def _move_generation(monkeypatch):
 
 def test_a_short_re_derivation_is_not_recorded(tmp_path, monkeypatch):
     # Fewer rows than before: the rows are replaced and the new generation
-    # is not recorded, so the next load drops and derives them again; that
-    # one comes up whole and is recorded.
+    # is not recorded, so the next load drops and derives them once more.
+    # That load compares against the short count, so it records the
+    # generation.
     calls: list = []
     _counting_parsers(monkeypatch, calls)
     bronze_root = tmp_path / "bronze"
@@ -467,6 +466,100 @@ def test_a_short_re_derivation_is_not_recorded(tmp_path, monkeypatch):
         assert ("g2" in {r[0] for r in conn.execute(
             "SELECT generation FROM document_derivations")}) == recorded
         conn.close()
+
+
+def test_a_pdf_that_does_not_parse_is_parsed_once(tmp_path, monkeypatch):
+    # The parse is a function of the bytes and the generation, so a
+    # failure is recorded with no rows and a second load reads nothing.
+    calls: list = []
+    _counting_parsers(monkeypatch, calls)
+
+    def broken(pdf, sha):
+        calls.append(("quarterly", pdf.name))
+        raise ValueError("no valuation date")
+
+    monkeypatch.setattr(loader, "parse_quarterly_report", broken)
+    bronze_root = tmp_path / "bronze"
+    _seed_pdf_dump(bronze_root, FIRST_RUN)
+    conn = _load(tmp_path, bronze_root)
+    assert sorted(calls) == [("credit_note", "2.pdf"), ("quarterly", "1.pdf")]
+    assert sorted(r[0] for r in conn.execute(
+        "SELECT row_count FROM document_derivations")) == [0, 1]
+    conn.close()
+    calls.clear()
+
+    _load(tmp_path, bronze_root).close()
+    assert calls == []
+
+
+def test_a_pdf_missing_on_disk_is_tried_at_the_next_load(
+        tmp_path, monkeypatch):
+    calls: list = []
+    _counting_parsers(monkeypatch, calls)
+    bronze_root = tmp_path / "bronze"
+    d = _seed_pdf_dump(bronze_root, FIRST_RUN)
+    conn = _load(tmp_path, bronze_root)
+    # The report is pending again, and its PDF is gone.
+    conn.execute("DELETE FROM document_derivations WHERE content_sha256 = ?",
+                 (hashlib.sha256(b"%PDF-1.4 report").hexdigest(),))
+    conn.close()
+    pdf = d / "documents" / "1.pdf"
+    pdf.unlink()
+    calls.clear()
+
+    conn = _load(tmp_path, bronze_root)
+    assert calls == []
+    assert conn.execute(
+        "SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 1
+    conn.close()
+
+    # Restored, it is derived (from the parse cache) and recorded.
+    pdf.write_bytes(b"%PDF-1.4 report")
+    conn = _load(tmp_path, bronze_root)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 2
+    assert loader._pdf_pass_row_count(conn) == 3
+    conn.close()
+
+
+def _restating_parser(monkeypatch):
+    """A stand-in report parser that reads the valuation date off the
+    bytes, and fails on bytes that say so."""
+    def quarterly(pdf, sha):
+        body = pdf.read_bytes()
+        if b"broken" in body:
+            raise ValueError("no valuation date")
+        return {"as_of_date": 1800000000 if b"restated" in body else 1700000000,
+                "account_external_id": "1000.100000.1", "currency": "CHF",
+                "source_sha256": sha,
+                "positions": [{"isin": "XX0000000001",
+                               "security_name": "Example Fund",
+                               "currency": "CHF", "market_value": 10.0}],
+                "cash": [{"balance_kind": "cash", "currency": "CHF",
+                          "amount": 2.0}]}
+
+    monkeypatch.setattr(loader, "parse_quarterly_report", quarterly)
+
+
+@pytest.mark.parametrize("restated, dates", [
+    (b"%PDF-1.4 restated", [1800000000]),
+    (b"%PDF-1.4 broken", []),
+])
+def test_a_restatement_leaves_no_row_of_the_older_content(
+        tmp_path, monkeypatch, restated, dates):
+    # The restatement moves the valuation date, or does not parse: either
+    # way the older content's rows go, as they would under --force.
+    _counting_parsers(monkeypatch, [])
+    _restating_parser(monkeypatch)
+    bronze_root = tmp_path / "bronze"
+    _seed_document_dump(bronze_root, FIRST_RUN, b"%PDF-1.4 original")
+    _load(tmp_path, bronze_root).close()
+    _seed_document_dump(bronze_root, RESTATED_RUN, restated)
+    conn = _load(tmp_path, bronze_root)
+    for table in ("historical_position_snapshots", "historical_cash_balances"):
+        assert [r[0] for r in conn.execute(
+            f"SELECT snapshot_at FROM {table}")] == dates
+    conn.close()
 
 
 def _version_3_silver(tmp_path: Path, stamp: str | None) -> Path:

@@ -106,17 +106,28 @@ def _statements_read_as_text():
 def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
     # The later dump restates part of the earlier one's span and adds a
     # day, moves a position, holds the same statement again and a new one.
+    # Between the two, the manual dir arrives: a file of its own, and a
+    # copy of the later dump's new statement.
     fixture = tmp_path / "fixture"
     first = write_dump(fixture, "20260105T120000Z", tx_rows=[
         csv_row("02-01-2026 10:00:00", "Payment", "500.0"),
         csv_row("03-01-2026 10:00:00", "Credit", "1.0")],
         statements={"doc-0001": statement_page("100")})
+    manual = fixture / "manual"
+    manual.mkdir()
+    (manual / "tax-statement.pdf").write_text("a manual file", encoding="utf-8")
+    (manual / "statement-copy.pdf").write_text(
+        statement_page("120", "2024-12-31"), encoding="utf-8")
     second = write_dump(fixture, "20260106T120000Z", quantity=12.0, tx_rows=[
         csv_row("03-01-2026 10:00:00", "Credit", "1.5"),
         csv_row("05-01-2026 10:00:00", "Custody Fees", "-5.0")],
         statements={"doc-0001": statement_page("100"),
                     "doc-0002": statement_page("120", "2024-12-31")})
-    incremental.check(load.main, argv, [first, second], tmp_path / "work")
+    incremental.check(load.main, argv, [first, manual, second],
+                      tmp_path / "work")
+    rows = incremental.silver_rows(tmp_path / "work" / "at-once.db")
+    assert len(rows["documents"]) == 3
+    assert sum("pp:doc-0002" in r for r in rows["positions"]) == 1
 
 
 def _statement_rows(db: Path) -> list[tuple]:
@@ -173,7 +184,9 @@ def test_a_new_generation_parses_every_statement_again(tmp_path):
     assert _derived(db) == [(load.PP_SCOPE, "another", 1)] * 2
 
 
-def test_a_statement_that_fails_to_parse_is_parsed_again(tmp_path):
+def test_a_statement_that_fails_to_parse_waits_for_a_parser_change(tmp_path):
+    # The parse is a function of the bytes and the generation: a failure
+    # is recorded with no rows, and only a new generation reads it again.
     bronze = tmp_path / "bronze"
     _two_statements(bronze)
     db = tmp_path / "swissquote.db"
@@ -186,11 +199,43 @@ def test_a_statement_that_fails_to_parse_is_parsed_again(tmp_path):
     with mock.patch.object(load, "parse_portfolio_performance", fail_one):
         assert load.main(argv(db, bronze)) == 0
     assert [r[0] for r in _statement_rows(db)] == ["pp:doc-0001"]
+    assert sorted(r[2] for r in _derived(db)) == [0, 1]
     with mock.patch.object(load, "parse_portfolio_performance",
                            wraps=read_statement) as parse:
         assert load.main(argv(db, bronze)) == 0
-    assert parse.call_count == 1
+        assert parse.call_count == 0
+        with mock.patch.object(load, "PP_GENERATION", "another"):
+            assert load.main(argv(db, bronze)) == 0
+        assert parse.call_count == 2
     assert [r[0] for r in _statement_rows(db)] == ["pp:doc-0001", "pp:doc-0002"]
+
+
+def test_a_dump_without_a_customer_id_rolls_back(tmp_path):
+    bronze = tmp_path / "bronze"
+    run = write_dump(bronze, "20260105T120000Z", tx_rows=[
+        csv_row("02-01-2026 10:00:00", "Payment", "500.0")])
+    meta = json.loads((run / "run.json").read_text())
+    del meta["customer_id"]
+    (run / "run.json").write_text(json.dumps(meta))
+    db = tmp_path / "swissquote.db"
+    with pytest.raises(SystemExit) as stop:
+        load.main(argv(db, bronze))
+    assert stop.value.code not in (0, None)
+    conn = load.open_db(db)
+    try:
+        for table in ("dump_runs", "accounts", "transactions"):
+            assert conn.execute(
+                f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_a_missing_bronze_dir_creates_no_silver(tmp_path):
+    db = tmp_path / "swissquote.db"
+    with pytest.raises(SystemExit) as stop:
+        load.main(argv(db, tmp_path / "absent"))
+    assert stop.value.code not in (0, None)
+    assert not db.exists()
 
 
 def test_statement_rows_of_a_silver_before_derivations_are_parsed_once(tmp_path):

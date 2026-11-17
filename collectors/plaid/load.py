@@ -469,8 +469,9 @@ def load_item(tree: Path, db_path: Path, *, force: bool,
     Raises RunBroken when a run cannot be loaded. An update keeps the runs
     loaded before it. A rebuild leaves the silver as it was.
 
-    Raises LoadStop, before anything is written, when a run is older than
-    the newest one loaded."""
+    Raises LoadStop, before any run is loaded, when the silver's schema
+    version is above this code's last migration, or when a run is older
+    than the newest one loaded."""
     identity = trees.identity(tree)
     if identity is None:
         return 0
@@ -485,6 +486,7 @@ def load_item(tree: Path, db_path: Path, *, force: bool,
         return _rebuild(tree, db_path, runs)
     conn = silver.open_db(db_path)
     try:
+        rebuild.migration_path_stop(conn, MIGRATIONS, db_path)
         version = silver.apply_migrations(conn, MIGRATIONS)
         held = _silver_item(conn)
         if held is not None and held != identity:
