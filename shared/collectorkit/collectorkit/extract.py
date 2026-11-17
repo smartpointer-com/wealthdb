@@ -6,7 +6,7 @@ the parser's code. Kept apart, each can change without redoing the other:
 a parser edit re-parses from cached text, and an engine upgrade
 re-extracts.
 
-The five extractors each return a ``collectorkit.words.Extracted``, one
+The four extractors each return a ``collectorkit.words.Extracted``, one
 ``Page`` per page of the document:
 
 * :func:`pdfium` reads PDFium's text layer, and optionally its characters
@@ -14,12 +14,12 @@ The five extractors each return a ``collectorkit.words.Extracted``, one
 * :func:`pdfplumber` reads pdfplumber's text and words, with the keyword
   arguments a parser passes to ``extract_text`` and ``extract_words``;
 * :func:`pdftotext_layout` reads poppler's ``pdftotext -layout``;
-* :func:`pdftotext_bbox` reads poppler's ``pdftotext -bbox`` word boxes;
-* :func:`ocr` rasters each page and reads it with a recogniser.
+* :func:`pdftotext_bbox` reads poppler's ``pdftotext -bbox`` word boxes.
 
-Each one makes the calls the parsers make today, with the same arguments,
-so its text is the text those parsers read. ``Extracted.text()`` joins the
-pages the way the legacy extractor of that engine joined them.
+Each one makes the calls, with the same arguments, of the whole-document
+extractor of that engine in ``collectorkit.pdf`` or
+``collectorkit.pdftotext``, so ``Extracted.text()`` is the string that
+extractor returns.
 
 :func:`cached` keys an extraction on the document's hash, the engine, the
 extractor's arguments, the engine's versions and the extractor's own code.
@@ -32,7 +32,6 @@ module never needs them.
 """
 from __future__ import annotations
 
-import argparse
 import ast
 import functools
 import gzip
@@ -44,13 +43,10 @@ import os
 import re
 import subprocess
 import sys
-import time
 from collections.abc import Callable, Mapping, Sequence
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _dist_version
 from pathlib import Path
 
-from collectorkit import pdf as _kitpdf
+from collectorkit import srcfp
 from collectorkit import pdftotext as _pdftotext
 from collectorkit import words as _words
 from collectorkit.words import Extracted, Page, Word, params_key
@@ -67,9 +63,9 @@ def pdfium(path, *, words: bool = False) -> Extracted:
 
     The text is what ``collectorkit.pdf.extract_text_pdfium`` returns,
     page by page: ``PdfTextPage.get_text_bounded()``, an empty page as
-    "". With ``words``, each page also carries the words schwab-web's
-    tax-form reader builds from the characters (:func:`_pdfium_words`),
-    read with no arguments: ``page.words()``."""
+    "". With ``words``, each page also carries its characters merged into
+    words (:func:`_pdfium_words`), read with no arguments:
+    ``page.words()``."""
     import pypdfium2 as pdfium_mod
     import pypdfium2.raw as pdfium_c
 
@@ -97,8 +93,8 @@ def pdfium(path, *, words: bool = False) -> Extracted:
 
 def _pdfium_words(textpage, pdfium_c) -> tuple[Word, ...]:
     """A page's characters merged into words. A word ends at whitespace,
-    at a change of line, or where the next character starts left of it.
-    The rule of schwab-web's ``tax_form_parsers._pdf_words``."""
+    at a change of line, or where the next character starts left of the
+    one before."""
     words: list[list] = []
     cur = None
     for c in range(textpage.count_chars()):
@@ -125,9 +121,9 @@ def pdfplumber(path, *, text_params: Mapping | None = None,
     """Every page's text, and words, from pdfplumber.
 
     ``text_params`` are the keyword arguments of ``page.extract_text``
-    (none for ``collectorkit.pdf.extract_text_pdfplumber``, ``x_tolerance=2``
-    for ubs-web). Each mapping in ``word_params`` is one call of
-    ``page.extract_words``, read back with ``page.words(**mapping)``."""
+    (none for ``collectorkit.pdf.extract_text_pdfplumber``). Each mapping
+    in ``word_params`` is one call of ``page.extract_words``, read back
+    with ``page.words(**mapping)``."""
     import pdfplumber as plumber
 
     text_kw = dict(text_params or {})
@@ -158,7 +154,7 @@ def pdftotext_layout(path, *, timeout: float | None = None) -> Extracted:
                      sep="\f")
 
 
-# `pdftotext -bbox` XHTML, as carta's K-1 reader matches it.
+# `pdftotext -bbox` XHTML: its pages and word boxes.
 _BBOX_PAGE = re.compile(r"<page\b[^>]*>(.*?)</page>", re.S)
 _BBOX_WORD = re.compile(r'<word xMin="([\d.]+)" yMin="([\d.]+)" '
                         r'xMax="([\d.]+)" yMax="([\d.]+)">(.*?)</word>')
@@ -167,10 +163,9 @@ _BBOX_WORD = re.compile(r'<word xMin="([\d.]+)" yMin="([\d.]+)" '
 def pdftotext_bbox(path, *, timeout: float | None = None) -> Extracted:
     """``pdftotext -bbox`` word boxes, one page per ``<page>``.
 
-    The words are carta's (``k1.bbox_xhtml`` then ``k1.bbox_pages``) with
-    the box's bottom kept as well. A page's text is its words joined by
-    single spaces, the text carta tests a page by. Raises
-    ``collectorkit.pdftotext``'s ExtractionError and ToolMissing."""
+    Every word box, its bottom included. A page's text is its words
+    joined by single spaces. Raises ``collectorkit.pdftotext``'s
+    ExtractionError and ToolMissing."""
     xhtml = _bbox_xhtml(path, timeout=timeout)
     pages = []
     for body in _BBOX_PAGE.findall(xhtml):
@@ -201,36 +196,6 @@ def _bbox_xhtml(path, *, timeout: float | None = None) -> str:
     return proc.stdout.decode("utf-8", errors="replace")
 
 
-def ocr(path, *, scale=_kitpdf.OCR_SCALE,
-        line_tolerance=_kitpdf.OCR_LINE_TOLERANCE, engine=None) -> Extracted:
-    """Every page rastered with PDFium and read by a recogniser: the calls
-    of ``collectorkit.pdf.extract_text_ocr``, kept per page.
-
-    A page's text is its lines joined by newlines. ``text()`` leaves out
-    a page with no text, as the legacy extractor adds nothing for a page
-    with no line. The one case the two still differ is a page whose only
-    line is empty. The engine name carries the recogniser, since the two
-    read the same raster differently."""
-    import pypdfium2 as pdfium_mod
-
-    name = _kitpdf.resolve_ocr_engine(engine)
-    reader = _kitpdf._READERS[name]()
-    pages: list[Page] = []
-    pdf = pdfium_mod.PdfDocument(str(path))
-    try:
-        for i in range(len(pdf)):
-            page = pdf[i]
-            try:
-                image = page.render(scale=scale).to_pil()
-            finally:
-                page.close()
-            lines = _kitpdf.group_ocr_lines(reader(image), line_tolerance)
-            pages.append(Page("\n".join(lines)))
-    finally:
-        pdf.close()
-    return Extracted(f"ocr-{name}", tuple(pages), skip_empty=True)
-
-
 # ============================================================
 # The extraction key and the cache
 # ============================================================
@@ -239,32 +204,14 @@ def ocr(path, *, scale=_kitpdf.OCR_SCALE,
 
 @functools.cache
 def _dists(*names: str) -> tuple[str, ...]:
-    out = []
-    for name in names:
-        try:
-            out.append(f"dist:{name}={_dist_version(name)}")
-        except PackageNotFoundError:
-            out.append(f"dist:{name}=unavailable")
-    return tuple(out)
+    return tuple(f"dist:{name}={srcfp.dist_version(name)}" for name in names)
 
 
 @functools.cache
 def _tool(*argv: str) -> tuple[str, ...]:
-    """What a binary says its version is, as one line. A missing or
-    failing binary is "unavailable", which is itself a value."""
-    try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return (f"tool:{argv[0]}=unavailable",)
-    banner = (proc.stdout + proc.stderr).strip().splitlines()
-    return (f"tool:{argv[0]}={banner[0].strip() if banner else 'unavailable'}",)
-
-
-def _ocr_versions(params: Mapping) -> tuple[str, ...]:
-    name = _kitpdf.resolve_ocr_engine(params.get("engine"))
-    stack = {_kitpdf.OCR_ENGINE_VISION: ("ocrmac",),
-             _kitpdf.OCR_ENGINE_RAPIDOCR: ("rapidocr", "onnxruntime")}[name]
-    return (f"recogniser:{name}", *_dists("pypdfium2", *stack))
+    """What a binary says its version is, as one line
+    (``collectorkit.srcfp.tool_version``)."""
+    return (f"tool:{argv[0]}={srcfp.tool_version(argv)}",)
 
 
 # What each engine's output depends on besides the document and the
@@ -274,14 +221,12 @@ _VERSIONS: dict[str, Callable[[Mapping], tuple[str, ...]]] = {
     "pdfplumber": lambda _params: _dists("pdfplumber", "pdfminer.six"),
     "pdftotext_layout": lambda _params: _tool("pdftotext", "-v"),
     "pdftotext_bbox": lambda _params: _tool("pdftotext", "-v"),
-    "ocr": _ocr_versions,
 }
 
 # The frozen kit modules whose code an extractor runs.
 _CODE_FILES = {
     "pdftotext_layout": (_pdftotext,),
     "pdftotext_bbox": (_pdftotext,),
-    "ocr": (_kitpdf,),
 }
 
 # Arguments that bound an extraction's time but not its result.
@@ -303,19 +248,8 @@ def _unwrap(extractor) -> tuple[str, dict]:
     return name, params
 
 
-def _strip_docstrings(tree: ast.AST) -> None:
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                             ast.AsyncFunctionDef)):
-            body = node.body
-            if (body and isinstance(body[0], ast.Expr)
-                    and isinstance(body[0].value, ast.Constant)
-                    and isinstance(body[0].value.value, str)):
-                node.body = body[1:]
-
-
 def _normalized(tree: ast.AST) -> str:
-    _strip_docstrings(tree)
+    srcfp.strip_docstrings(tree)
     return ast.dump(tree, annotate_fields=True, include_attributes=False)
 
 
@@ -434,15 +368,41 @@ def cache_root(collector: str) -> Path:
     return Path(base) / "wealthdb" / collector
 
 
+def default_dir(collector: str) -> Path:
+    """A collector's extraction-cache directory: ``extract`` under its
+    cache root (:func:`cache_root`), beside the parse cache
+    (``collectorkit.parsecache.default_dir``)."""
+    return cache_root(collector) / "extract"
+
+
+def make_private_dir(directory) -> None:
+    """Create `directory` and each missing parent, mode 0700 whatever the
+    umask: a cache holds what a statement says. A directory that exists
+    keeps its mode. Raises OSError when one cannot be made."""
+    path = Path(directory)
+    missing = []
+    while not path.exists() and path.parent != path:
+        missing.append(path)
+        path = path.parent
+    for d in reversed(missing):
+        try:
+            d.mkdir(mode=0o700)
+        except FileExistsError:
+            continue                    # a concurrent load made it
+        os.chmod(d, 0o700)
+
+
 def usable_cache_dir(directory) -> Path | None:
     """``directory``, or None when there is none or it lies inside a
     secrets directory. A cache never stops a load, so a refused
-    directory leaves the caller cache-less, with one warning."""
+    directory leaves the caller cache-less, with one warning. The
+    secrets directories are compared resolved, so a symlinked one is
+    refused too."""
     if directory is None:
         return None
     path = Path(directory)
     resolved = path.expanduser().resolve()
-    for secrets in _SECRETS_DIRS:
+    for secrets in {d.resolve() for d in _SECRETS_DIRS}:
         if resolved == secrets or secrets in resolved.parents:
             if resolved not in _warned_dirs:
                 _warned_dirs.add(resolved)
@@ -473,7 +433,7 @@ def cached(extractor, path, sha256: str, cache_dir) -> Extracted:
     extracted = extractor(path)
     tmp = entry.with_name(entry.name + ".tmp")
     try:
-        directory.mkdir(parents=True, exist_ok=True)
+        make_private_dir(directory)
         tmp.write_bytes(_dump(extracted))
         tmp.replace(entry)
     except OSError as exc:
@@ -482,73 +442,28 @@ def cached(extractor, path, sha256: str, cache_dir) -> Extracted:
     return extracted
 
 
-# ============================================================
-# Measure first: how large a document directory's cache would be
-# ============================================================
-
-# ubs-web's reads: page text at x_tolerance=2, the transaction list's words
-# at x_tolerance=2, the ledger's at x_tolerance=1.5.
-UBS_WEB_PARAMS = {
-    "text_params": {"x_tolerance": 2},
-    "word_params": ({"x_tolerance": 2},
-                    {"x_tolerance": 1.5, "keep_blank_chars": False}),
-}
+# A cache entry: `<sha>.<extraction key>.json.gz`.
+_ENTRY_RE = re.compile(r"^(?P<sha>[^.]+)\.(?P<key>[0-9a-f]{32})\.json\.gz$")
 
 
-def measure(doc_dir, extractor) -> dict:
-    """What caching every PDF under ``doc_dir`` with ``extractor`` would
-    store, in counts and bytes only: no text, no names, no paths. Writes
-    nothing. ``word_bytes`` is the JSON of the words alone, and
-    ``entry_bytes`` the gzip entries :func:`cached` would write."""
-    out = {"documents": 0, "failed": 0, "pages": 0, "words": {},
-           "text_bytes": 0, "word_bytes": 0, "entry_bytes": 0,
-           "largest_entry_bytes": 0, "seconds": 0.0}
-    for path in sorted(Path(doc_dir).rglob("*.pdf")):
-        started = time.monotonic()
-        try:
-            extracted = extractor(path)
-        except Exception:                       # noqa: BLE001 — counted
-            out["failed"] += 1
+def sweep(directory, keep_keys) -> int:
+    """Delete every cache entry in `directory` whose extraction key is not
+    in `keep_keys`, and return how many went. Run after a load with the
+    keys of the extractors it uses (:func:`extraction_key`): an entry
+    under an older key is never read again. Files that are no cache
+    entry stay."""
+    directory = usable_cache_dir(directory)
+    if directory is None or not directory.is_dir():
+        return 0
+    keep = set(keep_keys)
+    removed = 0
+    for path in directory.iterdir():
+        m = _ENTRY_RE.match(path.name)
+        if m is None or m["key"] in keep:
             continue
-        finally:
-            out["seconds"] += time.monotonic() - started
-        out["documents"] += 1
-        out["pages"] += len(extracted.pages)
-        for page in extracted.pages:
-            out["text_bytes"] += len(page.text.encode("utf-8"))
-            for key, words in page.word_sets:
-                out["words"][key] = out["words"].get(key, 0) + len(words)
-                out["word_bytes"] += len(json.dumps(
-                    [list(w) for w in words], ensure_ascii=False,
-                    separators=(",", ":")).encode("utf-8"))
-        size = len(_dump(extracted))
-        out["entry_bytes"] += size
-        out["largest_entry_bytes"] = max(out["largest_entry_bytes"], size)
-    out["seconds"] = round(out["seconds"], 1)
-    return out
-
-
-def _main(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(
-        prog="python -m collectorkit.extract",
-        description="Report what caching one directory's PDFs would store, "
-                    "in counts and bytes only.")
-    sub = p.add_subparsers(dest="verb", required=True)
-    m = sub.add_parser("measure")
-    m.add_argument("doc_dir", type=Path)
-    m.add_argument("--engine", choices=sorted(_VERSIONS),
-                   default="pdfplumber")
-    m.add_argument("--params", type=json.loads, default=None,
-                   help="the extractor's keyword arguments as a JSON "
-                        "object; default for pdfplumber: ubs-web's reads")
-    args = p.parse_args(argv)
-    params = args.params
-    if params is None:
-        params = UBS_WEB_PARAMS if args.engine == "pdfplumber" else {}
-    extractor = functools.partial(globals()[args.engine], **params)
-    print(json.dumps(measure(args.doc_dir, extractor), indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(_main(sys.argv[1:]))
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as exc:
+            log.debug("extract-cache: could not remove %s: %s", path, exc)
+    return removed

@@ -94,10 +94,23 @@ $XDG_DATA_HOME/wealthdb/<source>/
 **Docker mounts** (the containerised collectors): the wrapper
 bind-mounts `~/.secrets → /secrets` and `$XDG_DATA_HOME/wealthdb/<source> →
 /data`, so inside the container credentials are at
-`/secrets/<source>.env` and bronze/silver at `/data`. A load keeps its
-parse cache on the host: the wrapper mounts
-`${XDG_CACHE_HOME:-~/.cache}/wealthdb/<source> → /cache/collector` and
-sets `WEALTHDB_CACHE_DIR` to it.
+`/secrets/<source>.env` and bronze/silver at `/data`. It also mounts the
+browser's startup cache dir at `/cache/startupcache`.
+
+**Caches.** A load keeps its caches in
+`${XDG_CACHE_HOME:-~/.cache}/wealthdb/<source>`, on the host as in the
+container:
+
+- the wrapper mounts that dir at `/cache/collector` and points
+  `WEALTHDB_CACHE_DIR` at it;
+- a load that runs on the host finds the same dir through
+  `collectorkit.extract.cache_root`;
+- `WEALTHDB_CACHE_DIR` names one collector's cache root, never a dir
+  that several collectors share: a load sweeps the entries it does not
+  use.
+
+The dir holds extracted statement text and parsed rows, so it is kept
+mode `0700`. It is derived data: deleting it costs one slower load.
 
 **Session discipline:** `login --check` probes the stored session
 without a new MFA push. Where a session persists, `download --dry-run`
@@ -211,9 +224,9 @@ wrapper then calls `wrapper_init`, prints its help when
 `wrapper_wants_help`, and ends with `wrapper_main "$@"`. `wrapper_main`
 runs `build`, and runs `prune` on the host through
 `wrapper_host_prune`; fidelity-web and schwab-api route `prune`
-themselves. The library bind-mounts
-`~/.secrets → /secrets`, `<data> → /data` and the cache dir →
-`/cache/collector` (plus `/silver`, `/debug`, `/app` when applicable) and runs as `--user $(id -u):$(id -g)`.
+themselves. The library bind-mounts the dirs listed under Docker mounts
+and Caches (plus `/silver`, `/debug`, `/app` when applicable) and runs
+as `--user $(id -u):$(id -g)`.
 
 A **host-venv** wrapper (for tools that need no browser) sources
 [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh) and calls
@@ -237,7 +250,7 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | --- | --- | --- |
 | bronze root (every verb that touches it) | `--bronze-dir` | resolved data dir |
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
-| force reload (on `load`) | `--force` — delete the silver DB, then rebuild from all bronze | off |
+| force reload (on `load`) | `--force` — rebuild silver from all bronze; on the load frame the old silver stays in place until the new one is complete | off |
 | session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the five collectors that differ. | — |
 | human-MFA wait | `--mfa-timeout SECONDS` | per source; see the list below |
 | MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
@@ -466,19 +479,46 @@ runs, that walk signs in first.
 
 ### load.py — silver
 
-`load.py` opens the DB with
+`load.py` parses each bronze run into source-shaped tables. Silver is the
+**input contract to gold**: its columns follow the source's shape, not
+gold's, and are documented in the collector README.
+
+A loader states what is its own in a
+[`collectorkit.loader`](../shared/collectorkit/collectorkit/loader.py)
+`LoaderSpec`: its flags, its migrations, how one run becomes rows, and
+the passes around the runs. `loader.main` does the rest:
+
+- It opens silver and applies the migrations. A migration is an
+  `NNNN_*.sql` file. Each one ends by inserting its own version into
+  `schema_meta`.
+- It loads each run that silver has not loaded. Each run is one
+  transaction, and its `dump_runs` row is written last. A run that fails
+  leaves no rows behind, and the next load reads it again.
+- A load that finds no new run changes nothing.
+- `--force` builds a fresh silver beside the old one from every run. It
+  puts the new one in place only when the load succeeds
+  ([`collectorkit.rebuild`](../shared/collectorkit/collectorkit/rebuild.py)).
+
+A loader that is not on the frame uses the same parts of
 [`collectorkit.silver`](../shared/collectorkit/collectorkit/silver.py)
-`open_db(--silver-db)`, runs `apply_migrations(conn, migrations/)`, and
-parses each bronze run into source-shaped tables. The load is
-**idempotent** — already-loaded dumps are skipped (`loaded_snapshots`,
-backed by a `dump_runs` table keyed by the run timestamp from
-`bronze.parse_run_ts`). Migrations are `NNNN_*.sql` applied in order,
-each ending by inserting its own version into `schema_meta`
-(`silver_schema_version`). `open_db` leaves transactions to the caller;
-`silver.transaction(conn)` makes a block atomic — one per bronze run, so a
-failed load leaves no half-loaded run behind. Silver is the **input
-contract to gold**: its columns follow the source's shape, not gold's, and
-are documented in the collector README.
+itself: `open_db`, `apply_migrations`, one `transaction` per run, and
+`reset` for `--force`.
+
+An error inside a run ends the load. A load also stops on purpose
+(`rebuild.stop`) for a silver newer than the code, or for an invariant
+the loader checks. Silver stays as it was. A new column that only bronze
+can fill for old rows does not stop a load. It adds an entry to the
+loader's `REBUILD_ADVICE` (`rebuild.rebuild_advice`), which asks for one
+`load --force`.
+
+Rows parsed from a document carry their document. Each scope records the
+parser generation that derived each document
+([`collectorkit.derivations`](../shared/collectorkit/collectorkit/derivations.py)).
+So a load parses only new documents, and a parser change re-derives its
+own scope. Each parse is cached by the document's hash and the parser's
+fingerprint
+([`collectorkit.parsecache`](../shared/collectorkit/collectorkit/parsecache.py)),
+so `load --force` reads a parsed document from the cache.
 
 **Cost basis** is stated as printed, in columns rather than only in the
 payload, so a reader needs no JSON. That covers a holding's cost basis,
@@ -494,21 +534,49 @@ Both use schwab-web's column names and values for the figures they share
 ([schwab-web/DESIGN.md §9](schwab-web/DESIGN.md#9-cost-basis-and-tax-lots)).
 A lot that two documents print stays in silver twice, once per document.
 
-Document text comes from
+A loader extracts a document once per engine with
+[`collectorkit.extract`](../shared/collectorkit/collectorkit/extract.py)
+(`pdfium`, `pdfplumber`, `pdftotext_layout`, `pdftotext_bbox`).
+`extract.cached` keys the result on the document and the engine. The
+parser reads the pages and words as a
+[`collectorkit.words`](../shared/collectorkit/collectorkit/words.py)
+`Extracted`, and never imports `extract`. So the two change apart:
+
+- a parser change parses the cached text again and extracts nothing;
+- an engine change moves the extraction key, so each document is
+  extracted and parsed again;
+- the parser's fingerprint covers its own code only (`python=False`),
+  and its generation adds the extraction key.
+
+Some parsers extract for themselves, through the whole-document readers
 [`collectorkit.pdf`](../shared/collectorkit/collectorkit/pdf.py)
-(pypdfium, pdfplumber, OCR) or
+(pypdfium, pdfplumber, OCR) and
 [`collectorkit.pdftotext`](../shared/collectorkit/collectorkit/pdftotext.py)
-(poppler's `pdftotext -layout`, for parsers that read printed columns).
-Readings more than one source shares live beside them:
-[`collectorkit.money`](../shared/collectorkit/collectorkit/money.py) for an
-amount in its display form (`$1,234.56`, `(12.50)`),
-[`collectorkit.statement_period`](../shared/collectorkit/collectorkit/statement_period.py)
-for a period printed as two month-name dates, and
-[`collectorkit.parser_cli`](../shared/collectorkit/collectorkit/parser_cli.py)
-for the command line a statement parser offers on its own
-(`python pdf_parsers.py FILE.pdf [--json-out PATH]`, one JSON array of what
-each file yields). A source that prints money or dates another way keeps
-its own reader beside its parser.
+(poppler's `pdftotext -layout`).
+
+Other pieces that more than one source shares:
+
+- [`collectorkit.money`](../shared/collectorkit/collectorkit/money.py):
+  an amount in its display form (`$1,234.56`, `(12.50)`);
+- [`collectorkit.statement_period`](../shared/collectorkit/collectorkit/statement_period.py):
+  a period printed as two month-name dates;
+- [`collectorkit.statement`](../shared/collectorkit/collectorkit/statement.py):
+  a card statement's summary amounts, its row dates, and the checks
+  that its figures add up;
+- [`collectorkit.channels`](../shared/collectorkit/collectorkit/channels.py):
+  where an export's rows end and a statement's begin, and the one-to-one
+  match of rows two channels both carry;
+- [`collectorkit.k1`](../shared/collectorkit/collectorkit/k1.py): the
+  face page of a Schedule K-1;
+- [`collectorkit.series`](../shared/collectorkit/collectorkit/series.py):
+  the loader of a collector of dated series;
+- [`collectorkit.parser_cli`](../shared/collectorkit/collectorkit/parser_cli.py):
+  the command line a statement parser offers on its own
+  (`python pdf_parsers.py FILE.pdf [--json-out PATH]`, one JSON array of
+  what each file yields).
+
+A source that prints money or dates another way keeps its own reader
+beside its parser.
 
 A parser's fingerprint (`collectorkit.srcfp`) covers every collectorkit
 module it imports and the package `__init__`, so a code change to one of
@@ -714,6 +782,9 @@ Docker collectors, in the `.venv` for host ones. At minimum they cover
 **bronze → silver**: a *synthetic* bronze dump (no real IDs/balances —
 see root [AGENTS.md](../AGENTS.md) §4) and assertions that `load.py`
 projects the expected silver rows; pure-stdlib `unittest` works too.
+Each loader also runs `collectorkit.incremental.check` over its fixture
+runs: the runs loaded one load at a time must build the silver that one
+`load --force` builds.
 `make test` / `make test-collectors` runs the whole suite, and tests
 must pass before any commit. `make lint` runs ruff over every collector
 with the rules in the root `ruff.toml`; it has to be clean too. The

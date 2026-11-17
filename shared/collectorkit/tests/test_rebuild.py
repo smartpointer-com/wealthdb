@@ -1,5 +1,6 @@
-"""Tests for `collectorkit.rebuild`: the rebuild advice, the two stops of
-a load and the one rebuild path. Invented silvers only."""
+"""Tests for `collectorkit.rebuild`: the rebuild advice, the stop for a
+silver newer than the code and the one rebuild path. Invented silvers
+only."""
 from __future__ import annotations
 
 import argparse
@@ -122,59 +123,15 @@ def _parser():
     return p
 
 
-def test_the_load_frame_advises_until_load_force(migrations, tmp_path, caplog):
-    db, bronze = tmp_path / "toy.db", tmp_path / "bronze"
-    argv = ["--silver-db", str(db), "--bronze-dir", str(bronze)]
-    _write_run(bronze, "20260101T000000Z", ["a"])
-    spec = loader.LoaderSpec(name="toy", schema=migrations,
-                             load_run=_load_items, parser=_parser)
-    assert loader.main(spec, argv) == 0
-    (migrations / "0002_advice.sql").write_text(ADVISING)
-    advising = loader.LoaderSpec(name="toy", schema=migrations,
-                                 load_run=_load_items, parser=_parser,
-                                 advice=ADVICE)
-    _write_run(bronze, "20260102T000000Z", ["b"])
-    for _ in range(2):
-        caplog.clear()
-        assert loader.main(advising, argv) == 0
-        assert LINE_1 in caplog.messages and LINE_2 in caplog.messages
-    caplog.clear()
-    assert loader.main(advising, [*argv, "--force"]) == 0
-    assert loader.main(advising, argv) == 0
-    assert "built before" not in caplog.text
-    conn = sqlite3.connect(db)
-    assert conn.execute("SELECT count(*) FROM items").fetchone() == (2,)
-    conn.close()
-
-
-# ---- the two stops ----------------------------------------------------------
-
-def test_the_corruption_stop_names_the_check_the_table_and_the_rebuild():
-    with pytest.raises(rebuild.LoadStop) as e:
-        rebuild.corruption("/x/toy.db", "one balance per account and day",
-                           "balances", "toy load --force")
-    assert str(e.value) == (
-        "/x/toy.db: one balance per account and day does not hold in "
-        "balances. The load stopped and left the silver as it was. "
-        "`toy load --force` rebuilds it from bronze.")
-
+# ---- the stop ---------------------------------------------------------------
 
 def test_a_newer_silver_stop_names_both_versions_and_the_upgrade():
     with pytest.raises(rebuild.LoadStop) as e:
-        rebuild.no_migration_path("/x/toy.db", 9, 7, "toy load --force")
+        rebuild.no_migration_path("/x/toy.db", 9, 7)
     assert str(e.value) == (
         "/x/toy.db: silver is at schema version 9, newer than the 7 this "
         "code knows. The load stopped and left the silver as it was. "
         "Upgrade the collector to a version that knows this silver.")
-
-
-def test_a_silver_no_migration_starts_from_names_the_rebuild():
-    with pytest.raises(rebuild.LoadStop) as e:
-        rebuild.no_migration_path("/x/toy.db", 3, 7, "toy load --force")
-    assert str(e.value) == (
-        "/x/toy.db: silver is at schema version 3, which no migration of "
-        "this code starts from (it knows up to 7). The load stopped and left "
-        "the silver as it was. `toy load --force` rebuilds it from bronze.")
 
 
 # ---- the rebuild ------------------------------------------------------------

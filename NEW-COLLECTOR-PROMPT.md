@@ -231,8 +231,10 @@ and move on.
    collectors/README.md is binding; a standard flag the source cannot
    honour parses cleanly and warns loudly, never silently no-ops.
 4. **load** — bronze → SQLite silver (JSON1 payloads), migrations,
-   idempotent (re-load is a clean no-op; --force = delete + rebuild),
-   unit tests on synthetic fixtures only (synthesize values from
+   through the kit's load frame (collectorkit.loader; collectors/README.md,
+   "load.py — silver"): re-load is a clean no-op, and --force rebuilds
+   from all bronze beside the old silver. Add the standing test
+   collectorkit.incremental.check. Unit tests on synthetic fixtures only (synthesize values from
    scratch — never transform real ones; placeholder patterns per root
    AGENTS.md §4). The ledger source is whatever the capture proves
    richest — the SPA's own JSON usually supersedes CSV/HTML exports;
@@ -246,13 +248,15 @@ and move on.
    silver").
 5. **Statement backfill** (conditional — build only if the measured
    history floors say the transaction export is date-capped while
-   statements reach further back). If built: parse the
-   `pdftotext -layout` text `collectorkit.pdftotext` extracts; gate
-   every import on beginning + Σ == ending reconciliation (skip and log
-   what doesn't reconcile — never import a mis-parse); import only rows
-   strictly older than the export seam (the oldest row the transaction
-   export reaches — the chase collector's DESIGN.md documents the
-   reference implementation); attribute multi-product statements per
+   statements reach further back). If built: parse the text
+   collectorkit.extract extracts (`extract.cached(extract.pdftotext_layout,
+   …)`); the parser imports collectorkit.words, never extract. Gate
+   every import on beginning + Σ == ending reconciliation with
+   collectorkit.statement's checks (skip and log what doesn't
+   reconcile — never import a mis-parse); import only rows strictly
+   older than the export seam (the oldest row the transaction export
+   reaches, collectorkit.channels; the chase collector's DESIGN.md
+   documents the reference implementation); attribute multi-product statements per
    segment by balance chaining, stopping on ambiguity, never guessing.
    Where neither reaches far enough, a document the bank prints on
    request can: raiffeisen_at stitches such listings from `supplied/`
@@ -588,13 +592,17 @@ as hard rules rather than advice.
   archive floor) — the comparison decides whether a backfill phase
   exists at all, in either direction.
 - **Idempotency and self-healing:** re-load is a clean no-op; derived
-  silver tables are rebuilt from bronze each load rather than patched
-  incrementally (an incremental build can never retire stale rows
-  after an identity shift); destructive loaders validate their input
+  rows carry their document and are re-derived per parser generation
+  (collectorkit.derivations), so a parser change re-derives its own
+  scope and a routine load derives nothing. Runs loaded one at a time
+  must build the silver of one `load --force`
+  (collectorkit.incremental). Destructive loaders validate their input
   before touching existing output, and a windowed replace deletes only
   the span the input covers, not the span that was asked for. Mark
-  each parsed document, not just its rows: a document that yields no
-  rows is otherwise parsed again on every load.
+  each parsed document, not just its rows
+  (`derivations.record_derivation`, with a row count of 0 for one that
+  yields nothing): such a document is otherwise parsed again on every
+  load.
 - **Private-market portals differ from banks:** no transaction feed
   (synthesize a balanced double-entry ledger on the custody account —
   each event nets to zero, and the deposit/withdrawal boundary legs are

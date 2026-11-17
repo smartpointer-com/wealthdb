@@ -114,3 +114,12 @@ def test_a_pass_that_dies_leaves_its_documents_pending(conn):
     assert lines(conn, "words") == []
     assert len(derivations.pending_derivations(conn, "words", "g1",
                                                DOCUMENTS)) == 2
+
+
+def test_a_moved_generation_is_seen_per_scope(conn):
+    assert not derivations.generation_moved(conn, "lines", "g1")
+    derive(conn, "lines", "g1", Parser())
+    derive(conn, "other", "g7", Parser())
+    assert not derivations.generation_moved(conn, "lines", "g1")
+    assert derivations.generation_moved(conn, "lines", "g2")
+    assert not derivations.generation_moved(conn, "other", "g7")

@@ -52,7 +52,7 @@ from pathlib import Path
 from types import ModuleType
 
 
-def _strip_docstrings(tree: ast.AST) -> None:
+def strip_docstrings(tree: ast.AST) -> None:
     """Drop the docstring statement from every module/class/function so a
     docstring edit doesn't change the dump. Docstrings are documentation,
     not behaviour — no parser reads its own ``__doc__`` to produce rows."""
@@ -79,7 +79,7 @@ def normalized_source_hash(path: Path) -> str:
     raw = Path(path).read_bytes()
     try:
         tree = ast.parse(raw)
-        _strip_docstrings(tree)
+        strip_docstrings(tree)
         norm = ast.dump(tree, annotate_fields=True, include_attributes=False)
     except SyntaxError:
         norm = "rawbytes:" + hashlib.sha256(raw).hexdigest()
@@ -173,7 +173,7 @@ def _closure_files(roots: list[ModuleType]) -> list[Path]:
     return sorted(files)
 
 
-def _tool_version(argv: tuple[str, ...]) -> str:
+def tool_version(argv: tuple[str, ...]) -> str:
     """What an extraction binary reports about itself, normalised to one
     line.
 
@@ -191,6 +191,15 @@ def _tool_version(argv: tuple[str, ...]) -> str:
         return "unavailable"
     banner = (proc.stdout + proc.stderr).strip().splitlines()
     return banner[0].strip() if banner else "unavailable"
+
+
+def dist_version(name: str) -> str:
+    """The installed version of the distribution `name`, or
+    ``"unavailable"`` when it is not installed."""
+    try:
+        return _dist_version(name)
+    except PackageNotFoundError:
+        return "unavailable"
 
 
 def parser_fingerprint(
@@ -216,12 +225,9 @@ def parser_fingerprint(
         normalized_source_hash(f) for f in _closure_files(roots)
     )]
     for dist in extra_dists:
-        try:
-            parts.append(f"dist:{dist}={_dist_version(dist)}")
-        except PackageNotFoundError:
-            parts.append(f"dist:{dist}=unavailable")
+        parts.append(f"dist:{dist}={dist_version(dist)}")
     for tool in extra_tools:
-        parts.append(f"tool:{tool[0]}={_tool_version(tool)}")
+        parts.append(f"tool:{tool[0]}={tool_version(tool)}")
     if python:
         parts.append("py:" + platform.python_version())
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]

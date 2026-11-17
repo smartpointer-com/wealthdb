@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
 # `table.column` entries that hold the time of a load, not a fact of the
@@ -57,7 +57,9 @@ def silver_rows(db: Path, ignore: Iterable[str] = CLOCK_COLUMNS
 def check(load: Callable[[list[str]], int],
           argv: Callable[[Path, Path], list[str]],
           runs: Sequence[Path], work: Path,
-          ignore: Iterable[str] = CLOCK_COLUMNS) -> None:
+          ignore: Iterable[str] = CLOCK_COLUMNS,
+          rows: Callable[[Path, Iterable[str]], Mapping[str, list]]
+          = silver_rows) -> None:
     """Assert that `runs`, loaded one at a time, give the silver that one
     ``load --force`` of all of them gives.
 
@@ -65,6 +67,10 @@ def check(load: Callable[[list[str]], int],
     is its command line for those two paths. Each run dir of `runs` is
     copied into ``<work>/bronze`` in turn, and a load follows each copy.
     Then ``--force`` builds a second silver from the whole dir.
+
+    `rows(db, ignore)` reads a silver as table to sorted rows; the
+    default, :func:`silver_rows`, reads SQLite. A silver in another
+    store passes its own reader.
     """
     bronze = Path(work) / "bronze"
     bronze.mkdir(parents=True)
@@ -73,7 +79,7 @@ def check(load: Callable[[list[str]], int],
         shutil.copytree(run, bronze / Path(run).name)
         assert load(argv(one_by_one, bronze)) == 0, f"loading {Path(run).name}"
     assert load([*argv(at_once, bronze), "--force"]) == 0, "load --force"
-    a, b = silver_rows(one_by_one, ignore), silver_rows(at_once, ignore)
+    a, b = rows(one_by_one, ignore), rows(at_once, ignore)
     assert sorted(a) == sorted(b), "the two silvers hold other tables"
     differ = [t for t in a if a[t] != b[t]]
     assert not differ, f"rows differ in {differ}"

@@ -1,9 +1,12 @@
 """Tests for collectorkit.srcfp — the parser source fingerprint."""
 from __future__ import annotations
 
+import ast
 import importlib
+import re
 import sys
-
+import types
+from pathlib import Path
 
 from collectorkit import srcfp
 
@@ -185,9 +188,9 @@ def test_an_extraction_binary_moves_the_fingerprint(tmp_path, monkeypatch):
     root = _import_from(tmp_path, "shellout")
     tool = (("pdftotext", "-v"),)
 
-    monkeypatch.setattr(srcfp, "_tool_version", lambda argv: "poppler 1.0.0")
+    monkeypatch.setattr(srcfp, "tool_version", lambda argv: "poppler 1.0.0")
     fp_a = srcfp.parser_fingerprint([root], extra_tools=tool)
-    monkeypatch.setattr(srcfp, "_tool_version", lambda argv: "poppler 1.0.1")
+    monkeypatch.setattr(srcfp, "tool_version", lambda argv: "poppler 1.0.1")
     fp_b = srcfp.parser_fingerprint([root], extra_tools=tool)
     assert fp_a != fp_b
 
@@ -205,9 +208,50 @@ def test_a_missing_extraction_binary_is_a_value_not_an_error(tmp_path):
     _write(tmp_path / "noexe.py", "def parse():\n    return 1\n")
     root = _import_from(tmp_path, "noexe")
 
-    assert srcfp._tool_version(("definitely-not-on-this-path", "-v")) == "unavailable"
+    assert srcfp.tool_version(("definitely-not-on-this-path", "-v")) == "unavailable"
     fp = srcfp.parser_fingerprint(
         [root], extra_tools=(("definitely-not-on-this-path", "-v"),))
     assert len(fp) == 32
 
     sys.modules.pop("noexe", None)
+
+
+# ------------------------------------------------------------------
+# A reader fingerprinted without its engine imports no engine
+# ------------------------------------------------------------------
+
+_COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
+_KIT = Path(srcfp.__file__).resolve().parent
+_ENGINE_FILES = {"extract.py", "pdf.py", "pdftotext.py"}
+_ENGINE_PACKAGES = {"pdfplumber", "pypdfium2", "pdfminer", "fitz"}
+_NO_ENGINE_CALL = re.compile(
+    r"parser_fingerprint\(\s*\[([^\]]*)\][^)]*python=False")
+
+
+def _engine_free_roots() -> list[tuple[str, Path]]:
+    """Every root module a collector fingerprints with ``python=False``:
+    (collector, file)."""
+    out = []
+    for load in sorted(_COLLECTORS.glob("*/*.py")):
+        if "tests" in load.parts:
+            continue
+        for names in _NO_ENGINE_CALL.findall(load.read_text(encoding="utf-8")):
+            for name in (n.strip() for n in names.split(",") if n.strip()):
+                own = load.parent / f"{name}.py"
+                path = own if own.is_file() else _KIT / f"{name}.py"
+                assert path.is_file(), (load, name)
+                out.append((load.parent.name, path))
+    return out
+
+
+def test_a_reader_without_its_engine_in_the_fingerprint_imports_none():
+    roots = _engine_free_roots()
+    assert {c for c, _ in roots} >= {"ubs-web", "fidelity-web", "schwab-web"}
+    for collector, path in roots:
+        module = types.SimpleNamespace(__file__=str(path))
+        for f in srcfp._closure_files([module]):
+            where = (collector, path.name, f.name)
+            assert not (f.parent == _KIT and f.name in _ENGINE_FILES), where
+            imported = srcfp._imported_names(ast.parse(f.read_bytes()))
+            assert not {n.partition(".")[0] for n in imported} \
+                & _ENGINE_PACKAGES, where

@@ -1,5 +1,4 @@
-"""One re-derive protocol: rows derived from a document, per document and
-parser generation.
+"""Rows derived from a document, per document and parser generation.
 
 A pass that parses documents into rows records, per document and scope,
 the parser generation that derived them (`document_derivations`). A load
@@ -19,7 +18,15 @@ The protocol per scope, inside the caller's transaction:
    carry their document: a ``source_sha256`` or a source tag) with what
    the parser returns now;
 3. ``record_derivation(...)`` then records the document under this
-   generation.
+   generation. A document that yields nothing, a failed parse included,
+   is recorded with ``row_count`` 0, so only a new generation reads it
+   again.
+
+:func:`generation_moved` tells a pass whether its parser has changed
+since the scope was last derived.
+
+``collectorkit.silver.stale_generation`` is the older per-scope form,
+which re-derives a whole scope; a new collector uses this module.
 
 The table belongs to each collector's own migrations (collectorkit owns
 no schema): a collector that derives creates it with
@@ -84,3 +91,14 @@ def record_derivation(conn: sqlite3.Connection, content_sha256: str,
         "generation = excluded.generation, "
         "derived_at = excluded.derived_at, row_count = excluded.row_count",
         (content_sha256, scope, generation, row_count))
+
+
+def generation_moved(conn: sqlite3.Connection, scope: str,
+                     generation: str) -> bool:
+    """Whether `scope` holds a document derived under a generation other
+    than `generation`: its parser has changed since. A document with no
+    record is new, not moved."""
+    return conn.execute(
+        "SELECT 1 FROM document_derivations WHERE scope = ? "
+        "AND generation != ? LIMIT 1", (scope, generation)).fetchone() \
+        is not None

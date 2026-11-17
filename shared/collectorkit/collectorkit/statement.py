@@ -5,7 +5,7 @@ and activity rows under section headings. A parse is trusted only when the
 document's own arithmetic holds: the summary adds up to its new balance,
 and each section's rows add up to the figure the summary prints for it.
 
-These are the pieces chase's and amex's card parsers share:
+The pieces:
 
 * :func:`labelled_amounts` finds the amount printed after each label;
 * :func:`row_date` gives a printed MM/DD its year;
@@ -49,11 +49,12 @@ def row_date(mm: int, dd: int, start: date, end: date) -> date | None:
 
     The candidate years are the year before the start, the start's and the
     end's. A date inside the period wins outright; otherwise the one
-    closest to either end of it. A printed transaction date can fall a few
-    days before its period, and a December row sits on a January
-    statement; one rule reads both. The rule of chase's card parser."""
+    closest to either end of it, and an equal distance goes to the earlier
+    year. A printed transaction date can fall a few days before its
+    period, and a December row sits on a January statement; one rule
+    reads both."""
     best: tuple[int, date] | None = None
-    for y in {start.year - 1, start.year, end.year}:
+    for y in sorted({start.year - 1, start.year, end.year}):
         try:
             d = date(y, mm, dd)
         except ValueError:

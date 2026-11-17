@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from collectorkit.srcfp import _strip_docstrings
+from collectorkit.srcfp import strip_docstrings
 
 REPO = Path(__file__).resolve().parents[3]
 SCHWAB_WEB = REPO / "collectors/schwab-web/landmarks.py"
@@ -50,7 +50,7 @@ def _definition(path: Path, name: str) -> str:
         else:
             found = False
         if found:
-            _strip_docstrings(node)
+            strip_docstrings(node)
             return ast.dump(node)
     raise AssertionError(f"{name} not defined at the top level of {path.name}")
 

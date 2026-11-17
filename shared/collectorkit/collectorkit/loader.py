@@ -8,8 +8,7 @@ collector:
 1. parse the command line and set up logging;
 2. open the silver; stop, before anything is written, when its schema
    version is above the code's last migration; apply the migrations;
-3. advise a rebuild where silver predates an entry of ``spec.advice``,
-   then find the runs silver has not loaded (``spec.pending``);
+3. find the runs silver has not loaded (``spec.pending``);
 4. load each run in one transaction, its ``dump_runs`` row written last,
    so a run that fails leaves silver as it was and loads again next time;
 5. log each run's counts, then the totals.
@@ -17,7 +16,8 @@ collector:
 ``--force`` does the same into a fresh silver beside the old one, from
 every run, and puts it in place only once the load returns
 (:func:`collectorkit.rebuild.rebuild`). A failed ``--force`` leaves the
-old silver as it was.
+old silver as it was: an error, a stop, or a non-zero status from
+``after_runs``.
 
 A failure inside a run rolls that run back and ends the load: the error
 surfaces and the exit status is not zero. A stop
@@ -45,6 +45,14 @@ from collectorkit import bronze, cli, rebuild, silver
 MANIFEST_OPTIONAL = "optional"   # `Run.manifest` is None; the run loads
 MANIFEST_REQUIRED = "required"   # the read error ends the load
 MANIFEST_SKIP = "skip"           # a warning; the run is passed over
+
+
+class _Failed(Exception):
+    """A ``--force`` whose ``after_runs`` returned a non-zero status."""
+
+    def __init__(self, status: int):
+        super().__init__(status)
+        self.status = status
 
 
 class Skip(Exception):
@@ -88,6 +96,14 @@ def default_run_columns(run: Run) -> dict:
             "run_dir": str(run.dir.resolve())}
 
 
+def given_run_columns(run: Run) -> dict:
+    """The `dump_runs` row of :func:`default_run_columns` with the run
+    dir's path as given, not resolved."""
+    return {"snapshot_at": run.snapshot_at,
+            "silver_schema_version": run.version,
+            "run_dir": str(run.dir)}
+
+
 def given_paths(args: argparse.Namespace) -> tuple[Path, Path]:
     """The silver DB and the bronze dir as ``--silver-db`` and
     ``--bronze-dir`` name them."""
@@ -108,7 +124,8 @@ class LoaderSpec:
     `counts` and in that order (a bare number for one label), or None
     when `counts` is empty. The log names them: with ``counts=("fx
     rows",)`` a run that returns 3 logs ``3 fx rows``, and the closing
-    line gives the totals.
+    line gives the totals. Counts of another shape raise TypeError
+    inside the run's transaction, so the run rolls back.
 
     The hooks around the runs, each optional:
 
@@ -116,13 +133,12 @@ class LoaderSpec:
       returns is the exit status, and nothing is loaded;
     * ``before_runs(conn, load)`` after the migrations;
     * ``after_runs(conn, load)`` after the last run; a number it returns
-      is the exit status.
+      is the exit status. Under ``--force`` a non-zero one also discards
+      the fresh silver and keeps the old one.
 
     `pending(conn, bronze_dir, log=)` lists the runs to load, oldest
     first, none of them loaded yet. `open_db` opens the silver; a
-    default-isolation connection works too. `advice` is the loader's
-    ``REBUILD_ADVICE`` (:func:`collectorkit.rebuild.rebuild_advice`),
-    checked after the migrations.
+    default-isolation connection works too.
     """
     name: str
     schema: Path
@@ -137,7 +153,6 @@ class LoaderSpec:
     run_columns: Callable[[Run], dict] = default_run_columns
     open_db: Callable[[Path], sqlite3.Connection] = silver.open_db
     manifest: str = MANIFEST_OPTIONAL
-    advice: tuple[tuple[int, str], ...] = ()
 
 
 def read_run_manifest(run_dir: Path, policy: str = MANIFEST_OPTIONAL):
@@ -157,6 +172,19 @@ def read_run_manifest(run_dir: Path, policy: str = MANIFEST_OPTIONAL):
 def _counts(labels: tuple[str, ...], numbers) -> str:
     return "".join(f", {n} {label}" for label, n in zip(labels, numbers,
                                                        strict=True))
+
+
+def _run_counts(spec: LoaderSpec, returned) -> tuple[int, ...]:
+    """`load_run`'s counts as a tuple, one per label of `spec.counts`.
+    Any other shape raises TypeError."""
+    if not spec.counts and returned is None:
+        return ()
+    counts = (returned,) if isinstance(returned, int) else returned
+    if (not isinstance(counts, (tuple, list))
+            or len(counts) != len(spec.counts)):
+        raise TypeError(f"{spec.name}: load_run returned {returned!r} for "
+                        f"counts {spec.counts}")
+    return tuple(counts)
 
 
 def _write_run_row(conn: sqlite3.Connection, row: Mapping) -> None:
@@ -184,7 +212,7 @@ def load_runs(spec: LoaderSpec, conn: sqlite3.Connection,
         run.row = spec.run_columns(run)
         try:
             with silver.transaction(conn):
-                counts = spec.load_run(conn, run)
+                counts = _run_counts(spec, spec.load_run(conn, run))
                 _write_run_row(conn, run.row)
         except Skip:
             continue
@@ -192,8 +220,6 @@ def load_runs(spec: LoaderSpec, conn: sqlite3.Connection,
         if not spec.counts:
             log.info("loaded run %s", run_dir.name)
             continue
-        if isinstance(counts, int):
-            counts = (counts,)
         totals = [t + n for t, n in zip(totals, counts, strict=True)]
         log.info("loaded run %s:%s", run_dir.name,
                  _counts(spec.counts, counts)[1:])
@@ -215,11 +241,9 @@ def main(spec: LoaderSpec, argv: list[str] | None = None) -> int:
     silver_db, bronze_dir = spec.defaults(args)
     load = Load(args=args, silver_db=silver_db, bronze_dir=bronze_dir,
                 log=log)
-    command = f"{spec.name} load --force"
 
     def replay(conn: sqlite3.Connection, version: int) -> int | None:
         load.version = version
-        rebuild.rebuild_advice(conn, spec.advice, command)
         if spec.before_runs is not None:
             spec.before_runs(conn, load)
         totals = load_runs(spec, conn, load)
@@ -229,13 +253,24 @@ def main(spec: LoaderSpec, argv: list[str] | None = None) -> int:
                  _counts(spec.counts, totals), silver_db)
         return status
 
+    def replay_all(conn: sqlite3.Connection, version: int) -> None:
+        status = replay(conn, version)
+        if status:
+            raise _Failed(status)
+
     try:
         if args.force:
-            return rebuild.rebuild(silver_db, spec.schema, replay,
-                                   open_db=spec.open_db) or 0
+            try:
+                rebuild.rebuild(silver_db, spec.schema, replay_all,
+                                open_db=spec.open_db)
+            except _Failed as e:
+                log.error("%s: the rebuild ended with status %d, so the old "
+                          "silver stays in place", silver_db, e.status)
+                return e.status
+            return 0
         conn = spec.open_db(silver_db)
         try:
-            rebuild.migration_path_stop(conn, spec.schema, silver_db, command)
+            rebuild.migration_path_stop(conn, spec.schema, silver_db)
             return replay(conn, silver.apply_migrations(conn, spec.schema)) or 0
         finally:
             conn.close()

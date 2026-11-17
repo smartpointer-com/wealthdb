@@ -93,3 +93,19 @@ def test_the_load_time_columns_are_left_out(tmp_path):
     conn.commit()
     conn.close()
     assert incremental.silver_rows(db) == {"schema_meta": ["(1,)"]}
+
+
+def test_a_silver_of_another_store_passes_its_own_reader(tmp_path, runs):
+    def load_run(conn, run):
+        conn.executemany("INSERT OR REPLACE INTO items VALUES (?, ?)",
+                         [(n, run.snapshot_at) for n in _names(run)])
+
+    read = []
+
+    def rows(db, ignore):
+        read.append(Path(db).name)
+        return {"items": sorted(incremental.silver_rows(db, ignore)["items"])}
+
+    incremental.check(_spec(tmp_path, load_run), _argv, runs,
+                      tmp_path / "work", rows=rows)
+    assert read == ["one-by-one.db", "at-once.db"]

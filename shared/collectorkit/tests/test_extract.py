@@ -1,23 +1,22 @@
 """Tests for collectorkit.extract: the extractors, the key, the cache.
 
 The engines are not installed in the kit's venv, so each extractor runs
-against a stand-in engine that records its calls. The legacy extractor it
-replaces runs against the same stand-in, and the two must make the same
-calls and return the same text and words: equal by construction.
+against a stand-in engine that records its calls. Where the kit has a
+whole-document extractor for the engine (``collectorkit.pdf``,
+``collectorkit.pdftotext``), it runs against the same stand-in, and the
+two must make the same calls and return the same text. The words are
+checked against literal expectations.
 """
 from __future__ import annotations
 
 import functools
 import gzip
-import html
-import json
-import re
+import os
 import subprocess
 import sys
 import types
 from pathlib import Path
 
-import collector_modules
 import pytest
 
 from collectorkit import extract
@@ -27,6 +26,7 @@ from collectorkit import words
 from collectorkit.words import Extracted, Page, Word
 
 SHA = "ab" * 32
+OTHER_SHA = "cd" * 32
 
 
 # ------------------------------------------------------------------
@@ -88,13 +88,20 @@ def test_pdfplumber_text_is_the_kits_legacy_text(plumber, tmp_path):
     assert calls == legacy_calls
 
 
-def test_pdfplumber_is_ubs_webs_reads(plumber, tmp_path):
+# Text read at one tolerance, words at two.
+PLUMBER_PARAMS = {
+    "text_params": {"x_tolerance": 2},
+    "word_params": ({"x_tolerance": 2},
+                    {"x_tolerance": 1.5, "keep_blank_chars": False}),
+}
+
+
+def test_pdfplumber_reads_text_and_each_word_set_with_its_arguments(
+        plumber, tmp_path):
     _fake, calls = plumber
-    ubs = collector_modules.load("ubs-web", "pdf_parsers")
-    assert ubs.EXTRACTOR.func is extract.pdfplumber
-    assert ubs.EXTRACTOR.keywords == extract.UBS_WEB_PARAMS
-    doc = ubs.extracted(tmp_path / "a.pdf")
-    assert ("text", {"x_tolerance": 2}) in calls
+    doc = functools.partial(extract.pdfplumber, **PLUMBER_PARAMS)(
+        tmp_path / "a.pdf")
+    assert calls.count(("text", {"x_tolerance": 2})) == len(PLUMBER_PAGES)
     assert ("words", {"x_tolerance": 2}) in calls
     assert ("words", {"x_tolerance": 1.5, "keep_blank_chars": False}) in calls
     for page, (_, expected) in zip(doc.pages, PLUMBER_PAGES, strict=True):
@@ -103,8 +110,8 @@ def test_pdfplumber_is_ubs_webs_reads(plumber, tmp_path):
             for w in expected)
 
 
-def test_pdfplumber_words_are_fidelity_1099s(plumber, tmp_path):
-    """fidelity-web's 1099 reads extract_words() with no arguments."""
+def test_pdfplumber_words_with_no_arguments(plumber, tmp_path):
+    """An empty mapping is one extract_words() call with no arguments."""
     doc = extract.pdfplumber(tmp_path / "a.pdf", word_params=({},))
     with sys.modules["pdfplumber"].open("x") as pdf:
         legacy = [tuple(Word(w["text"], w["x0"], w["x1"], w["top"],
@@ -159,10 +166,6 @@ def pdfium(monkeypatch):
         def get_textpage(self):
             return _TextPage(*PDFIUM_PAGES[self._index])
 
-        def render(self, scale):
-            calls.append(("render", scale))
-            return types.SimpleNamespace(to_pil=lambda: ("image", self._index))
-
         def close(self):
             calls.append("page.close")
 
@@ -195,28 +198,13 @@ def test_pdfium_text_is_the_kits_legacy_text(pdfium, tmp_path):
     assert legacy == "Total Proceeds\n12.50\n"
 
 
-def test_pdfium_words_are_schwab_webs(pdfium, tmp_path):
-    schwab = collector_modules.load("schwab-web", "tax_form_parsers")
-    legacy = schwab._pdf_words(tmp_path / "a.pdf")
+def test_pdfium_words_merge_characters(pdfium, tmp_path):
     doc = extract.pdfium(tmp_path / "a.pdf", words=True)
-    mine = [[(w.text, w.x0, w.x1, w.bottom, w.top) for w in page.words()]
-            for page in doc.pages]
-    assert mine == [[tuple(w) for w in page] for page in legacy]
     assert [w.text for w in doc.pages[0].words()] == ["To", "Pr", "12", "x", "y"]
-
-
-def test_ocr_text_is_the_kits_legacy_text(pdfium, tmp_path, monkeypatch):
-    lines = {0: [kitpdf.TextRun("b", 0.5, 0.25, 0.125),
-                 kitpdf.TextRun("a", 0.25, 0.25, 0.125),
-                 kitpdf.TextRun("c", 0.25, 0.75, 0.125)],
-             1: []}
-    monkeypatch.setitem(kitpdf._READERS, kitpdf.OCR_ENGINE_VISION,
-                        lambda: lambda image: lines[image[1]])
-    legacy = kitpdf.extract_text_ocr(tmp_path / "a.pdf", engine="vision")
-    doc = extract.ocr(tmp_path / "a.pdf", engine="vision")
-    assert doc.text() == legacy == "a b\nc"
-    assert doc.engine == "ocr-vision"
-    assert ("render", kitpdf.OCR_SCALE) in pdfium
+    assert doc.pages[1].words() == ()
+    # A word's box spans its characters: PDFium's frame, top the larger.
+    assert doc.pages[0].words()[1] == Word("Pr", x0=22, x1=30, top=711,
+                                           bottom=699.5)
 
 
 # ------------------------------------------------------------------
@@ -251,61 +239,34 @@ BBOX = ('<html><body><doc><page width="612" height="792">'
         '</page><page width="612" height="792"></page></doc></body></html>')
 
 
-# carta's K-1 extraction before collectorkit.extract, as it was.
-_LEGACY_PAGE = re.compile(r"<page\b[^>]*>(.*?)</page>", re.S)
-_LEGACY_WORD = re.compile(r'<word xMin="([\d.]+)" yMin="([\d.]+)" '
-                          r'xMax="([\d.]+)" yMax="[\d.]+">(.*?)</word>')
-
-
-def _legacy_bbox_xhtml(path, *, timeout=None) -> str:
-    try:
-        proc = subprocess.run(["pdftotext", "-bbox", str(path), "-"],
-                              capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise pdftotext.ExtractionError(
-            f"pdftotext timed out after {timeout:g}s") from exc
-    except OSError as exc:
-        raise pdftotext.ToolMissing(
-            f"pdftotext (poppler-utils) cannot be run: {exc}") from exc
-    if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip()[:200]
-        raise pdftotext.ExtractionError(
-            f"pdftotext exited {proc.returncode}: {detail}")
-    return proc.stdout.decode("utf-8", errors="replace")
-
-
-def _legacy_bbox_pages(xhtml: str) -> list[list[tuple]]:
-    return [[(float(x0), float(y0), float(x1), html.unescape(t))
-             for x0, y0, x1, t in _LEGACY_WORD.findall(body)]
-            for body in _LEGACY_PAGE.findall(xhtml)]
-
-
-def test_pdftotext_bbox_is_cartas(monkeypatch, tmp_path):
+def test_pdftotext_bbox_reads_every_box_with_its_bottom(monkeypatch,
+                                                         tmp_path):
     seen: list = []
     monkeypatch.setattr(subprocess, "run", _fake_run(BBOX.encode(), seen=seen))
-    legacy = _legacy_bbox_pages(_legacy_bbox_xhtml(tmp_path / "a.pdf", timeout=60))
     doc = extract.pdftotext_bbox(tmp_path / "a.pdf", timeout=60)
-    assert seen[0] == seen[1]
-    assert [[(w.x0, w.top, w.x1, w.text) for w in p.words()]
-            for p in doc.pages] == [[tuple(w) for w in page] for page in legacy]
-    assert [p.text for p in doc.pages] == \
-        [" ".join(w[3] for w in page) for page in legacy]
-    assert doc.pages[0].words()[0].bottom == 28.0
+    assert seen == [(["pdftotext", "-bbox", str(tmp_path / "a.pdf"), "-"],
+                     {"capture_output": True, "timeout": 60})]
+    # The entity is unescaped; a box with no yMax is no word.
+    assert [p.words() for p in doc.pages] == [
+        (Word("A&B", x0=10.5, x1=30.0, top=20.25, bottom=28.0),
+         Word("Box", x0=40.0, x1=60.0, top=20.5, bottom=28.5)),
+        ()]
+    assert [p.text for p in doc.pages] == ["A&B Box", ""]
 
 
-@pytest.mark.parametrize("fake,error", [
-    (_fake_run(returncode=1), pdftotext.ExtractionError),
-    (_fake_run(exc=OSError("missing")), pdftotext.ToolMissing),
+@pytest.mark.parametrize("fake,error,message", [
+    (_fake_run(returncode=1), pdftotext.ExtractionError,
+     "pdftotext exited 1: bad pdf"),
+    (_fake_run(exc=OSError("missing")), pdftotext.ToolMissing,
+     "pdftotext (poppler-utils) cannot be run: missing"),
     (_fake_run(exc=subprocess.TimeoutExpired(["pdftotext"], 5)),
-     pdftotext.ExtractionError),
+     pdftotext.ExtractionError, "pdftotext timed out after 5s"),
 ])
-def test_pdftotext_bbox_fails_as_carta_does(monkeypatch, tmp_path, fake, error):
+def test_pdftotext_bbox_failures(monkeypatch, tmp_path, fake, error, message):
     monkeypatch.setattr(subprocess, "run", fake)
-    with pytest.raises(error) as theirs:
-        _legacy_bbox_xhtml(tmp_path / "a.pdf", timeout=5)
-    with pytest.raises(error) as ours:
+    with pytest.raises(error) as e:
         extract.pdftotext_bbox(tmp_path / "a.pdf", timeout=5)
-    assert str(ours.value) == str(theirs.value)
+    assert str(e.value) == message
 
 
 # ------------------------------------------------------------------
@@ -314,7 +275,7 @@ def test_pdftotext_bbox_fails_as_carta_does(monkeypatch, tmp_path, fake, error):
 
 def test_the_key_names_engine_arguments_and_versions(monkeypatch):
     monkeypatch.setattr(extract, "_tool", lambda *argv: ("tool:pdftotext=1",))
-    plumber = functools.partial(extract.pdfplumber, **extract.UBS_WEB_PARAMS)
+    plumber = functools.partial(extract.pdfplumber, **PLUMBER_PARAMS)
     keys = {extract.extraction_key(e) for e in (
         extract.pdfium, functools.partial(extract.pdfium, words=True),
         extract.pdfplumber, plumber, extract.pdftotext_layout,
@@ -322,7 +283,7 @@ def test_the_key_names_engine_arguments_and_versions(monkeypatch):
     assert len(keys) == 6
     assert all(len(k) == 32 for k in keys)
     assert extract.extraction_key(plumber) == extract.extraction_key(
-        functools.partial(extract.pdfplumber, **extract.UBS_WEB_PARAMS))
+        functools.partial(extract.pdfplumber, **PLUMBER_PARAMS))
     # A timeout bounds the time, not the text.
     assert extract.extraction_key(extract.pdftotext_layout) == \
         extract.extraction_key(functools.partial(extract.pdftotext_layout,
@@ -376,8 +337,8 @@ def test_the_code_hash_follows_the_entry_types_not_the_geometry():
         return extract._code_hash(text.encode(), extract._ENTRY_TYPES)
 
     base = entry_hash(source)
-    for old, new in (("if abs(wy - y) > limit:", "if abs(wy - y) >= limit:"),
-                     ('_CELL_RULES = ("nearest"', '_CELL_RULES = ("closest"')):
+    for old, new in (("abs(w.top - y) > tolerance", "abs(w.top - y) >= tolerance"),
+                     ("d = abs(word.x1 - at)", "d = abs(word.x0 - at)")):
         assert old in source
         assert entry_hash(source.replace(old, new, 1)) == base
     old = "skip_empty: bool = False"
@@ -443,6 +404,65 @@ def test_no_or_a_refused_directory_is_a_plain_call(tmp_path, counted,
     assert not list(tmp_path.iterdir())
 
 
+def test_a_symlinked_secrets_directory_is_refused(tmp_path, counted,
+                                                 monkeypatch):
+    real = tmp_path / "vault"
+    real.mkdir()
+    link = tmp_path / "secrets"
+    link.symlink_to(real)
+    monkeypatch.setattr(extract, "_SECRETS_DIRS", (link,))
+    assert extract.usable_cache_dir(link / "cache") is None
+    assert extract.usable_cache_dir(real / "cache") is None
+    extract.cached(extract.pdfium, "a.pdf", SHA, real / "cache")
+    assert not list(real.iterdir())
+    assert extract.usable_cache_dir(tmp_path / "cache") == tmp_path / "cache"
+
+
+@pytest.mark.parametrize("mask", [0o022, 0])
+def test_the_cache_dirs_it_creates_are_private(tmp_path, counted, mask):
+    old = os.umask(mask)
+    try:
+        extract.cached(extract.pdfium, "a.pdf", SHA,
+                       tmp_path / "root" / "extract")
+    finally:
+        os.umask(old)
+    for d in (tmp_path / "root", tmp_path / "root" / "extract"):
+        assert d.stat().st_mode & 0o777 == 0o700
+
+
+def test_a_cache_dir_that_exists_keeps_its_mode(tmp_path, counted):
+    (tmp_path / "extract").mkdir(mode=0o750)
+    (tmp_path / "extract").chmod(0o750)
+    extract.cached(extract.pdfium, "a.pdf", SHA, tmp_path / "extract")
+    assert (tmp_path / "extract").stat().st_mode & 0o777 == 0o750
+
+
+def test_sweep_keeps_the_named_keys_and_what_is_no_entry(tmp_path, counted):
+    cache = tmp_path / "extract"
+    extract.cached(extract.pdfium, "a.pdf", SHA, cache)
+    (entry,) = cache.iterdir()
+    current = entry.name.split(".")[1]
+    stale = "0" * 32
+    others = [f"{SHA}.{stale}.json.gz", f"{OTHER_SHA}.{stale}.json.gz",
+              f"{SHA}.{stale}.json.gz.tmp", "notes.txt",
+              f"{SHA}.short.json.gz"]
+    for name in others:
+        (cache / name).write_bytes(b"x")
+    assert extract.sweep(cache, {current}) == 2
+    assert sorted(p.name for p in cache.iterdir()) == sorted(
+        [entry.name, *others[2:]])
+    assert extract.sweep(cache, {current}) == 0
+    assert extract.sweep(tmp_path / "absent", ()) == 0
+    assert extract.sweep(None, ()) == 0
+
+
+def test_default_dir_is_beside_the_parse_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("WEALTHDB_CACHE_DIR", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    assert extract.default_dir("carta") == \
+        tmp_path / "wealthdb" / "carta" / "extract"
+
+
 def test_the_cache_root_is_xdg(monkeypatch, tmp_path):
     monkeypatch.delenv("WEALTHDB_CACHE_DIR", raising=False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
@@ -455,18 +475,3 @@ def test_the_wrappers_cache_dir_is_the_cache_root(monkeypatch, tmp_path):
     assert extract.cache_root("ubs-web") == tmp_path / "mounted"
     monkeypatch.setenv("WEALTHDB_CACHE_DIR", "")
     assert extract.cache_root("ubs-web") == tmp_path / "xdg" / "wealthdb" / "ubs-web"
-
-
-def test_measure_counts_and_writes_nothing(tmp_path, counted):
-    docs = tmp_path / "docs"
-    (docs / "sub").mkdir(parents=True)
-    for name in ("a.pdf", "sub/b.pdf", "broken.pdf", "c.txt"):
-        (docs / name).write_bytes(b"%PDF")
-    before = sorted(p.name for p in docs.rglob("*"))
-    out = extract.measure(docs, extract.pdfium)
-    assert sorted(p.name for p in docs.rglob("*")) == before
-    assert (out["documents"], out["failed"], out["pages"]) == (2, 1, 4)
-    assert out["words"] == {"{}": 2}
-    assert out["text_bytes"] == 2 * len("text é".encode())
-    assert out["entry_bytes"] > 0
-    assert "text" not in json.dumps(out).replace("text_bytes", "")

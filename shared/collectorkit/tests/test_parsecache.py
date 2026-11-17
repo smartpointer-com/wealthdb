@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -43,15 +44,6 @@ def test_put_then_get_from_memory_and_from_disk(tmp_path):
     assert (tmp_path / f"{SHA}.{NS}.json").is_file()
     assert ParseCache(tmp_path).get(SHA, NS) == {"rows": [1, 2]}
     assert ParseCache(tmp_path).get(SHA, "stmt.v2.0123abcd") is None
-
-
-def test_sidecars_are_fidelity_webs(tmp_path):
-    """The layout is fidelity-web's own, so its warm cache stays warm."""
-    fidelity = collector_modules.load("fidelity-web", "load", ("pdfplumber",))
-    fidelity.ParseCache(tmp_path).put(SHA, NS, {"period_end": "2025-01-31"})
-    assert ParseCache(tmp_path).get(SHA, NS) == {"period_end": "2025-01-31"}
-    ParseCache(tmp_path).put(OTHER_SHA, NS, {"lots": []})
-    assert fidelity.ParseCache(tmp_path).get(OTHER_SHA, NS) == {"lots": []}
 
 
 def test_an_error_result_is_never_stored(tmp_path):
@@ -115,9 +107,73 @@ def test_sweep_keeps_only_the_named_namespaces(tmp_path):
 
 
 def test_default_dir_is_under_the_cache_root(monkeypatch, tmp_path):
+    monkeypatch.delenv("WEALTHDB_CACHE_DIR", raising=False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     assert parsecache.default_dir("chase") == \
         tmp_path / "wealthdb" / "chase" / "parse-cache"
+
+
+@pytest.mark.parametrize("mask", [0o022, 0])
+def test_the_cache_dirs_it_creates_are_private(tmp_path, mask):
+    old = os.umask(mask)
+    try:
+        ParseCache(tmp_path / "root" / "parse-cache").put(SHA, NS, [1])
+    finally:
+        os.umask(old)
+    for d in (tmp_path / "root", tmp_path / "root" / "parse-cache"):
+        assert d.stat().st_mode & 0o777 == 0o700
+
+
+# ------------------------------------------------------------------
+# cached
+# ------------------------------------------------------------------
+
+@dataclass
+class _Parsed:
+    day: date
+    amount: Decimal
+    lines: list[str]
+
+
+def test_cached_parses_once_and_decodes_the_kind(tmp_path):
+    calls = []
+
+    def parse(path, scale):
+        calls.append((path, scale))
+        return _Parsed(date(2031, 1, 2), Decimal("1.10"), ["a"])
+
+    first = parsecache.cached(ParseCache(tmp_path), SHA, NS, parse, "a.pdf",
+                              2, kind=_Parsed)
+    again = parsecache.cached(ParseCache(tmp_path), SHA, NS, parse, "a.pdf",
+                              2, kind=_Parsed)
+    assert first == again == _Parsed(date(2031, 1, 2), Decimal("1.10"), ["a"])
+    assert calls == [("a.pdf", 2)]
+    assert json.loads((tmp_path / f"{SHA}.{NS}.json").read_text()) == {
+        "day": "2031-01-02", "amount": "1.10", "lines": ["a"]}
+
+
+def test_cached_without_a_kind_stores_the_result_as_it_is(tmp_path):
+    worker = Counter({"rows": [1]})
+    for _ in range(2):
+        assert parsecache.cached(ParseCache(tmp_path), SHA, NS, worker,
+                                 "a") == {"rows": [1]}
+    assert worker.calls == ["a"]
+
+
+def test_cached_stores_no_error_and_no_raise(tmp_path):
+    failing = Counter({"_error": "ValueError()"})
+    cache = ParseCache(tmp_path)
+    for _ in range(2):
+        assert parsecache.is_error(parsecache.cached(cache, SHA, NS, failing,
+                                                     "a"))
+    assert len(failing.calls) == 2
+
+    def boom():
+        raise ValueError("unreadable")
+
+    with pytest.raises(ValueError):
+        parsecache.cached(cache, OTHER_SHA, NS, boom)
+    assert not list(tmp_path.iterdir())
 
 
 # ------------------------------------------------------------------

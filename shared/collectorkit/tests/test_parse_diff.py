@@ -131,6 +131,30 @@ def test_an_interpreter_that_does_not_start_is_exit_2(tmp_path, bronze, capsys):
     assert rc == 2
 
 
+def test_a_relative_bronze_dir_is_read_from_where_the_tool_runs(
+        tmp_path, bronze, capsys, monkeypatch):
+    # Each side runs in its own root, so a relative path would name a file
+    # under that root, fail the same way on both sides, and read as same.
+    old = _checkout(tmp_path / "old")
+    new = _checkout(tmp_path / "new", tag="u")
+    monkeypatch.chdir(tmp_path)
+    rc, lines = _run(capsys, tmp_path, old, new, Path("bronze"))
+    assert (rc, lines[1]) == (1, "fakeparse:parse: 1 same, 2 differ")
+
+
+def test_a_relative_interpreter_path_starts(tmp_path, bronze, capsys,
+                                            monkeypatch):
+    old = _checkout(tmp_path / "old")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "python").symlink_to(sys.executable)
+    monkeypatch.chdir(tmp_path)
+    assert _run(capsys, tmp_path, old, old, bronze,
+                "--python", os.path.join("bin", "python")) == (0, [
+        "documents: 3 unique of 4 files",
+        "fakeparse:parse: 3 same, 0 differ",
+    ])
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file of mode 0")
 def test_an_unreadable_document_is_exit_2(tmp_path, bronze, capsys):
     old = _checkout(tmp_path / "old")

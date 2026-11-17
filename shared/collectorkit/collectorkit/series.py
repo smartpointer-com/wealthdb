@@ -43,7 +43,7 @@ def payload(fields: dict) -> str:
     return json.dumps(fields, separators=(",", ":"))
 
 
-def meaning(sid: str, meta: dict, fields: tuple[str, ...],
+def _meaning(sid: str, meta: dict, fields: tuple[str, ...],
             log: logging.Logger) -> dict | None:
     """The manifest entry's `fields`, in order. None, with a warning, when
     any of them is missing or empty."""
@@ -97,7 +97,7 @@ def load_series(conn: sqlite3.Connection, manifest: dict,
             log.warning("series %s has unknown family %r in manifest; "
                         "skipping", sid, name)
             continue
-        means = meaning(sid, meta, family.meaning, log)
+        means = _meaning(sid, meta, family.meaning, log)
         if means is None:
             continue
         rows[name] += family.rows(
@@ -124,9 +124,12 @@ def loader_spec(name: str, schema: Path,
                 description: str) -> loader.LoaderSpec:
     """The load frame of a series collector. Its command line takes
     ``--silver-db`` and ``--bronze-dir``, both required, under
-    `description`. A run dir with no run.json, or one whose status is not
-    complete, is skipped without a dump_runs row, so a later load picks
-    it up once its walk finalises."""
+    `description`.
+
+    The run.json is required: one that cannot be parsed ends the load. A
+    run the frame does not list (no run.json yet, or a status other than
+    complete) gets no dump_runs row, so a later load picks it up once its
+    walk finalises."""
     return loader.LoaderSpec(
         name=name, schema=schema, load_run=load_run,
         parser=lambda: _parser(description), counts=counts,

@@ -23,8 +23,9 @@ Two rules hold for both:
   directory) leaves the cache in memory only.
 
 Results are JSON. :func:`to_json` and :func:`from_json` carry a parser's
-dataclass results (chase's and amex's statements: ``Decimal`` amounts,
-``date`` days, nested lists) through it exactly.
+dataclass results (``Decimal`` amounts, ``date`` days, nested lists)
+through it exactly. :func:`cached` is one document's parse through the
+cache, with the codec when a result type is given.
 
 This module is the loaders'. No parser imports it.
 """
@@ -43,7 +44,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from collectorkit import bronze
-from collectorkit.extract import cache_root, usable_cache_dir
+from collectorkit.extract import cache_root, make_private_dir, usable_cache_dir
 
 log = logging.getLogger("collectorkit.parsecache")
 
@@ -55,7 +56,8 @@ _NAMESPACE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 def default_dir(collector: str) -> Path:
     """A collector's parse-cache directory: ``parse-cache`` under its cache
-    root (``collectorkit.extract.cache_root``)."""
+    root (``collectorkit.extract.cache_root``), beside the extraction
+    cache (``collectorkit.extract.default_dir``)."""
     return cache_root(collector) / "parse-cache"
 
 
@@ -141,13 +143,32 @@ class ParseCache:
     def _ensure_dir(self) -> bool:
         if self._dir_ready is None:
             try:
-                self._dir.mkdir(parents=True, exist_ok=True)
+                make_private_dir(self._dir)
                 self._dir_ready = True
             except OSError as e:
                 log.debug("parse-cache: memory only (cannot create %s): %s",
                           self._dir, e)
                 self._dir_ready = False
         return self._dir_ready
+
+
+def cached(cache: ParseCache, sha: str, namespace: str, parse, *args,
+           kind=None):
+    """``parse(*args)``, read from `cache` when this document was parsed
+    under `namespace` before, and stored there when not.
+
+    With `kind`, a dataclass type or a type hint, the result goes
+    through :func:`to_json` into the cache and comes back out through
+    ``from_json(data, kind)``. Without it, the result is stored as it
+    is, so it must be JSON already. A parse that raises stores nothing,
+    and neither does an error result: the next call parses such a
+    document again, and the caller decides whether a load makes one."""
+    hit = cache.get(sha, namespace)
+    if hit is not None:
+        return hit if kind is None else from_json(hit, kind)
+    parsed = parse(*args)
+    cache.put(sha, namespace, parsed if kind is None else to_json(parsed))
+    return parsed
 
 
 class ParsePool:

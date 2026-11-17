@@ -2,7 +2,8 @@
 
 Each collector emits silver records stamped at second-resolution Unix
 epoch (UTC). Sources state dates in their own formats; this module
-covers the formats two or more collectors share."""
+covers the formats two or more collectors share, and the CUSIP check
+digit."""
 from __future__ import annotations
 
 import re
@@ -73,3 +74,33 @@ def date_in_name(name: str, pattern) -> int | None:
         return epoch_day(date(int(m["y"]), int(m["m"]), int(m["d"])))
     except ValueError:
         return None
+
+
+# The CUSIP alphabet in value order: digits 0-9, letters 10-35, then
+# `*`, `@` and `#` as 36, 37 and 38.
+_CUSIP_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ*@#"
+
+
+def cusip_check_digit(base: str) -> str | None:
+    """The check digit of an eight-character CUSIP base, or None when the
+    base is not eight CUSIP characters.
+
+    The modulus-10 double-add-double rule: every second value doubles,
+    and the digits of each value are summed."""
+    if len(base) != 8:
+        return None
+    total = 0
+    for i, ch in enumerate(base):
+        v = _CUSIP_CHARS.find(ch)
+        if v < 0:
+            return None
+        if i % 2:
+            v *= 2
+        total += v // 10 + v % 10
+    return str((10 - total % 10) % 10)
+
+
+def is_cusip(s: str) -> bool:
+    """Whether `s` is nine CUSIP characters ending in a valid check
+    digit."""
+    return len(s) == 9 and cusip_check_digit(s[:8]) == s[8]

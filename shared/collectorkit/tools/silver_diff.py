@@ -9,7 +9,8 @@ hold the same rows. This tool reads both and reports where they differ:
 * per column, how many rows that match on the primary key hold a
   different value.
 
-A table with no primary key is compared as a multiset of rows over its
+A table with no primary key, or one with a NULL in a key column (SQLite
+lets such a key repeat), is compared as a multiset of rows over its
 shared columns, so only its one-sided row counts are reported.
 
 It prints table names, column names and counts, never a value. Clock
@@ -31,13 +32,16 @@ import argparse
 import sys
 from pathlib import Path
 
-# Columns that hold the time of a load, not a fact of the bronze. An entry
-# `collector:table.column` is a clock in that collector only.
+# The kit beside this tool, which runs as `python3 -I` with no kit installed.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from collectorkit.incremental import CLOCK_COLUMNS as _LOAD_CLOCKS  # noqa: E402
+
+# Columns that hold the time of a load, not a fact of the bronze: the load
+# clocks every silver has (`collectorkit.incremental`), and the clocks of
+# one collector or one store. An entry `collector:table.column` is a clock
+# in that collector only.
 CLOCK_COLUMNS = (
-    "schema_meta.applied_at",
-    "parser_generations.stamped_at",
-    "dump_runs.loaded_at",
-    "document_derivations.derived_at",
+    *sorted(_LOAD_CLOCKS),
     "angellist:tax_documents.retrieved_at",
     "load_runs.load_at",
     "swissquote:documents.first_seen_at",
@@ -162,6 +166,14 @@ def _count(cat: _Catalog, db: str, table: str) -> int:
     return cat.one(f"SELECT COUNT(*) FROM {db}.{_q(table)}")[0]
 
 
+def _null_in_key(cat: _Catalog, db: str, table: str, key: list[str]) -> bool:
+    """Whether a row holds NULL in a key column. SQLite lets such rows
+    repeat a key, so they cannot be paired by it."""
+    nulls = " OR ".join(f"{_q(k)} IS NULL" for k in key)
+    return bool(cat.one(
+        f"SELECT EXISTS (SELECT 1 FROM {db}.{_q(table)} WHERE {nulls})")[0])
+
+
 def _keyed(cat: _Catalog, table: str, key: list[str],
            cols: list[str]) -> tuple[int, int, dict[str, int]]:
     """Rows only in old, only in new, and per-column change counts on rows
@@ -240,6 +252,9 @@ def diff(old: Path, new: Path, ignore: set[str]) -> list[str]:
                 if c in new_cols and f"{t}.{c}" not in ignore]
         key = old_pk if old_pk == new_pk and old_pk and all(
             k in cols for k in old_pk) else []
+        if key and (_null_in_key(cat, "o", t, key)
+                    or _null_in_key(cat, "n", t, key)):
+            key = []
         n_old, n_new = _count(cat, "o", t), _count(cat, "n", t)
         if key:
             only_old, only_new, changed = _keyed(cat, t, key, cols)

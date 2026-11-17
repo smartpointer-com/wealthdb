@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -206,8 +207,14 @@ def main(argv: list[str] | None = None) -> int:
             p.error(f"{flag} {d}: not a directory")
     if args.jobs < 1:
         p.error("--jobs must be at least 1")
+    # Each side runs in its root, so a relative path is made absolute
+    # first. The interpreter keeps its symlink: a venv's python finds the
+    # venv by the path it is started as.
+    python = os.path.abspath(args.python) if os.sep in args.python \
+        else args.python
     try:
-        seen, files = unique_documents(args.bronze, args.glob or ["*.pdf"])
+        seen, files = unique_documents(args.bronze.resolve(),
+                                       args.glob or ["*.pdf"])
     except OSError as e:  # the class only: the message names the path
         print(f"parse_diff: cannot read a document ({e.__class__.__name__})",
               file=sys.stderr)
@@ -215,12 +222,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"documents: {len(files)} unique of {seen} files")
     try:
         report = run(args.old.resolve(), args.new.resolve(), files, args.specs,
-                     python=args.python, jobs=args.jobs)
+                     python=python, jobs=args.jobs)
     except RuntimeError as e:
         print(f"parse_diff: {e}", file=sys.stderr)
         return 2
     except OSError as e:  # --python does not start
-        print(f"parse_diff: cannot run {args.python} ({e.__class__.__name__})",
+        print(f"parse_diff: cannot run {python} ({e.__class__.__name__})",
               file=sys.stderr)
         return 2
     differs = False

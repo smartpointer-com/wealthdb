@@ -120,6 +120,22 @@ def test_a_table_without_a_key_compares_as_a_multiset(tmp_path, old, capsys):
         "notes: 3 rows in old, 3 in new; 1 only in old, 1 only in new (as rows)"])
 
 
+def test_a_key_that_holds_null_compares_as_a_multiset(tmp_path, capsys):
+    def build(path: Path, rows: list[str]) -> Path:
+        return _silver(path, "CREATE TABLE held (day INTEGER, isin TEXT,"
+                       " ccy TEXT, PRIMARY KEY (day, isin))",
+                       *(f"INSERT INTO held VALUES {r}" for r in rows))
+
+    rows = ["(1, NULL, 'CHF')", "(1, NULL, 'USD')", "(1, 'X', 'CHF')"]
+    old = build(tmp_path / "old.db", rows)
+    new = build(tmp_path / "new.db", rows[::-1])
+    assert _run(capsys, old, new) == (0, [])
+    other = build(tmp_path / "other.db",
+                  ["(1, NULL, 'CHF')", "(1, NULL, 'EUR')", "(1, 'X', 'CHF')"])
+    assert _run(capsys, old, other) == (1, [
+        "held: 3 rows in old, 3 in new; 1 only in old, 1 only in new (as rows)"])
+
+
 def test_one_extra_table_and_column_are_named(tmp_path, old, capsys):
     new = _silver(tmp_path / "new.db",
                   f"CREATE TABLE extra AS SELECT '{MARKER}' AS v",

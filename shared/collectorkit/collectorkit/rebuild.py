@@ -1,13 +1,11 @@
 """What stops a load, what a load only advises, and the one rebuild path.
 
-A load is incremental and keeps every loaded silver loadable. It stops for
-two reasons only, both raised by :func:`stop` so every collector words
-them the same way:
+A load is incremental and keeps every loaded silver loadable. An SQLite
+error while loading surfaces as the error itself. A load stops, through
+:func:`stop` so every collector words it the same way, for:
 
-* corruption found in loaded data (:func:`corruption`): an SQLite error
-  while loading, or an invariant over stored rows that the loader checks;
-* a silver the code has no migration path from (:func:`no_migration_path`;
-  :func:`migration_path_stop` checks for a silver newer than the code).
+* a silver newer than the code (:func:`migration_path_stop`);
+* an invariant over its bronze or its rows that the loader checks.
 
 A stop leaves silver as it was, readable.
 
@@ -67,33 +65,15 @@ def stop(where, reason: str, *, command: str | None = None,
                    f"silver as it was. {remedy}")
 
 
-def corruption(where, check: str, table: str, command: str) -> NoReturn:
-    """Stop for corruption: the check `check` does not hold over the rows
-    of `table`."""
-    stop(where, f"{check} does not hold in {table}", command=command)
-
-
-def no_migration_path(where, found: int, known: int,
-                      command: str) -> NoReturn:
-    """Stop for a silver at schema version `found` when this code's
-    migrations reach `known`. A newer silver names the upgrade; an older
-    one that no migration starts from names the rebuild `command`."""
-    if found > known:
-        stop(where, f"silver is at schema version {found}, newer than the "
-                    f"{known} this code knows", upgrade=True)
-    stop(where, f"silver is at schema version {found}, which no migration "
-                f"of this code starts from (it knows up to {known})",
-         command=command)
-
-
-def _has_table(conn: sqlite3.Connection, name: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (name,)).fetchone() is not None
+def no_migration_path(where, found: int, known: int) -> NoReturn:
+    """Stop for a silver at schema version `found`, newer than the `known`
+    this code's migrations reach. The message names the upgrade."""
+    stop(where, f"silver is at schema version {found}, newer than the "
+                f"{known} this code knows", upgrade=True)
 
 
 def _loaded_a_run(conn: sqlite3.Connection) -> bool:
-    return (_has_table(conn, "dump_runs") and conn.execute(
+    return (silver.has_table(conn, "dump_runs") and conn.execute(
         "SELECT 1 FROM dump_runs LIMIT 1").fetchone() is not None)
 
 
@@ -114,7 +94,7 @@ def rebuild_advice(conn: sqlite3.Connection,
     load goes on either way. Without the `rebuild_level` table (see
     REBUILD_LEVEL_DDL) nothing is advised.
     """
-    if not advice or not _has_table(conn, "rebuild_level"):
+    if not advice or not silver.has_table(conn, "rebuild_level"):
         return []
     level = conn.execute("SELECT MAX(level) FROM rebuild_level").fetchone()[0]
     if level is None and not _loaded_a_run(conn):
@@ -130,24 +110,22 @@ def rebuild_advice(conn: sqlite3.Connection,
     return lines
 
 
-SIDECARS = ("-wal", "-shm", "-journal")
-
-
 def _discard(path: Path, *, main: bool = True) -> None:
-    for sidecar in ("", *SIDECARS) if main else SIDECARS:
+    sidecars = silver.SQLITE_SIDECARS
+    for sidecar in ("", *sidecars) if main else sidecars:
         path.with_name(path.name + sidecar).unlink(missing_ok=True)
 
 
 def migration_path_stop(conn: sqlite3.Connection, migrations: Path,
-                        where, command: str) -> None:
+                        where) -> None:
     """Stop (:func:`no_migration_path`) when the silver on `conn` is at a
     schema version above the last of the `NNNN_*.sql` files in
     `migrations`. Reads only, so a stop leaves the silver as it was."""
-    known = max((int(m.group(1)) for f in Path(migrations).iterdir()
-                 if (m := silver.MIGRATION_FILE_RE.match(f.name))), default=0)
+    known = max((n for n, _ in silver.migration_files(migrations)),
+                default=0)
     found = silver.current_schema_version(conn)
     if found > known:
-        no_migration_path(where, found, known, command)
+        no_migration_path(where, found, known)
 
 
 def rebuild(db_path: Path, migrations: Path,

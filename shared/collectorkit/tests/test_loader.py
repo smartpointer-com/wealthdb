@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from collectorkit import loader, silver
+from collectorkit import loader, rebuild, silver
 
 SCHEMA = """
 CREATE TABLE schema_meta (silver_schema_version INTEGER PRIMARY KEY,
@@ -123,6 +123,134 @@ def test_a_failed_run_rolls_back_and_ends_the_load(spec, paths):
         run_main(spec, paths)
     assert rows(db, "SELECT name FROM items") == [("a",)]
     assert rows(db, "SELECT count(*) FROM dump_runs") == [(1,)]
+
+
+@pytest.mark.parametrize("wrong", [None, (1, 2), "1", [1, 2]])
+def test_counts_of_the_wrong_shape_roll_the_run_back(spec, paths, wrong):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a"])
+    assert run_main(spec, paths) == 0
+    write_run(bronze, RUN_2, ["b"])
+    shaped = replace(spec, load_run=lambda c, r: load_items(c, r) and wrong)
+    with pytest.raises(TypeError, match=r"toy: load_run returned .* for "
+                                        r"counts \('items',\)"):
+        run_main(shaped, paths)
+    assert rows(db, "SELECT name FROM items") == [("a",)]
+    assert rows(db, "SELECT count(*) FROM dump_runs") == [(1,)]
+
+
+def test_counts_with_no_labels_roll_the_run_back(spec, paths):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a"])
+    with pytest.raises(TypeError, match=r"load_run returned 1 for counts"):
+        run_main(replace(spec, counts=()), paths)
+    assert rows(db, "SELECT count(*) FROM dump_runs") == [(0,)]
+
+
+def test_a_list_of_counts_reads_as_a_tuple(spec, paths, caplog):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a", "b"])
+    listed = replace(spec, counts=("items", "extras"),
+                     load_run=lambda c, r: [load_items(c, r), 1])
+    with caplog.at_level(logging.INFO, logger="toy.load"):
+        assert run_main(listed, paths) == 0
+    assert "done: 1 run(s), 2 items, 1 extras" in caplog.text
+
+
+def _stop_on(name):
+    def load(conn, run):
+        if name in json.loads((run.dir / "items.json").read_text()):
+            conn.execute("INSERT INTO items VALUES ('half-written', 0)")
+            rebuild.stop(run.dir.name, "an invariant does not hold",
+                         command="toy load --force")
+        return load_items(conn, run)
+    return load
+
+
+def test_a_stop_in_a_run_keeps_the_runs_before_it(spec, paths, caplog):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a"])
+    write_run(bronze, RUN_2, ["halt"])
+    write_run(bronze, RUN_3, ["c"])
+    assert run_main(replace(spec, load_run=_stop_on("halt")), paths) == 1
+    assert (f"{RUN_2}: an invariant does not hold. The load stopped"
+            in caplog.text)
+    assert rows(db, "SELECT name FROM items") == [("a",)]
+    assert rows(db, "SELECT count(*) FROM dump_runs") == [(1,)]
+
+
+def test_a_stop_before_the_runs_loads_nothing(spec, paths):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a"])
+
+    def halt(conn, load):
+        rebuild.stop(load.silver_db, "an invariant does not hold",
+                     command="toy load --force")
+
+    assert run_main(replace(spec, before_runs=halt), paths) == 1
+    assert rows(db, "SELECT count(*) FROM dump_runs") == [(0,)]
+
+
+def _leaves_only(tmp_path):
+    return sorted(p.name for p in tmp_path.iterdir())
+
+
+def test_a_stop_under_force_keeps_the_old_silver(spec, paths, tmp_path):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a"])
+    assert run_main(spec, paths) == 0
+    before = db.read_bytes()
+    write_run(bronze, RUN_2, ["halt"])
+    assert run_main(replace(spec, load_run=_stop_on("halt")), paths,
+                    "--force") == 1
+    assert db.read_bytes() == before
+    assert _leaves_only(tmp_path) == ["bronze", "migrations", "toy.db"]
+
+
+def test_after_runs_raising_under_force_keeps_the_old_silver(spec, paths,
+                                                            tmp_path):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a"])
+    assert run_main(spec, paths) == 0
+    before = db.read_bytes()
+
+    def broken(conn, load):
+        raise RuntimeError("a pass after the runs that fails")
+
+    with pytest.raises(RuntimeError, match="fails"):
+        run_main(replace(spec, after_runs=broken), paths, "--force")
+    assert db.read_bytes() == before
+    assert _leaves_only(tmp_path) == ["bronze", "migrations", "toy.db"]
+
+
+def test_a_failing_status_under_force_keeps_the_old_silver(
+        spec, paths, tmp_path, caplog):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a"])
+    assert run_main(spec, paths) == 0
+    before = db.read_bytes()
+    write_run(bronze, RUN_2, ["b"])
+    failing = replace(spec, after_runs=lambda conn, load: 3)
+    assert run_main(failing, paths, "--force") == 3
+    assert db.read_bytes() == before
+    assert _leaves_only(tmp_path) == ["bronze", "migrations", "toy.db"]
+    assert "the rebuild ended with status 3" in caplog.text
+    # A zero status puts the rebuild in place.
+    assert run_main(replace(spec, after_runs=lambda conn, load: 0), paths,
+                    "--force") == 0
+    assert rows(db, "SELECT name FROM items ORDER BY name") == [("a",), ("b",)]
+
+
+def test_the_given_run_columns_keep_the_path_as_named(spec, paths, tmp_path,
+                                                       monkeypatch):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a"])
+    monkeypatch.chdir(tmp_path)
+    given = replace(spec, run_columns=loader.given_run_columns)
+    assert loader.main(given, ["--silver-db", str(db), "--bronze-dir",
+                               "bronze"]) == 0
+    assert rows(db, "SELECT * FROM dump_runs") == [
+        (1767225600, 1, str(Path("bronze") / RUN_1), None)]
 
 
 def test_a_skipped_run_writes_nothing_and_is_read_again(spec, paths, caplog):

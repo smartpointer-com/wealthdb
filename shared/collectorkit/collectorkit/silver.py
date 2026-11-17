@@ -20,6 +20,9 @@ log = logging.getLogger(__name__)
 # Migration filenames look like `0001_initial.sql`, `12_add_x.sql`, etc.
 MIGRATION_FILE_RE = re.compile(r"^(\d+)_.*\.sql$")
 
+# The files SQLite keeps beside a database while it is open or journalling.
+SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
+
 # Silver holds transactions, balances and holdings — the same financial
 # record its source shows behind a login — so the file is owner-only.
 _DB_MODE = 0o600
@@ -49,13 +52,13 @@ def own_only(path: Path) -> None:
 def reset(path: Path) -> None:
     """Delete the silver DB at `path` (with its SQLite ``-wal`` / ``-shm`` /
     ``-journal`` or DuckDB ``.wal`` sidecars) so the next load rebuilds it
-    from scratch. This is the uniform implementation behind ``load --force``:
-    silver is reproducible from bronze alone, so a clean rebuild is always
-    safe and sidesteps every collector's own skip / upsert logic. No-op when
-    the DB doesn't exist yet.
+    from scratch: the ``load --force`` of a loader that is not on
+    ``collectorkit.loader``. Silver is reproducible from bronze alone, so a
+    clean rebuild is always safe and sidesteps the collector's own skip /
+    upsert logic. No-op when the DB does not exist yet.
     """
     path = Path(path)
-    for sidecar in ("", "-wal", "-shm", "-journal", ".wal"):
+    for sidecar in ("", *SQLITE_SIDECARS, ".wal"):
         p = path.with_name(path.name + sidecar) if sidecar else path
         try:
             p.unlink()
@@ -135,13 +138,23 @@ def open_db_default_isolation(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def has_table(conn: sqlite3.Connection, name: str) -> bool:
+    """Whether the SQLite database on `conn` holds the table `name`."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,)).fetchone() is not None
+
+
+def migration_files(migrations_dir: Path) -> list[tuple[int, Path]]:
+    """The ``NNNN_*.sql`` files of `migrations_dir` as ``(number, path)``,
+    in numeric order."""
+    return sorted((int(m.group(1)), f) for f in Path(migrations_dir).iterdir()
+                  if (m := MIGRATION_FILE_RE.match(f.name)))
+
+
 def current_schema_version(conn: sqlite3.Connection) -> int:
     """MAX(silver_schema_version) from schema_meta, or 0 if it's absent."""
-    row = conn.execute(
-        "SELECT name FROM sqlite_master "
-        "WHERE type='table' AND name='schema_meta'"
-    ).fetchone()
-    if not row:
+    if not has_table(conn, "schema_meta"):
         return 0
     row = conn.execute(
         "SELECT COALESCE(MAX(silver_schema_version), 0) AS v FROM schema_meta"
@@ -167,12 +180,7 @@ def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> int:
     migrations_dir = Path(migrations_dir)
     if not migrations_dir.is_dir():
         raise SystemExit(f"Migrations dir not found: {migrations_dir}")
-    files = []
-    for f in migrations_dir.iterdir():
-        m = MIGRATION_FILE_RE.match(f.name)
-        if m:
-            files.append((int(m.group(1)), f))
-    files.sort()
+    files = migration_files(migrations_dir)
     current = current_schema_version(conn)
     log.info("Schema version on disk: %d; %d migration file(s) found",
              current, len(files))
@@ -202,11 +210,7 @@ def loaded_snapshots(conn: sqlite3.Connection) -> set[int]:
     loader can skip bronze runs it has already ingested. Empty if the
     table doesn't exist yet.
     """
-    row = conn.execute(
-        "SELECT name FROM sqlite_master "
-        "WHERE type='table' AND name='dump_runs'"
-    ).fetchone()
-    if not row:
+    if not has_table(conn, "dump_runs"):
         return set()
     return {
         int(r[0])
@@ -310,6 +314,10 @@ def record_document(conn: sqlite3.Connection, row) -> bool:
 # The table belongs to each collector's own migrations (collectorkit owns no
 # schema). These two calls are the whole protocol: ask before importing,
 # stamp once the import has returned.
+#
+# This is the older per-scope form: a parser change re-derives the whole
+# scope. `collectorkit.derivations` records each document under its
+# generation instead, and a new collector uses that.
 
 
 def stale_generation(conn: sqlite3.Connection, scope: str,

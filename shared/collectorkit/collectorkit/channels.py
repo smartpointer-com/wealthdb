@@ -82,17 +82,16 @@ def period_decision(start, end, seam, reach, oldest) -> str:
     * ``"covered"``: the period opens at or after the seam and closes at or
       before ``reach``, so the primary channel carries every row of it. A
       ``reach`` of None bounds nothing above. The ``oldest`` period is
-      never covered, because its start is not known: amex chains each
-      start from the period before. None is no such period.
+      never covered, because its start is not known. A caller that chains
+      each start from the period before passes the oldest period's end;
+      None is no such period.
     * ``"straddle"``: anything else. The period opens before the seam and
       closes after it, runs past the reach, or is the oldest. Its rows
       belong to neither channel.
 
     The gate is on the whole period, not each row: a statement dates a row
     by transaction date and the cycle bills it by post date, so a row gate
-    could land one charge from both channels.
-
-    chase's card pass passes no reach and no oldest; amex's passes both."""
+    could land one charge from both channels."""
     if seam is None:
         return UNBOUNDED
     if end < seam:
@@ -131,10 +130,7 @@ def pair_one_to_one(left: Iterable[Leg], right: Iterable[Leg],
     carries one of them must not absorb both.
 
     ``claims`` continues an earlier call's pairing, and is updated in
-    place: a pass that pairs statement by statement threads one through.
-
-    fidelity-web's statement-to-feed match passes
-    ``lambda a, b: abs(b - a) < 0.005`` and 3 days, or 14 for a fee."""
+    place: a pass that pairs statement by statement threads one through."""
     claims = {} if claims is None else claims
     taken = set(claims.values())
     by_account: dict[str, list[Leg]] = {}

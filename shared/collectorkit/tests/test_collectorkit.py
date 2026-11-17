@@ -131,6 +131,32 @@ class MigrationsTest(unittest.TestCase):
         self.assertEqual(silver.current_schema_version(reopened), 2)
         reopened.close()
 
+    def test_migration_files_are_numbered_sql_in_numeric_order(self):
+        (self.migrations / "10_later.sql").write_text(BAD_SQL)
+        (self.migrations / "README.md").write_text("not a migration")
+        (self.migrations / "0003.sql").write_text(BAD_SQL)
+        self.assertEqual(
+            [(n, f.name) for n, f in silver.migration_files(self.migrations)],
+            [(1, "0001_initial.sql"), (2, "0002_add.sql"), (10, "10_later.sql")])
+
+    def test_has_table(self):
+        conn = silver.open_db(self.db)
+        self.assertFalse(silver.has_table(conn, "schema_meta"))
+        silver.apply_migrations(conn, self.migrations)
+        self.assertTrue(silver.has_table(conn, "schema_meta"))
+        self.assertFalse(silver.has_table(conn, "schema"))
+        conn.close()
+
+    def test_reset_removes_the_db_and_its_sidecars(self):
+        names = ["silver.db", *(f"silver.db{s}" for s in
+                                (*silver.SQLITE_SIDECARS, ".wal")),
+                 "silver.db.rebuild"]
+        for name in names:
+            (self.root / name).write_text("x")
+        silver.reset(self.db)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()),
+                         ["migrations", "silver.db.rebuild"])
+
     def test_migration_must_bump_version(self):
         (self.migrations / "0003_bad.sql").write_text(BAD_SQL)
         conn = silver.open_db(self.db)

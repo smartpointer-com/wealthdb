@@ -1,118 +1,59 @@
 """Tests for collectorkit.words: the document types and the word
-geometry (rows, columns, cell_of).
-
-Each geometry test runs a reader's own clusterer or column rule on
-invented words and checks that the kit function, with the parameters
-that reader would pass, gives the same answer.
-"""
+geometry (rows, cell_of), over invented words."""
 from __future__ import annotations
 
-import random
-
-import collector_modules
 import pytest
 
-from collectorkit import pdf as kitpdf
-from collectorkit.words import Extracted, Page, Word, cell_of, columns, rows
-
-ubs_ledger = collector_modules.load("ubs-web", "account_statement")
-ubs_list = collector_modules.load("ubs-web", "soa_transaction_list")
-fidelity = collector_modules.load("fidelity-web", "pdf_parsers_1099")
-schwab = collector_modules.load("schwab-web", "tax_form_parsers")
+from collectorkit.words import Extracted, Page, Word, cell_of, rows
 
 
-def _page(rng: random.Random, n: int = 40) -> list[Word]:
-    """Invented words in a top-down frame: lines a few points apart, a
-    jitter around each that sometimes reaches the tolerance exactly, and
-    some equal x0 values."""
-    words = []
-    for i in range(n):
-        line = rng.randrange(8) * rng.choice((2.5, 3.0, 4.0, 6.0))
-        top = 100 + line + rng.choice((0.0, 0.5, 1.0, 1.5, 2.0, 2.9, 3.0,
-                                       3.1, 0.1 + 0.2))
-        x0 = rng.choice((10.0, 20.0, 20.0, 35.5, 50.25)) + rng.randrange(5) * 40
-        words.append(Word(f"w{i}", x0, x0 + rng.choice((8.0, 12.5)), top,
-                          top + rng.choice((7.0, 9.0))))
-    return words
+def _word(text, x0, top, width=10.0, height=8.0):
+    """A word in a top-down frame."""
+    return Word(text, x0=x0, x1=x0 + width, top=top, bottom=top + height)
 
 
-SEEDS = range(300)
+# ------------------------------------------------------------------
+# rows
+# ------------------------------------------------------------------
+
+def _texts(lines):
+    return [[w.text for w in row.words] for row in lines]
 
 
-def _cartas_k1_lines(words, same_line=2.0):
-    """The line reader carta's K-1 reader had before collectorkit.k1, as
-    it was: sort by (top, x0), join a line within `same_line` of its first
-    word, each line left to right."""
-    out = []
-    for w in sorted(words, key=lambda w: (w.top, w.x0)):
-        if out and abs(out[-1][0].top - w.top) <= same_line:
-            out[-1].append(w)
-        else:
-            out.append([w])
-    return [sorted(line, key=lambda w: w.x0) for line in out]
+def test_a_word_at_the_tolerance_joins_the_line_and_one_past_opens_the_next():
+    words = [_word("a", 10, 100.0), _word("b", 30, 102.0),
+             _word("c", 50, 104.01)]
+    lines = rows(words, 2.0, "first")
+    assert _texts(lines) == [["a", "b"], ["c"]]
+    assert [row.top for row in lines] == [100.0, 104.01]
 
 
-def test_rows_is_cartas_k1_line_reader():
-    for seed in SEEDS:
-        words = _page(random.Random(seed))
-        theirs = _cartas_k1_lines(words)
-        ours = [list(r.words) for r in rows(words, 2.0)]
-        assert ours == theirs, seed
+def test_the_anchor_is_the_lines_first_word():
+    # Each word is within the tolerance of the one before it, but the
+    # third is beyond the first's.
+    words = [_word("a", 10, 100.0), _word("b", 30, 101.5),
+             _word("c", 50, 103.0)]
+    assert _texts(rows(words, 2.0)) == [["a", "b"], ["c"]]
 
 
-def test_rows_is_the_ocr_line_grouper():
-    """Dyadic coordinates, so a run's centre and height survive the trip
-    through a box exactly. Distinct x within a page, since the grouper
-    orders equal x by text."""
-    for seed in SEEDS:
-        rng = random.Random(seed)
-        runs = []
-        for i, x in enumerate(rng.sample(range(64), 20)):
-            centre = rng.randrange(16, 48) / 64 + rng.choice((0, 1 / 128))
-            height = rng.choice((1, 2, 3, 4)) / 64
-            runs.append(kitpdf.TextRun(f"r{i}", x / 64, centre, height))
-        theirs = kitpdf.group_ocr_lines(runs, kitpdf.OCR_LINE_TOLERANCE)
-        words = [Word(r.text, r.x, r.x, r.centre - r.height / 2,
-                      r.centre + r.height / 2) for r in runs]
-        ours = rows(words, kitpdf.OCR_LINE_TOLERANCE, "mean", by="mid",
-                    relative=True)
-        assert [" ".join(w.text for w in r.words) for r in ours] == theirs, seed
+def test_a_line_reads_left_to_right_and_equal_x0_keeps_input_order():
+    words = [_word("right", 80, 100.5), _word("tie-1", 20, 101.0),
+             _word("left", 5, 100.0), _word("tie-2", 20, 101.0)]
+    assert _texts(rows(words, 2.0)) == [["left", "tie-1", "tie-2", "right"]]
+    swapped = [words[0], words[3], words[2], words[1]]
+    assert _texts(rows(swapped, 2.0)) == [["left", "tie-2", "tie-1", "right"]]
 
 
-def _schwab_word(text, x0, bottom, height=8.0):
-    """A word in PDFium's frame: y grows up, so top is the larger."""
-    return schwab._Word(text, x0, x0 + 10, bottom, bottom + height)
+def test_lines_come_top_to_bottom_whatever_the_input_order():
+    words = [_word("low", 10, 300.0), _word("high", 10, 100.0),
+             _word("mid", 10, 200.0)]
+    assert _texts(rows(words, 3.0)) == [["high"], ["mid"], ["low"]]
+    assert rows([], 3.0) == []
 
 
-def test_rows_is_schwabs_same_row_on_separate_lines():
-    """schwab-web asks for the row of one word: every word whose middle
-    lies within that word's height. On lines of one height, well apart,
-    that is the line rows() groups with half a height of tolerance."""
-    lines = (700.0, 690.0, 671.5)
-    theirs_words = [_schwab_word(f"w{i}{j}", 10 + 30 * j, bottom)
-                    for i, bottom in enumerate(lines) for j in range(4)]
-    words = [Word(w.text, w.x0, w.x1, w.top, w.bottom) for w in theirs_words]
-    by_text = {}
-    for row in rows(words, 4.0, by="mid"):
-        for w in row.words:
-            by_text[w.text] = [v.text for v in row.words]
-    for w in theirs_words:
-        assert [v.text for v in schwab._same_row(theirs_words, w)] == \
-            by_text[w.text]
-
-
-def test_schwabs_same_row_is_not_a_partition():
-    """A taller word's band reaches two lines that rows() keeps apart.
-    So schwab-web's reader is a band query, and rows() does not stand in
-    for it."""
-    tall = _schwab_word("tall", 100, 688.0, height=22.0)
-    theirs_words = [_schwab_word("a", 10, 700.0), _schwab_word("b", 10, 690.0),
-                    tall]
-    band = [w.text for w in schwab._same_row(theirs_words, tall)]
-    assert set(band) == {"a", "b", "tall"}
-    grouped = rows([Word(w.text, w.x0, w.x1, w.top, w.bottom)
-                    for w in theirs_words], 4.0, by="mid")
-    assert len(grouped) > 1
+def test_rows_has_one_anchor():
+    with pytest.raises(ValueError):
+        rows([_word("a", 0, 0)], 1.0, anchor="mean")
 
 
 # ------------------------------------------------------------------
@@ -137,118 +78,31 @@ def test_text_joins_as_the_engine_did():
 
 
 # ------------------------------------------------------------------
-# columns and cell_of
+# cell_of
 # ------------------------------------------------------------------
 
-def _row(*cells):
-    """Header words from (text, x0, x1), on one line."""
-    return [Word(t, x0, x1, 50.0, 58.0) for t, x0, x1 in cells]
+def test_cell_of_is_the_nearest_right_edge_within_the_slack():
+    cols = {"proceeds": 100.0, "cost": 150.0, "gain": 300.0}
+
+    def at(x1):
+        return cell_of(Word("1.00", x0=x1 - 20, x1=x1, top=0, bottom=8),
+                       cols, 12.0)
+
+    assert at(100.0) == "proceeds"
+    assert at(112.0) == "proceeds"                       # at the slack
+    assert at(112.01) is None                            # past it
+    assert at(138.0) == "cost"
+    assert at(137.99) is None
+    assert at(225.0) is None                             # between, far off
+    assert at(312.0) == "gain"
 
 
-LEDGER_HEADER = _row(("Date", 20, 40), ("Information", 60, 110),
-                     ("Debits", 300, 330), ("Credits", 380, 415),
-                     ("Value", 440, 465), ("date", 466, 485),
-                     ("Balance", 520, 560))
-LEDGER_LABELS = {"Debits": "Debits", "Credits": "Credits",
-                 "ValueDate": "Value", "Balance": "Balance"}
-
-
-def test_columns_and_cell_of_are_ubs_webs_ledger_rule():
-    anchors = ubs_ledger._stmt_find_header(rows(LEDGER_HEADER, 3.0))
-    cols = columns(LEDGER_HEADER, LEDGER_LABELS, "centre")
-    assert cols == {k: v for k, v in anchors.items() if k != "top"}
-    for x in range(250, 620, 3):
-        for width in (5, 20, 41):
-            w = Word("1.00", x, x + width, 70.0, 78.0)
-            assert cell_of(w, cols, by="centre") == \
-                ubs_ledger._stmt_assign_numeric(w, anchors), (x, width)
-
-
-TL_HEADER = _row(("Trade", 10, 30), ("date", 32, 50), ("Booking", 60, 90),
-                 ("text", 92, 108), ("Number/Amount", 140, 200),
-                 ("Description", 220, 270), ("Cost/Purchase", 320, 370),
-                 ("price", 372, 395), ("Transaction", 420, 470),
-                 ("price", 472, 495), ("Transaction", 520, 570),
-                 ("gain", 572, 590), ("Transaction", 620, 670),
-                 ("value", 672, 695))
-TL_RIGHT = {"D": "Cost/Purchase price", "E": "Transaction price",
-            "F": "Transaction gain", "G": "Transaction value"}
-
-
-def test_columns_and_cell_of_are_ubs_webs_transaction_list_rule():
-    second = [Word("x", 10, 20, 61.0, 69.0)]
-    anchors = ubs_list._tl_anchors(rows([*TL_HEADER, *second], 3.0))
-    right = columns(TL_HEADER, TL_RIGHT, "right", ordered=True)
-    assert right == anchors["right"]
-    assert columns(TL_HEADER, {"n": "Number/Amount"})["n"] == \
-        anchors["number_x1"]
-    assert columns(TL_HEADER, {"d": "Description"}, "left")["d"] == \
-        anchors["desc_x0"]
-    assert columns(TL_HEADER, {"D": "Cost/Purchase price"}, "left")["D"] == \
-        anchors["d_x0"]
-    # Unordered, "Transaction price" and "Transaction gain" still differ,
-    # but a label repeated left of its column would be found first.
-    assert columns(TL_HEADER, TL_RIGHT, "right") == right
-    for x1 in range(330, 720, 2):
-        w = Word("1.00", x1 - 25, x1, 80.0, 88.0)
-        (col,) = ubs_list._tl_cells((w,), anchors)
-        assert cell_of(w, right, ubs_list._TL_SLACK, rule="first_reaching",
-                       default="G") == col, x1
-
-
-FIDELITY_HEADER = _row(("Action", 10, 40), ("Quantity", 50, 90),
-                       ("1d", 150, 160), ("1e", 230, 240), ("1f", 300, 310),
-                       ("1g", 380, 390), ("Gain/Loss", 450, 500),
-                       ("4", 540, 545), ("14", 600, 610))
-
-
-def test_columns_and_cell_of_are_fidelity_1099s_rule():
-    starts = fidelity._column_starts(FIDELITY_HEADER)
-    labels = {column: label for label, column in fidelity._COLUMN_LABELS}
-    cols = columns(FIDELITY_HEADER, labels, "left")
-    assert sorted((x, name) for name, x in cols.items()) == starts
-    ordered = {name: x for x, name in starts}
-    for x1 in range(100, 700, 3):
-        w = Word("1.00", x1 - 30, x1, 70.0, 78.0)
-        assert cell_of(w, ordered, rule="last_passed") == \
-            fidelity._column_for(x1, starts), x1
-    assert columns(FIDELITY_HEADER[:-1], labels, "left") is None
-    assert fidelity._column_starts(FIDELITY_HEADER[:-1]) is None
-
-
-def test_cell_of_is_schwabs_year_end_rule():
-    """schwab-web places an amount at the heading whose right edge is
-    nearest its own, within 12 points, and refuses the lot otherwise."""
-    cols = {"proceeds": 100.0, "cost": 150.0, "wash": 200.0,
-            "discount": 230.0, "gain": 300.0}
-    sold = schwab._Word("01/02/25", 10, 50, 500.0, 508.0)
-
-    def amount(x1):
-        return schwab._Word("1.00", x1 - 20, x1, 500.0, 508.0)
-
-    fixed = [amount(100.0), amount(150.0), amount(300.0)]
-    for x1 in range(156, 262, 2):
-        probe = amount(float(x1))
-        theirs = schwab._yes_lot_amounts([sold, *fixed, probe], sold, cols)
-        col = cell_of(Word("1.00", x1 - 20, x1, 0, 0), cols,
-                      schwab._YES_COLUMN_SLACK)
-        field = schwab._YES_LAYOUT_FIELDS.get((col, 0))
-        if col in (None, "proceeds", "cost", "gain"):
-            assert theirs is None, x1
-        else:
-            assert theirs is not None and field in theirs, x1
-
-
-def test_cell_of_rules_at_their_edges():
+def test_cell_of_at_its_edges():
     cols = {"a": 10.0, "b": 20.0, "c": None}
-    w = Word("x", 0, 15.0, 0, 0)
+    w = Word("x", x0=0, x1=15.0, top=0, bottom=0)
     assert cell_of(w, cols) == "a"                       # equal: the first
+    assert cell_of(w, cols, slack=5.0) == "a"
     assert cell_of(w, cols, slack=4.0) is None
-    assert cell_of(w, cols, rule="first_reaching") == "b"
-    assert cell_of(w, cols, rule="last_passed") == "a"
-    assert cell_of(Word("x", 0, 5.0, 0, 0), cols, rule="last_passed",
-                   default="-") == "-"
-    with pytest.raises(ValueError):
-        cell_of(w, cols, rule="widest")
-    with pytest.raises(ValueError):
-        rows([w], 1.0, anchor="last")
+    assert cell_of(Word("x", x0=0, x1=1e6, top=0, bottom=0), cols) == "b"
+    assert cell_of(w, {"c": None}) is None
+    assert cell_of(w, {}) is None
