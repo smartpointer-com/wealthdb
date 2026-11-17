@@ -21,7 +21,8 @@ sys.path.insert(0, str(COLLECTOR))
 
 import card_parsers  # noqa: E402
 import load as loader  # noqa: E402
-from collectorkit import bronze, silver  # noqa: E402
+from collectorkit import bronze, incremental, silver  # noqa: E402
+from collectorkit.parsecache import ParseCache  # noqa: E402
 from silverdb import MIGRATIONS_DIR, fresh_db  # noqa: E402
 
 REL = "1234 00000001"   # synthetic "<4-digit branch> <8-digit base>"
@@ -469,7 +470,7 @@ def test_a_moved_parser_re_derives_without_a_new_dump(tmp_path, monkeypatch):
     monkeypatch.setattr(loader, "_load_historical_from_pdfs", _fake_walk)
 
     # The parsers have moved: the archive is re-derived.
-    loader._derive_documents_without_a_new_dump(conn, [dump], {})
+    loader._derive_documents_without_a_new_dump(conn, [dump], _parses())
     assert walked == [dump]
 
     # And having moved once, they have not moved twice: an unchanged
@@ -477,7 +478,7 @@ def test_a_moved_parser_re_derives_without_a_new_dump(tmp_path, monkeypatch):
     silver.stamp_generation(conn, loader.DOCUMENT_GENERATION_SCOPE,
                             loader._document_generation())
     walked.clear()
-    loader._derive_documents_without_a_new_dump(conn, [dump], {})
+    loader._derive_documents_without_a_new_dump(conn, [dump], _parses())
     assert walked == []
     conn.close()
 
@@ -490,7 +491,7 @@ def test_the_re_derive_needs_an_archive_to_walk(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loader, "_load_historical_from_pdfs",
                         lambda *a: pytest.fail("walked a dump with no archive"))
-    loader._derive_documents_without_a_new_dump(conn, [dump], {})
+    loader._derive_documents_without_a_new_dump(conn, [dump], _parses())
     conn.close()
 
 
@@ -930,7 +931,7 @@ def _archive_walk_saw(tmp_path, doc_type: str) -> bool:
     dump = home / "20260101T000000Z"
     (dump / "documents").mkdir(parents=True)
 
-    loader._load_historical_from_pdfs(conn, 1700000000, dump, {}, {})
+    loader._load_historical_from_pdfs(conn, 1700000000, dump, _parses(), {})
 
     purged = conn.execute(
         "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 0
@@ -958,6 +959,20 @@ def _seed_doc(conn, token: str, sha: str, doc_type: str) -> None:
         (token, sha, doc_type, f"{doc_type} 01.01.2020"))
 
 
+def _parses(conn=None, results: dict | None = None) -> loader.DocumentParses:
+    """A load's document parses, in memory and in-process. `results` maps
+    the token of a document `conn` lists to its parse: (kind, rows)."""
+    parses = loader.DocumentParses(ParseCache(), workers=1)
+    for token, (kind, rows) in (results or {}).items():
+        sha, label, doc_type = conn.execute(
+            "SELECT content_sha256, label, doc_type FROM documents "
+            "WHERE doc_token = ?", (token,)).fetchone()
+        parses.cache.put(loader._parse_key(sha, token, label, doc_type),
+                         loader._document_generation(),
+                         {"kind": kind, "rows": rows})
+    return parses
+
+
 def test_the_walk_writes_the_advices_after_the_statement_ledger(tmp_path):
     # The advice is listed FIRST here, which is the order that breaks a
     # pass that writes each document as it comes back: the movement it
@@ -970,17 +985,15 @@ def test_the_walk_writes_the_advices_after_the_statement_ledger(tmp_path):
     dump = tmp_path / "bronze" / "20260101T000000Z"
     (dump / "documents").mkdir(parents=True)
     # Pre-parsed, so the walk replays these instead of opening a PDF.
-    cache = {
-        "sha-adv": ("adv", "payment_advice", "adv.pdf",
-                    [_advice(_IBAN_B, credit=12345.67)], None),
-        "sha-stmt": ("stmt", "account_statement", "stmt.pdf",
-                     {"cash": [], "transactions": [
-                         _mv(_IBAN_B, _PRE, credit=12345.67)]}, None),
-    }
+    parses = _parses(conn, {
+        "adv": ("payment_advice", [_advice(_IBAN_B, credit=12345.67)]),
+        "stmt": ("account_statement", {"cash": [], "transactions": [
+            _mv(_IBAN_B, _PRE, credit=12345.67)]}),
+    })
 
     with conn:
         loader._load_historical_from_pdfs(conn, 1700000000, dump,
-                                          cache, {})
+                                          parses, {})
 
     ids = [r[0] for r in conn.execute(
         "SELECT transaction_external_id FROM transactions").fetchall()]
@@ -1410,10 +1423,11 @@ def test_a_new_supplied_document_derives_without_a_new_dump(
                         or (0, 0, 0, 0))
 
     # Nothing new: the parsers have not moved and nothing was supplied.
-    loader._derive_documents_without_a_new_dump(conn, [dump], {})
+    loader._derive_documents_without_a_new_dump(conn, [dump], _parses())
     assert walked == []
 
-    loader._derive_documents_without_a_new_dump(conn, [dump], {}, supplied=1)
+    loader._derive_documents_without_a_new_dump(conn, [dump], _parses(),
+                                                supplied=1)
     assert walked == [dump]
     conn.close()
 
@@ -1627,11 +1641,10 @@ def test_a_letter_that_is_no_call_goes_on_to_the_report_parser(monkeypatch,
                         lambda *a: ([report], []))
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(b"%PDF-1.4\n")
-    _token, kind, _name, rows, err = loader._parse_one_pdf(
-        ("token", str(pdf), "", loader.PRIVATE_MARKET_LETTER_DOC_TYPE))
-    assert err is None
-    assert kind == "private_market_report"
-    assert rows == {"reports": [report], "lines": []}
+    assert loader._parse_one_pdf(
+        ("token", str(pdf), "", loader.PRIVATE_MARKET_LETTER_DOC_TYPE)) == {
+        "kind": "private_market_report",
+        "rows": {"reports": [report], "lines": []}}
 
 
 def test_the_walk_lists_the_securities_advices(tmp_path):
@@ -1655,11 +1668,11 @@ def test_the_walk_writes_securities_advices_and_re_derives_them(tmp_path):
     (dump / "documents").mkdir(parents=True)
 
     def walk(amount: float) -> None:
-        cache = {"sha-call": ("call", "securities_advice", "call.pdf",
-                              [_securities_advice("call", amount)], None)}
+        parses = _parses(conn, {"call": (
+            "securities_advice", [_securities_advice("call", amount)])})
         with conn:
             loader._load_historical_from_pdfs(conn, 1700000000, dump,
-                                              cache, {})
+                                              parses, {})
 
     walk(12345.67)
     walk(13579.24)      # a re-derive replaces the row rather than adding one
@@ -1690,11 +1703,11 @@ def test_the_walk_writes_quarterly_reports_and_re_derives_them(tmp_path):
     (dump / "documents").mkdir(parents=True)
 
     def walk(lines: int) -> None:
-        cache = {"sha-report": ("report", "private_market_report",
-                                "report.pdf", _report("report", lines), None)}
+        parses = _parses(conn, {"report": (
+            "private_market_report", _report("report", lines))})
         with conn:
             loader._load_historical_from_pdfs(conn, 1700000000, dump,
-                                              cache, {})
+                                              parses, {})
 
     walk(3)
     walk(2)     # a re-derive replaces the lines rather than keeping a third
@@ -1762,11 +1775,11 @@ def test_the_walk_writes_statement_trades_and_re_derives_them(tmp_path):
     (dump / "documents").mkdir(parents=True)
 
     def walk(*trades: dict) -> None:
-        cache = {"sha-soa": ("soa", "statement_of_assets", "soa.pdf",
-                             {"positions": [], "trades": list(trades)}, None)}
+        parses = _parses(conn, {"soa": (
+            "statement_of_assets", {"positions": [], "trades": list(trades)})})
         with conn:
             loader._load_historical_from_pdfs(conn, 1700000000, dump,
-                                              cache, {})
+                                              parses, {})
 
     walk(_statement_trade(1, 100.0), _statement_trade(2, -50.0))
     walk(_statement_trade(1, 100.0), _statement_trade(2, -50.0))
@@ -1805,3 +1818,16 @@ def test_the_live_and_the_pdf_mortgage_classifiers_agree(caption):
     import pdf_parsers
     assert loader._mortgage_rate_type(caption) == \
         pdf_parsers._mortgage_rate_type_from_product(caption)
+
+
+# ============================================================
+# Loads are incremental: run by run gives the silver of one --force
+# ============================================================
+
+def test_runs_loaded_one_at_a_time_build_the_silver_of_one_rebuild(tmp_path):
+    import bronze_fixture
+    incremental.check(
+        loader.main,
+        lambda db, bronze_dir: ["--silver-db", str(db),
+                                "--bronze-dir", str(bronze_dir)],
+        bronze_fixture.write_runs(tmp_path / "runs"), tmp_path / "work")

@@ -44,11 +44,11 @@ import re
 import sqlite3
 import sys
 from collections.abc import Iterator
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, silver, srcfp
+from collectorkit import bronze, cli, parsecache, silver, srcfp
+from collectorkit.parsecache import ParseCache, ParsePool
 
 import card_parsers  # local module
 import landmarks as ubs  # local module: the export's shared vocabulary
@@ -352,13 +352,13 @@ def normalize_payload(data: dict) -> str:
 # ============================================================
 
 def load_dump(conn: sqlite3.Connection, dump_dir: Path,
-              schema_version: int, parse_cache: dict,
+              schema_version: int, parses: DocumentParses,
               mt940_floors: dict[str, int]) -> None:
     """Load one bronze dump into silver. Single transaction.
 
-    `parse_cache` is shared across the whole load run so each document
-    in the cumulative archive is parsed once, and `mt940_floors` is the
-    run's per-account MT940 cut-over (see `_load_historical_from_pdfs`)."""
+    `parses` is shared across the whole load run so each document in the
+    cumulative archive is parsed once, and `mt940_floors` is the run's
+    per-account MT940 cut-over (see `_load_historical_from_pdfs`)."""
     snapshot_at = ts_from_dir(dump_dir.name)
     log.info("loading %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
@@ -371,7 +371,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     ptxn_count = _load_portfolio_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
     hist_pos, hist_cash, hist_mort, hist_txn = _load_historical_from_pdfs(
-        conn, snapshot_at, dump_dir, parse_cache, mt940_floors)
+        conn, snapshot_at, dump_dir, parses, mt940_floors)
     card_acc, card_txn, card_inv, card_stmt = _load_cards(
         conn, snapshot_at, dump_dir)
     rate_count = _load_rates(conn, snapshot_at, dump_dir)
@@ -1794,12 +1794,11 @@ def _load_supplied_documents(conn: sqlite3.Connection,
 # Historical snapshots from PDF documents
 # ----------------------------------------------------------------
 
-def _parse_one_pdf(args: tuple[str, str, str, str | None]
-                   ) -> tuple[str, str, str, list[dict] | dict | None, str | None]:
-    """Worker-side: parse one PDF and return its rows. Pure (no DB
-    access) so it can run in a ProcessPoolExecutor worker. Returns
-    (token, kind, file_name, rows, error_message); exactly one of
-    `rows` or `error_message` is set on every non-skipped call."""
+def _parse_one_pdf(args: tuple[str, str, str, str | None]) -> dict:
+    """Worker-side: parse one PDF. Pure (no DB access) so it can run in a
+    process-pool worker, and JSON-ready so it can be cached. Returns
+    ``{"kind": ..., "rows": ...}``, or ``{"_error": message}`` when the
+    parser raised (an error result is never cached)."""
     from pdf_parsers import (
         parse_account_statement_combined, parse_capital_call,
         parse_contract_note, parse_maturity_notice, parse_payment_advice,
@@ -1807,8 +1806,6 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
     )
     token, fp, label, doc_type = args
     path = Path(fp)
-    if not path.is_file():
-        return token, "skip", path.name, None, None
     try:
         # The listing label names the type for a scraped document; a
         # supplied one has none and is indexed under the title it prints
@@ -1816,47 +1813,109 @@ def _parse_one_pdf(args: tuple[str, str, str, str | None]
         if ("Statement of assets" in (label or "")
                 or doc_type == SUPPLIED_STMT_OF_ASSETS_DOC_TYPE):
             positions, trades = parse_statement_of_assets(path, token, label)
-            return (token, "statement_of_assets", path.name,
-                    {"positions": positions, "trades": trades}, None)
+            return _parsed("statement_of_assets",
+                           {"positions": positions, "trades": trades})
         if doc_type == "Maturity notice":
-            rows = parse_maturity_notice(path, token)
-            return token, "mortgage", path.name, rows, None
+            return _parsed("mortgage", parse_maturity_notice(path, token))
         # Before the Account-Statement fallthrough below, which would
         # otherwise take every doc_type the SELECT admits.
         if (doc_type or "").strip().lower() in ADVICE_DOC_TYPES:
-            rows = parse_payment_advice(path, token)
-            return token, "payment_advice", path.name, rows, None
+            return _parsed("payment_advice", parse_payment_advice(path, token))
         if doc_type == CONTRACT_NOTE_DOC_TYPE:
-            rows = parse_contract_note(path, token)
-            return token, "securities_advice", path.name, rows, None
+            return _parsed("securities_advice",
+                           parse_contract_note(path, token))
         if doc_type == PRIVATE_MARKET_LETTER_DOC_TYPE:
             # The cover title says which a letter is. Each parser reads it
             # from the first page and declines a letter of the other kind.
             rows = parse_capital_call(path, token)
             if rows:
-                return token, "securities_advice", path.name, rows, None
+                return _parsed("securities_advice", rows)
             reports, lines = parse_quarterly_report(path, token)
-            return (token, "private_market_report", path.name,
-                    {"reports": reports, "lines": lines}, None)
+            return _parsed("private_market_report",
+                           {"reports": reports, "lines": lines})
         # Account Statement: a single PDF open yields BOTH the summary
         # balances (for historical_cash_balances) and the per-transaction
         # movement rows (for the transactions backfill), reusing one
         # page layout across both CPU-bound passes.
         cash, txns = parse_account_statement_combined(path, token)
-        return (token, "account_statement", path.name,
-                {"cash": cash, "transactions": txns}, None)
+        return _parsed("account_statement",
+                       {"cash": cash, "transactions": txns})
     except Exception as e:  # noqa: BLE001
-        return token, "error", path.name, None, f"{type(e).__name__}: {e}"
+        return {"_error": f"{type(e).__name__}: {e}"}
+
+
+def _parsed(kind: str, rows) -> dict:
+    """A worker's result as the parse cache stores it. Passed through
+    JSON here too, so a result parsed in this load and one read back from
+    the cache in a later load are the same values."""
+    return json.loads(json.dumps({"kind": kind, "rows": rows}))
+
+
+def _parse_key(sha: str, token: str, label: str | None,
+               doc_type: str | None) -> str:
+    """The parse cache's key for one archive document: its content and
+    what the router and the parsers read beside it (its token, label and
+    type). One silver ties a content hash to one documents row, but two
+    silvers built from one bronze need not."""
+    ident = "\0".join((sha, token, label or "", doc_type or ""))
+    return hashlib.sha256(ident.encode("utf-8")).hexdigest()
+
+
+class DocumentParses:
+    """The parse results of the document archive, for a whole load.
+
+    Each document is parsed once per parser generation: a result is kept
+    in the parse cache (`collectorkit.parsecache`) under the generation's
+    namespace, and replayed by every later dump and every later load.
+    Documents not in the cache are parsed across a process pool. A failed
+    parse is not cached, so the next walk tries it again."""
+
+    def __init__(self, cache: ParseCache, workers: int) -> None:
+        self.cache = cache
+        self.workers = workers
+        self._pool = ParsePool(cache, workers)
+        self.walked = False
+
+    def results(self, work: list[tuple]) -> list[tuple[str, dict]]:
+        """(file name, result) per document of `work`, in its order.
+        `work` rows are (doc_token, file_path, label, doc_type,
+        content_sha256). A document whose file is gone and that the cache
+        does not hold is left out, with no line."""
+        namespace = _document_generation()
+        self.walked = True
+        docs, misses = [], 0
+        for token, fp, label, doc_type, sha in work:
+            key = _parse_key(sha, token, label, doc_type)
+            args = (token, fp, label, doc_type)
+            if self.cache.get(key, namespace) is None:
+                if not Path(fp).is_file():
+                    continue
+                misses += 1
+                self._pool.enqueue(key, namespace, _parse_one_pdf, args)
+            docs.append((key, Path(fp).name, args))
+        if misses:
+            log.info("parsing %d PDFs across %d workers", misses,
+                     self.workers)
+            self._pool.dispatch()
+        return [(name, self._pool.resolve(key, namespace, _parse_one_pdf, args))
+                for key, name, args in docs]
+
+    def close(self) -> None:
+        """End the pool, and drop the cache entries of every parser
+        generation but the one this load walked under."""
+        self._pool.close()
+        if self.walked:
+            self.cache.sweep({_document_generation()})
 
 
 def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
-                               dump_dir: Path, parse_cache: dict,
+                               dump_dir: Path, parses: DocumentParses,
                                mt940_floors: dict[str, int],
                                ) -> tuple[int, int, int, int]:
     """Walk every PDF tracked in the documents table whose label
     indicates a Statement of assets, an Account Statement, a
     Maturity notice, a payment advice, a securities advice or a quarterly
-    report; parse it in a worker-pool of subprocesses, and upsert into the
+    report; parse it (`DocumentParses`), and upsert into the
     historical_* / transactions / advices / statement_trades /
     private_market_report* tables on the main thread.
     Returns (position_rows, cash_rows, mortgage_rows, transaction_rows) —
@@ -1869,15 +1928,14 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     threads. SQLite writes stay on the main connection.
 
     The documents table accumulates across dumps, so each dump's SELECT
-    re-lists the whole archive. `parse_cache` (keyed by content_sha256,
-    shared across the load run) holds each document's successful parse
-    result so it is parsed once, by the first dump that references it;
-    later dumps replay the cached rows. A skipped (missing-file) or
-    errored parse is deliberately left uncached and re-attempted per
-    dump. The per-dump inserts below still run for every dump, so the
-    silver tables stay byte-identical to parsing every dump afresh —
-    including the last-dump snapshot_at stamping on statement-derived
-    transaction upserts.
+    re-lists the whole archive. `parses` holds each document's
+    successful parse result across dumps and loads, so it is parsed once
+    per parser generation; later dumps replay the cached rows, in the
+    archive's order. A skipped (missing-file) or errored parse is left
+    uncached and re-attempted per dump. The per-dump inserts below still
+    run for every dump, so the silver tables stay byte-identical to
+    parsing every dump afresh — including the last-dump snapshot_at
+    stamping on statement-derived transaction upserts.
 
     `mt940_floors` is the per-account MT940 cut-over
     (`_mt940_floors_by_account`): coverage can begin at different dates
@@ -1892,7 +1950,8 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
 
     # Pull (doc_token, file_path, label, doc_type, content_sha256) for
     # relevant docs from the documents table — that's where bronze
-    # metadata lives. content_sha256 keys the cross-dump parse cache.
+    # metadata lives. content_sha256, with the token, label and type,
+    # keys the parse cache.
     # The advice spellings come from the one set the router reads too, so a
     # casing UBS invents is admitted here and routed there by the same edit.
     advice_types = sorted(ADVICE_DOC_TYPES)
@@ -1919,35 +1978,7 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     # purging there would empty the historical tables and put nothing back.
     _purge_stale_document_rows(conn)
 
-    # Split the archive into already-parsed docs (replay cached rows)
-    # and docs this run has not parsed yet (submit to the pool once).
-    results: list[tuple] = []
-    to_parse: dict[str, tuple] = {}
-    for token, fp, label, doc_type, sha in work:
-        cached = parse_cache.get(sha)
-        if cached is not None:
-            results.append(cached)
-        else:
-            to_parse.setdefault(sha, (token, fp, label, doc_type))
-
-    if to_parse:
-        n_workers = max(1, os.cpu_count() or 1)
-        log.info("parsing %d PDFs across %d workers", len(to_parse), n_workers)
-        with ProcessPoolExecutor(max_workers=n_workers) as ex:
-            futures = {ex.submit(_parse_one_pdf, args): sha
-                       for sha, args in to_parse.items()}
-            for fut in as_completed(futures):
-                res = fut.result()
-                # res = (token, kind, name, rows, err). Cache only a
-                # successful parse (err None, rows present); leave a skip
-                # (missing file) or an error uncached so a later dump
-                # re-attempts it. This keeps a transient in-worker failure
-                # (e.g. OOM under memory pressure) from being cached and
-                # permanently dropping a document's rows for the rest of
-                # the run.
-                if res[3] is not None and res[4] is None:
-                    parse_cache[futures[fut]] = res
-                results.append(res)
+    results = parses.results(work)
 
     pos_rows = 0
     cash_rows = 0
@@ -1958,10 +1989,11 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     report_rows = 0
     trade_rows = 0
     advices: list[dict] = []
-    for _token, kind, name, rows, err in results:
-        if err is not None:
-            log.warning("PDF parse failed for %s: %s", name, err)
+    for name, result in results:
+        if parsecache.is_error(result):
+            log.warning("PDF parse failed for %s: %s", name, result["_error"])
             continue
+        kind, rows = result["kind"], result["rows"]
         if kind == "statement_of_assets":
             pos_rows += _insert_hist_positions(
                 conn, (rows or {}).get("positions") or [])
@@ -1979,9 +2011,9 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
             # Collected, not written here: an advice is only worth writing
             # where nothing else recorded the movement, and the statement
             # ledger it has to be measured against is written by the branch
-            # below. Inside one loop the two would race — the results arrive
-            # in whatever order the parse workers finished — and the same
-            # archive would produce a different silver on each load.
+            # below. Inside one loop the two would race on the archive's
+            # order, and a statement listed after its advice would find the
+            # advice's movement not yet recorded.
             advices.extend(rows or [])
         elif kind == "account_statement":
             cash_rows += _insert_hist_cash_balances(
@@ -2478,7 +2510,7 @@ def _parse_doc_label(label: str) -> tuple[str | None, int | None]:
 # ============================================================
 
 def _derive_documents_without_a_new_dump(
-        conn: sqlite3.Connection, dumps: list[Path], parse_cache: dict,
+        conn: sqlite3.Connection, dumps: list[Path], parses: DocumentParses,
         *, supplied: int = 0) -> None:
     """Derive the document-backed slice when no dump loaded this run
     walked the archive — because the PARSERS have changed, or because a
@@ -2520,7 +2552,7 @@ def _derive_documents_without_a_new_dump(
     try:
         conn.execute("BEGIN")
         pos, cash, mort, txn = _load_historical_from_pdfs(
-            conn, ts_from_dir(newest.name), newest, parse_cache,
+            conn, ts_from_dir(newest.name), newest, parses,
             _mt940_floors_by_account(dumps))
         conn.execute("COMMIT")
     except Exception:  # noqa: BLE001 — log + rollback, as the dump loop does
@@ -2568,9 +2600,10 @@ def main(argv: list[str]) -> int:
     # Whether a loaded dump ran the archive walk, which only a dump with
     # a `documents/` directory does.
     walked = False
-    # Shared across dumps: parse each archived document once, replay the
-    # cached rows for the later dumps that re-list it.
-    parse_cache: dict = {}
+    # Shared across dumps and kept across loads: parse each archived
+    # document once, replay the cached rows for every walk that re-lists it.
+    parses = DocumentParses(ParseCache(parsecache.default_dir("ubs-web")),
+                            os.cpu_count() or 1)
     # Read off the loadable dumps' exports once, on the first dump this
     # run loads; bronze does not change during a load.
     mt940_floors: dict[str, int] | None = None
@@ -2583,7 +2616,7 @@ def main(argv: list[str]) -> int:
             mt940_floors = _mt940_floors_by_account(dumps)
         try:
             conn.execute("BEGIN")
-            load_dump(conn, dump_dir, schema_version, parse_cache,
+            load_dump(conn, dump_dir, schema_version, parses,
                       mt940_floors)
             conn.execute("COMMIT")
             n_loaded += 1
@@ -2592,8 +2625,9 @@ def main(argv: list[str]) -> int:
             conn.execute("ROLLBACK")
             log.exception("load failed for %s; skipped", dump_dir.name)
     if not walked:
-        _derive_documents_without_a_new_dump(conn, dumps, parse_cache,
+        _derive_documents_without_a_new_dump(conn, dumps, parses,
                                              supplied=n_supplied)
+    parses.close()
     conn.close()
     log.info("done: %d dumps loaded, %d already-loaded skipped",
              n_loaded, n_skipped)
