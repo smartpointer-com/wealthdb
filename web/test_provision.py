@@ -5118,6 +5118,22 @@ if duckdb is not None:
     _al = _db.execute(_render(CARDS["Allocation by asset class (privacy)"][2], {"benchmark": "Mix"})).fetchall()
     check("...the twin sets share beside share",
           {(c, round(v, 6)) for c, v, s in _al if s == "Mix"} == {("public_equity", 70.0), ("fixed_income", 30.0)}, _al)
+
+    def _mix_rows(name, **values):
+        return [r for r in _db.execute(_render(CARDS[name][2], {"benchmark": "Mix", **values})).fetchall()
+                if r[-1] == "Mix"]
+    check("...a picked asset class shows no benchmark: a whole mix stands beside a whole allocation only",
+          all(_mix_rows(n, asset_class=["cash"]) == [] and _mix_rows(n, asset_class=["public_equity", "cash"]) == []
+              for n in ("Allocation by asset class", "Allocation by asset class (privacy)",
+                        "Allocation by currency", "Allocation by currency (privacy)"))
+          and len(_mix_rows("Allocation by asset class", tax_wrapper=["taxable_personal"])) == 2)
+    _db.execute("INSERT INTO web_asset_classes_history VALUES ('2026-10-21', 'src-2', 'taxable_joint', 'real_estate',"
+                " -500, -400, -500, -500)")
+    check("...nor does a view whose total is not above zero, which no mix scales to",
+          _mix_rows("Allocation by asset class", source=["src-2"]) == []
+          and _mix_rows("Allocation by asset class (privacy)", source=["src-2"]) == []
+          and len(_mix_rows("Allocation by asset class", source=["src-1"])) == 2)
+    _db.execute("DELETE FROM web_asset_classes_history WHERE silver_source_id = 'src-2'")
     _mix = [(str(d), c, round(v, 6)) for d, c, v in _run("Asset class mix over time")]
     check("the asset class mix is each day's classes as shares of its total, the smallest at the end first",
           _mix == [("2026-10-21", "real_estate", -20.0), ("2026-09-30", "cash", 40.0), ("2026-10-21", "cash", 30.0),

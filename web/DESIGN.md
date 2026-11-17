@@ -1266,7 +1266,10 @@ A window past the benchmark's last month has no figure.
 The twins show returns and weights as they are. The value chart indexes
 both sides to 100 at the window's start. Allocation's base bars read
 the household's total held in the benchmark's mix, so both bars read in
-the picked currency, and the twin sets share beside share.
+the picked currency, and the twin sets share beside share. A benchmark
+is a whole allocation, so its bars stand only beside a whole one: none
+while the Asset class picker holds a value, and none when the total in
+view is not above zero, which no mix can be scaled to.
 
 The Cumulative return line starts on the first year the benchmark covers
 whole, at the `(all sources)` line's level that year.

@@ -197,18 +197,26 @@ def _breakdown_sql(view, dim, col, tags, share=False, benchmark=None):
     sum, the twin's (liability buckets read negative, and a zero sum
     blanks them). With `benchmark`, that dimension of the picked benchmark
     beside it: a share as a share, and on the base card as the same total
-    held in the benchmark's mix, so both bars read in the picked currency."""
+    held in the benchmark's mix, so both bars read in the picked currency.
+    A benchmark is a whole allocation, so its bars stand only beside a
+    whole one: none while the Asset class picker holds a value, and none
+    when the household's total in view is not above zero, which no mix
+    can be scaled to."""
     where = _asof_where(tags)
+    whole = (f"\n   AND NOT EXISTS (SELECT 1 FROM {view} WHERE FALSE[[ OR {{{{asset_class}}}}]])"
+             if "asset_class" in tags else "")
     if benchmark and not share:
         return (f"WITH p AS (\n  SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS value\n"
                 f"    FROM {view}" + where + "\n   GROUP BY 1)\n"
-                + _beside(dim, "value", benchmark, weight="share_pct / 100 * (SELECT sum(value) FROM p)"))
+                + _beside(dim, "value", benchmark, weight="share_pct / 100 * (SELECT sum(value) FROM p)",
+                          where=whole + "\n   AND (SELECT sum(value) FROM p) > 0"))
     if benchmark:
         return ("WITH r AS (\n"
                 f"  SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS v\n"
                 f"    FROM {view}" + where + "\n   GROUP BY 1),\n"
                 f"p AS (SELECT {dim}, v / (SELECT CASE WHEN sum(v) <> 0 THEN sum(v) END FROM r) * 100 AS value_pct\n"
-                "        FROM r)\n" + _beside(dim, "value_pct", benchmark))
+                "        FROM r)\n" + _beside(dim, "value_pct", benchmark,
+                                             where=whole + "\n   AND (SELECT sum(v) FROM r) > 0"))
     if not share:
         return (f"SELECT {dim}, sum({_ccy_case(col)})::DOUBLE AS value\n"
                 f"  FROM {view}" + where + "\n GROUP BY 1\n ORDER BY 2 DESC, 1")
