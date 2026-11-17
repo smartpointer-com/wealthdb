@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 
 import pytest
+from collectorkit.words import Extracted, Page, Word, params_key
 
+import soa_positions
 from pdf_parsers import (
     _stmt_security,
     _advice_trx_no,
-    _stmt_is_internal_transfer,
     _stmt_split_multi,
     parse_account_statement_text,
     parse_account_statement_transactions_pages,
@@ -35,9 +36,8 @@ from pdf_parsers import (
 #
 # The movement parser is WORD-based: it disambiguates the Debits vs
 # Credits column purely from x-position, so a text fixture isn't
-# enough — we build a fake pdfplumber document whose pages return
-# synthetic `extract_words()` output at the SAME column geometry the
-# real UBS statements use (Debits right-edge ~329, Credits ~414,
+# enough — we build an extracted document whose pages carry synthetic
+# words at the SAME column geometry the real UBS statements use (Debits right-edge ~329, Credits ~414,
 # Value date x0 ~432, Balance right-edge ~553). All amounts / dates /
 # the IBAN are synthetic placeholders per AGENTS.md §4.
 
@@ -55,16 +55,16 @@ _BAND = {
 _HEADER_TOP = 100.0
 
 
-def _w(text: str, x0: float, x1: float, top: float) -> dict:
-    return {"text": text, "x0": x0, "x1": x1, "top": top}
+def _w(text: str, x0: float, x1: float, top: float) -> Word:
+    return Word(text, x0, x1, top, top + 8.0)
 
 
-def _band_word(text: str, band: str, top: float) -> dict:
+def _band_word(text: str, band: str, top: float) -> Word:
     x0, x1 = _BAND[band]
     return _w(text, x0, x1, top)
 
 
-def _header_row(top: float = _HEADER_TOP) -> list[dict]:
+def _header_row(top: float = _HEADER_TOP) -> list[Word]:
     return [
         _w("Date", 42, 62, top), _w("Information", 85, 135, top),
         _w("Debits", 302, 329, top), _w("Credits", 384, 414, top),
@@ -73,7 +73,7 @@ def _header_row(top: float = _HEADER_TOP) -> list[dict]:
     ]
 
 
-def _info_words(info: str, top: float) -> list[dict]:
+def _info_words(info: str, top: float) -> list[Word]:
     ws, x = [], 85.0
     for tok in info.split():
         wdt = len(tok) * 6
@@ -82,28 +82,27 @@ def _info_words(info: str, top: float) -> list[dict]:
     return ws
 
 
-class _FakePage:
-    def __init__(self, words: list[dict], text: str):
-        self._words = words
-        self._text = text
-
-    def extract_words(self, **_kw) -> list[dict]:
-        return list(self._words)
-
-    def extract_text(self, **_kw) -> str:
-        return self._text
+# The word sets the extraction reads (pdf_parsers.EXTRACTOR): the
+# transaction list's and the ledger's. A test page carries its words in
+# both.
+_WORD_SETS = (params_key({"x_tolerance": 2}),
+              params_key({"x_tolerance": 1.5, "keep_blank_chars": False}))
 
 
-class _FakePDF:
-    def __init__(self, pages: list[_FakePage]):
-        self.pages = pages
+def _page(words: list[Word], text: str) -> Page:
+    words = tuple(words)
+    return Page(text, tuple((key, words) for key in _WORD_SETS))
+
+
+def _doc(*pages: Page) -> Extracted:
+    return Extracted("pdfplumber", pages)
 
 
 # Page-header text used only for IBAN + currency detection.
 _PAGE_TEXT = f"UBS personal account CHF\nIBAN {_SYN_IBAN}\n"
 
 
-def _build_statement_pdf() -> _FakePDF:
+def _build_statement_pdf() -> Extracted:
     """A synthetic 2-page CHF statement exercising: credit deposit
     (+ counterparty + counter-IBAN continuation), a debit
     e-banking order, a space-separated debit that drives the balance
@@ -146,7 +145,7 @@ def _build_statement_pdf() -> _FakePDF:
            _w("02.11.21", 432, 468, 220),
            _band_word("4983.95", "bal", 220)]
 
-    return _FakePDF([_FakePage(p1, _PAGE_TEXT), _FakePage(p2, _PAGE_TEXT)])
+    return _doc(_page(p1, _PAGE_TEXT), _page(p2, _PAGE_TEXT))
 
 
 class TestAccountStatementTransactions:
@@ -205,34 +204,6 @@ class TestAccountStatementTransactions:
                       if r["description_kind"] == "CREDIT" and not r["post_closing"])
         d = datetime.fromtimestamp(credit["booking_date"], timezone.utc)
         assert (d.year, d.month, d.day) == (2021, 10, 4)
-
-
-class TestInternalTransferDetection:
-    """Intra-portfolio reshuffles (mandate funding/reduction, book
-    transfers) are re-tagged so gold nets them instead of counting
-    them as external deposits/withdrawals. Genuine external credits
-    keep their booking type."""
-
-    def test_mandate_funding_is_internal(self):
-        assert _stmt_is_internal_transfer(
-            "CREDIT", ["INCREAS US EQUITY PORTFOLIO", "P. HOLDER"])
-        assert _stmt_is_internal_transfer(
-            "PAYMENT ORDER BY TELEPHONE",
-            ["UEBERTRAG", "REDUKTION US EQUITY MANDAT"])
-        assert _stmt_is_internal_transfer(
-            "SPECIAL PAYMENT ORDER", ["REDUCTION INVESTMENT PORTFOLIO"])
-
-    def test_external_credit_stays_external(self):
-        # Incoming external bank transfer — no internal marker.
-        assert not _stmt_is_internal_transfer(
-            "CREDIT", ["SOME EXTERNAL BANK", "1 times Incoming SIC-payment"])
-        assert not _stmt_is_internal_transfer("CREDIT", ["SALARY PAYER LTD"])
-
-    def test_only_cash_flow_types_eligible(self):
-        # A securities settlement referencing a portfolio must NOT be
-        # re-tagged (it is already excluded from flows as a buy/sell).
-        assert not _stmt_is_internal_transfer("SHARE", ["MANAGE US EQ PORTFOLIO"])
-        assert not _stmt_is_internal_transfer("DIVIDEND", ["MANAGE PORTFOLIO"])
 
 
 # ============================================================
@@ -341,7 +312,7 @@ class TestSplitBundledOrder:
         ), 936.37) is None
 
 
-def _bundle_pdf() -> _FakePDF:
+def _bundle_pdf() -> Extracted:
     """A one-page statement whose only movement is a two-payment batch."""
     p1 = _header_row()
     p1 += [_w("01.10.21", 42, 77, 120), *_info_words("Opening balance", 120),
@@ -363,7 +334,7 @@ def _bundle_pdf() -> _FakePDF:
            _w("domestic", 192, 235, 208)]
     p1 += [_w("31.10.21", 42, 77, 230), *_info_words("Closing balance", 230),
            _band_word("700.00", "bal", 230)]
-    return _FakePDF([_FakePage(p1, _PAGE_TEXT)])
+    return _doc(_page(p1, _PAGE_TEXT))
 
 
 class TestBundledOrderReachesTheLoaderSplit:
@@ -574,7 +545,7 @@ class TestPortfolioExternalId:
             "portfolio_number": "NNNNN",  # 5 digits, will push total to 17
         }
         monkeypatch.setattr(
-            "pdf_parsers.parse_label_statement_of_assets",
+            "soa_positions.parse_label_statement_of_assets",
             lambda label: bad_meta,
         )
         with pytest.raises(ValueError, match=r"length != 16"):
@@ -684,34 +655,32 @@ class TestStatementOfAssetsSecurities:
             self._soa_text(), "<doc-token>", self.LABEL)
         assert "XX0000000044" not in self._by_isin(rows)
 
-    def test_overview_precious_metals_synthesised_for_usd(self):
-        """The precious-metals portfolio has no Detailed-positions
-        page; its overview asset-class total is recovered as a
-        synthetic position with a non-ISIN-shaped key, attributed to
-        portfolio 01."""
+    def test_the_overview_total_is_no_position(self):
         rows = parse_statement_of_assets_text(
             self._soa_text("USD"), "<doc-token>", self.LABEL)
-        pm = [r for r in rows
-              if r["description"] == "Precious metals & commodities"]
-        assert len(pm) == 1
-        row = pm[0]
+        assert not [r for r in rows
+                    if r["description"] == "Precious metals & commodities"]
+
+    def test_the_overview_precious_metals_total_is_read_as_printed(self):
+        """The precious-metals portfolio has no Detailed-positions
+        page; its overview asset-class total is one row, attributed to
+        portfolio 01, in the currency the copy is valued in."""
+        (row,) = soa_positions.overview_totals(
+            self._soa_text("USD"), "<doc-token>", self.LABEL)
         # Only the Market value column — NOT the doubled mv+total run.
         assert row["market_value"] == pytest.approx(987654.0)
         assert row["market_value"] != pytest.approx(987654987654.0)
         assert row["currency_iso"] == "USD"
+        assert row["asset_class"] == "precious_metals"
         assert row["portfolio_external_id"].endswith("0001")
-        # Synthetic key must not look like a real ISIN (len != 12).
-        assert len(row["instrument_isin"]) != 12
-        assert row["instrument_isin"].startswith("PM-")
+        assert json.loads(row["payload"])["market_value"] == "987 654"
 
-    def test_overview_precious_metals_skipped_for_non_usd(self):
-        """Only the USD-valued copy emits the synthetic, so the same
-        holding (printed once per portfolio currency) collapses to a
-        single deterministic row across the relationship's PDFs."""
-        rows = parse_statement_of_assets_text(
+    def test_every_copy_states_its_overview_total(self):
+        """The overview prints the same total once per portfolio-currency
+        copy; each copy's is kept, in its own currency."""
+        (row,) = soa_positions.overview_totals(
             self._soa_text("CHF"), "<doc-token>", self.LABEL)
-        assert not [r for r in rows
-                    if r["description"] == "Precious metals & commodities"]
+        assert row["currency_iso"] == "CHF"
 
 
 class TestStatementOfAssetsHoldingDetail:
@@ -986,7 +955,7 @@ _TL_RIGHT = {"B": 266, "D": 527, "E": 598, "F": 682, "G": 782}
 _TL_LEFT = {"A": 39, "text": 96, "C": 271}
 
 
-def _tl_cell(col: str, text: str, top: float) -> list[dict]:
+def _tl_cell(col: str, text: str, top: float) -> list[Word]:
     """Words of one cell: left-aligned in A, C and the booking text,
     right-aligned in the figure columns. 5pt per character, 3pt gaps."""
     toks = text.split()
@@ -1000,12 +969,12 @@ def _tl_cell(col: str, text: str, top: float) -> list[dict]:
     return out
 
 
-def _tl_header() -> list[dict]:
+def _tl_header() -> list[Word]:
     return [_w(t, x0, x1, _TL_TOP + 10 * i)
             for i, row in enumerate(_TL_HEADER_ROWS) for t, x0, x1 in row]
 
 
-def _tl_booking(start: float, rows: dict[int, dict[str, str]]) -> list[dict]:
+def _tl_booking(start: float, rows: dict[int, dict[str, str]]) -> list[Word]:
     """A booking's words: {row number: {column: text}}."""
     return [w for k, cells in rows.items() for col, text in cells.items()
             for w in _tl_cell(col, text, start + 10 * k)]
@@ -1070,20 +1039,20 @@ _TL_WRAPPED = {
 }
 
 
-def _tl_pdf(*pages: list[dict]) -> _FakePDF:
-    return _FakePDF([_FakePage(words, _TL_PAGE_TEXT) for words in pages])
+def _tl_pdf(*pages: list[Word]) -> Extracted:
+    return _doc(*(_page(words, _TL_PAGE_TEXT) for words in pages))
 
 
 class TestTransactionList:
     LABEL = TestStatementOfAssetsSecurities.LABEL
 
-    def _trades(self, *pages: list[dict]) -> list[dict]:
+    def _trades(self, *pages: list[Word]) -> list[dict]:
         from pdf_parsers import parse_statement_of_assets_pages
-        _positions, trades = parse_statement_of_assets_pages(
+        _positions, trades, _totals = parse_statement_of_assets_pages(
             _tl_pdf(*pages), "<doc-token>", self.LABEL)
         return trades
 
-    def _page(self) -> list[dict]:
+    def _tl_words(self) -> list[Word]:
         return (_tl_header()
                 + _tl_booking(217, _TL_PURCHASE)
                 + _tl_booking(298, _TL_SALE)
@@ -1093,7 +1062,7 @@ class TestTransactionList:
                 + _tl_cell("A", "AAAA0000/000000/XXXXXXXXXXXX", 555))
 
     def test_each_booking_is_one_row_in_list_order(self):
-        trades = self._trades(self._page())
+        trades = self._trades(self._tl_words())
         assert [t["seq"] for t in trades] == [1, 2, 3]
         assert [t["isin"] for t in trades] == [
             "XX0000000055", "XX0000000066", "XX0000000077"]
@@ -1103,7 +1072,7 @@ class TestTransactionList:
             (1893456000, 1901145600)}                  # 01.01.2030, 31.03.2030
 
     def test_a_purchase_reads_its_price_rate_and_charges(self):
-        t = self._trades(self._page())[0]
+        t = self._trades(self._tl_words())[0]
         assert t["booking_text"] == "Purchase Spot"
         assert t["trade_date"] == 1893542400            # 02.01.2030
         assert t["trade_time"] == "10:00:00"
@@ -1128,7 +1097,7 @@ class TestTransactionList:
         assert t["account_iban"] == "CH000000000000000000A"
 
     def test_a_sale_reads_its_cost_and_realized_result(self):
-        t = self._trades(self._page())[1]
+        t = self._trades(self._tl_words())[1]
         assert t["booking_text"] == "Sale Spot"
         assert t["quantity"] == pytest.approx(-100.0)
         assert t["cost_price"] == pytest.approx(50.0)
@@ -1145,7 +1114,7 @@ class TestTransactionList:
         assert t["security_name"] == "Shs Example Two"
 
     def test_a_corporate_action_joins_its_booking_text(self):
-        t = self._trades(self._page())[2]
+        t = self._trades(self._tl_words())[2]
         assert t["booking_text"] == "Incoming from spin-off"
         assert t["quantity"] == pytest.approx(50.0)
         assert t["currency_iso"] == "CHF"
@@ -1177,7 +1146,7 @@ class TestTransactionList:
         assert payload["B3"] == "EUR -5.00" and payload["B7"] == "EUR -7.00"
 
     def test_the_closing_totals_are_not_a_booking(self):
-        trades = self._trades(self._page())
+        trades = self._trades(self._tl_words())
         assert trades[2]["transaction_value"] is None
         assert "Subtotal" not in trades[2]["payload"]
 
@@ -1198,10 +1167,10 @@ class TestTransactionList:
             (1, "XX0000000055"), (2, "XX0000000066")]
 
     def test_a_page_without_the_list_header_adds_nothing(self):
-        pdf = _FakePDF([_FakePage(_tl_booking(217, _TL_SALE), "Valued in USD\n")])
+        pdf = _doc(_page(_tl_booking(217, _TL_SALE), "Valued in USD\n"))
         from pdf_parsers import parse_statement_of_assets_pages
         assert parse_statement_of_assets_pages(
-            pdf, "<doc-token>", self.LABEL) == ([], [])
+            pdf, "<doc-token>", self.LABEL) == ([], [], [])
 
 
 class TestCapitalCall:
@@ -1498,10 +1467,10 @@ class TestMaturityNotice:
         # Branch zfill 3 → 4, base zfill 8 → 8, hyphen → space.
         assert row["account_external_id"] == "0999 12345678.MMM 0001"
         assert row["currency_iso"] == "CHF"
-        # Outstanding goes in as a liability (negative sign).
-        assert row["outstanding_balance"] == pytest.approx(-1234567.89)
+        # The principal as printed; gold gives the liability its sign.
+        assert row["outstanding_balance"] == pytest.approx(1234567.89)
         assert row["product_name"] == "UBS Fixed-Rate Mortgage"
-        assert row["rate_type"] == "fixed"
+        assert "rate_type" not in row
         assert row["collateral_description"] == \
             "EXAMPLE ROAD 1, 0000 EXAMPLECITY"
         # 2023-09-30 UTC midnight.
@@ -1510,10 +1479,9 @@ class TestMaturityNotice:
             row["as_of_date"], timezone.utc).date() \
             == datetime(2023, 9, 30).date()
 
-    def test_saron_classified_as_variable(self):
-        """SARON Mortgage is UBS's variable-rate product; rate_type
-        should map to 'variable', not 'saron', so the canonical
-        taxonomy stays rate-basis."""
+    def test_the_product_line_is_kept_whole(self):
+        """The loader reads the rate type off the product name
+        (load.py `_mortgage_rate_type`), so the name keeps its cue."""
         text = (
             "UBS SARON Mortgage CHF\n"
             f"{self.ACCT_LINE}\n"
@@ -1525,7 +1493,6 @@ class TestMaturityNotice:
         rows = parse_maturity_notice_text(text, "<doc-token>")
         assert len(rows) == 1
         assert rows[0]["product_name"] == "UBS SARON Mortgage"
-        assert rows[0]["rate_type"] == "variable"
 
     def test_non_mortgage_maturity_notice_returns_empty(self):
         """The doc_type 'Maturity notice' is also UBS-side used for
@@ -1759,15 +1726,14 @@ class TestPaymentAdvice:
         assert json.loads(r["payload"])["continuation"] == [
             "Increase Example Mandate"]
 
-    def test_a_mandate_purpose_is_marked_an_internal_transfer(self):
-        internal = _advice_row("Credit Advice", _ADV_IBAN_TO,
-                               trx="0000 036 ED 0000123",
-                               purpose="Uebertrag Example Portfolio")
-        assert json.loads(internal["payload"])["internal_transfer"]
-        external = _advice_row("Debit Advice", _ADV_IBAN_FROM,
-                               trx="0000 036 ED 0000123",
-                               purpose="YOUR PAYMENT ORDER DATED 01012020")
-        assert not json.loads(external["payload"])["internal_transfer"]
+    def test_the_purpose_travels_as_printed(self):
+        # Whether a purpose names an internal transfer is the gold
+        # adapter's first rule; it reads the purpose lines here.
+        p = json.loads(_advice_row(
+            "Credit Advice", _ADV_IBAN_TO, trx="0000 036 ED 0000123",
+            purpose="Uebertrag Example Portfolio")["payload"])
+        assert p["continuation"] == ["Uebertrag Example Portfolio"]
+        assert "internal_transfer" not in p
 
     def test_no_booking_type_and_no_counter_account_are_invented(self):
         # Gold promotes a row to external capital off the booking type,
@@ -1777,12 +1743,12 @@ class TestPaymentAdvice:
         assert r["description_kind"] is None
         assert r["counter_account"] is None
 
-    def test_the_row_is_marked_as_the_pdf_rail_and_as_an_advice(self):
-        # `source` names the rail gold dates the MT940 feed against;
-        # `document` is what the loader's re-derivation delete keys on.
+    def test_the_row_names_the_advice_as_its_source(self):
+        # `source` is the document; `document` is what the loader's
+        # re-derivation delete keys on.
         p = json.loads(_advice_row("Credit Advice", _ADV_IBAN_TO,
                                    trx="0000 036 ED 0000123")["payload"])
-        assert p["source"] == "account_statement_pdf"
+        assert p["source"] == "payment_advice_pdf"
         assert p["document"] == "payment_advice_pdf"
 
     def test_the_older_two_column_layout_still_finds_its_account(self):

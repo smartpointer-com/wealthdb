@@ -14,8 +14,12 @@ var webOptionalTables = []string{
 	"advices", "account_rates", "statement_trades", "portfolio_transactions",
 	"historical_position_snapshots", "historical_cash_balances", "historical_mortgages", "mortgages",
 	"card_accounts", "card_transactions", "card_invoices",
-	reportsTable, reportLinesTable,
+	reportsTable, reportLinesTable, overviewTotalsTable,
 }
+
+// overviewTotalsTable holds the totals a Statement of assets' relationship
+// overview prints (ubs-web migration 0018).
+const overviewTotalsTable = "statement_overview_totals"
 
 // webTableVersions is the ubs-web migration that adds each of
 // webOptionalTables.
@@ -23,7 +27,7 @@ var webTableVersions = map[string]int{
 	"advices": 13, "account_rates": 16, "statement_trades": 14, "portfolio_transactions": 12,
 	"historical_position_snapshots": 2, "historical_cash_balances": 2, "historical_mortgages": 5, "mortgages": 4,
 	"card_accounts": 7, "card_transactions": 7, "card_invoices": 7,
-	reportsTable: 17, reportLinesTable: 17,
+	reportsTable: 17, reportLinesTable: 17, overviewTotalsTable: 18,
 }
 
 // webSchema is which optional parts of the ubs-web silver schema a file

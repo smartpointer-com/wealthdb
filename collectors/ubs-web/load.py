@@ -48,19 +48,26 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, parsecache, silver, srcfp
+from collectorkit import bronze, cli, extract, parsecache, silver, srcfp
 from collectorkit.parsecache import ParseCache, ParsePool
 
+import account_statement  # local modules: the document readers
 import card_parsers  # local module
 import landmarks as ubs  # local module: the export's shared vocabulary
+import maturity_notice
+import payment_advice
+import pdf_parsers
+import quarterly_report
 import rate_parsers  # local module
+import securities_advice
+import soa_positions
 
 log = logging.getLogger("ubs-web.load")
 
-# `parser_generations` (migration 0009) records which generation of
-# `pdf_parsers` produced the document-derived rows in hand, so that a moved
-# parser drops them before re-deriving instead of landing new ones beside
-# them. See `_purge_stale_document_rows`.
+# `parser_generations` (migration 0009) records which generation of the
+# document readers produced the document-derived rows in hand, so that a
+# moved reader drops them before re-deriving instead of landing new ones
+# beside them. See `_purge_stale_document_rows`.
 DOCUMENT_GENERATION_SCOPE = "documents"
 
 # Bank-delivered PDFs — documents the e-banking archive never listed, so
@@ -108,6 +115,7 @@ _DOCUMENT_PASS_DELETES = (
     "DELETE FROM statement_trades",
     "DELETE FROM private_market_reports",
     "DELETE FROM private_market_report_lines",
+    "DELETE FROM statement_overview_totals",
 )
 
 # The `doc_type` spellings of the per-movement payment advices. UBS labels
@@ -130,16 +138,44 @@ PRIVATE_MARKET_LETTER_DOC_TYPE = "Private Market Letter"
 
 
 @functools.lru_cache(maxsize=1)
-def _document_generation() -> str:
-    """Fingerprint of the PDF parsing logic.
+def _namespaces() -> dict[str, str]:
+    """The parse-cache namespace of each document scope: the scope, the
+    fingerprint of the readers it runs, and the extraction's key. A
+    reader's fingerprint is its own code; the engine and its versions are
+    the extraction key's. So an edit to one reader re-parses only its
+    scope's documents, and an engine upgrade re-extracts all of them."""
+    fingerprints = {
+        "statement_of_assets": srcfp.parser_fingerprint(
+            [soa_positions], python=False),
+        "account_statement": srcfp.parser_fingerprint(
+            [account_statement], python=False),
+        "maturity_notice": srcfp.parser_fingerprint(
+            [maturity_notice], python=False),
+        "payment_advice": srcfp.parser_fingerprint(
+            [payment_advice], python=False),
+        "contract_note": srcfp.parser_fingerprint(
+            [securities_advice], python=False),
+        # A Private Market Letter is a capital call or a quarterly report,
+        # and both readers read it.
+        "private_market_letter": srcfp.parser_fingerprint(
+            [securities_advice, quarterly_report], python=False),
+    }
+    key = extract.extraction_key(pdf_parsers.EXTRACTOR)
+    return {scope: f"{scope}.{fp}.{key}" for scope, fp in fingerprints.items()}
 
-    `pdf_parsers` is imported lazily here as it is at its other call site:
-    pdfplumber is slow to import, and a load whose dumps carry no documents
-    never needs it.
-    """
-    import pdf_parsers  # noqa: PLC0415
-    return srcfp.parser_fingerprint(
-        [pdf_parsers], ("pdfplumber", "pdfminer.six"))
+
+@functools.lru_cache(maxsize=1)
+def _document_generation() -> str:
+    """The generation of the whole document pass: every scope's
+    namespace, hashed."""
+    joined = "\n".join(sorted(_namespaces().values()))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
+
+
+def _extract_dir() -> Path:
+    """Where the documents' extractions are cached: beside the parse
+    cache, under the collector's cache root."""
+    return extract.cache_root("ubs-web") / "extract"
 
 
 def _purge_stale_document_rows(conn: sqlite3.Connection) -> int:
@@ -147,9 +183,9 @@ def _purge_stale_document_rows(conn: sqlite3.Connection) -> int:
     moved, so the pass re-derives rather than adds to them.
 
     Whole-pass rather than per-document, though every row carries a
-    `source_doc_token`: the precious-metals overview row is written by
-    several documents that collapse onto one key, so a per-document delete
-    would remove a row another document still owns.
+    `source_doc_token`: the statement and advice rows are written against
+    what silver already holds (the MT940 floor, the advice's content
+    check), so the slice is re-derived as a whole.
     """
     if not silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
                                    _document_generation()):
@@ -679,13 +715,13 @@ def _parse_mortgage_term(s: str | None) -> tuple[int | None, int | None]:
 
 
 def _mortgage_rate_type(description_1: str | None) -> str | None:
-    """Map the Description 1 product name to 'fixed' / 'variable'.
-    Returns None when neither cue is present so the row stays
+    """Map a mortgage's product name to 'fixed' / 'variable': the
+    positions export's Description 1, or the product a maturity notice
+    prints. Returns None when neither cue is present so the row stays
     honest about an unknown rate basis.
 
-    The same reading as `pdf_parsers._mortgage_rate_type_from_product`,
-    so a mortgage gets one rate type from both feeds: a SARON mortgage
-    is UBS's variable-rate product."""
+    One reading for both feeds, so a mortgage gets one rate type: a
+    SARON mortgage is UBS's variable-rate product."""
     if not description_1:
         return None
     low = description_1.lower()
@@ -1740,8 +1776,11 @@ def _load_documents(conn: sqlite3.Connection, snapshot_at: int,
     return inserted
 
 
-def _supplied_document_meta(pdf: Path) -> tuple[str, int, str] | None:
-    """Identify a bank-delivered PDF from its own text.
+def _supplied_document_meta(pdf: Path, sha: str
+                            ) -> tuple[str, int, str] | None:
+    """Identify a bank-delivered PDF from its own text. The extraction is
+    cached under its content hash `sha`, so the walk that parses it later
+    reads it from there.
 
     Returns (doc_type, doc_date, portfolio_external_id), or None when the
     document is not one this loader knows how to read. Only the Statement
@@ -1752,15 +1791,13 @@ def _supplied_document_meta(pdf: Path) -> tuple[str, int, str] | None:
     file can be called anything, and a name is not evidence of what is
     inside it.
     """
-    from pdf_parsers import (  # noqa: PLC0415 — pdfplumber is slow to import
-        psn_portfolio_external_id, statement_of_assets_body_meta,
-        statement_of_assets_text,
-    )
-    meta = statement_of_assets_body_meta(statement_of_assets_text(pdf))
+    meta = pdf_parsers.statement_of_assets_body_meta(
+        pdf_parsers.statement_of_assets_text(
+            pdf, sha=sha, cache_dir=_extract_dir()))
     if meta is None:
         return None
     return (SUPPLIED_STMT_OF_ASSETS_DOC_TYPE, meta["as_of_date"],
-            psn_portfolio_external_id(meta))
+            pdf_parsers.psn_portfolio_external_id(meta))
 
 
 def _load_supplied_documents(conn: sqlite3.Connection,
@@ -1799,7 +1836,7 @@ def _load_supplied_documents(conn: sqlite3.Connection,
             log.debug("supplied document %s already in silver; skipping",
                       pdf.name)
             continue
-        meta = _supplied_document_meta(pdf)
+        meta = _supplied_document_meta(pdf, sha)
         if meta is None:
             log.warning("supplied documents: %s is not a document this "
                         "loader recognises; not indexed", pdf.name)
@@ -1834,50 +1871,70 @@ def _load_supplied_documents(conn: sqlite3.Connection,
 # Historical snapshots from PDF documents
 # ----------------------------------------------------------------
 
-def _parse_one_pdf(args: tuple[str, str, str, str | None]) -> dict:
-    """Worker-side: parse one PDF. Pure (no DB access) so it can run in a
-    process-pool worker, and JSON-ready so it can be cached. Returns
-    ``{"kind": ..., "rows": ...}``, or ``{"_error": message}`` when the
-    parser raised (an error result is never cached)."""
-    from pdf_parsers import (
-        parse_account_statement_combined, parse_capital_call,
-        parse_contract_note, parse_maturity_notice, parse_payment_advice,
-        parse_quarterly_report, parse_statement_of_assets,
-    )
-    token, fp, label, doc_type = args
+def _document_scope(label: str | None, doc_type: str | None) -> str:
+    """Which reader a document of the archive walk goes to, by its listing
+    label or its type: the scope its parse is cached and generated
+    under (`_namespaces`)."""
+    # The listing label names the type for a scraped document; a
+    # supplied one has none and is indexed under the title it prints
+    # on itself. Either way the parser reads the same document.
+    if ("Statement of assets" in (label or "")
+            or doc_type == SUPPLIED_STMT_OF_ASSETS_DOC_TYPE):
+        return "statement_of_assets"
+    if doc_type == "Maturity notice":
+        return "maturity_notice"
+    # Before the Account-Statement fallthrough below, which would
+    # otherwise take every doc_type the SELECT admits.
+    if (doc_type or "").strip().lower() in ADVICE_DOC_TYPES:
+        return "payment_advice"
+    if doc_type == CONTRACT_NOTE_DOC_TYPE:
+        return "contract_note"
+    if doc_type == PRIVATE_MARKET_LETTER_DOC_TYPE:
+        return "private_market_letter"
+    return "account_statement"
+
+
+def _parse_one_pdf(args: tuple) -> dict:
+    """Worker-side: parse one PDF with its scope's reader. Pure (no DB
+    access) so it can run in a process-pool worker, and JSON-ready so it
+    can be cached. `args` is (scope, token, file path, label, content
+    sha256, extraction cache dir). Returns ``{"kind": ..., "rows": ...}``,
+    or ``{"_error": message}`` when the parser raised (an error result is
+    never cached)."""
+    scope, token, fp, label, sha, extract_dir = args
     path = Path(fp)
+    cache = {"sha": sha, "cache_dir": extract_dir}
     try:
-        # The listing label names the type for a scraped document; a
-        # supplied one has none and is indexed under the title it prints
-        # on itself. Either way the parser reads the same document.
-        if ("Statement of assets" in (label or "")
-                or doc_type == SUPPLIED_STMT_OF_ASSETS_DOC_TYPE):
-            positions, trades = parse_statement_of_assets(path, token, label)
+        if scope == "statement_of_assets":
+            positions, trades, totals = pdf_parsers.parse_statement_of_assets(
+                path, token, label, **cache)
             return _parsed("statement_of_assets",
-                           {"positions": positions, "trades": trades})
-        if doc_type == "Maturity notice":
-            return _parsed("mortgage", parse_maturity_notice(path, token))
-        # Before the Account-Statement fallthrough below, which would
-        # otherwise take every doc_type the SELECT admits.
-        if (doc_type or "").strip().lower() in ADVICE_DOC_TYPES:
-            return _parsed("payment_advice", parse_payment_advice(path, token))
-        if doc_type == CONTRACT_NOTE_DOC_TYPE:
+                           {"positions": positions, "trades": trades,
+                            "overview_totals": totals})
+        if scope == "maturity_notice":
+            return _parsed("mortgage", pdf_parsers.parse_maturity_notice(
+                path, token, **cache))
+        if scope == "payment_advice":
+            return _parsed("payment_advice", pdf_parsers.parse_payment_advice(
+                path, token, **cache))
+        if scope == "contract_note":
             return _parsed("securities_advice",
-                           parse_contract_note(path, token))
-        if doc_type == PRIVATE_MARKET_LETTER_DOC_TYPE:
+                           pdf_parsers.parse_contract_note(path, token, **cache))
+        if scope == "private_market_letter":
             # The cover title says which a letter is. Each parser reads it
             # from the first page and declines a letter of the other kind.
-            rows = parse_capital_call(path, token)
+            rows = pdf_parsers.parse_capital_call(path, token, **cache)
             if rows:
                 return _parsed("securities_advice", rows)
-            reports, lines = parse_quarterly_report(path, token)
+            reports, lines = pdf_parsers.parse_quarterly_report(
+                path, token, **cache)
             return _parsed("private_market_report",
                            {"reports": reports, "lines": lines})
-        # Account Statement: a single PDF open yields BOTH the summary
+        # Account Statement: one extraction yields BOTH the summary
         # balances (for historical_cash_balances) and the per-transaction
-        # movement rows (for the transactions backfill), reusing one
-        # page layout across both CPU-bound passes.
-        cash, txns = parse_account_statement_combined(path, token)
+        # movement rows (for the transactions backfill).
+        cash, txns = pdf_parsers.parse_account_statement_combined(
+            path, token, **cache)
         return _parsed("account_statement",
                        {"cash": cash, "transactions": txns})
     except Exception as e:  # noqa: BLE001
@@ -1891,28 +1948,31 @@ def _parsed(kind: str, rows) -> dict:
     return json.loads(json.dumps({"kind": kind, "rows": rows}))
 
 
-def _parse_key(sha: str, token: str, label: str | None,
-               doc_type: str | None) -> str:
+def _parse_key(sha: str, token: str, label: str | None) -> str:
     """The parse cache's key for one archive document: its content and
-    what the router and the parsers read beside it (its token, label and
-    type). One silver ties a content hash to one documents row, but two
-    silvers built from one bronze need not."""
-    ident = "\0".join((sha, token, label or "", doc_type or ""))
+    what the parsers read beside it (its token and label; the scope is
+    the namespace's). One silver ties a content hash to one documents
+    row, but two silvers built from one bronze need not."""
+    ident = "\0".join((sha, token, label or ""))
     return hashlib.sha256(ident.encode("utf-8")).hexdigest()
 
 
 class DocumentParses:
     """The parse results of the document archive, for a whole load.
 
-    Each document is parsed once per parser generation: a result is kept
-    in the parse cache (`collectorkit.parsecache`) under the generation's
-    namespace, and replayed by every later dump and every later load.
-    Documents not in the cache are parsed across a process pool. A failed
-    parse is not cached, so the next walk tries it again."""
+    Each document is parsed once per reader generation: a result is kept
+    in the parse cache (`collectorkit.parsecache`) under its scope's
+    namespace (`_namespaces`), and replayed by every later dump and every
+    later load. Documents not in the cache are parsed across a process
+    pool, each read from the extraction cache in `extract_dir` when it
+    was extracted before. A failed parse is not cached, so the next walk
+    tries it again."""
 
-    def __init__(self, cache: ParseCache, workers: int) -> None:
+    def __init__(self, cache: ParseCache, workers: int,
+                 extract_dir: Path | None = None) -> None:
         self.cache = cache
         self.workers = workers
+        self.extract_dir = extract_dir
         self._pool = ParsePool(cache, workers)
         self.walked = False
 
@@ -1921,31 +1981,33 @@ class DocumentParses:
         `work` rows are (doc_token, file_path, label, doc_type,
         content_sha256). A document whose file is gone and that the cache
         does not hold is left out, with no line."""
-        namespace = _document_generation()
+        namespaces = _namespaces()
         self.walked = True
         docs, misses = [], 0
         for token, fp, label, doc_type, sha in work:
-            key = _parse_key(sha, token, label, doc_type)
-            args = (token, fp, label, doc_type)
+            scope = _document_scope(label, doc_type)
+            namespace = namespaces[scope]
+            key = _parse_key(sha, token, label)
+            args = (scope, token, fp, label, sha, self.extract_dir)
             if self.cache.get(key, namespace) is None:
                 if not Path(fp).is_file():
                     continue
                 misses += 1
                 self._pool.enqueue(key, namespace, _parse_one_pdf, args)
-            docs.append((key, Path(fp).name, args))
+            docs.append((key, namespace, Path(fp).name, args))
         if misses:
             log.info("parsing %d PDFs across %d workers", misses,
                      self.workers)
             self._pool.dispatch()
         return [(name, self._pool.resolve(key, namespace, _parse_one_pdf, args))
-                for key, name, args in docs]
+                for key, namespace, name, args in docs]
 
     def close(self) -> None:
-        """End the pool, and drop the cache entries of every parser
-        generation but the one this load walked under."""
+        """End the pool, and drop the cache entries of every reader
+        generation but the ones this load walked under."""
         self._pool.close()
         if self.walked:
-            self.cache.sweep({_document_generation()})
+            self.cache.sweep(set(_namespaces().values()))
 
 
 def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
@@ -2040,6 +2102,9 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
             trade_rows += silver.upsert_rows(
                 conn, "statement_trades", _STATEMENT_TRADE_COLUMNS,
                 (rows or {}).get("trades") or [])
+            silver.upsert_rows(
+                conn, "statement_overview_totals", _OVERVIEW_TOTAL_COLUMNS,
+                (rows or {}).get("overview_totals") or [])
         elif kind == "mortgage":
             mortgage_rows += _insert_hist_mortgages(conn, rows or [])
         elif kind == "securities_advice":
@@ -2148,6 +2213,14 @@ def _insert_hist_positions(conn: sqlite3.Connection,
             _replace_hist_cash_row(c, r)
     return _upsert_each(conn, "historical_position_snapshots",
                         _HIST_POSITION_COLUMNS, rows, before=clear_cash)
+
+
+# The columns `soa_positions` fills on every `statement_overview_totals` row:
+# one per statement copy, portfolio and asset class.
+_OVERVIEW_TOTAL_COLUMNS = (
+    "source_doc_token", "portfolio_external_id", "asset_class", "as_of_date",
+    "currency_iso", "market_value", "payload",
+)
 
 
 # The columns `pdf_parsers` fills on every `private_market_reports` row,
@@ -2522,7 +2595,8 @@ def _advice_already_recorded(conn: sqlite3.Connection, account: str,
     return None
 
 
-# The columns `pdf_parsers` fills on every `historical_mortgages` row.
+# The columns of every `historical_mortgages` row: what `maturity_notice`
+# reads, and the rate type the loader reads off the product name.
 _HIST_MORTGAGE_COLUMNS = (
     "as_of_date", "account_external_id", "currency_iso",
     "outstanding_balance", "product_name", "rate_type",
@@ -2532,8 +2606,9 @@ _HIST_MORTGAGE_COLUMNS = (
 
 def _insert_hist_mortgages(conn: sqlite3.Connection,
                            rows: list[dict]) -> int:
-    return _upsert_each(conn, "historical_mortgages",
-                        _HIST_MORTGAGE_COLUMNS, rows)
+    return _upsert_each(conn, "historical_mortgages", _HIST_MORTGAGE_COLUMNS,
+                        [{**r, "rate_type": _mortgage_rate_type(
+                            r.get("product_name"))} for r in rows])
 
 
 def _parse_doc_label(label: str) -> tuple[str | None, int | None]:
@@ -2648,7 +2723,7 @@ def main(argv: list[str]) -> int:
     # Shared across dumps and kept across loads: parse each archived
     # document once, replay the cached rows for every walk that re-lists it.
     parses = DocumentParses(ParseCache(parsecache.default_dir("ubs-web")),
-                            os.cpu_count() or 1)
+                            os.cpu_count() or 1, _extract_dir())
     # Read off the loadable dumps' exports once, on the first dump this
     # run loads; bronze does not change during a load.
     mt940_floors: dict[str, int] | None = None

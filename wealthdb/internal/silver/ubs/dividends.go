@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -508,8 +509,9 @@ func (d *dividendSecurities) addPortfolio(account, portfolio string) {
 // addCustodyTickers reads the printed statements of assets: the ticker
 // closing each custody position's description, under its portfolio; each
 // cash position's account under the same portfolio; and every currency
-// they print. One table names all three, so they agree on how a
-// portfolio is spelled.
+// they print, the precious-metals positions' included
+// (preciousMetalsTotals). One table names all three, so they agree on how
+// a portfolio is spelled.
 func (r *webReader) addCustodyTickers(ctx context.Context, d *dividendSecurities) error {
 	if r == nil || r.db == nil {
 		return nil
@@ -517,6 +519,13 @@ func (r *webReader) addCustodyTickers(ctx context.Context, d *dividendSecurities
 	ok, err := r.hasTable(ctx, "historical_position_snapshots")
 	if err != nil || !ok {
 		return err
+	}
+	metals, err := r.preciousMetalsTotals(ctx, canonical.Window{Start: math.MinInt64, End: math.MaxInt64})
+	if err != nil {
+		return err
+	}
+	for _, h := range metals {
+		d.currencies[h.ccy] = true
 	}
 	return silver.ScanRows(ctx, r.db, "ubs-web addCustodyTickers", `
 SELECT DISTINCT portfolio_external_id, account_external_id, instrument_isin,

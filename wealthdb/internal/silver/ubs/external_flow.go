@@ -14,10 +14,10 @@ import (
 // IBAN (schema: "IBAN no-spaces upper"), so this is a name-free, PII-free key:
 // membership decides internal-vs-external without any holder name. Used by the
 // PDF-backfill cash-flow classifier to recognise inter-own-account moves as a
-// SUPPLEMENT to the parser's internal_transfer boolean: it can demote a KNOWN own
-// counter to internal, but it cannot promote — the parser flag is checked first
-// and is authoritative, so an own mandate/portfolio destination absent from
-// `accounts` is still vetoed to internal by that flag, not by this set.
+// SUPPLEMENT to its internal-transfer rule (pdfInternalTransfer): it can demote
+// a KNOWN own counter to internal, but it cannot promote — that rule is checked
+// first and is authoritative, so an own mandate/portfolio destination absent
+// from `accounts` is still vetoed to internal by it, not by this set.
 func (r *webReader) buildOwnIBANSet(ctx context.Context) (map[string]bool, error) {
 	out := map[string]bool{}
 	if err := silver.ScanRows(ctx, r.db, "buildOwnIBANSet", `SELECT DISTINCT account_external_id FROM accounts`, func(rows *sql.Rows) error {
@@ -49,7 +49,7 @@ func (r *webReader) buildOwnIBANSet(ctx context.Context) (map[string]bool, error
 // the row's direction — NO holder name, NO free-text counterparty, i.e. no PII.
 //
 // Decision order:
-//  1. parser-confirmed internal_transfer         ⇒ INTERNAL (authoritative)
+//  1. an internal transfer (pdfInternalTransfer) ⇒ INTERNAL (authoritative)
 //  2. own counter IBAN                           ⇒ INTERNAL
 //  3. HYPOTHEK / MATURITY / CLOSING booking      ⇒ INTERNAL (own liability /
 //     product settling inside the relationship)
@@ -75,17 +75,16 @@ func (r *webReader) buildOwnIBANSet(ctx context.Context) (map[string]bool, error
 // errors offsetting instead of fabricating one-sided return; the honest fix
 // for that era is transaction-complete counterparty data, not a looser rule.
 func pdfCashIsExternal(p webTxPayload, own map[string]bool, outbound, railEra bool) bool {
-	// The collector's own name-free markers (UEBERTRAG/UMBUCHUNG/MANDAT/MANAGE/
-	// PORTFOLIO/REDUK on the continuation lines) already identified this row as an
-	// intra-relationship mandate-funding / book-transfer move. That is authoritative
-	// and VETOES external BEFORE any promotion below: a mandate/portfolio
-	// destination absent from `accounts` is a known-internal row that would
-	// otherwise pass the EXTERNAL conditions and fabricate owner capital
-	// (the conduit direction this model exists to prevent). own-IBAN membership is a
-	// supplement that can only DEMOTE a known-own counter to internal; it cannot
-	// catch such a row, so the parser flag must gate first.
-	if p.InternalTransfer {
-		return false // parser-confirmed internal reshuffle ⇒ never external
+	// The name-free markers on the continuation lines identify this row as an
+	// intra-relationship mandate-funding / book-transfer move. That is
+	// authoritative and VETOES external BEFORE any promotion below: a
+	// mandate/portfolio destination absent from `accounts` is a known-internal
+	// row that would otherwise pass the EXTERNAL conditions and fabricate owner
+	// capital (the conduit direction this model exists to prevent). own-IBAN
+	// membership is a supplement that can only DEMOTE a known-own counter to
+	// internal; it cannot catch such a row, so this rule must gate first.
+	if pdfInternalTransfer(p) {
+		return false // internal reshuffle ⇒ never external
 	}
 	ctr := normalizeIBAN(p.CounterAccount)
 	if ctr != "" && own[ctr] {
@@ -112,4 +111,54 @@ func pdfCashIsExternal(p webTxPayload, own map[string]bool, outbound, railEra bo
 		return false // only Swiss/Liechtenstein counterparties count; anything else stays INTERNAL
 	}
 	return true
+}
+
+// statementFlowTypes are the Account-Statement booking types that MOVE cash
+// (deposits and withdrawals in gold). Only these can be an internal transfer:
+// a securities settlement, a dividend or a fee referencing a portfolio is not
+// a flow at all, so it must never be read as one.
+var statementFlowTypes = map[string]bool{
+	"CREDIT":                     true,
+	"DEBIT":                      true,
+	"E-BANKING PAYMENT ORDER":    true,
+	"E-BANKING CREDIT":           true,
+	"MULTI E-BANKING ORDER":      true,
+	"PAYMENT ORDER":              true,
+	"PAYMENT ORDER BY TELEPHONE": true,
+	"SPECIAL PAYMENT ORDER":      true,
+	"PAYNET ORDER":               true,
+	"MULTI PAYNET ORDER":         true,
+}
+
+// internalTransferMarkers are the name-free words of an INTRA-portfolio cash
+// move: funding or reducing a managed mandate, or an explicit book transfer.
+// They reshuffle cash between the holder's own UBS accounts and mandates, so
+// they are not external capital. A genuine external credit (an incoming bank
+// transfer, a SIC payment, a salary) carries none of them. All are generic
+// banking terms, no personal identifiers.
+var internalTransferMarkers = []string{
+	"UEBERTRAG", "UMBUCHUNG", // DE: transfer / rebooking
+	"MANDAT", "MANAGE", // managed-mandate operations
+	"PORTFOLIO", "REDUK", "REDUCTION", "INCREAS",
+}
+
+// pdfInternalTransfer reports whether a PDF-archive cash movement is an
+// intra-portfolio reshuffle (funding/reducing a managed mandate, or a book
+// transfer) rather than external capital, from the continuation lines the
+// payload carries: a marker of internalTransferMarkers anywhere in them,
+// upper-cased. A statement row qualifies only under a cash-moving booking
+// type (statementFlowTypes). An advice prints no booking type, and its lines
+// are the purpose of the payment, which is written for exactly these moves
+// ("Uebertrag <portfolio>", "Increase <name> Mandate"), so it needs no gate.
+func pdfInternalTransfer(p webTxPayload) bool {
+	if !isPaymentAdvice(p) && !statementFlowTypes[p.BookingType] {
+		return false
+	}
+	blob := strings.ToUpper(strings.Join(p.Continuation, " "))
+	for _, m := range internalTransferMarkers {
+		if strings.Contains(blob, m) {
+			return true
+		}
+	}
+	return false
 }

@@ -350,11 +350,11 @@ func TestOffsetVetoTwinPhaseIsGlobal(t *testing.T) {
 	}
 }
 
-// TestOffsetVetoInternalLegPairsItsMirror pins the parser-internal true-pair
-// class: an UEBERTRAG-marked PDF payment order's receiving leg lands in the
-// MT940 feed as a bare credit, and the veto must demote that mirror too —
-// the parser flag already proves the money stayed inside the relationship,
-// so a surviving mirror would book a phantom external inflow.
+// TestOffsetVetoInternalLegPairsItsMirror pins the internal-transfer
+// true-pair class: an UEBERTRAG-marked PDF payment order's receiving leg
+// lands in the MT940 feed as a bare credit, and the veto must demote that
+// mirror too — the marker already proves the money stayed inside the
+// relationship, so a surviving mirror would book a phantom external inflow.
 func TestOffsetVetoInternalLegPairsItsMirror(t *testing.T) {
 	r := newWebTxFixture(t)
 	seedRailEraAnchor(t, r)
@@ -365,7 +365,7 @@ func TestOffsetVetoInternalLegPairsItsMirror(t *testing.T) {
             snapshot_at, value_date, currency_iso, amount_debit, amount_credit,
             description_kind, payload)
         VALUES ('T1', ?, 1000, ?, 'CHF', 20000, NULL, 'SPECIAL PAYMENT ORDER',
-                '{"source":"account_statement_pdf","booking_type":"SPECIAL PAYMENT ORDER","internal_transfer":true,"counter_account":null}')`,
+                '{"source":"account_statement_pdf","booking_type":"SPECIAL PAYMENT ORDER","counter_account":null,"continuation":["UEBERTRAG EXAMPLE MANDATE"]}')`,
 		vetoAcctA, vetoDay1); err != nil {
 		t.Fatalf("seed internal debit: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestOffsetVetoInternalLegPairsItsMirror(t *testing.T) {
 
 	internal := emittedInternal(t, r, nil)
 	if !internal["T1@"+vetoAcctA] {
-		t.Errorf("parser-internal debit: want the conduit verdict on its payload")
+		t.Errorf("internal-transfer debit: want the conduit verdict on its payload")
 	}
 	if !internal["T2@"+vetoAcctB] {
 		t.Error("its MT940 mirror: want the conduit verdict too (both sides of the move drop)")

@@ -153,7 +153,7 @@ func securitiesSide(hasDebit, hasCredit bool) canonical.TxKind {
 }
 
 // mt940FeedStart returns the earliest value_date carried by the MT940/CSV
-// feed (rows without the PDF backfill's source marker), or 0 when the silver
+// feed (rows without the PDF archive's source markers), or 0 when the silver
 // holds no MT940 rows at all. This is the era boundary for the classifier's
 // rail promotion: from this day on, PDF rows are per-account gap-fills inside
 // an era whose arrivals the MT940 feed counts, so they adopt MT940 semantics;
@@ -163,7 +163,8 @@ func (r *webReader) mt940FeedStart(ctx context.Context) (int64, error) {
 	var start sql.NullInt64
 	err := r.db.QueryRowContext(ctx, `
 SELECT MIN(value_date) FROM transactions
- WHERE payload NOT LIKE '%account_statement_pdf%'`).Scan(&start)
+ WHERE payload NOT LIKE '%account_statement_pdf%'
+   AND payload NOT LIKE '%payment_advice_pdf%'`).Scan(&start)
 	if err != nil {
 		return 0, fmt.Errorf("mt940FeedStart: %w", err)
 	}
@@ -175,11 +176,11 @@ SELECT MIN(value_date) FROM transactions
 // value handed to each helper, rather than each helper decoding the
 // same JSON into a struct of its own.
 type webTxPayload struct {
-	Source           string   `json:"source"`
-	BookingType      string   `json:"booking_type"`
-	InternalTransfer bool     `json:"internal_transfer"`
-	CounterAccount   string   `json:"counter_account"`
-	Continuation     []string `json:"continuation"`
+	Source         string   `json:"source"`
+	Document       string   `json:"document"`
+	BookingType    string   `json:"booking_type"`
+	CounterAccount string   `json:"counter_account"`
+	Continuation   []string `json:"continuation"`
 	// SecurityValor is the Swiss valor the statement parser lifts off a
 	// trade's continuation line. Statement era only: the export era
 	// states its instrument as an ISIN in Description1 and takes the
@@ -210,13 +211,27 @@ func decodeWebTxPayload(payload string) (webTxPayload, bool) {
 	return p, true
 }
 
-// isPDFCashBackfill reports whether a transaction came from the
-// Account-Statement PDF backfill (source="account_statement_pdf"). Gates the per-row external/internal
-// classifier (pdfCashIsExternal); the MT940 feed carries no such
-// marker and needs no per-row classifier beyond the same-day
-// offset veto.
+// The source values of the PDF archive's rows: an Account Statement's
+// ledger, and a payment advice. An advice row of an older silver names
+// the statement's value, and its `document` the advice.
+const (
+	sourceStatementPDF = "account_statement_pdf"
+	sourceAdvicePDF    = "payment_advice_pdf"
+)
+
+// isPDFCashBackfill reports whether a transaction came from the PDF
+// archive: an Account Statement or a payment advice. Gates the per-row
+// external/internal classifier (pdfCashIsExternal); the MT940 feed
+// carries no such marker and needs no per-row classifier beyond the
+// same-day offset veto.
 func isPDFCashBackfill(p webTxPayload) bool {
-	return p.Source == "account_statement_pdf"
+	return p.Source == sourceStatementPDF || p.Source == sourceAdvicePDF
+}
+
+// isPaymentAdvice reports whether a PDF row was read from a payment
+// advice, in either silver's spelling.
+func isPaymentAdvice(p webTxPayload) bool {
+	return p.Source == sourceAdvicePDF || p.Document == sourceAdvicePDF
 }
 
 // normalizeIBAN strips spaces and upper-cases an IBAN-shaped string so a payload's

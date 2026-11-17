@@ -150,7 +150,7 @@ CREATE TABLE historical_mortgages (
     as_of_date              INTEGER NOT NULL,        -- Unix seconds UTC
     account_external_id     TEXT    NOT NULL,        -- UBS mortgage no.
     currency_iso            TEXT    NOT NULL,
-    outstanding_balance     REAL,                    -- negative (liability)
+    outstanding_balance     REAL,                    -- as printed (positive)
     product_name            TEXT,                    -- 'UBS SARON Mortgage', …
     rate_type               TEXT,                    -- 'fixed'|'variable'|NULL (SARON maps to 'variable')
     collateral_description  TEXT,
@@ -468,4 +468,14 @@ CREATE TABLE private_market_report_lines (
     residual_value    REAL,
     payload           TEXT     NOT NULL,                -- the printed line
     PRIMARY KEY (source_doc_token, line_no)
+);
+CREATE TABLE statement_overview_totals (
+    source_doc_token       TEXT    NOT NULL,  -- FK to documents.doc_token
+    portfolio_external_id  TEXT    NOT NULL,  -- PSN-aligned, 16 chars
+    asset_class            TEXT    NOT NULL,  -- 'precious_metals'
+    as_of_date             INTEGER NOT NULL,  -- Unix seconds UTC
+    currency_iso           TEXT,
+    market_value           REAL    NOT NULL,
+    payload                TEXT    NOT NULL,
+    PRIMARY KEY (source_doc_token, portfolio_external_id, asset_class)
 );

@@ -9,6 +9,7 @@ banking relationship.
 from __future__ import annotations
 
 import itertools
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -717,22 +718,25 @@ def _route(monkeypatch, tmp_path, doc_type: str, label: str = "") -> str:
     import pdf_parsers
     called = []
     monkeypatch.setattr(pdf_parsers, "parse_payment_advice",
-                        lambda *a: called.append("advice") or [])
+                        lambda *a, **k: called.append("advice") or [])
     monkeypatch.setattr(pdf_parsers, "parse_maturity_notice",
-                        lambda *a: called.append("mortgage") or [])
+                        lambda *a, **k: called.append("mortgage") or [])
     monkeypatch.setattr(pdf_parsers, "parse_statement_of_assets",
-                        lambda *a: called.append("positions") or ([], []))
+                        lambda *a, **k: called.append("positions")
+                        or ([], [], []))
     monkeypatch.setattr(pdf_parsers, "parse_account_statement_combined",
-                        lambda *a: called.append("statement") or ([], []))
+                        lambda *a, **k: called.append("statement") or ([], []))
     monkeypatch.setattr(pdf_parsers, "parse_contract_note",
-                        lambda *a: called.append("contract_note") or [])
+                        lambda *a, **k: called.append("contract_note") or [])
     monkeypatch.setattr(pdf_parsers, "parse_capital_call",
-                        lambda *a: called.append("capital_call") or [])
+                        lambda *a, **k: called.append("capital_call") or [])
     monkeypatch.setattr(pdf_parsers, "parse_quarterly_report",
-                        lambda *a: called.append("quarterly_report") or ([], []))
+                        lambda *a, **k: called.append("quarterly_report")
+                        or ([], []))
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(b"%PDF-1.4\n")
-    loader._parse_one_pdf(("token", str(pdf), label, doc_type))
+    loader._parse_one_pdf((loader._document_scope(label, doc_type), "token",
+                           str(pdf), label, "sha", None))
     return called[0]
 
 
@@ -967,8 +971,9 @@ def _parses(conn=None, results: dict | None = None) -> loader.DocumentParses:
         sha, label, doc_type = conn.execute(
             "SELECT content_sha256, label, doc_type FROM documents "
             "WHERE doc_token = ?", (token,)).fetchone()
-        parses.cache.put(loader._parse_key(sha, token, label, doc_type),
-                         loader._document_generation(),
+        parses.cache.put(loader._parse_key(sha, token, label),
+                         loader._namespaces()[
+                             loader._document_scope(label, doc_type)],
                          {"kind": kind, "rows": rows})
     return parses
 
@@ -1321,9 +1326,9 @@ def _supplied_dir(tmp_path: Path, *names: str) -> Path:
 
 
 def _texts(monkeypatch, mapping: dict[str, str]) -> None:
-    """Stand in for pdfplumber: map each file NAME to the text it yields."""
+    """Stand in for the extraction: map each file NAME to its text."""
     monkeypatch.setattr("pdf_parsers.statement_of_assets_text",
-                        lambda path: mapping[Path(path).name])
+                        lambda path, **_cache: mapping[Path(path).name])
 
 
 def test_a_supplied_statement_is_indexed_from_its_own_text(
@@ -1626,6 +1631,97 @@ def test_0015_adds_the_nav_date_and_changes_no_row(tmp_path):
     conn.close()
 
 
+def _as_before_0018(payload: str, **set_) -> str:
+    """A statement or advice payload as the parsers wrote it before
+    migration 0018: the internal-transfer verdict after the booking type,
+    and `set_` applied."""
+    d = json.loads(payload)
+    old = {}
+    for k, v in d.items():
+        old[k] = set_.get(k, v)
+        if k == "booking_type":
+            old["internal_transfer"] = True
+    return json.dumps(old, ensure_ascii=False)
+
+
+def test_0018_rewrites_the_document_rows_to_what_the_parsers_write(tmp_path):
+    """Each row loaded before migration 0018 reads, after it, as the
+    current parsers write it, where the row holds what that takes."""
+    import bronze_fixture
+    import maturity_notice
+    import payment_advice
+    import soa_positions
+
+    mortgage, = maturity_notice.parse_maturity_notice_text(
+        "UBS Fixed-Rate Mortgage CHF\nAccount no. 999-12345678.MMM 0001\n"
+        "As at 30.09.2098\nCurrent debt capital 1 234 567.89\n", "tok-m")
+    mortgage["rate_type"] = loader._mortgage_rate_type(mortgage["product_name"])
+    advice, = payment_advice.parse_payment_advice_text(
+        "IBAN CH00 0000 0000 0000 0000 2\nCredit Advice\n"
+        "TRX-No. 0000 036 ED 0000123\nBookkeeping entry date 2 October 2098\n"
+        "Details of payment\nIncrease Example Mandate\n"
+        "Total amount CHF 12 345.67\n", "tok-a")
+    statement_payload = json.dumps({
+        "booking_type": "CREDIT", "running_balance": 1500.0,
+        "value_date": "05.10.98", "counter_account": None,
+        "continuation": ["UEBERTRAG EXAMPLE MANDATE"], "post_closing": False,
+        "source": "account_statement_pdf"}, ensure_ascii=False)
+    total, = soa_positions.overview_totals(
+        "Valued in USD\nPortfolio 01\n"
+        "Precious metals & commodities 987 654 987 654 75.00\n",
+        "tok-s", bronze_fixture.SOA_LABEL)
+
+    conn = _db_before(tmp_path, 18)
+    conn.execute(
+        "INSERT INTO historical_mortgages (as_of_date, account_external_id, "
+        "currency_iso, outstanding_balance, product_name, rate_type, "
+        "collateral_description, source_doc_token, payload) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (mortgage["as_of_date"], mortgage["account_external_id"], "CHF",
+         -mortgage["outstanding_balance"], mortgage["product_name"],
+         mortgage["rate_type"], None, "tok-m",
+         json.dumps({**json.loads(mortgage["payload"]),
+                     "rate_type": mortgage["rate_type"]})))
+    for txn_id, account, payload in (
+            ("stmt:0000000000000001", "CH0000000000000000001",
+             _as_before_0018(statement_payload)),
+            (advice["transaction_external_id"], "CH0000000000000000002",
+             _as_before_0018(advice["payload"],
+                             source="account_statement_pdf"))):
+        conn.execute(
+            "INSERT INTO transactions (transaction_external_id, "
+            "account_external_id, snapshot_at, booking_date, value_date, "
+            "currency_iso, payload) VALUES (?, ?, 1, 1, 1, 'CHF', ?)",
+            (txn_id, account, payload))
+    conn.execute(
+        "INSERT INTO historical_position_snapshots (as_of_date, "
+        "portfolio_external_id, account_external_id, instrument_isin, "
+        "currency_iso, market_value, market_value_currency, description, "
+        "source_doc_token, payload) VALUES (?, ?, '', ?, 'USD', ?, 'USD', "
+        "'Precious metals & commodities', 'tok-s', ?)",
+        (total["as_of_date"], total["portfolio_external_id"],
+         "PM-" + total["portfolio_external_id"], total["market_value"],
+         total["payload"]))
+    conn.commit()
+
+    silver.apply_migrations(conn, MIGRATIONS_DIR)
+
+    assert dict(conn.execute(
+        "SELECT outstanding_balance, rate_type, payload "
+        "FROM historical_mortgages").fetchone()) == {
+        "outstanding_balance": mortgage["outstanding_balance"],
+        "rate_type": "fixed", "payload": mortgage["payload"]}
+    assert [r[0] for r in conn.execute(
+        "SELECT payload FROM transactions ORDER BY transaction_external_id")
+    ] == [advice["payload"], statement_payload]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM historical_position_snapshots").fetchone()[0] == 0
+    cols = ", ".join(loader._OVERVIEW_TOTAL_COLUMNS)
+    assert dict(conn.execute(
+        f"SELECT {cols} FROM statement_overview_totals").fetchone()) == total
+    conn.close()
+
+
 def test_securities_advices_route_to_their_parsers(monkeypatch, tmp_path):
     assert _route(monkeypatch, tmp_path, "Contract note") == "contract_note"
     assert _route(monkeypatch, tmp_path,
@@ -1636,13 +1732,14 @@ def test_a_letter_that_is_no_call_goes_on_to_the_report_parser(monkeypatch,
                                                                 tmp_path):
     import pdf_parsers
     report = {"source_doc_token": "token"}
-    monkeypatch.setattr(pdf_parsers, "parse_capital_call", lambda *a: [])
+    monkeypatch.setattr(pdf_parsers, "parse_capital_call",
+                        lambda *a, **k: [])
     monkeypatch.setattr(pdf_parsers, "parse_quarterly_report",
-                        lambda *a: ([report], []))
+                        lambda *a, **k: ([report], []))
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(b"%PDF-1.4\n")
     assert loader._parse_one_pdf(
-        ("token", str(pdf), "", loader.PRIVATE_MARKET_LETTER_DOC_TYPE)) == {
+        ("private_market_letter", "token", str(pdf), "", "sha", None)) == {
         "kind": "private_market_report",
         "rows": {"reports": [report], "lines": []}}
 
@@ -1806,18 +1903,26 @@ def test_the_purge_takes_the_statement_trades(tmp_path):
 # One rate type per mortgage, from either feed
 # ============================================================
 
-@pytest.mark.parametrize("caption", [
-    "Example SARON Mortgage", "Example Fixed-rate Mortgage",
-    "Example fixed rate mortgage", "Beispiel Festhypothek",
-    "Example Variable Mortgage", "Beispiel variabler Hypothek",
-    "Example Mortgage",
+@pytest.mark.parametrize(("caption", "rate_type"), [
+    ("UBS SARON Mortgage", "variable"), ("UBS Fixed-Rate Mortgage", "fixed"),
+    ("UBS fixed rate Mortgage", "fixed"), ("Beispiel Festhypothek", "fixed"),
+    ("UBS Variable Mortgage", "variable"),
+    ("Beispiel variabler Hypothek", "variable"), ("UBS Example Mortgage", None),
 ])
-def test_the_live_and_the_pdf_mortgage_classifiers_agree(caption):
-    # The positions feed and the maturity-notice parser each read a
-    # product caption; the two copies must give a mortgage one rate type.
-    import pdf_parsers
-    assert loader._mortgage_rate_type(caption) == \
-        pdf_parsers._mortgage_rate_type_from_product(caption)
+def test_a_maturity_notice_takes_the_rate_type_of_its_product(
+        tmp_path, caption, rate_type):
+    # The positions feed and the maturity notices print a product name;
+    # one reading of it gives a mortgage one rate type from both.
+    conn = fresh_db(tmp_path)
+    loader._insert_hist_mortgages(conn, [{
+        "as_of_date": 1, "account_external_id": "0999 00000001.MMM 0001",
+        "currency_iso": "CHF", "outstanding_balance": 1.0,
+        "product_name": caption, "collateral_description": None,
+        "source_doc_token": "t", "payload": "{}"}])
+    assert conn.execute(
+        "SELECT rate_type FROM historical_mortgages").fetchone()[0] == rate_type
+    assert loader._mortgage_rate_type(caption) == rate_type
+    conn.close()
 
 
 # ============================================================

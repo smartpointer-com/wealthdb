@@ -593,7 +593,8 @@ in §3.6):
 | --- | --- | --- |
 | `historical_position_snapshots` | "Statement of assets" PDFs (semi-annual, sometimes quarterly) | One row per `(as_of_date, portfolio, account, ISIN)`. Cash positions have `instrument_isin = NULL` and a populated `account_external_id` (IBAN); securities have `instrument_isin` set and `account_external_id = ''` (UBS does not surface the safekeeping account in the printed text in a way we can extract). |
 | `historical_cash_balances` | "Account Statement" PDFs (monthly) | One row per `(period_end, account_external_id)` with opening / closing balance + turnover totals. UBS only issues an Account Statement for a given month when the account had activity in that month, so coverage is uneven; year-end months tend to cover the full account inventory. |
-| `historical_mortgages` | "Maturity notice" PDFs (one per fixed-rate / SARON interest-roll period, typically quarterly) | One row per `(as_of_date, account_external_id)` with the outstanding principal (negated to liability sign), the product line → rate type, and the collateral description (migration 0005). |
+| `historical_mortgages` | "Maturity notice" PDFs (one per fixed-rate / SARON interest-roll period, typically quarterly) | One row per `(as_of_date, account_external_id)` with the outstanding principal as printed (a positive amount; the gold adapter gives the liability its sign), the product line and the rate type the loader reads off it, and the collateral description (migrations 0005, 0018). |
+| `statement_overview_totals` | "Statement of assets" PDFs: the relationship overview | One row per `(document, portfolio, asset class)`: a "Precious metals & commodities" total as printed, in the currency the copy is valued in (migration 0018). |
 
 (The live-fetch side of mortgages is the `mortgages` table —
 migration 0004 — fed by positions.csv's "Pro memoria - Mortgages"
@@ -625,14 +626,14 @@ headline comes in three flavours:
 3. **Overview-only asset classes** — UBS issues no Detailed-positions
    page for some portfolio types (e.g. precious-metals custody), so
    such a holding has no per-instrument row anywhere in the PDF. Its
-   asset-class total is recovered from the relationship overview as a
-   single synthetic position (`description = "Precious metals &
-   commodities"`, a non-ISIN-shaped `instrument_isin` key of the form
-   `PM-<portfolio>`). The overview prints the figure once per
-   portfolio-currency PDF, so the walker emits it only from
-   USD-valued PDFs (the reporting-currency baseline); the
-   duplicate USD copies collapse on the silver PK. The gold adapter
-   recognises the non-ISIN key and leaves the canonical ISIN null.
+   asset-class total is read from the relationship overview into
+   `statement_overview_totals`, one row per statement copy. The
+   overview prints the figure once per portfolio-currency PDF, and
+   every copy is kept. The gold adapter turns the USD copy (the
+   reporting-currency baseline) into a single position
+   (`description = "Precious metals & commodities"`, a
+   non-ISIN-shaped key of the form `PM-<portfolio>`) and leaves the
+   canonical ISIN null.
 
 **Headlines whose figures run together.** The listed and
 private-markets patterns find where one figure ends by the decimal
@@ -735,8 +736,8 @@ The cash rows stay even though the gold adapter reads cash from
 quarter-end date that series has no row for, and such an observation
 exists nowhere else.
 
-**Known parser limitations.** The parsers in
-[pdf_parsers.py](pdf_parsers.py) are best-effort:
+**Known parser limitations.** The document readers
+([pdf_parsers.py](pdf_parsers.py) names them) are best-effort:
 
 - The "sector" field on securities sometimes captures the
   preceding `Distribution:` line instead of the actual sector
@@ -1039,9 +1040,10 @@ exposure record and a composition for the fund
   5. Catalog `documents/*.pdf` files referenced in `run.json` →
      upsert `documents`, computing `content_sha256` per file.
   6. Walk the `documents` table, route every PDF whose label or
-     `doc_type` names a type the parsers read to `pdf_parsers.py`, and
-     upsert the parsed positions / cash balances into the
-     `historical_*` tables. The Account-Statement movement walker
+     `doc_type` names a type the parsers read to that type's reader
+     (`pdf_parsers.py`), and upsert the parsed positions / cash
+     balances into the `historical_*` tables and the overview totals
+     into `statement_overview_totals`. The Account-Statement movement walker
      and the Credit/Debit Advice parser write `transactions` from
      the same walk (§3.6), and the capital-call and contract-note
      parsers write `advices` (§3.9). A Statement of assets also
@@ -1051,10 +1053,13 @@ exposure record and a composition for the fund
   8. Parse `rates/` → `account_rates` (§3.11).
 
 - **PDF parsing isolation.** `pdfplumber` is bundled in the
-  Docker image (`requirements.txt`). The parsers live in
-  `pdf_parsers.py` and have no DB-side dependencies, so they
-  can be unit-tested against a static PDF without spinning up
-  silver.
+  Docker image (`requirements.txt`). Each document kind has a
+  reader module of its own, which reads the extracted document
+  (`collectorkit.words`) and has no DB-side or extraction
+  dependencies, so it can be unit-tested against synthetic pages
+  without spinning up silver. `pdf_parsers.py` holds the one
+  extraction they read, cached by content under the collector's
+  cache root.
 - **Idempotency.** Re-running the loader on the same bronze dir
   is a no-op (PK collisions caught + content-dedup).
 - **Atomicity.** One transaction per dump-run. Roll back on any

@@ -7,17 +7,21 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
+// mandateFunding is the continuation of a mandate-funding move: a marker of
+// internalTransferMarkers, and nothing that names anyone.
+var mandateFunding = []string{"UEBERTRAG EXAMPLE MANDATE"}
+
 // pdfPayload builds a pre-2024 Account-Statement PDF-backfill payload with only
 // the fields pdfCashIsExternal reads, and returns it decoded the way the reader
 // decodes a row — so the JSON tag names stay pinned. All values synthetic /
 // IBAN-spec placeholder letters (AGENTS.md §4) — no real account IDs.
-func pdfPayload(t *testing.T, counter, bookingType string, internalTransfer bool) webTxPayload {
+func pdfPayload(t *testing.T, counter, bookingType string, continuation []string) webTxPayload {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{
-		"source":            "account_statement_pdf",
-		"counter_account":   counter,
-		"booking_type":      bookingType,
-		"internal_transfer": internalTransfer,
+		"source":          "account_statement_pdf",
+		"counter_account": counter,
+		"booking_type":    bookingType,
+		"continuation":    continuation,
 	})
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
@@ -30,42 +34,79 @@ func pdfPayload(t *testing.T, counter, bookingType string, internalTransfer bool
 }
 
 // TestPdfCashIsExternalInternalTransferVeto is the CAPITAL-FABRICATION regression.
-// A mandate-funding / book-transfer row that the collector's own
-// name-free markers already flagged internal_transfer=true, whose counter_account
-// is a non-own CH/LI IBAN ABSENT from the relationship's `accounts` set, and whose
-// booking_type carries none of the guard tokens (HYPOTHEK/MATURITY/CLOSING —
-// the mandate markers live on the continuation lines, not booking_type), satisfies
-// all four legacy EXTERNAL conditions. Before the fix it was classified EXTERNAL,
-// fabricating owner capital on an intra-relationship conduit move. The parser's
-// internal_transfer=true must VETO external BEFORE the IBAN promotion.
+// A mandate-funding / book-transfer row whose continuation carries one of the
+// name-free markers, whose counter_account is a non-own CH/LI IBAN ABSENT from
+// the relationship's `accounts` set, and whose booking_type carries none of the
+// guard tokens (HYPOTHEK/MATURITY/CLOSING — the mandate markers live on the
+// continuation lines, not booking_type), satisfies all four legacy EXTERNAL
+// conditions. Classified EXTERNAL it fabricates owner capital on an
+// intra-relationship conduit move. The marker must VETO external BEFORE the
+// IBAN promotion.
 func TestPdfCashIsExternalInternalTransferVeto(t *testing.T) {
 	// A CH IBAN that is NOT in the own set — an own mandate/portfolio destination
-	// the parser recognised via continuation-line markers but that never made it
-	// into `accounts`, so own-IBAN membership can't demote it.
+	// the markers recognise but that never made it into `accounts`, so own-IBAN
+	// membership can't demote it.
 	const unknownCH = "CH00 0000 0000 0000 0000 0"
 	own := map[string]bool{} // deliberately empty: the destination is absent
 
-	// internal_transfer=true ⇒ INTERNAL despite passing every IBAN/booking check.
-	pInternal := pdfPayload(t, unknownCH, "UEBERTRAG", true)
+	// A marker ⇒ INTERNAL despite passing every IBAN/booking check.
+	pInternal := pdfPayload(t, unknownCH, "CREDIT", mandateFunding)
 	if pdfCashIsExternal(pInternal, own, false, true) {
-		t.Fatalf("FABRICATION: internal_transfer=true mandate-funding move to a non-own "+
-			"absent CH IBAN classified EXTERNAL; parser flag must veto. payload=%+v", pInternal)
+		t.Fatalf("FABRICATION: mandate-funding move to a non-own absent CH IBAN "+
+			"classified EXTERNAL; the marker must veto. payload=%+v", pInternal)
 	}
 
-	// Control: the SAME row without the parser flag DOES promote to external via the
+	// Control: the SAME row without the marker DOES promote to external via the
 	// IBAN path — proving the veto (not some other guard) is what flipped it.
-	pExternal := pdfPayload(t, unknownCH, "UEBERTRAG", false)
+	pExternal := pdfPayload(t, unknownCH, "CREDIT", []string{"SOME EXTERNAL BANK"})
 	if !pdfCashIsExternal(pExternal, own, false, true) {
-		t.Errorf("control: non-own CH IBAN, no internal_transfer, no guard token should be EXTERNAL; payload=%+v", pExternal)
+		t.Errorf("control: non-own CH IBAN, no marker, no guard token should be EXTERNAL; payload=%+v", pExternal)
 	}
 
-	// The parser flag also vetoes the outbound payment-rail promotion: a payment
-	// order whose continuation markers identified an intra-relationship move must
-	// stay INTERNAL even though its booking type is in the rail set.
-	pRailInternal := pdfPayload(t, "", "E-BANKING PAYMENT ORDER", true)
+	// The marker also vetoes the outbound payment-rail promotion: a payment
+	// order whose continuation identifies an intra-relationship move must stay
+	// INTERNAL even though its booking type is in the rail set.
+	pRailInternal := pdfPayload(t, "", "E-BANKING PAYMENT ORDER", []string{"UEBERTRAG", "REDUKTION US EQUITY MANDAT"})
 	if pdfCashIsExternal(pRailInternal, own, true, true) {
-		t.Fatalf("FABRICATION: internal_transfer=true payment order classified EXTERNAL "+
-			"via the rail promotion; parser flag must veto. payload=%+v", pRailInternal)
+		t.Fatalf("FABRICATION: mandate-reducing payment order classified EXTERNAL "+
+			"via the rail promotion; the marker must veto. payload=%+v", pRailInternal)
+	}
+}
+
+// TestPdfInternalTransfer pins the rule's two readings: a statement row's
+// markers count under a cash-moving booking type only, and an advice's purpose
+// lines count with no booking type at all, in either silver's spelling of an
+// advice. Every narrative is synthetic.
+func TestPdfInternalTransfer(t *testing.T) {
+	advice := func(source string, purpose ...string) webTxPayload {
+		return webTxPayload{Source: source, Document: sourceAdvicePDF, Continuation: purpose}
+	}
+	cases := []struct {
+		name string
+		p    webTxPayload
+		want bool
+	}{
+		{"mandate funding", webTxPayload{BookingType: "CREDIT",
+			Continuation: []string{"INCREAS US EQUITY PORTFOLIO", "P. HOLDER"}}, true},
+		{"mandate reduction by telephone", webTxPayload{BookingType: "PAYMENT ORDER BY TELEPHONE",
+			Continuation: []string{"UEBERTRAG", "REDUKTION US EQUITY MANDAT"}}, true},
+		{"marker in lower case", webTxPayload{BookingType: "SPECIAL PAYMENT ORDER",
+			Continuation: []string{"reduction investment portfolio"}}, true},
+		{"external credit", webTxPayload{BookingType: "CREDIT",
+			Continuation: []string{"SOME EXTERNAL BANK", "1 times Incoming SIC-payment"}}, false},
+		{"salary", webTxPayload{BookingType: "CREDIT", Continuation: []string{"SALARY PAYER LTD"}}, false},
+		{"a settlement is no flow", webTxPayload{BookingType: "SHARE",
+			Continuation: []string{"MANAGE US EQ PORTFOLIO"}}, false},
+		{"a dividend is no flow", webTxPayload{BookingType: "DIVIDEND",
+			Continuation: []string{"MANAGE PORTFOLIO"}}, false},
+		{"advice for a mandate", advice(sourceAdvicePDF, "Increase Example Mandate"), true},
+		{"older silver's advice", advice(sourceStatementPDF, "Uebertrag Example Portfolio"), true},
+		{"advice for a payment", advice(sourceAdvicePDF, "YOUR PAYMENT ORDER DATED 01012020"), false},
+	}
+	for _, c := range cases {
+		if got := pdfInternalTransfer(c.p); got != c.want {
+			t.Errorf("%s: pdfInternalTransfer = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -87,8 +128,8 @@ func TestPdfCashIsExternalDecisionMatrix(t *testing.T) {
 		railEra  bool
 		want     bool
 	}{
-		{"parser-internal vetoes external", extCH, "SALE", true, false, true, false},
-		{"parser-internal vetoes even a bare deposit", extCH, "", true, false, true, false},
+		{"an internal transfer vetoes external", extCH, "CREDIT", true, false, true, false},
+		{"an internal transfer vetoes the rail promotion", "", "PAYMENT ORDER", true, true, true, false},
 		{"external CH counterparty", extCH, "SALE", false, false, true, true},
 		{"external CH counterparty, deep era", extCH, "SALE", false, false, false, true},
 		{"own CH counterparty is internal", ownCH, "SALE", false, false, true, false},
@@ -139,7 +180,11 @@ func TestPdfCashIsExternalDecisionMatrix(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := pdfCashIsExternal(pdfPayload(t, c.counter, c.booking, c.internal), own, c.outbound, c.railEra)
+			var continuation []string
+			if c.internal {
+				continuation = mandateFunding
+			}
+			got := pdfCashIsExternal(pdfPayload(t, c.counter, c.booking, continuation), own, c.outbound, c.railEra)
 			if got != c.want {
 				t.Errorf("pdfCashIsExternal = %v, want %v (counter=%q booking=%q internal=%v outbound=%v railEra=%v)",
 					got, c.want, c.counter, c.booking, c.internal, c.outbound, c.railEra)

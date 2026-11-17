@@ -1,10 +1,13 @@
 package ubs
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
+	"slices"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -184,6 +187,70 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 		out = append(out, h)
 		return nil
 	}, w.Start, w.End)
+	if err != nil {
+		return nil, err
+	}
+	metals, err := r.preciousMetalsTotals(ctx, w)
+	if err != nil || len(metals) == 0 {
+		return out, err
+	}
+	// In the order the rows of the table's key come back in, where an
+	// older silver holds the precious-metals positions too.
+	out = append(out, metals...)
+	slices.SortStableFunc(out, func(a, b statementHolding) int {
+		return cmp.Or(cmp.Compare(a.asOf, b.asOf), cmp.Compare(a.portID, b.portID),
+			cmp.Compare(a.isin, b.isin))
+	})
+	return out, nil
+}
+
+// preciousMetalsCurrency is the copy of a relationship overview the
+// precious-metals position is read from. The overview prints the same
+// total once per valuation currency (USD / CHF / EUR); taking the
+// reporting currency's copy keeps the position one row with one value,
+// which gold converts at query time. A total printed only in another
+// currency's copy gives no position.
+const preciousMetalsCurrency = "USD"
+
+// preciousMetalsTotals returns the overview's precious-metals totals in
+// the window, each as the holding it becomes: one per (as_of_date,
+// portfolio), read off the preciousMetalsCurrency copy, the last of
+// them the document walk wrote where several print it. UBS issues no
+// Detailed-positions page for such a portfolio (precious-metals
+// custody), so the overview's total is all a statement prints of it. Its
+// instrument key is deliberately not ISIN-shaped ("PM-<portfolio>"), so
+// statementInstrument leaves the canonical ISIN null.
+//
+// An older silver holds these as rows of historical_position_snapshots
+// under that key (ubs-web migration 0018 moves them), which
+// statementHoldings reads with the securities.
+func (r *webReader) preciousMetalsTotals(ctx context.Context, w canonical.Window) ([]statementHolding, error) {
+	ok, err := r.hasTable(ctx, overviewTotalsTable)
+	if err != nil || !ok {
+		return nil, err
+	}
+	const q = `
+SELECT as_of_date, portfolio_external_id, currency_iso, market_value, payload
+  FROM statement_overview_totals t
+ WHERE asset_class = 'precious_metals' AND currency_iso = ?
+   AND as_of_date BETWEEN ? AND ?
+   AND rowid = (SELECT MAX(rowid) FROM statement_overview_totals u
+                 WHERE u.asset_class = t.asset_class
+                   AND u.currency_iso = t.currency_iso
+                   AND u.as_of_date = t.as_of_date
+                   AND u.portfolio_external_id = t.portfolio_external_id)`
+	var out []statementHolding
+	err = silver.ScanRows(ctx, r.db, "preciousMetalsTotals", q, func(rows *sql.Rows) error {
+		var h statementHolding
+		if err := rows.Scan(&h.asOf, &h.portID, &h.ccy, &h.mv, &h.payload); err != nil {
+			return err
+		}
+		h.isin = "PM-" + h.portID
+		h.mvCcy = h.ccy
+		h.descr = sql.NullString{String: "Precious metals & commodities", Valid: true}
+		out = append(out, h)
+		return nil
+	}, preciousMetalsCurrency, w.Start, w.End)
 	return out, err
 }
 
@@ -194,7 +261,8 @@ SELECT as_of_date, portfolio_external_id, instrument_isin, currency_iso,
 // detail line for a precious-metals overlay portfolio that the
 // quarterly statements omit. The adapter also synthesises a single
 // overview precious-metals position (PM-<portfolio>) for such a
-// portfolio from the sibling reporting-currency statement, so
+// portfolio from the sibling reporting-currency statement
+// (preciousMetalsTotals), so
 // emitting the detail line too would double-count the metal at
 // every year-end (the two reach gold under distinct position
 // keys). Suppress the detail line whenever its overview sibling
@@ -343,9 +411,10 @@ type snapshotKey struct {
 }
 
 // preciousMetalsOverviewKeys returns the (as_of_date, portfolio)
-// pairs in the window that carry a synthetic overview precious-metals
-// row (instrument_isin like 'PM-%'). Used to suppress the duplicate
-// year-end gold-bar detail line for those portfolios.
+// pairs in the window that carry an overview precious-metals position
+// (preciousMetalsTotals; an older silver's rows keyed 'PM-%'). Used to
+// suppress the duplicate year-end gold-bar detail line for those
+// portfolios.
 func (r *webReader) preciousMetalsOverviewKeys(
 	ctx context.Context, w canonical.Window,
 ) (map[snapshotKey]bool, error) {
@@ -366,7 +435,11 @@ SELECT DISTINCT as_of_date, portfolio_external_id
 	}, w.Start, w.End); err != nil {
 		return nil, err
 	}
-	return set, nil
+	metals, err := r.preciousMetalsTotals(ctx, w)
+	for _, h := range metals {
+		set[snapshotKey{h.asOf, h.portID}] = true
+	}
+	return set, err
 }
 
 // isPreciousMetalsLine reports whether a historical_position_snapshots
@@ -474,7 +547,9 @@ SELECT period_end, period_start, account_external_id, currency_iso,
 // portfolio snapshot at that same as_of_date, emitting the same
 // triple as the live path — Account + Instrument + Position keyed
 // by the UBS-internal mortgage account number, AccountKind /
-// AssetClass = mortgage, MarketValue already negative from silver.
+// AssetClass = mortgage. Silver holds the principal as the notice
+// prints it, a positive amount (an older silver: negated); the
+// position is the liability, so its MarketValue is negative.
 //
 // It takes `byTime` directly (not byTime.At) and PEEKS rather than
 // creates: a mortgage row is only emitted when a real portfolio
@@ -560,11 +635,20 @@ SELECT as_of_date, account_external_id, currency_iso,
 			AssetClass:           canonical.AssetClassRealEstate,
 			Vehicle:              canonical.VehicleMortgage,
 			Currency:             currency,
-			MarketValue:          silver.DecimalPtrFromNullFloat(outstanding),
+			MarketValue:          silver.DecimalPtrFromNullFloat(liability(outstanding)),
 			Payload:              json.RawMessage(payload),
 		})
 		return nil
 	}, w.Start, w.End)
+}
+
+// liability is a principal as a liability's value: negative, whichever
+// sign silver stores it with.
+func liability(principal sql.NullFloat64) sql.NullFloat64 {
+	if principal.Valid {
+		principal.Float64 = -math.Abs(principal.Float64)
+	}
+	return principal
 }
 
 // historicalRange returns the span of dates the historical tables cover, or
@@ -587,6 +671,14 @@ func (r *webReader) historicalRange(ctx context.Context) (int64, int64, error) {
 	}
 	if ok {
 		queries = append(queries, `SELECT MIN(as_of_date), MAX(as_of_date) FROM historical_mortgages`)
+	}
+	// The precious-metals positions (preciousMetalsTotals), which an older
+	// silver holds in historical_position_snapshots.
+	if ok, err := r.hasTable(ctx, overviewTotalsTable); err != nil {
+		return -1, -1, err
+	} else if ok {
+		queries = append(queries, `SELECT MIN(as_of_date), MAX(as_of_date) FROM statement_overview_totals
+ WHERE asset_class = 'precious_metals' AND currency_iso = '`+preciousMetalsCurrency+`'`)
 	}
 	return silver.Extrema(ctx, r.db, "historicalRange", queries)
 }
