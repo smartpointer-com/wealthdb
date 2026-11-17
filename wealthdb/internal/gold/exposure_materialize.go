@@ -84,7 +84,9 @@ func MaterializeExposure(ctx context.Context, db *sql.DB, p MaterializeParams) (
 var exposureMaterialized = []string{"report_exposure", "report_exposure_debt", "report_exposure_issuer_ranks",
 	"report_exposure_security_slices"}
 
-// fillExposure writes MaterializeExposure's rows.
+// fillExposure writes MaterializeExposure's rows: report_exposure at
+// every month end from the first holding gold holds and at toEpoch, the
+// recent tables at yieldInstants, the benchmarks at toEpoch.
 func fillExposure(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64) (int, error) {
 	first, ok, err := FirstHoldingsAt(ctx, tx)
 	if err != nil {
@@ -93,13 +95,23 @@ func fillExposure(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64) (i
 	if !ok {
 		return 0, nil
 	}
+	return materializeExposure(ctx, tx, PeriodEnds(first, toEpoch, 1), yieldInstants(toEpoch), toEpoch, computedAt)
+}
+
+// materializeExposure writes report_exposure at each of instants, the
+// debt, issuer and security tables at each of recent
+// (materializeExposureRecent), and each benchmark's look-through at
+// benchmarkAt (materializeBenchmarkExposure), stamped computedAt. tx is
+// pinned and the tables are empty. It returns the number of rows
+// written.
+func materializeExposure(ctx context.Context, tx *sql.Tx, instants, recent []int64, benchmarkAt, computedAt int64) (int, error) {
 	parts := make([]string, len(materializeCurrencies))
 	for i, c := range materializeCurrencies {
 		parts[i] = fmt.Sprintf(exposureHoldingsSQL, c, c)
 	}
 	insert := fmt.Sprintf(exposureInsertSQL, strings.Join(parts, "\n    UNION ALL "))
 	n := 0
-	for _, at := range PeriodEnds(first, toEpoch, 1) {
+	for _, at := range instants {
 		res, err := tx.ExecContext(ctx, insert, at, computedAt)
 		if err != nil {
 			return 0, fmt.Errorf("MaterializeExposure at %d: %w", at, err)
@@ -110,13 +122,13 @@ func fillExposure(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64) (i
 		}
 		n += int(k)
 	}
-	k, err := materializeExposureRecent(ctx, tx, toEpoch, computedAt, parts)
+	k, err := materializeExposureRecent(ctx, tx, recent, computedAt, parts)
 	if err != nil {
 		return 0, err
 	}
 	n += k
 	// The virtual holdings shadow exposure_holdings, so they come last.
-	if k, err = materializeBenchmarkExposure(ctx, tx, toEpoch, computedAt); err != nil {
+	if k, err = materializeBenchmarkExposure(ctx, tx, benchmarkAt, computedAt); err != nil {
 		return 0, err
 	}
 	n += k

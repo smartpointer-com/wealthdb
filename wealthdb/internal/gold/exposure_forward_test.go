@@ -128,9 +128,7 @@ func TestExposureSplitsAForwardHeldDirectlyIntoItsLegs(t *testing.T) {
 	// dollars the CHF legs of QFW1 and QFW0 (-1025, -1000) and the USD
 	// legs of both and of the fund (1000, 1000, 340); in francs the same
 	// at 0.8.
-	if _, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: exAsOf, ComputedAt: 1}); err != nil {
-		t.Fatal(err)
-	}
+	materializeExposureAt(t, db, ctx, exAsOf, 1)
 	for _, c := range []struct {
 		out, ccy string
 		want     float64
@@ -252,9 +250,7 @@ func TestExposureLeavesOutAZeroForwardsLegsNoRateScales(t *testing.T) {
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: exAsOf, ComputedAt: 1}); err != nil {
-		t.Fatal(err)
-	}
+	materializeExposureAt(t, db, ctx, exAsOf, 1)
 
 	// The holding is worth zero in francs, so only its legs' scale is
 	// missing there.

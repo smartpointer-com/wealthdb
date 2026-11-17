@@ -209,9 +209,7 @@ func TestExposurePassCompletesAReceipt(t *testing.T) {
 	mustExec(t, db, `INSERT INTO security_facts (silver_source_id, security_key, field, as_of, provider, value, scheme) VALUES
 	    ('refdata', 'isin:US0000000733', 'legal_country', ?, 'gleif', 'DE', 'iso3166'),
 	    ('refdata', 'isin:US0000000734', 'hq_country', ?, 'gleif', 'AT', 'iso3166')`, exSnap, exSnap)
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureThrough(t, db, ctx, "receipts")
 	read := func(k string) (sector, sectorOrigin, country, domicile, domicileOrigin string) {
 		t.Helper()
 		var s, so, c, d, do sql.NullString
@@ -341,9 +339,7 @@ func TestExposureLinksANamedLineToItsShare(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureThrough(t, db, ctx, "receipts")
 	got := map[string]string{}
 	rows, err := db.QueryContext(ctx, `SELECT x.security_key, x.underlying_key || '|' || s.sector || '|' || s.risk_country
 	    FROM security_underlyings x JOIN securities s USING (security_key) WHERE x.security_key LIKE 'name:q%'`)
@@ -392,9 +388,7 @@ func TestExposureLinksASecurityOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureThrough(t, db, ctx, "receipts")
 	var n, keys int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(DISTINCT security_key) FROM security_underlyings`).Scan(&n,
 		&keys); err != nil {
@@ -474,9 +468,7 @@ func TestExposureLinksANamedLineInItsProxyFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureThrough(t, db, ctx, "receipts")
 	got := map[string]string{}
 	rows, err := db.QueryContext(ctx, `SELECT x.security_key, x.underlying_key || '|' || x.origin || '|' || s.sector_origin
 	    FROM security_underlyings x JOIN securities s USING (security_key) WHERE x.security_key LIKE 'name:r%'`)

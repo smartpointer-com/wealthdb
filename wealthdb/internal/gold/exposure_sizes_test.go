@@ -100,9 +100,7 @@ func TestExposureSizesStocks(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureThrough(t, db, ctx, "sizes")
 	for key, want := range map[string]string{
 		// 200m shares at 100: 20bn. 50m at 250, the price of a fund line
 		// newer than the position's 50: 12.5bn. A receipt has no market
@@ -242,9 +240,7 @@ func TestExposureSizeOfAShareOnTwoLines(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	if _, err := RebuildExposure(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	rebuildExposureThrough(t, db, ctx, "sizes")
 	var got string
 	if err := db.QueryRowContext(ctx, `SELECT concat_ws(' ', COALESCE(size, '-'), COALESCE(size_origin, '-'))
 	  FROM securities WHERE security_key = 'isin:CH0000000E01'`).Scan(&got); err != nil {

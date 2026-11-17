@@ -274,9 +274,7 @@ func TestFirstHoldingsAtCountsCash(t *testing.T) {
 func TestWebExposureSizesTheUnknown(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	if _, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: exAsOf, ComputedAt: 1}); err != nil {
-		t.Fatal(err)
-	}
+	materializeExposureAt(t, db, ctx, exAsOf, 1)
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure WHERE size = 'unknown'`).Scan(&n); err != nil ||
 		n == 0 {
@@ -376,9 +374,7 @@ func checkSecuritySlicesNarrow(t *testing.T, db *sql.DB, at int64, ccy string) {
 func TestWebExposureSecuritiesAnswers(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
-	if _, err := MaterializeExposure(ctx, db, MaterializeParams{ToEpoch: exAsOf, ComputedAt: 1}); err != nil {
-		t.Fatal(err)
-	}
+	materializeExposureAt(t, db, ctx, exAsOf, 1)
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM web_exposure_securities WHERE tax_wrapper = 'taxable_personal'`).
 		Scan(&n); err != nil || n == 0 {

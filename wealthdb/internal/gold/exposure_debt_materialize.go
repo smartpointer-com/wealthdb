@@ -119,17 +119,18 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
 
 // materializeExposureRecent fills report_exposure_debt,
 // report_exposure_issuer_ranks and report_exposure_security_slices at the
-// instants the yield tables hold (yieldInstants: today and the 12 month
-// ends before): the walk with the debt and issuer dimensions costs
-// several times the plain one, and the securities are many rows an
-// instant. parts are exposure_holdings per reporting currency.
-func materializeExposureRecent(ctx context.Context, tx *sql.Tx, toEpoch, computedAt int64, parts []string) (int, error) {
+// instants recent, those the yield tables hold (yieldInstants: today and
+// the 12 month ends before): the walk with the debt and issuer
+// dimensions costs several times the plain one, and the securities are
+// many rows an instant. parts are exposure_holdings per reporting
+// currency.
+func materializeExposureRecent(ctx context.Context, tx *sql.Tx, recent []int64, computedAt int64, parts []string) (int, error) {
 	holdings := strings.Join(parts, "\n    UNION ALL ")
 	stmts := []string{fmt.Sprintf(exposureDebtSQL, holdings),
 		fmt.Sprintf(exposureIssuersSQL, holdings, exposureIssuersShown),
 		fmt.Sprintf(exposureSecuritiesSQL, holdings)}
 	n := 0
-	for _, at := range yieldInstants(toEpoch) {
+	for _, at := range recent {
 		for _, q := range stmts {
 			res, err := tx.ExecContext(ctx, q, at, computedAt)
 			if err != nil {
