@@ -75,11 +75,10 @@ def statement_of_assets_body_meta(full_text: str) -> dict | None:
 
     Returns None unless all three anchors are present, so a PDF that is
     not a Statement of assets — or one whose text extraction failed —
-    is declined rather than half-identified. Measured against the whole
-    archive, the two roads agree on every document that has both; the
-    header's `As of` line is the one the label states, not the
-    `valued as of` note some year-end statements print a day or two
-    earlier.
+    is declined rather than half-identified. The two roads agree on a
+    document that has both; the header's `As of` line is the one the
+    label states, not the `valued as of` note a year-end statement can
+    print a day or two earlier.
     """
     if not _BODY_STMT_OF_ASSETS_TITLE_RE.search(full_text):
         return None
@@ -310,10 +309,10 @@ _DISTRIBUTION_DATE_RE = re.compile(r"^\s*Distribution:\s+\d{2}\.\d{2}\.\d{4}")
 # Market value (no accrued interest), and a plain thousands-aware
 # capture slurps BOTH equal columns into one doubled number whenever
 # their digit-groups line up under single-space separation — e.g.
-# "12 345 12 345 75.00" reads as 12 345 12 345. We anchor the Market
-# value by requiring the identical Total column to follow it (the
-# (?P=mv) backreference) and the %NA after that, so only the first
-# column is captured (synthetic example):
+# "12 345 12 345 75.00" reads as 12 345 12 345. The pattern anchors
+# the Market value by requiring the identical Total column to follow
+# it (the (?P=mv) backreference) and the %NA after that, so only the
+# first column is captured (synthetic example):
 #   "Precious metals & commodities 12 345 12 345 75.00 ..."
 _OVERVIEW_PORTFOLIO_RE = re.compile(r"^Portfolio\s+(?P<no>\d{2})\b")
 _OVERVIEW_PRECIOUS_METALS_RE = re.compile(
@@ -334,30 +333,39 @@ def parse(extracted: Extracted, doc_token: str, label: str
     The positions and the totals are read from the page text, the
     transaction list from the word positions of its own pages."""
     full_text = document_text(extracted)
-    positions = parse_statement_of_assets_text(full_text, doc_token, label)
-    totals = overview_totals(full_text, doc_token, label)
     meta = _statement_of_assets_meta(full_text, label)
     if meta is None:
-        return positions, [], totals
+        return [], [], []
+    base_ccy = _base_currency(full_text)
+    positions = _positions(full_text, doc_token, meta, base_ccy)
+    totals = _overview_totals(full_text, doc_token, meta, base_ccy)
     trades = soa_transaction_list.parse_transaction_list(
         [page for page in extracted.pages
          if soa_transaction_list.HEADER_TEXT in page.text],
         {"source_doc_token": doc_token,
          "as_of_date": meta["as_of_date"],
          "portfolio_external_id": psn_portfolio_external_id(meta),
-         "reporting_currency_iso": _base_currency(full_text)})
+         "reporting_currency_iso": base_ccy})
     return positions, trades, totals
+
 
 def parse_statement_of_assets_text(full_text: str, doc_token: str,
                                    label: str) -> list[dict]:
-    """The positions half of `parse_statement_of_assets`, on text already
+    """The positions half of `parse`, on text already
     extracted, so the regex / line-walk layer can be exercised without a
     real PDF on disk."""
     label_meta = _statement_of_assets_meta(full_text, label)
     if label_meta is None:
         return []
+    return _positions(full_text, doc_token, label_meta,
+                      _base_currency(full_text))
+
+
+def _positions(full_text: str, doc_token: str, label_meta: dict,
+               base_ccy: str | None) -> list[dict]:
+    """The position rows of a Statement of assets whose metadata is
+    `label_meta` and whose base currency is `base_ccy`."""
     psn_portfolio = psn_portfolio_external_id(label_meta)
-    base_ccy = _base_currency(full_text)
 
     # --- Slice the detailed-positions section ---
     in_detail = False
@@ -728,7 +736,14 @@ def overview_totals(full_text: str, doc_token: str, label: str
     label_meta = _statement_of_assets_meta(full_text, label)
     if label_meta is None:
         return []
-    base_ccy = _base_currency(full_text)
+    return _overview_totals(full_text, doc_token, label_meta,
+                            _base_currency(full_text))
+
+
+def _overview_totals(full_text: str, doc_token: str, label_meta: dict,
+                     base_ccy: str | None) -> list[dict]:
+    """The overview totals of a Statement of assets whose metadata is
+    `label_meta` and whose base currency is `base_ccy`."""
     rows: list[dict] = []
     seen: set[str] = set()
     current_no: str | None = None

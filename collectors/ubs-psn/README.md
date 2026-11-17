@@ -275,7 +275,7 @@ confirmation are described in [DESIGN.md §8](DESIGN.md#8-cost-basis).
 
 ```sh
 ./ubs-psn load                      # defaults under $XDG_DATA_HOME/wealthdb/ubs-psn
-./ubs-psn load --force              # delete the silver DB, rebuild from all bronze
+./ubs-psn load --force              # rebuild silver from all bronze, swapped in when it succeeds
 ```
 
 The loader scans `<bronze-dir>` for subdirectories whose names match

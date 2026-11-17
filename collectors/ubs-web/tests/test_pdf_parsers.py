@@ -1,4 +1,5 @@
-"""Tests for pdf_parsers.
+"""Tests for the document readers (pdf_parsers.py and the reader
+modules beside it).
 
 Tests work at the regex / text-assembly layer using synthetic
 labels and synthetic pre-extracted text fixtures, so they don't
@@ -12,19 +13,20 @@ import json
 import pytest
 from collectorkit.words import Extracted, Page, Word, params_key
 
+import account_statement
+import pdf_parsers
 import soa_positions
-from pdf_parsers import (
+from account_statement import (
     _stmt_security,
-    _advice_trx_no,
     _stmt_split_multi,
     parse_account_statement_text,
-    parse_account_statement_transactions_pages,
-    parse_capital_call_text,
-    parse_contract_note_text,
+)
+from maturity_notice import parse_maturity_notice_text
+from payment_advice import _advice_trx_no, parse_payment_advice_text
+from quarterly_report import parse_quarterly_report_text
+from securities_advice import parse_capital_call_text, parse_contract_note_text
+from soa_positions import (
     parse_label_statement_of_assets,
-    parse_maturity_notice_text,
-    parse_payment_advice_text,
-    parse_quarterly_report_text,
     parse_statement_of_assets_text,
     statement_of_assets_body_meta,
 )
@@ -36,10 +38,11 @@ from pdf_parsers import (
 #
 # The movement parser is WORD-based: it disambiguates the Debits vs
 # Credits column purely from x-position, so a text fixture isn't
-# enough — we build an extracted document whose pages carry synthetic
-# words at the SAME column geometry the real UBS statements use (Debits right-edge ~329, Credits ~414,
-# Value date x0 ~432, Balance right-edge ~553). All amounts / dates /
-# the IBAN are synthetic placeholders per AGENTS.md §4.
+# enough. The fixture is an extracted document whose pages carry
+# synthetic words at the SAME column geometry the real UBS statements
+# use (Debits right-edge ~329, Credits ~414, Value date x0 ~432,
+# Balance right-edge ~553). All amounts / dates / the IBAN are
+# synthetic placeholders per AGENTS.md §4.
 
 # Synthetic IBAN (all-zero placeholder, valid CH-IBAN shape).
 _SYN_IBAN = "CH00 0000 0000 0000 0000 1"
@@ -85,8 +88,8 @@ def _info_words(info: str, top: float) -> list[Word]:
 # The word sets the extraction reads (pdf_parsers.EXTRACTOR): the
 # transaction list's and the ledger's. A test page carries its words in
 # both.
-_WORD_SETS = (params_key({"x_tolerance": 2}),
-              params_key({"x_tolerance": 1.5, "keep_blank_chars": False}))
+_WORD_SETS = tuple(params_key(params) for params
+                   in pdf_parsers.EXTRACTOR.keywords["word_params"])
 
 
 def _page(words: list[Word], text: str) -> Page:
@@ -150,7 +153,7 @@ def _build_statement_pdf() -> Extracted:
 
 class TestAccountStatementTransactions:
     def _rows(self):
-        return parse_account_statement_transactions_pages(
+        return account_statement.movements(
             _build_statement_pdf(), "synthetic-token")
 
     def test_extracts_all_movements(self):
@@ -339,7 +342,7 @@ def _bundle_pdf() -> Extracted:
 
 class TestBundledOrderReachesTheLoaderSplit:
     def _rows(self):
-        return parse_account_statement_transactions_pages(
+        return account_statement.movements(
             _bundle_pdf(), "synthetic-token")
 
     def test_the_batch_row_is_replaced_by_its_payments(self):
@@ -1047,8 +1050,7 @@ class TestTransactionList:
     LABEL = TestStatementOfAssetsSecurities.LABEL
 
     def _trades(self, *pages: list[Word]) -> list[dict]:
-        from pdf_parsers import parse_statement_of_assets_pages
-        _positions, trades, _totals = parse_statement_of_assets_pages(
+        _positions, trades, _totals = soa_positions.parse(
             _tl_pdf(*pages), "<doc-token>", self.LABEL)
         return trades
 
@@ -1168,8 +1170,7 @@ class TestTransactionList:
 
     def test_a_page_without_the_list_header_adds_nothing(self):
         pdf = _doc(_page(_tl_booking(217, _TL_SALE), "Valued in USD\n"))
-        from pdf_parsers import parse_statement_of_assets_pages
-        assert parse_statement_of_assets_pages(
+        assert soa_positions.parse(
             pdf, "<doc-token>", self.LABEL) == ([], [], [])
 
 

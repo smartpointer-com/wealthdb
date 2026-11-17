@@ -22,15 +22,15 @@ from pdf_common import document_text, to_float, to_unix, undouble_bold
 #     ...
 #     Current debt capital N NNN NNN.NN
 #
-# We extract the outstanding principal as the historical balance at
-# the "As at" date and surface the product / currency for the gold
-# adapter to roll up into a mortgage Position.
+# The parser extracts the outstanding principal as the historical
+# balance at the "As at" date and surfaces the product / currency for
+# the gold adapter to roll up into a mortgage Position.
 #
 # The "Account no." in the maturity notice is the compact zero-
 # stripped form (`BBB-AAAAAA.MMM NNNN`); the live positions.csv
 # table normalises the same account to the padded 4-digit branch /
 # 8-digit base form (`BBBB AAAAAAAA.MMM NNNN`).
-# We re-pad on parse so the resulting account_external_id matches
+# The parser re-pads it, so the resulting account_external_id matches
 # `mortgages.account_external_id` exactly — gold's instruments/
 # accounts upsert is keyed by ID, so cross-snapshot identity has
 # to be byte-equal.
@@ -76,7 +76,7 @@ def parse(extracted: Extracted, doc_token: str) -> list[dict]:
 
 
 def parse_maturity_notice_text(text: str, doc_token: str) -> list[dict]:
-    """Pure-text variant of parse_maturity_notice for fixture-based
+    """Pure-text variant of `parse` for fixture-based
     tests. Returns [] when the PDF doesn't actually look like a
     mortgage maturity notice (so non-mortgage 'Maturity notice'
     doc_types — bonds, time deposits, etc. — are skipped gracefully).

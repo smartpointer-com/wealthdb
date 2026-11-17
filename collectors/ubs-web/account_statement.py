@@ -26,8 +26,8 @@ _PERIOD_RE = re.compile(
 # UBS Account-Statement headers come in a few variants, all
 # rendered with no internal whitespace, e.g. 'UBSSavingsAccountCHF'.
 # The common shape is "<account-type-words><CCY>" with the CCY
-# being the trailing three uppercase letters. We anchor on the
-# substring 'Account' and capture the trailing ISO code.
+# being the trailing three uppercase letters. The pattern anchors on
+# the substring 'Account' and captures the trailing ISO code.
 _CCY_HEADER_RE = re.compile(
     r"[A-Za-z]*[Aa]ccount[A-Za-z]*(?P<ccy>[A-Z]{3})\b"
 )
@@ -35,7 +35,7 @@ _CCY_HEADER_RE = re.compile(
 # text (whitespace already removed). UBS uses thin spaces as
 # thousand separators in the rendered PDF (e.g. "1 234.56"), so
 # after the `replace(" ", "")` pass the value has neither spaces
-# nor apostrophes between digits. We keep `'` in the value class
+# nor apostrophes between digits. The value class keeps `'`
 # defensively in case some historical statements use the Swiss
 # apostrophe convention and pdfplumber preserves it. The decimal
 # part is optional: zero-balance / closed-account statements
@@ -55,8 +55,8 @@ def parse_account_statement_text(text: str, doc_token: str) -> list[dict]:
     tests can exercise the regex layer without a real PDF on disk)."""
     # UBS Account-Statement PDFs render text with all the
     # whitespace squished out within tokens (e.g. `IBANCHKK...`,
-    # `Openingbalance1234.56`). pdfplumber preserves that. We
-    # match all the headers against the squished text.
+    # `Openingbalance1234.56`). pdfplumber preserves that. All the
+    # headers are matched against the squished text.
     flat = text.replace(" ", "").replace(" ", "")  #   = NBSP
     iban = None
     m = _IBAN_HEADER_RE.search(flat)
@@ -115,13 +115,13 @@ def parse_account_statement_text(text: str, doc_token: str) -> list[dict]:
 #
 # Only ONE of Debits / Credits is populated per row, and — crucially
 # — the plain text gives no marker of WHICH column an amount sits in.
-# We therefore work at the WORD level (`extract_words`) and bucket
-# each numeric token by its x-position against the ledger header's
-# per-column anchors. Alphabetic tokens are the booking-type text
-# (Information); they never poison the amount columns. This is
-# validated against the running Balance column: for every statement
-# in the archive `opening + Σ(credit − debit) == balance` chains
-# row-by-row to the printed Closing balance.
+# The parser therefore reads word positions (the extraction's ledger
+# word set) and buckets each numeric token by its x-position against
+# the ledger header's per-column anchors. Alphabetic tokens are the
+# booking-type text (Information); they never poison the amount
+# columns. The running Balance column checks it: a statement's
+# `opening + Σ(credit − debit) == balance` chains row-by-row to the
+# printed Closing balance.
 #
 # Conventions handled: space (thin-space / NBSP) thousands
 # separators ('199 993.01'); trailing-minus negatives ('16.05-');

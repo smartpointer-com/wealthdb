@@ -107,7 +107,7 @@ def _advice_trx_no(rest: str) -> str | None:
     payment ("ABC/ABC", "ABC/XYZ") and is not part of the number; the
     slash is what marks it, and many advices carry none at all. Every
     token before it has to be a bare alphanumeric group — anything
-    else means this is not the line we think it is, and a wrong id
+    else means this is not the transaction-number line, and a wrong id
     would key a row onto a transfer it has nothing to do with.
     """
     groups: list[str] = []
@@ -128,7 +128,7 @@ def parse(extracted: Extracted, doc_token: str) -> list[dict]:
 
 
 def parse_payment_advice_text(text: str, doc_token: str) -> list[dict]:
-    """Pure-text variant of `parse_payment_advice`, for fixture-based
+    """Pure-text variant of `parse`, for fixture-based
     tests. Returns [] for any document that does not state every fact
     a movement row needs — the direction, the transaction number, the
     account, the booked date and the amount — so the advice labels
@@ -152,8 +152,8 @@ def parse_payment_advice_text(text: str, doc_token: str) -> list[dict]:
         if iban is None:
             # Anywhere in the line, not anchored to its start: the
             # older layout sets the addressee column and the account
-            # column on one printed line. Every advice in the archive
-            # names exactly one IBAN, the account it is addressed to.
+            # column on one printed line. An advice names one IBAN, the
+            # account it is addressed to.
             m = IBAN_RE.search(ln)
             if m:
                 iban = re.sub(r"\s+", "", m.group(0)).upper()

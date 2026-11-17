@@ -54,7 +54,6 @@ _TL_PERIOD_RE = re.compile(
     r"^\s*From\s+(?P<start>\d{2}\.\d{2}\.\d{4})\s+to\s+"
     r"(?P<end>\d{2}\.\d{2}\.\d{4})\b", re.M)
 _TL_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
-_TL_TIME_RE = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 # A list's closing totals, and the page footer below them.
 _TL_END_RE = re.compile(r"^(?:Subtotal|Total)\b|^[A-Z0-9]{8}/\d{6}/")
 # A figure, optionally led by its currency and followed by a one-letter

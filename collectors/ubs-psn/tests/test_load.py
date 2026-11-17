@@ -1137,6 +1137,51 @@ def test_load_reads_only_timestamped_run_dirs(tmp_path):
     assert [Path(r).name for r in runs] == ["20260601T120000Z"]
 
 
+def test_a_run_whose_walk_did_not_finish_still_loads(tmp_path):
+    # A fetched queue zip exists nowhere else, so a run left in-progress
+    # and one that never wrote its run.json both load what they hold.
+    bronze_dir = tmp_path / "bronze"
+    running = bronze_dir / "20260601T120000Z"
+    _write_zip(running, "ZAH.zip", {"2026-05-28_ZAH_synthetic.txt": MT535})
+    (running / "run.json").write_text('{"status": "in-progress"}',
+                                      encoding="utf-8")
+    _write_zip(bronze_dir / "20260602T120000Z", "ZAH.zip",
+               {"2026-05-29_ZAH_synthetic.txt": MT535})
+    db = tmp_path / "ubs-psn.db"
+    assert loader.main(["--bronze-dir", str(bronze_dir),
+                        "--silver-db", str(db)]) == 0
+    conn = sqlite3.connect(db)
+    try:
+        runs = [r[0] for r in conn.execute("SELECT run_dir FROM dump_runs")]
+        held = [r[0] for r in conn.execute(
+            "SELECT snapshot_at FROM holdings ORDER BY snapshot_at")]
+    finally:
+        conn.close()
+    assert sorted(Path(r).name for r in runs) == [
+        "20260601T120000Z", "20260602T120000Z"]
+    assert held == [
+        int(datetime(2026, 5, d, tzinfo=timezone.utc).timestamp())
+        for d in (28, 29)]
+
+
+def test_a_slug_that_names_no_instant_is_skipped(tmp_path, caplog):
+    bronze_dir = tmp_path / "bronze"
+    _write_zip(bronze_dir / "20260230T120000Z", "ZAH.zip",
+               {"2026-05-28_ZAH_synthetic.txt": MT535})
+    _write_zip(bronze_dir / "20260601T120000Z", "ZAH.zip",
+               {"2026-05-29_ZAH_synthetic.txt": MT535})
+    db = tmp_path / "ubs-psn.db"
+    assert loader.main(["--bronze-dir", str(bronze_dir),
+                        "--silver-db", str(db)]) == 0
+    conn = sqlite3.connect(db)
+    try:
+        runs = [r[0] for r in conn.execute("SELECT run_dir FROM dump_runs")]
+    finally:
+        conn.close()
+    assert [Path(r).name for r in runs] == ["20260601T120000Z"]
+    assert "20260230T120000Z: skipped" in caplog.text
+
+
 # --------------------------------------------------------------------------
 # Loads are incremental: run by run gives the silver of one --force
 # --------------------------------------------------------------------------

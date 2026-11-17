@@ -137,13 +137,21 @@ CONTRACT_NOTE_DOC_TYPE = "Contract note"
 PRIVATE_MARKET_LETTER_DOC_TYPE = "Private Market Letter"
 
 
+# The version of the result shape `_parse_one_pdf` stores: its kinds and
+# the keys and row shapes under each. The shape is this module's code,
+# which no reader fingerprint covers, so any change to it bumps the
+# version and every document is parsed again.
+_RESULT_SHAPE = "r1"
+
+
 @functools.lru_cache(maxsize=1)
 def _namespaces() -> dict[str, str]:
     """The parse-cache namespace of each document scope: the scope, the
-    fingerprint of the readers it runs, and the extraction's key. A
-    reader's fingerprint is its own code; the engine and its versions are
-    the extraction key's. So an edit to one reader re-parses only its
-    scope's documents, and an engine upgrade re-extracts all of them."""
+    result shape (`_RESULT_SHAPE`), the fingerprint of the readers it
+    runs, and the extraction's key. A reader's fingerprint is its own
+    code; the engine and its versions are the extraction key's. So an
+    edit to one reader re-parses only its scope's documents, and an
+    engine upgrade re-extracts all of them."""
     fingerprints = {
         "statement_of_assets": srcfp.parser_fingerprint(
             [soa_positions], python=False),
@@ -161,7 +169,8 @@ def _namespaces() -> dict[str, str]:
             [securities_advice, quarterly_report], python=False),
     }
     key = extract.extraction_key(pdf_parsers.EXTRACTOR)
-    return {scope: f"{scope}.{fp}.{key}" for scope, fp in fingerprints.items()}
+    return {scope: f"{scope}.{_RESULT_SHAPE}.{fp}.{key}"
+            for scope, fp in fingerprints.items()}
 
 
 @functools.lru_cache(maxsize=1)
@@ -175,7 +184,7 @@ def _document_generation() -> str:
 def _extract_dir() -> Path:
     """Where the documents' extractions are cached: beside the parse
     cache, under the collector's cache root."""
-    return extract.cache_root("ubs-web") / "extract"
+    return extract.default_dir("ubs-web")
 
 
 def _purge_stale_document_rows(conn: sqlite3.Connection) -> int:
@@ -254,14 +263,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 # ============================================================
 
 def scan_bronze(bronze_dir: Path) -> list[Path]:
-    """Return bronze dump subdirs in chronological order."""
+    """Return bronze dump subdirs in chronological order. A slug that
+    names no real instant (a 30 February) is skipped with a warning."""
     if not bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir does not exist: {bronze_dir}")
-    return sorted(
-        (p for p in bronze_dir.iterdir()
-         if p.is_dir() and bronze.RUN_DIR_RE.match(p.name)),
-        key=lambda p: p.name,
-    )
+    dumps = []
+    for dump_dir in bronze.iter_run_dirs(bronze_dir):
+        try:
+            bronze.parse_run_ts(dump_dir.name)
+        except ValueError:
+            log.warning("skipping %s: not a valid run timestamp",
+                        dump_dir.name)
+            continue
+        dumps.append(dump_dir)
+    return dumps
 
 
 # The run.json status of a `download --only PASS` dump. It covers one
@@ -318,17 +333,12 @@ def loadable_dumps(dumps: list[Path]) -> list[Path]:
 
 
 def already_loaded(conn: sqlite3.Connection, dump_dir: Path) -> bool:
-    return silver.snapshot_loaded(conn, ts_from_dir(dump_dir.name))
+    return silver.snapshot_loaded(conn, bronze.parse_run_ts(dump_dir.name))
 
 
 # ============================================================
 # Helpers
 # ============================================================
-
-def ts_from_dir(name: str) -> int:
-    """Parse 'YYYYMMDDTHHMMSSZ' -> Unix seconds UTC."""
-    return bronze.parse_run_ts(name)
-
 
 def ts_from_dmy(s: str | None) -> int | None:
     """Parse 'DD.MM.YYYY' -> Unix seconds UTC, midnight."""
@@ -417,7 +427,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     `parses` is shared across the whole load run so each document in the
     cumulative archive is parsed once, and `mt940_floors` is the run's
     per-account MT940 cut-over (see `_load_historical_from_pdfs`)."""
-    snapshot_at = ts_from_dir(dump_dir.name)
+    snapshot_at = bronze.parse_run_ts(dump_dir.name)
     log.info("loading %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
     run_meta = _read_run_json(dump_dir)
@@ -1791,13 +1801,13 @@ def _supplied_document_meta(pdf: Path, sha: str
     file can be called anything, and a name is not evidence of what is
     inside it.
     """
-    meta = pdf_parsers.statement_of_assets_body_meta(
+    meta = soa_positions.statement_of_assets_body_meta(
         pdf_parsers.statement_of_assets_text(
             pdf, sha=sha, cache_dir=_extract_dir()))
     if meta is None:
         return None
     return (SUPPLIED_STMT_OF_ASSETS_DOC_TYPE, meta["as_of_date"],
-            pdf_parsers.psn_portfolio_external_id(meta))
+            soa_positions.psn_portfolio_external_id(meta))
 
 
 def _load_supplied_documents(conn: sqlite3.Connection,
@@ -1965,8 +1975,9 @@ class DocumentParses:
     namespace (`_namespaces`), and replayed by every later dump and every
     later load. Documents not in the cache are parsed across a process
     pool, each read from the extraction cache in `extract_dir` when it
-    was extracted before. A failed parse is not cached, so the next walk
-    tries it again."""
+    was extracted before. pdfplumber extraction is CPU-bound and
+    GIL-bound, so the pool runs OS processes, not threads. A failed parse
+    is not cached, so the next walk tries it again."""
 
     def __init__(self, cache: ParseCache, workers: int,
                  extract_dir: Path | None = None) -> None:
@@ -2004,10 +2015,13 @@ class DocumentParses:
 
     def close(self) -> None:
         """End the pool, and drop the cache entries of every reader
-        generation but the ones this load walked under."""
+        generation but the ones this load walked under, and the
+        extractions of every extractor but `pdf_parsers.EXTRACTOR`."""
         self._pool.close()
         if self.walked:
             self.cache.sweep(set(_namespaces().values()))
+            extract.sweep(self.extract_dir,
+                          {extract.extraction_key(pdf_parsers.EXTRACTOR)})
 
 
 def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
@@ -2023,11 +2037,8 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     Returns (position_rows, cash_rows, mortgage_rows, transaction_rows) —
     the payment-advice rows are transactions and are counted with the
     statement ones; the securities advices and the statements'
-    transaction lists are logged.
-
-    pdfplumber / pdfminer text extraction is CPU-bound and largely
-    GIL-bound, so the speedup comes from real OS processes, not
-    threads. SQLite writes stay on the main connection.
+    transaction lists are logged. SQLite writes stay on the main
+    connection.
 
     The documents table accumulates across dumps, so each dump's SELECT
     re-lists the whole archive. `parses` holds each document's
@@ -2178,7 +2189,7 @@ def _replace_hist_cash_row(conn: sqlite3.Connection, r: dict) -> None:
     )
 
 
-# The columns `pdf_parsers` fills on every position row it emits.
+# The columns `soa_positions` fills on every position row it emits.
 _HIST_POSITION_COLUMNS = (
     "as_of_date", "portfolio_external_id", "account_external_id",
     "instrument_isin", "currency_iso", "units", "market_value",
@@ -2223,8 +2234,9 @@ _OVERVIEW_TOTAL_COLUMNS = (
 )
 
 
-# The columns `pdf_parsers` fills on every `private_market_reports` row,
-# and on every `private_market_report_lines` row: one report per document.
+# The columns `quarterly_report` fills on every `private_market_reports`
+# row, and on every `private_market_report_lines` row: one report per
+# document.
 _REPORT_COLUMNS = (
     "source_doc_token", "instrument_isin", "fund_name", "as_of",
     "lines_as_of", "currency_iso", "commitment", "capital_called",
@@ -2253,8 +2265,8 @@ def _insert_private_market_reports(conn: sqlite3.Connection,
     return n
 
 
-# The columns `pdf_parsers` fills on every `advices` row: one capital call
-# or contract note per document.
+# The columns `securities_advice` fills on every `advices` row: one
+# capital call or contract note per document.
 _ADVICE_COLUMNS = (
     "source_doc_token", "kind", "title", "doc_date", "trade_date",
     "value_date", "instrument_isin", "valor", "security_name",
@@ -2264,9 +2276,9 @@ _ADVICE_COLUMNS = (
 )
 
 
-# The columns `pdf_parsers` fills on every `statement_trades` row: one
-# booking a statement's transaction list prints, keyed by the statement
-# and the booking's place in its list.
+# The columns `soa_transaction_list` fills on every `statement_trades`
+# row: one booking a statement's transaction list prints, keyed by the
+# statement and the booking's place in its list.
 _STATEMENT_TRADE_COLUMNS = (
     "source_doc_token", "seq", "as_of_date", "portfolio_external_id",
     "reporting_currency_iso", "period_start", "period_end", "trade_date",
@@ -2283,7 +2295,8 @@ _STATEMENT_TRADE_COLUMNS = (
 )
 
 
-# The columns `pdf_parsers` fills on every `historical_cash_balances` row.
+# The columns `account_statement` fills on every
+# `historical_cash_balances` row.
 _HIST_CASH_BALANCE_COLUMNS = (
     "period_end", "account_external_id", "currency_iso", "period_start",
     "opening_balance", "closing_balance", "total_debits", "total_credits",
@@ -2669,7 +2682,7 @@ def _derive_documents_without_a_new_dump(
     try:
         conn.execute("BEGIN")
         pos, cash, mort, txn = _load_historical_from_pdfs(
-            conn, ts_from_dir(newest.name), newest, parses,
+            conn, bronze.parse_run_ts(newest.name), newest, parses,
             _mt940_floors_by_account(dumps))
         conn.execute("COMMIT")
     except Exception:  # noqa: BLE001 — log + rollback, as the dump loop does

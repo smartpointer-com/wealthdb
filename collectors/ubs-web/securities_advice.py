@@ -131,7 +131,7 @@ def capital_call(extracted: Extracted, doc_token: str) -> list[dict]:
 
 
 def parse_capital_call_text(text: str, doc_token: str) -> list[dict]:
-    """Pure-text variant of `parse_capital_call`. Returns [] unless the
+    """Pure-text variant of `capital_call`. Returns [] unless the
     document is a capital call stating its ISIN and its called amount,
     the two facts the row is about."""
     if not _CALL_TITLE_RE.search(text):
@@ -184,7 +184,7 @@ def contract_note(extracted: Extracted, doc_token: str) -> list[dict]:
 
 
 def parse_contract_note_text(text: str, doc_token: str) -> list[dict]:
-    """Pure-text variant of `parse_contract_note`. Returns [] unless the
+    """Pure-text variant of `contract_note`. Returns [] unless the
     document is a contract note stating an ISIN and a market value."""
     if not _NOTE_TITLE_RE.search(text):
         return []

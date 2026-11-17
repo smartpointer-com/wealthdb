@@ -1013,7 +1013,7 @@ def test_load_reads_both_surfaces_onto_their_accounts(tmp_path):
         (IBAN_API, "debit", 1, 9.75, None, "2025-07-01", "api"),
     ]
     snap = conn.execute("SELECT DISTINCT snapshot_at FROM account_rates").fetchall()
-    assert [s[0] for s in snap] == [load.ts_from_dir(dump.name)]
+    assert [s[0] for s in snap] == [bronze.parse_run_ts(dump.name)]
 
 
 def test_an_account_with_no_conditions_writes_no_row(tmp_path):
@@ -1073,7 +1073,7 @@ def test_a_reread_with_fewer_tiers_leaves_no_old_row(tmp_path):
     path = dump / "rates" / "acct-opaque-1.json"
     path.write_text(json.dumps(_api_payload()))
     conn = fresh_db(tmp_path)
-    snapshot_at = load.ts_from_dir(dump.name)
+    snapshot_at = bronze.parse_run_ts(dump.name)
     assert load._load_rates(conn, snapshot_at, dump) == 4
     # Another dump's rows are not this dump's to drop.
     conn.execute(

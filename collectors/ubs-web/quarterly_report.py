@@ -250,7 +250,7 @@ def parse(extracted: Extracted, doc_token: str
 
 def parse_quarterly_report_text(text: str, doc_token: str
                                 ) -> tuple[list[dict], list[dict]]:
-    """Pure-text variant of `parse_quarterly_report`: the report row and
+    """Pure-text variant of `parse`: the report row and
     its investment lines. Returns ([], []) unless the document is a
     quarterly report whose capital account states the fund's ISIN and its
     date, the two facts that place the report."""

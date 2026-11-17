@@ -712,50 +712,58 @@ def test_the_purge_takes_the_advice_era_and_leaves_the_export(tmp_path):
 
 # ---- document routing ---------------------------------------------
 
-def _route(monkeypatch, tmp_path, doc_type: str, label: str = "") -> str:
-    """Which parser `_parse_one_pdf` hands a document to, with every
-    parser stubbed so no PDF is opened."""
-    import pdf_parsers
-    called = []
-    monkeypatch.setattr(pdf_parsers, "parse_payment_advice",
-                        lambda *a, **k: called.append("advice") or [])
-    monkeypatch.setattr(pdf_parsers, "parse_maturity_notice",
-                        lambda *a, **k: called.append("mortgage") or [])
-    monkeypatch.setattr(pdf_parsers, "parse_statement_of_assets",
-                        lambda *a, **k: called.append("positions")
-                        or ([], [], []))
-    monkeypatch.setattr(pdf_parsers, "parse_account_statement_combined",
-                        lambda *a, **k: called.append("statement") or ([], []))
-    monkeypatch.setattr(pdf_parsers, "parse_contract_note",
-                        lambda *a, **k: called.append("contract_note") or [])
-    monkeypatch.setattr(pdf_parsers, "parse_capital_call",
-                        lambda *a, **k: called.append("capital_call") or [])
-    monkeypatch.setattr(pdf_parsers, "parse_quarterly_report",
-                        lambda *a, **k: called.append("quarterly_report")
-                        or ([], []))
-    pdf = tmp_path / "doc.pdf"
-    pdf.write_bytes(b"%PDF-1.4\n")
-    loader._parse_one_pdf((loader._document_scope(label, doc_type), "token",
-                           str(pdf), label, "sha", None))
-    return called[0]
+def _scope(doc_type: str, label: str = "") -> str:
+    """Which reader the walk hands a document to."""
+    return loader._document_scope(label, doc_type)
 
 
-def test_an_advice_label_routes_to_the_advice_parser(monkeypatch, tmp_path):
+def test_an_advice_label_routes_to_the_advice_parser():
     # UBS spells the label inconsistently within one archive, so the
     # match is case-folded.
-    assert _route(monkeypatch, tmp_path, "Credit Advice") == "advice"
-    assert _route(monkeypatch, tmp_path, "Debit Advice") == "advice"
-    assert _route(monkeypatch, tmp_path, "Debit advice") == "advice"
+    assert _scope("Credit Advice") == "payment_advice"
+    assert _scope("Debit Advice") == "payment_advice"
+    assert _scope("Debit advice") == "payment_advice"
 
 
-def test_a_label_that_only_reads_like_an_advice_is_left_alone(monkeypatch,
-                                                              tmp_path):
+def test_a_label_that_only_reads_like_an_advice_is_left_alone():
     # 'UBS Advice' is a fee the bank bills itself and 'Advice _
     # Statement' a securities confirmation. Neither is a payment, and
     # neither may be pulled out of the Account-Statement path.
-    assert _route(monkeypatch, tmp_path, "UBS Advice") == "statement"
-    assert _route(monkeypatch, tmp_path, "Advice _ Statement") == "statement"
-    assert _route(monkeypatch, tmp_path, "Maturity notice") == "mortgage"
+    assert _scope("UBS Advice") == "account_statement"
+    assert _scope("Advice _ Statement") == "account_statement"
+    assert _scope("Maturity notice") == "maturity_notice"
+
+
+# The wrapper each scope's parse calls, what the stub of it returns, and
+# the kind the parse is stored under.
+_SCOPE_READERS = {
+    "statement_of_assets": ("parse_statement_of_assets", ([], [], []),
+                            "statement_of_assets"),
+    "maturity_notice": ("parse_maturity_notice", [], "mortgage"),
+    "payment_advice": ("parse_payment_advice", [], "payment_advice"),
+    "contract_note": ("parse_contract_note", [], "securities_advice"),
+    "private_market_letter": ("parse_capital_call", [{"kind": "call"}],
+                              "securities_advice"),
+    "account_statement": ("parse_account_statement_combined", ([], []),
+                          "account_statement"),
+}
+
+
+@pytest.mark.parametrize("scope", sorted(_SCOPE_READERS))
+def test_each_scope_reaches_its_reader_with_its_kind(monkeypatch, scope):
+    # Every wrapper is stubbed, so no PDF is opened.
+    import pdf_parsers
+    called = []
+    for wrapper, result, _kind in [*_SCOPE_READERS.values(),
+                                   ("parse_quarterly_report", ([], []), "")]:
+        monkeypatch.setattr(
+            pdf_parsers, wrapper,
+            lambda *_a, _w=wrapper, _r=result, **_k: called.append(_w) or _r)
+    wrapper, _result, kind = _SCOPE_READERS[scope]
+    parsed = loader._parse_one_pdf(
+        (scope, "token", "doc.pdf", "", "sha", None))
+    assert called == [wrapper]
+    assert parsed["kind"] == kind
 
 
 # ---- an advice must not restate the statement ledger ---------------
@@ -976,6 +984,96 @@ def _parses(conn=None, results: dict | None = None) -> loader.DocumentParses:
                              loader._document_scope(label, doc_type)],
                          {"kind": kind, "rows": rows})
     return parses
+
+
+def test_the_result_shape_version_moves_every_namespace(monkeypatch):
+    # The shape a parse is stored in is this loader's code, which no
+    # reader fingerprint covers, so its version is part of the namespace.
+    before = dict(loader._namespaces())
+    loader._namespaces.cache_clear()
+    monkeypatch.setattr(loader, "_RESULT_SHAPE", "r-next")
+    try:
+        after = loader._namespaces()
+    finally:
+        loader._namespaces.cache_clear()
+    assert after.keys() == before.keys()
+    assert all(after[scope] != before[scope] for scope in before)
+
+
+def _seed_pdf_doc(conn, tmp_path, token: str, doc_type: str) -> str:
+    """A documents row whose file exists, so a walk parses it. Returns
+    its label."""
+    pdf = tmp_path / f"{token}.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    label = f"{doc_type} 01.01.2020"
+    conn.execute(
+        "INSERT INTO documents (doc_token, content_sha256, file_path, "
+        "size_bytes, snapshot_at, doc_type, label) "
+        "VALUES (?, ?, ?, 1, 1700000000, ?, ?)",
+        (token, f"sha-{token}", str(pdf), doc_type, label))
+    return label
+
+
+def test_a_reader_that_raises_is_logged_and_tried_again(tmp_path, monkeypatch,
+                                                        caplog):
+    import pdf_parsers
+    conn = fresh_db(tmp_path)
+    label = _seed_pdf_doc(conn, tmp_path, "note", loader.CONTRACT_NOTE_DOC_TYPE)
+    dump = tmp_path / "bronze" / "20260101T000000Z"
+    (dump / "documents").mkdir(parents=True)
+    calls = []
+
+    def raises(*_a, **_k):
+        calls.append(1)
+        raise ValueError("synthetic failure")
+
+    monkeypatch.setattr(pdf_parsers, "parse_contract_note", raises)
+    parses = loader.DocumentParses(ParseCache(), workers=1)
+    with conn:
+        loader._load_historical_from_pdfs(conn, 1700000000, dump, parses, {})
+    assert caplog.text.count("PDF parse failed for note.pdf") == 1
+    assert parses.cache.get(loader._parse_key("sha-note", "note", label),
+                            loader._namespaces()["contract_note"]) is None
+    with conn:
+        loader._load_historical_from_pdfs(conn, 1700000000, dump, parses, {})
+    assert len(calls) == 2
+    conn.close()
+
+
+def test_a_document_whose_file_is_gone_replays_only_from_the_cache(tmp_path):
+    gone = str(tmp_path / "gone.pdf")
+    label = "Contract note 01.01.2020"
+    held = {"kind": "securities_advice", "rows": []}
+    parses = loader.DocumentParses(ParseCache(), workers=1)
+    parses.cache.put(loader._parse_key("sha-held", "held", label),
+                     loader._namespaces()["contract_note"], held)
+    assert parses.results([
+        ("held", gone, label, loader.CONTRACT_NOTE_DOC_TYPE, "sha-held"),
+        ("lost", gone, label, loader.CONTRACT_NOTE_DOC_TYPE, "sha-lost"),
+    ]) == [("gone.pdf", held)]
+
+
+def test_closing_a_walked_load_sweeps_the_extractions_of_other_extractors(
+        tmp_path):
+    import pdf_parsers
+    from collectorkit import extract
+    current = extract.extraction_key(pdf_parsers.EXTRACTOR)
+    kept = tmp_path / f"{'a' * 64}.{current}.json.gz"
+    stale = tmp_path / f"{'a' * 64}.{'0' * 32}.json.gz"
+    for entry in (kept, stale):
+        entry.write_bytes(b"")
+    parses = loader.DocumentParses(ParseCache(), workers=1,
+                                   extract_dir=tmp_path)
+    parses.results([])
+    parses.close()
+    assert kept.exists() and not stale.exists()
+
+
+def test_the_extractions_are_cached_beside_the_parse_cache():
+    from collectorkit import extract, parsecache
+    assert loader._extract_dir() == extract.default_dir("ubs-web")
+    assert loader._extract_dir().parent == (
+        parsecache.default_dir("ubs-web").parent)
 
 
 def test_the_walk_writes_the_advices_after_the_statement_ledger(tmp_path):
@@ -1528,6 +1626,14 @@ def test_main_loads_only_the_loadable_dumps(tmp_path, monkeypatch):
     assert loaded == [good, part]
 
 
+def test_a_slug_that_names_no_instant_is_skipped(tmp_path, caplog):
+    (tmp_path / "20260230T000000Z").mkdir()
+    (tmp_path / "20260301T000000Z").mkdir()
+    assert [d.name for d in loader.scan_bronze(tmp_path)] == [
+        "20260301T000000Z"]
+    assert "skipping 20260230T000000Z" in caplog.text
+
+
 def test_the_supplied_directory_is_not_a_bronze_dump(tmp_path):
     """It sits beside the run dirs, and must never be walked as one."""
     (tmp_path / loader.SUPPLIED_DOCUMENTS_DIRNAME).mkdir()
@@ -1722,10 +1828,9 @@ def test_0018_rewrites_the_document_rows_to_what_the_parsers_write(tmp_path):
     conn.close()
 
 
-def test_securities_advices_route_to_their_parsers(monkeypatch, tmp_path):
-    assert _route(monkeypatch, tmp_path, "Contract note") == "contract_note"
-    assert _route(monkeypatch, tmp_path,
-                  "Private Market Letter") == "capital_call"
+def test_securities_advices_route_to_their_parsers():
+    assert _scope("Contract note") == "contract_note"
+    assert _scope("Private Market Letter") == "private_market_letter"
 
 
 def test_a_letter_that_is_no_call_goes_on_to_the_report_parser(monkeypatch,
@@ -1750,7 +1855,7 @@ def test_the_walk_lists_the_securities_advices(tmp_path):
 
 
 def _securities_advice(token: str, amount: float) -> dict:
-    """One parsed `advices` row as `pdf_parsers` emits them."""
+    """One parsed `advices` row as `securities_advice` emits them."""
     row = dict.fromkeys(loader._ADVICE_COLUMNS)
     row.update(source_doc_token=token, kind="capital_call",
                instrument_isin="XX0000000011", currency_iso="USD",
@@ -1779,7 +1884,7 @@ def test_the_walk_writes_securities_advices_and_re_derives_them(tmp_path):
 
 
 def _report(token: str, lines: int) -> dict:
-    """One parsed quarterly report and its lines, as `pdf_parsers`
+    """One parsed quarterly report and its lines, as `quarterly_report`
     emits them. Every value is invented."""
     row = dict.fromkeys(loader._REPORT_COLUMNS)
     row.update(source_doc_token=token, instrument_isin="XX0000000011",
@@ -1845,7 +1950,8 @@ def test_the_purge_takes_the_securities_advices(tmp_path):
 # ============================================================
 
 def _statement_trade(seq: int, quantity: float) -> dict:
-    """One parsed `statement_trades` row as `pdf_parsers` emits them."""
+    """One parsed `statement_trades` row as `soa_transaction_list` emits
+    them."""
     row = dict.fromkeys(loader._STATEMENT_TRADE_COLUMNS)
     row.update(source_doc_token="soa", seq=seq, as_of_date=1901145600,
                portfolio_external_id="0000000000000001",
@@ -1854,11 +1960,11 @@ def _statement_trade(seq: int, quantity: float) -> dict:
     return row
 
 
-def test_a_statement_of_assets_routes_to_its_parser(monkeypatch, tmp_path):
-    assert _route(monkeypatch, tmp_path, "",
-                  "Statement of assets as of 31032030") == "positions"
-    assert _route(monkeypatch, tmp_path,
-                  loader.SUPPLIED_STMT_OF_ASSETS_DOC_TYPE) == "positions"
+def test_a_statement_of_assets_routes_to_its_parser():
+    assert _scope("", "Statement of assets as of 31032030") == (
+        "statement_of_assets")
+    assert _scope(loader.SUPPLIED_STMT_OF_ASSETS_DOC_TYPE) == (
+        "statement_of_assets")
 
 
 def test_the_walk_writes_statement_trades_and_re_derives_them(tmp_path):
@@ -2006,3 +2112,88 @@ def test_a_dump_loaded_after_a_newer_one_updates_no_card_row(tmp_path):
         "SELECT snapshot_at, settled_in_invoice FROM card_transactions")] == [
         (2000, 1)]
     conn.close()
+
+
+def _write_portfolio_trade(conn, root: Path, snapshot_at: int,
+                           variant: str) -> None:
+    import test_portfolio_transactions as ptx
+    price = {"newer": ";20.5;", "older": ";20.6;"}[variant]
+    dump = ptx._seed(root, ptx._csv(ptx.BUY.replace(";20.5;", price)))
+    loader._load_portfolio_transactions(conn, snapshot_at, dump)
+
+
+def _write_card_invoice(conn, root: Path, snapshot_at: int,
+                        variant: str) -> None:
+    import test_card_load as cards
+    due = {"newer": "-250.00", "older": "-300.00"}[variant]
+    dump = cards._write_bronze(
+        root / "20990101T000000Z", roster=cards._roster(cards._account_node()),
+        invoices={"invoices": [cards._invoice()]},
+        details=[cards._detail(due=due)],
+        statements={"a" * 64 + ".pdf": "INV-1"})
+    loader._load_cards(conn, snapshot_at, dump)
+
+
+def _write_statement_movement(conn, _root: Path, snapshot_at: int,
+                              variant: str) -> None:
+    row = dict(_mv(_IBAN_A, _PRE, credit=100.0),
+               counterparty=f"Example {variant.title()} Name")
+    loader._insert_hist_transactions(conn, snapshot_at, [row], {})
+
+
+@pytest.mark.parametrize("table, write", [
+    ("portfolio_transactions", _write_portfolio_trade),
+    ("card_invoices", _write_card_invoice),
+    ("card_statements", _write_card_invoice),
+    ("transactions", _write_statement_movement),
+])
+def test_a_dump_loaded_after_a_newer_one_rewrites_no_row(tmp_path, table,
+                                                          write):
+    # Each variant writes the same row with different content.
+    conn = fresh_db(tmp_path)
+    write(conn, tmp_path / "newer", 2000, "newer")
+    newer = sorted(tuple(r) for r in conn.execute(f"SELECT * FROM {table}"))
+    write(conn, tmp_path / "older", 1000, "older")
+    assert newer
+    assert sorted(tuple(r) for r in conn.execute(
+        f"SELECT * FROM {table}")) == newer
+    conn.close()
+
+
+def _archive_dump(root: Path) -> Path:
+    dump = root / "20260101T000000Z"
+    (dump / "documents").mkdir(parents=True)
+    (dump / "run.json").write_text('{"status": "complete"}')
+    return dump
+
+
+def test_a_failed_derive_fails_the_load(tmp_path, monkeypatch):
+    root = tmp_path / "bronze"
+    _archive_dump(root)
+    argv = ["--silver-db", str(tmp_path / "ubs-web.db"),
+            "--bronze-dir", str(root)]
+    monkeypatch.setattr(loader, "_load_historical_from_pdfs",
+                        lambda *_a: (0, 0, 0, 0))
+    assert loader.main(argv) == 0
+
+    # The dump is loaded, so this load walks the archive only in the
+    # derive a newly supplied document asks for.
+    def fails(*_a):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(loader, "_load_historical_from_pdfs", fails)
+    monkeypatch.setattr(loader, "_load_supplied_documents", lambda _c, _d: 1)
+    assert loader.main(argv) == 1
+
+
+def test_a_failed_supplied_document_pass_fails_the_load(tmp_path,
+                                                        monkeypatch):
+    root = tmp_path / "bronze"
+    root.mkdir()
+
+    def fails(_conn, _supplied_dir):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(loader, "_load_supplied_documents", fails)
+    assert loader.main(["--silver-db", str(tmp_path / "ubs-web.db"),
+                        "--bronze-dir", str(root)]) == 1

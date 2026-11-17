@@ -23,9 +23,9 @@ Each returns plain dicts ready for the loader to insert into silver. A
 reader imports `collectorkit.words` and pdf_common.py and nothing that
 extracts, so its parser fingerprint is its own code. This module is the
 other half, and the names the loader and the tests use: `EXTRACTOR`,
-the one extraction every reader reads, and a `parse_*(path, ...)`
-wrapper per kind that extracts a document (from the extraction cache
-when the loader passes one) and reads it.
+the one extraction every reader reads, `extracted`, and a
+`parse_*(path, ...)` wrapper per kind that extracts a document (from the
+extraction cache when the loader passes one) and reads it.
 
 Parsing strategy: PDF tables in UBS statements are not real PDF
 tables (no row / column structure for pdfplumber to detect — see
@@ -52,9 +52,7 @@ on pdfplumber because the visual-line reconstruction PDFium needs
 (count_rects() returns either cell-level granularity that splits a row
 across many lines, or column-shared-baseline rects that merge columns
 that pdfplumber keeps apart) cannot reproduce the line layout these
-parsers read. The Account-Statement balance summary's squish-and-match
-reading does round-trip byte-identical under pypdfium2, so that one
-parser could move on its own.
+parsers read.
 """
 from __future__ import annotations
 
@@ -70,35 +68,7 @@ import payment_advice
 import quarterly_report
 import securities_advice
 import soa_positions
-from account_statement import (
-    _stmt_security, _stmt_split_multi, parse_account_statement_text,
-)
-from maturity_notice import parse_maturity_notice_text
-from payment_advice import _advice_trx_no, parse_payment_advice_text
 from pdf_common import document_text
-from quarterly_report import parse_quarterly_report_text
-from securities_advice import parse_capital_call_text, parse_contract_note_text
-from soa_positions import (
-    parse_label_statement_of_assets, parse_statement_of_assets_text,
-    psn_portfolio_external_id, statement_of_assets_body_meta,
-)
-from soa_transaction_list import parse_transaction_list
-
-__all__ = [
-    "EXTRACTOR", "parse_account_statement_combined",
-    "parse_account_statement_text",
-    "parse_account_statement_transactions_pages", "parse_capital_call",
-    "parse_capital_call_text", "parse_contract_note",
-    "parse_contract_note_text", "parse_label_statement_of_assets",
-    "parse_maturity_notice", "parse_maturity_notice_text",
-    "parse_payment_advice", "parse_payment_advice_text",
-    "parse_quarterly_report", "parse_quarterly_report_text",
-    "parse_statement_of_assets", "parse_statement_of_assets_pages",
-    "parse_statement_of_assets_text", "parse_transaction_list",
-    "psn_portfolio_external_id", "statement_of_assets_body_meta",
-    "statement_of_assets_text",
-    "_advice_trx_no", "_stmt_security", "_stmt_split_multi",
-]
 
 # Every page's text, laid out as every text-walking reader reads it, and
 # the two word sets the two word-position readers read: the transaction
@@ -107,11 +77,6 @@ EXTRACTOR = functools.partial(
     extract.pdfplumber, text_params={"x_tolerance": 2},
     word_params=({"x_tolerance": 2},
                  {"x_tolerance": 1.5, "keep_blank_chars": False}))
-
-# The readers that take an extracted document, under the names the tests
-# and the loader know.
-parse_statement_of_assets_pages = soa_positions.parse
-parse_account_statement_transactions_pages = account_statement.movements
 
 
 def extracted(pdf_path: Path, *, sha: str | None = None,

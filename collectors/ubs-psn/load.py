@@ -1468,13 +1468,19 @@ def pending_dumps(conn: sqlite3.Connection, bronze_dir: Path, *,
 
     Every timestamped run dir is a dump, whatever its run.json status:
     a fetched queue zip exists nowhere else, so a dump whose walk did not
-    finish still loads what it holds."""
+    finish still loads what it holds. A slug that names no real instant
+    (a 30 February) is skipped with a warning."""
     dumps = list(bronze.iter_run_dirs(bronze_dir))
     log.info("Found %d dump directory(s) under %s", len(dumps), bronze_dir)
     loaded = silver.loaded_snapshots(conn)
     pending: list[Path] = []
     for d in dumps:
-        if bronze.parse_run_ts(d.name) in loaded:
+        try:
+            ts = bronze.parse_run_ts(d.name)
+        except ValueError:
+            log.warning("  %s: skipped (not a valid run timestamp)", d.name)
+            continue
+        if ts in loaded:
             log.info("  %s: skipped (already loaded)", d.name)
             continue
         pending.append(d)

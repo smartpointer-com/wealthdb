@@ -321,10 +321,12 @@ Credentials go in `~/.secrets/ubs-web.env`, as one line
 `UBS_CONTRACT_NUMBER=<contract-number>`. The bank-level
 `~/.secrets/ubs.env` is read when `ubs-web.env` does not exist.
 
-The tool adds a `/debug` mount for opt-in diagnostics:
+The tool also mounts its load caches and a `/debug` dir for opt-in
+diagnostics:
 
 | Container path | Host path (default) | Purpose |
 | --- | --- | --- |
+| `/cache/collector` | `${XDG_CACHE_HOME:-~/.cache}/wealthdb/ubs-web` | the parse and extraction caches a load replays |
 | `/debug` | `~/.cache/wealthdb/debug/ubs-web` (`UBS_WEB_DEBUG_DIR`) | opt-in screenshots / Playwright traces / ad-hoc QR PNGs, and the whole `explore` recording |
 
 Pass any debug-flag value as `/debug/...` so debug artefacts stay

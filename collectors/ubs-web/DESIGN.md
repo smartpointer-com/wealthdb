@@ -320,8 +320,9 @@ than minting one:
   statement's printed running balance.
   Each existing row can excuse at most one advice, so two genuinely
   distinct same-day payments of one amount both still land; and the
-  advices are written after every statement in the same pass, so the
-  order the PDF workers happen to finish in cannot change the result.
+  advices are written after every statement in the same pass, so a
+  statement listed after its advice in the archive still counts
+  against it.
 - **The MT940 floor does not gate it.** That floor exists because the
   statement era mints ids of its own, so a statement and the feed
   recording one booking produce two rows nothing can recognise as one.
@@ -629,11 +630,9 @@ headline comes in three flavours:
    asset-class total is read from the relationship overview into
    `statement_overview_totals`, one row per statement copy. The
    overview prints the figure once per portfolio-currency PDF, and
-   every copy is kept. The gold adapter turns the USD copy (the
-   reporting-currency baseline) into a single position
-   (`description = "Precious metals & commodities"`, a
-   non-ISIN-shaped key of the form `PM-<portfolio>`) and leaves the
-   canonical ISIN null.
+   every copy is kept. The gold adapter turns one copy into the
+   portfolio's position
+   ([ubs.md §9](../../wealthdb/docs/adapters/ubs.md#9-historical-pdf-reconstructed-data)).
 
 **Headlines whose figures run together.** The listed and
 private-markets patterns find where one figure ends by the decimal
@@ -1062,8 +1061,12 @@ exposure record and a composition for the fund
   cache root.
 - **Idempotency.** Re-running the loader on the same bronze dir
   is a no-op (PK collisions caught + content-dedup).
-- **Atomicity.** One transaction per dump-run. Roll back on any
-  parsing failure; re-run after fixing.
+- **Atomicity.** One transaction per dump. A dump that fails is
+  rolled back and logged. The later dumps still load, and the load
+  exits non-zero. The next load runs the failed dump again: it adds
+  the rows silver lacks and leaves every row a newer dump wrote as it
+  is. A document that fails to parse is logged and left out of that
+  walk. It is not cached, so the next walk parses it again.
 - **Run status + pruning.** The `run.json` status lifecycle and the
   `prune` safety envelope are fleet-wide
   ([collectors/README.md](../README.md#debug-artefacts-run-status-and-pruning-bronze)).

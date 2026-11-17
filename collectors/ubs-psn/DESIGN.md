@@ -126,7 +126,8 @@ the operationally-correct response is:
 
 `dump_runs.snapshot_at` (= the dump-directory timestamp) provides
 idempotency on re-runs that do not change loader semantics, but for
-loader-semantics changes a wipe is the only consistent path.
+loader-semantics changes a `load --force` rebuild is the only
+consistent path.
 
 ## 7. Bronze layout and pruning
 
