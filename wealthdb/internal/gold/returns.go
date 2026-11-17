@@ -618,6 +618,20 @@ func (a *accountData) valueAt(day int64) (float64, bool) {
 	return a.series[i-1].val, true
 }
 
+// changeDays appends to days each day in (from, to] on which a's value
+// changes: the days of its series there, and its last day's next, where
+// it ends inside the span and reads nothing from then on.
+func (a *accountData) changeDays(from, to int64, days []int64) []int64 {
+	i := sort.Search(len(a.series), func(k int) bool { return a.series[k].day > from })
+	for ; i < len(a.series) && a.series[i].day <= to; i++ {
+		days = append(days, a.series[i].day)
+	}
+	if n := len(a.series); n > 0 && a.series[n-1].day >= from && a.series[n-1].day < to {
+		days = append(days, a.series[n-1].day+1)
+	}
+	return days
+}
+
 // closureDay returns the explicit-closure day (the account's value went to ~0)
 // or 0 when it merely stopped updating (staleness must NOT synthesize a
 // divestment). The daily carry-forward spine extends a zeroing row into a flat

@@ -7,6 +7,7 @@ The returns quality column gives the reason for every n/a and tags every approxi
 - boundary_same_snapshot: the bucket starts and ends on the same snapshot.
 - stale_snapshot: the end value rests on a snapshot much older than the entity's usual gap; the feed may have stopped.
 - dietz_degenerate: the bucket's approximation has no defined value.
+- loss_beyond_total: twr is n/a: a period lost more than everything while the value stayed at zero or above, so its flows and values disagree, or the period is too coarse.
 - post_exit_residue: money left nearly all of the entity; twr leaves out the periods on what remained, while gain and mwr still count its income.
 - nonpositive_base: a loan or a net-negative entity; a return means nothing.
 - mwr_no_flows: no money moved in or out, so there is no money-weighted return; read twr.

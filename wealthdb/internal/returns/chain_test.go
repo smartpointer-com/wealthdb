@@ -148,3 +148,14 @@ func TestAnnualizeATotalLoss(t *testing.T) {
 		}
 	}
 }
+
+// A total loss is no loss beyond it, float dust below -100% included; only
+// a figure past it is.
+func TestBeyondTotalLoss(t *testing.T) {
+	t.Parallel()
+	for r, want := range map[float64]bool{0.1: false, -0.5: false, -1: false, -1 - 1e-15: false, -1.001: true, -3: true} {
+		if got := BeyondTotalLoss(r); got != want {
+			t.Errorf("BeyondTotalLoss(%v) = %v, want %v", r, got, want)
+		}
+	}
+}

@@ -44,6 +44,15 @@ func Chain(buckets []Bucket) (cum float64, ok bool) {
 	return prod - 1, true
 }
 
+// totalLossTol is the float dust a sub-period's return may sit below -100%
+// by and still read as a total loss.
+const totalLossTol = 1e-9
+
+// BeyondTotalLoss reports whether a sub-period's return r loses more than
+// everything the sub-period held. Only leverage loses that much; without it
+// the flows and values disagree.
+func BeyondTotalLoss(r float64) bool { return r < -1-totalLossTol }
+
 // Annualize converts a cumulative return over `days` to an annual rate:
 // (1+cum)^(365.25/days)-1. A total loss, or a chain past one, stays a total loss:
 // a negative base has no fractional power.

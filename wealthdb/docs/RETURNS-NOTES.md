@@ -240,6 +240,19 @@ Guards: `TestBridgeReadsTheCommonCases`,
   valuation days a roll adds nothing, so a grain whose accounts value
   together chains its plain carried values. The accounts grain never rolls.
   Guard: `TestChainRollsAnAccountForward`.
+- **No loss beyond everything while the value stays at zero or above.**
+  The chain compounds the entity's assets summed. A value that never
+  reads below zero cannot lose more than it held. A sub-period below
+  -100% while that value stays at zero or above therefore says the flows
+  and values disagree, as when money paid in has no value yet, or that the
+  sub-period is too coarse for the approximation. Chained, that one factor
+  takes the whole window below -100%. So the window's TWR is n/a, tagged
+  `loss_beyond_total`. Where the entity's value reads below zero on some
+  day of the sub-period, as when an overdraft or a margin loan outweighs
+  the rest, the arithmetic stands. A loan account of the grain is no part
+  of the value the chain compounds, so it does not count. The tag changes
+  no other figure: MWR, the values, the flows and the per-period rows read
+  as before. Guard: `TestLossBeyondTotal`.
 - **MWR reads the values the chain reads.** Its opening and closing values
   hold what the window's edges have rolled in, so a window that ends with
   a deposit not yet shown has an MWR beside its TWR, not behind it.
@@ -606,7 +619,8 @@ every approximation is tagged. Computed set:
 `since_data_inception`, `configured_inception`, `partial_window`,
 `staggered_inception`, `accounts_grain_meaningless`, `empty_bucket`,
 `carried_forward`, `boundary_same_snapshot`, `stale_snapshot`,
-`dropped_while_nonzero`, `dietz_degenerate`, `nonpositive_base`,
+`dropped_while_nonzero`, `dietz_degenerate`, `loss_beyond_total`,
+`nonpositive_base`,
 `mwr_no_flows`, `mwr_no_sign_change`, `mwr_nonunique`,
 `mwr_no_converge`, `mwr_incomplete_flows`, `mwr_negative_net_capital`,
 `unmatched_transfers=N`, `cross_source_netted=N`, `rolled_forward`,
@@ -621,6 +635,10 @@ A benchmark's figures have flags of their own ("Benchmarks" below):
 
 `post_exit_residue` marks a summary row whose chain left out sub-periods on
 the residue of an exit ("Post-exit residue").
+
+`loss_beyond_total` marks a summary row whose TWR is n/a because one of its
+sub-periods lost more than everything while the entity's value stayed at
+zero or above ("The math").
 
 `rolled_forward` marks a summary row whose window starts or ends with money
 moved that a valuation has not shown yet. TWR and MWR read it rolled in;

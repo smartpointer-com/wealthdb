@@ -157,11 +157,29 @@ func (r *entityRun) rows(fx fxBounds) []ReturnRow {
 
 	// Since-inception summary row, cumulative TWR pinned to the canonical bucket.
 	residue := residueEnds(r.assets, p, r.toDay, r.aggregate)
-	sr := summaryRow(base, winFrom, winTo, av, flows, r.rolled, r.snaps, residue, r.assets, p, entityQ)
+	sr := summaryRow(base, winFrom, winTo, av, flows, r.rolled, r.snaps, residue, r.assets, r.owesOver, p, entityQ)
 	if staleAt(r.snaps, winTo, r.gap, r.gapOK) {
 		sr.Quality = append(sr.Quality, "stale_snapshot")
 	}
 	return append(out, sr)
+}
+
+// owesOver reports whether the value the chain compounds, the entity's
+// assets summed (entityValue), reads below zero on some day of [from, to]:
+// debt that outweighs the rest, an overdraft or a margin loan say. A
+// liability account the entity holds is no part of that value, so it
+// does not count.
+func (e *entity) owesOver(from, to int64) bool {
+	days := []int64{from}
+	for _, a := range e.assets {
+		days = a.changeDays(from, to, days)
+	}
+	for _, day := range days {
+		if v, ok := e.value(day); ok && v < -valueTol {
+			return true
+		}
+	}
+	return false
 }
 
 // entityValue is the aggregate value at a day: each constituent's
@@ -202,7 +220,9 @@ func bucketRow(base ReturnRow, bs, be int64, period string, av func(int64) (floa
 	return r
 }
 
-func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, bool), flows, rolled []returns.Flow, snaps []int64, residue map[int64]bool, assets []*accountData, p ReturnParams, entityQ []string) ReturnRow {
+// summaryRow is the window's since-inception row. owes says whether the
+// entity's value reads below zero over a sub-period (entity.owesOver).
+func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, bool), flows, rolled []returns.Flow, snaps []int64, residue map[int64]bool, assets []*accountData, owes func(from, to int64) bool, p ReturnParams, entityQ []string) ReturnRow {
 	r := base
 	r.Period, r.IsSummary = summaryLabel(winFrom, winTo), true
 	v0, _ := av(winFrom)
@@ -218,9 +238,18 @@ func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, b
 	// poisons the geometric chain — a fixed calendar bucket could, when a period
 	// boundary falls inside a snapshot gap and splits a flow from its later value
 	// realisation (see RETURNS-NOTES §"snapshot-aligned headline").
+	//
+	// A sub-period that loses more than everything, while the value the chain
+	// compounds never reads below zero over it, is no return: a value that
+	// stays at zero or above cannot lose more than it held, so the flows and
+	// values disagree, as when money paid in has no value yet, or the
+	// sub-period is too coarse for the approximation. Chained, such a factor
+	// takes the whole window below -100%, so the window's TWR is n/a instead
+	// (loss_beyond_total). Where the value reads below zero, the arithmetic
+	// stands.
 	bounds := canonicalChainBounds(winFrom, winTo, snaps)
 	var buckets []returns.Bucket
-	degenerate, skipped := false, false
+	degenerate, skipped, beyond := false, false, false
 	for _, sp := range chainSubPeriods(bounds, av, rolled, flows) {
 		if sp.empty {
 			continue
@@ -234,6 +263,9 @@ func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, b
 		if !ok {
 			degenerate = true
 		}
+		if ok && returns.BeyondTotalLoss(rr) && !owes(sp.from, sp.to) {
+			beyond = true
+		}
 	}
 	if skipped {
 		q = append(q, "post_exit_residue")
@@ -244,14 +276,18 @@ func summaryRow(base ReturnRow, winFrom, winTo int64, av func(int64) (float64, b
 			// A window wholly on a residue: each sub-period a factor of 1.
 			cum, ok = 0, true
 		}
-		if ok {
+		switch {
+		case ok && !beyond:
 			r.TWR = f64(cum)
 			days := float64(bounds[len(bounds)-1] - bounds[0])
 			if returns.ShouldAnnualize(p.Annualize, days) {
 				r.TWRAnnualized = f64(returns.Annualize(cum, days))
 			}
-		} else if degenerate {
+		case !ok && degenerate:
 			q = append(q, "dietz_degenerate")
+		}
+		if beyond {
+			q = append(q, "loss_beyond_total")
 		}
 	}
 

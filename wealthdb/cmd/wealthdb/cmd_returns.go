@@ -428,11 +428,12 @@ Flags:
                     (returns % stay visible)
 
 The quality column is load-bearing: n/a returns always carry a reason
-(nonpositive_base, mwr_no_flows, dietz_degenerate, empty_bucket, nav_only,
-staggered_inception, unmatched_transfers, …). Account-grain flow-complete
-returns are exact; everything else is best-effort. Returns are NOT additive
-across grains (global is a value identity over all accounts INCLUDING hidden
-plumbing, not a return identity).
+(nonpositive_base, mwr_no_flows, dietz_degenerate, loss_beyond_total,
+empty_bucket, nav_only, staggered_inception, unmatched_transfers, …).
+Account-grain flow-complete returns are exact; everything else is
+best-effort. Returns are NOT additive across grains (global is a value
+identity over all accounts INCLUDING hidden plumbing, not a return
+identity).
 
 Available columns:
   ` + joinColumnNames(registry) + `

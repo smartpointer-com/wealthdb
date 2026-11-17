@@ -222,7 +222,8 @@ Never echo any of them wholesale.
   removed; MWR (`--method mwr`, XIRR) is the return on the money as it
   went in and out. Both are after fees and taxes paid. `quality` explains
   every `n/a`: `nonpositive_base` (a loan or an unpriced opening: no
-  return), `mwr_no_flows`, `nav_only…` (rough), `since_data_inception`,
+  return), `mwr_no_flows`, `loss_beyond_total` (a period's flows and
+  values disagree), `nav_only…` (rough), `since_data_inception`,
   `stale_snapshot`. Account rows are exact, coarser views best-effort;
   returns never add across views. Cash accounts and deposit banks have no
   rows of their own (their money still counts in `global`); a card is in
