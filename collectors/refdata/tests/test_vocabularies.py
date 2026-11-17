@@ -1,9 +1,9 @@
 """The vocabularies the collector and the engine both write down, read
 from the engine's Go source: a word one side renames fails here."""
 
-import json
 import re
 
+import wanted
 import wants
 from providers import REGISTRY, base, table
 from tests.helpers import ENGINE, go_source
@@ -35,10 +35,9 @@ def test_every_fact_of_the_engines_golden_list_has_a_provider():
     block = re.search(r"var periodFamilies = .*?\n\}\n", go_source("gold/refdata_wanted.go"), re.S).group(0)
     families = re.findall(r'\{"(\w+)",\s*\[\]string', block)
     assert families == list(wants.FAMILIES)
-    doc = json.loads((ENGINE / "gold" / "testdata" / "refdata_wanted.json").read_text())
-    fund_facts = {f for fund in doc["funds"] for f in fund.get("wants") or ()}
-    security_facts = {f for s in doc["securities"]
-                      for f in (*(s.get("wants") or ()), *(f for f in s.get("missing") or () if f in families))}
+    w = wanted.from_file(ENGINE / "gold" / "testdata" / "refdata_wanted.json")
+    fund_facts = {f for fund in w.funds for f in fund.wants}
+    security_facts = {f for s in w.securities for f in (*s.wants, *(f for f in s.missing if f in families))}
     assert fund_facts and security_facts
     assert [f for f in fund_facts if wants.fact_of("fund", f) not in wants.FACTS] == []
     assert [f for f in security_facts if wants.fact_of("security", f) not in wants.FACTS] == []

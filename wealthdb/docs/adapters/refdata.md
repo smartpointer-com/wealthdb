@@ -267,7 +267,7 @@ It prints one JSON document, the wanted list (`internal/gold/refdata_wanted.go`)
 It is the one way the collector reads gold, and its JSON is a versioned
 contract:
 
-- `contract` is `refdata-wanted`, `version` is `4`.
+- `contract` is `refdata-wanted`, `version` is `5`.
 - A change takes a new version when a collector of the version before
   would misread the list. Such a change removes or renames a field,
   changes what a field means, gives a field a value it did not hold
@@ -276,7 +276,12 @@ contract:
 - A field added alone, that an older collector may ignore, takes no new
   version.
 - A collector refuses a version it does not know. The refdata collector
-  reads versions 1 to 4.
+  reads versions 1 to 5.
+- Version 5 states what a fund or a security wants as one entry per
+  fact, in `wants`. Versions 1 to 4 state it in fields apart: a fund's
+  `held_from`, `held_to`, `compositions`, `wants`, `facts` and
+  `history_from`, a security's `missing`, `lookups`, `periods`, `wants`
+  and `calendar`. Version 4 also wants `line_durations` of a bond fund.
 - Version 1 has no `wants`, `facts` or `periods`. Its `missing` names no
   family of period facts.
 - Version 2 wants no `dividend_calendar`. Its securities have no
@@ -302,11 +307,15 @@ A fund:
 | `isin`, `cusip`, `symbol` | the identifiers known, each `null` where none is; the identifier the reference is made of is always filled |
 | `name`, `currency` | the holding's name and the currency it is priced in |
 | `roles` | `held`, `proxy` (it stands in for a held fund), `reference` (its lines widen the security master), `underlying` (a held fund holds it) or `benchmark` (a benchmark's mix names it) |
-| `held_from`, `held_to` | the days a composition is wanted for; `held_to` is `null` while the fund is still held |
-| `compositions` | the days gold already has a composition for, on any basis, ascending |
-| `wants` | the facts the fund is wanted for beyond its compositions (below), in the order below; `[]` where none |
-| `facts` | per fact, the days gold holds it for the fund, ascending, `YYYY-MM-DD`; a fact gold holds nothing of is absent; `{}` where nothing |
-| `history_from` | how far back a backfill reads the fund's `monthly_returns`, whatever days it was held; `null` for a fund no benchmark names |
+| `wants` | what the fund is wanted for, one entry per fact: its `composition` first, then the facts below, in the order below |
+
+A fund's want:
+
+| Field | Meaning |
+| --- | --- |
+| `fact` | `composition`, or a fact below |
+| `from`, `to` | the days it is wanted for, `YYYY-MM-DD`: the days the fund is held, `to` `null` while it is still held. `monthly_returns` is wanted from the fund's history start, whatever days it was held. |
+| `have` | the days gold already holds it for, ascending, `YYYY-MM-DD`; `[]` where none. A composition's are on any basis. |
 
 A fund is wanted when a position holds it as an `etf`, a `fund` or a
 `structured_product` whose asset class has lines worth reading: public
@@ -335,7 +344,6 @@ A fund held (role `held`) wants these facts, in this order:
 | `risk_metrics` | a fund of class fixed income or multi asset | its N-PORT filing's rate sensitivities (`fund_risk`) |
 | `characteristics` | every fund held but a structured product | the figures its issuer's page states: duration, yields, credit quality |
 | `money_market` | a fund of class cash, a money-market fund | its 7-day yields and its weighted average maturity and life |
-| `line_durations` | a fund of class fixed income whose newest composition has no line with a duration or a modified duration | the durations of its lines, which come only with a composition that states them, such as an issuer's holdings file |
 | `dividend_calendar` | every fund held but a structured product | its distributions: their ex, record and pay days and amounts (`dividend_events`) |
 
 A fund a benchmark names is wanted from today, as a reference fund is,
@@ -344,16 +352,14 @@ monthly total returns (`fund_returns`), first, then `characteristics`
 where it is not held. Its lines widen the security master, as a
 reference fund's do ([EXPOSURE.md](../EXPOSURE.md), "Benchmarks").
 
-The class is the one a holding states. A bond fund with no composition
-yet wants `line_durations` too. A fund that only the roles `proxy`,
+The class is the one a holding states. A fund that only the roles `proxy`,
 `reference` or `underlying` name wants none of these, and neither does a
 structured product: no filing or issuer page states them for a note. A
 structured product's composition is still wanted.
 
-`facts` lists the days gold holds for every fund, whatever its role. The
-fund is read through its aliases, as for `compositions`. A collector
-skips a day it already has, and reads freshness from the last one. Each
-fact has its days from these rows:
+A want's `have` reads the fund through its aliases. A collector skips
+a day it already has, and reads freshness from the last one. Each fact
+has its days from these rows:
 
 - `risk_metrics`: the fund's `fund_risk` rows.
 - `monthly_returns`: the filing days of its `fund_returns` rows.
@@ -361,8 +367,6 @@ fact has its days from these rows:
   `seven_day_yield`, `seven_day_gross_yield`,
   `weighted_average_maturity` or `weighted_average_life`.
 - `characteristics`: its other `fund_characteristics` rows.
-- `line_durations`: its compositions that have a line with a duration
-  or a modified duration.
 - `dividend_calendar`: the `as_of` days of its `dividend_calendar` rows.
 
 A fund states the identifiers gold knows for it, so a provider can
@@ -381,12 +385,31 @@ A security:
 | `scope` | `direct`: held directly, and always completed. `constituent`: named by a held fund's lines, and lacking a sector or a country there or a family of period facts; a collector looks these up only when its config allows. A collector skips a scope it does not know. |
 | `share_pct` | a constituent's share of net worth through funds, in percent, so a collector asks the biggest first; `null` for a security held directly |
 | `asset_class` | the security's asset class: the holding's, or the one its fund lines state, so a lookup that finds companies can skip a bond |
-| `missing` | the fields no source states yet: `sector`, `country` and, for a stock held directly, `market_cap` (the fact fields below). Then, for public equity, `earnings`, `dividends` and `financials` (below). A bond's type from a lookup states its sector. A municipal bond's type states its country too. For a constituent, a country only an ISIN's prefix implies counts as missing, and so does a sector or a country a depositary receipt took from a share matched by name (EXPOSURE.md §3). |
-| `lookups` | the day each provider last answered for the security, so a collector refreshes what is older than its `max_age_days`. An answer under another key that found nothing does not count, so the security's own identifier is asked. |
-| `periods` | per family of period facts, the newest period end gold holds, `YYYY-MM-DD`, the security read through its aliases; a family gold holds nothing of is absent; `{}` where nothing. A collector asks only for later periods. |
 | `receipt` | `true` where gold reads the security as a depositary receipt (EXPOSURE.md §13): a lookup or GLEIF calls it one, or a name a lookup, a broker or a fund line gives it says so under a US ISIN or none |
-| `wants` | the facts the security is wanted for beyond its fields: `["dividend_calendar"]` for a security held directly that pays dividends, else `[]`. A stock of class public equity pays them (a share or a receipt). So does a security of class real estate with an ISIN or a CUSIP, such as a listed REIT. |
-| `calendar` | the newest `as_of` of the `dividend_calendar` rows gold holds under the security's key, read through its aliases, `YYYY-MM-DD`; `null` where none. A JPX row, stored under `jpx:<code>`, counts for no security. |
+| `wants` | what the security is wanted for, one entry per fact: `identity` first, then each field it lacks, then each fact it is wanted for beyond its fields |
+
+A security's want:
+
+| Field | Meaning |
+| --- | --- |
+| `fact` | `identity`; a missing field; or `dividend_calendar` |
+| `by` | `identity`'s only: the day each provider last answered for the security, so a collector refreshes what is older than its `max_age_days`. An answer under another key that found nothing does not count, so the security's own identifier is asked. Absent where none answered. |
+| `have` | the newest day gold holds it for, `YYYY-MM-DD`, read through the security's aliases: a family of period facts' newest period end, so a collector asks only for later periods; the dividend calendar's newest `as_of`. Absent where gold holds none. |
+
+The missing fields are those no source states yet: `sector`, `country`
+and, for a stock held directly, `market_cap` (the fact fields below).
+Then, for public equity, `earnings`, `dividends` and `financials`
+(below). A bond's type from a lookup states its sector. A municipal
+bond's type states its country too. For a constituent, a country only
+an ISIN's prefix implies counts as missing, and so does a sector or a
+country a depositary receipt took from a share matched by name
+(EXPOSURE.md §3).
+
+A security held directly that pays dividends wants `dividend_calendar`.
+A stock of class public equity pays them (a share or a receipt). So
+does a security of class real estate with an ISIN or a CUSIP, such as a
+listed REIT. A JPX row, stored under `jpx:<code>`, counts for no
+security's `have`.
 
 A period fact is a figure a company reported for one period
 (`security_period_facts`). Its fields fall into three families:
@@ -401,7 +424,7 @@ A security is wanted when a position holds it as a `stock` or a `bond`,
 or when the look-through of the day reaches it through a fund held today
 (an equity or a bond line, any level deep). Such a constituent is wanted
 when its leaf there has no sector or no country, or when it is public
-equity and misses a family of period facts. Its `missing` names exactly
+equity and misses a family of period facts. Its wants name exactly
 what it lacks. A line naming a fund, and a fund the look-through
 stops at, are no constituents: no company lookup describes a fund. A
 constituent states the identifiers its key and its aliases give: a US

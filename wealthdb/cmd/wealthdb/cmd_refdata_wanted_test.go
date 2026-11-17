@@ -17,7 +17,7 @@ func TestRefdataWantedPrintsTheWantedList(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, se)
 	}
-	var w gold.Wanted
+	var w gold.WantedList
 	if err := json.Unmarshal([]byte(so), &w); err != nil {
 		t.Fatalf("not the wanted list: %v\n%s", err, so)
 	}

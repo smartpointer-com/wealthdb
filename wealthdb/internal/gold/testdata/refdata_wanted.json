@@ -1,6 +1,6 @@
 {
   "contract": "refdata-wanted",
-  "version": 4,
+  "version": 5,
   "generated_at": "2026-10-13T09:30:00Z",
   "as_of": "2026-10-13",
   "settings": {
@@ -17,15 +17,26 @@
       "roles": [
         "held"
       ],
-      "held_from": "2026-03-31",
-      "held_to": "2026-03-31",
-      "compositions": [],
       "wants": [
-        "characteristics",
-        "dividend_calendar"
-      ],
-      "facts": {},
-      "history_from": null
+        {
+          "fact": "composition",
+          "from": "2026-03-31",
+          "to": "2026-03-31",
+          "have": []
+        },
+        {
+          "fact": "characteristics",
+          "from": "2026-03-31",
+          "to": "2026-03-31",
+          "have": []
+        },
+        {
+          "fact": "dividend_calendar",
+          "from": "2026-03-31",
+          "to": "2026-03-31",
+          "have": []
+        }
+      ]
     },
     {
       "ref": "isin:XX0000000017",
@@ -37,12 +48,14 @@
       "roles": [
         "held"
       ],
-      "held_from": "2026-06-30",
-      "held_to": null,
-      "compositions": [],
-      "wants": [],
-      "facts": {},
-      "history_from": null
+      "wants": [
+        {
+          "fact": "composition",
+          "from": "2026-06-30",
+          "to": null,
+          "have": []
+        }
+      ]
     },
     {
       "ref": "symbol:BNDF",
@@ -54,30 +67,39 @@
       "roles": [
         "held"
       ],
-      "held_from": "2026-06-30",
-      "held_to": null,
-      "compositions": [
-        "2026-03-31",
-        "2026-06-30"
-      ],
       "wants": [
-        "risk_metrics",
-        "characteristics",
-        "line_durations",
-        "dividend_calendar"
-      ],
-      "facts": {
-        "characteristics": [
-          "2026-09-30"
-        ],
-        "line_durations": [
-          "2026-03-31"
-        ],
-        "risk_metrics": [
-          "2026-06-30"
-        ]
-      },
-      "history_from": null
+        {
+          "fact": "composition",
+          "from": "2026-06-30",
+          "to": null,
+          "have": [
+            "2026-03-31",
+            "2026-06-30"
+          ]
+        },
+        {
+          "fact": "risk_metrics",
+          "from": "2026-06-30",
+          "to": null,
+          "have": [
+            "2026-06-30"
+          ]
+        },
+        {
+          "fact": "characteristics",
+          "from": "2026-06-30",
+          "to": null,
+          "have": [
+            "2026-09-30"
+          ]
+        },
+        {
+          "fact": "dividend_calendar",
+          "from": "2026-06-30",
+          "to": null,
+          "have": []
+        }
+      ]
     },
     {
       "ref": "symbol:FUNDA",
@@ -89,17 +111,28 @@
       "roles": [
         "held"
       ],
-      "held_from": "2026-01-31",
-      "held_to": null,
-      "compositions": [
-        "2026-03-31"
-      ],
       "wants": [
-        "characteristics",
-        "dividend_calendar"
-      ],
-      "facts": {},
-      "history_from": null
+        {
+          "fact": "composition",
+          "from": "2026-01-31",
+          "to": null,
+          "have": [
+            "2026-03-31"
+          ]
+        },
+        {
+          "fact": "characteristics",
+          "from": "2026-01-31",
+          "to": null,
+          "have": []
+        },
+        {
+          "fact": "dividend_calendar",
+          "from": "2026-01-31",
+          "to": null,
+          "have": []
+        }
+      ]
     },
     {
       "ref": "symbol:FUNDB",
@@ -111,17 +144,32 @@
       "roles": [
         "held"
       ],
-      "held_from": "2026-01-31",
-      "held_to": "2026-01-31",
-      "compositions": [],
       "wants": [
-        "risk_metrics",
-        "characteristics",
-        "line_durations",
-        "dividend_calendar"
-      ],
-      "facts": {},
-      "history_from": null
+        {
+          "fact": "composition",
+          "from": "2026-01-31",
+          "to": "2026-01-31",
+          "have": []
+        },
+        {
+          "fact": "risk_metrics",
+          "from": "2026-01-31",
+          "to": "2026-01-31",
+          "have": []
+        },
+        {
+          "fact": "characteristics",
+          "from": "2026-01-31",
+          "to": "2026-01-31",
+          "have": []
+        },
+        {
+          "fact": "dividend_calendar",
+          "from": "2026-01-31",
+          "to": "2026-01-31",
+          "have": []
+        }
+      ]
     },
     {
       "ref": "symbol:IDX1",
@@ -133,16 +181,14 @@
       "roles": [
         "proxy"
       ],
-      "held_from": "2026-01-31",
-      "held_to": "2026-01-31",
-      "compositions": [],
-      "wants": [],
-      "facts": {
-        "risk_metrics": [
-          "2026-01-31"
-        ]
-      },
-      "history_from": null
+      "wants": [
+        {
+          "fact": "composition",
+          "from": "2026-01-31",
+          "to": "2026-01-31",
+          "have": []
+        }
+      ]
     },
     {
       "ref": "symbol:IDX9",
@@ -154,12 +200,14 @@
       "roles": [
         "reference"
       ],
-      "held_from": "2026-10-13",
-      "held_to": null,
-      "compositions": [],
-      "wants": [],
-      "facts": {},
-      "history_from": null
+      "wants": [
+        {
+          "fact": "composition",
+          "from": "2026-10-13",
+          "to": null,
+          "have": []
+        }
+      ]
     },
     {
       "ref": "symbol:MMF1",
@@ -171,27 +219,39 @@
       "roles": [
         "held"
       ],
-      "held_from": "2026-06-30",
-      "held_to": null,
-      "compositions": [],
       "wants": [
-        "characteristics",
-        "money_market",
-        "dividend_calendar"
-      ],
-      "facts": {
-        "characteristics": [
-          "2026-09-30"
-        ],
-        "dividend_calendar": [
-          "2026-09-02",
-          "2026-10-02"
-        ],
-        "money_market": [
-          "2026-10-09"
-        ]
-      },
-      "history_from": null
+        {
+          "fact": "composition",
+          "from": "2026-06-30",
+          "to": null,
+          "have": []
+        },
+        {
+          "fact": "characteristics",
+          "from": "2026-06-30",
+          "to": null,
+          "have": [
+            "2026-09-30"
+          ]
+        },
+        {
+          "fact": "money_market",
+          "from": "2026-06-30",
+          "to": null,
+          "have": [
+            "2026-10-09"
+          ]
+        },
+        {
+          "fact": "dividend_calendar",
+          "from": "2026-06-30",
+          "to": null,
+          "have": [
+            "2026-09-02",
+            "2026-10-02"
+          ]
+        }
+      ]
     }
   ],
   "securities": [
@@ -205,21 +265,33 @@
       "scope": "direct",
       "share_pct": null,
       "asset_class": "public_equity",
-      "missing": [
-        "sector",
-        "country",
-        "market_cap",
-        "earnings",
-        "dividends",
-        "financials"
-      ],
-      "lookups": {},
-      "periods": {},
       "receipt": true,
       "wants": [
-        "dividend_calendar"
-      ],
-      "calendar": null
+        {
+          "fact": "identity"
+        },
+        {
+          "fact": "sector"
+        },
+        {
+          "fact": "country"
+        },
+        {
+          "fact": "market_cap"
+        },
+        {
+          "fact": "earnings"
+        },
+        {
+          "fact": "dividends"
+        },
+        {
+          "fact": "financials"
+        },
+        {
+          "fact": "dividend_calendar"
+        }
+      ]
     },
     {
       "key": "isin:XX0000000009",
@@ -231,23 +303,33 @@
       "scope": "direct",
       "share_pct": null,
       "asset_class": "public_equity",
-      "missing": [
-        "market_cap",
-        "dividends",
-        "financials"
-      ],
-      "lookups": {
-        "gleif": "2026-05-01"
-      },
-      "periods": {
-        "dividends": "2025-12-31",
-        "earnings": "2026-06-30"
-      },
       "receipt": false,
       "wants": [
-        "dividend_calendar"
-      ],
-      "calendar": "2026-09-02"
+        {
+          "fact": "identity",
+          "by": {
+            "gleif": "2026-05-01"
+          }
+        },
+        {
+          "fact": "market_cap"
+        },
+        {
+          "fact": "dividends",
+          "have": [
+            "2025-12-31"
+          ]
+        },
+        {
+          "fact": "financials"
+        },
+        {
+          "fact": "dividend_calendar",
+          "have": [
+            "2026-09-02"
+          ]
+        }
+      ]
     },
     {
       "key": "isin:XX0000000019",
@@ -259,17 +341,15 @@
       "scope": "constituent",
       "share_pct": 3.0555555555555554,
       "asset_class": "public_equity",
-      "missing": [
-        "earnings"
-      ],
-      "lookups": {},
-      "periods": {
-        "dividends": "2026-06-30",
-        "financials": "2026-06-30"
-      },
       "receipt": false,
-      "wants": [],
-      "calendar": null
+      "wants": [
+        {
+          "fact": "identity"
+        },
+        {
+          "fact": "earnings"
+        }
+      ]
     }
   ]
 }

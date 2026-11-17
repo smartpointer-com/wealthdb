@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"maps"
+	"math"
+	"math/rand/v2"
 	"os"
 	"slices"
 	"strconv"
@@ -17,10 +19,18 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-var updateGolden = flag.Bool("update-wanted", false, "rewrite testdata/refdata_wanted.json")
+var updateGolden = flag.Bool("update-wanted", false, "rewrite testdata/refdata_wanted*.json")
+
+// The wanted lists the golden household pins: as gold builds it, in
+// version 4's shape, and as the engine prints it.
+const (
+	wantedGoldenV4 = "testdata/refdata_wanted_v4.json"
+	wantedGolden   = "testdata/refdata_wanted.json"
+)
 
 // The wanted list of a small invented household, pinned as JSON: the
-// contract the refdata collector reads (docs/adapters/refdata.md §5).
+// contract the refdata collector reads (docs/adapters/refdata.md §5),
+// and gold's own build of it in version 4's shape.
 //
 //   - FUNDA is held at one source under a symbol and at another under a
 //     CUSIP, which reads as the ISIN the US rule gives; nothing ties the
@@ -137,12 +147,19 @@ func TestRefdataWantedPinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := json.MarshalIndent(w, "", "  ")
+	pinWanted(t, w, wantedGoldenV4)
+	pinWanted(t, w.List(), wantedGolden)
+}
+
+// pinWanted compares v's indented JSON with the golden file, which
+// -update-wanted rewrites.
+func pinWanted(t *testing.T, v any, golden string) {
+	t.Helper()
+	got, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got = append(got, '\n')
-	const golden = "testdata/refdata_wanted.json"
 	if *updateGolden {
 		if err := os.WriteFile(golden, got, 0o644); err != nil {
 			t.Fatal(err)
@@ -154,6 +171,50 @@ func TestRefdataWantedPinned(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("wanted list differs from %s:\n%s", golden, got)
+	}
+}
+
+// A version 4 list, as JSON, converts to the version 5 list of the same
+// gold: List reads nothing but the list.
+func TestWantedListConvertsAVersion4List(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(wantedGoldenV4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w Wanted
+	if err := json.Unmarshal(raw, &w); err != nil {
+		t.Fatal(err)
+	}
+	if w.Version != wantedVersion4 {
+		t.Fatalf("%s is version %d, want %d", wantedGoldenV4, w.Version, wantedVersion4)
+	}
+	got, err := json.MarshalIndent(w.List(), "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(wantedGolden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(append(got, '\n'), want) {
+		t.Errorf("the converted %s differs from %s:\n%s", wantedGoldenV4, wantedGolden, got)
+	}
+	l := w.List()
+	for _, f := range l.Funds {
+		if f.Wants[0].Fact != "composition" {
+			t.Errorf("%s: wants begin with %q, want its composition", f.Ref, f.Wants[0].Fact)
+		}
+		for _, x := range f.Wants {
+			if x.Fact == wantLineDurations {
+				t.Errorf("%s: wants %s, which the contract no longer names", f.Ref, x.Fact)
+			}
+		}
+	}
+	for _, s := range l.Securities {
+		if s.Wants[0].Fact != wantIdentity {
+			t.Errorf("%s: wants begin with %q, want its lookup", s.Key, s.Wants[0].Fact)
+		}
 	}
 }
 
@@ -860,5 +921,65 @@ func TestStalePeriods(t *testing.T) {
 	got := stalePeriods(map[string]string{"earnings": "2026-05-31", "dividends": "2026-05-30"}, now)
 	if !slices.Equal(got, []string{"dividends", "financials"}) {
 		t.Errorf("stale = %v, want dividends and financials", got)
+	}
+}
+
+// A constituent's share of net worth does not follow the order its lines
+// come in: the sums are exact. The lines mix one weight so large that a
+// small one added to it alone is lost, and several small ones whose sum
+// is not.
+func TestRefdataWantedSharesDoNotFollowTheLinesOrder(t *testing.T) {
+	t.Parallel()
+	type line struct {
+		key    string
+		weight float64
+	}
+	lines := []line{{"isin:XX0000000071", 1e9}, {"isin:XX0000000072", 1}}
+	for range 10 {
+		lines = append(lines, line{"isin:XX0000000071", 1e-8}, line{"isin:XX0000000073", 1e-8})
+	}
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	shares := func(order []line) map[string]uint64 {
+		db, ctx := openMigrated(t)
+		mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name,
+		    base_currency, first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`)
+		mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol,
+		    first_seen_at, last_seen_at) VALUES ('test-src', 'FUNDS', 'public_equity', 'etf', 'FUNDS', 0, 0)`)
+		mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+		    instrument_external_id, asset_class, vehicle, currency, market_value)
+		    VALUES ('test-src', ?, 'A', 'FUNDS', 'FUNDS', 'public_equity', 'etf', 'USD', 1000)`, day)
+		mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
+		    VALUES ('test-src', 'symbol:FUNDS', ?, 'holdings', 'sec-nport', ?)`, day, len(order))
+		for i, l := range order {
+			mustExec(t, db, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin,
+			    name, asset_type, weight, currency) VALUES ('test-src', 'symbol:FUNDS', ?, 'holdings', ?, ?, ?, 'Co', 'EC', ?, 'USD')`,
+				day, i+1, l.key, strings.TrimPrefix(l.key, "isin:"), l.weight)
+		}
+		if _, err := RebuildExposure(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		w, err := RefdataWanted(ctx, db, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]uint64{}
+		for _, s := range w.Securities {
+			if s.SharePct != nil {
+				out[s.Key] = math.Float64bits(*s.SharePct)
+			}
+		}
+		return out
+	}
+	want := shares(lines)
+	if len(want) != 3 {
+		t.Fatalf("shares of %d constituents, want 3: %v", len(want), want)
+	}
+	r := rand.New(rand.NewPCG(1, 2))
+	for range 3 {
+		order := slices.Clone(lines)
+		r.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+		if got := shares(order); !maps.Equal(got, want) {
+			t.Errorf("shares in another order of the lines: %v, want %v", got, want)
+		}
 	}
 }

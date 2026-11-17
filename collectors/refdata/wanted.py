@@ -5,8 +5,17 @@ The engine prints it (`wealthdb -r refdata-wanted`, a hidden read-only
 subcommand); `--wanted FILE` reads a saved copy instead, for tests and
 for a run on another machine. It is a versioned JSON contract
 (wealthdb/docs/adapters/refdata.md §5): this module refuses a contract
-or a version it does not know rather than guess at its fields. A
-version 1 list names no facts: it reads with `wants`, `facts` and
+or a version it does not know rather than guess at its fields.
+
+A version 5 list states what each fund and security wants as one entry
+per fact (read_fund_wants, read_security_wants). It reads as the fields
+the versions before state apart: a fund's composition gives its held
+days and compositions, monthly_returns its history_from, every other
+fact its wants and facts; a security's identity gives its lookups,
+dividend_calendar its wants and calendar, every other entry its
+missing and periods.
+
+A version 1 list names no facts: it reads with `wants`, `facts` and
 `periods` empty. A list of version 1 or 2 names no security's receipt,
 wants or calendar: they read false, empty and None. A list before
 version 4 names no fund's history_from: it reads None.
@@ -24,7 +33,10 @@ from pathlib import Path
 import config
 
 CONTRACT = "refdata-wanted"
-VERSIONS = (1, 2, 3, 4)
+VERSIONS = (1, 2, 3, 4, 5)
+# The facts a security wants beyond its fields, each with the field that
+# holds the newest day gold has it for.
+SECURITY_WANTS = {"dividend_calendar": "calendar"}
 
 
 class WantedError(Exception):
@@ -94,6 +106,9 @@ def parse(doc) -> Wanted:
         raise WantedError(f"{CONTRACT} version {doc.get('version')!r} is not one this collector reads "
                           f"({', '.join(map(str, VERSIONS))}); update the collector or the engine so they agree")
     try:
+        if doc["version"] >= 5:
+            doc = {**doc, "funds": [read_fund_wants(f) for f in doc.get("funds") or ()],
+                   "securities": [read_security_wants(s) for s in doc.get("securities") or ()]}
         funds = tuple(Fund(
             ref=f["ref"], isin=f.get("isin"), cusip=f.get("cusip"), symbol=f.get("symbol"),
             name=f.get("name"), currency=f.get("currency"), roles=tuple(f.get("roles") or ()),
@@ -118,6 +133,46 @@ def parse(doc) -> Wanted:
                       funds=funds, securities=securities)
     except (KeyError, TypeError, ValueError) as e:
         raise WantedError(f"{CONTRACT} document is malformed: {e}") from e
+
+
+def read_fund_wants(f: dict) -> dict:
+    """A version 5 fund as the fields of the versions before: its
+    composition's days as held_from, held_to and compositions, the from
+    of monthly_returns as history_from, each other fact in wants and its
+    days, where gold holds any, in facts."""
+    out = {k: v for k, v in f.items() if k != "wants"}
+    out["wants"], out["facts"] = [], {}
+    for w in f.get("wants") or ():
+        fact = w["fact"]
+        if fact == "composition":
+            out.update(held_from=w.get("from"), held_to=w.get("to"), compositions=w.get("have") or [])
+            continue
+        if fact == "monthly_returns":
+            out["history_from"] = w.get("from")
+        out["wants"].append(fact)
+        if w.get("have"):
+            out["facts"][fact] = w["have"]
+    return out
+
+
+def read_security_wants(s: dict) -> dict:
+    """A version 5 security as the fields of the versions before: its
+    identity's `by` as lookups, a fact of SECURITY_WANTS in wants with its
+    newest day, each other entry in missing with its newest period."""
+    out = {k: v for k, v in s.items() if k != "wants"}
+    out.update(lookups={}, missing=[], periods={}, wants=[])
+    for w in s.get("wants") or ():
+        fact, have = w["fact"], w.get("have") or []
+        if fact == "identity":
+            out["lookups"] = w.get("by") or {}
+        elif fact in SECURITY_WANTS:
+            out["wants"].append(fact)
+            out[SECURITY_WANTS[fact]] = have[-1] if have else None
+        else:
+            out["missing"].append(fact)
+            if have:
+                out["periods"][fact] = have[-1]
+    return out
 
 
 def from_file(path: Path) -> Wanted:

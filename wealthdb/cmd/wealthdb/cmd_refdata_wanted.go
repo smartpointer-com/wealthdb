@@ -17,7 +17,7 @@ func init() {
 
 // cmdRefdataWanted prints the wanted list, the JSON document the refdata
 // collector reads to learn which funds and securities gold wants
-// reference data for (gold.Wanted; docs/adapters/refdata.md §5). It is
+// reference data for (gold.WantedList; docs/adapters/refdata.md §5). It is
 // the one way the collector reads gold. Read-only, and hidden from
 // `wealthdb help`, like config-env: the collector runs it as
 // `wealthdb -r refdata-wanted`.
@@ -28,16 +28,15 @@ func cmdRefdataWanted(ctx context.Context, g globalFlags, subargs []string, _ io
 		fmt.Fprintln(stderr, `usage: wealthdb -r refdata-wanted
 
 Print the wanted list the refdata collector reads, as JSON (contract
-version `+fmt.Sprint(gold.WantedContractVersion)+`). It names:
+version `+fmt.Sprint(gold.WantedContractVersion)+`). Each subject it names lists what it wants,
+one entry per fact, with the days gold holds it for. It names:
   - every fund gold wants: a held, proxy, reference or size fund, or
-    one a held fund holds. Each lists the days it is wanted for, the
-    days gold has a composition for and the days gold has each fact
-    for. A held fund also lists the facts it is wanted for, its
-    dividend calendar among them.
-  - every directly held security, with the attributes still missing,
-    whether gold reads it as a depositary receipt, and the newest day of
-    its dividend calendar, which a stock or a listed REIT is wanted
-    for.
+    one a held fund holds. Each wants its composition over the days it
+    is wanted for. A held fund also wants its facts, its dividend
+    calendar among them.
+  - every directly held security: its lookup, the attributes still
+    missing, and the dividend calendar a stock or a listed REIT is
+    wanted for; and whether gold reads it as a depositary receipt.
   - the securities the funds held today reach that lack a sector or a
     country, or, for a stock, recent earnings, dividends or financials.`)
 	}
@@ -62,5 +61,5 @@ version `+fmt.Sprint(gold.WantedContractVersion)+`). It names:
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
-	return enc.Encode(w)
+	return enc.Encode(w.List())
 }

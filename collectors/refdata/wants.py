@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+from wanted import SECURITY_WANTS
+
 COMPOSITION, IDENTITY = "composition", "identity"
 # The roles that want a fund's current composition whether or not it is
 # held today: it stands in for, widens or lies under a held fund, or
@@ -63,9 +65,6 @@ _BY = {(f.subject, f.name): f for f in FACTS}
 # A security's facts by the field of a claim that names them.
 FAMILIES = tuple(f.name for f in FACTS if f.subject == "security" and f.asked_by == "families")
 CLAIM_FACTS = frozenset(f.name for f in FACTS if f.subject == "security" and f.asked_by == "facts")
-# The facts a security wants (its `wants`), each with the wanted list's
-# field that holds the newest day gold has it for.
-_GOLD_DAY = {"dividend_calendar": "calendar"}
 
 
 def fact_of(subject: str, name: str) -> Fact:
@@ -145,7 +144,7 @@ def security_wants(sec) -> list:
     out = [Want(sec, fact_of("security", IDENTITY), current=direct, counted=False, by=sec.lookups)]
     out += [Want(sec, _BY[("security", f)], current=direct) for f in sec.missing if f in FAMILIES]
     out += [Want(sec, _BY[("security", f)], current=direct,
-                 have=frozenset(filter(None, (getattr(sec, _GOLD_DAY[f]),)))) for f in sec.wants if f in CLAIM_FACTS]
+                 have=frozenset(filter(None, (getattr(sec, SECURITY_WANTS[f]),)))) for f in sec.wants if f in CLAIM_FACTS]
     return out
 
 

@@ -161,7 +161,8 @@ The reason for one left is one of these:
   answers the fact.
 - `comes only with a composition from: NAMES`: only a composition from
   these providers states the fact, and the run asks none of them for
-  the fund's composition.
+  the fund's composition. A version 4 wanted list asks for such a fact,
+  `line_durations`; a version 5 list does not.
 - `provider off: NAMES`: only providers that the run does not ask
   answer it.
 - `no provider claims it`: the providers that answer it do not know the
