@@ -66,17 +66,13 @@ func materializeYield(ctx context.Context, tx *sql.Tx, instants []int64, currenc
 	shared := &yieldShared{}
 	var now *yield.Inputs
 	for _, at := range instants {
-		// What does not depend on the currency is read once an instant.
-		base, err := readYieldBase(ctx, tx, at, shared)
+		// The instant is read once, in every currency.
+		base, err := readYieldBase(ctx, tx, at, shared, currencies)
 		if err != nil {
 			return 0, fmt.Errorf("MaterializeYield: %w", err)
 		}
 		for _, ccy := range currencies {
-			in, err := base.inputs(ctx, tx, ccy)
-			if err != nil {
-				return 0, fmt.Errorf("MaterializeYield: %w", err)
-			}
-			b := yield.Compute(in)
+			b := yield.Compute(base.inputs(ccy))
 			if err := m.positions(b, at, ccy); err != nil {
 				return 0, err
 			}

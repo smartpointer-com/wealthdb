@@ -41,20 +41,21 @@ func YieldSecurities(ctx context.Context, db *sql.DB, b *yield.Book) ([]yield.Se
 	return b.Securities(rows), nil
 }
 
-// readSecurities reads the reported figures of each stock held directly
-// and gives it the trailing twelve months of each: the last four
-// quarters, a quarter a year-to-date figure implies taken as the
-// difference from the one before it, the fourth as the fiscal year less
-// the nine months; a year earlier too, for growth. A stock an earlier
-// currency's inputs read is not read again.
-func (b *yieldBase) readSecurities(ctx context.Context, db querier, in *yield.Inputs) error {
+// readSecurities reads the reported figures of each stock some currency
+// of the base holds directly and gives it the trailing twelve months of
+// each: the last four quarters, a quarter a year-to-date figure implies
+// taken as the difference from the one before it, the fourth as the
+// fiscal year less the nine months; a year earlier too, for growth.
+func (b *yieldBase) readSecurities(ctx context.Context, db querier) error {
 	keys := map[string]bool{}
-	for _, h := range in.Holdings {
-		if h.Vehicle == "stock" && h.SecurityID != "" && !b.asked[h.SecurityID] {
-			keys[h.SecurityID], b.asked[h.SecurityID] = true, true
+	for _, v := range b.valued {
+		for _, h := range v.holdings {
+			if h.Vehicle == "stock" && h.SecurityID != "" {
+				keys[h.SecurityID] = true
+			}
 		}
 	}
-	return YieldSecurityFacts(ctx, db, in, keys)
+	return YieldSecurityFacts(ctx, db, b.in, keys)
 }
 
 // YieldSecurityFacts gives each security of keys its trailing twelve

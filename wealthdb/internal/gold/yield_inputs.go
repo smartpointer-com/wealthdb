@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -17,23 +18,22 @@ import (
 // funds' figures and lines, the curves, the income of the twelve months
 // before, and the reported figures of the securities held.
 func YieldInputs(ctx context.Context, db querier, asOf int64, ccy string) (*yield.Inputs, error) {
-	base, err := readYieldBase(ctx, db, asOf, &yieldShared{})
+	base, err := readYieldBase(ctx, db, asOf, &yieldShared{}, []string{ccy})
 	if err != nil {
 		return nil, err
 	}
-	return base.inputs(ctx, db, ccy)
+	return base.inputs(ccy), nil
 }
 
-// yieldBase is what the inputs of one instant read whatever the output
-// currency: the accounts, terms, rates, conventions and curves, the
-// ledger's dividends, the withholding table, the aliases and the
-// instruments held, the dividend calendar and the settlement cycles,
+// yieldBase is what the inputs of one instant read, once for the
+// currencies it is valued in: the accounts, terms, rates, conventions and
+// curves, the ledger's dividends, the withholding table, the aliases and
+// the instruments held, the dividend calendar and the settlement cycles,
 // each holding's amount on each day of the twelve months to the instant,
-// the reported figures of the stocks a currency's inputs have already
-// read, the units of the instruments paid, and the funds held. Every
-// currency's inputs share its maps, and none changes them except
-// Securities and the funds: each currency's inputs add the stocks and the
-// funds no earlier one read (asked, funds).
+// the reported figures of the stocks held, the income lines and the units
+// of the instruments they pay, and the funds held; and each currency's
+// valuation. Every currency's inputs share its maps, and none changes
+// them.
 type yieldBase struct {
 	in *yield.Inputs
 	// amounts is each position's amount day by day, in each currency it
@@ -55,14 +55,31 @@ type yieldBase struct {
 	calendar map[string][]yield.CalendarEvent
 	cycles   yield.SettlementCycles
 	gaps     dividendGaps
-	// asked are the securities whose reported figures were read.
-	asked map[string]bool
-	// units are the units of the instruments the income lines pay, which
-	// the first currency's inputs read (readIncome).
+	// currencies are the currencies the instant is valued in, and valued
+	// each one's valuation, in their order (readValuations).
+	currencies []string
+	valued     []valuation
+	// lines are the income lines of the 24 months to the instant, values
+	// each one's value in each of the currencies (readIncome), and
+	// attributions what they pay under each set of holdings a currency
+	// holds (attribution).
+	lines        []incomeLine
+	values       [][]*float64
+	attributions []*incomeAttribution
+	// units are the units of the instruments the income lines pay
+	// (readIncome).
 	units *yieldUnits
-	// funds are the funds some currency's inputs have read, by key
-	// (readFunds).
+	// funds are the funds some currency holds, by key (readFunds).
 	funds map[string]*fundRead
+}
+
+// valuation is what an instant's inputs read in one output currency: the
+// holdings as `holdings global` values them, each one's legal situs where
+// known, and the exchange rates.
+type valuation struct {
+	holdings []yield.Holding
+	situs    map[yield.HoldingKey]string
+	fx       map[string]float64
 }
 
 // yieldShared is what the bases of several instants read once, as no
@@ -75,10 +92,12 @@ type yieldShared struct {
 	gaps     dividendGaps
 }
 
-// readYieldBase reads the instant asOf's yieldBase. The positions read
-// as receipts, the dividend calendar and the settlement cycles come from
-// shared, read on the first instant that needs them.
-func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldShared) (*yieldBase, error) {
+// readYieldBase reads the instant asOf's yieldBase, valued in each
+// currency of currencies. The positions read as receipts, the dividend
+// calendar and the settlement cycles come from shared, read on the first
+// instant that needs them.
+func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldShared,
+	currencies []string) (*yieldBase, error) {
 	day := time.Unix(asOf, 0).UTC()
 	in := &yield.Inputs{AsOf: asOf, Day: time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC),
 		Accounts: map[yield.AccountKey]yield.Account{}, Terms: map[yield.InstrumentKey]yield.Terms{},
@@ -87,9 +106,9 @@ func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldSha
 		Withholding: map[string]map[string]float64{}, AccountWithholding: map[yield.AccountKey]map[string]float64{},
 		Held: map[yield.InstrumentKey][]string{}, HeldSecurity: map[yield.InstrumentKey]string{},
 		Aliases: map[yield.AliasKey]string{}}
-	b := &yieldBase{in: in, asked: map[string]bool{}, lag: map[yield.InstrumentKey]yield.Lag{},
+	b := &yieldBase{in: in, lag: map[yield.InstrumentKey]yield.Lag{},
 		market: map[yield.InstrumentKey]string{}, share: map[yield.InstrumentKey]bool{},
-		funds: map[string]*fundRead{}}
+		currencies: currencies, funds: map[string]*fundRead{}}
 	if err := runSteps("YieldInputs", []step{
 		{"accounts", func() error { return readYieldAccounts(ctx, db, in) }},
 		{"terms", func() error { return readYieldTerms(ctx, db, in) }},
@@ -110,67 +129,86 @@ func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldSha
 			return err
 		}},
 		{"withholding", func() error { return readWithholding(ctx, db, in) }},
+		{"holdings", func() error { return b.readValuations(ctx, db) }},
+		{"funds", func() error { return b.readFunds(ctx, db) }},
+		{"income", func() error { return b.readIncome(ctx, db) }},
+		{"securities", func() error { return b.readSecurities(ctx, db) }},
 	}); err != nil {
 		return nil, err
 	}
 	return b, nil
 }
 
-// inputs are the base's instant valued in ccy: the base's figures, the
-// holdings as `holdings global` values them, the funds held, the income
-// of the twelve months before, the reported figures of the stocks held,
+// inputs are the base's instant valued in ccy, one of its currencies: the
+// base's figures, the holdings as `holdings global` values them, the
+// funds held and their lines, the income of the twelve months before,
 // each holding's daily amounts and the exchange rates.
-func (b *yieldBase) inputs(ctx context.Context, db querier, ccy string) (*yield.Inputs, error) {
+func (b *yieldBase) inputs(ccy string) *yield.Inputs {
+	ci := slices.Index(b.currencies, ccy)
+	v := b.valued[ci]
 	in := *b.in
 	in.Currency = ccy
 	in.Funds, in.Income, in.AccountIncome = map[string]*yield.Fund{}, map[yield.HoldingKey]yield.Received{},
 		map[yield.AccountCurrency]yield.Received{}
-	in.Payments, in.Daily = map[yield.HoldingKey][]yield.Payment{}, map[yield.HoldingKey]yield.Daily{}
-	in.FormerDaily = map[yield.InstrumentKey][]yield.Daily{}
-	in.Situs, in.FXRates = map[yield.HoldingKey]string{}, map[string]float64{}
-	if err := runSteps("YieldInputs", []step{
-		{"holdings", func() error { return readYieldHoldings(ctx, db, &in) }},
-		{"funds", func() error { return b.readFunds(ctx, db, &in) }},
-		{"income", func() error { return b.readIncome(ctx, db, &in) }},
-		{"securities", func() error { return b.readSecurities(ctx, db, &in) }},
-		{"fx", func() error { return readYieldFX(ctx, db, &in) }},
-		{"daily", func() error {
-			b.daily(&in)
-			return nil
-		}},
-	}); err != nil {
-		return nil, err
-	}
-	return &in, nil
+	in.Daily, in.FormerDaily = map[yield.HoldingKey]yield.Daily{}, map[yield.InstrumentKey][]yield.Daily{}
+	in.Holdings, in.Situs, in.FXRates = slices.Clone(v.holdings), v.situs, v.fx
+	b.pickFunds(&in)
+	in.Index()
+	b.income(&in, ci)
+	b.daily(&in)
+	return &in
 }
 
-func readYieldHoldings(ctx context.Context, db querier, in *yield.Inputs) error {
+// readValuations reads each currency's valuation of the instant
+// (yieldBase.valued): the holdings and their situs in one statement, the
+// exchange rates in another.
+func (b *yieldBase) readValuations(ctx context.Context, db querier) error {
+	b.valued = make([]valuation, len(b.currencies))
+	for i := range b.valued {
+		b.valued[i] = valuation{situs: map[yield.HoldingKey]string{}, fx: map[string]float64{}}
+	}
+	if err := readYieldHoldings(ctx, db, b.in.AsOf, b.currencies, b.valued); err != nil {
+		return err
+	}
+	return readYieldFX(ctx, db, b.in.AsOf, b.currencies, b.valued)
+}
+
+// readYieldHoldings reads the holdings at the instant asOf valued in each
+// currency of currencies, and their situs, into the valuation of each.
+func readYieldHoldings(ctx context.Context, db querier, asOf int64, currencies []string, out []valuation) error {
+	branches := make([]string, len(currencies))
+	args := []any{asOf}
+	for i, ccy := range currencies {
+		args = append(args, ccy)
+		branches[i] = fmt.Sprintf("SELECT %d AS v, * FROM yield_holdings($1, $%d)", i, len(args))
+	}
 	return scanAll(ctx, db, `
-SELECT h.src, h.acct, h.position_key, COALESCE(h.iid, ''), COALESCE(h.asset_class, ''), COALESCE(h.vehicle, ''),
+SELECT h.v, h.src, h.acct, h.position_key, COALESCE(h.iid, ''), COALESCE(h.asset_class, ''), COALESCE(h.vehicle, ''),
        COALESCE(h.ccy, ''), h.is_cash, h.value, COALESCE(h.amount, 0), h.quantity, h.accrued, h.acquisition_date,
        COALESCE(h.symbol, ''), COALESCE(h.name, ''), COALESCE(h.key, ''),
        COALESCE(h.key, '`+HoldingKeyPrefix+`' || h.src || ':' || COALESCE(h.iid, h.position_key)), COALESCE(st.situs, '')
-  FROM yield_holdings(?, ?) h
-  LEFT JOIN exposure_situs_at(?) st ON st.silver_source_id = h.src AND st.account_external_id = h.acct
+  FROM (`+strings.Join(branches, "\n        UNION ALL ")+`) h
+  LEFT JOIN exposure_situs_at($1) st ON st.silver_source_id = h.src AND st.account_external_id = h.acct
        AND st.position_key = h.position_key
  WHERE h.value IS NOT NULL AND ABS(COALESCE(h.amount, 0)) >= 0.005
- ORDER BY 1, 2, 3`, func(rows *sql.Rows) error {
+ ORDER BY h.v, h.src, h.acct, h.position_key`, func(rows *sql.Rows) error {
+		var v int
 		var h yield.Holding
 		var qty, accrued sql.NullFloat64
 		var acquired sql.NullTime
 		var situs string
-		if err := rows.Scan(&h.Source, &h.Account, &h.PositionKey, &h.Instrument, &h.AssetClass, &h.Vehicle, &h.Currency,
-			&h.IsCash, &h.Value, &h.Amount, &qty, &accrued, &acquired, &h.Symbol, &h.Name, &h.SecurityID, &h.Key,
-			&situs); err != nil {
+		if err := rows.Scan(&v, &h.Source, &h.Account, &h.PositionKey, &h.Instrument, &h.AssetClass, &h.Vehicle,
+			&h.Currency, &h.IsCash, &h.Value, &h.Amount, &qty, &accrued, &acquired, &h.Symbol, &h.Name, &h.SecurityID,
+			&h.Key, &situs); err != nil {
 			return err
 		}
 		h.Quantity, h.Accrued, h.Acquired = nullFloatToPtr(qty), nullFloatToPtr(accrued), nullDate(acquired)
-		in.Holdings = append(in.Holdings, h)
+		out[v].holdings = append(out[v].holdings, h)
 		if situs != "" {
-			in.Situs[h.HoldingKey] = situs
+			out[v].situs[h.HoldingKey] = situs
 		}
 		return nil
-	}, in.AsOf, in.Currency, in.AsOf)
+	}, args...)
 }
 
 func readYieldAccounts(ctx context.Context, db querier, in *yield.Inputs) error {
@@ -513,17 +551,26 @@ func readWithholding(ctx context.Context, db querier, in *yield.Inputs) error {
 }
 
 // readYieldFX reads the rate from each currency gold holds figures in to
-// the output currency, on the instant's day.
-func readYieldFX(ctx context.Context, db querier, in *yield.Inputs) error {
+// each currency of currencies, on the day of the instant asOf, into the
+// valuation of each.
+func readYieldFX(ctx context.Context, db querier, asOf int64, currencies []string, out []valuation) error {
+	branches := make([]string, len(currencies))
+	args := []any{asOf}
+	for i, ccy := range currencies {
+		args = append(args, ccy)
+		branches[i] = fmt.Sprintf(`(SELECT %d AS v, from_ccy, rate FROM fx_rates_to($%d)
+     WHERE day <= $1 // 86400 AND rate IS NOT NULL
+   QUALIFY row_number() OVER (PARTITION BY from_ccy ORDER BY day DESC) = 1)`, i, len(args))
+	}
 	return scanAll(ctx, db, `
-SELECT from_ccy, rate FROM fx_rates_to(?) WHERE day <= ? // 86400 AND rate IS NOT NULL
-QUALIFY row_number() OVER (PARTITION BY from_ccy ORDER BY day DESC) = 1`, func(rows *sql.Rows) error {
+SELECT v, from_ccy, rate FROM (`+strings.Join(branches, "\n    UNION ALL ")+`)`, func(rows *sql.Rows) error {
+		var v int
 		var ccy string
 		var rate float64
-		if err := rows.Scan(&ccy, &rate); err != nil {
+		if err := rows.Scan(&v, &ccy, &rate); err != nil {
 			return err
 		}
-		in.FXRates[ccy] = rate
+		out[v].fx[ccy] = rate
 		return nil
-	}, in.Currency, in.AsOf)
+	}, args...)
 }

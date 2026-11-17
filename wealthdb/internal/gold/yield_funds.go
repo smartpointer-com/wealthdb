@@ -30,28 +30,33 @@ func heldFunds(in *yield.Inputs) []string {
 	return slices.Sorted(maps.Keys(keys))
 }
 
-// readFunds gives in the funds it holds directly. A fund is read once an
-// instant (readYieldFunds), by the first currency's inputs to hold it:
-// every currency's inputs share its figures, which yield.Compute does not
-// change. Each currency picks the lines of its own holdings
-// (yield.PickLines).
-func (b *yieldBase) readFunds(ctx context.Context, db querier, in *yield.Inputs) error {
-	keys := heldFunds(in)
-	if len(keys) == 0 {
+// readFunds reads the funds some currency of the base holds directly,
+// once (readYieldFunds): every currency's inputs share their figures,
+// which yield.Compute does not change.
+func (b *yieldBase) readFunds(ctx context.Context, db querier) error {
+	held := map[string]bool{}
+	for _, v := range b.valued {
+		for _, k := range heldFunds(&yield.Inputs{Holdings: v.holdings}) {
+			held[k] = true
+		}
+	}
+	if len(held) == 0 {
 		return nil
 	}
-	var missing []string
-	for _, k := range keys {
-		if b.funds[k] == nil {
-			missing = append(missing, k)
-		}
+	read, err := readYieldFunds(ctx, db, b.in, slices.Sorted(maps.Keys(held)))
+	if err != nil {
+		return err
 	}
-	if len(missing) > 0 {
-		read, err := readYieldFunds(ctx, db, in, missing)
-		if err != nil {
-			return err
-		}
-		maps.Copy(b.funds, read)
+	b.funds = read
+	return nil
+}
+
+// pickFunds gives in the funds it holds directly (readFunds) and the
+// lines of its own holdings (yield.PickLines).
+func (b *yieldBase) pickFunds(in *yield.Inputs) {
+	keys := heldFunds(in)
+	if len(keys) == 0 {
+		return
 	}
 	for _, k := range keys {
 		in.Funds[k] = b.funds[k].fund
@@ -61,7 +66,6 @@ func (b *yieldBase) readFunds(ctx context.Context, db querier, in *yield.Inputs)
 		lines[k] = &b.funds[k].lines
 	}
 	yield.PickLines(in, lines, keys)
-	return nil
 }
 
 // readYieldFunds reads, for each fund of keys, its newest figure of each

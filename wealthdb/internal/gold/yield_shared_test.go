@@ -1,7 +1,8 @@
 package gold
 
 import (
-	"encoding/json"
+	"context"
+	"database/sql"
 	"fmt"
 	"reflect"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/enrichtest"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/yield"
 )
 
@@ -91,14 +93,30 @@ func dump(v any) string {
 	return b.String()
 }
 
-// The inputs of an instant's currencies share the base's maps and the
-// funds the first currency to hold one reads (readYieldBase, readFunds).
+// seedYieldBookShared is seedYieldBookFX's book with a fund's
+// distribution received, and each pair's rate stored in one direction:
+// fx_daily picks either of a stored rate and the reciprocal of its
+// opposite of one snapshot, which differ in their last bits. Invented.
+func seedYieldBookShared(t *testing.T) (*sql.DB, context.Context, int64) {
+	t.Helper()
+	db, ctx, at := seedYieldBookFX(t)
+	execEach(t, db, `DELETE FROM fx_rates WHERE base_currency = 'USD'`,
+		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
+		    currency, net_amount, instrument_external_id) VALUES
+		    ('test-src', 'D1', `+itoa(ymd(2026, 3, 16).Unix())+`, 'A', 'dividend', 'USD', 12, 'IDXF')`)
+	enrichtest.SeedIncome(t, db, ruleIncome("D1", "sig-fund", "INCOME_DIVIDENDS"))
+	return db, ctx, at
+}
+
+// The inputs of an instant's currencies share the base's maps, its funds
+// and the attribution of its income lines (readYieldBase, attribution).
 // yield.Compute reads them and changes none of them; what it does change
 // is its own currency's (the copy's indexes, which Index makes afresh).
-// So the shared read gives each currency what a read of its own gives.
+// So each currency's inputs from the shared read are what a read of that
+// currency alone gives.
 func TestComputeLeavesTheSharedInputsAlone(t *testing.T) {
 	t.Parallel()
-	db, ctx, at := seedYieldBookFX(t)
+	db, ctx, at := seedYieldBookShared(t)
 	// A short bond fund's filed sensitivities: Compute flips their sign
 	// on a copy of its own, never on the fund the currencies share.
 	execEach(t, db,
@@ -107,18 +125,18 @@ func TestComputeLeavesTheSharedInputsAlone(t *testing.T) {
 		    'USD', '10Y', 1.1)`,
 		`INSERT INTO fund_characteristics (silver_source_id, fund_ref, as_of, provider, field, label, value) VALUES
 		    ('ref', 'symbol:BNDF', `+itoa(at-86399)+`, 'ishares', 'effective_duration', '', -1.5)`)
-	base, err := readYieldBase(ctx, db, at, &yieldShared{})
+	base, err := readYieldBase(ctx, db, at, &yieldShared{}, materializeCurrencies)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sawFunds := false
+	sawFunds, sawPayments := false, false
 	for _, ccy := range materializeCurrencies {
-		in, err := base.inputs(ctx, db, ccy)
-		if err != nil {
-			t.Fatal(err)
-		}
+		in := base.inputs(ccy)
 		sawFunds = sawFunds || in.Funds["symbol:BNDF"] != nil && in.Funds["symbol:BNDF"].Risk != nil
-		shared := func() string { return dump(base.in) + dump(base.funds) }
+		sawPayments = sawPayments || len(in.Payments) > 0
+		shared := func() string {
+			return dump(base.in) + dump(base.funds) + dump(base.valued) + dump(base.attributions)
+		}
 		before := shared()
 		yield.Compute(in)
 		if after := shared(); after != before {
@@ -128,71 +146,60 @@ func TestComputeLeavesTheSharedInputsAlone(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for name, pair := range map[string][2]any{"funds": {in.Funds, own.Funds}, "lines": {in.Lines, own.Lines}} {
-			a, err := json.Marshal(pair[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			b, err := json.Marshal(pair[1])
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(a) != string(b) {
+		for name, pair := range map[string][2]any{"holdings": {in.Holdings, own.Holdings},
+			"funds": {in.Funds, own.Funds}, "lines": {in.Lines, own.Lines}, "income": {in.Income, own.Income},
+			"account income": {in.AccountIncome, own.AccountIncome}, "payments": {in.Payments, own.Payments},
+			"account payments": {in.AccountPayments, own.AccountPayments}, "fx": {in.FXRates, own.FXRates},
+			"situs": {in.Situs, own.Situs}, "daily": {in.Daily, own.Daily},
+			"former daily": {in.FormerDaily, own.FormerDaily}} {
+			if a, b := dump(pair[0]), dump(pair[1]); a != b {
 				t.Errorf("%s %s: shared read %s, a read of its own %s", ccy, name, a, b)
 			}
 		}
+		for k, f := range own.Securities {
+			if dump(in.Securities[k]) != dump(f) {
+				t.Errorf("%s security %s: shared read %s, a read of its own %s", ccy, k, dump(in.Securities[k]),
+					dump(f))
+			}
+		}
 	}
-	if !sawFunds {
-		t.Fatal("the fixture holds no fund with a filed sensitivity")
+	if !sawFunds || !sawPayments {
+		t.Fatalf("the fixture holds a fund with a filed sensitivity: %v, pays: %v", sawFunds, sawPayments)
 	}
 }
 
-// A later currency that holds a fund no earlier one did reads that fund
-// alone: the funds already read keep their figures, and the lines it
-// picks are what a read of its own picks.
-func TestALaterCurrencyReadsOnlyTheFundsItAdds(t *testing.T) {
+// The currencies whose holdings are the same attribute the income lines
+// once: their inputs share the payments. A currency no rate converts the
+// holdings to holds none of them, and its lines are attributed apart, as
+// a read of that currency alone attributes them.
+func TestCurrenciesOfOneHoldingsShareTheirPayments(t *testing.T) {
 	t.Parallel()
-	db, ctx, at := seedYieldBookFX(t)
-	base, err := readYieldBase(ctx, db, at, &yieldShared{})
+	db, ctx, at := seedYieldBookShared(t)
+	execEach(t, db, `DELETE FROM fx_rates WHERE 'GBP' IN (base_currency, quote_currency)`)
+	base, err := readYieldBase(ctx, db, at, &yieldShared{}, materializeCurrencies)
 	if err != nil {
 		t.Fatal(err)
 	}
-	full, err := base.inputs(ctx, db, "USD")
-	if err != nil {
-		t.Fatal(err)
+	usd, gbp := base.inputs("USD"), base.inputs("GBP")
+	if len(usd.Holdings) == 0 || len(gbp.Holdings) != 0 || len(usd.Payments) == 0 {
+		t.Fatalf("%d dollar holdings and %d payments, %d sterling holdings", len(usd.Holdings), len(usd.Payments),
+			len(gbp.Holdings))
 	}
-	keys := heldFunds(full)
-	if len(keys) < 2 {
-		t.Fatalf("the fixture holds %d funds, want two or more", len(keys))
-	}
-	fresh := &yieldBase{in: base.in, funds: map[string]*fundRead{}}
-	first := *full
-	first.Funds = map[string]*yield.Fund{}
-	first.Holdings = nil
-	for _, h := range full.Holdings {
-		if h.SecurityID != keys[1] {
-			first.Holdings = append(first.Holdings, h)
+	for _, ccy := range []string{"CHF", "EUR"} {
+		if in := base.inputs(ccy); reflect.ValueOf(in.Payments).UnsafePointer() !=
+			reflect.ValueOf(usd.Payments).UnsafePointer() {
+			t.Errorf("%s reads payments of its own", ccy)
 		}
 	}
-	if err := fresh.readFunds(ctx, db, &first); err != nil {
+	if len(base.attributions) != 2 {
+		t.Errorf("%d attributions, want the one of the converted holdings and the one of none", len(base.attributions))
+	}
+	own, err := YieldInputs(ctx, db, at, "GBP")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh.funds[keys[1]] != nil {
-		t.Fatalf("%s read though no holding holds it", keys[1])
-	}
-	kept := fresh.funds[keys[0]].fund
-	later := *full
-	later.Funds = map[string]*yield.Fund{}
-	if err := fresh.readFunds(ctx, db, &later); err != nil {
-		t.Fatal(err)
-	}
-	if fresh.funds[keys[1]] == nil || later.Funds[keys[0]] != kept {
-		t.Errorf("the later read: %s read %v, %s kept %v", keys[1], fresh.funds[keys[1]] != nil, keys[0],
-			later.Funds[keys[0]] == kept)
-	}
-	a, _ := json.Marshal(later.Lines)
-	b, _ := json.Marshal(full.Lines)
-	if string(a) != string(b) {
-		t.Errorf("lines %s, a read of its own %s", a, b)
+	if a, b := dump(gbp.Payments)+dump(gbp.AccountPayments)+dump(gbp.Income)+dump(gbp.AccountIncome),
+		dump(own.Payments)+dump(own.AccountPayments)+dump(own.Income)+dump(own.AccountIncome); a != b {
+		t.Errorf("sterling: shared read %s, a read of its own %s", a, b)
 	}
 }
