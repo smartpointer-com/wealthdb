@@ -325,17 +325,51 @@ adapter is a thin forward-fill:
   position leaves, the date carries the exit-day zero snapshot
   (`silver.ClosureMarkerBatch`) instead of an empty batch. `market_value`
   = the collector's
-  `market_value_minor` (current FMV → quarterly fund fair-value statement
-  → annual tax-basis NAV → cost, never blended within a snapshot).
+  `market_value_minor` where the latest event marks the position (current
+  FMV → quarterly fund fair-value statement → annual tax-basis NAV, never
+  blended within a snapshot).
   `book_value` = the capital contributed as the portal states it, on the
-  latest portal event ≤ the date. It is gross: cash distributions do not
-  reduce it. A K-1's Line 19(c) property distribution does. From the
+  latest portal event ≤ the date. Where the portal states none, it is the
+  capital the funding ledger paid into the position by then, less its
+  refunds, stamped derived / paid_in / included. It is gross: cash
+  distributions do not reduce it. A K-1's Line 19(c) property distribution does. From the
   K-1's period end, which is a snapshot day, the basis it states left in
   kind comes off the book value, never below zero. A K-1's cumulative
   contributions are tax-basis capital and can differ from the portal's
   figure, so they ride in the position payload as
   `tax_basis_contributed` instead. `quantity=NULL`;
   `acquisition_date=investment_date`.
+- **Money moved in counts at cost until the next mark.** A position's
+  value is its last mark plus what the funding ledger moved into it after
+  the mark's UTC day, or with no mark yet what the ledger moved in. That
+  is its investments less its refunds and payouts, and never below zero.
+  A mark covers the money moved on its own UTC day, whatever the time of
+  day, and the next mark replaces the sum. A value set at cost is no mark.
+  Each such movement is a snapshot time, at the end of its ledger day, the
+  instant that day's wallet cash is stamped at.
+  - A position whose first payment comes before its investment event is
+    held from that payment.
+  - A deal the ledger names and no position event does is held at cost
+    while what the ledger moved into it is above zero. A commitment
+    refunded in full so leaves nothing behind, and a deal still funded
+    stays held at cost.
+  - A position the ledger moves nothing into keeps its events' values:
+    its last mark, plus the change in the capital its later event states
+    contributed where both state one, else the cost the event states. A
+    silver without the ledger's position link (before silver migration
+    0007) takes this path for every position.
+  - A payment on a company held through several SPVs links to the SPV
+    whose investment date is nearest (`link_funding_transactions`). A
+    wrong pick moves value between those SPVs until their next marks.
+
+  Without the rule the wallet's cash would move on the ledger's day while
+  the position waited for its mark. A call would read as a loss and a
+  payout as a gain until then. A value from a mark is valued at the
+  mark's date, and a value at cost alone at its first payment's, so money
+  moved in since never reads as a fresh mark. Its payload's
+  `valuation_basis` says `cost`, or `mark_plus_cost` with the money moved
+  since as `net_paid_in_since_mark`. Silver keeps the events as the
+  portal states them.
 - **Transactions = the funding ledger** (`funding_transactions`). Each cash
   movement maps to a canonical kind by its source type:
   deposit→`deposit`, withdrawal/transfer→`withdrawal` (external bank ↔
@@ -360,13 +394,21 @@ adapter is a thin forward-fill:
   snapshots at the end of each load. Only external-bank
   deposits / withdrawals stay account-level. Every ledger row links to a
   vehicle.
-- **Cash.** The funding account's current uninvested cash is one
-  `BalanceKind=current` CashBalanceChange, so account value = positions + cash.
+- **Cash.** The funding wallet's uninvested cash is a
+  `BalanceKind=current` CashBalanceChange at the end of every ledger day,
+  so account value = positions + cash on every day. The balance is the
+  ledger's running balance where it follows the signed amounts, with the
+  opening balance read from the first day as a whole. Where it does not
+  follow, or no row states one, the balance is the amounts' cumulative
+  sum, anchored so the last day ends on the balance the latest dump
+  states, and the load logs it. That stated balance is the wallet's cash
+  as of its dump, so it is a balance of its own at the dump's time. A
+  ledger that ends elsewhere is logged.
 
 Consequence: `positions.market_value` summed in gold will not equal
 `portfolio_summary.totalValue` for the current date — positions without a
-reported FMV carry their latest dated mark, the K-1's tax basis, or cost
-before the first K-1. A re-mark to cost at the data date would override a
+reported FMV carry their latest dated mark or the K-1's tax basis, plus
+the money moved in since at cost, or cost before the first mark. A re-mark to cost at the data date would override a
 later, lower statement, so none is written.
 
 An exit paid in shares — an SPV distributing the listed stock it received

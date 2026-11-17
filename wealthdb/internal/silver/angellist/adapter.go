@@ -29,14 +29,24 @@
 //     the adapter emits each position's latest snapshot on/before it,
 //     dropping the is_open=0 (exited) ones — a COMPLETE portfolio per
 //     date, which is what gold's as-of query reads. market_value =
-//     `market_value_minor` (the collector's mark: current FMV, else the
-//     annual K-1 tax-basis NAV, else cost — never blended within a
-//     snapshot). Money is minor units (cents); the adapter scales by
-//     10^-2. quantity = NULL (LP interests have no unit quantity).
+//     `market_value_minor` where the latest mark states it (current FMV,
+//     else a fund statement's fair value, else the annual K-1 tax-basis
+//     NAV — never blended within a snapshot), plus what the funding
+//     ledger moved into the position since at cost; before any mark the
+//     position is at that cost alone (carry.go). Each ledger movement is
+//     a snapshot day. A position is held from its first payment where
+//     that comes first, and a deal only the ledger names while what the
+//     ledger moved into it is above zero. The position is valued at its
+//     last mark's day, or with none at its first payment's, and its
+//     payload's valuation_basis says `cost` or `mark_plus_cost`.
+//     Money is minor units (cents); the adapter scales by 10^-2.
+//     quantity = NULL (LP interests have no unit quantity).
 //
 //   - book_value is the capital paid in (docs/DESIGN.md §7.4): the
 //     portal's `contributed_minor`, gross of cash paid back, stamped
-//     stated / paid_in / included. A K-1 that states a Line 19(c)
+//     stated / paid_in / included. Where the portal states none, it is
+//     the capital the funding ledger paid in less its refunds, stamped
+//     derived / paid_in / included. A K-1 that states a Line 19(c)
 //     property distribution (`k1_capital_accounts`, silver migration
 //     0008) moves that basis out with the asset: from the K-1's period
 //     end (Dec 31 of its tax year) the book value is the paid-in figure
@@ -53,9 +63,10 @@
 //     bank ↔ account), investment→contribution and refund→contribution
 //     (a positive reversal), disbursement→sell on an SPV and distribution
 //     on a fund, transfer→withdrawal — using the source-signed amount (it
-//     reconciles to the balance). The
-//     account's current uninvested cash is one CashBalanceChange
-//     (BalanceKind=current), so account value = positions + cash.
+//     reconciles to the balance). The wallet's uninvested cash is a
+//     CashBalanceChange (BalanceKind=current) at the end of every ledger
+//     day, read from the ledger (cash.go), so account value = positions +
+//     cash on every day.
 package angellist
 
 import (

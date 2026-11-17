@@ -2,6 +2,8 @@ package angellist
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
@@ -16,8 +18,8 @@ import (
 // (position_snapshots.as_of_date, an inception, an early K-1 year) and
 // the funding-ledger dates (funding_transactions.occurred_at), since a
 // funding cash flow can predate the first investment (an opening deposit)
-// or postdate the last valuation. It reaches the latest removal or K-1
-// period end where that is later (reachDates). The transaction range is
+// or postdate the last valuation. It reaches the latest removal, K-1
+// period end or stated wallet balance where that is later (reachDates). The transaction range is
 // the funding-account cash ledger. A silver without the ledger has
 // neither ledger range.
 func (c *Connection) clock() silver.Clock {
@@ -36,9 +38,9 @@ func (c *Connection) clock() silver.Clock {
 	return k
 }
 
-// reachDates reach the latest dump that stopped listing a position and the
-// latest K-1 period end: snapshot times (snapshots.go) that can lie after
-// every mark.
+// reachDates reach the latest dump that stopped listing a position, the
+// latest K-1 period end and the dump that states the wallet's balance:
+// snapshot times (snapshots.go, cash.go) that can lie after every mark.
 func (c *Connection) reachDates(ctx context.Context) (lo, hi int64, err error) {
 	removals, err := c.removals(ctx)
 	if err != nil {
@@ -48,7 +50,17 @@ func (c *Connection) reachDates(ctx context.Context) (lo, hi int64, err error) {
 	if err != nil {
 		return -1, -1, err
 	}
-	return -1, k.Reach(removals.Reach(-1)), nil
+	hi = k.Reach(removals.Reach(-1))
+	if c.schema.fundingAccounts && c.schema.fundingTransactions {
+		var at sql.NullInt64
+		if err := c.db.QueryRowContext(ctx, `SELECT MAX(snapshot_at) FROM funding_accounts`).Scan(&at); err != nil {
+			return -1, -1, fmt.Errorf("angellist wallet balance date: %w", err)
+		}
+		if at.Valid && at.Int64 > hi {
+			hi = at.Int64
+		}
+	}
+	return -1, hi, nil
 }
 
 // Status and ChangeWindow are the clock's (silver.Clock).

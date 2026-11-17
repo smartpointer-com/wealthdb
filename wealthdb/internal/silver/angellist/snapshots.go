@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/shopspring/decimal"
 
@@ -16,7 +16,8 @@ import (
 // Snapshots forward-fills the per-day portfolio from the silver's
 // event-sourced position_snapshots (silver.Book). The collector already
 // replays each position's timeline and computes its mark (silver
-// migration 0005); this adapter does no valuation logic. Every event
+// migration 0005); the adapter adds only the money the funding ledger
+// moves between marks, at cost (carry.go). Every event
 // date gets a COMPLETE snapshot: each position's latest snapshot on or
 // before that date, keeping only the is_open ones, which is what gold's
 // as-of query reads (each account's latest snapshot, all its
@@ -27,7 +28,8 @@ import (
 // own mark date (ValuedAt). When the LAST position leaves, that date
 // gets the exit-day zero snapshot instead (silver.ClosureMarkerBatch).
 // The K-1 period ends are snapshot times too: a book value steps down
-// there (inKind).
+// there (inKind). So is each ledger movement into or out of a held
+// position (carry.go): its value moves at cost there.
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -49,36 +51,44 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err != nil {
 		return nil, err
 	}
+	paid, dayEnd, err := c.readLedger(ctx)
+	if err != nil {
+		return nil, err
+	}
+	deals, err := c.ledgerDeals(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cc := newCostCarry(paid, dayEnd)
+	states = cc.withLedger(states, deals)
+	cc.readMarks(states)
 	batches, err := silver.Book{
 		States:   states,
-		Extra:    k.PeriodEnds(),
+		Extra:    append(k.PeriodEnds(), cc.dates(states, removals)...),
 		Removals: removals,
 		Account:  func(t int64) canonical.AccountChange { return custodyAccount(account, t) },
 		Emit: func(t int64, held []silver.Holding) (canonical.SnapshotBatch, error) {
-			return emit(t, account, k, held), nil
+			return emit(t, account, k, cc, held), nil
 		},
-		StampValuedAt: true,
-		Closure:       true,
+		Closure: true,
 	}.Batches(w)
 	if err != nil {
 		return nil, err
 	}
 	k.LogClamped(kindName)
-	// The funding account's current uninvested cash (so account value =
-	// positions + cash). Emitted as one CashBalanceChange dated at the last
-	// funding movement.
-	cb, ok, err := c.fundingCashBalance(ctx, account)
+	// The funding wallet's uninvested cash on every ledger day (so account
+	// value = positions + cash).
+	cash, err := c.fundingCash(ctx, account)
 	if err != nil {
 		return nil, err
 	}
-	if ok {
-		batches = append(batches, canonical.SnapshotBatch{
-			CashBalances: []canonical.CashBalanceChange{cb},
-		})
+	if len(cash) > 0 {
+		batches = append(batches, canonical.SnapshotBatch{CashBalances: cash})
 	}
 	// Instruments for EXITED investments — offerings derived from the funding
-	// ledger that hold no current position (so emit never emits them),
-	// but whose contributions / distributions need an instrument to link to.
+	// ledger that hold no current position (emit names them only on the
+	// snapshots between their payments), but whose contributions /
+	// distributions need an instrument to link to.
 	insts, err := c.exitedInstruments(ctx)
 	if err != nil {
 		return nil, err
@@ -127,49 +137,6 @@ SELECT o.position_external_id, COALESCE(o.company_name, ''), COALESCE(o.kind, ''
 		}
 		return inst, nil
 	})
-}
-
-// fundingCashBalance is the funding account's current uninvested cash as a
-// CashBalanceChange, dated at the latest funding movement (the balance is the
-// running total after it). ok=false when there is no funding ledger (a silver
-// that predates it, or no row) or no account.
-func (c *Connection) fundingCashBalance(ctx context.Context, account string) (canonical.CashBalanceChange, bool, error) {
-	if account == "" {
-		return canonical.CashBalanceChange{}, false, nil
-	}
-	if !c.schema.fundingAccounts || !c.schema.fundingTransactions {
-		return canonical.CashBalanceChange{}, false, nil
-	}
-	var (
-		balMinor sql.NullInt64
-		ccy      sql.NullString
-		asOf     sql.NullInt64
-	)
-	const q = `
-SELECT fa.balance_minor, fa.currency,
-       (SELECT MAX(occurred_at) FROM funding_transactions)
-  FROM funding_accounts fa LIMIT 1`
-	err := c.db.QueryRowContext(ctx, q).Scan(&balMinor, &ccy, &asOf)
-	if errors.Is(err, sql.ErrNoRows) {
-		return canonical.CashBalanceChange{}, false, nil
-	}
-	if err != nil {
-		return canonical.CashBalanceChange{}, false, fmt.Errorf("angellist funding balance: %w", err)
-	}
-	if !balMinor.Valid || !asOf.Valid {
-		return canonical.CashBalanceChange{}, false, nil
-	}
-	cur := "USD"
-	if ccy.Valid && ccy.String != "" {
-		cur = ccy.String
-	}
-	return canonical.CashBalanceChange{
-		SnapshotAt:        asOf.Int64,
-		AccountExternalID: account,
-		Currency:          cur,
-		BalanceKind:       canonical.BalanceKindCurrent,
-		Amount:            *minorPtr(balMinor),
-	}, true, nil
 }
 
 // removals are the open positions a complete dump no longer lists, each
@@ -231,8 +198,10 @@ SELECT COALESCE(NULLIF(slug, ''), '') FROM (
 // reads from it (silver.Holding.Row).
 type state struct {
 	currency, kind, company, payload string
-	market, contributed, taxBasis    sql.NullInt64
-	invested                         sql.NullInt64
+	// basis is the event's valuation_basis: fmv, tax_basis or cost.
+	basis                         string
+	market, contributed, taxBasis sql.NullInt64
+	invested                      sql.NullInt64
 }
 
 // states are every position's snapshots, oldest first (silver.Book). A
@@ -246,7 +215,7 @@ func (c *Connection) states(ctx context.Context) ([]silver.Holding, error) {
 SELECT ps.position_external_id, ps.as_of_date,
        COALESCE(ps.is_open = 1 AND o.position_external_id IS NOT NULL, 0),
        COALESCE(ps.currency, o.currency, 'USD'),
-       ps.market_value_minor,
+       ps.market_value_minor, COALESCE(ps.valuation_basis, ''),
        (SELECT contributed_minor FROM position_snapshots p
          WHERE p.position_external_id = ps.position_external_id
            AND p.event_type IN ('investment', 'valuation')
@@ -267,7 +236,7 @@ SELECT ps.position_external_id, ps.as_of_date,
 			h silver.Holding
 			s state
 		)
-		err := rows.Scan(&h.Key, &h.At, &h.Open, &s.currency, &s.market, &s.contributed, &s.taxBasis,
+		err := rows.Scan(&h.Key, &h.At, &h.Open, &s.currency, &s.market, &s.basis, &s.contributed, &s.taxBasis,
 			&s.kind, &s.company, &s.invested, &s.payload)
 		h.Row = s
 		return h, err
@@ -279,15 +248,19 @@ SELECT ps.position_external_id, ps.as_of_date,
 // FK is satisfied and the instrument's seen-range merges across batches.
 // The book carries the single invest account.
 //
-// The value is the latest event's mark, whichever source states it, and
-// the position is valued at that event's date. The book value is the
-// capital contributed as the portal states it, on its latest event
-// on/before t, less the basis K-1s say left in kind by then (inKind). A K-1
-// states cumulative contributions too, but on the partnership's tax basis,
-// which can differ from the portal's figure; it rides in the payload as
-// tax_basis_contributed, so the book value does not move between the two
-// as the latest event changes.
-func emit(t int64, account string, k *silver.InKind, held []silver.Holding) canonical.SnapshotBatch {
+// The value is the latest mark, whichever source states it, plus what the
+// funding ledger moved into the position since, at cost; before any mark
+// it is that cost alone (costCarry.value). The position is valued at the
+// mark's date, or with none at its first payment's, and a payload states
+// any cost in the value. The book value is the capital contributed as the
+// portal states it, on its latest event on/before t, or where the portal
+// states none the capital the funding ledger paid in by t less its refunds
+// (costCarry.paidIn). Either way the basis K-1s say left in kind by then
+// comes off it (inKind). A K-1 states cumulative contributions too, but on
+// the partnership's tax basis, which can differ from the portal's figure;
+// it rides in the payload as tax_basis_contributed, so the book value does
+// not move between the two as the latest event changes.
+func emit(t int64, account string, k *silver.InKind, cc *costCarry, held []silver.Holding) canonical.SnapshotBatch {
 	var batch canonical.SnapshotBatch
 	if account == "" {
 		return batch
@@ -304,11 +277,22 @@ func emit(t int64, account string, k *silver.InKind, held []silver.Holding) cano
 			AssetClass:           acNew,
 			Vehicle:              vehicle,
 			Currency:             s.currency,
-			MarketValue:          minorPtr(s.market),
 			AcquisitionDate:      silver.DatePtrFromNullUnix(s.invested),
 		}
-		book, basis, extra := k.BookValue(h.Key, t, minorPtr(s.contributed), paidInBasis)
+		var carried map[string]any
+		change.MarketValue, change.ValuedAt, carried = cc.value(h, t)
+		paidIn, stamp := minorPtr(s.contributed), paidInBasis
+		if paidIn == nil {
+			paidIn, stamp = cc.paidIn(h.Key, t), ledgerPaidInBasis
+		}
+		book, basis, extra := k.BookValue(h.Key, t, paidIn, stamp)
 		change.SetBookValue(book, basis)
+		if carried != nil {
+			if extra == nil {
+				extra = map[string]any{}
+			}
+			maps.Copy(extra, carried)
+		}
 		if tax := minorPtr(s.taxBasis); tax != nil {
 			if extra == nil {
 				extra = map[string]any{}

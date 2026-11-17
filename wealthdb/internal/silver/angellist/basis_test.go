@@ -118,8 +118,8 @@ func TestAPropertyDistributionReducesTheBookValueFromTheK1PeriodEnd(t *testing.T
 	if got := string(byDay[silvertest.ISO(t, "2022-06-30")]["s1"].Payload); got != want {
 		t.Errorf("s1 payload = %s, want %s", got, want)
 	}
-	if p := byDay[silvertest.ISO(t, "2021-06-30")]["s1"]; p.Payload != nil {
-		t.Errorf("s1 payload before the K-1 period end = %s, want none", p.Payload)
+	if got := string(byDay[silvertest.ISO(t, "2021-06-30")]["s1"].Payload); got != `{"valuation_basis":"cost"}` {
+		t.Errorf("s1 payload before the K-1 period end = %s, want the cost basis alone", got)
 	}
 }
 

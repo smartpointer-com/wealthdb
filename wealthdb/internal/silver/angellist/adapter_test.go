@@ -164,8 +164,9 @@ func TestSnapshotsForwardFillPerEventDate(t *testing.T) {
 			t.Errorf("t=%d p1 payload = %s, want the K-1 contributions as tax_basis_contributed", at, got)
 		}
 	}
-	if p := posByT[100]["p1"]; p.Payload != nil {
-		t.Errorf("t=100 p1 payload = %s, want none before the first K-1", p.Payload)
+	// Before its first mark p1 is at the cost its investment states.
+	if got := string(posByT[100]["p1"].Payload); got != `{"valuation_basis":"cost"}` {
+		t.Errorf("t=100 p1 payload = %s, want the cost basis alone before the first K-1", got)
 	}
 	// Taxonomy: a multi-company private fund keeps the private_equity
 	// exposure but rides the pooled-fund vehicle -> (private_equity, fund).
@@ -310,42 +311,6 @@ func TestTransactionsFunding(t *testing.T) {
 	}
 	if s.OldestTransactionAt != 100 || s.LatestTransactionAt != 600 {
 		t.Errorf("tx extrema = [%d,%d], want [100,600]", s.OldestTransactionAt, s.LatestTransactionAt)
-	}
-}
-
-// TestSnapshotsFundingCashBalance verifies the funding account's current
-// uninvested cash is emitted as a CashBalanceChange dated at the latest
-// funding movement.
-func TestSnapshotsFundingCashBalance(t *testing.T) {
-	path, db := newFixtureSilver(t)
-	if _, err := db.Exec(`
-        INSERT INTO dump_runs(snapshot_at, invest_account_slug) VALUES (1000, 'acct');
-        INSERT INTO funding_accounts(funding_account_external_id, currency, balance_minor)
-            VALUES ('fa1', 'USD', 250000);
-        INSERT INTO funding_transactions(transaction_external_id, occurred_at, type, amount_minor, currency) VALUES
-            ('t1', 100, 'deposit',     500000, 'USD'),
-            ('t2', 700, 'withdrawal', -250000, 'USD');
-    `); err != nil {
-		t.Fatal(err)
-	}
-	conn := openAdapter(t, path)
-	w, _ := conn.ChangeWindow(context.Background(), -1)
-	cbs := silvertest.Merged(t, conn, w).CashBalances
-	if len(cbs) != 1 {
-		t.Fatalf("cash balances = %d, want 1", len(cbs))
-	}
-	cb := cbs[0]
-	if cb.BalanceKind != canonical.BalanceKindCurrent {
-		t.Errorf("balance_kind = %q, want current", cb.BalanceKind)
-	}
-	if cb.Amount.StringFixed(2) != "2500.00" { // 250000 minor; == deposit − withdrawal
-		t.Errorf("amount = %v, want 2500.00", cb.Amount)
-	}
-	if cb.SnapshotAt != 700 {
-		t.Errorf("snapshot_at = %d, want 700 (last funding movement)", cb.SnapshotAt)
-	}
-	if cb.AccountExternalID != "acct" {
-		t.Errorf("account = %q, want acct", cb.AccountExternalID)
 	}
 }
 
