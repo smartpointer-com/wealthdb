@@ -419,7 +419,8 @@ the latest of those instants in the window:
 - the cycles show the public equity.
 - each dimension's buckets add up to net worth, `(none)` holding what
   it does not describe. A card leaves that row out and plots each
-  bucket's share of the rest, the CLI's `class_share`. So its bars sum
+  bucket's share of the rest, the CLI's `class_share` (gold's
+  `exposure_class_share`). So its bars sum
   to 100. A card's title names the class it counts. The maturity card's
   names the debt alone, but it counts the debt and the cash, each by its
   term. Where the rest sums to zero or less, a loan outweighing it, no
@@ -475,7 +476,10 @@ and the twelve month ends before, so a window that ends earlier shows
 nothing on those cards. A rate weighs the holdings that state it as
 `yield.summarize` does: over the assets, or over every holding where a
 group holds no asset. So a figure is `wealthdb yield global`'s over
-the same selection.
+the same selection. Gold's macros state these formulas once:
+`yield_rate`, `yield_earning_value` and `yield_part_income`, a part's
+income under the projection's pickers. The engine's tests hold each one
+to its Go function.
 
 The realized yield pools as the engine pools a row. It is the
 holdings' income of the twelve months over the sum of their mean daily
@@ -564,8 +568,10 @@ interest received"), as is the twin's yield on their value ("Holdings'
 income yield").
 
 The by-month chart has a band per type and status. The six types keep
-their colours. The other lines band by their class (`INCOME_LINE_CLASSES`,
-held by a test to the statement's, `cashflow_txn_nodes`): salary and
+their colours. The other lines band by their class: `web_income`'s
+`income_class`, from gold's `income_line_class`, the statement's
+operating-in class (`cashflow_txn_nodes`). The cash flow projection
+keeps its other income by the same macro. The classes are salary and
 earnings, other yield, benefits, other receipts and uncategorized. The
 expected one is marked run-rate, in a lighter shade. A subtitle above
 the chart says so. The Rate path, Maturing and Shift do not move a
@@ -713,7 +719,8 @@ Horizon expects none, the shares are blank. No amount reaches it.
 tiles. Its figures are shares, so the twin shows the card as it is.
 
 **Data Freshness** counts a source's age from its last read, not from
-its latest snapshot: gold's `source_observed` says
+its latest snapshot: `web_sources_observed` gives each source's
+`observed_at` from gold's `source_observed`, which says
 when a run last read each source, whether or not anything changed
 (wealthdb/docs/DESIGN.md §6.4). A portal that marks its holdings
 quarterly and was read today is current. The table shows the read,
@@ -813,6 +820,10 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0205: it lacks `web_sources_observed`, `web_income`'s class and
+  projected types, `web_yield`'s `is_cash` and `rate_sensitive`,
+  `web_exposure_debt`'s `grade` and `bucket_order`, and the yield, fee
+  and exposure macros the cards call;
 - 0203: its flow, income, fee, holdings, exposure and yield views
   predate the vocabulary's roles (`spend_categories` columns,
   `account_kinds`), the far side in `transfer_links`, the debt predicate

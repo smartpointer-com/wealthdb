@@ -72,6 +72,18 @@ CREATE VIEW web_sources_latest AS
       FROM holdings_lines_latest
      GROUP BY 1, 2, 3, 4;
 
+-- web_sources_observed: each source at its latest snapshot
+-- (serving_sources_latest) with observed_at, the instant a run last
+-- read it (source_observed): unknown reads as its newest snapshot, and
+-- it is never before that snapshot. is_feed is false for the declared
+-- accounts' reserved source (canonical.DeclaredSourceID), which has no
+-- feed and no snapshot.
+CREATE VIEW web_sources_observed AS
+    SELECT r.*, GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at), r.snapshot_at) AS observed_at,
+           r.silver_source_id <> 'declared' AS is_feed
+      FROM serving_sources_latest r
+      LEFT JOIN source_observed o USING (silver_source_id);
+
 CREATE VIEW web_card_balances_history AS
     SELECT epoch_ms(as_of_day * 1000) AS as_of_day,
            silver_source_id, account_external_id,
@@ -82,6 +94,36 @@ CREATE VIEW web_card_balances_history AS
            balance, balance_usd, balance_chf, balance_eur, balance_gbp
       FROM serving_card_balances_history;
 
+-- income_projected_types: the projection's income types an income line
+-- of detailed type `detailed` can be (gold's incomeTypeSQL): interest a
+-- bond pays is a coupon, a dividend a fund pays a distribution. NULL for
+-- a type the projection does not project (canonical's ProjectedIncome).
+CREATE MACRO income_projected_types(detailed) AS
+    CASE detailed WHEN 'INCOME_INTEREST_EARNED' THEN ['interest', 'coupons']
+                  WHEN 'INCOME_DIVIDENDS' THEN ['dividends', 'distributions']
+                  WHEN 'INCOME_DISTRIBUTIONS' THEN ['distributions']
+                  WHEN 'INCOME_RENTAL' THEN ['rent']
+                  WHEN 'INCOME_RETIREMENT_PENSION' THEN ['pension'] END;
+
+-- income_line_class: the operating-in class of an income line of
+-- detailed type `detailed` that the projection does not project, as the
+-- cash flow statement classes a receipt (canonical's FlowClassIn, which
+-- cashflow_txn_nodes reads from spend_categories): a line of no type is
+-- the unresolved class, one of a type no class names other receipts.
+-- NULL for a projected type, whose lines are the holdings' income. The
+-- cash flow projection keeps its other income by it (gold.CashflowPlanIncome).
+CREATE MACRO income_line_class(detailed) AS
+    CASE WHEN detailed IS NULL THEN '(uncategorized)'
+         WHEN income_projected_types(detailed) IS NOT NULL THEN NULL
+         WHEN detailed IN ('INCOME_SALARY', 'INCOME_GIG_ECONOMY', 'INCOME_CONTRACTOR') THEN 'earnings'
+         WHEN detailed IN ('INCOME_STAKING', 'INCOME_ROYALTIES', 'INCOME_ENERGY_FEED_IN') THEN 'yield'
+         WHEN detailed IN ('INCOME_GOVERNMENT_BENEFITS', 'INCOME_UNEMPLOYMENT', 'INCOME_LONG_TERM_DISABILITY',
+                           'INCOME_MILITARY', 'INCOME_CHILD_SUPPORT', 'INCOME_ALIMONY') THEN 'benefits'
+         ELSE 'other_receipts' END;
+
+-- web_income: every income line. income_class is its operating-in class
+-- (income_line_class), NULL for a type the projection projects, and
+-- projected_types the projection's types it can be.
 CREATE VIEW web_income AS
     SELECT epoch_ms(i.occurred_at * 1000) AS occurred_at,
            i.silver_source_id, i.account_external_id,
@@ -96,6 +138,8 @@ CREATE VIEW web_income AS
            COALESCE(i.income_primary_label, '(uncategorized)') AS income_primary_label,
            COALESCE(i.income_label,         '(uncategorized)') AS income_label,
            i.provider_income_label,
+           income_line_class(i.income_detailed) AS income_class,
+           income_projected_types(i.income_detailed) AS projected_types,
            i.value_usd, i.value_chf, i.value_eur, i.value_gbp
       FROM serving_income_transactions i
       LEFT JOIN accounts a ON a.silver_source_id = i.silver_source_id
@@ -176,6 +220,12 @@ SELECT CAST(epoch_ms(r.as_of * 1000) AS DATE) AS as_of_day,
 -- pension: `income:<type>:<CCY>`) reads its account's. A day is a DATE; a rate
 -- prints as `_pct`; money is in the holding's currency with fx_<ccy> to
 -- each reporting currency, or a row filter on `currency`.
+--
+-- web_yield's is_cash says a holding is cash, as `wealthdb yield cash`
+-- lists it: a balance, a term deposit or a money-market holding.
+-- rate_sensitive says its value moves with rates: a bond, a bill, a
+-- floating note, or a bond, multi-asset or money-market fund
+-- (docs/YIELD.md §3).
 CREATE VIEW web_yield AS
 SELECT CAST(epoch_ms(p.as_of * 1000) AS DATE) AS as_of_day, p.as_of = (SELECT max(as_of) FROM report_yield_positions)
            AS today,
@@ -186,7 +236,9 @@ SELECT CAST(epoch_ms(p.as_of * 1000) AS DATE) AS as_of_day, p.as_of = (SELECT ma
        p.quantity, p.price, p.value, p.coupon_pct, p.maturity_date, p.rating, p.stated_pct, p.current_yield_pct,
        p.implied_pct, p.implied_annual_pct, p.realized_pct, p.received_12m, p.mean_value, p.earnings_yield_pct,
        p.dividend_yield_pct, p.payout_pct, p.benchmark_pct, p.gap_pct, p.duration, p.convexity, p.maturity_years,
-       p.dv01, p.income_12m, p.income_100bp, p.weighs, p.tags
+       p.dv01, p.income_12m, p.income_100bp, p.weighs, p.tags,
+       p.kind IN ('deposit', 'term_deposit', 'money_market') AS is_cash,
+       p.kind IN ('bond', 'bill', 'floating_note', 'bond_fund', 'multi_asset', 'money_market') AS rate_sensitive
   FROM report_yield_positions p
   LEFT JOIN accounts a ON a.silver_source_id = p.silver_source_id AND a.account_external_id = p.account_external_id;
 
@@ -247,9 +299,13 @@ SELECT x.currency, x.silver_source_id, x.account_external_id, x.position_key, x.
        AND h.account_external_id = x.account_external_id AND h.position_key = x.position_key
   LEFT JOIN accounts a ON a.silver_source_id = x.silver_source_id AND a.account_external_id = x.account_external_id;
 
+-- web_exposure_debt: the debt and equity buckets, each with its credit
+-- grade and its place in its dimension's order, as the exposure reports
+-- give them.
 CREATE VIEW web_exposure_debt AS
 SELECT CAST(epoch_ms(as_of * 1000) AS DATE) AS as_of_day, currency, silver_source_id,
-       account_wrapper(tax_wrapper) AS tax_wrapper, dimension, bucket, unknown, value
+       account_wrapper(tax_wrapper) AS tax_wrapper, dimension, bucket, unknown, value,
+       exposure_credit_grade(bucket) AS grade, exposure_bucket_order(dimension, bucket) AS bucket_order
   FROM report_exposure_debt;
 
 CREATE VIEW web_exposure_issuers AS
@@ -560,6 +616,18 @@ CREATE VIEW web_marks AS
 --     no card. Its fee rate is fees over its assets' mean value, the
 --     base its return reads, as `wealthdb spending fees` reads it.
 -- ============================================================
+
+-- fee_rate_pct: the yearly fee rate in percent of `fees` paid over a
+-- span whose daily values sum to `value_days`, on 365 days; none with no
+-- value (gold's feeRate, which divides by the mean over the days held).
+CREATE MACRO fee_rate_pct(fees, value_days) AS
+    CASE WHEN value_days > 0 THEN 100 * fees * 365 / value_days END;
+
+-- chain_returns: the monthly returns `twr` compounded, a month with no
+-- return or one that lost everything left out; none with nothing to
+-- chain (gold's chainMonths).
+CREATE MACRO chain_returns(twr) AS
+    exp(sum(ln(1 + CASE WHEN twr > -1 THEN twr END))) - 1;
 
 -- web_fees: what the fee tiles read, at day grain, so a picked window
 -- cuts it where it cuts the other Spending tiles.

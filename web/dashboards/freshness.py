@@ -1,7 +1,7 @@
 """The Data Freshness dashboard's cards and its twin's. Part of provision.py."""
 
 import sqlkit
-from sqlkit import (BENCHMARK_COLOR, DECLARED_SOURCE, OBSERVED_AT, PRIVACY_DESC, _share_viz)
+from sqlkit import (BENCHMARK_COLOR, PRIVACY_DESC, _share_viz)
 
 
 def freshness_cards(f):
@@ -11,30 +11,26 @@ def freshness_cards(f):
     shares, so the twin shows them as they are. A source is as stale as
     its last read, not its latest mark: a portal that marks quarterly
     and was read today is current, and the days since its latest mark
-    are days it has been quiet. A source's last read is OBSERVED_AT, and
-    the days since are calendar days, as Metabase's datetime-diff counts
-    them. The mark, not the snapshot: a read that
-    found a holding gone dates a snapshot at the read while the marks
-    keep their dates. The declared accounts (config `declared_accounts`)
-    sit under their own reserved source, which has no feed and so no
-    snapshot: counted, it would be the stalest source every day, so it is
-    left out. The freshness table's twin shows each value as a share of
+    are days it has been quiet. A source's last read is its observed_at
+    (web_sources_observed), and the days since are calendar days, as
+    Metabase's datetime-diff counts them. The mark, not the snapshot: a
+    read that found a holding gone dates a snapshot at the read while the
+    marks keep their dates. The declared accounts (config
+    `declared_accounts`) sit under their own reserved source, which has no
+    feed and so no snapshot: counted, it would be the stalest source every
+    day, so a card keeps the sources that are a feed (is_feed). The freshness table's twin shows each value as a share of
     the latest net worth: the dashboard is unfiltered by design, so that
     scale IS the selected-sources scale, and the source rows total 100.
     It has a description of its own: the base card's promises a money
     column, which there holds shares."""
     f = f.using(tail=PRIVACY_DESC if f.privacy else "")
-    observed_at = f"epoch_ms({OBSERVED_AT} * 1000) AS observed_at"
     f.card("Stalest source (days)", "scalar",
            "Days since the source read longest ago was last read. A source "
            "that marks quarterly counts from its latest read.",
            "WITH s AS (\n"
-           "  SELECT datesub('day', CAST(observed_at AS DATE), CAST(now() AS DATE)) AS days_stale\n"
-           "    FROM (SELECT r.silver_source_id,\n"
-           f"                 {observed_at}\n"
-           "            FROM serving_sources_latest r\n"
-           "            LEFT JOIN source_observed o USING (silver_source_id))\n"
-           f"   WHERE silver_source_id <> '{DECLARED_SOURCE}')\n"
+           "  SELECT datesub('day', CAST(epoch_ms(observed_at * 1000) AS DATE), CAST(now() AS DATE)) AS days_stale\n"
+           "    FROM web_sources_observed\n"
+           "   WHERE is_feed)\n"
            "SELECT max(days_stale) AS max FROM s",
            {}, tags={}, exempt=True, home="Data Freshness")
     f.card("Returns age (days)", "scalar",
@@ -61,11 +57,10 @@ def freshness_cards(f):
     f.card("Source freshness", "table", desc,
            "WITH s AS (\n"
            "  SELECT r.silver_source_id,\n"
-           f"         {observed_at},\n"
+           "         epoch_ms(r.observed_at * 1000) AS observed_at,\n"
            f"         epoch_ms(r.valued_at * 1000) AS valued_at, {shown}\n"
-           "    FROM serving_sources_latest r\n"
-           f"    LEFT JOIN source_observed o USING (silver_source_id){nw}\n"
-           f"   WHERE r.silver_source_id <> '{DECLARED_SOURCE}')\n"
+           f"    FROM web_sources_observed r{nw}\n"
+           "   WHERE r.is_feed)\n"
            "SELECT silver_source_id, observed_at,\n"
            "       datesub('day', CAST(observed_at AS DATE), CAST(now() AS DATE)) AS days_stale,\n"
            "       valued_at,\n"

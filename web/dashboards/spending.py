@@ -373,9 +373,9 @@ def fee_cards(f):
             f"         sum({val}) FILTER (WHERE line = 'value')::DOUBLE AS value_days,\n"
             "         count(DISTINCT day) FILTER (WHERE line = 'value') AS days\n"
             "    FROM f\n   GROUP BY 1\n  HAVING count(*) FILTER (WHERE line = 'fee') > 0),\n"
-            "r AS (\n  SELECT entity_key, exp(sum(ln(1 + twr))) - 1 AS twr\n"
+            "r AS (\n  SELECT entity_key, chain_returns(twr) AS twr\n"
             "    FROM (SELECT DISTINCT entity_key, day, twr FROM f\n"
-            "           WHERE line = 'return' AND currency = {{currency}} AND twr > -1)\n"
+            "           WHERE line = 'return' AND currency = {{currency}})\n"
             "   GROUP BY 1),\n"
             "t AS (SELECT NULLIF(sum(fees), 0) AS total FROM e),\n"
             "n AS (\n  SELECT *, entity || ' (' || silver_source_id || ' ' || entity_kind || ')' AS entity_label,\n"
@@ -399,7 +399,7 @@ def fee_cards(f):
           "series_settings": {c: {"color": FEE_GROUP_COLORS[g], "title": FEE_GROUP_TITLES[g]}
                               for c, g in zip(group_cols, FEE_GROUP_COLORS, strict=True)},
           **(_share_viz(*group_cols) if privacy else {})})
-    rate = "CASE WHEN value_days > 0 THEN 100 * fees * 365 / value_days END AS fee_rate_pct"
+    rate = "fee_rate_pct(fees, value_days) AS fee_rate_pct"
     twr = "100 * r.twr AS twr_pct"
     money = ("100 * fees / (SELECT total FROM t) AS fees_pct" if privacy
              else "value_days / NULLIF(days, 0) AS mean_value")

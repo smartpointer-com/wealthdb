@@ -269,7 +269,7 @@ func feeMonths(ds *returnsDataset, p ReturnParams) map[string][]ReturnRow {
 
 // chainMonths compounds the returns of the months that end in the bucket. A
 // month with no return, or one that lost everything, is left out, as the
-// fee tiles' logarithms leave it out. It returns nil with nothing to chain,
+// fee tiles' chain_returns leaves it out. It returns nil with nothing to chain,
 // and the months' quality tags.
 func chainMonths(months []ReturnRow, b feeBucket) (*float64, []string) {
 	growth, chained := 1.0, false
@@ -313,6 +313,16 @@ func (e *feeEntity) meanValue(b feeBucket) (float64, int64) {
 	return sum / float64(days), days
 }
 
+// feeRate is the yearly fee rate, a ratio, of total paid over days on
+// which the entity held mean on average; nil where it held no value. The
+// fee tiles read it as fee_rate_pct.
+func feeRate(total, mean float64, days int64) *float64 {
+	if !(mean > valueTol) {
+		return nil
+	}
+	return f64(total / mean * feeDaysPerYear / float64(days))
+}
+
 func (e *feeEntity) row(b feeBucket, months []ReturnRow) FeeRow {
 	r := FeeRow{Period: b.label, StartDay: b.start, EndDay: b.end,
 		SilverSourceID: e.src, EntityKind: e.kind, EntityID: e.id, EntityLabel: e.label}
@@ -330,9 +340,7 @@ func (e *feeEntity) row(b feeBucket, months []ReturnRow) FeeRow {
 	if days > 0 {
 		r.MeanValue = decStr(mean)
 	}
-	if mean > valueTol {
-		r.FeeRate = f64(total / mean * feeDaysPerYear / float64(days))
-	} else {
+	if r.FeeRate = feeRate(total, mean, days); r.FeeRate == nil {
 		r.Quality = append(r.Quality, "no_mean_value")
 	}
 	if days > 0 && days < b.end-b.start+1 {

@@ -95,5 +95,6 @@ func TestWebIncomeAnswersWithEveryColumn(t *testing.T) {
 		"occurred_at", "silver_source_id", "account_external_id", "display_name",
 		"account_label", "account_kind", "tax_wrapper", "payer_name", "income_primary",
 		"income_detailed", "income_primary_label", "income_label",
-		"provider_income_label", "value_usd", "value_chf", "value_eur", "value_gbp")
+		"provider_income_label", "income_class", "projected_types", "value_usd", "value_chf", "value_eur",
+		"value_gbp")
 }

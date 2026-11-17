@@ -2,7 +2,7 @@
 and views, for the pickers' values and a reader's own questions. Part
 of provision.py."""
 
-from sqlkit import (_ccy_pick, _ccy_slash, _ccy_values, _ccy_words, OBSERVED_AT)
+from sqlkit import (_ccy_pick, _ccy_slash, _ccy_values, _ccy_words)
 
 
 def report_models():
@@ -144,12 +144,10 @@ def report_models():
                 f"       {_ccy_values()}")
 
     # Each source's newest snapshot, the latest mark it rides on
-    # (valued_at) and its last read (OBSERVED_AT): a quiet source is
-    # observed through its latest download although its latest mark is
+    # (valued_at) and its last read (web_sources_observed): a quiet source
+    # is observed through its latest download although its latest mark is
     # older.
-    sources_latest = (
-        f"(SELECT r.*, {OBSERVED_AT} AS observed_at FROM serving_sources_latest r"
-        " LEFT JOIN source_observed o USING (silver_source_id)) s")
+    sources_latest = "(SELECT * EXCLUDE (is_feed) FROM web_sources_observed) s"
     SOURCES_TS = ["snapshot_at", "valued_at", "observed_at"]
     return {
         "report_global_latest": (

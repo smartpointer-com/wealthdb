@@ -2,7 +2,7 @@
 
 from sqlkit import (BENCHMARK_COLOR, BENCHMARK_SERIES, BENCHMARK_TAG, _beside, _beside_viz,
                     _columns_with_benchmark, EXPOSURE_FILTERS, HOLDING_KEY_PREFIX, native_tags, NO_BENCHMARK,
-                    PICKED_BENCHMARK, PORTFOLIO_SERIES, PRIVACY_DESC, _share_viz, _sql_list, STACKED_VIZ,
+                    PICKED_BENCHMARK, PORTFOLIO_SERIES, PRIVACY_DESC, _share_viz, STACKED_VIZ,
                     _table_columns, twin_name, _window_end)
 
 
@@ -220,51 +220,50 @@ def exposure_cards(f):
     dtags = {**native_tags("web_exposure_debt", EXPOSURE_DEBT_FILTERS), "benchmark": BENCHMARK_TAG}
     # The debt view carries no asset class (EXPOSURE_DEBT_FILTERS).
     whole_class = " Its class is fixed, so it takes no Asset class."
-    class_share = "100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c)"
+    class_share = "exposure_class_share(sum(value), any_value(c.total))"
 
     def class_select(dimension, label, cols):
         """The CTEs of a class_bars card over `dimension`, and its rows."""
         return (_window_end("web_exposure_debt", dtags, where=f"\n     AND dimension = '{dimension}'")[1] + ",\n"
                 "c AS (SELECT sum(value) AS total FROM e WHERE bucket <> '(none)')",
                 f"SELECT bucket AS {label}{cols}{money},\n       {class_share} AS class_share_pct\n"
-                "  FROM e\n WHERE bucket <> '(none)'\n GROUP BY bucket\n"
+                "  FROM e, c\n WHERE bucket <> '(none)'\n GROUP BY bucket, grade, bucket_order\n"
                 f"HAVING coalesce(abs({class_share}) >= {SMALLEST_BAR_PCT}, TRUE)")
 
-    def class_bars(name, desc, dimension, label, buckets, extra=(), tooltip=(), beside=False):
+    def class_bars(name, desc, dimension, label, extra=(), tooltip=(), beside=False):
         """A dimension's bars at the window's end, in the view's own
-        bucket order: each bucket's share of its class, with the `extra`
-        columns beside it and the `tooltip` ones in its tooltip. With
-        `beside`, the picked benchmark's on the same reading."""
+        bucket order (bucket_order): each bucket's share of its class,
+        with the `extra` columns beside it and the `tooltip` ones in its
+        tooltip. With `beside`, the picked benchmark's on the same
+        reading."""
         head, select = class_select(dimension, label, "".join(f",\n       {c}" for c in extra))
         if beside:
             card(name, "bar", desc + whole_class,
                  head + ",\np AS (\n" + select + ")\n"
                  + _beside(label, "class_share_pct", dimension, (*tooltip, *amount),
                            weight="100 * share_pct / sum(share_pct) OVER ()", where="\n   AND bucket <> '(none)'",
-                           order=f"list_position([{_sql_list(buckets)}], {label})", keep_series=True),
+                           order=f"exposure_bucket_order('{dimension}', {label})", keep_series=True),
                  bars(label, "class_share_pct", tooltip, decimals=2, beside=True), tags=dtags)
             return
         card(name, "bar", desc + whole_class,
-             head + "\n" + select + f"\n ORDER BY list_position([{_sql_list(buckets)}], bucket)",
+             head + "\n" + select + "\n ORDER BY bucket_order",
              bars(label, "class_share_pct", tooltip, decimals=2), tags=dtags)
 
-    grade = (f"CASE WHEN bucket IN ({_sql_list(INVESTMENT_GRADE)}) THEN 'IG'"
-             f" WHEN bucket IN ({_sql_list(HIGH_YIELD)}) THEN 'HY' END AS grade")
     class_bars("Debt by credit rating, share of debt and cash",
                "Counts debt and cash by rating at the window's end. It covers the last twelve months.",
-               "credit", "rating", CREDIT_BUCKETS,
-               extra=(grade, "100 * sum(abs(value)) FILTER (WHERE unknown) / NULLIF(sum(abs(value)), 0)"
-                             " AS unknown_pct"),
+               "credit", "rating",
+               extra=("grade", "100 * sum(abs(value)) FILTER (WHERE unknown) / NULLIF(sum(abs(value)), 0)"
+                               " AS unknown_pct"),
                tooltip=("grade", "unknown_pct"), beside=True)
     class_bars("Debt by maturity",
                "Counts debt and cash by term at the window's end. It covers the last twelve months.",
-               "maturity", "maturity", MATURITY_BUCKETS, beside=True)
+               "maturity", "maturity", beside=True)
     class_bars("Debt by coupon kind",
                "Counts debt by coupon kind at the window's end. It covers the last twelve months.",
-               "coupon", "coupon", COUPON_BUCKETS)
+               "coupon", "coupon")
     class_bars("Public equity by cycle",
                "Counts public equity by cycle at the window's end. It covers the last twelve months.",
-               "cycle", "cycle", CYCLE_BUCKETS)
+               "cycle", "cycle")
 
     # The securities, each summed over its slices of the selection
     # (web_exposure_securities): the labels of its heaviest slice that
@@ -314,21 +313,6 @@ def exposure_cards(f):
                              ("value", "direct_value", "via_funds_value")),
                            "funds", "share_pct", "benchmark_pct", "difference_pct")}, tags=stags)
 
-
-# The exposure views' buckets in their order (the report_exposure_credit,
-# _maturities, _coupons and _cycles macros), each card's bars drawn in it,
-# and the grades of the credit buckets.
-CREDIT_BUCKETS = ("AAA", "AA", "A", "BBB", "BB", "B", "unrated", "cash")
-
-INVESTMENT_GRADE = ("AAA", "AA", "A", "BBB")
-
-HIGH_YIELD = ("BB", "B")
-
-MATURITY_BUCKETS = ("under 1y", "1-3y", "3-5y", "5-10y", "10-20y", "over 20y", "perpetual", "unknown")
-
-COUPON_BUCKETS = ("fixed", "floating", "inflation_linked", "zero", "unknown")
-
-CYCLE_BUCKETS = ("cyclical", "defensive", "sensitive", "unknown")
 
 # The smallest share, in percent, a debt card draws as a bar.
 SMALLEST_BAR_PCT = 0.01

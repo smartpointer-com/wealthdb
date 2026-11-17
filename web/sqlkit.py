@@ -91,11 +91,6 @@ UNCATEGORIZED = "(uncategorized)"
 # (canonical.DeclaredSourceID in the engine).
 DECLARED_SOURCE = "declared"
 
-# A source's last read over serving_sources_latest `r` and gold's
-# source_observed `o`: the instant a run last read it, unknown reading
-# as its newest snapshot, and never before that snapshot.
-OBSERVED_AT = "GREATEST(COALESCE(o.observed_snapshots_through, r.snapshot_at), r.snapshot_at)"
-
 # The Benchmark picker's value for no benchmark, and the name of the
 # household's side on a card that sets the two beside each other. Gold
 # holds the first too (canonical.NoBenchmark).
@@ -429,21 +424,16 @@ def _columns_with_benchmark(sql, order, *cols):
 # (gold.HoldingKeyPrefix): it can carry an account's id.
 HOLDING_KEY_PREFIX = "holding:"
 
-# The value a group's income yield divides by, weighed as its rates are.
-EARNING_VALUE = "CASE WHEN bool_or(weighs) THEN sum(value) FILTER (WHERE weighs) ELSE sum(value) END"
+# The value a group's income yield divides by, weighed as its rates are
+# (gold macro yield_earning_value).
+EARNING_VALUE = "yield_earning_value(value, weighs)"
 
 # A projection part's income under the picked rate path and shift, in its
-# holding's currency (yield.Part.Income): the fixed part, the floating
-# principal at the month's benchmark plus its spread and the shift, and a
-# rolled holding's income at its rate on the path plus the shift. Each
-# floating rate floors at zero. PARTS_FROM joins each part to its rate as
-# `rt`; a currency the rates lack reads zero, as the engine's does.
-_ROLL = "CASE WHEN {{rates}} = 'forward' THEN p.roll_forward ELSE p.roll_constant END"
-
-PART_INCOME = ("p.fixed + p.principal * GREATEST(0, COALESCE(rt.rate_pct, 0) + p.spread + ({{shift}}) / 100.0) / 1200\n"
-               "             + CASE WHEN p.roll_principal = 0 THEN " + _ROLL + "\n"
-               "                    ELSE p.roll_principal * GREATEST(0, (" + _ROLL + ") * 1200 / p.roll_principal\n"
-               "                                                     + ({{shift}}) / 100.0) / 1200 END")
+# holding's currency (gold macro yield_part_income). PARTS_FROM joins
+# each part to its rate as `rt`; a currency the rates lack reads zero, as
+# the engine's does.
+PART_INCOME = ("yield_part_income(p.fixed, p.principal, p.spread, COALESCE(rt.rate_pct, 0), p.roll_constant,\n"
+               "                               p.roll_forward, p.roll_principal, {{rates}}, {{shift}})")
 
 PARTS_FROM = ("    FROM web_yield_parts p\n"
               "    LEFT JOIN web_yield_rates rt ON rt.currency = p.holding_currency AND rt.month = p.month\n"

@@ -28,6 +28,36 @@ CREATE MACRO yield_realized_pct(received, mean, weighs) AS
          THEN 100 * sum(received) FILTER (WHERE weighs) / NULLIF(sum(mean) FILTER (WHERE weighs), 0)
          ELSE 100 * sum(received) / NULLIF(sum(mean), 0) END + 0.0;
 
+-- yield_rate: the value-weighted average of rate x over a group's rows
+-- that state it, weighed as yield.summarize weighs one: over the rows
+-- that weigh (no liability, no line of no positive value), else over
+-- every row where none weighs (docs/YIELD.md §5). None where the value
+-- that states it sums to zero.
+CREATE MACRO yield_rate(x, value, weighs) AS
+    CASE WHEN bool_or(weighs)
+         THEN sum(value * x) FILTER (WHERE weighs AND x IS NOT NULL)
+              / NULLIF(sum(value) FILTER (WHERE weighs AND x IS NOT NULL), 0)
+         ELSE sum(value * x) FILTER (WHERE x IS NOT NULL) / NULLIF(sum(value) FILTER (WHERE x IS NOT NULL), 0) END;
+
+-- yield_earning_value: the value a group's income yield divides by,
+-- weighed as its rates are (yield_rate): the rows that weigh, else every
+-- row.
+CREATE MACRO yield_earning_value(value, weighs) AS
+    CASE WHEN bool_or(weighs) THEN sum(value) FILTER (WHERE weighs) ELSE sum(value) END;
+
+-- yield_part_income: a projection part's income (report_yield_parts) in
+-- its holding's currency under rate path `path` and a parallel shift of
+-- `shift` basis points, given the month's benchmark rate in percent
+-- (yield.Part.Income): the fixed part, the floating principal at the
+-- rate plus its spread and the shift, and a rolled holding's income at
+-- its rate on the path plus the shift. Each floating rate floors at zero.
+CREATE MACRO yield_part_income(fixed, principal, spread, rate, roll_constant, roll_forward, roll_principal, path,
+                               shift) AS
+    fixed + principal * GREATEST(0, rate + spread + (shift) / 100.0) / 1200
+        + CASE WHEN roll_principal = 0 THEN CASE WHEN path = 'forward' THEN roll_forward ELSE roll_constant END
+               ELSE roll_principal * GREATEST(0, (CASE WHEN path = 'forward' THEN roll_forward ELSE roll_constant END)
+                                                 * 1200 / roll_principal + (shift) / 100.0) / 1200 END;
+
 -- ---- yield_holdings, hash-joined ----------------------------------------
 
 -- yield_holdings: the exposure holdings with their amounts, each

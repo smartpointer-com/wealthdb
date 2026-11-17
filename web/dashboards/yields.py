@@ -3,18 +3,14 @@
 from sqlkit import (BENCHMARK_TAG, _ccy_case, _columns_with_benchmark, EARNING_VALUE, EXPOSURE_FILTERS,
                     HORIZON_MONTHS, LINES_VIZ, native_tags, _native_where, PART_INCOME, PARTS_AHEAD,
                     PARTS_FROM, PEAK, _peak_cte, PICKED_BENCHMARK, PRIVACY_DESC, PROJECTION_TAGS, _share_viz,
-                    _sql_list, twin_name, _window_end)
+                    twin_name, _window_end)
 
 
 def _rate(x):
     """The value-weighted average of rate column `x` over a group's rows
-    that state it, weighed as yield.summarize weighs one: over the assets
-    (`weighs`: no liability, no line of no positive value), or over every
-    row where the group holds no asset (docs/YIELD.md §5)."""
-    def avg(cond):
-        return (f"sum(value * {x}) FILTER (WHERE {cond}{x} IS NOT NULL)"
-                f" / NULLIF(sum(value) FILTER (WHERE {cond}{x} IS NOT NULL), 0)")
-    return f"CASE WHEN bool_or(weighs) THEN {avg('weighs AND ')}\n            ELSE {avg('')} END"
+    that state it, weighed as yield.summarize weighs one (gold macro
+    yield_rate)."""
+    return f"yield_rate({x}, value, weighs)"
 
 
 # A group's realized yield, pooled as yield.summarize pools a row's: its
@@ -34,14 +30,6 @@ def _income_yield(income="income_12m"):
 HELD_JOIN = ("    JOIN h ON h.silver_source_id = p.silver_source_id"
              " AND h.account_external_id = p.account_external_id\n"
              "         AND h.position_key = p.position_key")
-
-# The kinds the cash card lists, and what the duration scatter reads:
-# bonds and the funds that move with rates (docs/YIELD.md §3). A floating
-# note implies no yield, so it never plots.
-CASH_KINDS = ("deposit", "term_deposit", "money_market")
-
-DURATION_KINDS = ("bond", "bill", "floating_note", "bond_fund", "multi_asset", "money_market")
-
 
 def yield_cards(f):
     """The Yield dashboard's cards, or on the twin their privacy
@@ -136,7 +124,7 @@ def yield_cards(f):
     # credit ones, as `wealthdb yield cash` lists them.
     cash_order = "value < 0, gap_pct NULLS FIRST, value DESC"
     cash_rows = (end + ",\nc AS (\n  SELECT account_label, kind, holding_currency, stated_pct, benchmark_pct, gap_pct, value\n"
-                 f"    FROM e\n   WHERE kind IN ({_sql_list(CASH_KINDS)}))\n")
+                 "    FROM e\n   WHERE is_cash)\n")
     cash_desc = ("Each cash holding's rate against its benchmark at the window's end, worst "
                  "paid first.")
     if privacy:
@@ -161,7 +149,7 @@ def yield_cards(f):
          end + "\nSELECT holding_currency AS currency, duration, implied_pct AS implied_yield_pct, symbol, "
          + (f"{twin_name('name')} AS name,\n       100 * value / NULLIF(sum(value) OVER (), 0) AS share_pct"
             if privacy else "name,\n       value") +
-         f"\n  FROM e\n WHERE kind IN ({_sql_list(DURATION_KINDS)})\n"
+         "\n  FROM e\n WHERE rate_sensitive\n"
          "   AND duration IS NOT NULL AND implied_pct IS NOT NULL\n ORDER BY value DESC",
          {"graph.dimensions": ["duration", "currency"], "graph.metrics": ["implied_yield_pct"],
           "scatter.bubble": size, "graph.tooltip_columns": ["symbol", "name", size],
@@ -213,7 +201,7 @@ def yield_cards(f):
     # the picked path and shift: each part's income there less its income
     # here, as the engine's income per 100bp reads it. A floating rate
     # floors at zero, so below zero a point more earns less than a point.
-    up = PART_INCOME.replace("({{shift}})", "({{shift}} + 100)")
+    up = PART_INCOME.replace("{{shift}})", "{{shift}} + 100)")
     sens = (held + ",\ns AS (\n"
             f"  SELECT p.holding_currency, (({up}) - ({PART_INCOME})) * {_ccy_case('p.fx')} AS v\n" + PARTS_FROM +
             "\n" + HELD_JOIN + PARTS_AHEAD + ")")

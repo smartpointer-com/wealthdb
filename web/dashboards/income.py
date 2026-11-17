@@ -172,52 +172,16 @@ INTEREST_TYPES = ("interest", "coupons")
 
 DIVIDEND_TYPES = ("dividends", "distributions")
 
-# Each type, by the income lines' detailed types it reads, as the
-# engine's incomeTypeSQL maps a line: interest a bond pays is a coupon,
-# a dividend a fund pays a distribution. So the Type picker, which lists
-# the lines' labels, reaches the holdings' cards through this map, and a
-# label of any other type selects nothing there.
-INCOME_DETAILED_TYPES = {"interest": ("INCOME_INTEREST_EARNED",), "coupons": ("INCOME_INTEREST_EARNED",),
-                         "dividends": ("INCOME_DIVIDENDS",),
-                         "distributions": ("INCOME_DIVIDENDS", "INCOME_DISTRIBUTIONS"),
-                         "rent": ("INCOME_RENTAL",), "pension": ("INCOME_RETIREMENT_PENSION",)}
-
-# The detailed types the holdings' cards type, every other income line
-# being one no holding pays.
-PROJECTED_DETAILED = tuple(sorted({d for ds in INCOME_DETAILED_TYPES.values() for d in ds}))
-
-# The cash flow statement's unresolved class, and its class of an
-# income line no other class names.
-UNCATEGORIZED_CLASS = "(uncategorized)"
-
-OTHER_RECEIPTS = "other_receipts"
-
-# The operating-in class of an income line no holding pays, as the cash
-# flow statement classes it (cashflow_txn_nodes), and as the cash flow
-# projection keeps its other income (0169): a line nothing placed,
-# labelled UNCATEGORIZED, is the unresolved class, any other one other
-# receipts. A test holds it to the macro's.
-INCOME_LINE_CLASSES = {"earnings": ("INCOME_SALARY", "INCOME_GIG_ECONOMY", "INCOME_CONTRACTOR"),
-                       "yield": ("INCOME_STAKING", "INCOME_ROYALTIES", "INCOME_ENERGY_FEED_IN"),
-                       "benefits": ("INCOME_GOVERNMENT_BENEFITS", "INCOME_UNEMPLOYMENT",
-                                    "INCOME_LONG_TERM_DISABILITY", "INCOME_MILITARY", "INCOME_CHILD_SUPPORT",
-                                    "INCOME_ALIMONY")}
-
-# Each class's band on the by-month chart, and its colour: received in
-# it, its run-rate in a lighter shade. A greyer palette than the six
-# types', so the holdings' bands stay the ones that read first.
+# Each operating-in class of an income line no holding pays
+# (web_income.income_class), its band on the by-month chart, and its
+# colour: received in it, its run-rate in a lighter shade. A greyer
+# palette than the six types', so the holdings' bands stay the ones that
+# read first.
 INCOME_CLASS_BANDS = {"earnings": "salary and earnings", "yield": "other yield", "benefits": "benefits",
-                      OTHER_RECEIPTS: "other receipts", UNCATEGORIZED_CLASS: "uncategorized"}
+                      "other_receipts": "other receipts", "(uncategorized)": "uncategorized"}
 
 INCOME_CLASS_COLORS = {"earnings": "#6f4fd8", "yield": "#0b8aa8", "benefits": "#8c5a3c",
-                       OTHER_RECEIPTS: "#6b6b6b", UNCATEGORIZED_CLASS: "#a3a3a3"}
-
-
-def _line_class(col="income_detailed"):
-    """The SQL of the INCOME_LINE_CLASSES class of an income line by its
-    detailed type `col`."""
-    return ("CASE " + " ".join(f"WHEN {col} IN ({_sql_list(ds)}) THEN '{c}'" for c, ds in INCOME_LINE_CLASSES.items())
-            + f" WHEN {col} = '{UNCATEGORIZED}' THEN '{UNCATEGORIZED_CLASS}' ELSE '{OTHER_RECEIPTS}' END")
+                       "other_receipts": "#6b6b6b", "(uncategorized)": "#a3a3a3"}
 
 
 def _class_band(col):
@@ -253,7 +217,7 @@ def income_projected_cards(f):
     - the six types the holdings receive (web_yield_received), each under
       its holding, else its account;
     - every other income line (web_income), under its account and banded
-      by its operating-in class (INCOME_LINE_CLASSES);
+      by its operating-in class (income_class);
     - what the holdings are expected to pay (web_yield_parts, under the
       projection's pickers);
     - the other income's run-rate (web_cashflow_plan's pool_income
@@ -279,15 +243,10 @@ def income_projected_cards(f):
     sel_tags = view_tags("web_income", {"type": ("income_label", "string/=")})
     for k, (view, col) in selection.items():
         sel_tags.update(view_tags(view, {k: (col, "string/=")}))
-    # The six types the labels picked map to (INCOME_DETAILED_TYPES).
-    picked_types = ("SELECT m.type FROM (VALUES " + ", ".join(
-        f"('{d}', '{t}')" for t, ds in INCOME_DETAILED_TYPES.items() for d in ds)
-        + ") m(detailed, type)\n                    WHERE m.detailed IN"
-        " (SELECT income_detailed FROM web_income WHERE {{type}})")
-    projected = _sql_list(PROJECTED_DETAILED)
+    # The six types the labels picked can be (web_income.projected_types).
+    picked_types = "SELECT unnest(projected_types) FROM web_income WHERE {{type}}"
     # The classes the labels picked map to, a projected type none.
-    picked_classes = (f"SELECT {_line_class()} FROM web_income\n                    WHERE income_detailed NOT IN"
-                      f" ({projected}) AND {{{{type}}}}")
+    picked_classes = "SELECT income_class FROM web_income WHERE {{type}}"
 
     def kept(alias="", typed=True, by_account=False):
         """The optional clauses keeping a row whose source, account, tax
@@ -337,11 +296,11 @@ def income_projected_cards(f):
     # range.
     this_month = "(SELECT CAST(date_trunc('month', max(day)) AS DATE) FROM web_income_days)"
     this_month_got = ("mg AS (\n"
-                      f"  SELECT {_line_class()} AS class, silver_source_id, account_external_id,\n"
+                      "  SELECT income_class AS class, silver_source_id, account_external_id,\n"
                       f"         sum({_ccy_case('value')}) AS got\n"
                       f"    FROM web_income\n   WHERE CAST(occurred_at AS DATE) >= {this_month}\n"
                       "     AND CAST(occurred_at AS DATE) <= (SELECT max(day) FROM web_income_days)\n"
-                      f"     AND income_detailed NOT IN ({projected})\n"
+                      "     AND income_class IS NOT NULL\n"
                       "   GROUP BY ALL)")
 
     # Each part's income in its holding's currency and its rate to the
@@ -363,9 +322,9 @@ def income_projected_cards(f):
     # Every other income line received, by its account and class.
     def other(typed=True):
         return ("ox AS (\n"
-                f"  SELECT CAST(occurred_at AS DATE) AS day, {_line_class()} AS class,\n"
+                "  SELECT CAST(occurred_at AS DATE) AS day, income_class AS class,\n"
                 f"         silver_source_id, account_external_id, account_label, {_ccy_case('value')} AS value\n"
-                f"    FROM web_income\n   WHERE income_detailed NOT IN ({projected})" + line_days
+                "    FROM web_income\n   WHERE income_class IS NOT NULL" + line_days
                 + kept(typed=False) + ("\n     [[AND {{type}}]]" if typed else "") + ")")
 
     # The other income's run-rate over the horizon's months. A salary
@@ -716,8 +675,8 @@ POSITION_TAG = {"id": "position-tag", "name": "position", "display-name": "Posit
 # source with no income line is still a source, so the source's view is
 # the sources', not the income's; the same holds for a tax wrapper,
 # whose picker lists every account's. The Type binds the income lines'
-# label, which `kept` maps to the holdings' types (INCOME_DETAILED_TYPES)
-# and the run-rate's classes (INCOME_LINE_CLASSES). The Time range
+# label, which `kept` maps to the holdings' types (projected_types) and
+# the run-rate's classes (income_class). The Time range
 # reaches them the same way, through the days the income received
 # covers.
 INCOME_PROJECTED_SELECTION = {"source": ("web_sources_latest", "silver_source_id"),

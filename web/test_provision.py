@@ -1448,11 +1448,12 @@ _MODELS_SQL = {n: sql for n, (sql, _d) in p.report_models().items()}
 check("no report model reads a history macro",
       not any("_history_multi()" in q for q in _MODELS_SQL.values()),
       [n for n, q in _MODELS_SQL.items() if "_history_multi()" in q])
-check("the accounts, positions and sources latest models and the transactions ones read their tables",
+check("the accounts, positions and sources latest models and the transactions ones read their tables"
+      " or the view of their source table",
       all(f"FROM {t}" in _MODELS_SQL[m] for m, t in (
           ("report_accounts_latest", "serving_accounts_latest"),
           ("report_positions_latest", "serving_positions_latest"),
-          ("report_sources_latest", "serving_sources_latest"),
+          ("report_sources_latest", "web_sources_observed"),
           ("report_global_latest", "serving_global_latest"),
           ("report_portfolios_latest", "serving_portfolios_latest"),
           ("report_transactions", "serving_transactions"))))
@@ -2810,11 +2811,11 @@ for _n in _ex_debt:
         check(f"'{_name}' plots each bucket's share of every bucket but (none)",
               VIZ[_name]["graph.metrics"] == ["class_share_pct"]
               and "c AS (SELECT sum(value) AS total FROM e WHERE bucket <> '(none)')" in _q
-              and "100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c) AS class_share_pct" in _q
+              and "exposure_class_share(sum(value), any_value(c.total)) AS class_share_pct" in _q
               and "share_pct AS share_pct" not in _q and "OVER" not in _q.split("UNION ALL BY NAME")[0], _q[-500:])
         check(f"...its label held to two decimals, a bucket under {exposure.SMALLEST_BAR_PCT}% left out of the bars",
               VIZ[_name]["column_settings"]['["name","class_share_pct"]'] == {"suffix": "%", "decimals": 2}
-              and ("HAVING coalesce(abs(100 * sum(value) / (SELECT CASE WHEN total > 0 THEN total END FROM c))"
+              and ("HAVING coalesce(abs(exposure_class_share(sum(value), any_value(c.total)))"
                    f" >= {exposure.SMALLEST_BAR_PCT}, TRUE)") in _q)
 # Each description starts by saying what its card counts, which
 # Metabase shows behind the info icon. The maturity card's title names
@@ -2828,24 +2829,18 @@ check("...and the names they replace are retired",
           for s in ("", p.PRIVACY_SUFFIX)))
 check("every picker these tiles map lands on a tag they declare and read",
       not _picker_targets_resolve(list(_ex_debt_sql)), _picker_targets_resolve(list(_ex_debt_sql)))
-# The bars follow the views' own bucket orders (the CLI's), so a bucket
-# respelt in the engine would drop out of its bar silently. Each order is
-# read from its macro's newest definition.
-_orders = {b: [re.findall(r"'([^']+)'", m) for m in re.findall(
-               r"list_position\(\[([^\]]*)\]", _latest_definition(f"report_exposure_{macro}"), re.S)]
-           for b, macro in ((exposure.CREDIT_BUCKETS, "credit"), (exposure.MATURITY_BUCKETS, "maturities"),
-                            (exposure.COUPON_BUCKETS, "coupons"), (exposure.CYCLE_BUCKETS, "cycles"))}
-check("each card's buckets are the engine's, in its order, (none) apart",
-      all(orders and all(o == [*b, "(none)"] for o in orders) for b, orders in _orders.items()), _orders)
-# The grades split canonical's rating buckets, and the credit view grades
-# a bucket by the same split.
+# The bars follow the views' own bucket orders (the CLI's) and the
+# credit view's grades: gold's exposure_bucket_order and
+# exposure_credit_grade, which web_exposure_debt carries. A card names no
+# bucket of its own.
 _canonical_go = _go_package("canonical")
-_ratings = _go_list(_canonical_go, "ratingBuckets", "RatingBucket")
-check("the grades split canonical's rating buckets, best first, as the credit view grades them",
-      [*exposure.INVESTMENT_GRADE, *exposure.HIGH_YIELD] == _ratings
-      and (f"WHEN bucket IN ({p._sql_list(exposure.INVESTMENT_GRADE)}) THEN 'IG' "
-           f"WHEN bucket IN ({p._sql_list(exposure.HIGH_YIELD)}) THEN 'HY'") in _latest_definition("report_exposure_credit"),
-      _ratings)
+_debt_view = _view_body("web_exposure_debt")
+check("each card's buckets are in the exposure views' order, each rating with its grade",
+      "exposure_bucket_order(dimension, bucket) AS bucket_order" in _debt_view
+      and "exposure_credit_grade(bucket) AS grade" in _debt_view
+      and all(("ORDER BY bucket_order" in q) != ("exposure_bucket_order('" in q) for q in _ex_debt_sql.values())
+      and not any(re.search(r"'(?:AAA|BBB|under 1y|fixed|cyclical)'", q) for q in _ex_debt_sql.values()),
+      _debt_view)
 check("their descriptions say they cover the last twelve months",
       all("last twelve months" in CARDS[n][1] for n in _ex_debt_sql))
 
@@ -2928,25 +2923,24 @@ for _n in _y_all:
     else:
         check(f"'{_n}' reads the window's last day and takes no projection picker",
               "time_range" in _tags and not _tags & {"rates", "maturing", "shift", "horizon"}, sorted(_tags))
-check("a part's income is yield.Part.Income's, each floating rate floored at zero",
-      all(s in sqlkit.PART_INCOME for s in ("p.fixed", "p.roll_forward", "p.roll_constant",
-                                       "p.principal * GREATEST(0, COALESCE(rt.rate_pct, 0) + p.spread"
-                                       " + ({{shift}}) / 100.0) / 1200",
-                                       "WHEN p.roll_principal = 0 THEN",
-                                       "ELSE p.roll_principal * GREATEST(0, ("))
-      and "rt.path = {{rates}}" in sqlkit.PARTS_FROM, sqlkit.PART_INCOME)
-check("a rate weighs the assets, else every row, as yield.summarize does",
-      "CASE WHEN bool_or(weighs) THEN sum(value * x) FILTER (WHERE weighs AND x IS NOT NULL)" in yields._rate("x")
-      and "ELSE sum(value * x) FILTER (WHERE x IS NOT NULL)" in yields._rate("x"))
+# The formulas are gold's macros, which the engine's tests hold to the
+# Go functions (wealthdb/internal/gold/web_macros_test.go).
+check("a part's income, a rate and an earning value are gold's macros",
+      sqlkit.PART_INCOME.startswith("yield_part_income(") and "{{rates}}, {{shift}})" in sqlkit.PART_INCOME
+      and "rt.path = {{rates}}" in sqlkit.PARTS_FROM and yields._rate("x") == "yield_rate(x, value, weighs)"
+      and sqlkit.EARNING_VALUE == "yield_earning_value(value, weighs)"
+      and all(_latest_definition(m) for m in ("yield_part_income", "yield_rate", "yield_earning_value")),
+      sqlkit.PART_INCOME)
 check("the cash card lists the worst paid first, the debit balances last",
       "ORDER BY value < 0, gap_pct NULLS FIRST" in _y_sql["Cash against its benchmark"])
-# A kind respelt in the engine would empty a tile with no error.
+# A kind respelt in the engine would empty a tile with no error. The view
+# says which kinds are cash and which move with rates.
 _kinds = set(re.findall(r'Kind\w+\s+Kind = "(\w+)"', _yield_go))
 check("the cash, duration and dividend cards select the yield report's kinds",
-      {*yields.CASH_KINDS, *yields.DURATION_KINDS, "stock"} <= _kinds and "multi_asset" in yields.DURATION_KINDS
-      and f"kind IN ({p._sql_list(yields.CASH_KINDS)})" in _y_sql["Cash against its benchmark"]
-      and f"kind IN ({p._sql_list(yields.DURATION_KINDS)})" in _y_sql["Yield against duration"]
-      and "WHERE kind = 'stock'" in _y_sql["Dividend yield against payout"], sorted(_kinds))
+      "stock" in _kinds and "WHERE is_cash)" in _y_sql["Cash against its benchmark"]
+      and "WHERE rate_sensitive\n" in _y_sql["Yield against duration"]
+      and "WHERE kind = 'stock'" in _y_sql["Dividend yield against payout"]
+      and {"is_cash", "rate_sensitive"} <= set(re.findall(r"AS (\w+)", _view_body("web_yield"))), sorted(_kinds))
 check("the DV01 twin is a share of the day's net worth per basis point",
       "nw AS (SELECT sum(value) AS nw FROM w" in _y_sql["DV01 along the curve (privacy)"]
       and VIZ["DV01 along the curve (privacy)"]["graph.metrics"] == ["dv01_pct"])
@@ -3069,7 +3063,7 @@ check("every card reads the income received where it shows a received figure, ev
       "the picked currency",
       all(("FROM web_yield_received\n   WHERE currency = {{currency}}" in q) == (n not in _EXPECTED_ONLY | _EVERY_LINE)
           and ("FROM web_yield_received" in q) == (n not in _EXPECTED_ONLY | _EVERY_LINE)
-          and ("FROM web_income\n   WHERE income_detailed NOT IN" in q)
+          and ("FROM web_income\n   WHERE income_class IS NOT NULL" in q)
           == (n not in _EXPECTED_ONLY | _EVERY_LINE and n != _YIELD_TWIN)
           and ("FROM web_income\n   WHERE TRUE" in q) == (n in _EVERY_LINE)
           and ("FROM web_cashflow_plan c" in q) == (n not in _RECEIVED_ONLY | _HOLDINGS_ONLY)
@@ -3241,46 +3235,28 @@ check("...and the tax booked reaching it through its account",
           " WHERE account_wrapper(tax_wrapper) IN (SELECT tax_wrapper FROM web_sources_latest"
           " WHERE {{tax_wrapper}}))" in _in_sql[n]
           for n in _EVERY_LINE))
-# The Type picker lists the lines' labels; a holdings' card keeps a row
-# whose type a picked label's detailed type maps to, the map the engine
-# types the lines by.
-_type_sql = re.search(r"var incomeTypeSQL = fmt\.Sprintf\(`(.*?)`,(.*?)\)\n", _gold_go, re.S)
-_args = [a.strip().removeprefix("yield.Type").removeprefix("canonical.") for a in _type_sql.group(2).split(",")]
-_go_map = {}
-for _d, _i in re.findall(r"income_detailed = '(\w+)'.*?THEN '%\[(\d)\]s'", _type_sql.group(1), re.S):
-    _go_map.setdefault(_d, set()).add(_args[int(_i) - 1].lower())
-_py_map = {}
-for _t, _ds in income.INCOME_DETAILED_TYPES.items():
-    for _d in _ds:
-        _py_map.setdefault(_d, set()).add(_t)
-check("the label-to-type map is the engine's incomeTypeSQL",
-      _py_map == _go_map, (_py_map, _go_map))
-check("...each of the six types reached by a label, and only those the cash flow projection projects",
-      set(income.INCOME_DETAILED_TYPES) == set(income.INCOME_TYPE_COLORS)
-      and all(income.INCOME_DETAILED_TYPES.values())
-      and set(_py_map) == {d for d, v in goref.category_roles("ProjectedIncome").items() if v == "true"},
-      _py_map)
-check("...and a label of any other type mapping to none",
-      "INCOME_SALARY" not in _py_map and "INCOME_OTHER" not in _py_map)
-
-# The classes the other lines band by are the cash flow statement's
-# operating-in classes, as gold keeps the plan's other income by them:
-# cashflow_txn_nodes reads a receipt's class from the vocabulary
-# (spend_categories.flow_class_in, stamped from FlowClassIn in
-# canonical/spendtaxonomy.go), other_receipts where a value names none;
-# the projected types are left to the holdings' cards.
-_in_case = re.search(r"WHEN 'in' THEN\s*CASE(.*?)\bEND\b",
-                     _latest_definition("cashflow_txn_nodes"), re.S).group(1)
-_class_consts = goref.go_consts(_canonical_go, "CashflowClass")
-_vocab_classes = {_d: _class_consts[_c] for _d, _c in goref.category_roles("FlowClassIn").items()}
-_py_classes = {d: c for c, ds in income.INCOME_LINE_CLASSES.items() for d in ds}
-check("the other lines' classes are the statement's operating-in classes, the projected types aside",
-      _py_classes == {d: c for d, c in _vocab_classes.items() if d not in income.PROJECTED_DETAILED}
-      and set(income.PROJECTED_DETAILED) <= set(_vocab_classes)
-      and f"p.verdict_class_in, '{income.OTHER_RECEIPTS}')" in _in_case
-      and f"THEN '{income.UNCATEGORIZED_CLASS}'" in _in_case
-      and set(income.INCOME_CLASS_BANDS) == {*income.INCOME_LINE_CLASSES, income.OTHER_RECEIPTS, income.UNCATEGORIZED_CLASS},
-      (_py_classes, _vocab_classes))
+# The Type picker lists the lines' labels. A holdings' card keeps a row
+# whose type a picked label's line can be (web_income.projected_types),
+# and a run-rate's row whose operating-in class it has
+# (web_income.income_class), a projected type none. Gold's macros state
+# both maps, and the engine's tests hold them to the vocabulary and to
+# the projection's typing (wealthdb/internal/gold/web_macros_test.go).
+check("the holdings' and the run-rate's cards map a picked label through web_income's columns",
+      any("type IN (SELECT unnest(projected_types) FROM web_income WHERE {{type}})" in q for q in _in_sql.values())
+      and any("class IN (SELECT income_class FROM web_income WHERE {{type}})" in q for q in _in_sql.values())
+      and not any("income_detailed" in q for q in _in_sql.values()),
+      [n for n, q in _in_sql.items() if "income_detailed" in q])
+_view_inc = _view_body("web_income")
+check("...the columns gold's macros over the line's detailed type",
+      "income_line_class(i.income_detailed) AS income_class" in _view_inc
+      and "income_projected_types(i.income_detailed) AS projected_types" in _view_inc, _view_inc)
+# Each class and each type the macros give has its band and its colour.
+_classes = set(re.findall(r"(?:THEN|ELSE) '([^']+)'", _latest_definition("income_line_class")))
+_types = set(re.findall(r"'(\w+)'", "".join(re.findall(r"\[([^\]]*)\]",
+                                                        _latest_definition("income_projected_types")))))
+check("...each class with its band and colour, each projected type with its colour",
+      _classes == set(income.INCOME_CLASS_BANDS) == set(income.INCOME_CLASS_COLORS)
+      and _types == set(income.INCOME_TYPE_COLORS), (_classes, _types))
 
 section("every tile names the pickers that miss it")
 
@@ -3404,10 +3380,10 @@ for _n in ("Fees by portfolio", "Fee rate by portfolio"):
           "account" not in CARDS[p.privacy_name(_n)][2]["native"]["template-tags"]
           and "SELECT entity_group" in _twin and "mean_value" not in _twin)
 _rate = sql_of(CARDS["Fee rate by portfolio"][2])
-check("the fee rate is the CLI's: fees over the summed daily value, on 365 days, blank at no value",
-      "CASE WHEN value_days > 0 THEN 100 * fees * 365 / value_days END AS fee_rate_pct" in _rate)
-check("...beside the monthly returns chained in the picked currency",
-      "exp(sum(ln(1 + twr))) - 1" in _rate and "currency = {{currency}}" in _rate)
+check("the fee rate is gold's fee_rate_pct over the summed daily value",
+      "fee_rate_pct(fees, value_days) AS fee_rate_pct" in _rate and _latest_definition("fee_rate_pct"))
+check("...beside the monthly returns chained by gold's chain_returns in the picked currency",
+      "chain_returns(twr) AS twr" in _rate and "currency = {{currency}}" in _rate and _latest_definition("chain_returns"))
 # The groups are gold's fee_group values: a group gold adds and the
 # tiles leave out would drop out of the stacked bars, so the bars would
 # stop summing to the fees.
@@ -3599,6 +3575,7 @@ check("the Gains picker offers exactly the engine's readings of a missing cost b
 # parts and principals are in each holding's currency, with its rate to
 # every reporting currency beside it; its rates table, the days the
 # income received covers and the stock positions' sizes hold no money.
+# web_sources_observed carries serving_sources_latest's columns whole.
 _LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers", "web_exposure_securities",
                "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan", "web_bridge"}
 _FX_TABLES = {"web_yield_parts": "report_yield_parts", "web_yield_events": "report_yield_events"}
@@ -3607,7 +3584,7 @@ _missing = {v: [c for c in sqlkit.REPORTING_CURRENCIES
             for v in p.web_views_wanted()
             if v not in _LONG_VIEWS | set(_FX_TABLES) | {"web_yield_rates", "web_income_days", "web_cashflow_pool",
                                                           "web_position_sizes", "web_history_calendar",
-                                                          "web_benchmarks", "web_marks"}}
+                                                          "web_benchmarks", "web_marks", "web_sources_observed"}}
 check("every wide serving view carries a value column per reporting currency",
       not any(_missing.values()), {v: m for v, m in _missing.items() if m})
 _ym = open(os.path.join(_REPO, "wealthdb", "internal", "gold", "yield_materialize.go"),
@@ -3724,30 +3701,28 @@ for _name, (_sql, _cols) in sorted(_PCT_CARDS.items()):
               not _scaled, _sql[:300])
 
 # The declared accounts' reserved source has no feed and no snapshot, so
-# its latest snapshot reads as the epoch. Every freshness card leaves it
-# out, or the stalest source would be that non-feed every day. Checked
-# against the engine's own constant, read off disk.
+# its latest snapshot reads as the epoch. The colours give it a place of
+# its own. Checked against the engine's own constant, read off disk.
 _types_go = open(os.path.join(_REPO, "wealthdb", "internal", "canonical", "types.go"),
                 encoding="utf-8").read()
 check("DECLARED_SOURCE matches canonical.DeclaredSourceID",
       f'const DeclaredSourceID = "{sqlkit.DECLARED_SOURCE}"' in _types_go)
 _FRESH = {n: CARD_DEFS[n].query for n in ("Stalest source (days)", "Source freshness",
                                           "Source freshness (privacy)")}
-for _name, _q in _FRESH.items():
-    check(f"'{_name}' leaves the declared source out",
-          f"silver_source_id <> '{sqlkit.DECLARED_SOURCE}'" in sql_of(_q), sql_of(_q))
 
 # Freshness is the last read, not the latest snapshot: a source that
 # marks quarterly and was read today is current. The sources model and
-# every freshness card read it (gold source_observed), and each card
-# counts its days from it.
+# every freshness card read it (web_sources_observed), each card counts
+# its days from it, and every freshness card keeps the sources that are a
+# feed, or the stalest source would be the declared one every day.
 check("the sources model carries when a run last read each source",
-      "source_observed" in MODELS["report_sources_latest"][0] and "observed_at" in MODELS["report_sources_latest"][0],
+      "FROM web_sources_observed" in MODELS["report_sources_latest"][0]
+      and "EXCLUDE (is_feed)" in MODELS["report_sources_latest"][0],
       MODELS["report_sources_latest"][0][:120])
 for _name, _q in _FRESH.items():
-    check(f"'{_name}' counts its days from the last read",
-          "LEFT JOIN source_observed o USING (silver_source_id)" in sql_of(_q)
-          and "CAST(observed_at AS DATE), CAST(now() AS DATE)) AS days_stale" in sql_of(_q), sql_of(_q))
+    check(f"'{_name}' counts its days from the last read, over the feeds alone",
+          "FROM web_sources_observed" in sql_of(_q) and "is_feed" in sql_of(_q)
+          and "AS DATE), CAST(now() AS DATE)) AS days_stale" in sql_of(_q), sql_of(_q))
 _fresh_sql = sql_of(_FRESH["Source freshness"])
 check("'Source freshness' shows the read, the latest mark and the days quiet",
       _output_columns(_fresh_sql) == ["silver_source_id", "observed_at", "days_stale", "valued_at", "days_quiet",
@@ -3762,6 +3737,8 @@ check("the sources model renders valued_at as a timestamp",
       "epoch_ms(valued_at * 1000) AS valued_at" in MODELS["report_sources_latest"][0],
       MODELS["report_sources_latest"][0][:200])
 check("source_observed is a gold view", _latest_definition("source_observed").startswith("CREATE OR REPLACE VIEW"))
+check("web_sources_observed reads it beside each source's latest snapshot",
+      "LEFT JOIN source_observed o USING (silver_source_id)" in _latest_definition("web_sources_observed"))
 check("the sources reports carry valued_at", "AS valued_at" in _latest_definition("report_sources_multi"))
 
 section("an API call that fails is never read as an empty answer")
@@ -4095,9 +4072,16 @@ def _book():
                + _latest_definition("account_display_name") + _latest_definition("account_label")
                + _latest_definition("income_scoped_accounts") +
                "CREATE TABLE web_sources_latest (silver_source_id TEXT, tax_wrapper TEXT);"
-               "CREATE TABLE web_income (occurred_at TIMESTAMP, silver_source_id TEXT, account_external_id TEXT,"
+               "CREATE TABLE web_income_lines (occurred_at TIMESTAMP, silver_source_id TEXT, account_external_id TEXT,"
                " account_label TEXT, tax_wrapper TEXT, income_detailed TEXT, income_label TEXT,"
-               " value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE);")
+               " value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE);"
+               + "".join(_latest_definition(m) for m in ("income_projected_types", "income_line_class",
+                                                         "yield_rate", "yield_earning_value", "yield_part_income",
+                                                         "exposure_credit_grade", "exposure_bucket_order",
+                                                         "exposure_class_share")) +
+               # web_income's two columns of the line's type, over the lines.
+               "CREATE VIEW web_income AS SELECT *, income_line_class(income_detailed) AS income_class,"
+               " income_projected_types(income_detailed) AS projected_types FROM web_income_lines;")
     # The yield, income and cash flow projection tables and their views;
     # the pool's accounts the Cash Flow checks below define for themselves.
     db.execute("CREATE MACRO cashflow_pool_accounts() AS TABLE"
@@ -4175,7 +4159,7 @@ def _book():
                 "dividends": ("INCOME_DIVIDENDS", "Dividends"), "rent": ("INCOME_RENTAL", "Rent"),
                 "salary": ("INCOME_SALARY", "Salary")}
     label = {"src-1": "Brokerage (src-1 brokerage)", "src-2": "Savings (src-2 deposit)"}
-    insert("web_income", [
+    insert("web_income_lines", [
         {"occurred_at": dt.datetime(day.year, day.month, day.day, 9), "silver_source_id": src,
          "account_external_id": acct, "account_label": label[src], "tax_wrapper": wrapper[src],
          "income_detailed": detailed[typ][0], "income_label": detailed[typ][1],
@@ -4500,7 +4484,7 @@ if duckdb is not None:
     # the one counts as Net income counts it, and a tax wrapper reaches
     # the other through its account.
     _db.execute("BEGIN")
-    _db.execute("INSERT INTO web_income (occurred_at, silver_source_id, account_external_id, account_label, tax_wrapper,"
+    _db.execute("INSERT INTO web_income_lines (occurred_at, silver_source_id, account_external_id, account_label, tax_wrapper,"
                 " income_detailed, income_label, value_usd, value_chf) VALUES (TIMESTAMP '2020-06-01 09:00', 'src-1',"
                 " 'acct-1', 'Brokerage (src-1 brokerage)', 'taxable_personal', 'INCOME_SALARY', 'Salary', 500, 400)")
     _db.execute("INSERT INTO accounts (silver_source_id, account_external_id, display_name, account_kind, tax_wrapper)"
@@ -4521,7 +4505,7 @@ if duckdb is not None:
     # refund's label keeps its class's run-rate, other receipts; the
     # Account picker keeps an account's run-rate.
     _db.execute("BEGIN")
-    _db.execute("INSERT INTO web_income (occurred_at, silver_source_id, account_external_id, account_label, tax_wrapper,"
+    _db.execute("INSERT INTO web_income_lines (occurred_at, silver_source_id, account_external_id, account_label, tax_wrapper,"
                 " income_detailed, income_label, value_usd, value_chf) VALUES"
                 " (TIMESTAMP '2020-06-01 09:00', 'src-1', 'acct-1', 'Brokerage (src-1 brokerage)', 'taxable_personal',"
                 " 'INCOME_SALARY', 'Salary', 500, 400),"
@@ -4597,13 +4581,13 @@ if duckdb is not None:
     _paid = []
     for _wage in (None, ("2", 150), ("1", 150), ("1", 100)):
         if _wage:
-            _db.execute("INSERT INTO web_income (occurred_at, silver_source_id, account_external_id, account_label,"
+            _db.execute("INSERT INTO web_income_lines (occurred_at, silver_source_id, account_external_id, account_label,"
                         " tax_wrapper, income_detailed, income_label, value_usd, value_chf) VALUES"
                         f" (TIMESTAMP '2026-10-{10 + len(_paid)} 09:00', 'src-{_wage[0]}', 'acct-{_wage[0]}', 'x',"
                         f" 'taxable_personal', 'INCOME_SALARY', 'Salary', {_wage[1]}, {_wage[1] * 0.8})")
         _m = {(m.date().isoformat(), s): v for m, s, v in _run("Received and expected by month")}
         _paid.append((_m.get(_october, 0.0), _m.get(("2026-11-01", _october[1]))))
-    _db.execute("DELETE FROM web_income WHERE occurred_at >= TIMESTAMP '2026-10-01'")
+    _db.execute("DELETE FROM web_income_lines WHERE occurred_at >= TIMESTAMP '2026-10-01'")
     check("this month's run-rate is its figure less what its class and account received, never below 0",
           [round(a, 6) for a, _ in _paid] == [200.0, 200.0, 50.0, 0.0]
           and all(_near(b, 200.0) for _, b in _paid), _paid)
@@ -4624,7 +4608,7 @@ if duckdb is not None:
                 " SELECT 0, currency, month, month_start, 'outside_income', class, silver_source_id,"
                 " account_external_id, value / 2, quality FROM report_cashflow_plan"
                 " WHERE part = 'pool_income' AND class = 'earnings'")
-    _db.execute("INSERT INTO web_income (occurred_at, silver_source_id, account_external_id, account_label,"
+    _db.execute("INSERT INTO web_income_lines (occurred_at, silver_source_id, account_external_id, account_label,"
                 " tax_wrapper, income_detailed, income_label, value_usd, value_chf) VALUES"
                 " (TIMESTAMP '2026-10-15 09:00', 'src-1', 'acct-1', 'x', 'taxable_personal', 'INCOME_SALARY',"
                 " 'Salary', 250, 200)")
@@ -5388,7 +5372,8 @@ if duckdb is not None:
     _fees = duckdb.connect()
     _fees.execute("CREATE TABLE web_fees (day TIMESTAMP, line TEXT, silver_source_id TEXT, account_label TEXT,"
                   " entity_key TEXT, entity_kind TEXT, entity TEXT, fee_group TEXT, currency TEXT,"
-                  " value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE, twr DOUBLE)")
+                  " value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE, twr DOUBLE);"
+                  + _latest_definition("fee_rate_pct") + _latest_definition("chain_returns"))
     _broker, _cash = ("src-a", "Broker (src-a brokerage)", "a-p", "portfolio", "Growth"), \
         ("src-a", "Cash (src-a checking)", "a-p", "portfolio", "Growth")
     _everyday = ("src-b", "Everyday (src-b checking)", "b-a", "account", "Everyday")
@@ -6159,7 +6144,8 @@ if duckdb is not None:
     # Two portfolios of one source and kind with one fee each, the same.
     _fe = _both_ways(
         "CREATE TABLE web_fees (day TIMESTAMP, line TEXT, silver_source_id TEXT, account_label TEXT,"
-        f" entity_key TEXT, entity_kind TEXT, entity TEXT, fee_group TEXT, currency TEXT, {_CCY}, twr DOUBLE)",
+        f" entity_key TEXT, entity_kind TEXT, entity TEXT, fee_group TEXT, currency TEXT, {_CCY}, twr DOUBLE);"
+        + _latest_definition("fee_rate_pct") + _latest_definition("chain_returns"),
         {"web_fees": [("2026-10-01", "fee", "src-1", "Account", k, "portfolio", e, "bank", "USD", *_ccy(10.0), None)
                       for k, e in (("p-2", "Zeta"), ("p-1", "Alpha"))]},
         ["Fees by portfolio", "Fees by portfolio (privacy)", "Fee rate by portfolio", "Fee rate by portfolio (privacy)"])

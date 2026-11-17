@@ -240,36 +240,9 @@ const PlanOutsidePart = "outside_income"
 // other_income; an income reader reads this part with PlanOutsidePart.
 const PlanPoolPart = "pool_income"
 
-// planIncomeClasses are the operating-in classes of the cash flow
-// statement by an income line's detailed type
-// (canonical.CategoryRoles.FlowClassIn), the projected types
-// (projectedIncomeDetailed) aside: a line of no type is the unresolved
-// class, one of any other type other receipts.
-var planIncomeClasses = func() map[string][]string {
-	out := map[string][]string{}
-	for _, c := range canonical.SpendCategories {
-		if r := c.Roles(); r.FlowClassIn != "" && !r.ProjectedIncome {
-			out[string(r.FlowClassIn)] = append(out[string(r.FlowClassIn)], c.Detailed)
-		}
-	}
-	return out
-}()
-
-// planIncomeClassSQL is planIncomeClasses as the SQL class of an income
-// line w.
-var planIncomeClassSQL = func() string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "CASE WHEN w.income_detailed IS NULL THEN '%s'", planUncategorized)
-	for _, c := range slices.Sorted(maps.Keys(planIncomeClasses)) {
-		fmt.Fprintf(&b, " WHEN w.income_detailed IN ('%s') THEN '%s'",
-			strings.Join(planIncomeClasses[c], "', '"), c)
-	}
-	return b.String() + " ELSE '" + string(canonical.ClassOtherReceipts) + "' END"
-}()
-
 // planIncomeSQL sums the window's income lines by side of the pool on
-// the line's own day (in_pool), class and account, the projected types
-// aside, with an account's first income line outside the pool ever, of
+// the line's own day (in_pool), operating-in class (income_line_class)
+// and account, the projected types aside, with an account's first income line outside the pool ever, of
 // any type (NULL for one that has none).
 var planIncomeSQL = `
 WITH firsts AS (
@@ -281,7 +254,7 @@ lines AS (
     SELECT w.*, NOT w.in_pool AS outside
       FROM income_lines_outccy(?1, ?2, ?3) w
      WHERE NOT list_contains(?4, COALESCE(w.income_detailed, '')))
-SELECT w.outside, ` + planIncomeClassSQL + ` AS class, w.silver_source_id, w.account_external_id,
+SELECT w.outside, income_line_class(w.income_detailed) AS class, w.silver_source_id, w.account_external_id,
        SUM(w.value_outccy)::DOUBLE, any_value(f.first)
   FROM lines w
   LEFT JOIN firsts f USING (silver_source_id, account_external_id)
