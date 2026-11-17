@@ -23,7 +23,9 @@ Exchange Group's daily ex-rights list.
   file that is no workbook, or holds no list, is refused: a later run
   asks for it again while the page links it.
 - A request's `answered` names the shares whose TSE code (tse_code) its
-  file lists with a dividend.
+  file lists with a dividend. A code of five characters whose last is 0,
+  the check digit a list may add, reads as its first four on both sides,
+  as gold reads it.
 
 Terms: README.md, jpx.
 """
@@ -51,9 +53,11 @@ REF = "ex-rights:{day}"
 LIST_DOC = "ex-rights.xls"
 CAL = "dividend_calendar"
 # A TSE code: four characters, a letter allowed in the second and fourth
-# places; a ticker may add the exchange (1Q01.T, 1Q01 JP).
+# places; a ticker may add the exchange (1Q01.T, 1Q01 JP), and a code its
+# check digit 0 (1Q010). Gold reads a code alike (tseCodeSQL).
 CODE = re.compile(r"[0-9][0-9A-Z][0-9][0-9A-Z]")
 EXCHANGE_SUFFIX = re.compile(r"[.\s:](?:T|JP|JT|TYO|TSE)$")
+CHECK_DIGIT = re.compile(r"^([0-9A-Z]{4})0$")
 LISTED_CODE = re.compile(r"[0-9A-Z]{3,6}")
 DIVIDEND = re.compile(r"(?i)dividend|distribution")
 # A list's columns, by the words their header holds (lower case, a hyphen
@@ -75,10 +79,16 @@ def wanted_share(security) -> bool:
     return direct_share(security) and ident(security, "isin").startswith("JP")
 
 
+def bare_code(text: str) -> str:
+    """A code or ticker without the exchange a ticker adds and without
+    the check digit 0 a five-character code adds; upper case."""
+    return CHECK_DIGIT.sub(r"\1", EXCHANGE_SUFFIX.sub("", str(text or "").strip().upper()))
+
+
 def tse_code(security) -> str:
     """A share's TSE code, where its symbol is one or a ticker of one;
     "" where it is neither."""
-    symbol = EXCHANGE_SUFFIX.sub("", ident(security, "symbol"))
+    symbol = bare_code(ident(security, "symbol"))
     return symbol if CODE.fullmatch(symbol) else ""
 
 
@@ -111,8 +121,8 @@ class Jpx(Provider):
         if rows is None:
             raise ProviderError(f"{resp.url} holds no ex-rights list")
         write_file(outdir, LIST_DOC, resp.body)
-        stated = {e["ref"].removeprefix("jpx:") for e in events(rows, date.fromisoformat(claim["day"]),
-                                                                  provider=self.name)}
+        stated = {bare_code(e["ref"].removeprefix("jpx:")) for e in events(rows, date.fromisoformat(claim["day"]),
+                                                                            provider=self.name)}
         answered = sorted({k for code, keys in claim["codes"].items() if code in stated for k in keys})
         write_meta(outdir, **claim, provider=self.name, as_of=claim["day"], answered=answered)
 

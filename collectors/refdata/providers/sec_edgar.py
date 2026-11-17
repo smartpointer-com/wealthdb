@@ -147,7 +147,9 @@ class SecEdgar(Provider):
     serves_securities = True
     serves_bulk = True
     needs_contact = True
-    answers = LOOKUP_ANSWERS | frozenset(FAMILIES) | {sec_calendar.CALENDAR}
+    # Its shares outstanding answer a stock's market cap, which gold
+    # wants of a stock held directly only.
+    answers = LOOKUP_ANSWERS | {"market_cap"} | frozenset(FAMILIES) | {sec_calendar.CALENDAR}
 
     def _tickers(self, ctx) -> tuple:
         """ticker -> CIK as the SEC writes it, share-class tickers (XYZ-B)

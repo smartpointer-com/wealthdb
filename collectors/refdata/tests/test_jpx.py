@@ -2,6 +2,7 @@
 index page while a Japanese share is held, every list no earlier run
 fetched, and every dividend row of each kept, held or not."""
 
+import re
 from datetime import date
 from pathlib import Path
 
@@ -12,7 +13,7 @@ import load
 import wanted as wantedmod
 from providers import REGISTRY, jpx
 from providers.base import Context, ProviderError, read_meta
-from tests.helpers import FakeClient, make_run, rows, run_entries, wanted_doc
+from tests.helpers import FakeClient, go_source, make_run, rows, run_entries, wanted_doc
 from tests.xls import workbook
 
 FIX = Path(__file__).parent / "fixtures"
@@ -84,6 +85,29 @@ def test_a_tse_code_is_a_symbol_of_four_characters_or_a_ticker_of_one():
     for symbol, code in (("9Z0A", "9Z0A"), ("9Z9A.T", "9Z9A"), ("9Z5A JP", "9Z5A"), ("9Z0A:TYO", "9Z0A"),
                          ("QABC", ""), ("99901", ""), (None, "")):
         assert jpx.tse_code(jp_share("isin:JP0000000010", symbol)) == code
+
+
+def gold_code(text: str) -> str:
+    """A code as gold's tseCodeSQL reads it, by its own two patterns."""
+    src = re.search(r"func tseCodeSQL\(expr string\) string \{(.*?)\n\}", go_source("gold/yield_calendar.go"),
+                    re.S).group(1)
+    suffix = re.search(r"\), '([^']*)', ''\)", src).group(1)
+    pattern, repl = re.search(r"bare \+ `, '([^']*)', '([^']*)'\)", src).groups()
+    return re.sub(pattern, repl, re.sub(suffix, "", text.strip().upper()))
+
+
+@pytest.mark.parametrize("listed, symbol", [
+    ("9Z0A", "9Z0A"), ("9Z0A", "9Z0A.T"), ("9Z0A", "9Z0A JP"), ("9Z0A", "9Z0A:TYO"), ("9Z0A0", "9Z0A"),
+    ("99990", "9999"), ("99990", "9999.T"), ("99990", "99990"), ("9999", "99990"), ("9Z0A", "9Z1A"),
+    ("99991", "9999")])
+def test_a_list_answers_a_share_where_gold_joins_its_row(tmp_path, listed, symbol):
+    share = jp_share("isin:JP0000000010", symbol)
+    claim = {"ref": "ex-rights:2026-10-23", "url": f"{LISTS}20261023EN.xls", "day": "2026-10-23",
+             "keys": [share.key], "codes": {jpx.tse_code(share): [share.key]} if jpx.tse_code(share) else {},
+             "facts": [CAL]}
+    _, out = _fetch(tmp_path, ex_rights([date(2026, 10, 30), date(2026, 10, 29), listed, "Example", "Prime",
+                                         "Ex-Dividend", ""]), claim)
+    assert (read_meta(out)["answered"] == [share.key]) == (gold_code(listed) == gold_code(symbol))
 
 
 def _fetch(tmp_path, body, claim=None):

@@ -1,6 +1,7 @@
 """The security providers: gleif, openfigi and sec-edgar, on invented
 answers in each API's layout."""
 
+import re
 from datetime import date
 
 import pytest
@@ -11,7 +12,7 @@ from providers.base import Context, ProviderError
 from providers.gleif import Gleif, parse_records
 from providers.openfigi import API as FIGI, OpenFigi, parse_mapping
 from providers.sec_edgar import SecEdgar, latest_shares, names_agree, parse_company
-from tests.helpers import FakeClient
+from tests.helpers import FakeClient, go_source
 from wanted import Security
 
 DAY = date(2026, 10, 13)
@@ -317,6 +318,27 @@ def test_sec_edgar_states_no_address_for_a_depositary_receipt():
 
 # The LEI record of a depositary receipt's issuer, a company abroad.
 RECEIPT_LEI = "XXXXXXXXXXXXXXXXXX31"
+def wanted_fields() -> dict:
+    """wanted field -> the fact fields gold reads it from (wantedFields)."""
+    block = re.search(r"var wantedFields = .*?\n\}\n", go_source("gold/refdata_wanted.go"), re.S).group(0)
+    return {f: set(re.findall(r'"(\w+)"', facts))
+            for f, facts in re.findall(r'\{"(\w+)",\s*\[\]string\{(.*?)\}', block, re.S)}
+
+
+def test_a_lookup_answers_each_wanted_field_its_facts_state():
+    """A provider's `answers` names every wanted field gold reads from a
+    fact field it writes: the planner asks a provider for what it names."""
+    gleif = parse_records({"data": [{"attributes": {"lei": "XXXXXXXXXXXXXXXXXX23", "entity": {
+        "jurisdiction": "KY", "legalAddress": {"country": "KY"}, "headquartersAddress": {"country": "HK"}}}}]},
+        "isin:XX0000000604", "XX0000000604", DAY, provider="gleif")
+    edgar = parse_company(SUB, SHARES, "symbol:QEXI", DAY, provider="sec-edgar")
+    fields = wanted_fields()
+    assert {"sector", "country", "market_cap"} <= set(fields)
+    for provider, parsed in ((Gleif(), gleif), (SecEdgar(), edgar)):
+        written = {f["field"] for f in parsed.security_facts}
+        assert {w for w, facts in fields.items() if facts & written} <= provider.answers, provider.name
+
+
 RECEIPT_RECORD = {"data": [{"id": RECEIPT_LEI, "attributes": {"lei": RECEIPT_LEI, "entity": {
     "legalName": {"name": "Qorvant Holdings"}, "jurisdiction": "KR", "legalAddress": {"country": "KR"}}}}]}
 
