@@ -7,14 +7,9 @@ import (
 	"strings"
 )
 
-// exposureScaledSQL is each leaf of the instant $1, with its debt and
-// issuer dimensions (exposure_yield_leaves), in each reporting currency
-// (scaledLeavesSQL). Each statement walks it for itself, so the memory
-// of one instant's walk is freed before the next.
-var exposureScaledSQL = scaledLeavesSQL(`l AS MATERIALIZED (SELECT * FROM exposure_yield_leaves(CAST($1 AS BIGINT), 'USD'))`)
-
 // The dimensions report_exposure_debt holds, one per debt and equity
-// view: the dashboard's debt cards filter on them.
+// view, as exposure_debt_buckets names them: the dashboard's debt cards
+// filter on them.
 const (
 	debtDimensionCredit   = "credit"
 	debtDimensionMaturity = "maturity"
@@ -24,31 +19,14 @@ const (
 
 // exposureDebtSQL is the instant's buckets of the four debt and equity
 // views (EXPOSURE.md §7) per reporting currency, source and tax wrapper:
-// a leaf's credit and maturity buckets split by its page fund's
-// breakdowns as exposure_debt_buckets splits them, its coupon kind and
-// its cycle. Each dimension sums to the instant's net worth. A
-// breakdown's join carries its condition in the key, so the join hashes.
+// each leaf in each dimension as exposure_debt_buckets gives it, valued
+// in each reporting currency (scaledLeavesSQL). Each dimension sums to
+// the instant's net worth.
 var exposureDebtSQL = `INSERT INTO report_exposure_debt BY NAME
-WITH ` + exposureScaledSQL + `,
-c AS (
-    SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionCredit + `' AS dimension,
-           exposure_credit_bucket(s.asset_class, s.debt, s.rating, b.bucket) AS bucket,
-           exposure_credit_unknown(s.debt, s.rating, b.unknown) AS unknown,
-           s.value * s.k * COALESCE(b.share, 1) AS value
-      FROM s LEFT JOIN exposure_page_breakdown(CAST($1 AS BIGINT), 'credit_quality') b
-           ON b.fund = CASE WHEN s.debt AND s.rating IS NULL THEN s.page_fund END
-    UNION ALL
-    SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionMaturity + `', exposure_maturity_split(s.maturity_bucket, b.bucket), FALSE,
-           s.value * s.k * COALESCE(b.share, 1)
-      FROM s LEFT JOIN exposure_page_breakdown(CAST($1 AS BIGINT), 'maturity_breakdown') b
-           ON b.fund = CASE WHEN s.maturity_bucket = 'unknown' THEN s.page_fund END
-    UNION ALL
-    SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionCoupon + `', s.coupon_bucket, FALSE, s.value * s.k FROM s
-    UNION ALL
-    SELECT s.out_ccy, s.src, s.wrapper, '` + debtDimensionCycle + `', s.cycle, FALSE, s.value * s.k FROM s)
+WITH ` + scaledLeavesSQL(`l AS (SELECT * FROM exposure_debt_buckets(CAST($1 AS BIGINT), 'USD'))`) + `
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, src AS silver_source_id,
-       wrapper AS tax_wrapper, dimension, bucket, unknown, ` + exposureSum("value") + ` AS value
-  FROM c
+       wrapper AS tax_wrapper, dimension, bucket, unknown, ` + exposureSum("value * k") + ` AS value
+  FROM s
  GROUP BY ALL`
 
 // exposureIssuersShown is how many issuers report_exposure_issuer_ranks
@@ -58,10 +36,11 @@ const exposureIssuersShown = 100
 // exposureIssuersSQL is the instant's issuers per reporting currency as
 // the report_exposure_issuers macro ranks them: the largest
 // exposureIssuersShown and the (none) row; the running share counts
-// every issuer. The sums, the running one and the total among them, are
-// exact (exposureSum), so the ranks and shares never follow row order.
+// every issuer. Each leaf has its issuer from exposure_yield_leaves. The
+// sums, the running one and the total among them, are exact
+// (exposureSum), so the ranks and shares never follow row order.
 var exposureIssuersSQL = `INSERT INTO report_exposure_issuer_ranks BY NAME
-WITH ` + exposureScaledSQL + `,
+WITH ` + scaledLeavesSQL(`l AS MATERIALIZED (SELECT * FROM exposure_yield_leaves(CAST($1 AS BIGINT), 'USD'))`) + `,
 g AS (
     SELECT out_ccy, COALESCE(issuer_key, '(none)') AS ik,
            CASE WHEN COALESCE(issuer_key, '(none)') = '(none)' THEN '(none)'
@@ -89,22 +68,13 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
 // exposureSecuritiesSQL is the instant's report_exposure_securities rows
 // per reporting currency, cut by source, tax wrapper and the leaf's asset
 // class: a security's slices (migration 0165). A leaf's security is the
-// view's (exposure_labeled_leaves, derived/60_exposure.sql): keep the
-// CASE and the direct split the same. Each label is its largest
+// one exposure_labeled_leaves names, as in the view. Each label is its largest
 // leaf's that has one, the greater label on a tie, with that leaf's
 // absolute value as its weight, so a card that takes the label of the
 // heaviest slice gives the view's.
 var exposureSecuritiesSQL = `INSERT INTO report_exposure_security_slices BY NAME
-WITH ` + scaledLeavesSQL(`l AS (SELECT * FROM exposure_leaves(CAST($1 AS BIGINT), 'USD'))`) + `,
-g AS (
-    SELECT s.*, abs(s.value * s.k) AS w,
-           CASE WHEN s.kind IN ('remainder', 'leverage') THEN '(' || s.kind || ') ' || s.fund_ref
-                WHEN s.asset_class = 'cash' AND NOT s.declared AND (s.key IS NULL OR s.key LIKE 'name:%%')
-                     THEN 'cash:' || s.currency
-                WHEN s.key IS NOT NULL THEN s.key
-                WHEN s.depth > 0 THEN 'line:' || s.fund_ref || ':' || COALESCE(s.name, s.asset_type_raw, '')
-                ELSE 'holding:' || s.src || ':' || COALESCE(s.iid, s.position_key) END AS security
-      FROM s)
+WITH ` + scaledLeavesSQL(`l AS (SELECT * FROM exposure_labeled_leaves(CAST($1 AS BIGINT), 'USD'))`) + `,
+g AS (SELECT s.*, abs(s.value * s.k) AS w FROM s)
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, src AS silver_source_id,
        wrapper AS tax_wrapper, asset_class, security, MAX(name) AS name, MAX(ticker) AS ticker,
        arg_max(sector, (w, sector)) AS sector, arg_max(country, (w, country)) AS country,
