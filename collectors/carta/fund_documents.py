@@ -9,7 +9,8 @@ import json
 import re
 from pathlib import Path
 
-from collectorkit import bronze, derivations, docdedup, extract, k1, pdftotext
+from collectorkit import (bronze, derivations, docdedup, extract, k1,
+                          pdftotext, srcfp)
 
 from common import (_cj, _date_ts, _insert_cash_flow, _read_json,
                     _read_transactions_csv, _s, log)
@@ -134,10 +135,11 @@ _LAYOUT = functools.partial(extract.pdftotext_layout, timeout=30)
 _BBOX = functools.partial(extract.pdftotext_bbox, timeout=60)
 
 
-def _extract_dir() -> Path:
-    """Where extracted text is kept between runs and loads, keyed on the
-    document's bytes and the engine (collectorkit.extract.cached)."""
-    return extract.cache_root("carta") / "extract"
+def sweep_extract_cache(_conn, _load) -> None:
+    """Remove the extraction-cache entries neither extractor above reads
+    any more: those an engine upgrade or a code edit left behind."""
+    extract.sweep(extract.default_dir("carta"),
+                  {extract.extraction_key(e) for e in (_LAYOUT, _BBOX)})
 
 
 def _pdf_text(pdf: Path) -> str | None:
@@ -147,7 +149,7 @@ def _pdf_text(pdf: Path) -> str | None:
     the same bytes again, all from the cache."""
     try:
         return extract.cached(_LAYOUT, pdf, bronze.sha256_file(pdf)[0],
-                              _extract_dir()).text()
+                              extract.default_dir("carta")).text()
     except pdftotext.ExtractionError as exc:
         log.warning("pdftotext failed on %s: %s", pdf.name, exc)
         return None
@@ -406,12 +408,12 @@ _K1_COLUMNS = ("beginning_capital", "contributions", "net_income",
                "long_term_gain")
 
 
-# The K-1 face page reader's scope in document_derivations, and the
-# generation of what it reads. A change to collectorkit.k1 that changes its
-# results raises the generation, and the next run that holds a tax document
-# derives it again.
+# The K-1 reader's scope in document_derivations, and its generation: the
+# reader's code and the extraction's key, so an edit to collectorkit.k1 or a
+# pdftotext upgrade derives every tax document again.
 K1_SCOPE = "k1"
-K1_GENERATION = "1"
+K1_GENERATION = (srcfp.parser_fingerprint([k1], python=False) + "."
+                 + extract.extraction_key(_BBOX))
 
 
 def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
@@ -444,7 +446,8 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
         if sha not in pending:
             continue
         try:
-            parsed = k1.parse(extract.cached(_BBOX, pdf, sha, _extract_dir()))
+            parsed = k1.parse(extract.cached(_BBOX, pdf, sha,
+                                             extract.default_dir("carta")))
         except pdftotext.ExtractionError as exc:
             log.warning("pdftotext -bbox failed on %s: %s", pdf.name, exc)
             continue

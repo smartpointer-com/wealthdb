@@ -50,9 +50,8 @@ Bronze → silver mapping (schema in migrations/):
                                   (collectorkit.k1)
 
 SQLite + JSON1 (the repo default — no DuckDB need here; this is shape
-transformation, not a window-function replay). collectorkit.silver provides
-the migration runner + dump_runs idempotency; collectorkit.bronze provides
-run-dir discovery + snapshot timestamp parsing.
+transformation, not a window-function replay). collectorkit.loader runs it:
+run discovery, one transaction per run, the dump_runs row and --force.
 """
 from __future__ import annotations
 
@@ -71,16 +70,7 @@ from exercises import (_last_exercise_fmv, _last_exercise_price,
                        _match_exercises, _read_exercises)
 from fund_documents import (_fund_cash_flows, _warn_unowned_fund_documents,
                             load_documents, load_k1_capital_accounts,
-                            load_statement_nav)
-
-# The loader's tests name these through `load`.
-from captable import _fmv_as_of, _held_market_value  # noqa: F401
-from common import _flow_at, _insert_cash_flow, _read_transactions_csv  # noqa: F401
-from exercises import _parse_exercise_xlsx  # noqa: F401
-from fund_documents import (  # noqa: F401
-    K1_GENERATION, _document_pdf, _parse_notice, _parse_statement_flows,
-    _pdf_text, _period_deltas, _residue_from_cumulative,
-    _statement_flows_from_text, _statement_from_text, parse_notice_text)
+                            load_statement_nav, sweep_extract_cache)
 
 log = logging.getLogger("carta.load")
 
@@ -204,27 +194,20 @@ def load_capital_events(conn, events) -> int:
     return n
 
 
-def load_cash_flows(conn, run_dir: Path, snap: int) -> int:
+def load_cash_flows(conn, run_dir: Path, snap: int,
+                    entities: list[tuple]) -> int:
     """Build the dated cash-flow ledger (migration 0003): a row per cash event
     — stock exercises / exit from the cap-table certs + cancellation, and fund
     capital calls / distributions from each fund's notices and
-    capital-account statements. Amounts are positive magnitudes; the gold
-    adapter projects each as a balanced double-entry pair on the custody
-    account (DESIGN.md §6)."""
-    entities_dir = run_dir / "entities"
-    if not entities_dir.is_dir():
-        return 0
+    capital-account statements. `entities` is the run's (entity id, entity
+    dir, is a fund) in load_run's order. Amounts are positive magnitudes; the
+    gold adapter projects each as a balanced double-entry pair on the
+    custody account (DESIGN.md §6)."""
     docs_dir = run_dir / "documents"
     bronze_root = run_dir.parent  # side-loaded `<entity_external_id>-*.csv` live here
     n = 0
-    for edir in sorted(entities_dir.iterdir()):
-        if not edir.is_dir():
-            continue
-        meta = _read_json(edir / "meta.json")
-        if not isinstance(meta, dict):
-            continue
-        eid = meta.get("corporation_id")
-        if meta.get("is_fund_investment"):
+    for eid, edir, is_fund in entities:
+        if is_fund:
             n += _fund_cash_flows(conn, eid, docs_dir, snap, bronze_root)
         else:
             n += _captable_cash_flows(conn, eid, edir, snap, bronze_root)
@@ -272,8 +255,8 @@ def load_run(conn, run: loader.Run) -> tuple[int, ...]:
     ind_id = _s(manifest.get("individual_id"))
     firm_id = _s(manifest.get("firm_id"))
 
-    n_sec = n_vest = n_fund = n_call = n_evt = n_navh = n_cf = 0
-    fund_eids = []
+    n_sec = n_vest = n_fund = n_call = n_evt = n_navh = 0
+    entities = []           # (eid, edir, is a fund), in dir-name order
     entities_dir = run_dir / "entities"
     if entities_dir.is_dir():
         for edir in sorted(entities_dir.iterdir()):
@@ -285,14 +268,15 @@ def load_run(conn, run: loader.Run) -> tuple[int, ...]:
             hd = _read_json(edir / "holdings-dashboard.json")
             hd = hd if isinstance(hd, dict) else {}
             eid = meta.get("corporation_id")
+            is_fund = bool(meta.get("is_fund_investment"))
+            entities.append((eid, edir, is_fund))
 
-            if meta.get("is_fund_investment"):
+            if is_fund:
                 # Fund LP: snapshot at the capital-account statement's
                 # effective (sharing) date — its NAV is a quarter-end
                 # figure, not a download-time one. The full quarterly NAV
                 # history comes from the statement PDFs (load_statement_nav,
                 # after this loop).
-                fund_eids.append(eid)
                 sharing = _fund_sharing_date(edir)
                 snap = _date_ts(sharing) or dump_snap
                 load_entity(conn, snap, ind_id, firm_id, edir)
@@ -358,10 +342,11 @@ def load_run(conn, run: loader.Run) -> tuple[int, ...]:
     docs_dir = run_dir / "documents"
     n_doc = load_documents(conn, dump_snap, run_dir.name, docs_dir)
     n_k1 = load_k1_capital_accounts(conn, docs_dir)
+    fund_eids = [eid for eid, _edir, is_fund in entities if is_fund]
     for eid in fund_eids:
         n_navh += load_statement_nav(conn, docs_dir, eid)
     _warn_unowned_fund_documents(docs_dir, fund_eids)
-    n_cf = load_cash_flows(conn, run_dir, dump_snap)
+    n_cf = load_cash_flows(conn, run_dir, dump_snap, entities)
     return (n_sec, n_evt, n_vest, n_fund, n_navh, n_call, n_cf, n_doc, n_k1)
 
 
@@ -387,7 +372,7 @@ def _parser() -> argparse.ArgumentParser:
 SPEC = loader.LoaderSpec(
     name="carta", schema=MIGRATIONS_DIR, load_run=load_run, parser=_parser,
     counts=RUN_COUNTS, run_columns=run_columns,
-    manifest=loader.MANIFEST_SKIP)
+    after_runs=sweep_extract_cache, manifest=loader.MANIFEST_SKIP)
 
 
 def main(argv: list[str]) -> int:

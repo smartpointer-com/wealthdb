@@ -14,7 +14,7 @@ Synthetic bronze (captures.jsonl) + synthetic K-1 CSV → SQLite silver. Covers:
     (fund_name / fund_tax_id) stamped onto the offering
   * idempotent reload (no duplicate snapshots)
   * silver-DB + documents-dir defaults derived from --bronze-dir
-  * --force rebuild reproduces the incremental load, modulo the
+  * runs loaded one at a time build what --force builds, modulo the
     VOLATILE_COLUMNS wall-clock stamps (allowlist completeness guarded)
 """
 from __future__ import annotations
@@ -347,7 +347,8 @@ def test_k1_lines_backfill_from_payload(tmp_path):
 
     fresh = tmp_path / "fresh.db"
     assert load.main(argv + ["--silver-db", str(fresh)]) == 0
-    assert _dump_silver(old) == _dump_silver(fresh)
+    assert incremental.silver_rows(old, IGNORE) == \
+        incremental.silver_rows(fresh, IGNORE)
 
 
 # Money forms a K-1 CSV cell can take, each with the loader's reading.
@@ -649,7 +650,7 @@ def test_idempotent_reload(tmp_path):
 
 # Wall-clock ingest stamps: (table, column) pairs that record WHEN a load
 # ran, not bronze-derived data, so two otherwise-identical silver builds
-# legitimately differ there. _dump_silver drops exactly these columns —
+# legitimately differ there. IGNORE drops exactly these columns —
 # whether the stamp comes from a column DEFAULT or from the INSERT itself.
 # test_volatile_allowlist_is_complete cross-checks the set against the
 # migrations and the loader SQL, so a new stamp fails loudly until listed.
@@ -673,29 +674,9 @@ _WALL_CLOCK_SQL = re.compile(
     r"|\bstrftime\s*\(\s*'[^']*'\s*\)")
 
 
-def _dump_silver(db):
-    """Full snapshot of every user table's rows, for asserting two silver
-    builds carry identical data. Tables are discovered via sqlite_master (a
-    newly added one is picked up automatically); the VOLATILE_COLUMNS
-    wall-clock stamps are dropped — they form no part of "silver is
-    reproducible from bronze". Each table's rows are ordered by their repr,
-    a stable total order independent of insertion sequence and of NULL/int
-    column mixing."""
-    c = sqlite3.connect(db)
-    try:
-        tables = [r[0] for r in c.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-        state = {}
-        for t in tables:
-            keep = [name for _cid, name, _ty, _nn, _dflt, _pk
-                    in c.execute(f'PRAGMA table_info("{t}")')
-                    if (t, name) not in VOLATILE_COLUMNS]
-            sel = ", ".join(f'"{col}"' for col in keep)
-            state[t] = sorted(c.execute(f'SELECT {sel} FROM "{t}"'), key=repr)
-        return state
-    finally:
-        c.close()
+# The columns two silver builds are compared without
+# (incremental.silver_rows).
+IGNORE = incremental.CLOCK_COLUMNS | {f"{t}.{c}" for t, c in VOLATILE_COLUMNS}
 
 
 def test_volatile_allowlist_is_complete():
@@ -704,7 +685,7 @@ def test_volatile_allowlist_is_complete():
     Completeness: every wall-clock stamp in the SQL — a column DEFAULT in
     migrations/*.sql or a stamp inside one of load.py's statements (the
     kind a DEFAULT scan cannot see) — must target an allowlisted column;
-    otherwise _dump_silver keeps it and any two-build comparison flakes
+    otherwise IGNORE keeps it and any two-build comparison flakes
     once the builds straddle a second boundary. Precision: every
     allowlisted pair must be a real, provably stamped column, so a stale
     entry can't silently drop genuine data from the comparison."""
@@ -729,7 +710,7 @@ def test_volatile_allowlist_is_complete():
             assert cols, (
                 f"{src.name}:{i + 1}: stamps the wall clock into {table!r}, but no "
                 f"matching (table, column) is in VOLATILE_COLUMNS — add it there so "
-                f"_dump_silver keeps excluding it from the two-build comparison")
+                f"IGNORE keeps excluding it from the two-build comparison")
             stamped.update((table, c) for c in cols)
 
     # Both directions at once: nothing stamped is missing from the
@@ -756,60 +737,6 @@ def test_volatile_allowlist_is_complete():
         assert default_stamped <= VOLATILE_COLUMNS
     finally:
         conn.close()
-
-
-def test_force_rebuild_equals_incremental(tmp_path):
-    """`load --force` builds a fresh silver DB from all bronze and puts it
-    in place; for UNCHANGED bronze that reproduces the plain incremental
-    load exactly (silver is a pure function of bronze). Guards the rebuild
-    wiring: a forced rebuild must land on identical data, never drift or
-    duplicate."""
-    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
-    # One complete run spanning every populated table: two positions (an SPV
-    # and a fund), the dashboard summary + its NAV time series, an open
-    # commitment, and the funding cash ledger — an account-level deposit, an
-    # investment matched to a current position, and one into an exited company
-    # that derives a thin offering from the ledger.
-    funding = {"op": "InvestmentEntityQuery", "data": {"invest": {"investmentEntity": {
-        "entityId": "e1", "slugName": "acct-individual", "legalName": "X",
-        "balance": m(120000),
-        "transactions": [
-            {"id": "t1", "date": 100, "type": "deposit", "amount": m(200000),
-             "balance": m(200000), "description": "Deposit from bank", "syndicateName": None},
-            {"id": "t2", "date": 200, "type": "investment", "amount": m(-50000),
-             "balance": m(150000), "description": "Investment in Synthetic Co",
-             "syndicateName": "Synth SPV"},
-            {"id": "t3", "date": 300, "type": "investment", "amount": m(-30000),
-             "balance": m(120000), "description": "Investment in Exited Co",
-             "syndicateName": "Exit SPV"},
-        ]}}}}
-    write_run(dest, "20240101T000000Z", [
-        positions_capture([pos_node("p1", "acme-co-s", name="Synthetic Co"),
-                           pos_node("p2", "acme-fund-f", name="Fund One", total=None)]),
-        dashboard_capture(), commitments_capture(), funding])
-
-    # Documents at the derived <bronze-dir>/angellist-documents sibling, so
-    # the rebuild also spans tax_documents + k1_capital_accounts — and the
-    # re-stamped tax_documents.retrieved_at (strftime('%s','now') inside the
-    # INSERT, invisible to a DEFAULT scan) is exactly what VOLATILE_COLUMNS
-    # must absorb for the equality to hold across a second boundary.
-    write_k1_csv(dest / "angellist-documents")
-    argv = ["--bronze-dir", str(dest), "--silver-db", str(db)]
-
-    # Plain incremental load, then snapshot the whole silver DB.
-    assert load.main(argv) == 0
-    before = _dump_silver(db)
-    # Sanity: the load actually populated the core tables, so the equality
-    # below can't pass vacuously on two empty builds.
-    assert before["offerings"] and before["position_snapshots"] \
-        and before["funding_transactions"] and before["tax_documents"] \
-        and before["k1_capital_accounts"]
-
-    # Force = a full rebuild from the same, unchanged bronze.
-    assert load.main(argv + ["--force"]) == 0
-    after = _dump_silver(db)
-
-    assert after == before
 
 
 def test_load_reads_operations_named_without_the_query_suffix(tmp_path):
@@ -854,30 +781,117 @@ def test_an_unfinished_dump_is_not_loaded(tmp_path):
     c.close()
 
 
+def test_a_run_without_captures_is_read_once_they_exist(tmp_path):
+    """A complete run with no captures.jsonl is passed over and writes no
+    dump_runs row, so the next load reads it once the file is there."""
+    dest, db = tmp_path / "bronze", tmp_path / "angellist.db"
+    run = write_run(dest, "20240101T000000Z",
+                    [positions_capture([pos_node("p1", "acme-co-s")])])
+    captures = (run / "captures.jsonl").read_text()
+    (run / "captures.jsonl").unlink()
+    argv = ["--bronze-dir", str(dest), "--silver-db", str(db)]
+    assert load.main(argv) == 0
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 0
+    c.close()
+    (run / "captures.jsonl").write_text(captures)
+    assert load.main(argv) == 0
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM dump_runs").fetchone()[0] == 1
+    assert [r[0] for r in c.execute(
+        "SELECT position_external_id FROM offerings")] == ["p1"]
+    c.close()
+
+
+def _tx(tid, date, amount, description, ty="investment"):
+    return {"id": tid, "date": date, "type": ty, "amount": m(amount),
+            "balance": m(0), "description": description, "syndicateName": None}
+
+
+def funding_capture(balance, transactions):
+    return {"op": "InvestmentEntityQuery", "data": {"invest": {"investmentEntity": {
+        "entityId": "e1", "slugName": "acct-individual", "legalName": "X",
+        "balance": m(balance), "transactions": transactions}}}}
+
+
+# Two SPVs of one company, invested a month apart in one year, and the
+# K-1 funds of that year: their totals sit 50 and 100 from SPV A's
+# contribution, and 0 and 50 from SPV B's.
+MULTI_A_DATE, MULTI_B_DATE = INV_DATE, INV_DATE + 30 * 86400
+
+
+def write_multi_spv_k1_csv(docs_dir):
+    docs_dir = Path(docs_dir)
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    with open(docs_dir / "Synthetic 2020 Consolidated Schedule K-1 Package.csv",
+              "w", newline="") as f:
+        csv.writer(f).writerows([K1_HDR, [
+            "Multi Co", "Multi Fund One, a series of X, LP", "Issued", "$0",
+            "$1,100", "$0", "", "", "", "$1,100", "1.0", "No", "12-0000011"], [
+            "Multi Co", "Multi Fund Two, a series of X, LP", "Issued", "$0",
+            "$1,050", "$0", "", "", "", "$1,050", "1.0", "No", "12-0000012"]])
+
+
 def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
     """The later run re-marks a position, closes another, adds one, and
-    carries a new NAV point; the K-1 pass runs over both silvers."""
+    carries a new NAV point and a longer funding ledger. It also adds a
+    second SPV of a company whose two K-1 funds the first run paired to
+    the one SPV it held, and makes that company's name ambiguous for the
+    K-1 rows' vehicle. The K-1 pass runs over both silvers."""
     fixture = tmp_path / "fixture"
+    ledger = [
+        _tx("t1", 100, 400000, "Deposit from bank", ty="deposit"),
+        _tx("t2", 200, -50000, "Investment in Synthetic Co"),
+        _tx("t3", 300, -30000, "Investment in Exited Co"),
+        _tx("t4", MULTI_A_DATE, -100000, "Investment in Multi Co"),
+    ]
+    multi_a = pos_node("pMa", "multi-a-s", name="Multi Co", inv_date=MULTI_A_DATE,
+                       contributed=100000, total=None)
     runs = [
         write_run(fixture, "20240101T000000Z", [
             positions_capture([pos_node("p1", "acme-co-s", name="Synthetic Co"),
-                               pos_node("p2", "acme-fund-f", name="Fund One")]),
-            dashboard_capture(), commitments_capture()]),
+                               pos_node("p2", "acme-fund-f", name="Fund One"),
+                               multi_a]),
+            dashboard_capture(), commitments_capture(),
+            funding_capture(220000, ledger)]),
         write_run(fixture, "20240201T000000Z", [
             positions_capture([
                 pos_node("p1", "acme-co-s", name="Synthetic Co", total=90000),
                 pos_node("p2", "acme-fund-f", name="Fund One", status="closed"),
-                pos_node("p3", "other-co-s", name="Other Co", total=None)]),
+                pos_node("p3", "other-co-s", name="Other Co", total=None),
+                multi_a,
+                pos_node("pMb", "multi-b-s", name="Multi Co",
+                         inv_date=MULTI_B_DATE, contributed=105000, total=None)]),
             dashboard_capture(timeseries=[
                 {"year": 2024, "month": 2, "day": 1, "totalValue": m(55000),
                  "totalInvestedAmount": m(60000), "realizedValue": m(0),
                  "unrealizedValue": m(55000), "offlineValueChange": m(0),
-                 "isApproximate": False}])]),
+                 "isApproximate": False}]),
+            funding_capture(115000, [
+                *ledger,
+                _tx("t5", MULTI_B_DATE, -105000, "Investment in Multi Co")])]),
     ]
     docs = tmp_path / "documents"
     write_k1_csv(docs)
+    write_multi_spv_k1_csv(docs)
+    work = tmp_path / "work"
     incremental.check(load.main, lambda db, bronze: [
         "--silver-db", str(db), "--bronze-dir", str(bronze),
-        "--documents-dir", str(docs)], runs, tmp_path / "work",
-        ignore=incremental.CLOCK_COLUMNS | {
-            f"{t}.{c}" for t, c in VOLATILE_COLUMNS})
+        "--documents-dir", str(docs)], runs, work, ignore=IGNORE)
+
+    c = sqlite3.connect(work / "at-once.db")
+    # Each fund pairs to the SPV whose contribution its total matches.
+    assert c.execute(
+        "SELECT position_external_id, fund_name FROM offerings "
+        "WHERE company_name = 'Multi Co' ORDER BY 1").fetchall() == [
+        ("pMa", "Multi Fund One, a series of X, LP"),
+        ("pMb", "Multi Fund Two, a series of X, LP")]
+    assert c.execute(
+        "SELECT DISTINCT vehicle_external_id FROM k1_capital_accounts "
+        "WHERE portfolio_company = 'Multi Co'").fetchall() == [(None,)]
+    assert dict(c.execute(
+        "SELECT transaction_external_id, position_external_id "
+        "FROM funding_transactions")) == {
+        "t1": None, "t2": "p1", "t3": "funding:exited-co", "t4": "pMa",
+        "t5": "pMb"}
+    c.close()

@@ -362,9 +362,11 @@ lives in `positions`; the ledgers key by stable source id.
 
 **Document parsing** (`statements.py`, via `pdftotext`): `download` (default)
 fetches each offering's document PDFs (`node.documents[].downloadUrl`) into
-`documents/<deal-slug>/<doc-slug>.pdf`; `load` parses them. **Capital-account
-statements give the multi-company funds the fair-value NAV the holdings API
-lacks** — each statement's `ending_nav` is injected into `positions` as a
+`documents/<deal-slug>/<doc-slug>.pdf`; `load` parses them. Every later
+run holds the same PDFs again, so each extraction is kept in the
+collector's cache (`collectorkit.extract`), and a PDF is extracted once.
+**Capital-account statements give the multi-company funds the fair-value
+NAV the holdings API lacks** — each statement's `ending_nav` is injected into `positions` as a
 `statement` revaluation event (kind=`private_fund` only; SPVs stay
 tender-driven), so a fund's `positions` history runs investment → quarterly
 NAV revaluations. The API reports only cost for a fund, so a fall below

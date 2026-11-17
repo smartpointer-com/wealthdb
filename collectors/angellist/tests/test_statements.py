@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import statements  # noqa: E402
+from collectorkit import pdftotext  # noqa: E402
 
 QUARTERLY = """\
                  Example Fund of Funds, LP
@@ -71,3 +72,48 @@ def test_cents():
     assert statements._cents("(273)") == -27300
     assert statements._cents("—") is None
     assert statements._cents("") is None
+
+
+# What `pdftotext -layout` gives for a two-page report: each page ends in
+# a form feed, and the text holds characters beyond ASCII.
+LAYOUT_TEXT = QUARTERLY + "\f" + DEDICATED + "  Total — €\n\f"
+
+
+def _layout_text(calls, text=LAYOUT_TEXT):
+    def layout_text(path, *, timeout=None):
+        calls.append(Path(path).name)
+        return text
+    return layout_text
+
+
+def test_pdf_text_is_the_layout_text_and_extracts_each_document_once(
+        tmp_path, monkeypatch, cache_dir):
+    calls = []
+    monkeypatch.setattr(pdftotext, "layout_text", _layout_text(calls))
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 synthetic")
+    assert statements.pdf_text(report) == LAYOUT_TEXT
+    # A copy of the same bytes (a run's hardlink, a later load) is read
+    # from the cache, and gives the same text to the byte.
+    again = tmp_path / "again.pdf"
+    again.write_bytes(report.read_bytes())
+    assert statements.pdf_text(again) == LAYOUT_TEXT
+    assert calls == ["report.pdf"]
+    assert len(list((cache_dir / "extract").glob("*.json.gz"))) == 1
+
+
+def test_pdf_text_of_a_document_pdftotext_cannot_read_is_empty(
+        tmp_path, monkeypatch):
+    calls = []
+
+    def fail(path, *, timeout=None):
+        calls.append(Path(path).name)
+        raise pdftotext.ExtractionError("encrypted")
+    monkeypatch.setattr(pdftotext, "layout_text", fail)
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 synthetic")
+    assert statements.pdf_text(report) == ""
+    # A failure is not kept: the next load tries again.
+    assert statements.pdf_text(report) == ""
+    assert calls == ["report.pdf", "report.pdf"]
+

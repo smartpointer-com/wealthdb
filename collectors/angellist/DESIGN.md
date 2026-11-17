@@ -283,7 +283,9 @@ portfolio company keeps its old label on old tax years, and matching only
 the current label would split one fund across two instruments. Real
 offerings always beat funding-ledger-derived thin ones; multi-SPV
 companies disambiguate by investment year + cumulative contribution
-amount. Statement events are rebuilt from scratch on every load (they
+amount. The contribution compared is the portal's latest, never a
+statement event's, so the pairing reads the same whatever an earlier load
+paired. Statement events are rebuilt from scratch on every load (they
 derive wholly from `k1_capital_accounts`), and an offering's
 `fund_name` / `fund_tax_id` is cleared where the pairing no longer makes
 it. So a pairing that shifts leaves no stale marks behind, and a fund

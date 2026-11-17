@@ -549,11 +549,9 @@ columns, so the statement lines stay when that run carries no statements
 (`download --no-documents`).
 
 **K-1 tax capital.** Each tax document is searched for the federal Schedule
-K-1 (Form 1065) face page; a 1042-S has none and yields no row. The
-fleet's K-1 reader (`collectorkit.k1`) reads the page from `pdftotext -bbox` word boxes, because `-layout` folds the
-form's three columns into each other on dense lines. A word belongs to the
-column its left edge falls in, and to the box whose caption is nearest above
-it. An item-L amount belongs to the caption line nearest it vertically.
+K-1 (Form 1065) face page; a 1042-S has none and yields no row. The kit's
+K-1 reader (`collectorkit.k1`, which describes how it places each figure)
+reads the face page from `pdftotext -bbox` word boxes.
 `k1_capital_accounts` keeps one row per K-1 document, keyed on its sha256:
 
 - item L: `beginning_capital`, `contributions`, `net_income`,
@@ -569,9 +567,10 @@ other figure carries the sign the form prints. The fund is the index row's
 `fund_id`, which is the fund entity's id. A re-issued K-1 under the same
 document id replaces the row. Two documents that print the same tax year
 both stay; gold reconciles them. Each tax document is read once per
-generation of the reader (`K1_GENERATION`, recorded in
-`document_derivations`). A later run that holds the same bytes reads
-nothing.
+generation (`K1_GENERATION`, recorded in `document_derivations`). The
+generation is the reader's code and the extraction's key, so an edit to
+`collectorkit.k1` or a pdftotext upgrade derives every tax document again.
+A later run that holds the same bytes reads nothing.
 
 **Tax year and period (migration 0005).** The heading reads "For calendar
 year YYYY, or tax year beginning … ending …". A calendar-year form leaves

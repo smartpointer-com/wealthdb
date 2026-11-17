@@ -20,6 +20,10 @@ def _phrase(x0: float, top: float, phrase: str) -> list[Word]:
     return out
 
 
+def _no_boxes():
+    return None
+
+
 def _face() -> Extracted:
     words = []
     for x0, top, phrase in [
@@ -46,7 +50,7 @@ _ITEM_L = ("Beginning capital account . . . $       90,000.\n"
 
 
 def test_a_printed_minus_sign_is_kept():
-    got = statements.parse_k1(_HEAD + _ITEM_L, None)
+    got = statements.parse_k1(_HEAD + _ITEM_L, _no_boxes)
     assert got == {"tax_year": 2098, "is_final": False,
                    "beginning_capital": 90000.0, "current_year_income": -3127.0,
                    "withdrawals_distributions": -2000.0,
@@ -54,9 +58,12 @@ def test_a_printed_minus_sign_is_kept():
 
 
 def test_a_form_the_text_reads_fully_is_not_read_from_its_boxes():
-    # The boxes hold other figures; none of them is taken.
-    assert statements.parse_k1(_HEAD + _ITEM_L, _face()) == (
-        statements.parse_k1(_HEAD + _ITEM_L, None))
+    # The boxes are never extracted.
+    def boxes():
+        raise AssertionError("the word boxes were extracted")
+
+    assert statements.parse_k1(_HEAD + _ITEM_L, boxes) == (
+        statements.parse_k1(_HEAD + _ITEM_L, _no_boxes))
 
 
 def test_a_figure_off_its_caption_line_comes_from_the_boxes():
@@ -68,14 +75,21 @@ def test_a_figure_off_its_caption_line_comes_from_the_boxes():
             "Withdrawals and distributions . . $ (       3,618. )\n"
             "Ending capital account . . . . $\n"
             "                                     148,915.\n")
-    assert statements.parse_k1(text, _face()) == {
+    calls = []
+
+    def boxes():
+        calls.append(1)
+        return _face()
+
+    assert statements.parse_k1(text, boxes) == {
         "tax_year": 2098, "is_final": False,
         "beginning_capital": 104286.0, "current_year_income": -3127.0,
         "withdrawals_distributions": -3618.0, "ending_capital": 148915.0}
+    assert calls == [1]             # extracted once for both figures
 
 
 def test_a_k1_without_word_boxes_keeps_what_the_text_states():
-    got = statements.parse_k1(_HEAD + "Final K-1\nX\n", None)
+    got = statements.parse_k1(_HEAD + "Final K-1\nX\n", _no_boxes)
     assert got["tax_year"] == 2098 and got["is_final"] is True
     assert {got[k] for k in ("beginning_capital", "current_year_income",
                              "withdrawals_distributions",

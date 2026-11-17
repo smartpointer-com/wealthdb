@@ -12,24 +12,31 @@ gains/(losses)" line). That is the closest on-source FMV mark a fund
 position has: the K-1 CSV only carries the tax-basis capital account.
 
 Text is extracted with `pdftotext -layout` (poppler-utils). All functions
-are pure (text in, dict out) except `pdf_text`, which shells out. Nothing
-here carries source data.
+are pure (text in, dict out) except `pdf_text`, which shells out and keeps
+what it read in the extraction cache. Nothing here carries source data.
 """
 from __future__ import annotations
 
+import functools
 import re
 from pathlib import Path
 
-from collectorkit import pdftotext
+from collectorkit import bronze, extract, pdftotext
 from collectorkit.money import parse_money_cents as _cents
+
+# How a fund report is read: `pdftotext -layout`.
+_LAYOUT = functools.partial(extract.pdftotext_layout, timeout=120)
 
 
 def pdf_text(path: Path) -> str:
     """Extract layout-preserving text from a PDF via pdftotext. Empty on any
     failure (missing poppler, encrypted PDF, …) — the caller treats an
-    unparseable doc as metadata-only."""
+    unparseable doc as metadata-only. Each document is extracted once:
+    every later load reads its text from the extraction cache, keyed on
+    the bytes and the engine (collectorkit.extract.cached)."""
     try:
-        return pdftotext.layout_text(path, timeout=120)
+        return extract.cached(_LAYOUT, path, bronze.sha256_file(path)[0],
+                              extract.default_dir("angellist")).text()
     except pdftotext.ExtractionError:
         return ""
 

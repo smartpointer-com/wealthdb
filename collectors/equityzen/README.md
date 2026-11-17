@@ -116,7 +116,7 @@ Other useful flags:
 - `login --totp CODE` passes the code without a prompt.
 - `download --no-documents` skips the document fetch.
 - `download --documents-force` re-fetches every document (see below).
-- `load --force` deletes silver and rebuilds it from all bronze.
+- `load --force` rebuilds silver from all bronze.
 - `explore --fresh` wipes the profile, so the next `login` asks for TOTP.
 
 Marks change only on a closed transaction or a new statement, so a

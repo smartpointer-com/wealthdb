@@ -49,7 +49,7 @@ import re
 import sys
 from pathlib import Path
 
-from collectorkit import loader
+from collectorkit import loader, silver
 from collectorkit.money import parse_money_cents
 
 import statements
@@ -123,10 +123,11 @@ def _invest(data) -> dict:
     return ((data or {}).get("invest") or {}) if isinstance(data, dict) else {}
 
 
-def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> str | None:
-    """Load one run's captures inside the frame's transaction, and return
-    the invest account slug they name. A run without captures.jsonl is
-    passed over (loader.Skip)."""
+def load_snapshot(conn, snapshot_at: int, run_dir: Path
+                  ) -> tuple[str | None, tuple[int, int, int]]:
+    """Load one run's captures inside the frame's transaction. Returns the
+    invest account slug they name and the run's counts (RUN_COUNTS). A run
+    without captures.jsonl is passed over (loader.Skip)."""
     cap_path = run_dir / "captures.jsonl"
     if not cap_path.is_file():
         log.warning("%s: no captures.jsonl, skipping", run_dir.name)
@@ -152,11 +153,7 @@ def load_snapshot(conn, snapshot_at: int, run_dir: Path) -> str | None:
         _load_summary(conn, summary, acct_slug, snapshot_at)
     n_commit = _load_commitments(conn, ops, snapshot_at)
     n_fund = load_funding(conn, captures, snapshot_at)
-
-    log.info("%s: %d position(s) / offering(s), %d vehicle(s), %d commitment(s), %d funding tx",
-             run_dir.name, n_positions,
-             conn.execute("SELECT COUNT(*) FROM vehicles").fetchone()[0], n_commit, n_fund)
-    return acct_slug
+    return acct_slug, (n_positions, n_commit, n_fund)
 
 
 def _load_positions(conn, ops, snapshot_at: int, data_date) -> int:
@@ -326,7 +323,6 @@ def _load_commitments(conn, ops, snapshot_at: int) -> int:
     return n_commit
 
 
-
 def load_funding(conn, captures, snapshot_at: int) -> int:
     """Parse the InvestmentEntity query into the funding-account cash ledger:
     `funding_accounts` (current cash balance) + `funding_transactions` (the
@@ -392,7 +388,7 @@ def _vehicle_name_map(conn):
     return {k: v for k, v in last.items() if counts[k] == 1}
 
 
-def _parse_k1_csv(conn, path, year, doc_id, name_to_vehicle) -> int:
+def _parse_k1_csv(conn, path, year, doc_id) -> int:
     with path.open(newline="", encoding="utf-8-sig") as fp:
         rows = list(csv.reader(fp))
     if not rows:
@@ -447,8 +443,7 @@ def _parse_k1_csv(conn, path, year, doc_id, name_to_vehicle) -> int:
              parse_money_cents(cell(r, "dist")), parse_money_cents(cell(r, "cashdist")),
              parse_money_cents(cell(r, "propdist")), parse_money_cents(cell(r, "stgain")),
              parse_money_cents(cell(r, "ltgain")), parse_money_cents(cell(r, "end")), endpct,
-             name_to_vehicle.get(company.strip().lower()) if company else None,
-             doc_id, json.dumps(dict(zip(h, r, strict=False)), separators=(",", ":"))))
+             None, doc_id, json.dumps(dict(zip(h, r, strict=False)), separators=(",", ":"))))
         n += 1
     return n
 
@@ -462,7 +457,6 @@ def load_documents(conn, docs_dir: Path) -> None:
     docs_dir = Path(docs_dir)
     if not docs_dir.is_dir():
         return
-    name_to_vehicle = _vehicle_name_map(conn)
     n_docs = 0
     for path in sorted(docs_dir.iterdir()):
         if not path.is_file() or path.suffix.lower() not in (".csv", ".pdf"):
@@ -496,8 +490,7 @@ def load_documents(conn, docs_dir: Path) -> None:
             "SELECT content_sha256 FROM tax_documents WHERE document_id=?",
             (doc_id,)).fetchone()
 
-        conn.execute("BEGIN")
-        try:
+        with silver.transaction(conn):
             conn.execute(
                 "INSERT OR REPLACE INTO tax_documents "
                 "(document_id, doc_type, tax_year, period, document_status, "
@@ -505,15 +498,28 @@ def load_documents(conn, docs_dir: Path) -> None:
                 "VALUES (?,?,?,?,?,?,?,strftime('%s','now'),?)",
                 (doc_id, doc_type, year, period, status, path.name, sha, None))
             if is_k1 and suffix == "csv" and (prior is None or prior[0] != sha):
-                _parse_k1_csv(conn, path, year, doc_id, name_to_vehicle)
-            conn.execute("COMMIT")
-            n_docs += 1
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+                _parse_k1_csv(conn, path, year, doc_id)
+        n_docs += 1
     if n_docs:
         log.info("documents: %d file(s); k1_capital_accounts rows now %d",
                  n_docs, conn.execute("SELECT COUNT(*) FROM k1_capital_accounts").fetchone()[0])
+
+
+def link_k1_vehicles(conn) -> None:
+    """Point each K-1 row at the vehicle its portfolio company names, from
+    the vehicles loaded so far (_vehicle_name_map). Every row is set on
+    every load, so a vehicle seen after its K-1 CSV was parsed, or a name
+    another vehicle has since made ambiguous, reads the same as in a
+    rebuild."""
+    name_to_vehicle = _vehicle_name_map(conn)
+    with silver.transaction(conn):
+        for (company,) in conn.execute(
+                "SELECT DISTINCT portfolio_company FROM k1_capital_accounts "
+                "WHERE portfolio_company IS NOT NULL").fetchall():
+            conn.execute(
+                "UPDATE k1_capital_accounts SET vehicle_external_id = ? "
+                "WHERE portfolio_company = ?",
+                (name_to_vehicle.get(company.strip().lower()), company))
 
 
 # --------------------------------------------------------------------------
@@ -535,12 +541,16 @@ def _pair_k1_to_positions(conn):
     map link_funding_transactions uses to resolve pre-rename descriptions.
     A label claimed by two funds paired to different positions is dropped
     from the alias map as ambiguous."""
-    # Positions per company, with their latest contributed + investment year.
+    # Positions per company, with their latest contributed + investment
+    # year. The contribution is the portal's: the statement events are the
+    # last load's pairing (rebuilt after this), so a run-by-run load would
+    # read its own earlier pairing back where a rebuild reads none.
     pos_by_company = {}
     for pid, company, inv_date, contributed in conn.execute(
             "SELECT o.position_external_id, o.company_name, o.investment_date, "
             "       (SELECT contributed_minor FROM position_snapshots s "
             "          WHERE s.position_external_id = o.position_external_id "
+            "            AND s.event_type <> 'statement' "
             "          ORDER BY as_of_date DESC LIMIT 1) "
             "  FROM offerings o").fetchall():
         pos_by_company.setdefault((company or "").strip().lower(), []).append(
@@ -622,8 +632,7 @@ def build_k1_statement_snapshots(conn, fund_to_pid) -> None:
                  ending=ending, final=final, ein=ein))
 
     n = 0
-    conn.execute("BEGIN")
-    try:
+    with silver.transaction(conn):
         conn.execute("DELETE FROM position_snapshots WHERE event_type = 'statement'")
         paired = {pid: fund for fund, pid in fund_to_pid.items()}
         for pid, fund in conn.execute(
@@ -652,10 +661,6 @@ def build_k1_statement_snapshots(conn, fund_to_pid) -> None:
                              status="exited" if y["final"] else None,
                              snapshot_at=latest_run)
                 n += 1
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
     if n:
         log.info("k1 statement events: %d (paired SPVs: %d)", n, len(fund_to_pid))
 
@@ -701,8 +706,7 @@ def build_financial_statement_snapshots(conn, docs_dir: Path) -> None:
     latest_run = conn.execute("SELECT MAX(snapshot_at) FROM dump_runs").fetchone()[0] or 0
 
     n = 0
-    conn.execute("BEGIN")
-    try:
+    with silver.transaction(conn):
         for path in sorted(docs_dir.iterdir()):
             if (not path.is_file() or path.suffix.lower() != ".pdf"
                     or "schedule k-1" in path.name.lower()):
@@ -738,10 +742,6 @@ def build_financial_statement_snapshots(conn, docs_dir: Path) -> None:
                          is_open=prior[2] if prior else 1,
                          status=None, snapshot_at=latest_run)
             n += 1
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
     if n:
         log.info("fund fair-value statement events: %d", n)
 
@@ -828,8 +828,7 @@ def link_funding_transactions(conn, k1_aliases=None) -> None:
     n_link = n_exit = n_date = 0
     multi: dict[str, int] = {}
     exited: dict[str, str] = {}  # normalised company -> synthetic offering id
-    conn.execute("BEGIN")
-    try:
+    with silver.transaction(conn):
         for txid, ty, desc, occurred in rows:
             d = _norm_company(desc)  # normalise both sides (dots/parens) before matching
             hit = next((co for co, pat in pats if pat.search(d)), None)
@@ -883,10 +882,6 @@ def link_funding_transactions(conn, k1_aliases=None) -> None:
             "DELETE FROM position_snapshots WHERE position_external_id IN "
             f"({orphaned})").rowcount
         conn.execute(f"DELETE FROM offerings WHERE position_external_id IN ({orphaned})")
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
     log.info("funding tx linked: %d (exited instruments derived: %d, orphaned snapshots dropped: %d; "
              "multi-SPV disambiguated by date: %d; still unlinked: %d tx across %d companies)",
              n_link, n_exit, n_drop, n_date, sum(multi.values()), len(multi))
@@ -935,14 +930,21 @@ def _run_columns(run: loader.Run) -> dict:
             "payload": manifest.read_text() if manifest.is_file() else None}
 
 
-def load_run(conn, run: loader.Run) -> None:
-    run.row["invest_account_slug"] = load_snapshot(conn, run.snapshot_at, run.dir)
+# What load_run counts in a run, in its order.
+RUN_COUNTS = ("positions", "commitments", "funding tx")
+
+
+def load_run(conn, run: loader.Run) -> tuple[int, int, int]:
+    run.row["invest_account_slug"], counts = load_snapshot(
+        conn, run.snapshot_at, run.dir)
+    return counts
 
 
 def _document_passes(conn, load: loader.Load) -> None:
     """The passes over every loaded run and the documents dir."""
     docs_dir = _documents_dir(load)
     load_documents(conn, docs_dir)
+    link_k1_vehicles(conn)
     fund_to_pid, k1_aliases = _pair_k1_to_positions(conn)
     build_k1_statement_snapshots(conn, fund_to_pid)
     build_financial_statement_snapshots(conn, docs_dir)
@@ -954,7 +956,8 @@ def _document_passes(conn, load: loader.Load) -> None:
 # and prune reclaims it instead.
 SPEC = loader.LoaderSpec(
     name="angellist", schema=MIGRATIONS, load_run=load_run, parser=_parser,
-    defaults=_paths, after_runs=_document_passes, run_columns=_run_columns)
+    counts=RUN_COUNTS, defaults=_paths, after_runs=_document_passes,
+    run_columns=_run_columns)
 
 
 def main(argv: list[str] | None = None) -> int:

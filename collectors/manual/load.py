@@ -30,7 +30,8 @@ There is therefore no `login` and no `download` step — only `load`:
      context — never silently dropped).
   3. Rebuild the SQLite silver from the current CSVs (full truncate-reload,
      inside one transaction, so a validation failure leaves silver
-     untouched).
+     untouched). `--force` builds the silver afresh beside the old one,
+     which a failed load leaves in place.
 
 The CSVs are a small, hand-edited dataset (a few rows a year), so a full
 rebuild on every load is the simplest correct model: same CSVs in => same
@@ -56,7 +57,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NoReturn
 
-from collectorkit import cli, silver
+from collectorkit import cli, rebuild, silver
 
 log = logging.getLogger("manual.load")
 
@@ -153,6 +154,7 @@ DEFAULT_ACCOUNT_NAME = "Manual"
 DEFAULT_ACCOUNT_KIND = "other"
 DEFAULT_TAX_WRAPPER = "taxable_personal"
 DEFAULT_MANAGEMENT_STYLE = "self_directed"
+
 
 class LoadError(SystemExit):
     """A validation failure with file:row:column context. Subclasses
@@ -285,10 +287,9 @@ def default_account() -> dict:
     }
 
 
-def validate_accounts(rows: list[dict]) -> dict[str, dict]:
+def validate_accounts(rows: list[dict], fname: str) -> dict[str, dict]:
     """The declared pseudo-accounts, keyed by id. An empty accounts.csv (or
     none at all) yields the single default account."""
-    fname = "accounts.csv"
     out: dict[str, dict] = {}
     for r in rows:
         n = r["_row"]
@@ -315,8 +316,7 @@ def validate_accounts(rows: list[dict]) -> dict[str, dict]:
 
 
 def validate_positions(rows: list[dict], accounts: dict[str, dict],
-                       ) -> dict[str, dict]:
-    fname = "positions.csv"
+                       fname: str) -> dict[str, dict]:
     out: dict[str, dict] = {}
     row_of: dict[str, int] = {}
     for r in rows:
@@ -412,8 +412,7 @@ def _dated_row(fname: str, r: dict, positions: dict[str, dict],
 
 
 def validate_valuations(rows: list[dict], positions: dict[str, dict],
-                        ) -> list[dict]:
-    fname = "valuations.csv"
+                        fname: str) -> list[dict]:
     out: list[dict] = []
     seen: set[tuple[str, date]] = set()
     for r in rows:
@@ -436,11 +435,10 @@ def validate_valuations(rows: list[dict], positions: dict[str, dict],
 
 
 def validate_cost_basis(rows: list[dict], positions: dict[str, dict],
-                        ) -> list[dict]:
+                        fname: str) -> list[dict]:
     """The optional paid-in series: the capital paid into a position as of a
     date, gross of any paid back. Where a position has one, gold takes its
     book value from it instead of the valuation at acquired_at."""
-    fname = "cost_basis.csv"
     out: list[dict] = []
     seen: set[tuple[str, date]] = set()
     for r in rows:
@@ -457,12 +455,11 @@ def validate_cost_basis(rows: list[dict], positions: dict[str, dict],
 
 
 def validate_exits(rows: list[dict], positions: dict[str, dict],
-                   ) -> list[dict]:
+                   fname: str) -> list[dict]:
     """The optional exits: what a position was sold for on the day it left
     the book, gross of any part held back. One row per position; the
     position's closed_at is the exit date, and is filled in from it when
     blank. A write-off is proceeds 0."""
-    fname = "exits.csv"
     out: list[dict] = []
     seen: set[str] = set()
     for r in rows:
@@ -515,14 +512,14 @@ class FileSpec:
 
     `required` columns must be present in the header; `optional` ones
     default to empty when the file omits them; any other column is
-    rejected as a likely typo. `validate(rows, book)` turns the file's
+    rejected as a likely typo. `validate(rows, book, name)` turns the file's
     rows into records, a list or a dict keyed by id; `book` holds the
     records of the files before it, by table. Each record holds a value
     for every one of `columns`, the columns of `table` it fills."""
     name: str
     required: tuple[str, ...]
     optional: tuple[str, ...]
-    validate: Callable[[list[dict], dict[str, Any]], Any]
+    validate: Callable[[list[dict], dict[str, Any], str], Any]
     table: str
     columns: tuple[str, ...]
 
@@ -531,34 +528,38 @@ FILES = (
     FileSpec("accounts.csv",
              ("id", "display_name", "account_kind"),
              ("tax_wrapper", "management_style", "notes", "payload"),
-             lambda rows, book: validate_accounts(rows),
+             lambda rows, book, name: validate_accounts(rows, name),
              "accounts",
              ("id", "display_name", "account_kind", "tax_wrapper",
               "management_style", "notes", "payload")),
     FileSpec("positions.csv",
              ("id", "kind", "display_name", "currency", "acquired_at"),
              ("closed_at", "notes", "payload", "vehicle", "account_id"),
-             lambda rows, book: validate_positions(rows, book["accounts"]),
+             lambda rows, book, name: validate_positions(
+                 rows, book["accounts"], name),
              "positions",
              ("id", "account_id", "kind", "vehicle", "display_name",
               "currency", "acquired_at", "closed_at", "notes", "payload")),
     FileSpec("valuations.csv",
              ("position_id", "as_of_date", "value", "currency"),
              ("notes", "payload"),
-             lambda rows, book: validate_valuations(rows, book["positions"]),
+             lambda rows, book, name: validate_valuations(
+                 rows, book["positions"], name),
              "valuations",
              ("position_id", "as_of_date", "value", "currency", "notes",
               "payload")),
     FileSpec("cost_basis.csv",
              ("position_id", "as_of_date", "amount", "currency"),
              ("notes",),
-             lambda rows, book: validate_cost_basis(rows, book["positions"]),
+             lambda rows, book, name: validate_cost_basis(
+                 rows, book["positions"], name),
              "cost_basis",
              ("position_id", "as_of_date", "amount", "currency", "notes")),
     FileSpec("exits.csv",
              ("position_id", "exit_date", "proceeds", "currency"),
              ("notes",),
-             lambda rows, book: validate_exits(rows, book["positions"]),
+             lambda rows, book, name: validate_exits(
+                 rows, book["positions"], name),
              "exits",
              ("position_id", "exit_date", "proceeds", "currency", "notes")),
 )
@@ -598,7 +599,7 @@ def load(conn: sqlite3.Connection, bronze_dir: Path) -> dict:
     # a half-rebuilt DB.
     book: dict[str, Any] = {}
     for f in FILES:
-        book[f.table] = f.validate(rows[f.table], book)
+        book[f.table] = f.validate(rows[f.table], book, f.name)
     accounts, positions = book["accounts"], book["positions"]
     # An account nothing is held in projects no gold account, so it is a
     # typo or a leftover rather than an empty sleeve worth carrying.
@@ -657,20 +658,34 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     bronze_dir, silver_db = resolve_paths(args)
-    if args.force:
-        silver.reset(silver_db)
+    try:
+        counts = _load_into(silver_db, bronze_dir, force=args.force)
+    except rebuild.LoadStop as e:
+        log.error("%s", e)
+        return 1
+    log.info("loaded %d account(s), %d position(s), %d valuation(s), "
+             "%d cost-basis row(s), %d exit(s)", counts["accounts"],
+             counts["positions"], counts["valuations"],
+             counts["cost_basis"], counts["exits"])
+    return 0
+
+
+def _load_into(silver_db: Path, bronze_dir: Path, *, force: bool) -> dict:
+    """Load the book into `silver_db` and return the counts. With `force`
+    the silver is built afresh beside the old one, which a failed load
+    leaves in place."""
+    def replay(conn: sqlite3.Connection, version: int) -> dict:
+        log.info("silver schema at version %d (%s)", version, silver_db)
+        return load(conn, bronze_dir)
+
+    if force:
+        return rebuild.rebuild(silver_db, MIGRATIONS_DIR, replay)
     conn = open_db(silver_db)
     try:
-        version = apply_migrations(conn)
-        log.info("silver schema at version %d (%s)", version, silver_db)
-        counts = load(conn, bronze_dir)
-        log.info("loaded %d account(s), %d position(s), %d valuation(s), "
-                 "%d cost-basis row(s), %d exit(s)", counts["accounts"],
-                 counts["positions"], counts["valuations"],
-                 counts["cost_basis"], counts["exits"])
+        rebuild.migration_path_stop(conn, MIGRATIONS_DIR, silver_db)
+        return replay(conn, apply_migrations(conn))
     finally:
         conn.close()
-    return 0
 
 
 if __name__ == "__main__":

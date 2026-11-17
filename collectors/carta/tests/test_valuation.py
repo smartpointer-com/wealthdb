@@ -1,5 +1,5 @@
 """
-Unit tests for load.py's side-loaded valuation override.
+Unit tests for the loader's side-loaded valuation override (captable).
 
 In-memory SQLite + a tmp_path bronze edir. Exercises the valuation-CSV
 parsing, the carry-forward FMV lookup, and the core contract: a position's
@@ -13,7 +13,7 @@ import datetime as dt
 import json
 from pathlib import Path
 
-import load
+import captable
 
 
 def _ts(iso: str) -> int:
@@ -31,7 +31,7 @@ def test_read_valuation_csv_parses_sorts_and_skips_comments(tmp_path):
                  "2019-06-30,0.50\n"
                  "2018-01-01,0.10\n"   # deliberately out of order
                  "2021-12-31,3.00\n")
-    assert load._read_valuation_csv(p) == [
+    assert captable._read_valuation_csv(p) == [
         (_ts("2018-01-01"), 0.10),
         (_ts("2019-06-30"), 0.50),
         (_ts("2021-12-31"), 3.00),
@@ -39,28 +39,28 @@ def test_read_valuation_csv_parses_sorts_and_skips_comments(tmp_path):
 
 
 def test_read_valuation_csv_absent(tmp_path):
-    assert load._read_valuation_csv(tmp_path / "missing.csv") == []
+    assert captable._read_valuation_csv(tmp_path / "missing.csv") == []
 
 
 def test_fmv_as_of_carries_forward():
     tl = [(_ts("2018-01-01"), 0.10), (_ts("2021-12-31"), 3.00)]
-    assert load._fmv_as_of(tl, _ts("2017-06-01")) is None    # before first row
-    assert load._fmv_as_of(tl, _ts("2018-01-01")) == 0.10    # exactly on it
-    assert load._fmv_as_of(tl, _ts("2020-06-30")) == 0.10    # carried forward
-    assert load._fmv_as_of(tl, _ts("2022-06-30")) == 3.00    # latest
+    assert captable._fmv_as_of(tl, _ts("2017-06-01")) is None    # before first row
+    assert captable._fmv_as_of(tl, _ts("2018-01-01")) == 0.10    # exactly on it
+    assert captable._fmv_as_of(tl, _ts("2020-06-30")) == 0.10    # carried forward
+    assert captable._fmv_as_of(tl, _ts("2022-06-30")) == 3.00    # latest
 
 
 def test_held_market_value_convertible_at_principal():
     # A SAFE / convertible note carries at its principal (cost), independent of
     # any share FMV — it has no shares until it converts.
     note = {"cost": 100000.0}
-    assert load._held_market_value("convertible", None, None, note) == 100000.0
-    assert load._held_market_value("convertible", 0.0, 2.5, note) == 100000.0  # price ignored
-    assert load._held_market_value("convertible", None, None, {}) == 0.0       # missing cost → 0
+    assert captable._held_market_value("convertible", None, None, note) == 100000.0
+    assert captable._held_market_value("convertible", 0.0, 2.5, note) == 100000.0  # price ignored
+    assert captable._held_market_value("convertible", None, None, {}) == 0.0       # missing cost → 0
     # A share is quantity x FMV; every other line (options, warrants, …) is 0.
-    assert load._held_market_value("share", 100.0, 2.5, {"cost": 9}) == 250.0
-    assert load._held_market_value("share", 100.0, None, {}) == 0.0            # no FMV as-of
-    assert load._held_market_value("option", 100.0, 2.5, {}) == 0.0
+    assert captable._held_market_value("share", 100.0, 2.5, {"cost": 9}) == 250.0
+    assert captable._held_market_value("share", 100.0, None, {}) == 0.0            # no FMV as-of
+    assert captable._held_market_value("option", 100.0, 2.5, {}) == 0.0
 
 
 # ---- load_securities_valued: count + price move over time ------------------
@@ -105,7 +105,7 @@ def test_valued_count_and_price_over_time(migrated, tmp_path):
     fmv = [(_ts("2021-01-01"), 1.0), (_ts("2022-01-01"), 2.0),
            (_ts("2024-01-01"), 5.0)]
     cancel = _ts("2025-01-01")
-    n = load.load_securities_valued(migrated, 42, edir,
+    n = captable.load_securities_valued(migrated, 42, edir,
                                     fmv_timeline=fmv, cancel_ts=cancel,
                                     exercises={})
     # The count covers every delta row written, the exit rows included.
@@ -126,7 +126,7 @@ def test_valued_count_and_price_over_time(migrated, tmp_path):
 
 def test_options_carry_zero_value(migrated, tmp_path):
     edir = _synthetic_edir(tmp_path)
-    load.load_securities_valued(migrated, 42, edir,
+    captable.load_securities_valued(migrated, 42, edir,
                                 fmv_timeline=[(_ts("2021-01-01"), 1.0)],
                                 cancel_ts=None, exercises={})
     vals = migrated.execute("SELECT DISTINCT market_value FROM securities "

@@ -469,6 +469,37 @@ def test_a_value_gold_would_reject_fails_at_load(tmp_path, col, bad):
     assert col in str(exc.value)
 
 
+def test_a_failed_force_leaves_silver_untouched(tmp_path):
+    """--force builds the silver beside the old one, so a bad row in the
+    book keeps the last good load's silver, byte for byte."""
+    book = _write_book(tmp_path)
+    db = tmp_path / "manual.db"
+    argv = ["--bronze-dir", str(book), "--silver-db", str(db)]
+    assert loader.main(argv) == 0
+    before = db.read_bytes()
+    _write(book, "positions.csv", "id,kind,display_name,currency,acquired_at\n"
+                                  "p-own,spaceship,X,USD,2020-01-01\n")
+    with pytest.raises(loader.LoadError):
+        loader.main([*argv, "--force"])
+    assert db.read_bytes() == before
+    assert not db.with_name(db.name + ".rebuild").exists()
+
+
+def test_a_silver_newer_than_the_code_stops_the_load(tmp_path, caplog):
+    book = _write_book(tmp_path)
+    db = tmp_path / "manual.db"
+    argv = ["--bronze-dir", str(book), "--silver-db", str(db)]
+    assert loader.main(argv) == 0
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO schema_meta VALUES (9999, 0)")
+    conn.commit()
+    conn.close()
+    before = db.read_bytes()
+    assert loader.main(argv) == 1
+    assert "newer than" in caplog.text
+    assert db.read_bytes() == before
+
+
 # ----------------------------------------------------------------------
 # A load depends on the CSVs alone.
 # ----------------------------------------------------------------------

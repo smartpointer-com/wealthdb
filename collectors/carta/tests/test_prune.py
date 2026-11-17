@@ -18,6 +18,8 @@ Plus the load-side half of the lifecycle (the load frame):
   * a status="in-progress" dump or one with no run.json is NOT loaded (the
     guard keeps a crashed walk's partial capture out of silver)
   * a status="complete" dump and a statusless dump ARE loaded
+  * a dry-run dump and one whose run.json cannot be read write no
+    dump_runs row
 
 And `load --force` rebuilds exactly the silver an incremental load builds.
 """
@@ -177,6 +179,26 @@ def test_load_loads_statusless_dump(tmp_path, migrated):
                   entities=False, documents=False)
     assert load_one(migrated, d) is True
     assert _dump_runs_count(migrated) == 1
+
+
+def test_load_skips_a_dry_run_dump(tmp_path, migrated, caplog):
+    d = make_dump(tmp_path, OLD_TS, entities=False, documents=False)
+    manifest = json.loads((d / "run.json").read_text())
+    (d / "run.json").write_text(json.dumps({**manifest, "dry_run": True}))
+    with caplog.at_level("INFO"):
+        assert load_one(migrated, d) is False
+    assert _dump_runs_count(migrated) == 0
+    assert any("dry-run dump" in m for m in caplog.messages)
+
+
+def test_load_skips_a_dump_whose_run_json_cannot_be_read(tmp_path, migrated,
+                                                         caplog):
+    # The loader needs the manifest's ids, so the frame passes over the run.
+    d = make_dump(tmp_path, OLD_TS, entities=False, documents=False)
+    (d / "run.json").write_text("{not json")
+    assert load_one(migrated, d) is False
+    assert _dump_runs_count(migrated) == 0
+    assert any("run.json cannot be read" in m for m in caplog.messages)
 
 
 # ============================================================

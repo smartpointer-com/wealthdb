@@ -10,7 +10,8 @@ Redirecting the module default to a fresh empty tmp dir makes the
 isolation structural — defense-in-depth on top of the derivation: a load
 with no path flags scans an empty tree, ingests nothing, and leaves its
 silver in the tmp dir, never under /data. Tests that scope
-`--bronze-dir` / `--silver-db` themselves are unaffected.
+`--bronze-dir` / `--silver-db` themselves are unaffected. The extraction
+cache is kept inside each test's tmp dir the same way.
 """
 from __future__ import annotations
 
@@ -28,3 +29,12 @@ import load  # noqa: E402
 def _bronze_dir_never_defaults_to_real_data(tmp_path_factory, monkeypatch):
     empty = tmp_path_factory.mktemp("no-bronze")
     monkeypatch.setattr(load, "DEFAULT_BRONZE_DIR", empty)
+
+
+@pytest.fixture(autouse=True)
+def cache_dir(tmp_path, monkeypatch) -> Path:
+    """The extraction cache (collectorkit.extract.cache_root), inside the
+    test's own directory."""
+    path = tmp_path / "cache"
+    monkeypatch.setenv("WEALTHDB_CACHE_DIR", str(path))
+    return path

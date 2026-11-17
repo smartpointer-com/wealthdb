@@ -22,7 +22,7 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import load as loader  # noqa: E402
-import prices  # noqa: E402
+from collectorkit import incremental  # noqa: E402
 
 CU = "1"
 
@@ -477,6 +477,13 @@ def test_stage_work_db_seeds_from_existing_target(tmp_path):
     # No scratch dir → open in place, nothing to promote.
     assert loader._stage_work_db(silver, None) == (silver, False)
 
+    # Unseeded (--force): the scratch copy starts empty, the silver DB
+    # stays as it is.
+    work, promote = loader._stage_work_db(silver, scratch, seed=False)
+    assert (work, promote) == (scratch / silver.name, True)
+    assert not work.exists()
+    assert silver.read_bytes() == b"EXISTING-STATE"
+
 
 def test_scratch_dir_promotes_finished_db_and_cleans_up(tmp_path):
     # Driving main() with --scratch-dir builds the DB under scratch and
@@ -568,43 +575,18 @@ def _dump_silver_state(silver: Path) -> dict[str, list[tuple]]:
         conn.close()
 
 
-def test_force_rebuild_equals_incremental(tmp_path):
-    # `load --force` deletes the silver DB and rebuilds it from all bronze
-    # (silver.reset runs in main() before the work DB is staged, so the
-    # load seeds empty and every snapshot re-ingests). For UNCHANGED
-    # bronze that rebuild must reproduce a plain incremental load exactly
-    # across every data table — the guarantee that makes --force a safe
-    # repair rather than a state-altering operation. --no-fetch-prices
-    # keeps both loads offline (the post-ingest USD price fill is
-    # default-on and would otherwise reach the network).
-    bronze = tmp_path / "bronze"
-    _seed(bronze)
-    silver = tmp_path / "silver" / "cointracking.duckdb"
-
-    argv = ["--bronze-dir", str(bronze), "--silver-db", str(silver),
-            "--no-fetch-prices"]
-
-    # Plain incremental load into a fresh silver DB, then capture state.
-    assert loader.main(argv) == 0
-    incremental = _dump_silver_state(silver)
-    # Guard against a vacuous pass: the load must actually have populated
-    # silver, so the equivalence below compares real state, not two empties.
-    assert incremental["transactions"], "incremental load wrote no transactions"
-
-    # Force rebuild over the SAME unchanged bronze, then re-capture.
-    assert loader.main(argv + ["--force"]) == 0
-    rebuilt = _dump_silver_state(silver)
-
-    assert rebuilt == incremental
-
+def _overview(run_dir: Path, cu: str, rows: list[str]) -> None:
+    (run_dir / f"cu_{cu}" / "overview.csv").write_text(
+        OVERVIEW_HEADER + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
 
 
 def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
     # Three exports land one load apart; a second silver is built from
     # all three in one --force. The replay keeps a row's snapshot_at
     # where history did not change, so this pins that the run-by-run
-    # order of a --force reproduces each load's stamps.
-    bronze = tmp_path / "bronze"
+    # order of a --force reproduces each load's stamps. Two exports
+    # price one day differently: the first one read keeps it.
+    fixture = tmp_path / "fixture"
     exports = [
         ("20240201T000000Z", {"1": [_row("Deposit", buy="1", buy_cur="BTC",
                                          date="2024-01-10 10:00:00")]}),
@@ -620,16 +602,61 @@ def test_runs_loaded_one_at_a_time_build_what_force_builds(tmp_path):
                               "2": [_row("Deposit", buy="2", buy_cur="ETH",
                                          date="2024-02-01 10:00:00")]}),
     ]
-    one_by_one = tmp_path / "one-by-one.duckdb"
-    at_once = tmp_path / "at-once.duckdb"
-    argv = ["--bronze-dir", str(bronze), "--no-fetch-prices"]
-    for slug, portfolios in exports:
-        _seed_export(bronze, slug, portfolios)
-        assert loader.main([*argv, "--silver-db", str(one_by_one)]) == 0
-    assert loader.main([*argv, "--silver-db", str(at_once), "--force"]) == 0
+    runs = [_seed_export(fixture, slug, portfolios)
+            for slug, portfolios in exports]
+    _overview(runs[0], "1", ['"2024/01/10","20000","1","","","20000"'])
+    _overview(runs[1], "1", ['"2024/01/10","21000","1","","","21000"',
+                             '"2024/02/20","15000","0.5","","","15000"'])
+    incremental.check(
+        loader.main, lambda db, bronze: [
+            "--silver-db", str(db), "--bronze-dir", str(bronze),
+            "--no-fetch-prices"],
+        runs, tmp_path / "work",
+        rows=lambda db, ignore: _dump_silver_state(db))
+    conn = duckdb.connect(str(tmp_path / "work" / "at-once.db"))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM positions_daily"
+                            ).fetchone()[0]
+        assert conn.execute(
+            "SELECT CAST(as_of_date AS VARCHAR), price FROM portfolio_prices "
+            "ORDER BY 1").fetchall() == [("2024-01-10", Decimal("20000")),
+                                         ("2024-02-20", Decimal("30000"))]
+    finally:
+        conn.close()
 
-    a, b = _dump_silver_state(one_by_one), _dump_silver_state(at_once)
-    assert a["positions_daily"] and a == b
+
+def _a_loaded_silver(tmp_path: Path) -> tuple[list[str], Path, bytes]:
+    """A silver DB loaded from one export through a scratch dir: the
+    load's argv, the DB, and its bytes."""
+    bronze = tmp_path / "bronze"
+    _seed(bronze)
+    silver = tmp_path / "silver" / "cointracking.duckdb"
+    argv = ["--bronze-dir", str(bronze), "--silver-db", str(silver),
+            "--scratch-dir", str(tmp_path / "scratch"), "--no-fetch-prices"]
+    assert loader.main(argv) == 0
+    return argv, silver, silver.read_bytes()
+
+
+def test_a_force_that_raises_keeps_the_old_silver(tmp_path, monkeypatch):
+    argv, silver, before = _a_loaded_silver(tmp_path)
+
+    def boom(conn, args):
+        raise RuntimeError("rebuild failed")
+    monkeypatch.setattr(loader, "run_load", boom)
+    with pytest.raises(RuntimeError):
+        loader.main([*argv, "--force"])
+    assert silver.read_bytes() == before
+
+
+def test_a_force_with_a_failed_snapshot_keeps_the_old_silver(tmp_path):
+    argv, silver, before = _a_loaded_silver(tmp_path)
+    run2 = _seed_export(tmp_path / "bronze", "20240301T000000Z",
+                        {CU: [TRADE_ROW]})
+    (run2 / f"cu_{CU}" / "trades.csv").write_text(
+        '"Type","Buy","Cur."\n"Deposit","6","ETH"\n', encoding="utf-8")
+    assert loader.main([*argv, "--force"]) == 1
+    assert silver.read_bytes() == before
+
 
 # ---- Group, Tx-ID and the export's local time ------------------------
 
@@ -887,84 +914,3 @@ def test_a_failed_snapshot_leaves_silver_as_the_last_one_did(tmp_path):
 
     assert _dump_silver_state(db) == before
     assert _query(tmp_path, "SELECT COUNT(*) FROM dump_runs") == [(1,)]
-
-
-# ---- price fill -------------------------------------------------------
-
-D1, D2, D3 = date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)
-
-
-def _held(conn, sym: str, days) -> None:
-    for d in days:
-        conn.execute(
-            "INSERT INTO positions_daily VALUES (?, 'cu_1', 'cu_1:ExchangeA', "
-            "?, 1, 1)", [d, sym])
-
-
-def _price_rows(conn, source: str) -> dict[date, Decimal]:
-    return dict(conn.execute(
-        "SELECT as_of_date, price_usd FROM coin_prices WHERE source = ?",
-        [source]).fetchall())
-
-
-class _Coins:
-    """A price client that returns `rows`, or raises when given none."""
-
-    def __init__(self, rows=None):
-        self.rows = rows
-
-    def ohlcv_historical(self, coin_id, from_ts, to_ts):
-        if self.rows is None:
-            raise RuntimeError("provider down")
-        return self.rows
-
-    fetch_fiat_to_usd = ohlcv_historical
-
-
-def _coin_db(tmp_path):
-    conn = _fresh_db(tmp_path)
-    _held(conn, "BTC", (D1, D2, D3))
-    conn.execute("INSERT INTO coin_mapping VALUES "
-                 "('BTC', 'binance', 'BTCUSDT', NULL, 0)")
-    conn.execute("INSERT INTO coin_prices VALUES (?, 'BTC', 100, 'binance', 0)",
-                 [D3])
-    return conn
-
-
-def test_a_failed_price_fetch_keeps_the_stored_price(tmp_path):
-    conn = _coin_db(tmp_path)
-    assert prices.fetch_coin_prices(conn, _Coins(), "missing") == (0, 0)
-    assert _price_rows(conn, "binance") == {D3: Decimal(100)}
-
-
-def test_the_missing_fill_replaces_the_latest_priced_day(tmp_path):
-    # The stored latest day was an intraday price; the fill replaces it
-    # with the fetched close and adds the held days still unpriced. A day
-    # outside the held range is not stored.
-    conn = _coin_db(tmp_path)
-    client = _Coins([(D1, 1.0), (D2, 2.0), (D3, 3.0), (date(2024, 1, 4), 4.0)])
-    assert prices.fetch_coin_prices(conn, client, "missing") == (1, 3)
-    assert _price_rows(conn, "binance") == {
-        D1: Decimal(1), D2: Decimal(2), D3: Decimal(3)}
-
-
-def test_a_failed_fx_fetch_keeps_the_stored_rate(tmp_path):
-    conn = _fresh_db(tmp_path)
-    _held(conn, "EUR", (D1, D2))
-    conn.execute(
-        "INSERT INTO coin_prices VALUES (?, 'EUR', 1.1, 'frankfurter', 0)", [D2])
-    assert prices.fetch_fx_rates(conn, _Coins(), "missing") == (0, 0)
-    assert _price_rows(conn, "frankfurter") == {D2: Decimal("1.1")}
-
-
-def test_backfill_counts_only_the_rows_it_writes(tmp_path, monkeypatch):
-    # A row a fetch wrote in the same second carries the same fetched_at;
-    # it is not a backfilled gap.
-    monkeypatch.setattr(prices.time, "time", lambda: 1000.0)
-    conn = _fresh_db(tmp_path)
-    _held(conn, "BTC", (D1, D2))
-    conn.execute(
-        "INSERT INTO coin_prices VALUES (?, 'BTC', 5, 'binance', 1000)", [D2])
-    assert prices.backfill_first_day_gaps(conn) == 1
-    assert prices.backfill_first_day_gaps(conn) == 0
-    assert _price_rows(conn, "binance") == {D1: Decimal(5), D2: Decimal(5)}

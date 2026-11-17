@@ -111,7 +111,7 @@ Iterate without a fresh login:
 
 ```sh
 ./angellist download --dry-run    # navigate + capture with the saved cookie, write no bronze
-./angellist load --force          # delete silver + rebuild from all bronze
+./angellist load --force          # rebuild silver from all bronze
 ```
 
 `download --dry-run` uses the saved cookie and never signs in. It lists

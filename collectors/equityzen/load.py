@@ -3,9 +3,10 @@
 
 Parses the bronze captured by download.py into the source-shaped SQLite
 silver DB, the input contract to the gold engine. Idempotent: bronze runs
-already recorded in `dump_runs` are skipped; --force deletes the silver DB
-and rebuilds it from all bronze. A run that never finished (no run.json, or
-a status other than "complete") is skipped too: `prune` reclaims it.
+already recorded in `dump_runs` are skipped; --force rebuilds it from all
+bronze, beside the old silver, which a failed rebuild leaves in place. A run
+that never finished (no run.json, or a status other than "complete") is
+skipped too: `prune` reclaims it.
 
 Per bronze run (`$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/`):
 
@@ -37,6 +38,7 @@ See DESIGN.md §4/§5/§6.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import logging
 import os
@@ -72,15 +74,6 @@ def canonical_json(obj) -> str:
 def read_json(path: Path):
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
-
-
-def open_db(path: Path) -> sqlite3.Connection:
-    """Default-isolation connection so `with conn:` brackets each run's load
-    in a BEGIN/COMMIT (ROLLBACK on error): collectorkit's shared helper,
-    plus row_factory=Row for the by-name reads below."""
-    conn = silver.open_db_default_isolation(Path(path))
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def _g(d, *path, default=None):
@@ -237,14 +230,19 @@ def _cash_flow_rows(snapshot_at: int, node: dict) -> list[tuple]:
     return rows
 
 
-# ---- content-hash parse cache -------------------------------------------
+# ---- extraction and parse cache -------------------------------------------
 #
-# The same statement/K-1 PDF is hardlinked into every later dump, so a full
-# reload finds each blob many times over. Both the content hash and the
-# pdftotext parse are functions of the blob content alone, so each is
-# computed once per distinct blob rather than once per (dump, document):
-# bronze.sha256_file memoizes the hash by file identity, and the parse is
-# cached here by that hash.
+# The same statement/K-1 PDF is hardlinked into every later dump, so a load
+# finds each blob many times over. Its extractions are kept on disk between
+# loads (collectorkit.extract.cached, keyed on the bytes and the engine),
+# and its parse once per process here, by content hash: the hash and the
+# parse are functions of the blob content alone, and bronze.sha256_file
+# memoizes the hash by file identity.
+
+# How a document is read: its `pdftotext -layout` text, and for a K-1 the
+# face page's `pdftotext -bbox` word boxes (collectorkit.k1).
+_LAYOUT = functools.partial(extract.pdftotext_layout, timeout=120)
+_BBOX = functools.partial(extract.pdftotext_bbox, timeout=120)
 
 _PARSE_CACHE: dict[str, dict] = {}            # sha256 hex -> {kind, cap, text[, k1]}
 
@@ -255,6 +253,17 @@ def _content_hash(blob: Path) -> str:
     return bronze.sha256_file(blob)[0]
 
 
+def _extracted(extractor, blob: Path, chash: str):
+    """`extractor` over a blob through the extraction cache, or None when
+    the PDF cannot be extracted (missing poppler, encrypted PDF, zip, …):
+    the caller treats such a document as metadata-only."""
+    try:
+        return extract.cached(extractor, blob, chash,
+                              extract.default_dir("equityzen"))
+    except pdftotext.ExtractionError:
+        return None
+
+
 def _parse_pdf(blob: Path, chash: str) -> dict:
     """Extract, classify, and parse a PDF once per content hash. Returns
     {"kind", "cap", "text"} — the text classification, the statement
@@ -263,7 +272,8 @@ def _parse_pdf(blob: Path, chash: str) -> dict:
     fresh parse; the caller selects cap vs k1 by document type."""
     cached = _PARSE_CACHE.get(chash)
     if cached is None:
-        text = statements.pdf_text(blob)
+        layout = _extracted(_LAYOUT, blob, chash)
+        text = "" if layout is None else layout.text()
         cached = {
             "kind": statements.classify(text),
             "cap": statements.parse_capital_account(text),
@@ -275,16 +285,20 @@ def _parse_pdf(blob: Path, chash: str) -> dict:
 
 def _parse_k1(blob: Path, chash: str) -> dict:
     """statements.parse_k1 over a PDF the parse cache holds, once per
-    content hash: its text, and its word boxes (`pdftotext -bbox`; None
-    when they cannot be extracted)."""
+    content hash: its text, and its word boxes (`pdftotext -bbox`), which
+    are extracted only when the text leaves an Item L figure empty."""
     cached = _PARSE_CACHE[chash]
     if "k1" not in cached:
-        try:
-            boxes = extract.pdftotext_bbox(blob, timeout=120)
-        except pdftotext.ExtractionError:
-            boxes = None
-        cached["k1"] = statements.parse_k1(cached["text"], boxes)
+        cached["k1"] = statements.parse_k1(
+            cached["text"], lambda: _extracted(_BBOX, blob, chash))
     return cached["k1"]
+
+
+def _sweep_extract_cache(_conn, _load) -> None:
+    """Remove the extraction-cache entries neither extractor above reads
+    any more: those an engine upgrade or a code edit left behind."""
+    extract.sweep(extract.default_dir("equityzen"),
+                  {extract.extraction_key(e) for e in (_LAYOUT, _BBOX)})
 
 
 def _pdf_blobs(run_dir: Path, nodes: dict) -> list[tuple[Path, str]]:
@@ -306,9 +320,10 @@ def _pdf_blobs(run_dir: Path, nodes: dict) -> list[tuple[Path, str]]:
 def _prewarm_parses(blobs: list[tuple[Path, str]]) -> None:
     """Fill the parse cache for the blobs not yet seen, extracting their text
     concurrently. pdftotext is a subprocess that releases the GIL while it
-    runs, so a thread pool overlaps the launches instead of the parent idling
-    in poll() through a strictly serial sequence. The subsequent serial load
-    loop then finds every blob already cached, leaving SQL order untouched."""
+    runs, so on a cold extraction cache a thread pool overlaps the launches
+    instead of the parent idling in poll() through a strictly serial
+    sequence. The subsequent serial load loop then finds every blob already
+    cached, leaving SQL order untouched."""
     todo = {chash: blob for blob, chash in blobs if chash not in _PARSE_CACHE}
     if not todo:
         return
@@ -401,8 +416,7 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> tuple[int, ...]:
                 stage = node.get("dealStage") or (prev[0] if prev else None)
                 nodes[did] = (stage, node, body)
 
-    stats = {"offerings": 0, "positions": 0, "cash_flows": 0, "tax_documents": 0,
-             "capital_account_statements": 0, "k1_documents": 0}
+    stats = dict.fromkeys(RUN_COUNTS, 0)
 
     # Extract+parse this run's PDF blobs concurrently before the serial load;
     # the cache makes the per-offering loop below a pure cache read.
@@ -461,7 +475,7 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> tuple[int, ...]:
                 "cost_basis_remaining, price_per_share, market_value, "
                 "distributions_cumulative, total_value, snapshot_at, payload) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
-            stats["positions"] += 1
+            stats["position-events"] += 1
 
         for row in _cash_flow_rows(snapshot_at, node):
             conn.execute(
@@ -472,10 +486,7 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> tuple[int, ...]:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
             stats["cash_flows"] += 1
 
-    return tuple(stats[k] for k in ("offerings", "positions", "cash_flows",
-                                     "tax_documents",
-                                     "capital_account_statements",
-                                     "k1_documents"))
+    return tuple(stats.values())
 
 
 def run_columns(run: loader.Run) -> dict:
@@ -505,7 +516,7 @@ def _parser() -> argparse.ArgumentParser:
 SPEC = loader.LoaderSpec(
     name="equityzen", schema=MIGRATIONS_DIR, load_run=load_run,
     parser=_parser, counts=RUN_COUNTS, run_columns=run_columns,
-    open_db=open_db, manifest=loader.MANIFEST_REQUIRED)
+    after_runs=_sweep_extract_cache, manifest=loader.MANIFEST_REQUIRED)
 
 
 def main(argv: list[str]) -> int:

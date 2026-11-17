@@ -277,15 +277,17 @@ So a migration or a new timezone setting takes effect at the next
 `positions_daily` upsert against whatever is already in `transactions`.
 It helps when iterating on the type-handler rules.
 
-`--force` deletes the silver DB and rebuilds it from all bronze, the
-fleet-wide meaning.
+`--force` rebuilds the silver DB from all bronze, the fleet-wide
+meaning.
 
 `--scratch-dir DIR` runs the load against a working copy of the silver
 DB in `DIR` and moves the finished file back over `--silver-db` on
 success. The container entrypoint passes `--scratch-dir /tmp`. DuckDB's
 many small writes then stay on the container's own disk instead of the
 slow bind mount, and the silver reaches `/data` in one move. A failed
-load leaves the original silver untouched.
+load leaves the original silver untouched. Under `--force` the working
+copy starts empty, so a failed rebuild keeps the old silver too.
+Without `--scratch-dir`, `--force` deletes the silver DB first.
 
 ### Timezone
 

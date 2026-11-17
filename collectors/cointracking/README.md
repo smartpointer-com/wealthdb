@@ -106,7 +106,7 @@ More examples:
 ./cointracking download --dry-run     # walk the pages, export nothing
 ./cointracking load --no-fetch-prices # build silver offline
 ./cointracking load --replay-only     # re-run the holdings replay only
-./cointracking load --force           # delete silver, rebuild from all bronze
+./cointracking load --force           # rebuild silver from all bronze
 ./cointracking fetch-prices --missing # fill price gaps only
 ./cointracking fetch-prices           # drop and re-fetch every price
 ```

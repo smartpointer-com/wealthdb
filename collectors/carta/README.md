@@ -104,7 +104,7 @@ Cheaper runs:
 ./carta login --check          # exit 0 if the session is valid, 1 if not
 ./carta download --dry-run     # list the held entities; write nothing
 ./carta download --no-documents
-./carta load --force           # delete silver and rebuild from all bronze
+./carta load --force           # rebuild silver from all bronze
 ./carta prune --dry-run        # print what prune would delete
 ```
 

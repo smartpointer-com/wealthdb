@@ -1,9 +1,9 @@
 """cointracking USD price fill: crypto from Binance, fiat from Frankfurter.
 
 Fills `coin_prices` for every coin and fiat held in `positions_daily`,
-on each day it is held. `load` runs the fill after ingest
-(:func:`fill_missing`; --no-fetch-prices skips it), and `fetch-prices`
-runs it in either mode (fetch_prices.py).
+on each day it is held (:func:`fill`). `load` runs the fill after ingest
+in 'missing' mode (--no-fetch-prices skips it), and `fetch-prices` runs
+it in either mode (fetch_prices.py).
 
 The fill logs under the loader's name, `cointracking.load`, from both
 commands.
@@ -76,8 +76,8 @@ def ensure_coin_mapping(
 def coin_date_range(
     conn: duckdb.DuckDBPyConnection, sym: str,
 ) -> tuple[date, date] | None:
-    """Return (min, max) as_of_date in positions_daily where the
-    user held `sym` (amount > 0). None if the coin was never held."""
+    """Return (min, max) as_of_date in positions_daily where `sym` is
+    held (amount > 0). None if the coin was never held."""
     row = conn.execute(
         "SELECT MIN(as_of_date), MAX(as_of_date) FROM positions_daily "
         "WHERE instrument_external_id = ? AND amount > 0",
@@ -369,18 +369,20 @@ def fetch_fx_rates(
     return fiats_fetched, prices_written
 
 
-def fill_missing(conn: duckdb.DuckDBPyConnection) -> None:
-    """The price fill `load` runs after ingest: missing USD prices from
-    the crypto provider, then fiat rates, then the first-day gaps."""
-    log.info("price-fill: filling missing USD prices "
-             "from %s + FX rates from %s",
-             PRICE_PROVIDER, FX_PROVIDER)
-    client = BinanceClient(api_key=get_api_key())
-    coins, prices = fetch_coin_prices(conn, client, mode="missing")
+def fill(conn: duckdb.DuckDBPyConnection, mode: str) -> None:
+    """The price fill in `mode` ('missing' or 'full', see
+    fetch_coin_prices): USD prices from the crypto provider, then fiat
+    rates, then the first-day gaps. `load` runs it in 'missing' mode
+    after ingest, `fetch-prices` in either."""
+    if mode not in ("missing", "full"):
+        raise ValueError(f"unknown fetch mode: {mode!r}")
+    log.info("price-fill: %s mode, USD prices from %s + FX rates from %s",
+             mode, PRICE_PROVIDER, FX_PROVIDER)
+    coins, prices = fetch_coin_prices(
+        conn, BinanceClient(api_key=get_api_key()), mode=mode)
     log.info("price-fill: %d coin(s) fetched, %d price "
              "row(s) written", coins, prices)
-    fx_client = FrankfurterClient()
-    fiats, fx_rows = fetch_fx_rates(conn, fx_client, mode="missing")
+    fiats, fx_rows = fetch_fx_rates(conn, FrankfurterClient(), mode=mode)
     log.info("price-fill: %d fiat(s) fetched, %d FX "
              "rate row(s) written", fiats, fx_rows)
     backfill_first_day_gaps(conn)

@@ -978,14 +978,16 @@ def reingest_reason(
 
 
 def _stage_work_db(
-    silver_db: Path, scratch_dir: Path | None,
+    silver_db: Path, scratch_dir: Path | None, *, seed: bool = True,
 ) -> tuple[Path, bool]:
     """Pick the path DuckDB actually opens for the load.
 
     Without --scratch-dir the silver DB is opened in place. With it, an
     existing silver DB is copied into scratch_dir so the incremental
     load sees prior state, and the returned flag tells the caller to
-    move the finished copy back onto silver_db afterwards.
+    move the finished copy back onto silver_db afterwards. With `seed`
+    False the scratch copy starts empty instead, and the silver DB stays
+    as it is until the promote.
 
     Returns (work_db, promote): work_db is the path to open, promote is
     True when it must be copied back to silver_db on success."""
@@ -996,7 +998,7 @@ def _stage_work_db(
     if work_db.resolve() == silver_db.resolve():
         # Scratch resolves to the silver location — nothing to stage.
         return silver_db, False
-    if silver_db.exists():
+    if seed and silver_db.exists():
         shutil.copy2(silver_db, work_db)
     elif work_db.exists():
         # No source to seed from; drop a stale scratch copy so the load
@@ -1076,7 +1078,7 @@ def run_load(conn: duckdb.DuckDBPyConnection, args: argparse.Namespace) -> int:
             failed = True
 
     if args.fetch_prices:
-        prices.fill_missing(conn)
+        prices.fill(conn, "missing")
 
     if failed:
         log.error("done, with failed snapshot(s); see above")
@@ -1090,13 +1092,14 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
-    # --force = delete the silver DB, then rebuild from all bronze (the
-    # fleet-wide meaning). Reset before staging so the work DB seeds empty
-    # and every snapshot re-ingests; silver.reset clears the DuckDB file and
-    # its .wal sidecar.
-    if args.force:
+    # --force rebuilds from all bronze into an empty DB. Staged in scratch,
+    # the old silver DB stays in place until the promote, so a rebuild that
+    # fails leaves it as it was. In place, it is deleted first (silver.reset
+    # clears the DuckDB file and its .wal sidecar).
+    work_db, promote = _stage_work_db(args.silver_db, args.scratch_dir,
+                                      seed=not args.force)
+    if args.force and not promote:
         silver.reset(args.silver_db)
-    work_db, promote = _stage_work_db(args.silver_db, args.scratch_dir)
     try:
         conn = duckdb.connect(str(work_db))
         # The only silver here that is DuckDB rather than SQLite, so it
@@ -1107,10 +1110,10 @@ def main(argv: list[str]) -> int:
             rc = run_load(conn, args)
         finally:
             conn.close()
-        if promote:
-            # Only reached on a clean run — a hard failure propagates
-            # before this and leaves the silver DB as it was before this
-            # run (already deleted under --force).
+        # A hard failure propagates before this and leaves the silver DB
+        # as it was before this run. A rebuild that failed a snapshot
+        # (rc 1) is not promoted either: the old silver stays whole.
+        if promote and not (args.force and rc):
             _promote_work_db(work_db, args.silver_db)
         return rc
     finally:

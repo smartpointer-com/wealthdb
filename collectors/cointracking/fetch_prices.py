@@ -11,8 +11,8 @@ Two modes:
 
   - --missing: fetch only (held, unpriced) gaps + the previous
     run's latest priced day (always re-fetched because it was an
-    intraday snapshot when first stored). Identical to the price
-    fill `load` runs by default. Useful when load was run with
+    intraday snapshot when first stored). The price fill `load`
+    runs by default (prices.fill). Useful when load was run with
     --no-fetch-prices and prices need to be brought up to date
     without re-running the bronze ingest.
 
@@ -40,12 +40,8 @@ import duckdb
 
 from collectorkit import cli, silver
 
-from binance import BinanceClient, get_api_key
-from frankfurter import FrankfurterClient
+import prices
 from load import apply_migrations
-from prices import (
-    fetch_coin_prices, fetch_fx_rates, backfill_first_day_gaps,
-)
 
 log = logging.getLogger("cointracking.fetch_prices")
 
@@ -82,20 +78,10 @@ def main(argv: list[str]) -> int:
     conn = duckdb.connect(str(args.silver_db))
     silver.own_only(args.silver_db)
     try:
-        # Make sure the schema is current (in case fetch-prices is
-        # run against a silver DB that pre-dates migration 0002).
+        # Bring the schema up to date, so an older silver gains the
+        # price tables.
         apply_migrations(conn)
-
-        client = BinanceClient(api_key=get_api_key())
-        mode = "missing" if args.missing else "full"
-        coins, prices = fetch_coin_prices(conn, client, mode=mode)
-        log.info("crypto: %s mode, %d coin(s) fetched, %d price row(s) written",
-                 mode, coins, prices)
-        fx_client = FrankfurterClient()
-        fiats, fx_rows = fetch_fx_rates(conn, fx_client, mode=mode)
-        log.info("fx:     %s mode, %d fiat(s) fetched, %d rate row(s) written",
-                 mode, fiats, fx_rows)
-        backfill_first_day_gaps(conn)
+        prices.fill(conn, "missing" if args.missing else "full")
     finally:
         conn.close()
     return 0

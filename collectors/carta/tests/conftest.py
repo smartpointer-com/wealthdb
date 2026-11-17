@@ -1,7 +1,7 @@
 """Shared test setup for carta.
 
 Puts the collector dir on `sys.path` so the tests can import the loader's
-modules, `download`, `k1` and `prune`, and provides the migrated in-memory
+modules, `download` and `prune`, and provides the migrated in-memory
 silver, one run loaded through the load frame, and the bronze documents
 dir several suites build. Synthetic data only.
 """
@@ -17,9 +17,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import fund_documents  # noqa: E402
 import load  # noqa: E402
-from collectorkit import loader, silver  # noqa: E402
+from collectorkit import extract, loader, silver  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
@@ -27,9 +26,8 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 @pytest.fixture(autouse=True)
 def extract_dir(tmp_path, monkeypatch) -> Path:
     """The loader's extraction cache, inside the test's own directory."""
-    path = tmp_path / "extract-cache"
-    monkeypatch.setattr(fund_documents, "_extract_dir", lambda: path)
-    return path
+    monkeypatch.setenv("WEALTHDB_CACHE_DIR", str(tmp_path / "cache"))
+    return extract.default_dir("carta")
 
 
 @pytest.fixture

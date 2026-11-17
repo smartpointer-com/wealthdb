@@ -97,6 +97,10 @@ def _read_transactions_csv(path: Path) -> list[dict]:
 # cancellation date) and US ('MM/DD/YYYY', certificates and documents).
 _ISO_DAY = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})")
 _US_DAY = re.compile(r"([0-9]{2})/([0-9]{2})/([0-9]{4})")
+_EPOCH = dt.date(1970, 1, 1)
+# The days of one 400-year Gregorian cycle. dt.date starts at year 1, and
+# SQLite's date() reads year 0 too: that year is read one cycle on.
+_CYCLE_DAYS = 146097
 
 
 def _flow_at(flow_date) -> int | None:
@@ -111,19 +115,11 @@ def _flow_at(flow_date) -> int | None:
         month, day, year = (int(g) for g in m.groups())
     else:
         return None
-    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
-    if not (1 <= month <= 12
-            and 1 <= day <= (31, 29 if leap else 28, 31, 30, 31, 30,
-                             31, 31, 30, 31, 30, 31)[month - 1]):
+    try:
+        days = (dt.date(year or 400, month, day) - _EPOCH).days
+    except ValueError:
         return None
-    # Days since 1970-01-01 in the proleptic Gregorian calendar, any year
-    # from 0000 on (H. Hinnant's days_from_civil).
-    y = year - (month <= 2)
-    era = y // 400
-    yoe = y - era * 400
-    doy = (153 * (month + (-3 if month > 2 else 9)) + 2) // 5 + day - 1
-    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
-    return (era * 146097 + doe - 719468) * 86400
+    return (days - (0 if year else _CYCLE_DAYS)) * 86400
 
 
 def _insert_cash_flow(conn, cfid: str, eid, snap: int, kind: str,
