@@ -174,16 +174,19 @@ The reason for one left is one of these:
   asked about the fund. A timeout does this.
 
 A download logs the same counts, one line per fact. It closes with one
-`lost:` line per fund whose fact a failure cost this run. That is a
-failed fetch with no other answer, a failed claim or date list, or for
-`monthly_returns` any one date that failed:
+`lost:` line per fund, security or bulk request a failure cost a want
+this run. That is a failed fetch with no other answer, a failed claim
+or date list, or for `monthly_returns` any one date that failed:
 
 ```text
 lost: symbol:ACWI: this run failed on monthly_returns; rerun with --backfill --ref symbol:ACWI
 ```
 
-The rerun recovers the fund, and asks only the dates still missing. A
-line names `--backfill` only where the run had it. A `lost:` line does
+The line names the ref a rerun asks for: the fund, the security, or the
+bulk request that failed. A fund is named by the facts it lost. Its
+composition is named only where it lost nothing else, as the rerun asks
+for it too. The rerun recovers the want, and asks only the dates still
+missing. A line names `--backfill` only where the run had it. A `lost:` line does
 not change the exit code, so one timeout does not fail a nightly run. A
 provider can answer that it has nothing for a fund. That loses nothing,
 and no line names the fund.

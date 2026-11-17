@@ -783,37 +783,58 @@ def _failed(entry) -> bool:
 
 
 def lost_funds(cover, reqs, results, unplanned=frozenset()) -> dict:
-    """fund ref -> the facts a failure cost it this run, sorted: a request
-    that asked for one met an error and none answered it, or a failed
-    lookup left a request missing (`unplanned`), whatever else came.
-    A series fact counts by date: a filing's months are its own, one
-    missing month leaves a gap in every window over it, and only a
-    backfill asks a past date again. A provider with nothing to state
-    loses nothing, and a rerun would not change its answer. A request
-    --limit deferred has not failed."""
+    """ref -> what a failure cost it this run, sorted, by the --ref that
+    recovers it: a fund's ref, a security's key, a bulk request's ref.
+
+    A want is lost where a request that asked for it met an error and
+    none answered it: a fund's composition, each fact a request asks
+    for, and each row of the coverage, a security's among them. So is
+    one a failed lookup left with a request missing (`unplanned`),
+    whatever else came. A fund that lost a fact is named by its facts
+    alone, its composition only where it lost nothing else: a rerun for
+    its facts asks for the composition too. A series fact counts by
+    date: a filing's months are its own, one missing month leaves a gap
+    in every window over it, and only a backfill asks a past date again.
+    A provider with nothing to state loses nothing, and a rerun would
+    not change its answer. A request --limit deferred has not failed."""
     entries = {id(r): e for r, e in zip(reqs, results, strict=True)}
-    asked = [(r, f) for r in reqs if r.kind == "fund" for f in r.facts]
-    asked += [(r, fact) for fact, wanting in cover.items() for c in wanting.values() for r in c.requests
-              if r.kind == "fund" and fact not in r.facts]
-    got, lost = set(), set()
-    for r, fact in asked:
+    asking = [(r, r.ref, f) for r in reqs if r.kind == "fund"
+              for f in ((COMPOSITION,) if r.compositions else ()) + r.facts]
+    asking += [(r, ref, fact) for fact, wanting in cover.items() for ref, c in wanting.items() for r in c.requests]
+    got, lost = set(), {}
+    for r, ref, fact in asking:
         e = entries[id(r)]
-        key = (r.ref, fact, r.as_of if fact_of("fund", fact).series else None)
-        if e["status"] == "ok" and (fact in e["facts"] if fact in r.facts
-                                    else fact in REGISTRY[e["provider"]].composition_facts):
+        key = (ref, fact, r.as_of if fact_of("fund" if r.kind == "fund" else "security", fact).series else None)
+        if e["status"] == "ok" and _answered(r, e, fact):
             got.add(key)
         elif _failed(e):
-            lost.add(key)
+            lost.setdefault(key, set()).add(r.ref)
     out = {}
-    for ref, fact in sorted({key[:2] for key in lost - got} | set(unplanned)):
-        out.setdefault(ref, []).append(fact)
-    return out
+    for key, refs in lost.items():
+        if key not in got:
+            for ref in refs:
+                out.setdefault(ref, set()).add(key[1])
+    for ref, fact in unplanned:
+        out.setdefault(ref, set()).add(fact)
+    return {ref: sorted(facts - {COMPOSITION} or facts) for ref, facts in sorted(out.items())}
+
+
+def _answered(r, entry, fact) -> bool:
+    """Whether a request that served answered a fact it asked for: one its
+    `facts` name by its entry's facts, as the fetch states them; the
+    composition by serving; a fact a fund's compositions state by its
+    provider's `composition_facts`; a family of figures by serving."""
+    if fact in r.facts:
+        return fact in entry["facts"]
+    if r.kind == "fund" and fact != COMPOSITION:
+        return fact in REGISTRY[entry["provider"]].composition_facts
+    return True
 
 
 def log_lost(lost, backfill) -> None:
-    """One closing line per fund a failure cost a fact it wanted, with the
-    rerun that recovers it. The exit code stays 0: one timeout must not
-    fail a nightly."""
+    """One closing line per ref a failure cost a want, with the rerun
+    that recovers it. The exit code stays 0: one timeout must not fail a
+    nightly."""
     flag = "--backfill " if backfill else ""
     for ref, facts in lost.items():
         log.warning("lost: %s: this run failed on %s; rerun with %s--ref %s", ref, ", ".join(facts), flag, ref)

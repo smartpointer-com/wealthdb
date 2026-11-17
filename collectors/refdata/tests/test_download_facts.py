@@ -766,6 +766,51 @@ def test_a_standby_whose_claim_fails_counts_as_an_error(registry, tmp_path, monk
         f"lost: {REF}: this run failed on risk_metrics; rerun with --ref {REF}"]
 
 
+def test_a_failed_composition_is_named_where_no_fact_is(registry, tmp_path, monkeypatch, caplog):
+    registry(_Facts("comp", fails=True))
+    assert _lost_lines(tmp_path, monkeypatch, caplog, [held()], ("comp",)) == [
+        f"lost: {REF}: this run failed on composition; rerun with --ref {REF}"]
+
+
+class _Down(_Company):
+    """A company lookup whose every fetch fails."""
+
+    def fetch_security(self, claim, outdir, ctx):
+        raise ProviderError("timed out")
+
+
+class _FramesDown(_Frames):
+    """A bulk provider whose every fetch fails."""
+
+    def fetch_bulk(self, claim, outdir, ctx):
+        raise ProviderError("timed out")
+
+
+def test_a_failed_security_request_or_bulk_request_is_named_by_the_ref_that_reruns_it(
+        registry, tmp_path, monkeypatch, caplog):
+    registry(_Down(), _FramesDown())
+    caplog.set_level(logging.WARNING, logger="refdata.download")
+    monkeypatch.setattr(download.config, "load", lambda known: config.Config(providers=("company", "frames"),
+                                                                          constituents=True))
+    monkeypatch.setattr(download, "today_utc", lambda: TODAY)
+    w = write_wanted(tmp_path / "wanted.json", v2(securities=[security("isin:US0000000011", ["dividends"]),
+                                                              security("isin:US0000000012", ["earnings"], "constituent")]))
+    assert download.main(["--bronze-dir", str(tmp_path / "data"), "--wanted", str(w)]) == 0
+    assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("lost: ")] == [
+        "lost: frame:eps:CY2026Q1: this run failed on earnings; rerun with --ref frame:eps:CY2026Q1",
+        "lost: isin:US0000000011: this run failed on dividends; rerun with --ref isin:US0000000011"]
+
+
+def test_a_security_fact_another_request_answers_is_no_loss():
+    key = "isin:US0000000013"
+    down = download.Request("security", "a", key)
+    up = download.Request("security", "b", key)
+    cover = {"earnings": {key: download.Cover(requests=[down, up])}}
+    assert download.lost_funds(cover, [down, up], [{"status": "error"}, {"status": "ok"}]) == {}
+    assert download.lost_funds(cover, [down, up], [{"status": "error"}, {"status": "unavailable"}]) == {
+        key: ["earnings"]}
+
+
 def _dated(*outcomes, fact="monthly_returns"):
     """Requests for `fact` at each of (day, entry), and their entries."""
     reqs = [download.Request("fund", "filing", REF, day, facts=(fact,)) for day, _ in outcomes]
