@@ -3,7 +3,6 @@ by frame for the securities held through funds, on invented answers in
 the layout of the SEC's XBRL API."""
 
 import json
-import re
 from datetime import date
 from pathlib import Path
 
@@ -13,7 +12,7 @@ import fetcher
 from providers.base import Context, ProviderError, Unavailable, read_meta
 from providers.sec_edgar import FAMILIES, FIGURES, SecEdgar, figure_rows
 from providers.sec_frames import due, last_due, periods, quarter
-from tests.helpers import FakeClient, go_source
+from tests.helpers import FakeClient, go_rows, go_source
 from wanted import Security
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -158,9 +157,7 @@ def test_the_families_and_their_fields_are_those_gold_reads():
     """Gold's wanted list reads a family's newest period from these
     fields (periodFamilies): a figure renamed or moved on one side would
     leave its family wanted for ever."""
-    block = re.search(r"var periodFamilies = .*?\n\}\n", go_source("gold/refdata_wanted.go"), re.S).group(0)
-    gold = [(family, re.findall(r'"(\w+)"', fields))
-            for family, fields in re.findall(r'\{"(\w+)",\s*\[\]string\{(.*?)\}\}', block, re.S)]
+    gold = go_rows(go_source("gold/refdata_wanted.go"), "periodFamilies")
     assert gold == [(family, [f.field for f in FIGURES if f.family == family]) for family in FAMILIES]
 
 

@@ -30,17 +30,14 @@ A fund provider:
 
 A fund provider may also answer some of the facts a fund `wants`
 (risk_metrics, monthly_returns, money_market, characteristics,
-line_durations, dividend_calendar; the wanted list, adapters/refdata.md §5): it names
+dividend_calendar; the wanted list, adapters/refdata.md §5): it names
 them in `facts`, and is asked for a fund that wants one even where
 another provider serves the fund's compositions. Its fetch and parse are
 the same calls. The facts it can state for a past day, as a filing does,
 it names in `dated_facts` too; the others it states for today only. A
 fetch that succeeds without a fact it was asked for (a page that failed
 beside a file that did not) names it in meta.json's `facts_missing`
-(facts_missing()), so the fact stays due. The facts it states with every
-composition it serves, as a holdings file states its lines' durations,
-it names in `composition_facts` instead: a request for the fund's
-composition answers them, and none is made for them alone.
+(facts_missing()), so the fact stays due.
 
 The dividend calendar is such a fact of a fund, and a fact a security
 held directly `wants` (wanted.Security.wants). A provider states every
@@ -352,19 +349,17 @@ class Provider:
     # thousands.
     answers = frozenset()
     # The facts of a fund's `wants` a fund provider answers beside
-    # compositions (`facts`), those it can state for a past day
-    # (`dated_facts`), and those its compositions state
-    # (`composition_facts`).
+    # compositions (`facts`), and those it can state for a past day
+    # (`dated_facts`).
     facts = frozenset()
     dated_facts = frozenset()
-    composition_facts = frozenset()
     # A fund provider whose documents state a fund's facts and no holdings
     # (a money-market filing) is never offered a fund's compositions.
     serves_compositions = True
     # The flags of a fund provider's claim that ask its fetch for the
     # optional parts stating a fact (a fund page, its distributions), by
-    # fact. A request sets each to whether it asks for the fact: a page is
-    # fetched only where a fact it states is due.
+    # fact, as PAGE_FLAGS. A request sets each to whether it asks for the
+    # fact: a page is fetched only where a fact it states is due.
     claim_flags = {}
     # The fewest days between two security requests to the provider for
     # one security, whatever max_age_days says, a request that failed
@@ -591,6 +586,18 @@ def us_symbol(fund) -> str:
     (a UCITS fund's local ticker can be a US fund's)."""
     isin = ident(fund, "isin")
     return ident(fund, "symbol") if not isin or isin.startswith("US") else ""
+
+
+# The flags of an issuer's claim, by the fact each asks a fetch for: the
+# fund page's figures, and its distributions.
+PAGE_FLAGS = {"characteristics": "characteristics", "dividend_calendar": "calendar"}
+
+
+def page_flags(fund, flags=PAGE_FLAGS) -> dict:
+    """A claim's flags for a wanted fund: each set where the fund wants
+    its fact. A fund wanted as a proxy or an underlying wants none, and
+    its fetch then asks for no page or distributions."""
+    return {flag: fact in fund.wants for fact, flag in flags.items()}
 
 
 def listed(index: dict, fund, us_site: str):

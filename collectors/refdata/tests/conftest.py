@@ -1,6 +1,7 @@
 """Put the collector's own modules on the path, as the wrapper runs them,
-give the tests a fake provider in the registry, and parse each folder a
-provider parses a second time, compressed."""
+give the tests a fake provider in the registry or a registry of their
+own, and parse each folder a provider parses a second time,
+compressed."""
 
 import shutil
 import sys
@@ -10,6 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import download  # noqa: E402
+import load  # noqa: E402
 from collectorkit import compress  # noqa: E402
 from providers import REGISTRY, sec_calendar  # noqa: E402
 from providers.base import META, TEXT_SUFFIXES  # noqa: E402
@@ -63,6 +66,20 @@ def _compressed_twin(monkeypatch, tmp_path_factory):
                 raise error
             return out
         monkeypatch.setattr(owner, "parse", parse)
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    """The providers download and load know, these only: a reason names
+    no real provider."""
+    reg = {}
+    monkeypatch.setattr(download, "REGISTRY", reg)
+    monkeypatch.setattr(load, "REGISTRY", reg)
+
+    def add(*providers):
+        reg.update((p.name, p) for p in providers)
+        return providers
+    return add
 
 
 @pytest.fixture

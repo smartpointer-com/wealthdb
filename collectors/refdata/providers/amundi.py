@@ -41,7 +41,7 @@ from pathlib import Path
 
 from . import table
 from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, dec, event_row, facts_missing, ident,
-                   merge_events, percent, read_json, read_meta, row, write_file, write_meta)
+                   merge_events, page_flags, percent, read_json, read_meta, row, write_file, write_meta)
 
 HOST = "https://www.amundietf.ch"
 API = f"{HOST}/mapi/ProductAPI/getProductsData"
@@ -77,9 +77,7 @@ class Amundi(Provider):
         isin, name = ident(fund, "isin"), fund.name or ""
         if not isin or not ISSUER.search(name) or not ETF.search(name):
             return None
-        # A fund wanted as a proxy or an underlying wants no calendar, and
-        # its fetch asks for no dividend history.
-        return {"ref": fund.ref, "isin": isin, "calendar": "dividend_calendar" in fund.wants}
+        return {"ref": fund.ref, "isin": isin, **page_flags(fund, {"dividend_calendar": "calendar"})}
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
         body = {"context": CONTEXT, "productIds": [claim["isin"]], "productType": "PRODUCT",

@@ -54,8 +54,9 @@ from pathlib import Path
 from collectorkit.parse import iso_date
 
 from . import fundpage, table, xlsx
-from .base import (Parsed, Provider, ProviderError, amount, event_row, facts_missing, has_file, ident, merge_events,
-                   present, read_bytes, read_json, read_meta, today_utc, write_file, write_meta)
+from .base import (PAGE_FLAGS, Parsed, Provider, ProviderError, amount, event_row, facts_missing, has_file, ident,
+                   merge_events, page_flags, present, read_bytes, read_json, read_meta, today_utc, write_file,
+                   write_meta)
 
 EXPORT = "https://etf.dws.com/etfdata/export/GBR/ENG/excel/product/constituent/{isin}/"
 PAGE = "https://etf.dws.com/api/pdp/en-gb/etf/{isin}/pdpMetaTagsTealium"
@@ -90,16 +91,13 @@ class Xtrackers(Provider):
     name = "xtrackers"
     serves_funds = True
     facts = frozenset({"characteristics", "dividend_calendar"})
-    claim_flags = {"characteristics": "characteristics", "dividend_calendar": "calendar"}
+    claim_flags = PAGE_FLAGS
 
     def claim(self, fund, ctx):
         isin = ident(fund, "isin")
         if not isin or isin.startswith("US") or not ISSUER.search(fund.name or ""):
             return None
-        # A fund wanted as a proxy or an underlying wants neither, and its
-        # fetch asks for no page data.
-        return {"ref": fund.ref, "isin": isin, "characteristics": "characteristics" in fund.wants,
-                "calendar": "dividend_calendar" in fund.wants}
+        return {"ref": fund.ref, "isin": isin, **page_flags(fund)}
 
     def fetch(self, claim, as_of, outdir: Path, ctx):
         resp = ctx.client.get(EXPORT.format(isin=claim["isin"]))

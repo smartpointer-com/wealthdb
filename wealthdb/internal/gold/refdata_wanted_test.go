@@ -37,12 +37,10 @@ const (
 //     two keys yet, so they are two funds, each with its own window. The
 //     second source has not been observed for months, so its holding
 //     ends at its last snapshot.
-//   - FUNDB, a bond fund, was sold, so its window is closed. With no
-//     composition yet, it wants its lines' durations.
+//   - FUNDB, a bond fund, was sold, so its window is closed.
 //   - IDX1 is FUNDB's proxy, with a filing's rate sensitivities but
 //     wanting no fact; IDX9 is a reference fund.
-//   - BNDF is a bond fund held with rate sensitivities and figures; its
-//     newest composition states no line's duration, an older one does.
+//   - BNDF is a bond fund held with rate sensitivities and figures.
 //   - MMF1 is a money-market fund with its 7-day yield and other figures.
 //   - STK1 is a stock with a sector from a fund line, a lookup day, an
 //     old period of earnings and a fresh one under its ticker, and an old
@@ -55,6 +53,9 @@ const (
 //     two days. STK1's calendar row under its ticker counts for its ISIN,
 //     and a JPX row counts for no security.
 //   - ADR1, a stock held directly, is a receipt by its name.
+//   - BMK1 makes up a benchmark and is not held: it wants its monthly
+//     returns from the start of their history, of which gold has one
+//     filing, and its characteristics.
 //   - A private fund and a coin are not wanted.
 func TestRefdataWantedPinned(t *testing.T) {
 	t.Parallel()
@@ -142,6 +143,10 @@ func TestRefdataWantedPinned(t *testing.T) {
 	if _, err := RebuildExposure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	mustExec(t, db, `INSERT INTO benchmark_funds (benchmark, fund_ref, weight_pct, builtin) VALUES ('example', 'symbol:BMK1', 100, false)`)
+	mustExec(t, db, `INSERT INTO fund_returns (silver_source_id, fund_ref, as_of, month, total_return) VALUES
+	    ('refdata', 'symbol:BMK1', ?, '2026-07-31', 1.25), ('refdata', 'symbol:BMK1', ?, '2026-08-31', -0.5)`,
+		day(9, 30), day(9, 30))
 
 	w, err := RefdataWanted(ctx, db, time.Date(2026, 10, 13, 9, 30, 0, 0, time.UTC))
 	if err != nil {
@@ -171,50 +176,6 @@ func pinWanted(t *testing.T, v any, golden string) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("wanted list differs from %s:\n%s", golden, got)
-	}
-}
-
-// A version 4 list, as JSON, converts to the version 5 list of the same
-// gold: List reads nothing but the list.
-func TestWantedListConvertsAVersion4List(t *testing.T) {
-	t.Parallel()
-	raw, err := os.ReadFile(wantedGoldenV4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var w Wanted
-	if err := json.Unmarshal(raw, &w); err != nil {
-		t.Fatal(err)
-	}
-	if w.Version != wantedVersion4 {
-		t.Fatalf("%s is version %d, want %d", wantedGoldenV4, w.Version, wantedVersion4)
-	}
-	got, err := json.MarshalIndent(w.List(), "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := os.ReadFile(wantedGolden)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(append(got, '\n'), want) {
-		t.Errorf("the converted %s differs from %s:\n%s", wantedGoldenV4, wantedGolden, got)
-	}
-	l := w.List()
-	for _, f := range l.Funds {
-		if f.Wants[0].Fact != "composition" {
-			t.Errorf("%s: wants begin with %q, want its composition", f.Ref, f.Wants[0].Fact)
-		}
-		for _, x := range f.Wants {
-			if x.Fact == wantLineDurations {
-				t.Errorf("%s: wants %s, which the contract no longer names", f.Ref, x.Fact)
-			}
-		}
-	}
-	for _, s := range l.Securities {
-		if s.Wants[0].Fact != wantIdentity {
-			t.Errorf("%s: wants begin with %q, want its lookup", s.Key, s.Wants[0].Fact)
-		}
 	}
 }
 
@@ -827,10 +788,8 @@ func TestRefdataWantedFundsStateTheirAliases(t *testing.T) {
 
 // A fund held is wanted for the facts its asset class has: a bond or
 // multi-asset fund for its rate sensitivities, every fund for its
-// figures and its dividend calendar, a bond fund for its lines' durations
-// while its newest composition states none. Its facts list every day gold
-// holds, read through the aliases as its compositions are, whatever its
-// role.
+// figures and its dividend calendar. Its facts list every day gold holds,
+// read through the aliases as its compositions are, whatever its role.
 func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
@@ -850,14 +809,6 @@ func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 		 ('test-src', ?, 'A', 'QMIX', 'QMIX', 'multi_asset', 'fund', 'USD', 100),
 		 ('test-src', ?, 'A', 'QEQF', 'QEQF', 'public_equity', 'etf', 'USD', 100),
 		 ('test-src', ?, 'A', 'QNOT', 'QNOT', 'public_equity', 'structured_product', 'USD', 100)`,
-		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count) VALUES
-		 ('test-src', 'symbol:QBND', ? - 86400 * 30, 'holdings', 'testprov', 1),
-		 ('test-src', 'symbol:QBND', ?, 'holdings', 'testprov', 2)`,
-		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, weight, duration,
-		 modified_duration) VALUES
-		 ('test-src', 'symbol:QBND', ? - 86400 * 30, 'holdings', 1, NULL, 100, 5.5, NULL),
-		 ('test-src', 'symbol:QBND', ?, 'holdings', 1, NULL, 60, NULL, NULL),
-		 ('test-src', 'symbol:QBND', ?, 'holdings', 2, NULL, 40, NULL, 5.25)`,
 		// The multi-asset fund's figures under its ticker; two filings'
 		// rows of one day are one day.
 		`INSERT INTO fund_risk (silver_source_id, fund_ref, as_of, currency, tenor, dv01) VALUES
@@ -893,8 +844,7 @@ func TestRefdataWantedNamesTheFactsAFundLacks(t *testing.T) {
 		wants []string
 		facts map[string][]string
 	}{
-		"symbol:QBND": {[]string{"risk_metrics", "characteristics", "dividend_calendar"},
-			map[string][]string{"line_durations": {"2026-05-31", "2026-06-30"}}},
+		"symbol:QBND": {[]string{"risk_metrics", "characteristics", "dividend_calendar"}, map[string][]string{}},
 		"isin:XX0000000501": {[]string{"risk_metrics", "characteristics", "dividend_calendar"},
 			map[string][]string{"risk_metrics": {"2026-04-01", "2026-06-30"}}},
 		// A seven-day yield counts for a money-market fund's facts, which
@@ -980,6 +930,48 @@ func TestRefdataWantedSharesDoNotFollowTheLinesOrder(t *testing.T) {
 		r.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
 		if got := shares(order); !maps.Equal(got, want) {
 			t.Errorf("shares in another order of the lines: %v, want %v", got, want)
+		}
+	}
+}
+
+// A constituent whose lines state two asset classes at equal values reads
+// the same class whatever order the lines come in: the last by name.
+func TestRefdataWantedAssetClassOfATieDoesNotFollowTheLinesOrder(t *testing.T) {
+	t.Parallel()
+	day := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC).Unix()
+	class := func(types ...string) string {
+		db, ctx := openMigrated(t)
+		mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name,
+		    base_currency, first_seen_at, last_seen_at) VALUES ('test-src', 'A', 'brokerage', 'Brokerage', 'USD', 0, 0)`)
+		mustExec(t, db, `INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol,
+		    first_seen_at, last_seen_at) VALUES ('test-src', 'FUNDT', 'multi_asset', 'etf', 'FUNDT', 0, 0)`)
+		mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+		    instrument_external_id, asset_class, vehicle, currency, market_value)
+		    VALUES ('test-src', ?, 'A', 'FUNDT', 'FUNDT', 'multi_asset', 'etf', 'USD', 1000)`, day)
+		mustExec(t, db, `INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count)
+		    VALUES ('test-src', 'symbol:FUNDT', ?, 'holdings', 'sec-nport', ?)`, day, len(types))
+		for i, typ := range types {
+			mustExec(t, db, `INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, isin,
+			    name, asset_type, weight, currency) VALUES ('test-src', 'symbol:FUNDT', ?, 'holdings', ?, 'isin:XX0000000074',
+			    'XX0000000074', 'Co', ?, 50, 'USD')`, day, i+1, typ)
+		}
+		if _, err := RebuildExposure(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		w, err := RefdataWanted(ctx, db, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range w.Securities {
+			if s.Key == "isin:XX0000000074" && s.AssetClass != nil {
+				return *s.AssetClass
+			}
+		}
+		return ""
+	}
+	for _, types := range [][]string{{"EC", "DBT"}, {"DBT", "EC"}} {
+		if got := class(types...); got != "public_equity" {
+			t.Errorf("lines %v: asset class %q, want public_equity", types, got)
 		}
 	}
 }

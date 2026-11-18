@@ -18,7 +18,7 @@ from providers import REGISTRY, sec_calendar, sec_edgar
 from providers.base import Context, read_bytes, read_meta, write_meta
 from providers.sec_calendar import Seen, due, months_back, seen
 from providers.sec_edgar import SecEdgar
-from tests.helpers import EXHIBIT, FakeClient, broken_archive, kept_run, make_run, rows, run_entries, wanted_doc, \
+from tests.helpers import EXHIBIT, FakeClient, Fetched, broken_archive, kept_run, make_run, rows, run_entries, wanted_doc, \
     whole_archive
 
 FIXTURE = Path(__file__).parent / "fixtures" / "edgar_10q_dividends.htm"
@@ -549,7 +549,7 @@ def run(bronze_dir, day, client, today):
     today[0] = day
     ctx = Context(client=client, data_dir=bronze_dir, providers=frozenset({"sec-edgar"}))
     reqs, _, cover = download.plan(wantedmod.parse(doc()), [REGISTRY["sec-edgar"]], ctx, today=day, max_age=30,
-                                   backfill=False, earlier=download.fetched_before(bronze_dir))
+                                   backfill=False, earlier=Fetched.read(bronze_dir))
     return run_entries(make_run(bronze_dir, f"{day:%Y%m%d}T010000Z", reqs, ctx)), cover
 
 

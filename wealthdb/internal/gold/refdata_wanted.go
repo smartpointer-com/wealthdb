@@ -30,8 +30,7 @@ const WantedContractVersion = 5
 const wantedVersion4 = 4
 
 // Wanted is the wanted list as gold builds it, in the shape of contract
-// version 4, which a version 4 list's JSON reads into. List gives it in
-// the contract's shape.
+// version 4. List gives it in the contract's shape.
 type Wanted struct {
 	Contract    string           `json:"contract"`
 	Version     int              `json:"version"`
@@ -68,9 +67,9 @@ type WantedFund struct {
 	// Compositions are the days gold already has a composition for, on
 	// any basis, ascending.
 	Compositions []string `json:"compositions"`
-	// Wants are the facts a held fund is wanted for beyond its
-	// compositions (fundWants), in that order; empty for a fund no
-	// holding names.
+	// Wants are the facts a held or benchmark fund is wanted for beyond
+	// its compositions (fundWants), in that order; empty for a fund
+	// wanted only as a proxy, a reference or an underlying.
 	Wants []string `json:"wants"`
 	// Facts are the days gold holds each fact for, whatever the fund's
 	// role, ascending as Compositions, so a collector skips a day it has
@@ -195,23 +194,22 @@ type SecurityWant struct {
 	By   map[string]string `json:"by,omitempty"`
 }
 
-// wantIdentity is a security's lookup, as a want.
-const wantIdentity = "identity"
+// A fund's composition and a security's lookup, as wants.
+const (
+	wantComposition = "composition"
+	wantIdentity    = "identity"
+)
 
 // List is the wanted list in the contract's shape. A fund's wants are
-// its composition and the facts it wants, line_durations aside: a
-// composition states those, and no request asks for them. A security's
-// are its lookup, its missing fields with the newest period gold holds
-// of a family, and its wants with the calendar's newest day.
+// its composition and the facts it wants. A security's are its lookup,
+// its missing fields with the newest period gold holds of a family, and
+// its wants with the calendar's newest day.
 func (w *Wanted) List() *WantedList {
 	out := &WantedList{Contract: wantedContract, Version: WantedContractVersion, GeneratedAt: w.GeneratedAt,
 		AsOf: w.AsOf, Settings: w.Settings, Funds: []WantedListFund{}, Securities: []WantedListSecurity{}}
 	for _, f := range w.Funds {
-		wants := []FundWant{{Fact: "composition", From: f.HeldFrom, To: f.HeldTo, Have: orEmpty(f.Compositions)}}
+		wants := []FundWant{{Fact: wantComposition, From: f.HeldFrom, To: f.HeldTo, Have: orEmpty(f.Compositions)}}
 		for _, fact := range f.Wants {
-			if fact == wantLineDurations {
-				continue
-			}
 			from := f.HeldFrom
 			if fact == wantMonthlyReturns && f.HistoryFrom != nil {
 				from = f.HistoryFrom
@@ -776,8 +774,6 @@ func addCompositionDates(ctx context.Context, db *sql.DB, funds map[string]*Want
 //     as a whole: duration, yields, credit quality (fund_characteristics);
 //   - money_market: a money-market fund's 7-day yields and weighted
 //     average maturity and life (fund_characteristics, moneyMarketFields);
-//   - line_durations: a bond fund's durations line by line, while its
-//     newest composition states none (fund_lines);
 //   - dividend_calendar: its distributions, their ex, record and pay days
 //     (dividend_calendar). A stock held directly wants it too.
 const (
@@ -785,7 +781,6 @@ const (
 	wantMonthlyReturns   = "monthly_returns"
 	wantCharacteristics  = "characteristics"
 	wantMoneyMarket      = "money_market"
-	wantLineDurations    = "line_durations"
 	wantDividendCalendar = "dividend_calendar"
 )
 
@@ -798,8 +793,7 @@ var moneyMarketFields = []string{"seven_day_yield", "seven_day_gross_yield", "we
 // holdings state; fund says one of them holds it as a fund. A fund wanted
 // only as a proxy, a reference or size fund, or a held fund's underlying
 // wants none, and so does a structured product: no filing or issuer page
-// states them for a note. A bond fund with no composition yet wants its
-// lines' durations too. Every fund held wants its dividend calendar. A
+// states them for a note. Every fund held wants its dividend calendar. A
 // benchmark's fund wants its monthly returns and its characteristics,
 // the yield and duration the benchmark reads.
 func fundWants(f *WantedFund, classes []string, fund bool) []string {
@@ -824,25 +818,12 @@ func fundWants(f *WantedFund, classes []string, fund bool) []string {
 	if of("cash") {
 		wants = append(wants, wantMoneyMarket)
 	}
-	if of("fixed_income") && (len(f.Compositions) == 0 ||
-		lastDay(f.Facts[wantLineDurations]) < lastDay(f.Compositions)) {
-		wants = append(wants, wantLineDurations)
-	}
 	return append(wants, wantDividendCalendar)
 }
 
-// lastDay is the last of ascending days, "" where there is none.
-func lastDay(days []string) string {
-	if len(days) == 0 {
-		return ""
-	}
-	return days[len(days)-1]
-}
-
 // addFundFacts lists the days gold holds each fact for, per wanted fund,
-// the fund read through its aliases as its compositions are. A
-// composition's day counts for line_durations where one of its lines
-// states a duration or a modified duration. A dividend calendar's days
+// the fund read through its aliases as its compositions are. A dividend
+// calendar's days
 // are those its rows were stated on, and its monthly returns' days are
 // the filings' that state them.
 func addFundFacts(ctx context.Context, db *sql.DB, funds map[string]*WantedFund, keys keyReader) error {
@@ -853,9 +834,6 @@ WITH f AS (
     SELECT fund_ref, CASE WHEN list_contains(CAST(? AS VARCHAR[]), field) THEN '`+wantMoneyMarket+`'
                           ELSE '`+wantCharacteristics+`' END, as_of
       FROM fund_characteristics
-    UNION
-    SELECT fund_ref, '`+wantLineDurations+`', as_of FROM fund_lines
-     WHERE duration IS NOT NULL OR modified_duration IS NOT NULL
     UNION
     SELECT ref, '`+wantDividendCalendar+`', as_of FROM dividend_calendar
     UNION
@@ -974,7 +952,8 @@ func stalePeriods(periods map[string]string, now time.Time) []string {
 // and its aliases state: a US symbol only from a fund line on a US
 // listing or a lookup, never from a broker's local ticker. A gold
 // without the exposure macros has none. A share's sums are exact
-// decimals, so it does not follow the order the leaves come in.
+// decimals, so it does not follow the order the leaves come in, and nor
+// does its asset class: the biggest leaf's, the last by name of a tie.
 func addConstituents(ctx context.Context, db *sql.DB, securities map[string]*WantedSecurity, held []string,
 	now time.Time, ids map[string]aliasIDs, periods map[string]map[string]string) error {
 	if len(held) == 0 {
@@ -984,7 +963,7 @@ func addConstituents(ctx context.Context, db *sql.DB, securities map[string]*Wan
 WITH l AS (SELECT * FROM exposure_leaves(?, 'USD')),
 t AS (SELECT SUM(CAST(value AS DECIMAL(38,10))) AS total FROM l),
 c AS (
-    SELECT l.key, SUM(CAST(abs(l.value) AS DECIMAL(38,10))) AS v, MAX(l.name) AS name, arg_max(l.asset_class, abs(l.value)) AS asset_class,
+    SELECT l.key, SUM(CAST(abs(l.value) AS DECIMAL(38,10))) AS v, MAX(l.name) AS name, arg_max(l.asset_class, (abs(l.value), l.asset_class)) FILTER (WHERE l.value IS NOT NULL) AS asset_class,
            BOOL_OR(l.sector IS NULL OR starts_with(COALESCE(s.sector_origin, ''), 'underlying:')) AS no_sector,
            BOOL_OR(l.country IS NULL
                    OR starts_with(COALESCE(s.risk_country_origin, ''), 'underlying:')

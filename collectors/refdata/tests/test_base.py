@@ -4,16 +4,22 @@ it."""
 
 import json
 import traceback
+from dataclasses import replace
 from datetime import date
 
 import pytest
 
 import wanted
 from collectorkit import compress
-from providers.base import (COLUMNS, Context, ProviderError, amount, dec, direct_share, earlier_answers, earlier_docs,
-                            earlier_metas, event_id, event_row, facts_missing, has_file, ident, kinds_paid,
-                            latest_through, merge_events, percent, present, read_bytes, read_json, read_state, row,
-                            through_day, us_symbol, write_file, write_json)
+from providers.amundi import Amundi
+from providers.base import (COLUMNS, PAGE_FLAGS, Context, ProviderError, amount, dec, direct_share, earlier_answers,
+                            earlier_docs, earlier_metas, event_id, event_row, facts_missing, has_file, ident,
+                            kinds_paid, latest_through, merge_events, percent, present, read_bytes, read_json,
+                            read_state, row, through_day, us_symbol, write_file, write_json)
+from providers.invesco import Invesco
+from providers.ishares import IShares
+from providers.spdr import Spdr
+from providers.xtrackers import Xtrackers
 
 
 def test_a_row_holds_every_column_but_run_at():
@@ -240,3 +246,31 @@ def test_the_plain_form_wins_where_both_are_kept(tmp_path):
     compress.compress_file(tmp_path / "answer.json", remove_original=False)
     (tmp_path / "answer.json").write_bytes(b'{"plain": 2}')
     assert read_json(tmp_path, "answer.json") == {"plain": 2} and has_file(tmp_path, "answer.json")
+
+
+def _issuers():
+    """Each issuer whose claim carries page flags, with a fund it claims:
+    a product list of the one fund stands in for a list fetched."""
+    ishares, spdr = IShares(), Spdr()
+    ishares._index = lambda ctx: {"XX0000000910": ("ch", {"isin": "XX0000000910", "productPageUrl": "/qexm"})}
+    spdr._index = lambda ctx: {"XX0000000911": ("eu", {"fundUri": "/etf/example-qexm-gy", "keywords": ""})}
+    return [(ishares, wanted.Fund(ref="isin:XX0000000910", isin="XX0000000910")),
+            (spdr, wanted.Fund(ref="isin:XX0000000911", isin="XX0000000911")),
+            (Invesco(), wanted.Fund(ref="isin:XX0000000912", isin="XX0000000912", name="Invesco Example UCITS ETF")),
+            (Xtrackers(), wanted.Fund(ref="isin:XX0000000913", isin="XX0000000913", name="Xtrackers Example UCITS ETF")),
+            (Amundi(), wanted.Fund(ref="isin:XX0000000914", isin="XX0000000914", name="Amundi Example UCITS ETF"))]
+
+
+@pytest.mark.parametrize("wants", [(), ("characteristics",), ("dividend_calendar",),
+                                   ("risk_metrics", "characteristics", "dividend_calendar")])
+def test_an_issuer_claim_sets_each_page_flag_where_the_fund_wants_its_fact(wants):
+    """A claim's page flags come in PAGE_FLAGS' order, each true where
+    the fund wants its fact: a fund wanted for another one wants none.
+    Amundi states only the calendar, and the planner sets no flag of its
+    claim."""
+    for p, fund in _issuers():
+        claim = p.claim(replace(fund, wants=wants), Context(client=None))
+        flags = PAGE_FLAGS if p.claim_flags else {"dividend_calendar": "calendar"}
+        assert p.claim_flags in (PAGE_FLAGS, {}), p.name
+        assert {k: claim[k] for k in flags.values()} == {flag: fact in wants for fact, flag in flags.items()}, p.name
+        assert [k for k in claim if k in ("characteristics", "calendar")] == list(flags.values()), p.name

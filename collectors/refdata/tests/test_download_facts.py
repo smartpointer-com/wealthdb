@@ -6,15 +6,13 @@ import logging
 import sqlite3
 from datetime import date
 
-import pytest
 
 import config
 import download
 import load
-from download import Fetched
 from providers.base import Context, Parsed, Provider, ProviderError, Unavailable, read_meta, row, write_meta
-from tests.helpers import (TODAY, FakeLookup, FakeProvider, fund, held, make_run, plan, run_entries, wanted_doc,
-                           write_wanted)
+from tests.helpers import (TODAY, FakeLookup, FakeProvider, Fetched, fund, held, make_run, plan, run_entries,
+                           wanted_doc, write_wanted)
 
 REF = "symbol:FUNDA"
 
@@ -22,16 +20,14 @@ REF = "symbol:FUNDA"
 class _Facts(FakeProvider):
     """Serves the compositions of the funds it knows, as FakeProvider, and
     states the facts it names beside them, for past days too unless
-    `dated` is false, and the `stated` ones with every composition; with
-    `fails`, fails every fetch; with `missing`, names those facts missing
-    from every fetch that succeeds."""
+    `dated` is false; with `fails`, fails every fetch; with `missing`,
+    names those facts missing from every fetch that succeeds."""
 
     def __init__(self, name, facts=(), known=("FUNDA",), fails=False, compositions=True, dated=True, missing=(),
-                 stated=(), **kw):
+                 **kw):
         super().__init__(known, **kw)
         self.name, self.facts, self.fails, self.serves_compositions = name, frozenset(facts), fails, compositions
         self.dated_facts, self.missing = (self.facts if dated else frozenset()), list(missing)
-        self.composition_facts = frozenset(stated)
 
     def fetch(self, claim, as_of, outdir, ctx):
         if self.fails:
@@ -85,19 +81,6 @@ class _Company(Provider):
     def fetch_security(self, claim, outdir, ctx):
         outdir.mkdir(parents=True, exist_ok=True)
         write_meta(outdir, key=claim["key"], families=claim["families"])
-
-
-@pytest.fixture
-def registry(monkeypatch):
-    """The providers download knows, these only: a reason names no real
-    provider."""
-    reg = {}
-    monkeypatch.setattr(download, "REGISTRY", reg)
-
-    def add(*providers):
-        reg.update((p.name, p) for p in providers)
-        return providers
-    return add
 
 
 def security(key, missing, scope="direct", lookups=None):
@@ -189,7 +172,7 @@ def test_a_request_for_facts_alone_loads_no_composition(registry, tmp_path, monk
         assert con.execute("SELECT provider FROM compositions").fetchall() == [("comp",)]
     finally:
         con.close()
-    assert set(download.fetched_before(data).funds) == {("comp", REF, date(2026, 7, 14))}
+    assert set(Fetched.read(data).funds) == {("comp", REF, date(2026, 7, 14))}
 
 
 def test_the_next_provider_that_answers_a_fact_stands_by_for_it(registry, tmp_path):
@@ -296,7 +279,7 @@ def test_the_days_a_request_for_facts_alone_fetched_count_as_had(registry, tmp_p
     (run / "run.json").write_text(json.dumps({"status": "complete", "requests": [
         {"kind": "fund", "provider": "mmf", "ref": REF, "as_of": day, "facts": ["money_market"], "facts_only": True,
          "status": "ok"} for day in ("2026-02-28", "2026-03-31")]}))
-    earlier = download.fetched_before(tmp_path)
+    earlier = Fetched.read(tmp_path)
     assert earlier.funds == {}
     assert earlier.fact_days == {("mmf", REF, "money_market"): {date(2026, 2, 28), date(2026, 3, 31)}}
     month_ends = [date(2026, 1, 31), date(2026, 2, 28), date(2026, 3, 31)]
@@ -341,52 +324,6 @@ def test_a_provider_of_facts_only_is_offered_no_composition(registry):
     assert unclaimed == []
 
 
-def test_a_fact_a_composition_states_comes_with_the_composition_request(registry):
-    (holdings,) = registry(_Facts("holdings", stated={"line_durations"}))
-    doc = v2([held(compositions=["2026-05-29"], wants=["line_durations"])])
-    reqs, _, cover = plan(doc, [holdings])
-    # The current composition is asked for, and no request for the fact
-    # alone; past --limit it waits for the next run.
-    assert asked(reqs) == [("holdings", None, (), ())] and reqs[0].compositions
-    assert cover["line_durations"][REF].requests == reqs
-    assert download.tally(cover)[0][1:] == (1, 1, 0, [])
-    assert download.tally(cover, {id(r) for r in reqs})[0][4] == [(REF, "deferred by --limit")]
-    # A backfill's past compositions ask for it too.
-    doc = v2([held(held_from="2026-02-01", compositions=["2026-07-10"], wants=["line_durations"])])
-    reqs, _, cover = plan(doc, [holdings], backfill=True)
-    assert [r.as_of for r in reqs] == [date(2026, m, 28) for m in range(1, 6)]
-    assert cover["line_durations"][REF].requests == reqs
-
-
-def test_a_fact_a_composition_states_is_never_asked_for_alone(registry):
-    comp, holdings = registry(_Facts("comp"), _Facts("holdings", {"characteristics"}, stated={"line_durations"}))
-    doc = v2([held(compositions=["2026-05-29"], wants=["line_durations"])])
-    reason = "comes only with a composition from: holdings"
-    # Another provider serves the composition; holdings only stands by.
-    reqs, _, cover = plan(doc, [comp, holdings])
-    assert asked(reqs) == [("comp", None, (), ("holdings",))]
-    c = cover["line_durations"][REF]
-    assert (c.requests, c.had, c.reason) == ([], False, reason)
-    # A request to it for another fact alone loads no composition.
-    doc = v2([held(compositions=["2026-05-29"], wants=["characteristics", "line_durations"])])
-    reqs, _, cover = plan(doc, [comp, holdings])
-    assert [(r.provider, r.compositions) for r in reqs] == [("comp", True), ("holdings", False)]
-    assert (cover["line_durations"][REF].requests, cover["line_durations"][REF].reason) == ([], reason)
-    # Nor where the run leaves it off.
-    _, _, cover = plan(doc, [comp])
-    assert cover["line_durations"][REF].reason == reason
-
-
-def test_a_composition_an_earlier_run_fetched_states_the_fact_for_max_age(registry):
-    (holdings,) = registry(_Facts("holdings", stated={"line_durations"}))
-    doc = v2([held(compositions=["2026-05-29"], wants=["line_durations"])])
-    earlier = Fetched.of(funds={("holdings", REF, date(2026, 7, 10)): date(2026, 7, 10)})
-    reqs, _, cover = plan(doc, [holdings], earlier=earlier)
-    assert reqs == [] and download.tally(cover)[0][1:] == (1, 0, 1, [])
-    reqs, _, cover = plan(doc, [holdings], earlier=earlier, today=date(2026, 8, 15))
-    assert asked(reqs) == [("holdings", None, (), ())] and cover["line_durations"][REF].requests == reqs
-
-
 def test_a_standby_that_does_not_claim_the_fund_takes_no_attempt(registry, tmp_path):
     a, b, c = registry(_Facts("a", {"risk_metrics"}, fails=True), _Facts("b", {"risk_metrics"}, known=()),
                        _Facts("c", {"risk_metrics"}))
@@ -405,6 +342,19 @@ def test_a_fetch_that_writes_no_meta_json_names_no_fact_missing(registry, tmp_pa
             return day
 
     (page,) = registry(Bare("page", {"characteristics"}))
+    (r,), _, _ = plan(v2([held(wants=["characteristics"])]), [page])
+    (entry,) = download.execute([r], tmp_path, Context(client=None))
+    assert (entry["status"], entry["facts"]) == ("ok", ["characteristics"])
+
+
+def test_a_meta_json_that_is_no_object_names_no_fact_missing(registry, tmp_path):
+    class Listed(_Facts):
+        def fetch(self, claim, as_of, outdir, ctx):
+            day = super().fetch(claim, as_of, outdir, ctx)
+            (outdir / "meta.json").write_text("[]")
+            return day
+
+    (page,) = registry(Listed("page", {"characteristics"}))
     (r,), _, _ = plan(v2([held(wants=["characteristics"])]), [page])
     (entry,) = download.execute([r], tmp_path, Context(client=None))
     assert (entry["status"], entry["facts"]) == ("ok", ["characteristics"])
@@ -448,7 +398,7 @@ def test_a_bulk_request_round_trips_through_execute_and_load(registry, tmp_path,
     # The next run knows the frame fetched: the provider plans it no more.
     # A security its answer states a figure for counts as had, the other
     # one it named as left.
-    earlier = download.fetched_before(data)
+    earlier = Fetched.read(data)
     assert earlier.bulk == {("frames", "frame:eps:CY2026Q1"): date(2026, 7, 15)}
     assert earlier.answered == {("frames", "isin:US0000000001"): date(2026, 7, 15)}
     reqs, _, cover = plan(doc, [frames], constituents=True, earlier=earlier)
@@ -465,7 +415,7 @@ def test_a_bulk_answer_without_answered_counts_none(tmp_path):
     (run / "run.json").write_text(json.dumps({"status": "complete", "requests": [
         {"kind": "bulk", "provider": "frames", "ref": "frame:eps:CY2026Q1", "status": "ok", "dir": "bulk/frames/f"},
         {"kind": "bulk", "provider": "frames", "ref": "frame:eps:CY2026Q2", "status": "ok", "dir": "bulk/frames/g"}]}))
-    earlier = download.fetched_before(tmp_path)
+    earlier = Fetched.read(tmp_path)
     assert len(earlier.bulk) == 2 and earlier.answered == {}
 
 
@@ -542,7 +492,7 @@ def test_a_security_request_records_the_families_it_asks_for(registry, tmp_path)
     data = tmp_path / "data"
     entries = run_entries(make_run(data, "20260715T010000Z", reqs))
     assert [e.get("families") for e in entries] == [["earnings", "dividends", "financials"], None]
-    earlier = download.fetched_before(data)
+    earlier = Fetched.read(data)
     assert earlier.families == {("company", "isin:US0000000007"): date(2026, 7, 15)}
     assert set(earlier.lookups) == {("company", "isin:US0000000007"), ("company", "isin:US0000000008")}
 
@@ -556,7 +506,7 @@ def test_earlier_runs_count_their_fund_facts_and_bulk_requests(tmp_path):
         {"kind": "fund", "provider": "issuer", "ref": REF, "facts": ["characteristics"], "status": "error"},
         {"kind": "bulk", "provider": "frames", "ref": "frame:eps:CY2026Q1", "status": "ok"},
         {"kind": "bulk", "provider": "frames", "ref": "frame:eps:CY2026Q2", "status": "unavailable"}]}))
-    earlier = download.fetched_before(tmp_path)
+    earlier = Fetched.read(tmp_path)
     assert earlier.funds == {("filing", REF, date(2026, 3, 31)): date(2026, 7, 14)}
     assert earlier.facts == {("filing", REF, "risk_metrics"): date(2026, 7, 14)}
     assert earlier.bulk == {("frames", "frame:eps:CY2026Q1"): date(2026, 7, 14)}
@@ -571,7 +521,7 @@ def _coverage_case(tmp_path, monkeypatch, registry):
     monkeypatch.setattr(download.config, "load", lambda known: config.Config(providers=("comp", "issuer", "frames")))
     monkeypatch.setattr(download, "today_utc", lambda: TODAY)
     w = write_wanted(tmp_path / "wanted.json", v2(
-        [held(wants=["risk_metrics", "characteristics", "line_durations"]),
+        [held(wants=["risk_metrics", "characteristics"]),
          held("symbol:FUNDB", "EXMB", wants=["characteristics"], compositions=["2026-07-10"]),
          held("symbol:FUNDC", "EXMC", wants=["characteristics"], compositions=["2026-07-10"],
               facts={"characteristics": ["2026-07-10"]})],
@@ -591,8 +541,6 @@ def test_dry_run_says_what_becomes_of_every_fact_wanted(tmp_path, monkeypatch, r
         "risk_metrics\tsymbol:FUNDA\tprovider off: filing",
         "characteristics\t3 wanted, 1 planned, 1 had",
         "characteristics\tsymbol:FUNDB\tno provider claims it",
-        "line_durations\t1 wanted, 0 planned, 0 had",
-        "line_durations\tsymbol:FUNDA\tno enabled provider answers it",
         "earnings\t2 wanted, 1 planned, 0 had",
         "earnings\tisin:XX0000000002\tno provider claims it",
         "dividends\t1 wanted, 0 planned, 0 had",
@@ -612,7 +560,6 @@ def test_a_run_logs_the_same_counts_one_line_per_fact(tmp_path, monkeypatch, reg
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("facts: ")]
     assert lines == ["facts: risk_metrics: 1 wanted, 0 planned, 0 had, 1 provider off: filing",
                      "facts: characteristics: 3 wanted, 1 planned, 1 had, 1 no provider claims it",
-                     "facts: line_durations: 1 wanted, 0 planned, 0 had, 1 no enabled provider answers it",
                      "facts: earnings: 2 wanted, 0 planned, 0 had, 1 deferred by --limit, 1 no provider claims it",
                      "facts: dividends: 1 wanted, 0 planned, 0 had, 1 provider off: divs"]
     (run,) = (tmp_path / "data").iterdir()
@@ -694,12 +641,6 @@ def test_a_request_past_the_limit_is_no_loss(registry, tmp_path, monkeypatch, ca
     assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("filing",), "--limit", "0") == []
 
 
-def test_a_fact_that_comes_with_a_composition_is_lost_with_it(registry, tmp_path, monkeypatch, caplog):
-    registry(_Facts("comp", stated={"line_durations"}, fails=True))
-    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["line_durations"])], ("comp",)) == [
-        f"lost: {REF}: this run failed on line_durations; rerun with --ref {REF}"]
-
-
 def test_a_failed_date_list_loses_a_history_though_the_current_answer_came(registry, tmp_path, monkeypatch, caplog):
     registry(_NoDates("filing", {"monthly_returns"}, latest_=date(2026, 6, 30)))
     assert _lost_lines(tmp_path, monkeypatch, caplog, [benchmark_fund()], ("filing",), "--backfill") == [
@@ -724,12 +665,6 @@ def test_a_sold_fund_whose_past_days_a_failed_claim_cost_is_named(registry, tmp_
         f"lost: {REF}: this run failed on risk_metrics; rerun with --backfill --ref {REF}"]
 
 
-def test_a_failed_claim_on_a_fact_of_compositions_is_lost(registry, tmp_path, monkeypatch, caplog):
-    registry(_NoClaim("comp", stated={"line_durations"}))
-    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["line_durations"])], ("comp",)) == [
-        f"lost: {REF}: this run failed on line_durations; rerun with --ref {REF}"]
-
-
 def test_a_failed_claim_does_not_read_as_unclaimed(registry, tmp_path, monkeypatch, caplog):
     registry(_NoClaim("comp"))
     _lost_lines(tmp_path, monkeypatch, caplog, [held()], ("comp",))
@@ -741,12 +676,6 @@ def test_a_standby_that_serves_without_the_fact_leaves_it_lost(registry, tmp_pat
     registry(_Facts("a", {"risk_metrics"}, fails=True), _Facts("b"))
     assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["risk_metrics"])], ("a", "b")) == [
         f"lost: {REF}: this run failed on risk_metrics; rerun with --ref {REF}"]
-
-
-def test_a_standby_that_states_no_composition_fact_leaves_it_lost(registry, tmp_path, monkeypatch, caplog):
-    registry(_Facts("a", stated={"line_durations"}, fails=True), _Facts("b"))
-    assert _lost_lines(tmp_path, monkeypatch, caplog, [held(wants=["line_durations"])], ("a", "b")) == [
-        f"lost: {REF}: this run failed on line_durations; rerun with --ref {REF}"]
 
 
 def test_nothing_to_serve_is_no_loss(registry, tmp_path, monkeypatch, caplog):
@@ -806,8 +735,8 @@ def test_a_security_fact_another_request_answers_is_no_loss():
     down = download.Request("security", "a", key)
     up = download.Request("security", "b", key)
     cover = {"earnings": {key: download.Cover(requests=[down, up])}}
-    assert download.lost_funds(cover, [down, up], [{"status": "error"}, {"status": "ok"}]) == {}
-    assert download.lost_funds(cover, [down, up], [{"status": "error"}, {"status": "unavailable"}]) == {
+    assert download.lost(cover, [down, up], [{"status": "error"}, {"status": "ok"}]) == {}
+    assert download.lost(cover, [down, up], [{"status": "error"}, {"status": "unavailable"}]) == {
         key: ["earnings"]}
 
 
@@ -822,21 +751,21 @@ FAILED = {"status": "error"}
 
 
 def test_a_failed_past_month_is_lost_though_another_month_came():
-    assert download.lost_funds({}, *_dated((None, GOT), (date(2026, 3, 31), FAILED))) == {REF: ["monthly_returns"]}
+    assert download.lost({}, *_dated((None, GOT), (date(2026, 3, 31), FAILED))) == {REF: ["monthly_returns"]}
 
 
 def test_every_month_answered_prints_no_line():
-    assert download.lost_funds({}, *_dated((None, GOT), (date(2026, 3, 31), GOT))) == {}
+    assert download.lost({}, *_dated((None, GOT), (date(2026, 3, 31), GOT))) == {}
 
 
 def test_a_month_a_second_request_answered_is_no_loss():
     day = date(2026, 3, 31)
-    assert download.lost_funds({}, *_dated((day, FAILED), (day, GOT))) == {}
+    assert download.lost({}, *_dated((day, FAILED), (day, GOT))) == {}
 
 
 def test_another_fact_counts_by_fund_and_fact():
     got = {"status": "ok", "facts": ["risk_metrics"]}
-    assert download.lost_funds({}, *_dated((None, got), (date(2026, 3, 31), FAILED), fact="risk_metrics")) == {}
+    assert download.lost({}, *_dated((None, got), (date(2026, 3, 31), FAILED), fact="risk_metrics")) == {}
 
 
 class _DownOn(_Facts):

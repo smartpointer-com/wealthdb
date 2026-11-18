@@ -42,18 +42,14 @@ class Ledger:
     by: dict = field(default_factory=dict, compare=False, repr=False)
 
     def settle(self, provider, kind, subject, fact, day, run) -> None:
-        """Settle an answer; run None: a run of no known day, which
-        never counts as recent."""
+        """Settle an answer the run of day `run` fetched."""
         days = self.runs.setdefault((provider, kind, subject, fact), {})
-        if run is None:
-            days.setdefault(day, None)
-        else:
-            days[day] = max(filter(None, (days.get(day), run)))
+        days[day] = max(days.get(day, run), run)
         self.by.setdefault((kind, subject, fact), set()).add(provider)
 
     def last(self, provider, kind, subject, fact) -> date | None:
         """The day of the latest run that settled the fact."""
-        return max(filter(None, self.runs.get((provider, kind, subject, fact), {}).values()), default=None)
+        return max(self.runs.get((provider, kind, subject, fact), {}).values(), default=None)
 
     def settled(self, provider, kind, subject, fact) -> set:
         """The days the provider's answers stated the fact for."""
@@ -63,10 +59,10 @@ class Ledger:
         """The days any provider's answers stated the fact for."""
         return {d for p in self.by.get((kind, subject, fact), ()) for d in self.settled(p, kind, subject, fact)}
 
-    def subjects(self, provider, kind, fact=None) -> dict:
-        """subject -> the day of the latest run that settled its fact,
-        of one provider."""
-        return {s: self.last(p, k, s, f) for (p, k, s, f) in self.runs if (p, k, f) == (provider, kind, fact)}
+    def subjects(self, provider, kind) -> dict:
+        """subject -> the day of the latest run that settled it, of one
+        provider: a bulk request's ref, which settles no fact."""
+        return {s: self.last(p, k, s, f) for (p, k, s, f) in self.runs if (p, k, f) == (provider, kind, None)}
 
     def last_sent(self, provider, key) -> date | None:
         """The day of the latest security request sent to the provider
@@ -119,10 +115,16 @@ def flat_keys(keys) -> set:
     return set(keys or ())
 
 
+def meta_field(folder, name):
+    """A field of a request folder's meta.json; None where it is absent
+    or the file does not read as an object."""
+    try:
+        return read_meta(folder).get(name)
+    except (ProviderError, OSError, ValueError, AttributeError):
+        return None
+
+
 def answered(folder) -> set:
     """The security keys a bulk answer names in its meta.json's
     `answered` (base.py); none where it names none."""
-    try:
-        return flat_keys(read_meta(folder).get("answered"))
-    except (ProviderError, OSError, ValueError, AttributeError):
-        return set()
+    return flat_keys(meta_field(folder, "answered"))

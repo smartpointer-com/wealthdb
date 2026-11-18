@@ -281,7 +281,8 @@ contract:
   fact, in `wants`. Versions 1 to 4 state it in fields apart: a fund's
   `held_from`, `held_to`, `compositions`, `wants`, `facts` and
   `history_from`, a security's `missing`, `lookups`, `periods`, `wants`
-  and `calendar`. Version 4 also wants `line_durations` of a bond fund.
+  and `calendar`. Version 4 also wants `line_durations` of a bond fund,
+  which no provider of the collector answers.
 - Version 1 has no `wants`, `facts` or `periods`. Its `missing` names no
   family of period facts.
 - Version 2 wants no `dividend_calendar`. Its securities have no

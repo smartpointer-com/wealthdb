@@ -45,6 +45,30 @@
       "history_from": null
     },
     {
+      "ref": "symbol:BMK1",
+      "isin": null,
+      "cusip": null,
+      "symbol": "BMK1",
+      "name": null,
+      "currency": null,
+      "roles": [
+        "benchmark"
+      ],
+      "held_from": "2026-10-13",
+      "held_to": null,
+      "compositions": [],
+      "wants": [
+        "monthly_returns",
+        "characteristics"
+      ],
+      "facts": {
+        "monthly_returns": [
+          "2026-09-30"
+        ]
+      },
+      "history_from": "2019-01-01"
+    },
+    {
       "ref": "symbol:BNDF",
       "isin": null,
       "cusip": null,
@@ -63,15 +87,11 @@
       "wants": [
         "risk_metrics",
         "characteristics",
-        "line_durations",
         "dividend_calendar"
       ],
       "facts": {
         "characteristics": [
           "2026-09-30"
-        ],
-        "line_durations": [
-          "2026-03-31"
         ],
         "risk_metrics": [
           "2026-06-30"
@@ -117,7 +137,6 @@
       "wants": [
         "risk_metrics",
         "characteristics",
-        "line_durations",
         "dividend_calendar"
       ],
       "facts": {},

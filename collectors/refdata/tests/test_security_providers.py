@@ -1,7 +1,6 @@
 """The security providers: gleif, openfigi and sec-edgar, on invented
 answers in each API's layout."""
 
-import re
 from datetime import date
 
 import pytest
@@ -12,7 +11,7 @@ from providers.base import Context, ProviderError
 from providers.gleif import Gleif, parse_records
 from providers.openfigi import API as FIGI, OpenFigi, parse_mapping
 from providers.sec_edgar import SecEdgar, latest_shares, names_agree, parse_company
-from tests.helpers import FakeClient, go_source
+from tests.helpers import FakeClient, go_rows, go_source
 from wanted import Security
 
 DAY = date(2026, 10, 13)
@@ -316,13 +315,9 @@ def test_sec_edgar_states_no_address_for_a_depositary_receipt():
     assert {f["field"]: f["value"] for f in p.security_facts} == {"incorporation": "M0"}
 
 
-# The LEI record of a depositary receipt's issuer, a company abroad.
-RECEIPT_LEI = "XXXXXXXXXXXXXXXXXX31"
 def wanted_fields() -> dict:
     """wanted field -> the fact fields gold reads it from (wantedFields)."""
-    block = re.search(r"var wantedFields = .*?\n\}\n", go_source("gold/refdata_wanted.go"), re.S).group(0)
-    return {f: set(re.findall(r'"(\w+)"', facts))
-            for f, facts in re.findall(r'\{"(\w+)",\s*\[\]string\{(.*?)\}', block, re.S)}
+    return {f: set(facts) for f, facts in go_rows(go_source("gold/refdata_wanted.go"), "wantedFields")}
 
 
 def test_a_lookup_answers_each_wanted_field_its_facts_state():
@@ -339,6 +334,8 @@ def test_a_lookup_answers_each_wanted_field_its_facts_state():
         assert {w for w, facts in fields.items() if facts & written} <= provider.answers, provider.name
 
 
+# The LEI record of a depositary receipt's issuer, a company abroad.
+RECEIPT_LEI = "XXXXXXXXXXXXXXXXXX31"
 RECEIPT_RECORD = {"data": [{"id": RECEIPT_LEI, "attributes": {"lei": RECEIPT_LEI, "entity": {
     "legalName": {"name": "Qorvant Holdings"}, "jurisdiction": "KR", "legalAddress": {"country": "KR"}}}}]}
 

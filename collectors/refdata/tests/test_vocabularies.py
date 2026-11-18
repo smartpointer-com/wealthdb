@@ -6,7 +6,7 @@ import re
 import wanted
 import wants
 from providers import REGISTRY, base, table
-from tests.helpers import ENGINE, go_source
+from tests.helpers import ENGINE, go_rows, go_source
 
 
 def go_values(text, type_name) -> dict:
@@ -28,12 +28,18 @@ def test_the_us_exchange_patterns_are_golds():
     assert patterns == [table.US_EXCHANGE.pattern, table.NOT_US.pattern]
 
 
+def test_a_security_claim_names_the_facts_a_security_wants():
+    """The facts a security claim names (`facts`) are those a security's
+    `wants` reads with the field gold dates them by."""
+    assert wants.CLAIM_FACTS == {f.name for f in wants.FACTS if f.subject == "security" and f.asked_by == "facts"}
+    assert wants.CLAIM_FACTS == set(wanted.SECURITY_WANTS)
+
+
 def test_every_fact_of_the_engines_golden_list_has_a_provider():
     """A fund's `wants`, a security's `wants`, and the families of
     figures among its `missing` (periodFamilies) are facts the planner
     knows, and some registered provider answers each."""
-    block = re.search(r"var periodFamilies = .*?\n\}\n", go_source("gold/refdata_wanted.go"), re.S).group(0)
-    families = re.findall(r'\{"(\w+)",\s*\[\]string', block)
+    families = [family for family, _ in go_rows(go_source("gold/refdata_wanted.go"), "periodFamilies")]
     assert families == list(wants.FAMILIES)
     w = wanted.from_file(ENGINE / "gold" / "testdata" / "refdata_wanted.json")
     fund_facts = {f for fund in w.funds for f in fund.wants}
@@ -42,6 +48,6 @@ def test_every_fact_of_the_engines_golden_list_has_a_provider():
     assert [f for f in fund_facts if wants.fact_of("fund", f) not in wants.FACTS] == []
     assert [f for f in security_facts if wants.fact_of("security", f) not in wants.FACTS] == []
     for fact in sorted(fund_facts):
-        assert any(p.serves_funds and fact in p.facts | p.composition_facts for p in REGISTRY.values()), fact
+        assert any(p.serves_funds and fact in p.facts for p in REGISTRY.values()), fact
     for fact in sorted(security_facts):
         assert any((p.serves_securities or p.serves_bulk) and fact in p.answers for p in REGISTRY.values()), fact

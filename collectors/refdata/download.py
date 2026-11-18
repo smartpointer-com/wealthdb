@@ -16,9 +16,7 @@ refdata downloader: the wanted list in, raw provider files out.
    metrics, characteristics, money-market figures, its dividend
    calendar) whose newest day had is older than max_age_days, ask the
    providers that answer it in the same order, whichever serves the
-   compositions; with --backfill, for the past dates too. A fact a
-   provider states only with a composition (line durations) comes with a
-   composition request to it, never with a request of its own.
+   compositions; with --backfill, for the past dates too.
 4. For every wanted security held directly, ask every enabled security
    provider whose last answer is older than max_age_days, and every one
    that answers a fact the security wants (its dividend calendar) whose
@@ -70,9 +68,9 @@ import config
 import fetcher
 import wanted as wantedmod
 from collectorkit import bronze, cli, debugcap
-from ledger import FIGURES, NAMED, Ledger, flat_keys
+from ledger import FIGURES, NAMED, Ledger, flat_keys, meta_field
 from providers import REGISTRY
-from providers.base import KIND_DIRS, Context, ProviderError, Unavailable, folder_name, log_notes, read_meta, today_utc
+from providers.base import KIND_DIRS, Context, ProviderError, Unavailable, folder_name, log_notes, today_utc
 from wants import CLAIM_FACTS, COMPOSITION, IDENTITY, ORDER, fact_of, security_order, wants
 
 log = logging.getLogger("refdata.download")
@@ -122,86 +120,6 @@ class Cover:
     reason: str = ""
 
 
-class Fetched(Ledger):
-    """The ledger stated as one map per kind of answer, each with the day
-    of the latest run that fetched it:
-
-    funds      (provider, fund ref, day of the composition)
-    facts      (provider, fund ref, fact)
-    fact_days  (provider, fund ref, fact) -> the days a request fetched it for
-    lookups    (provider, security key)
-    families   (provider, security key), of a security request that asked for figures
-    wants      (provider, security key, fact), of a request that asked for a fact the
-               security wants: a security request, or a bulk answer that names it
-    answered   (provider, security key), of a bulk answer whose `answered` names it
-    bulk       (provider, bulk ref)
-    asked      (provider, security key), of a security request sent, one that failed too"""
-
-    @classmethod
-    def of(cls, *, funds=None, facts=None, fact_days=None, lookups=None, families=None, wants=None, answered=None,
-           bulk=None, asked=None) -> Fetched:
-        """The maps given, every other one empty."""
-        out = cls()
-        for (p, ref, day), run in (funds or {}).items():
-            out.settle(p, "fund", ref, COMPOSITION, day, run)
-        for (p, ref, fact), run in (facts or {}).items():
-            out.settle(p, "fund", ref, fact, None, run)
-        for (p, ref, fact), days in (fact_days or {}).items():
-            for day in days:
-                out.settle(p, "fund", ref, fact, day, None)
-        for m, fact in ((lookups, IDENTITY), (families, FIGURES), (answered, NAMED)):
-            for (p, key), run in (m or {}).items():
-                out.settle(p, "security", key, fact, None, run)
-        for (p, key, fact), run in (wants or {}).items():
-            out.settle(p, "security", key, fact, None, run)
-        for (p, ref), run in (bulk or {}).items():
-            out.settle(p, "bulk", ref, None, None, run)
-        out.sent.update(asked or {})
-        return out
-
-    def _map(self, kind, keep, with_fact=False) -> dict:
-        return {(p, s, *((f,) if with_fact else ())): last for (p, k, s, f) in self.runs
-                if k == kind and keep(f) and (last := self.last(p, k, s, f)) is not None}
-
-    @property
-    def funds(self) -> dict:
-        return {(p, s, d): run for (p, k, s, f), days in self.runs.items() if (k, f) == ("fund", COMPOSITION)
-                for d, run in days.items()}
-
-    @property
-    def facts(self) -> dict:
-        return self._map("fund", lambda f: f != COMPOSITION, True)
-
-    @property
-    def fact_days(self) -> dict:
-        return {(p, s, f): days for (p, k, s, f) in self.runs if k == "fund" and f != COMPOSITION
-                and (days := self.settled(p, k, s, f))}
-
-    @property
-    def lookups(self) -> dict:
-        return self._map("security", lambda f: f == IDENTITY)
-
-    @property
-    def families(self) -> dict:
-        return self._map("security", lambda f: f == FIGURES)
-
-    @property
-    def wants(self) -> dict:
-        return self._map("security", lambda f: f not in (IDENTITY, FIGURES, NAMED), True)
-
-    @property
-    def answered(self) -> dict:
-        return self._map("security", lambda f: f == NAMED)
-
-    @property
-    def bulk(self) -> dict:
-        return self._map("bulk", lambda f: True)
-
-    @property
-    def asked(self) -> dict:
-        return dict(self.sent)
-
-
 def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__.strip().split("\n\n")[0])
     p.add_argument("--bronze-dir", type=Path, default=None, help="One run dir is created here per invocation.")
@@ -209,7 +127,7 @@ def parse_args(argv):
                    help="Read the wanted list from this file instead of asking the engine.")
     p.add_argument("--backfill", action="store_true",
                    help="Also fetch every past date a provider can serve inside the days a fund was held, "
-                        "and a benchmark fund's monthly returns from its history_from on.")
+                        "and a benchmark fund's monthly returns as far back as the wanted list asks.")
     p.add_argument("--provider", action="append", default=None,
                    help="Ask only this provider (repeatable); it must be one refdata.cfg enables.")
     p.add_argument("--ref", action="append", default=None,
@@ -255,12 +173,6 @@ def enabled_providers(cfg: config.Config, only=None):
     return out
 
 
-def fetched_before(bronze_dir: Path | None) -> Fetched:
-    """What earlier complete runs fetched (ledger.py), which counts as
-    had until gold holds it."""
-    return Fetched.read(bronze_dir)
-
-
 def _ask(ref: str, provider: str, what: str, call, *args, failed=None):
     """call(*args): a provider's answer about one fund or security, or
     None where it fails, which adds the provider to the set `failed`.
@@ -280,13 +192,13 @@ def _ask(ref: str, provider: str, what: str, call, *args, failed=None):
 class _Asked:
     """One fund's questions to the providers, each asked once a run: its
     wants share their claims, newest dates and date lists. The dates are
-    those in [since, until], or from the fund's history_from on.
+    those in [listed_from, until], or from the fund's history_from on.
     `failed` holds the providers each question failed on, as a None
     alone does not tell a failure from a provider that does not claim
     the fund."""
 
-    def __init__(self, fund, ctx, since, until):
-        self.fund, self.ctx, self.since, self.until, self.answers = fund, ctx, since, until, {}
+    def __init__(self, fund, ctx, listed_from, until):
+        self.fund, self.ctx, self.listed_from, self.until, self.answers = fund, ctx, listed_from, until, {}
         self.failed = {}
 
     def _once(self, p, what, call, *args):
@@ -307,10 +219,10 @@ class _Asked:
 
     def dates(self, p, want=None) -> list:
         """The dates a want's backfill reads: from the fund's
-        history_from on, or in [since, until]."""
+        history_from on, or in [listed_from, until]."""
         if want is not None and want.history:
             return self._once(p, LIST_HISTORY, p.dates, self.claim(p), want.listed_from, self.until, self.ctx) or []
-        return self._once(p, LIST_DATES, p.dates, self.claim(p), self.since, self.until, self.ctx) or []
+        return self._once(p, LIST_DATES, p.dates, self.claim(p), self.listed_from, self.until, self.ctx) or []
 
 
 def described(fund: wantedmod.Fund, claim: dict) -> wantedmod.Fund:
@@ -366,15 +278,15 @@ def _past_days(listed, held_from, have, near):
         yield d
 
 
-def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_age: int, backfill: bool,
+def plan(wanted: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_age: int, backfill: bool,
          refs=None, securities=True, constituents=False, floor_pct=0, earlier: Ledger | None = None,
          unplanned=None):
     """The requests a run makes, the funds' then the securities' and the
     bulk ones; the funds that want a composition no provider claims; and
     what becomes of every fact wanted, as fact -> ref or key -> Cover.
-    `earlier` is what earlier runs fetched (fetched_before). The set
-    `unplanned` gains (fund ref, fact) for a fact a failed lookup left
-    with a request missing.
+    `earlier` is what earlier complete runs fetched (Ledger.read), which
+    counts as had until gold holds it. The set `unplanned` gains (fund
+    ref, fact) for a fact a failed lookup left with a request missing.
 
     Each want (wants.py) is routed by its fact: a fund's to the first
     provider that claims the fund (_Planner.first), a security's to every
@@ -382,7 +294,7 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
     (_Planner.every). Then every bulk provider plans its own requests."""
     run = _Planner(providers, ctx, today=today, max_age=max_age, backfill=backfill, ledger=earlier or Ledger(),
                    unplanned=set() if unplanned is None else unplanned)
-    subjects = [list(ws) for _, ws in groupby(wants(want, today=today, refs=refs, securities=securities,
+    subjects = [list(ws) for _, ws in groupby(wants(wanted, today=today, refs=refs, securities=securities,
                                                     constituents=constituents, floor_pct=floor_pct),
                                               key=lambda w: id(w.subject))]
     for ws in subjects:
@@ -393,7 +305,7 @@ def plan(want: wantedmod.Wanted, providers, ctx: Context, *, today: date, max_ag
         every = [ws for ws in subjects if ws[0].fact.route == "all"]
         for ws in every:
             run.every(ws)
-        run.bulk(security_order(want.securities, constituents, floor_pct), refs)
+        run.bulk(security_order(wanted.securities, constituents, floor_pct), refs)
         run.cover_securities([w for ws in every for w in ws if w.counted])
     return run.reqs, run.unclaimed, run.cover
 
@@ -454,9 +366,6 @@ class _Planner:
         fact's near_days; nor the newest one when the current answer is
         asked for.
 
-        A fact that no provider's `facts` name, but some provider's
-        `composition_facts` do, gets no request of its own (_stated).
-
         A failed claim of a fact due or of past days, or a failed date
         list, adds the fact to `unplanned`: a request that should exist
         does not."""
@@ -473,7 +382,7 @@ class _Planner:
         serving = [p for p in self.funds if _serves(p, fact)]
         if not serving:
             if due and not composition:
-                self._stated(w, c, asked, own)
+                c.reason = _unanswered(fact, self.funds)
             return not claimed
         for i, p in enumerate(serving):
             claim = asked.claim(p)
@@ -520,21 +429,6 @@ class _Planner:
                     own.append(Request("fund", p.name, asked.fund.ref, d, claim))
                     have.add(d)
         return claimed
-
-    def _stated(self, w, c, asked, own):
-        """Record what becomes of a due fact that only compositions state
-        (`composition_facts`): each of the fund's composition requests to
-        such a provider asks for it, and it is had where an earlier run
-        fetched a composition from one within max_age."""
-        fact, ref = w.fact.name, w.subject.ref
-        stating = {p.name for p in self.funds if fact in p.composition_facts}
-        c.requests = [r for r in own if r.compositions and r.provider in stating]
-        c.had = not c.requests and any(self.fresh(self.ledger.last(q, "fund", ref, COMPOSITION)) for q in stating)
-        if not (c.requests or c.had):
-            c.reason = _unanswered(fact, self.funds)
-            if asked.failed_on(CLAIM, stating):
-                c.reason = LOOKUP_FAILED
-                self.unplanned.add((ref, fact))
 
     def _asking(self, own, w, p, as_of, claim, standbys) -> Request:
         """The fund's request to p for as_of, which asks for the want's
@@ -667,22 +561,14 @@ class _Planner:
 def _facts_missing(folder: Path) -> set:
     """The facts a fetch that succeeded names as missing in its meta.json
     (base.py): they stay due, as if the run had not asked."""
-    try:
-        return set(read_meta(folder).get("facts_missing") or ())
-    except (ProviderError, OSError, ValueError):
-        return set()
+    return set(meta_field(folder, "facts_missing") or ())
 
 
 def _unanswered(fact, providers, kind="fund") -> str:
     """Why no provider of the run is asked for a fact of a fund (`kind`
-    fund) or of a security: a fund's comes only with a composition from
-    the registered providers whose `composition_facts` name it; the
-    registered providers that answer it are off, as refdata.cfg does not
-    enable them or --provider leaves them out; or none answers it."""
-    if kind == "fund":
-        stating = [name for name, p in REGISTRY.items() if fact in p.composition_facts]
-        if stating:
-            return f"comes only with a composition from: {', '.join(stating)}"
+    fund) or of a security: the registered providers that answer it are
+    off, as refdata.cfg does not enable them or --provider leaves them
+    out; or none answers it."""
     on = {p.name for p in providers}
     off = [name for name, p in REGISTRY.items() if name not in on and _answers_fact(p, fact, kind)]
     return f"provider off: {', '.join(off)}" if off else "no enabled provider answers it"
@@ -782,7 +668,7 @@ def _failed(entry) -> bool:
     return "error" in (entry["status"], *(t["status"] for t in entry.get("tried", ())))
 
 
-def lost_funds(cover, reqs, results, unplanned=frozenset()) -> dict:
+def lost(cover, reqs, results, unplanned=frozenset()) -> dict:
     """ref -> what a failure cost it this run, sorted, by the --ref that
     recovers it: a fund's ref, a security's key, a bulk request's ref.
 
@@ -801,16 +687,16 @@ def lost_funds(cover, reqs, results, unplanned=frozenset()) -> dict:
     asking = [(r, r.ref, f) for r in reqs if r.kind == "fund"
               for f in ((COMPOSITION,) if r.compositions else ()) + r.facts]
     asking += [(r, ref, fact) for fact, wanting in cover.items() for ref, c in wanting.items() for r in c.requests]
-    got, lost = set(), {}
+    got, missed = set(), {}
     for r, ref, fact in asking:
         e = entries[id(r)]
         key = (ref, fact, r.as_of if fact_of("fund" if r.kind == "fund" else "security", fact).series else None)
         if e["status"] == "ok" and _answered(r, e, fact):
             got.add(key)
         elif _failed(e):
-            lost.setdefault(key, set()).add(r.ref)
+            missed.setdefault(key, set()).add(r.ref)
     out = {}
-    for key, refs in lost.items():
+    for key, refs in missed.items():
         if key not in got:
             for ref in refs:
                 out.setdefault(ref, set()).add(key[1])
@@ -822,13 +708,8 @@ def lost_funds(cover, reqs, results, unplanned=frozenset()) -> dict:
 def _answered(r, entry, fact) -> bool:
     """Whether a request that served answered a fact it asked for: one its
     `facts` name by its entry's facts, as the fetch states them; the
-    composition by serving; a fact a fund's compositions state by its
-    provider's `composition_facts`; a family of figures by serving."""
-    if fact in r.facts:
-        return fact in entry["facts"]
-    if r.kind == "fund" and fact != COMPOSITION:
-        return fact in REGISTRY[entry["provider"]].composition_facts
-    return True
+    composition and a family of figures by serving."""
+    return fact in entry["facts"] if fact in r.facts else True
 
 
 def log_lost(lost, backfill) -> None:
@@ -968,7 +849,7 @@ def main(argv=None) -> int:
     if args.bronze_dir is None:
         raise SystemExit("--bronze-dir is required (or pass --check to probe the providers).")
     try:
-        want = wantedmod.from_file(args.wanted) if args.wanted else wantedmod.from_engine(config.engine_command(cfg))
+        wanted = wantedmod.from_file(args.wanted) if args.wanted else wantedmod.from_engine(config.engine_command(cfg))
     except wantedmod.WantedError as e:
         log.error("%s", e)
         return 3
@@ -980,14 +861,14 @@ def main(argv=None) -> int:
         run = bronze.run_dir(args.bronze_dir, slug)
         bronze.atomic_write_json(run / "run.json", {"slug": slug, "status": "in-progress"})
         ctx.client.trace = debugcap.HttpTrace(run, log=log, enabled=args.debug)
-    earlier = fetched_before(args.bronze_dir)
+    earlier = Ledger.read(args.bronze_dir)
     unplanned = set()
-    reqs, unclaimed, cover = plan(want, providers, ctx, today=today_utc(), max_age=cfg.max_age_days,
+    reqs, unclaimed, cover = plan(wanted, providers, ctx, today=today_utc(), max_age=cfg.max_age_days,
                                   backfill=args.backfill, refs=set(args.ref or ()),
                                   securities=not args.no_securities, constituents=cfg.constituents,
                                   floor_pct=cfg.constituent_floor_pct, earlier=earlier, unplanned=unplanned)
     log.info("wanted: %d funds, %d securities; %d requests; %d funds no provider claims",
-             len(want.funds), len(want.securities), len(reqs), len(unclaimed))
+             len(wanted.funds), len(wanted.securities), len(reqs), len(unclaimed))
     for ref in unclaimed:
         log.info("unclaimed: %s", ref)
     if args.dry_run:
@@ -999,7 +880,7 @@ def main(argv=None) -> int:
         for line in coverage_lines(cover, deferred):
             print(line)
         return 0
-    manifest = {"slug": slug, "status": "in-progress", "wanted_as_of": want.as_of.isoformat(),
+    manifest = {"slug": slug, "status": "in-progress", "wanted_as_of": wanted.as_of.isoformat(),
                 "providers": [p.name for p in providers], "unclaimed": unclaimed, "requests": []}
     bronze.atomic_write_json(run / "run.json", manifest)
     manifest["requests"] = execute(reqs, run, ctx, args.limit)
@@ -1009,7 +890,7 @@ def main(argv=None) -> int:
     log.info("run %s: %s", slug, ", ".join(f"{n} {s}" for s, n in sorted(by.items())) or "nothing to fetch")
     log_coverage(cover, {id(r) for r, e in zip(reqs, manifest["requests"], strict=True) if e["status"] == "deferred"})
     log_notes(providers, log)
-    log_lost(lost_funds(cover, reqs, manifest["requests"], unplanned), args.backfill)
+    log_lost(lost(cover, reqs, manifest["requests"], unplanned), args.backfill)
     return 0
 
 

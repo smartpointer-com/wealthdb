@@ -56,7 +56,7 @@ class Fund:
     held_to: date | None = None          # None: still held
     compositions: tuple = ()             # dates gold has, ascending
     wants: tuple = ()                    # risk_metrics, monthly_returns, characteristics, money_market,
-                                         # line_durations, dividend_calendar
+                                         # dividend_calendar
     facts: dict = field(default_factory=dict)     # fact -> tuple of the dates gold has, ascending
     history_from: date | None = None     # how far back a backfill reads its monthly_returns
 

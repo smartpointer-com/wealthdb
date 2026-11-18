@@ -499,8 +499,8 @@ class TestRollForward(unittest.TestCase):
 
     def test_the_wanted_list_matches_a_fresh_build(self):
         """It reads the reference records no report compared above reads:
-        the funds' risk rows, characteristics and line durations, and the
-        companies' reported figures. rate_observations has no reader to
+        the funds' risk rows and characteristics, and the companies'
+        reported figures. rate_observations has no reader to
         compare."""
         def wanted(root):
             out = json.loads(engine(root, "refdata-wanted", read_only=True))

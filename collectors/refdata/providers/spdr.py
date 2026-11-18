@@ -68,9 +68,9 @@ from pathlib import Path
 import fetcher
 
 from . import fundpage, table, xlsx
-from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, event_row, facts_missing, has_file, ident,
-                   kinds_paid, listed, merge_events, present, read_bytes, read_json, read_meta, write_file, write_json,
-                   write_meta)
+from .base import (PAGE_FLAGS, Parsed, Provider, ProviderError, amount, blank_to_none, event_row, facts_missing,
+                   has_file, ident, kinds_paid, listed, merge_events, page_flags, present, read_bytes, read_json,
+                   read_meta, write_file, write_json, write_meta)
 
 FINDER = "https://www.ssga.com/bin/v1/ssmp/fund/fundfinder"
 FINDERS = {
@@ -170,7 +170,7 @@ class Spdr(Provider):
     name = "spdr"
     serves_funds = True
     facts = frozenset({"characteristics", "dividend_calendar"})
-    claim_flags = {"characteristics": "characteristics", "dividend_calendar": "calendar"}
+    claim_flags = PAGE_FLAGS
 
     def _index(self, ctx) -> dict:
         """identifier or ticker -> (region, fund entry), from both finders."""
@@ -189,11 +189,8 @@ class Spdr(Provider):
         for region, d in listed(self._index(ctx), fund, "us"):
             ticker = _file_ticker(region, d.get("fundUri"))
             if ticker:
-                # A fund wanted as a proxy or an underlying wants neither,
-                # and its fetch asks for no page or distributions.
                 return {"ref": fund.ref, "region": region, "ticker": ticker, "name": d.get("fundName"),
-                        "page": d["fundUri"], **_ids(fund, d), "characteristics": "characteristics" in fund.wants,
-                        "calendar": "dividend_calendar" in fund.wants}
+                        "page": d["fundUri"], **_ids(fund, d), **page_flags(fund)}
         return None
 
     def _distributions(self, region: str, ctx) -> dict:

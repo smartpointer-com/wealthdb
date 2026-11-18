@@ -11,7 +11,7 @@ import config
 import download
 import load
 from providers.base import Context, Parsed, Provider, read_meta, row, write_meta
-from tests.helpers import TODAY, FakeProvider, held, make_run, plan, rows, run_entries, wanted_doc, write_wanted
+from tests.helpers import TODAY, FakeProvider, Fetched, held, make_run, plan, rows, run_entries, wanted_doc, write_wanted
 
 REF = "symbol:FUNDA"
 CAL = "dividend_calendar"
@@ -100,20 +100,6 @@ class _Daily(Provider):
         write_meta(outdir, **claim, answered=claim["keys"][:1])
 
 
-@pytest.fixture
-def registry(monkeypatch):
-    """The providers download and load know, these only: a reason names
-    no real provider."""
-    reg = {}
-    monkeypatch.setattr(download, "REGISTRY", reg)
-    monkeypatch.setattr(load, "REGISTRY", reg)
-
-    def add(*providers):
-        reg.update((p.name, p) for p in providers)
-        return providers
-    return add
-
-
 def v3(funds=(), securities=()):
     return wanted_doc(funds, securities, version=3)
 
@@ -159,7 +145,7 @@ def test_a_calendar_fetched_counts_for_max_age_whether_or_not_it_states_events(r
     assert rows(db, "SELECT COUNT(*) FROM compositions") == [(0,)]
     assert rows(db, "SELECT ref, provider, event_id FROM dividend_events") == \
         ([(REF, "issuer", "e1")] if events else [])
-    earlier = download.fetched_before(data)
+    earlier = Fetched.read(data)
     assert earlier.facts == {("issuer", REF, CAL): date(2026, 7, 15)}
     reqs, _, cover = plan(doc, [comp, issuer], earlier=earlier)
     assert reqs == [] and cover[CAL][REF].had
@@ -191,7 +177,7 @@ def test_an_earlier_runs_calendar_request_counts_until_max_age_has_passed(regist
     data = tmp_path / "data"
     (entry,) = run_entries(make_run(data, "20260715T010000Z", reqs))
     assert (entry["status"], entry["facts"]) == ("ok", [CAL])
-    earlier = download.fetched_before(data)
+    earlier = Fetched.read(data)
     assert earlier.wants == {("exchange", "symbol:QSHR", CAL): date(2026, 7, 15)}
     reqs, _, cover = plan(doc, [exchange], earlier=earlier)
     assert reqs == [] and cover[CAL]["symbol:QSHR"].had
@@ -204,7 +190,7 @@ def test_a_fetch_that_names_the_calendar_missing_keeps_it_due(registry, tmp_path
     data = tmp_path / "data"
     (entry,) = run_entries(make_run(data, "20260715T010000Z", reqs))
     assert (entry["status"], entry["facts"]) == ("ok", [])
-    assert download.fetched_before(data).wants == {}
+    assert Fetched.read(data).wants == {}
 
 
 def test_a_lookup_sees_only_the_wants_due_and_asks_for_those_its_claim_names(registry):
@@ -238,7 +224,7 @@ def test_a_bulk_request_asks_for_the_calendar_its_claim_names(registry, tmp_path
     data = tmp_path / "data"
     (entry,) = run_entries(make_run(data, "20260715T010000Z", reqs))
     assert entry["facts"] == [CAL]
-    earlier = download.fetched_before(data)
+    earlier = Fetched.read(data)
     # The answer states the first receipt's calendar: it is had, the other
     # left.
     assert earlier.wants == {("daily", "symbol:QRCA", CAL): date(2026, 7, 15)}

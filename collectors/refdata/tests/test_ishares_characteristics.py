@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-import download
 
 from providers.base import Context, has_file, read_bytes, read_json, read_meta
 from providers.fundpage import BOND_FIGURES
@@ -283,12 +282,6 @@ def test_an_item_named_for_a_figure_wins_over_one_only_captioned_so():
             '<div class="product-data-item col-modelOad "> <div class="caption"> Effective Duration </div>'
             ' <div class="data"> 5.84 </div> </div>')
     assert figures(item_figures(page_items(page))) == {"effective_duration": ("5.84", None)}
-
-
-def test_line_durations_come_only_with_an_ishares_composition():
-    """The planner names iShares as the provider whose compositions state
-    a fund's line durations."""
-    assert download._unanswered("line_durations", []) == "comes only with a composition from: ishares"
 
 
 def test_a_zero_or_a_dash_is_no_figure():

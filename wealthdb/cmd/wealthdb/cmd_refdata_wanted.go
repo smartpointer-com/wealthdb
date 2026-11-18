@@ -30,10 +30,11 @@ func cmdRefdataWanted(ctx context.Context, g globalFlags, subargs []string, _ io
 Print the wanted list the refdata collector reads, as JSON (contract
 version `+fmt.Sprint(gold.WantedContractVersion)+`). Each subject it names lists what it wants,
 one entry per fact, with the days gold holds it for. It names:
-  - every fund gold wants: a held, proxy, reference or size fund, or
-    one a held fund holds. Each wants its composition over the days it
-    is wanted for. A held fund also wants its facts, its dividend
-    calendar among them.
+  - every fund gold wants: a held, proxy, reference, size or benchmark
+    fund, or one a held fund holds. Each wants its composition over the
+    days it is wanted for. A held fund also wants its facts, its
+    dividend calendar among them; a benchmark's fund its monthly
+    returns and characteristics.
   - every directly held security: its lookup, the attributes still
     missing, and the dividend calendar a stock or a listed REIT is
     wanted for; and whether gold reads it as a depositary receipt.

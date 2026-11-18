@@ -15,7 +15,7 @@ import wanted as wantedmod
 from collectorkit import bronze
 from providers import REGISTRY, six
 from providers.base import Context, Provider, ProviderError, has_file, read_bytes, read_json, read_meta
-from tests.helpers import TODAY, FakeClient, kept_run, make_run, rows, run_entries, wanted_doc
+from tests.helpers import TODAY, FakeClient, Fetched, kept_run, make_run, rows, run_entries, wanted_doc
 
 FIX = Path(__file__).parent / "fixtures"
 CAL = "dividend_calendar"
@@ -270,7 +270,7 @@ def test_a_later_dividend_answer_keeps_the_pay_day_an_earlier_notice_stated(tmp_
     # The notice, fetched after the dividends, stands for its event.
     assert _events(db)["2026-03-10"] == ("2026-03-12", "2.5", '{"notice":"900101"}')
     # Within max_age and on the day of the search: nothing to ask.
-    earlier = download.fetched_before(data)
+    earlier = Fetched.read(data)
     assert _plan(today[0], earlier=earlier)[0] == []
     # A month on, the dividends are due again; the search goes on from the
     # last one's day. It finds nothing new, and the answer joins the
@@ -303,8 +303,8 @@ def test_a_share_is_asked_once_a_month_whatever_max_age_says_a_failed_request_to
     asked = date(2026, 7, 5)
     # The day's search is done: only the share's own request is in question.
     searched = {("six", six.NOTICES_REF): asked + timedelta(days=40)}
-    served = download.Fetched.of(asked={("six", KEY): asked}, wants={("six", KEY, CAL): asked}, bulk=searched)
-    failed = download.Fetched.of(asked={("six", KEY): asked}, bulk=searched)
+    served = Fetched.of(asked={("six", KEY): asked}, wants={("six", KEY, CAL): asked}, bulk=searched)
+    failed = Fetched.of(asked={("six", KEY): asked}, bulk=searched)
     # Ten days on, with max_age_days at 7: neither is asked again.
     reqs, c = _due(asked + timedelta(days=10), served, 7)
     assert reqs == [] and c.had
@@ -316,7 +316,7 @@ def test_a_share_is_asked_once_a_month_whatever_max_age_says_a_failed_request_to
     # A longer max_age_days holds as it says.
     assert _due(asked + timedelta(days=31), served, 60)[0] == []
     # Gold's calendar day counts for the month as well.
-    gold = download.Fetched.of(bulk=searched)
+    gold = Fetched.of(bulk=searched)
     assert _due(asked + timedelta(days=10), gold, 7, calendar=asked)[0] == []
     assert _due(asked + timedelta(days=31), gold, 7, calendar=asked)[0] == ["security"]
 
@@ -346,7 +346,7 @@ def test_a_failed_request_counts_as_asked_in_the_next_plan(tmp_path):
     data = tmp_path / "data"
     reqs, _, _ = _plan(TODAY)
     _execute(data, "20260715T010000Z", reqs[:1], FakeClient(routes(**{DIVIDENDS: 503})))
-    earlier = download.fetched_before(data)
+    earlier = Fetched.read(data)
     assert earlier.asked == {("six", KEY): TODAY} and earlier.wants == {}
     assert _due(TODAY + timedelta(days=1), earlier, 1)[0] == []
 
@@ -504,7 +504,7 @@ def test_a_run_that_died_after_its_request_still_waits_the_month(tmp_path):
     bronze.atomic_write_json(data / six.ASKED, {KEY: "2026-07-05"})
 
     def plan(day):
-        reqs, _, cover = _plan(day, earlier=download.Fetched.of(bulk={("six", six.NOTICES_REF): day}), max_age=7,
+        reqs, _, cover = _plan(day, earlier=Fetched.of(bulk={("six", six.NOTICES_REF): day}), max_age=7,
                                data_dir=data)
         return [r.kind for r in reqs], cover[CAL][KEY]
     reqs, c = plan(date(2026, 7, 15))
@@ -528,7 +528,7 @@ def test_an_ask_record_that_does_not_read_asks_six_nothing(tmp_path, caplog):
     with pytest.raises(ProviderError, match="monthly ask cannot be kept"):
         p.fetch_security(p.claim_security(share(), None), tmp_path / "out", Context(client=client, data_dir=data))
     assert client.asked == []
-    reqs, _, _ = _plan(TODAY, earlier=download.Fetched.of(bulk={("six", six.NOTICES_REF): TODAY}), data_dir=data)
+    reqs, _, _ = _plan(TODAY, earlier=Fetched.of(bulk={("six", six.NOTICES_REF): TODAY}), data_dir=data)
     assert reqs == [] and "could not read the days of its requests" in caplog.text
 
 

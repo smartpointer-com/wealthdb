@@ -43,16 +43,15 @@ class Fact:
 
 # In the order the coverage lists them (adapters/refdata.md §5): a fund's
 # composition and the facts beyond it, which a fund provider's `facts`
-# answer, or its compositions (`composition_facts`); then a security's
-# lookup, the families of figures it lacks and the facts it wants, which
-# a security or bulk provider's `answers` answer.
+# answer; then a security's lookup, the families of figures it lacks and
+# the facts it wants, which a security or bulk provider's `answers`
+# answer.
 FACTS = (
     Fact(COMPOSITION, "fund", "first", near_days=15),
     Fact("risk_metrics", "fund", "first"),
     Fact("monthly_returns", "fund", "first", series=True),
     Fact("characteristics", "fund", "first"),
     Fact("money_market", "fund", "first"),
-    Fact("line_durations", "fund", "first"),
     Fact("dividend_calendar", "fund", "first"),
     Fact(IDENTITY, "security", "all", asked_by=""),
     Fact("earnings", "security", "all", asked_by="families"),
@@ -62,9 +61,10 @@ FACTS = (
 )
 ORDER = tuple(dict.fromkeys(f.name for f in FACTS))
 _BY = {(f.subject, f.name): f for f in FACTS}
-# A security's facts by the field of a claim that names them.
+# A security's facts by the field of a claim that names them: its
+# families of figures, and the facts it wants (SECURITY_WANTS).
 FAMILIES = tuple(f.name for f in FACTS if f.subject == "security" and f.asked_by == "families")
-CLAIM_FACTS = frozenset(f.name for f in FACTS if f.subject == "security" and f.asked_by == "facts")
+CLAIM_FACTS = frozenset(SECURITY_WANTS)
 
 
 def fact_of(subject: str, name: str) -> Fact:
@@ -148,12 +148,13 @@ def security_wants(sec) -> list:
     return out
 
 
-def wants(w, *, today: date, refs=None, securities=True, constituents=False, floor_pct=0) -> list:
+def wants(wanted, *, today: date, refs=None, securities=True, constituents=False, floor_pct=0) -> list:
     """Every want of a wanted list, a subject's together: the funds' in
     the list's order, then the securities' in security_order. Only the
     subjects `refs` names, where given."""
-    out = [x for fund in w.funds if not refs or fund.ref in refs for x in fund_wants(fund, today, w.max_gap_days)]
+    out = [x for fund in wanted.funds if not refs or fund.ref in refs
+           for x in fund_wants(fund, today, wanted.max_gap_days)]
     if securities:
-        out += [x for sec in security_order(w.securities, constituents, floor_pct) if not refs or sec.key in refs
+        out += [x for sec in security_order(wanted.securities, constituents, floor_pct) if not refs or sec.key in refs
                 for x in security_wants(sec)]
     return out

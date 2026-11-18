@@ -13,7 +13,7 @@ import load
 import wanted as wantedmod
 from providers import REGISTRY, jpx
 from providers.base import Context, ProviderError, read_meta
-from tests.helpers import FakeClient, go_source, make_run, rows, run_entries, wanted_doc
+from tests.helpers import FakeClient, Fetched, go_source, make_run, rows, run_entries, wanted_doc
 from tests.xls import workbook
 
 FIX = Path(__file__).parent / "fixtures"
@@ -204,7 +204,7 @@ def test_a_run_fetches_each_list_once_and_the_newer_lists_row_wins(tmp_path):
     assert rows(db, "SELECT ref, as_of FROM dividend_events WHERE ref = 'jpx:9Z0A'") == [("jpx:9Z0A", 1792713600)]
     assert rows(db, "SELECT COUNT(*) FROM dividend_events") == [(3,)]
     # The next run reads the index again and asks for no list it has.
-    earlier = download.fetched_before(data)
+    earlier = Fetched.read(data)
     assert download.plan(want, [REGISTRY["jpx"]], Context(client=client), today=DAY, max_age=30, backfill=False,
                          earlier=earlier)[0] == []
     assert earlier.wants == {("jpx", "isin:JP0000000010", CAL): DAY}

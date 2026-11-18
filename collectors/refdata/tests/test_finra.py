@@ -20,7 +20,7 @@ from providers import finra as finra_mod
 from providers.base import Context, Provider, ProviderError, read_bytes, read_meta
 from providers.finra import (BUDGET, CAL, DATA_URL, HISTORY_START, REF, REQUEST_MAX, TALLY, TOKEN_KEY, TOKEN_URL,
                              Finra, covered, events)
-from tests.helpers import TODAY, FakeClient, FakeHttps, kept_run, make_run, rows, wanted_doc
+from tests.helpers import TODAY, FakeClient, FakeHttps, Fetched, kept_run, make_run, rows, wanted_doc
 from wanted import Security
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -405,7 +405,7 @@ def test_a_run_plans_fetches_and_loads_the_receipts_calendar(tmp_path, monkeypat
         ("isin:XX0000000801", "900002", "final", "2025-12-01", "0.4125"),
         ("isin:XX0000000801", "900003", "final", "2016-04-01", None),
         ("symbol:QEXPY", "900001", "final", "2026-05-08", "1.5")]
-    earlier = download.fetched_before(data)
+    earlier = Fetched.read(data)
     assert set(earlier.wants) == {("finra", "symbol:QEXPY", CAL), ("finra", "isin:XX0000000801", CAL)}
     reqs, _, cover = download.plan(want, [p], ctx(FakeClient(), data), today=TODAY, max_age=30, backfill=False,
                                    earlier=earlier)

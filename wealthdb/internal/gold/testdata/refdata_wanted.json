@@ -58,6 +58,39 @@
       ]
     },
     {
+      "ref": "symbol:BMK1",
+      "isin": null,
+      "cusip": null,
+      "symbol": "BMK1",
+      "name": null,
+      "currency": null,
+      "roles": [
+        "benchmark"
+      ],
+      "wants": [
+        {
+          "fact": "composition",
+          "from": "2026-10-13",
+          "to": null,
+          "have": []
+        },
+        {
+          "fact": "monthly_returns",
+          "from": "2019-01-01",
+          "to": null,
+          "have": [
+            "2026-09-30"
+          ]
+        },
+        {
+          "fact": "characteristics",
+          "from": "2026-10-13",
+          "to": null,
+          "have": []
+        }
+      ]
+    },
+    {
       "ref": "symbol:BNDF",
       "isin": null,
       "cusip": null,

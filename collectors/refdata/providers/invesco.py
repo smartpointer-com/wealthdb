@@ -76,8 +76,9 @@ import fetcher
 from collectorkit.parse import iso_date
 
 from . import fundpage, table
-from .base import (Parsed, Provider, ProviderError, amount, blank_to_none, dec, event_row, facts_missing, has_file,
-                   ident, kinds_paid, merge_events, present, read_json, read_meta, row, write_file, write_meta)
+from .base import (PAGE_FLAGS, Parsed, Provider, ProviderError, amount, blank_to_none, dec, event_row, facts_missing,
+                   has_file, ident, kinds_paid, merge_events, page_flags, present, read_json, read_meta, row,
+                   write_file, write_meta)
 
 API = "https://dng-api.invesco.com/cache/v1/accounts/{locale}/shareclasses/{id}/"
 ISSUER = re.compile(r"invesco|powershares", re.I)
@@ -131,7 +132,7 @@ class Invesco(Provider):
     name = "invesco"
     serves_funds = True
     facts = frozenset({"characteristics", "dividend_calendar"})
-    claim_flags = {"characteristics": "characteristics", "dividend_calendar": "calendar"}
+    claim_flags = PAGE_FLAGS
 
     def claim(self, fund, ctx):
         if not (ISSUER.search(fund.name or "") and ETF.search(fund.name or "")):
@@ -139,9 +140,7 @@ class Invesco(Provider):
         isin, cusip = ident(fund, "isin"), ident(fund, "cusip")
         if not cusip and isin.startswith("US") and len(isin) == 12:
             cusip = isin[2:11]
-        # A fund wanted as a proxy or an underlying wants neither, and its
-        # fetch asks for no page answer or distributions.
-        wants = {"characteristics": "characteristics" in fund.wants, "calendar": "dividend_calendar" in fund.wants}
+        wants = page_flags(fund)
         if cusip:
             return {"ref": fund.ref, "site": "us", "id": cusip, **wants}
         if isin:

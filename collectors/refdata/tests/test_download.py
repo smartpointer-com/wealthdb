@@ -10,10 +10,11 @@ import config
 import download
 import fetcher
 import wanted as wantedmod
+import wants
 from providers.base import Context, Provider, ProviderError, Unavailable
 from providers.inbox import Inbox
 from tests import helpers
-from tests.helpers import TODAY, FakeHttps, FakeLookup, FakeProvider, fund, wanted_doc, write_wanted
+from tests.helpers import TODAY, FakeHttps, FakeLookup, FakeProvider, Fetched, fund, wanted_doc, write_wanted
 
 
 @pytest.fixture
@@ -69,8 +70,8 @@ def test_plan_does_not_fetch_again_what_a_provider_served_within_max_age(fake):
     # recently it was fetched.
     want = wantedmod.parse(wanted_doc([fund("symbol:FUNDA", "FUNDA", compositions=["2026-01-31"])]))
     served = {(fake.name, "symbol:FUNDA", date(2026, 1, 31)): date(2026, 7, 1)}
-    assert plan(want, [fake], earlier=download.Fetched.of(funds=served))[0] == []
-    reqs, _ = plan(want, [fake], today=date(2026, 8, 15), earlier=download.Fetched.of(funds=served))
+    assert plan(want, [fake], earlier=Fetched.of(funds=served))[0] == []
+    reqs, _ = plan(want, [fake], today=date(2026, 8, 15), earlier=Fetched.of(funds=served))
     assert [(r.ref, r.as_of) for r in reqs] == [("symbol:FUNDA", None)]
 
 
@@ -379,15 +380,15 @@ def test_securities_held_directly_come_first_then_constituents_by_share():
         {"key": "isin:XX0000000073", "scope": "constituent", "share_pct": 2.5, "missing": ["country"], "lookups": {}},
         {"key": "isin:XX0000000074", "scope": "unheard-of", "missing": [], "lookups": {}}])
     want = wantedmod.parse(doc)
-    assert [s.key for s in download.security_order(want.securities, True)] == [
+    assert [s.key for s in wants.security_order(want.securities, True)] == [
         "isin:XX0000000072", "isin:XX0000000073", "isin:XX0000000071"]
-    assert [s.key for s in download.security_order(want.securities, False)] == ["isin:XX0000000072"]
+    assert [s.key for s in wants.security_order(want.securities, False)] == ["isin:XX0000000072"]
     assert want.securities[2].share_pct == 2.5
     # Below the floor a constituent is not asked; one held directly is,
     # and one at the floor is.
-    assert [s.key for s in download.security_order(want.securities, True, 1.0)] == [
+    assert [s.key for s in wants.security_order(want.securities, True, 1.0)] == [
         "isin:XX0000000072", "isin:XX0000000073"]
-    assert [s.key for s in download.security_order(want.securities, True, 0.5)] == [
+    assert [s.key for s in wants.security_order(want.securities, True, 0.5)] == [
         "isin:XX0000000072", "isin:XX0000000073", "isin:XX0000000071"]
 
 
@@ -399,7 +400,7 @@ def test_the_floor_counts_a_share_by_its_size():
         {"key": "isin:XX0000000076", "scope": "constituent", "share_pct": None, "missing": ["sector"], "lookups": {}},
         {"key": "isin:XX0000000077", "scope": "constituent", "share_pct": -0.01, "missing": ["sector"], "lookups": {}}])
     want = wantedmod.parse(doc)
-    assert [s.key for s in download.security_order(want.securities, True, 0.1)] == [
+    assert [s.key for s in wants.security_order(want.securities, True, 0.1)] == [
         "isin:XX0000000075", "isin:XX0000000076"]
 
 
@@ -429,7 +430,7 @@ def test_plan_asks_constituents_only_when_allowed_and_what_a_provider_answers():
     assert keys(plan(want, [lk], constituents=True)[0]) == ["isin:XX0000000091", "isin:XX0000000092"]
     # An earlier run's answer counts until gold holds it.
     again, _ = plan(want, [lk], constituents=True,
-                    earlier=download.Fetched.of(lookups={("lookup", "isin:XX0000000092"): TODAY}))
+                    earlier=Fetched.of(lookups={("lookup", "isin:XX0000000092"): TODAY}))
     assert keys(again) == ["isin:XX0000000091"]
     # Without securities, none is asked.
     assert plan(want, [lk], constituents=True, securities=False)[0] == []
@@ -447,10 +448,10 @@ def test_earlier_runs_count_their_lookups_and_compositions(tmp_path):
     crashed.mkdir()
     (crashed / "run.json").write_text(json.dumps({"status": "in-progress", "requests": [
         {"kind": "security", "provider": "gleif", "ref": "isin:XX0000000096", "status": "ok"}]}))
-    earlier = download.fetched_before(tmp_path)
+    earlier = Fetched.read(tmp_path)
     assert earlier.lookups == {("gleif", "isin:XX0000000095"): date(2026, 7, 14)}
     assert earlier.funds == {("fake", "symbol:FUNDA", date(2026, 1, 31)): date(2026, 7, 14)}
     # A request sent counts as asked whether or not it served.
     assert earlier.asked == {("gleif", "isin:XX0000000095"): date(2026, 7, 14),
                              ("gleif", "isin:XX0000000096"): date(2026, 7, 14)}
-    assert earlier == download.Fetched.of(funds=earlier.funds, lookups=earlier.lookups, asked=earlier.asked)
+    assert earlier == Fetched.of(funds=earlier.funds, lookups=earlier.lookups, asked=earlier.asked)
