@@ -2085,8 +2085,8 @@ fee line: a portfolio, else an account outside any portfolio.
 | `fees` | the spending lines in primary `BANK_FEES`, net of refunds |
 | `fees_investment`, `fees_bank`, `fees_atm`, `fees_other` | the same lines by detailed group: `BANK_FEES_INVESTMENT_FEES`; other bank fees, overdraft and insufficient funds; ATM fees; the rest |
 | `mean_value` | the entity's mean daily value, over the days it held one. A portfolio's leaves out its mortgages and cards, as its `twr_pct` does |
-| `fee_rate_pct` | `fees` over `mean_value`, annualized over the days the entity held a value, on a 365-day year. Blank where the mean value is not above zero |
-| `twr_pct` | the entity's monthly returns from a since-inception run of `returns portfolios` or `returns accounts`, chained over the months that end inside the window. Blank where `returns` has no month, as for plumbing cash accounts |
+| `fee_rate_pct` | `fees` over `mean_value`, annualized over the days the entity held a value, on a 365-day year. Blank where the mean value is not above zero (a millionth or less counts as zero) |
+| `twr_pct` | the entity's monthly returns from a since-inception run of `returns portfolios` or `returns accounts`, chained over the months that end inside the window. Blank where `returns` has no month, as for plumbing cash accounts. A month that lost everything is left out of the chain |
 | `quality` | `no_mean_value`, `part_window_value`, `no_return`, `unpriced_fees=N`, and the tags of the months chained |
 
 `--period` is `monthly`, `quarterly`, `annual` or `total`, the default.
@@ -2123,7 +2123,9 @@ Limits:
 The Spending dashboard's fee tiles read `web_fees`:
 the same lines, daily values and monthly returns, at day grain. A
 portfolio's value there leaves out its mortgages and cards too. So
-every figure on them is this view's over any window.
+every figure on them is this view's over any window. The tiles compute
+`fee_rate_pct` and `twr_pct` with the macros `fee_rate_pct` and
+`chain_returns`, the same rules as this view.
 
 ## 8. Storage and lifecycle
 

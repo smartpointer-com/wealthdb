@@ -1460,8 +1460,8 @@ one that finds no new data (§8.1): that a run found nothing new is
 itself the observation a freshness reader needs. The view
 `source_observed` reads them, NULL where a silver does not say;
 `wealthdb status`, the `holdings sources` column `observed_date`, the
-MCP `status` tool and the Data Freshness dashboard count staleness
-from it.
+MCP `status` tool and the Data Freshness dashboard, through
+`web_sources_observed`, count staleness from it.
 
 **The roster a read states.** A portal that marks its holdings on
 event dates writes nothing to its silver when it drops a holding whose
@@ -2835,12 +2835,13 @@ priority-less sources sort last).
 **`fx_daily` — one winner per pair per UTC day.** `fx_norm`'s edges are
 bucketed to the UTC day (`snapshot_at // 86400`). Within each
 `(from_ccy, to_ccy, day)`, a `ROW_NUMBER()` ordered by `fx_priority`
-ASC, then `snapshot_at` DESC picks a single winning rate. Two more keys
-break ties: a stored rate before a reciprocal, then the source id. So a day two
-sources both cover goes to the higher-priority source; a day only one
-covers is filled by that one. (A reference source like `fred` thus
-keeps the deep historic tail an account source lacks, without
-overriding that account source on the days they overlap.)
+ASC, then `snapshot_at` DESC picks a single winning rate. Two more
+keys break ties. A stored rate wins over a reciprocal, then the lower
+source id. So a day two sources both cover goes to the higher-priority
+source; a day only one covers is filled by that one. (A reference
+source like `fred` thus keeps the deep historic tail an account source
+lacks, without overriding that account source on the days they
+overlap.)
 
 **Conversion inside the report macros.** The macros convert a line by
 an **ASOF LEFT JOIN** to `fx_daily` that takes the most recent rate **at
@@ -3304,8 +3305,21 @@ income population ([INCOME.md](INCOME.md)):
 - the FX pair `income_lines_outccy` / `income_lines_multi`;
 - `report_income_summary`, `report_income_types` and
   `report_income_transactions`, with a `_multi` form of the last;
-- `web_income`, `web_spending`'s shape over the income lines. `(uncategorized)`
-  labels the type columns but not the payer, which a delta line never has.
+- `income_line_class(detailed)` and `income_projected_types(detailed)`:
+  an income line's operating-in class, as the statement classes a
+  receipt, NULL for a type the projection projects; and the
+  projection's types it can be. The cash flow projection's other income
+  reads the first;
+- `web_income`, `web_spending`'s shape over the income lines, with
+  `income_class` and `projected_types` from those macros.
+  `(uncategorized)` labels the type columns but not the payer, which a
+  delta line never has;
+- `income_received`, `income_other`, `income_expected` and
+  `income_run_rate`: the Income dashboard's income in its window, one
+  arm each, in a picked currency. The cards read the arms.
+  `income_window` is their union, for any other reader.
+  `income_class_band` names a class's band, and `income_today()` the
+  window's last day ([web/DESIGN.md](../../web/DESIGN.md) §6).
 
 [INCOME.md](INCOME.md) owns how these differ from the spending set: the
 kind floor read over the verdict store, the `distribution` floor, and the
@@ -3342,7 +3356,8 @@ The third reading of the same engine. Its statement is mostly SQL
   transactions and balances) with the flow over the dates those balances
   cover. The second does that per account and period, in the account's own
   currency, never converted.
-- The cash flow projection (`cashflow projection`, CASHFLOW.md §12) is Go.
+- The cash flow projection (`cashflow projection`, CASHFLOW.md §12) is
+  Go for the CLI and the MCP `cashflow` tool.
   `gold.CashflowPlanLookback` reads the look-back's parts over
   `cashflow_lines_outccy`. `gold.PlanMonths` splits today's book's
   `ProjectionRows` by the pool's accounts (`gold.CashflowPool`).
@@ -3354,7 +3369,9 @@ The third reading of the same engine. Its statement is mostly SQL
   class and account, and `gold.CashflowPlanIncome`'s income lines as
   two parts of their own: outside the pool and in it;
   `web_cashflow_plan` serves it, and `web_cashflow_pool` the pool's
-  accounts.
+  accounts. The dashboard reads the same months through the macro
+  `cashflow_projection(ccy, rates, maturing, shift, horizon)`. It reads
+  the stored parts and today's projection (§10.15).
 
 The node assignment reads each family's resolution macro, never its
 `_lines_base`, because several verdicts it needs are exactly the ones a
@@ -3489,8 +3506,12 @@ The macros:
   `exposure_maturity_split`;
 - `exposure_credit_grade(bucket)`, `exposure_bucket_order(dimension,
   bucket)` and `exposure_class_share(value, total)`: a credit bucket's
-  grade, a bucket's place in its dimension, and a bucket's share of
-  what its dimension describes;
+  grade, a bucket's place in its dimension (a debt dimension or the
+  size), and a bucket's share of what its dimension describes;
+- `exposure_place_bucket(place, class)` and `exposure_size_bucket(size,
+  class)`: the country or region bucket and the size bucket of a leaf,
+  `unknown` where none is stated and `(none)` where the class has
+  none;
 - `exposure_quality(flags, value)` and `exposure_situs_quality(basis,
   value)`: the aggregates behind the `quality` columns;
 - `exposure_divergence(asof)`: how far each fund read from a report lies
@@ -3548,6 +3569,10 @@ They are cut by source, tax wrapper and asset class, so the dashboard's
 pickers reach them. A slice keeps the weight of the leaf each label
 comes from, so the slices of a selection add up to the view's rows.
 
+Each value in these tables is a sum of its leaves as decimals,
+`benchmark_exposure`'s too. So a web refresh of one gold writes the same
+values in any row order.
+
 `web_exposure`, `web_exposure_debt`, `web_exposure_issuers` and
 `web_exposure_securities` are the dashboard's reading of them
 ([web/DESIGN.md](../../web/DESIGN.md) §8).
@@ -3559,10 +3584,13 @@ The yield report computes in Go, over what gold reads at one instant.
 
 Migration 0135 defines `instrument_terms`, `account_rates` and the
 ledger's yield tables (§7.6). `derived/70_yield.sql` holds the
-holdings macro. The yield pass (`gold.RebuildYield`) runs after the exposure
-pass at the end of every load and reload. It reads the exposure pass's
-instrument keys and securities, and rewrites `instrument_terms`,
-`account_rates` and `dividend_gaps` (§7.6) in one transaction.
+holdings macro and the formulas the cards apply at read time:
+`yield_realized_pct`, `yield_rate`, `yield_earning_value` and
+`yield_part_income`. The yield pass (`gold.RebuildYield`) runs after
+the exposure pass at the end of every load and reload. It reads the
+exposure pass's instrument keys and securities, and rewrites
+`instrument_terms`, `account_rates` and `dividend_gaps` (§7.6) in one
+transaction.
 
 The pieces:
 
@@ -3624,8 +3652,6 @@ book:
   assumptions (the rate path, the maturing rule, the shift);
   `ProjectionRows`, `IncomeRows` and `Calendar` turn them into the
   views' rows, so the views reconcile by construction;
-- `gold.IncomeReceived`: the received half, each income line named by
-  the holding it belongs to;
 - `gold.ForwardIncome`: the book, the window and its amounts, the
   same window a year before and the next twelve months. A window past
   the projection is refused (`gold.PastProjection`);
@@ -3653,8 +3679,9 @@ each from the books `yield.Compute` gives:
   maturities return. A holding's parts come from the first reporting
   currency's book that holds it, so a holding no rate converts to US
   dollars keeps its projection in the other currencies. A card sums a
-  part's income (`yield.Part.Income`) at query time, so a rate path, a
-  maturing rule, a shift and a horizon cost no storage;
+  part's income at query time with `yield_part_income`, which computes
+  `yield.Part.Income` in SQL. So a rate path, a maturing rule, a shift
+  and a horizon cost no storage;
 - `report_yield_received`: the income lines the income projection
   counts as received (its six types), to the instant, per reporting
   currency;
@@ -4087,7 +4114,9 @@ stamped gold column that the `fx_daily` view reads.
   source's rank into the `silver_sources.fx_priority` gold column (added
   by migration `0019`; rank 0 = highest, unlisted = NULL = lowest), and
   the `fx_norm` / `fx_daily` views read that column directly.
-- **Exact timestamp** (`snapshot_at` DESC) breaks any remaining tie.
+- **Within the source**, the newer `snapshot_at` wins. A stored rate
+  then wins over a reciprocal, and the lower source id over a higher
+  one. These last two keys only break ties (§10.6).
 
 Out of scope: non-snapshotted FX sources (e.g. ECB reference rates,
 or a manually maintained `fx_overrides` table for currencies no silver
