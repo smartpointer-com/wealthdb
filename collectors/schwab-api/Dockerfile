@@ -14,13 +14,9 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy only the login surface, plus the token-file client that
-# `login --check` shares with download.py. download.py / load.py / tests
-# run on the host venv, so they're deliberately NOT baked into this
-# image. Listed explicitly so stray host artefacts never leak in.
-COPY login.py oauth_landmarks.py _tokenclient.py /app/
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run of the login container mounts the checkout over
+# /app (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the
+# image holds only what the code runs on.
 
 # Image default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to /secrets have

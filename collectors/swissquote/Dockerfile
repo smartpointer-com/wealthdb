@@ -5,19 +5,12 @@
 ARG WEALTHDB_IMAGE_TAG=latest
 FROM wealthdb/base-playwright:${WEALTHDB_IMAGE_TAG}
 
-# Install collector-specific deps first so editing scripts doesn't bust
-# the pip cache layer.
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts and migrations last. Listed explicitly so accidentally-
-# present host artefacts (.venv, real-credential JSONs, recorded
-# Playwright traces) never make it into the image even if
-# .dockerignore is incomplete.
-COPY login.py download.py load.py pp_parser.py landmarks.py prune.py /app/
-COPY migrations /app/migrations
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run and every test mounts the checkout over /app
+# (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the image
+# holds only what the code runs on.
 
 # Default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes

@@ -48,6 +48,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME=schwab-api
+# The login container's build and run: the checkout's source over /app.
+HAS_APP_MOUNT=1
 
 cmd="${1:-help}"
 

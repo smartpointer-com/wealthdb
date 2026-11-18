@@ -766,12 +766,11 @@ of `collectors/`); **the presence of a Dockerfile decides the runtime.**
   (Chromium, plus Xvfb/x11vnc and the shared entrypoint bootstrap so a
   browser can be run headed and driven over VNC), or
   `wealthdb/base-camoufox` (that, plus a stealth-patched Firefox).
-  `requirements.txt` is copied and `pip install`ed first (a cache
-  layer). A collector with `HAS_APP_MOUNT` copies nothing more. Any
-  other copies its scripts, `migrations` and `entrypoint.sh` **by name**,
-  so stray host artefacts never enter the image. `entrypoint.sh` maps
-  the subcommand to the right script. A collectorkit test
-  (`test_collector_images.py`) checks both rules.
+  `requirements.txt` is copied and `pip install`ed, and nothing more:
+  the wrapper mounts the checkout over `/app` (`HAS_APP_MOUNT`), so a
+  run uses the checkout's code. `entrypoint.sh` maps the subcommand to
+  the right script. A collectorkit test (`test_collector_images.py`)
+  checks the rule.
   `make build-<name>` runs `<wrapper> build`, and the bases come from
   `make base-images`. A build is skipped when the image's
   `wealthdb.inputs` label matches a hash of its inputs and its base

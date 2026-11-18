@@ -12,6 +12,7 @@ set -euo pipefail
 NAME=relevate
 ENV_VARS=(RELEVATE_LOGIN RELEVATE_PASSWORD)
 HAS_DEBUG=1
+HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1
 # Source <secrets-dir>/relevate.env (or $RELEVATE_ENV_FILE) host-side
 # before `docker run`, so the credentials reach the container.

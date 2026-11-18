@@ -5,21 +5,12 @@
 ARG WEALTHDB_IMAGE_TAG=latest
 FROM wealthdb/base-playwright:${WEALTHDB_IMAGE_TAG}
 
-# Install collector-specific deps first so editing scripts doesn't bust
-# the pip cache layer.
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# Copy scripts last. Listed explicitly so stray host artefacts (.venv,
-# real-credential JSONs, recorded Playwright traces) never reach the
-# image. Every module the verbs import must be listed:
-# shared/collectorkit/tests/test_collector_images.py checks it.
-COPY login.py download.py load.py prune.py explore.py cards.py card_parsers.py landmarks.py pdf_parsers.py \
-     pdf_common.py soa_positions.py soa_transaction_list.py account_statement.py maturity_notice.py \
-     payment_advice.py securities_advice.py quarterly_report.py rates.py rate_parsers.py /app/
-COPY migrations /app/migrations
-COPY entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
+# No source: every run and every test mounts the checkout over /app
+# (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the image
+# holds only what the code runs on.
 
 # Default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to mounted volumes

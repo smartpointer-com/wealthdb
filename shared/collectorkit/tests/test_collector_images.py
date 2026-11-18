@@ -1,26 +1,13 @@
-"""Every Docker collector's image carries each module its verbs run.
+"""Every Docker collector runs the checkout's code, never its image's.
 
-A collector whose wrapper mounts the checkout over `/app`
-(`HAS_APP_MOUNT=1`) runs no code from its image, so its Dockerfile copies
-`requirements.txt` alone: the wrapper hashes only the Dockerfile and that
-file to decide on a rebuild, and anything else copied would go stale.
-
-Any other collector's Dockerfile copies its scripts by name, so a module a
-script starts to import is missing from the image until it is listed too.
-The check reads, per such collector:
-
-* the scripts its `entrypoint.sh` runs (`run DISPLAY <script>.py`,
-  `login_folds DISPLAY <script>.py`, or `python3 /app/<script>.py`, and
-  `prune.py` where `entrypoint_common` answers `prune`);
-* their first-party import closure: the collector's own modules they
-  import, at any depth and also inside functions;
-* what its Dockerfile `COPY`s into the image.
-
-and asserts the closure is copied. Static only: nothing is built or run.
+Each Docker collector's wrapper mounts the checkout over `/app`
+(`HAS_APP_MOUNT=1`), so its Dockerfile copies `requirements.txt` alone:
+the wrapper hashes only the Dockerfile and that file to decide on a
+rebuild, and anything else copied would go stale. Static only: nothing
+is built or run.
 """
 from __future__ import annotations
 
-import ast
 import re
 import shlex
 from pathlib import Path
@@ -40,10 +27,6 @@ MOUNTED = sorted(
     if re.search(r"^HAS_APP_MOUNT=1\b",
                  (COLLECTORS / n / n).read_text(encoding="utf-8"), re.M))
 
-_RUN_RE = re.compile(
-    r"(?:\bpython3? /app/|\b(?:run|login_folds) (?:plain|xvfb|vnc:\S+) )"
-    r"([\w./-]+\.py)\b")
-_COMMON_PRUNE_RE = re.compile(r"^\s*prune\|.*\bentrypoint_common\b", re.M)
 _COPY_RE = re.compile(r"^\s*COPY\s", re.IGNORECASE)
 
 
@@ -66,60 +49,12 @@ def _copied(root: Path) -> set[str]:
     return paths
 
 
-def _module_file(root: Path, name: str) -> Path | None:
-    """The collector's own source file for top-level module `name`."""
-    for f in (root / f"{name}.py", root / name / "__init__.py"):
-        if f.is_file():
-            return f
-    return None
-
-
-def _closure(root: Path, scripts: set[str]) -> set[Path]:
-    """`scripts` and every collector module they import, transitively."""
-    seen: set[Path] = set()
-    todo = [root / s for s in scripts]
-    while todo:
-        f = todo.pop()
-        if f in seen or not f.is_file():
-            continue
-        seen.add(f)
-        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom) and not node.level:
-                names = [node.module] if node.module else []
-            else:
-                continue
-            for name in names:
-                dep = _module_file(root, name.split(".")[0])
-                if dep is not None:
-                    todo.append(dep)
-    return seen
-
-
 @pytest.mark.parametrize("name", MOUNTED)
 def test_a_mounted_image_copies_requirements_alone(name):
     assert _copied(COLLECTORS / name) == {"requirements.txt"}, (
         f"{name}: a HAS_APP_MOUNT image copies requirements.txt alone")
 
 
-@pytest.mark.parametrize(
-    "name", [n for n in DOCKER_COLLECTORS if n not in MOUNTED])
-def test_the_image_ships_every_module_its_verbs_run(name):
-    root = COLLECTORS / name
-    entrypoint = (root / "entrypoint.sh").read_text(encoding="utf-8")
-    scripts = set(_RUN_RE.findall(entrypoint))
-    if _COMMON_PRUNE_RE.search(entrypoint):
-        scripts.add("prune.py")
-    assert scripts, f"{name}: entrypoint.sh runs no /app script"
-    absent = sorted(s for s in scripts if not (root / s).is_file())
-    assert not absent, f"{name}: entrypoint.sh runs {absent}, not in the tree"
-    copied = _copied(root)
-    missing = sorted(str(f.relative_to(root)) for f in _closure(root, scripts)
-                     if str(f.relative_to(root)) not in copied)
-    assert not missing, f"{name}: Dockerfile does not COPY {missing}"
-
-
-def test_the_docker_collectors_are_found():
-    assert {"fidelity-web", "schwab-web"} <= set(MOUNTED)
-    assert set(DOCKER_COLLECTORS) - set(MOUNTED)
+def test_every_docker_collector_mounts_its_source():
+    assert {"fidelity-web", "schwab-web"} <= set(DOCKER_COLLECTORS)
+    assert MOUNTED == DOCKER_COLLECTORS

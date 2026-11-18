@@ -70,7 +70,8 @@ Pass-through env (set on host, available inside container):
 --- calls
 python3
   -
-  <TMP>/w-swissquote/tree/collectors/swissquote
+  <TMP>/w-swissquote/tree/collectors/swissquote/Dockerfile
+  <TMP>/w-swissquote/tree/collectors/swissquote/requirements.txt
   --
   missing
 docker
@@ -119,6 +120,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   login
   [env] SWISSQUOTE_USERNAME=<unset>
@@ -155,6 +158,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   download
   [env] SWISSQUOTE_USERNAME=<unset>
@@ -191,6 +196,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   load
   [env] SWISSQUOTE_USERNAME=<unset>
@@ -238,6 +245,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   sh
   [env] SWISSQUOTE_USERNAME=<unset>
@@ -274,6 +283,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   bash
   [env] SWISSQUOTE_USERNAME=<unset>
@@ -310,6 +321,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   login
   --check
@@ -347,6 +360,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   download
   --dry-run
@@ -388,6 +403,8 @@ docker
   <TMP>/w-swissquote/silver:/silver
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   load
   --silver-db
@@ -428,6 +445,8 @@ docker
   <TMP>/w-swissquote/silver:/silver
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   load
   --silver-db
@@ -466,6 +485,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   load
   [env] SWISSQUOTE_USERNAME=<unset>
@@ -502,6 +523,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   load
   [env] SWISSQUOTE_USERNAME=<unset>
@@ -538,6 +561,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   download
   [env] SWISSQUOTE_USERNAME=<unset>
@@ -574,6 +599,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   download
   [env] SWISSQUOTE_USERNAME=<unset>
@@ -610,6 +637,8 @@ docker
   WEALTHDB_CACHE_DIR=/cache/collector
   -v
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote:/debug
+  -v
+  <TMP>/w-swissquote/tree/collectors/swissquote:/app
   wealthdb/swissquote:latest
   bogus-verb
   [env] SWISSQUOTE_USERNAME=<unset>
