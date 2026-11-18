@@ -333,19 +333,74 @@ macro of its own:
   `journal`), never deposit/withdrawal: a deposit+withdrawal of equal size
   can be a genuine pair of external movements, so netting them would cancel
   real external capital. An internal move booked as deposit/withdrawal
-  surfaces as two external flows, not silently cancelled. Netting is
-  deterministic — `netTransfers` sorts stably by `(|amount|, day, id)`.
-  ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar days;
-  FX-normalized via `value_outccy`; named constants.
+  surfaces as two external flows, not silently cancelled. A leg pairs by
+  what it moved:
+  - **In kind.** A leg whose transaction names an instrument moved a
+    holding. It pairs by holding and quantity, never by value: one coin
+    out, one coin in. The two legs move one holding in opposite
+    directions, at most 7 days apart (`lots.PairWindow`), in the same
+    quantity (`sameQuantity`). What the same quantity is depends on the
+    holding's asset class, the row's own where it states one, else its
+    instrument's:
+    - **Crypto** (asset class `crypto`): within 5% of the larger
+      (`lots.PairTolerance`), so a network fee taken in kind still pairs,
+      and its value reads as a loss.
+    - **Every other class, and a class gold does not state:** a security
+      (a share, an option contract, a unit of a fund, a bond) never
+      arrives short, so only the exact quantity pairs, up to float noise
+      (1e-9 of the larger). 100 shares out and 99 in do not pair.
+
+    Each leg, in day order, takes the open leg of the closest quantity. A holding is the instrument's ISIN, else its
+    CUSIP, where gold describes one, so shares moved between two banks
+    pair. Without one, it is the instrument id among the sources of one
+    kind. A leg that states no quantity pairs only through a stored pair.
+    One leg pairs with one leg: a move split over two receipts pairs at
+    most one of them. Whatever the price did between the two days is
+    return (`pairInKind`). The value netter still runs first, over every
+    leg, but pairs two legs only where both are cash or both moved one
+    holding in the same quantity; the legs that moved a holding and are
+    left then pair by holding and quantity. A leg that funds a debut funds
+    it by quantity where the legs moved the same quantity the first
+    valuation holds, by the same rule: the first value stands for them at the debut's
+    prices, by the holding's share of that value (`movedLegs.fundedAt`).
+    So the price move up to the debut is return, and a shortfall, a fee in
+    kind, is a loss. The shares are read only where the first valuation
+    holds positions in one currency and no cash. Elsewhere, and where the
+    quantities differ more, a leg funds its debut by its value, and a first
+    value below that value books the difference as capital that left:
+    nothing says the same holding arrived.
+  - **Cash.** A leg that names no instrument pairs by value:
+    ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar
+    days; FX-normalized via `value_outccy`. It is deterministic:
+    `netTransfers` sorts stably by `(|amount|, day, id)`.
 - **Stored transfer pairs** (opt-in, DESIGN.md §5.8) are the one
   sanctioned crossing of that deposit/withdrawal line. A pair the load
-  stored nets in entities that hold both legs live: the matcher's pairs
-  and the equity-transfer ledger's `in_kind` pairs alike. Such an entity
-  is tagged `cross_source_netted=N`. The stored evidence is exactly what
-  the within-entity heuristic lacks. Dropped legs are
-  withheld from `netTransfers`' candidate pool, and `--netting off`
-  disables the drops along with the heuristic netter. Off ⇒
-  byte-identical.
+  stored binds in every entity that holds both legs in the window, at any
+  day gap and any value gap: the matcher's pairs and the equity-transfer
+  ledger's `in_kind` pairs alike. Where both legs are live the pair drops.
+  Where a leg falls on or before its account's debut, or in a zero tail,
+  the pair settles as a netted pair: the leg funds the debut, or the
+  closure books it. Such an entity is tagged `cross_source_netted=N`. The
+  stored evidence is exactly what the within-entity heuristic lacks. Their
+  legs are withheld from the netter's candidates, and `--netting off`
+  disables them along with the netter. Off ⇒ byte-identical.
+- **Money in transit.** Between a pair's two legs the money is in neither
+  account, and it is still the household's. For a pair the value netter's
+  rule would not pair (a stored pair whose legs are days or a price move
+  apart, or a leg on a debut that is a deposit or withdrawal, or legs paired
+  by holding and quantity alone), the chain carries the money
+  (`movedLegs.rolled`). The carry runs from the day the chain stops
+  counting it in the sending account until the receiving account's value
+  shows it: the debut for a leg that funds one, else the leg's valuation.
+  It runs whether or not either valuation confirms the legs, so every
+  funding leg of a debut is carried when the first value appears. Where the
+  sending account would stop counting the money only on or after the day
+  the receiving one shows it, there is no transit and nothing is carried.
+  Such a
+  pair leaves TWR and MWR as if the money never left: cash legs of one
+  amount into a debut have no net effect. A pair the value netter's rule
+  pairs, and a stored pair whose both legs are live, keep their own
+  reading.
 - **Explicit closure** is detected only when an account's value series ends
   in a ~0 carry tail (`|v| < valueTol`) — mere staleness never triggers it.
   The per-source `ClosureScope` knob decides how the exit is accounted:
@@ -479,10 +534,10 @@ chained TWR below −100%.
   zero-carry tail — land where the series shows no ΔV. Under the default
   `ClosureScope` they are subsumed, and the closure flow books them on
   the zeroing day; `ClosureLedgerExact` keeps them as the real exit legs.
-- **Netting interaction:** transfer/journal netting runs over the full
-  candidate set (pre-debut legs included) **before** subsumption, so
-  genuine internal pairs annihilate and only a constituent's own surviving
-  pre-debut/closure capital is subsumed. A surviving journal-OUT sits on an
+- **Netting interaction:** stored pairs and transfer/journal netting run
+  over the full candidate set (pre-debut legs included) **before**
+  subsumption, so genuine internal pairs annihilate and only a
+  constituent's own surviving pre-debut/closure capital is subsumed. A surviving journal-OUT sits on an
   *alive* account whose value series reflects the drop, so it is real, not
   an orphaned phantom.
 - **A cancelled pre-debut leg reduces onboarding** by its signed amount,
@@ -585,10 +640,11 @@ source.
     the return.
 - **cointracking** registers the default policy. A coin's transfer legs
   count as any source's transfers do. A move between two wallets nets
-  where a grain holds both wallets: the netter pairs its legs by value,
-  and with `returns_transfer_matching` on, the pair the load stores nets
-  too. A wallet that debuts funded by such a move onboards only what the
-  move did not bring in. A leg nothing pairs is a flow at the day's rate.
+  where a grain holds both wallets: the netter pairs its legs by coin and
+  quantity, and with `returns_transfer_matching` on, the pair the load
+  stores nets too. A wallet that debuts funded by such a move onboards only
+  what the move did not bring in. A leg nothing pairs is a flow at the
+  day's rate.
 - **Config overrides.** wealthdb.cfg can adjust a source's registered
   policy (`returns_policy_overrides`, DESIGN.md §5.6), keyed by
   silver_source_id. The override applies at the engine's single

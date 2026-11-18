@@ -196,11 +196,11 @@ func TestCrossSourceNettingWindowStraddle(t *testing.T) {
 	}
 }
 
-// TestCrossSourceNettingSubsumedDebutLegKeptOut pins the onboarding
-// interplay: a deposit funding a constituent that debuts AFTER it is
-// represented by the synthetic onboarding step-up, so the pair must NOT net —
-// dropping the sender's live leg would count the capital asymmetrically.
-func TestCrossSourceNettingSubsumedDebutLegKeptOut(t *testing.T) {
+// TestCrossSourceNettingFundsALaterDebut pins the onboarding interplay: a
+// deposit funding a constituent that debuts AFTER it funds that debut, so
+// the onboarding books the first value less the deposit, and the sender's
+// leg stays inside.
+func TestCrossSourceNettingFundsALaterDebut(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	// B1's first snapshot lands the day after its funding deposit.
@@ -209,19 +209,18 @@ func TestCrossSourceNettingSubsumedDebutLegKeptOut(t *testing.T) {
 
 	rows, err := RunReturns(ctx, db, tmParams("global", 0, end))
 	if err != nil {
-		t.Fatalf("subsumed: %v", err)
+		t.Fatalf("debut: %v", err)
 	}
 	g, ok := summaryFor(rows, "")
 	if !ok {
 		t.Fatal("no global row")
 	}
-	if qualityHas(g, "cross_source_netted=1") {
-		t.Errorf("pair with a debut-subsumed leg must not net; flags = %v", g.Quality)
+	if !qualityHas(g, "cross_source_netted=1") || qualityHas(g, "unmatched_transfers=1") {
+		t.Errorf("a pair with a debut leg nets; flags = %v", g.Quality)
 	}
-	// The journal leg still counts (-10000); B1's arrival enters as its 50000
-	// onboarding step-up, not as the subsumed deposit.
+	// B1's 50000 first value onboards less the 10000 the entity held already.
 	if nf := netFlowOf(t, rows, ""); math.Abs(nf-40000) > 0.01 {
-		t.Errorf("net flow = %v, want -10000 + 50000 onboarding", nf)
+		t.Errorf("net flow = %v, want 50000 onboarding less the 10000 moved", nf)
 	}
 }
 
@@ -248,11 +247,11 @@ func TestCrossSourceNettingObeysNettingSwitch(t *testing.T) {
 	}
 }
 
-// TestLinkedDropsKeepsAPreDebutLeg pins the liveness rule directly: a leg
-// before its account's debut is subsumed by the debut's onboarding, so its
-// pair must not net through the link: dropping the partner's live leg would
-// count the capital asymmetrically.
-func TestLinkedDropsKeepsAPreDebutLeg(t *testing.T) {
+// TestStoredPairsSettleAPreDebutLeg pins the liveness rule directly: a pair
+// with a leg before its account's debut does not drop, which would count the
+// capital asymmetrically. It settles as a netted pair, so the leg funds the
+// debut.
+func TestStoredPairsSettleAPreDebutLeg(t *testing.T) {
 	t.Parallel()
 	winFrom, winTo := int64(100), int64(300)
 	sender := &accountData{
@@ -268,8 +267,10 @@ func TestLinkedDropsKeepsAPreDebutLeg(t *testing.T) {
 		transferLike: []returns.Flow{{Day: 150, Amount: 10000, ID: "in"}},
 		links:        map[string]linkedLeg{"in": {src: "s1", acct: "A", txID: "out", day: 150}},
 	}
-	if drops, pairs := linkedDrops([]*accountData{sender, receiver}, winFrom, winTo); pairs != 0 || len(drops) != 0 {
-		t.Errorf("a pre-debut linked leg must not net: pairs=%d drops=%v", pairs, drops)
+	sp := storedPairs([]*accountData{sender, receiver}, winFrom, winTo)
+	want := [][2]string{{acctKey(acctKey("s1", "A"), "out"), acctKey(acctKey("s2", "B"), "in")}}
+	if sp.pairs != 1 || len(sp.drops) != 0 || !reflect.DeepEqual(sp.settle, want) {
+		t.Errorf("a pre-debut linked leg settles its pair: pairs=%d drops=%v settle=%q", sp.pairs, sp.drops, sp.settle)
 	}
 }
 

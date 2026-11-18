@@ -1,10 +1,13 @@
 package gold
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -306,13 +309,17 @@ func loadReturnsDatasets(ctx context.Context, db *sql.DB, src spineSource, fx fx
 	if err != nil {
 		return nil, err
 	}
+	idents, err := loadInstrumentFacts(ctx, db)
+	if err != nil {
+		return nil, err
+	}
 	// A link binds where both its legs are flows of a currency's dataset,
 	// and the attached flows can differ by currency where FX is unresolved.
 	flows := map[string]attachedFlows{}
 	for _, t := range txns {
 		for i, ccy := range src.currencies {
 			attached := attachOneFlow(byCcy[ccy], fx, ccy, t.src, t.acct, canonical.TxKind(t.kind),
-				t.occurredAt, t.txID, t.ccy, t.values[i], t.returnsInternal)
+				t.occurredAt, t.txID, t.ccy, t.values[i], t.returnsInternal, t.holding(idents))
 			if attached && s.TransferMatching {
 				if flows[ccy] == nil {
 					flows[ccy] = attachedFlows{}
@@ -326,6 +333,9 @@ func loadReturnsDatasets(ctx context.Context, db *sql.DB, src spineSource, fx fx
 		if links, err = loadStoredTransferLinks(ctx, db); err != nil {
 			return nil, err
 		}
+	}
+	if err := loadDebutHoldings(ctx, db, idents, byCcy); err != nil {
+		return nil, err
 	}
 	out := make(map[string]*returnsDataset, len(src.currencies))
 	for _, ccy := range src.currencies {
@@ -499,6 +509,7 @@ type dayVal struct {
 type accountData struct {
 	src, acct     string
 	kind          string
+	srcKind       string // the source's silver_kind
 	portfolio     string // portfolio_external_id ("" when none)
 	portfolioName string // resolved portfolio display name ("" when none/unresolved)
 	label         string
@@ -519,6 +530,16 @@ type accountData struct {
 	// nil otherwise). Consumed per entity in entityFlows: a linked pair nets
 	// only where both legs are live members of the same entity window.
 	links map[string]linkedLeg
+
+	// inKind maps a transfer-like flow's transaction id to the holding it
+	// moved, for the legs that name one; nil when none does. The netter
+	// pairs such a leg by holding and quantity (pairInKind).
+	inKind map[string]heldMove
+	// debut is what the account's first valuation holds, by holding, for an
+	// account whose transfer-like legs on or before its debut moved a
+	// holding; nil otherwise, or where the first valuation holds cash or
+	// prices its holdings in more than one currency (loadDebutHoldings).
+	debut map[string]debutHolding
 
 	// twin is the same account in residueCurrency's dataset, nil where the
 	// dataset is that currency's or none is linked (linkResidueTwins).
@@ -776,7 +797,7 @@ func loadSpine(ctx context.Context, db *sql.DB, src spineSource, ov map[string]R
 func newAccountData(kinds, pfNames map[string]string, ov map[string]ReturnsPolicyOverride, src, acct, kind string, label, base, pf sql.NullString) *accountData {
 	rp, _ := returns.ReturnsPolicyFor(kinds[src])
 	rp = applyPolicyOverride(rp, ov, src)
-	a := &accountData{src: src, acct: acct, kind: kind, rpolicy: rp}
+	a := &accountData{src: src, acct: acct, kind: kind, srcKind: kinds[src], rpolicy: rp}
 	a.portfolio = pf.String
 	a.portfolioName = pfNames[acctKey(src, pf.String)]
 	a.baseCurrency = base.String
@@ -932,6 +953,24 @@ type flowTxnRow struct {
 	// conduit churn rather than owner capital — read only under the
 	// policy's ExternalOnly (see attachOneFlow).
 	returnsInternal bool
+	// inst is the instrument the row names, its id or else its hint
+	// ("" for a movement of cash), class the asset class the row states
+	// ("" for none), and qty its quantity, unsigned (0 when none is
+	// stated).
+	inst, class string
+	qty         float64
+}
+
+// holding is what the row moved, with what gold states of its instrument
+// (loadInstrumentFacts): its identity, and its asset class, the row's own
+// where it states one.
+func (r flowTxnRow) holding(facts map[string]instrumentFacts) heldRef {
+	f := facts[acctKey(r.src, r.inst)]
+	class := r.class
+	if class == "" {
+		class = f.class
+	}
+	return heldRef{inst: r.inst, ident: f.ident, class: class, qty: r.qty}
 }
 
 // loadFlowTxns reads every transaction's flow-relevant fields, its net amount
@@ -954,12 +993,15 @@ func loadFlowTxns(ctx context.Context, db *sql.DB, src spineSource) ([]flowTxnRo
 	for i := range vals {
 		dest = append(dest, &vals[i])
 	}
-	dest = append(dest, &cur.returnsInternal)
+	var inst, class sql.NullString
+	var qty sql.NullFloat64
+	dest = append(dest, &cur.returnsInternal, &inst, &qty, &class)
 	for rows.Next() {
 		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("%s transactions scan: %w", src.op, err)
 		}
 		r := cur
+		r.inst, r.class, r.qty = inst.String, class.String, math.Abs(qty.Float64)
 		r.values = make([]*string, len(vals))
 		for i, v := range vals {
 			r.values[i] = src.decimal(v)
@@ -991,9 +1033,11 @@ type spineSource struct {
 }
 
 // flowTxnJoin is the part of a transactions query after its value columns:
-// the adapter's conduit verdict.
+// the adapter's conduit verdict, and the instrument, quantity and asset
+// class the row moved.
 const flowTxnJoin = `,
-	        COALESCE(t.payload ->> '` + canonical.PayloadReturnsFlow + `' = 'internal', FALSE) AS returns_internal
+	        COALESCE(t.payload ->> '` + canonical.PayloadReturnsFlow + `' = 'internal', FALSE) AS returns_internal,
+	        COALESCE(t.instrument_external_id, t.instrument_hint), CAST(t.quantity AS DOUBLE), t.asset_class
 	   FROM %s r
 	   LEFT JOIN transactions t
 	          ON t.silver_source_id        = r.silver_source_id
@@ -1019,11 +1063,12 @@ func oneCurrency(ccy string) spineSource {
 // attachOneFlow classifies one transaction as an external flow for its account
 // in byKey (a no-op if the account isn't loaded), once per currency of a
 // load, and reports whether a flow was attached: a stored transfer link binds
-// only between attached flows (bindStoredLinks).
+// only between attached flows (bindStoredLinks). A transfer-like flow that
+// moved a holding keeps it (accountData.inKind).
 // valueOut is the transaction's net amount already converted to outCcy (nil ⇒
 // unresolved FX ⇒ not a flow); txCcy is the transaction's own currency, for
 // the day-0 clamp check.
-func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct string, kind canonical.TxKind, occurredAt int64, txID, txCcy string, valueOut *string, returnsInternal bool) bool {
+func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct string, kind canonical.TxKind, occurredAt int64, txID, txCcy string, valueOut *string, returnsInternal bool, held heldRef) bool {
 	a := byKey[acctKey(src, acct)]
 	if a == nil {
 		return false
@@ -1054,6 +1099,12 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 	f := returns.Flow{Day: day, Amount: val, ID: txID}
 	if a.rpolicy.Flow.IsTransferLike(kind) {
 		a.transferLike = append(a.transferLike, f)
+		if held.inst != "" {
+			if a.inKind == nil {
+				a.inKind = map[string]heldMove{}
+			}
+			a.inKind[txID] = held.move(a.srcKind)
+		}
 	} else {
 		a.nonTransfer = append(a.nonTransfer, f)
 	}
@@ -1071,6 +1122,172 @@ type attachedFlow struct {
 
 // attachedFlows indexes a dataset's attached flows by transaction.
 type attachedFlows map[txRef]attachedFlow
+
+// heldRef is the holding a transaction row moved, as the row names it: the
+// instrument ("" for cash), the identity gold holds for it across sources
+// ("" when none), its asset class ("" when gold states none), and the
+// quantity, unsigned.
+type heldRef struct {
+	inst, ident, class string
+	qty                float64
+}
+
+// heldMove is what a transfer-like leg moved in kind: its holding, a key
+// two legs share where they name one instrument, the quantity, unsigned (0
+// when the leg states none), and whether it pairs only on the exact
+// quantity (exactQuantity).
+type heldMove struct {
+	holding string
+	qty     float64
+	exact   bool
+}
+
+// exactQuantity says a holding of asset class moves only whole: a security,
+// a share, an option contract, a unit of a fund or a bond, never arrives
+// short, so its legs pair, and fund a debut, only on the exact quantity. A
+// coin can arrive short by a network fee, so a holding of class crypto pairs
+// within the in-kind tolerance. A class gold does not state counts as a
+// security.
+func exactQuantity(class string) bool { return class != string(canonical.AssetClassCrypto) }
+
+// move keys r's holding: the instrument's identity where gold holds one,
+// which reads the same in every source, else its id among the sources of
+// one kind, whose ids mean the same thing (as the lot engine's pairable).
+func (r heldRef) move(srcKind string) heldMove {
+	m := heldMove{holding: acctKey(srcKind, r.inst), qty: r.qty, exact: exactQuantity(r.class)}
+	if r.ident != "" {
+		m.holding = acctKey("", r.ident)
+	}
+	return m
+}
+
+// debutHolding is one holding of a debut's first valuation: the quantity
+// held and its share of the valuation's value.
+type debutHolding struct{ qty, share float64 }
+
+// loadDebutHoldings reads, for every account a leg moved a holding into on or
+// before its debut, the holdings of its first valuation (accountData.debut):
+// the positions of the day's last snapshot. A share is the position's market
+// value over all of them, so it is read only where every position states one
+// in a single currency and the account holds no cash then. The holdings do
+// not depend on the currency, so each currency's account gets the same.
+func loadDebutHoldings(ctx context.Context, q querier, facts map[string]instrumentFacts, byCcy map[string]map[string]*accountData) error {
+	type ref struct {
+		src, acct string
+		day       int64
+	}
+	accts := map[ref][]*accountData{}
+	for _, byKey := range byCcy {
+		for _, a := range byKey {
+			for f := range a.legs(0, a.firstDay()) {
+				if _, ok := a.inKind[f.ID]; ok {
+					r := ref{a.src, a.acct, a.firstDay()}
+					accts[r] = append(accts[r], a)
+					break
+				}
+			}
+		}
+	}
+	if len(accts) == 0 {
+		return nil
+	}
+	refs := slices.SortedFunc(maps.Keys(accts), func(x, y ref) int {
+		return cmp.Or(strings.Compare(x.src, y.src), strings.Compare(x.acct, y.acct), cmp.Compare(x.day, y.day))
+	})
+	var values []string
+	var args []any
+	for _, r := range refs {
+		values = append(values, "(?, ?, ?)")
+		args = append(args, r.src, r.acct, r.day)
+	}
+	rows, err := q.QueryContext(ctx, `
+		WITH w(s, a, d) AS (VALUES `+strings.Join(values, ", ")+`),
+		     cash AS (SELECT DISTINCT b.silver_source_id AS s, b.account_external_id AS a
+		                FROM cash_balances b
+		                JOIN w ON b.silver_source_id = w.s AND b.account_external_id = w.a
+		                      AND b.snapshot_at // 86400 = w.d
+		               WHERE b.amount <> 0)
+		SELECT p.silver_source_id, p.account_external_id, w.d, p.instrument_external_id,
+		       CAST(p.quantity AS DOUBLE), CAST(p.market_value AS DOUBLE), p.currency,
+		       cash.s IS NOT NULL
+		  FROM positions p
+		  JOIN w ON p.silver_source_id = w.s AND p.account_external_id = w.a
+		        AND p.snapshot_at // 86400 = w.d
+		  LEFT JOIN cash ON cash.s = p.silver_source_id AND cash.a = p.account_external_id
+		QUALIFY p.snapshot_at = max(p.snapshot_at) OVER (PARTITION BY p.silver_source_id, p.account_external_id)
+		 ORDER BY 1, 2, 4`, args...)
+	if err != nil {
+		return fmt.Errorf("returns debut holdings: %w", err)
+	}
+	defer rows.Close()
+	type position struct {
+		inst     sql.NullString
+		qty, mv  sql.NullFloat64
+		ccy      string
+		withCash bool
+	}
+	held := map[ref][]position{}
+	for rows.Next() {
+		var r ref
+		var p position
+		if err := rows.Scan(&r.src, &r.acct, &r.day, &p.inst, &p.qty, &p.mv, &p.ccy, &p.withCash); err != nil {
+			return fmt.Errorf("returns debut holdings scan: %w", err)
+		}
+		held[r] = append(held[r], p)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for r, ps := range held {
+		var total returns.Sum
+		ok := true
+		for _, p := range ps {
+			ok = ok && !p.withCash && p.inst.Valid && p.qty.Valid && p.mv.Valid && p.mv.Float64 > 0 && p.ccy == ps[0].ccy
+			total.Add(p.mv.Float64)
+		}
+		if !ok {
+			continue
+		}
+		for _, a := range accts[r] {
+			a.debut = map[string]debutHolding{}
+			for _, p := range ps {
+				h := heldRef{inst: p.inst.String, ident: facts[acctKey(r.src, p.inst.String)].ident}.move(a.srcKind).holding
+				d := a.debut[h]
+				d.qty += math.Abs(p.qty.Float64)
+				d.share += p.mv.Float64 / total.Total()
+				a.debut[h] = d
+			}
+		}
+	}
+	return nil
+}
+
+// instrumentFacts is what gold states of an instrument that the in-kind
+// netter reads: its identity across sources, the ISIN, else the CUSIP ("" for
+// none), and its asset class.
+type instrumentFacts struct{ ident, class string }
+
+// loadInstrumentFacts reads every instrument's facts, keyed acctKey(source,
+// instrument id).
+func loadInstrumentFacts(ctx context.Context, q querier) (map[string]instrumentFacts, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT silver_source_id, instrument_external_id, COALESCE(isin, cusip, ''), asset_class
+		  FROM instruments`)
+	if err != nil {
+		return nil, fmt.Errorf("returns instruments: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]instrumentFacts{}
+	for rows.Next() {
+		var src, id string
+		var f instrumentFacts
+		if err := rows.Scan(&src, &id, &f.ident, &f.class); err != nil {
+			return nil, fmt.Errorf("returns instruments scan: %w", err)
+		}
+		out[acctKey(src, id)] = f
+	}
+	return out, rows.Err()
+}
 
 // storedTransferLink is one leg's transfer_links row that names a partner leg.
 type storedTransferLink struct {

@@ -24,10 +24,8 @@ import (
 // wallets. A phantom inflow of the debut value would inflate net_flow and
 // drag the aggregate TWR negative.
 //
-// A stored link changes nothing here. The in-leg lands on its wallet's
-// debut, so linkedDrops leaves the link unused (a pre-debut leg), and the
-// netter pairs the legs as before: the moved price stays inside its
-// tolerance.
+// A stored link changes nothing here. It pairs the legs the netter pairs
+// without it, and the in-leg on its wallet's debut funds the debut alike.
 func TestCointrackingSweepFundsColdDebut(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
