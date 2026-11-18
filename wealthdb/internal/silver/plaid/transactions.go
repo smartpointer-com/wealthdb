@@ -20,11 +20,11 @@ import (
 // left out; its payments are booked on the account they were paid from.
 //
 // SIGNS. Silver holds both ledgers in the fleet's sign already (money into
-// the account is positive), the collector having negated Plaid's own. The
-// bank and card ledger still goes through ApplyCanonicalSign, so a kind with
-// a fixed direction comes out signed that way. The investment ledger keeps
-// each row's own sign: a row that disagrees with its kind is a correction,
-// and forcing the sign would book it a second time.
+// the account is positive), the collector having negated Plaid's own, and
+// each row keeps its sign. A bank or card row's kind is read off that sign
+// (bankTxKind), so the two always agree. An investment row that disagrees
+// with its kind is a correction, and forcing the sign would book it a
+// second time.
 //
 // PENDING rows are emitted like any other, with Plaid's `pending` in the
 // payload. A pending charge that posts gets a new id. Every read of the
@@ -105,7 +105,7 @@ SELECT transaction_id, account_id, posted_at, amount, COALESCE(currency, ''),
 			return fmt.Errorf("plaid Transactions: %s: amount %q: %w", id, rawAmount, err)
 		}
 		kind := bankTxKind(a.kind, amount, primary, detailed, legacy)
-		net := canonical.ApplyCanonicalSign(kind, &amount)
+		net := &amount
 		out.Transactions = append(out.Transactions, canonical.TransactionChange{
 			TransactionExternalID: id,
 			OccurredAt:            posted,

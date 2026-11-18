@@ -285,11 +285,6 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 	if defaultCcy != nil {
 		tx.Currency = *defaultCcy
 	}
-	// reversal is an MT940 line's reversal mark, `RC` or `RD`, else "":
-	// the bank taking back a credit, or returning a debit. The mark, not
-	// the kind, says which way the money moved.
-	var reversal string
-
 	switch silverKind {
 	case "trade_confirmation":
 		var p tradeConfirmationPayload
@@ -315,8 +310,10 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		if p.NetCurrency != "" {
 			tx.Currency = p.NetCurrency
 		}
-		tx.GrossAmount = p.GrossAmount
-		tx.NetAmount = p.NetAmount
+		// The confirmation states magnitudes, and its side the
+		// direction: the kind carries the side, so the kind signs them.
+		tx.GrossAmount = canonical.ApplyCanonicalSign(tx.Kind, p.GrossAmount)
+		tx.NetAmount = canonical.ApplyCanonicalSign(tx.Kind, p.NetAmount)
 		tx.Quantity = p.Quantity
 		tx.Price = p.Price
 		tx.Description = textPtr(p.SecurityName)
@@ -333,23 +330,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		if p.Funds != "" {
 			tx.Currency = p.Funds
 		}
-		// MT940 stores amount as a positive number with the
-		// direction in `credit_debit` ("C" / "D"; a reversal, "RC" /
-		// "RD", is signed below). A debit is pre-signed here so
-		// reversals from elsewhere — sources that DO supply a signed
-		// amount with a deliberate negative — aren't silently
-		// re-flipped by ApplyCanonicalSign. After this branch the
-		// helper sees an already-signed amount and only acts when
-		// sign and kind agree.
-		amt := p.Amount
-		if amt != nil && p.CreditDebit == "D" && !amt.IsNegative() {
-			n := amt.Neg()
-			amt = &n
-		}
-		tx.NetAmount = amt
-		if isReversalMark(p.CreditDebit) {
-			reversal = p.CreditDebit
-		}
+		tx.NetAmount = markSigned(tx.Kind, p.CreditDebit, p.Amount)
 		// Text columns (docs/adapters/ubs.md §7): the :86: narrative,
 		// flattened to one line, is the description — a bare code
 		// passes through as that code — and the :61: type code is the
@@ -396,31 +377,32 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		tx.Currency = "XXX"
 	}
 
-	// Normalise amount signs per the canonical convention. UBS
-	// MT940 supplies positive amounts plus a credit/debit flag,
-	// and the kind already encodes the direction; collapsing both
-	// into a signed amount happens here.
-	//
-	// A reversal is the exception, as sign.go prescribes for a
-	// reversal row: its mark gives the sign, whatever kind it reads as.
-	// The reversal of a credit (`RC`) takes money back and is negative:
-	// a `DIVIDENDE` narrative on one is a dividend the bank debits, which
-	// the canonical sign would book as one it paid. The reversal of a
-	// debit (`RD`) returns money and is positive: a returned payment
-	// reads as a withdrawal, which the canonical sign would book as a
-	// second payment. The stream, the reconcile table and the offset veto
-	// all project the row here, so they read the one sign.
-	tx.GrossAmount = canonical.ApplyCanonicalSign(tx.Kind, tx.GrossAmount)
-	switch {
-	case reversal != "" && tx.NetAmount != nil:
-		signed := tx.NetAmount.Abs()
-		if isCreditReversal(reversal) {
-			signed = signed.Neg()
-		}
-		tx.NetAmount = &signed
-	default:
-		tx.NetAmount = canonical.ApplyCanonicalSign(tx.Kind, tx.NetAmount)
-	}
-
 	return tx, nil
+}
+
+// markSigned is an MT940 line's amount signed by its credit/debit mark.
+// MT940 states the amount as a magnitude and the direction in the mark,
+// and the mark, not the kind, says which way the money moved. A credit
+// (`C`) and the reversal of a debit (`RD`, a returned payment) bring
+// money in. A debit (`D`) and the reversal of a credit (`RC`, the bank
+// taking it back) take money out. The kind's canonical sign would book
+// either reversal as a second copy of what it cancels: a `DIVIDENDE`
+// narrative on an `RC` as a dividend paid, a returned payment as a
+// second payment. The stream, the reconcile table and the offset veto
+// all project the row here, so they read the one sign. A line with no
+// mark is signed by its kind (canonical.ApplyCanonicalSign).
+func markSigned(kind canonical.TxKind, mark string, amount *canonical.Decimal) *canonical.Decimal {
+	if amount == nil {
+		return nil
+	}
+	var signed canonical.Decimal
+	switch strings.ToUpper(strings.TrimSpace(mark)) {
+	case "C", "RD":
+		signed = amount.Abs()
+	case "D", "RC":
+		signed = amount.Abs().Neg()
+	default:
+		return canonical.ApplyCanonicalSign(kind, amount)
+	}
+	return &signed
 }

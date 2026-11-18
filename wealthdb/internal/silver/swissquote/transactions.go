@@ -49,8 +49,10 @@ SELECT account_external_id, occurred_at, transaction_type,
 			AccountExternalID: extID,
 			Kind:              kind,
 			Currency:          currency,
-			NetAmount:         canonical.ApplyCanonicalSign(kind, &netDec),
-			Description:       silver.StrPtrIfNonEmpty(narrative(txType, payload)),
+			// The export's net amount is signed as the cash the
+			// account gained, and gold keeps it as stated.
+			NetAmount:   &netDec,
+			Description: silver.StrPtrIfNonEmpty(narrative(txType, payload)),
 			// The bank's own booking type, as UBS's rows carry theirs: a
 			// row whose narrative is nothing more is filing-only, and a
 			// rule can read it.

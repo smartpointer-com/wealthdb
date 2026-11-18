@@ -18,9 +18,7 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 	// silver.transactions.kind is already canonical
 	// (buy/sell/fee/interest/dividend/corporate_action/deposit);
 	// txKindFor just enum-validates. amount_chf is signed at the
-	// source (debits negative), so ApplyCanonicalSign is a no-op
-	// for kinds with a fixed sign and pass-through for the
-	// source-dependent ones (interest, corporate_action).
+	// source (debits negative), and gold keeps it as stated.
 	//
 	// CAST decimals to VARCHAR to dodge SQLite REAL → float64
 	// precision loss before parsing through shopspring/decimal.
@@ -57,14 +55,13 @@ SELECT transaction_external_id, occurred_at, account_external_id,
 			return fmt.Errorf("viac Transactions scan: %w", err)
 		}
 		kind := txKindFor(rawKind)
-		netDec := amtStr
 		tx := canonical.TransactionChange{
 			TransactionExternalID: txID,
 			OccurredAt:            occurredAt,
 			AccountExternalID:     acct,
 			Kind:                  kind,
 			Currency:              currency,
-			NetAmount:             canonical.ApplyCanonicalSign(kind, netDec),
+			NetAmount:             amtStr,
 			Payload:               json.RawMessage(payload),
 		}
 		// A fee, an interest credit or a contribution carries no

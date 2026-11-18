@@ -284,10 +284,9 @@ func isWholeDescriptor(descriptor string, descriptors []string) bool {
 // No PSN cutoff applies: PSN carries no card rows, so there is nothing
 // for the cut to arbitrate between.
 //
-// The amounts are UBS's own and already canonical for a liability, but
-// they still pass through ApplyCanonicalSign, because the card kinds
-// have a fixed direction — a purchase is negative and a refund or card
-// payment positive whatever the row said.
+// The amounts are UBS's own and already canonical for a liability, and
+// each row keeps its sign. The kind is read off that sign (cardTxKind),
+// so the two always agree.
 func (r *webReader) cardTransactions(ctx context.Context, w canonical.Window) (canonical.TransactionBatch, error) {
 	var out canonical.TransactionBatch
 	ok, err := r.hasCardTables(ctx)
@@ -321,7 +320,7 @@ SELECT transaction_external_id, value_date, account_external_id, amount,
 			AccountExternalID:     accountID,
 			Kind:                  kind,
 			Currency:              ccy,
-			NetAmount:             canonical.ApplyCanonicalSign(kind, &net),
+			NetAmount:             &net,
 			// The terminal descriptor, verbatim. It is the input to
 			// gold's merchant signature, so any reformatting here would
 			// re-key every merchant it touched.

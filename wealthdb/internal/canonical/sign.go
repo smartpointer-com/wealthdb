@@ -132,10 +132,14 @@ func CashSignedKinds() []SignedKindPin {
 //   - Kind has no fixed canonical sign (canonicalSign returns 0):
 //     amount returned unchanged so the source-supplied sign wins.
 //   - Kind has a fixed canonical sign: the absolute value of
-//     `amount` is taken and given the canonical sign. This
-//     handles both "raw was positive" sources (UBS MT940 with
-//     debit flag) and "raw was already signed" sources (Schwab
-//     API) uniformly.
+//     `amount` is taken and given the canonical sign.
+//
+// NetAmount is the cash the account gained, as the source states it.
+// A source that states a signed amount passes it through, and an
+// adapter that reads the kind off that sign has nothing to repair.
+// This helper is for a source that states a magnitude and a side
+// (a debit/credit mark, a section, a side word) that the kind
+// carries: there the kind is the stated direction.
 //
 // Reversal handling: this helper unconditionally forces the
 // canonical sign, which is wrong for explicit reversal rows
@@ -145,9 +149,6 @@ func CashSignedKinds() []SignedKindPin {
 // the correction). Adapters that recognise a reversal marker in
 // their silver should bypass this helper for those rows and
 // assign the source-signed amount directly.
-//
-// Adapters should call this in their transaction builder before
-// assigning to GrossAmount and NetAmount.
 func ApplyCanonicalSign(kind TxKind, amount *Decimal) *Decimal {
 	if amount == nil {
 		return nil

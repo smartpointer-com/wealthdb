@@ -37,10 +37,8 @@ SELECT MIN(t), MAX(t) FROM (
 // SIGNS. Silver already holds the fleet's card convention — spend negative,
 // anything reducing the balance owed positive — the collector having negated
 // Amex's own spend-positive figures at load. That agrees with the canonical
-// convention for a liability carried as negative cash. Each row is still
-// re-signed by its kind, because the card kinds have a fixed canonical
-// direction: a purchase comes out negative and a refund or bill payment
-// positive whatever the row said.
+// convention for a liability carried as negative cash, so each row keeps its
+// sign whatever its kind.
 //
 // IDS on the modern era are the provider's own stable reference, which is also
 // the QFX FITID and (unquoted) the CSV Reference. Unlike chase, no
@@ -103,7 +101,7 @@ SELECT account_external_id, period_end, closing
 	},
 	TxKind: func(r bank.Row, _ bool) (canonical.TxKind, bool, bool) {
 		k, known := cardTxKind(r.Kind, r.Category, r.Amount)
-		return k, known, true
+		return k, known, false
 	},
 })
 
@@ -157,9 +155,8 @@ func cardTxKind(rawKind, category string, amt canonical.Decimal) (canonical.TxKi
 		return canonical.TxKindRefund, true
 	case "DEBIT":
 		// The fees test lives inside the DEBIT case, not above the
-		// switch: a fee REVERSAL carries the same category, and `fee`
-		// forces a negative canonical sign, which would state the
-		// charge twice.
+		// switch: a fee REVERSAL carries the same category, and it is
+		// a credit that refunds the charge, not a second fee.
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(category)),
 			feesCategory) {
 			return canonical.TxKindFee, true

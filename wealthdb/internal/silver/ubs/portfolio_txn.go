@@ -317,7 +317,10 @@ func (r *webReader) portfolioTransactions(ctx context.Context, w canonical.Windo
 			continue
 		}
 
-		net := canonical.NewDecimalFromFloat(math.Abs(l.amount))
+		// The list states cash out as a positive value, and the kind is
+		// read off that sign (portfolioCashKind): the cash the account
+		// gained is its negation.
+		net := canonical.NewDecimalFromFloat(-l.amount)
 		tx := canonical.TransactionChange{
 			TransactionExternalID: l.emittedID(),
 			// The settlement day: when the cash moved, which is what
@@ -329,7 +332,7 @@ func (r *webReader) portfolioTransactions(ctx context.Context, w canonical.Windo
 			// One figure, not two. The list states a gross value and
 			// no commission, so carrying it as both the gross and the
 			// net would assert a commission of zero.
-			NetAmount: canonical.ApplyCanonicalSign(l.kind, &net),
+			NetAmount: &net,
 			Price:     portfolioTradePrice(l.quantity, l.transPrice, l.amount),
 			// The security as the bank labels it. A name is a hint,
 			// never an identity — the ISIN beside it is the identity.
