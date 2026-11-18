@@ -199,7 +199,7 @@ def _load_master(conn, snapshot_at, run_meta):
 
 
 def account_key(account_external_id):
-    """Mirrors download.account_key() — first 16 hex of sha256."""
+    """Mirrors landmarks.account_key() — first 16 hex of sha256."""
     return bronze.short_token(account_external_id)
 
 
@@ -646,7 +646,7 @@ def _synthesise_activity_id(identity, occurrence):
 
     Fidelity's Activity export is consolidated across all accounts
     and the backfill downloads it window by window
-    (`download.MAX_ACTIVITY_WINDOW_DAYS`-day chunks)
+    (`landmarks.MAX_ACTIVITY_WINDOW_DAYS`-day chunks)
     on every run. The SAME real-world transaction therefore lands
     in many distinct CSV files — different windows, different runs.
     The dedup key must depend only on the transaction's intrinsic

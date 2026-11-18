@@ -2,15 +2,14 @@
 
 The walk in `download.py` records each phase's result in run.json;
 these rules read those results into the run's `coverage` block and its
-exit code, and judge an activity export against the window it was
-asked for.
+exit code.
 """
 
 from __future__ import annotations
 
 import logging
-import re
-from datetime import date, datetime
+
+from collectorkit import cli
 
 # The walk's own logger: a record reads the same whichever module
 # writes it.
@@ -44,11 +43,9 @@ PHASE_OK_STATUS = {
     "lots": ("complete",),
 }
 
-# The exit code a run uses to say a phase came back short. Distinct
-# from the credential (2) and login (3) codes already in use, so a
-# nightly summary tells "the session died" apart from "a phase quietly
-# died".
-EXIT_PHASE_INCOMPLETE = 4
+# The fleet's "came back short" status (collectorkit.cli.EXIT_SHORT):
+# the dump is loadable and its coverage names the gaps.
+EXIT_PHASE_INCOMPLETE = cli.EXIT_SHORT
 
 
 def _gap_label(entry):
@@ -174,55 +171,3 @@ def exit_code_for_coverage(coverage):
         ", ".join(short),
     )
     return EXIT_PHASE_INCOMPLETE
-
-
-def activity_csv_coverage(path):
-    """What an activity CSV actually covers: ``(rows, first, last)``
-    over its ``Run Date`` column, or ``(0, None, None)`` when it holds
-    no dated row.
-
-    Recorded on every window's result so an export that came back
-    short — or empty, which a header-only CSV looks exactly like from
-    the outside — is visible in run.json instead of reading as a
-    success with a file next to it. Never raises: a coverage figure is
-    diagnostic, and failing to compute one must not cost the export
-    that was already saved."""
-    try:
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-    except Exception as e:
-        log.debug("activity coverage read failed: %s", e)
-        return 0, None, None
-    days = []
-    for line in text.splitlines():
-        m = re.match(r'\s*"?(\d{2})/(\d{2})/(\d{4})"?\s*,', line)
-        if not m:
-            continue
-        try:
-            days.append(date(int(m.group(3)), int(m.group(1)),
-                            int(m.group(2))))
-        except ValueError:
-            continue
-    if not days:
-        return 0, None, None
-    return len(days), min(days), max(days)
-
-
-def activity_export_matches(rows, first, last, since_date, until_date):
-    """Whether an export's own rows fall inside the window it was
-    asked for.
-
-    An export with NO rows matches by default: there is nothing to
-    place, and a genuinely quiet window is legitimate. Anything else
-    is judged on content, because content is the only thing on this
-    page that cannot lie about which filter produced it."""
-    if not rows:
-        return True
-    return first >= since_date and last <= until_date
-
-
-def parse_iso_date(value):
-    """Parse YYYY-MM-DD; return ``date``. ``None`` if value is
-    empty / unset."""
-    if not value:
-        return None
-    return datetime.strptime(value, "%Y-%m-%d").date()

@@ -26,8 +26,6 @@ import landmarks as ubs  # local module: URL + DOM landmarks
 from qr import (  # noqa: F401
     decode_data_url_png,
     render_qr_to_terminal,
-    _HALFBLOCK,
-    _detect_module_pitch,
     QR_PNG_SCALE,
     _upscale_qr_png,
 )

@@ -7,6 +7,7 @@ was never imported — that `py_compile` and import-only checks miss
 (argparse defaults are evaluated at runtime, when the parser is built).
 No network, no side effects: `--help` exits before any work.
 """
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,7 +43,7 @@ def test_login_entrypoint_does_not_hardcode_tracing():
     """
     ep = _COLLECTOR_DIR / "entrypoint.sh"
     exec_lines = [ln for ln in ep.read_text().splitlines()
-                  if "exec python3 /app/login.py" in ln or " login.py" in ln and ln.lstrip().split(")")[-1].lstrip().startswith("run ")]
+                  if re.search(r"\brun \S+ login\.py\b", ln)]
     assert exec_lines, "no login exec line found in entrypoint.sh"
     for ln in exec_lines:
         assert "--trace" not in ln, f"entrypoint hardcodes --trace: {ln!r}"

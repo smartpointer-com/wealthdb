@@ -43,10 +43,8 @@ from pathlib import Path
 import landmarks as schwab
 # The walk's pure name rules; each name is bound here too.
 from names import (  # noqa: F401
-    _SUFFIX_RE,
     _suffix_of,
     _COUNT_RE,
-    _FN_SAFE,
     _safe,
 )
 from collectorkit import bronze, debugcap
@@ -87,13 +85,13 @@ RECOVERY_DEADLINE_S = 180
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     """Capture the scrubbed HTML and a viewport PNG at a navigation
     landmark into the `--screenshot-dir` host path (None captures
-    nothing). The login credentials (login.py's LOGIN_ID_ENV and
+    nothing). The login credentials (landmarks' LOGIN_ID_ENV and
     PASSWORD_ENV) and the session are masked out of the markup. Never
     raises. Shared by login.py's sign-in landmarks.
     """
     debugcap.landmark_capturer(
-        screenshot_dir, user_env="SCHWAB_LOGIN_ID",
-        pass_env="SCHWAB_PASSWORD", session=True, log=log)(page, label)
+        screenshot_dir, user_env=schwab.LOGIN_ID_ENV,
+        pass_env=schwab.PASSWORD_ENV, session=True, log=log)(page, label)
 
 # ============================================================
 # Account enumeration

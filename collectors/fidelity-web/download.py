@@ -190,23 +190,18 @@ from windows import (  # noqa: F401
     make_activity_windows,
     mark_outside_retention,
     clamp_activity_window,
+    activity_csv_coverage,
+    activity_export_matches,
 )
 from phase_coverage import (  # noqa: F401
     PHASE_RESULT_KEYS,
     PHASE_OK_STATUS,
     EXIT_PHASE_INCOMPLETE,
-    _gap_label,
     ENTRY_FAIL_STATUS,
-    _attempt_entries,
-    _entry_failed,
     phase_coverage,
     exit_code_for_coverage,
-    activity_csv_coverage,
-    activity_export_matches,
-    parse_iso_date,
 )
 from lot_queries import (  # noqa: F401
-    _row_val,
     lot_position_rows,
     lot_position_id,
     open_lot_signature,
@@ -215,7 +210,6 @@ from lot_queries import (  # noqa: F401
     closedpositions_body,
     closedlots_body,
     openlots_body,
-    _LOTS_LAST_PAGE_RE,
     openlots_last_page,
     decode_pico,
     lot_ineligible_accounts,
@@ -227,7 +221,6 @@ from lot_queries import (  # noqa: F401
     _lot_pause,
 )
 from documents import (  # noqa: F401
-    _STATEMENT_LABEL_YEAR_RE,
     _statement_label_year,
     _write_doc_bytes,
     _pdf_from_docapi_body,
@@ -348,6 +341,14 @@ def enumerate_account_dimensions(page):
     except Exception as e:
         log.warning("account-dimension enumeration failed: %s", e)
         return []
+
+
+def parse_iso_date(value):
+    """Parse YYYY-MM-DD; return ``date``. ``None`` if value is
+    empty / unset."""
+    if not value:
+        return None
+    return datetime.strptime(value, "%Y-%m-%d").date()
 
 
 def capture(page, capture_dir, label):
@@ -3274,7 +3275,7 @@ def run_check(args):
                 page.goto(landing, wait_until="domcontentloaded")
             except Exception as e:
                 log.error("navigation failed: %s", e)
-                return 3
+                return cli.EXIT_NO_VERDICT
             capture(page, args.screenshot_dir, "check-landed")
             time.sleep(2.0)
             url = live_url(page)
@@ -3311,7 +3312,7 @@ def run_oneshot(args):
         try:
             page = open_page(context)
             if not login(page, args, username, password):
-                return 3
+                return cli.EXIT_NO_VERDICT
             # Sign-in done: from here a DOM snapshot can only catch account
             # data, which the trace already holds, so the walk gets the
             # richer artefact.

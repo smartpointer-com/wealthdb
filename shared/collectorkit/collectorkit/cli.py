@@ -34,6 +34,9 @@ EXIT_USAGE = 2
 # A probe that could not run, such as a browser that did not start: no
 # verdict on the session either way.
 EXIT_NO_VERDICT = 3
+# A download whose phases ran but came back short: a phase it attempted
+# returned less than it should have.
+EXIT_SHORT = 4
 # A person has to sign in first: there is no session, or it is dead.
 EXIT_NEEDS_PERSON = 6
 

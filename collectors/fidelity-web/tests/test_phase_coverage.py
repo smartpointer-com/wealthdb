@@ -28,6 +28,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
+from collectorkit import cli
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -124,10 +125,10 @@ def test_a_short_phase_makes_the_run_exit_non_zero():
     assert code != 0
 
 
-def test_the_short_code_is_distinct_from_the_auth_codes():
-    """A nightly summary has to tell 'the session died' from 'a phase
-    quietly died'; 2 and 3 are already credentials and login."""
-    assert download.EXIT_PHASE_INCOMPLETE not in (0, 1, 2, 3)
+def test_the_short_code_is_the_fleets_short_status():
+    """A short phase exits with the fleet's 'came back short' status,
+    so a nightly summary reads it as it reads every collector's."""
+    assert download.EXIT_PHASE_INCOMPLETE == cli.EXIT_SHORT
 
 
 # ------------------------------------------------------- window arithmetic

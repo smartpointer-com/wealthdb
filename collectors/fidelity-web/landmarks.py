@@ -150,8 +150,8 @@ SEL_LOGIN_BUTTON = "#dom-login-button"
 
 # International Usage Agreement interstitial — Fidelity interposes
 # this page for non-US-locale clients (Camoufox geoip=True can trip
-# it, depending on the egress IP). User must accept before the
-# signin form is served. The accept link runs
+# it, depending on the egress IP). The agreement must be accepted
+# before the signin form is served. The accept link runs
 # javascript:acceptAgreement() which then routes onward.
 SEL_IUA_ACCEPT_CANDIDATES = (
     "a.accept-link",

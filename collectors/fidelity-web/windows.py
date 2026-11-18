@@ -1,13 +1,15 @@
 """The activity backfill's windows: how a requested range is cut into
-exports, clamped to what the page serves, and how a refused window past
-the retention floor is told apart from a gap. Pure date arithmetic; the
-walk in `download.py` drives the page.
+exports, clamped to what the page serves, how a refused window past the
+retention floor is told apart from a gap, and whether an export's rows
+fall inside the window it was asked for. The walk in `download.py`
+drives the page.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+import re
+from datetime import date, timedelta
 
 from landmarks import (
     ACTIVITY_OUTSIDE_RETENTION, ACTIVITY_RANGE_REFUSED,
@@ -112,3 +114,47 @@ def clamp_activity_window(since_date, until_date, fmin, fmax, today):
         )
         until_date = fmax
     return since_date, until_date
+
+
+def activity_csv_coverage(path):
+    """What an activity CSV actually covers: ``(rows, first, last)``
+    over its ``Run Date`` column, or ``(0, None, None)`` when it holds
+    no dated row.
+
+    Recorded on every window's result so an export that came back
+    short — or empty, which a header-only CSV looks exactly like from
+    the outside — is visible in run.json instead of reading as a
+    success with a file next to it. Never raises: a coverage figure is
+    diagnostic, and failing to compute one must not cost the export
+    that was already saved."""
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except Exception as e:
+        log.debug("activity coverage read failed: %s", e)
+        return 0, None, None
+    days = []
+    for line in text.splitlines():
+        m = re.match(r'\s*"?(\d{2})/(\d{2})/(\d{4})"?\s*,', line)
+        if not m:
+            continue
+        try:
+            days.append(date(int(m.group(3)), int(m.group(1)),
+                            int(m.group(2))))
+        except ValueError:
+            continue
+    if not days:
+        return 0, None, None
+    return len(days), min(days), max(days)
+
+
+def activity_export_matches(rows, first, last, since_date, until_date):
+    """Whether an export's own rows fall inside the window it was
+    asked for.
+
+    An export with NO rows matches by default: there is nothing to
+    place, and a genuinely quiet window is legitimate. Anything else
+    is judged on content, because content is the only thing on this
+    page that cannot lie about which filter produced it."""
+    if not rows:
+        return True
+    return first >= since_date and last <= until_date

@@ -39,7 +39,7 @@ def read_token_creation_time(path: Path) -> datetime | None:
 def print_token_age(token_path: Path) -> None:
     """Print when the token file was issued and when its refresh token
     runs out by the 7-day cap. An estimate from the file alone: the
-    probe in :func:`cmd_check` is what proves the token."""
+    probe (`login.probe_token`) is what proves the token."""
     issued = read_token_creation_time(token_path)
     print(f"Token file:        {token_path}")
     if issued is None:

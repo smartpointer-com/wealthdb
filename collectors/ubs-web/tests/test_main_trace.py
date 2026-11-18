@@ -6,13 +6,17 @@ The trace it records (the launch, every page, locator, frame, request
 and context call, and every sleep, in order) must equal the stored one
 in `traces/<case>.trace`. A restructuring of the walk that keeps its
 behaviour keeps these files as they are; a trace that changes is a walk
-that sends something else.
+that sends something else. To record new traces on purpose, run the
+tests with `COLLECTORKIT_RECORD_TRACES=1` (`collectorkit.testing.RECORD_ENV`).
 
 The scripts are synthetic: invented tokens and labels, no provider
-text. A script answers just enough for each pass to take its main path;
-the trace pins what the walk does with those answers. One case per
-`--only` pass and the whole walk, the dry run, a homepage that lists no
-account, and a pass that raises.
+text, and a placeholder user agent, so a Playwright bump that moves the
+real one leaves the traces as they are. A script answers just enough
+for each pass to take its main path; the trace pins what the walk does
+with those answers. One case per `--only` pass and the whole walk, the
+dry run, a homepage that lists no account, and a pass that raises. That
+last case also leaves one dialog open, so the dismiss loop is pinned
+too.
 """
 
 from __future__ import annotations
@@ -26,8 +30,8 @@ import pytest
 
 import download
 import landmarks as ubs
-from collectorkit import bronze, cli, testing
-from collectorkit.testing import Compute, Raises, Recorder, Script
+from collectorkit import cli, testing
+from collectorkit.testing import Compute, Raises, Recorder, Script, Seq
 
 HERE = Path(__file__).resolve().parent
 COLLECTOR = HERE.parent
@@ -35,6 +39,8 @@ TRACES = HERE / "traces"
 TODAY = date(2026, 1, 15)
 SLUG = "20260115T120000Z"
 SPA = "https://ebanking-ch1.ubs.com/app/OQJ/1/ebanking/spa.html"
+USER_AGENT = "ua-synthetic"
+OPEN_DIALOGS = "dialog[open]').length"
 
 ACCOUNT_ROWS = [
     {"href": "#/cash-account-transactions?target=x&accountId=tok-a",
@@ -55,10 +61,6 @@ class _ApiRequest:
     headers = {"apikey": "key-synthetic"}
 
 
-def _js(fragment):
-    return lambda call: fragment in str(call.arg)
-
-
 def _goto(call):
     # The entry lands on the SPA; the homepage's widgets call its API.
     if call.arg == ubs.LOGIN_ENTRY_URL:
@@ -73,6 +75,8 @@ def base_script(accounts=ACCOUNT_ROWS):
     s.on("new_context", None, Compute(lambda c: c.rec.context))
     s.on("new_page", None, Compute(lambda c: c.rec.page))
     s.on("goto", None, Compute(_goto))
+    # No dialog is open.
+    s.on("evaluate", testing.js_contains(OPEN_DIALOGS), 0)
     s.on("evaluate", lambda c: c.args[1:] == (
         ubs.HOME_CASH_ACCOUNT_LINK_SELECTOR,), accounts)
     s.on("evaluate", lambda c: c.args[1:] == (
@@ -88,6 +92,8 @@ def base_script(accounts=ACCOUNT_ROWS):
 
 def raising_script():
     s = base_script()
+    # A dialog is open at the first look and closed at the next.
+    s.on("evaluate", testing.js_contains(OPEN_DIALOGS), Seq(1, 0))
     s.on("click", ubs.TXN_PERIOD_FILTER_SELECTOR,
          Raises(RuntimeError("synthetic failure")), times=1)
     return s
@@ -96,12 +102,9 @@ def raising_script():
 def run_case(tmp_path, monkeypatch, *, script, flags=()):
     """Run one `download.main`; return its trace."""
     clock = testing.FakeClock().install(monkeypatch)
-    collector_modules = [m for m in list(sys.modules.values())
-                         if str(getattr(m, "__file__", "") or "")
-                         .startswith(str(COLLECTOR))]
-    testing.freeze_today(monkeypatch, TODAY, collector_modules)
+    testing.freeze_collector(monkeypatch, COLLECTOR, TODAY, SLUG)
     monkeypatch.setattr(cli, "_today_utc", lambda: TODAY)
-    monkeypatch.setattr(bronze, "ts_slug", lambda now=None: SLUG)
+    monkeypatch.setattr(download, "USER_AGENT", USER_AGENT)
     rec = Recorder(script, root=tmp_path, clock=clock)
     fake = types.ModuleType("playwright.sync_api")
     fake.sync_playwright = lambda: rec.node("playwright")
@@ -140,5 +143,4 @@ def _case(name):
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_main_sends_the_stored_trace(name, tmp_path, monkeypatch):
     trace = run_case(tmp_path, monkeypatch, **_case(name))
-    stored = (TRACES / f"{name}.trace").read_text().splitlines()
-    assert trace == stored
+    testing.assert_trace(TRACES / f"{name}.trace", trace)

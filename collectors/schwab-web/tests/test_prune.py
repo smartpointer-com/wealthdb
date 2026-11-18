@@ -152,9 +152,3 @@ def test_statusless_dry_run_shell_kept(tmp_path):
                   screenshots=False, age_s=STALE_S)
     run_main(tmp_path)
     assert d.exists()
-
-
-# ============================================================
-# Target validation
-# ============================================================
-

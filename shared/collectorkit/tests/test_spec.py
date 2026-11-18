@@ -219,3 +219,12 @@ def test_each_declaration_prunes_its_debug_artefacts_and_crashed_runs(
                 "transactions/acct/tx.csv"):
         with pytest.raises(SystemExit):
             config.validate_target(complete / rel, tmp_path)
+
+
+@fleet
+@pytest.mark.parametrize("name", NAMES)
+def test_every_prune_builds_its_config_from_the_declaration(name):
+    p = COLLECTORS / name / "prune.py"
+    if p.is_file():
+        assert "prune.spec_config(SPEC" in p.read_text(encoding="utf-8"), \
+            f"{name}/prune.py hand-builds its PruneConfig"

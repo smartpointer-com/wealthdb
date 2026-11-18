@@ -63,7 +63,7 @@ def test_env_file_prefers_an_explicit_path(monkeypatch, tmp_path):
     explicit.write_text("UBS_EXPLORE_TEST=explicit\n")
     candidate.write_text("UBS_EXPLORE_TEST=candidate\n")
     monkeypatch.setattr(explore, "DEFAULT_ENV_FILE_CANDIDATES", (candidate,))
-    monkeypatch.delenv("UBS_EXPLORE_TEST", raising=False)
+    monkeypatch.setenv("UBS_EXPLORE_TEST", "exported")
     assert explore.source_env_file(explicit) == explicit
     assert os.environ["UBS_EXPLORE_TEST"] == "explicit"
 

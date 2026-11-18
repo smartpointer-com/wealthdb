@@ -6,6 +6,8 @@ The trace it records (every page, locator, request and context call, and
 every sleep, in order) must equal the stored one in `traces/<case>.trace`.
 A restructuring of the walk that keeps its behaviour keeps these files
 as they are; a trace that changes is a walk that sends something else.
+To record new traces on purpose, run the tests with
+`COLLECTORKIT_RECORD_TRACES=1` (`collectorkit.testing.RECORD_ENV`).
 
 The scripts are synthetic: invented account ids, no provider text. A
 script answers just enough for each phase to take its main path; the
@@ -28,7 +30,7 @@ COLLECTOR = HERE.parent
 sys.path.insert(0, str(COLLECTOR))
 
 import download  # noqa: E402
-from collectorkit import bronze, testing  # noqa: E402
+from collectorkit import testing  # noqa: E402
 from collectorkit.testing import Compute, Raises, Recorder, Script  # noqa: E402
 
 TRACES = HERE / "traces"
@@ -59,11 +61,6 @@ class _PositionsRequest:
         return dict(self.headers)
 
 
-def _js(fragment):
-    """Match an evaluate whose script holds `fragment`."""
-    return lambda call: fragment in str(call.arg)
-
-
 def _goto(call):
     if call.arg == download.URL_POSITIONS:
         call.rec.emit("request", _PositionsRequest())
@@ -71,8 +68,8 @@ def _goto(call):
 
 def base_script(dimensions=DIMENSIONS):
     s = Script(url=download.URL_PORTFOLIO_SUMMARY, download=b"a,b\n")
-    s.on("evaluate", _js("location.href"), Compute(lambda c: c.rec.url))
-    s.on("evaluate", _js("ap143528-accounts-selector-account-link"),
+    s.on("evaluate", testing.js_contains("location.href"), Compute(lambda c: c.rec.url))
+    s.on("evaluate", testing.js_contains("ap143528-accounts-selector-account-link"),
          dimensions)
     s.on("goto", None, Compute(_goto))
     # Positions: the preset select, the kebab and its Download item.
@@ -81,7 +78,7 @@ def base_script(dimensions=DIMENSIONS):
         s.on("count", sel, 1)
     s.on("is_visible", "role=menuitem[name=/download/i]", True)
     # Lots: every in-page poswebex query answers with no rows.
-    s.on("evaluate", _js("credentials: \"include\""),
+    s.on("evaluate", testing.js_contains("credentials: \"include\""),
          {"status": 200, "text": json.dumps({"rowData": []})})
     # Activity: the picker opens on its Custom tab, both date inputs,
     # Apply, the Download trigger and its CSV item are there.
@@ -92,7 +89,7 @@ def base_script(dimensions=DIMENSIONS):
                 download.SEL_ACTIVITY_CSV_ITEM,
                 download.SEL_ACTIVITY_CSV_SELECTORS[0]):
         s.on("count", sel, 1)
-    s.on("evaluate", _js("el.min"), {"min": None, "max": None})
+    s.on("evaluate", testing.js_contains("el.min"), {"min": None, "max": None})
     # Documents: both rail links are there, each type offers two
     # years.
     s.on("count", "a[href='statements']:has-text('Personal')", 1)
@@ -111,11 +108,7 @@ def base_script(dimensions=DIMENSIONS):
 def run_case(tmp_path, monkeypatch, *, script, mode="all", dry_run=False):
     """Drive one walk; return its trace."""
     clock = testing.FakeClock().install(monkeypatch)
-    collector_modules = [m for m in list(sys.modules.values())
-                         if str(getattr(m, "__file__", "") or "")
-                         .startswith(str(COLLECTOR))]
-    testing.freeze_today(monkeypatch, TODAY, collector_modules)
-    monkeypatch.setattr(bronze, "ts_slug", lambda now=None: SLUG)
+    testing.freeze_collector(monkeypatch, COLLECTOR, TODAY, SLUG)
     # Every lot pause is the short one, at the middle of its range.
     monkeypatch.setattr(random, "randrange", lambda n: 1)
     monkeypatch.setattr(random, "uniform", lambda a, b: (a + b) / 2)
@@ -160,5 +153,4 @@ def _case(name):
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_walk_sends_the_stored_trace(name, tmp_path, monkeypatch):
     trace = run_case(tmp_path, monkeypatch, **_case(name))
-    stored = (TRACES / f"{name}.trace").read_text().splitlines()
-    assert trace == stored
+    testing.assert_trace(TRACES / f"{name}.trace", trace)

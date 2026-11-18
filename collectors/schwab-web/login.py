@@ -48,6 +48,7 @@ from landmarks import (  # noqa: F401
     _since_to_schwab_preset,
     _exact_window,
 )
+from landmarks import LOGIN_ID_ENV, PASSWORD_ENV
 from download import maybe_screenshot
 
 from collectorkit import cli, debugcap, envfile, launch
@@ -78,18 +79,6 @@ DEFAULT_ENV_FILE_CANDIDATES = (
     Path("/secrets/schwab-web.env"),
     Path.home() / ".secrets" / "schwab-web.env",
 )
-
-# Env var names. The companion ~/.secrets/schwab-web.env file is a
-# bash script that sets `SCHWAB_LOGIN_ID=<login-id>` and
-# `SCHWAB_PASSWORD=<password>`, quoted by bash's rules (single quotes
-# keep every character as written).
-#
-# Note the asymmetry vs. schwab-api (Trader API), which uses
-# SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET for OAuth credentials.
-# These are the web-login credentials and live in a separate
-# namespace so the two sets never collide in a single shell env.
-LOGIN_ID_ENV = "SCHWAB_LOGIN_ID"
-PASSWORD_ENV = "SCHWAB_PASSWORD"
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

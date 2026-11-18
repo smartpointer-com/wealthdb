@@ -31,6 +31,18 @@ MARKETING_HOMEPAGE = "https://www.schwab.com/"
 # `id` of the login iframe on the marketing homepage.
 LOGIN_IFRAME_ID = "schwablmslogin"
 
+# Env var names. The companion ~/.secrets/schwab-web.env file is a
+# bash script that sets `SCHWAB_LOGIN_ID=<login-id>` and
+# `SCHWAB_PASSWORD=<password>`, quoted by bash's rules (single quotes
+# keep every character as written).
+#
+# Note the asymmetry vs. schwab-api (Trader API), which uses
+# SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET for OAuth credentials.
+# These are the web-login credentials and live in a separate
+# namespace so the two sets never collide in a single shell env.
+LOGIN_ID_ENV = "SCHWAB_LOGIN_ID"
+PASSWORD_ENV = "SCHWAB_PASSWORD"
+
 # Stable IDs for the form inputs inside the iframe (confirmed in
 # the gateway SPA's main.*.js bundle as Angular form-control names).
 LOGIN_ID_INPUT_ID = "loginIdInput"

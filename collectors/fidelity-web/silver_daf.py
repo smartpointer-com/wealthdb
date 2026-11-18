@@ -298,7 +298,7 @@ def _load_daf_events(conn, snapshot_at, account_ext, acct_dir):
     return inserted
 
 
-# DAF document filename stems (download._daf_doc_stem): '<TYPE>_<date>',
+# DAF document filename stems (daf._daf_doc_stem): '<TYPE>_<date>',
 # TYPE ∈ {STATEMENT, GRANT, CONTRIBUTION, FORM_8283}. The kind is
 # namespaced 'daf_*' so DAF documents never mix with the retail
 # statement / tax-form rows.

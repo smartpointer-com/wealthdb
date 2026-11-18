@@ -88,9 +88,3 @@ def test_missing_run_json_dump_deleted(tmp_path):
     d = make_dump(tmp_path, OLD_TS, run_json=False, age_s=STALE_S)
     run_main(tmp_path)
     assert not d.exists()
-
-
-# ============================================================
-# Target validation
-# ============================================================
-
