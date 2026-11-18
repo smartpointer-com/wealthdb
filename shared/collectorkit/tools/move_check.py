@@ -9,14 +9,17 @@ they were with the modules they became:
   same. No function or class is added or lost.
 * Every module-level binding (a constant, a compiled pattern) is bound
   to the same expression as before.
-* The new version of the split module still binds every function,
-  class and binding the old one defined, by definition or by import,
-  so an importer of the old module finds each name where it was.
+* The new version of the split module still binds every public
+  function, class and binding the old one defined, by definition or by
+  import, so an importer of the old module finds each name where it
+  was. A private name (a leading underscore) has no importer outside
+  the module and its tests, so one the old module no longer binds is a
+  note.
 
 Imports and every other top-level statement (the docstring, the main
 guard) are not compared. A binding that changed is reported but does
-not fail the check; a function or class that changed, or a name the
-old module no longer binds, does.
+not fail the check; a function or class that changed, or a public name
+the old module no longer binds, does.
 
     move_check.py OLD NEW [NEW ...] [--before PEER ...]
 
@@ -126,9 +129,11 @@ def compare(old: list[Module],
     failures += _differences(_tally(old, "defs"), _tally(new, "defs"))
     notes = [f"binding {line}" for line in _differences(
         _tally(old, "bindings"), _tally(new, "bindings"))]
-    kept = set(old[0].defs) | set(old[0].bindings)
+    dropped = sorted((set(old[0].defs) | set(old[0].bindings)) - new[0].names)
     failures += [f"no longer bound by the old module: {n}"
-                 for n in sorted(kept - new[0].names)]
+                 for n in dropped if not n.startswith("_")]
+    notes += [f"private name no longer bound: {n}"
+              for n in dropped if n.startswith("_")]
     return failures, notes
 
 

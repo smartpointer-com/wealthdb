@@ -1,8 +1,9 @@
 """Credential redaction for everything a run writes to disk.
 
 The pure half of the `--debug` captures: string and JSON rewriting, no I/O
-beyond the HAR rewrite and no Playwright. :mod:`collectorkit.debugcap`
-re-exports every name, so a capture site reads them from there.
+beyond the HAR rewrite, and no Playwright import (:class:`SessionMask`
+reads the jar of the page it is handed). :mod:`collectorkit.debugcap`
+re-exports every public name, so a capture site reads them from there.
 
 Two complementary passes run throughout:
 

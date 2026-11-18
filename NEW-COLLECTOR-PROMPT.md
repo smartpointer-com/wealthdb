@@ -77,9 +77,9 @@ the template should read this whole file plus the docs it names.
 
 Every build copies the newest validated sibling of its archetype and
 diverges only where a capture proves the new source differs — including
-the site half of its explore harness (entry URL, host gate, detector
-script, login-form fill); the recording half is `collectorkit.explore`,
-shared by every harness. Pick the archetype from the
+the site half of its explore harness (an `explore.Site`: entry URL, host
+gate, detector script, login-form selectors); the recording half is
+`collectorkit.explore`, shared by every harness. Pick the archetype from the
 Auth/Runtime columns of the roster table in
 [collectors/README.md](collectors/README.md), newest sibling first
 (date candidates with `git log --diff-filter=A -- collectors/<name>`):
@@ -163,17 +163,22 @@ and move on.
 
 ## Phases
 
-1. **Scaffold** — adapt the template sibling's harness: an explore.py
-   that gives `collectorkit.explore.Session` the site's host gate,
-   detector script and login-form fill. The session already captures a
+1. **Scaffold** — adapt the template sibling's files. A collector.py
+   declares the collector (`collectorkit.spec.Collector`); the
+   collectorkit suite fails a collector without one. An explore.py
+   declares the site as a `collectorkit.explore.Site` (host gate,
+   detector script, login-form selectors) and runs `explore.main`.
+   The session already captures a
    DOM snapshot per distinct screen AND response bodies (network +
    click logs alone pin no selectors and leave every JSON shape a
    guess), routes every capture through the harness's
    `debugcap.secret_redactor(username, password)` and every DOM through
    `debugcap.scrub_dom`, and cleans the recorded HAR after the context
-   close. A capture written from a `login.py` or a `download.py` is the
-   author's to route through the same two maskers; the collectorkit
-   suite enforces `scrub_dom` on any module that serialises a page. A
+   close. A `login.py` or `download.py` capture goes through
+   `debugcap.landmark_capturer` (sign-in landmarks) or
+   `debugcap.page_capturer` (a walk that holds a session), which mask
+   and scrub; the collectorkit suite enforces `scrub_dom` on any module
+   that serialises a page. A
    Playwright trace cannot be rewritten at all and holds the credential
    verbatim. Dockerfile on the matching
    shared base image (Camoufox for unknown or hostile bot defense — it
@@ -224,7 +229,8 @@ and move on.
    authenticated-surface request mid-challenge — it can invalidate
    the challenge server-side. Give every browser-event dependency a
    poll-based twin and pump the event loop in every wait. Bronze runs
-   follow the fleet layout (run.json status lifecycle, accounts
+   follow the fleet layout (the run.json status lifecycle, written by
+   `bronze.open_run`; accounts
    roster, per-account exports/JSON/statements; diagnostics only
    behind --debug). Wire the standard flags via collectorkit.cli
    (add_standard_args / resolve_standard) — the conventions table in

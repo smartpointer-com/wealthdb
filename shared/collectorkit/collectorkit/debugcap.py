@@ -47,7 +47,7 @@ The contract for the bronze-resident pair, :func:`capture_page` and
 
 The masks themselves (:func:`secret_redactor`, :func:`scrub_dom`,
 :func:`redact_har` and the rest) are :mod:`collectorkit.redact`, a pure
-text library. This module re-exports every name of it.
+text library. This module re-exports every public name of it.
 
 What this module cannot clean, said plainly so no caller reads a capture as
 safe that is not: a **Playwright trace** (``trace.zip`` / ``trace-chunks/``)
@@ -79,8 +79,6 @@ from collectorkit.cli import LOG_FORMAT
 from collectorkit.redact import (  # noqa: F401
     REDACTED,
     SessionMask,
-    _SECRET_HEADERS,
-    _SECRET_PARAMS,
     env_redactor,
     redact_body,
     redact_har,
@@ -171,7 +169,7 @@ def page_capturer(debug_dir: Path | None, *, log: logging.Logger):
 
 def capture_landmark(page, out_dir: Path | None, label: str, *,
                      log: logging.Logger, png_timeout_ms: int = 3_000,
-                     redact=None) -> None:
+                     redact) -> None:
     """Save `page` as ``<ts>-<label>.html`` and ``.png`` in `out_dir`.
 
     The sign-in twin of :func:`capture_page`: `out_dir` is a debug dir the
@@ -182,7 +180,8 @@ def capture_landmark(page, out_dir: Path | None, label: str, *,
     The DOM comes first. `page.content()` can fail while an SPA is
     "navigating and changing", so the fallback reads the DOM in-page,
     which has no such guard. The markup goes through :func:`scrub_dom`,
-    as in :func:`capture_page`. The screenshot is the viewport only,
+    as in :func:`capture_page`, and `redact` has no default there either.
+    The screenshot is the viewport only,
     animations off, capped at `png_timeout_ms`: Firefox can wait for
     fonts that never finish loading, so a missed screenshot is logged at
     debug and accepted.
@@ -227,8 +226,8 @@ def landmark_capturer(out_dir: Path | None, *, user_env=None, pass_env=None,
     """``capture(page, label)``: a :func:`capture_landmark` into `out_dir`
     that always masks. None `out_dir` captures nothing. Never raises.
 
-    The mask is built at the first capture: the run has sourced its env
-    file by then, and the page holds the session.
+    The mask is read at each capture, so a jar that changes during a
+    sign-in is masked as it stands at that landmark.
 
     - `user_env` and `pass_env` name the credentials, one env name or a
       tuple of them each. Every value they hold is masked wherever the
@@ -239,20 +238,14 @@ def landmark_capturer(out_dir: Path | None, *, user_env=None, pass_env=None,
     Every capture also blanks the password inputs (:func:`scrub_dom`).
     """
     names = _env_names(user_env) + _env_names(pass_env)
-    jar = SessionMask() if session else None
-    env_mask = None
 
     def capture(page, label: str) -> None:
-        nonlocal env_mask
         if out_dir is None:
             return
         try:
-            if env_mask is None:
-                env_mask = secret_redactor(
-                    *(os.environ.get(n, "") for n in names))
-            steps = [env_mask]
-            if jar is not None:
-                steps.append(jar.for_page(page))
+            steps = [secret_redactor(*(os.environ.get(n, "") for n in names))]
+            if session:
+                steps.append(SessionMask().for_page(page))
         except Exception as e:  # noqa: BLE001 - diagnostics never break a run
             log.warning("capture %s skipped, no mask: %s", label, e)
             return

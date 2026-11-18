@@ -27,11 +27,11 @@ What stays in each collector's own ``explore.py`` is what is particular to
 its source: the entry URL, the host gate, the credential env names and the
 sign-in form's selectors. :func:`click_recorder_js` builds the in-page
 detector from them, :func:`prefill_login` fills the form, and
-:class:`Session` composes the rest. A Camoufox harness declares them as a
-:class:`Site` and hands it to :func:`main`, which runs the session. The fill and its credentials are
-:mod:`collectorkit.loginform` (a collector's ``login.py`` often reuses
-them), and the profile prep is :func:`collectorkit.launch.prepare_profile`;
-both are re-exported here.
+:class:`Session` composes the rest. A Camoufox harness declares them as
+a :class:`Site` and hands it to :func:`main`, which runs the session.
+The fill and its credentials are :mod:`collectorkit.loginform` (a
+collector's ``login.py`` often reuses them), and the profile prep is
+:func:`collectorkit.launch.prepare_profile`; both are re-exported here.
 
 Playwright and Camoufox are imported where they are used, so the library
 stays importable without them.

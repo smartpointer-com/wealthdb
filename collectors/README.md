@@ -154,6 +154,7 @@ the wrapper, the env file, and the image name.
 ```
 collectors/<name>/
 ├── <name>                 the wrapper — what wealthdb-collect dispatches to (executable)
+├── collector.py           the declaration: SPEC, a collectorkit.spec.Collector
 ├── login.py               mints/refreshes the session  (may be a no-op or absent)
 ├── download.py            fetches bronze
 ├── load.py                parses bronze → silver
@@ -166,6 +167,32 @@ collectors/<name>/
 ├── DESIGN.md              source-specific reverse-engineering notes (optional)
 └── AGENTS.md              source-specific agent rules (allowed UI surface, etc.)
 ```
+
+### The declaration — `collector.py`
+
+Each collector declares itself once, as `SPEC` in its `collector.py`.
+`SPEC` is a `collectorkit.spec.Collector`. It names:
+
+- the collector's name and env prefix, as its wrapper sets them;
+- what a download signs in with, and whether it may run with no person
+  present;
+- whether a download honours `--lookback` or always fetches the whole
+  history;
+- the debug subdirs and globs that `prune` reclaims from a complete run.
+
+The file imports only the standard library and collectorkit, so a tool
+reads it without the collector's own dependencies. This prints one JSON
+object per collector:
+
+```sh
+python -m collectorkit.spec describe collectors/fred collectors/amex
+```
+
+The collectorkit suite checks each declaration against its wrapper's
+`NAME` and `ENV_PREFIX` and against its download's window. It also
+checks that the default paths in its scripts are the ones `spec.paths()`
+derives from the name. A collector without a `collector.py` fails that
+suite.
 
 ### The wrapper — the `wealthdb-collect` contract
 
@@ -260,6 +287,7 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
 | force reload (on `load`) | `--force` — rebuild silver from all bronze; on the load frame the old silver stays in place until the new one is complete | off |
 | session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the five collectors that differ. | — |
+| exit status (`download`, `login --check`) | `collectorkit.cli`: `0` done, `1` failed, `2` usage error, `3` no verdict (a probe that could not run), `6` a person has to sign in first. A full `login` may give its own codes. | — |
 | human-MFA wait | `--mfa-timeout SECONDS` | per source; see the list below |
 | MFA-page-appear wait | `--mfa-page-timeout SECONDS` | per source |
 | login-diagnostics dir | `--screenshot-dir` (login); `--debug-dir` on an `explore` harness, and on `prune`, which reclaims that dir | None |
@@ -610,6 +638,16 @@ python3 -I shared/collectorkit/tools/parse_diff.py \
 python3 -I shared/collectorkit/tools/silver_diff.py old/svb.db new/svb.db
 ```
 
+Two more prove that a restructuring kept the code and the calls:
+
+- [`move_check.py`](../shared/collectorkit/tools/move_check.py)
+  `OLD NEW...` checks that a module split moved every function and
+  class unchanged.
+- [`collectorkit.testing`](../shared/collectorkit/collectorkit/testing.py)
+  records the calls a browser walk makes. A trace stored as a fixture
+  pins their order. `COLLECTORKIT_RECORD_TRACES=1` writes the fixtures
+  anew after an intended change to a walk.
+
 ### Debug artefacts, run status, and pruning bronze
 
 A bronze run dir holds **only what `load` reads**, plus the run's
@@ -672,7 +710,9 @@ uniform convention:
 - **`run.json` `status` lifecycle.** A `download` writes
   `{"status": "in-progress"}` when it creates the run dir, then
   atomically overwrites `run.json` with the terminal manifest carrying
-  `"status": "complete"` (or `"dry-run"`) at the end. So a run dir is a
+  `"status": "complete"` (or `"dry-run"`) at the end.
+  `collectorkit.bronze.open_run` writes both manifests, and a new
+  download uses it. So a run dir is a
   **complete** dump (`status == "complete"`) or a **non-complete** one (an
   `in-progress` marker from a crashed walk, a `dry-run` shell, or no
   `run.json` at all). A manifest with no `status` field is classified by
@@ -715,13 +755,18 @@ uniform convention:
 The safety envelope is **identical everywhere** because it lives in one
 place — [`collectorkit.prune`](../shared/collectorkit/collectorkit/prune.py),
 a reviewed, unit-tested engine. Each collector with run dirs ships a
-**thin `prune.py`** that hands the engine a `PruneConfig`: the
-`debug_subdirs` to reclaim (empty for collectors that write none) and
-an `is_complete(run_dir, meta)`
-predicate (most pass `prune.lenient_classification`; the rest build on
-`prune.status_classification`, which encodes the `status` lifecycle plus
-a per-collector legacy fallback). The engine
-guarantees, for every collector:
+**thin `prune.py`** whose config is `prune.spec_config(SPEC)`. That
+config holds:
+
+- the debug subdirs and globs that `collector.py` names (none for a
+  collector that writes no debug artefact);
+- an `is_complete(run_dir, meta)` predicate. It is the lenient rule
+  (`prune.lenient_classification`) unless the collector passes its own,
+  as `prune.spec_config(SPEC, is_complete)`. Its own predicate builds
+  on `prune.status_classification`, which encodes the `status`
+  lifecycle plus a per-collector legacy fallback.
+
+The engine guarantees, for every collector:
 
 - a **`load` input is never deleted** — inside bronze the only paths
   removed are the configured debug subdirs of *complete* dumps and whole

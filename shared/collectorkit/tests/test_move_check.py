@@ -94,6 +94,16 @@ def test_a_name_the_old_module_no_longer_binds_fails(tmp_path, capsys):
     assert out.splitlines()[0] == "no longer bound by the old module: pure"
 
 
+def test_a_private_name_the_old_module_no_longer_binds_is_a_note(
+        tmp_path, capsys):
+    helper = "\n\ndef _helper(text):\n    return text\n"
+    rc, out = _run(tmp_path, OLD + helper, ("after", OLD_AFTER),
+                   ("rules", RULES + helper), capsys=capsys)
+    assert rc == 0, out
+    assert out.splitlines()[0] == "private name no longer bound: _helper"
+    assert out.endswith("0 failures, 1 notes\n")
+
+
 def test_a_missing_added_or_twice_defined_function_fails(tmp_path, capsys):
     rules = RULES.replace("def pure", "def renamed")
     rules += "\n\ndef walk(page):\n    return page.goto(LIMIT)\n"

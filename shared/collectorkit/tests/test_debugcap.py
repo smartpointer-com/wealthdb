@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from collectorkit import debugcap  # noqa: E402
+from collectorkit import debugcap, redact  # noqa: E402
 
 log = logging.getLogger("test.debugcap")
 
@@ -37,7 +37,7 @@ COLLECTORS = Path(__file__).resolve().parents[3] / "collectors"
 KIT_EXPLORE = Path(__file__).resolve().parents[1] / "collectorkit" / "explore.py"
 
 # Stated as literals, never imported from the module: a name removed from
-# debugcap._SECRET_PARAMS has to fail a test, and a test that reads the set
+# redact._SECRET_PARAMS has to fail a test, and a test that reads the set
 # it is checking would follow the removal instead of catching it.
 KNOWN_PARAMS = (
     "api_key", "apikey", "key", "token", "access_token", "refresh_token",
@@ -70,7 +70,7 @@ class RedactUrlTest(unittest.TestCase):
     def test_the_credential_parameter_set_is_the_one_stated_here(self):
         # Pins both directions: a name dropped from the module fails the
         # loop above, and one added without a test here fails this.
-        self.assertEqual(frozenset(KNOWN_PARAMS), debugcap._SECRET_PARAMS)
+        self.assertEqual(frozenset(KNOWN_PARAMS), redact._SECRET_PARAMS)
 
     def test_is_case_insensitive(self):
         out = debugcap.redact_url("https://x.invalid/a?API_KEY=LEAKME")
@@ -1364,7 +1364,7 @@ class RedactHeadersTest(unittest.TestCase):
 
     def test_the_credential_header_set_is_the_one_stated_here(self):
         self.assertEqual(frozenset(KNOWN_PARAMS) | frozenset(HEADER_ONLY),
-                         debugcap._SECRET_HEADERS)
+                         redact._SECRET_HEADERS)
 
     def test_empty_and_unmappable_inputs_are_safe(self):
         self.assertEqual(debugcap.redact_headers(None), {})
@@ -1453,7 +1453,8 @@ class CaptureLandmarkTest(unittest.TestCase):
 
     def test_writes_timestamped_dom_and_viewport_screenshot(self):
         page = _LandmarkPage()
-        debugcap.capture_landmark(page, self.dir, "signin", log=log)
+        debugcap.capture_landmark(page, self.dir, "signin", log=log,
+                                  redact=None)
         self.assertEqual(self._one(".html").read_text(), "<html>ok</html>")
         self._one(".png")
         self.assertEqual(page.shot["timeout"], 3_000)
@@ -1462,20 +1463,21 @@ class CaptureLandmarkTest(unittest.TestCase):
 
     def test_no_dir_captures_nothing(self):
         page = _LandmarkPage()
-        debugcap.capture_landmark(page, None, "signin", log=log)
+        debugcap.capture_landmark(page, None, "signin", log=log, redact=None)
         self.assertIsNone(page.shot)
 
     def test_a_navigating_page_falls_back_to_the_live_dom(self):
         page = _LandmarkPage(content_raises=True)
         debugcap.capture_landmark(page, self.dir, "signin", log=log,
-                                  png_timeout_ms=5_000)
+                                  png_timeout_ms=5_000, redact=None)
         self.assertEqual(self._one(".html").read_text(),
                          "<html>evaluated</html>")
         self.assertEqual(page.shot["timeout"], 5_000)
 
     def test_a_missed_screenshot_keeps_the_dom_and_never_raises(self):
         page = _LandmarkPage(shot_raises=True)
-        debugcap.capture_landmark(page, self.dir, "signin", log=log)
+        debugcap.capture_landmark(page, self.dir, "signin", log=log,
+                                  redact=None)
         self._one(".html")
         self.assertEqual(list(self.dir.glob("*.png")), [])
 
@@ -1521,7 +1523,7 @@ class LandmarkCapturerTest(unittest.TestCase):
             self.assertNotIn(secret, out)
         self.assertEqual(out.count(debugcap.REDACTED), 3)
 
-    def test_reads_the_credentials_at_the_first_capture(self):
+    def test_reads_the_credentials_at_the_capture(self):
         # The env file is sourced after the capture is wired, before the
         # first landmark.
         capture = debugcap.landmark_capturer(self.dir, user_env="EX_LATE",
@@ -1529,6 +1531,23 @@ class LandmarkCapturerTest(unittest.TestCase):
         with mock.patch.dict("os.environ", {"EX_LATE": "late-user-value"}):
             capture(_LandmarkPage("<div>late-user-value</div>"), "signin")
         self.assertNotIn("late-user-value", self._html())
+
+    def test_each_capture_reads_the_jar_as_it_stands(self):
+        # A capturer kept across a sign-in sees the pre-login jar first and
+        # the minted session later; the later capture masks the session.
+        capture = debugcap.landmark_capturer(self.dir, session=True, log=log)
+        jar = []
+        context = types.SimpleNamespace(cookies=lambda: list(jar))
+        values = {"before": "EXAMPLEPRELOGINVALUE",
+                  "after": "EXAMPLEMINTEDSESSION"}
+        for label, value in values.items():
+            jar[:] = [{"name": "s", "value": value}]
+            page = _LandmarkPage(f"<meta content='{value}'>")
+            page.context = context
+            capture(page, label)
+        for label, value in values.items():
+            (found,) = self.dir.glob(f"*-{label}.html")
+            self.assertNotIn(value, found.read_text())
 
     def test_masks_the_session_jar(self):
         page = _LandmarkPage("<meta content='EXAMPLESESSIONVALUE'>")

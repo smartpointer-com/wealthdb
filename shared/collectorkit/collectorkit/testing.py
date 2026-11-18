@@ -26,16 +26,27 @@ body, say) is written as a digest, and a path under the test's root as
 `<root>/...`. The trace of a walk, stored as a fixture, is the
 mechanical proof that a later restructuring sent the same calls in the
 same order.
+
+`assert_trace` compares a trace with its fixture. A walk that is meant
+to send something else gets its fixture written anew: run the test with
+`COLLECTORKIT_RECORD_TRACES=1` set, then read the diff of the fixture.
+`freeze_collector` pins what a trace would otherwise take from the real
+clock: today's date in a collector's modules and the run slug.
 """
 
 from __future__ import annotations
 
+import difflib
 import hashlib
+import os
+import sys
 import time as _time
 from dataclasses import dataclass
 from datetime import date as _date
 from datetime import datetime as _datetime
 from pathlib import Path, PurePath
+
+from collectorkit import bronze
 
 # Calls that read rather than act, and what they read when no rule
 # answers: nothing is on the page.
@@ -102,6 +113,10 @@ MAX_CALLS = 50_000
 
 # Text arguments longer than this are written as a digest.
 LONG_TEXT = 200
+
+# Set (to any value but empty), `assert_trace` writes the fixture instead
+# of comparing with it.
+RECORD_ENV = "COLLECTORKIT_RECORD_TRACES"
 
 
 class Raises:
@@ -393,12 +408,55 @@ def freeze_today(monkeypatch, today: _date, modules) -> None:
         def now(cls, tz=None):
             return cls(y, m, d, 12, tzinfo=tz)
 
-        @classmethod
-        def utcnow(cls):
-            return cls(y, m, d, 12)
-
     for module in modules:
         if getattr(module, "date", None) is _date:
             monkeypatch.setattr(module, "date", FrozenDate)
         if getattr(module, "datetime", None) is _datetime:
             monkeypatch.setattr(module, "datetime", FrozenDatetime)
+
+
+def freeze_collector(monkeypatch, collector_dir, today: _date,
+                     slug: str) -> None:
+    """Make today read `today` (:func:`freeze_today`) in every module
+    loaded from `collector_dir`, its tests included, and make
+    `bronze.ts_slug` return `slug`."""
+    prefix = str(Path(collector_dir).resolve())
+    modules = [m for m in list(sys.modules.values())
+               if str(getattr(m, "__file__", "") or "").startswith(prefix)]
+    freeze_today(monkeypatch, today, modules)
+    monkeypatch.setattr(bronze, "ts_slug", lambda now=None: slug)
+
+
+def js_contains(fragment: str):
+    """A rule's match: a call whose first argument (an `evaluate`'s
+    script, say) holds `fragment`."""
+    return lambda call: fragment in str(call.arg)
+
+
+def assert_trace(path, trace: list[str]) -> None:
+    """Fail unless `trace` is the one stored at `path`, one line per
+    call.
+
+    With :data:`RECORD_ENV` set, write `trace` to `path` instead, so an
+    intended change to a walk is one test run and a reviewed diff.
+    """
+    path = Path(path)
+    if os.environ.get(RECORD_ENV):
+        text = "".join(f"{line}\n" for line in trace)
+        if not path.is_file() or path.read_text() != text:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        return
+    if not path.is_file():
+        raise AssertionError(
+            f"no stored trace {path.name}; run with {RECORD_ENV}=1 to write it")
+    stored = path.read_text().splitlines()
+    if trace != stored:
+        diff = list(difflib.unified_diff(
+            stored, trace, f"{path.name} (stored)", f"{path.name} (run)",
+            lineterm=""))
+        shown = "\n".join(diff[:60])
+        more = f"\n... {len(diff) - 60} more diff lines" if len(diff) > 60 else ""
+        raise AssertionError(
+            f"the trace differs from {path.name}; with {RECORD_ENV}=1 set the "
+            f"test writes it anew\n{shown}{more}")

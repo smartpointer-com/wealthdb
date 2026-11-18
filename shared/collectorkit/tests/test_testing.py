@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from collectorkit import testing  # noqa: E402
+from collectorkit import bronze, testing  # noqa: E402
 from collectorkit.testing import (  # noqa: E402
     NODE, Compute, Raises, Recorder, Script, Seq,
 )
@@ -139,3 +139,51 @@ def test_freeze_today_rebinds_only_the_named_modules(monkeypatch):
         2026, 1, 15, 12, tzinfo=timezone.utc)
     assert isinstance(date(2020, 1, 1), frozen.date)
     assert other.date is date
+
+
+def test_freeze_collector_freezes_the_modules_under_its_dir(
+        tmp_path, monkeypatch):
+    inside = types.ModuleType("inside_collector")
+    inside.__file__ = str(tmp_path / "walk.py")
+    outside = types.ModuleType("outside_collector")
+    outside.__file__ = str(tmp_path.parent / "elsewhere.py")
+    for m in (inside, outside):
+        m.date = date
+        monkeypatch.setitem(sys.modules, m.__name__, m)
+    testing.freeze_collector(monkeypatch, tmp_path, date(2026, 1, 15),
+                             "20260115T120000Z")
+    assert inside.date.today() == date(2026, 1, 15)
+    assert outside.date is date
+    assert bronze.ts_slug() == "20260115T120000Z"
+
+
+def test_js_contains_matches_the_first_argument():
+    rec = Recorder(Script().on("evaluate", testing.js_contains("el.min"), 7))
+    assert rec.page.evaluate("(el) => el.min") == 7
+    assert rec.page.evaluate("(el) => el.max") is None
+
+
+def test_assert_trace_passes_on_the_stored_trace_and_shows_a_diff(
+        tmp_path, monkeypatch):
+    monkeypatch.delenv(testing.RECORD_ENV, raising=False)
+    path = tmp_path / "case.trace"
+    path.write_text("page.goto('a')\nsleep(1)\n")
+    testing.assert_trace(path, ["page.goto('a')", "sleep(1)"])
+    with pytest.raises(AssertionError) as raised:
+        testing.assert_trace(path, ["page.goto('a')", "sleep(2)"])
+    assert "-sleep(1)\n+sleep(2)" in str(raised.value)
+    assert testing.RECORD_ENV in str(raised.value)
+    with pytest.raises(AssertionError, match="no stored trace"):
+        testing.assert_trace(tmp_path / "new.trace", [])
+
+
+def test_assert_trace_writes_the_fixture_when_recording(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv(testing.RECORD_ENV, "1")
+    path = tmp_path / "traces" / "case.trace"
+    testing.assert_trace(path, ["page.goto('a')", "sleep(1)"])
+    assert path.read_text() == "page.goto('a')\nsleep(1)\n"
+    testing.assert_trace(path, ["page.goto('b')"])
+    assert path.read_text() == "page.goto('b')\n"
+    monkeypatch.delenv(testing.RECORD_ENV)
+    testing.assert_trace(path, ["page.goto('b')"])

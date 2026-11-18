@@ -234,7 +234,7 @@ class ChallengeDialogTest(unittest.TestCase):
 class ExitVocabularyTest(unittest.TestCase):
     def test_each_status_has_its_own_value_and_two_is_argparses(self):
         codes = [cli.EXIT_OK, cli.EXIT_FAILED, cli.EXIT_USAGE,
-                 cli.EXIT_NO_VERDICT, cli.EXIT_SHORT, cli.EXIT_NEEDS_PERSON]
+                 cli.EXIT_NO_VERDICT, cli.EXIT_NEEDS_PERSON]
         self.assertEqual(len(set(codes)), len(codes))
         self.assertEqual((cli.EXIT_OK, cli.EXIT_FAILED), (0, 1))
         p = argparse.ArgumentParser()
@@ -242,23 +242,6 @@ class ExitVocabularyTest(unittest.TestCase):
                 self.assertRaises(SystemExit) as raised:
             p.parse_args(["--unknown"])
         self.assertEqual(raised.exception.code, cli.EXIT_USAGE)
-
-
-class MfaTimeoutTest(unittest.TestCase):
-    def test_the_default_wait_is_five_minutes(self):
-        self.assertEqual(cli.MFA_TIMEOUT_S, 300)
-        p = argparse.ArgumentParser()
-        cli.add_mfa_timeout(p, help="Seconds to wait.")
-        self.assertEqual(p.parse_args([]).mfa_timeout, 300)
-        self.assertEqual(p.parse_args(["--mfa-timeout", "90"]).mfa_timeout, 90)
-
-    def test_a_collector_keeps_its_default_type_and_help(self):
-        p = argparse.ArgumentParser()
-        cli.add_mfa_timeout(p, default=120.0, type=float,
-                            help="Seconds to wait for the push.")
-        self.assertEqual(p.parse_args(["--mfa-timeout", "1.5"]).mfa_timeout, 1.5)
-        self.assertEqual(p.parse_args([]).mfa_timeout, 120.0)
-        self.assertIn("Seconds to wait for the push.", p.format_help())
 
 
 if __name__ == "__main__":

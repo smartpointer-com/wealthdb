@@ -22,19 +22,18 @@ from pathlib import Path
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
-# A verb's exit status, one meaning each, so a caller can tell a run that
-# needs a person from one that failed. 2 stays argparse's usage error.
-# The values above it avoid the codes the fleet's downloads already give
-# another meaning (5: no usable series in fred and curves).
+# A download's or a session probe's exit status, one meaning each, so a
+# caller can tell a run that needs a person from one that failed. 2 stays
+# argparse's usage error. 5 is left out: fred and curves give it to a
+# download with no usable series. The vocabulary does not cover a full
+# login: the ubs-web, schwab-api and schwab-web logins give 4 to 8 their
+# own sign-in failures.
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 # A probe that could not run, such as a browser that did not start: no
 # verdict on the session either way.
 EXIT_NO_VERDICT = 3
-# The run is complete and loadable, but a surface came back short (its
-# manifest's coverage says which).
-EXIT_SHORT = 4
 # A person has to sign in first: there is no session, or it is dead.
 EXIT_NEEDS_PERSON = 6
 
@@ -318,22 +317,6 @@ def resolve_standard(args: argparse.Namespace, *, verb: str,
     if log is not None:
         warn_lookback_ignored(args.lookback, log, what=what)
     return None, None
-
-
-# How long a sign-in waits for its second factor, in seconds: a typed
-# code, a push approval or a sign-in by hand over VNC (AGENTS.md §9). A
-# provider that states a shorter lifetime for its code passes that.
-MFA_TIMEOUT_S = 300
-
-
-def add_mfa_timeout(parser: argparse.ArgumentParser, *,
-                    default: float = MFA_TIMEOUT_S, help: str,
-                    type=int) -> None:
-    """Add ``--mfa-timeout``: the seconds a sign-in waits for its second
-    factor. Each collector passes its own `help`, which names what the
-    wait covers there."""
-    parser.add_argument("--mfa-timeout", type=type, default=default,
-                        help=help)
 
 
 # ---- the person at the terminal --------------------------------------------
