@@ -461,8 +461,11 @@ line (`BALANCE CLOSING OF SERVICE PRICES`, `INTEREST CALCULATION
 BALANCE`), which reaches silver with a figure of `0.00` and the totals
 as its only narrative.
 
-- The adapter drops a row with an amount of exactly zero and no
-  narrative but the turnover-total line (`isStatementSummary`).
+- The adapter drops every statement row with an amount of exactly
+  zero: it moves no money, whatever its booking type says (a period
+  close, a low booking amount). Silver keeps it as printed.
+- It drops an advice row of amount zero whose only narrative is the
+  turnover-total line (`isStatementSummary`).
 - The export prints the same marker as a zero-amount `Balance closing
   of service prices` row without a booking type. It is dropped the same
   way (`isServicePriceClose`).

@@ -392,17 +392,18 @@ type webTxRow struct {
 	counterparty, descKind           sql.NullString
 }
 
-// periodSummary reports whether the row is a statement's period summary,
-// which is no booking. The "Turnover total" line a statement prints
-// before its closing balance carries no date, so the collector's parser
-// attaches it to the booking that precedes it — at a period close the
-// zero-amount service-price or interest line — and that row reaches
-// silver with the totals as its only narrative and an amount of zero.
-// The same line under a real fee or interest amount is a booking and is
-// kept (bookingLines; docs/adapters/ubs.md §7). The CSV feed prints the
-// same close as a zero-amount service-price row with no booking type.
+// periodSummary reports whether the row moves no money and is no
+// booking. A statement line of amount zero moves nothing, whatever it
+// says: a service-price close, a low booking amount, or the "Turnover
+// total" line a statement prints before its closing balance, which the
+// collector's parser attaches to the booking that precedes it. Silver
+// keeps them as printed. The same lines under a real amount are
+// bookings and are kept (bookingLines; docs/adapters/ubs.md §7). The CSV
+// feed prints a period close as a zero-amount service-price row with no
+// booking type, and an advice's zero line restates a summary.
 func (row *webRow) periodSummary() bool {
-	return row.net.IsZero() && (row.pdfBackfill && isStatementSummary(row.pl) ||
+	return row.net.IsZero() && (isStatementEraID(row.txID) ||
+		row.pdfBackfill && isStatementSummary(row.pl) ||
 		!row.pdfBackfill && isServicePriceClose(row.hint))
 }
 

@@ -634,3 +634,46 @@ func TestAnAdviceTheExportHoldsGivesWay(t *testing.T) {
 		t.Error("the export's row was not emitted")
 	}
 }
+
+// An export dividend books at its gross with the tax withheld beside it;
+// the statement prints the net credit, which is what the export row moved.
+func TestAStatementCopyOfANetDividendFoldsIntoTheExportPair(t *testing.T) {
+	const day = 420 * 86400
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	seedDatedRow(t, r, "EXP0000001", day, day, nil, 65.0, "Dividend",
+		exportPayload("Example Share; CH0000000001", "Dividend", "Number/Amt. 100 CHF; Transaction no. EXP0000001"))
+	seedDatedRow(t, r, foldStmtA, day, day, nil, 65.0, "DIVIDEND",
+		statementPayload("DIVIDEND", "VN 1234567", "EXAMPLE SHARE"))
+	got := drainTx(t, emitWebStream(t, r))
+	if _, ok := got[foldStmtA+"@"+textAcct]; ok {
+		t.Error("the statement's net credit was emitted beside the export pair")
+	}
+	div, tax := got["EXP0000001@"+textAcct], got["EXP0000001@"+textAcct+withholdingIDSuffix]
+	if derefDecimal(div.NetAmount) != "100" || derefDecimal(tax.NetAmount) != "-35" {
+		t.Errorf("export pair = %s, %s; want the gross 100 and the tax -35",
+			derefDecimal(div.NetAmount), derefDecimal(tax.NetAmount))
+	}
+}
+
+// A statement line of amount zero moves no money: it reaches no ledger,
+// whatever its booking type. The same type under an amount is a booking.
+func TestAZeroStatementLineIsNoBooking(t *testing.T) {
+	const day = 420 * 86400
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	seedDatedRow(t, r, foldStmtA, day, day, nil, 0.0, "LOW BOOKING AMOUNT",
+		statementPayload("LOW BOOKING AMOUNT", "EXAMPLE SHARE"))
+	seedDatedRow(t, r, foldStmtB, day, day, nil, 0.0, "BALANCE CLOSING OF SERVICE PRICES",
+		statementPayload("BALANCE CLOSING OF SERVICE PRICES", "Example service"))
+	seedDatedRow(t, r, foldStmtC, day+86400, day+86400, nil, 12.0, "BALANCE CLOSING OF SERVICE PRICES",
+		statementPayload("BALANCE CLOSING OF SERVICE PRICES", "Example service"))
+	got := drainTx(t, emitWebStream(t, r))
+	for id, want := range map[string]bool{foldStmtA: false, foldStmtB: false, foldStmtC: true} {
+		if _, ok := got[id+"@"+textAcct]; ok != want {
+			t.Errorf("%s emitted = %v, want %v", id, ok, want)
+		}
+	}
+}
