@@ -41,6 +41,13 @@ from pathlib import Path
 
 import download
 import landmarks as schwab
+# The lookback's mapping onto the site's filters; each name is
+# bound here too.
+from landmarks import (  # noqa: F401
+    LAST_10_YEARS_DAYS,
+    _since_to_schwab_preset,
+    _exact_window,
+)
 from download import maybe_screenshot
 
 from collectorkit import cli, debugcap, envfile, launch
@@ -1110,52 +1117,6 @@ def _prefill_login_iframe(page, login_id_value: str, password_value: str) -> Non
 # ============================================================
 # Entry point
 # ============================================================
-
-# Schwab's Statements filter tops out at Last10Years. A window reaching
-# further back cannot be honoured, so the walk covers less than was asked
-# for — worth one warning rather than a silent shortfall.
-LAST_10_YEARS_DAYS = 3650
-
-
-def _since_to_schwab_preset(since, until, log=None) -> str:
-    """Map a (since, until) window to the narrowest Statements preset that
-    still covers it.
-
-    A named --lookback window runs on the preset; an exact window
-    (_exact_window) uses the custom date-range mode and falls back to this
-    preset. A window wider than the longest preset is capped, with a
-    warning."""
-    days = (until - since).days
-    if days <= 90:
-        return "Last3Months"
-    if days <= 180:
-        return "Last6Months"
-    # <= keeps the shared 5y preset (exactly 1825 days) on Last5Years.
-    # Safe: Schwab resolves Last5Years to the 5-calendar-year
-    # anniversary date, and any 5-year calendar span contains at least
-    # one leap day, so the preset always covers >= 1826 days — never a
-    # day short of 1825.
-    if days <= 1825:
-        return "Last5Years"
-    if days > LAST_10_YEARS_DAYS and log is not None:
-        log.warning(
-            "requested window reaches back to %s (%d days), but Schwab's "
-            "filter stops at Last10Years — coverage is capped at ~10 years.",
-            since, days)
-    return "Last10Years"
-
-
-def _exact_window(lookback, since, until):
-    """(since, until) when ``--lookback`` names an exact ISO date, else
-    None. resolve_lookback already validated the value, so anything
-    that is not a named preset is an ISO date. Named presets keep the
-    preset ladder on both pages; an exact date drives the shared
-    SpecifyDateRange custom mode on Statements and Tx-history alike,
-    each falling back to the covering preset if the fill fails."""
-    if lookback and lookback not in cli.LOOKBACK_PRESETS:
-        return (since, until)
-    return None
-
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
