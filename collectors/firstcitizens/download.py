@@ -198,16 +198,16 @@ def walk(context, bronze_dir: Path, *, formats: tuple[str, ...],
     posted_date = (q2client.posted_date_range(since, until)
                    if since and until else None)
     slug = bronze.ts_slug()
-    run_dir = bronze.run_dir(bronze_dir, slug)
+    run = bronze.open_run(bronze_dir, slug, dry_run=dry_run,
+                          dry_policy="stamp", meta=build_manifest(
+                              bronze.IN_PROGRESS, accounts=[], counts={},
+                              since=since, until=until, formats=formats))
+    run_dir = run.dir
     (run_dir / "raw").mkdir(parents=True, exist_ok=True)
     (run_dir / "history").mkdir(exist_ok=True)
     (run_dir / "transactions").mkdir(exist_ok=True)
     if documents:
         (run_dir / "statements").mkdir(exist_ok=True)
-
-    bronze.atomic_write_json(run_dir / "run.json", build_manifest(
-        "in-progress", accounts=[], counts={}, since=since, until=until,
-        formats=formats))
 
     status, roster = login.q2_get_json(context, q2client.accounts_url())
     if status != 200 or roster is None:
@@ -256,8 +256,8 @@ def walk(context, bronze_dir: Path, *, formats: tuple[str, ...],
             counts["statements"] += _download_statements(
                 context, acct, run_dir, since=since)
 
-    status_str = "dry-run" if dry_run else "complete"
-    bronze.atomic_write_json(run_dir / "run.json", build_manifest(
+    status_str = bronze.DRY_RUN if dry_run else bronze.COMPLETE_STATUS
+    run.finish(build_manifest(
         status_str, accounts=accounts, counts=counts, since=since,
         until=until, formats=formats))
     log.info("download %s: %s", status_str, counts)

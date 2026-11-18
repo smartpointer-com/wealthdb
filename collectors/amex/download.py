@@ -333,17 +333,18 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
                     " --no-documents, so nothing this run reaches further.")
 
     slug = bronze.ts_slug()
-    run_dir = bronze.run_dir(bronze_dir, slug)
+    run = bronze.open_run(bronze_dir, slug, dry_run=dry_run,
+                          dry_policy="stamp", meta=build_manifest(
+                              bronze.IN_PROGRESS, accounts=[], counts={},
+                              since=since, until=until, formats=formats,
+                              clamped=clamped,
+                              documents_since=documents_since))
+    run_dir = run.dir
     (run_dir / "raw").mkdir(parents=True, exist_ok=True)
     (run_dir / "activity").mkdir(exist_ok=True)
     (run_dir / "transactions").mkdir(exist_ok=True)
     if documents:
         (run_dir / "statements").mkdir(exist_ok=True)
-
-    bronze.atomic_write_json(run_dir / "run.json", build_manifest(
-        "in-progress", accounts=[], counts={}, since=since, until=until,
-        formats=formats, clamped=clamped,
-        documents_since=documents_since))
 
     status, roster = login.fn_post(context, amexclient.FN_CUSTOMER_OVERVIEW)
     if status != 200 or roster is None:
@@ -420,8 +421,8 @@ def walk(context, bronze_dir: Path, *, since: date | None = None,
             counts["statements"] += pdfs
             counts["year_end_summaries"] += summaries
 
-    status_str = "dry-run" if dry_run else "complete"
-    bronze.atomic_write_json(run_dir / "run.json", build_manifest(
+    status_str = bronze.DRY_RUN if dry_run else bronze.COMPLETE_STATUS
+    run.finish(build_manifest(
         status_str, accounts=accounts, counts=counts, since=since,
         until=until, formats=formats, clamped=clamped,
         documents_since=documents_since, pagination=pagination,

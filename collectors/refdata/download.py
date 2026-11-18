@@ -858,9 +858,8 @@ def main(argv=None) -> int:
         # requests the plan makes as well.
         args.bronze_dir.mkdir(parents=True, exist_ok=True)
         slug = bronze.ts_slug()
-        run = bronze.run_dir(args.bronze_dir, slug)
-        bronze.atomic_write_json(run / "run.json", {"slug": slug, "status": "in-progress"})
-        ctx.client.trace = debugcap.HttpTrace(run, log=log, enabled=args.debug)
+        run = bronze.open_run(args.bronze_dir, slug, meta={"slug": slug})
+        ctx.client.trace = debugcap.HttpTrace(run.dir, log=log, enabled=args.debug)
     earlier = Ledger.read(args.bronze_dir)
     unplanned = set()
     reqs, unclaimed, cover = plan(wanted, providers, ctx, today=today_utc(), max_age=cfg.max_age_days,
@@ -880,12 +879,11 @@ def main(argv=None) -> int:
         for line in coverage_lines(cover, deferred):
             print(line)
         return 0
-    manifest = {"slug": slug, "status": "in-progress", "wanted_as_of": wanted.as_of.isoformat(),
+    manifest = {"slug": slug, "wanted_as_of": wanted.as_of.isoformat(),
                 "providers": [p.name for p in providers], "unclaimed": unclaimed, "requests": []}
-    bronze.atomic_write_json(run / "run.json", manifest)
-    manifest["requests"] = execute(reqs, run, ctx, args.limit)
-    manifest["status"] = "complete"
-    bronze.atomic_write_json(run / "run.json", manifest)
+    run.update(**manifest)
+    manifest["requests"] = execute(reqs, run.dir, ctx, args.limit)
+    run.finish(manifest)
     by = Counter(e["status"] for e in manifest["requests"])
     log.info("run %s: %s", slug, ", ".join(f"{n} {s}" for s, n in sorted(by.items())) or "nothing to fetch")
     log_coverage(cover, {id(r) for r, e in zip(reqs, manifest["requests"], strict=True) if e["status"] == "deferred"})

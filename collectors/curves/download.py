@@ -344,7 +344,6 @@ def main(argv: list[str] | None = None) -> int:
              len(series_ids))
 
     slug = bronze.ts_slug()
-    run = None if args.dry_run else bronze.run_dir(args.bronze_dir, slug)
     manifest = {
         "slug": slug,
         "since": since.isoformat(),
@@ -353,18 +352,16 @@ def main(argv: list[str] | None = None) -> int:
         "series": {},
     }
 
-    # Drop an "in-progress" manifest up front; the write makes the run dir
-    # (a dry run makes none). A walk that crashes mid-fetch thus leaves
-    # status="in-progress": load skips such a dump,
-    # and prune reclaims it once quiescent. The terminal write below
-    # atomically overwrites this marker with status="complete".
-    if run is not None:
-        manifest["status"] = "in-progress"
-        bronze.atomic_write_json(run / "run.json", manifest)
+    # The "in-progress" manifest goes down up front and makes the run dir;
+    # a dry run makes none and writes nothing. A walk that crashes
+    # mid-fetch thus leaves status="in-progress": load skips such a dump,
+    # and prune reclaims it once quiescent.
+    run = bronze.open_run(args.bronze_dir, slug, dry_run=args.dry_run,
+                          meta=manifest)
 
     # One trace for the whole run. A dry run creates no run dir, so
     # HttpTrace(None) makes the capture an explicit no-op.
-    trace = debugcap.HttpTrace(run, log=log, enabled=args.debug)
+    trace = debugcap.HttpTrace(run.dir, log=log, enabled=args.debug)
 
     total = failures = unchanged = 0
     for portal, sids in by_portal.items():
@@ -395,21 +392,19 @@ def main(argv: list[str] | None = None) -> int:
             manifest["series"][sid] = {**SERIES[sid], "rows": n}
             log.info("series %s (%s): %d dated observations", sid,
                      _describe(sid), n)
-        if run is not None:
-            bronze.atomic_write_bytes(run / entry["file"], body)
+        run.write_bytes(entry["file"], body)
 
     # A run that fetched nothing and found nothing unchanged is a failure
     # worth a non-zero exit, a dry run included.
     rc = 0 if manifest["series"] or unchanged else 5
-    if run is None:
+    if run.dir is None:
         log.info("dry run: %d observations across %d series, %d failures "
                  "(nothing written)", total, len(manifest["series"]), failures)
         return rc
 
-    manifest["status"] = bronze.COMPLETE_STATUS
-    bronze.atomic_write_json(run / "run.json", manifest)
+    run.finish(manifest)
     log.info("wrote %d series (%d observations, %d failures) to %s",
-             len(manifest["series"]), total, failures, run)
+             len(manifest["series"]), total, failures, run.dir)
     return rc
 
 

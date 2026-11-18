@@ -206,16 +206,17 @@ def walk(context, watch, bronze_dir: Path, *, since: date | None = None,
     enumerates the roster but writes no history/balances/PDFs and stamps the
     manifest 'dry-run'."""
     slug = bronze.ts_slug()
-    run_dir = bronze.run_dir(bronze_dir, slug)
+    run = bronze.open_run(bronze_dir, slug, dry_run=dry_run,
+                          dry_policy="stamp", meta=build_manifest(
+                              bronze.IN_PROGRESS, accounts=[], counts={},
+                              since=since, until=until))
+    run_dir = run.dir
     (run_dir / "raw").mkdir(parents=True, exist_ok=True)
     (run_dir / "history").mkdir(exist_ok=True)
     (run_dir / "balances").mkdir(exist_ok=True)
     (run_dir / "details").mkdir(exist_ok=True)
     if documents:
         (run_dir / "statements").mkdir(exist_ok=True)
-
-    bronze.atomic_write_json(run_dir / "run.json", build_manifest(
-        "in-progress", accounts=[], counts={}, since=since, until=until))
 
     status, roster = login.api_get_json(context, watch, elba.produkte_url())
     if status != 200 or not isinstance(roster, list):
@@ -269,8 +270,8 @@ def walk(context, watch, bronze_dir: Path, *, since: date | None = None,
             counts["statements"] += _download_statements(
                 context, watch, all_docs, iban, run_dir, since)
 
-    status_str = "dry-run" if dry_run else "complete"
-    bronze.atomic_write_json(run_dir / "run.json", build_manifest(
+    status_str = bronze.DRY_RUN if dry_run else bronze.COMPLETE_STATUS
+    run.finish(build_manifest(
         status_str, accounts=accounts, counts=counts, since=since, until=until))
     log.info("download %s: %s", status_str, counts)
     return {"run_dir": str(run_dir), "accounts": len(accounts), **counts}

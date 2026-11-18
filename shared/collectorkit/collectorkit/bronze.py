@@ -1,6 +1,7 @@
 """Bronze helpers shared by collectors.
 
-UTC-timestamped run directories, the one classification of a run that
+UTC-timestamped run directories and the one writer of a download's run
+dir and manifest (:func:`open_run`), the one classification of a run that
 loaders and prune share (:func:`classify_run`), atomic writes (tmp +
 rename so an interrupted run never leaves a half-written artifact), and
 the canonical-JSON form used for content-based dedup.
@@ -12,6 +13,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,6 +99,11 @@ def run_status(run_json_path: Path) -> str | None:
 
 # The run.json status of a finished dump.
 COMPLETE_STATUS = "complete"
+# The status from the run dir's creation until the terminal write. A run
+# that keeps it crashed or is still running.
+IN_PROGRESS = "in-progress"
+# The terminal status of a dry run that leaves its run dir in place.
+DRY_RUN = "dry-run"
 
 
 def is_loadable_status(status: str | None) -> bool:
@@ -268,6 +276,158 @@ def manifest_is_complete(run_dir: Path, manifest_name: str = "run.json") -> bool
     download that writes no status writes its manifest only at the end.
     """
     return classify_run(run_dir, manifest_name=manifest_name)[0] == COMPLETE
+
+
+# What a dry run leaves under the bronze dir:
+#   "none"     no run dir at all; every write of the run is skipped;
+#   "stamp"    a run dir like a real run's, its status DRY_RUN at the end;
+#   "scratch"  a run dir in a temp dir, removed when the run closes.
+DRY_POLICIES = ("none", "stamp", "scratch")
+# What a run that raises leaves behind: "leave" keeps its run dir with the
+# IN_PROGRESS status; "remove" deletes it.
+CRASH_POLICIES = ("leave", "remove")
+
+# The exit code of a run whose coverage records a surface that came back
+# short. The dump is still complete and loadable.
+EXIT_SHORT = 4
+
+
+class Run:
+    """One download's run dir and its manifest, from :func:`open_run`.
+
+    `dir` is the run dir, or ``None`` on a dry run that writes nothing;
+    every write is then skipped. The manifest is written with the
+    IN_PROGRESS status at the start and on each :meth:`update`, and with
+    its terminal status once, by :meth:`finish`.
+
+    The run is a context manager. Closing it removes a scratch dir, and
+    when a crash policy of ``"remove"`` meets an exception before
+    :meth:`finish`, the run dir too.
+    """
+
+    def __init__(self, dir: Path | None, slug: str, *, dry_run: bool,
+                 on_crash: str, meta: dict | None,
+                 scratch: tempfile.TemporaryDirectory | None = None) -> None:
+        self.dir = dir
+        self.slug = slug
+        self.dry_run = dry_run
+        self._on_crash = on_crash
+        self._scratch = scratch
+        self._manifest = dict(meta or {})
+        self._coverage: dict[str, dict] = {}
+        self.finished = False
+
+    def write_json(self, rel, obj) -> Path | None:
+        """Write `obj` as JSON at `rel` under the run dir (see
+        :func:`atomic_write_json`); the path, or ``None`` when the run
+        writes nothing."""
+        if self.dir is None:
+            return None
+        path = self.dir / rel
+        atomic_write_json(path, obj)
+        return path
+
+    def write_bytes(self, rel, data: bytes) -> Path | None:
+        """Write `data` at `rel` under the run dir (see
+        :func:`atomic_write_bytes`); the path, or ``None`` when the run
+        writes nothing."""
+        if self.dir is None:
+            return None
+        path = self.dir / rel
+        atomic_write_bytes(path, data)
+        return path
+
+    def _write_manifest(self, status: str) -> None:
+        body = {**self._manifest, "status": status}
+        if self._coverage:
+            body["coverage"] = self.coverage()
+        self.write_json("run.json", body)
+
+    def update(self, **fields) -> None:
+        """Merge `fields` into the manifest and rewrite it, still
+        IN_PROGRESS."""
+        self._manifest.update(fields)
+        self._write_manifest(IN_PROGRESS)
+
+    def cover(self, surface: str, *, ok: bool, gap=None) -> None:
+        """Record one attempt on `surface`. A failed attempt marks the
+        surface short, and its `gap` (a window, a document) is listed."""
+        entry = self._coverage.setdefault(surface, {"complete": True, "gaps": []})
+        if not ok:
+            entry["complete"] = False
+            if gap is not None:
+                entry["gaps"].append(str(gap))
+
+    def coverage(self) -> dict:
+        """``{surface: {"complete": bool, "gaps": [str]}}`` over every
+        surface :meth:`cover` was told of. The manifest carries it under
+        ``coverage`` once one was."""
+        return {s: {"complete": e["complete"], "gaps": list(e["gaps"])}
+                for s, e in self._coverage.items()}
+
+    def finish(self, manifest: dict | None = None,
+               status: str = COMPLETE_STATUS) -> None:
+        """Write the terminal manifest: `manifest` when given, else the
+        one built by :meth:`update`. The status is `status`, or DRY_RUN
+        on a dry run."""
+        if manifest is not None:
+            self._manifest = dict(manifest)
+        self._write_manifest(DRY_RUN if self.dry_run else status)
+        self.finished = True
+
+    def exit_code(self) -> int:
+        """0, or EXIT_SHORT when a covered surface came back short."""
+        if any(not e["complete"] for e in self._coverage.values()):
+            return EXIT_SHORT
+        return 0
+
+    def close(self, crashed: bool = False) -> None:
+        """Remove the scratch dir; on a crash before :meth:`finish` under
+        the ``"remove"`` policy, remove the run dir."""
+        if self._scratch is not None:
+            self._scratch.cleanup()
+            self._scratch = None
+        elif (crashed and not self.finished and self._on_crash == "remove"
+              and self.dir is not None and self.dir.exists()):
+            shutil.rmtree(self.dir, ignore_errors=True)
+            log.warning("removed incomplete run dir %s after failure",
+                        self.dir.name)
+
+    def __enter__(self) -> Run:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close(crashed=exc_type is not None)
+
+
+def open_run(bronze_dir: Path, slug: str | None = None, *,
+             dry_run: bool = False, dry_policy: str = "none",
+             on_crash: str = "leave", meta: dict | None = None) -> Run:
+    """Open a download's run dir `<bronze_dir>/<slug>` (a fresh UTC slug
+    by default) and write `meta` as its IN_PROGRESS manifest.
+
+    A load skips the run and prune reclaims it until :meth:`Run.finish`
+    writes the terminal status. `dry_policy` says what a dry run leaves
+    (:data:`DRY_POLICIES`); `on_crash` what a run that raises leaves
+    (:data:`CRASH_POLICIES`).
+    """
+    if dry_policy not in DRY_POLICIES:
+        raise ValueError(f"dry_policy must be one of {DRY_POLICIES}, not {dry_policy!r}")
+    if on_crash not in CRASH_POLICIES:
+        raise ValueError(f"on_crash must be one of {CRASH_POLICIES}, not {on_crash!r}")
+    slug = slug or ts_slug()
+    scratch = None
+    if not dry_run or dry_policy == "stamp":
+        path: Path | None = run_dir(bronze_dir, slug)
+    elif dry_policy == "scratch":
+        scratch = tempfile.TemporaryDirectory(prefix="collectorkit-dryrun-")
+        path = Path(scratch.name) / slug
+    else:
+        path = None
+    run = Run(path, slug, dry_run=dry_run, on_crash=on_crash, meta=meta,
+              scratch=scratch)
+    run._write_manifest(IN_PROGRESS)
+    return run
 
 
 def pending_run_dirs(conn, bronze_dir: Path, *, log) -> list[Path]:
