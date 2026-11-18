@@ -137,6 +137,52 @@ _STMT_ROW_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{2}$")   # DD.MM.YY
 # CH-IBAN (inter-account e-banking transfer) or a UBS mortgage
 # account stamp ("HYPOTHEK <base>.<type> <sub-account>").
 _STMT_HYPO_RE = re.compile(r"HYPOTHEK\s+[\d ]+\.[A-Z0-9]+\s+\d+")
+# The page footer, as runs of words: the form note with the page number
+# after it, and the document's code (six letters and two digits / six
+# digits / fifteen letters and digits). Its words sit among the ledger's,
+# on a row of their own or on a ledger row they share a line with, so they
+# are taken out word by word and every other word is read.
+_STMT_FORM_NOTE = tuple(re.compile(p) for p in ("Form", "without", "signature"))
+_STMT_PAGE_NUMBER = tuple(re.compile(p) for p in ("Page", r"\d+", "/", r"\d+"))
+# The code is read off the line's text, so it is found however the
+# extraction splits it into words: with or without spaces around its
+# slashes, and in whichever slash glyph the page prints.
+_STMT_DOCUMENT_CODE = re.compile(
+    r"(?<![A-Z0-9])[A-Z]{6}\d{2}\s*[/\u2215\uff0f]\s*\d{6}\s*[/\u2215\uff0f]\s*[A-Z0-9]{15}(?![A-Z0-9])")
+
+
+def _run_at(texts: list[str], i: int, run: tuple) -> int:
+    """The length of `run` where its words open texts[i:], else 0."""
+    if len(texts) - i < len(run):
+        return 0
+    window = texts[i:i + len(run)]
+    return len(run) if all(p.fullmatch(t) for p, t in zip(run, window, strict=True)) else 0
+
+
+def _without_furniture(words) -> list:
+    """A row's words less the page footer's: the form note and the page
+    number after it (`_STMT_FORM_NOTE`), and every word the document
+    code spans (`_STMT_DOCUMENT_CODE`)."""
+    texts = [w.text for w in words]
+    spans, at = [], 0
+    for t in texts:
+        spans.append((at, at + len(t)))
+        at += len(t) + 1
+    line = " ".join(texts)
+    coded = set()
+    for m in _STMT_DOCUMENT_CODE.finditer(line):
+        coded |= {k for k, (a, b) in enumerate(spans) if a < m.end() and b > m.start()}
+    out, i = [], 0
+    while i < len(words):
+        if n := _run_at(texts, i, _STMT_FORM_NOTE):
+            i += n
+            i += _run_at(texts, i, _STMT_PAGE_NUMBER)
+        elif i in coded:
+            i += 1
+        else:
+            out.append(words[i])
+            i += 1
+    return out
 
 def _stmt_amount(tokens: list[str]) -> float | None:
     """Join a ledger column's numeric word-fragments into a float.
@@ -345,9 +391,9 @@ def parse(extracted: Extracted, doc_token: str
 
 def movements(extracted: Extracted, doc_token: str) -> list[dict]:
     """One dict per booking (movement) row of the ledger. The loader maps
-    these into the silver `transactions` table (deterministic id +
-    per-account MT940 cut-over); rows carry the statement-level
-    reconciliation result so the loader can gate on it."""
+    these into the silver `transactions` table under a deterministic id;
+    rows carry the statement-level reconciliation result so the loader
+    can gate on it."""
     ledger = _read_ledger(extracted)
     return _ledger_rows(ledger, not _chain_problems(ledger), doc_token)
 
@@ -382,7 +428,10 @@ def _read_ledger(extracted: Extracted) -> dict:
         for r in rows:
             if r.top <= anchors["top"] + 1:
                 continue
-            ws = r.words
+            ws = _without_furniture(r.words)
+            if not ws:
+                continue
+            line = " ".join(w.text for w in ws)
             # Row date = leading DD.MM.YY token in the far-left Date
             # column (x0 < 80). Everything else is content.
             row_date = None
@@ -394,7 +443,7 @@ def _read_ledger(extracted: Extracted) -> dict:
             if row_date is None:
                 # Continuation line — attach to the preceding movement.
                 if cur is not None:
-                    cur["_cont"].append(" ".join(w.text for w in ws))
+                    cur["_cont"].append(line)
                 continue
 
             # Digit-leading tokens → numeric columns (by nearest

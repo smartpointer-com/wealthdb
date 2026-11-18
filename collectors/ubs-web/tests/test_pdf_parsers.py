@@ -2058,3 +2058,129 @@ class TestQuarterlyReport:
         call = report.replace("Quarterly Report\n", "Capital Call\n", 1)
         assert parse_quarterly_report_text(call, "<doc-token>") == ([], [])
         assert parse_capital_call_text(report, "<doc-token>") == []
+
+
+# ============================================================
+# Page furniture under the ledger
+# ============================================================
+
+def test_the_page_footer_is_no_part_of_the_last_movement():
+    """A page closes with its footer: the form note and page number,
+    then the document's code line. The movement above it ends where the
+    ledger does, and one that runs on to the next page keeps its lines
+    there."""
+    p1 = _header_row()
+    p1 += [_w("01.10.21", 42, 77, 120), *_info_words("Opening balance", 120),
+           _band_word("1000.00", "bal", 120)]
+    p1 += [_w("30.10.21", 42, 77, 140),
+           *_info_words("BALANCE CLOSING OF SERVICE PRICES", 140),
+           _band_word("12.00", "credit", 140),
+           _w("30.10.21", 432, 468, 140),
+           _band_word("1012.00", "bal", 140)]
+    p1 += [*_info_words("Example service", 155)]
+    p1 += _footer(700)
+    p2 = _header_row()
+    p2 += [*_info_words("Example detail", 110)]
+    p2 += [_w("31.10.21", 42, 77, 160), *_info_words("Closing balance", 160),
+           _band_word("1012.00", "bal", 160)]
+    rows = account_statement.movements(
+        _doc(_page(p1, _PAGE_TEXT), _page(p2, _PAGE_TEXT)), "synthetic-token")
+    assert len(rows) == 1
+    payload = json.loads(rows[0]["payload"])
+    assert payload["continuation"] == ["Example service", "Example detail"]
+    assert rows[0]["reconciled"]
+
+
+def _footer(top: float) -> list[Word]:
+    """The footer's two rows: the form note with the page number, and
+    the document's code line."""
+    return [_w("Form", 42, 62, top), _w("without", 64, 94, top),
+            _w("signature", 96, 136, top), _w("Page", 400, 420, top),
+            _w("1", 422, 427, top), _w("/", 429, 432, top), _w("2", 434, 439, top),
+            *_code(42, top + 12)]
+
+
+def _code(x0: float, top: float) -> list[Word]:
+    """The document's code line, in its printed shape: six letters and
+    two digits / six digits / fifteen letters and digits."""
+    return [_w("ABCDEF12", x0, x0 + 40, top), _w("/", x0 + 42, x0 + 45, top),
+            _w("345678", x0 + 47, x0 + 77, top), _w("/", x0 + 79, x0 + 82, top),
+            _w("AB1CD2EF3GH4IJ5", x0 + 84, x0 + 160, top)]
+
+
+def test_a_movement_below_the_footer_keeps_every_figure_and_line():
+    """The footer's rows can sit above the ledger's last rows: the
+    service-price closing and its lines below them on the page. They are
+    passed over, and every movement, figure and line around them stays."""
+    p1 = _header_row()
+    p1 += [_w("01.10.21", 42, 77, 120), *_info_words("Opening balance", 120),
+           _band_word("1000.00", "bal", 120)]
+    p1 += [_w("04.10.21", 42, 77, 140), *_info_words("CREDIT", 140),
+           _band_word("100.00", "credit", 140),
+           _w("04.10.21", 432, 468, 140), _band_word("1100.00", "bal", 140)]
+    p1 += [*_info_words("Example payer", 155)]
+    p1 += _footer(300)[:7]
+    p1 += [_w("30.10.21", 42, 77, 340),
+           *_info_words("BALANCE CLOSING OF SERVICE PRICES", 340),
+           _band_word("12.00", "credit", 340),
+           _w("30.10.21", 432, 468, 340), _band_word("1112.00", "bal", 340)]
+    p1 += [*_info_words("Example service", 355)]
+    # The code line, away from the note it belongs to.
+    p1 += _code(42, 365)
+    p1 += [_w("31.10.21", 42, 77, 380), *_info_words("Closing balance", 380),
+           _band_word("1112.00", "bal", 380)]
+    rows = account_statement.movements(_doc(_page(p1, _PAGE_TEXT)), "synthetic-token")
+    assert [(r["description_kind"], r["amount_credit"]) for r in rows] == [
+        ("CREDIT", 100.0), ("BALANCE CLOSING OF SERVICE PRICES", 12.0)]
+    assert [json.loads(r["payload"])["continuation"] for r in rows] == [
+        ["Example payer"], ["Example service"]]
+    assert all(r["reconciled"] for r in rows)
+
+
+def test_the_footer_code_on_a_ledger_line_is_taken_out_of_it():
+    """The code can print on the line of a movement's own row, to the
+    left of its date or after its text; it is taken out and the row is
+    read as it would be without it."""
+    p1 = _header_row()
+    p1 += [_w("01.10.21", 42, 77, 120), *_info_words("Opening balance", 120),
+           _band_word("1000.00", "bal", 120)]
+    p1 += [*_code(-150, 140), _w("30.10.21", 42, 77, 140),
+           *_info_words("BALANCE CLOSING OF SERVICE PRICES", 140),
+           _band_word("12.00", "credit", 140),
+           _w("30.10.21", 432, 468, 140), _band_word("1012.00", "bal", 140)]
+    p1 += [*_info_words("Example service", 155), *_code(200, 155)]
+    p1 += [_w("31.10.21", 42, 77, 180), *_info_words("Closing balance", 180),
+           _band_word("1012.00", "bal", 180)]
+    rows = account_statement.movements(_doc(_page(p1, _PAGE_TEXT)), "synthetic-token")
+    assert [(r["description_kind"], r["amount_credit"]) for r in rows] == [
+        ("BALANCE CLOSING OF SERVICE PRICES", 12.0)]
+    assert json.loads(rows[0]["payload"])["continuation"] == ["Example service"]
+    assert rows[0]["reconciled"]
+
+
+@pytest.mark.parametrize("code", [
+    ["ABCDEF12", "/", "345678", "/", "AB1CD2EF3GH4IJ5"],
+    ["ABCDEF12/", "345678/", "AB1CD2EF3GH4IJ5"],
+    ["ABCDEF12/345678/AB1CD2EF3GH4IJ5"],
+])
+def test_the_footer_code_leaves_the_line_it_opens(code):
+    """The code can open a continuation line that goes on with the
+    movement's own reference and date; however the extraction splits it
+    into words, it goes and the rest of the line stays."""
+    p1 = _header_row()
+    p1 += [_w("01.10.21", 42, 77, 120), *_info_words("Opening balance", 120),
+           _band_word("1000.00", "bal", 120)]
+    p1 += [_w("04.10.21", 42, 77, 140), *_info_words("E-BANKING DOMESTIC", 140),
+           _band_word("40.00", "debit", 140),
+           _w("04.10.21", 432, 468, 140), _band_word("960.00", "bal", 140)]
+    x = 85.0
+    line = []
+    for tok in [*code, "K12345", "01.02.2021"]:
+        line.append(_w(tok, x, x + 6 * len(tok), 155))
+        x += 6 * len(tok) + 4
+    p1 += line
+    p1 += [_w("31.10.21", 42, 77, 180), *_info_words("Closing balance", 180),
+           _band_word("960.00", "bal", 180)]
+    rows = account_statement.movements(_doc(_page(p1, _PAGE_TEXT)), "synthetic-token")
+    assert len(rows) == 1 and rows[0]["reconciled"]
+    assert json.loads(rows[0]["payload"])["continuation"] == ["K12345 01.02.2021"]
