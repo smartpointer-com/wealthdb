@@ -44,17 +44,11 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
+from collector import SPEC
 
-CONFIG = prune.PruneConfig(
-    # The only debug artefact fred writes: `download --debug`'s HTTP trace,
-    # which debugcap lands under this subdir fleet-wide. Everything else in
-    # a complete run dir (run.json + each <series_id>.json) is a load input —
-    # adding either here would delete one.
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=prune.lenient_classification,
-)
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

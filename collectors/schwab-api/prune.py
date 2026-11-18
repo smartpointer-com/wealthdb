@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import compress, debugcap, prune
+from collectorkit import compress, prune
+
+from collector import SPEC
 
 # The terminal artefact of a complete run: the last file `download.py`
 # writes unconditionally (before the optional, load-optional
@@ -54,12 +56,7 @@ def _is_complete(run_dir, meta):
             compress.resolve_variant(rd / TERMINAL_ARTEFACT) is not None))
 
 
-CONFIG = prune.PruneConfig(
-    # `download --debug`'s HTTP trace, which debugcap lands under this
-    # subdir fleet-wide. Every other file in a run dir is a load input.
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=_is_complete,
-)
+CONFIG = prune.spec_config(SPEC, _is_complete)
 
 
 def main(argv=None):

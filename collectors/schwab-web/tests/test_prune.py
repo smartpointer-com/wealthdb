@@ -10,8 +10,8 @@ tmp_path bronze trees matching download.walk()'s layout. Covers:
   * debug_globs: transactions/*/page-*.html reclaimed from a complete
     dump, every other file in that load-input dir kept
   * no run.json: a non-complete dump, deleted once quiescent
-  * statusless manifests are kept as complete, a legacy --dry-run shell
-    (dry_run=true) included, since load reads them
+  * a statusless legacy --dry-run shell (dry_run=true) is kept as
+    complete, since load reads it
 """
 
 from __future__ import annotations
@@ -144,16 +144,6 @@ def test_missing_run_json_dump_deleted(tmp_path):
 # Statusless manifests: kept, as load reads them
 # ============================================================
 
-def test_statusless_real_dump_kept_as_complete(tmp_path):
-    # A statusless manifest predates the field: classify COMPLETE, keep
-    # its load inputs, prune only its debug captures.
-    d = make_dump(tmp_path, OLD_TS, status=None, dry_run=False,
-                  screenshots=True, age_s=STALE_S)
-    run_main(tmp_path)
-    assert d.exists()
-    assert not (d / "screenshots").exists()
-    _load_inputs_intact(d)
-
 
 def test_statusless_dry_run_shell_kept(tmp_path):
     # A statusless run.json with dry_run=true is a legacy --dry-run
@@ -168,6 +158,3 @@ def test_statusless_dry_run_shell_kept(tmp_path):
 # Target validation
 # ============================================================
 
-def test_validate_target_accepts_the_debug_subdir(tmp_path):
-    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)

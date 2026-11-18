@@ -25,11 +25,9 @@ import sys
 
 from collectorkit import prune
 
+from collector import SPEC
 
-CONFIG = prune.PruneConfig(
-    debug_subdirs=(),          # firstcitizens writes no in-bronze debug capture
-    is_complete=prune.lenient_classification,
-)
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

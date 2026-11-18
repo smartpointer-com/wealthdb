@@ -40,18 +40,11 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
-# `download --debug` writes the landing-page capture to <run>/screenshots/.
-# Naming it here is what lets prune reclaim it from a dump that is otherwise
-# worth keeping.
-DEBUG_SUBDIRS: tuple[str, ...] = (debugcap.SCREENSHOTS_DIR,)
+from collector import SPEC
 
-
-CONFIG = prune.PruneConfig(
-    debug_subdirs=DEBUG_SUBDIRS,
-    is_complete=prune.lenient_classification,
-)
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

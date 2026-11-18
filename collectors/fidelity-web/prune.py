@@ -53,15 +53,13 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
+from collector import SPEC
 
-CONFIG = prune.PruneConfig(
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    # A status key decides; a statusless but readable run.json is
-    # COMPLETE (see the module docstring).
-    is_complete=prune.lenient_classification,
-)
+# A status key decides; a statusless but readable run.json is
+# COMPLETE (see the module docstring).
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

@@ -51,15 +51,11 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
+from collector import SPEC
 
-CONFIG = prune.PruneConfig(
-    # Where `download --debug` puts its per-route captures.
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=prune.lenient_classification,
-    manifest_name="run.json",
-)
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

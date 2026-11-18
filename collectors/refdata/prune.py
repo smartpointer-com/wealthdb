@@ -23,12 +23,11 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
-CONFIG = prune.PruneConfig(
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=prune.lenient_classification,
-)
+from collector import SPEC
+
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

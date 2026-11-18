@@ -231,6 +231,22 @@ class ChallengeDialogTest(unittest.TestCase):
         self.assertNotIn("123456", err.getvalue())
 
 
+class MfaTimeoutTest(unittest.TestCase):
+    def test_the_default_wait_is_five_minutes(self):
+        self.assertEqual(cli.MFA_TIMEOUT_S, 300)
+        p = argparse.ArgumentParser()
+        cli.add_mfa_timeout(p, help="Seconds to wait.")
+        self.assertEqual(p.parse_args([]).mfa_timeout, 300)
+        self.assertEqual(p.parse_args(["--mfa-timeout", "90"]).mfa_timeout, 90)
+
+    def test_a_collector_keeps_its_default_type_and_help(self):
+        p = argparse.ArgumentParser()
+        cli.add_mfa_timeout(p, default=120.0, type=float,
+                            help="Seconds to wait for the push.")
+        self.assertEqual(p.parse_args(["--mfa-timeout", "1.5"]).mfa_timeout, 1.5)
+        self.assertEqual(p.parse_args([]).mfa_timeout, 120.0)
+        self.assertIn("Seconds to wait for the push.", p.format_help())
+
 
 if __name__ == "__main__":
     unittest.main()

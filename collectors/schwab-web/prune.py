@@ -32,22 +32,13 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
-# Per-account landing-page HTML beside the tx-history exports. `load`
-# never reads it; this glob matches ONLY files named page-*.html two
-# levels deep, never a load-input sibling (all of which are
-# more-details.json or .csv/.json/.xml exports).
-TX_PAGE_HTML_ORPHAN_GLOB = "transactions/*/page-*.html"
+from collector import SPEC
 
-
-CONFIG = prune.PruneConfig(
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    debug_globs=(TX_PAGE_HTML_ORPHAN_GLOB,),
-    # A status key decides. A statusless but readable run.json predates
-    # the field; load reads such a dump, so it is kept.
-    is_complete=prune.lenient_classification,
-)
+# A status key decides. A statusless but readable run.json predates
+# the field; load reads such a dump, so it is kept.
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

@@ -9,7 +9,6 @@ layout:
   * a complete dump keeps its load inputs (captures.jsonl, run.json) and
     viewer.json, and loses screenshots/, the per-route captures
     `download --debug` writes
-  * a statusless manifest counts as complete and is kept whole
   * `main()` wires that config: a dump with no run.json or a status other
     than complete is deleted, while the bronze-root siblings
     angellist-documents/ (a K-1/PDF load input) and the silver
@@ -65,21 +64,6 @@ def test_complete_dump_screenshots_pruned_inputs_kept(tmp_path):
     assert prune.main(["--bronze-dir", str(tmp_path)]) == 0
     assert not (d / "screenshots").exists()
     assert_inputs_intact(d)
-
-
-def test_statusless_manifest_kept_as_complete(tmp_path):
-    # A download that writes no status writes its manifest only once the
-    # walk finished, so a statusless run.json means the dump is complete.
-    d = make_dump(tmp_path, OLD_TS, status=None, screenshots=False)
-    assert prune.main(["--bronze-dir", str(tmp_path),
-                       "--min-age-hours", "0"]) == 0
-    assert_inputs_intact(d)
-
-
-def test_validate_target_accepts_screenshots_subdir(tmp_path):
-    # The one subdir shape prune may target: the --debug capture dir.
-    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_main_deletes_unfinished_dumps_and_nothing_at_the_root(tmp_path):

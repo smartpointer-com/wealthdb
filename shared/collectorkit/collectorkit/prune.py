@@ -691,6 +691,15 @@ def run(config: PruneConfig, bronze_dir: Path, *, dry_run: bool,
     return 0
 
 
+def spec_config(spec, is_complete: Callable[[Path, dict | None], Classification]
+                = lenient_classification) -> PruneConfig:
+    """The :class:`PruneConfig` of the collector declared by `spec` (a
+    :class:`collectorkit.spec.Collector`): its debug subdirs and globs,
+    and `is_complete`, the lenient rule unless the collector has its own."""
+    return PruneConfig(debug_subdirs=spec.debug_subdirs,
+                       debug_globs=spec.debug_globs, is_complete=is_complete)
+
+
 def main(config: PruneConfig, argv=None, *, description: str | None = None,
          prog: str | None = None) -> int:
     """argparse entry point for a collector's thin ``prune.py``. Pass the

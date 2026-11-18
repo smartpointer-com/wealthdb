@@ -34,13 +34,9 @@ import sys
 
 from collectorkit import prune
 
+from collector import SPEC
 
-CONFIG = prune.PruneConfig(
-    # `download --debug` keeps every non-roster /svc/ body here; the roster
-    # bodies are raw/account-NN.json, one level up, out of the glob's reach.
-    debug_globs=("raw/svc/*.json",),
-    is_complete=prune.lenient_classification,
-)
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

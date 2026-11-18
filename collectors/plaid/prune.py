@@ -39,10 +39,11 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import cli, debugcap, prune
+from collectorkit import cli, prune
 
 import items
 import trees
+from collector import SPEC
 
 
 def _is_complete(run_dir, meta):
@@ -56,12 +57,7 @@ def _is_complete(run_dir, meta):
     return prune.status_classification(meta)
 
 
-CONFIG = prune.PruneConfig(
-    # The one debug artefact a run writes: `download --debug`'s HTTP trace.
-    # Every other file in a complete run is a load input.
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=_is_complete,
-)
+CONFIG = prune.spec_config(SPEC, _is_complete)
 
 
 def main(argv=None) -> int:

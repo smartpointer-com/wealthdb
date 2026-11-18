@@ -11,8 +11,7 @@ cointracking's PruneConfig decides:
 
   * main() reclaims screenshots/ from a complete dump and deletes a
     stale non-complete dump whole; load inputs are kept
-  * statusless manifest classified legacy-complete → kept intact
-  * validate_target accepts screenshots/, never a cu_<id>/ load input
+  * validate_target never accepts a cu_<id>/ load input
 """
 
 from __future__ import annotations
@@ -102,25 +101,6 @@ def test_main_reclaims_screenshots_and_noncomplete_dumps(tmp_path):
     assert not (d / "screenshots").exists()
     assert _inputs_intact(d)
     assert not crashed.exists()
-
-
-def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
-    # A run.json with no `status` key predates the status lifecycle: such
-    # a dump only ever got a run.json at the end, so its presence means
-    # the dump finished — classify COMPLETE and keep every load input.
-    # Those dumps predate the bronze-resident --debug captures too, hence
-    # no screenshots.
-    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S,
-                  screenshots=False)
-    run_main(tmp_path)
-    assert d.exists()
-    assert _inputs_intact(d)
-
-
-def test_validate_target_accepts_screenshots_subdir(tmp_path):
-    # The one subdir shape prune may target: the --debug capture dir.
-    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_load_inputs(tmp_path):

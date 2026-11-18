@@ -304,6 +304,22 @@ def resolve_standard(args: argparse.Namespace, *, verb: str,
     return None, None
 
 
+# How long a sign-in waits for its second factor, in seconds: a typed
+# code, a push approval or a sign-in by hand over VNC (AGENTS.md §9). A
+# provider that states a shorter lifetime for its code passes that.
+MFA_TIMEOUT_S = 300
+
+
+def add_mfa_timeout(parser: argparse.ArgumentParser, *,
+                    default: float = MFA_TIMEOUT_S, help: str,
+                    type=int) -> None:
+    """Add ``--mfa-timeout``: the seconds a sign-in waits for its second
+    factor. Each collector passes its own `help`, which names what the
+    wait covers there."""
+    parser.add_argument("--mfa-timeout", type=type, default=default,
+                        help=help)
+
+
 # ---- the person at the terminal --------------------------------------------
 #
 # A sign-in's second factor is read from a person, the same way everywhere:

@@ -50,15 +50,11 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
+from collector import SPEC
 
-CONFIG = prune.PruneConfig(
-    # The one non-load-input a run dir can hold: where `download --debug`
-    # puts its captures. Every other file is a load input.
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=prune.lenient_classification,
-)
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

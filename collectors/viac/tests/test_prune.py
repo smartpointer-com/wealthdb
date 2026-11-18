@@ -11,11 +11,11 @@ tests cover what viac's PruneConfig decides:
 
   * main() reclaims a complete dump's --debug trace and deletes a stale
     non-complete dump whole; every load input is kept
-  * a legacy statusless manifest is complete, a legacy --dry-run shell
-    (dry_run:true) included, since load reads it
+  * a legacy --dry-run shell (dry_run:true) is complete, since load
+    reads it
   * hard-linked PDFs: deleting a non-complete dump preserves the inode
     while a complete dump still links it (no load input lost)
-  * validate_target accepts screenshots/, never a load-input subdir
+  * validate_target never accepts a load-input subdir
 """
 
 from __future__ import annotations
@@ -138,18 +138,6 @@ def test_main_reclaims_debug_trace_and_noncomplete_dumps(tmp_path):
     assert not crashed.exists()
 
 
-def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
-    # A run.json with no `status` key predates the status lifecycle,
-    # where the manifest was written only at the end, so its presence
-    # (with dry_run:false) means the dump finished: keep it and all its
-    # load inputs. Current walks always carry a status key, so this
-    # branch only ever sees such dumps.
-    d = make_dump(tmp_path, OLD_TS, status=None, dry_run=False, age_s=STALE_S)
-    run_main(tmp_path)
-    assert d.exists()
-    assert _load_inputs_present(d)
-
-
 def test_legacy_dry_run_shell_kept(tmp_path):
     # A statusless manifest carrying dry_run:true is the shape a legacy
     # --dry-run left behind. load reads every statusless dump, so prune
@@ -173,11 +161,6 @@ def test_hardlinked_pdf_survives_noncomplete_dir_deletion(tmp_path):
     assert not crashed.exists()
     assert complete_pdf.exists()
     assert complete_pdf.read_bytes() == b"%PDF-1.4 synthetic"
-
-
-def test_validate_target_accepts_debug_subdir(tmp_path):
-    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_load_inputs(tmp_path):

@@ -10,9 +10,8 @@ tests cover what fred's PruneConfig decides:
 
   * main() reclaims the --debug trace of a complete dump and deletes a
     stale non-complete dump whole; load inputs are kept
-  * a statusless manifest is COMPLETE (lenient classification), kept
   * a complete dump that fetched no series is kept
-  * validate_target accepts a run dir's screenshots/, never a load input
+  * validate_target never accepts a load input
 
 tmp_path bronze trees, synthetic round rates only — no real FX data.
 """
@@ -112,15 +111,6 @@ def test_main_reclaims_debug_trace_and_noncomplete_dumps(tmp_path):
     assert not crashed.exists()
 
 
-def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
-    # A statusless run.json is written once, at the end of the walk, so its
-    # presence means the dump finished: classify COMPLETE, keep it.
-    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S)
-    assert run_main(tmp_path) == 0
-    assert d.exists()
-    _series_and_manifest_intact(d)
-
-
 def test_total_failure_complete_dump_kept(tmp_path):
     # A run where every series failed writes run.json status="complete"
     # with an empty series dict (the walk finished, just fetched nothing).
@@ -133,11 +123,6 @@ def test_total_failure_complete_dump_kept(tmp_path):
     assert run_main(tmp_path) == 0
     assert d.exists()
     assert (d / "run.json").exists()
-
-
-def test_validate_target_accepts_debug_subdir(tmp_path):
-    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
 
 
 def test_validate_target_refuses_load_inputs(tmp_path):

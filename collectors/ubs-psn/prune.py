@@ -49,7 +49,9 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
+
+from collector import SPEC
 
 
 def _is_complete(run_dir, meta):
@@ -78,13 +80,7 @@ def _is_complete(run_dir, meta):
     return prune.status_classification(meta, run_dir=run_dir)
 
 
-CONFIG = prune.PruneConfig(
-    # `screenshots/` holds legacy `download --debug` listing captures, never
-    # a load input. Each run's listing.json is provenance and is never
-    # nominated here. The run dir's zips are the load inputs.
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=_is_complete,
-)
+CONFIG = prune.spec_config(SPEC, _is_complete)
 
 
 def main(argv=None):

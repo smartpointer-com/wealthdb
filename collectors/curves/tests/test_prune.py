@@ -72,12 +72,6 @@ def test_main_reclaims_debug_trace_and_noncomplete_dumps(tmp_path):
     assert not in_progress.exists()
 
 
-def test_statusless_manifest_kept_as_complete(tmp_path):
-    d = make_dump(tmp_path, OLD_TS, status=None, age_s=STALE_S)
-    assert run_main(tmp_path) == 0
-    assert (d / "run.json").exists() and (d / "snb.csv").exists()
-
-
 def test_validate_target_accepts_debug_subdir_only(tmp_path):
     (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
     prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)

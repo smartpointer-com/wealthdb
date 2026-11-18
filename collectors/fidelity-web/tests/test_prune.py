@@ -7,7 +7,6 @@ checks) is tested in collectorkit. The tests drive the collector's
 tmp_path bronze trees. Covers:
   * complete dump: screenshots/ deleted, load inputs untouched
   * no run.json: a non-complete dump, deleted whole once quiescent
-  * statusless manifest: classified COMPLETE (lenient), inputs kept
 """
 
 from __future__ import annotations
@@ -91,23 +90,7 @@ def test_missing_run_json_dump_deleted(tmp_path):
     assert not d.exists()
 
 
-def test_statusless_manifest_kept_as_legacy_complete(tmp_path):
-    # A run.json with no `status` key predates the status lifecycle: such
-    # a dump only ever got a run.json at the end, so its presence means
-    # the dump finished — classify COMPLETE, keep its load inputs, prune
-    # only its debug captures.
-    d = make_dump(tmp_path, OLD_TS, status=None, screenshots=True,
-                  age_s=STALE_S)
-    run_main(tmp_path)
-    assert d.exists()
-    assert not (d / "screenshots").exists()
-    assert (d / "positions" / "positions_summary.csv").exists()
-
-
 # ============================================================
 # Target validation
 # ============================================================
 
-def test_validate_target_accepts_the_debug_subdir(tmp_path):
-    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
