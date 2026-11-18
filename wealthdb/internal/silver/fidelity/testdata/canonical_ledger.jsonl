@@ -4,6 +4,8 @@
 {"End":1000,"HasChanges":true,"NewChangeNumber":1000,"Spans":null,"Start":880}
 == accounts 1
 {"AccountCategory":null,"AccountExternalID":"000000001","AccountKind":"brokerage","BaseCurrency":"USD","DisplayName":null,"FirstSeenAt":1000,"LastSeenAt":1000,"ManagementStyle":null,"Nickname":null,"Payload":{},"PortfolioExternalID":"PORT1","RelationshipID":null,"SilverSourceID":"","TaxWrapper":null}
+== covers 1
+{"AccountExternalID":"000000001","SilverSourceID":"","SnapshotAt":1000}
 == transactions 20
 {"AccountExternalID":"000000001","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"TRANSFERRED FROM VS 000-000001-1 (Cash)","GrossAmount":null,"InstrumentExternalID":null,"InstrumentHint":"","Kind":"journal","Memo":null,"NetAmount":"100","OccurredAt":938,"Payload":{"Action":"TRANSFERRED FROM VS 000-000001-1 (Cash)"},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"selfin","Vehicle":""}
 {"AccountExternalID":"000000001","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"TRANSFERRED TO VS 000-000001-2 (Margin)","GrossAmount":null,"InstrumentExternalID":null,"InstrumentHint":"","Kind":"journal","Memo":null,"NetAmount":"-100","OccurredAt":940,"Payload":{"Action":"TRANSFERRED TO VS 000-000001-2 (Margin)"},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"selfout","Vehicle":""}

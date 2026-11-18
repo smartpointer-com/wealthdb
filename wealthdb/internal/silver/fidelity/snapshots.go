@@ -50,6 +50,9 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	if err := c.appendPositionsAndCash(ctx, w, byTime, lots, cusips); err != nil {
 		return nil, err
 	}
+	if err := c.appendCovers(ctx, w, byTime); err != nil {
+		return nil, err
+	}
 	lots.logSkipped()
 	if len(histTimes) > 0 {
 		// Project the master rows onto each historical date
@@ -251,6 +254,35 @@ func applyHeldKind(id string, held map[string]canonical.AccountKind, change *can
 	if kind, ok := held[id]; ok {
 		change.AccountKind = kind
 	}
+}
+
+// appendCovers states, at each dump whose positions entered silver, the
+// accounts it reports whole: the accounts the dump's master rows name.
+// The loader admits a dump's positions only where it observed every
+// channel of the accounts in its scope (positions_present), and a
+// dump's cash is its positions' core and pending rows, so such a dump
+// states each of those accounts in full at its own instant. An account
+// outside its scope has no master row there and is not covered.
+func (c *Connection) appendCovers(ctx context.Context, w canonical.Window, byTime map[int64]*canonical.SnapshotBatch) error {
+	const q = `
+SELECT a.snapshot_at, a.account_external_id
+  FROM accounts a
+  JOIN dump_runs d ON d.snapshot_at = a.snapshot_at
+ WHERE d.positions_present = 1 AND a.snapshot_at BETWEEN ? AND ?
+ ORDER BY a.snapshot_at, a.account_external_id`
+	return silver.ScanRows(ctx, c.db, "appendCovers", q, func(rows *sql.Rows) error {
+		var (
+			snap int64
+			acct string
+		)
+		if err := rows.Scan(&snap, &acct); err != nil {
+			return err
+		}
+		if batch, ok := byTime[snap]; ok {
+			batch.Covers = append(batch.Covers, canonical.CoverageChange{SnapshotAt: snap, AccountExternalID: acct})
+		}
+		return nil
+	}, w.Start, w.End)
 }
 
 // pendingActivity names the row Fidelity lists money in flight under.

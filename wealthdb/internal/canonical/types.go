@@ -148,6 +148,21 @@ type CashBalanceChange struct {
 	Payload           json.RawMessage
 }
 
+// CoverageChange is one insert into gold's `snapshot_coverage` table: the
+// source reports the account whole at SnapshotAt. The batch's positions
+// and cash balances of the account stamped at that instant are all the
+// account held then, and an account with none held nothing. Gold ends a
+// key at the first such instant after its last observation that omits
+// it, or sooner where an inferred ending comes first (DESIGN.md §10.7).
+// A source states it only for an account it read in full at that
+// instant; a run that skipped the account, or read only its holdings or
+// only its cash, states nothing for it.
+type CoverageChange struct {
+	SilverSourceID    string
+	SnapshotAt        int64
+	AccountExternalID string
+}
+
 // FxRateChange is one insert into gold's `fx_rates` table.
 type FxRateChange struct {
 	SilverSourceID string
@@ -443,9 +458,10 @@ func (w Window) Changes(kind string) bool {
 // SnapshotBatch is one batch yielded by a SnapshotStream.Next call.
 // Adapters multiplex change records of different types into one
 // batch. The loader writes each batch's facts (positions,
-// position_lots, cash_balances, fx_rates and the reference records)
-// as it arrives and folds the dimensions (portfolios, accounts,
-// instruments) to upsert once the stream drains (docs/DESIGN.md §8.4);
+// position_lots, cash_balances, fx_rates, the coverage and the
+// reference records) as it arrives and folds the dimensions
+// (portfolios, accounts, instruments) to upsert once the stream drains
+// (docs/DESIGN.md §8.4);
 // gold declares no foreign keys, so the order within the load's
 // transaction does not matter.
 //
@@ -459,6 +475,9 @@ type SnapshotBatch struct {
 	PositionLots []PositionLotChange
 	CashBalances []CashBalanceChange
 	FxRates      []FxRateChange
+	// Covers are the accounts the batch reports whole, each at an
+	// instant (CoverageChange).
+	Covers []CoverageChange
 
 	FundCompositions []FundCompositionChange
 	FundLines        []FundLineChange
@@ -514,6 +533,7 @@ func (b *SnapshotBatch) SetSource(id string) {
 	setSource(b.PositionLots, id, func(r *PositionLotChange) *string { return &r.SilverSourceID })
 	setSource(b.CashBalances, id, func(r *CashBalanceChange) *string { return &r.SilverSourceID })
 	setSource(b.FxRates, id, func(r *FxRateChange) *string { return &r.SilverSourceID })
+	setSource(b.Covers, id, func(r *CoverageChange) *string { return &r.SilverSourceID })
 	setSource(b.FundCompositions, id, func(r *FundCompositionChange) *string { return &r.SilverSourceID })
 	setSource(b.FundLines, id, func(r *FundLineChange) *string { return &r.SilverSourceID })
 	setSource(b.Reference, id, func(r *RefRows) *string { return &r.SilverSourceID })

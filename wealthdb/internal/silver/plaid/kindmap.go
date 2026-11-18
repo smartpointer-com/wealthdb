@@ -145,8 +145,8 @@ func feeDebit(primary, legacy string) bool {
 // or a loan disbursement, or its older category says "Payment > Credit
 // Card". Any other credit is a refund. A credit on a card cannot be a loan
 // disbursement, since a card lends with a debit. The fee test sits inside
-// the debit case: a fee reversal carries the same category, and `fee`
-// forces a negative sign.
+// the debit case: a fee reversal carries the same category, and it is a
+// credit that refunds the charge, not a second fee.
 func bankTxKind(kind canonical.AccountKind, amount canonical.Decimal,
 	primary, detailed, legacy string) canonical.TxKind {
 	debit := amount.IsNegative()

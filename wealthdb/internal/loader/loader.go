@@ -449,6 +449,10 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 			func(c canonical.CashBalanceChange) (string, int64) {
 				return c.AccountExternalID, c.SnapshotAt
 			})
+		batch.Covers = dropSuperseded(batch.Covers, spec.Supersession,
+			func(c canonical.CoverageChange) (string, int64) {
+				return c.AccountExternalID, c.SnapshotAt
+			})
 		// A stated period is dated by its last day: one that ends on or
 		// after the handover is the successor's to state.
 		batch.StatedPeriods = dropSuperseded(batch.StatedPeriods, spec.Supersession,
@@ -469,6 +473,9 @@ func applySnapshots(ctx context.Context, tx *sql.Tx, conn silver.Connection, w c
 			return total, err
 		}
 		if err := writer.InsertFxRates(ctx, batch.FxRates); err != nil {
+			return total, err
+		}
+		if err := writer.InsertCoverage(ctx, batch.Covers); err != nil {
 			return total, err
 		}
 		if err := writer.InsertReference(ctx, &batch); err != nil {

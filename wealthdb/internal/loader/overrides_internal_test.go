@@ -6,6 +6,7 @@ package loader
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -564,6 +565,70 @@ func TestSupersessionDropsStatedPeriodsFromTheHandover(t *testing.T) {
 	}
 	if want := []string{"before", "other-account"}; !equalStrings(kept, want) {
 		t.Errorf("kept stated periods %v, want %v", kept, want)
+	}
+}
+
+// TestSupersessionDropsCoversFromTheHandover: a cover is cut by its
+// snapshot, like the rows it covers. One stated before the handover
+// stays; one on or after it goes, so it cannot end the successor's keys
+// of the account, and another account's cover is untouched.
+func TestSupersessionDropsCoversFromTheHandover(t *testing.T) {
+	ctx := context.Background()
+	g, err := gold.OpenFresh(filepath.Join(t.TempDir(), "gold.db"))
+	if err != nil {
+		t.Fatalf("gold.OpenFresh: %v", err)
+	}
+	t.Cleanup(func() { g.Close() })
+
+	const (
+		sourceID = "stub-source"
+		handover = int64(1700006400)
+	)
+	silver := &stubSilver{batch: canonical.SnapshotBatch{Covers: []canonical.CoverageChange{
+		{AccountExternalID: "ACCT0001", SnapshotAt: handover - 86400},
+		{AccountExternalID: "ACCT0001", SnapshotAt: handover},
+		{AccountExternalID: "ACCT0001", SnapshotAt: handover + 86400},
+		{AccountExternalID: "ACCT0002", SnapshotAt: handover + 86400},
+	}}}
+	spec := SourceSpec{ID: sourceID, Supersession: map[string]int64{"ACCT0001": handover}}
+	window := canonical.Window{Start: 0, End: handover + 86400, HasChanges: true, NewChangeNumber: 1}
+
+	tx, err := g.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := applySnapshots(ctx, tx, silver, window, spec); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("apply snapshots: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	rows, err := g.QueryContext(ctx, `SELECT account_external_id || '@' || CAST(snapshot_at AS VARCHAR)
+	                                    FROM snapshot_coverage WHERE silver_source_id = ?
+	                                   ORDER BY account_external_id, snapshot_at`, sourceID)
+	if err != nil {
+		t.Fatalf("read coverage: %v", err)
+	}
+	defer rows.Close()
+	var kept []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		kept = append(kept, c)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read coverage: %v", err)
+	}
+	want := []string{
+		fmt.Sprintf("ACCT0001@%d", handover-86400),
+		fmt.Sprintf("ACCT0002@%d", handover+86400),
+	}
+	if !equalStrings(kept, want) {
+		t.Errorf("kept covers %v, want %v", kept, want)
 	}
 }
 

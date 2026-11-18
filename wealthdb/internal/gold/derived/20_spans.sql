@@ -61,6 +61,14 @@ CREATE MACRO hist_days() AS TABLE (
 --     chain, matching its point-in-time twin — a display row has no sum
 --     for a NULL to poison.
 --
+--   * A SNAPSHOT THAT COVERS THE ACCOUNT ENDS IT. A source may state
+--     which accounts a snapshot reports whole (snapshot_coverage). A key
+--     leaves the series at the first later snapshot that covers its
+--     account and does not report it, with no grace. The re-cover and
+--     the source's clock below infer what a source did not say. A key
+--     ends at the earliest of the three, so coverage can end a key
+--     sooner, never later.
+--
 --   * A LATER RUN THAT RE-COVERS THE KEY'S COMPANY ENDS IT. Absence is
 --     evidence of closure exactly when the run that produced it was in
 --     a position to report the key: a key leaves the series at the
@@ -83,7 +91,7 @@ CREATE MACRO hist_days() AS TABLE (
 --     supersedes nothing, so its accounts keep their last values to the
 --     end of the spine.
 --
---   * BOTH ENDINGS APPLY TO A KEY'S LAST OBSERVATION ONLY, so neither
+--   * EVERY ENDING APPLIES TO A KEY'S LAST OBSERVATION ONLY, so none
 --     can punch a hole in the middle of a series: a card reporting once
 --     per statement cycle, a holding valued less often than yearly and
 --     a deposit re-dumped nightly sit inside one source without
@@ -182,7 +190,15 @@ CREATE MACRO key_grace(median_gap_days) AS
 -- ---- the endings, the history and the spans -----------------------------
 
 -- pos_key_ends / cash_key_ends: the snapshot at which each key leaves
--- the series, by the endings above; a key that has not ended has no row.
+-- the series; a key that has not ended has no row.
+--
+-- A key whose account a later snapshot covers (snapshot_coverage) ends
+-- at the first such snapshot: that snapshot reports the account whole
+-- and the key is not in it. The source said what it read, so no grace
+-- applies. A key ends at the earlier of that snapshot and the ending
+-- inferred above (inferred): coverage can end a key sooner, never
+-- later. A source that states no coverage takes the inferred ending
+-- alone.
 CREATE MACRO pos_key_ends() AS TABLE (
     WITH obs AS MATERIALIZED (SELECT * FROM pos_key_obs()),
     last_obs AS MATERIALIZED (SELECT src, acct, MAX(snap) AS snap FROM obs GROUP BY 1, 2),
@@ -211,14 +227,24 @@ CREATE MACRO pos_key_ends() AS TABLE (
                   FROM (SELECT DISTINCT src, acct, snap // 86400 AS day FROM obs))
          GROUP BY 1, 2),
     newest AS (SELECT src, MAX(snap) AS snap FROM obs GROUP BY 1),
-    own_cash AS (SELECT DISTINCT src, acct, snap FROM cash_key_obs())
-    SELECT r.src, r.acct, r.snap AS end_snap
-      FROM recovered r
-      JOIN last_obs l ON l.src = r.src AND l.acct = r.acct
-      JOIN cadence c ON c.src = r.src AND c.acct = r.acct
-      JOIN newest s ON s.src = r.src
-      LEFT JOIN own_cash o ON o.src = r.src AND o.acct = r.acct AND o.snap = r.snap
-     WHERE s.snap > l.snap + c.grace OR o.snap IS NOT NULL
+    own_cash AS (SELECT DISTINCT src, acct, snap FROM cash_key_obs()),
+    inferred AS (
+        SELECT r.src, r.acct, r.snap AS end_snap
+          FROM recovered r
+          JOIN last_obs l ON l.src = r.src AND l.acct = r.acct
+          JOIN cadence c ON c.src = r.src AND c.acct = r.acct
+          JOIN newest s ON s.src = r.src
+          LEFT JOIN own_cash o ON o.src = r.src AND o.acct = r.acct AND o.snap = r.snap
+         WHERE s.snap > l.snap + c.grace OR o.snap IS NOT NULL),
+    covered AS (
+        SELECT l.src, l.acct, MIN(v.snapshot_at) AS end_snap
+          FROM last_obs l
+          JOIN snapshot_coverage v
+            ON v.silver_source_id = l.src AND v.account_external_id = l.acct AND v.snapshot_at > l.snap
+         GROUP BY 1, 2)
+    SELECT src, acct, MIN(end_snap) AS end_snap
+      FROM (SELECT * FROM covered UNION ALL SELECT * FROM inferred)
+     GROUP BY 1, 2
 );
 
 CREATE MACRO cash_key_ends() AS TABLE (
@@ -253,13 +279,23 @@ CREATE MACRO cash_key_ends() AS TABLE (
                        LEAD(day) OVER (PARTITION BY src, acct, ccy ORDER BY day) AS next_day
                   FROM (SELECT DISTINCT src, acct, ccy, snap // 86400 AS day FROM obs))
          GROUP BY 1, 2, 3),
-    newest AS (SELECT src, MAX(snap) AS snap FROM obs GROUP BY 1)
-    SELECT r.src, r.acct, r.ccy, r.snap AS end_snap
-      FROM recovered r
-      JOIN last_obs l ON l.src = r.src AND l.acct = r.acct AND l.ccy = r.ccy
-      JOIN cadence c ON c.src = r.src AND c.acct = r.acct AND c.ccy = r.ccy
-      JOIN newest s ON s.src = r.src
-     WHERE s.snap > l.snap + c.grace
+    newest AS (SELECT src, MAX(snap) AS snap FROM obs GROUP BY 1),
+    inferred AS (
+        SELECT r.src, r.acct, r.ccy, r.snap AS end_snap
+          FROM recovered r
+          JOIN last_obs l ON l.src = r.src AND l.acct = r.acct AND l.ccy = r.ccy
+          JOIN cadence c ON c.src = r.src AND c.acct = r.acct AND c.ccy = r.ccy
+          JOIN newest s ON s.src = r.src
+         WHERE s.snap > l.snap + c.grace),
+    covered AS (
+        SELECT l.src, l.acct, l.ccy, MIN(v.snapshot_at) AS end_snap
+          FROM last_obs l
+          JOIN snapshot_coverage v
+            ON v.silver_source_id = l.src AND v.account_external_id = l.acct AND v.snapshot_at > l.snap
+         GROUP BY 1, 2, 3)
+    SELECT src, acct, ccy, MIN(end_snap) AS end_snap
+      FROM (SELECT * FROM covered UNION ALL SELECT * FROM inferred)
+     GROUP BY 1, 2, 3
 );
 
 -- hist_active_pos / hist_active_cash: per day of the spine, each key's

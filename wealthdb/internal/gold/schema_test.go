@@ -235,14 +235,16 @@ func TestEnumChecksDroppedKeepsRowsAndShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The derived set reads the vocabulary's roles, which a later
-	// migration adds; that migration touches neither table.
-	j := slices.IndexFunc(ms, func(m migration) bool { return strings.HasSuffix(m.name, "_vocabulary_roles.sql") })
-	if j < 0 {
-		t.Fatal("no vocabulary roles migration")
-	}
-	if err := applyMigration(ctx, db, ms[j]); err != nil {
-		t.Fatal(err)
+	// The derived set reads the vocabulary's roles and the snapshot
+	// coverage, which later migrations add; they touch neither table.
+	for _, suffix := range []string{"_vocabulary_roles.sql", "_snapshot_coverage.sql"} {
+		j := slices.IndexFunc(ms, func(m migration) bool { return strings.HasSuffix(m.name, suffix) })
+		if j < 0 {
+			t.Fatalf("no migration *%s", suffix)
+		}
+		if err := applyMigration(ctx, db, ms[j]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := applyDerived(ctx, db, set, ms[i-1].version, enumChecksDropped-1); err != nil {
 		t.Fatalf("apply the derived set: %v", err)

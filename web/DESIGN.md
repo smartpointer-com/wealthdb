@@ -827,6 +827,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0212: its key endings ignore the snapshot coverage a source states,
+  so an account a covering run leaves out stands past its end;
 - 0209: its `fee_rate_pct` takes no day count, which the Fee rate by
   portfolio cards pass, and it lacks `reporting_pick` and the
   `exposure_place_bucket`, `exposure_size_bucket` and size order the

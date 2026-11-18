@@ -137,7 +137,8 @@ none gives no rate ([DESIGN.md §4.3](DESIGN.md#43-load)).
 The gold adapter (`wealthdb/internal/silver/firstcitizens/`) maps the
 accounts to cash accounts. It builds a closing-balance series from the
 running balance. It adds the roster balance at each run that listed the
-account, so gold can end an account the bank stops listing. It puts each
+account. Each such run covers the whole roster, so an account the bank
+stops listing ends at the first run that leaves it out. It puts each
 statement's rate on a closing balance of the statement's cycle, as
 `interest_rate`, valid from the statement's closing day. Deposit accounts are not investments, so their return
 rows are hidden.

@@ -15,13 +15,12 @@ import (
 )
 
 // A deposit bank states each account's CURRENT balance at every run that
-// listed it, and each ledger close at the last second of its day. Gold's
-// own endings then decide when an account the bank stopped listing closes
-// (wealthdb/docs/DESIGN.md §10.7): its last balance ends at the first
-// later snapshot at which every peer observed with it, and still observed
-// then, is observed again, once the bank's newest snapshot lies more than
-// one and a half of its cadences past that balance. Its cadence is the
-// median gap between the days it is observed on, ledger closes included.
+// listed it, and each ledger close at the last second of its day. Each
+// run reads the bank's whole roster, so it states that it covers every
+// account the roster has held: the ones it listed, and the ones it left
+// out, which it reports as holding nothing. Gold ends an account at the
+// first covering run after its last balance (wealthdb/docs/DESIGN.md
+// §10.7), with no grace: the run said what it read.
 //
 // These tests load the firstcitizens and raiffeisen_at adapters into gold
 // on an invented book of weekly runs:
@@ -31,15 +30,10 @@ import (
 //   - QUIET is listed by every run but never changes, so silver holds its
 //     first roster row alone.
 //   - GONE never changes either, and the bank stops listing it at week 4.
-//     Its cadence is the weekly run.
 //   - LEDGER never changes on the roster, closes in the ledger every few
 //     days between the runs, and the bank stops listing it at week 4 too.
-//     Its cadence is the ledger's.
 //
-// Week 4 lies a week past week 3, the last run that listed GONE and LEDGER.
-// That is past LEDGER's grace but inside GONE's: LEDGER ends at week 4 and
-// GONE stands. Once the bank runs a week more, GONE ends at week 4 too.
-// QUIET never ends.
+// Both end at week 4, the first run that left them out. QUIET never ends.
 
 // depositBank is one bank's silver: its kind, its test schema, the currency
 // its accounts keep, the INSERT that records that the run at ?1 listed the
@@ -179,8 +173,7 @@ func TestADepositAccountTheBankStopsListingEnds(t *testing.T) {
 				t.Errorf("ACTIVE's history on the week 2 day = %v, want the close 1500", got)
 			}
 
-			// Week 4 left GONE and LEDGER out. It lies inside GONE's grace,
-			// a week and a half, but past LEDGER's, three days.
+			// Week 4 left GONE and LEDGER out, and covered both.
 			var last int64
 			if err := g.QueryRow(`SELECT MAX(snapshot_at) FROM cash_balances
 			     WHERE account_external_id = 'GONE'`).Scan(&last); err != nil {
@@ -189,23 +182,30 @@ func TestADepositAccountTheBankStopsListingEnds(t *testing.T) {
 			if last != depositWeek(3) {
 				t.Errorf("GONE's last balance at %d, want its last listing run %d", last, depositWeek(3))
 			}
-			if end, ok := cashEnd(t, g, "bank", "GONE"); ok {
-				t.Errorf("GONE ends at %d inside its grace, want no ending", end)
+			for _, acct := range []string{"GONE", "LEDGER"} {
+				if end, ok := cashEnd(t, g, "bank", acct); !ok || end != depositWeek(4) {
+					t.Errorf("%s ends at %d (%v), want the run that left it out %d", acct, end, ok, depositWeek(4))
+				}
 			}
-			if end, ok := cashEnd(t, g, "bank", "LEDGER"); !ok || end != depositWeek(4) {
-				t.Errorf("LEDGER ends at %d (%v), want the run that left it out %d", end, ok, depositWeek(4))
-			}
-			for acct, want := range map[string]float64{"ACTIVE": 1004, "QUIET": 75, "GONE": 250, "LEDGER": 0} {
+			for acct, want := range map[string]float64{"ACTIVE": 1004, "QUIET": 75, "GONE": 0, "LEDGER": 0} {
 				if got := balanceAt(t, g, "bank", acct, b.ccy, depositWeek(4)+3600); got != want {
 					t.Errorf("%s after week 4 = %v, want %v", acct, got, want)
 				}
 			}
 
-			// Week 5 lies two weeks past GONE's last listing run, past its
-			// grace: it ends at week 4.
+			// Week 5 loads incrementally. It covers every account once,
+			// and GONE still ends at week 4.
 			b.row(t, s, 5, "ACTIVE", 1005)
 			b.run(t, s, 5, "ACTIVE", "QUIET")
 			load()
+			var n, runs int
+			if err := g.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT snapshot_at) FROM snapshot_coverage
+			     WHERE silver_source_id = 'bank'`).Scan(&n, &runs); err != nil {
+				t.Fatal(err)
+			}
+			if n != 6*4 || runs != 6 {
+				t.Errorf("snapshot_coverage holds %d rows over %d runs, want %d over 6", n, runs, 6*4)
+			}
 			if end, ok := cashEnd(t, g, "bank", "GONE"); !ok || end != depositWeek(4) {
 				t.Errorf("GONE ends at %d (%v), want the run that left it out %d", end, ok, depositWeek(4))
 			}

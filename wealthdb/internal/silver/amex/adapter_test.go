@@ -324,8 +324,8 @@ func TestTransactionKinds(t *testing.T) {
 		{"100000000000000004", canonical.TxKindCardPayment, "400"},
 		// A fee REVERSAL is a categorised credit like any other, so the
 		// direction is read before the category: it nets against the fee
-		// inside the spending base, where kinding it `fee` would force
-		// the canonical sign negative and count the charge twice.
+		// inside the spending base. Kinded `fee`, it would read as a
+		// second charge.
 		{"100000000000000005", canonical.TxKindRefund, "12"},
 		{"P0001ABCDEF0000000", canonical.TxKindPurchase, "-25"},
 	} {

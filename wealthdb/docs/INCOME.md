@@ -122,14 +122,15 @@ policy about reversals. One canonical kind carries two opposite events,
 interest credited and interest charged. Only the sign tells them apart,
 and spending claims the negative half.
 
-A negative `deposit` is a reversal by construction:
+A negative `deposit` is the source's own reversal:
 
-- the canonical sign of `deposit` is positive, and
-  `ApplyCanonicalSign` forces it (`canonical/sign.go`);
-- only an adapter that keeps a source sign on purpose can produce a
-  negative one. An adapter does this when the source marks a reversal.
-  The Fidelity adapter keeps every sign, because its sources sign each
-  row from the account's side.
+- the canonical sign of `deposit` is positive;
+- an adapter that reads a magnitude and a side forces that sign
+  (`ApplyCanonicalSign`, `canonical/sign.go`);
+- an adapter of a signed source keeps the source's sign. The Fidelity,
+  viac and swissquote adapters do this, because their sources sign
+  each row from the account's side. So a negative `deposit` comes only
+  from a source that marks a reversal.
 
 ---
 

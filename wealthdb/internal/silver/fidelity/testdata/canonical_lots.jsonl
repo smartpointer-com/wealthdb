@@ -25,3 +25,8 @@
 {"AccountExternalID":"ACC1","AcquisitionDate":"2024-11-15T00:00:00Z","BasisOrigin":"stated","BookValue":"399.99","Covered":null,"Currency":"USD","InstrumentExternalID":"VTI","LotKey":"1","MarketValue":"1000","Payload":{"cells":["Nov-15-2024","4.000"],"cusip":"SYNCUSIP1","fetched_at":1000,"page":1,"unit_cost":99.9975,"unrealized_gain_loss":600.01},"PositionKey":"VTI","Quantity":"4","SilverSourceID":"","SnapshotAt":1000,"SourceDocument":"sha-a","Term":"short"}
 {"AccountExternalID":"ACC1","AcquisitionDate":"2024-11-15T00:00:00Z","BasisOrigin":"stated","BookValue":"399.99","Covered":null,"Currency":"USD","InstrumentExternalID":"VTI","LotKey":"1","MarketValue":null,"Payload":{"cells":["Nov-15-2024","4.000"],"current_value":1000.0,"cusip":"SYNCUSIP1","fetched_at":1000,"page":1,"term":"SHORT","unit_cost":99.9975,"unrealized_gain_loss":600.01},"PositionKey":"VTI","Quantity":"4","SilverSourceID":"","SnapshotAt":2000,"SourceDocument":"sha-a","Term":"short"}
 {"AccountExternalID":"ACC1","AcquisitionDate":null,"BasisOrigin":"stated","BookValue":"4950","Covered":null,"Currency":"USD","InstrumentExternalID":"BND1","LotKey":"0","MarketValue":"4950","Payload":{"acquired_date":"Transferred","cusip":"BND1","fetched_at":4000,"unit_cost":99.0,"unrealized_gain_loss":0.0},"PositionKey":"BND1","Quantity":"5000","SilverSourceID":"","SnapshotAt":4000,"SourceDocument":"sha-c","Term":""}
+== covers 4
+{"AccountExternalID":"ACC1","SilverSourceID":"","SnapshotAt":1000}
+{"AccountExternalID":"ACC1","SilverSourceID":"","SnapshotAt":2000}
+{"AccountExternalID":"ACC1","SilverSourceID":"","SnapshotAt":3000}
+{"AccountExternalID":"ACC1","SilverSourceID":"","SnapshotAt":4000}

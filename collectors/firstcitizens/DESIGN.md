@@ -307,8 +307,12 @@ that still listed an unchanged account is visible.
 - a closing-balance series from the per-row running balance, each
   stamped at its day's last second;
 - a current balance from the roster at each run that listed the account
-  (`run_accounts`). An account the bank stops listing has no balance
-  after its last listing run, so gold can end it;
+  (`run_accounts`);
+- the coverage of each such run. The run reads the whole roster, so it
+  covers every account the roster held by then. An account the bank
+  stops listing ends at the first run that leaves it out
+  ([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). A
+  listed account with no roster balance is not covered at that run;
 - every transaction: interest and fee recognised from the description,
   else deposit or withdrawal by sign;
 - each statement's rate, as `interest_rate`, `interest_side` `credit`

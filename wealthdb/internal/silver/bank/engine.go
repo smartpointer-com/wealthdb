@@ -274,8 +274,8 @@ func signed(amount float64, card bool) canonical.Decimal {
 }
 
 // Snapshots emits, in one batch: one ACCOUNT per roster account, the
-// CURRENT balances (Source.Listing), each CLOSING series in turn, then the
-// source's own pass.
+// CURRENT balances and the coverage of each listing run (Source.Listing),
+// each CLOSING series in turn, then the source's own pass.
 //
 // A CURRENT and a CLOSING mark are told apart by kind rather than by date.
 // They can fall on the same day and do not compete when they do.
@@ -288,11 +288,17 @@ func (c *connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 	var batch canonical.SnapshotBatch
-	if err := c.appendAccounts(ctx, w, f, &batch); err != nil {
+	roster, err := c.appendAccounts(ctx, w, f, &batch)
+	if err != nil {
 		return nil, err
 	}
 	if c.listed {
+		from := len(batch.CashBalances)
 		if err := appendReportedBalances(ctx, c.db, c.src.Kind, c.src.Listing, w, f.currency, &batch); err != nil {
+			return nil, err
+		}
+		if err := appendListedCovers(ctx, c.db, c.src.Kind, c.src.Listing, w, roster,
+			batch.CashBalances[from:], &batch); err != nil {
 			return nil, err
 		}
 	}
@@ -310,14 +316,14 @@ func (c *connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 }
 
 // appendAccounts emits one AccountChange per roster account from its latest
-// snapshot. Without a Listing it adds that account's CURRENT balance when
-// the roster captured one.
+// snapshot, and returns the roster. Without a Listing it adds that
+// account's CURRENT balance when the roster captured one.
 func (c *connection) appendAccounts(ctx context.Context, w canonical.Window, f facts,
-	batch *canonical.SnapshotBatch) error {
+	batch *canonical.SnapshotBatch) ([]RosterRow, error) {
 	s := c.src
 	roster, err := readRoster(ctx, c.db, s.Kind+" appendAccounts", s.NameCol, s.TypeCol)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, r := range roster {
 		card := f.card(r.ID)
@@ -336,7 +342,7 @@ func (c *connection) appendAccounts(ctx context.Context, w canonical.Window, f f
 		}
 		if s.Account != nil {
 			if err := s.Account(&acc); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		batch.Accounts = append(batch.Accounts, acc)
@@ -347,7 +353,7 @@ func (c *connection) appendAccounts(ctx context.Context, w canonical.Window, f f
 			batch.CashBalances = append(batch.CashBalances, cb)
 		}
 	}
-	return nil
+	return roster, nil
 }
 
 // appendClosings emits one CLOSING balance per row of the series whose

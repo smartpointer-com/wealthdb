@@ -28,6 +28,12 @@
 {"AccountExternalID":"acct-card","Amount":"-410.25","BalanceKind":"current","Currency":"USD","Payload":{"basis":"roster"},"SilverSourceID":"","SnapshotAt":1925794800}
 {"AccountExternalID":"acct-checking","Amount":"1200.5","BalanceKind":"current","Currency":"USD","Payload":{"basis":"roster"},"SilverSourceID":"","SnapshotAt":1925794800}
 {"AccountExternalID":"acct-ira","Amount":"300","BalanceKind":"current","Currency":"USD","Payload":{"basis":"holdings"},"SilverSourceID":"","SnapshotAt":1925794800}
+== covers 5
+{"AccountExternalID":"acct-card","SilverSourceID":"","SnapshotAt":1925794800}
+{"AccountExternalID":"acct-checking","SilverSourceID":"","SnapshotAt":1925794800}
+{"AccountExternalID":"acct-coin","SilverSourceID":"","SnapshotAt":1925794800}
+{"AccountExternalID":"acct-home","SilverSourceID":"","SnapshotAt":1925794800}
+{"AccountExternalID":"acct-ira","SilverSourceID":"","SnapshotAt":1925794800}
 == transactions 18
 {"AccountExternalID":"acct-card","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"Cafe","GrossAmount":"-12.5","InstrumentExternalID":null,"InstrumentHint":"","Kind":"purchase","Memo":null,"NetAmount":"-12.5","OccurredAt":1925337600,"Payload":{"category_id":null,"pending":true,"transaction_id":"tx-card"},"Price":null,"ProviderCategory":"FOOD_AND_DRINK_COFFEE","Quantity":null,"SilverSourceID":"","TransactionExternalID":"tx-card","Vehicle":""}
 {"AccountExternalID":"acct-card","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"Payment","GrossAmount":"300","InstrumentExternalID":null,"InstrumentHint":"","Kind":"card_payment","Memo":null,"NetAmount":"300","OccurredAt":1925424000,"Payload":{"category_id":null,"pending":false,"transaction_id":"tx-bill"},"Price":null,"ProviderCategory":"LOAN_PAYMENTS_CREDIT_CARD_PAYMENT","Quantity":null,"SilverSourceID":"","TransactionExternalID":"tx-bill","Vehicle":""}

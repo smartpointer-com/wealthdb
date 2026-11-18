@@ -223,6 +223,12 @@ say what such an account holds.
   run, in its own currency. That figure may come from a run whose
   holdings failed. The payload says `"basis": "carried"` and the run it
   was stated at.
+- **Coverage.** Each run that carries snapshots covers each account it
+  states in full. An investment account is stated by its holdings.
+  Any other account is stated by a figure, stated or carried. Gold
+  ends a key of such an account no later than the first covering run
+  that leaves it out (DESIGN.md §10.7). An account listed with no
+  figure so far is not covered.
 - **Closure.** An account that held positions at the last run and
   holds none now gets its last positions replayed at zero
   (`silver.ClosureMarkerBatch`). It left the Item, or sold out. Without
@@ -304,7 +310,8 @@ settlement and states its trade date apart, as a time:
   load re-emits the whole history (§8).
 
 **The bank and card ledger** (cash and card accounts). Silver holds it
-in the fleet's sign, and it still goes through `ApplyCanonicalSign`.
+in the fleet's sign, and each row keeps it. The kind is read off the
+sign.
 
 | Account | Row | Kind |
 | --- | --- | --- |

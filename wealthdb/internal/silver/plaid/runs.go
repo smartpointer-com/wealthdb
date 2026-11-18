@@ -212,7 +212,10 @@ func closedCash(last, now []cashKey, t int64) []canonical.CashBalanceChange {
 }
 
 // appendRun adds one run's accounts, balances, mortgages and holdings to b,
-// and records in `stated` the figure each account stated. An account the
+// and records in `stated` the figure each account stated. b covers at t
+// each account the run states in full: an investment account by its
+// holdings, any other by its figure. An account listed with no figure
+// stated so far says nothing of its cash, and is not covered. An account the
 // run lists without a figure restates the last one it stated, if any. It
 // returns the cash keys the run stated, and counts in unsummed the
 // positions whose tax lots do not add up to them (appendHoldings).
@@ -227,7 +230,9 @@ func (c *Connection) appendRun(ctx context.Context, b *canonical.SnapshotBatch, 
 	for _, a := range accounts {
 		byID[a.id] = a
 		b.Accounts = append(b.Accounts, accountChange(a, t, t))
+		cover := canonical.CoverageChange{SnapshotAt: t, AccountExternalID: a.id}
 		if investmentLedgerKind(a.kind) {
+			b.Covers = append(b.Covers, cover)
 			continue
 		}
 		s, ok := statedOf(a, t)
@@ -236,6 +241,7 @@ func (c *Connection) appendRun(ctx context.Context, b *canonical.SnapshotBatch, 
 		} else if s, ok = stated[a.id]; !ok {
 			continue
 		}
+		b.Covers = append(b.Covers, cover)
 		if a.kind == canonical.AccountKindMortgage {
 			appendMortgage(b, t, a, s)
 			continue

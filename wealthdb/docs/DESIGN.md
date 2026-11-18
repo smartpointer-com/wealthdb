@@ -1520,6 +1520,24 @@ read it, must not end a holding. A collector with partial runs must
 record, per dump, the coverage the run declares beside the roster
 before it may feed `silver.Removals`.
 
+**The coverage a snapshot states.** An adapter may state, per snapshot
+instant, the accounts the snapshot reports whole
+(`canonical.CoverageChange`, gold's `snapshot_coverage`). Its
+positions and cash of such an account at that instant are all the
+account held. An account with none held nothing. A run that skipped
+an account, or read only its holdings or only its cash, states
+nothing for it. Gold ends a key at the first covering snapshot that
+leaves it out, or sooner where an inferred ending comes first (§10.7).
+These adapters state coverage:
+
+| kind | a snapshot covers |
+|---|---|
+| firstcitizens, raiffeisen_at | at each run with a listing, every roster account seen by then. A listed account with no roster balance is not covered |
+| plaid | at each run that carries snapshots, each account it states in full: by holdings, or by a stated or carried figure |
+| fidelity | at each dump whose positions entered silver, each account its master rows name |
+
+Every other kind states none, and its keys end by inference (§10.7).
+
 ### 6.5 Pull-model batched iterator
 
 The plugin yields batches of canonical records via `Next` calls.
@@ -2938,7 +2956,7 @@ where every balance row is its own observation. One active snapshot per
 *source* would be right only for a source that writes every account in
 one run. Where a deposit run, a card run and a statement backfill each
 land under their own `snapshot_at`, it would report whichever run was
-last and drop every account the others carried. Five rules complete the
+last and drop every account the others carried. Six rules complete the
 picture:
 
 - **Zero is an observation.** The cash line bases keep `amount = 0` rows, so an account paid down to zero carries the
@@ -2953,6 +2971,12 @@ picture:
   point-in-time twin does — a display row has no sum for a NULL to poison.
   The point-in-time reads take a zero cash row as an observation too.
   `cash_chosen` leaves zero balances out of its output, after the pick.
+- **A snapshot that covers the account ends it.** A source may state which
+  accounts a snapshot reports whole (§6.4). A key leaves the series at the
+  first later snapshot that covers its account and does not report it. No
+  grace applies. The re-cover and the source's clock below infer what a
+  source did not say. A key ends at the earliest of the three, so coverage
+  can end a key sooner, never later.
 - **A later run that re-covers the key's company ends it.** Absence is evidence
   of closure exactly when the run that produced it was in a position to report
   the key: a key leaves the series at the first later snapshot of its source
@@ -2987,7 +3011,7 @@ picture:
   of the spine. The price is that a key a partial-run source stops reporting
   without a zeroing row lingers for up to a year; an explicit zero row ends it
   immediately, which is what the adapters emit on closure.
-- **Both endings apply to a key's LAST observation only**, so neither can open a
+- **Every ending applies to a key's LAST observation only**, so none can open a
   hole in the middle of a series: a card reporting per statement cycle, a
   holding marked less often than yearly and a deposit re-dumped nightly sit in
   one source without expiring each other for as long as their runs carry their
@@ -3003,13 +3027,14 @@ any instant (`pos_active_at` / `cash_active_at`):
 - the key's last observation stands while the instant is before its ending
   snapshot, and while the source's clock at the instant is at most
   `hist_carry_days()` days past the observation's day. The ending snapshot is the
+  earlier of the first covering snapshot that leaves the key out and the
   re-cover, once the grace or the account's own cash lets it end.
 
 Each observation so holds over a span (`pos_key_spans()` /
 `cash_key_spans()`): from its own instant to the key's next observation. The
-last one holds to the earlier of its two endings, or for ever.
+last one holds to the earliest of its endings, or for ever.
 `pos_active_at(instants)` / `cash_active_at(instants)` give the observation each
-key holds at each instant. The re-cover ending, with its cadence, has one
+key holds at each instant. The coverage and re-cover endings have one
 definition (`pos_key_ends()` / `cash_key_ends()`), which `hist_active_pos()` /
 `hist_active_cash()` and the cash flow's mortgage split read too. At a day's last
 second the rule is the history's day rule.
@@ -3037,7 +3062,9 @@ What follows for readers of these macros:
     of it.
 
   Gold cannot tell these shapes apart sooner without a sign from the source of
-  which accounts a run could report.
+  which accounts a run could report. A source that states its coverage
+  gives that sign: an account a covering run leaves out ends no later than
+  that run.
 - **A past read can change.** A read of a past instant changes when a later run
   passes a key's grace: the key then reads as closed from its re-cover run on.
   It changes back once the key is observed again.

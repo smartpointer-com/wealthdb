@@ -14,14 +14,14 @@ import (
 
 // Writer wraps a *sql.Tx and inserts/upserts canonical *Change
 // records into the gold tables. The insert-only fact tables
-// (positions, position_lots, cash_balances, fx_rates, transactions)
-// go in as multi-row VALUES chunks, and realized_lots column by column
-// (colInsert, whose row-wise form insertColumns feeds the yield
-// tables) — DuckDB's per-statement cost dwarfs its per-row cost, so
-// one statement per row is the slowest way to feed it. The dimension
-// tables upsert row-by-row (the §8.4 guard needs ON CONFLICT per row);
-// callers keep those batches small by folding duplicate emissions
-// first — see ChangeAccumulator.
+// (positions, position_lots, cash_balances, snapshot_coverage,
+// fx_rates, transactions) go in as multi-row VALUES chunks, and
+// realized_lots column by column (colInsert, whose row-wise form
+// insertColumns feeds the yield tables) — DuckDB's per-statement cost
+// dwarfs its per-row cost, so one statement per row is the slowest way
+// to feed it. The dimension tables upsert row-by-row (the §8.4 guard
+// needs ON CONFLICT per row); callers keep those batches small by
+// folding duplicate emissions first — see ChangeAccumulator.
 //
 // Caller owns the transaction lifecycle: BeginTx, call writer
 // methods, Commit or Rollback. A Writer is not goroutine-safe;
@@ -542,6 +542,21 @@ INSERT INTO cash_balances (
 			return append(args,
 				r.SilverSourceID, r.SnapshotAt, r.AccountExternalID,
 				r.Currency, string(r.BalanceKind), r.Amount, nullableJSON(r.Payload))
+		})
+}
+
+// InsertCoverage inserts `snapshot_coverage` rows. A source may state
+// one account at one instant in more than one batch, and the row lands
+// once.
+func (w *Writer) InsertCoverage(ctx context.Context, batch []canonical.CoverageChange) error {
+	const head = `
+INSERT OR IGNORE INTO snapshot_coverage (
+    silver_source_id, snapshot_at, account_external_id
+) VALUES `
+	return InsertChunked(ctx, w.tx, "InsertCoverage", head, `(?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args, r.SilverSourceID, r.SnapshotAt, r.AccountExternalID)
 		})
 }
 

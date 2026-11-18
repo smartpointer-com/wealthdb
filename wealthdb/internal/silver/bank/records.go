@@ -77,9 +77,9 @@ func appendBalances(ctx context.Context, db *sql.DB, label, q string, args []any
 // the others.
 //
 // Silver content-dedups an unchanged roster row, so the runs table is the
-// only record that a quiet account was still listed. An account the
-// latest runs leave out has no balance after the last run that listed it,
-// so gold can end it (wealthdb/docs/DESIGN.md §10.7).
+// only record that a quiet account was still listed. An account a run
+// leaves out ends at that run, by the run's coverage (appendListedCovers,
+// wealthdb/docs/DESIGN.md §10.7).
 func appendReportedBalances(ctx context.Context, db *sql.DB, kind, runsTable string,
 	w canonical.Window, ccy func(accountID string) string, batch *canonical.SnapshotBatch) error {
 	q := `
@@ -95,6 +95,56 @@ SELECT id, at, balance FROM (
  ORDER BY id, at`
 	return appendBalances(ctx, db, kind+" roster balances", q, []any{w.Start, w.End},
 		canonical.BalanceKindCurrent, `{"basis":"roster"}`, ccy, nil, batch)
+}
+
+// appendListedCovers states, for each run inside w that recorded a
+// listing in runsTable, the accounts it reports whole at its instant.
+// A run reads the bank's whole roster, so it covers every account the
+// roster has held since before it: the ones it listed and the ones it
+// left out, which the bank no longer holds. A listed account is covered
+// only where the run stated its balance (reported, the CURRENT balances
+// appendReportedBalances emitted): a listing with no figure says nothing
+// of the account's cash. A run that recorded no listing covers nothing.
+func appendListedCovers(ctx context.Context, db *sql.DB, kind, runsTable string,
+	w canonical.Window, roster []RosterRow, reported []canonical.CashBalanceChange,
+	batch *canonical.SnapshotBatch) error {
+	type runAccount struct {
+		at int64
+		id string
+	}
+	stated := make(map[runAccount]bool, len(reported))
+	for _, b := range reported {
+		stated[runAccount{b.SnapshotAt, b.AccountExternalID}] = true
+	}
+	listed := map[runAccount]bool{}
+	var runs []int64
+	err := silver.ScanRows(ctx, db, kind+" run listings", `
+SELECT snapshot_at, account_external_id FROM `+runsTable+`
+ WHERE snapshot_at BETWEEN ? AND ?
+ ORDER BY snapshot_at, account_external_id`, func(rows *sql.Rows) error {
+		var r runAccount
+		if err := rows.Scan(&r.at, &r.id); err != nil {
+			return err
+		}
+		if len(runs) == 0 || runs[len(runs)-1] != r.at {
+			runs = append(runs, r.at)
+		}
+		listed[r] = true
+		return nil
+	}, w.Start, w.End)
+	if err != nil {
+		return err
+	}
+	for _, at := range runs {
+		for _, r := range roster {
+			k := runAccount{at, r.ID}
+			if r.FirstSeen > at || listed[k] && !stated[k] {
+				continue
+			}
+			batch.Covers = append(batch.Covers, canonical.CoverageChange{SnapshotAt: at, AccountExternalID: r.ID})
+		}
+	}
+	return nil
 }
 
 // RosterRow is an account's latest row in a bank silver's `accounts`

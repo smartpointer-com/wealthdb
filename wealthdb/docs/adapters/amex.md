@@ -109,8 +109,7 @@ and says why
 The whole card ledger. Silver already holds the fleet's card convention
 — spend negative, anything reducing the balance owed positive — the
 collector having negated Amex's own spend-positive figures at load.
-Kinds are still routed through `ApplyCanonicalSign`, because each has a
-fixed canonical direction.
+Each row keeps that sign, whatever its kind.
 
 **Kind mapping.** Two vocabularies share silver's `kind` column, one per
 era.

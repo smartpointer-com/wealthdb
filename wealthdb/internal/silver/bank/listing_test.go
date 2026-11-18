@@ -109,6 +109,37 @@ func TestCurrentBalanceAtEachRunThatListedTheAccount(t *testing.T) {
 	}
 }
 
+// TestEachListingRunCoversTheWholeRoster: a run reads the bank's whole
+// roster, so it covers each account the roster held before it, listed
+// or left out. An account first seen later is not covered yet, and one
+// listed with no balance is not covered at that run: the listing says
+// nothing of its cash.
+func TestEachListingRunCoversTheWholeRoster(t *testing.T) {
+	for _, b := range listingBanks {
+		t.Run(b.kind, func(t *testing.T) {
+			path, db, src := b.seed(t)
+			r0, r1, r2, r3 := silvertest.SeedRuns(t, db, loadUnix, "acct-1", "acct-2", "acct-3")
+			silvertest.Exec(t, db, `INSERT INTO accounts VALUES (?,?,?,?,?,?,?,?)`,
+				r3, "acct-4", "Savings", "", "…0004", b.ccy, nil, "{}")
+			silvertest.Exec(t, db, `INSERT INTO run_accounts VALUES (?,?)`, r3, "acct-4")
+			conn := open(t, src, path)
+			got := map[int64][]string{}
+			for _, c := range silvertest.Merged(t, conn, silvertest.WindowSince0(t, conn)).Covers {
+				got[c.SnapshotAt] = append(got[c.SnapshotAt], c.AccountExternalID)
+			}
+			want := map[int64][]string{
+				r0: {"acct-2", "acct-3"},
+				r1: {"acct-2", "acct-3"},
+				r2: {"acct-1", "acct-2", "acct-3"},
+				r3: {"acct-1", "acct-2", "acct-3"},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("covers =\n %v\nwant\n %v", got, want)
+			}
+		})
+	}
+}
+
 // TestSnapshotsNeedTheListing pins a silver loaded before the listing
 // table: it is read as far as it goes. Its runs say nothing about a quiet
 // account, so no CURRENT balance is stamped, the closing balances still
@@ -132,6 +163,9 @@ func TestSnapshotsNeedTheListing(t *testing.T) {
 			}
 			if closings == 0 {
 				t.Error("no closing balance: the silver should still read as far as it goes")
+			}
+			if len(sb.Covers) != 0 {
+				t.Errorf("covers %v from a silver without run_accounts", sb.Covers)
 			}
 			notes := conn.(silver.SchemaAdviser).SchemaAdvice()
 			if len(notes) != 1 || !slices.Contains(notes[0].Missing, "run_accounts") ||

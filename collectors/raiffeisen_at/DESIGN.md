@@ -650,8 +650,12 @@ plus `load.py`'s supplied pass. `pdftotext` comes from the image's
 - a closing cash balance per day from `daily_balances`, stamped at the
   day's last second;
 - a current balance from the roster at each run that listed the account
-  (`run_accounts`). An account the bank stops listing has no balance
-  after its last listing run, so gold can end it;
+  (`run_accounts`);
+- the coverage of each such run. The run reads the whole roster, so it
+  covers every account the roster held by then. An account the bank
+  stops listing ends at the first run that leaves it out
+  ([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). A
+  listed account with no roster balance is not covered at that run;
 - every transaction, with `amount` already signed: interest and fee
   recognised from the category or description, else deposit or
   withdrawal by sign.

@@ -87,6 +87,7 @@ var SourceTables = []SourceTable{
 	{Name: "realized_lots", Account: true, Class: ClassFact},
 	{Name: "fx_rates", TimeCol: "snapshot_at", Class: ClassFact},
 	{Name: "cash_balances", TimeCol: "snapshot_at", Account: true, Class: ClassFact},
+	{Name: "snapshot_coverage", TimeCol: "snapshot_at", Account: true, Class: ClassFact},
 	{Name: "position_lots", TimeCol: "snapshot_at", Account: true, Class: ClassFact},
 	{Name: "positions", TimeCol: "snapshot_at", Account: true, Class: ClassFact},
 

@@ -10,6 +10,8 @@
 {"AccountExternalID":"acct-1","Amount":"650","BalanceKind":"closing","Currency":"USD","Payload":{"basis":"running_balance"},"SilverSourceID":"","SnapshotAt":1770335999}
 {"AccountExternalID":"acct-1","Amount":"652.5","BalanceKind":"closing","Currency":"USD","Payload":{"basis":"running_balance"},"SilverSourceID":"","SnapshotAt":1771199999}
 {"AccountExternalID":"acct-1","Amount":"700","BalanceKind":"closing","Currency":"USD","Payload":{"basis":"running_balance"},"SilverSourceID":"","SnapshotAt":1768953599}
+== covers 1
+{"AccountExternalID":"acct-1","SilverSourceID":"","SnapshotAt":1772366400}
 == transactions 4
 {"AccountExternalID":"acct-1","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"COFFEE BAR","GrossAmount":"-300","InstrumentExternalID":null,"InstrumentHint":"","Kind":"withdrawal","Memo":null,"NetAmount":"-300","OccurredAt":1768867200,"Payload":{},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"t2","Vehicle":""}
 {"AccountExternalID":"acct-1","AssetClass":"","CheckNumber":null,"Counterparty":null,"Currency":"USD","Description":"INTEREST PAYMENT","GrossAmount":"2.5","InstrumentExternalID":null,"InstrumentHint":"","Kind":"interest","Memo":null,"NetAmount":"2.5","OccurredAt":1771113600,"Payload":{},"Price":null,"ProviderCategory":null,"Quantity":null,"SilverSourceID":"","TransactionExternalID":"t4","Vehicle":""}

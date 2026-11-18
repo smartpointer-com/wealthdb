@@ -14,3 +14,6 @@
 == positions 2
 {"AccountExternalID":"9990001","AccruedInterest":null,"AcquisitionDate":null,"AssetClass":"multi_asset","Basis":{"Fees":"","Method":"","Origin":""},"BookValue":null,"Currency":"USD","InstrumentExternalID":"POOLX1","MarketValue":"100000","Payload":{},"PositionKey":"POOLX1","Quantity":"1000","SilverSourceID":"","SnapshotAt":1000,"ValuedAt":0,"Vehicle":"fund"}
 {"AccountExternalID":"ACC1","AccruedInterest":null,"AcquisitionDate":null,"AssetClass":"public_equity","Basis":{"Fees":"","Method":"","Origin":""},"BookValue":null,"Currency":"USD","InstrumentExternalID":"VTI","MarketValue":"2500","Payload":{},"PositionKey":"VTI","Quantity":"10","SilverSourceID":"","SnapshotAt":1000,"ValuedAt":0,"Vehicle":"etf"}
+== covers 2
+{"AccountExternalID":"9990001","SilverSourceID":"","SnapshotAt":1000}
+{"AccountExternalID":"ACC1","SilverSourceID":"","SnapshotAt":1000}

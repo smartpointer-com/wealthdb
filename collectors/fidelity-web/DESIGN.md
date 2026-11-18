@@ -1490,6 +1490,14 @@ it omits. The invariant is enforced at both ends:
   the retail master rows of a legacy `mode='daf'` dump (its
   `account_dimensions` is an enumeration-only capture).
 
+  A dump with `positions_present = 1` covers each account its master
+  rows name: the gold adapter states that the dump reports those
+  accounts whole. Gold ends a holding or a balance of such an account
+  no later than the first covering dump that leaves it out
+  ([wealthdb/docs/DESIGN.md](../../wealthdb/docs/DESIGN.md) §10.7). An
+  account outside the dump's scope has no master row there, so the
+  dump says nothing about it.
+
 ### 12.4 Known limits
 
 1. Whether `poolBalances?numberOfDays=N` (N > 1) returns a NAV/value
