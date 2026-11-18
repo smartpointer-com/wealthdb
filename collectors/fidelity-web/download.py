@@ -225,9 +225,6 @@ LANDMARK_TIMEOUT_MS = 60_000
 # FIDELITY_USERNAME/PASSWORD so an existing env file keeps working.
 USERNAME_ENVS = ("FIDELITY_WEB_USERNAME", "FIDELITY_USERNAME")
 PASSWORD_ENVS = ("FIDELITY_WEB_PASSWORD", "FIDELITY_PASSWORD")
-# Credentials whose env-file value wins over a value inherited from the
-# calling environment: the file is authoritative for them.
-_CRED_OVERRIDE_VARS = USERNAME_ENVS + PASSWORD_ENVS
 
 DEFAULT_ENV_FILE_CANDIDATES = (
     Path("/secrets/fidelity-web.env"),
@@ -3644,9 +3641,8 @@ def walk(context, page, config):
 # ---------------------------------------------------------------------------
 
 def maybe_source_env_files(args):
-    envfile.source_first_env_file(
-        args.env_file, DEFAULT_ENV_FILE_CANDIDATES, logger=log,
-        override_vars=_CRED_OVERRIDE_VARS, warn_on_override=True)
+    envfile.load(args.env_file, candidates=DEFAULT_ENV_FILE_CANDIDATES,
+                 logger=log)
 
 
 # ---------------------------------------------------------------------------

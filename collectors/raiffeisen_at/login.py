@@ -191,8 +191,7 @@ def _probe_authenticated(context, watch: _Watch) -> bool:
 # --- login-form driving ---------------------------------------------------
 
 def _load_credentials(env_file: Path) -> tuple[str, str, str]:
-    if envfile.source_env_file(env_file):
-        log.info("env file: %s (sourced)", env_file)
+    envfile.load(None, candidates=(env_file,), logger=log)
     username = os.environ.get(USER_ENV, "")
     password = os.environ.get(PASS_ENV, "")
     region = os.environ.get(REGION_ENV, "")

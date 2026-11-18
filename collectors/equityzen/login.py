@@ -367,8 +367,7 @@ def main(argv: list[str]) -> int:
 
     username = password = ""
     if not args.check:
-        if envfile.source_env_file(args.env_file, prefer_file=True):
-            log.info("env file:    %s (sourced)", args.env_file)
+        envfile.load(None, candidates=(args.env_file,), logger=log)
         username = next((os.environ[k] for k in USER_ENVS if os.environ.get(k)), "")
         password = os.environ.get(PASS_ENV, "")
         if not (username and password):

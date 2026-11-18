@@ -138,11 +138,13 @@ def is_ubs_host(url: str) -> bool:
     return bool(UBS_HOST_RE.search(host))
 
 
-def resolve_env_file(explicit: Path | None) -> Path | None:
-    """The env file to source: the explicit one, else the first of login's
-    candidates that exists (ubs-web's, else the bank-level fallback the
-    README documents). None when none exists."""
-    return envfile.resolve_env_file(explicit, DEFAULT_ENV_FILE_CANDIDATES)
+def source_env_file(explicit: Path | None) -> Path | None:
+    """Source the env file as login sources it, its values winning: the
+    explicit one, else the first of login's candidates that exists
+    (ubs-web's, else the bank-level fallback the README documents).
+    Returns the path sourced, or None when none exists."""
+    return envfile.load(explicit, candidates=DEFAULT_ENV_FILE_CANDIDATES,
+                        logger=log)
 
 
 def _looks_authenticated(context) -> bool:
@@ -221,11 +223,7 @@ def main(argv: list[str]) -> int:
         write_state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH)
     have_state = state_path.is_file()
 
-    # Sourced as login sources it: the file's value wins.
-    env_file = resolve_env_file(args.env_file)
-    if env_file is not None and envfile.source_env_file(env_file,
-                                                        prefer_file=True):
-        log.info("env file:    %s (sourced)", env_file)
+    source_env_file(args.env_file)
     contract = os.environ.get(CONTRACT_NUMBER_ENV, "")
     prefill = bool(contract) and not args.no_prefill
     if args.no_prefill:

@@ -228,6 +228,16 @@ class CredentialsTest(_Tmp):
                 no_prefill=True, host="example.com", log=log)
         self.assertFalse(got[2])
 
+    def test_the_env_file_wins_over_an_exported_credential(self):
+        env_file = self.root / "example.env"
+        env_file.write_text(f"EXAMPLE_PASSWORD='{PASSWORD}'\n")
+        env = {"EXAMPLE_USERNAME": USERNAME, "EXAMPLE_PASSWORD": "exported"}
+        with mock.patch.dict("os.environ", env, clear=True):
+            got = explore.load_credentials(
+                env_file, ("EXAMPLE_USERNAME",), ("EXAMPLE_PASSWORD",),
+                no_prefill=False, host="example.com", log=log)
+        self.assertEqual(got, (USERNAME, PASSWORD, True))
+
     def test_fresh_wipes_the_profile(self):
         profile = self.root / "profile"
         profile.mkdir()

@@ -1,9 +1,9 @@
-"""maybe_source_env_files' wiring: a named env file is the file sourced,
-with the credential keys overriding the environment. The candidate search
-and the exit on a missing named file are
-collectorkit.envfile.source_first_env_file's, tested there. Synthetic
-fixtures only."""
+"""maybe_source_env_files' wiring: the named env file, else the first of
+the collector's candidates, is sourced, and its values win over the
+environment. The rule itself is collectorkit.envfile.load's, tested
+there. Synthetic fixtures only."""
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -18,18 +18,20 @@ def _args(env_file):
     return argparse.Namespace(env_file=env_file)
 
 
-def _record_loads(monkeypatch):
-    loaded: list[tuple] = []
+def test_the_flag_and_the_candidates_reach_the_loader(tmp_path, monkeypatch):
+    calls = []
     monkeypatch.setattr(
-        envfile, "load_env_file",
-        lambda p, override_vars, *, logger, warn_on_override=False:
-            loaded.append((Path(p), tuple(override_vars), warn_on_override)))
-    return loaded
-
-
-def test_explicit_existing_loads_it(tmp_path, monkeypatch):
+        envfile, "load",
+        lambda explicit, **kwargs: calls.append((explicit, kwargs)))
     f = tmp_path / "creds.env"
-    f.write_text("K=v\n")
-    loaded = _record_loads(monkeypatch)
     download.maybe_source_env_files(_args(f))
-    assert loaded == [(f, tuple(download._CRED_OVERRIDE_VARS), True)]
+    assert calls == [(f, {"candidates": download.DEFAULT_ENV_FILE_CANDIDATES,
+                          "logger": download.log})]
+
+
+def test_a_named_file_wins_over_the_environment(tmp_path, monkeypatch):
+    f = tmp_path / "creds.env"
+    f.write_text(f"{download.USERNAME_ENVS[0]}=from-file\n")
+    monkeypatch.setenv(download.USERNAME_ENVS[0], "exported")
+    download.maybe_source_env_files(_args(f))
+    assert os.environ[download.USERNAME_ENVS[0]] == "from-file"

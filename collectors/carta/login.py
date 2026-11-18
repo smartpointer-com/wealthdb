@@ -295,7 +295,7 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    envfile.source_env_file(args.env_file, prefer_file=True)
+    envfile.load(None, candidates=(args.env_file,), logger=log)
     # 0700 profile dir (holds the session + device-trust cookie), with its
     # regenerable startupCache relocated out of the secrets tree.
     launch.prepare_profile_dir(args.profile_dir)

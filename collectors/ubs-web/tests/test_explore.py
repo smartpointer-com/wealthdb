@@ -10,6 +10,7 @@ machinery (collectorkit.explore) is tested in collectorkit.
 from __future__ import annotations
 
 import contextlib
+import os
 from pathlib import Path
 
 import pytest
@@ -57,23 +58,30 @@ def test_other_frames_are_not_captured(url):
 # Env-file resolution
 # --------------------------------------------------------------------
 
-def test_env_file_prefers_an_explicit_path(tmp_path):
-    explicit = tmp_path / "custom.env"
-    assert explore.resolve_env_file(explicit) == explicit
+def test_env_file_prefers_an_explicit_path(monkeypatch, tmp_path):
+    explicit, candidate = tmp_path / "custom.env", tmp_path / "ubs-web.env"
+    explicit.write_text("UBS_EXPLORE_TEST=explicit\n")
+    candidate.write_text("UBS_EXPLORE_TEST=candidate\n")
+    monkeypatch.setattr(explore, "DEFAULT_ENV_FILE_CANDIDATES", (candidate,))
+    monkeypatch.delenv("UBS_EXPLORE_TEST", raising=False)
+    assert explore.source_env_file(explicit) == explicit
+    assert os.environ["UBS_EXPLORE_TEST"] == "explicit"
 
 
 def test_env_file_returns_none_when_nothing_exists(monkeypatch, tmp_path):
     monkeypatch.setattr(explore, "DEFAULT_ENV_FILE_CANDIDATES",
                         (tmp_path / "a.env", tmp_path / "b.env"))
-    assert explore.resolve_env_file(None) is None
+    assert explore.source_env_file(None) is None
 
 
 def test_env_file_falls_back_to_the_bank_level_file(monkeypatch, tmp_path):
     primary, fallback = tmp_path / "ubs-web.env", tmp_path / "ubs.env"
-    fallback.write_text("x=1\n")
+    fallback.write_text("UBS_EXPLORE_TEST=fallback\n")
     monkeypatch.setattr(explore, "DEFAULT_ENV_FILE_CANDIDATES",
                         (primary, fallback))
-    assert explore.resolve_env_file(None) == fallback
+    monkeypatch.setenv("UBS_EXPLORE_TEST", "exported")
+    assert explore.source_env_file(None) == fallback
+    assert os.environ["UBS_EXPLORE_TEST"] == "fallback"
 
 
 # --------------------------------------------------------------------

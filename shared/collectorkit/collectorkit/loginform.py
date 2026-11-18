@@ -37,13 +37,13 @@ def load_credentials(env_file: Path | None, user_envs: tuple[str, ...],
                      host: str, log: logging.Logger) -> tuple[str, str, bool]:
     """Source the env file and read the login credentials.
 
-    Each is the first non-empty of its env names; a value already in the
-    environment wins over the file's. Returns (username, password,
-    prefill), where `prefill` says whether both are there to fill and
+    `env_file` is sourced when it exists and skipped when it does not; its
+    values win over the environment's. Each credential is the first
+    non-empty of its env names. Returns (username, password, prefill),
+    where `prefill` says whether both are there to fill and
     ``--no-prefill`` did not refuse them.
     """
-    if env_file is not None and envfile.source_env_file(env_file):
-        log.info("env file:    %s (sourced)", env_file)
+    envfile.load(None, candidates=(env_file,), logger=log)
     username = _first_set(user_envs)
     password = _first_set(pass_envs)
     if no_prefill:

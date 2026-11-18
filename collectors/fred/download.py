@@ -255,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # A direct `download.py` run needs no wrapper: the named file is
     # sourced through bash, as the wrapper sources it, and its values win.
-    envfile.source_named_env_file(args.env_file, "FRED_ENV_FILE")
+    envfile.load(args.env_file, env_var="FRED_ENV_FILE", logger=log)
     api_key = envfile.resolve_credential(args.api_key, "FRED_API_KEY",
                                          "--api-key")
     if args.check:

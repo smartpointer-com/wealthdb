@@ -495,7 +495,7 @@ def main() -> int:
     # sourced last, so its values win. A path that was asked for but is
     # absent is an error, not a silent fallback to whatever the environment
     # happened to hold.
-    envfile.source_named_env_file(args.env_file, "UBS_PSN_ENV_FILE")
+    envfile.load(args.env_file, env_var="UBS_PSN_ENV_FILE", logger=log)
     # value-with-env-fallback (AGENTS.md §3): --client-id VALUE else
     # UBS_PSN_CLIENT_ID, so a direct `download.py` with the env var exported
     # works, matching fred.

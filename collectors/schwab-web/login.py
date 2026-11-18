@@ -84,9 +84,6 @@ DEFAULT_ENV_FILE_CANDIDATES = (
 LOGIN_ID_ENV = "SCHWAB_LOGIN_ID"
 PASSWORD_ENV = "SCHWAB_PASSWORD"
 
-# Credentials whose env-file value wins over a value inherited from
-# the calling environment: the file is authoritative for them.
-_CRED_OVERRIDE_VARS = (LOGIN_ID_ENV, PASSWORD_ENV)
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -209,9 +206,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 # ============================================================
 
 def maybe_source_env_files(args: argparse.Namespace) -> None:
-    envfile.source_first_env_file(
-        args.env_file, DEFAULT_ENV_FILE_CANDIDATES, logger=log,
-        override_vars=_CRED_OVERRIDE_VARS, warn_on_override=True)
+    envfile.load(args.env_file, candidates=DEFAULT_ENV_FILE_CANDIDATES,
+                 logger=log)
 
 
 # ============================================================

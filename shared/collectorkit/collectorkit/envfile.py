@@ -13,13 +13,9 @@ Quoting and escaping are bash's:
 No parser here stands in for bash, so a file means the same to a
 collector as to the wrapper that sources it.
 
-:func:`read_env_file` returns what the file set. Two loaders apply it to
-``os.environ``:
-
-- :func:`source_env_file` lets either the environment or the file win,
-  for every key.
-- :func:`load_env_file` lets the file win for named credential keys, and
-  the environment win for the rest.
+:func:`read_env_file` returns what the file set. :func:`load` picks the
+file and applies it to ``os.environ`` by one rule: the file's values win
+over the environment's.
 
 Credentials are resolved with the value-with-env-fallback pattern (an
 explicit flag value wins, else the env var), never a `--x-env NAME`
@@ -111,123 +107,52 @@ def read_env_file(path: Path) -> dict[str, str]:
             if k not in BASH_VAR_BLOCKLIST and old.get(k) != v}
 
 
-def source_env_file(path: Path, prefer_file: bool = False) -> bool:
-    """Source `path` as bash and merge what it sets into ``os.environ``.
+def load(explicit, *, env_var: str | None = None, candidates=(),
+         logger) -> Path | None:
+    """Source one env file into ``os.environ``, its values winning. Returns
+    the path sourced, or None when there is none to source.
 
-    By default an existing environment value wins (``setdefault``
-    semantics, for the case where the calling shell already exported the
-    credentials). ``prefer_file=True`` lets the file's value win instead.
-    Returns False if the file is absent. Raises ValueError on a bash error
-    (see :func:`read_env_file`).
+    The file is the first of:
+
+    - `explicit`, an ``--env-file`` flag;
+    - the path in the environment variable `env_var`;
+    - the first of `candidates` that is a file. A None candidate is
+      skipped, and so is one that does not exist.
+
+    A file named by the flag or the variable that does not exist exits: a
+    file that was asked for is never silently replaced by a candidate or by
+    the environment. A bash error exits too, with :func:`read_env_file`'s
+    message.
+
+    A value the file replaces is logged when the environment held a
+    different one, by length only, never the value.
     """
-    path = Path(path)
-    if not path.is_file():
-        return False
-    for key, val in read_env_file(path).items():
-        if prefer_file:
-            os.environ[key] = val
-        else:
-            os.environ.setdefault(key, val)
-    return True
-
-
-def source_named_env_file(explicit: Path | None, env_var: str) -> Path | None:
-    """Source the env file a run names, so that its values win.
-
-    The file is `explicit` (an ``--env-file`` flag), else the path in the
-    environment variable `env_var`. Neither set returns None and sources
-    nothing. A named file that does not exist exits: a file that was asked
-    for is never silently replaced by whatever the environment holds. A
-    bash error exits too, with :func:`read_env_file`'s message. Returns the
-    path sourced.
-    """
-    path = explicit or (Path(os.environ[env_var])
-                        if os.environ.get(env_var) else None)
-    if path is None:
-        return None
-    if not Path(path).is_file():
-        raise SystemExit(f"{'--env-file' if explicit else env_var} names no file: {path}")
-    try:
-        source_env_file(path, prefer_file=True)
-    except ValueError as e:
-        raise SystemExit(str(e)) from e
-    return Path(path)
-
-
-def resolve_env_file(arg_path, candidates) -> Path | None:
-    """Return `arg_path` if given, else the first existing path in
-    `candidates`, else None."""
-    if arg_path is not None:
-        return Path(arg_path)
-    for candidate in candidates:
-        if Path(candidate).is_file():
-            return Path(candidate)
-    return None
-
-
-def source_first_env_file(explicit, candidates, *, logger,
-                          override_vars=None,
-                          warn_on_override: bool = False) -> Path | None:
-    """Source `explicit` (an ``--env-file`` flag), else the first existing
-    path in `candidates`. Returns the path sourced, or None when neither
-    names a file.
-
-    A named file that does not exist exits: a file that was asked for is
-    never silently replaced by a candidate or by the environment. A bash
-    error exits too, with :func:`read_env_file`'s message.
-
-    With `override_vars`, the file is applied by :func:`load_env_file`
-    (the file wins for those keys, the environment for the rest). Without
-    it, every value in the file wins (:func:`source_env_file` with
-    ``prefer_file=True``).
-    """
-    if explicit is not None and not Path(explicit).is_file():
-        raise SystemExit(f"--env-file does not exist: {explicit}")
-    path = resolve_env_file(explicit, candidates)
-    if path is None:
-        return None
-    if override_vars is not None:
-        load_env_file(path, override_vars, logger=logger,
-                      warn_on_override=warn_on_override)
+    if explicit is not None:
+        path, named = Path(explicit), "--env-file"
+    elif env_var and os.environ.get(env_var):
+        path, named = Path(os.environ[env_var]), env_var
     else:
-        try:
-            source_env_file(path, prefer_file=True)
-        except ValueError as e:
-            raise SystemExit(str(e)) from e
-    logger.info("env sourced from %s", path)
-    return path
-
-
-def load_env_file(path, override_vars, *, logger,
-                  warn_on_override: bool = False) -> None:
-    """Source `path` as bash and merge what it sets into ``os.environ``.
-
-    ``override_vars`` names the keys whose file value wins over a value
-    already in the environment (credentials: the file is authoritative).
-    Every other key uses ``setdefault`` (the file is a fallback). With
-    ``warn_on_override``, an inherited value that differs from the file's
-    is logged via ``logger``, by length only, never the secret.
-
-    Raises FileNotFoundError when `path` is no file. A bash error raises
-    SystemExit with :func:`read_env_file`'s message.
-    """
-    path = Path(path)
-    logger.debug("loading env file: %s", path)
+        path = next((Path(c) for c in candidates
+                     if c is not None and Path(c).is_file()), None)
+        named = None
+    if path is None:
+        return None
+    if named is not None and not path.is_file():
+        raise SystemExit(f"{named} names no file: {path}")
     try:
         values = read_env_file(path)
     except ValueError as e:
         raise SystemExit(str(e)) from e
     for key, value in values.items():
-        if key not in override_vars:
-            os.environ.setdefault(key, value)
-            continue
         prior = os.environ.get(key)
-        if warn_on_override and prior is not None and prior != value:
+        if prior is not None and prior != value:
             logger.warning(
                 "%s from the environment (len=%d) differs from the value "
                 "in %s (len=%d); using the file's value.",
                 key, len(prior), path, len(value))
         os.environ[key] = value
+    logger.info("env sourced from %s", path)
+    return path
 
 
 def resolve_credential(value, env_name: str, flag_name: str) -> str:

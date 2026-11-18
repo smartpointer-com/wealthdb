@@ -80,6 +80,15 @@ def test_load_credentials_reads_all_three(monkeypatch, tmp_path):
     assert (user, pwd, region) == ("3V000042", "12345", "zz00")
 
 
+def test_the_env_file_wins_over_an_exported_credential(monkeypatch, tmp_path):
+    env = tmp_path / "raiffeisen_at.env"
+    env.write_text(f"{login.PASS_ENV}=from-file\n")
+    monkeypatch.setenv(login.USER_ENV, "3V000042")
+    monkeypatch.setenv(login.PASS_ENV, "exported")
+    monkeypatch.setenv(login.REGION_ENV, "zz00")
+    assert login._load_credentials(env)[1] == "from-file"
+
+
 # ============================================================
 # Bearer harvest + auth headers
 # ============================================================

@@ -64,15 +64,6 @@ log = logging.getLogger("schwab-login")
 # constant so --check output matches the actual cap.
 REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
-# Credential env vars whose env-file value wins over a value inherited
-# from the calling environment. The OAuth app id/secret live in
-# schwab-api.env; the Schwab web login id/password (reused to pre-fill
-# the consent login) live in schwab-web.env.
-_CRED_OVERRIDE_VARS = frozenset({
-    "SCHWAB_CLIENT_ID", "SCHWAB_CLIENT_SECRET",
-    "SCHWAB_LOGIN_ID", "SCHWAB_PASSWORD",
-})
-
 # Env files sourced (first existing path of each set, container then host
 # form). schwab-api.env carries the OAuth app credentials; schwab-web.env
 # carries the Schwab login id/password pre-filled into the consent login.
@@ -192,15 +183,10 @@ def source_env_files(explicit: Path | None = None) -> None:
     are both available. Absent files are fine. An explicit --env-file (or
     the SCHWAB_API_ENV_FILE env var) is then sourced last and wins."""
     for candidates in _ENV_FILE_SETS:
-        envfile.source_first_env_file(None, candidates, logger=log,
-                                      override_vars=_CRED_OVERRIDE_VARS)
+        envfile.load(None, candidates=candidates, logger=log)
     # An explicit --env-file (or $SCHWAB_API_ENV_FILE) is sourced last, so
-    # its credential values win.
-    lead = explicit or (Path(os.environ["SCHWAB_API_ENV_FILE"])
-                        if os.environ.get("SCHWAB_API_ENV_FILE") else None)
-    if lead is not None:
-        envfile.source_first_env_file(lead, (), logger=log,
-                                      override_vars=_CRED_OVERRIDE_VARS)
+    # its values win.
+    envfile.load(explicit, env_var="SCHWAB_API_ENV_FILE", logger=log)
 
 
 # ============================================================

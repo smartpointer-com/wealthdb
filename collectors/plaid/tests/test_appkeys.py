@@ -51,11 +51,11 @@ def test_every_verb_sources_the_named_env_file_first(
     # resolved; collectorkit.envfile owns how the file is read.
     calls = []
 
-    def record(explicit, env_var):
+    def record(explicit, *, env_var, logger):
         calls.append((explicit, env_var))
         raise _Sourced
 
-    monkeypatch.setattr(envfile, "source_named_env_file", record)
+    monkeypatch.setattr(envfile, "load", record)
     env = tmp_path / "plaid.env"
     with pytest.raises(_Sourced):
         importlib.import_module(verb).main(

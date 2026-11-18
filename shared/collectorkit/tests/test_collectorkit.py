@@ -323,7 +323,7 @@ class EnvFileTest(unittest.TestCase):
             for shape in shapes:
                 envf.write_text("export CK_OK=1\n" + shape)
                 with self.assertRaises(ValueError) as caught:
-                    envfile.source_env_file(envf)
+                    envfile.read_env_file(envf)
                 message = str(caught.exception)
                 self.assertIn("at line 2", message)
                 self.assertIn(str(envf), message)
@@ -340,28 +340,13 @@ class EnvFileTest(unittest.TestCase):
                 'CK_BAZ="qux with spaces"\n'
                 "CK_DOLLAR='literal$notexpanded'\n"
             )
-            self.assertTrue(envfile.source_env_file(envf))
+            self.assertEqual(envfile.load(None, candidates=(envf,),
+                                          logger=_ENV_LOG), envf)
             self.assertEqual(os.environ["CK_FOO"], "bar")
             self.assertEqual(os.environ["CK_BAZ"], "qux with spaces")
             self.assertEqual(os.environ["CK_DOLLAR"], "literal$notexpanded")
         for k in ("CK_FOO", "CK_BAZ", "CK_DOLLAR"):
             os.environ.pop(k, None)
-
-    def test_prefer_file_overrides_environment(self):
-        os.environ["CK_PREF"] = "from-env"
-        try:
-            with tempfile.TemporaryDirectory() as d:
-                envf = Path(d) / "test.env"
-                envf.write_text("CK_PREF=from-file\n")
-                # Default: environment wins.
-                self.assertTrue(envfile.source_env_file(envf))
-                self.assertEqual(os.environ["CK_PREF"], "from-env")
-                # prefer_file=True: file wins.
-                self.assertTrue(
-                    envfile.source_env_file(envf, prefer_file=True))
-                self.assertEqual(os.environ["CK_PREF"], "from-file")
-        finally:
-            os.environ.pop("CK_PREF", None)
 
     def test_resolve_credential_precedence(self):
         os.environ.pop("CK_CRED", None)
@@ -373,6 +358,9 @@ class EnvFileTest(unittest.TestCase):
         os.environ.pop("CK_CRED", None)
         with self.assertRaises(SystemExit):
             envfile.resolve_credential(None, "CK_CRED", "--x")
+
+
+_ENV_LOG = logging.getLogger("test-envfile")
 
 
 @contextlib.contextmanager
@@ -494,156 +482,110 @@ class ReadEnvFileTest(unittest.TestCase):
         self.assertNotIn("CK_SECRET", message)
 
 
-class LoadEnvFileTest(unittest.TestCase):
-    """load_env_file: the file wins for the named credential keys, the
-    environment wins for the rest."""
-
-    LOG = logging.getLogger("test-envfile")
+class LoadTest(unittest.TestCase):
+    """load: the flag, else the variable, else the first existing
+    candidate; the file's values win; a named file that is missing, or
+    any bash error, exits."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.path = Path(self.tmp.name) / "creds.env"
+        self.dir = Path(self.tmp.name)
+        self.flag = self.dir / "flag.env"
+        self.var = self.dir / "var.env"
+        self.c1, self.c2 = self.dir / "a.env", self.dir / "b.env"
+        for path in (self.flag, self.var, self.c1, self.c2):
+            path.write_text(f"CK_LOAD={path.stem}\n")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_override_semantics(self):
-        self.path.write_text("CK_CRED='fromfile$1'\nCK_PLAIN=fromfile\n"
+    def _load(self, explicit=None, candidates=(), **env):
+        with _isolated_environ(**env):
+            os.environ.pop("CK_LOAD", None)
+            got = envfile.load(explicit, env_var="CK_LOAD_ENV_FILE",
+                               candidates=candidates, logger=_ENV_LOG)
+            return got, os.environ.get("CK_LOAD")
+
+    def test_the_flag_wins_over_the_variable_and_the_candidates(self):
+        self.assertEqual(
+            self._load(self.flag, [self.c1], CK_LOAD_ENV_FILE=str(self.var)),
+            (self.flag, "flag"))
+
+    def test_the_variable_wins_over_the_candidates(self):
+        self.assertEqual(
+            self._load(None, [self.c1], CK_LOAD_ENV_FILE=str(self.var)),
+            (self.var, "var"))
+
+    def test_an_empty_variable_names_nothing(self):
+        self.assertEqual(self._load(None, [self.c1], CK_LOAD_ENV_FILE=""),
+                         (self.c1, "a"))
+
+    def test_the_first_existing_candidate_is_sourced(self):
+        self.c1.unlink()
+        self.assertEqual(self._load(None, [None, self.c1, self.c2]),
+                         (self.c2, "b"))
+        self.assertEqual(self._load(None, [self.c2, self.dir / "x.env"]),
+                         (self.c2, "b"))
+
+    def test_a_directory_candidate_is_skipped(self):
+        d = self.dir / "dir.env"
+        d.mkdir()
+        self.assertEqual(self._load(None, [d, self.c2]), (self.c2, "b"))
+
+    def test_nothing_to_source_returns_none(self):
+        self.assertEqual(self._load(None, [self.dir / "x.env", None]),
+                         (None, None))
+
+    def test_the_files_values_win_over_the_environment(self):
+        self.flag.write_text("CK_CRED='fromfile$1'\nCK_PLAIN=fromfile\n"
                              "CK_FRESH=fresh\n")
         with _isolated_environ(CK_CRED="hostcred", CK_PLAIN="hostplain"):
             os.environ.pop("CK_FRESH", None)
-            envfile.load_env_file(self.path, {"CK_CRED"}, logger=self.LOG)
+            envfile.load(self.flag, logger=_ENV_LOG)
             self.assertEqual(os.environ["CK_CRED"], "fromfile$1")
-            self.assertEqual(os.environ["CK_PLAIN"], "hostplain")
+            self.assertEqual(os.environ["CK_PLAIN"], "fromfile")
             self.assertEqual(os.environ["CK_FRESH"], "fresh")
 
-    def test_warning_names_lengths_never_values(self):
-        self.path.write_text("CK_CRED=SYNTHETIC-FILE\n")
+    def test_a_candidate_wins_over_the_environment_too(self):
+        self.assertEqual(self._load(None, [self.c1], CK_LOAD="exported")[1],
+                         "a")
+
+    def test_a_replaced_value_is_logged_by_length_never_by_value(self):
+        self.flag.write_text("CK_CRED=SYNTHETIC-FILE\n")
         with _isolated_environ(CK_CRED="SYNTHETIC-HOST-VALUE"), \
-                self.assertLogs(self.LOG, "WARNING") as logs:
-            envfile.load_env_file(self.path, ("CK_CRED",), logger=self.LOG,
-                                  warn_on_override=True)
+                self.assertLogs(_ENV_LOG, "WARNING") as logs:
+            envfile.load(self.flag, logger=_ENV_LOG)
         text = "\n".join(logs.output)
+        self.assertIn("CK_CRED", text)
         self.assertIn("len=20", text)
         self.assertIn("len=14", text)
         self.assertNotIn("SYNTHETIC", text)
 
     def test_no_warning_when_the_values_agree(self):
-        self.path.write_text("CK_CRED=same\n")
+        self.flag.write_text("CK_CRED=same\n")
         with _isolated_environ(CK_CRED="same"), \
-                self.assertNoLogs(self.LOG, "WARNING"):
-            envfile.load_env_file(self.path, ("CK_CRED",), logger=self.LOG,
-                                  warn_on_override=True)
+                self.assertNoLogs(_ENV_LOG, "WARNING"):
+            envfile.load(self.flag, logger=_ENV_LOG)
 
-    def test_a_bash_error_exits_without_the_line(self):
-        self.path.write_text("CK_CRED=SYNTHETIC VALUE-TAIL\n")
-        with self.assertRaises(SystemExit) as caught:
-            envfile.load_env_file(self.path, ("CK_CRED",), logger=self.LOG)
-        self.assertIn(str(self.path), str(caught.exception))
-        self.assertNotIn("VALUE-TAIL", str(caught.exception))
-
-    def test_a_missing_file_raises(self):
-        with self.assertRaises(FileNotFoundError):
-            envfile.load_env_file(self.path, (), logger=self.LOG)
-
-
-class SourceNamedEnvFileTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.path = Path(self.tmp.name) / "named.env"
-        self.path.write_text("CK_NAMED=fromfile\n")
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_the_explicit_file_wins_over_the_environment(self):
-        with _isolated_environ(CK_NAMED="host"):
-            os.environ.pop("CK_NAMED_ENV_FILE", None)
-            self.assertEqual(
-                envfile.source_named_env_file(self.path, "CK_NAMED_ENV_FILE"),
-                self.path)
-            self.assertEqual(os.environ["CK_NAMED"], "fromfile")
-
-    def test_the_env_var_names_the_file(self):
-        with _isolated_environ(CK_NAMED_ENV_FILE=str(self.path)):
-            os.environ.pop("CK_NAMED", None)
-            envfile.source_named_env_file(None, "CK_NAMED_ENV_FILE")
-            self.assertEqual(os.environ["CK_NAMED"], "fromfile")
-
-    def test_nothing_named_sources_nothing(self):
-        with _isolated_environ():
-            os.environ.pop("CK_NAMED_ENV_FILE", None)
-            self.assertIsNone(
-                envfile.source_named_env_file(None, "CK_NAMED_ENV_FILE"))
-
-    def test_a_named_file_that_is_missing_exits(self):
-        with self.assertRaises(SystemExit):
-            envfile.source_named_env_file(self.path.with_name("nope.env"),
-                                          "CK_NAMED_ENV_FILE")
-
-    def test_a_bash_error_exits(self):
-        self.path.write_text("CK_NAMED='unterminated\n")
-        with self.assertRaises(SystemExit):
-            envfile.source_named_env_file(self.path, "CK_NAMED_ENV_FILE")
-
-
-class SourceFirstEnvFileTest(unittest.TestCase):
-    """source_first_env_file: a named file, else the first candidate that
-    exists; a named file that is missing, or any bash error, exits."""
-
-    LOG = logging.getLogger("test-envfile")
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.dir = Path(self.tmp.name)
-        self.named = self.dir / "named.env"
-        self.named.write_text("CK_FIRST=named\n")
-        self.c1, self.c2 = self.dir / "a.env", self.dir / "b.env"
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def _source(self, explicit, candidates=(), **kw):
-        return envfile.source_first_env_file(explicit, candidates,
-                                             logger=self.LOG, **kw)
-
-    def test_a_named_file_is_sourced_over_the_candidates(self):
-        self.c1.write_text("CK_FIRST=candidate\n")
-        with _isolated_environ(CK_FIRST="host"):
-            self.assertEqual(self._source(self.named, [self.c1]), self.named)
-            self.assertEqual(os.environ["CK_FIRST"], "named")
-
-    def test_a_named_file_that_is_missing_exits(self):
-        self.c1.write_text("CK_FIRST=candidate\n")
-        with self.assertRaises(SystemExit):
-            self._source(self.dir / "nope.env", [self.c1])
+    def test_a_missing_named_file_exits_and_says_who_named_it(self):
+        missing = self.dir / "nope.env"
+        with self.assertRaisesRegex(SystemExit, "--env-file names no file"):
+            self._load(missing, [self.c1])
+        with self.assertRaisesRegex(SystemExit,
+                                    "CK_LOAD_ENV_FILE names no file"):
+            self._load(None, [self.c1], CK_LOAD_ENV_FILE=str(missing))
 
     def test_a_named_directory_exits(self):
         with self.assertRaises(SystemExit):
-            self._source(self.dir, [])
+            self._load(self.dir)
 
-    def test_the_first_existing_candidate_is_sourced(self):
-        self.c2.write_text("CK_FIRST=second\n")
-        with _isolated_environ():
-            self.assertEqual(self._source(None, [self.c1, self.c2]), self.c2)
-            self.assertEqual(os.environ["CK_FIRST"], "second")
-
-    def test_no_file_sources_nothing(self):
-        self.assertIsNone(self._source(None, [self.c1, self.c2]))
-
-    def test_a_bash_error_exits(self):
-        self.c1.write_text("CK_FIRST='unterminated\n")
-        with self.assertRaises(SystemExit):
-            self._source(None, [self.c1])
-        with self.assertRaises(SystemExit):
-            self._source(None, [self.c1], override_vars=("CK_FIRST",))
-
-    def test_override_vars_keep_the_environment_for_other_keys(self):
-        self.named.write_text("CK_FIRST=named\nCK_OTHER=named\n")
-        with _isolated_environ(CK_FIRST="host", CK_OTHER="host"):
-            self._source(self.named, override_vars=("CK_FIRST",))
-            self.assertEqual(os.environ["CK_FIRST"], "named")
-            self.assertEqual(os.environ["CK_OTHER"], "host")
+    def test_a_bash_error_exits_without_the_line(self):
+        self.c1.write_text("CK_LOAD=SYNTHETIC VALUE-TAIL\n")
+        for explicit, candidates in ((self.c1, ()), (None, [self.c1])):
+            with self.assertRaises(SystemExit) as caught:
+                self._load(explicit, candidates)
+            self.assertIn(str(self.c1), str(caught.exception))
+            self.assertNotIn("VALUE-TAIL", str(caught.exception))
 
 
 def _build_parser():

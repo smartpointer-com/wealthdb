@@ -274,9 +274,8 @@ def main(argv: list[str]) -> int:
         return check_session(args.state_path)
 
     # Full login: source env file, pull credentials.
-    if envfile.source_first_env_file(args.env_file,
-                                     DEFAULT_ENV_FILE_CANDIDATES,
-                                     logger=log) is None:
+    if envfile.load(args.env_file, candidates=DEFAULT_ENV_FILE_CANDIDATES,
+                    logger=log) is None:
         log.info("no env file path resolved; relying on process env vars.")
 
     username_raw = os.environ.get(LOGIN_ENV)

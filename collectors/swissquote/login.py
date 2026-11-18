@@ -517,8 +517,8 @@ def main(argv: list[str] | None = None) -> int:
     # login isn't forced to getpass-prompt. --env-file wins, else the first
     # existing default candidate. A named file that is missing, or a bash
     # error, stops the run.
-    envfile.source_first_env_file(args.env_file, DEFAULT_ENV_FILE_CANDIDATES,
-                                  logger=log)
+    envfile.load(args.env_file, candidates=DEFAULT_ENV_FILE_CANDIDATES,
+                 logger=log)
 
     # --trace must be paired with --screenshot-dir. The trace bundle
     # lands inside that directory; there is no implicit fallback to

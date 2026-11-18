@@ -146,18 +146,10 @@ def resolve_contract_number(args: argparse.Namespace) -> str:
     AGENTS.md §3: the contract number is passed by value or read from
     the environment, never through a password-style flag.
     """
-    env_files: list[Path]
-    if args.env_file is not None:
-        if not args.env_file.exists():
-            raise SystemExit(f"--env-file does not exist: {args.env_file}")
-        env_files = [args.env_file]
-    else:
-        # First existing candidate wins (ubs-web.env over the bank-level
-        # ubs.env); don't source both, which would let ubs.env override.
-        env_files = [p for p in DEFAULT_ENV_FILE_CANDIDATES if p.exists()][:1]
-
-    for env_file in env_files:
-        envfile.source_env_file(env_file, prefer_file=True)
+    # The first existing candidate wins (ubs-web.env over the bank-level
+    # ubs.env); only one is sourced, so ubs.env never overrides it.
+    envfile.load(args.env_file, candidates=DEFAULT_ENV_FILE_CANDIDATES,
+                 logger=log)
 
     if args.contract_number:
         return args.contract_number.strip()

@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 
 from collectorkit import cli, envfile
@@ -38,6 +39,8 @@ import link
 import plaidapi
 from appkeys import make_client
 from link import say
+
+log = logging.getLogger("plaid.login")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -159,7 +162,7 @@ def check(args: argparse.Namespace, client: plaidapi.Client) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     cli.configure_logging(args.verbose)
-    envfile.source_named_env_file(args.env_file, "PLAID_ENV_FILE")
+    envfile.load(args.env_file, env_var="PLAID_ENV_FILE", logger=log)
     environment = appkeys.environment(args)
     try:
         if args.check:

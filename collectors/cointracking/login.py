@@ -245,7 +245,7 @@ def main(argv: list[str]) -> int:
     cli.configure_logging(args.verbose)
 
     # The default file is optional; a bash error in it stops the run.
-    envfile.source_first_env_file(None, (args.env_file,), logger=log)
+    envfile.load(None, candidates=(args.env_file,), logger=log)
     # 0700 profile dir (holds the multi-year session + device-trust cookie),
     # with its regenerable startupCache relocated out of the secrets tree.
     launch.prepare_profile_dir(args.profile_dir)
