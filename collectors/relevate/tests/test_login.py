@@ -43,5 +43,5 @@ def test_check_reports_the_probe_verdict(tmp_path, monkeypatch, capsys):
     assert seen == ["synthetic"]
 
     monkeypatch.setattr(login, "step_probe", lambda session: False)
-    assert login.do_check(_state(tmp_path)) == 2
+    assert login.do_check(_state(tmp_path)) == login.cli.EXIT_NEEDS_PERSON == 6
     assert capsys.readouterr().out.strip() == "DEAD"

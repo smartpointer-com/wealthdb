@@ -7,6 +7,7 @@ Synthetic values only.
 """
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -192,3 +193,33 @@ def test_no_mfa_timeout_flag():
     # that points at `login`.
     with pytest.raises(SystemExit):
         download.parse_args(["--bronze-dir", "/data", "--mfa-timeout", "5"])
+
+
+# ============================================================
+# The exit status of a run that cannot sign in unattended
+# ============================================================
+
+def _stub_sign_in(monkeypatch, outcome):
+    @contextlib.contextmanager
+    def _camoufox(profile_dir):
+        yield object(), object()
+
+    def _drive(context, page, args, *, two_factor):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+    monkeypatch.setattr(login, "camoufox", _camoufox)
+    monkeypatch.setattr(login, "drive_to_auth", _drive)
+
+
+def test_an_expired_device_trust_needs_a_person(tmp_path, monkeypatch):
+    _stub_sign_in(monkeypatch, login.NeedsLogin("device trust has expired"))
+    args = download.parse_args(["--bronze-dir", str(tmp_path)])
+    assert download.run_download(args) == download.cli.EXIT_NEEDS_PERSON == 6
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_failed_sign_in_exits_one(tmp_path, monkeypatch):
+    _stub_sign_in(monkeypatch, False)
+    args = download.parse_args(["--bronze-dir", str(tmp_path)])
+    assert download.run_download(args) == 1

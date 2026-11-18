@@ -231,6 +231,19 @@ class ChallengeDialogTest(unittest.TestCase):
         self.assertNotIn("123456", err.getvalue())
 
 
+class ExitVocabularyTest(unittest.TestCase):
+    def test_each_status_has_its_own_value_and_two_is_argparses(self):
+        codes = [cli.EXIT_OK, cli.EXIT_FAILED, cli.EXIT_USAGE,
+                 cli.EXIT_NO_VERDICT, cli.EXIT_SHORT, cli.EXIT_NEEDS_PERSON]
+        self.assertEqual(len(set(codes)), len(codes))
+        self.assertEqual((cli.EXIT_OK, cli.EXIT_FAILED), (0, 1))
+        p = argparse.ArgumentParser()
+        with mock.patch("sys.stderr", io.StringIO()), \
+                self.assertRaises(SystemExit) as raised:
+            p.parse_args(["--unknown"])
+        self.assertEqual(raised.exception.code, cli.EXIT_USAGE)
+
+
 class MfaTimeoutTest(unittest.TestCase):
     def test_the_default_wait_is_five_minutes(self):
         self.assertEqual(cli.MFA_TIMEOUT_S, 300)

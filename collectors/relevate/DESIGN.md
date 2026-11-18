@@ -255,7 +255,8 @@ login.py [--state-path PATH] [--check] [--max-otp-attempts N]
 - `--check` — **no credentials submitted, no mTAN push.** Loads
   the existing state file, restores the cookie jar, hits the
   landmark probe, and prints `ALIVE` / `DEAD` / `MISSING` on stdout.
-  Exit codes: 0 (ALIVE), 1 (MISSING), 2 (DEAD).
+  Exit codes: 0 (ALIVE), 1 (MISSING), 6 (DEAD: a login is needed,
+  `collectorkit.cli.EXIT_NEEDS_PERSON`).
 - `--max-otp-attempts` — how many OTP submissions before giving up
   (default 3). The prompt has no deadline: `input()` blocks on stdin
   until a code arrives.

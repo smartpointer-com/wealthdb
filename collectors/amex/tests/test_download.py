@@ -647,13 +647,13 @@ def _stub_sign_in(monkeypatch, raises):
     monkeypatch.setattr(download.login, "drive_to_auth", _drive)
 
 
-def test_an_unattended_run_that_meets_a_challenge_exits_two(tmp_path,
-                                                            monkeypatch):
+def test_an_unattended_run_that_meets_a_challenge_needs_a_person(
+        tmp_path, monkeypatch):
     # Distinct from a refusal: nothing is wrong with the credentials, the
     # device trust simply expired and this run cannot answer a passcode.
     _stub_sign_in(monkeypatch, login.NeedsLogin("device trust has expired"))
     args = download.parse_args(["--bronze-dir", str(tmp_path), "--no-cli-mfa"])
-    assert download.run_download(args) == 2
+    assert download.run_download(args) == download.cli.EXIT_NEEDS_PERSON == 6
 
 
 def test_a_refused_sign_in_exits_one(tmp_path, monkeypatch):

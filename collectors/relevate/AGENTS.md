@@ -58,7 +58,7 @@ without asking and those that are real sessions. For relevate:
   then reads the two listing endpoints (the investment overview and the
   document index), logs what a real run would fetch, and writes nothing
   to bronze. Both are allowed without asking.
-  - `login --check` prints `ALIVE` (exit 0), `DEAD` (exit 2) or
+  - `login --check` prints `ALIVE` (exit 0), `DEAD` (exit 6, a login is needed) or
     `MISSING` (exit 1, no state file).
   - `download --dry-run` exits 1 with a dead session and 64 with no
     state file.

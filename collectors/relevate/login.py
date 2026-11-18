@@ -325,7 +325,7 @@ def do_check(state_path: Path) -> int:
         print("ALIVE", flush=True)
         return 0
     print("DEAD", flush=True)
-    return 2
+    return cli.EXIT_NEEDS_PERSON
 
 
 def do_login(args: argparse.Namespace) -> int:

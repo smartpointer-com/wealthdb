@@ -514,10 +514,10 @@ def main(argv: list[str]) -> int:
             # A browser that cannot even start is an environment failure,
             # not a session verdict. Exiting 1 here would read as "stale"
             # to the entrypoint and burn a needless by-hand 2FA login;
-            # exit 3 so the probe caller can tell the two apart.
+            # exit 3 (no verdict) so the probe caller can tell the two apart.
             log.error("--check aborted: browser failed to launch (%s) — "
                       "not a session verdict", exc)
-            return 3
+            return cli.EXIT_NO_VERDICT
         raise
     finally:
         shutil.rmtree(profile, ignore_errors=True)

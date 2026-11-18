@@ -487,7 +487,7 @@ def run_download(args: argparse.Namespace) -> int:
                                      two_factor=two_factor)
         except login.NeedsLogin as exc:
             log.error("%s", exc)
-            return 2
+            return cli.EXIT_NEEDS_PERSON
         except login.LogonFailed as exc:
             log.error("%s", exc)
             return 1

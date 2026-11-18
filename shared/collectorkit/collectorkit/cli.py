@@ -22,6 +22,22 @@ from pathlib import Path
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
+# A verb's exit status, one meaning each, so a caller can tell a run that
+# needs a person from one that failed. 2 stays argparse's usage error.
+# The values above it avoid the codes the fleet's downloads already give
+# another meaning (5: no usable series in fred and curves).
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_USAGE = 2
+# A probe that could not run, such as a browser that did not start: no
+# verdict on the session either way.
+EXIT_NO_VERDICT = 3
+# The run is complete and loadable, but a surface came back short (its
+# manifest's coverage says which).
+EXIT_SHORT = 4
+# A person has to sign in first: there is no session, or it is dead.
+EXIT_NEEDS_PERSON = 6
+
 
 def default_data_root() -> Path:
     """The default wealthdb data root for host-side collectors when no

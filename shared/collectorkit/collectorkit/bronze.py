@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .cli import EXIT_SHORT
 from .silver import loaded_snapshots
 
 # Single implementation lives in silver; re-exported here so
@@ -287,10 +288,6 @@ DRY_POLICIES = ("none", "stamp", "scratch")
 # IN_PROGRESS status; "remove" deletes it.
 CRASH_POLICIES = ("leave", "remove")
 
-# The exit code of a run whose coverage records a surface that came back
-# short. The dump is still complete and loadable.
-EXIT_SHORT = 4
-
 
 class Run:
     """One download's run dir and its manifest, from :func:`open_run`.
@@ -376,7 +373,8 @@ class Run:
         self.finished = True
 
     def exit_code(self) -> int:
-        """0, or EXIT_SHORT when a covered surface came back short."""
+        """0, or :data:`collectorkit.cli.EXIT_SHORT` when a covered
+        surface came back short."""
         if any(not e["complete"] for e in self._coverage.values()):
             return EXIT_SHORT
         return 0

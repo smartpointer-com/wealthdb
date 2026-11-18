@@ -292,7 +292,7 @@ def run_download(args: argparse.Namespace) -> int:
                                      two_factor=login.TWOFACTOR_NONE)
         except login.NeedsLogin as exc:
             log.error("%s", exc)
-            return 2
+            return cli.EXIT_NEEDS_PERSON
         if not ok:
             log.error("authentication failed — retry, or run `login` if the "
                       "device trust has expired")
