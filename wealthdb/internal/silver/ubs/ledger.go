@@ -91,11 +91,11 @@ func (r *webReader) ledger(ctx context.Context) ([]webRow, error) {
 func (r *webReader) readWeb(ctx context.Context) ([]webRow, error) {
 	var out []webRow
 	err := silver.ScanRows(ctx, r.db, "ubs-web ledger", `
-SELECT transaction_external_id, value_date, account_external_id, currency_iso,
+SELECT transaction_external_id, value_date, booking_date, account_external_id, currency_iso,
        amount_debit, amount_credit, counterparty, description_kind, payload
   FROM transactions`, func(rows *sql.Rows) error {
 		var row webTxRow
-		if err := rows.Scan(&row.txID, &row.valueDate, &row.account, &row.currency,
+		if err := rows.Scan(&row.txID, &row.valueDate, &row.bookingDate, &row.account, &row.currency,
 			&row.debit, &row.credit, &row.counterparty, &row.descKind, &row.payload); err != nil {
 			return fmt.Errorf("ubs-web ledger scan: %w", err)
 		}

@@ -22,7 +22,7 @@ CREATE TABLE accounts (
     PRIMARY KEY (snapshot_at, account_external_id));
 CREATE TABLE transactions (
     transaction_external_id TEXT NOT NULL, account_external_id TEXT NOT NULL,
-    snapshot_at INTEGER NOT NULL, value_date INTEGER NOT NULL,
+    snapshot_at INTEGER NOT NULL, booking_date INTEGER, value_date INTEGER NOT NULL,
     currency_iso TEXT NOT NULL, amount_debit REAL, amount_credit REAL,
     counterparty TEXT, description_kind TEXT, payload TEXT NOT NULL,
     PRIMARY KEY (transaction_external_id, account_external_id));`

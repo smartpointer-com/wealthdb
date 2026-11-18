@@ -313,6 +313,7 @@ Three eras record the cash ledger:
 | --- | --- | --- |
 | Statement reconstruction | `ubs-web.transactions`, `payload.source = "account_statement_pdf"` | `stmt:`, a content hash of the printed row |
 | Account-statement export | `ubs-web.transactions`, no `payload.source` | UBS's "Transaction no." |
+| Payment advice | `ubs-web.transactions`, `payment_advice_pdf` marker | UBS's "Transaction no." |
 | PSN | `ubs-psn.events` | `mt940:`, `mt515:`, … |
 
 Their time ranges overlap and their id spaces are disjoint. The adapter
@@ -331,14 +332,16 @@ candidates the rules before it left standing.
 
 | # | Rule | Loses | Wins | Key | Match |
 | --- | --- | --- | --- | --- | --- |
-| 1 | the cut | statement, export | — | PSN start, account covered | authority |
-| 2 | leg over export | export | cash leg | booking | 1:1 |
-| 3 | export over statement | statement | export | booking | 1:1 |
-| 4 | feed over statement | statement | feed, mirror, cash leg | booking | 1:1 |
-| 5 | feed over web by number | statement, export | feed | account, bank number | any |
-| 6 | web over mirror | mirror | statement, export | booking, as the offset veto reads it | any |
-| 7 | confirmation over settlement line | feed `NSEC` or `NMSC` | MT515 | settlement | 1:1 |
-| 8 | settlement over list | list row | statement, export, MT515, feed | cash account, currency, day | 1:1 |
+| 1 | split legs over their movement | statement | — | a leg `<id>#1` stands | authority |
+| 2 | web over advice | advice | statement, export | account, currency, column, magnitude, either date | first free |
+| 3 | the cut | statement, export, advice | — | PSN start, account covered | authority |
+| 4 | leg over export | export, advice | cash leg | booking | 1:1 |
+| 5 | export over statement | statement | export | booking | 1:1 |
+| 6 | feed over statement | statement | feed, mirror, cash leg | booking | 1:1 |
+| 7 | feed over web by number | statement, export, advice | feed | account, bank number | any |
+| 8 | web over mirror | mirror | statement, export, advice | booking, as the offset veto reads it | any |
+| 9 | confirmation over settlement line | feed `NSEC` or `NMSC` | MT515 | settlement | 1:1 |
+| 10 | settlement over list | list row | statement, export, advice, MT515, feed | cash account, currency, day | 1:1 |
 
 - **The keys differ** because the rails state one booking differently.
   The booking key is signed cents (*Statement copies*). The settlement
@@ -346,15 +349,25 @@ candidates the rules before it left standing.
   PSN rails*). The list states a value no cash record shares, so its key
   has no amount (§11).
 - **1:1 counts.** N winners take at most N losers, so a second equal
-  booking survives. Pairs go in id order. Rules 7 and 8 take their
+  booking survives. Pairs go in id order. Rules 9 and 10 take their
   losers in the order the silver lists them.
 - **Any** drops every loser while one winner holds the key.
+- **First free** takes the advices in id order. Each goes to the first
+  ledger row by id that holds its movement on either of its two dates
+  and that no earlier advice took.
 - **No rule pairs two records of one kind.** Two identical payments on
   one day are two bookings.
 - **The whole silver**, unwindowed. Whether a booking is recorded twice
   depends on silver's contents, never on the slice a load covers.
-- Rule 2 has an exception: where the leg reads no gross and its export
+- Rule 4 has an exception: where the leg reads no gross and its export
   copy states one, the leg goes and the copy stays.
+- A statement can print a batch of payments whole where another lists
+  them, and the parser splits the listed batch into legs under the
+  movement's id. Rule 1 keeps the legs.
+- An advice states one movement and nothing else. Rule 2 keeps the
+  ledger's row where it holds that movement: the figure in the same
+  column, the magnitude equal to the cent. The export signs its cells
+  and the printed eras do not, so the column gives the direction.
 
 A rule removes records. It never changes an amount, a date, a kind or
 an id. Text moves only downward: the survivor takes each column it left
@@ -544,7 +557,7 @@ number the bank wrote.
 
 Three passes read the reference:
 
-- The era text fold and rule 5 of the reconcile table match an export
+- The era text fold and rule 7 of the reconcile table match an export
   row to its MT940 copy on (account, number). The account is part of the key
   because the two legs of a transfer share the number.
 - The internal-transfer matcher pairs on it ahead of amounts
@@ -590,7 +603,7 @@ silver pairs them: the statement loader dedups only within the archive,
 and the hard cut arbitrates web against PSN, not one web era against
 another.
 
-Rules 2 to 4 of the reconcile table are that match. Their key, the
+Rules 4 to 6 of the reconcile table are that match. Their key, the
 booking key, is four facts of the booking. Each comes from the
 adapter's own projection of the row, never from the raw silver columns:
 
@@ -643,7 +656,7 @@ eras land on one signed number.
   every day, and a confirmation books its own cash leg (*The accounts
   the feed does not speak for*). The leg is keyed on the amount it
   posted (`:19B::PSTA//`), which is what the export row moved. The
-  export copy pairs with the leg first (rule 2), 1:1, and only on the
+  export copy pairs with the leg first (rule 4), 1:1, and only on the
   leg's own day. A statement copy then pairs with the leg as with any
   feed row. The leg keeps its security, its gross and its tax row.
 - **Where the leg reads no gross and its export copy states one**, the
@@ -676,7 +689,7 @@ the MT940 `:61:` line for its cash leg, typed `NSEC` with a bare
 booking code. They share no id. Left alone, one trade would be two
 rows, and every count, turnover and per-instrument total would double.
 
-Rule 7 of the reconcile table matches them on the settlement both
+Rule 9 of the reconcile table matches them on the settlement both
 rails state (`settlementKey`):
 
 - the cash account;
@@ -708,7 +721,7 @@ ledger. But the first dump's statements reach back over the days before
 it. For a short window both feeds hold an entry and neither side's
 window excludes it.
 
-Rule 5 of the reconcile table closes that window on (account, bank
+Rule 7 of the reconcile table closes that window on (account, bank
 reference). That is an exact identity, not a signature over amounts. The web copy
 is dropped, as the cut does on every later day: the MT940 row reaches
 gold and the export's text folds onto it.
@@ -758,7 +771,7 @@ currency, the same value day, the opposite direction, id
 - Where the feed speaks for the other account that day, nothing is
   booked: its own statement carries the leg.
 - Where the export carries the booking, the export's row is the record
-  and the mirror is withheld (rule 6 of *The reconcile table*). The feed
+  and the mirror is withheld (rule 8 of *The reconcile table*). The feed
   row still names the account.
 - A statement copy from a later annual statement pairs with the mirror
   as with any feed row (*Statement copies*).
@@ -1134,7 +1147,7 @@ The reconcile table and the veto leave the pair whole:
   amount it posted. A statement copy prints that amount, so it still
   pairs with the row booked gross. A tax row has no statement copy and
   is no candidate.
-- Rule 7 reads `NSEC` and `NMSC` lines and the offset veto deposits and
+- Rule 9 reads `NSEC` and `NMSC` lines and the offset veto deposits and
   withdrawals. Neither reads a dividend, a dividend reversal or a tax
   row.
 - The tax row's payload carries no bank reference. So the era text fold
@@ -1549,7 +1562,7 @@ statement and on the confirmation.
   and not others.
 - Its winners are the records the earlier rules left standing: the web
   rows past the cut and the other rules, every confirmation, and the
-  MT940 lines rule 7 kept. A trade recorded twice on the feed, as a
+  MT940 lines rule 9 kept. A trade recorded twice on the feed, as a
   confirmation and as the line for its cash leg, counts once.
 
 No PSN cutoff applies, and none could: the cut arbitrates between two

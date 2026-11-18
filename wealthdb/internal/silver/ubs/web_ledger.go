@@ -387,6 +387,7 @@ func (p *webTxPass) returnsInternal(row *webRow, kind canonical.TxKind, pl webTx
 type webTxRow struct {
 	txID, account, currency, payload string
 	valueDate                        int64
+	bookingDate                      sql.NullInt64
 	debit, credit                    sql.NullFloat64
 	counterparty, descKind           sql.NullString
 }

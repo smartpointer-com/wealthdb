@@ -504,3 +504,133 @@ func TestStatementReversalKeepsItsSignEndToEnd(t *testing.T) {
 		t.Errorf("booking + cancellation = %s, want 0", sum)
 	}
 }
+
+// An advice states one movement: its account, its two dates, the column
+// its figure sits in and the figure. Where the ledger holds that movement
+// the ledger's row is the record; elsewhere the advice is.
+
+const advicePayload = `{"source":"payment_advice_pdf","document":"payment_advice_pdf","continuation":[]}`
+
+// seedDatedRow inserts one web row with both of its dates.
+func seedDatedRow(t *testing.T, r *webReader, id string, valued, booked int64, debit, credit any, descKind, payload string) {
+	t.Helper()
+	if _, err := r.db.Exec(`
+        INSERT INTO transactions (transaction_external_id, account_external_id,
+            snapshot_at, booking_date, value_date, currency_iso, amount_debit, amount_credit,
+            description_kind, payload)
+        VALUES (?, ?, 1000, ?, ?, 'CHF', ?, ?, ?, ?)`,
+		id, textAcct, booked, valued, debit, credit, descKind, payload); err != nil {
+		t.Fatalf("seed %s: %v", id, err)
+	}
+}
+
+func TestAnAdviceTheLedgerHoldsGivesWay(t *testing.T) {
+	const (
+		day    = 420 * 86400
+		booked = 418 * 86400
+	)
+	for _, tc := range []struct {
+		name           string
+		valued, booked int64
+		gone           bool
+	}{
+		{"on the value day", day, booked, true},
+		{"on the booking day alone", day + 2*86400, booked, true},
+		{"on neither day", day + 2*86400, booked + 86400, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newWebTxFixture(t)
+			seedWebAccount(t, r, textAcct)
+			seedRailEraAnchor(t, r)
+			seedDatedRow(t, r, foldStmtA, day, booked, 80.0, nil, "E-BANKING PAYMENT ORDER",
+				statementPayload("E-BANKING PAYMENT ORDER", "EXAMPLE PAYEE"))
+			seedDatedRow(t, r, "ADV0000001", tc.valued, tc.booked, 80.0, nil, "", advicePayload)
+			got := drainTx(t, emitWebStream(t, r))
+			if _, ok := got[foldStmtA+"@"+textAcct]; !ok {
+				t.Error("the statement's row was not emitted")
+			}
+			if _, ok := got["ADV0000001@"+textAcct]; ok == tc.gone {
+				t.Errorf("advice emitted = %v, want %v", ok, !tc.gone)
+			}
+		})
+	}
+}
+
+// One ledger row excuses one advice: two payments of one figure on one
+// day are two movements, and the second advice is the record of its own.
+func TestALedgerRowExcusesOneAdvice(t *testing.T) {
+	const day = 420 * 86400
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	seedDatedRow(t, r, foldStmtA, day, day, nil, 300.0, "CREDIT", statementPayload("CREDIT", "EXAMPLE PAYER"))
+	seedDatedRow(t, r, "ADV0000001", day, day, nil, 300.0, "", advicePayload)
+	seedDatedRow(t, r, "ADV0000002", day, day, nil, 300.0, "", advicePayload)
+	got := drainTx(t, emitWebStream(t, r))
+	_, first := got["ADV0000001@"+textAcct]
+	_, second := got["ADV0000002@"+textAcct]
+	if first || !second {
+		t.Errorf("advices emitted: first %v, second %v; want only the second, past the first by id", first, second)
+	}
+	if n := countOnDay(got, day); n != 2 {
+		t.Errorf("rows on the day = %d, want the statement row and one advice", n)
+	}
+}
+
+// A figure in the other column is another movement.
+func TestAnAdviceInTheOtherColumnStands(t *testing.T) {
+	const day = 420 * 86400
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	seedDatedRow(t, r, foldStmtA, day, day, 80.0, nil, "E-BANKING PAYMENT ORDER",
+		statementPayload("E-BANKING PAYMENT ORDER", "EXAMPLE PAYEE"))
+	seedDatedRow(t, r, "ADV0000001", day, day, nil, 80.0, "", advicePayload)
+	if _, ok := drainTx(t, emitWebStream(t, r))["ADV0000001@"+textAcct]; !ok {
+		t.Error("an advice crediting what the ledger debits was dropped")
+	}
+}
+
+// A statement can print a batch of payments as one movement where another
+// statement lists them. The parser splits the listed batch into legs under
+// the movement's id; the movement printed whole gives way to them.
+func TestABatchMovementGivesWayToItsLegs(t *testing.T) {
+	const day = 420 * 86400
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	seedDatedRow(t, r, foldStmtA, day, day, 300.0, nil, "E-BANKING PAYMENT ORDER",
+		statementPayload("E-BANKING PAYMENT ORDER", "2 TIMES E-BANKING"))
+	seedDatedRow(t, r, foldStmtA+"#1", day, day, 100.0, nil, "E-BANKING PAYMENT ORDER",
+		statementPayload("E-BANKING PAYMENT ORDER", "EXAMPLE PAYEE ONE"))
+	seedDatedRow(t, r, foldStmtA+"#2", day, day, 200.0, nil, "E-BANKING PAYMENT ORDER",
+		statementPayload("E-BANKING PAYMENT ORDER", "EXAMPLE PAYEE TWO"))
+	// Another movement on the day, printed whole, with no legs.
+	seedDatedRow(t, r, foldStmtB, day, day, 300.0, nil, "E-BANKING PAYMENT ORDER",
+		statementPayload("E-BANKING PAYMENT ORDER", "EXAMPLE PAYEE THREE"))
+	got := drainTx(t, emitWebStream(t, r))
+	for id, want := range map[string]bool{foldStmtA: false, foldStmtA + "#1": true, foldStmtA + "#2": true, foldStmtB: true} {
+		if _, ok := got[id+"@"+textAcct]; ok != want {
+			t.Errorf("%s emitted = %v, want %v", id, ok, want)
+		}
+	}
+}
+
+// The export signs its cells and an advice prints the figure: the
+// magnitude in the debit column is the same movement.
+func TestAnAdviceTheExportHoldsGivesWay(t *testing.T) {
+	const day = 420 * 86400
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	seedDatedRow(t, r, "EXP0000001", day, day, -80.0, nil, "e-banking payment order",
+		exportPayload("EXAMPLE PAYEE", "e-banking payment order", "Transaction no. EXP0000001"))
+	seedDatedRow(t, r, "ADV0000001", day, day, 80.0, nil, "", advicePayload)
+	got := drainTx(t, emitWebStream(t, r))
+	if _, ok := got["ADV0000001@"+textAcct]; ok {
+		t.Error("an advice the export holds was emitted beside it")
+	}
+	if _, ok := got["EXP0000001@"+textAcct]; !ok {
+		t.Error("the export's row was not emitted")
+	}
+}

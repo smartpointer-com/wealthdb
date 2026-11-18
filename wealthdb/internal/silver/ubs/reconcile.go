@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -13,8 +14,9 @@ import (
 // One booking, one row.
 //
 // A UBS cash booking can stand on several records. A statement prints it,
-// the netbanking export lists it, the MT940 feed carries it, and an MT515
-// or MT566 confirms the trade or the payment behind it. The adapter books
+// the netbanking export lists it, a payment advice states it, the MT940
+// feed carries it, and an MT515 or MT566 confirms the trade or the
+// payment behind it. The adapter books
 // two records of its own where no feed carries the booking: a conversion's
 // other leg (conversionMirrors) and a corporate action's cash leg
 // (cashLeg). The portfolio transaction list states a managed portfolio's
@@ -56,8 +58,13 @@ const (
 	// recStatement: a web row reconstructed from a printed statement
 	// (isStatementEraID).
 	recStatement recordKind = iota
-	// recExport: any other web row, the bank's machine-readable record.
+	// recExport: a web row of the netbanking export, the bank's
+	// machine-readable record.
 	recExport
+	// recAdvice: a web row read from a payment advice (sourceAdvicePDF).
+	// It carries the bank's own number for the entry, as an export row
+	// does, and states nothing else but the movement.
+	recAdvice
 	// recFeed: an MT940 cash movement.
 	recFeed
 	// recMirror: a conversion's other leg the adapter books
@@ -75,16 +82,20 @@ const (
 )
 
 var recordKindNames = [recordKinds]string{
-	"statement", "export", "feed", "mirror", "leg", "confirmation", "list",
+	"statement", "export", "advice", "feed", "mirror", "leg", "confirmation", "list",
 }
 
 func (k recordKind) String() string { return recordKindNames[k] }
 
-// webRecordKind is the kind of a web row: a statement reconstruction or
-// an export row.
-func webRecordKind(txID string) recordKind {
-	if isStatementEraID(txID) {
+// webRecordKind is the kind of a web row: a statement reconstruction, an
+// advice, or an export row. An advice is known by the marker its payload
+// carries, the one the loader deletes it by.
+func webRecordKind(row *webRow) recordKind {
+	switch {
+	case isStatementEraID(row.txID):
 		return recStatement
+	case strings.Contains(row.payload, sourceAdvicePDF):
+		return recAdvice
 	}
 	return recExport
 }
@@ -98,7 +109,7 @@ type candidate struct {
 	day int64
 
 	// The record itself; which field is set follows the kind.
-	web          *webRow                   // statement, export
+	web          *webRow                   // statement, export, advice
 	feed         *feedRow                  // feed, confirmation
 	confirmation *tradeConfirmationPayload // confirmation
 	mirror       *conversionMirror         // mirror
@@ -151,6 +162,10 @@ const (
 	oneToOne
 	// anyWinner: per key, every loser goes while any winner stands.
 	anyWinner
+	// firstFree: losers in id order, each to the first winner by id that
+	// shares any of its keys and no earlier loser took. A winner takes
+	// one loser whichever key it matched on.
+	firstFree
 )
 
 // reconcileRule is one row of the table.
@@ -160,8 +175,10 @@ type reconcileRule struct {
 	winners []recordKind
 	match   matchKind
 	// key is the identity a loser and its winner share; false where the
-	// record has none, and takes no part in the rule.
-	key func(*candidate) (any, bool)
+	// record has none, and takes no part in the rule. A firstFree rule
+	// has keys instead, tried together.
+	key  func(*candidate) (any, bool)
+	keys []func(*candidate) (any, bool)
 	// owns is byAuthority's test.
 	owns func(*candidate) bool
 	// byID orders a oneToOne rule's losers by id; else they keep the
@@ -176,6 +193,8 @@ type reconcileRule struct {
 
 // The rule names. A consumer reads ruleCut apart from the others.
 const (
+	ruleLegsOverMovement   = "split legs over their movement"
+	ruleWebOverAdvice      = "web over advice"
 	ruleCut                = "cut"
 	ruleLegOverExport      = "leg over export"
 	ruleExportOverStmt     = "export over statement"
@@ -189,12 +208,37 @@ const (
 // reconcileRules is the table, in order. ibans resolves the bank's
 // internal cash-account ids to the IBANs the registry keys by
 // (cashIBAN).
-func reconcileRules(cut psnCut, ibans map[string]string) []reconcileRule {
+// split names the movements a statement printed as one batch and the
+// parser split into its payments (splitMovements).
+func reconcileRules(cut psnCut, ibans map[string]string, split map[webTxTextKey]bool) []reconcileRule {
 	return []reconcileRule{{
+		// A batch the statement printed as one movement and the parser
+		// split into its payments is those payments. A statement that
+		// printed it whole beside one that listed them adds nothing.
+		name:   ruleLegsOverMovement,
+		losers: []recordKind{recStatement},
+		match:  byAuthority,
+		owns: func(c *candidate) bool {
+			return split[webTxTextKey{account: c.web.account, txnNo: c.web.txID}]
+		},
+	}, {
+		// An advice states one movement and nothing else. Where the
+		// ledger holds it, on either of the advice's two dates, the
+		// ledger's row is the record: it carries the booking type and
+		// reconciled against the statement's printed balance.
+		name:    ruleWebOverAdvice,
+		losers:  []recordKind{recAdvice},
+		winners: []recordKind{recStatement, recExport},
+		match:   firstFree,
+		keys: []func(*candidate) (any, bool){
+			func(c *candidate) (any, bool) { return adviceKeyOf(c, false) },
+			func(c *candidate) (any, bool) { return adviceKeyOf(c, true) },
+		},
+	}, {
 		// From each relationship's PSN start, a web row on an account
 		// the feed speaks for is the feed's to carry.
 		name:   ruleCut,
-		losers: []recordKind{recStatement, recExport},
+		losers: []recordKind{recStatement, recExport, recAdvice},
 		match:  byAuthority,
 		owns:   func(c *candidate) bool { return cut.excludes(c.web.account, c.web.valueDate) },
 	}, {
@@ -202,7 +246,7 @@ func reconcileRules(cut psnCut, ibans map[string]string) []reconcileRule {
 		// Its export copy goes, unless only the copy states a gross: the
 		// copy then stands, at its gross, and the leg goes.
 		name:    ruleLegOverExport,
-		losers:  []recordKind{recExport},
+		losers:  []recordKind{recExport, recAdvice},
 		winners: []recordKind{recLeg},
 		match:   oneToOne,
 		key:     bookingKeyOf,
@@ -214,6 +258,8 @@ func reconcileRules(cut psnCut, ibans map[string]string) []reconcileRule {
 	}, {
 		// The machine-readable records outrank a reconstruction from a
 		// printed statement: the export first, then the feed's records.
+		// An advice does not: a statement row it shares a booking with
+		// took the advice before, or is a movement of its own.
 		name:    ruleExportOverStmt,
 		losers:  []recordKind{recStatement},
 		winners: []recordKind{recExport},
@@ -234,7 +280,7 @@ func reconcileRules(cut psnCut, ibans map[string]string) []reconcileRule {
 		// leaves to the web side. There the bank's own number for the
 		// entry says the feed already holds it.
 		name:    ruleFeedOverWebByRef,
-		losers:  []recordKind{recStatement, recExport},
+		losers:  []recordKind{recStatement, recExport, recAdvice},
 		winners: []recordKind{recFeed},
 		match:   anyWinner,
 		key:     bankRefKeyOf,
@@ -243,7 +289,7 @@ func reconcileRules(cut psnCut, ibans map[string]string) []reconcileRule {
 		// of it goes.
 		name:    ruleWebOverMirror,
 		losers:  []recordKind{recMirror},
-		winners: []recordKind{recStatement, recExport},
+		winners: []recordKind{recStatement, recExport, recAdvice},
 		match:   anyWinner,
 		key:     offsetBookingOf,
 	}, {
@@ -259,7 +305,7 @@ func reconcileRules(cut psnCut, ibans map[string]string) []reconcileRule {
 		// settlement on its cash account, currency and day.
 		name:    ruleSettledOverList,
 		losers:  []recordKind{recList},
-		winners: []recordKind{recStatement, recExport, recConfirmation, recFeed},
+		winners: []recordKind{recStatement, recExport, recAdvice, recConfirmation, recFeed},
 		match:   oneToOne,
 		key:     func(c *candidate) (any, bool) { return settledDayKeyOf(c, ibans) },
 	}}
@@ -269,7 +315,7 @@ func reconcileRules(cut psnCut, ibans map[string]string) []reconcileRule {
 // rail's projection moves, a cash leg's the amount it posted.
 func bookingKeyOf(c *candidate) (any, bool) {
 	switch c.kind {
-	case recStatement, recExport:
+	case recStatement, recExport, recAdvice:
 		row := c.web
 		return newBookingKey(row.account, row.valueDate, row.signed, row.currency)
 	case recFeed:
@@ -285,12 +331,50 @@ func bookingKeyOf(c *candidate) (any, bool) {
 	return nil, false
 }
 
+// adviceKey is a movement as an advice and the ledger both state it: the
+// account, the currency, one of the two dates, the column the figure
+// sits in, and the figure's magnitude to the cent. The magnitude, because
+// the export signs its cells and the printed eras do not; the column says
+// the direction.
+type adviceKey struct {
+	account, currency string
+	day               int64
+	outbound          bool
+	cents             string
+}
+
+// adviceKeyOf is a web row's adviceKey on its value date, or on its
+// booking date where byEntry is set.
+func adviceKeyOf(c *candidate, byEntry bool) (any, bool) {
+	row := c.web
+	day := row.valueDate
+	if byEntry {
+		if !row.bookingDate.Valid {
+			return nil, false
+		}
+		day = row.bookingDate.Int64
+	}
+	figure, outbound := row.credit, false
+	if row.debit.Valid {
+		figure, outbound = row.debit, true
+	}
+	if !figure.Valid {
+		return nil, false
+	}
+	magnitude := canonical.NewDecimalFromFloat(math.Abs(figure.Float64))
+	cents, ok := bookingCents(&magnitude)
+	if !ok {
+		return nil, false
+	}
+	return adviceKey{account: row.account, currency: row.currency, day: day, outbound: outbound, cents: cents}, true
+}
+
 // bankRefKeyOf is the bank's own number for the entry and the account it
 // sits on (webTxTextKey): a web row's transaction number, a feed line's
 // bank reference.
 func bankRefKeyOf(c *candidate) (any, bool) {
 	switch c.kind {
-	case recStatement, recExport:
+	case recStatement, recExport, recAdvice:
 		return webTxTextKey{account: c.web.account, txnNo: webTxNumber(c.web.txID)}, true
 	case recFeed:
 		row := c.feed
@@ -310,7 +394,7 @@ func bankRefKeyOf(c *candidate) (any, bool) {
 // reads it (offsetLeg.booking): a web row of either kind, and a mirror.
 func offsetBookingOf(c *candidate) (any, bool) {
 	switch c.kind {
-	case recStatement, recExport:
+	case recStatement, recExport, recAdvice:
 		row := c.web
 		if row.kind != canonical.TxKindDeposit && row.kind != canonical.TxKindWithdrawal || row.signed == nil {
 			return nil, false
@@ -366,7 +450,7 @@ func settledDayKeyOf(c *candidate, ibans map[string]string) (any, bool) {
 	case recList:
 		l := c.list
 		return newSettledDayKey(l.cashAccount, l.currency, l.valueDate), true
-	case recStatement, recExport:
+	case recStatement, recExport, recAdvice:
 		row := c.web
 		if row.kind != canonical.TxKindBuy && row.kind != canonical.TxKindSell || row.periodSummary() {
 			return nil, false
@@ -425,12 +509,16 @@ func (rule *reconcileRule) apply(all []*candidate) {
 		}
 		return false
 	}
-	if rule.match == byAuthority {
+	switch rule.match {
+	case byAuthority:
 		for _, c := range all {
 			if c.stands() && is(rule.losers, c) && rule.owns(c) {
 				c.lostTo = rule.name
 			}
 		}
+		return
+	case firstFree:
+		rule.applyFirstFree(all, is)
 		return
 	}
 	// Both sides are taken before any verdict, so a record this rule
@@ -485,6 +573,56 @@ func (rule *reconcileRule) apply(all []*candidate) {
 	}
 }
 
+// applyFirstFree is apply for a firstFree rule.
+func (rule *reconcileRule) applyFirstFree(all []*candidate, is func([]recordKind, *candidate) bool) {
+	var losers []*candidate
+	winners := make([]map[any][]*candidate, len(rule.keys))
+	for i := range winners {
+		winners[i] = map[any][]*candidate{}
+	}
+	for _, c := range all {
+		switch {
+		case !c.stands():
+		case is(rule.losers, c):
+			losers = append(losers, c)
+		case is(rule.winners, c):
+			for i, key := range rule.keys {
+				if k, ok := key(c); ok {
+					winners[i][k] = append(winners[i][k], c)
+				}
+			}
+		}
+	}
+	for _, at := range winners {
+		for _, ws := range at {
+			sort.Slice(ws, func(i, j int) bool { return ws[i].id < ws[j].id })
+		}
+	}
+	sort.Slice(losers, func(i, j int) bool { return losers[i].id < losers[j].id })
+	taken := map[*candidate]bool{}
+	for _, l := range losers {
+		var first *candidate
+		for i, key := range rule.keys {
+			k, ok := key(l)
+			if !ok {
+				continue
+			}
+			for _, w := range winners[i][k] {
+				if !taken[w] {
+					if first == nil || w.id < first.id {
+						first = w
+					}
+					break
+				}
+			}
+		}
+		if first != nil {
+			taken[first] = true
+			l.lostTo = rule.name
+		}
+	}
+}
+
 // recordRef names a candidate: its kind and its id.
 type recordRef struct {
 	kind recordKind
@@ -520,12 +658,12 @@ func (rc *reconciliation) lostTo(kind recordKind, id string) string {
 
 // webLostTo is lostTo for a web row.
 func (rc *reconciliation) webLostTo(row *webRow) string {
-	return rc.lostTo(webRecordKind(row.txID), row.emittedID())
+	return rc.lostTo(webRecordKind(row), row.emittedID())
 }
 
 // carried is the text the records a web row replaced carry onto it.
 func (rc *reconciliation) carried(row *webRow) (webTxText, bool) {
-	c, ok := rc.byRef[recordRef{webRecordKind(row.txID), row.emittedID()}]
+	c, ok := rc.byRef[recordRef{webRecordKind(row), row.emittedID()}]
 	if !ok || c.text == nil {
 		return webTxText{}, false
 	}
@@ -539,7 +677,7 @@ func reconcile(ctx context.Context, web *webReader, psn *psnReader, rels []Relat
 	if err != nil {
 		return nil, err
 	}
-	for _, rule := range reconcileRules(rc.cut, ibans) {
+	for _, rule := range reconcileRules(rc.cut, ibans, splitMovements(rc.records)) {
 		rule.apply(rc.records)
 	}
 	rc.index()
@@ -577,7 +715,7 @@ func readCandidates(ctx context.Context, web *webReader, psn *psnReader, rels []
 	for i := range ledger {
 		row := &ledger[i]
 		rc.records = append(rc.records, &candidate{
-			kind: webRecordKind(row.txID), id: row.emittedID(), day: row.valueDate, web: row,
+			kind: webRecordKind(row), id: row.emittedID(), day: row.valueDate, web: row,
 		})
 	}
 	feed, err := psn.feed(ctx)
@@ -635,6 +773,21 @@ func readCandidates(ctx context.Context, web *webReader, psn *psnReader, rels []
 		}
 	}
 	return rc, ibans, nil
+}
+
+// splitMovements names, by account and id, the statement movements the
+// parser split into payments: a leg `<id>#1` of it stands in silver.
+func splitMovements(records []*candidate) map[webTxTextKey]bool {
+	out := map[webTxTextKey]bool{}
+	for _, c := range records {
+		if c.kind != recStatement {
+			continue
+		}
+		if base, ok := strings.CutSuffix(c.web.txID, "#1"); ok {
+			out[webTxTextKey{account: c.web.account, txnNo: base}] = true
+		}
+	}
+	return out
 }
 
 // index builds the lookups the passes read.
