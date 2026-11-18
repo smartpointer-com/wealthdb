@@ -2304,6 +2304,22 @@ every load (`writeDividendGaps`), and the yield report reads a record
 day from it where the calendar dates no distribution of a payment
 (YIELD.md §4).
 
+Migration 0210 adds `transaction_holdings`: the holding each
+transaction that names an instrument belongs to. Its holder is the
+account that held the instrument as the line happened: its own
+account, where it held it then or, for a line that moves no units, at
+any time before; else the one other account of its portfolio, else the one
+account of its source that held it under the line's id (YIELD.md §4).
+A row holds that account, the id it held the instrument under, and the
+step that placed it (`basis`: `own`, `portfolio`, `source`, or `none` where
+no account, or several, held it). The yield pass rebuilds it whole at
+every load. `transaction_holdings_inputs` holds the stamp of the inputs
+it was placed from: the rule's version and a stamp of `silver_sources`,
+`accounts` and `holding_aliases`. A reader whose inputs
+stamp otherwise places the lines itself, and the yield materializer
+stores what it placed. So a gold whose yield pass has not run since its
+inputs moved, such as one just upgraded, reads the same holders.
+
 Migration 0159 adds `stated_periods`: an account's summary of one
 period as a document states it. A row holds the values at the period's
 two ends, the net additions, the gain, the income, the fees and the
@@ -2515,9 +2531,9 @@ its transactions, because none is a per-source fact:
 6. The exposure pass rebuilds the exposure report's derived tables
    (§10.14). An alias ties a line one source loaded to an instrument
    another one did.
-7. The yield pass rebuilds `instrument_terms`, `account_rates` and
-   `dividend_gaps` (§7.6). It reads the exposure pass's instrument
-   keys.
+7. The yield pass rebuilds `instrument_terms`, `account_rates`,
+   `dividend_gaps` and `transaction_holdings` (§7.6). It reads the
+   exposure pass's instrument keys.
 
 A failed FX stamp is a warning: it degrades a conversion. The other
 six fail as errors. A failed pass does not stop the next one; the
@@ -3589,8 +3605,8 @@ holdings macro and the formulas the cards apply at read time:
 `yield_part_income`. The yield pass (`gold.RebuildYield`) runs after
 the exposure pass at the end of every load and reload. It reads the
 exposure pass's instrument keys and securities, and rewrites
-`instrument_terms`, `account_rates` and `dividend_gaps` (§7.6) in one
-transaction.
+`instrument_terms`, `account_rates`, `dividend_gaps` and
+`transaction_holdings` (§7.6) in one transaction.
 
 The pieces:
 
@@ -3614,9 +3630,17 @@ The pieces:
 
   SQL folds the same way (`holdingAliasJoins`). A payment, a holding, a
   position and a trade meet under the folded id;
+- the holder, `yield.Holders.Place`: the account that held a line's
+  instrument as the line happened, read once per transaction into
+  `transaction_holdings` (§7.6) and from there into
+  `yield.Inputs.Placed`. An income line belongs to its holder's holding
+  or sold position (`yield.Inputs.LineHolding`), and a trade moves its
+  holder's quantity. A line no account is known to have held belongs
+  where the instant's holdings place it (`yield.Inputs.HoldingOf`,
+  `Sold`);
 - the record day, `readYieldUnits`: what each account held of each
   instrument paid, at its snapshots, moved by its trades since
-  (YIELD.md §4 says which account a cash account's trade moves).
+  (YIELD.md §4 says which account a trade moves).
   `yield.RecordOf` gives a payment's record day: the one the dividend
   calendar states (`dividend_calendar`, read by `readCalendar`), else
   the one its ex day derives by the market's settlement cycle

@@ -68,6 +68,7 @@ var survivesReset = map[string]string{
 	"exposure_situs":             "exposure",
 	"instrument_terms":           "yield",
 	"account_rates":              "yield",
+	"transaction_holdings":       "yield",
 	"lot_runs":                   "lots",
 }
 

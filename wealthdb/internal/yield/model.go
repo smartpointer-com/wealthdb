@@ -82,14 +82,22 @@ type Inputs struct {
 	// instrument its source also keys by its ticker, which reads as the
 	// ticker.
 	Aliases map[AliasKey]string
+	// Placed are the transactions a holder is known for, by source and
+	// id: the account that held the instrument a transaction names as it
+	// happened, and the id it held it under (Holders.Place, gold's
+	// transaction_holdings). A transaction Place leaves unplaced has
+	// none.
+	Placed map[TxnKey]UnitKey
 	// pools are the holdings of each instrument (poolKey), bySecurity the
-	// instruments of each security Held names, sorted, and folds each
+	// instruments of each security Held names, sorted, folds each
 	// holding's instrument as the matching reads it, by its place in
-	// Holdings: what Index fills. instrumentPools are what each
+	// Holdings, and byAccount the first holding of each instrument in each
+	// account, by its fold: what Index fills. instrumentPools are what each
 	// instrument's holdings and positions pool (instrumentPool), once read.
 	pools           map[string][]Holding
 	bySecurity      map[string][]InstrumentKey
 	folds           []string
+	byAccount       map[UnitKey]HoldingKey
 	instrumentPools map[string]pool
 	// Withholding is yield_withholding: percent by situs country and
 	// tax wrapper (canonical.WithholdingDefault for every other).
@@ -112,6 +120,9 @@ type AccountCurrency struct {
 
 // InstrumentKey names an instrument at its source.
 type InstrumentKey struct{ Source, Instrument string }
+
+// TxnKey names a transaction at its source.
+type TxnKey struct{ Source, Transaction string }
 
 // AliasKey names an id an account of a source keys an instrument by;
 // Account "" names it for every account of the source.
@@ -463,6 +474,30 @@ func (in *Inputs) Sold(src, acct, iid string) (HoldingKey, bool) {
 	return HoldingKey{src, acct, id}, false
 }
 
+// LineHolding is the holding transaction id of source src, booked on
+// account acct and naming the instrument iid, belongs to. A transaction
+// placed with its holder (Placed) belongs to the holder's holding of
+// the instrument at the instant, else to the holder's sold position of
+// it: who held it as the line happened. Any other belongs where the
+// holdings of the instant place it (HoldingOf, else Sold). false where
+// neither places it.
+func (in *Inputs) LineHolding(src, acct, id, iid string) (HoldingKey, bool) {
+	if iid == "" {
+		return HoldingKey{}, false
+	}
+	if k, ok := in.Placed[TxnKey{src, id}]; ok {
+		in.index()
+		if h, ok := in.byAccount[k]; ok {
+			return h, true
+		}
+		return HoldingKey{k.Source, k.Account, k.Instrument}, true
+	}
+	if key, held := in.HoldingOf(src, acct, iid); held {
+		return key, true
+	}
+	return in.Sold(src, acct, iid)
+}
+
 // poolKey names the holdings a holding's instrument pools with: those of
 // its security (SecurityID), which names one security at every source,
 // else those of its instrument at its source (instrumentKey); "" for a
@@ -478,17 +513,24 @@ func (in *Inputs) poolKey(h Holding) string {
 	return ""
 }
 
-// Index folds each holding's instrument (Fold), pools the holdings by
-// their instruments (poolKey), and lists the instruments of each security
-// Held names (HeldSecurity), for HoldingOf and instrumentOf; each indexes
+// Index folds each holding's instrument (Fold), indexes each account's
+// first holding of each fold, pools the holdings by their instruments
+// (poolKey), and lists the instruments of each security Held names
+// (HeldSecurity), for HoldingOf, LineHolding and instrumentOf; each indexes
 // the inputs where no Index has (index). Compute calls it first; a reader
 // that matches many lines calls it once it has read the holdings. After a
 // change of Holdings or Aliases, the matching reads the last Index's until
 // the next one.
 func (in *Inputs) Index() {
 	in.folds = make([]string, len(in.Holdings))
+	in.byAccount = map[UnitKey]HoldingKey{}
 	for i, h := range in.Holdings {
 		in.folds[i] = in.Fold(h.Source, h.Account, h.Instrument)
+		if k := (UnitKey{h.Source, h.Account, in.folds[i]}); h.Instrument != "" {
+			if _, ok := in.byAccount[k]; !ok {
+				in.byAccount[k] = h.HoldingKey
+			}
+		}
 	}
 	in.pools = map[string][]Holding{}
 	for _, h := range in.Holdings {

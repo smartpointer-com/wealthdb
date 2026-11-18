@@ -5,7 +5,6 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
@@ -25,18 +24,36 @@ type UnitPoint struct {
 // Holds says the point holds some of its instrument.
 func (p UnitPoint) Holds() bool { return p.Qty != nil && *p.Qty > lots.Tolerance(*p.Qty) }
 
-// Holders are what tells which account's holding a line of the inputs
-// In moves or is paid on, over time, where HoldingOf tells it at the
-// instant: the quantities of the instruments paid in each account that
-// held them, at the points they change (Points), and the accounts whose
-// points each instrument has, by account (Accounts).
+// Holders are what tells which account a line of the inputs In moves
+// or is paid on, over time, where HoldingOf tells it at the instant:
+// the quantities of the instruments in each account that held them, at
+// the points they change (Points), and the accounts whose points each
+// instrument has, by account (Accounts).
 type Holders struct {
 	In       *Inputs
 	Points   map[UnitKey][]UnitPoint
 	Accounts map[InstrumentKey][]string
-	// siblings memoises PortfolioKeys for TradeKey.
+	// siblings memoises PortfolioKeys for Place.
 	siblings map[UnitKey][]UnitKey
 }
+
+// A Placing says which step of Place placed a line.
+type Placing string
+
+const (
+	// PlacedOwn: the account the line is booked on held its instrument.
+	PlacedOwn Placing = "own"
+	// PlacedPortfolio: the one other account of its portfolio that did.
+	PlacedPortfolio Placing = "portfolio"
+	// PlacedSource: the one account of its source that did.
+	PlacedSource Placing = "source"
+	// PlacedNone: no account, or more than one, did.
+	PlacedNone Placing = "none"
+)
+
+// PlaceVersion numbers Place's rule. A stored placement of another
+// version is read as stale.
+const PlaceVersion = 2
 
 // PortfolioKeys are the keys a line of account acct reads the instrument
 // iid names under, iid folded under each account (Fold): acct's own, then
@@ -78,19 +95,27 @@ func (h *Holders) KeysOf(all []UnitKey) []UnitKey {
 	return keys
 }
 
-// TradeKey is the key trade t moves the quantity of, booked under key on
-// its account, which names its instrument iid: the booking account's,
-// where that account holds its instrument as the trade happens (holdsAt).
-// Else, for a trade booked on a cash account, the one other account of
-// its portfolio that holds it then, its instrument folded under that
-// account or under the booking account (PortfolioKeys, key). Where none
-// does, or several do, the booking key: which account the trade went to
-// is not known, and it moves no holding. A trade of any other account
-// moves only its own.
-func (h *Holders) TradeKey(key UnitKey, iid string, t UnitTrade) UnitKey {
-	if h.holdsAt(key, t) ||
-		h.In.Accounts[AccountKey{Source: key.Source, Account: key.Account}].Kind != string(canonical.AccountKindCash) {
-		return key
+// Place is the key of the holding transaction t belongs to, booked under
+// key on its account, which names its instrument iid, and the step that
+// placed it: the account that held the instrument as t happened
+// (holdsAt). That is the booking account, where it held it (PlacedOwn).
+// A line that moves no units stays with its booking account where that
+// account held the instrument at any point up to it (heldBy): a
+// dividend paid after a holding moved on is paid on what the account
+// held on its record day.
+// Else the one other account of its portfolio that held it then, its
+// instrument folded under that account or under the booking account
+// (PortfolioKeys, key; PlacedPortfolio). Else the one account of its
+// source that held it under the booking account's id (PlacedSource). A
+// bank books a trade or a dividend to a cash account beside the custody
+// account, or in another portfolio. Where none held it, or several did,
+// the booking key (PlacedNone): which account it went to is not known.
+// A trade that brings units (a buy) also reads the first point after it,
+// as its units land there; any other line reads only what was held as
+// it happened.
+func (h *Holders) Place(key UnitKey, iid string, t UnitTrade) (UnitKey, Placing) {
+	if h.holdsAt(key, t) || (t.Qty == 0 && h.heldBy(key, t.At)) {
+		return key, PlacedOwn
 	}
 	own := UnitKey{key.Source, key.Account, iid}
 	siblings, ok := h.siblings[own]
@@ -110,10 +135,34 @@ func (h *Holders) TradeKey(key UnitKey, iid string, t UnitTrade) UnitKey {
 			}
 		}
 	}
-	if len(holder) != 1 {
-		return key
+	switch len(holder) {
+	case 1:
+		return holder[0], PlacedPortfolio
+	case 0:
+		for _, a := range h.Accounts[InstrumentKey{Source: key.Source, Instrument: key.Instrument}] {
+			if c := (UnitKey{key.Source, a, key.Instrument}); a != key.Account && h.holdsAt(c, t) {
+				holder = append(holder, c)
+			}
+		}
+		if len(holder) == 1 {
+			return holder[0], PlacedSource
+		}
 	}
-	return holder[0]
+	return key, PlacedNone
+}
+
+// heldBy says key k held some of its instrument at a point at or before
+// at.
+func (h *Holders) heldBy(k UnitKey, at int64) bool {
+	for _, p := range h.Points[k] {
+		if p.At > at {
+			return false
+		}
+		if p.Holds() {
+			return true
+		}
+	}
+	return false
 }
 
 // holdsAt says key k holds its instrument as trade t happens: its newest

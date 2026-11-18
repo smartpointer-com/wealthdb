@@ -107,7 +107,8 @@ func (b *yieldBase) attribution(in *yield.Inputs) *incomeAttribution {
 // of the 24 months to the instant the same way, in the line's currency.
 // A dividend or a distribution comes with the quantities yield.Payment
 // documents, read under its account's keys (yield.Holders.KeysOf, quantity,
-// span, firstHeld), its record day the one the dividend calendar states
+// span, firstHeld), else under its holder's where those keys leave the
+// holder out (yield.Inputs.Placed), its record day the one the dividend calendar states
 // or derives, else the one its issuer's learned gap gives, else the one
 // its market's lag gives (yield.RecordOf, recordOf, gapOf).
 // Where the calendar gives the days, the quantity reads as the ex day
@@ -132,6 +133,9 @@ func (b *yieldBase) attribute(in *yield.Inputs, ids []holdingID) *incomeAttribut
 				pay := time.Unix(start, 0).UTC()
 				under := in.PortfolioKeys(l.Source, l.Account, l.Instrument)
 				keys := b.units.KeysOf(under)
+				if k, ok := in.Placed[yield.TxnKey{Source: l.Source, Transaction: l.ID}]; ok && !slices.Contains(keys, k) {
+					keys = []unitKey{k}
+				}
 				p.Quantity, p.Units = b.units.quantity(keys, start)
 				lag, events, share, market, security := b.recordOf(in, under)
 				learned := b.gapOf(security, share, market)
@@ -271,13 +275,13 @@ func paysPerShare(t yield.IncomeType) bool {
 	return t == yield.TypeDividends || t == yield.TypeDistributions
 }
 
-// incomeLine is one income transaction of a type the projection counts:
-// its amount in its currency and its description.
+// incomeLine is one income transaction of a type the projection counts,
+// by its source and id: its amount in its currency and its description.
 type incomeLine struct {
-	Source, Account, Instrument, Currency, Description string
-	At                                                 int64
-	Type                                               yield.IncomeType
-	Amount                                             float64
+	Source, ID, Account, Instrument, Currency, Description string
+	At                                                     int64
+	Type                                                   yield.IncomeType
+	Amount                                                 float64
 }
 
 // couponOf reads an account's interest line that names no instrument but
@@ -310,9 +314,10 @@ func couponOf(in *yield.Inputs, l *incomeLine) {
 	}
 }
 
-// lineHolding is the holding a line belongs to (yield.Inputs.HoldingOf),
-// else the sold position that holds it (yield.Inputs.Sold); false where
-// neither does. Interest that names a bond is its coupon (couponOf). A
+// lineHolding is the holding a line belongs to, else the sold position
+// that holds it (yield.Inputs.LineHolding): its holder's, where the
+// account that held its instrument as it happened is known; false where
+// none does. Interest that names a bond is its coupon (couponOf). A
 // sold position's coupons pool with the bond's amounts in its realized
 // yield. A coupon whose line names no bond, or one that neither its
 // account, its portfolio, nor one account of its source alone held,
@@ -322,10 +327,7 @@ func couponOf(in *yield.Inputs, l *incomeLine) {
 // its line names its bond or only its description does.
 func lineHolding(in *yield.Inputs, l *incomeLine) (yield.HoldingKey, bool) {
 	couponOf(in, l)
-	key, held := in.HoldingOf(l.Source, l.Account, l.Instrument)
-	if !held {
-		key, held = in.Sold(l.Source, l.Account, l.Instrument)
-	}
+	key, held := in.LineHolding(l.Source, l.Account, l.ID, l.Instrument)
 	if !held && l.Type == yield.TypeCoupons {
 		l.Instrument = ""
 		return yield.HoldingKey{}, false
@@ -360,7 +362,8 @@ WITH l AS (
            AND i.instrument_external_id = t.instrument_external_id
       LEFT JOIN instrument_terms_at($2) tm ON tm.silver_source_id = t.silver_source_id
            AND tm.instrument_external_id = t.instrument_external_id)`+ctes.String()+`
-SELECT l.silver_source_id, l.account_external_id, COALESCE(l.instrument_external_id, ''), l.occurred_at,
+SELECT l.silver_source_id, l.transaction_external_id, l.account_external_id, COALESCE(l.instrument_external_id, ''),
+       l.occurred_at,
        l.currency, l.amount, l.type, l.description`+values.String()+`
   FROM l`+joins.String()+`
  WHERE l.type IS NOT NULL
@@ -368,7 +371,7 @@ SELECT l.silver_source_id, l.account_external_id, COALESCE(l.instrument_external
 		var l incomeLine
 		var typ string
 		nulls := make([]sql.NullFloat64, len(currencies))
-		dest := []any{&l.Source, &l.Account, &l.Instrument, &l.At, &l.Currency, &l.Amount, &typ, &l.Description}
+		dest := []any{&l.Source, &l.ID, &l.Account, &l.Instrument, &l.At, &l.Currency, &l.Amount, &typ, &l.Description}
 		for i := range nulls {
 			dest = append(dest, &nulls[i])
 		}

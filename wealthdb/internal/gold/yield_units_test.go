@@ -728,11 +728,12 @@ func TestADividendIsPaidOnItsRecordDaysQuantity(t *testing.T) {
 	}
 }
 
-// TestATradeOnTheCashAccountMovesItsPortfoliosHolding: a bank books a
-// trade, and its dividend, on a cash account beside the custody account
-// that holds the share. The book is invented, at a bank whose portfolio
-// P1 has the custody accounts SAFE and SAFE2, the cash account CASH and
-// the brokerage account BRK, each shown at month ends:
+// TestATradeMovesItsHoldersHolding: a trade moves the holding of the
+// account that held its share as it happened: a bank books a trade, and
+// its dividend, on a cash account beside the custody account. The book
+// is invented, at a bank whose portfolio P1 has the custody accounts
+// SAFE and SAFE2, the cash account CASH and the brokerage account BRK,
+// each shown at month ends:
 //   - QCHS, a Swiss share: SAFE held 50 to February; CASH booked a sale of
 //     10 on 12 March and the dividend of 31 March, 0.5 a share. The record
 //     day, two business days before, reads February's 50 less the sale.
@@ -747,11 +748,12 @@ func TestADividendIsPaidOnItsRecordDaysQuantity(t *testing.T) {
 //   - QALS: CASH names it QALT, an id only SAFE's alias folds into QALS;
 //     its sale moves SAFE's QALS.
 //   - QBRK: BRK, a brokerage account, sells it without holding it: the
-//     sale moves no other account's holding.
-//   - QOTH: CASH2, of portfolio P2, sells it: SAFE keeps February's 50.
+//     sale moves SAFE's, the one account of its portfolio that holds it.
+//   - QOTH: CASH2, of portfolio P2, sells it: the sale moves SAFE's, the
+//     one account of the bank that holds it.
 //   - QFND, a fund with no record day: CASH's buy of 50 on 2 March moves
 //     SAFE's 100, read as the pay day begins.
-func TestATradeOnTheCashAccountMovesItsPortfoliosHolding(t *testing.T) {
+func TestATradeMovesItsHoldersHolding(t *testing.T) {
 	t.Parallel()
 	early, pay := ymd(2026-1, 1, 1), ymd(2026, 3, 31)
 	sold := func(n float64) []bookSeg { return []bookSeg{{early, 50, 2500}, {pay, 50 - n, 2500 - 50*n}} }
@@ -811,7 +813,7 @@ func TestATradeOnTheCashAccountMovesItsPortfoliosHolding(t *testing.T) {
 		want      float64
 	}{
 		{"SAFE", "QCHS", 40}, {"CASH", "QOWN", 40}, {"SAFE", "QTWO", 100}, {"SAFE2", "QSEQ", 40},
-		{"SAFE", "QHLD", 40}, {"SAFE", "QALS", 40}, {"SAFE", "QBRK", 50}, {"SAFE", "QOTH", 50},
+		{"SAFE", "QHLD", 40}, {"SAFE", "QALS", 40}, {"SAFE", "QBRK", 40}, {"SAFE", "QOTH", 40},
 	} {
 		ps := in.Payments[yield.HoldingKey{Source: "bank", Account: c.acct, PositionKey: c.iid}]
 		if len(ps) != 1 || ps[0].Record == nil || *ps[0].Record != c.want {

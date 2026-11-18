@@ -63,7 +63,13 @@ func materializeYield(ctx context.Context, tx *sql.Tx, instants []int64, currenc
 	}
 	today := map[string]*yield.Book{}
 	// What depends on neither the currency nor the instant is read once.
-	shared := &yieldShared{}
+	// The transactions' holders are stored where the yield pass has not
+	// placed them from the inputs gold holds.
+	placed, err := readPlacements(ctx, tx, tx)
+	if err != nil {
+		return 0, fmt.Errorf("MaterializeYield: %w", err)
+	}
+	shared := &yieldShared{placed: placed}
 	var now *yield.Inputs
 	for _, at := range instants {
 		// The instant is read once, in every currency.

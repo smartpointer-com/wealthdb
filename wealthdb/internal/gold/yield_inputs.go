@@ -85,18 +85,21 @@ type valuation struct {
 
 // yieldShared is what the bases of several instants read once, as no
 // instant changes it: the positions the situs rule reads as receipts, the
-// dividend calendar, the settlement cycles and the learned gaps.
+// dividend calendar, the settlement cycles, the learned gaps, and the
+// holder of each transaction placed (readPlacements).
 type yieldShared struct {
 	receipts map[[3]string]bool
 	calendar map[string][]yield.CalendarEvent
 	cycles   yield.SettlementCycles
 	gaps     dividendGaps
+	placed   map[yield.TxnKey]unitKey
 }
 
 // readYieldBase reads the instant asOf's yieldBase, valued in each
 // currency of currencies. The positions read as receipts, the dividend
 // calendar, the settlement cycles and the learned gaps come from shared,
-// read on the first instant that needs them.
+// read on the first instant that needs them, as are the transactions'
+// holders.
 func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldShared,
 	currencies []string) (*yieldBase, error) {
 	day := time.Unix(asOf, 0).UTC()
@@ -132,6 +135,14 @@ func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldSha
 		{"withholding", func() error { return readWithholding(ctx, db, in) }},
 		{"holdings", func() error { return b.readValuations(ctx, db) }},
 		{"funds", func() error { return b.readFunds(ctx, db) }},
+		{"placed", func() error {
+			var err error
+			if shared.placed == nil {
+				shared.placed, err = readPlacements(ctx, db, nil)
+			}
+			in.Placed = shared.placed
+			return err
+		}},
 		{"income", func() error { return b.readIncome(ctx, db) }},
 		{"securities", func() error { return b.readSecurities(ctx, db) }},
 	}); err != nil {

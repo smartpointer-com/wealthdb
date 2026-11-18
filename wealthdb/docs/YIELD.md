@@ -491,16 +491,30 @@ twelve months to the day over the mean daily value.
   holding named.
 - A dividend counts at its gross where its source states one, else at
   its net (INCOME.md §5).
-- A line of an account that held the instrument once and sold it stays
-  with that sold position, as `income` lists it. A coupon does too. A
-  line of an account that never held it belongs to a holding of it in
-  its portfolio: a bank books a dividend to the cash account beside the
-  custody account. Where no account of the portfolio holds it but one
-  held it once, the line stays with its own sold position. Else it
-  belongs to a holding of it at its source. Where the source holds none,
-  and one account of the source alone held it, the line is that
-  account's sold position: a bank may book a dividend in another
-  portfolio.
+- A line belongs to the account that held its instrument as the line
+  happened. That is its own account where it held it then, or at any
+  time before: a dividend paid after the holding moved on is paid on
+  what the account held on its record day. Else it is the one other
+  account of its portfolio that held it then: a bank books a dividend
+  to the cash account beside the custody account. Else it is the one
+  account of its source that held it then, under the id the line's own
+  account knows it by: a bank may book a dividend in another
+  portfolio. The yield pass decides this once per line
+  (`transaction_holdings`, DESIGN.md §7.6).
+- The line is that account's holding of the instrument. Where the
+  account holds none of it at the day, the line is the account's sold
+  position, as `income` lists it. A coupon does too. So a dividend paid
+  before a move between two accounts of a portfolio stays with the
+  earlier account, and one paid after it is the later account's.
+- Where no account held the instrument as the line happened, or
+  several did, the holdings of the day place it. A line of an account
+  that held the instrument once and sold it stays with that sold
+  position. A line of an account that never held it belongs to a
+  holding of it in its portfolio. Where no account of the portfolio
+  holds it but one held it once, the line stays with its own sold
+  position. Else it belongs to a holding of it at its source. Where the
+  source holds none, and one account of the source alone held it, the
+  line is that account's sold position.
 - A line meets its holding under any id its source gives the
   instrument. A source may key one security by its CUSIP and by its
   ticker. The config may give one holding two keys (`holding_aliases`,
@@ -764,14 +778,17 @@ the instrument included.
 - That quantity comes from the account's newest snapshot by then. The
   account's trades since that snapshot move it. The day's own trades
   earn none of the payment.
-- A trade booked on a cash account that holds none of its instrument as
-  the trade happens moves another account's holding. That is the one
-  other account of its portfolio that holds it then. A bank books a
-  trade on the cash account beside the custody account. Where several
-  accounts hold it then, or none, the trade moves no holding, since its
-  account is not known. A payment that reads all the portfolio's
-  accounts then reads their snapshots without that trade. A trade of any
-  other kind of account moves only its own holding.
+- A trade moves the holding of the account that held its instrument as
+  it happened, as a line belongs to one. A trade booked on an account
+  that holds none of its instrument then moves another account's
+  holding: the one other account of its portfolio that holds it then,
+  else the one account of its source that holds it under the trade's
+  id. A bank books a trade on the cash
+  account beside the custody account. A buy reads the first snapshot
+  after it too, since its units land there. Where several accounts hold
+  it, or none, the trade moves no holding, since its account is not
+  known. A payment that reads all the portfolio's accounts then reads
+  their snapshots without that trade.
 - A trade stamped at a snapshot's instant counts in it, as the lot
   engine reads a snapshot. Some statements leave out their last day's
   trades: where the snapshot shows the previous one's quantity without
