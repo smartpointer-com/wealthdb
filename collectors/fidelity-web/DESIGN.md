@@ -870,7 +870,7 @@ VNC. After the post-auth URL lands, the walk runs as normal (or
 
 ## 8. UI surface map
 
-The URLs and selectors below mirror the constants in `download.py`.
+The URLs and selectors below mirror the constants in `landmarks.py`.
 
 ### 8.1 URLs
 

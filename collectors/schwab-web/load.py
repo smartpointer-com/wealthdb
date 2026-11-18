@@ -1133,7 +1133,7 @@ def _load_more_details(acct_dir: Path) -> dict:
     writes `<acct_dir>/more-details.json` as a list of
     `{"row_key", "row_cells", "fields", "raw_text"}` records. The
     dialog is parsed here from `raw_text` (more_detail.parse); the
-    download's `fields` is not read. row_key is a deterministic SHA-256
+    record's `fields` stays empty and is not read. row_key is a deterministic SHA-256
     prefix over the row's promoted columns
     (date|amount|description|symbol|action) that the loader can
     re-derive from the JSON export to merge details in. See

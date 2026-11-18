@@ -44,7 +44,7 @@ within the surfaces listed below:
   (one position's open-lot table), `closedpositions` (a tax year's
   closed positions) and `closedlots` (one closed position's lots).
   They are POSTs, and they are reads: the page sends them whenever
-  a table is opened. `download.POSWEB_READ_ENDPOINTS` is the
+  a table is opened. `landmarks.POSWEB_READ_ENDPOINTS` is the
   allow-list in code.
 - Logout (optional; not required between runs, but harmless).
 

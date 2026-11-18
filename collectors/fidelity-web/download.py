@@ -97,18 +97,15 @@ input; ``prune`` deletes the former wholesale.
 from __future__ import annotations
 
 import argparse
-import base64
 import functools
 import hashlib
 import json
 import logging
 import os
-import random
 import re
 import signal
 import sys
 import time
-import zlib
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -116,215 +113,141 @@ from urllib.parse import quote
 from collectorkit import bronze, cli, compress, debugcap, envfile, launch
 
 import lot_parsers
+# The walk's landmarks and its pure rules live in the modules below.
+# Each name is bound here too, so an importer of download finds it.
+from landmarks import (  # noqa: F401
+    URL_PORTFOLIO_SUMMARY,
+    URL_POSITIONS,
+    URL_ACTIVITY,
+    URL_DOCUMENTS,
+    URL_BALANCES,
+    URL_PERFORMANCE,
+    POST_AUTH_PREFIX,
+    DOCCENTER_PREFIX,
+    SEL_ALL_ACCOUNTS,
+    SEL_KEBAB_MENU,
+    SEL_ACCOUNT_LINK,
+    SEL_PRESET_VIEW_SELECT,
+    KEBAB_OPEN_WAIT_S,
+    TABLE_RENDER_WAIT_S,
+    SPA_HYDRATE_WAIT_S,
+    DOWNLOAD_TIMEOUT_MS,
+    MAX_ACTIVITY_WINDOW_DAYS,
+    ACTIVITY_RETENTION_FLOOR_DAYS,
+    ACTIVITY_RANGE_REFUSED,
+    ACTIVITY_OUTSIDE_RETENTION,
+    ACTIVITY_EXPORT_ATTEMPTS,
+    ACTIVITY_EXPORT_RETRY_SECONDS,
+    LANDMARK_TIMEOUT_MS,
+    USERNAME_ENVS,
+    PASSWORD_ENVS,
+    DEFAULT_ENV_FILE_CANDIDATES,
+    SIGNIN_URL,
+    SEL_USERNAME_SELECT,
+    SEL_USERNAME_OTHER_OPTION_VALUE,
+    SEL_USERNAME_TEXT_INPUT_CANDIDATES,
+    SEL_PASSWORD_INPUT,
+    SEL_LOGIN_BUTTON,
+    SEL_IUA_ACCEPT_CANDIDATES,
+    SEL_2FA_CODE_INPUT,
+    SEL_2FA_SUBMIT_CANDIDATES,
+    SEL_TRUST_BROWSER_CHECKBOX,
+    SEL_TRUST_BROWSER_LABEL,
+    SEL_LOGOUT_CANDIDATES,
+    account_key,
+    parse_exclude_list,
+    POSWEB_API,
+    POSWEB_READ_ENDPOINTS,
+    LOTS_PAGE_SIZE,
+    LOT_REQUEST_PAUSE_S,
+    LOT_LONG_PAUSE_EVERY,
+    LOT_LONG_PAUSE_S,
+    LOT_MAX_FETCHES_PER_RUN,
+    LOT_CONTEXT_TIMEOUT_S,
+    LOT_MAX_CONSECUTIVE_FAILURES,
+    SEL_TIMEPICKER_PILL,
+    SEL_TIMEPICKER_OPEN,
+    SEL_ACTIVITY_FROM_DATE,
+    SEL_ACTIVITY_TO_DATE,
+    SEL_ACTIVITY_APPLY,
+    SEL_ACTIVITY_CSV_SELECTORS,
+    SEL_ACTIVITY_CSV_ITEM,
+    SEL_TIMEPICKER_LABEL,
+    SEL_DOCCENTER_TIMEFILTER,
+    SEL_DOCCENTER_APPLY,
+    DAF_HOST,
+    DAF_ORIGIN,
+    DAF_SSO_URL,
+    DAF_SPA_URL,
+    DAF_API,
+    DAF_IDENTITY_URL,
+    DAF_JWT_HEADER,
+    DAF_DOCUMENT_TYPES,
+    DAF_PAGE_SIZE,
+    _daf_ep,
+)
+from windows import (  # noqa: F401
+    make_activity_windows,
+    mark_outside_retention,
+    clamp_activity_window,
+)
+from phase_coverage import (  # noqa: F401
+    PHASE_RESULT_KEYS,
+    PHASE_OK_STATUS,
+    EXIT_PHASE_INCOMPLETE,
+    _gap_label,
+    ENTRY_FAIL_STATUS,
+    _attempt_entries,
+    _entry_failed,
+    phase_coverage,
+    exit_code_for_coverage,
+    activity_csv_coverage,
+    activity_export_matches,
+    parse_iso_date,
+)
+from lot_queries import (  # noqa: F401
+    _row_val,
+    lot_position_rows,
+    lot_position_id,
+    open_lot_signature,
+    closed_lot_signature,
+    _row_symbol,
+    closedpositions_body,
+    closedlots_body,
+    openlots_body,
+    _LOTS_LAST_PAGE_RE,
+    openlots_last_page,
+    decode_pico,
+    lot_ineligible_accounts,
+    previous_lot_index,
+    write_lot_index,
+    LotFetchError,
+    _LotBundle,
+    LotStepAborted,
+    _lot_pause,
+)
+from documents import (  # noqa: F401
+    _STATEMENT_LABEL_YEAR_RE,
+    _statement_label_year,
+    _write_doc_bytes,
+    _pdf_from_docapi_body,
+    _is_docapi_download_response,
+    _doc_stem,
+)
+from daf import (  # noqa: F401
+    _login_has_daf,
+    _daf_doc_stem,
+    _daf_year_span,
+    _daf_parse_establish_date,
+)
 
 
 log = logging.getLogger("fidelity-web.download")
 
 
 # ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-URL_PORTFOLIO_SUMMARY = "https://digital.fidelity.com/ftgw/digital/portfolio/summary"
-URL_POSITIONS = "https://digital.fidelity.com/ftgw/digital/portfolio/positions"
-URL_ACTIVITY = "https://digital.fidelity.com/ftgw/digital/portfolio/activity"
-URL_DOCUMENTS = "https://digital.fidelity.com/ftgw/digital/portfolio/documents"
-URL_BALANCES = "https://digital.fidelity.com/ftgw/digital/portfolio/balances"
-URL_PERFORMANCE = "https://digital.fidelity.com/ftgw/digital/portfolio/performance"
-POST_AUTH_PREFIX = "https://digital.fidelity.com/ftgw/digital/portfolio/"
-# The document center is a separate "Enterprise Document Center" SPA
-# off the portfolio host. Navigating to URL_DOCUMENTS 302s there, so
-# the documents phase accepts this
-# prefix as a valid post-auth landing (it is NOT a session-timeout
-# bounce, which would redirect to the /prgw/digital/signin login).
-DOCCENTER_PREFIX = "https://digitalservices.fidelity.com/navigate/ent-documentcenter/"
-
-# Account-selector account-link testid pattern is
-# ``ap143528-accounts-selector-account-link-<account-id>``, with
-# the id being 9-digit for brokerage / trust / 529 and 7-digit
-# for a Fidelity Charitable DAF (auto-excluded by length in
-# walk()). The pattern is used inline by
-# ``enumerate_account_dimensions``; the named selectors below
-# cover the rest of the positions phase.
-SEL_ALL_ACCOUNTS = ".acct-selector__all-accounts"
-SEL_KEBAB_MENU = "[data-testid='kebab-menu']"
-# Any account-selector account-link (the enumeration target). Used
-# as a hydration proxy when retrying enumeration on the positions
-# surface — the links render in the DOM even with the dropdown
-# collapsed.
-SEL_ACCOUNT_LINK = (
-    "[data-testid^='ap143528-accounts-selector-account-link-']"
-)
-SEL_PRESET_VIEW_SELECT = "[data-testid='preset-views-dropdown'] select"
-
-# Timing.
-KEBAB_OPEN_WAIT_S = 2.0
-TABLE_RENDER_WAIT_S = 3.0
-SPA_HYDRATE_WAIT_S = 5.0
-DOWNLOAD_TIMEOUT_MS = 30_000
-
-# Custom-range requests longer than this are bisected into
-# MAX_ACTIVITY_WINDOW_DAYS-day windows, one CSV per window.
-#
-# The activity Custom range is capped at 93 days per export by
-# Fidelity, but the windows are cut to 30 — the width of the page's
-# OWN default filter ("Past 30 days") — and that is a correctness
-# rule, not a politeness one.
-#
-# The CSV is generated from whatever the table currently holds, and
-# the filter's label updates the instant Apply is pressed, well before
-# the rows behind it arrive. An export taken in that gap is the
-# PREVIOUS filter's data under the new window's name. Asking only for
-# windows no wider than the page's own default bounds the damage: a
-# stale answer is then a SUPERSET of what was asked for rather than a
-# truncation of it, and a superset is recoverable where a truncation
-# is a hole nothing reports. A 93-day window has the opposite
-# property and can silently return 30 days.
-#
-# It is a floor under the damage, not the mechanism that prevents it.
-# `activity_export_matches` is that: it refuses any export whose rows
-# fall outside the window asked for, superset included, and pulls the
-# window again. The cap is what makes a run that exhausts its retries
-# still land something usable.
-MAX_ACTIVITY_WINDOW_DAYS = 30
-
-# How far back an activity backfill reaches when the page publishes no
-# date bounds to clamp against — which is the current generation's
-# behaviour, since its date inputs carry no min/max. Fidelity's own
-# retention on this export has been ~4-5 years; five is the generous
-# reading. It matters because `--lookback all` asks for thirty years,
-# and every year past retention is a month of identical empty exports.
-# The floor can still lie before what Fidelity serves. The page refuses
-# those first windows, and `mark_outside_retention` keeps them out of
-# the phase's gaps.
-ACTIVITY_RETENTION_FLOOR_DAYS = 5 * 366
-
-# The error a window records when the page refuses its Custom range.
-ACTIVITY_RANGE_REFUSED = "custom-range not applied"
-
-# The status of a refused window that ends before the first window the
-# page accepted (see `mark_outside_retention`).
-ACTIVITY_OUTSIDE_RETENTION = "outside-retention"
-
-# How many times a window's export is pulled before its rows are
-# accepted, and how long to let the table settle between tries. The
-# table lags the filter by one apply, so the second pull is normally
-# the one that lands; the third is slack for a slow fetch.
-ACTIVITY_EXPORT_ATTEMPTS = 3
-ACTIVITY_EXPORT_RETRY_SECONDS = 3.0
-
-
-# ---------------------------------------------------------------------------
-# Login + session constants
-# ---------------------------------------------------------------------------
-
-LANDMARK_TIMEOUT_MS = 60_000
-
-# Canonical ${PREFIX}_ credential envs first, the unprefixed FIDELITY_*
-# names second: read FIDELITY_WEB_USERNAME/PASSWORD, falling back to
-# FIDELITY_USERNAME/PASSWORD so an existing env file keeps working.
-USERNAME_ENVS = ("FIDELITY_WEB_USERNAME", "FIDELITY_USERNAME")
-PASSWORD_ENVS = ("FIDELITY_WEB_PASSWORD", "FIDELITY_PASSWORD")
-
-DEFAULT_ENV_FILE_CANDIDATES = (
-    Path("/secrets/fidelity-web.env"),
-    Path.home() / ".secrets" / "fidelity-web.env",
-)
-
-SIGNIN_URL = "https://digital.fidelity.com/prgw/digital/signin/"
-
-# Login form selectors. Mirrors the captured DOM; see DESIGN.md §8.2.
-# Username field: a <select> on returning devices ("remember my
-# username" cookie present), a text <input> on first visit.
-SEL_USERNAME_SELECT = "#dom-select-username"
-SEL_USERNAME_OTHER_OPTION_VALUE = "default"
-# The username input, current generation first. `~=` and not `=` on
-# the autocomplete match: the attribute is a SPACE-SEPARATED TOKEN
-# LIST (`autocomplete="username webauthn"` today), so an exact-value
-# match misses it the moment Fidelity adds a token. That one operator
-# would have carried this selector through the rename below on its
-# own, which is why it sits ahead of every superseded id.
-SEL_USERNAME_TEXT_INPUT_CANDIDATES = (
-    "input#dom-username-input",
-    "input[autocomplete~=username]",
-    "input#userId-input",
-    "input[name=userId]",
-    "input[aria-labelledby=dom-username-label]",
-)
-SEL_PASSWORD_INPUT = "#dom-pswd-input"
-SEL_LOGIN_BUTTON = "#dom-login-button"
-
-# International Usage Agreement interstitial — Fidelity interposes
-# this page for non-US-locale clients (Camoufox geoip=True can trip
-# it, depending on the egress IP). User must accept before the
-# signin form is served. The accept link runs
-# javascript:acceptAgreement() which then routes onward.
-SEL_IUA_ACCEPT_CANDIDATES = (
-    "a.accept-link",
-    "a[title='I Accept']",
-    "a:has-text('I Accept')",
-)
-
-# 2FA selectors.
-SEL_2FA_CODE_INPUT = "#dom-totp-security-code-input"
-SEL_2FA_SUBMIT_CANDIDATES = (
-    "button[type=submit]:has-text('Submit')",
-    "button[type=submit]:has-text('Continue')",
-    "button[type=submit]:has-text('Verify')",
-    "button[type=submit]",
-)
-
-# Trust-this-browser checkbox: the <input> is overlaid by a PVD
-# styled <label>::before that intercepts pointer events. Clicking
-# the label (not the input) is the only reliable activation path.
-SEL_TRUST_BROWSER_CHECKBOX = "#dom-trust-device-checkbox"
-SEL_TRUST_BROWSER_LABEL = "label[for='dom-trust-device-checkbox']"
-
-# Logout: best-effort. The user menu surfaces a 'Log Out' anchor;
-# the run clicks it before the Camoufox context tears down so Fidelity
-# invalidates the session cookie server-side. If selectors drift
-# the context.close() still cleans up locally — Fidelity's idle
-# timeout (~15 min) will eventually invalidate the cookie too.
-SEL_LOGOUT_CANDIDATES = (
-    "a:has-text('Log Out')",
-    "a:has-text('Log out')",
-    "button:has-text('Log Out')",
-    "[aria-label='Log Out']",
-)
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def account_key(account_external_id):
-    """First 16 hex chars of sha256(id) — the on-disk filename
-    discriminator per DESIGN §2. Keeps ``ls`` of a bronze dir from
-    leaking real Fidelity account numbers."""
-    return bronze.short_token(account_external_id)
-
-
-def parse_exclude_list(value):
-    if not value:
-        return set()
-    return {x.strip() for x in value.split(",") if x.strip()}
-
-
-def _login_has_daf(dimensions):
-    """True when the account selector enumerated a Fidelity Charitable
-    Donor-Advised Fund. Primary signal is the ``Fidelity Charitable®
-    Giving`` section label (matched loosely on 'charitable'); the
-    fallback is the DAF's tell-tale non-9-digit account id (the retail
-    accounts are all 9-digit — §3.1). Used to decide whether ``--mode
-    all`` takes the DAF SSO hop, so a retail-only login skips it."""
-    for d in dimensions:
-        label = (d.get("portfolio") or "")
-        if "charitable" in label.lower():
-            return True
-        aid = d.get("account_id") or ""
-        if aid and len(aid) != 9:
-            return True
-    return False
 
 
 def live_url(page):
@@ -425,272 +348,6 @@ def enumerate_account_dimensions(page):
     except Exception as e:
         log.warning("account-dimension enumeration failed: %s", e)
         return []
-
-
-def make_activity_windows(since_date, until_date):
-    """Bisect ``[since_date, until_date]`` into
-    ``MAX_ACTIVITY_WINDOW_DAYS``-day windows (oldest first) so each
-    fits under Fidelity's per-export cap on the Custom range tab.
-    Returns a list of ``(start, end)`` date tuples."""
-    if until_date < since_date:
-        return []
-    windows = []
-    cursor = since_date
-    while cursor <= until_date:
-        end = min(
-            cursor + timedelta(days=MAX_ACTIVITY_WINDOW_DAYS - 1),
-            until_date,
-        )
-        windows.append((cursor, end))
-        cursor = end + timedelta(days=1)
-    return windows
-
-
-def mark_outside_retention(results):
-    """Tell the windows of an activity backfill that lie past Fidelity's
-    retention apart from its gaps.
-
-    The backfill starts at ``ACTIVITY_RETENTION_FLOOR_DAYS``, an assumed
-    floor, so its first windows can lie before what Fidelity serves, and
-    the page refuses their Custom range. A refused window that ends
-    before the first window the page accepted is outside retention: no
-    run can fetch it. It is recorded with the status
-    ``ACTIVITY_OUTSIDE_RETENTION`` and no ``ok`` flag, which keeps it
-    out of the phase's gaps. A refused window after an accepted one
-    stays a gap. So does every refused window of a run in which the
-    page accepted none, because nothing then shows where retention
-    starts."""
-    accepted = [r["window"][0] for r in results
-                if r.get("window") and r.get("error") != ACTIVITY_RANGE_REFUSED]
-    if not accepted:
-        return results
-    first = min(accepted)
-    out = [
-        {"window": r["window"], "status": ACTIVITY_OUTSIDE_RETENTION}
-        if r.get("error") == ACTIVITY_RANGE_REFUSED and r.get("window")
-        and r["window"][1] < first else r
-        for r in results
-    ]
-    outside = sum(r.get("status") == ACTIVITY_OUTSIDE_RETENTION for r in out)
-    if outside:
-        log.info("activity backfill: %d window(s) before %s lie outside "
-                 "Fidelity's retention; not counted as gaps", outside, first)
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Phase coverage — what a run actually got, beside what it attempted
-# ---------------------------------------------------------------------------
-
-# The run.json key each phase writes its result under. A key is
-# present exactly when the phase was requested AND attempted, so the
-# presence of a key — not the value of --mode — is what says a phase
-# ran.
-PHASE_RESULT_KEYS = (
-    ("positions", "positions_results"),
-    ("activity", "activity_results"),
-    ("documents", "documents_results"),
-    ("balances", "balances_results"),
-    ("performance", "performance_results"),
-    ("daf", "daf_results"),
-    ("lots", "lots_results"),
-)
-
-# For the phases whose result is a status dict rather than a list of
-# attempts, the statuses that mean the phase did its job. `no-daf` is
-# one of them: a login with no donor-advised fund has nothing to
-# fetch, and walk() has already upgraded a no-daf that contradicts the
-# enumerated accounts into an error.
-PHASE_OK_STATUS = {
-    "documents": ("walked",),
-    "balances": ("explored-no-export",),
-    "performance": ("explored-no-export",),
-    "daf": ("complete", "no-daf"),
-    "lots": ("complete",),
-}
-
-# The exit code a run uses to say a phase came back short. Distinct
-# from the credential (2) and login (3) codes already in use, so a
-# nightly summary tells "the session died" apart from "a phase quietly
-# died".
-EXIT_PHASE_INCOMPLETE = 4
-
-
-def _gap_label(entry):
-    """A failed attempt, named the way ubs-web names one: a window as
-    ``YYYY-MM-DD..YYYY-MM-DD``, anything else by whatever identifies
-    it."""
-    win = entry.get("window")
-    if isinstance(win, (list, tuple)) and len(win) == 2 and all(win):
-        return f"{win[0]}..{win[1]}"
-    for key in ("view", "row_label", "account"):
-        if entry.get(key):
-            return str(entry[key])
-    return str(entry.get("error") or "unknown")
-
-
-# A nested attempt reports failure two ways: with an `ok` flag (the
-# list phases) or with a status (the DAF's per-account map). The
-# statuses that mean failure are enumerated here rather than the ones
-# that mean success — at this depth an unfamiliar status is far more
-# likely to be a shape this table has not learned than a failure, and
-# the top-level allow-list (PHASE_OK_STATUS) already catches a phase
-# that went wrong as a whole.
-ENTRY_FAIL_STATUS = ("error", "session-timeout")
-
-
-def _attempt_entries(result):
-    """The per-attempt dicts inside a phase result, whatever shape
-    that phase uses. A list phase yields itself; a status-dict phase
-    yields the dicts nested one level under it — both its sub-lists
-    (documents keeps statements / tax_forms under one envelope) and
-    its sub-maps (the DAF keys its per-account results by account)."""
-    if isinstance(result, list):
-        return [e for e in result if isinstance(e, dict)]
-    if isinstance(result, dict):
-        out = []
-        for value in result.values():
-            if isinstance(value, list):
-                out += [e for e in value if isinstance(e, dict)]
-            elif isinstance(value, dict):
-                out += [e for e in value.values() if isinstance(e, dict)]
-        return out
-    return []
-
-
-def _entry_failed(entry):
-    return (not entry.get("ok", True)
-            or entry.get("status") in ENTRY_FAIL_STATUS)
-
-
-def phase_coverage(run_json, requested_window=None):
-    """What each attempted phase actually covered.
-
-    One entry per phase the run attempted, ALWAYS carrying a `gaps`
-    list — empty included, so a reader can tell a run that covered
-    everything from one taken before this field existed. That is
-    ubs-web's convention (`csv_gaps` / `mt940_gaps`), applied per
-    phase.
-
-    `complete` is the field a caller acts on: True when every attempt
-    the phase made succeeded, False when any did not. A phase the run
-    never requested has no entry at all, so "not asked for" is never
-    confused with "asked for and came back empty".
-    """
-    coverage = {}
-    for name, key in PHASE_RESULT_KEYS:
-        if key not in run_json:
-            continue                      # phase not requested
-        result = run_json[key]
-        entries = _attempt_entries(result)
-        gaps = [_gap_label(e) for e in entries if _entry_failed(e)]
-        complete = not gaps
-
-        # A status-dict phase also has to like its own status.
-        if isinstance(result, dict) and name in PHASE_OK_STATUS:
-            status = result.get("status")
-            if status not in PHASE_OK_STATUS[name]:
-                complete = False
-                gaps.append(f"status={status}")
-
-        # A sub-walk that raised outright leaves no attempt list to
-        # judge — only a `<name>_error` beside an envelope status that
-        # is still the successful one, because the sibling sub-walk
-        # did finish. Without this the documents phase can lose half
-        # of what it went for and report complete.
-        if isinstance(result, dict):
-            for field, value in result.items():
-                if field.endswith("_error") and value:
-                    complete = False
-                    gaps.append(f"{field[:-len('_error')]}: {value}")
-
-        # An empty ATTEMPT list is the inverse of an empty gap list:
-        # the phase ran and covered nothing at all. It is only a gap
-        # when something was actually asked for — a window that
-        # resolves to no days legitimately yields no attempts.
-        if isinstance(result, list) and not entries:
-            if name == "activity" and requested_window and all(requested_window):
-                complete = False
-                gaps.append("{}..{}".format(*requested_window))
-            elif name != "activity":
-                complete = False
-                gaps.append("no attempt recorded")
-
-        coverage[name] = {"complete": complete, "gaps": gaps}
-    return coverage
-
-
-def exit_code_for_coverage(coverage):
-    """0 when every attempted phase covered what it set out to, else
-    EXIT_PHASE_INCOMPLETE.
-
-    This is the signal the nightly relies on. run.json's own status
-    deliberately stays `complete` whatever a phase did (see walk), so
-    the dump keeps its artefacts and its loadability; the exit code is
-    the separate axis that says a phase came back short, and it is
-    emitted only after the manifest has been finalised."""
-    short = sorted(name for name, c in (coverage or {}).items()
-                   if not c.get("complete"))
-    if not short:
-        return 0
-    log.error(
-        "phase(s) came back short: %s — the dump is still loadable and "
-        "run.json records the gaps under `coverage`",
-        ", ".join(short),
-    )
-    return EXIT_PHASE_INCOMPLETE
-
-
-def activity_csv_coverage(path):
-    """What an activity CSV actually covers: ``(rows, first, last)``
-    over its ``Run Date`` column, or ``(0, None, None)`` when it holds
-    no dated row.
-
-    Recorded on every window's result so an export that came back
-    short — or empty, which a header-only CSV looks exactly like from
-    the outside — is visible in run.json instead of reading as a
-    success with a file next to it. Never raises: a coverage figure is
-    diagnostic, and failing to compute one must not cost the export
-    that was already saved."""
-    try:
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-    except Exception as e:
-        log.debug("activity coverage read failed: %s", e)
-        return 0, None, None
-    days = []
-    for line in text.splitlines():
-        m = re.match(r'\s*"?(\d{2})/(\d{2})/(\d{4})"?\s*,', line)
-        if not m:
-            continue
-        try:
-            days.append(date(int(m.group(3)), int(m.group(1)),
-                            int(m.group(2))))
-        except ValueError:
-            continue
-    if not days:
-        return 0, None, None
-    return len(days), min(days), max(days)
-
-
-def activity_export_matches(rows, first, last, since_date, until_date):
-    """Whether an export's own rows fall inside the window it was
-    asked for.
-
-    An export with NO rows matches by default: there is nothing to
-    place, and a genuinely quiet window is legitimate. Anything else
-    is judged on content, because content is the only thing on this
-    page that cannot lie about which filter produced it."""
-    if not rows:
-        return True
-    return first >= since_date and last <= until_date
-
-
-def parse_iso_date(value):
-    """Parse YYYY-MM-DD; return ``date``. ``None`` if value is
-    empty / unset."""
-    if not value:
-        return None
-    return datetime.strptime(value, "%Y-%m-%d").date()
 
 
 def capture(page, capture_dir, label):
@@ -983,244 +640,6 @@ def scrape_positions(page, bronze_dir, capture_dir):
 # (`pico`) are copied from the page's own positions request, and every
 # body mirrors the page's.
 
-POSWEB_API = "https://digital.fidelity.com/ftgw/digital/positions/poswebex/api"
-# The only endpoints `_poswebex_post` will call. `state/save`, which
-# stores display settings, is deliberately absent.
-POSWEB_READ_ENDPOINTS = frozenset({
-    "positions", "openlots", "closedpositions", "closedlots"})
-LOTS_PAGE_SIZE = 10
-# A pause before each lot request, drawn from this range, so a run
-# opens tables at a person's pace rather than in a burst. About one
-# request in LOT_LONG_PAUSE_EVERY waits LOT_LONG_PAUSE_S instead, the
-# way a reader stops to look at a table.
-LOT_REQUEST_PAUSE_S = (2.0, 5.0)
-LOT_LONG_PAUSE_EVERY = 25
-LOT_LONG_PAUSE_S = (20.0, 45.0)
-# The most lot tables one run fetches. Past it, the remaining new or
-# changed positions are deferred to the next run, so a full refresh
-# spreads over several nights instead of sending a thousand requests
-# in one session. A nightly's own changes stay well under it.
-LOT_MAX_FETCHES_PER_RUN = 200
-LOT_CONTEXT_TIMEOUT_S = 60
-# Consecutive failed lot requests after which the step stops: by then
-# the session has most likely ended, and every further request would
-# fail too.
-LOT_MAX_CONSECUTIVE_FAILURES = 5
-
-
-def _row_val(row, *path):
-    """The numeric `val` at ``path`` in a poswebex row, or None. A cell
-    is ``{"val": …, "disp": …}``; an empty one carries ``""`` for val."""
-    cell = row
-    for key in path:
-        if not isinstance(cell, dict):
-            return None
-        cell = cell.get(key)
-    val = cell.get("val") if isinstance(cell, dict) else None
-    return val if isinstance(val, (int, float)) else None
-
-
-def lot_position_rows(positions):
-    """The rows of a poswebex positions response whose lots can be
-    opened: position rows the page marks `isEligibleForLots`."""
-    for row in (positions or {}).get("rowData") or []:
-        if not str(row.get("rowType", "")).startswith("POSITION"):
-            continue
-        if (row.get("meta") or {}).get("isEligibleForLots"):
-            yield row
-
-
-def lot_position_id(row):
-    """A position's key within its account: the CUSIP, else the
-    symbol."""
-    sym = row.get("sym") or {}
-    return sym.get("cusip") or sym.get("name")
-
-
-def open_lot_signature(row):
-    """What decides whether a position's lots must be fetched again: its
-    quantity and cost basis total. A buy, a sale, a reinvestment or a
-    basis adjustment changes one of them."""
-    return {
-        "quantity": _row_val(row, "qty"),
-        "cost_basis_total": _row_val(row, "cstBasStk", "top"),
-    }
-
-
-def closed_lot_signature(row):
-    """What decides whether a closed position's lots must be fetched
-    again: its proceeds, cost basis and gain. A further sale of the
-    same security in the year changes them."""
-    return {
-        "proceeds": _row_val(row, "proceedsAmt"),
-        "cost_basis": _row_val(row, "cstBasCloPos"),
-        "gain_loss": _row_val(row, "totGLCloPos"),
-    }
-
-
-def _row_symbol(row):
-    sym = row.get("sym") or {}
-    return {"symbol": sym.get("name"), "cusip": sym.get("cusip")}
-
-
-def closedpositions_body(ctx, account, tax_year, ineligible):
-    """The closedpositions query the page sends for one account's
-    closed positions in a tax year. ``ineligible`` is the page's list
-    of accounts without lots."""
-    return {
-        "dateType": "TAX_YEAR",
-        "taxYear": str(tax_year),
-        "accts": [account],
-        "pico": ctx["body"].get("pico"),
-        "externalCustId": ctx["body"].get("externalCustId"),
-        "settings": {"isUnadjusted": False, "filter": ""},
-        "ineligibleAccounts": list(ineligible),
-    }
-
-
-def closedlots_body(ctx, account, cusip, tax_year):
-    """The closedlots query the page sends for one closed position."""
-    return {
-        "acctNum": account,
-        "cusip": cusip,
-        "pageNum": 1,
-        "startDate": f"{tax_year}-01-01",
-        "endDate": f"{tax_year}-12-31",
-        "pico": ctx["body"].get("pico"),
-        "isUnadjusted": False,
-        "isDownLoad": True,
-    }
-
-
-def openlots_body(account, row, page_num):
-    """The openlots request the page sends for one position's lot
-    table, one page at a time."""
-    meta = row.get("meta") or {}
-    sym = row.get("sym") or {}
-    return {
-        "acctNum": account,
-        "acctType": meta.get("acctType"),
-        "cusip": sym.get("cusip"),
-        "symbol": sym.get("name"),
-        "holdingType": meta.get("holdingType"),
-        "isUnadjusted": False,
-        "isCostBasisAdjusted": bool(meta.get("isFixedIncome")),
-        "pageNum": page_num,
-        "pageSize": LOTS_PAGE_SIZE,
-        "returnBasketTaxLotDetail": False,
-        "positionDetail": {
-            "lastPrice": _row_val(row, "lstPrStk", "top"),
-            "securityType": meta.get("securityType"),
-            "currentValue": _row_val(row, "curVal"),
-            "quantity": _row_val(row, "qty"),
-            "costBasis": meta.get("cstbasType"),
-            "isCostBasisEditable": False,
-            "isNotQuotable": bool(meta.get("isNotQuotable")),
-            "isCrypto": bool(meta.get("isCrypto")),
-        },
-    }
-
-
-_LOTS_LAST_PAGE_RE = re.compile(r'<meta name="lastPage" content="(\d+)"')
-
-
-def openlots_last_page(html):
-    """The page count an openlots response states, or None when the
-    response is not a lot table (an error page, a sign-in bounce)."""
-    m = _LOTS_LAST_PAGE_RE.search(html or "")
-    return int(m.group(1)) if m else None
-
-
-def decode_pico(pico):
-    """The account list inside the page's `pico` context (base64 of a
-    gzipped JSON object), or [] when it does not decode."""
-    try:
-        obj = json.loads(zlib.decompress(base64.b64decode(pico),
-                                         zlib.MAX_WBITS | 16))
-    except (TypeError, ValueError, zlib.error):
-        return []
-    accounts = obj.get("accounts") if isinstance(obj, dict) else None
-    return accounts if isinstance(accounts, list) else []
-
-
-def lot_ineligible_accounts(pico_accounts):
-    """The accounts the page treats as having no lots, in the page's
-    order: anything that is not a brokerage account, and 529 plans."""
-    return [str(a["accountId"]) for a in pico_accounts
-            if a.get("accountId")
-            and (a.get("cit") or not a.get("brokerageAccount"))]
-
-
-def previous_lot_index(dest_root, current_slug):
-    """The newest lot index in a complete dump before ``current_slug``,
-    or None. An index carries forward the fetch each position's lots
-    came from, so the newest one alone says what is already in bronze.
-    A dump that did not complete, or has no manifest, is passed over:
-    `load` never reads it (`bronze.run_is_loadable`), so a fetch it holds
-    never reaches silver, and `prune` deletes it."""
-    for run_dir in reversed(list(bronze.iter_run_dirs(dest_root))):
-        if run_dir.name >= current_slug:
-            continue
-        if not bronze.run_is_loadable(run_dir):
-            continue
-        index = lot_parsers.read_lot_index(run_dir / "lots")
-        if index is not None:
-            return index
-    return None
-
-
-def write_lot_index(lots_dir, index):
-    """Write the lot index compact and compressed. It lists every
-    lot-eligible position on every run, so it is the step's largest
-    file; without indentation and compressed it is about a tenth of
-    its pretty-printed size. The plain file is written atomically first,
-    so a failed compression leaves a readable index."""
-    path = lots_dir / lot_parsers.LOTS_INDEX
-    bronze.atomic_write_bytes(path, json.dumps(
-        index, separators=(",", ":"), sort_keys=True).encode("utf-8"))
-    compress.compress_best_effort(path, log)
-
-
-class LotFetchError(RuntimeError):
-    """A lot request came back as something other than its answer."""
-
-
-class _LotBundle:
-    """Every response of a run's lot step, one JSON line each, in one
-    file: ``{"id", "endpoint", "account", "position", "tax_year",
-    "page", "body"}``, the body as received.
-
-    One file per response would cost a filesystem block each, and a
-    run fetches only new and changed positions, so no response repeats
-    an earlier run's bytes for the dedup sweep to share. In one file the
-    repeated table markup also compresses once. Lines are flushed as
-    they arrive, so a run that dies keeps what it fetched; ``close``
-    compresses the finished file."""
-
-    def __init__(self, path):
-        self.path = path
-        self._fh = open(path, "w", encoding="utf-8")
-        self._next = 0
-
-    def add(self, endpoint, body, *, account, position=None,
-            tax_year=None, page=None):
-        """Append one response; returns its record id."""
-        rid = self._next
-        self._next += 1
-        self._fh.write(json.dumps({
-            "id": rid, "endpoint": endpoint, "account": account,
-            "position": position, "tax_year": tax_year, "page": page,
-            "body": body}, ensure_ascii=False) + "\n")
-        self._fh.flush()
-        return rid
-
-    def close(self):
-        self._fh.close()
-        if self._next:
-            compress.compress_best_effort(self.path, log)
-        else:
-            self.path.unlink(missing_ok=True)
-
 
 class _LotFailures:
     """Counts consecutive lot-request failures; ``record`` raises
@@ -1236,17 +655,6 @@ class _LotFailures:
         if self.run >= LOT_MAX_CONSECUTIVE_FAILURES:
             raise LotStepAborted(
                 f"{self.run} lot requests failed in a row")
-
-
-class LotStepAborted(RuntimeError):
-    """The lot step stopped early; see _LotFailures."""
-
-
-def _lot_pause():
-    if random.randrange(LOT_LONG_PAUSE_EVERY) == 0:
-        time.sleep(random.uniform(*LOT_LONG_PAUSE_S))
-    else:
-        time.sleep(random.uniform(*LOT_REQUEST_PAUSE_S))
 
 
 def _capture_positions_context(page):
@@ -1528,59 +936,6 @@ def scrape_lots(page, bronze_dir, accounts, prev_index, *, refresh=False,
 # Activity & Orders — one consolidated CSV per date-window
 # ---------------------------------------------------------------------------
 
-# The activity time filter, in the generations Fidelity has served.
-#
-# The time-period control is a `<filter-by-time>` button (the `fds-*`
-# design system) that expands a panel. The button carries the open
-# state on `aria-expanded`, which is the semantic signal and survives
-# a renaming of the panel itself. The older inline pill
-# (`ap143528-timeperiod-filter`) and its radio probe stay as the
-# fallback for a partial rollback.
-SEL_TIMEPICKER_PILL = (
-    "[data-testid='filter-by-time-button'], "
-    "[data-testid='ap143528-timeperiod-filter']"
-)
-SEL_TIMEPICKER_OPEN = (
-    "[data-testid='filter-by-time-button'][aria-expanded='true'], "
-    "input#Custom[type='radio'], input#Recent[type='radio']"
-)
-
-# The Custom tab's own controls, current generation first. The `fds-*`
-# date inputs carry no `min`/`max`, where the generation before them
-# did — the bounds probe reads null and simply does not clamp, and the
-# retention floor is enforced by the panel's own validation instead
-# (`from-date-too-old-error`, `date-range-too-large-error`).
-SEL_ACTIVITY_FROM_DATE = "#input-from-date, #customized-timeperiod-from-date"
-SEL_ACTIVITY_TO_DATE = "#input-to-date, #customized-timeperiod-to-date"
-# Apply is an unlabelled submit button, so it is addressed through the
-# form the date inputs sit in rather than by name: both the form id and
-# the button id are generated per render.
-SEL_ACTIVITY_APPLY = (
-    "form:has(#input-from-date) button[type='submit'], "
-    "button[aria-label='Apply Customized Time Period']"
-)
-
-# The popover's CSV item, current generation first: the custom
-# element's own light-DOM id, then the native button by its label.
-# `_click_activity_download` tries these before its text-matched
-# fallbacks, and the open-wait polls their union — which is derived
-# here rather than written out a second time, so the two cannot drift
-# apart. Pure CSS on purpose: a `:has-text()` pseudo-class has no
-# place in a selector used only to answer "did the popover open".
-SEL_ACTIVITY_CSV_SELECTORS = (
-    "#download-csv-button",
-    "button[aria-label='Download as CSV']",
-)
-SEL_ACTIVITY_CSV_ITEM = ", ".join(SEL_ACTIVITY_CSV_SELECTORS)
-
-# The time-filter button states the filter currently in force on its
-# own label ("Open time filter. Current filter: 01/07/2026 -
-# 10/09/2026"). That label is the only positive confirmation the page
-# offers that an Apply actually took, and reading it is what stops a
-# window from exporting under the WRONG range — see
-# `_activity_filter_shows_range`.
-SEL_TIMEPICKER_LABEL = "[data-testid='filter-by-time-button']"
-
 
 def _activity_filter_shows_range(page, since_date, until_date):
     """True when the time-filter control's label names both endpoints
@@ -1688,50 +1043,6 @@ def _click_custom_timeperiod_tab(page):
         except Exception as e:
             log.debug("custom time-period tab click via %r: %s", sel, e)
     return False
-
-
-def clamp_activity_window(since_date, until_date, fmin, fmax, today):
-    """The window a backfill will actually walk.
-
-    ``fmin``/``fmax`` are whatever the Custom tab published in its
-    date inputs' ``min``/``max`` attributes, either of which may be
-    None. The current generation of the panel publishes NEITHER — it
-    enforces retention through validation messages instead — so an
-    absent ``fmin`` is the normal case rather than a broken probe, and
-    ``ACTIVITY_RETENTION_FLOOR_DAYS`` stands in for it: generous
-    enough to reach everything Fidelity has ever served here, short
-    enough that ``--lookback all`` stays a walk rather than a siege of
-    hundreds of identical empty exports.
-
-    The returned range may be inverted, which is how a request that
-    falls entirely outside the available window reports itself.
-    """
-    if fmin is None:
-        floor = today - timedelta(days=ACTIVITY_RETENTION_FLOOR_DAYS)
-        if since_date < floor:
-            log.info(
-                "activity backfill: the panel published no date "
-                "bounds, so the requested since=%s is clamped to the "
-                "assumed retention floor %s (%d days)",
-                since_date.isoformat(), floor.isoformat(),
-                ACTIVITY_RETENTION_FLOOR_DAYS,
-            )
-            since_date = floor
-    elif since_date < fmin:
-        log.info(
-            "activity backfill: clamping requested since=%s up to "
-            "Fidelity's earliest available %s",
-            since_date.isoformat(), fmin.isoformat(),
-        )
-        since_date = fmin
-    if fmax and until_date > fmax:
-        log.info(
-            "activity backfill: clamping requested until=%s down to "
-            "Fidelity's latest available %s",
-            until_date.isoformat(), fmax.isoformat(),
-        )
-        until_date = fmax
-    return since_date, until_date
 
 
 def _probe_activity_date_bounds(page, capture_dir):
@@ -2275,28 +1586,6 @@ def scrape_activity(page, since_date, until_date,
 
 
 # ---------------------------------------------------------------------------
-# Documents — Statements + Tax forms
-# ---------------------------------------------------------------------------
-
-
-# Statement row labels are heterogeneous (monthly: "January 2026 — ...",
-# quarterly: "Jan-March 2026 — ...", annual: "Annual 2026 — ..."), so the
-# filter anchors on the 4-digit '20YY' year token, which every label form
-# contains. Year-precision filtering keeps the per-row download path
-# index-stable; finer granularity would need per-label format-specific
-# parsing.
-_STATEMENT_LABEL_YEAR_RE = re.compile(r"\b(20\d{2})\b")
-
-
-def _statement_label_year(label: str) -> int | None:
-    """Extract the year from a statement-row aria-label, or None if
-    no recognisable year token is present (the row is then kept; the
-    safer default is to download than to silently skip)."""
-    m = _STATEMENT_LABEL_YEAR_RE.search(label)
-    return int(m.group(1)) if m else None
-
-
-# ---------------------------------------------------------------------------
 # Enterprise Document Center (digitalservices.fidelity.com/navigate/
 # ent-documentcenter) — statements + tax forms.
 #
@@ -2315,12 +1604,6 @@ def _statement_label_year(label: str) -> int | None:
 #     _doccenter_download_row); any popup tab the click spawns is
 #     closed.
 # ---------------------------------------------------------------------------
-
-SEL_DOCCENTER_TIMEFILTER = "#options-select-TimeFilter"
-SEL_DOCCENTER_APPLY = (
-    "button.pvd-button--primary:has-text('Apply'), "
-    "button:has-text('Apply')"
-)
 
 
 def _doccenter_goto_type(page, rel_href, label, capture_dir, tag):
@@ -2387,69 +1670,6 @@ def _doccenter_pdf_rows(page):
         has_text=re.compile(r"\(pdf\)\s*$", re.I))
 
 
-def _write_doc_bytes(docs_dir, name, body):
-    """Non-clobbering write of ``body`` under ``docs_dir``/``name``."""
-    out_path = docs_dir / name
-    base, _, ext = name.rpartition(".")
-    k = 1
-    while out_path.exists():
-        out_path = docs_dir / (f"{base}__{k}.{ext}" if ext else f"{name}__{k}")
-        k += 1
-    out_path.write_bytes(body)
-    return out_path
-
-
-def _pdf_from_docapi_body(body):
-    """Extract the PDF bytes from a ``financial-documents/download``
-    JSON response. The endpoint returns the PDF as base64 in
-    ``document.docDetail.content`` (``contentType: application/pdf``).
-    The ``deflated`` flag is unreliable — some payloads are plain
-    base64(PDF), so the payload is decoded, used directly if it is
-    already a PDF, and only zlib-inflated as a fallback. Returns bytes
-    or None."""
-    try:
-        d = json.loads(body)
-    except Exception:
-        return None
-    content = (d.get("document", {}) or {}).get("docDetail", {}) \
-                .get("content")
-    if not content:
-        return None
-    try:
-        raw = base64.b64decode(content)
-    except Exception:
-        return None
-    if raw[:4] == b"%PDF":
-        return raw
-    try:
-        inflated = zlib.decompress(raw)
-        if inflated[:4] == b"%PDF":
-            return inflated
-    except Exception:
-        pass
-    return None
-
-
-def _is_docapi_download_response(resp):
-    """True for the doc center's own ``financial-documents/download``
-    POST response.
-
-    **Only the POST counts.** Documents are fetched from a host other
-    than the one serving the page they are clicked on, so the browser
-    preflights that URL, and the OPTIONS answers 200 with an empty body
-    before the real response arrives. Matched on the URL alone the wait
-    below returns the preflight, whose empty body decodes to no PDF, and
-    every row this serves — tax forms and statements alike — fails as if
-    the endpoint had changed shape.
-    Browserless, so it is unit-tested."""
-    try:
-        if "financial-documents/download" not in (resp.url or ""):
-            return False
-        return (resp.request.method or "").upper() == "POST"
-    except Exception:
-        return False
-
-
 def _doccenter_download_row(page, context, row_loc):
     """Click one '(pdf)' row and return the PDF bytes.
 
@@ -2498,24 +1718,6 @@ def _doccenter_download_row(page, context, row_loc):
                 _doccenter_settle(page)
             except Exception:
                 pass
-
-
-def _doc_stem(label, tag):
-    """Build a bronze filename stem from a row label. For the
-    statements type the stem is forced to begin with ``Statement`` so
-    the silver loader's 529 historical path (which globs
-    ``Statement*.pdf``) parses the householded Investment Report —
-    a combined statement can carry EDUCATION (529) account sections,
-    which ``pdf_parsers.parse`` reads. Redundant
-    ``Statement`` / ``(pdf)`` tokens in the label are dropped first so
-    the name stays readable."""
-    base = re.sub(r"\(pdf\)", "", label, flags=re.I)
-    if tag == "statements":
-        base = re.sub(r"statement", "", base, flags=re.I)
-    base = re.sub(r"[^A-Za-z0-9]+", "_", base).strip("_")[:60]
-    if tag == "statements":
-        return ("Statement_" + base).strip("_") if base else "Statement"
-    return base or "doc"
 
 
 def _doccenter_download_visible_rows(page, context, docs_dir, capture_dir,
@@ -2800,42 +2002,6 @@ def scrape_performance(page, bronze_dir, capture_dir):
 # 7-digit id length; this phase is what actually ingests it, from the
 # charitable API's own account roster.
 
-DAF_HOST = "charitablegift.fidelity.com"
-DAF_ORIGIN = f"https://{DAF_HOST}"
-# CGFLogon consumes the retail session cookie and redirects into the
-# donor SPA — the SSO hop. Navigating it (rather than the SPA URL
-# directly) is what plants the charitablegift.fidelity.com session
-# cookies that page.request then reuses.
-DAF_SSO_URL = f"{DAF_ORIGIN}/cgfweb/CGFLogon.cgfdo?Ref_at=ng"
-# The donor SPA the SSO hop lands on. Nothing navigates here directly;
-# kept as the pinned record of where the walk stands after the hop.
-DAF_SPA_URL = f"{DAF_ORIGIN}/cgfweb/fc-donor/?Ref_at=ng"
-DAF_API = f"{DAF_ORIGIN}/fc-services/api/v1"
-# The API bootstrap: POST identity/self mints the per-session auth JWT
-# (returned in the fid-cgf-auth-jwt response header) and returns the
-# donor's partyId. Subsequent GETs carry the JWT as a request header.
-DAF_IDENTITY_URL = f"{DAF_API}/identity/self"
-DAF_JWT_HEADER = "fid-cgf-auth-jwt"
-# Document types the listing endpoint serves (DESIGN.md §12.1). Each is
-# queried over the full [establish-date, today] window; every returned
-# row is fetched as a PDF via document/download.
-DAF_DOCUMENT_TYPES = ("STATEMENT", "GRANT", "CONTRIBUTION", "FORM_8283")
-DAF_PAGE_SIZE = 100
-
-
-def _daf_ep(url):
-    """A PII-safe endpoint label for logs. Account / party / grant ids
-    ride in BOTH the path (``givingAccounts/<acctNbr>``) and the query
-    (``?accountId=<acctNbr>``) of the charitable API, so this strips the
-    query, drops the API-root prefix, and masks every long digit run —
-    the log shows ``givingAccounts/<id>``, never a real account number."""
-    path = url.split("?", 1)[0]
-    for prefix in (DAF_API, DAF_ORIGIN):
-        if path.startswith(prefix):
-            path = path[len(prefix):]
-            break
-    return re.sub(r"\d{4,}", "<id>", path.lstrip("/")) or path
-
 
 def _daf_get(page, url, jwt):
     """One authenticated GET against the charitable API over
@@ -3068,48 +2234,6 @@ def _daf_scrape_documents(page, jwt, account_nbr, since_date, acct_dir):
     _daf_save_items(acct_dir, "documents_index.json", index)
     return {"listed": len(index), "saved_pdfs": saved,
             "errors": errors}
-
-
-def _daf_doc_stem(row, dtype):
-    """Readable bronze filename stem for a DAF document row, prefixed by
-    type so a directory listing sorts by kind. PII (account/document
-    ids) stays out of the name — the date + type is enough to
-    disambiguate, and the canonical mapping lives inside the PDF."""
-    date = (row.get("correspondenceDate") or row.get("generatedDate")
-            or "")[:10]
-    base = re.sub(r"[^A-Za-z0-9]+", "_",
-                  f"{dtype}_{date}").strip("_")[:60]
-    return base or dtype
-
-
-def _daf_year_span(since_date, establish_date):
-    """Inclusive list of calendar years to sweep for the year-scoped
-    endpoints (poolExchange, adjustments). Runs from the later of the
-    requested window start and the account's establish date up to the
-    current year — so a since-inception default covers the account's
-    whole life without probing years before it existed."""
-    today = datetime.now(timezone.utc).date()
-    start_year = since_date.year if since_date else today.year
-    if establish_date is not None:
-        start_year = max(start_year, establish_date.year) \
-            if since_date else establish_date.year
-    return list(range(start_year, today.year + 1))
-
-
-def _daf_parse_establish_date(account_master):
-    """Pull the account establish date (YYYY-MM-DD or MM/DD/YYYY) from
-    the givingAccounts master, returning a date or None. Bounds the
-    year-scoped sweeps and the document-listing window."""
-    raw = (account_master or {}).get("establishDate") \
-        or (account_master or {}).get("establishmentDate")
-    if not raw:
-        return None
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            return datetime.strptime(raw[:19], fmt).date()
-        except (ValueError, TypeError):
-            continue
-    return None
 
 
 def _daf_scrape_account(page, jwt, account, since_date, daf_root, *,
