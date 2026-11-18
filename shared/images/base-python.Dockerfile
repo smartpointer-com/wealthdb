@@ -16,3 +16,7 @@ WORKDIR /app
 # Bake in the shared collector library.
 COPY collectorkit /opt/collectorkit
 RUN pip install /opt/collectorkit
+
+# The entrypoint dispatch (run, entrypoint_common), sourced by the
+# entrypoint of every collector built on this image.
+COPY images/entrypoint-lib.sh /opt/entrypoint-lib.sh

@@ -42,7 +42,7 @@ def test_login_entrypoint_does_not_hardcode_tracing():
     """
     ep = _COLLECTOR_DIR / "entrypoint.sh"
     exec_lines = [ln for ln in ep.read_text().splitlines()
-                  if "exec python3 /app/login.py" in ln]
+                  if "exec python3 /app/login.py" in ln or " login.py" in ln and ln.lstrip().split(")")[-1].lstrip().startswith("run ")]
     assert exec_lines, "no login exec line found in entrypoint.sh"
     for ln in exec_lines:
         assert "--trace" not in ln, f"entrypoint hardcodes --trace: {ln!r}"

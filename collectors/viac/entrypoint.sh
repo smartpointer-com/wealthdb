@@ -6,42 +6,20 @@
 
 set -euo pipefail
 
-case "${1:-help}" in
-    login)
-        # Mint or refresh the session cookie jar + CSRF metadata
-        # in /secrets/viac-state.json. Prompts on stdin for the
-        # mTAN code sent to the registered phone. --check probes an
-        # existing session without triggering a new mTAN push.
-        shift
-        exec python3 /app/login.py "$@"
-        ;;
-    download)
-        # Bronze dump against /rest/web/. Loads the persisted
-        # cookie jar from /secrets/viac-state.json (mint with
-        # `login` first). --dry-run walks JSON endpoints but
-        # skips PDF binaries. The per-event TRANSACTION PDFs are
-        # downloaded by default in addition to the default-tier
-        # documents; --no-transaction-documents skips them.
-        shift
-        exec python3 /app/download.py "$@"
-        ;;
-    load)
-        # Parse bronze into silver SQLite. Idempotent: skips
-        # dumps already loaded (tracked via dump_runs.snapshot_at).
-        shift
-        exec python3 /app/load.py "$@"
-        ;;
-    prune)
-        # Delete non-complete dumps (crashed/in-progress walks and
-        # legacy --dry-run shells) and `download --debug` HTTP traces
-        # from the bronze tree. No browser, no Xvfb. --dry-run previews.
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
+# shellcheck source=/dev/null
+source /opt/entrypoint-lib.sh
+
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    login)    run plain login.py -- "$@" ;;
+    download) run plain download.py -- "$@" ;;
+    load)     run plain load.py -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 viac container
@@ -72,9 +50,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
         ;;
-    *)
-        # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run viac python -c '...'`.
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

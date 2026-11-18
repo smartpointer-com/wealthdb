@@ -6,39 +6,21 @@
 
 set -euo pipefail
 
-case "${1:-help}" in
-    login)
-        # Mint or refresh the Airlock cookie jar. Prompts on stdin
-        # for the mTAN code. Pass --check to probe the existing
-        # session without triggering a new mTAN.
-        shift
-        exec python3 /app/login.py "$@"
-        ;;
-    download)
-        # Bronze dump against /middlelayer/v2/. Loads the persisted
-        # cookie jar from /secrets/relevate-state.json. Use
-        # --dry-run to enumerate without per-portfolio /
-        # per-document fetches.
-        shift
-        exec python3 /app/download.py "$@"
-        ;;
-    load)
-        # Parse bronze into silver SQLite.
-        shift
-        exec python3 /app/load.py "$@"
-        ;;
-    prune)
-        # Delete non-complete dumps (crashed walks + --dry-run shells)
-        # and `download --debug` HTTP traces from the bronze tree.
-        # No browser/Xvfb needed. --dry-run prints the
-        # plan first. Also reachable host-side via the wrapper.
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
+# shellcheck source=/dev/null
+source /opt/entrypoint-lib.sh
+
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    # Prompts on stdin for the mTAN code; --check probes the session.
+    login)    run plain login.py -- "$@" ;;
+    download) run plain download.py -- "$@" ;;
+    load)     run plain load.py -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 relevate container
@@ -70,9 +52,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
         ;;
-    *)
-        # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run relevate python -c '...'`.
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

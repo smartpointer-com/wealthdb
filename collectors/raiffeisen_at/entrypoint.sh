@@ -12,72 +12,31 @@
 
 set -euo pipefail
 
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
-    explore)
-        # Discovery harness: Camoufox over VNC + HAR/network log/click log/
-        # DOM snapshots under /debug.
-        shift
-        exec_if_help explore.py "$@"
-        start_xvfb
-        start_x11vnc explore
-        exec python3 /app/explore.py "$@"
-        ;;
-    download)
-        # One-shot: fill/confirm the login → pushTAN approved on the phone →
-        # REST fetch. Headed Camoufox under Xvfb, no VNC (nothing to type).
-        # Falls back to `vnc-login` when a control can't be driven.
-        shift
-        exec_if_help login.py "$@"
-        start_xvfb
-        exec python3 /app/login.py --cli-mfa --bronze-dir /data "$@"
-        ;;
-    vnc-login)
-        # Fallback: expose VNC and complete the whole login (form/card +
-        # pushTAN) by hand, then fetch. Use when the automated form-drive
-        # can't find a control.
-        shift
-        exec_if_help login.py "$@"
-        start_xvfb
-        start_x11vnc vnc-login
-        exec python3 /app/login.py --no-cli-mfa --bronze-dir /data "$@"
-        ;;
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    explore)   run vnc:explore explore.py -- "$@" ;;
+    # One-shot: fill or confirm the login, pushTAN approved on the phone,
+    # REST fetch. Headed Camoufox under Xvfb, no VNC.
+    download)  run xvfb login.py --cli-mfa --bronze-dir /data -- "$@" ;;
+    # Fallback: the whole login (form/card + pushTAN) by hand over VNC.
+    vnc-login) run vnc:vnc-login login.py --no-cli-mfa --bronze-dir /data -- "$@" ;;
     login)
-        # `login --check` is a real read-only session probe (headless under
-        # Xvfb, no VNC, no pushTAN). A bare `login` has nothing to persist
-        # separately — it folds into `download` — so it is a clean no-op that
-        # an orchestrator's login→download→load can call without tripping.
-        shift
-        exec_if_help login.py "$@"
-        for a in "$@"; do
-            if [[ "$a" == "--check" ]]; then
-                start_xvfb
-                exec python3 /app/login.py "$@"
-            fi
-        done
-        echo "raiffeisen_at: 'login' folds into 'download' — nothing to" \
-             "persist (the pushTAN fires every sign-in; §F)." >&2
-        echo "  Run 'download' (one-shot login + fetch), or 'login --check'" \
-             "to probe a session." >&2
-        exit 0
+        # `login --check` is a read-only session probe under Xvfb.
+        login_folds xvfb login.py -- "$@" <<'EOF'
+raiffeisen_at: 'login' folds into 'download' — nothing to persist (the pushTAN fires every sign-in; §F).
+  Run 'download' (one-shot login + fetch), or 'login --check' to probe a session.
+EOF
         ;;
-    load)
-        # Silver loader — pure SQLite + Python, no browser.
-        shift
-        exec python3 /app/load.py --bronze-dir /data "$@"
-        ;;
-    prune)
-        # Bronze reclaim — pure file walk. Also reachable host-side via the
-        # wrapper (the usual path).
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+    load)      run plain load.py --bronze-dir /data -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 raiffeisen_at container
@@ -111,7 +70,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand flags.
 EOF
         ;;
-    *)
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

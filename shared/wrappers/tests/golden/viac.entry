@@ -1,5 +1,8 @@
 === 
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 exit: 0
 --- stdout
 viac container
@@ -31,6 +34,9 @@ Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 --- stderr
 === --help
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 exit: 0
 --- stdout
 viac container
@@ -62,6 +68,9 @@ Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 --- stderr
 === login
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/login.py
 exit: 0
@@ -69,6 +78,9 @@ exit: 0
 --- stderr
 === login --help
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/login.py
   --help
@@ -77,6 +89,9 @@ exit: 0
 --- stderr
 === download
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/download.py
 exit: 0
@@ -84,6 +99,9 @@ exit: 0
 --- stderr
 === download --help
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/download.py
   --help
@@ -92,6 +110,9 @@ exit: 0
 --- stderr
 === load
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/load.py
 exit: 0
@@ -99,6 +120,9 @@ exit: 0
 --- stderr
 === load --help
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/load.py
   --help
@@ -107,6 +131,9 @@ exit: 0
 --- stderr
 === prune
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/prune.py
 exit: 0
@@ -114,6 +141,9 @@ exit: 0
 --- stderr
 === prune --help
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/prune.py
   --help
@@ -122,18 +152,27 @@ exit: 0
 --- stderr
 === sh -c echo shell
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 exit: 0
 --- stdout
 shell
 --- stderr
 === bash -c echo shell
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 exit: 0
 --- stdout
 shell
 --- stderr
 === login --check
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/login.py
   --check
@@ -142,6 +181,9 @@ exit: 0
 --- stderr
 === download --dry-run --lookback 1w
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 python3
   /app/download.py
   --dry-run
@@ -152,6 +194,9 @@ exit: 0
 --- stderr
 === bogus-verb
 --- calls
+lib: mkdir
+  -p
+  /tmp/.cache
 exit: 127
 --- stdout
 --- stderr

@@ -6,83 +6,32 @@
 
 set -euo pipefail
 
-# Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc), shared by the browser collectors and baked into
-# base-playwright at /opt/entrypoint-lib.sh.
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
-    explore)
-        # Discovery harness (DAF / Fidelity Charitable surface):
-        # Camoufox over VNC + HAR / network log / click log / DOM
-        # snapshots under /debug. The human drives; the harness
-        # records. See DESIGN.md §12.
-        shift
-        exec_if_help explore.py "$@"
-        start_xvfb
-        start_x11vnc explore
-        exec python3 /app/explore.py "$@"
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    explore)    run vnc:explore explore.py -- "$@" ;;
+    download)   run xvfb download.py -- "$@" ;;
+    vnc-login)  run vnc:vnc-login download.py --vnc -- "$@" ;;
+    load)       run plain load.py --bronze-dir /data --silver-db /data/fidelity-web.db -- "$@" ;;
+    recompress) run plain recompress.py -- "$@" ;;
+    login)
+        login_folds -- "$@" <<'EOF'
+fidelity-web: 'login' folds into 'download' — nothing to persist.
+  The Fidelity session is browser-lifetime only, so
+  there's nothing to persist from a login-and-exit.
+  Use instead:
+    vnc-login   first-time / re-auth via VNC-assisted MFA
+    download    one-shot login -> walk (login is folded in)
+EOF
         ;;
-    download)
-        # One-shot: login → walk → logout → exit. Drives Camoufox
-        # through the Fidelity login form, prompts for the 2FA
-        # code on stdin (Duo / Google Authenticator / Symantec VIP,
-        # whichever is configured), runs the requested
-        # walk phases, attempts a clean logout, exits.
-        shift
-        exec_if_help download.py "$@"
-        start_xvfb
-        exec python3 /app/download.py "$@"
-        ;;
-    vnc-login)
-        # First-time profile-dir seed: drive Camoufox to the
-        # pre-filled login form, then HAND OFF to a VNC session.
-        # Start x11vnc on the Xvfb display; the wrapper publishes
-        # the port on 127.0.0.1 only (typically 5900, but moves +1
-        # each time 5900 is already taken on the host) — tunnel to
-        # it with ssh -L. A VNC password is required
-        # regardless (macOS Screen Sharing refuses no-auth servers);
-        # a fresh one is generated every launch.
-        #
-        # By default the walk runs after the VNC-driven login lands;
-        # pass `--mode none` to just seed the profile dir and exit
-        # without scraping.
-        shift
-        exec_if_help download.py --vnc "$@"
-        start_xvfb
-        start_x11vnc vnc-login
-        exec python3 /app/download.py --vnc "$@"
-        ;;
-    load)
-        # The wrapper runs load on the host venv; this arm serves a
-        # direct `docker run`, so it names the /data mount, where the
-        # host layout keeps both bronze and silver.
-        shift
-        exec python3 /app/load.py --bronze-dir /data --silver-db /data/fidelity-web.db "$@"
-        ;;
-    prune)
-        # Delete debug artefacts (<run>/screenshots/), non-complete
-        # dumps from the bronze tree, and aged entries of the /debug
-        # cache. No browser, no Xvfb. Also reachable host-side via the
-        # wrapper.
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    recompress)
-        # One-time backlog sweep: replace plain HTML/CSV bronze
-        # (balances/performance HTML, positions/activity/statement CSV)
-        # inside complete dumps with verified .zst twins (the form
-        # download writes). No browser, no Xvfb. Manual only —
-        # never schedule; review --dry-run first. Also reachable
-        # host-side via the wrapper.
-        shift
-        exec python3 /app/recompress.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 fidelity-web container
@@ -118,30 +67,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
         ;;
-    login)
-        # `login` is a natural thing to type (most collectors have
-        # it) but fidelity-web folds it into `download`: the Fidelity
-        # session lives only for the browser's lifetime, so a login that
-        # exits leaves nothing reusable — a clean no-op (exit 0). Catch it
-        # explicitly — otherwise it falls through to the pass-through below
-        # and execs the container's /bin/login (util-linux), which aborts
-        # with the baffling "Cannot possibly work without effective root"
-        # (it needs euid 0; the container runs as a non-root user). The host
-        # wrapper traps it first; this closes the direct-`docker run` path.
-        echo "fidelity-web: 'login' folds into 'download' — nothing to persist." >&2
-        echo "  The Fidelity session is browser-lifetime only, so" >&2
-        echo "  there's nothing to persist from a login-and-exit." >&2
-        echo "  Use instead:" >&2
-        echo "    vnc-login   first-time / re-auth via VNC-assisted MFA" >&2
-        echo "    download    one-shot login -> walk (login is folded in)" >&2
-        exit 0
-        ;;
-    *)
-        # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run fidelity-web python -c '...'`. Note this
-        # execs the literal argv, so an unrecognised subcommand-like
-        # word runs as a system command (see the `login` arm above
-        # for why the most likely such mistake is special-cased).
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

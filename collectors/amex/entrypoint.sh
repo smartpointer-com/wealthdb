@@ -12,75 +12,33 @@
 
 set -euo pipefail
 
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
-    explore)
-        # Discovery harness: Camoufox over VNC + HAR / network log / click
-        # log / DOM snapshots under /debug.
-        shift
-        exec_if_help explore.py "$@"
-        start_xvfb
-        start_x11vnc explore
-        exec python3 /app/explore.py "$@"
-        ;;
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    explore)   run vnc:explore explore.py -- "$@" ;;
     login)
-        # `login` folds into `download` (DESIGN.md §L). The host wrapper
-        # already traps a bare one; this closes the direct-`docker run amex
-        # login` path, which would otherwise reach the container's
-        # util-linux /bin/login. `login --check` is a real verb: it reads
-        # the profile's device-trust cookie straight out of the Firefox jar
-        # on disk, so it needs no display, no browser and no network.
-        # `--help` prints argparse's usage and likewise starts nothing.
-        shift
-        for a in "$@"; do
-            case "$a" in
-                --check|--help|-h) exec python3 /app/login.py "$@" ;;
-            esac
-        done
-        echo "amex: 'login' folds into 'download' — the sign-in budget is" \
-             "too small to spend one on a separate verb (DESIGN.md §L)." >&2
-        echo "  Run 'download', or 'login --check' to report whether this" \
-             "device is registered." >&2
-        exit 0
+        # Folds into `download` (§L). `login --check` reads the profile's
+        # device-trust cookie: no browser, no network.
+        login_folds plain login.py -- "$@" <<'EOF'
+amex: 'login' folds into 'download' — the sign-in budget is too small to spend one on a separate verb (DESIGN.md §L).
+  Run 'download', or 'login --check' to report whether this device is registered.
+EOF
         ;;
-    vnc-login)
-        # The same walk as `download`, behind a sign-in completed BY HAND in
-        # the browser: the only way to answer a captcha, and the way to
-        # register a device without a terminal. One sign-in, not two.
-        shift
-        exec_if_help download.py "$@"
-        start_xvfb
-        start_x11vnc vnc-login
-        exec python3 /app/download.py --vnc-mfa --bronze-dir /data "$@"
-        ;;
-    download)
-        # Submit the form on the trusted device (normally no passcode), then
-        # fetch the card data over REST. Headed Camoufox under Xvfb, no VNC.
-        # A challenge is answered from the TERMINAL when the wrapper gave the
-        # container a TTY, and is a loud failure when it did not — see
-        # download.resolve_two_factor.
-        shift
-        exec_if_help download.py "$@"
-        start_xvfb
-        exec python3 /app/download.py --bronze-dir /data "$@"
-        ;;
-    load)
-        # Silver loader — pure SQLite + Python, no browser.
-        shift
-        exec python3 /app/load.py --bronze-dir /data "$@"
-        ;;
-    prune)
-        # Bronze reclaim — pure file walk. Also reachable host-side via the
-        # wrapper (the usual path).
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+    # The sign-in walk behind a by-hand sign-in over VNC, the only way to
+    # answer a captcha.
+    vnc-login) run vnc:vnc-login download.py --vnc-mfa --bronze-dir /data -- "$@" ;;
+    # Headed Camoufox under Xvfb, no VNC: a challenge is answered from the
+    # terminal.
+    download)  run xvfb download.py --bronze-dir /data -- "$@" ;;
+    load)      run plain load.py --bronze-dir /data -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 amex container
@@ -120,7 +78,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand flags.
 EOF
         ;;
-    *)
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

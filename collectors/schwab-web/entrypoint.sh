@@ -8,74 +8,34 @@
 
 set -euo pipefail
 
-# Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc), shared by the browser collectors and baked into
-# base-playwright at /opt/entrypoint-lib.sh.
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    # One-shot CLI-MFA login + scrape, headed under Xvfb.
     download)
-        # One-shot: CLI-MFA login → scrape → exit. Schwab
-        # invalidates the persistent profile's cookies within
-        # seconds of Firefox closing, so login + scrape must
-        # happen in one Firefox lifetime — each invocation pays
-        # one MFA challenge, in exchange for not having to
-        # babysit a long-lived process. Stdin must be a TTY.
-        shift
-        exec_if_help login.py "$@"
-        start_xvfb
-        exec python3 /app/login.py \
-            --profile-dir /secrets/schwab-web-profile \
-            --cli-mfa --bronze-dir /data "$@"
+        run xvfb login.py --profile-dir /secrets/schwab-web-profile \
+            --cli-mfa --bronze-dir /data -- "$@"
         ;;
     vnc-login)
-        # Fallback: start x11vnc on the same Xvfb display and
-        # run the login + scrape flow with --no-cli-mfa, so Log In
-        # + 2FA are driven by hand from a local VNC
-        # client. Use when CLI-MFA selectors drift or a non-
-        # code challenge (security question, push-to-device) is
-        # required. A fresh VNC password is generated each
-        # launch and printed to stderr; the wrapper publishes
-        # the port on 127.0.0.1 only (typically 5900, but moves
-        # +1 each time 5900 is already taken on the host) —
-        # tunnel to it with ssh -L.
-        shift
-        exec_if_help login.py "$@"
-        start_xvfb
-        start_x11vnc vnc-login
-        exec python3 /app/login.py \
-            --profile-dir /secrets/schwab-web-profile \
-            --no-cli-mfa --bronze-dir /data "$@"
+        run vnc:vnc-login login.py --profile-dir /secrets/schwab-web-profile \
+            --no-cli-mfa --bronze-dir /data -- "$@"
         ;;
-    load)
-        shift
-        exec python3 /app/load.py "$@"
+    load)                run plain load.py -- "$@" ;;
+    collapse-statements) run plain dedup.py -- "$@" ;;
+    login)
+        login_folds -- "$@" <<'EOF'
+schwab-web: 'login' folds into 'download' — nothing to persist.
+  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'.
+EOF
         ;;
-    collapse-statements)
-        # Parse-equivalence collapse of the statement bronze: fold
-        # re-rendered statement PDFs that parse identically onto the
-        # oldest copy. Distinct from the fleet `wealthdb-collect dedup`
-        # sweep (byte-identical hardlinks) — this deletes non-identical
-        # bytes that merely parse the same. Needs the image's pypdfium2
-        # for text extraction, so it runs in-container like `load` (no
-        # browser, no Xvfb). --dry-run emits the evidence report and
-        # collapses nothing.
-        shift
-        exec python3 /app/dedup.py "$@"
-        ;;
-    prune)
-        # Delete debug artefacts (<run>/screenshots/, stray
-        # transactions/*/page-*.html) and non-complete dumps from the
-        # bronze tree. No browser, no Xvfb. Also reachable host-side
-        # via the wrapper.
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 schwab-web container
@@ -114,20 +74,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
         ;;
-    login)
-        # `login` is a natural thing to type, but schwab-web mints its
-        # session inside `download` (one-shot CLI-MFA scrape) and persists
-        # nothing separately — so login is a clean no-op (exit 0). Catch it
-        # explicitly: the host wrapper already traps it, and this closes the
-        # direct-`docker run schwab-web login` path, which would otherwise
-        # fall through to the container's util-linux /bin/login and die.
-        echo "schwab-web: 'login' folds into 'download' — nothing to persist." >&2
-        echo "  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'." >&2
-        exit 0
-        ;;
-    *)
-        # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run schwab-web python -c '...'`.
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

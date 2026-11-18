@@ -12,47 +12,30 @@
 
 set -euo pipefail
 
-# Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc), shared by the browser collectors and baked into
-# base-playwright at /opt/entrypoint-lib.sh.
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
     login)
-        # Automated (default): auto-submit login, prompt 2FA on stdin,
-        # drive the consent pages. Camoufox needs the Xvfb display; no VNC.
-        shift
-        # --check / --manual / --help are headless; skip the browser.
+        # `--check` (probe the token) and `--manual` (paste the URL) need
+        # no browser.
         for a in "$@"; do
             case "$a" in
-                --check|--manual|-h|--help)
-                    exec python3 /app/login.py "$@"
-                    ;;
+                --check|--manual) run plain login.py -- "$@" ;;
             esac
         done
-        start_xvfb
-        # Diagnostics are opt-in (fleet convention), not injected here.
-        # Pass --screenshot-dir /debug through the wrapper to capture
-        # pages; --trace adds a Playwright trace, but the base image's
-        # Firefox crashes on tracing.start(), which ends the login.
-        exec python3 /app/login.py "$@"
+        run xvfb login.py -- "$@"
         ;;
-    vnc-login)
-        # Manual fallback: start x11vnc and run --no-cli-mfa so login /
-        # 2FA / consent are driven by hand over a VNC client (use when
-        # the automated `login` selectors drift). Account checkboxes
-        # are still auto-ticked.
-        shift
-        exec_if_help login.py --no-cli-mfa "$@"
-        start_xvfb
-        start_x11vnc vnc-login
-        exec python3 /app/login.py --no-cli-mfa "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+    vnc-login) run vnc:vnc-login login.py --no-cli-mfa -- "$@" ;;
+    # `prune` runs on the host venv; of the common verbs the image
+    # answers only the shell.
+    sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 schwab-api login container
@@ -77,7 +60,5 @@ Usage:
   help           Show this message.
 EOF
         ;;
-    *)
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

@@ -137,7 +137,6 @@ lib: mkdir
   /tmp/.cache
 python3
   /app/login.py
-  --no-cli-mfa
   --help
 exit: 0
 --- stdout

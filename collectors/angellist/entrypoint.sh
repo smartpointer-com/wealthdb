@@ -13,157 +13,134 @@
 
 set -euo pipefail
 
-# Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc), shared by the browser collectors and baked into
-# base-playwright at /opt/entrypoint-lib.sh.
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
-    explore)
-        # Discovery harness. Drives Camoufox over VNC, records every
-        # click + every network fetch into /debug/<ts>/ so download.py
-        # can be written from real traces.
-        shift
-        exec_if_help explore.py "$@"
-        start_xvfb
-        start_x11vnc explore
-        exec python3 /app/explore.py "$@"
-        ;;
-    login)
-        # The auth path (a BYO-session bootstrap).
-        # AngelList's venture login is gated by an invisible Turnstile/
-        # reCAPTCHA challenge that flags the Camoufox/Playwright automation
-        # stack, so there is no unattended login.
-        #
-        # Fast path: if the saved profile holds a non-expired session cookie
-        # AND a headless probe confirms the server still accepts it, lift the
-        # cookie and exit 0 — no VNC sign-in needed. The probe matters: a
-        # cookie can be unexpired yet server-rejected (stale), which would
-        # otherwise make `download` fail after login wrongly reported success.
-        # Flags:
-        #   --check  probe only; report whether the session is valid, never
-        #            open Firefox (exit 1 if not).
-        #   --fresh  skip the check and always re-login (the `load --force`
-        #            spelling is reserved for the loader's rebuild).
-        # Otherwise launch a genuine, un-instrumented stock Firefox under
-        # Xvfb + VNC so the login is cleared by hand; on a clean close,
-        # lift the session from its plaintext cookies.sqlite.
-        shift
-        # A help request anywhere among the flags must never probe the
-        # server, start a display or open Firefox.
-        for a in "$@"; do
-            case "$a" in
-                -h|--help)
-                    echo "angellist login — BYO-cookie auth path." >&2
-                    echo "  --check  probe the saved session (exit 0 valid / 1 stale); never opens Firefox." >&2
-                    echo "  --fresh  skip the check and always re-login by hand over VNC." >&2
-                    echo "  (no flag) probe; if stale, open Firefox under VNC for a by-hand login." >&2
-                    exit 0 ;;
-            esac
-        done
-        # Fixed in-container paths under the /secrets mount. To relocate
-        # them, override the mount itself (ANGELLIST_SECRETS_DIR) — an env
-        # var read only here would never reach the container.
-        FXPROFILE="/secrets/angellist-fxprofile"
-        COOKIES="/secrets/angellist-cookies.json"
-        login_mode=auto
-        case "${1:-}" in
-            --check) login_mode=check; shift ;;
-            --fresh) login_mode=fresh; shift ;;
-            -*) echo "angellist login: unknown flag '$1' (try --check / --fresh / --help)." >&2
-                exit 2 ;;
+# angellist_login [--check | --fresh] — the `login` verb.
+angellist_login() {
+    # The auth path (a BYO-session bootstrap).
+    # AngelList's venture login is gated by an invisible Turnstile/
+    # reCAPTCHA challenge that flags the Camoufox/Playwright automation
+    # stack, so there is no unattended login.
+    #
+    # Fast path: if the saved profile holds a non-expired session cookie
+    # AND a headless probe confirms the server still accepts it, lift the
+    # cookie and exit 0 — no VNC sign-in needed. The probe matters: a
+    # cookie can be unexpired yet server-rejected (stale), which would
+    # otherwise make `download` fail after login wrongly reported success.
+    # Flags:
+    #   --check  probe only; report whether the session is valid, never
+    #            open Firefox (exit 1 if not).
+    #   --fresh  skip the check and always re-login (the `load --force`
+    #            spelling is reserved for the loader's rebuild).
+    # Otherwise launch a genuine, un-instrumented stock Firefox under
+    # Xvfb + VNC so the login is cleared by hand; on a clean close,
+    # lift the session from its plaintext cookies.sqlite.
+    # A help request anywhere among the flags must never probe the
+    # server, start a display or open Firefox.
+    for a in "$@"; do
+        case "$a" in
+            -h|--help)
+                echo "angellist login — BYO-cookie auth path." >&2
+                echo "  --check  probe the saved session (exit 0 valid / 1 stale); never opens Firefox." >&2
+                echo "  --fresh  skip the check and always re-login by hand over VNC." >&2
+                echo "  (no flag) probe; if stale, open Firefox under VNC for a by-hand login." >&2
+                exit 0 ;;
         esac
-        # One mode flag at most: an extra argument fails rather than
-        # being ignored.
-        if [[ $# -gt 0 ]]; then
-            echo "angellist login: unexpected argument '$1' (try --check / --fresh / --help)." >&2
-            exit 2
-        fi
-        # Seed the profile's user.js (a stock Firefox takes no Playwright
-        # prefs) and relocate its startupCache out of /secrets. Runs before
-        # the session probe, not only on the re-login path: a session can
-        # stay valid for ~27 days, and the profile would otherwise miss a
-        # month of pref/relocation updates (e.g. a browser-version bump
-        # replacing the startupCache symlink with a real dir).
-        python3 /app/fxprofile.py --profile-dir "$FXPROFILE"
-        if [[ "$login_mode" != "fresh" ]]; then
-            # 1. Cheap client-side filter: lift the cookie only if a non-expired
-            #    session cookie is present in the saved profile.
-            if python3 /app/extract_cookies.py \
-                    --db "$FXPROFILE/cookies.sqlite" --out "$COOKIES" --require-valid; then
-                # 2. Authoritative server probe: a cookie can be unexpired yet
-                #    rejected by AngelList (stale/revoked session). Confirm it
-                #    actually establishes identity (headless, no VNC) before
-                #    skipping the sign-in — otherwise `download` would fail.
-                probe_rc=0
-                python3 /app/download.py --cookies "$COOKIES" --check || probe_rc=$?
-                if [[ "$probe_rc" -eq 0 ]]; then
-                    echo "login: existing AngelList session still valid — cookie lifted to" >&2
-                    echo "login:   $COOKIES. No VNC login needed (pass --fresh to re-login)." >&2
-                    exit 0
-                elif [[ "$probe_rc" -ge 2 ]]; then
-                    # Probe exits ≥2 when it could not run at all (browser/
-                    # environment failure) — not a session verdict. Forcing a
-                    # re-login here would burn a by-hand 2FA on a broken
-                    # container; surface the real failure instead.
-                    echo "login: session probe could not run (exit $probe_rc) — not a stale session." >&2
-                    echo "login: fix the failure above and re-run." >&2
-                    exit "$probe_rc"
-                fi
-                echo "login: saved cookie is unexpired but the server rejected it (stale session)." >&2
+    done
+    # Fixed in-container paths under the /secrets mount. To relocate
+    # them, override the mount itself (ANGELLIST_SECRETS_DIR) — an env
+    # var read only here would never reach the container.
+    FXPROFILE="/secrets/angellist-fxprofile"
+    COOKIES="/secrets/angellist-cookies.json"
+    login_mode=auto
+    case "${1:-}" in
+        --check) login_mode=check; shift ;;
+        --fresh) login_mode=fresh; shift ;;
+        -*) echo "angellist login: unknown flag '$1' (try --check / --fresh / --help)." >&2
+            exit 2 ;;
+    esac
+    # One mode flag at most: an extra argument fails rather than
+    # being ignored.
+    if [[ $# -gt 0 ]]; then
+        echo "angellist login: unexpected argument '$1' (try --check / --fresh / --help)." >&2
+        exit 2
+    fi
+    # Seed the profile's user.js (a stock Firefox takes no Playwright
+    # prefs) and relocate its startupCache out of /secrets. Runs before
+    # the session probe, not only on the re-login path: a session can
+    # stay valid for ~27 days, and the profile would otherwise miss a
+    # month of pref/relocation updates (e.g. a browser-version bump
+    # replacing the startupCache symlink with a real dir).
+    python3 /app/fxprofile.py --profile-dir "$FXPROFILE"
+    if [[ "$login_mode" != "fresh" ]]; then
+        # 1. Cheap client-side filter: lift the cookie only if a non-expired
+        #    session cookie is present in the saved profile.
+        if python3 /app/extract_cookies.py \
+                --db "$FXPROFILE/cookies.sqlite" --out "$COOKIES" --require-valid; then
+            # 2. Authoritative server probe: a cookie can be unexpired yet
+            #    rejected by AngelList (stale/revoked session). Confirm it
+            #    actually establishes identity (headless, no VNC) before
+            #    skipping the sign-in — otherwise `download` would fail.
+            probe_rc=0
+            python3 /app/download.py --cookies "$COOKIES" --check || probe_rc=$?
+            if [[ "$probe_rc" -eq 0 ]]; then
+                echo "login: existing AngelList session still valid — cookie lifted to" >&2
+                echo "login:   $COOKIES. No VNC login needed (pass --fresh to re-login)." >&2
+                exit 0
+            elif [[ "$probe_rc" -ge 2 ]]; then
+                # Probe exits ≥2 when it could not run at all (browser/
+                # environment failure) — not a session verdict. Forcing a
+                # re-login here would burn a by-hand 2FA on a broken
+                # container; surface the real failure instead.
+                echo "login: session probe could not run (exit $probe_rc) — not a stale session." >&2
+                echo "login: fix the failure above and re-run." >&2
+                exit "$probe_rc"
             fi
-            if [[ "$login_mode" == "check" ]]; then
-                echo "login --check: no valid saved session — run \`login\` to refresh." >&2
-                exit 1
-            fi
-            echo "login: no valid saved session — opening Firefox to log in…" >&2
+            echo "login: saved cookie is unexpired but the server rejected it (stale session)." >&2
         fi
-        start_xvfb
-        start_x11vnc login
-        # Firefox's content-process sandbox needs a user namespace, which
-        # Colima's default seccomp profile blocks (EPERM) — left on, page
-        # rendering crashes. Disable it (env here + the matching pref in
-        # fxprofile.py). This is an internal process-isolation setting,
-        # invisible to web content, so it has no bearing on the anti-bot
-        # fingerprint.
-        export MOZ_DISABLE_CONTENT_SANDBOX=1
-        echo "login: opening Firefox -> https://venture.angellist.com/v/login" >&2
-        echo "login: log in (+2FA) in the VNC window, confirm you reach your" >&2
-        echo "login: portfolio. OPTIONAL: open 'Taxes & Documents' and download" >&2
-        echo "login: your K-1 CSVs/PDFs save to angellist-documents/ in your" >&2
-        echo "login:   wealthdb data dir (mounted here at /data)." >&2
-        echo "login: Then CLOSE the Firefox window to lift the cookie." >&2
-        firefox -profile "$FXPROFILE" -no-remote -new-instance \
-            "https://venture.angellist.com/v/login" >"${TMPDIR:-/tmp}/firefox.log" 2>&1 || true
-        echo "login: Firefox closed — extracting AngelList cookies…" >&2
-        exec python3 /app/extract_cookies.py \
-            --db "$FXPROFILE/cookies.sqlite" --out "$COOKIES"
-        ;;
-    download)
-        # Per-surface browse + capture loop. Injects the session cookie
-        # `login` lifted (/secrets/angellist-cookies.json).
-        shift
-        exec python3 /app/download.py "$@"
-        ;;
-    load)
-        # SQLite silver loader. Ingests bronze `captures.jsonl` + the
-        # downloaded K-1 CSVs / tax docs into the source-shaped silver
-        # tables. Pure Python, no browser, no display.
-        shift
-        exec python3 /app/load.py "$@"
-        ;;
-    prune)
-        # Delete non-complete dumps (crashed / interrupted downloads)
-        # from the bronze tree. Pure file walk, no browser, no display.
-        # Also reachable host-side via the wrapper (the preferred route).
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+        if [[ "$login_mode" == "check" ]]; then
+            echo "login --check: no valid saved session — run \`login\` to refresh." >&2
+            exit 1
+        fi
+        echo "login: no valid saved session — opening Firefox to log in…" >&2
+    fi
+    start_xvfb
+    start_x11vnc login
+    # Firefox's content-process sandbox needs a user namespace, which
+    # Colima's default seccomp profile blocks (EPERM) — left on, page
+    # rendering crashes. Disable it (env here + the matching pref in
+    # fxprofile.py). This is an internal process-isolation setting,
+    # invisible to web content, so it has no bearing on the anti-bot
+    # fingerprint.
+    export MOZ_DISABLE_CONTENT_SANDBOX=1
+    echo "login: opening Firefox -> https://venture.angellist.com/v/login" >&2
+    echo "login: log in (+2FA) in the VNC window, confirm you reach your" >&2
+    echo "login: portfolio. OPTIONAL: open 'Taxes & Documents' and download" >&2
+    echo "login: your K-1 CSVs/PDFs save to angellist-documents/ in your" >&2
+    echo "login:   wealthdb data dir (mounted here at /data)." >&2
+    echo "login: Then CLOSE the Firefox window to lift the cookie." >&2
+    firefox -profile "$FXPROFILE" -no-remote -new-instance \
+        "https://venture.angellist.com/v/login" >"${TMPDIR:-/tmp}/firefox.log" 2>&1 || true
+    echo "login: Firefox closed — extracting AngelList cookies…" >&2
+    exec python3 /app/extract_cookies.py \
+        --db "$FXPROFILE/cookies.sqlite" --out "$COOKIES"
+}
+
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    explore)  run vnc:explore explore.py -- "$@" ;;
+    login)    angellist_login "$@" ;;
+    # Injects the session cookie `login` lifted
+    # (/secrets/angellist-cookies.json); headless, no display.
+    download) run plain download.py -- "$@" ;;
+    load)     run plain load.py -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 angellist container
@@ -208,8 +185,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
         ;;
-    *)
-        # Pass-through for ad-hoc commands inside the container.
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

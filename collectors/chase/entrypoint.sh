@@ -11,74 +11,31 @@
 
 set -euo pipefail
 
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
-    explore)
-        # Discovery harness: Camoufox over VNC + trace capture.
-        shift
-        exec_if_help explore.py "$@"
-        start_xvfb
-        start_x11vnc explore
-        exec python3 /app/explore.py "$@"
-        ;;
-    download)
-        # One-shot: pre-fill → 2FA driven from the TERMINAL (no VNC) →
-        # scrape. Headed Camoufox under Xvfb for stealth, but x11vnc is NOT
-        # started — login.py drives the challenge over stdin. Falls back to
-        # `vnc-login` when a challenge control can't be driven.
-        shift
-        exec_if_help login.py "$@"
-        start_xvfb
-        exec python3 /app/login.py --cli-mfa --bronze-dir /data "$@"
-        ;;
-    vnc-login)
-        # Fallback: expose VNC and let Sign In + 2FA be completed by hand in
-        # the browser, then scrape. Use when the CLI-MFA drive can't find a
-        # challenge control (the challenge UI selectors are trace-derived —
-        # DESIGN.md §5).
-        shift
-        exec_if_help login.py "$@"
-        start_xvfb
-        start_x11vnc vnc-login
-        exec python3 /app/login.py --no-cli-mfa --bronze-dir /data "$@"
-        ;;
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    explore)   run vnc:explore explore.py -- "$@" ;;
+    # One-shot: pre-fill, 2FA driven from the TERMINAL, scrape. Headed
+    # Camoufox under Xvfb for stealth, no VNC.
+    download)  run xvfb login.py --cli-mfa --bronze-dir /data -- "$@" ;;
+    # Fallback: Sign In + 2FA by hand over VNC, then scrape.
+    vnc-login) run vnc:vnc-login login.py --no-cli-mfa --bronze-dir /data -- "$@" ;;
     login)
-        # `login --check` is a real read-only session probe (headless under
-        # Xvfb, no VNC, no 2FA push). A bare `login` has nothing to persist
-        # separately — it folds into `download` — so it is a clean no-op that
-        # an orchestrator's login→download→load can call without tripping.
-        # `--help` prints the flags and starts nothing.
-        shift
-        exec_if_help login.py "$@"
-        for a in "$@"; do
-            if [[ "$a" == "--check" ]]; then
-                start_xvfb
-                exec python3 /app/login.py "$@"
-            fi
-        done
-        echo "chase: 'login' folds into 'download' — nothing to persist" \
-             "(the session dies with Firefox; §F)." >&2
-        echo "  Run 'download' (one-shot login + scrape), or 'login --check'" \
-             "to probe a session." >&2
-        exit 0
+        # `login --check` is a read-only session probe under Xvfb.
+        login_folds xvfb login.py -- "$@" <<'EOF'
+chase: 'login' folds into 'download' — nothing to persist (the session dies with Firefox; §F).
+  Run 'download' (one-shot login + scrape), or 'login --check' to probe a session.
+EOF
         ;;
-    load)
-        # Silver loader — pure SQLite + Python, no browser.
-        shift
-        exec python3 /app/load.py --bronze-dir /data "$@"
-        ;;
-    prune)
-        # Bronze reclaim — pure file walk. Also reachable host-side via the
-        # wrapper (the usual path).
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+    load)      run plain load.py --bronze-dir /data -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 chase container
@@ -112,7 +69,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand flags.
 EOF
         ;;
-    *)
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

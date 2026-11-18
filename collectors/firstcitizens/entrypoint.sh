@@ -12,62 +12,24 @@
 
 set -euo pipefail
 
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
-    explore)
-        # Discovery harness: Camoufox over VNC + HAR / network log / click
-        # log / DOM snapshots under /debug.
-        shift
-        exec_if_help explore.py "$@"
-        start_xvfb
-        start_x11vnc explore
-        exec python3 /app/explore.py "$@"
-        ;;
-    login)
-        # Interactive login (device registration). 2FA is driven from the
-        # TERMINAL over stdin — headed Camoufox under Xvfb, no VNC.
-        # `--check` still launches Camoufox to submit the form (the only way
-        # past Akamai), so Xvfb is started for it too.
-        shift
-        exec_if_help login.py "$@"
-        start_xvfb
-        exec python3 /app/login.py "$@"
-        ;;
-    vnc-login)
-        # Fallback: expose VNC and complete Sign In + 2FA by hand in the
-        # browser (use when the terminal 2FA drive can't find a control).
-        shift
-        exec_if_help login.py --no-cli-mfa "$@"
-        start_xvfb
-        start_x11vnc vnc-login
-        exec python3 /app/login.py --no-cli-mfa "$@"
-        ;;
-    download)
-        # Unattended: submit the form on the trusted device (no 2FA), then
-        # fetch the deposit data over REST. Headed Camoufox under Xvfb, no
-        # VNC. Fails loudly if device-trust has expired (run `login`).
-        shift
-        exec_if_help download.py "$@"
-        start_xvfb
-        exec python3 /app/download.py --bronze-dir /data "$@"
-        ;;
-    load)
-        # Silver loader — pure SQLite + Python, no browser.
-        shift
-        exec python3 /app/load.py --bronze-dir /data "$@"
-        ;;
-    prune)
-        # Bronze reclaim — pure file walk. Also reachable host-side via the
-        # wrapper (the usual path).
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    explore)   run vnc:explore explore.py -- "$@" ;;
+    # Interactive: registers the device, 2FA driven from the terminal.
+    login)     run xvfb login.py -- "$@" ;;
+    vnc-login) run vnc:vnc-login login.py --no-cli-mfa -- "$@" ;;
+    # Unattended: the trusted device skips 2FA.
+    download)  run xvfb download.py --bronze-dir /data -- "$@" ;;
+    load)      run plain load.py --bronze-dir /data -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 firstcitizens container
@@ -100,7 +62,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand flags.
 EOF
         ;;
-    *)
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

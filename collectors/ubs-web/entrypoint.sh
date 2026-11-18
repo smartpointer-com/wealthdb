@@ -4,47 +4,22 @@
 
 set -euo pipefail
 
-# Shared Xvfb / x11vnc bootstrap (start_xvfb, start_x11vnc), baked into
-# base-playwright. Only `explore` uses it: login and download drive
-# Chromium headless, and the QR challenge is rendered to the terminal.
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
-    login)
-        shift
-        exec python3 /app/login.py "$@"
-        ;;
-    download)
-        shift
-        exec python3 /app/download.py "$@"
-        ;;
-    load)
-        shift
-        exec python3 /app/load.py "$@"
-        ;;
-    explore)
-        # Discovery harness: headed Chromium on a virtual display, served
-        # over VNC so the session is driven by hand. The harness only
-        # records — every navigation and click is made by hand. Artefacts
-        # land in the /debug mount, never bronze.
-        shift
-        exec_if_help explore.py "$@"
-        start_xvfb
-        start_x11vnc explore
-        exec python3 /app/explore.py "$@"
-        ;;
-    prune)
-        # Delete non-complete dumps (crashed walks, legacy dry-run shells)
-        # from the bronze tree. No browser, no Xvfb — a pure file walk
-        # over the /data mount.
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    # Chromium headless; the QR challenge is rendered to the terminal.
+    login)    run plain login.py -- "$@" ;;
+    download) run plain download.py -- "$@" ;;
+    load)     run plain load.py -- "$@" ;;
+    explore)  run vnc:explore explore.py -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 ubs-web container
@@ -65,9 +40,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
         ;;
-    *)
-        # Pass-through for ad-hoc commands inside the container,
-        # e.g. `docker run ubs-web python -c '...'`.
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

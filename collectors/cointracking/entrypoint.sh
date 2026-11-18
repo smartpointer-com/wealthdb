@@ -13,88 +13,24 @@
 
 set -euo pipefail
 
-# Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc), shared by the browser collectors and baked into
-# base-playwright at /opt/entrypoint-lib.sh.
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
-    explore)
-        # Discovery harness. Drives Camoufox over VNC, records every
-        # click + every network fetch into /debug/<ts>/
-        # so login.py + download.py can be written from real traces.
-        shift
-        exec_if_help explore.py "$@"
-        start_xvfb
-        start_x11vnc explore
-        exec python3 /app/explore.py "$@"
-        ;;
-    login)
-        # Headless Playwright Firefox driving the SPA login form.
-        # No Xvfb, no VNC. Reads the 2FA code from stdin.
-        shift
-        exec python3 /app/login.py "$@"
-        ;;
-    download)
-        # Headless Playwright Firefox per-portfolio loop.
-        # No Xvfb / no VNC — headless Firefox needs no display.
-        # Uses the same
-        # persistent profile as login.py so authentication carries
-        # over for free.
-        shift
-        exec python3 /app/download.py "$@"
-        ;;
-    load)
-        # DuckDB silver loader. Ingests bronze CSVs (trades, balance,
-        # overview), recomputes positions_daily via the aggregate-
-        # then-window replay (incremental upsert from first deviation
-        # day), populates portfolio_prices from overview.csv, and
-        # reconciles vs balance.csv per portfolio. By default also
-        # fills missing prices at the end, crypto from Binance and
-        # fiat from the ECB via Frankfurter (--no-fetch-prices skips it).
-        #
-        # --scratch-dir /tmp writes the DuckDB silver to the container-
-        # local overlay instead of straight onto the /data VirtioFS
-        # bind mount: the existing DB is copied in once, DuckDB's
-        # per-statement writes stay local, and the finished file is
-        # moved back onto /data in a single bulk transfer. It goes
-        # before "$@" so an explicit --scratch-dir override still wins
-        # (argparse takes the last value).
-        shift
-        exec python3 /app/load.py --scratch-dir /tmp "$@"
-        ;;
-    prune)
-        # Delete non-complete dumps (crashed / in-progress) from the
-        # bronze tree, and strip screenshots/ (the download --debug
-        # captures) from complete dumps; --debug-dir also reclaims the
-        # /debug cache. No browser, no Xvfb. A complete dump's load
-        # inputs are left intact.
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    recompress)
-        # One-time backlog sweep: replace plain cu_<id>/*.csv in
-        # complete dumps with verified .csv.zst twins (the form
-        # download writes). No browser, no Xvfb. Manual only —
-        # never schedule; review --dry-run first.
-        shift
-        exec python3 /app/recompress.py "$@"
-        ;;
-    fetch-prices)
-        # Price backfill: crypto from Binance public spot, fiat from
-        # the ECB via Frankfurter. --missing for gap-fill (the same
-        # fill `load` runs by default), no-flag for full re-fetch
-        # (corruption recovery).
-        # Always re-fetches the latest priced day because that row
-        # was an intraday snapshot when first written.
-        shift
-        exec python3 /app/fetch_prices.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    explore)      run vnc:explore explore.py -- "$@" ;;
+    # Headless Playwright Firefox: no display.
+    login)        run plain login.py -- "$@" ;;
+    download)     run plain download.py -- "$@" ;;
+    load)         run plain load.py --scratch-dir /tmp -- "$@" ;;
+    recompress)   run plain recompress.py -- "$@" ;;
+    fetch-prices) run plain fetch_prices.py -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 cointracking container
@@ -158,8 +94,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
         ;;
-    *)
-        # Pass-through for ad-hoc commands inside the container.
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

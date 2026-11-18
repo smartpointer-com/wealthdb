@@ -9,7 +9,9 @@ Any other collector's Dockerfile copies its scripts by name, so a module a
 script starts to import is missing from the image until it is listed too.
 The check reads, per such collector:
 
-* the scripts its `entrypoint.sh` runs (`python3 /app/<script>.py`);
+* the scripts its `entrypoint.sh` runs (`run DISPLAY <script>.py`,
+  `login_folds DISPLAY <script>.py`, or `python3 /app/<script>.py`, and
+  `prune.py` where `entrypoint_common` answers `prune`);
 * their first-party import closure: the collector's own modules they
   import, at any depth and also inside functions;
 * what its Dockerfile `COPY`s into the image.
@@ -38,7 +40,10 @@ MOUNTED = sorted(
     if re.search(r"^HAS_APP_MOUNT=1\b",
                  (COLLECTORS / n / n).read_text(encoding="utf-8"), re.M))
 
-_RUN_RE = re.compile(r"\bpython3? /app/([\w./-]+\.py)\b")
+_RUN_RE = re.compile(
+    r"(?:\bpython3? /app/|\b(?:run|login_folds) (?:plain|xvfb|vnc:\S+) )"
+    r"([\w./-]+\.py)\b")
+_COMMON_PRUNE_RE = re.compile(r"^\s*prune\|.*\bentrypoint_common\b", re.M)
 _COPY_RE = re.compile(r"^\s*COPY\s", re.IGNORECASE)
 
 
@@ -102,8 +107,10 @@ def test_a_mounted_image_copies_requirements_alone(name):
     "name", [n for n in DOCKER_COLLECTORS if n not in MOUNTED])
 def test_the_image_ships_every_module_its_verbs_run(name):
     root = COLLECTORS / name
-    scripts = set(_RUN_RE.findall(
-        (root / "entrypoint.sh").read_text(encoding="utf-8")))
+    entrypoint = (root / "entrypoint.sh").read_text(encoding="utf-8")
+    scripts = set(_RUN_RE.findall(entrypoint))
+    if _COMMON_PRUNE_RE.search(entrypoint):
+        scripts.add("prune.py")
     assert scripts, f"{name}: entrypoint.sh runs no /app script"
     absent = sorted(s for s in scripts if not (root / s).is_file())
     assert not absent, f"{name}: entrypoint.sh runs {absent}, not in the tree"

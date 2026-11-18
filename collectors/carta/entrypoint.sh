@@ -14,64 +14,21 @@
 
 set -euo pipefail
 
-# Xvfb / x11vnc / camoufox-cache bootstrap (VFB_DISPLAY, start_xvfb,
-# start_x11vnc), shared by the browser collectors and baked into
-# base-playwright at /opt/entrypoint-lib.sh.
+# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
+# x11vnc / camoufox-cache bootstrap, baked into the base image at
+# /opt/entrypoint-lib.sh.
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
-case "${1:-help}" in
-    explore)
-        # Discovery harness. Drives Camoufox over VNC, records every
-        # click + every network fetch into /debug/<ts>/ so login.py +
-        # download.py can be written from real traces.
-        shift
-        exec_if_help explore.py "$@"
-        start_xvfb
-        start_x11vnc explore
-        exec python3 /app/explore.py "$@"
-        ;;
-    login)
-        # SPA login form + 2FA, headed Camoufox under Xvfb (no VNC — the
-        # 2FA code is read from stdin). Camoufox (not vanilla Firefox) is
-        # required to clear Carta's Cloudflare challenge; headed-under-Xvfb
-        # matches the proven explore config.
-        shift
-        exec_if_help login.py "$@"
-        start_xvfb
-        exec python3 /app/login.py "$@"
-        ;;
-    download)
-        # Reuses the login.py session profile. Drives headed Camoufox under
-        # Xvfb (Cloudflare again), then calls the JSON endpoints via the
-        # context request API. No VNC.
-        shift
-        exec_if_help download.py "$@"
-        start_xvfb
-        exec python3 /app/download.py "$@"
-        ;;
-    load)
-        # SQLite silver loader. Ingests bronze (portfolio/issuer/security
-        # JSON, export blobs, document PDFs) into the source-shaped silver
-        # tables. Pure Python, no browser, no display.
-        shift
-        exec python3 /app/load.py "$@"
-        ;;
-    prune)
-        # Delete non-complete dumps (a crashed walk left run.json
-        # status="in-progress", or a walk that crashed before writing
-        # run.json left none) from the bronze tree, plus screenshots/ (the
-        # download --debug captures) from complete dumps. Pure file walk —
-        # no browser, no Xvfb. A complete dump's load inputs are never
-        # touched.
-        # Also reachable host-side via the wrapper (the usual path).
-        shift
-        exec python3 /app/prune.py "$@"
-        ;;
-    sh|bash)
-        shift
-        exec /bin/bash "$@"
-        ;;
+verb="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$verb" in
+    explore)  run vnc:explore explore.py -- "$@" ;;
+    login)    run xvfb login.py -- "$@" ;;
+    download) run xvfb download.py -- "$@" ;;
+    load)     run plain load.py -- "$@" ;;
+    prune|sh|bash) entrypoint_common "$verb" "$@" ;;
     help|--help|-h)
         cat <<'EOF'
 carta container
@@ -111,8 +68,5 @@ Subcommands:
 Run "<wrapper> <subcommand> --help" for subcommand-specific flags.
 EOF
         ;;
-    *)
-        # Pass-through for ad-hoc commands inside the container.
-        exec "$@"
-        ;;
+    *) exec "$verb" "$@" ;;
 esac

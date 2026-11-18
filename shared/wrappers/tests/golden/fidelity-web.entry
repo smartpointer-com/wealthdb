@@ -143,7 +143,6 @@ lib: mkdir
   /tmp/.cache
 python3
   /app/download.py
-  --vnc
   --help
 exit: 0
 --- stdout
