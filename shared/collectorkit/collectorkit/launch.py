@@ -290,6 +290,17 @@ def prepare_profile_dir(profile_dir: Path, mode: int = PROFILE_DIR_MODE,
     return profile_dir
 
 
+def prepare_profile(profile_dir: Path, *, fresh: bool, note: str,
+                    log: logging.Logger) -> None:
+    """Wipe the profile when `fresh`, then ready it for Camoufox. `note`
+    says what the wipe costs the next sign-in."""
+    if fresh and profile_dir.exists():
+        log.warning("--fresh: wiping profile dir %s (%s)", profile_dir, note)
+        shutil.rmtree(profile_dir)
+    prepare_profile_dir(profile_dir)
+    log.info("profile dir: %s", profile_dir)
+
+
 # ---- the sign-in browser -----------------------------------------------------
 
 

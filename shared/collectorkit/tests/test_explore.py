@@ -238,6 +238,18 @@ class CredentialsTest(_Tmp):
         prep.assert_called_once_with(profile)
 
 
+class ReExportTest(unittest.TestCase):
+    def test_explore_re_exports_the_form_fill_and_the_profile_prep(self):
+        # Harnesses and logins read these through explore.
+        from collectorkit import launch, loginform
+        for name in ("DEFAULT_OTP_SELECTOR", "DEFAULT_PASSWORD_SELECTOR",
+                     "load_credentials", "prefill_login"):
+            with self.subTest(name):
+                self.assertIs(getattr(explore, name),
+                              getattr(loginform, name))
+        self.assertIs(explore.prepare_profile, launch.prepare_profile)
+
+
 class SessionTest(_Tmp):
     def _session(self, stack, *, redact=None, **kwargs):
         return explore.Session(

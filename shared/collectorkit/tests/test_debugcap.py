@@ -300,6 +300,42 @@ class ScrubDomTest(unittest.TestCase):
         out = self._entity_scrub('<div>a&amp;b"c&lt;d&gt;e</div>')
         self.assertEqual(out, f"<div>{debugcap.REDACTED}</div>")
 
+    def test_also_blank_blanks_a_marked_input(self):
+        # A one-time-code box is a plain text input holding one digit: the
+        # password rule and a value mask both miss it, its marker does not.
+        out = debugcap.scrub_dom(
+            "<input data-testid='Code-Box-0' type='text' value='7'>",
+            also_blank=("code-box",))
+        self.assertIn('value=""', out)
+        self.assertNotIn("value='7'", out)
+
+    def test_also_blank_leaves_unmarked_inputs_and_passwords_as_before(self):
+        markup = ('<input name="userid" value="keepme">'
+                  '<input type="password" value="pw">')
+        out = debugcap.scrub_dom(markup, also_blank=("code-box",))
+        self.assertIn('value="keepme"', out)
+        self.assertNotIn('"pw"', out)
+
+    def test_also_blank_runs_before_the_redactor(self):
+        out = debugcap.scrub_dom(
+            '<input id="code-box" value="7"><div>hunted</div>',
+            debugcap.secret_redactor("hunted"), also_blank=("code-box",))
+        self.assertEqual(
+            out, f'<input id="code-box" value=""><div>{debugcap.REDACTED}</div>')
+
+
+class RedactModuleTest(unittest.TestCase):
+    def test_debugcap_re_exports_the_redaction_library(self):
+        # Call sites and the source scans read the masks through debugcap;
+        # a name the re-export drops would fail at a capture, not here.
+        from collectorkit import redact
+        for name in ("REDACTED", "SessionMask", "env_redactor", "redact_body",
+                     "redact_har", "redact_headers", "redact_url",
+                     "safe_error", "scrub_dom", "secret_redactor",
+                     "secret_variants", "session_redactor", "url_shape"):
+            with self.subTest(name):
+                self.assertIs(getattr(debugcap, name), getattr(redact, name))
+
 
 @unittest.skipUnless(COLLECTORS.is_dir(), "collectors/ not present")
 class CollectorRedactionTest(unittest.TestCase):
@@ -680,7 +716,7 @@ class CapturePageTest(unittest.TestCase):
 
     def test_writes_dom_and_screenshot(self):
         p = self._Page()
-        debugcap.capture_page(p, self.run, "landing", log=log)
+        debugcap.capture_page(p, self.run, "landing", log=log, redact=None)
         d = self.run / debugcap.SCREENSHOTS_DIR
         self.assertEqual((d / "landing.html").read_text(), "<html>ok</html>")
         self.assertTrue((d / "landing.png").exists())
@@ -690,17 +726,19 @@ class CapturePageTest(unittest.TestCase):
         # be lost because a screenshot timed out on a busy page.
         p = self._Page(shot_raises=True)
         with self.assertLogs(log, level="WARNING"):
-            debugcap.capture_page(p, self.run, "landing", log=log)
+            debugcap.capture_page(p, self.run, "landing", log=log, redact=None)
         self.assertTrue((self.run / debugcap.SCREENSHOTS_DIR / "landing.html").exists())
 
     def test_a_dom_failure_never_propagates(self):
         p = self._Page(content_raises=True)
         with self.assertLogs(log, level="WARNING"):
-            debugcap.capture_page(p, self.run, "landing", log=log)   # no raise
+            debugcap.capture_page(p, self.run, "landing", log=log,
+                                  redact=None)   # no raise
 
     def test_png_can_be_skipped(self):
         p = self._Page()
-        debugcap.capture_page(p, self.run, "landing", log=log, png=False)
+        debugcap.capture_page(p, self.run, "landing", log=log, png=False,
+                              redact=None)
         d = self.run / debugcap.SCREENSHOTS_DIR
         self.assertTrue((d / "landing.html").exists())
         self.assertFalse((d / "landing.png").exists())
@@ -709,9 +747,14 @@ class CapturePageTest(unittest.TestCase):
         # A --debug capture of a sign-in page must not persist the typed
         # credential, whether or not the caller knows what it is.
         p = self._Page('<input type="password" value="s3cr3t">')
-        debugcap.capture_page(p, self.run, "signin", log=log)
+        debugcap.capture_page(p, self.run, "signin", log=log, redact=None)
         out = (self.run / debugcap.SCREENSHOTS_DIR / "signin.html").read_text()
         self.assertNotIn("s3cr3t", out)
+
+    def test_the_redactor_is_required(self):
+        # A site that masks nothing says so; one that forgets cannot.
+        with self.assertRaises(TypeError):
+            debugcap.capture_page(self._Page(), self.run, "landing", log=log)
 
     def test_a_redactor_masks_known_credentials_too(self):
         p = self._Page('<div>example-user</div>')
@@ -1114,7 +1157,7 @@ class RedactHarTest(unittest.TestCase):
         def _boom(src, dst):
             raise OSError("replace failed")
 
-        with mock.patch.object(debugcap.os, "replace", _boom):
+        with mock.patch("os.replace", _boom):
             with self.assertLogs(log, level="WARNING") as caught:
                 self.assertFalse(debugcap.redact_har(self.har, log=log))
 

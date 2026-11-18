@@ -44,7 +44,6 @@ import argparse
 import contextlib
 import logging
 import os
-import re
 import shutil
 import sqlite3
 import sys
@@ -577,11 +576,6 @@ def authenticate(context, page, watch: _LogonWatch, *, two_factor: str,
 
 # --- verbs ----------------------------------------------------------------
 
-_INPUT_TAG_RE = re.compile(r"""<input\b(?:[^>"']|"[^"]*"|'[^']*')*>""", re.I)
-_VALUE_ATTR_RE = re.compile(r"""\bvalue\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)""",
-                            re.I)
-
-
 def blank_otp(html: str) -> str:
     """Blank the passcode boxes out of a serialized DOM.
 
@@ -591,12 +585,7 @@ def blank_otp(html: str) -> str:
     no value-based masker can either, because each holds a single digit. So
     they are blanked by the id they carry.
     """
-    def blank(match):
-        tag = match.group(0)
-        if "otp-input" not in tag.lower():
-            return tag
-        return _VALUE_ATTR_RE.sub('value=""', tag)
-    return _INPUT_TAG_RE.sub(blank, html) if html else html
+    return debugcap.scrub_dom(html, also_blank=("otp-input",))
 
 
 def _capture(page, args, name: str) -> None:
