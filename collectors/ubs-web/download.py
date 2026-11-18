@@ -29,6 +29,8 @@ import logging
 import re
 import sys
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -62,10 +64,6 @@ from login import (  # local module
 )
 
 log = logging.getLogger("ubs-web.download")
-
-# The walk's passes, in the order it runs them. `--only` names one.
-PASSES = ("positions", "transactions", "rates", "portfolio-transactions",
-          "documents", "cards")
 
 NAV_TIMEOUT_MS = 60_000
 LANDMARK_TIMEOUT_MS = 30_000
@@ -1147,12 +1145,18 @@ def open_legacy_rates(page):
 # ============================================================
 
 def write_run_json(run_dir: Path, since: date, until: date,
-                   accounts: list[dict], documents: list[dict],
-                   positions: list[dict],
-                   cards_meta: dict | None = None,
-                   portfolio_transactions: list[dict] | None = None,
-                   only: str | None = None,
-                   rates_meta: dict | None = None) -> None:
+                   results: dict, only: str | None = None) -> None:
+    """Write the terminal manifest from each pass's result, keyed by the
+    pass's run.json key (`Pass.key`). A pass that did not run, or failed
+    in isolation, leaves its key out of `results`, and its list reads as
+    empty. The card and rate blocks are written only when their pass
+    returned one."""
+    accounts = results.get("transactions", [])
+    documents = results.get("documents", [])
+    positions = results.get("positions", [])
+    portfolio_transactions = results.get("portfolio_transactions", [])
+    cards_meta = results.get("cards")
+    rates_meta = results.get("rates")
     payload = {
         "dump_started_at": bronze.ts_slug(),
         # Terminal status for the run.json lifecycle: this function is
@@ -1655,27 +1659,144 @@ def _click_portfolio_export(page) -> bytes | None:
 # Main
 # ============================================================
 
+@dataclass(frozen=True)
+class Pass:
+    """One pass of the walk.
+
+    `plan` gives the dry-run sentence for a real run with these flags and
+    this many cash accounts, or None when the flags skip the pass. `run`
+    makes the export, and write_run_json writes its result as the block
+    under `key`. A failure of an `isolated` pass is
+    logged and captured as `failure_capture`, and the walk goes on. Any
+    other failure ends the walk, and no manifest is written.
+    """
+
+    name: str       # the --only word
+    key: str        # its run.json block (write_run_json)
+    plan: Callable[[argparse.Namespace, int], str | None]
+    run: Callable[[_Walk], object]
+    isolated: bool = False
+    failure_capture: str = ""
+
+
+@dataclass(frozen=True)
+class _Walk:
+    """What the passes of one real run share."""
+
+    args: argparse.Namespace
+    page: object
+    context: object
+    run_dir: Path
+    since: date
+    until: date
+    accounts: list[dict]
+    apikey_holder: dict
+    capture: Callable
+
+
+def _run_transactions(w: _Walk) -> list[dict]:
+    """Each cash account's transaction export. One account's failure is
+    logged and captured, and the walk goes on to the next."""
+    txn_results: list[dict] = []
+    for account in w.accounts:
+        try:
+            meta = export_transactions(
+                w.page, account, w.since, w.until, w.run_dir,
+                w.args.screenshot_dir,
+            )
+            txn_results.append(meta)
+        except SystemExit:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.exception("transactions export failed for %s "
+                          "account %s: %s",
+                          account["kind"],
+                          _log_id(account), e)
+            # Failure path only: the page is still on the
+            # surface that raised, so this is the DOM the
+            # failing step saw. One capture per account
+            # would bury it. Named by the sha256 prefix the
+            # export filenames already use.
+            w.capture(w.page, "20-txn-"
+                      f"{bronze.short_token(account['account_id'])}"
+                      "-failed")
+    return txn_results
+
+
+# The walk's passes, in the order it runs them. `--only` names one.
+# A lambda looks its export up when it runs, so a test can replace it.
+PASS_TABLE = (
+    Pass("positions", "positions",
+         plan=lambda args, n: "the positions of each portfolio",
+         run=lambda w: export_positions(
+             w.page, w.run_dir, w.args.screenshot_dir,
+         )),
+    Pass("transactions", "transactions",
+         plan=lambda args, n: f"the transactions of {n} cash account(s)",
+         run=_run_transactions),
+    Pass("rates", "rates",
+         plan=lambda args, n: f"the interest conditions of {n} cash "
+                              "account(s), and of the legacy list's other "
+                              "accounts",
+         run=lambda w: _capture_rates(
+             w.page, w.run_dir, w.accounts, w.args.screenshot_dir)),
+    Pass("portfolio-transactions", "portfolio_transactions",
+         plan=lambda args, n: "one securities-transaction export per "
+                              "managed portfolio",
+         run=lambda w: export_portfolio_transactions(
+             w.page, w.run_dir, w.since, w.until,
+             w.args.screenshot_dir,
+         ),
+         isolated=True, failure_capture="25-portfolio-txn-failed"),
+    Pass("documents", "documents",
+         plan=lambda args, n: "the documents archive",
+         run=lambda w: harvest_documents(
+             w.page, w.since, w.until, w.run_dir,
+             w.context, w.args.screenshot_dir, capture=w.capture,
+         )),
+    Pass("cards", "cards",
+         plan=lambda args, n: None if args.no_cards else (
+             "the card roster, each card's ledger and its invoices"
+             + ("" if args.no_card_statements else " and statement PDFs")),
+         run=lambda w: None if w.args.no_cards else _capture_cards(
+             w.context, w.page, w.apikey_holder, w.run_dir,
+             w.since, w.until,
+             statements=not w.args.no_card_statements,
+         )),
+)
+PASSES = tuple(p.name for p in PASS_TABLE)
+
+
 def dry_run_plan(args: argparse.Namespace, cash_accounts: int) -> str:
     """What a real run with these flags would export, for the dry-run log:
     the passes `--only` selects, without the card pass under
     `--no-cards`."""
-    what = {
-        "positions": "the positions of each portfolio",
-        "transactions": f"the transactions of {cash_accounts} cash "
-                        "account(s)",
-        "rates": f"the interest conditions of {cash_accounts} cash "
-                 "account(s), and of the legacy list's other accounts",
-        "portfolio-transactions": "one securities-transaction export per "
-                                  "managed portfolio",
-        "documents": "the documents archive",
-        "cards": "the card roster, each card's ledger and its invoices"
-                 + ("" if args.no_card_statements else " and statement PDFs"),
-    }
-    passes = [p for p in PASSES if args.only in (None, p)
-              and not (p == "cards" and args.no_cards)]
-    if not passes:
+    what = [s for p in PASS_TABLE if args.only in (None, p.name)
+            and (s := p.plan(args, cash_accounts)) is not None]
+    if not what:
         return "nothing"
-    return "would export " + "; ".join(what[p] for p in passes)
+    return "would export " + "; ".join(what)
+
+
+def _run_passes(w: _Walk) -> dict:
+    """Run the passes `--only` selects, in table order; return each
+    result under its run.json key."""
+    results: dict = {}
+    for p in PASS_TABLE:
+        if w.args.only not in (None, p.name):
+            continue
+        if not p.isolated:
+            results[p.key] = p.run(w)
+            continue
+        try:
+            results[p.key] = p.run(w)
+        except SystemExit:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.exception("%s export failed: %s",
+                          p.name.replace("-", " "), e)
+            w.capture(w.page, p.failure_capture)
+    return results
 
 
 def main(argv: list[str]) -> int:
@@ -1736,12 +1857,6 @@ def main(argv: list[str]) -> int:
                 # warn. This DOM is what says whether the anchors moved or
                 # were genuinely absent.
                 capture(page, "10-home")
-                txn_results: list[dict] = []
-                doc_results: list[dict] = []
-                positions_meta: list[dict] = []
-                portfolio_txn_meta: list[dict] = []
-                cards_meta: dict | None = None
-                rates_meta: dict | None = None
                 if args.dry_run:
                     # Read-only walk: session verified and accounts
                     # enumerated above. Log the plan (what a real run
@@ -1751,65 +1866,12 @@ def main(argv: list[str]) -> int:
                     log.info("dry-run plan: %s, in [%s..%s]",
                              dry_run_plan(args, len(accounts)), since, until)
                 else:
-                    def run(name):
-                        return args.only in (None, name)
-                    if run("positions"):
-                        positions_meta = export_positions(
-                            page, run_dir, args.screenshot_dir,
-                        )
-                    for account in (accounts if run("transactions") else []):
-                        try:
-                            meta = export_transactions(
-                                page, account, since, until, run_dir,
-                                args.screenshot_dir,
-                            )
-                            txn_results.append(meta)
-                        except SystemExit:
-                            raise
-                        except Exception as e:  # noqa: BLE001
-                            log.exception("transactions export failed for %s "
-                                          "account %s: %s",
-                                          account["kind"],
-                                          _log_id(account), e)
-                            # Failure path only: the page is still on the
-                            # surface that raised, so this is the DOM the
-                            # failing step saw. One capture per account
-                            # would bury it. Named by the sha256 prefix the
-                            # export filenames already use.
-                            capture(page, "20-txn-"
-                                    f"{bronze.short_token(account['account_id'])}"
-                                    "-failed")
-                    if run("rates"):
-                        rates_meta = _capture_rates(
-                            page, run_dir, accounts, args.screenshot_dir)
-                    try:
-                        if run("portfolio-transactions"):
-                            portfolio_txn_meta = export_portfolio_transactions(
-                                page, run_dir, since, until,
-                                args.screenshot_dir,
-                            )
-                    except SystemExit:
-                        raise
-                    except Exception as e:  # noqa: BLE001
-                        log.exception("portfolio transactions export "
-                                      "failed: %s", e)
-                        capture(page, "25-portfolio-txn-failed")
-                    if run("documents"):
-                        doc_results = harvest_documents(
-                            page, since, until, run_dir,
-                            context, args.screenshot_dir, capture=capture,
-                        )
-                    if not args.no_cards and run("cards"):
-                        cards_meta = _capture_cards(
-                            context, page, apikey_holder, run_dir,
-                            since, until,
-                            statements=not args.no_card_statements,
-                        )
-                    write_run_json(run_dir, since, until,
-                                   txn_results, doc_results,
-                                   positions_meta, cards_meta,
-                                   portfolio_txn_meta, args.only,
-                                   rates_meta)
+                    results = _run_passes(_Walk(
+                        args=args, page=page, context=context,
+                        run_dir=run_dir, since=since, until=until,
+                        accounts=accounts, apikey_holder=apikey_holder,
+                        capture=capture))
+                    write_run_json(run_dir, since, until, results, args.only)
             finally:
                 debugcap.stop_trace_if_active(context, args.trace,
                                               args.screenshot_dir,

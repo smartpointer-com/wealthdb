@@ -2,7 +2,9 @@
 
 The walk in `download.py` records each phase's result in run.json;
 these rules read those results into the run's `coverage` block and its
-exit code.
+exit code. They read the phases from the walk's table
+(`download.PASSES`): each phase's `name`, its run.json `key`, and its
+`ok_status`.
 """
 
 from __future__ import annotations
@@ -15,33 +17,6 @@ from collectorkit import cli
 # writes it.
 log = logging.getLogger("fidelity-web.download")
 
-
-# The run.json key each phase writes its result under. A key is
-# present exactly when the phase was requested AND attempted, so the
-# presence of a key — not the value of --mode — is what says a phase
-# ran.
-PHASE_RESULT_KEYS = (
-    ("positions", "positions_results"),
-    ("activity", "activity_results"),
-    ("documents", "documents_results"),
-    ("balances", "balances_results"),
-    ("performance", "performance_results"),
-    ("daf", "daf_results"),
-    ("lots", "lots_results"),
-)
-
-# For the phases whose result is a status dict rather than a list of
-# attempts, the statuses that mean the phase did its job. `no-daf` is
-# one of them: a login with no donor-advised fund has nothing to
-# fetch, and walk() has already upgraded a no-daf that contradicts the
-# enumerated accounts into an error.
-PHASE_OK_STATUS = {
-    "documents": ("walked",),
-    "balances": ("explored-no-export",),
-    "performance": ("explored-no-export",),
-    "daf": ("complete", "no-daf"),
-    "lots": ("complete",),
-}
 
 # The fleet's "came back short" status (collectorkit.cli.EXIT_SHORT):
 # the dump is loadable and its coverage names the gaps.
@@ -66,8 +41,8 @@ def _gap_label(entry):
 # statuses that mean failure are enumerated here rather than the ones
 # that mean success — at this depth an unfamiliar status is far more
 # likely to be a shape this table has not learned than a failure, and
-# the top-level allow-list (PHASE_OK_STATUS) already catches a phase
-# that went wrong as a whole.
+# the top-level allow-list (each phase's `ok_status`) already catches a
+# phase that went wrong as a whole.
 ENTRY_FAIL_STATUS = ("error", "session-timeout")
 
 
@@ -95,8 +70,8 @@ def _entry_failed(entry):
             or entry.get("status") in ENTRY_FAIL_STATUS)
 
 
-def phase_coverage(run_json, requested_window=None):
-    """What each attempted phase actually covered.
+def phase_coverage(phases, run_json, requested_window=None):
+    """What each attempted phase of `phases` actually covered.
 
     One entry per phase the run attempted, ALWAYS carrying a `gaps`
     list — empty included, so a reader can tell a run that covered
@@ -110,18 +85,19 @@ def phase_coverage(run_json, requested_window=None):
     confused with "asked for and came back empty".
     """
     coverage = {}
-    for name, key in PHASE_RESULT_KEYS:
-        if key not in run_json:
+    for phase in phases:
+        name = phase.name
+        if phase.key not in run_json:
             continue                      # phase not requested
-        result = run_json[key]
+        result = run_json[phase.key]
         entries = _attempt_entries(result)
         gaps = [_gap_label(e) for e in entries if _entry_failed(e)]
         complete = not gaps
 
         # A status-dict phase also has to like its own status.
-        if isinstance(result, dict) and name in PHASE_OK_STATUS:
+        if isinstance(result, dict) and phase.ok_status is not None:
             status = result.get("status")
-            if status not in PHASE_OK_STATUS[name]:
+            if status not in phase.ok_status:
                 complete = False
                 gaps.append(f"status={status}")
 

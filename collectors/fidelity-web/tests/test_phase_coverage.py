@@ -38,7 +38,7 @@ import download  # noqa: E402
 # ---------------------------------------------------------------- coverage
 
 def test_a_phase_that_covered_everything_reports_an_empty_gap_list():
-    cov = download.phase_coverage({
+    cov = download.phase_coverage(download.PASSES, {
         "activity_results": [
             {"window": ["2026-09-01", "2026-09-30"], "file": "a.csv", "ok": True},
         ],
@@ -47,7 +47,7 @@ def test_a_phase_that_covered_everything_reports_an_empty_gap_list():
 
 
 def test_a_failed_window_becomes_a_gap_named_as_a_range():
-    cov = download.phase_coverage({
+    cov = download.phase_coverage(download.PASSES, {
         "activity_results": [
             {"window": ["2026-07-01", "2026-07-30"], "ok": True, "file": "a.csv"},
             {"window": ["2026-07-31", "2026-08-29"], "ok": False,
@@ -61,7 +61,7 @@ def test_a_failed_window_becomes_a_gap_named_as_a_range():
 def test_a_phase_that_was_not_requested_has_no_entry_at_all():
     """'not asked for' must never read as 'asked for and came back
     empty' — that conflation is what let the hole hide."""
-    cov = download.phase_coverage({"positions_results": [
+    cov = download.phase_coverage(download.PASSES, {"positions_results": [
         {"view": "summary", "file": "p.csv", "ok": True},
     ]})
     assert "positions" in cov
@@ -74,7 +74,7 @@ def test_an_activity_phase_that_attempted_nothing_is_a_gap():
     nothing, which the old shape recorded as an empty list that read
     like success."""
     cov = download.phase_coverage(
-        {"activity_results": []},
+        download.PASSES, {"activity_results": []},
         requested_window=("2026-07-01", "2026-09-10"),
     )
     assert cov["activity"]["complete"] is False
@@ -82,10 +82,10 @@ def test_an_activity_phase_that_attempted_nothing_is_a_gap():
 
 
 def test_a_status_phase_is_judged_on_its_status():
-    ok = download.phase_coverage({"balances_results": {
+    ok = download.phase_coverage(download.PASSES, {"balances_results": {
         "status": "explored-no-export", "file": "b.html"}})
     assert ok["balances"]["complete"] is True
-    bad = download.phase_coverage({"balances_results": {
+    bad = download.phase_coverage(download.PASSES, {"balances_results": {
         "status": "session-timeout", "landed_url": "https://example.invalid/x"}})
     assert bad["balances"]["complete"] is False
     assert bad["balances"]["gaps"] == ["status=session-timeout"]
@@ -94,12 +94,12 @@ def test_a_status_phase_is_judged_on_its_status():
 def test_a_login_with_no_daf_is_complete_not_short():
     """A phase with nothing to fetch did its job; only a phase that
     tried and failed is a gap."""
-    cov = download.phase_coverage({"daf_results": {"status": "no-daf"}})
+    cov = download.phase_coverage(download.PASSES, {"daf_results": {"status": "no-daf"}})
     assert cov["daf"]["complete"] is True
 
 
 def test_documents_sub_walks_contribute_their_own_gaps():
-    cov = download.phase_coverage({"documents_results": {
+    cov = download.phase_coverage(download.PASSES, {"documents_results": {
         "status": "walked",
         "statements": [{"row_label": "2026", "file": "s.pdf", "ok": True}],
         "tax_forms": [{"ok": False, "error": "tax-forms-nav-not-found"}],
@@ -265,7 +265,7 @@ def test_a_sub_walk_that_raised_outright_is_a_gap():
     sub-walk finished, and a walk that raised leaves no attempt list
     to judge — only a `<name>_error`. The documents phase could lose
     half of what it went for and still report complete."""
-    cov = download.phase_coverage({"documents_results": {
+    cov = download.phase_coverage(download.PASSES, {"documents_results": {
         "status": "walked",
         "statements": [{"row_label": "2026", "file": "s.pdf", "ok": True}],
         "statements_error": "Timeout 30000ms exceeded",
@@ -279,7 +279,7 @@ def test_a_failed_daf_account_is_a_gap():
     listing them, and each says it failed with a status rather than an
     `ok` flag — two shapes past the list-and-flag reading, so a dead
     account was invisible under an envelope reading `complete`."""
-    cov = download.phase_coverage({"daf_results": {
+    cov = download.phase_coverage(download.PASSES, {"daf_results": {
         "status": "complete",
         "accounts": 2,
         "per_account": {
@@ -292,7 +292,7 @@ def test_a_failed_daf_account_is_a_gap():
 
 
 def test_a_daf_whose_accounts_all_landed_is_complete():
-    cov = download.phase_coverage({"daf_results": {
+    cov = download.phase_coverage(download.PASSES, {"daf_results": {
         "status": "complete", "accounts": 1,
         "per_account": {"acct-a": {"status": "complete", "grants": 3}},
     }})
@@ -358,7 +358,7 @@ def test_windows_before_retention_are_not_gaps(backfill):
     assert all("ok" not in r for r in outside)
     assert max(r["window"][1] for r in outside) < min(
         r["window"][0] for r in fetched)
-    cov = download.phase_coverage({"activity_results": results})
+    cov = download.phase_coverage(download.PASSES, {"activity_results": results})
     assert cov["activity"] == {"complete": True, "gaps": []}
     assert download.exit_code_for_coverage(cov) == 0
 
@@ -372,14 +372,14 @@ def test_a_window_refused_after_an_accepted_one_stays_a_gap(backfill):
 
     gap = next(r for r in results if r["window"][0] == later.isoformat())
     assert (gap["ok"], gap["error"]) == (False, "custom-range not applied")
-    cov = download.phase_coverage({"activity_results": results})
+    cov = download.phase_coverage(download.PASSES, {"activity_results": results})
     assert cov["activity"]["gaps"] == ["{}..{}".format(*gap["window"])]
 
 
 def test_a_page_that_refuses_every_window_leaves_every_window_a_gap(backfill):
     results = backfill(FakeActivityPage(date.today() + timedelta(days=1)))
     assert results and all(r["ok"] is False for r in results)
-    cov = download.phase_coverage({"activity_results": results})
+    cov = download.phase_coverage(download.PASSES, {"activity_results": results})
     assert len(cov["activity"]["gaps"]) == len(results)
 
 
@@ -396,5 +396,5 @@ def test_a_window_the_page_took_bounds_retention_though_its_export_failed():
     ])
     assert results[0] == {"window": ["2021-01-01", "2021-01-30"],
                           "status": "outside-retention"}
-    cov = download.phase_coverage({"activity_results": results})
+    cov = download.phase_coverage(download.PASSES, {"activity_results": results})
     assert cov["activity"]["gaps"] == ["2021-01-31..2021-03-01"]

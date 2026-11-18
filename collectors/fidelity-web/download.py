@@ -106,6 +106,8 @@ import re
 import signal
 import sys
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -194,8 +196,6 @@ from windows import (  # noqa: F401
     activity_export_matches,
 )
 from phase_coverage import (  # noqa: F401
-    PHASE_RESULT_KEYS,
-    PHASE_OK_STATUS,
     EXIT_PHASE_INCOMPLETE,
     ENTRY_FAIL_STATUS,
     phase_coverage,
@@ -2475,21 +2475,149 @@ def scrape_daf(page, bronze_dir, capture_dir, since_date, *,
 # walk() — orchestrates the per-phase scrapes against a live session
 # ---------------------------------------------------------------------------
 
-# The phases whose result is a list of attempts; the rest report a
-# status dict (PHASE_OK_STATUS).
-_LIST_PHASES = ("positions", "activity")
+@dataclass(frozen=True)
+class Pass:
+    """One phase of the walk.
+
+    `name` is the phase as `coverage` names it, and `key` the run.json
+    key its result lands under. A key is present exactly when the phase
+    was requested and attempted, so the key, not the value of --mode,
+    says a phase ran. `mode` is the --mode word that runs it,
+    besides `all`. `plan` is the dry run's step for the phase, or None
+    when the dry run has nothing to do for it. `run` scrapes; None from
+    it leaves the key out. A failure of an `isolated` phase becomes a
+    failed result in the phase's own shape. `ok_status` lists the
+    statuses that mean the phase did its job; None means its result is
+    a list of attempts, each with its own `ok`.
+    """
+
+    name: str
+    key: str
+    mode: str
+    plan: Callable[[_Walk], None] | None
+    run: Callable[[_Walk], object]
+    isolated: bool
+    ok_status: tuple[str, ...] | None
 
 
-def _run_phase(name, fn, *args, **kwargs):
-    """Run one phase's scrape function. An exception it raises becomes
-    a failed result in the phase's own shape, so the walk goes on to
-    the later phases, finishes its manifest, and `phase_coverage`
-    reports the gap."""
+@dataclass(frozen=True)
+class _Walk:
+    """What the phases of one walk share."""
+
+    context: object
+    page: object
+    config: dict
+    mode: str
+    dest_root: Path
+    slug: str
+    bronze_dir: Path | None
+    capture_dir: Path | None
+    dimensions: list[dict]
+    in_scope: list[str]
+    since_date: date | None
+    until_date: date | None
+    docs_min_year: int
+
+
+def _plan_daf(w):
+    """The DAF phase lives behind an SSO hop + its own JSON API, so
+    unlike the retail phases (whose surfaces the enumeration already
+    reached) a dry-run has to exercise it explicitly to cover that
+    surface — the read-only enumeration hops, bootstraps, reads the
+    roster + per-account counts, and writes nothing."""
+    if _login_has_daf(w.dimensions):
+        daf_plan = scrape_daf(
+            w.page, None, None, w.since_date, dry_run=True,
+            positions_only=(w.mode == "positions"))
+        log.info("dry-run: DAF plan — %s", json.dumps(daf_plan,
+                 default=str))
+
+
+def _run_daf(w):
+    """The DAF rides every positions-bearing mode so each such dump
+    is a COMPLETE holdings observation (retail + DAF) — gold's
+    per-source latest-snapshot anchor treats it as one, and a
+    partial dump would read as the uncovered accounts having
+    emptied. --mode all runs the full DAF phase (events, exports,
+    documents); --mode positions runs the master + pool slice.
+    There is deliberately no DAF-only mode for the same reason."""
+    if not _login_has_daf(w.dimensions):
+        log.info("no Fidelity Charitable relationship enumerated; "
+                 "skipping DAF phase")
+        return None
+    daf_results = scrape_daf(
+        w.page, w.bronze_dir, w.capture_dir, w.since_date,
+        positions_only=(w.mode == "positions"),
+    )
+    if daf_results.get("status") == "no-daf":
+        # The account enumeration said this login HAS a DAF, so a
+        # no-daf outcome here is a failure (SSO bounce, empty
+        # roster), not an absence — escalate so the loader's
+        # completeness guard treats the dump's positions as
+        # partial rather than loading a retail-only observation.
+        daf_results = {"status": "error",
+                       "error": "DAF expected (enumerated in the "
+                                "account selector) but the "
+                                "charitable walk found none",
+                       **{k: v for k, v in daf_results.items()
+                          if k != "status"}}
+        log.warning("DAF phase failed: %s", daf_results["error"])
+    return daf_results
+
+
+# The walk's phases, in the order it runs them. A lambda looks its
+# scrape up when it runs, so a test can replace it.
+PASSES = (
+    Pass("positions", "positions_results", mode="positions", plan=None,
+         run=lambda w: scrape_positions(w.page, w.bronze_dir, w.capture_dir),
+         isolated=True, ok_status=None),
+    Pass("lots", "lots_results", mode="positions", plan=None,
+         run=lambda w: scrape_lots(
+             w.page, w.bronze_dir, w.in_scope,
+             previous_lot_index(w.dest_root, w.slug),
+             refresh=w.config.get("refresh_lots", "false").lower() == "true",
+         ),
+         isolated=True, ok_status=("complete",)),
+    Pass("activity", "activity_results", mode="activity", plan=None,
+         run=lambda w: scrape_activity(
+             w.page, w.since_date, w.until_date,
+             w.bronze_dir, w.capture_dir,
+         ),
+         isolated=True, ok_status=None),
+    Pass("documents", "documents_results", mode="documents", plan=None,
+         run=lambda w: scrape_documents(
+             w.page, w.context, w.bronze_dir, w.capture_dir,
+             min_year=w.docs_min_year,
+             explore=w.config.get("explore", "false").lower() == "true",
+         ),
+         isolated=True, ok_status=("walked",)),
+    Pass("balances", "balances_results", mode="balances", plan=None,
+         run=lambda w: scrape_balances(w.page, w.bronze_dir, w.capture_dir),
+         isolated=True, ok_status=("explored-no-export",)),
+    Pass("performance", "performance_results", mode="performance",
+         plan=None,
+         run=lambda w: scrape_performance(
+             w.page, w.bronze_dir, w.capture_dir,
+         ),
+         isolated=True, ok_status=("explored-no-export",)),
+    # `no-daf` is a success: a login with no donor-advised fund has
+    # nothing to fetch, and _run_daf has already turned a no-daf that
+    # contradicts the enumerated accounts into an error.
+    Pass("daf", "daf_results", mode="positions", plan=_plan_daf,
+         run=_run_daf, isolated=True, ok_status=("complete", "no-daf")),
+)
+
+
+def _run_phase(phase, w):
+    """Run one phase's scrape. An exception it raises becomes a failed
+    result in the phase's own shape, so the walk goes on to the later
+    phases, finishes its manifest, and `phase_coverage` reports the
+    gap."""
     try:
-        return fn(*args, **kwargs)
+        return phase.run(w)
     except Exception as e:
-        log.exception("%s phase failed", name)
-        if name in _LIST_PHASES:
+        log.exception("%s phase failed", phase.name)
+        if phase.ok_status is None:
             return [{"ok": False, "error": str(e)}]
         return {"status": "error", "error": str(e)}
 
@@ -2497,9 +2625,10 @@ def _run_phase(name, fn, *args, **kwargs):
 def walk(context, page, config):
     """Run the requested phase(s) against a logged-in session.
     Called from ``run_oneshot()`` after ``login()`` lands on the
-    post-auth URL. Dispatches to the per-phase scrape functions
-    based on ``config['mode']``. Each phase runs under _run_phase,
-    so a failure in one phase does not block the others."""
+    post-auth URL. Runs the phases of ``PASSES`` that
+    ``config['mode']`` selects, in table order. Each isolated phase
+    runs under _run_phase, so a failure in one phase does not block
+    the others."""
     dest_root = Path(config.get("dest") or "/data")
     dry_run = config.get("dry_run", "false").lower() == "true"
     debug = config.get("debug", "false").lower() == "true"
@@ -2647,6 +2776,15 @@ def walk(context, page, config):
         "phases_requested": mode,
     }
 
+    w = _Walk(
+        context=context, page=page, config=config, mode=mode,
+        dest_root=dest_root, slug=slug, bronze_dir=bronze_dir,
+        capture_dir=capture_dir, dimensions=dimensions, in_scope=in_scope,
+        since_date=since_date, until_date=until_date,
+        docs_min_year=docs_min_year,
+    )
+    selected = [p for p in PASSES if mode in ("all", p.mode)]
+
     if dry_run:
         # Log the plan (what a real run WOULD fetch: counts, scope,
         # windows). No run dir was created and no run.json is written —
@@ -2661,86 +2799,20 @@ def walk(context, page, config):
             run_json["activity_window"], documents_since.isoformat(),
             dest_root,
         )
-        # The DAF phase lives behind an SSO hop + its own JSON API, so
-        # unlike the retail phases (whose surfaces the enumeration above
-        # already reached) a dry-run has to exercise it explicitly to
-        # cover that surface — the read-only enumeration hops, bootstraps,
-        # reads the roster + per-account counts, and writes nothing.
-        if mode in ("all", "positions") and _login_has_daf(dimensions):
-            daf_plan = scrape_daf(
-                page, None, None, since_date, dry_run=True,
-                positions_only=(mode == "positions"))
-            log.info("dry-run: DAF plan — %s", json.dumps(daf_plan,
-                     default=str))
+        for phase in selected:
+            if phase.plan is not None:
+                phase.plan(w)
         return
 
-    if mode in ("all", "positions"):
-        run_json["positions_results"] = _run_phase(
-            "positions", scrape_positions, page, bronze_dir, capture_dir,
-        )
-        run_json["lots_results"] = _run_phase(
-            "lots", scrape_lots,
-            page, bronze_dir, in_scope,
-            previous_lot_index(dest_root, slug),
-            refresh=config.get("refresh_lots", "false").lower() == "true",
-        )
-    if mode in ("all", "activity"):
-        run_json["activity_results"] = _run_phase(
-            "activity", scrape_activity,
-            page, since_date, until_date,
-            bronze_dir, capture_dir,
-        )
-    if mode in ("all", "documents"):
-        run_json["documents_results"] = _run_phase(
-            "documents", scrape_documents,
-            page, context, bronze_dir, capture_dir,
-            min_year=docs_min_year,
-            explore=config.get("explore", "false").lower() == "true",
-        )
-    if mode in ("all", "balances"):
-        run_json["balances_results"] = _run_phase(
-            "balances", scrape_balances, page, bronze_dir, capture_dir,
-        )
-    if mode in ("all", "performance"):
-        run_json["performance_results"] = _run_phase(
-            "performance", scrape_performance,
-            page, bronze_dir, capture_dir,
-        )
-    if mode in ("all", "positions") and _login_has_daf(dimensions):
-        # The DAF rides every positions-bearing mode so each such dump
-        # is a COMPLETE holdings observation (retail + DAF) — gold's
-        # per-source latest-snapshot anchor treats it as one, and a
-        # partial dump would read as the uncovered accounts having
-        # emptied. --mode all runs the full DAF phase (events, exports,
-        # documents); --mode positions runs the master + pool slice.
-        # There is deliberately no DAF-only mode for the same reason.
-        daf_results = _run_phase(
-            "daf", scrape_daf,
-            page, bronze_dir, capture_dir, since_date,
-            positions_only=(mode == "positions"),
-        )
-        if daf_results.get("status") == "no-daf":
-            # The account enumeration said this login HAS a DAF, so a
-            # no-daf outcome here is a failure (SSO bounce, empty
-            # roster), not an absence — escalate so the loader's
-            # completeness guard treats the dump's positions as
-            # partial rather than loading a retail-only observation.
-            daf_results = {"status": "error",
-                           "error": "DAF expected (enumerated in the "
-                                    "account selector) but the "
-                                    "charitable walk found none",
-                           **{k: v for k, v in daf_results.items()
-                              if k != "status"}}
-            log.warning("DAF phase failed: %s", daf_results["error"])
-        run_json["daf_results"] = daf_results
-    elif mode in ("all", "positions"):
-        log.info("no Fidelity Charitable relationship enumerated; "
-                 "skipping DAF phase")
+    for phase in selected:
+        result = _run_phase(phase, w) if phase.isolated else phase.run(w)
+        if result is not None:
+            run_json[phase.key] = result
     # What each attempted phase actually got. Always written, so an
     # empty `gaps` list is a positive statement of coverage rather
     # than the absence of a field.
     run_json["coverage"] = phase_coverage(
-        run_json, (config.get("since"), config.get("until")),
+        PASSES, run_json, (config.get("since"), config.get("until")),
     )
 
     # The status stays `complete` whatever the phases did, and that is

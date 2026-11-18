@@ -227,7 +227,7 @@ def test_a_failed_position_is_fetched_by_the_next_run(tmp_path, no_pause):
     assert first["status"] == "partial"
     failed = {e["position"]: e for e in first["open"]}["CUSIPBBB2"]
     assert "fetched_in" not in failed
-    cov = download.phase_coverage({"lots_results": result})
+    cov = download.phase_coverage(download.PASSES, {"lots_results": result})
     assert cov["lots"]["complete"] is False
     api = _api(ROWS)
     _run(tmp_path, "20990102T000000Z", api, prev=first)
