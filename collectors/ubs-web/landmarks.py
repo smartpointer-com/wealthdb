@@ -14,6 +14,7 @@ AGENTS.md §1.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 
 # ============================================================
 # Hosts and entry-point URLs
@@ -505,3 +506,49 @@ def iban_canonical(text: str | None) -> str | None:
         return None
     c = re.sub(r"\s+", "", str(text)).upper()
     return c if re.fullmatch(r"CH\d{2}[0-9A-Z]{17}", c) else None
+
+
+# ============================================================
+# SPA URLs
+# ============================================================
+
+def _href_to_route(href: str) -> str:
+    """Reduce a full or relative href down to its hash route."""
+    if "#" in href:
+        return "#" + href.split("#", 1)[1]
+    return href
+
+
+def _origin(url: str) -> str:
+    """Return the `scheme://host[:port]` of a URL."""
+    s = urlsplit(url)
+    return f"{s.scheme}://{s.netloc}"
+
+
+def _build_spa_url(current_url: str, hash_route: str) -> str:
+    """Replace just the fragment of the post-auth SPA URL."""
+    s = urlsplit(current_url)
+    base = f"{s.scheme}://{s.netloc}{s.path}"
+    if s.query:
+        base += "?" + s.query
+    return base + (hash_route if hash_route.startswith("#") else "#" + hash_route)
+
+
+def _extract_query_param(href: str, name: str) -> str | None:
+    """Pull a query-string param out of a URL whose query lives in
+    the hash fragment (SPA-style), which urlsplit's query field does
+    not reach."""
+    if "#" in href:
+        _, frag = href.split("#", 1)
+    else:
+        frag = href
+    if "?" not in frag:
+        return None
+    _, qs = frag.split("?", 1)
+    for kv in qs.split("&"):
+        if "=" not in kv:
+            continue
+        k, v = kv.split("=", 1)
+        if k == name:
+            return v
+    return None
