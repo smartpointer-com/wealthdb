@@ -1154,40 +1154,6 @@ def _extract_tx_row_cells(row) -> list[str] | None:
         texts[1],  # Action / Transaction Type
     ]
 
-def _parse_more_modal_text(text: str) -> dict:
-    """Parse Schwab's "More"-modal inner text into a flat
-    key→value dict. Lines look like::
-
-        Trade Date            05/25/2022
-        Settle Date           05/26/2022
-        Action                Sell to Open
-
-    i.e. a label column then a value column, separated by 2+
-    spaces. Section headers and the modal chrome are skipped.
-    """
-    skip = {
-        "Print",
-        "Transactions",
-        "Trade Details",
-        "Transactions Trade Details",
-        "Trade Transaction Details",
-        "Deposit Details",
-        "Check Details",
-        "Check Image Details",
-        "Money Market Activity Details",
-    }
-    fields: dict[str, str] = {}
-    for line in text.split("\n"):
-        line = line.strip()
-        if not line or line in skip:
-            continue
-        m = re.match(r"^(.+?)\s{2,}(.+)$", line)
-        if m:
-            key = m.group(1).strip()
-            val = m.group(2).strip()
-            if key:
-                fields[key] = val
-    return fields
 
 # Rows whose "More" opens the wire-details dialog. That modal
 # lazy-loads its content and ignores Escape, and its leaked overlay
@@ -1301,11 +1267,12 @@ def _scrape_more_details(page, account_suffix: str,
                         modal = page.locator('[role="dialog"]:visible').first
                         modal.wait_for(state="visible", timeout=5_000)
                         raw_text = modal.inner_text()
-                        fields = _parse_more_modal_text(raw_text)
+                        # `fields` stays empty: the loader parses
+                        # `raw_text` (more_detail.py).
                         details.append({
                             "row_key": row_key,
                             "row_cells": cells,
-                            "fields": fields,
+                            "fields": {},
                             "raw_text": raw_text,
                         })
                     except Exception as e:
