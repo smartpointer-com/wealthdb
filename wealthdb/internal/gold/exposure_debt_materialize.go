@@ -36,15 +36,17 @@ const exposureIssuersShown = 100
 // exposureIssuersSQL is the instant's issuers per reporting currency as
 // the report_exposure_issuers macro ranks them: the largest
 // exposureIssuersShown and the (none) row; the running share counts
-// every issuer. Each leaf has its issuer from exposure_yield_leaves. The
-// sums, the running one and the total among them, are exact
-// (exposureSum), so the ranks and shares never follow row order.
+// every issuer. Each leaf has its issuer from exposure_yield_leaves; an
+// issuer's name is picked by its leaves' values in the row's currency,
+// as the macro picks it in the currency it is asked for. The sums, the
+// running one and the total among them, are exact (exposureSum), so the
+// ranks and shares never follow row order.
 var exposureIssuersSQL = `INSERT INTO report_exposure_issuer_ranks BY NAME
 WITH ` + scaledLeavesSQL(`l AS MATERIALIZED (SELECT * FROM exposure_yield_leaves(CAST($1 AS BIGINT), 'USD'))`) + `,
 g AS (
     SELECT out_ccy, COALESCE(issuer_key, '(none)') AS ik,
            CASE WHEN COALESCE(issuer_key, '(none)') = '(none)' THEN '(none)'
-                ELSE first(issuer_name ORDER BY name_rank DESC, abs(value) DESC, issuer_name) END AS issuer,
+                ELSE first(issuer_name ORDER BY name_rank DESC, abs(value * k) DESC, issuer_name) END AS issuer,
            MIN(lei) AS lei, SUM(` + exposureDecimal("value * k") + `) AS d_value,
            SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE asset_class = 'public_equity') AS d_equity,
            SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE debt) AS d_debt,
@@ -55,7 +57,7 @@ r AS (
            CAST(sum(g.d_value) OVER (PARTITION BY g.out_ccy) AS DOUBLE) AS total,
            CAST(sum(g.d_value) OVER (w ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS DOUBLE) AS running
       FROM g
-    WINDOW w AS (PARTITION BY g.out_ccy ORDER BY g.ik = '(none)', g.d_value DESC, g.ik))
+    WINDOW w AS (PARTITION BY g.out_ccy ORDER BY g.ik = '(none)', CAST(g.d_value AS DECIMAL(28,4)) DESC, g.ik))
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, rank, issuer, lei, value,
        100 * value / NULLIF(total, 0) AS share_pct,
        CASE WHEN ik <> '(none)' THEN 100 * running / NULLIF(total, 0) END AS cumulative_share_pct,

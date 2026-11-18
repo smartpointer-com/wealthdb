@@ -327,6 +327,7 @@ PLAN_INCOME_PARTS = ("investment_income", "other_income", "principal_returned", 
 
 PLAN_OUTFLOW_PARTS = ("operating_out", "debt_service")
 
+
 def cashflow_plan_cards(f):
     """The Cash Flow dashboard's projection cards and the Wealth
     Overview's projected net, or on the twin their privacy variants.

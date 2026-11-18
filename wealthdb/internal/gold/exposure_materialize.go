@@ -26,8 +26,8 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
  GROUP BY ALL`
 
 // exposureSum is the exact sum of the DOUBLE expression x, as a DOUBLE:
-// each term rounded to exposureSumScale decimals, the terms summed as
-// decimals, the sum read back once. A float sum follows the order of its
+// each term rounded to twelve decimals (exposureDecimal), the terms
+// summed as decimals, the sum read back once. A float sum follows the order of its
 // terms, which a parallel aggregate does not fix, so the same gold would
 // write other last bits on another run.
 func exposureSum(x string) string {

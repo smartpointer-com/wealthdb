@@ -11,7 +11,9 @@ import (
 // DOUBLE (the look-through splits values by weight) and is read here at
 // four decimals, as every money column is. A macro's ORDER BY does not
 // bind the query that reads it, so a reader whose macro orders by its
-// own columns repeats that ORDER BY, and tied rows print in one order.
+// own columns repeats that ORDER BY, a value read at the four decimals
+// it prints, then its key: rows of one printed value print in one order
+// whatever the last bits of their sums.
 
 // ExposureShares are the share columns every aggregate view carries, in
 // percent of net worth.
@@ -23,7 +25,8 @@ type ExposureShares struct {
 // op its errors name, its macro, the columns that key its rows, whether
 // they carry a class share, whether the macro takes a country reading,
 // and the ORDER BY its reader repeats, empty where the reader keeps the
-// macro's order as it comes.
+// macro's order as it comes: sectors and sizes order by their class's
+// total, a column they do not return.
 type exposureDimension struct {
 	op, macro, keys     string
 	classShare, country bool
@@ -34,19 +37,26 @@ type exposureDimension struct {
 // its keys, then its value, its shares and its quality (exposureRows).
 var exposureDimensions = map[string]exposureDimension{
 	"classes": {op: "ExposureClasses", macro: "report_exposure_classes", keys: "asset_class",
-		order: "value DESC, asset_class"},
+		order: exposureValueOrder + ", asset_class"},
 	"sectors": {op: "ExposureSectors", macro: "report_exposure_sectors", keys: "asset_class, sector", classShare: true},
 	"sizes":   {op: "ExposureSizes", macro: "report_exposure_sizes", keys: "asset_class, size", classShare: true},
 	"countries": {op: "ExposureCountries", macro: "report_exposure_countries", keys: "country, country_name, region",
-		country: true, order: "value DESC, country, region"},
+		country: true, order: exposureValueOrder + ", country, region"},
 	"currencies": {op: "ExposureCurrencies", macro: "report_exposure_currencies", keys: "currency, currency_kind",
-		order: "value DESC, currency"},
-	"credit": {op: "ExposureCredit", macro: "report_exposure_credit", keys: "bucket, grade", classShare: true},
+		order: exposureValueOrder + ", currency"},
+	"credit": {op: "ExposureCredit", macro: "report_exposure_credit", keys: "bucket, grade", classShare: true,
+		order: "exposure_bucket_order('credit', bucket)"},
 	"maturities": {op: "ExposureMaturities", macro: "report_exposure_maturities", keys: "bucket, NULL",
-		classShare: true},
-	"coupons": {op: "ExposureCoupons", macro: "report_exposure_coupons", keys: "coupon_kind, NULL", classShare: true},
-	"cycles":  {op: "ExposureCycles", macro: "report_exposure_cycles", keys: "cycle, NULL", classShare: true},
+		classShare: true, order: "exposure_bucket_order('maturity', bucket)"},
+	"coupons": {op: "ExposureCoupons", macro: "report_exposure_coupons", keys: "coupon_kind, NULL", classShare: true,
+		order: "exposure_bucket_order('coupon', coupon_kind)"},
+	"cycles": {op: "ExposureCycles", macro: "report_exposure_cycles", keys: "cycle, NULL", classShare: true,
+		order: "exposure_bucket_order('cycle', cycle)"},
 }
+
+// exposureValueOrder orders a reader's rows by their value as printed,
+// the largest first.
+const exposureValueOrder = "CAST(value AS DECIMAL(28,4)) DESC"
 
 // exposureCells are the scan targets an aggregate row shares: its value,
 // its shares, its class share (nil for a view without one) and its
@@ -199,7 +209,7 @@ func ExposureSitus(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]E
 	return scanRows(ctx, db, "ExposureSitus", `
 SELECT situs, country_name, region, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, funds_pct, quality
   FROM report_exposure_situs(?, ?)
- ORDER BY value DESC, situs`, []any{asOf, ccy}, func(r *ExposureSitusRow) []any {
+ ORDER BY `+exposureValueOrder+`, situs`, []any{asOf, ccy}, func(r *ExposureSitusRow) []any {
 		return []any{&r.Situs, str(&r.CountryName), str(&r.Region), dec(&r.Value), flt(&r.SharePct), flt(&r.FundsPct),
 			&r.Quality}
 	})
@@ -269,7 +279,7 @@ SELECT fund, name, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, via, proxy,
        composition_as_of, gap_days, lines, weight_sum, domicile, situs, situs_basis, replication, lending,
        hedged_currency, declaration_as_of, declared_dimensions, quality
   FROM report_exposure_funds(?, ?)
- ORDER BY fund = '(other holdings)', abs(value) DESC, fund`, []any{asOf, ccy}, func(r *ExposureFundRow) []any {
+ ORDER BY fund = '(other holdings)', abs(CAST(value AS DECIMAL(28,4))) DESC, fund`, []any{asOf, ccy}, func(r *ExposureFundRow) []any {
 		return []any{&r.Fund, str(&r.Name), dec(&r.Value), flt(&r.SharePct), str(&r.Via), str(&r.Proxy),
 			flt(&r.Leverage), str(&r.Provider), str(&r.Basis), i64(&r.CompositionAsOf), i64(&r.GapDays),
 			i64(&r.Lines), flt(&r.WeightSum), str(&r.Domicile), str(&r.Situs), str(&r.SitusBasis),

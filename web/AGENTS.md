@@ -69,10 +69,10 @@ port-forward; auth is Metabase's own login.
   there, never in a migration.
   [derived/README.md](../wealthdb/internal/gold/derived/README.md) says
   how.
-- A card that starts reading a new view or table raises
+- A card that starts reading a new view, macro or table raises
   `MIN_GOLD_SCHEMA` to the gold schema version that brings it: the
-  derived version for a view, the migration for a table. A test holds
-  it there.
+  derived version for a view or macro, the migration for a table. A
+  test holds it there.
 - The gold DuckDB connection is added at runtime by `provision.py`,
   never baked into the image.
 - This component holds **no source credentials**. Its one secret is the

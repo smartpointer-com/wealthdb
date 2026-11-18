@@ -94,33 +94,6 @@ CREATE VIEW web_card_balances_history AS
            balance, balance_usd, balance_chf, balance_eur, balance_gbp
       FROM serving_card_balances_history;
 
--- income_projected_types: the projection's income types an income line
--- of detailed type `detailed` can be (gold's incomeTypeSQL): interest a
--- bond pays is a coupon, a dividend a fund pays a distribution. NULL for
--- a type the projection does not project (canonical's ProjectedIncome).
-CREATE MACRO income_projected_types(detailed) AS
-    CASE detailed WHEN 'INCOME_INTEREST_EARNED' THEN ['interest', 'coupons']
-                  WHEN 'INCOME_DIVIDENDS' THEN ['dividends', 'distributions']
-                  WHEN 'INCOME_DISTRIBUTIONS' THEN ['distributions']
-                  WHEN 'INCOME_RENTAL' THEN ['rent']
-                  WHEN 'INCOME_RETIREMENT_PENSION' THEN ['pension'] END;
-
--- income_line_class: the operating-in class of an income line of
--- detailed type `detailed` that the projection does not project, as the
--- cash flow statement classes a receipt (canonical's FlowClassIn, which
--- cashflow_txn_nodes reads from spend_categories): a line of no type is
--- the unresolved class, one of a type no class names other receipts.
--- NULL for a projected type, whose lines are the holdings' income. The
--- cash flow projection keeps its other income by it (gold.CashflowPlanIncome).
-CREATE MACRO income_line_class(detailed) AS
-    CASE WHEN detailed IS NULL THEN '(uncategorized)'
-         WHEN income_projected_types(detailed) IS NOT NULL THEN NULL
-         WHEN detailed IN ('INCOME_SALARY', 'INCOME_GIG_ECONOMY', 'INCOME_CONTRACTOR') THEN 'earnings'
-         WHEN detailed IN ('INCOME_STAKING', 'INCOME_ROYALTIES', 'INCOME_ENERGY_FEED_IN') THEN 'yield'
-         WHEN detailed IN ('INCOME_GOVERNMENT_BENEFITS', 'INCOME_UNEMPLOYMENT', 'INCOME_LONG_TERM_DISABILITY',
-                           'INCOME_MILITARY', 'INCOME_CHILD_SUPPORT', 'INCOME_ALIMONY') THEN 'benefits'
-         ELSE 'other_receipts' END;
-
 -- web_income: every income line. income_class is its operating-in class
 -- (income_line_class), NULL for a type the projection projects, and
 -- projected_types the projection's types it can be.
@@ -198,15 +171,12 @@ SELECT CAST(epoch_ms(r.as_of * 1000) AS DATE) AS as_of_day,
        account_wrapper(r.tax_wrapper) AS tax_wrapper,
        r.asset_class,
        COALESCE(r.sector, 'unknown') AS sector,
-       CASE WHEN r.country IS NOT NULL THEN r.country
-            WHEN r.asset_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END AS country,
+       exposure_place_bucket(r.country, r.asset_class) AS country,
        co.name AS country_name,
-       COALESCE(r.region, CASE WHEN r.asset_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END)
-           AS region,
+       exposure_place_bucket(r.region, r.asset_class) AS region,
        COALESCE(r.exposure_currency, 'unknown') AS exposure_currency,
        r.currency_kind,
-       CASE WHEN r.asset_class <> 'public_equity' THEN '(none)' ELSE COALESCE(r.size, 'unknown') END
-           AS size,
+       exposure_size_bucket(r.size, r.asset_class) AS size,
        CASE WHEN r.via_funds THEN 'via funds' ELSE 'direct' END AS held,
        r.how,
        COALESCE(r.situs, 'unknown') AS situs,
@@ -623,10 +593,11 @@ CREATE VIEW web_marks AS
 -- ============================================================
 
 -- fee_rate_pct: the yearly fee rate in percent of `fees` paid over a
--- span whose daily values sum to `value_days`, on 365 days; none with no
--- value (gold's feeRate, which divides by the mean over the days held).
-CREATE MACRO fee_rate_pct(fees, value_days) AS
-    CASE WHEN value_days > 0 THEN 100 * fees * 365 / value_days END;
+-- span of `days` days held whose daily values sum to `value_days`, on
+-- 365 days; none where the mean over the days held is not above the
+-- engine's value tolerance, 1e-6 (gold's feeRate).
+CREATE MACRO fee_rate_pct(fees, value_days, days) AS
+    CASE WHEN days > 0 AND value_days / days > 1e-6 THEN 100 * fees * 365 / value_days END;
 
 -- chain_returns: the monthly returns `twr` compounded, a month with no
 -- return or one that lost everything left out; none with nothing to
@@ -701,6 +672,11 @@ CREATE VIEW web_fees AS
 -- parallel shift in basis points, over a horizon of months.
 -- ============================================================
 
+-- reporting_pick: of the four figures in the reporting currencies, the
+-- one in currency p_ccy; none for another currency.
+CREATE MACRO reporting_pick(p_ccy, usd, chf, eur, gbp) AS
+    CASE p_ccy WHEN 'USD' THEN usd WHEN 'CHF' THEN chf WHEN 'EUR' THEN eur WHEN 'GBP' THEN gbp END;
+
 -- income_class_band: the band an income line of operating-in class
 -- `class` (income_line_class) draws in on the Income dashboard.
 CREATE MACRO income_class_band(class) AS
@@ -709,7 +685,8 @@ CREATE MACRO income_class_band(class) AS
                WHEN '(uncategorized)' THEN 'uncategorized' END;
 
 -- The income in the window, in currency p_ccy, a row per amount, in
--- four arms (`arm`), one macro each, and income_window their union:
+-- four arms (`arm`), one macro each. The cards read the arms, each card
+-- those it shows, and income_window is their union for any other reader:
 --
 --   * income_expected: what today's holdings are expected to pay, each
 --     part of the projection (web_yield_parts) under the path, the rule
@@ -738,8 +715,7 @@ CREATE MACRO income_expected(p_ccy, p_rates, p_maturing, p_shift, p_horizon) AS 
                p.holding_currency,
                yield_part_income(p.fixed, p.principal, p.spread, COALESCE(rt.rate_pct, 0), p.roll_constant,
                                  p.roll_forward, p.roll_principal, p_rates, p_shift) AS amount,
-               CASE p_ccy WHEN 'USD' THEN p.fx_usd WHEN 'CHF' THEN p.fx_chf WHEN 'EUR' THEN p.fx_eur
-                          WHEN 'GBP' THEN p.fx_gbp END AS fx,
+               reporting_pick(p_ccy, p.fx_usd, p.fx_chf, p.fx_eur, p.fx_gbp) AS fx,
                p.withholding_pct, p.basis, p.reinvested, p.silver_source_id, p.account_external_id,
                p.position_key, p.account_label, p.tax_wrapper, p.vehicle, p.symbol, p.name
           FROM web_yield_parts p
@@ -769,8 +745,7 @@ CREATE MACRO income_other(p_ccy) AS TABLE (
     SELECT 'other' AS arm, 'received' AS status, income_class AS type,
            CAST(date_trunc('month', CAST(occurred_at AS DATE)) AS DATE) AS month_start, NULL::INTEGER AS m,
            CAST(occurred_at AS DATE) AS day, NULL::VARCHAR AS holding_currency, NULL::DOUBLE AS amount,
-           CASE p_ccy WHEN 'USD' THEN value_usd WHEN 'CHF' THEN value_chf WHEN 'EUR' THEN value_eur
-                      WHEN 'GBP' THEN value_gbp END AS value,
+           reporting_pick(p_ccy, value_usd, value_chf, value_eur, value_gbp) AS value,
            NULL::DOUBLE AS withheld, NULL::DOUBLE AS fx, NULL::VARCHAR AS basis, NULL::VARCHAR AS reinvested,
            income_label AS label, tax_wrapper,
            silver_source_id, account_external_id, 'class:' || income_class AS position_key, account_label,
@@ -798,11 +773,10 @@ CREATE MACRO income_run_rate(p_ccy, p_horizon) AS TABLE (
     -- day to today, by class and account.
     mg AS (
         SELECT income_class AS class, silver_source_id, account_external_id,
-               sum(CASE p_ccy WHEN 'USD' THEN value_usd WHEN 'CHF' THEN value_chf WHEN 'EUR' THEN value_eur
-                              WHEN 'GBP' THEN value_gbp END) AS got
+               sum(reporting_pick(p_ccy, value_usd, value_chf, value_eur, value_gbp)) AS got
           FROM web_income
-         WHERE CAST(occurred_at AS DATE) >= (SELECT CAST(date_trunc('month', max(day)) AS DATE) FROM web_income_days)
-           AND CAST(occurred_at AS DATE) <= (SELECT max(day) FROM web_income_days)
+         WHERE CAST(occurred_at AS DATE) >= CAST(date_trunc('month', income_today()) AS DATE)
+           AND CAST(occurred_at AS DATE) <= income_today()
            AND income_class IS NOT NULL
          GROUP BY ALL),
     px AS (
@@ -811,13 +785,13 @@ CREATE MACRO income_run_rate(p_ccy, p_horizon) AS TABLE (
           FROM pl
          WHERE month BETWEEN 1 AND p_horizon
         UNION ALL
-        SELECT 0, (SELECT CAST(date_trunc('month', max(day)) AS DATE) FROM web_income_days), class,
+        SELECT 0, CAST(date_trunc('month', income_today()) AS DATE), class,
                silver_source_id, account_external_id, account_label, tax_wrapper,
                GREATEST(0, value - coalesce(mg.got, 0))
           FROM pl
           LEFT JOIN mg USING (class, silver_source_id, account_external_id)
          WHERE month = 1
-           AND (SELECT CAST(date_trunc('month', max(day)) AS DATE) FROM web_income_days) IS NOT NULL)
+           AND income_today() IS NOT NULL)
     SELECT 'run_rate' AS arm, 'expected' AS status, class AS type, month_start, m, NULL::DATE AS day,
            NULL::VARCHAR AS holding_currency, NULL::DOUBLE AS amount, value, NULL::DOUBLE AS withheld,
            NULL::DOUBLE AS fx, NULL::VARCHAR AS basis,
@@ -827,6 +801,8 @@ CREATE MACRO income_run_rate(p_ccy, p_horizon) AS TABLE (
       FROM px
 );
 
+-- income_window: the four arms' union, the one entry point for a reader
+-- that takes the window whole. No card reads it.
 CREATE MACRO income_window(p_ccy, p_rates, p_maturing, p_shift, p_horizon) AS TABLE (
     SELECT * FROM income_received(p_ccy)
     UNION ALL
@@ -851,8 +827,7 @@ CREATE MACRO cashflow_projection(p_ccy, p_rates, p_maturing, p_shift, p_horizon)
         SELECT p.month AS m, pl.silver_source_id IS NOT NULL AS pool,
                sum((yield_part_income(p.fixed, p.principal, p.spread, COALESCE(rt.rate_pct, 0), p.roll_constant,
                                       p.roll_forward, p.roll_principal, p_rates, p_shift))
-                   * CASE p_ccy WHEN 'USD' THEN p.fx_usd WHEN 'CHF' THEN p.fx_chf WHEN 'EUR' THEN p.fx_eur
-                                WHEN 'GBP' THEN p.fx_gbp END) AS v
+                   * reporting_pick(p_ccy, p.fx_usd, p.fx_chf, p.fx_eur, p.fx_gbp)) AS v
           FROM web_yield_parts p
           LEFT JOIN web_yield_rates rt ON rt.currency = p.holding_currency AND rt.month = p.month
                AND rt.path = p_rates
@@ -863,8 +838,7 @@ CREATE MACRO cashflow_projection(p_ccy, p_rates, p_maturing, p_shift, p_horizon)
          GROUP BY 1, 2),
     pr AS (
         SELECT e.month AS m, pl.silver_source_id IS NOT NULL AS pool,
-               sum(e.amount * CASE p_ccy WHEN 'USD' THEN e.fx_usd WHEN 'CHF' THEN e.fx_chf WHEN 'EUR' THEN e.fx_eur
-                                         WHEN 'GBP' THEN e.fx_gbp END) AS v
+               sum(e.amount * reporting_pick(p_ccy, e.fx_usd, e.fx_chf, e.fx_eur, e.fx_gbp)) AS v
           FROM web_yield_events e
           LEFT JOIN web_cashflow_pool pl ON pl.silver_source_id = e.silver_source_id
                AND pl.account_external_id = e.account_external_id

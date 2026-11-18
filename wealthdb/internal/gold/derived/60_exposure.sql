@@ -274,17 +274,28 @@ CREATE MACRO exposure_maturity_split(p_bucket, p_page) AS
 CREATE MACRO exposure_credit_grade(p_bucket) AS
     CASE WHEN p_bucket IN ('AAA', 'AA', 'A', 'BBB') THEN 'IG' WHEN p_bucket IN ('BB', 'B') THEN 'HY' END;
 
+-- exposure_place_bucket: a leaf's country or region bucket, p_place:
+-- (none) for a metal or a coin, else unknown where none is known.
+-- exposure_size_bucket: a leaf's size bucket, p_size: (none) outside
+-- public equity, else unknown where none is known.
+CREATE MACRO exposure_place_bucket(p_place, p_class) AS
+    COALESCE(p_place, CASE WHEN p_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END);
+
+CREATE MACRO exposure_size_bucket(p_size, p_class) AS
+    CASE WHEN p_class <> 'public_equity' THEN '(none)' ELSE COALESCE(p_size, 'unknown') END;
+
 -- exposure_bucket_order: the place of a bucket in its debt or equity
 -- dimension's order, as the views print them: p_dimension is credit,
--- maturity, coupon or cycle, as report_exposure_debt names them. (none)
--- comes last.
+-- maturity, coupon or cycle, as report_exposure_debt names them, or size.
+-- (none) comes last.
 CREATE MACRO exposure_bucket_order(p_dimension, p_bucket) AS
     list_position(CASE p_dimension
                        WHEN 'credit' THEN ['AAA', 'AA', 'A', 'BBB', 'BB', 'B', 'unrated', 'cash', '(none)']
                        WHEN 'maturity' THEN ['under 1y', '1-3y', '3-5y', '5-10y', '10-20y', 'over 20y', 'perpetual',
                                              'unknown', '(none)']
                        WHEN 'coupon' THEN ['fixed', 'floating', 'inflation_linked', 'zero', 'unknown', '(none)']
-                       WHEN 'cycle' THEN ['cyclical', 'defensive', 'sensitive', 'unknown', '(none)'] END,
+                       WHEN 'cycle' THEN ['cyclical', 'defensive', 'sensitive', 'unknown', '(none)']
+                       WHEN 'size' THEN ['large', 'mid', 'small', 'unknown', '(none)'] END,
                   p_bucket);
 
 -- exposure_class_share: a bucket's share, in percent, of the total of
@@ -606,7 +617,9 @@ CREATE MACRO exposure_funds_at(p_asof) AS TABLE (
 -- security's, else the line's own label. Each mix holds only the lines
 -- that state its dimension, and a dimension counts only where a line
 -- of the proxy's file labels it itself. Only lines of positive
--- weight count, so a short line does not offset a long one.
+-- weight count, so a short line does not offset a long one. The weights
+-- are summed as the decimals they are stored as, so a share never
+-- follows the order of the lines.
 CREATE MACRO exposure_divergence(p_asof) AS TABLE (
     WITH fa AS MATERIALIZED (SELECT * FROM exposure_funds_at(p_asof)),
     sides AS (
@@ -623,7 +636,7 @@ CREATE MACRO exposure_divergence(p_asof) AS TABLE (
                (VALUES ('fund'), ('proxy')) x(side)
          WHERE f.via = 'direct' AND c.source_kind = 'report'),
     lines AS MATERIALIZED (
-        SELECT s.fund_ref, s.proxy_ref, s.side, l.weight::DOUBLE AS w,
+        SELECT s.fund_ref, s.proxy_ref, s.side, l.weight AS w,
                COALESCE(sec.sector, ls.value) AS sector,
                COALESCE(sec.risk_country, lc.value, sec.domicile) AS country,
                trim(COALESCE(l.sector, '')) <> '' AS own_sector,
@@ -639,7 +652,7 @@ CREATE MACRO exposure_divergence(p_asof) AS TABLE (
          WHERE COALESCE(la.value, 'public_equity') = 'public_equity' AND l.weight > 0),
     mix AS (
         SELECT fund_ref, proxy_ref, side, dim, bucket,
-               SUM(w) / SUM(SUM(w)) OVER (PARTITION BY fund_ref, side, dim) AS share
+               CAST(SUM(w) AS DOUBLE) / CAST(SUM(SUM(w)) OVER (PARTITION BY fund_ref, side, dim) AS DOUBLE) AS share
           FROM (SELECT fund_ref, proxy_ref, side, w, 'sector' AS dim, sector AS bucket FROM lines
                  WHERE sector IS NOT NULL
                 UNION ALL
@@ -1029,22 +1042,19 @@ CREATE MACRO exposure_leaves(p_asof, p_ccy, p_country := 'risk') AS TABLE (
 
 -- exposure_labeled_leaves: exposure_leaves with each leaf's buckets as
 -- the views name them. A sector or a currency no source states is
--- unknown. A country or a region is (none) for a metal or a coin, else
--- unknown where none is known. A size is (none) outside public equity,
--- else unknown where none is known. security is the row a leaf counts
--- under in the securities view: a fund's remainder or leverage by its
--- fund; cash no declaration or security names by its currency; a
--- security by its key; a line no key names by its fund and its name; a
--- holding no key names by its source and instrument.
+-- unknown. A country or a region is its exposure_place_bucket, a size
+-- its exposure_size_bucket. security is the row a leaf counts under in
+-- the securities view: a fund's remainder or leverage by its fund; cash
+-- no declaration or security names by its currency; a security by its
+-- key; a line no key names by its fund and its name; a holding no key
+-- names by its source and instrument.
 CREATE MACRO exposure_labeled_leaves(p_asof, p_ccy, p_country := 'risk') AS TABLE (
     SELECT l.*,
            COALESCE(l.sector, 'unknown') AS sector_bucket,
-           CASE WHEN l.country IS NOT NULL THEN l.country
-                WHEN l.asset_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END AS country_bucket,
-           COALESCE(l.region, CASE WHEN l.asset_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END)
-               AS region_bucket,
+           exposure_place_bucket(l.country, l.asset_class) AS country_bucket,
+           exposure_place_bucket(l.region, l.asset_class) AS region_bucket,
            COALESCE(l.currency, 'unknown') AS currency_bucket,
-           CASE WHEN l.asset_class <> 'public_equity' THEN '(none)' ELSE COALESCE(l.size, 'unknown') END AS size_bucket,
+           exposure_size_bucket(l.size, l.asset_class) AS size_bucket,
            CASE WHEN l.kind IN ('remainder', 'leverage') THEN '(' || l.kind || ') ' || l.fund_ref
                 WHEN l.asset_class = 'cash' AND NOT l.declared AND (l.key IS NULL OR l.key LIKE 'name:%')
                      THEN 'cash:' || l.currency
@@ -1218,7 +1228,7 @@ CREATE MACRO exposure_yield_leaves(p_asof, p_ccy) AS TABLE (
     WITH l AS MATERIALIZED (SELECT * FROM exposure_leaves(p_asof, p_ccy)),
     t AS (SELECT * FROM instrument_terms_at(p_asof)),
     rf AS (SELECT exposure_key(fund_ref) AS fund_ref,
-                  arg_max(bucket_low, list_position(['AAA', 'AA', 'A', 'BBB', 'BB', 'B'], bucket_low)) AS bucket_low
+                  arg_max(bucket_low, exposure_bucket_order('credit', bucket_low)) AS bucket_low
              FROM yield_rating_funds GROUP BY 1),
     gk AS (SELECT exposure_key(security_key) AS key, first(lei ORDER BY as_of DESC, lei) AS lei
              FROM security_identities WHERE provider = 'gleif' AND lei IS NOT NULL GROUP BY 1),
@@ -1314,7 +1324,10 @@ CREATE MACRO exposure_yield_leaves(p_asof, p_ccy) AS TABLE (
 -- worth (cumulative_share_pct) and what part of the issuer's value is
 -- equity, debt and cash. Its name is GLEIF's, else its stock's, else its
 -- largest leaf's. The leaves no issuer applies to are one (none) row at
--- the end.
+-- the end. The rows rank by their value at four decimals, as a money
+-- column prints, then by issuer_key: issuers of one printed value keep
+-- one order whatever the last bits of their sums, and the running share
+-- follows that order.
 CREATE MACRO report_exposure_issuers(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT *, COALESCE(issuer_key, '(none)') AS ik FROM exposure_yield_leaves(p_asof, p_ccy)),
     t AS (SELECT SUM(value) AS total FROM l),
@@ -1329,9 +1342,10 @@ CREATE MACRO report_exposure_issuers(p_asof, p_ccy) AS TABLE (
                COUNT(DISTINCT key) AS securities,
                exposure_quality(flags, value) AS quality
           FROM l GROUP BY ik)
-    SELECT g.issuer, g.lei, g.value, 100 * g.value / NULLIF(t.total, 0) AS share_pct,
+    SELECT g.issuer_key, g.issuer, g.lei, g.value, 100 * g.value / NULLIF(t.total, 0) AS share_pct,
            CASE WHEN g.issuer_key <> '(none)' THEN
-                100 * SUM(g.value) OVER (ORDER BY g.issuer_key = '(none)', g.value DESC, g.issuer_key
+                100 * SUM(g.value) OVER (ORDER BY g.issuer_key = '(none)', CAST(g.value AS DECIMAL(28,4)) DESC,
+                                                  g.issuer_key
                                          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) / NULLIF(t.total, 0) END
                AS cumulative_share_pct,
            100 * COALESCE(g.equity, 0) / NULLIF(g.value, 0) AS equity_pct,
@@ -1339,7 +1353,7 @@ CREATE MACRO report_exposure_issuers(p_asof, p_ccy) AS TABLE (
            100 * COALESCE(g.cash, 0) / NULLIF(g.value, 0) AS cash_pct,
            g.securities, g.quality
       FROM g, t
-     ORDER BY g.issuer_key = '(none)', g.value DESC, g.issuer_key
+     ORDER BY g.issuer_key = '(none)', CAST(g.value AS DECIMAL(28,4)) DESC, g.issuer_key
 );
 
 -- exposure_debt_buckets: each leaf of exposure_yield_leaves in each of
@@ -1421,8 +1435,7 @@ CREATE MACRO report_exposure_sizes(p_asof, p_ccy) AS TABLE (
            exposure_quality(l.flags, l.value) AS quality
       FROM l JOIN c USING (asset_class), t
      GROUP BY l.asset_class, l.size_bucket, t.total, c.class_total
-     ORDER BY c.class_total DESC, l.asset_class,
-              CASE l.size_bucket WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 WHEN 'unknown' THEN 4 ELSE 5 END
+     ORDER BY c.class_total DESC, l.asset_class, exposure_bucket_order('size', l.size_bucket)
 );
 
 -- report_exposure_countries: the leaves by country, split by direct.

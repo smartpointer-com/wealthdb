@@ -281,8 +281,7 @@ def income_projected_cards(f):
     # with none picked, as Net income counts them.
     line_days = "\n     [[AND CAST(occurred_at AS DATE) IN (SELECT day FROM web_income_days WHERE {{time_range}})]]"
     # The rest of the current month, as a share of its days.
-    month_rest = ("(SELECT (day(last_day(max(day))) - day(max(day))) / day(last_day(max(day)))"
-                  " FROM web_income_days)")
+    month_rest = "((day(last_day(income_today())) - day(income_today())) / day(last_day(income_today())))"
     keys = "silver_source_id, account_external_id, position_key, account_label, vehicle, symbol, name"
     # The holdings' halves, every line's received, every line's expected,
     # and the four (income_window's arms).
@@ -291,7 +290,7 @@ def income_projected_cards(f):
     every = (*got, *due)
 
     def window_kept(typed=True):
-        """The optional clauses keeping an income_window row whose source,
+        """The optional clauses keeping an arm's row whose source,
         account, tax wrapper and type the pickers select. An other line
         keeps its label, a run-rate its class and a holding's row its
         type the picked labels map to. With `typed` False, every type."""
@@ -486,7 +485,7 @@ def income_projected_cards(f):
            "         sum(value) FILTER (WHERE status = 'expected') AS expected\n"
            "    FROM a\n   GROUP BY 1, 2, 3)")
     positions = ("r AS (\n"
-                 "  SELECT COALESCE(h.vehicle, i.vehicle) AS vehicle,\n"
+                 "  SELECT silver_source_id, account_external_id, COALESCE(h.vehicle, i.vehicle) AS vehicle,\n"
                  "         COALESCE(h.account_label, i.account_label) AS account_label,\n"
                  "         COALESCE(h.symbol, i.symbol) AS symbol, COALESCE(h.name, i.name) AS name, position_key,\n"
                  "         h.quantity, h.price, h.value,\n"
@@ -494,7 +493,8 @@ def income_projected_cards(f):
                  "    FROM hold h\n"
                  "    FULL JOIN inc i USING (silver_source_id, account_external_id, position_key))")
     position_order = ("\n  FROM r\n ORDER BY vehicle NULLS LAST, received + expected DESC, symbol, name,"
-                      " account_label, position_key")
+                      " account_label, position_key,"
+                      " silver_source_id, account_external_id")
     position_desc = ("Each position's income received and expected, by vehicle. A class row holds an "
                      "account's other lines and has no payments; click a holding's symbol or name to list its.")
     # A click on a position's symbol or name picks the position the
@@ -593,14 +593,14 @@ POSITION_TAG = {"id": "position-tag", "name": "position", "display-name": "Posit
 # one template tag of a card. So each of its field filters is bound to
 # the view whose values its picker's dropdown lists, and every view the
 # card reads keeps the rows whose source, account or tax wrapper that
-# view's selected rows carry (`kept` in income_projected_cards). A
-# source with no income line is still a source, so the source's view is
-# the sources', not the income's; the same holds for a tax wrapper,
-# whose picker lists every account's. The Type binds the income lines'
-# label, which `kept` maps to the holdings' types (projected_types) and
-# the run-rate's classes (income_class). The Time range
-# reaches them the same way, through the days the income received
-# covers.
+# view's selected rows carry (`window_kept` over the window's arms,
+# `kept` over the other views, in income_projected_cards). A source
+# with no income line is still a source, so the source's view is the
+# sources', not the income's; the same holds for a tax wrapper, whose
+# picker lists every account's. The Type binds the income lines' label,
+# which `window_kept` maps to the holdings' types (projected_types) and
+# the run-rate's classes (income_class). The Time range reaches them the
+# same way, through the days the income received covers.
 INCOME_PROJECTED_SELECTION = {"source": ("web_sources_latest", "silver_source_id"),
                               "account": ("web_income", "account_label"),
                               "tax_wrapper": ("web_sources_latest", "tax_wrapper")}

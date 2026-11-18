@@ -1,7 +1,7 @@
 """The Yield dashboard's cards and its twin's. Part of provision.py."""
 
 from sqlkit import (BENCHMARK_TAG, _ccy_case, _columns_with_benchmark, EARNING_VALUE, EXPOSURE_FILTERS,
-                    HORIZON_MONTHS, LINES_VIZ, native_tags, _native_where, PART_INCOME, PARTS_AHEAD,
+                    HORIZON_MONTHS, LINES_VIZ, native_tags, _native_where, part_income, PARTS_AHEAD,
                     PARTS_FROM, PEAK, _peak_cte, PICKED_BENCHMARK, PRIVACY_DESC, PROJECTION_TAGS, _share_viz,
                     twin_name, _window_end)
 
@@ -78,7 +78,7 @@ def yield_cards(f):
             "    FROM web_yield" + _native_where(held_tags) +
             "\n     AND currency = {{currency}}\n     AND today)")
     horizon = (held + ",\nx AS (\n"
-               f"  SELECT p.month, ({PART_INCOME}) * {_ccy_case('p.fx')} AS income\n" + PARTS_FROM + "\n" + HELD_JOIN +
+               f"  SELECT p.month, ({part_income()}) * {_ccy_case('p.fx')} AS income\n" + PARTS_FROM + "\n" + HELD_JOIN +
                PARTS_AHEAD + ")\n")
     # The horizon's income per year over the value that earns it.
     horizon_yield = ("SELECT 100 * (SELECT sum(income) FROM x) * 12 / " + HORIZON_MONTHS +
@@ -201,9 +201,9 @@ def yield_cards(f):
     # the picked path and shift: each part's income there less its income
     # here, as the engine's income per 100bp reads it. A floating rate
     # floors at zero, so below zero a point more earns less than a point.
-    up = PART_INCOME.replace("{{shift}})", "{{shift}} + 100)")
+    up = part_income("{{shift}} + 100")
     sens = (held + ",\ns AS (\n"
-            f"  SELECT p.holding_currency, (({up}) - ({PART_INCOME})) * {_ccy_case('p.fx')} AS v\n" + PARTS_FROM +
+            f"  SELECT p.holding_currency, (({up}) - ({part_income()})) * {_ccy_case('p.fx')} AS v\n" + PARTS_FROM +
             "\n" + HELD_JOIN + PARTS_AHEAD + ")")
     if privacy:
         proj("Income sensitivity to rates", "bar",
@@ -229,7 +229,7 @@ def yield_cards(f):
          "above 100% is not covered by earnings.",
          end + "\nSELECT DISTINCT symbol, name, payout_pct, dividend_yield_pct\n  FROM e\n"
          " WHERE kind = 'stock'\n   AND payout_pct IS NOT NULL AND dividend_yield_pct IS NOT NULL\n"
-         " ORDER BY dividend_yield_pct DESC, symbol",
+         " ORDER BY dividend_yield_pct DESC, symbol, name, payout_pct",
          {"graph.dimensions": ["payout_pct"], "graph.metrics": ["dividend_yield_pct"],
           "graph.tooltip_columns": ["symbol", "name"], **_share_viz("payout_pct", "dividend_yield_pct")}, exempt=True)
 

@@ -135,12 +135,15 @@ func TestFeeRatePctIsFeeRate(t *testing.T) {
 		fees := (r.Float64() - 0.1) * 5e3
 		days := int64(1 + r.IntN(400))
 		mean := (r.Float64() - 0.05) * 1e6
-		if i%50 == 0 {
+		switch {
+		case i%50 == 0:
 			mean = 0
+		case i%25 == 0:
+			mean = r.Float64() * 2e-6 // about valueTol
 		}
 		var got sql.NullFloat64
-		if err := db.QueryRowContext(ctx, `SELECT fee_rate_pct(?::DOUBLE, ?::DOUBLE) / 100`, fees,
-			mean*float64(days)).Scan(&got); err != nil {
+		if err := db.QueryRowContext(ctx, `SELECT fee_rate_pct(?::DOUBLE, ?::DOUBLE, ?) / 100`, fees,
+			mean*float64(days), days).Scan(&got); err != nil {
 			t.Fatal(err)
 		}
 		if want := feeRate(fees, mean, days); !nearPtr(nullFloat(got), want, 1e-12) {

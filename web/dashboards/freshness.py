@@ -18,9 +18,10 @@ def freshness_cards(f):
     marks keep their dates. The declared accounts (config
     `declared_accounts`) sit under their own reserved source, which has no
     feed and so no snapshot: counted, it would be the stalest source every
-    day, so a card keeps the sources that are a feed (is_feed). The freshness table's twin shows each value as a share of
-    the latest net worth: the dashboard is unfiltered by design, so that
-    scale IS the selected-sources scale, and the source rows total 100.
+    day, so a card keeps the sources that are a feed (is_feed). The
+    freshness table's twin shows each value as a share of the latest net
+    worth: the dashboard is unfiltered by design, so that scale IS the
+    selected-sources scale, and the source rows total 100.
     It has a description of its own: the base card's promises a money
     column, which there holds shares."""
     f = f.using(tail=PRIVACY_DESC if f.privacy else "")

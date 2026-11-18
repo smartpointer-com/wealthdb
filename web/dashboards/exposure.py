@@ -99,7 +99,7 @@ def exposure_cards(f):
              last + f",\nr AS (SELECT {dim} AS k, sum(share_pct) AS latest FROM e GROUP BY 1)\n"
              f"SELECT w.as_of_day, {band} AS {label},\n       sum(w.{metric}) AS {metric}\n"
              f"  FROM w\n  LEFT JOIN r ON r.k = w.{dim}\n GROUP BY 1, 2\n"
-             f" ORDER BY max({rank}), {'2, ' if fold else ''}1",
+             f" ORDER BY max({rank}), 2, 1",
              {"graph.dimensions": ["as_of_day", label], "graph.metrics": [metric], **STACKED_VIZ,
               **({} if metric == "value" else _share_viz(metric))}, exempt=not amounts)
 
@@ -195,7 +195,7 @@ def exposure_cards(f):
          "       100 * sum(share_pct) / sum(sum(share_pct)) OVER () AS class_share_pct\n"
          "  FROM e\n WHERE asset_class = 'public_equity'\n GROUP BY 1)\n"
          + _beside("size", "class_share_pct", "size", amount, weight="100 * share_pct / sum(share_pct) OVER ()",
-                   order="CASE size WHEN 'large' THEN 1 WHEN 'mid' THEN 2 WHEN 'small' THEN 3 ELSE 4 END",
+                   order="exposure_bucket_order('size', size)",
                    keep_series=True),
          bars("size", "class_share_pct", beside=True))
     over_time("How the figures are classified",

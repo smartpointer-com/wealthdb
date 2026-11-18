@@ -381,3 +381,30 @@ func TestWebExposureSecuritiesAnswers(t *testing.T) {
 		t.Errorf("%d slices, err %v", n, err)
 	}
 }
+
+// exposureSum gives one sum whatever the order of its terms, where a
+// float sum does not: 1e16 + 1 rounds back to 1e16, so the float sum
+// of 1e16, 1 and -1e16 is 0 in that order and 1 with the 1 last.
+func TestExposureSumIgnoresRowOrder(t *testing.T) {
+	t.Parallel()
+	db, _ := openMigrated(t)
+	terms := `(VALUES (1, 1e16::DOUBLE), (2, 1::DOUBLE), (3, -1e16::DOUBLE)) v(o, x)`
+	var inOrder, lastOne float64
+	if err := db.QueryRow(`SELECT SUM(x ORDER BY o), SUM(x ORDER BY o = 2, o) FROM `+terms).Scan(&inOrder,
+		&lastOne); err != nil {
+		t.Fatal(err)
+	}
+	if inOrder == lastOne {
+		t.Fatalf("a float sum gives %v in both orders: the terms no longer show the order", inOrder)
+	}
+	for _, order := range []string{"o", "o = 2, o", "o DESC"} {
+		var got float64
+		if err := db.QueryRow(`SELECT ` + exposureSum("x") + ` FROM (SELECT x FROM ` + terms + ` ORDER BY ` + order +
+			`)`).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != 1 {
+			t.Errorf("ordered by %s: %v, want 1", order, got)
+		}
+	}
+}

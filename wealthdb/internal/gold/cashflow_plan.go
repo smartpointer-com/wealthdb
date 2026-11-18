@@ -242,8 +242,9 @@ const PlanPoolPart = "pool_income"
 
 // planIncomeSQL sums the window's income lines by side of the pool on
 // the line's own day (in_pool), operating-in class (income_line_class)
-// and account, the projected types aside, with an account's first income line outside the pool ever, of
-// any type (NULL for one that has none).
+// and account, the projected types aside, with an account's first
+// income line outside the pool ever, of any type (NULL for one that has
+// none).
 var planIncomeSQL = `
 WITH firsts AS (
     SELECT b.silver_source_id, b.account_external_id, MIN(b.occurred_at) AS first
@@ -253,7 +254,7 @@ WITH firsts AS (
 lines AS (
     SELECT w.*, NOT w.in_pool AS outside
       FROM income_lines_outccy(?1, ?2, ?3) w
-     WHERE NOT list_contains(?4, COALESCE(w.income_detailed, '')))
+     WHERE income_line_class(w.income_detailed) IS NOT NULL)
 SELECT w.outside, income_line_class(w.income_detailed) AS class, w.silver_source_id, w.account_external_id,
        SUM(w.value_outccy)::DOUBLE, any_value(f.first)
   FROM lines w
@@ -287,7 +288,7 @@ func CashflowPlanIncome(ctx context.Context, db querier, from, to int64, outCcy 
 			pool[k] = value / float64(poolMonths)
 		}
 		return nil
-	}, from, to, outCcy, projectedIncomeDetailed)
+	}, from, to, outCcy)
 	if err != nil {
 		return nil, nil, fmt.Errorf("CashflowPlanIncome: %w", err)
 	}

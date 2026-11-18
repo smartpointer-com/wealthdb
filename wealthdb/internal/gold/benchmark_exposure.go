@@ -42,10 +42,18 @@ const benchmarkSource = "(benchmark)"
 
 // benchmarkExposureSQL is every benchmark's look-through at the instant
 // $1, on the serving views' definitions: web_exposure's buckets, the
-// debt buckets of exposureDebtSQL, and a security and an issuer as the
-// dashboard's tables name them. A leaf's value is its share of the
+// debt buckets of exposure_debt_buckets, and a security and an issuer as
+// the dashboard's tables name them. A leaf's value is its share of the
 // benchmark in percent, the weights summing to 100. The shares are exact
 // sums of the leaves (exposureSum).
+//
+// The place buckets call exposure_place_bucket, as
+// exposure_labeled_leaves does; the size leaves out the (none) of every
+// class but public equity. The security CASE mirrors
+// exposure_labeled_leaves' with no arm for a holding no key names: every
+// virtual holding has its fund's key. It stays written out because one
+// walk, exposure_yield_leaves, serves every dimension here; reading
+// exposure_labeled_leaves beside it would walk the leaves again.
 var benchmarkExposureSQL = `INSERT INTO benchmark_exposure BY NAME
 WITH l AS MATERIALIZED (SELECT * FROM exposure_yield_leaves(CAST($1 AS BIGINT), 'USD')),
 d AS (
@@ -56,10 +64,10 @@ d AS (
     SELECT acct, '` + BenchmarkDimClassSector + `', asset_class || '|' || COALESCE(sector, 'unknown'), value FROM l
     UNION ALL
     SELECT acct, '` + BenchmarkDimRegion + `',
-           COALESCE(region, CASE WHEN asset_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END), value FROM l
+           exposure_place_bucket(region, asset_class), value FROM l
     UNION ALL
     SELECT acct, '` + BenchmarkDimCountry + `',
-           COALESCE(country, CASE WHEN asset_class IN ('metal', 'crypto') THEN '(none)' ELSE 'unknown' END), value FROM l
+           exposure_place_bucket(country, asset_class), value FROM l
     UNION ALL
     SELECT acct, '` + BenchmarkDimCurrency + `', COALESCE(currency, 'unknown'), value FROM l
     UNION ALL

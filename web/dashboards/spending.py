@@ -399,7 +399,7 @@ def fee_cards(f):
           "series_settings": {c: {"color": FEE_GROUP_COLORS[g], "title": FEE_GROUP_TITLES[g]}
                               for c, g in zip(group_cols, FEE_GROUP_COLORS, strict=True)},
           **(_share_viz(*group_cols) if privacy else {})})
-    rate = "fee_rate_pct(fees, value_days) AS fee_rate_pct"
+    rate = "fee_rate_pct(fees, value_days, days) AS fee_rate_pct"
     twr = "100 * r.twr AS twr_pct"
     money = ("100 * fees / (SELECT total FROM t) AS fees_pct" if privacy
              else "value_days / NULLIF(days, 0) AS mean_value")

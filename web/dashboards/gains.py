@@ -241,7 +241,8 @@ def gains_cards(f):
         "       unrealized_end / cost_basis AS unrealized_pct,\n"
         "       unrealized_end AS unrealized,\n"
         "       abs(value) AS value\n"
-        "  FROM e\n WHERE unrealized_end IS NOT NULL AND cost_basis > 0",
+        "  FROM e\n WHERE unrealized_end IS NOT NULL AND cost_basis > 0"
+        "\n ORDER BY silver_source_id, account_external_id, instrument_key",
         # The second dimension splits the dots into one series, and
         # so one colour, per asset class.
         {"graph.dimensions": ["unrealized_pct", "asset_class"],

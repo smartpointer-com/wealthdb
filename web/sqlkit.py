@@ -428,12 +428,14 @@ HOLDING_KEY_PREFIX = "holding:"
 # (gold macro yield_earning_value).
 EARNING_VALUE = "yield_earning_value(value, weighs)"
 
-# A projection part's income under the picked rate path and shift, in its
-# holding's currency (gold macro yield_part_income). PARTS_FROM joins
-# each part to its rate as `rt`; a currency the rates lack reads zero, as
-# the engine's does.
-PART_INCOME = ("yield_part_income(p.fixed, p.principal, p.spread, COALESCE(rt.rate_pct, 0), p.roll_constant,\n"
-               "                               p.roll_forward, p.roll_principal, {{rates}}, {{shift}})")
+def part_income(shift="{{shift}}"):
+    """A projection part's income under the picked rate path and `shift`,
+    the picked shift by default, in its holding's currency (gold macro
+    yield_part_income). PARTS_FROM joins each part to its rate as `rt`; a
+    currency the rates lack reads zero, as the engine's does."""
+    return ("yield_part_income(p.fixed, p.principal, p.spread, COALESCE(rt.rate_pct, 0), p.roll_constant,\n"
+            "                               p.roll_forward, p.roll_principal, {{rates}}, " + shift + ")")
+
 
 PARTS_FROM = ("    FROM web_yield_parts p\n"
               "    LEFT JOIN web_yield_rates rt ON rt.currency = p.holding_currency AND rt.month = p.month\n"
@@ -509,8 +511,9 @@ MATURING_RULES = ("cash", "idle", "roll")
 
 HORIZONS = ("12", "24", "36")
 
-# The arguments the projection's table macros take (income_window,
-# cashflow_projection): the picked currency and the four assumptions.
+# The arguments the projection's table macros take (income_expected and
+# cashflow_projection, which the cards call, and income_window): the
+# picked currency and the four assumptions.
 PROJECTION_ARGS = "{{currency}}, {{rates}}, {{maturing}}, {{shift}}, " + HORIZON_MONTHS
 
 

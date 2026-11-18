@@ -1092,6 +1092,33 @@ CREATE MACRO income_lines_multi(p_from, p_to) AS TABLE (
       ASOF LEFT JOIN fx_reporting_bridges fxb ON fxb.day <= (b.occurred_at // 86400)
 );
 
+-- income_projected_types: the projection's income types an income line
+-- of detailed type `detailed` can be (gold's incomeTypeSQL): interest a
+-- bond pays is a coupon, a dividend a fund pays a distribution. NULL for
+-- a type the projection does not project (canonical's ProjectedIncome).
+CREATE MACRO income_projected_types(detailed) AS
+    CASE detailed WHEN 'INCOME_INTEREST_EARNED' THEN ['interest', 'coupons']
+                  WHEN 'INCOME_DIVIDENDS' THEN ['dividends', 'distributions']
+                  WHEN 'INCOME_DISTRIBUTIONS' THEN ['distributions']
+                  WHEN 'INCOME_RENTAL' THEN ['rent']
+                  WHEN 'INCOME_RETIREMENT_PENSION' THEN ['pension'] END;
+
+-- income_line_class: the operating-in class of an income line of
+-- detailed type `detailed` that the projection does not project, as the
+-- cash flow statement classes a receipt (canonical's FlowClassIn, which
+-- cashflow_txn_nodes reads from spend_categories): a line of no type is
+-- the unresolved class, one of a type no class names other receipts.
+-- NULL for a projected type, whose lines are the holdings' income. The
+-- cash flow projection keeps its other income by it (gold.CashflowPlanIncome).
+CREATE MACRO income_line_class(detailed) AS
+    CASE WHEN detailed IS NULL THEN '(uncategorized)'
+         WHEN income_projected_types(detailed) IS NOT NULL THEN NULL
+         WHEN detailed IN ('INCOME_SALARY', 'INCOME_GIG_ECONOMY', 'INCOME_CONTRACTOR') THEN 'earnings'
+         WHEN detailed IN ('INCOME_STAKING', 'INCOME_ROYALTIES', 'INCOME_ENERGY_FEED_IN') THEN 'yield'
+         WHEN detailed IN ('INCOME_GOVERNMENT_BENEFITS', 'INCOME_UNEMPLOYMENT', 'INCOME_LONG_TERM_DISABILITY',
+                           'INCOME_MILITARY', 'INCOME_CHILD_SUPPORT', 'INCOME_ALIMONY') THEN 'benefits'
+         ELSE 'other_receipts' END;
+
 CREATE MACRO report_income_transactions_multi(p_from, p_to) AS TABLE (
     SELECT silver_source_id, transaction_external_id, occurred_at,
            account_external_id, account_kind, display_name, nickname, account_category,

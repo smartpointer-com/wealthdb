@@ -941,13 +941,16 @@ def _newest(obj):
     return max(_defined_in(obj), default=None)
 
 
-_NEWEST = {o: _newest(o) for o in p.web_views_wanted() + _SERVED}
-check("the cards' minimum gold schema is no older than any view or table they read",
-      bool(_SERVED) and all(n is not None and n <= p.MIN_GOLD_SCHEMA for n in _NEWEST.values()),
+_READ_SQL = [sql_of(q) for _d, _desc, q in CARDS.values()] + [sql for sql, _d in MODELS.values()]
+# The gold macros a card or a model calls.
+_MACROS = sorted({m for q in _READ_SQL for m in re.findall(r"\b(\w+)\(", q)
+                  if re.search(rf"^CREATE MACRO {m}\b", DERIVED_SQL, re.M)})
+_NEWEST = {o: _newest(o) for o in p.web_views_wanted() + _SERVED + _MACROS}
+check("the cards' minimum gold schema is no older than any view, macro or table they read",
+      bool(_SERVED) and bool(_MACROS) and all(n is not None and n <= p.MIN_GOLD_SCHEMA for n in _NEWEST.values()),
       {o: n for o, n in _NEWEST.items() if n is None or n > p.MIN_GOLD_SCHEMA})
 # The startup probe and that check read the views the SQL reads after
 # FROM or JOIN, so a view a card names any other way would go unprobed.
-_READ_SQL = [sql_of(q) for _d, _desc, q in CARDS.values()] + [sql for sql, _d in MODELS.values()]
 _NAMED_VIEWS = {v for q in _READ_SQL for v in re.findall(r"\bweb_\w+", q)}
 check("the probe wants every web_* view a card or a model names",
       _NAMED_VIEWS == set(p.web_views_wanted()), sorted(_NAMED_VIEWS ^ set(p.web_views_wanted())))
@@ -2835,6 +2838,15 @@ check("every picker these tiles map lands on a tag they declare and read",
 # bucket of its own.
 _canonical_go = _go_package("canonical")
 _debt_view = _view_body("web_exposure_debt")
+# Both macros spell canonical's rating buckets, best first, as literals.
+_ratings = _go_list(_canonical_go, "ratingBuckets", "RatingBucket")
+_quoted = [f"'{r}'" for r in _ratings or []]
+check("the credit order starts with canonical's rating buckets, best first, and the grades split them",
+      bool(_quoted)
+      and f"WHEN 'credit' THEN [{', '.join(_quoted)}, " in _latest_definition("exposure_bucket_order")
+      and (f"WHEN p_bucket IN ({', '.join(_quoted[:4])}) THEN 'IG' "
+           f"WHEN p_bucket IN ({', '.join(_quoted[4:])}) THEN 'HY'") in _latest_definition("exposure_credit_grade"),
+      _ratings)
 check("each card's buckets are in the exposure views' order, each rating with its grade",
       "exposure_bucket_order(dimension, bucket) AS bucket_order" in _debt_view
       and "exposure_credit_grade(bucket) AS grade" in _debt_view
@@ -2926,11 +2938,12 @@ for _n in _y_all:
 # The formulas are gold's macros, which the engine's tests hold to the
 # Go functions (wealthdb/internal/gold/web_macros_test.go).
 check("a part's income, a rate and an earning value are gold's macros",
-      sqlkit.PART_INCOME.startswith("yield_part_income(") and "{{rates}}, {{shift}})" in sqlkit.PART_INCOME
+      sqlkit.part_income().startswith("yield_part_income(") and sqlkit.part_income().endswith("{{rates}}, {{shift}})")
+      and sqlkit.part_income("{{shift}} + 100").endswith("{{rates}}, {{shift}} + 100)")
       and "rt.path = {{rates}}" in sqlkit.PARTS_FROM and yields._rate("x") == "yield_rate(x, value, weighs)"
       and sqlkit.EARNING_VALUE == "yield_earning_value(value, weighs)"
       and all(_latest_definition(m) for m in ("yield_part_income", "yield_rate", "yield_earning_value")),
-      sqlkit.PART_INCOME)
+      sqlkit.part_income())
 check("the cash card lists the worst paid first, the debit balances last",
       "ORDER BY value < 0, gap_pct NULLS FIRST" in _y_sql["Cash against its benchmark"])
 # A kind respelt in the engine would empty a tile with no error. The view
@@ -3139,7 +3152,7 @@ check("no card declares a window variable: on Income the Time range and the Hori
 check("the monthly average divides by the months the received days and the horizon cover",
       "SELECT (SELECT coalesce(sum(1 / day(last_day(day))), 0) FROM web_income_days [[WHERE {{time_range}}]])"
       " AS received" in _in_sql["Monthly average income"]
-      and "CAST({{horizon}} AS INTEGER) + coalesce((SELECT (day(last_day(max(day))) - day(max(day)))"
+      and "CAST({{horizon}} AS INTEGER) + coalesce(((day(last_day(income_today())) - day(income_today()))"
       in _in_sql["Monthly average income"]
       and "/ (SELECT received + expected FROM mo)" in _in_sql["Monthly average income"])
 # The withholding of the income received is the tax a source booked, of
@@ -3388,8 +3401,8 @@ for _n in ("Fees by portfolio", "Fee rate by portfolio"):
           "account" not in CARDS[p.privacy_name(_n)][2]["native"]["template-tags"]
           and "SELECT entity_group" in _twin and "mean_value" not in _twin)
 _rate = sql_of(CARDS["Fee rate by portfolio"][2])
-check("the fee rate is gold's fee_rate_pct over the summed daily value",
-      "fee_rate_pct(fees, value_days) AS fee_rate_pct" in _rate and _latest_definition("fee_rate_pct"))
+check("the fee rate is gold's fee_rate_pct over the summed daily value and the days held",
+      "fee_rate_pct(fees, value_days, days) AS fee_rate_pct" in _rate and _latest_definition("fee_rate_pct"))
 check("...beside the monthly returns chained by gold's chain_returns in the picked currency",
       "chain_returns(twr) AS twr" in _rate and "currency = {{currency}}" in _rate and _latest_definition("chain_returns"))
 # The groups are gold's fee_group values: a group gold adds and the
@@ -3439,7 +3452,10 @@ check("...which sums the income projection's parts, months 1 to the Horizon",
       and "WHERE p.rule = p_maturing\n           AND p.month BETWEEN 1 AND p_horizon" in _cfp_def, _cfp_def[:400])
 check("...the principal maturities return under the rule, in the picked currency",
       "FROM web_yield_events e" in _cfp_def and "WHERE e.rule = p_maturing\n           AND e.month BETWEEN 1 AND" in _cfp_def
-      and "sum(e.amount * CASE p_ccy WHEN 'USD' THEN e.fx_usd" in _cfp_def)
+      and "sum(e.amount * reporting_pick(p_ccy, e.fx_usd, e.fx_chf, e.fx_eur, e.fx_gbp))" in _cfp_def)
+check("gold's reporting_pick is the cards' currency CASE over the reporting currencies",
+      _statement_code(_latest_definition("reporting_pick")).endswith(
+          "AS " + sqlkit._ccy_switch("p_ccy", lambda c: c)))
 check("...both split by the cash pool's accounts, the rest the vehicles' income",
       all(f"LEFT JOIN web_cashflow_pool pl ON pl.silver_source_id = {a}.silver_source_id" in _cfp_def for a in "pe")
       and "GROUP BY 1, 2" in _cfp_def and "coalesce(xv.v, 0) + coalesce(rv.v, 0) AS vehicles_income" in _cfp_def)
@@ -3627,8 +3643,10 @@ check("...and re-add the tag it strips from the quality",
 # vocabularies the engine defines. A label respelt on either side would
 # empty or overfill a tile with no error.
 _wx = _latest_definition("web_exposure")
+_wpb = _latest_definition("exposure_place_bucket")
 check("web_exposure renders the '(none)' and 'unknown' labels the country map leaves out",
-      "THEN '(none)' ELSE 'unknown' END AS country" in _wx, _wx[:300])
+      "exposure_place_bucket(r.country, r.asset_class) AS country" in _wx
+      and "THEN '(none)' ELSE 'unknown' END" in _wpb, (_wx[:300], _wpb))
 check("the size tile's class and sizes are the engine's",
       "public_equity" in _go_consts("taxonomy.go", "AssetClass")
       and {"large", "mid", "small"} <= _go_consts("size.go", "Size"),
@@ -4087,7 +4105,7 @@ def _book():
                "CREATE TABLE web_income_lines (occurred_at TIMESTAMP, silver_source_id TEXT, account_external_id TEXT,"
                " account_label TEXT, tax_wrapper TEXT, income_detailed TEXT, income_label TEXT,"
                " value_usd DOUBLE, value_chf DOUBLE, value_eur DOUBLE, value_gbp DOUBLE);"
-               + "".join(_latest_definition(m) for m in ("income_class_band",
+               + "".join(_latest_definition(m) for m in ("reporting_pick", "income_class_band",
                                                          "income_projected_types", "income_line_class",
                                                          "yield_rate", "yield_earning_value", "yield_part_income",
                                                          "exposure_credit_grade", "exposure_bucket_order",
@@ -4298,7 +4316,7 @@ if duckdb is not None:
     def _part(rates, shift, **fields):
         cols = {"fixed": 0, "principal": 0, "spread": 0, "roll_constant": 0, "roll_forward": 0,
                 "roll_principal": 0, **fields}
-        sql = sqlkit.PART_INCOME.replace("{{rates}}", f"'{rates}'").replace("{{shift}}", str(shift))
+        sql = sqlkit.part_income(str(shift)).replace("{{rates}}", f"'{rates}'")
         return _db.execute("SELECT " + sql + " FROM (SELECT " +
                            ", ".join(f"{v}::DOUBLE AS {k}" for k, v in cols.items()) +
                            ") p, (SELECT 0.5::DOUBLE AS rate_pct) rt").fetchone()[0]
@@ -6170,6 +6188,36 @@ if duckdb is not None:
                   "Fee rate by portfolio": (0, ["Alpha (src-1 portfolio)", "Zeta (src-1 portfolio)"]),
                   "Fees by portfolio (privacy)": (0, ["src-1 / portfolio 1", "src-1 / portfolio 2"]),
                   "Fee rate by portfolio (privacy)": (0, ["src-1 / portfolio 1", "src-1 / portfolio 2"])})
+
+    # Six asset classes gone by the window's end, so of one rank, and one
+    # held at it: the bands order by their name, then the day.
+    _gone = ("real_estate", "bond", "cash", "alternative", "crypto", "commodity")
+    _ex = _both_ways(
+        "CREATE TABLE web_exposure (as_of_day DATE, currency TEXT, asset_class TEXT, value DOUBLE)",
+        {"web_exposure": [("2026-09-30", "USD", k, 10.0) for k in _gone] + [("2026-10-31", "USD", "equity", 100.0)]},
+        ["Asset classes over time"])
+    _pinned(_ex, {"Asset classes over time": (1, [*sorted(_gone), "equity"])})
+
+    # Two positions alike in every figure, of two accounts: they order by
+    # their key, so the one of src-a comes first whatever its symbol.
+    _ga = _both_ways(
+        "CREATE TABLE web_gains (currency TEXT, missing_basis TEXT, period TIMESTAMP, at_end BOOLEAN,"
+        " silver_source_id TEXT, account_external_id TEXT, instrument_key TEXT, symbol TEXT, name TEXT,"
+        " asset_class TEXT, cost_basis DOUBLE, value DOUBLE, unrealized_end DOUBLE)",
+        {"web_gains": [("USD", p.sqlkit.DEFAULT_MISSING_BASIS, "2026-10-01", True, src, "acct-1", "k-1", sym, None,
+                        "equity", 100.0, 120.0, 20.0) for src, sym in (("src-b", "AAA"), ("src-a", "ZZZ"))]},
+        ["Unrealized gain vs. percent"])
+    _pinned(_ga, {"Unrealized gain vs. percent": (0, ["ZZZ", "AAA"])})
+
+    # Three stocks of one yield and one symbol: they order by name, then
+    # by payout.
+    _dy = _both_ways(
+        "CREATE TABLE web_yield (as_of_day DATE, currency TEXT, kind TEXT, symbol TEXT, name TEXT,"
+        " payout_pct DOUBLE, dividend_yield_pct DOUBLE)",
+        {"web_yield": [("2026-10-31", "USD", "stock", "S", n, pay, 3.0)
+                       for n, pay in (("Beta", 50.0), ("Alpha", 60.0), ("Alpha", 20.0))]},
+        ["Dividend yield against payout"])
+    _pinned(_dy, {"Dividend yield against payout": (2, [20.0, 60.0, 50.0])})
 
     # The book with a second account, acct-0, holding twice acct-1's bond
     # (the same payments on twice the value) and, like acct-1's dollars,
