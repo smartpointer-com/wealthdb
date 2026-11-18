@@ -1148,19 +1148,22 @@ two.
 
 - **PSN:** `MAX(dump_runs.snapshot_at)`, or `-1` when `dump_runs` is
   empty.
-- **Web:** the later of `MAX(dump_runs.snapshot_at)` and
-  `MAX(transactions.value_date)`, or `-1` when both are empty.
+- **Web:** `MAX(dump_runs.snapshot_at)`, or `-1` when `dump_runs` is
+  empty.
 
-Other web dates never count toward the change number:
+No date a row states counts toward the change number:
 
+- a transaction can be valued after the dump that read it, such as a
+  payment order set for a later day;
 - the statement reconstructions and historical mortgages widen
   `Status`'s snapshot range;
 - they, the card ledger and statements, and the portfolio transaction
   list widen the load window (§9, §10.3, §11).
 
-`ChangeWindow` never advances the watermark to those dates. A
-future-dated maturity notice would otherwise keep the source from ever
-reading as up to date.
+`ChangeWindow` never advances the watermark to those dates. A date past
+the latest dump would otherwise hold the watermark ahead of every later
+dump of both feeds, and a future-dated maturity notice would keep the
+source from ever reading as up to date.
 
 **The load window.**
 
@@ -1178,9 +1181,11 @@ reading as up to date.
   copy gold already holds. Silver dates it by the day it states, not
   the day it arrived. So the rows it changes lie outside a later load's
   window.
-- Web: a dump or a transaction value date past the watermark triggers a
-  load. The new change number is the latest of them. The window then
-  widens to every historical, card and portfolio-transaction date.
+- Web: a dump past the watermark triggers a load, and its time is the
+  new change number. The window spans the dump and the value dates of
+  the transactions it wrote (`transactions.snapshot_at`), which can lie
+  before the watermark. It then widens to every historical, card and
+  portfolio-transaction date.
 
 **Observed through.** The report feed is observed through its latest
 report. The web feed is observed through its latest run for the

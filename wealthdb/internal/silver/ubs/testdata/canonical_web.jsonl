@@ -1,7 +1,7 @@
 == status 1
-{"LatestChangeNumber":2600,"LatestSnapshotAt":2000,"LatestTransactionAt":2600,"ObservedSnapshotsThrough":2000,"ObservedTransactionsThrough":2000,"OldestSnapshotAt":500,"OldestTransactionAt":900}
+{"LatestChangeNumber":2000,"LatestSnapshotAt":2000,"LatestTransactionAt":2600,"ObservedSnapshotsThrough":2000,"ObservedTransactionsThrough":2000,"OldestSnapshotAt":500,"OldestTransactionAt":900}
 == window 1
-{"End":2600,"HasChanges":true,"NewChangeNumber":2600,"Spans":null,"Start":500}
+{"End":2600,"HasChanges":true,"NewChangeNumber":2000,"Spans":null,"Start":500}
 == portfolios 3
 {"BaseCurrency":"CHF","DisplayName":null,"FirstSeenAt":800,"LastSeenAt":800,"Nickname":null,"Payload":null,"PortfolioExternalID":"P1","RelationshipID":null,"SilverSourceID":""}
 {"BaseCurrency":null,"DisplayName":"Example portfolio","FirstSeenAt":1000,"LastSeenAt":1000,"Nickname":null,"Payload":{},"PortfolioExternalID":"P1","RelationshipID":"REL1","SilverSourceID":""}

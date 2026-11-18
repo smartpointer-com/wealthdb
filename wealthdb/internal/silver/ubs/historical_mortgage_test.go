@@ -420,9 +420,9 @@ func TestStatusChangeNumberIgnoresHistoricalDates(t *testing.T) {
 	r := newWebFixture(t)
 	for _, q := range []string{
 		`CREATE TABLE dump_runs (snapshot_at INTEGER)`,
-		`CREATE TABLE transactions (value_date INTEGER)`,
+		`CREATE TABLE transactions (snapshot_at INTEGER, value_date INTEGER)`,
 		`INSERT INTO dump_runs VALUES (1000)`,
-		`INSERT INTO transactions VALUES (900)`,
+		`INSERT INTO transactions VALUES (1000, 900)`,
 		`INSERT INTO historical_mortgages (as_of_date) VALUES (5000)`,
 	} {
 		if _, err := r.db.Exec(q); err != nil {

@@ -172,7 +172,7 @@ func TestTheMergedStreamCarriesTheReports(t *testing.T) {
 	web := newWebFixture(t)
 	silvertest.Exec(t, web.db, `
 CREATE TABLE dump_runs (snapshot_at INTEGER PRIMARY KEY, run_dir TEXT);
-CREATE TABLE transactions (value_date INTEGER);
+CREATE TABLE transactions (snapshot_at INTEGER, value_date INTEGER);
 CREATE TABLE portfolios (
     snapshot_at INTEGER, portfolio_external_id TEXT, banking_relationship_id TEXT,
     description TEXT, payload TEXT);

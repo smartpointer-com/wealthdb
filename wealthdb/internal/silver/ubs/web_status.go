@@ -54,23 +54,21 @@ SELECT window_since, COALESCE(window_until, snapshot_at) FROM dump_runs WHERE wi
 // clock is the web feed's. Snapshot times come from dump_runs,
 // widened to the historical (PDF) snapshots, which pre-date the first
 // live dump; transaction times from transactions.value_date. The change
-// number is the latest of either, the value the window advances the
-// watermark to. The historical tables widen the snapshot range but not
-// the change number: a historical date past the latest dump would
-// otherwise keep the source from ever reading as up to date. The
-// watermarks are observed().
+// number is the latest dump: a row can be valued after the dump that
+// read it, and a value date ahead of the runs would hold the watermark
+// past every later dump of both feeds. The watermarks are observed().
 //
-// A dump or a transaction past the watermark opens a window over the new
-// rows, widened to every date the web feed emits at that no dump run
-// shares (windowDates): the historical snapshots, the card billing
-// periods, the managed portfolios' trades and the private-markets
-// quarterly reports. Gold's delete-then-reinsert would otherwise leave
-// duplicates of them behind.
+// A dump past the watermark opens a window over its own time and the
+// value dates of the rows it wrote (transactions.snapshot_at), which can
+// lie before the watermark. The window is widened to every date the web
+// feed emits at that no dump run shares (windowDates): the historical
+// snapshots, the card billing periods, the managed portfolios' trades
+// and the private-markets quarterly reports. Gold's delete-then-reinsert
+// would otherwise leave duplicates of them behind.
 func (r *webReader) clock() silver.Clock {
 	return silver.Clock{
-		Kind: "ubs-web",
-		Runs: `SELECT MAX(t) FROM (SELECT MAX(snapshot_at) AS t FROM dump_runs
-                    UNION ALL SELECT MAX(value_date) FROM transactions)`,
+		Kind:     "ubs-web",
+		Runs:     silver.LatestDump,
 		Snapshot: []string{`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs`},
 		Extra:    r.historicalRange,
 		Ledger:   []string{`SELECT MIN(value_date), MAX(value_date) FROM transactions`},
@@ -78,7 +76,7 @@ func (r *webReader) clock() silver.Clock {
 		Mode: silver.Incremental{
 			New: []string{
 				`SELECT MIN(snapshot_at), MAX(snapshot_at) FROM dump_runs WHERE snapshot_at > ?`,
-				`SELECT MIN(value_date), MAX(value_date) FROM transactions WHERE value_date > ?`,
+				silver.RangeStampedPast("transactions", "value_date", "snapshot_at"),
 			},
 			Extra: r.windowDates,
 		},
