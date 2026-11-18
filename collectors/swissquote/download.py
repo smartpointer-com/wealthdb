@@ -36,7 +36,7 @@ from pathlib import Path
 import landmarks as sq  # local module
 import login  # local module: the shared browser knobs + state paths
 
-from collectorkit import bronze, cli, debugcap, session
+from collectorkit import bronze, cli, debugcap
 
 log = logging.getLogger("swissquote.download")
 
@@ -662,8 +662,7 @@ def run(args: argparse.Namespace) -> int:
     capture = debugcap.page_capturer(debug_dir, log=log)
 
     with sync_playwright() as p:
-        browser, context = _new_context(p, session.resolve_state_path(
-            args.state_path, DEFAULT_STATE_PATH, login.LEGACY_STATE_PATH))
+        browser, context = _new_context(p, args.state_path)
         _maybe_start_trace(context, args.trace)
         page = context.new_page()
         try:

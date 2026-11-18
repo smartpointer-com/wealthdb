@@ -109,8 +109,7 @@ with echo off. Each script's `--help` lists every flag.
 - **Skipped push.** Swissquote sometimes skips the push for a recently
   seen device fingerprint. `login` then completes at once.
 - **Session state.** The browser context (cookies and localStorage) goes
-  to `~/.secrets/swissquote-state.json`, chmod `0600`. A state file named
-  `swissquote_state.json` is read when the canonical one is absent.
+  to `~/.secrets/swissquote-state.json`, chmod `0600`.
 - **Lifetime.** Swissquote sets the session lifetime by policy. Expect a
   new sign-in at least once per working session. `download` has no
   refresh logic. When F5 bounces it to `/my.policy`, it exits and asks

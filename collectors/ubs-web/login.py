@@ -77,10 +77,6 @@ CONTRACT_NUMBER_ENV = "UBS_CONTRACT_NUMBER"
 # WEALTHDB_SECRETS_DIR) at /secrets, so the session state lives
 # there by default and survives across container runs.
 DEFAULT_STATE_PATH = Path("/secrets/ubs-web-state.json")
-# Fallback state location (underscore) — read when the canonical file is absent,
-# so a session stored under this name keeps working. New logins write
-# DEFAULT_STATE_PATH, migrating the session to the hyphenated name.
-LEGACY_STATE_PATH = Path("/secrets/ubs_web_state.json")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -534,8 +530,7 @@ def main(argv: list[str]) -> int:
 
     if args.check:
         return run_check(
-            state_path=session.resolve_state_path(
-                args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH),
+            state_path=args.state_path,
             screenshot_dir=args.screenshot_dir,
             trace=args.trace,
         )

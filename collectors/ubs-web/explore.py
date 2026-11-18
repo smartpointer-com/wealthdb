@@ -66,7 +66,7 @@ import landmarks as ubs
 # three scripts, and the contract number comes from the same file login
 # reads.
 from login import (CONTRACT_NUMBER_ENV, DEFAULT_ENV_FILE_CANDIDATES,
-                   DEFAULT_STATE_PATH, LEGACY_STATE_PATH, USER_AGENT)
+                   DEFAULT_STATE_PATH, USER_AGENT)
 
 log = logging.getLogger("ubs-web.explore")
 
@@ -215,12 +215,7 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
 
-    # Read from whichever name holds a session (resolve_state_path honours
-    # the legacy name); always write to the canonical path, so a session
-    # found under the legacy name migrates on the way out.
-    write_state_path = args.state_path or DEFAULT_STATE_PATH
-    state_path = session.resolve_state_path(
-        write_state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH)
+    state_path = args.state_path or DEFAULT_STATE_PATH
     have_state = state_path.is_file()
 
     source_env_file(args.env_file)
@@ -279,9 +274,9 @@ def main(argv: list[str]) -> int:
         # between one challenge and two.
         if not args.no_save_state and _looks_authenticated(context):
             try:
-                context.storage_state(path=str(write_state_path))
-                session.secure_file(write_state_path)
-                log.info("session state saved to %s", write_state_path)
+                context.storage_state(path=str(state_path))
+                session.secure_file(state_path)
+                log.info("session state saved to %s", state_path)
             except Exception as exc:  # noqa: BLE001
                 log.warning("could not save session state: %s",
                             debugcap.safe_error(exc))

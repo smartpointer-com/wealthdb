@@ -35,7 +35,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from collectorkit import bronze, cli, debugcap, launch, session
+from collectorkit import bronze, cli, debugcap, launch
 
 import cards  # local module
 import landmarks as ubs  # local module
@@ -60,7 +60,7 @@ from names import (  # noqa: F401
 # same UA (UBS's anti-bot heuristics must see a single session), same
 # screenshot convention.
 from login import (  # local module
-    DEFAULT_STATE_PATH, LEGACY_STATE_PATH, USER_AGENT, maybe_screenshot,
+    DEFAULT_STATE_PATH, USER_AGENT, maybe_screenshot,
 )
 
 log = logging.getLogger("ubs-web.download")
@@ -1837,8 +1837,7 @@ def main(argv: list[str]) -> int:
     rc = 0
     try:
         with sync_playwright() as pw:
-            browser, context = _new_context(pw, session.resolve_state_path(
-                args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH))
+            browser, context = _new_context(pw, args.state_path)
             if args.trace:
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
             # The card and account APIs authenticate with a header the SPA

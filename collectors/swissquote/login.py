@@ -56,9 +56,6 @@ LANDMARK_TIMEOUT_MS = 30_000
 # WEALTHDB_SECRETS_DIR) at /secrets, so the session state lives
 # there by default and survives across container runs.
 DEFAULT_STATE_PATH = Path("/secrets/swissquote-state.json")
-# Fallback state location (underscore) — read when the canonical file is absent,
-# so a session stored under this name keeps working. login writes the canonical name.
-LEGACY_STATE_PATH = Path("/secrets/swissquote_state.json")
 
 # Default credentials env-file locations (the wrapper mounts ~/.secrets at
 # /secrets). --env-file wins; else the first existing candidate.
@@ -270,8 +267,7 @@ def check_session(args: argparse.Namespace) -> int:
     """Return 0 if the saved session still authenticates, 1 otherwise."""
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-    state_path = session.resolve_state_path(
-        args.state_path, DEFAULT_STATE_PATH, LEGACY_STATE_PATH)
+    state_path = args.state_path
     if not state_path.is_file():
         raise SystemExit(
             f"No state file at {state_path}. Nothing to check; "
