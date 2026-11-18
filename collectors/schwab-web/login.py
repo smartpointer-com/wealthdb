@@ -512,28 +512,9 @@ def run_manual(profile_dir: Path,
                                           "manual", log=log)
 
 
-def _live_url(page) -> str:
-    """Read the page's current URL by asking Firefox directly.
-
-    Equivalent to `page.url` EXCEPT under camoufox 135 + playwright
-    1.49: juggler doesn't reliably deliver `frameNavigated` events
-    to the driver, so `page.url` stays stuck on the pre-redirect
-    value after a top-level navigation completes (the Firefox UI
-    URL bar updates, but Playwright's cached accessor doesn't).
-    `location.href` via evaluate forces Firefox to answer from its
-    actual document state, which is what landmark detection needs.
-
-    Returns the cached page.url on evaluation failure — page mid-
-    navigation, page closing, or other races — so a transient
-    error doesn't kill the polling loop.
-    """
-    try:
-        result = page.evaluate("() => location.href")
-        if isinstance(result, str) and result:
-            return result
-    except Exception:
-        pass
-    return page.url
+# The page's URL as the browser shows it. Bound here so a test can
+# replace it for this module alone.
+_live_url = launch.live_url
 
 
 def _visible_page_text(scope, limit: int = 600) -> str:

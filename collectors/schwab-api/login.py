@@ -282,14 +282,6 @@ def _scopes(page) -> list:
     return [page, *[f for f in page.frames if f.parent_frame is not None]]
 
 
-def _live_url(page) -> str:
-    """page.url can lag behind a client-side redirect; read it live."""
-    try:
-        return page.evaluate("() => window.location.href")
-    except Exception:
-        return page.url
-
-
 def _fill_first(scope, candidates, value: str) -> bool:
     """Fill the first matching/visible candidate selector in `scope`
     (a page or frame). Returns True on success."""
@@ -390,7 +382,7 @@ def _visible_error_text(page) -> str:
 def _notice_scope(page):
     """The page or frame currently on the gateway's terminal notice
     route, or None."""
-    if lm.is_gateway_notice_url(_live_url(page)):
+    if lm.is_gateway_notice_url(launch.live_url(page)):
         return page
     try:
         frames = [f for f in page.frames if f.parent_frame is not None]
@@ -485,7 +477,7 @@ def classify_page(page, callback_url: str) -> str:
     'terms' / 'account-link' / 'review' (the consent flow, by heading),
     'login' (the credential form), or 'unknown'. Ordered so terminal and
     challenge states win over anything else the DOM might still show."""
-    url = _live_url(page)
+    url = launch.live_url(page)
     if lm.is_callback_url(url, callback_url):
         return "callback"
     if _notice_scope(page) is not None:
@@ -511,7 +503,7 @@ def _page_signature(page) -> str:
         struct = page.evaluate(_STRUCT_SIG_JS)
     except Exception:
         struct = ""
-    raw = f"{_live_url(page)}|{struct}"
+    raw = f"{launch.live_url(page)}|{struct}"
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]
 
 
@@ -717,7 +709,7 @@ def _wait_for_callback(page, captured: list, callback_url: str,
     while time.monotonic() < deadline:
         if captured:
             return captured[0]
-        url = _live_url(page)
+        url = launch.live_url(page)
         if lm.is_callback_url(url, callback_url):
             return url
         scope = _notice_scope(page)

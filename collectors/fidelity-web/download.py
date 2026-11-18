@@ -243,19 +243,9 @@ log = logging.getLogger("fidelity-web.download")
 # ---------------------------------------------------------------------------
 
 
-def live_url(page):
-    """``page.evaluate('() => location.href')`` — workaround for the
-    Camoufox 135 + Playwright 1.49 ``frameNavigated`` propagation
-    bug. ``page.url`` stays stuck on the pre-redirect URL after
-    navigation; ``location.href`` returns Firefox's actual document
-    URL."""
-    try:
-        result = page.evaluate("() => location.href")
-        if isinstance(result, str) and result:
-            return result
-    except Exception:
-        pass
-    return page.url
+# The page's URL as the browser shows it. Bound here so a test can
+# replace it for this module alone.
+live_url = launch.live_url
 
 
 def enumerate_account_dimensions(page):

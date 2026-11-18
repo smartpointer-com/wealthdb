@@ -571,6 +571,42 @@ class PageDrivingTest(unittest.TestCase):
         self.assertEqual(launch.page_url(_Page()), "https://www.example.com/")
 
 
+class _EvalPage:
+    """A page whose in-page `location.href` read answers `href`, or
+    raises it when it is an exception."""
+
+    url = "https://www.example.com/cached"
+
+    def __init__(self, href):
+        self.href = href
+        self.calls = []
+
+    def evaluate(self, expression):
+        self.calls.append(expression)
+        if isinstance(self.href, Exception):
+            raise self.href
+        return self.href
+
+
+class LiveUrlTest(unittest.TestCase):
+    def test_reads_the_url_in_the_page(self):
+        page = _EvalPage("https://www.example.com/live")
+        self.assertEqual(launch.live_url(page), "https://www.example.com/live")
+        self.assertEqual(page.calls, ["() => location.href"])
+
+    def test_an_empty_answer_falls_back_to_the_cached_url(self):
+        self.assertEqual(launch.live_url(_EvalPage("")),
+                         "https://www.example.com/cached")
+
+    def test_a_non_string_answer_falls_back_to_the_cached_url(self):
+        self.assertEqual(launch.live_url(_EvalPage(None)),
+                         "https://www.example.com/cached")
+
+    def test_a_failed_read_falls_back_to_the_cached_url(self):
+        self.assertEqual(launch.live_url(_EvalPage(RuntimeError("navigating"))),
+                         "https://www.example.com/cached")
+
+
 class PersistentCamoufoxTest(unittest.TestCase):
     def test_yields_the_restored_page_and_closes_quietly(self):
         import sys

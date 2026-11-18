@@ -54,7 +54,7 @@ The pref helpers return fresh copies, so a caller may mutate the result
 without affecting the next call.
 
 `persistent_camoufox` is the hardened launch most sign-ins open, and
-`pump` / `wait_for` / `page_url` drive the page it yields.
+`pump` / `wait_for` / `page_url` / `live_url` drive the page it yields.
 `camoufox_context` is the same launch for a collector that drives the
 context itself, with an optional trace and a close that logs a failure
 rather than hiding it.
@@ -436,3 +436,23 @@ def page_url(page) -> str:
         return page.url or ""
     except Exception:
         return ""
+
+
+def live_url(page) -> str:
+    """The page's current URL, asked of the browser itself.
+
+    On the pinned Camoufox and Playwright, `frameNavigated` does not
+    reliably reach the driver, so `page.url` can stay on the
+    pre-redirect URL after a top-level navigation. `location.href`,
+    read in the page, answers from the document Firefox actually shows.
+
+    Falls back to `page.url` when the read raises (mid-navigation, a
+    closing page) or returns no URL, so a transient error does not end
+    a polling loop. Unlike `page_url`, the fallback is unguarded."""
+    try:
+        result = page.evaluate("() => location.href")
+        if isinstance(result, str) and result:
+            return result
+    except Exception:
+        pass
+    return page.url

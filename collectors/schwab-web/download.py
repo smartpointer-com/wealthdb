@@ -47,7 +47,7 @@ from names import (  # noqa: F401
     _COUNT_RE,
     _safe,
 )
-from collectorkit import bronze, debugcap
+from collectorkit import bronze, debugcap, launch
 
 log = logging.getLogger("schwab-web.download")
 
@@ -1432,10 +1432,7 @@ def capture_transactions(page, account: dict, dest_dir: Path,
     tx_range = _STATEMENT_TO_TX_RANGE.get(date_range, date_range)
     _apply_tx_filter(page, account["suffix"], tx_range, exact_window)
 
-    try:
-        url = page.evaluate("() => location.href") or page.url
-    except Exception:
-        url = page.url
+    url = launch.live_url(page)
     title = page.title()
     log.info("tx-history …%s: url=%s title=%r",
              account["suffix"], url, title)
