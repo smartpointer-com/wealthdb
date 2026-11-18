@@ -93,14 +93,12 @@ esac
 # both sides, and the variable is forwarded so that expansion (and the
 # collectors' own wrappers) agree. The host path must be one Docker can
 # see (for Colima, listed under `mounts:` in colima.yaml).
-DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
-
+#
 # Config file follows the XDG config dir ($XDG_CONFIG_HOME, falling back
 # to ~/.config). Same-path mount + forwarded variable, like the data
 # root above, so the engine's default config resolution lands on the
 # mounted file on both sides.
-CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
-CFG="$CFG_DIR/wealthdb.cfg"
+wealthdb_engine_paths
 
 mkdir -p "$CFG_DIR" "$DATA_ROOT"
 [ -f "$CFG" ] || : > "$CFG"

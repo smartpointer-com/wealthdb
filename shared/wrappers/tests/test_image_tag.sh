@@ -32,7 +32,8 @@ mkdir -p "$TREE/wealthdb" "$TREE/shared/wrappers"
 cp "$ROOT/wealthdb/wealthdb" "$ROOT/wealthdb/wealthdb-go" "$TREE/wealthdb/"
 cp "$ROOT/shared/wrappers/wrapper-lib.sh" "$ROOT/shared/wrappers/image-tag.sh" \
     "$ROOT/shared/wrappers/envfile-lib.sh" "$ROOT/shared/wrappers/demo-root.sh" \
-    "$ROOT/shared/wrappers/paths-lib.sh" "$TREE/shared/wrappers/"
+    "$ROOT/shared/wrappers/paths-lib.sh" "$ROOT/shared/wrappers/service-lib.sh" \
+    "$TREE/shared/wrappers/"
 mkdir -p "$TREE/mcp" "$TREE/web"
 cp "$ROOT/Makefile" "$TREE/"
 cp "$ROOT/mcp/mcp" "$TREE/mcp/"

@@ -23,6 +23,12 @@ ROOT="$(cd "$HERE/.." && pwd)"
 . "$ROOT/shared/wrappers/envfile-lib.sh"
 wealthdb_export_image_tag "$ROOT" || exit 2
 WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
+# The helpers web shares with mcp; Metabase listens on 3000 in the
+# container.
+SERVICE=web
+SERVICE_CPORT=3000
+# shellcheck disable=SC1091
+. "$ROOT/shared/wrappers/service-lib.sh"
 
 # ---- settings ---------------------------------------------------------
 
@@ -52,26 +58,11 @@ _resolve_knobs() {
 # refresh run it under _timed, with errexit off. With CONFIG_LOADED set,
 # a start later in the same run does not run the engine again.
 _load_config() {
-    _require_docker || return 1
-    local out
-    if [ -n "${WEALTHDB_CONFIG:-}" ]; then
-        out="$("$WEALTHDB" -c "$WEALTHDB_CONFIG" config-env web)" || out=""
-    else
-        out="$("$WEALTHDB" config-env web)" || out=""
-    fi
-    if [ -z "$out" ]; then
-        echo "web: could not read settings via 'wealthdb config-env web' (is wealthdb.cfg valid?)" >&2
-        return 1
-    fi
-    eval "$out"
+    _config_env || return 1
     ENABLED="${WEALTHDB_WEB_ENABLED:-0}"
     PORT="${WEALTHDB_WEB_PORT:-3000}"
     GOLD_DB="${WEALTHDB_GOLD_DB:-}"
     CONFIG_LOADED=1
-}
-
-_require_docker() {
-    command -v docker >/dev/null 2>&1 || { echo "web: docker not found on PATH" >&2; return 1; }
 }
 
 # start and refresh time their steps and read the snapshot's mtime,
@@ -81,18 +72,6 @@ _require_python3() {
 }
 
 # ---- pure helpers (unit-tested) ---------------------------------------
-
-# _publish_args PORT BIND → prints `docker run` -p flags (one token
-# per line) for loopback IPv4 and/or IPv6.
-_publish_args() {
-    local port="$1" bind="$2"
-    case "$bind" in
-        v4)   printf '%s\n' -p "127.0.0.1:${port}:3000" ;;
-        v6)   printf '%s\n' -p "[::1]:${port}:3000" ;;
-        both) printf '%s\n' -p "127.0.0.1:${port}:3000" -p "[::1]:${port}:3000" ;;
-        *)    echo "web: invalid WEALTHDB_WEB_BIND '$bind' (want both|v4|v6)" >&2; return 1 ;;
-    esac
-}
 
 # _docker_run_args populates the DOCKER_ARGS array from the resolved
 # globals (IMAGE, CONTAINER, PORT, BIND, H2_DIR, SNAP). Pure (no exec);
@@ -205,8 +184,6 @@ _snapshot_kept() {
 }
 
 _mtime()      { date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown; }
-_is_running() { [ -n "$(docker ps  -q -f "name=^${CONTAINER}\$" -f status=running 2>/dev/null)" ]; }
-_exists()     { [ -n "$(docker ps -aq -f "name=^${CONTAINER}\$" 2>/dev/null)" ]; }
 
 # ---- subcommands ------------------------------------------------------
 
@@ -561,16 +538,8 @@ EOF
 
 web_main() {
     set -euo pipefail
-    # Optional secrets env for admin creds etc. (repo convention:
-    # secrets live in ~/.secrets, never in the config file). It is a bash
-    # script: syntax-checked, then sourced with every assignment exported.
-    # A file that does not parse stops the script, and bash's message is
-    # not shown, since it quotes the line.
-    local envf="${WEALTHDB_WEB_ENV_FILE:-$HOME/.secrets/wealthdb-web.env}"
-    if [ -f "$envf" ] && ! wealthdb_source_bash "$envf"; then
-        echo "web: $envf has a bash syntax error" >&2
-        return 1
-    fi
+    # Optional secrets env for admin creds etc.
+    _source_env_file || return 1
     _resolve_knobs
     local cmd="${1:-help}"
     if [ "$#" -gt 0 ]; then shift; fi

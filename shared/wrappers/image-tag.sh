@@ -2,8 +2,10 @@
 # removes, and how a build decides to skip and waits its turn: the
 # inputs hash and its label (wealthdb_inputs_hash,
 # wealthdb_build_unchanged) and the build lock (wealthdb_build_lock).
-# POSIX sh; sourced by the engine wrappers, the collector wrappers, mcp
-# and web, and by the Makefile.
+# It also holds the engine's host paths (wealthdb_engine_paths), which
+# the engine wrapper and mcp mount alike. POSIX sh; sourced by the
+# engine wrappers, the collector wrappers, mcp and web, and by the
+# Makefile.
 #
 # WEALTHDB_IMAGE_TAG wins when it is set. Otherwise the first line of
 # .image-tag at the repository root names the tag: the file is
@@ -260,4 +262,15 @@ try:
 except OSError:
     pass
 PY
+}
+
+# wealthdb_engine_paths sets the engine's host paths, which the engine
+# wrapper mounts at the same path in its container: DATA_ROOT (gold and
+# every silver; WEALTHDB_DATA_ROOT, else $XDG_DATA_HOME/wealthdb, else
+# ~/.local/share/wealthdb), CFG_DIR ($XDG_CONFIG_HOME, else ~/.config)
+# and CFG, the default wealthdb.cfg in it.
+wealthdb_engine_paths() {
+    DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
+    CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+    CFG="$CFG_DIR/wealthdb.cfg"
 }

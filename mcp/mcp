@@ -26,6 +26,11 @@ ROOT="$(cd "$HERE/.." && pwd)"
 . "$ROOT/shared/wrappers/envfile-lib.sh"
 wealthdb_export_image_tag "$ROOT" || exit 2
 WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
+# The helpers mcp shares with web; the server listens on the published
+# port in the container too.
+SERVICE=mcp
+# shellcheck disable=SC1091
+. "$ROOT/shared/wrappers/service-lib.sh"
 
 INSECURE_WARNING="INSECURE: authentication is off; any process on this machine can read this household's finances."
 
@@ -33,17 +38,17 @@ INSECURE_WARNING="INSECURE: authentication is off; any process on this machine c
 
 # _resolve_knobs sets the operational knobs from env overrides and
 # defaults. Pure (no Docker, no config round-trip); unit-tested. The
-# data root and config resolve exactly as the engine wrapper resolves
-# them, so the same-path mounts land where the config expects.
+# data root and config resolve as the engine wrapper resolves them
+# (wealthdb_engine_paths), so the same-path mounts land where the config
+# expects; WEALTHDB_CONFIG names another config file.
 _resolve_knobs() {
     IMAGE="wealthdb:$WEALTHDB_IMAGE_TAG"
     CONTAINER="${WEALTHDB_MCP_CONTAINER:-wealthdb-mcp}"
     DATA_DIR="${WEALTHDB_MCP_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/mcp}"
     BIND="${WEALTHDB_MCP_BIND:-both}"   # both | v4 | v6
     TOKEN_FILE="$DATA_DIR/token"
-    DATA_ROOT="${WEALTHDB_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb}"
-    CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
-    CFG="${WEALTHDB_CONFIG:-$CFG_DIR/wealthdb.cfg}"
+    wealthdb_engine_paths
+    CFG="${WEALTHDB_CONFIG:-$CFG}"
     CHARS="${WEALTHDB_MCP_CHARS:-}"
     ALLOW_HOSTS="${WEALTHDB_MCP_ALLOW_HOSTS:-}"
 }
@@ -53,27 +58,12 @@ _resolve_knobs() {
 # parses and validates wealthdb.cfg. WEALTHDB_MCP_AUTH and
 # WEALTHDB_MCP_INSECURE in the environment win over the config.
 _load_config() {
-    _require_docker || return 1
-    local out
-    if [ -n "${WEALTHDB_CONFIG:-}" ]; then
-        out="$("$WEALTHDB" -c "$WEALTHDB_CONFIG" config-env mcp)" || out=""
-    else
-        out="$("$WEALTHDB" config-env mcp)" || out=""
-    fi
-    if [ -z "$out" ]; then
-        echo "mcp: could not read settings via 'wealthdb config-env mcp' (is wealthdb.cfg valid?)" >&2
-        return 1
-    fi
-    eval "$out"
+    _config_env || return 1
     ENABLED="${WEALTHDB_MCP_ENABLED:-0}"
     PORT="${WEALTHDB_MCP_PORT:-3300}"
     GOLD_DB="${WEALTHDB_GOLD_DB:-}"
     AUTH="${WEALTHDB_MCP_AUTH:-${WEALTHDB_MCP_CONFIG_AUTH:-token}}"
     INSECURE="${WEALTHDB_MCP_INSECURE:-${WEALTHDB_MCP_CONFIG_INSECURE:-0}}"
-}
-
-_require_docker() {
-    command -v docker >/dev/null 2>&1 || { echo "mcp: docker not found on PATH" >&2; return 1; }
 }
 
 # ---- pure helpers (unit-tested) ---------------------------------------
@@ -100,19 +90,6 @@ _check_auth() {
             echo "     It takes effect only beside \"insecure\": true in the mcp block (or WEALTHDB_MCP_INSECURE=1)." >&2
             return 1 ;;
         *)  echo "mcp: auth \"$AUTH\" is not a mode (want token | none)" >&2; return 1 ;;
-    esac
-}
-
-# _publish_args PORT BIND → prints `docker run` -p flags (one token
-# per line) for loopback IPv4 and/or IPv6. The server listens on the
-# same port inside the container.
-_publish_args() {
-    local port="$1" bind="$2"
-    case "$bind" in
-        v4)   printf '%s\n' -p "127.0.0.1:${port}:${port}" ;;
-        v6)   printf '%s\n' -p "[::1]:${port}:${port}" ;;
-        both) printf '%s\n' -p "127.0.0.1:${port}:${port}" -p "[::1]:${port}:${port}" ;;
-        *)    echo "mcp: invalid WEALTHDB_MCP_BIND '$bind' (want both|v4|v6)" >&2; return 1 ;;
     esac
 }
 
@@ -233,9 +210,6 @@ _base_url() {
         printf 'http://127.0.0.1:%s\n' "$PORT"
     fi
 }
-
-_is_running() { [ -n "$(docker ps  -q -f "name=^${CONTAINER}\$" -f status=running 2>/dev/null)" ]; }
-_exists()     { [ -n "$(docker ps -aq -f "name=^${CONTAINER}\$" 2>/dev/null)" ]; }
 
 _require_enabled() {
     if [ "$ENABLED" != 1 ]; then
@@ -423,15 +397,8 @@ EOF
 
 mcp_main() {
     set -euo pipefail
-    # Optional env file for the token and the knobs. It is a bash
-    # script: syntax-checked, then sourced with every assignment
-    # exported. A file that does not parse stops the script, and bash's
-    # message is not shown, since it quotes the line.
-    local envf="${WEALTHDB_MCP_ENV_FILE:-$HOME/.secrets/wealthdb-mcp.env}"
-    if [ -f "$envf" ] && ! wealthdb_source_bash "$envf"; then
-        echo "mcp: $envf has a bash syntax error" >&2
-        return 1
-    fi
+    # Optional env file for the token and the knobs.
+    _source_env_file || return 1
     _resolve_knobs
     local cmd="${1:-help}"
     if [ "$#" -gt 0 ]; then shift; fi
