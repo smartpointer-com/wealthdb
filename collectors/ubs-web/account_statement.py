@@ -148,7 +148,9 @@ _STMT_PAGE_NUMBER = tuple(re.compile(p) for p in ("Page", r"\d+", "/", r"\d+"))
 # extraction splits it into words: with or without spaces around its
 # slashes, and in whichever slash glyph the page prints.
 _STMT_DOCUMENT_CODE = re.compile(
-    r"(?<![A-Z0-9])[A-Z]{6}\d{2}\s*[/\u2215\uff0f]\s*\d{6}\s*[/\u2215\uff0f]\s*[A-Z0-9]{15}(?![A-Z0-9])")
+    r"(?<![A-Z0-9])[A-Z]{6}\d{2}"
+    r"\s*[/\u2215\uff0f]\s*\d{6}"
+    r"\s*[/\u2215\uff0f]\s*[A-Z0-9]{15}(?![A-Z0-9])")
 
 
 def _run_at(texts: list[str], i: int, run: tuple) -> int:
@@ -160,9 +162,10 @@ def _run_at(texts: list[str], i: int, run: tuple) -> int:
 
 
 def _without_furniture(words) -> list:
-    """A row's words less the page footer's: the form note and the page
-    number after it (`_STMT_FORM_NOTE`), and every word the document
-    code spans (`_STMT_DOCUMENT_CODE`)."""
+    """A row's words less the page footer's: the form note
+    (`_STMT_FORM_NOTE`) and the page number after it
+    (`_STMT_PAGE_NUMBER`), and every word the document code spans
+    (`_STMT_DOCUMENT_CODE`)."""
     texts = [w.text for w in words]
     spans, at = [], 0
     for t in texts:
@@ -183,6 +186,7 @@ def _without_furniture(words) -> list:
             out.append(words[i])
             i += 1
     return out
+
 
 def _stmt_amount(tokens: list[str]) -> float | None:
     """Join a ledger column's numeric word-fragments into a float.
@@ -344,8 +348,7 @@ def _stmt_split_multi(cont_lines: list[str],
     A line ending in an amount opens a payment and the amount is taken
     off its text; the lines under it are that beneficiary's name and
     address overflow, which run to as many lines as the beneficiary
-    needs. Anything after the trailer is the page's own furniture and
-    belongs to no payment.
+    needs. Anything after the trailer belongs to no payment.
 
     Proved means both of the trailer's claims hold: as many payments
     were found as it counts, and they add up to the movement's printed
@@ -431,7 +434,6 @@ def _read_ledger(extracted: Extracted) -> dict:
             ws = _without_furniture(r.words)
             if not ws:
                 continue
-            line = " ".join(w.text for w in ws)
             # Row date = leading DD.MM.YY token in the far-left Date
             # column (x0 < 80). Everything else is content.
             row_date = None
@@ -443,7 +445,7 @@ def _read_ledger(extracted: Extracted) -> dict:
             if row_date is None:
                 # Continuation line — attach to the preceding movement.
                 if cur is not None:
-                    cur["_cont"].append(line)
+                    cur["_cont"].append(" ".join(w.text for w in ws))
                 continue
 
             # Digit-leading tokens → numeric columns (by nearest

@@ -1482,7 +1482,7 @@ class TestMaturityNotice:
 
     def test_the_product_line_is_kept_whole(self):
         """The loader reads the rate type off the product name
-        (load.py `_mortgage_rate_type`), so the name keeps its cue."""
+        (load_rows.py `_mortgage_rate_type`), so the name keeps its cue."""
         text = (
             "UBS SARON Mortgage CHF\n"
             f"{self.ACCT_LINE}\n"
@@ -2162,6 +2162,8 @@ def test_the_footer_code_on_a_ledger_line_is_taken_out_of_it():
     ["ABCDEF12", "/", "345678", "/", "AB1CD2EF3GH4IJ5"],
     ["ABCDEF12/", "345678/", "AB1CD2EF3GH4IJ5"],
     ["ABCDEF12/345678/AB1CD2EF3GH4IJ5"],
+    ["ABCDEF12\u2215345678\u2215AB1CD2EF3GH4IJ5"],
+    ["ABCDEF12\uff0f345678\uff0fAB1CD2EF3GH4IJ5"],
 ])
 def test_the_footer_code_leaves_the_line_it_opens(code):
     """The code can open a continuation line that goes on with the

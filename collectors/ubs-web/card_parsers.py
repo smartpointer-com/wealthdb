@@ -3,7 +3,7 @@
 Bronze → silver parsers for the credit-card surface.
 
 Pure functions from the JSON `cards.py` stored to the row dicts
-`load.py` writes: no database handle, no filesystem beyond what is
+`cards_load.py` writes: no database handle, no filesystem beyond what is
 handed in, so each can be tested against a synthetic payload without
 standing silver up. The same split `pdf_parsers.py` uses.
 
@@ -86,7 +86,7 @@ def _content_id(prefix: str, parts, occurrence: int = 0) -> str:
     every dump re-fetches the whole history — the group has the same
     membership each time, so it hands out the same indices.
 
-    Mirrors `load.py`'s `_stmt_txn_id` for the statement era, which
+    Mirrors statement_ledger.py's `_stmt_txn_id` for the statement era, which
     solves the same problem for a source that never had an id at all.
     """
     body = "|".join("" if x is None else str(x) for x in (*parts, occurrence))

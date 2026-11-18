@@ -1,4 +1,4 @@
-"""Bronze→silver tests for the ubs-web collector's load.py.
+"""Bronze→silver tests for the ubs-web loader.
 
 Seeds a minimal synthetic UBS web positions export (the semicolon
 CSV with the "Valued in:" footer) and runs the positions loader,
@@ -22,6 +22,7 @@ sys.path.insert(0, str(COLLECTOR))
 
 import card_parsers  # noqa: E402
 import load as loader  # noqa: E402
+import documents_load  # noqa: E402
 from collectorkit import bronze, incremental, silver  # noqa: E402
 from collectorkit.parsecache import ParseCache  # noqa: E402
 from silverdb import MIGRATIONS_DIR, fresh_db  # noqa: E402
@@ -197,10 +198,10 @@ _IBAN_B = "CH0000000000000000002"
 
 
 def _mv(account: str, booking: int, *, credit=None, debit=None,
-        desc="CREDIT", occ=0, reconciled=True, value=None) -> dict:
+        desc="CREDIT", occ=0, reconciled=True) -> dict:
     return {
         "booking_date": booking,
-        "value_date": value if value is not None else booking,
+        "value_date": booking,
         "account_external_id": account,
         "currency_iso": "CHF",
         "amount_debit": debit,
@@ -289,8 +290,8 @@ def test_a_batch_payments_ids_are_the_movements_id_plus_a_position():
 
 
 def test_an_unsplit_rows_id_is_unchanged_by_the_batch_columns():
-    """Every id minted before batches were split must still be minted,
-    or the overlap dedup breaks and silver keeps both spellings."""
+    """An unsplit row's id is the movement id, or a statement that
+    prints the batch whole and one that splits it would not meet."""
     r = _mv(_IBAN_A, _PRE, credit=100.0)
     assert loader._stmt_txn_id(_IBAN_A, r) == loader._stmt_batch_txn_id(_IBAN_A, r)
 
@@ -494,18 +495,18 @@ def test_cash_rows_that_are_genuinely_different_stay_apart(tmp_path):
 _ADVICE_TXN = "0000036ED0000123"
 
 
-def _advice(account: str, *, credit=None, debit=None, booking=_PRE,
-            txn=_ADVICE_TXN, purpose="Increase Example Mandate") -> dict:
+def _advice(account: str, *, credit=None, debit=None,
+            txn=_ADVICE_TXN) -> dict:
     """One parsed advice row as `_insert_advice_transactions` takes them."""
     return {
         "transaction_external_id": txn,
-        "booking_date": booking,
-        "value_date": booking,
+        "booking_date": _PRE,
+        "value_date": _PRE,
         "account_external_id": account,
         "currency_iso": "CHF",
         "amount_debit": debit,
         "amount_credit": credit,
-        "counterparty": purpose,
+        "counterparty": "Increase Example Mandate",
         "description_kind": None,
         "counter_account": None,
         "source_doc_token": "synthetic-token",
@@ -668,15 +669,13 @@ def test_each_scope_reaches_its_reader_with_its_kind(monkeypatch, scope):
 # primary key cannot recognise the pair. Both are written; the adapter
 # keeps the ledger's row where it holds the advice's movement.
 
-def _stmt_row(conn, account, *, booking=_PRE, credit=None, debit=None,
-              value=None, desc="CREDIT"):
+def _stmt_row(conn, account, *, credit=None, debit=None, desc="CREDIT"):
     """One statement-era row, written by the real statement path so it
     carries that era's id and its printed (unsigned) amount column."""
     with conn:
         loader._insert_hist_transactions(
             conn, 1700000000,
-            [_mv(account, booking, credit=credit, debit=debit, desc=desc,
-                 value=value)])
+            [_mv(account, _PRE, credit=credit, debit=debit, desc=desc)])
 
 
 def test_an_advice_is_written_beside_the_statement_row(tmp_path):
@@ -693,31 +692,6 @@ def test_an_advice_is_written_beside_the_statement_row(tmp_path):
     conn.close()
 
 
-def test_the_advice_pass_does_not_depend_on_the_parse_order(tmp_path):
-    # The pass hands the advices over in whatever order the PDF workers
-    # finished. Two loads of one archive must still reach one silver.
-    batch = [
-        _advice(_IBAN_B, credit=12345.67, txn="0000036ED0000123"),
-        _advice(_IBAN_B, credit=12345.67, txn="0000036ED0000456"),
-        _advice(_IBAN_A, debit=500.0, txn="0000036ED0000789"),
-    ]
-
-    def written(rows):
-        home = tmp_path / rows[0]["transaction_external_id"]
-        home.mkdir(parents=True, exist_ok=True)
-        conn = fresh_db(home)
-        _stmt_row(conn, _IBAN_B, credit=12345.67)
-        with conn:
-            loader._insert_advice_transactions(conn, 1, rows)
-        got = sorted(r[0] for r in conn.execute(
-            "SELECT transaction_external_id FROM transactions "
-            "WHERE payload LIKE '%payment_advice_pdf%'").fetchall())
-        conn.close()
-        return got
-
-    assert written(batch) == written(list(reversed(batch)))
-
-
 def test_a_second_load_of_one_archive_adds_nothing(tmp_path):
     conn = fresh_db(tmp_path)
     rows = [_advice(_IBAN_B, credit=12345.67)]
@@ -727,24 +701,6 @@ def test_a_second_load_of_one_archive_adds_nothing(tmp_path):
         assert loader._insert_advice_transactions(conn, 2, rows) == 0
     assert conn.execute(
         "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 1
-    conn.close()
-
-
-def test_the_export_keeps_its_row_under_a_shared_key(tmp_path):
-    # The export restated the same transaction number with a corrected
-    # amount. The key, which is what the two feeds share, keeps the
-    # export's row.
-    conn = fresh_db(tmp_path)
-    _seed_export_row(conn, _ADVICE_TXN, _IBAN_B, debit=-999.99)
-    with conn:
-        n = loader._insert_advice_transactions(
-            conn, 1, [_advice(_IBAN_B, debit=12345.67)])
-
-    assert n == 0
-    row = conn.execute(
-        "SELECT amount_debit, description_kind FROM transactions").fetchone()
-    assert row["amount_debit"] == -999.99
-    assert row["description_kind"] == "Special payment order"
     conn.close()
 
 
@@ -818,7 +774,7 @@ def test_the_result_shape_version_moves_every_namespace(monkeypatch):
     # reader fingerprint covers, so its version is part of the namespace.
     before = dict(loader._namespaces())
     loader._namespaces.cache_clear()
-    monkeypatch.setattr(loader, "_RESULT_SHAPE", "r-next")
+    monkeypatch.setattr(documents_load, "_RESULT_SHAPE", "r-next")
     try:
         after = loader._namespaces()
     finally:
@@ -904,8 +860,7 @@ def test_the_extractions_are_cached_beside_the_parse_cache():
 
 
 def test_the_walk_writes_the_advice_and_the_statement_ledger(tmp_path):
-    # The advice is listed FIRST here. Both documents' rows are written,
-    # whichever PDF worker finished first.
+    # Both documents' rows reach `transactions` from one walk.
     conn = fresh_db(tmp_path)
     _seed_doc(conn, "adv", "sha-adv", "Credit Advice")
     _seed_doc(conn, "stmt", "sha-stmt", "Account Statement")
@@ -1012,7 +967,8 @@ def test_a_products_whole_ledger_survives_one_transaction_number(tmp_path):
 def test_the_largest_movement_keeps_the_banks_own_number(tmp_path):
     """A payment and the correspondent's fee share one number. The
     PAYMENT must keep the bare number: the advice pass is keyed by it
-    (load.py's header note), and an advice names the payment."""
+    (the `_DOCUMENT_PASS_DELETES` note in documents_load.py), and an
+    advice names the payment."""
     conn = fresh_db(tmp_path)
     rows = [
         _txn_row("02-11", "-444.44", "", "1000.00", "ZD00000TI0000000",

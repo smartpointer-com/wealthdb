@@ -1,6 +1,6 @@
 """Bronze -> silver for the credit-card surface.
 
-Covers card_parsers (pure) and load.py's card pass (against a real
+Covers card_parsers (pure) and cards_load.py's card pass (against a real
 SQLite silver built from the migrations). Every value is invented.
 
 The properties that carry weight:
@@ -332,7 +332,7 @@ def test_reconcile_tolerance_admits_a_rounding_cent_but_not_a_real_gap():
 
 
 # --------------------------------------------------------------------
-# load.py — the card pass against a real silver
+# cards_load.py — the card pass against a real silver
 # --------------------------------------------------------------------
 
 def _silver() -> sqlite3.Connection:

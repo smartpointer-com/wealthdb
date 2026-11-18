@@ -71,7 +71,7 @@ def parse_amount(text) -> float | None:
     """An amount as printed (`100'000.00`, `CHF 100,000.00`, `250000`) or
     a number -> a float; blank -> None. A leading currency code and
     thousands separators go, the decimal point stays. Distinct from
-    `load.parse_grouped_decimal`, which reads a trailing unit and no
+    `export_load.parse_grouped_decimal`, which reads a trailing unit and no
     currency."""
     if isinstance(text, bool) or text is None:
         return None

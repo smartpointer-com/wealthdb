@@ -296,8 +296,7 @@ compound primary key was built for (§3.6 above, migration 0001): the
 missing leg lands beside the leg the export already holds, and a
 consumer that pairs legs on a shared transaction number finds both.
 
-Two consequences follow from sharing the export's id space rather
-than minting one:
+Two consequences follow from the advice's id:
 
 - **An advice never overwrites.** It states four facts — direction,
   amount, currency, and the booking and value dates — where the export
@@ -350,9 +349,8 @@ archive (the same booking printed on a monthly and an annual statement
 hashes identically, so the upsert collapses it), but nothing in silver
 reconciles a statement row against the export's or the feed's record of
 the same booking — the ids do not meet, and silver does not decide merge
-policy. The wealthdb
-UBS adapter owns that reconciliation: see the reconcile table in
-[the adapter doc](../../wealthdb/docs/adapters/ubs.md).
+policy. The wealthdb UBS adapter owns that reconciliation: see the
+reconcile table in [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
 **A batch order becomes its payments.** The statement books a batch of
 e-banking payments as ONE movement carrying the batch total, listing the
@@ -1005,23 +1003,26 @@ exposure record and a composition for the fund
 - **Bronze scan.** Walk `<bronze-root>` for subdirectories
   matching `YYYYMMDDTHHMMSSZ` and skip those already in
   `dump_runs`.
-- **Per dump:**
-  1. Parse `run.json` to get the window bounds; write `dump_runs`.
-  2. Parse `positions/*.csv` (per-portfolio CSVs first, then the
+- **Per dump** (the module that runs each step is named in
+  brackets; the row rules the steps share are in `load_rows.py`):
+  1. [`load.py`] Parse `run.json` to get the window bounds; write `dump_runs`.
+  2. [`export_load.py`] Parse `positions/*.csv` (per-portfolio CSVs first, then the
      consolidated default-view CSV) → upsert
      `banking_relationships`, `portfolios`, `accounts`,
      `positions`. Per-portfolio first means real portfolio
      assignments win and only truly-unassigned accounts land
      under the synthetic catch-all portfolio.
-  3. Parse `transactions/cash_*.csv` (per-account, per-window) →
-     upsert `transactions` keyed by `(transaction_external_id,
+  3. [`export_load.py`, the ids in `txn_ids.py`] Parse
+     `transactions/cash_*.csv` (per-account, per-window) → upsert
+     `transactions` keyed by `(transaction_external_id,
      account_external_id)`. The `.mt940` files stay in bronze; no
      loader reads them.
-  4. Parse `portfolio_transactions/*.csv` → `portfolio_transactions`
+  4. [`export_load.py`] Parse `portfolio_transactions/*.csv` → `portfolio_transactions`
      (§3.7b).
-  5. Catalog `documents/*.pdf` files referenced in `run.json` →
+  5. [`documents_load.py`] Catalog `documents/*.pdf` files referenced in `run.json` →
      upsert `documents`, computing `content_sha256` per file.
-  6. Walk the `documents` table, route every PDF whose label or
+  6. [`documents_load.py`, the statement and advice movements in
+     `statement_ledger.py`] Walk the `documents` table, route every PDF whose label or
      `doc_type` names a type the parsers read to that type's reader
      (`pdf_parsers.py`), and upsert the parsed positions / cash
      balances into the `historical_*` tables and the overview totals
@@ -1031,8 +1032,8 @@ exposure record and a composition for the fund
      parsers write `advices` (§3.9). A Statement of assets also
      writes its transaction list to `statement_trades` (§3.10), and a
      quarterly report writes `private_market_reports` (§3.12).
-  7. Parse `cards/` → the `card_*` tables (§5.9).
-  8. Parse `rates/` → `account_rates` (§3.11).
+  7. [`cards_load.py`] Parse `cards/` → the `card_*` tables (§5.9).
+  8. [`rates_load.py`] Parse `rates/` → `account_rates` (§3.11).
 
 - **PDF parsing isolation.** `pdfplumber` is bundled in the
   Docker image (`requirements.txt`). Each document kind has a

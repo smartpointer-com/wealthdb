@@ -244,7 +244,7 @@ def parse_payment_advice_text(text: str, doc_token: str) -> list[dict]:
             "source": "payment_advice_pdf",
             # The marker the loader's document pass deletes on, since an
             # advice row is keyed by UBS's transaction number and so
-            # carries no id prefix to recognise it by (load.py
+            # carries no id prefix to recognise it by (documents_load.py
             # `_DOCUMENT_PASS_DELETES`).
             "document": "payment_advice_pdf",
             "advice_direction": direction,
