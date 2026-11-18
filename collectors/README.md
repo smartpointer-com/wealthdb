@@ -204,16 +204,16 @@ shared library and setting a small config block.
 
 A **Docker** wrapper sources
 [`shared/wrappers/wrapper-lib.sh`](../shared/wrappers/wrapper-lib.sh)
-and sets `NAME`, `ENV_PREFIX` and `ENV_VARS` (env vars forwarded into
-the container with `-e`). It may opt into these knobs:
+and sets `NAME` and `ENV_VARS` (env vars forwarded into the container
+with `-e`). `ENV_PREFIX` is `NAME` in upper snake case unless the
+wrapper sets it. It may opt into these knobs:
 
 - `HAS_DEBUG`: a `/debug` mount for `--screenshot-dir` and `--trace`.
 - `HAS_APP_MOUNT`: the checkout's source over `/app` on every verb.
   The image then holds no source, so only an edit to the Dockerfile
   or `requirements.txt` rebuilds it.
 - `HAS_SAFETY`: refuse to clobber a live container mid-MFA.
-- `HAS_VNC`: VNC port forwarding for `vnc-login`. `VNC_SUBCOMMANDS`
-  replaces the list of verbs that get it.
+- `VNC_SUBCOMMANDS`: the verbs that get a forwarded VNC port.
 - `HAS_ENV_FILE`: source the credentials env file on the host, so the
   `ENV_VARS` it sets are forwarded.
 - `SILVER_SUBCOMMANDS`: the verbs that read `--silver-db`, in place of
@@ -221,7 +221,9 @@ the container with `-e`). It may opt into these knobs:
 
 A wrapper with a config file calls `wrapper_source_cfg` first. The
 wrapper then calls `wrapper_init`, prints its help when
-`wrapper_wants_help`, and ends with `wrapper_main "$@"`. `wrapper_main`
+`wrapper_wants_help`, and ends with `wrapper_main "$@"`. A wrapper whose
+`login` folds into `download` calls `wrapper_login_folds` before that.
+A bare `login` then prints a notice and starts no container. `wrapper_main`
 runs `build`, and runs `prune` on the host through
 `wrapper_host_prune`; fidelity-web and schwab-api route `prune`
 themselves. The library bind-mounts the dirs listed under Docker mounts
@@ -290,8 +292,7 @@ exception is uniformity: a flag the fleet orchestrator forwards to every
 source must PARSE everywhere, so `--lookback` is accepted by every
 `download` and a collector that cannot narrow its fetch warns rather than
 rejecting. A wrapper declares its silver-consuming verbs with
-`SILVER_SUBCOMMANDS` (default `(load)`), the same convention
-`VNC_SUBCOMMANDS` uses.
+`SILVER_SUBCOMMANDS` (default `(load)`).
 
 **There is exactly one window flag: `--lookback`.** Every `download`
 accepts it, so a fleet orchestrator can hand the same flag to every source. It

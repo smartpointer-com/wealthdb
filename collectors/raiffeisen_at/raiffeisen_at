@@ -17,12 +17,10 @@
 set -euo pipefail
 
 NAME=raiffeisen_at
-ENV_PREFIX=RAIFFEISEN_AT
 ENV_VARS=(RAIFFEISEN_AT_USERNAME RAIFFEISEN_AT_PASSWORD RAIFFEISEN_AT_REGION)
 HAS_DEBUG=1
 HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live container mid-pushTAN / mid-VNC
-HAS_VNC=1           # forward a free 5900-6000 port
 VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -84,5 +82,13 @@ Credentials (read from /secrets/raiffeisen_at.env inside the container
 EOF
     exit 0
 fi
+
+# `login` folds into `download` (the pushTAN fires every sign-in, §F), so a
+# bare one is a host-side no-op. `login --check` is a read-only session
+# probe and passes through, as do the help flags.
+wrapper_login_folds --check --help -h -- "$@" <<'EOF'
+raiffeisen_at: 'login' folds into 'download' — nothing to persist (the pushTAN fires every sign-in; §F).
+  Run 'download' (one-shot login + fetch), or 'login --check' to probe a session.
+EOF
 
 wrapper_main "$@"

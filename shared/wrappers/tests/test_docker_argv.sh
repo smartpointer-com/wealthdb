@@ -9,7 +9,8 @@
 #   - every mount source is an absolute host path, since `docker run -v`
 #     reads a bare relative source as a named volume;
 #   - the VNC port is forwarded only for the VNC_SUBCOMMANDS, on the first
-#     free host port.
+#     free host port;
+#   - ENV_PREFIX is derived from NAME when the wrapper does not set it.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -21,7 +22,7 @@ trap 'rm -rf "$TMP"' EXIT
 # No ambient override may steer a mount out of the sandbox; a case sets
 # the one it tests.
 unset WEALTHDB_DATA_ROOT TESTCOL_SECRETS_DIR TESTCOL_DATA_DIR TESTCOL_DEBUG_DIR \
-      TESTCOL_SILVER_DB HAS_VNC VNC_SUBCOMMANDS
+      TESTCOL_SILVER_DB VNC_SUBCOMMANDS
 
 # A fake `docker` that prints its argv (one item per line) and exits, so
 # wrapper_main's `exec docker run ...` is captured rather than really
@@ -50,7 +51,7 @@ docker_argv() {
         export WEALTHDB_SECRETS_DIR="$TMP/secrets"
         mkdir -p "$TMP/secrets" "$TMP/work"
         cd "$TMP/work" || exit 1
-        NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=()
+        NAME="${TEST_NAME:-testcol}"; ENV_PREFIX="${TEST_PREFIX-TESTCOL}"; ENV_VARS=()
         # shellcheck disable=SC1091
         source "$HERE/../wrapper-lib.sh"
         wrapper_init
@@ -108,15 +109,21 @@ out="$(TESTCOL_DATA_DIR=envdata docker_argv login)"
 has_item "a relative TESTCOL_DATA_DIR mounts as an absolute host path" "$TMP/work/envdata:/data" "$out"
 
 echo "wrapper-lib VNC port:"
-out="$(HAS_VNC=1 docker_argv vnc-login 2>/dev/null)"
+out="$(VNC_SUBCOMMANDS=(vnc-login); docker_argv vnc-login 2>/dev/null)"
 has_item "vnc-login gets the first free host port" "127.0.0.1:5901:5900" "$out"
 has_item "the container learns the host port" "VNC_HOST_PORT=5901" "$out"
-out="$(HAS_VNC=1 docker_argv login)"
-lacks_item "login gets no VNC port by default" "VNC_HOST_PORT=5901" "$out"
-out="$(HAS_VNC=1 VNC_SUBCOMMANDS=(explore login); docker_argv login 2>/dev/null)"
+out="$(VNC_SUBCOMMANDS=(vnc-login); docker_argv login)"
+lacks_item "a verb not named gets no VNC port" "VNC_HOST_PORT=5901" "$out"
+out="$(VNC_SUBCOMMANDS=(explore login); docker_argv login 2>/dev/null)"
 has_item "VNC_SUBCOMMANDS names the verbs that get one" "VNC_HOST_PORT=5901" "$out"
-out="$(HAS_VNC=1 VNC_SUBCOMMANDS=(explore login); docker_argv vnc-login)"
-lacks_item "VNC_SUBCOMMANDS replaces the default" "VNC_HOST_PORT=5901" "$out"
+out="$(docker_argv vnc-login)"
+lacks_item "no VNC_SUBCOMMANDS, no VNC port" "VNC_HOST_PORT=5901" "$out"
+out="$(VNC_SUBCOMMANDS=(); docker_argv vnc-login)"
+lacks_item "an empty VNC_SUBCOMMANDS, no VNC port" "VNC_HOST_PORT=5901" "$out"
+
+echo "wrapper-lib ENV_PREFIX:"
+out="$(TEST_NAME=test-col TEST_PREFIX='' TEST_COL_DATA_DIR=derived docker_argv login)"
+has_item "an unset ENV_PREFIX is NAME in upper snake case" "$TMP/work/derived:/data" "$out"
 
 echo
 summary "wrapper_main docker argv tests"

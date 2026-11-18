@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Behaviour test for the `login` traps of the wrappers whose `login` folds
-# into `download`: amex, fidelity-web and schwab-web. A bare `login` is a
-# host-side no-op that never starts a container. amex lets `login --check`
-# and the help flags through to the container; fidelity-web and schwab-web
-# have no session to probe, so their trap takes every `login`. Runs each
-# wrapper with a stubbed docker on PATH, so nothing real is invoked. Pass
-# wrapper paths to test those instead of the three.
+# into `download`: amex, chase, fidelity-web, raiffeisen_at and
+# schwab-web. A bare `login` is a host-side no-op that never starts a
+# container. amex, chase and raiffeisen_at let `login --check` and the
+# help flags through to the container; fidelity-web and schwab-web have no
+# session to probe, so their trap takes every `login`. Runs each wrapper
+# with a stubbed docker on PATH, so nothing real is invoked. Pass wrapper
+# paths to test those instead of the five.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib.sh
@@ -14,7 +15,9 @@ COLLECTORS="$HERE/../../../collectors"
 if [[ $# -gt 0 ]]; then
     WRAPPERS=("$@")
 else
-    WRAPPERS=("$COLLECTORS/amex/amex" "$COLLECTORS/fidelity-web/fidelity-web"
+    WRAPPERS=("$COLLECTORS/amex/amex" "$COLLECTORS/chase/chase"
+              "$COLLECTORS/fidelity-web/fidelity-web"
+              "$COLLECTORS/raiffeisen_at/raiffeisen_at"
               "$COLLECTORS/schwab-web/schwab-web")
 fi
 
@@ -66,12 +69,12 @@ for wrapper in "${WRAPPERS[@]}"; do
         && ok "bare login explains itself" || bad "bare login message: $out"
     started && bad "bare login started a container" || ok "bare login starts no container"
 
-    # The flags amex lets through: `--check` reads the profile's
-    # device-trust cookie, and a trapped `--help` would print the no-op
+    # The flags a collector with a session probe lets through: `--check`
+    # probes the session, and a trapped `--help` would print the no-op
     # notice instead of the collector's own usage.
     for flag in --check --help -h; do
         run "$wrapper" login "$flag" >/dev/null 2>&1
-        if [[ "$name" == amex ]]; then
+        if [[ "$name" == amex || "$name" == chase || "$name" == raiffeisen_at ]]; then
             started && ok "login $flag passes through" || bad "login $flag was trapped"
         elif [[ "$flag" == --check ]]; then
             started && bad "login --check started a container" \

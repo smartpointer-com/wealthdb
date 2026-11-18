@@ -76,7 +76,7 @@ fi
 # The wrappers' help path runs wrapper_init and prints the mounts, so a
 # config file's data dir shows there with no docker involved.
 for c in relevate cointracking; do
-    prefix="$(grep '^ENV_PREFIX=' "$REPO/collectors/$c/$c" | cut -d= -f2)"
+    prefix="$(printf '%s' "$c" | tr 'a-z-' 'A-Z_')"
     printf '%s_DATA_DIR=%s\n' "$prefix" "$TMP/$c-data" > "$TMP/$c.cfg"
     out="$(env -u WEALTHDB_DATA_ROOT -u "${prefix}_DATA_DIR" \
            "${prefix}_CFG=$TMP/$c.cfg" "$REPO/collectors/$c/$c" help 2>&1)"

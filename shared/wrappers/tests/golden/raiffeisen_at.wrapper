@@ -193,56 +193,11 @@ exit: 0
 --- stderr
 === login
 --- calls
-docker
-  ps
-  --filter
-  name=^raiffeisen_at$
-  --filter
-  status=running
-  -q
-docker
-  rm
-  -f
-  raiffeisen_at
-docker
-  run
-  --rm
-  --name
-  raiffeisen_at
-  --user
-  <UID>:<GID>
-  -e
-  HOME=/tmp
-  -e
-  RAIFFEISEN_AT_USERNAME
-  -e
-  RAIFFEISEN_AT_PASSWORD
-  -e
-  RAIFFEISEN_AT_REGION
-  -v
-  <TMP>/w-raiffeisen_at/home/.secrets:/secrets
-  -v
-  <TMP>/w-raiffeisen_at/xdgdata/wealthdb/raiffeisen_at:/data
-  -v
-  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache:/cache/startupcache
-  -e
-  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
-  -v
-  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at:/cache/collector
-  -e
-  WEALTHDB_CACHE_DIR=/cache/collector
-  -v
-  <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at:/debug
-  -v
-  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at:/app
-  wealthdb/raiffeisen_at:latest
-  login
-  [env] RAIFFEISEN_AT_USERNAME=<unset>
-  [env] RAIFFEISEN_AT_PASSWORD=<unset>
-  [env] RAIFFEISEN_AT_REGION=<unset>
 exit: 0
 --- stdout
 --- stderr
+raiffeisen_at: 'login' folds into 'download' — nothing to persist (the pushTAN fires every sign-in; §F).
+  Run 'download' (one-shot login + fetch), or 'login --check' to probe a session.
 === vnc-login
 --- calls
 lsof

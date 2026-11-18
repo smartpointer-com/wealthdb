@@ -245,53 +245,11 @@ exit: 0
 --- stderr
 === login
 --- calls
-docker
-  ps
-  --filter
-  name=^chase$
-  --filter
-  status=running
-  -q
-docker
-  rm
-  -f
-  chase
-docker
-  run
-  --rm
-  --name
-  chase
-  --user
-  <UID>:<GID>
-  -e
-  HOME=/tmp
-  -e
-  CHASE_USERNAME
-  -e
-  CHASE_PASSWORD
-  -v
-  <TMP>/w-chase/home/.secrets:/secrets
-  -v
-  <TMP>/w-chase/xdgdata/wealthdb/chase:/data
-  -v
-  <TMP>/w-chase/xdgcache/wealthdb/startupcache:/cache/startupcache
-  -e
-  WEALTHDB_STARTUPCACHE_DIR=/cache/startupcache
-  -v
-  <TMP>/w-chase/xdgcache/wealthdb/chase:/cache/collector
-  -e
-  WEALTHDB_CACHE_DIR=/cache/collector
-  -v
-  <TMP>/w-chase/xdgcache/wealthdb/debug/chase:/debug
-  -v
-  <TMP>/w-chase/tree/collectors/chase:/app
-  wealthdb/chase:latest
-  login
-  [env] CHASE_USERNAME=<unset>
-  [env] CHASE_PASSWORD=<unset>
 exit: 0
 --- stdout
 --- stderr
+chase: 'login' folds into 'download' — nothing to persist (the session dies with Firefox; §F).
+  Run 'download' (one-shot login + scrape), or 'login --check' to probe a session.
 === load
 --- calls
 docker

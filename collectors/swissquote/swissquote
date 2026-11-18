@@ -9,7 +9,6 @@
 set -euo pipefail
 
 NAME=swissquote
-ENV_PREFIX=SWISSQUOTE
 ENV_VARS=(SWISSQUOTE_USERNAME SWISSQUOTE_PASSWORD)
 HAS_DEBUG=1         # /debug mount for login.py --screenshot-dir / --trace
 # No /app mount of the checkout, no safety guard and no VNC subcommand.

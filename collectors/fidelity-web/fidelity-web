@@ -30,13 +30,11 @@
 set -euo pipefail
 
 NAME=fidelity-web
-ENV_PREFIX=FIDELITY_WEB
 ENV_VARS=(FIDELITY_WEB_USERNAME FIDELITY_WEB_PASSWORD FIDELITY_USERNAME FIDELITY_PASSWORD)
 HAS_DEBUG=1
 HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live MFA / VNC handoff
-HAS_VNC=1           # forward a free 5900-6000 port for the VNC verbs
-VNC_SUBCOMMANDS=(explore vnc-login)
+VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
@@ -123,17 +121,15 @@ fi
 
 # `./fidelity-web login` → clean host-side no-op (exit 0), never a container
 # spin. The Fidelity session lives only for the browser's lifetime, so a
-# login-and-exit persists nothing. Trapping it here keeps an orchestrator's
-# login → download → load from tripping (and stops `login` from reaching the
-# container's util-linux /bin/login). Use `download` (login is folded in) or
-# `vnc-login` for the first-time / re-auth VNC-assisted profile seed.
-if [[ "${1:-}" == "login" ]]; then
-    echo "fidelity-web: 'login' folds into 'download' — nothing to persist." >&2
-    echo "  The Fidelity session is browser-lifetime only. Use instead:" >&2
-    echo "    vnc-login   first-time / re-auth via VNC-assisted MFA" >&2
-    echo "    download    one-shot login -> walk (login is folded in)" >&2
-    exit 0
-fi
+# login-and-exit persists nothing, and no flag passes through. Use
+# `download` (login is folded in) or `vnc-login` for the first-time /
+# re-auth VNC-assisted profile seed.
+wrapper_login_folds -- "$@" <<'EOF'
+fidelity-web: 'login' folds into 'download' — nothing to persist.
+  The Fidelity session is browser-lifetime only. Use instead:
+    vnc-login   first-time / re-auth via VNC-assisted MFA
+    download    one-shot login -> walk (login is folded in)
+EOF
 
 # The file-only verbs (load / prune / recompress) run host-side on the
 # collector's .venv python (via host_python): pure file walks + SQLite /

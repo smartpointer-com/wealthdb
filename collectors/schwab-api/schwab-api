@@ -72,7 +72,7 @@ case "$cmd" in
         # VNC port (wrapper-lib forwards it only for the 'vnc-login' sub).
         ENV_VARS=(SCHWAB_CLIENT_ID SCHWAB_CLIENT_SECRET \
                   SCHWAB_LOGIN_ID SCHWAB_PASSWORD)
-        HAS_VNC=1           # vnc-login → forward a free 5900-6000 port
+        VNC_SUBCOMMANDS=(vnc-login)   # forward a free 5900-6000 port
         HAS_DEBUG=1         # /debug for the trace + page captures
         HAS_SAFETY=1        # don't evict a live VNC / 2FA session
         # shellcheck disable=SC1091

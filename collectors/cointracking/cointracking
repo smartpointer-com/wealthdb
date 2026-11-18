@@ -14,7 +14,6 @@
 set -euo pipefail
 
 NAME=cointracking
-ENV_PREFIX=COINTRACKING
 # BINANCE_API_KEY is optional — it raises the Binance rate limit for the
 # default price fill on `load`; forwarded so a key exported in the shell
 # or set in cointracking.cfg reaches the container. load and fetch-prices
@@ -26,8 +25,7 @@ ENV_VARS=(COINTRACKING_USERNAME COINTRACKING_PASSWORD BINANCE_API_KEY
 HAS_DEBUG=1
 HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live VNC handoff
-HAS_VNC=1           # forward a free 5900-6000 port
-VNC_SUBCOMMANDS=(explore)   # replaces the default {vnc-login} — no vnc-login verb here
+VNC_SUBCOMMANDS=(explore)   # the browser-over-VNC verbs
 SILVER_SUBCOMMANDS=(load fetch-prices)  # replaces the default {load} — fetch-prices
                                         # backfills prices straight into silver
 

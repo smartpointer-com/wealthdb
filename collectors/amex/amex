@@ -21,12 +21,10 @@
 set -euo pipefail
 
 NAME=amex
-ENV_PREFIX=AMEX
 ENV_VARS=(AMEX_USERNAME AMEX_PASSWORD)
 HAS_DEBUG=1
 HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
-HAS_VNC=1           # forward a free 5900-6000 port
 VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -96,28 +94,14 @@ EOF
 fi
 
 # `login` folds into `download` (DESIGN.md §L), so a bare one is a host-side
-# no-op: exit 0 without starting a container at all. That keeps an
-# orchestrator's login -> download -> load from tripping, and — since the
-# orchestrator runs the pair for every source — saves a container start per
-# source per refresh. `login --check` is a real verb and passes through; it
-# reads the profile's device-trust cookie off disk and touches no network.
-# `--help` / `-h` pass through too: the parser's usage is what the footer
-# below promises for every subcommand, and printing it must not be traded
-# for the fold notice.
-if [[ "${1:-}" == "login" ]]; then
-    PASSES_THROUGH=no
-    for arg in "$@"; do
-        case "$arg" in
-            --check|--help|-h) PASSES_THROUGH=yes ;;
-        esac
-    done
-    if [[ "$PASSES_THROUGH" == "no" ]]; then
-        echo "amex: 'login' folds into 'download' — the sign-in budget is" \
-             "too small to spend one on a separate verb (DESIGN.md §L)." >&2
-        echo "  Run 'download', or 'login --check' to report whether this" \
-             "device is registered." >&2
-        exit 0
-    fi
-fi
+# no-op. `login --check` is a real verb and passes through; it reads the
+# profile's device-trust cookie off disk and touches no network. `--help` /
+# `-h` pass through too: the parser's usage is what the footer below
+# promises for every subcommand, and printing it must not be traded for the
+# fold notice.
+wrapper_login_folds --check --help -h -- "$@" <<'EOF'
+amex: 'login' folds into 'download' — the sign-in budget is too small to spend one on a separate verb (DESIGN.md §L).
+  Run 'download', or 'login --check' to report whether this device is registered.
+EOF
 
 wrapper_main "$@"

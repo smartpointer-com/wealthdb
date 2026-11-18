@@ -14,12 +14,11 @@
 set -euo pipefail
 
 NAME=schwab-web
-ENV_PREFIX=SCHWAB_WEB
 ENV_VARS=(SCHWAB_LOGIN_ID SCHWAB_PASSWORD)
 HAS_DEBUG=1
 HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live MFA/VNC session
-HAS_VNC=1           # forward a free 5900-6000 port for vnc-login
+VNC_SUBCOMMANDS=(vnc-login)   # the browser-over-VNC verb
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
@@ -97,15 +96,12 @@ fi
 # `./schwab-web login` → clean host-side no-op (exit 0), never a container
 # spin. schwab-web is a one-shot scraper: the Firefox session is minted
 # inside `download` (CLI-MFA on stdin) and persists nothing separately, so
-# there is no standalone login step. Trapping it here keeps an
-# orchestrator's login → download → load from tripping (and stops `login`
-# from reaching the container's util-linux /bin/login).
-if [[ "${1:-}" == "login" ]]; then
-    echo "schwab-web: 'login' folds into 'download' — nothing to persist." >&2
-    echo "  This one-shot scraper mints its session inside 'download'" >&2
-    echo "  (CLI-MFA prompt on stdin). Run 'download' directly, or" >&2
-    echo "  'vnc-login' when the CLI-MFA selectors drift." >&2
-    exit 0
-fi
+# there is no standalone login step and no flag passes through.
+wrapper_login_folds -- "$@" <<'EOF'
+schwab-web: 'login' folds into 'download' — nothing to persist.
+  This one-shot scraper mints its session inside 'download'
+  (CLI-MFA prompt on stdin). Run 'download' directly, or
+  'vnc-login' when the CLI-MFA selectors drift.
+EOF
 
 wrapper_main "$@"

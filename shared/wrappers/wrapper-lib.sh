@@ -15,12 +15,15 @@
 #                HERE="$(cd "$(dirname "$0")" && pwd)" at the top of each
 #                wrapper.
 #   NAME         short collector name, e.g. "fidelity-web".
-#   ENV_PREFIX   upper-cased env-var prefix, e.g. "FIDELITY_WEB". Used to
-#                derive both override knobs (${ENV_PREFIX}_SECRETS_DIR
-#                etc.) and the force-replace switch
-#                (${ENV_PREFIX}_FORCE_REPLACE).
 #   ENV_VARS     Bash array of env-var names to forward into the container
 #                via `-e VAR` (e.g. (FIDELITY_USERNAME FIDELITY_PASSWORD)).
+#
+# Caller MAY SET (before sourcing):
+#   ENV_PREFIX   upper-cased env-var prefix. Used to derive both override
+#                knobs (${ENV_PREFIX}_SECRETS_DIR etc.) and the
+#                force-replace switch (${ENV_PREFIX}_FORCE_REPLACE).
+#                wrapper_init derives it from NAME when unset:
+#                "fidelity-web" gives "FIDELITY_WEB".
 #
 # Caller MAY SET (before sourcing) to opt in to features:
 #   HAS_DEBUG=1       Mount $HOST_DEBUG → /debug. Required for collectors
@@ -36,13 +39,12 @@
 #                     burn a 2FA prompt or evict a VNC handoff. Override
 #                     with ${ENV_PREFIX}_FORCE_REPLACE=1 when the live
 #                     container is known-stuck.
-#   HAS_VNC=1         Forward a host-side VNC port for the `vnc-login`
-#                     subcommand. Walks 5900-6000 for a free port (defends
-#                     against macOS Screen Sharing, prior crashed runs,
-#                     other VNC servers) and passes the chosen port as
-#                     VNC_HOST_PORT inside the container.
-#   VNC_SUBCOMMANDS   Bash array of the subcommands that get the VNC port
-#                     under HAS_VNC=1. Replaces the default (vnc-login).
+#   VNC_SUBCOMMANDS   Bash array of the subcommands that get a forwarded
+#                     host-side VNC port. Walks 5900-6000 for a free port
+#                     (defends against macOS Screen Sharing, prior crashed
+#                     runs, other VNC servers) and passes the chosen port
+#                     as VNC_HOST_PORT inside the container. Unset or
+#                     empty, no verb gets one.
 #   SILVER_SUBCOMMANDS
 #                     Bash array of the subcommands that read --silver-db.
 #                     Replaces the default (load).
@@ -51,7 +53,8 @@
 #                     (see wrapper_source_env_file).
 #
 # A wrapper with a config file calls `wrapper_source_cfg PREFIX DEFAULT`
-# before wrapper_init.
+# before wrapper_init. A wrapper whose `login` folds into `download`
+# calls `wrapper_login_folds` before wrapper_main.
 #
 # wrapper_init POPULATES (for the caller and the helpers below):
 #   HOST_SECRETS, HOST_DATA, HOST_DEBUG (when HAS_DEBUG=1),
@@ -121,6 +124,7 @@ wrapper_source_cfg() {
 #   4. the ~/.secrets and ${XDG_DATA_HOME:-~/.local/share}/wealthdb/<name>
 #      defaults
 wrapper_init() {
+    : "${ENV_PREFIX:=$(printf '%s' "$NAME" | tr 'a-z-' 'A-Z_')}"
     wealthdb_export_image_tag "$_WRAPPER_ROOT" || exit 2
     IMAGE="$(_envvar IMAGE "wealthdb/${NAME}:${WEALTHDB_IMAGE_TAG}")"
     CONTAINER_NAME="$(_envvar CONTAINER "$NAME")"
@@ -158,8 +162,7 @@ wrapper_init() {
 # wrapper_verb_takes_silver — is `$1` a subcommand that consumes the silver
 # DB? The set defaults to just `load`. A wrapper with another
 # silver-consuming verb sets SILVER_SUBCOMMANDS to REPLACE that default —
-# e.g. SILVER_SUBCOMMANDS=(load fetch-prices) for cointracking. Mirrors the
-# VNC_SUBCOMMANDS convention below.
+# e.g. SILVER_SUBCOMMANDS=(load fetch-prices) for cointracking.
 wrapper_verb_takes_silver() {
     local want="$1" v
     local -a verbs
@@ -469,6 +472,33 @@ wrapper_safety_guard() {
 # Common dispatch
 # ----------------------------------------------------------------------
 
+# wrapper_login_folds [PASS_FLAG...] -- ARGS... — the `login` of a
+# collector whose sign-in folds into `download`. When ARGS name the
+# `login` verb and hold none of the PASS_FLAGs, print the notice read
+# from stdin and exit 0 without starting a container. That keeps an
+# orchestrator's login -> download -> load from tripping, saves a
+# container start, and keeps `login` from reaching the container's
+# util-linux /bin/login. A PASS_FLAG, such as a session probe's
+# `--check` or a help flag, takes `login` to the container. Returns
+# otherwise.
+wrapper_login_folds() {
+    local -a pass=()
+    while [[ $# -gt 0 && "$1" != -- ]]; do
+        pass+=("$1")
+        shift
+    done
+    shift
+    [[ "${1:-}" == login ]] || return 0
+    local a p
+    for a in "$@"; do
+        for p in ${pass[@]+"${pass[@]}"}; do
+            [[ "$a" == "$p" ]] && return 0
+        done
+    done
+    cat >&2
+    exit 0
+}
+
 # wrapper_wants_help [args...] — are the args a request for the
 # wrapper's help: none at all, or help / --help / -h as the verb?
 wrapper_wants_help() {
@@ -496,31 +526,17 @@ wrapper_main() {
     wrapper_check_mounts
     wrapper_tty_args
 
+    # A verb of VNC_SUBCOMMANDS gets a forwarded VNC port.
     local -a extra_args=()
-    if [[ "${HAS_VNC:-0}" == "1" ]]; then
-        local sub="${1:-}" need_vnc=0 v
-        # The set of subcommands that get a forwarded VNC port. When unset it
-        # defaults to just `vnc-login` (the collectors that implement that
-        # verb). A wrapper whose VNC surface is different sets VNC_SUBCOMMANDS
-        # to REPLACE that default — e.g. VNC_SUBCOMMANDS=(explore login) for a
-        # collector whose VNC verbs are explore/login and which has NO
-        # vnc-login — so it never allocates a port for (nor advertises) a
-        # vnc-login it doesn't implement.
-        local -a vnc_set
-        if [[ -n "${VNC_SUBCOMMANDS+x}" ]]; then
-            vnc_set=(${VNC_SUBCOMMANDS[@]+"${VNC_SUBCOMMANDS[@]}"})
-        else
-            vnc_set=(vnc-login)
-        fi
-        for v in ${vnc_set[@]+"${vnc_set[@]}"}; do
-            [[ "$sub" == "$v" ]] && { need_vnc=1; break; }
-        done
-        if [[ $need_vnc == 1 ]]; then
+    local v
+    for v in ${VNC_SUBCOMMANDS[@]+"${VNC_SUBCOMMANDS[@]}"}; do
+        if [[ "${1:-}" == "$v" ]]; then
             wrapper_vnc_port
             extra_args+=(-p "127.0.0.1:${vnc_host_port}:5900"
                          -e "VNC_HOST_PORT=${vnc_host_port}")
+            break
         fi
-    fi
+    done
 
     if [[ "${HAS_SAFETY:-0}" == "1" ]]; then
         wrapper_safety_guard "$@"
@@ -533,7 +549,6 @@ wrapper_main() {
         --user "$(id -u):$(id -g)"
         -e HOME=/tmp
     )
-    local v
     for v in ${ENV_VARS[@]+"${ENV_VARS[@]}"}; do
         docker_args+=(-e "$v")
     done
