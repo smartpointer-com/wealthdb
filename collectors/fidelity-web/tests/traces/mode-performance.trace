@@ -1,0 +1,8 @@
+page.evaluate('() => location.href')
+page.evaluate(<text 9c6eb7f4d4f9>)
+page.goto('https://digital.fidelity.com/ftgw/digital/portfolio/performance', wait_until='domcontentloaded')
+sleep(1.0)
+page.evaluate('() => location.href')
+sleep(5.0)
+page.evaluate('() => location.href')
+page.content()
