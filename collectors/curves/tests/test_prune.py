@@ -72,9 +72,8 @@ def test_main_reclaims_debug_trace_and_noncomplete_dumps(tmp_path):
     assert not in_progress.exists()
 
 
-def test_validate_target_accepts_debug_subdir_only(tmp_path):
-    (tmp_path / OLD_TS / "screenshots").mkdir(parents=True)
-    prune.CONFIG.validate_target(tmp_path / OLD_TS / "screenshots", tmp_path)
+def test_validate_target_refuses_load_inputs(tmp_path):
+    (tmp_path / OLD_TS).mkdir()
     for name in ("run.json", "ecb.csv"):
         with pytest.raises(SystemExit):
             prune.CONFIG.validate_target(tmp_path / OLD_TS / name, tmp_path)

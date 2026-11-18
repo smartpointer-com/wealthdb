@@ -837,7 +837,7 @@ def main(argv: list[str]) -> int:
                   "is too small to spend one on a separate verb (DESIGN.md "
                   "§L). Run `download`, or `login --check` to report whether "
                   "this device is registered.")
-        return 2
+        return cli.EXIT_USAGE
     return run_check(args)
 
 

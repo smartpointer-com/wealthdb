@@ -257,6 +257,20 @@ def test_debug_trace_records_a_transient_failure(tmp_path, monkeypatch):
     assert sum(1 for x in lines if x["url"].endswith("/rest/web/wealth/summary")) == 2
 
 
+def test_an_http_error_during_the_walk_is_a_failure(tmp_path, monkeypatch):
+    import httpx
+
+    class _DownClient(FakeClient):
+        def get(self, path, **kwargs):
+            raise httpx.ConnectError("no route")
+
+    monkeypatch.setattr(download.ViacClient, "from_state",
+                        staticmethod(lambda path: _DownClient()))
+    rc = download.main(["--bronze-dir", str(tmp_path / "bronze"),
+                        "--state-path", str(_state_file(tmp_path))])
+    assert rc == download.cli.EXIT_FAILED
+
+
 def test_dry_run_with_debug_persists_nothing_to_bronze(tmp_path, patched_client):
     # A dry-run mints no run dir, so the trace has nowhere to land:
     # HttpTrace(None) swallows the records rather than resurrecting a

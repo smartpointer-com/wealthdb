@@ -876,14 +876,14 @@ def do_download(args: argparse.Namespace) -> int:
         session, state_minted_at = new_session_from_state(args.state_path)
     except FileNotFoundError as exc:
         logger.error("%s", exc)
-        return 64
+        return cli.EXIT_NEEDS_PERSON
 
     if not step_probe(session):
         logger.error(
             "session probe failed — run `./relevate login` "
             "to mint a fresh session.",
         )
-        return 1
+        return cli.EXIT_NEEDS_PERSON
 
     ts = bronze.ts_slug()
 

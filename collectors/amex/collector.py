@@ -5,7 +5,8 @@ SPEC = Collector(
     name="amex",
     env_prefix="AMEX",
     session="profile",
-    unattended=True,
+    # Every download signs in (see AGENTS.md), so none is unattended.
+    unattended=False,
     window="bounded",
     # amex writes no in-bronze debug capture.
     debug_subdirs=(),

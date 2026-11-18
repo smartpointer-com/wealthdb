@@ -5,7 +5,8 @@ SPEC = Collector(
     name="firstcitizens",
     env_prefix="FIRSTCITIZENS",
     session="profile",
-    unattended=True,
+    # Every download signs in (see AGENTS.md), so none is unattended.
+    unattended=False,
     window="bounded",
     # firstcitizens writes no in-bronze debug capture.
     debug_subdirs=(),

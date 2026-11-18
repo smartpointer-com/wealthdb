@@ -34,7 +34,6 @@ tree under `/data` stays clean.
 from __future__ import annotations
 
 import argparse
-import logging
 import re
 import sys
 from pathlib import Path
@@ -42,8 +41,6 @@ from pathlib import Path
 from collectorkit import explore
 
 import elba_client as elba
-
-log = logging.getLogger("raiffeisen_at.explore")
 
 DEFAULT_PROFILE_DIR = Path("/secrets/raiffeisen_at-profile")
 DEFAULT_ENV_FILE = Path("/secrets/raiffeisen_at.env")
@@ -102,20 +99,6 @@ CLICK_RECORDER_JS = explore.click_recorder_js(
     password_selector=PWD_SELECTOR, otp_selector=OTP_SELECTOR)
 
 
-def _prefill(page, username: str, password: str, filled: set) -> bool:
-    """Pre-fill the Mein ELBA login form, each field at most once per page.
-
-    Frame-aware: the form may sit in the main frame or in a same-brand
-    iframe. Both fields must co-exist in one frame, so a TWO-STEP login
-    (identifier first, password later) leaves the pre-fill idle; the
-    credentials are then typed by hand. Never submits: sign-in and 2FA are
-    driven by hand in the VNC session.
-    """
-    return explore.prefill_login(
-        page, username, password, filled, host_re=HOST_RE,
-        user_selector=USER_SELECTOR, password_selector=PWD_SELECTOR, log=log)
-
-
 # What the person at the VNC session is asked to walk (DESIGN.md §3).
 WALK = ("walk the three discovery flows (DESIGN.md §3): 1) log in via VNC, "
         "noting the pushTAN screen and its completion; 2) open the document "
@@ -124,6 +107,11 @@ WALK = ("walk the three discovery flows (DESIGN.md §3): 1) log in via VNC, "
         "the CSV export may be run once for comparison.")
 
 
+# The site's own selectors drive the shared pre-fill, frame-aware and at
+# most once per field and page. Both fields must co-exist in one frame, so
+# a two-step login (identifier first, password later) leaves the pre-fill
+# idle and the credentials are typed by hand. It never submits: sign-in
+# and 2FA are driven by hand in the VNC session.
 SITE = explore.Site(
     name="raiffeisen_at", url=elba.START_URL, profile_dir=DEFAULT_PROFILE_DIR,
     env_file=DEFAULT_ENV_FILE, user_envs=(USER_ENV,), pass_envs=(PASS_ENV,),
@@ -139,7 +127,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str]) -> int:
-    return explore.main(SITE, argv, __doc__, prefill=_prefill)
+    return explore.main(SITE, argv, __doc__)
 
 
 if __name__ == "__main__":

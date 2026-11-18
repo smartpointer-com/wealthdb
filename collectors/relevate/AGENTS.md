@@ -58,9 +58,9 @@ without asking and those that are real sessions. For relevate:
   then reads the two listing endpoints (the investment overview and the
   document index), logs what a real run would fetch, and writes nothing
   to bronze. Both are allowed without asking.
-  - `login --check` prints `ALIVE` (exit 0), `DEAD` (exit 6, a login is needed) or
-    `MISSING` (exit 1, no state file).
-  - `download --dry-run` exits 1 with a dead session and 64 with no
+  - `login --check` prints `ALIVE` (exit 0), `DEAD` (a dead session) or
+    `MISSING` (no state file). Both mean a login is needed: exit 6.
+  - `download`, `--dry-run` included, exits 6 with a dead session or no
     state file.
 - A real `download` reuses the stored session and never signs in, but it
   fetches everything. Run it only when asked.

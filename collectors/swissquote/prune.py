@@ -52,17 +52,14 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
+from collector import SPEC
 
-CONFIG = prune.PruneConfig(
-    # Where `download --debug` puts its landmark captures.
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    # A statusless-but-readable run.json is a pre-`status` complete dump:
-    # the manifest was written only at the end, so its presence means the
-    # walk finished.
-    is_complete=prune.lenient_classification,
-)
+# A statusless-but-readable run.json is a pre-`status` complete dump:
+# the manifest was written only at the end, so its presence means the
+# walk finished.
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

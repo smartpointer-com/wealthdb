@@ -255,8 +255,8 @@ login.py [--state-path PATH] [--check] [--max-otp-attempts N]
 - `--check` — **no credentials submitted, no mTAN push.** Loads
   the existing state file, restores the cookie jar, hits the
   landmark probe, and prints `ALIVE` / `DEAD` / `MISSING` on stdout.
-  Exit codes: 0 (ALIVE), 1 (MISSING), 6 (DEAD: a login is needed,
-  `collectorkit.cli.EXIT_NEEDS_PERSON`).
+  Exit codes: 0 (ALIVE), and 6 for MISSING and DEAD (a login is
+  needed, `collectorkit.cli.EXIT_NEEDS_PERSON`).
 - `--max-otp-attempts` — how many OTP submissions before giving up
   (default 3). The prompt has no deadline: `input()` blocks on stdin
   until a code arrives.
@@ -301,12 +301,12 @@ like a browser's:
 ### 4.1 Flow
 
 1. Load `/secrets/relevate-state.json` and restore the cookie
-   jar into a `requests.Session`. Missing file → exit `64` with
+   jar into a `requests.Session`. Missing file → exit 6 with
    "run `./relevate login` first".
 2. Set the session headers listed in §3.4. No `X-CSRFT759` on GETs:
    Airlock enforces double-submit only on POSTs.
 3. Probe `/auth/rest/protected/self-service/ui/configuration/portal`.
-   Non-200 → exit 1 and report that the session is dead. `download`
+   Non-200 → exit 6 and report that the session is dead. `download`
    never signs in.
 4. Create the run dir `/data/<UTC-ts>/` and open the `Manifest`
    (the `run.json` writer). It is born `status: "in-progress"` and
@@ -460,10 +460,10 @@ cheaply while iterating on the loader or on one portfolio's response
 shape.
 
 `--dry-run` reuses the stored session; it never signs in and never
-sends an mTAN. With no state file it exits 64, and with a dead session
-it exits 1, as a real run does. With a live session it calls only the
-two master listings (`investment-overview` and `documents`) and logs
-how many portfolios and in-window documents a real run would fetch.
+sends an mTAN. With no state file or a dead session it exits 6, as a
+real run does. With a live session it calls only the two master
+listings (`investment-overview` and `documents`) and logs how many
+portfolios and in-window documents a real run would fetch.
 Its manifest goes to a throwaway temp dir that is removed on exit, so
 nothing lands under `--bronze-dir`. `--debug` captures nothing on a
 dry run.

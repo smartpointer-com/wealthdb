@@ -141,18 +141,26 @@ def screenshot(page, screenshot_dir: Path | None, name: str) -> None:
         log.warning("Screenshot %s failed: %s", path, e)
 
 
-def _dump_html(page, screenshot_dir: Path | None, name: str) -> None:
+def _dump_html(page, screenshot_dir: Path | None, name: str, *,
+               secrets: tuple[str, ...]) -> None:
     """Save the page's rendered HTML next to the screenshot. Useful for
     pinning a selector against the live DOM (a screenshot can't be
-    grepped). Best-effort; only when a screenshot dir is configured."""
+    grepped). Best-effort; only when a screenshot dir is configured.
+
+    Every value in `secrets` (the run's credentials) is masked wherever
+    the markup carries it."""
     if not screenshot_dir:
         return
     screenshot_dir.mkdir(parents=True, exist_ok=True)
     path = screenshot_dir / f"{name}.html"
     try:
         # Scrubbed: a dump taken on the sign-in page would otherwise
-        # persist the typed password as a `value` attribute.
-        path.write_text(debugcap.scrub_dom(page.content()), encoding="utf-8")
+        # persist the typed password as a `value` attribute, and the
+        # username in a text input, a hidden field or a script.
+        path.write_text(
+            debugcap.scrub_dom(page.content(),
+                               debugcap.secret_redactor(*secrets)),
+            encoding="utf-8")
         log.info("Page HTML: %s", path)
     except Exception as e:  # noqa: BLE001 - best-effort debug aid
         log.warning("HTML dump %s failed: %s", path, e)
@@ -379,7 +387,8 @@ def login(args: argparse.Namespace) -> int:
                     timeout=5000,
                 )
                 screenshot(page, args.screenshot_dir, f"login_{ts}_03_mfa")
-                _dump_html(page, args.screenshot_dir, f"login_{ts}_03_mfa")
+                _dump_html(page, args.screenshot_dir, f"login_{ts}_03_mfa",
+                           secrets=(username, password))
                 _announce_operation_code(
                     page,
                     waiting_note=f"Waiting up to {args.mfa_timeout}s ...",

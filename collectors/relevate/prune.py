@@ -52,17 +52,13 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
+from collector import SPEC
 
-CONFIG = prune.PruneConfig(
-    # `download --debug`'s HTTP trace, which debugcap lands under this
-    # subdir fleet-wide. Everything else in a run dir is a bronze capture.
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    # A status key decides. A statusless but readable run.json predates
-    # the field; load reads such a dump, so it is kept.
-    is_complete=prune.lenient_classification,
-)
+# A status key decides. A statusless but readable run.json predates
+# the field; load reads such a dump, so it is kept.
+CONFIG = prune.spec_config(SPEC)
 
 
 def main(argv=None):

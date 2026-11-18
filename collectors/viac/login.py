@@ -158,7 +158,7 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
         client._ensure_csrf_known()
         if not client.csrf_cookie_name:
             log.error("no CSRFT<N>-S cookie set by GET /; aborting.")
-            return 2
+            return cli.EXIT_FAILED
         log.info("CSRF: cookie=%s header=%s",
                  client.csrf_cookie_name, client.csrf_header_name)
 
@@ -190,7 +190,7 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
                     "minutes and try again."
                 ),
             )
-            return 2
+            return cli.EXIT_FAILED
         body = resp.json()
         attrs = (body.get("data") or {}).get("attributes") or {}
         phone = attrs.get("phoneNumber", "<unknown>")
@@ -198,7 +198,7 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
         if next_step != "MTAN_OTP_REQUIRED":
             log.error("unexpected nextAuthStep %r (expected MTAN_OTP_REQUIRED)",
                       next_step)
-            return 2
+            return cli.EXIT_FAILED
 
         # Step 4: prompt for the OTP. The read blocks indefinitely
         # rather than timing out, so fetching the phone is never a race.
@@ -224,14 +224,14 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
                       "to the phone. OTP_EXPIRED: re-run login.py to "
                       "trigger a fresh SMS."),
             )
-            return 2
+            return cli.EXIT_FAILED
 
         # Step 6: confirm the session via GET /authentication/.
         log.info("GET /external-login/.../authentication (confirm)")
         resp = client.get("/external-login/public/authentication/")
         if resp.status_code != 200:
             log.error("authentication confirm returned %d", resp.status_code)
-            return 2
+            return cli.EXIT_FAILED
         log.info("authentication confirmed")
 
         # Step 7: activate the web-side session.
@@ -239,7 +239,7 @@ def mint_session(state_path: Path, username: str, password: str) -> int:
         resp = client.post("/rest/web/customer/loginHook")
         if resp.status_code != 204:
             log.error("loginHook returned %d (expected 204)", resp.status_code)
-            return 2
+            return cli.EXIT_FAILED
 
         # Persist.
         client.save_state(state_path)
@@ -287,7 +287,7 @@ def main(argv: list[str]) -> int:
             "be the mobile number in E.164 form including the "
             "country code (e.g. `+417XXXXXXXX`).",
             LOGIN_ENV, PASSWORD_ENV, LOGIN_ENV)
-        return 2
+        return cli.EXIT_USAGE
 
     username = normalize_login(username_raw)
     if not looks_like_e164(username):
@@ -298,14 +298,14 @@ def main(argv: list[str]) -> int:
             "the API call login replays does not — the country code "
             "must be in viac.env.",
             LOGIN_ENV, _redact_login(username))
-        return 2
+        return cli.EXIT_USAGE
     log.info("%s: %s", LOGIN_ENV, _redact_login(username))
 
     try:
         return mint_session(args.state_path, username, password)
     except httpx.HTTPError as e:
         log.error("HTTP error during login: %s", e)
-        return 2
+        return cli.EXIT_FAILED
 
 
 if __name__ == "__main__":

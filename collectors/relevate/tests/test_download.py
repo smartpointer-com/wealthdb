@@ -128,6 +128,27 @@ def test_dry_run_does_not_create_bronze_dir(tmp_path, monkeypatch):
     assert not bronze.exists()
 
 
+def test_no_state_file_needs_a_login(tmp_path):
+    rc = download.main([
+        "--dry-run",
+        "--bronze-dir", str(tmp_path / "bronze"),
+        "--state-path", str(tmp_path / "absent.json"),
+    ])
+    assert rc == download.cli.EXIT_NEEDS_PERSON
+
+
+def test_a_dead_session_needs_a_login(tmp_path, monkeypatch):
+    _patch_session(monkeypatch)
+    monkeypatch.setattr(download, "step_probe", lambda session: False)
+    bronze = tmp_path / "bronze"
+    rc = download.main([
+        "--bronze-dir", str(bronze),
+        "--state-path", str(tmp_path / "state.json"),
+    ])
+    assert rc == download.cli.EXIT_NEEDS_PERSON
+    assert not bronze.exists()
+
+
 def test_session_from_state_carries_the_dashboard_headers(tmp_path):
     # The download session is login's session with the SPA's dashboard
     # Referer and its literal-undefined Authorization, plus the stored

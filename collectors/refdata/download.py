@@ -852,7 +852,7 @@ def main(argv=None) -> int:
         wanted = wantedmod.from_file(args.wanted) if args.wanted else wantedmod.from_engine(config.engine_command(cfg))
     except wantedmod.WantedError as e:
         log.error("%s", e)
-        return 3
+        return cli.EXIT_FAILED
     if not args.dry_run:
         # The run dir comes before the plan, so --debug traces the
         # requests the plan makes as well.

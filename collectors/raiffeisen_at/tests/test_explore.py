@@ -8,12 +8,14 @@ Synthetic values only (no real credentials or account data).
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import explore  # noqa: E402
+from collectorkit import explore as kit_explore  # noqa: E402
 
 USERNAME = "example-user"
 PASSWORD = "example-password"
@@ -188,11 +190,23 @@ class StubPage:
         self.url = frames[0].url
 
 
+def _prefill(page) -> bool:
+    # The fill explore.main runs: the shared one, with the site's own gate
+    # and selectors.
+    site = explore.SITE
+    return kit_explore.prefill_login(
+        page, USERNAME, PASSWORD, set(), host_re=site.host_re,
+        user_selector=site.user_selector,
+        password_selector=site.password_selector,
+        user_alt_selector=site.user_alt_selector,
+        log=logging.getLogger("test"))
+
+
 def test_prefill_rejects_foreign_host():
     user, pwd = StubField(), StubField()
     page = StubPage(StubFrame("https://raiffeisen.at.evil.example/login",
                               user=user, pwd=pwd))
-    assert not explore._prefill(page, USERNAME, PASSWORD, set())
+    assert not _prefill(page)
     assert user.fill_calls == [] and pwd.fill_calls == []
 
 
@@ -204,7 +218,7 @@ def test_prefill_reaches_form_in_same_brand_iframe():
         StubFrame("https://mein.elba.raiffeisen.at/"),
         StubFrame("https://sso.raiffeisen.at/frame", user=user, pwd=pwd),
     )
-    assert explore._prefill(page, USERNAME, PASSWORD, set())
+    assert _prefill(page)
     assert user.value == USERNAME and pwd.value == PASSWORD
 
 
@@ -217,5 +231,5 @@ def test_prefill_never_reaches_foreign_iframe():
         StubFrame("https://mein.elba.raiffeisen.at/"),
         StubFrame("https://widgets.example.net/login", user=user, pwd=pwd),
     )
-    assert not explore._prefill(page, USERNAME, PASSWORD, set())
+    assert not _prefill(page)
     assert user.fill_calls == [] and pwd.fill_calls == []

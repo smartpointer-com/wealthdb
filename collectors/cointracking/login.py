@@ -199,9 +199,11 @@ def login(page, username: str, password: str) -> None:
         # (cointracking sometimes re-renders with a visible
         # error: "Invalid 2FA code", "Session expired", etc.).
         # Scrubbed before truncation: a re-render can bring the sign-in
-        # form back with the password still in it, and this string is raised.
-        body = debugcap.scrub_dom(page.content())[:2000] \
-            .replace("\n", " ").strip()
+        # form back with the credentials still in it, and this string is
+        # raised. Both are masked by value, wherever the markup has them.
+        body = debugcap.scrub_dom(
+            page.content(), debugcap.secret_redactor(username, password)
+        )[:2000].replace("\n", " ").strip()
         raise RuntimeError(
             f"did not land on /dashboard after 2FA submit. "
             f"Current URL: {page.url}. Page body (first 2000 chars):"

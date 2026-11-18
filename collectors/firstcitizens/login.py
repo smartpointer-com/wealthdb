@@ -638,7 +638,7 @@ def main(argv: list[str]) -> int:
         if args.fresh:
             log.error("--fresh cannot be combined with --check "
                       "(a read-only probe never wipes device trust).")
-            return 2
+            return cli.EXIT_USAGE
         return run_check(args)
     return run_login(args)
 

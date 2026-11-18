@@ -319,7 +319,8 @@ def test_main_exit_codes(tmp_path, monkeypatch):
     monkeypatch.setattr(download.config, "load", broken)
     assert download.main(["--bronze-dir", str(tmp_path)]) == 2
     configured(monkeypatch, providers=("inbox",))
-    assert download.main(["--bronze-dir", str(tmp_path), "--wanted", str(tmp_path / "none.json")]) == 3
+    missing = str(tmp_path / "none.json")
+    assert download.main(["--bronze-dir", str(tmp_path), "--wanted", missing]) == download.cli.EXIT_FAILED
     with pytest.raises(SystemExit, match="--bronze-dir is required"):
         download.main([])
 

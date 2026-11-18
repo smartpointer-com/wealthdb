@@ -30,14 +30,13 @@ tree under `/data` stays clean.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from collectorkit import cli, debugcap, explore
+from collectorkit import debugcap, explore
 
 log = logging.getLogger("carta.explore")
 
@@ -81,16 +80,6 @@ PWD_SELECTOR = "input[type='password']"
 CLICK_RECORDER_JS = explore.click_recorder_js(
     EVENT_PREFIX, host_re=HOST_RE, user_selector=USER_SELECTOR,
     password_selector=PWD_SELECTOR, otp_selector=None)
-
-
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=__doc__.strip(),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    explore.add_args(p, url=DEFAULT_URL, env_file=DEFAULT_ENV_FILE,
-                     profile_dir=DEFAULT_PROFILE_DIR, dom_snapshots=False)
-    return p.parse_args(argv)
 
 
 def _maybe_prefill_login(page, email: str, password: str) -> bool:
@@ -146,27 +135,26 @@ WALK = ("log in via VNC, click through the pages the download needs (the "
         "stock-comp plan AND the fund LP statements).")
 
 
-def main(argv: list[str]) -> int:
-    args = parse_args(argv)
-    cli.configure_logging(args.verbose)
-    explore.prepare_profile(args.profile_dir, fresh=args.fresh, log=log,
-                            note="2FA will be required on next login")
-    username, password, prefill = explore.load_credentials(
-        args.env_file, USER_ENVS, (PASS_ENV,),
-        no_prefill=args.no_prefill, host="carta.com", log=log)
+SITE = explore.Site(
+    name="carta", url=DEFAULT_URL, profile_dir=DEFAULT_PROFILE_DIR,
+    env_file=DEFAULT_ENV_FILE, user_envs=USER_ENVS, pass_envs=(PASS_ENV,),
+    host="carta.com", host_re=HOST_RE, user_selector=USER_SELECTOR,
+    password_selector=PWD_SELECTOR, event_prefix=EVENT_PREFIX,
+    init_js=CLICK_RECORDER_JS, walk=WALK,
+    fresh_note="2FA will be required on next login",
+    dom_snapshots=False)
 
-    with contextlib.ExitStack() as stack:
-        session = explore.Session.from_args(
-            stack, args, redact=debugcap.secret_redactor(username, password),
-            log=log)
-        context = session.open_camoufox(stack, args.profile_dir)
-        session.attach(
-            context, init_js=CLICK_RECORDER_JS, event_prefix=EVENT_PREFIX,
-            prefill=(lambda page: _maybe_prefill_login(page, username, password)) if prefill else None)
-        session.open(args.url)
-        session.record(WALK, max_duration=args.max_duration)
-    session.report()
-    return 0
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    return explore.parser(SITE, __doc__).parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    # Carta's own fill, which handles a two-step form.
+    return explore.main(
+        SITE, argv, __doc__,
+        prefill=lambda page, username, password, _filled:
+            _maybe_prefill_login(page, username, password))
 
 
 if __name__ == "__main__":

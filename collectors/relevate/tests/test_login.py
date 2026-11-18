@@ -26,7 +26,8 @@ def _state(tmp_path: Path) -> Path:
 
 
 def test_check_without_a_state_file_is_missing(tmp_path, capsys):
-    assert login.do_check(tmp_path / "absent.json") == 1
+    # No session is a login needed, the same verdict as a dead one.
+    assert login.do_check(tmp_path / "absent.json") == login.cli.EXIT_NEEDS_PERSON
     assert capsys.readouterr().out.strip() == "MISSING"
 
 

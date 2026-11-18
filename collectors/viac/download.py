@@ -668,7 +668,7 @@ def main(argv: list[str]) -> int:
             )
     except httpx.HTTPError as e:
         log.error("HTTP error during walk: %s", e)
-        return 2
+        return cli.EXIT_FAILED
 
     # Stamp the terminal status and atomically (tmp + rename) overwrite
     # the in-progress marker, so a prune racing the finalisation never

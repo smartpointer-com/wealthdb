@@ -44,8 +44,9 @@ from __future__ import annotations
 
 import sys
 
-from collectorkit import debugcap, prune
+from collectorkit import prune
 
+from collector import SPEC
 import load  # local module: the loader owns which dumps are load inputs
 
 
@@ -64,11 +65,7 @@ def _is_complete(run_dir, meta):
         legacy_complete=lambda rd, m: load.legacy_manifest_is_complete(m))
 
 
-CONFIG = prune.PruneConfig(
-    # Where `download --debug` puts its landmark captures.
-    debug_subdirs=(debugcap.SCREENSHOTS_DIR,),
-    is_complete=_is_complete,
-)
+CONFIG = prune.spec_config(SPEC, _is_complete)
 
 
 def main(argv=None):

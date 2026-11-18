@@ -568,14 +568,14 @@ def main(argv: list[str]) -> int:
         if args.fresh:
             log.error("--fresh cannot be combined with --check "
                       "(a read-only probe never wipes the profile).")
-            return 2
+            return cli.EXIT_USAGE
         return run_check(args)
     if args.bronze_dir is None:
         # The session does not persist (§F), so a sign-in without a fetch
         # would cost a pushTAN for nothing.
         log.error("--bronze-dir is required to sign in: the sign-in serves "
                   "the fetch (the download verb passes /data).")
-        return 2
+        return cli.EXIT_USAGE
     return run_login_and_fetch(args)
 
 
