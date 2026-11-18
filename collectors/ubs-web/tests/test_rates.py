@@ -1003,7 +1003,7 @@ def test_load_reads_both_surfaces_onto_their_accounts(tmp_path):
         _legacy_page([("01.01.2026", "5.000%", "")], [],
                      iban=IBAN_API_PRINTED))
     conn = fresh_db(tmp_path)
-    load.load_dump(conn, dump, 16, None, {})
+    load.load_dump(conn, dump, 16, None)
     assert _rows(conn) == [
         (IBAN_LEGACY, "credit", 1, 0.1, None, "2026-01-01", "legacy"),
         (IBAN_LEGACY, "debit", 1, 7.5, None, "2025-07-01", "legacy"),
@@ -1023,7 +1023,7 @@ def test_an_account_with_no_conditions_writes_no_row(tmp_path):
     (dump / "rates" / rates.legacy_file_name(IBAN_LEGACY)).write_text(
         _legacy_page([], [], repeated=False))
     conn = fresh_db(tmp_path)
-    load.load_dump(conn, dump, 16, None, {})
+    load.load_dump(conn, dump, 16, None)
     assert _rows(conn) == []
 
 
@@ -1035,7 +1035,7 @@ def test_an_api_file_stating_no_conditions_leaves_the_legacy_page(tmp_path):
     (dump / "rates" / rates.legacy_file_name(IBAN_LEGACY)).write_text(
         _legacy_page([("01.01.2026", "0.100%", "")], []))
     conn = fresh_db(tmp_path)
-    load.load_dump(conn, dump, 16, None, {})
+    load.load_dump(conn, dump, 16, None)
     assert _rows(conn) == [
         (IBAN_LEGACY, "credit", 1, 0.1, None, "2026-01-01", "legacy")]
 
@@ -1054,7 +1054,7 @@ def test_a_rate_artefact_that_does_not_read_is_skipped(tmp_path, caplog,
         _legacy_page([("01.01.2026", "0.100%", "")], []))
     (dump / "rates" / name).write_text(body)
     conn = fresh_db(tmp_path)
-    load.load_dump(conn, dump, 16, None, {})
+    load.load_dump(conn, dump, 16, None)
     assert _rows(conn) == [
         (IBAN_LEGACY, "credit", 1, 0.1, None, "2026-01-01", "legacy")]
     assert name in caplog.text

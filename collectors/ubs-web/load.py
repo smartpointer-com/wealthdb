@@ -37,7 +37,6 @@ import csv
 import functools
 import hashlib
 import io
-import itertools
 import json
 import logging
 import os
@@ -173,11 +172,17 @@ def _namespaces() -> dict[str, str]:
             for scope, fp in fingerprints.items()}
 
 
+# The version of what the document pass writes from a parse result. It
+# is part of the pass's generation and of no parse-cache namespace, so a
+# change to the writes re-derives the archive from the cached parses.
+_WRITES = "w1"
+
+
 @functools.lru_cache(maxsize=1)
 def _document_generation() -> str:
     """The generation of the whole document pass: every scope's
-    namespace, hashed."""
-    joined = "\n".join(sorted(_namespaces().values()))
+    namespace and the version of its writes (`_WRITES`), hashed."""
+    joined = "\n".join([*sorted(_namespaces().values()), _WRITES])
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:32]
 
 
@@ -192,9 +197,8 @@ def _purge_stale_document_rows(conn: sqlite3.Connection) -> int:
     moved, so the pass re-derives rather than adds to them.
 
     Whole-pass rather than per-document, though every row carries a
-    `source_doc_token`: the statement and advice rows are written against
-    what silver already holds (the MT940 floor, the advice's content
-    check), so the slice is re-derived as a whole.
+    `source_doc_token`: an advice is written only where the export holds no
+    row under its key, so the slice is re-derived as a whole.
     """
     if not silver.stale_generation(conn, DOCUMENT_GENERATION_SCOPE,
                                    _document_generation()):
@@ -221,7 +225,6 @@ POSITIONS_COLS = [
 
 # Transactions CSV (UTF-8 BOM, semicolon, CRLF): a metadata block, then
 # the data header row that starts with "Trade date;".
-TXN_HEADER_FROM = "From:"
 TXN_HEADER_IBAN = "IBAN:"
 # The metadata block sits within the first lines of the file.
 TXN_HEADER_SCAN_LINES = 15
@@ -420,13 +423,11 @@ def _written_by_a_newer_dump(conn: sqlite3.Connection, table: str,
 # ============================================================
 
 def load_dump(conn: sqlite3.Connection, dump_dir: Path,
-              schema_version: int, parses: DocumentParses,
-              mt940_floors: dict[str, int]) -> None:
+              schema_version: int, parses: DocumentParses) -> None:
     """Load one bronze dump into silver. Single transaction.
 
     `parses` is shared across the whole load run so each document in the
-    cumulative archive is parsed once, and `mt940_floors` is the run's
-    per-account MT940 cut-over (see `_load_historical_from_pdfs`)."""
+    cumulative archive is parsed once."""
     snapshot_at = bronze.parse_run_ts(dump_dir.name)
     log.info("loading %s (snapshot_at=%d)", dump_dir.name, snapshot_at)
 
@@ -439,7 +440,7 @@ def load_dump(conn: sqlite3.Connection, dump_dir: Path,
     ptxn_count = _load_portfolio_transactions(conn, snapshot_at, dump_dir)
     doc_count = _load_documents(conn, snapshot_at, dump_dir, run_meta)
     hist_pos, hist_cash, hist_mort, hist_txn = _load_historical_from_pdfs(
-        conn, snapshot_at, dump_dir, parses, mt940_floors)
+        conn, snapshot_at, dump_dir, parses)
     card_acc, card_txn, card_inv, card_stmt = _load_cards(
         conn, snapshot_at, dump_dir)
     rate_count = _load_rates(conn, snapshot_at, dump_dir)
@@ -2026,7 +2027,6 @@ class DocumentParses:
 
 def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
                                dump_dir: Path, parses: DocumentParses,
-                               mt940_floors: dict[str, int],
                                ) -> tuple[int, int, int, int]:
     """Walk every PDF tracked in the documents table whose label
     indicates a Statement of assets, an Account Statement, a
@@ -2050,13 +2050,10 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
     parsing every dump afresh — including the last-dump snapshot_at
     stamping on statement-derived transaction upserts.
 
-    `mt940_floors` is the per-account MT940 cut-over
-    (`_mt940_floors_by_account`): coverage can begin at different dates
-    per account (or be absent), so a single global floor would silently
-    drop movements. PDF movements are ingested only BELOW each account's
-    own floor; MT940 owns everything from the floor onward. It is computed
-    once per load from the dumps the load reads, so it is independent of
-    dump load order."""
+    Every statement movement and every advice is written, whatever else
+    records the same booking: silver keeps each era's rows as the
+    documents print them, and the UBS adapter decides which record of a
+    booking gold keeps."""
     docs_dir = dump_dir / "documents"
     if not docs_dir.is_dir():
         return 0, 0, 0, 0
@@ -2124,19 +2121,15 @@ def _load_historical_from_pdfs(conn: sqlite3.Connection, snapshot_at: int,
         elif kind == "private_market_report":
             report_rows += _insert_private_market_reports(conn, rows or {})
         elif kind == "payment_advice":
-            # Collected, not written here: an advice is only worth writing
-            # where nothing else recorded the movement, and the statement
-            # ledger it has to be measured against is written by the branch
-            # below. Inside one loop the two would race on the archive's
-            # order, and a statement listed after its advice would find the
-            # advice's movement not yet recorded.
+            # Collected, and written after the statement ledger: an advice
+            # and a movement of the export share their key, and the
+            # export's row is the one kept (`_insert_advice_transactions`).
             advices.extend(rows or [])
         elif kind == "account_statement":
             cash_rows += _insert_hist_cash_balances(
                 conn, (rows or {}).get("cash") or [])
             n, rejected = _insert_hist_transactions(
-                conn, snapshot_at, (rows or {}).get("transactions") or [],
-                mt940_floors)
+                conn, snapshot_at, (rows or {}).get("transactions") or [])
             txn_rows += n
             txn_reject_stmts += rejected
     if txn_reject_stmts:
@@ -2310,46 +2303,6 @@ def _insert_hist_cash_balances(conn: sqlite3.Connection,
                         _HIST_CASH_BALANCE_COLUMNS, rows)
 
 
-def _mt940_floors_by_account(dumps: list[Path]) -> dict[str, int]:
-    """Per-account MT940 coverage floor (Unix seconds), read from the
-    `From:` line of every `transactions/cash_*.csv` in `dumps` (the
-    dumps the load reads, `loadable_dumps`), keyed by canonical IBAN.
-
-    The MT940/CSV feed is authoritative from its declared `From:`
-    date onward for the account it covers; below that date the PDF
-    Account Statements are the only source. Coverage is uneven per
-    account, so the EARLIEST `From:` seen for each account is taken.
-    Accounts that never appear in any CSV are absent from the map —
-    the PDF then owns all of their history (no cut-over). A dump the
-    load skips (a crashed walk) is not read: its export never reaches
-    silver, so it must not move a floor."""
-    floors: dict[str, int] = {}
-    for csv_path in (path for dump_dir in dumps
-                     for path in sorted((dump_dir / "transactions")
-                                        .glob("cash_*.csv"))):
-        iban = None
-        frm = None
-        # Only the metadata block is read.
-        try:
-            with csv_path.open(encoding="utf-8-sig") as f:
-                lines = [ln.rstrip("\r\n")
-                         for ln in itertools.islice(f, TXN_HEADER_SCAN_LINES)]
-        except OSError:
-            continue
-        for ln in lines:
-            if ln.startswith(TXN_HEADER_IBAN):
-                iban = _txn_header_value(ln)
-            elif ln.startswith(TXN_HEADER_FROM):
-                frm = _txn_header_value(ln)
-        acct = ubs.iban_canonical(iban)
-        floor = card_parsers.ts(frm)
-        if not acct or not floor:
-            continue
-        if acct not in floors or floor < floors[acct]:
-            floors[acct] = floor
-    return floors
-
-
 def _stmt_batch_txn_id(account: str, r: dict) -> str:
     """Content-stable transaction id for the MOVEMENT a PDF row came
     from. Same booking on the monthly AND the annual statement (and in
@@ -2359,7 +2312,8 @@ def _stmt_batch_txn_id(account: str, r: dict) -> str:
 
     A split bundle's legs all hash to this same value — they are the
     one movement the statement printed — which is what lets a leg name
-    the batch row it replaces."""
+    the movement a statement printed whole, and the UBS adapter keep the
+    legs in its place."""
     parts = "|".join(str(x) for x in (
         account, r["booking_date"], r["value_date"],
         # A leg carries its own share in amount_debit/amount_credit;
@@ -2383,16 +2337,15 @@ def _stmt_txn_id(account: str, r: dict) -> str:
 
 
 def _insert_hist_transactions(conn: sqlite3.Connection, snapshot_at: int,
-                              rows: list[dict],
-                              mt940_floors: dict[str, int]) -> tuple[int, int]:
+                              rows: list[dict]) -> tuple[int, int]:
     """Insert PDF-derived movement rows into the silver `transactions`
-    table, applying the per-account MT940 cut-over and content-id
-    dedup. Returns (rows_inserted, statements_rejected).
+    table under their content ids (`_stmt_txn_id`), so the same booking
+    printed on two statements is one row. Returns (rows_inserted,
+    statements_rejected).
 
     A statement whose movements failed the running-balance
     reconciliation is rejected wholesale (its column assignment is
-    not trustworthy). Movements at/after their account's MT940 floor
-    are skipped — MT940 owns that window."""
+    not trustworthy)."""
     if not rows:
         return 0, 0
     if not rows[0].get("reconciled", False):
@@ -2402,21 +2355,7 @@ def _insert_hist_transactions(conn: sqlite3.Connection, snapshot_at: int,
         account = ubs.iban_canonical(r.get("account_external_id"))
         if not account:
             continue  # non-cash / non-IBAN statement header
-        floor = mt940_floors.get(account)
-        if floor is not None and r["booking_date"] >= floor:
-            continue  # MT940 owns this window for this account
         txn_id = _stmt_txn_id(account, r)
-        # The batch row this leg replaces was written by an earlier load,
-        # under the id the movement still hashes to. Retiring it as the
-        # first leg lands keeps the batch total from being counted a
-        # second time beside the legs that now carry it. Deliberately
-        # after the MT940 cut-over above: where the legs are skipped,
-        # nothing replaces the batch row and it must stay.
-        if r.get("multi_leg_index") == 1:
-            conn.execute(
-                "DELETE FROM transactions WHERE transaction_external_id = ? "
-                "  AND account_external_id = ?",
-                (_stmt_batch_txn_id(account, r), account))
         try:
             conn.execute(
                 _TXN_INSERT +
@@ -2466,64 +2405,28 @@ def _insert_advice_transactions(conn: sqlite3.Connection, snapshot_at: int,
 
     Why ON CONFLICT DO NOTHING rather than DO UPDATE. An advice states four
     facts — direction, amount, currency and the two dates — and nothing
-    else: no booking type, no counter account, no trade date. The export and
-    the MT940 feed state all of those for the same movement. Since the two
-    feeds meet on the SAME key here (unlike the statement era, whose minted
-    ids can never collide with theirs), an upsert would overwrite a full row
-    with a thinner one every time the document pass ran, and the loss would
-    be invisible. The advice fills a hole; it does not restate a row that
-    already has an owner. Re-derivation when the parser moves comes from the
+    else: no booking type, no counter account, no trade date. The export
+    states all of those for the same movement, under the same key. An
+    upsert would overwrite a full row with a thinner one every time the
+    document pass ran, and the loss would be invisible. So the export's
+    row stays. Re-derivation when the parser moves comes from the
     pass-level delete instead (`_DOCUMENT_PASS_DELETES`), which drops the
     advice rows by their payload marker so the next run writes them afresh
     — an export row, having no such marker, is not touched.
 
-    Why the MT940 floor does NOT gate these rows. The floor exists because
-    the statement era mints content-hashed ids of its own, so a statement
-    and the feed recording one booking produce two rows that nothing can
-    recognise as one; cutting the PDF off where the feed begins is the only
-    way to keep the movement from being counted twice. An advice cannot
-    create that duplicate against the FEED: it carries the feed's own id, so
-    an overlap there collides on the primary key and the DO NOTHING above
-    resolves it in the richer row's favour. Applying the floor as well would
-    only ever discard rows the key has already made harmless — and it is
-    keyed by account, while the whole value of an advice is the leg on the
-    account the feed does not cover at all, which has no floor to be
-    measured against.
-
-    Why the key is not enough on its own. Against the STATEMENT era the same
-    argument runs backwards: a statement row is keyed by a minted `stmt:`
-    hash, so the very movement an advice states can already sit on the same
-    account under an id the primary key can never collide with. An advice
-    issued for a payment the account's own statement goes on to print in its
-    ledger is exactly that case. Inserting there does not
-    fill a hole, it books the payment a second time, which is the phantom
-    flow this whole path exists to remove. So before an advice is written the
-    movement is looked for by its CONTENT (`_advice_already_recorded`), and
-    an advice that restates a movement silver already holds is dropped. The
-    ledger row is the better record anyway: it carries the booking type and
-    it reconciled against the statement's printed running balance.
+    Every other advice is written, also where a statement prints the same
+    movement under its own minted id: which record of the booking gold
+    keeps is the UBS adapter's decision, made where every era is in hand.
     """
     inserted = 0
-    skipped = 0
-    # Each existing row may explain at most ONE advice, and the order the
-    # advices are considered in decides which. Sorted so that a second run
-    # over the same archive reaches the same silver: the pass hands them over
-    # in whatever order the parse workers finished. Claims are per (account,
-    # id) because that is the row — the two legs of one transfer share the id
-    # and a claim on one must not reach across to the other's account.
-    claimed: set[tuple[str, str]] = set()
+    # Sorted, so the copy that keeps a key shared by two advices does not
+    # depend on the order the parse workers finished in.
     for r in sorted(rows, key=lambda r: (r.get("transaction_external_id") or "",
                                          r.get("account_external_id") or "")):
         account = ubs.iban_canonical(r.get("account_external_id"))
         txn_id = r.get("transaction_external_id")
         if not account or not txn_id:
             continue
-        already = _advice_already_recorded(conn, account, r, claimed)
-        if already is not None:
-            claimed.add((account, already))
-            skipped += 1
-            continue
-        claimed.add((account, txn_id))
         cur = conn.execute(
             _TXN_INSERT +
             "DO NOTHING",
@@ -2537,75 +2440,11 @@ def _insert_advice_transactions(conn: sqlite3.Connection, snapshot_at: int,
                 r.get("payload") or "{}",
             ),
         )
-        # 0 when the conflict clause kept the row an earlier, richer feed
-        # already wrote; 1 when the advice actually filled a hole.
+        # 0 when the conflict clause kept the row the export already
+        # wrote; 1 when the advice wrote a row of its own.
         if cur.rowcount > 0:
             inserted += 1
-    if skipped:
-        log.info("%d payment advice(s) restate a movement silver already "
-                 "holds; left to the row that has it", skipped)
     return inserted
-
-
-# Two amounts are the same movement when they agree to the cent. The eras
-# print to two decimals and the figures travel through float, so an exact
-# comparison would turn a representation artefact into a duplicate row.
-_ADVICE_AMOUNT_EPS = 0.005
-
-
-def _advice_already_recorded(conn: sqlite3.Connection, account: str,
-                             r: dict,
-                             claimed: set[tuple[str, str]]) -> str | None:
-    """The id of the row silver already holds for the movement this advice
-    states, or None when nothing holds it.
-
-    Identity is the content, not the id, because the whole difficulty is
-    that the eras do not agree on ids: the statement walker mints a `stmt:`
-    hash for the very booking the advice names with UBS's transaction
-    number. What they do agree on is the account, the day, the currency, the
-    COLUMN the figure sits in — and the figure's magnitude. The magnitude is
-    compared with abs() on both sides deliberately: the export writes the
-    sheet's own signed cell and the PDF eras write the unsigned figure they
-    print, so the direction has to be read from the column and never from
-    the sign (DESIGN.md §3.6).
-
-    Either date may carry the match. The advice states a bookkeeping entry
-    date and a value date; a back-valued payment prints them days apart, and
-    which of the two the other era filed the booking under varies with the
-    era. Requiring only one to line up keeps such a pair from being written
-    twice.
-
-    `claimed` names the rows earlier advices in this pass already matched or
-    wrote, so one row can excuse only one advice: two genuinely distinct
-    payments of the same amount, on one account, on one day are a shape an
-    archive can hold (for example an FX leg and a same-currency leg landing
-    together), and the second of them must still be written."""
-    amount = r.get("amount_debit")
-    outbound = amount is not None
-    if amount is None:
-        amount = r.get("amount_credit")
-    if amount is None:
-        return None
-    cur = conn.execute(
-        "SELECT transaction_external_id, amount_debit, amount_credit "
-        "FROM transactions "
-        "WHERE account_external_id = ? AND currency_iso = ? "
-        "  AND (value_date = ? OR booking_date = ?) "
-        "ORDER BY transaction_external_id",
-        (account, r.get("currency_iso") or "",
-         r["value_date"], r["booking_date"]),
-    )
-    for tid, debit, credit in cur.fetchall():
-        if (account, tid) in claimed:
-            continue
-        if (debit is not None) != outbound:
-            continue
-        figure = debit if outbound else credit
-        if figure is None:
-            continue
-        if abs(abs(figure) - abs(amount)) <= _ADVICE_AMOUNT_EPS:
-            return tid
-    return None
 
 
 # The columns of every `historical_mortgages` row: what `maturity_notice`
@@ -2682,8 +2521,7 @@ def _derive_documents_without_a_new_dump(
     try:
         conn.execute("BEGIN")
         pos, cash, mort, txn = _load_historical_from_pdfs(
-            conn, bronze.parse_run_ts(newest.name), newest, parses,
-            _mt940_floors_by_account(dumps))
+            conn, bronze.parse_run_ts(newest.name), newest, parses)
         conn.execute("COMMIT")
     except Exception:  # noqa: BLE001 — log + rollback, as the dump loop does
         conn.execute("ROLLBACK")
@@ -2737,20 +2575,14 @@ def main(argv: list[str]) -> int:
     # document once, replay the cached rows for every walk that re-lists it.
     parses = DocumentParses(ParseCache(parsecache.default_dir("ubs-web")),
                             os.cpu_count() or 1, _extract_dir())
-    # Read off the loadable dumps' exports once, on the first dump this
-    # run loads; bronze does not change during a load.
-    mt940_floors: dict[str, int] | None = None
     for dump_dir in dumps:
         if already_loaded(conn, dump_dir):
             n_skipped += 1
             log.debug("skipping already-loaded dump %s", dump_dir.name)
             continue
-        if mt940_floors is None:
-            mt940_floors = _mt940_floors_by_account(dumps)
         try:
             conn.execute("BEGIN")
-            load_dump(conn, dump_dir, schema_version, parses,
-                      mt940_floors)
+            load_dump(conn, dump_dir, schema_version, parses)
             conn.execute("COMMIT")
             n_loaded += 1
             walked = walked or (dump_dir / "documents").is_dir()

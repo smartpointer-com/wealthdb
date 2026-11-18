@@ -188,29 +188,12 @@ def test_load_mortgage_saron_is_variable(tmp_path):
 
 
 # ================================================================
-# Pre-2024 transaction backfill: per-account MT940 cut-over + dedup
+# The statement ledger: every movement, content-id dedup
 # ================================================================
 
 # Synthetic IBANs (all-zero placeholders, valid CH-IBAN shape).
-_IBAN_A = "CH0000000000000000001"   # has an MT940 floor (2024-01-02)
-_IBAN_B = "CH0000000000000000002"   # NO MT940 coverage → PDF owns all
-
-
-def _write_cash_csv(dump: Path, iban_spaced: str, from_date: str,
-                    hash_id: str) -> None:
-    """Write a minimal synthetic MT940 cash CSV carrying just the
-    IBAN: and From: metadata lines the floor scanner reads."""
-    tdir = dump / "transactions"
-    tdir.mkdir(parents=True, exist_ok=True)
-    body = (
-        f"Product:;UBS personal account;\r\n"
-        f"IBAN:;{iban_spaced};\r\n"
-        f"From:;{from_date};\r\n"
-        f"To:;2026-01-01;\r\n"
-        "Trade date;Booking date;Value date;Currency;Debit;Credit;"
-        "Transaction no.;Description1;Description2\r\n"
-    )
-    (tdir / f"cash_{hash_id}_x.csv").write_text(body, encoding="utf-8-sig")
+_IBAN_A = "CH0000000000000000001"
+_IBAN_B = "CH0000000000000000002"
 
 
 def _mv(account: str, booking: int, *, credit=None, debit=None,
@@ -231,75 +214,27 @@ def _mv(account: str, booking: int, *, credit=None, debit=None,
     }
 
 
-# 2024-01-02 and a pre/post reference point, as Unix seconds UTC.
-_FLOOR = card_parsers.ts("2024-01-02")
-_PRE = card_parsers.ts("2023-12-15")    # below the floor
-_POST = card_parsers.ts("2024-03-06")   # at/after the floor
+# Two reference days, as Unix seconds UTC.
+_PRE = card_parsers.ts("2023-12-15")
+_POST = card_parsers.ts("2024-03-06")
 
 
-def test_mt940_floors_by_account(tmp_path: Path):
-    root = tmp_path / "bronze"
-    # Account A appears in two dumps; take the EARLIEST From:.
-    _write_cash_csv(root / "20260101T000000Z", "CH00 0000 0000 0000 0000 1",
-                    "2024-01-02", "aaaa")
-    _write_cash_csv(root / "20260201T000000Z", "CH00 0000 0000 0000 0000 1",
-                    "2026-02-20", "bbbb")
-    floors = loader._mt940_floors_by_account(
-        [root / "20260101T000000Z", root / "20260201T000000Z"])
-    assert floors.get(_IBAN_A) == card_parsers.ts("2024-01-02")
-    # Account B never appears → no floor (PDF owns all its history).
-    assert _IBAN_B not in floors
-
-
-def test_a_crashed_dump_does_not_move_the_mt940_floor(tmp_path, monkeypatch):
-    # A crashed walk's export never reaches silver, so a From: in it that
-    # reaches earlier than any loaded export must not take the PDF
-    # movements in that gap away. The floors come from the dumps `load`
-    # reads, once per load.
-    root = tmp_path / "bronze"
-    crashed, loaded = root / "20260101T000000Z", root / "20260201T000000Z"
-    _write_cash_csv(crashed, "CH00 0000 0000 0000 0000 1", "2023-06-01",
-                    "aaaa")
-    (crashed / "run.json").write_text('{"status": "in-progress"}')
-    _write_cash_csv(loaded, "CH00 0000 0000 0000 0000 1", "2024-01-02",
-                    "bbbb")
-    (loaded / "run.json").write_text('{"status": "complete"}')
-    (loaded / "documents").mkdir()
-
-    seen: list[dict] = []
-    walks = []
-    real = loader._mt940_floors_by_account
-
-    def counted(dumps):
-        walks.append([d.name for d in dumps])
-        return real(dumps)
-
-    monkeypatch.setattr(loader, "_mt940_floors_by_account", counted)
-    monkeypatch.setattr(
-        loader, "_load_historical_from_pdfs",
-        lambda _c, _s, _d, _cache, floors: seen.append(floors) or (0, 0, 0, 0))
-    assert loader.main(["--bronze-dir", str(root),
-                        "--silver-db", str(tmp_path / "ubs-web.db")]) == 0
-    assert seen == [{_IBAN_A: card_parsers.ts("2024-01-02")}]
-    assert walks == [[loaded.name]]
-
-
-def test_cutover_gate_per_account(tmp_path: Path):
+def test_every_statement_movement_is_written(tmp_path: Path):
+    """The statement ledger is written whole, on every account and every
+    day, whatever the export also covers: which record of a booking
+    gold keeps is the adapter's decision."""
     conn = fresh_db(tmp_path)
-    floors = {_IBAN_A: _FLOOR}   # A has a floor; B absent
     rows = [
-        _mv(_IBAN_A, _PRE, credit=100.0),    # below floor → INGEST
-        _mv(_IBAN_A, _POST, credit=200.0),   # at/after floor → SKIP (MT940)
-        _mv(_IBAN_B, _POST, credit=300.0),   # B has no floor → INGEST
+        _mv(_IBAN_A, _PRE, credit=100.0),
+        _mv(_IBAN_A, _POST, credit=200.0),
+        _mv(_IBAN_B, _POST, credit=300.0),
     ]
     with conn:
-        n, rejected = loader._insert_hist_transactions(conn, 1, rows, floors)
-    assert rejected == 0
+        n, rejected = loader._insert_hist_transactions(conn, 1, rows)
+    assert (n, rejected) == (3, 0)
     got = conn.execute(
-        "SELECT account_external_id, booking_date, amount_credit "
-        "FROM transactions ORDER BY amount_credit").fetchall()
-    assert n == 2
-    assert [r["amount_credit"] for r in got] == [100.0, 300.0]
+        "SELECT amount_credit FROM transactions ORDER BY amount_credit").fetchall()
+    assert [r["amount_credit"] for r in got] == [100.0, 200.0, 300.0]
 
 
 def test_reconciliation_failure_rejects_whole_statement(tmp_path: Path):
@@ -307,7 +242,7 @@ def test_reconciliation_failure_rejects_whole_statement(tmp_path: Path):
     rows = [_mv(_IBAN_A, _PRE, credit=100.0, reconciled=False),
             _mv(_IBAN_A, _PRE, debit=50.0, reconciled=False, occ=1)]
     with conn:
-        n, rejected = loader._insert_hist_transactions(conn, 1, rows, {})
+        n, rejected = loader._insert_hist_transactions(conn, 1, rows)
     assert n == 0 and rejected == 1
     assert conn.execute("SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 0
 
@@ -319,11 +254,11 @@ def test_content_id_dedups_overlapping_statements(tmp_path: Path):
     conn = fresh_db(tmp_path)
     same = dict(account=_IBAN_A, booking=_PRE, credit=100.0, desc="CREDIT")
     with conn:
-        loader._insert_hist_transactions(conn, 1, [_mv(**same, occ=0)], {})
+        loader._insert_hist_transactions(conn, 1, [_mv(**same, occ=0)])
         # Re-ingest identical row (as if from the annual statement).
-        loader._insert_hist_transactions(conn, 2, [_mv(**same, occ=0)], {})
+        loader._insert_hist_transactions(conn, 2, [_mv(**same, occ=0)])
         # A genuinely distinct second identical same-day booking (occ=1).
-        loader._insert_hist_transactions(conn, 2, [_mv(**same, occ=1)], {})
+        loader._insert_hist_transactions(conn, 2, [_mv(**same, occ=1)])
     assert conn.execute(
         "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 2
 
@@ -360,44 +295,23 @@ def test_an_unsplit_rows_id_is_unchanged_by_the_batch_columns():
     assert loader._stmt_txn_id(_IBAN_A, r) == loader._stmt_batch_txn_id(_IBAN_A, r)
 
 
-def test_the_batch_row_an_earlier_load_wrote_is_retired(tmp_path: Path):
-    """A load that predates the split wrote the batch total as one row.
-    Once the payments carry it, that row must go, or the total is counted
-    twice — once whole, once as its parts."""
+def test_a_movement_printed_whole_stays_beside_its_payments(tmp_path: Path):
+    """One statement prints a batch as one movement, another lists its
+    payments. Both are written, under the movement's id and its legs'
+    ids, and the adapter keeps the payments in the movement's place."""
     conn = fresh_db(tmp_path)
     batch = _mv(_IBAN_A, _PRE, debit=150.0, desc="MULTI E-BANKING ORDER")
-    with conn:
-        loader._insert_hist_transactions(conn, 1, [batch], {})
-    assert conn.execute(
-        "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 1
-
     legs = [_leg(_IBAN_A, _PRE, debit=50.0, index=i, count=3,
                  parent_debit=150.0) for i in (1, 2, 3)]
     with conn:
-        loader._insert_hist_transactions(conn, 2, legs, {})
+        loader._insert_hist_transactions(conn, 1, [batch])
+        loader._insert_hist_transactions(conn, 2, legs)
     rows = conn.execute(
         "SELECT transaction_external_id t, amount_debit d FROM transactions "
         "ORDER BY t").fetchall()
-    assert [r["d"] for r in rows] == [50.0, 50.0, 50.0]
-    assert loader._stmt_batch_txn_id(_IBAN_A, batch) not in [r["t"] for r in rows]
-
-
-def test_the_batch_row_survives_where_the_cut_over_skips_its_payments(
-        tmp_path: Path):
-    """Above the MT940 floor the payments are not inserted, so retiring
-    the batch row would drop the movement entirely rather than replace
-    it."""
-    conn = fresh_db(tmp_path)
-    batch = _mv(_IBAN_A, _POST, debit=150.0, desc="MULTI E-BANKING ORDER")
-    with conn:
-        # Written while no floor applied, as an earlier load would have.
-        loader._insert_hist_transactions(conn, 1, [batch], {})
-    legs = [_leg(_IBAN_A, _POST, debit=50.0, index=i, count=3,
-                 parent_debit=150.0) for i in (1, 2, 3)]
-    with conn:
-        loader._insert_hist_transactions(conn, 2, legs, {_IBAN_A: _FLOOR})
-    rows = conn.execute("SELECT amount_debit d FROM transactions").fetchall()
-    assert [r["d"] for r in rows] == [150.0]
+    movement = loader._stmt_batch_txn_id(_IBAN_A, batch)
+    assert [r["t"] for r in rows] == [movement] + [f"{movement}#{n}" for n in (1, 2, 3)]
+    assert [r["d"] for r in rows] == [150.0, 50.0, 50.0, 50.0]
 
 
 def test_stmt_txn_id_stable_and_namespaced():
@@ -464,7 +378,7 @@ def test_a_moved_parser_re_derives_without_a_new_dump(tmp_path, monkeypatch):
 
     walked: list[Path] = []
 
-    def _fake_walk(_conn, _snapshot_at, dump_dir, _cache, _floors):
+    def _fake_walk(_conn, _snapshot_at, dump_dir, _cache):
         walked.append(dump_dir)
         return (0, 0, 0, 0)
 
@@ -658,26 +572,6 @@ def test_an_advice_never_overwrites_the_row_the_export_wrote(tmp_path):
     conn.close()
 
 
-def test_the_mt940_floor_does_not_gate_an_advice(tmp_path):
-    # The floor keeps the statement era, whose ids are minted, from
-    # restating a booking the feed already carries under an id nothing
-    # can match. An advice carries the feed's own id, so the key
-    # resolves an overlap and the floor has nothing left to protect.
-    root = tmp_path / "bronze"
-    _write_cash_csv(root / "20260101T000000Z", "CH00 0000 0000 0000 0000 1",
-                    "2024-01-02", "aaaa")
-    floors = loader._mt940_floors_by_account([root / "20260101T000000Z"])
-    assert floors[_IBAN_A] < _POST          # the row below is above it
-
-    conn = fresh_db(tmp_path)
-    with conn:
-        n = loader._insert_advice_transactions(
-            conn, 1, [_advice(_IBAN_A, credit=1000.0, booking=_POST)])
-
-    assert n == 1
-    conn.close()
-
-
 def test_an_advice_with_an_unusable_account_is_dropped(tmp_path):
     conn = fresh_db(tmp_path)
     with conn:
@@ -766,12 +660,13 @@ def test_each_scope_reaches_its_reader_with_its_kind(monkeypatch, scope):
     assert parsed["kind"] == kind
 
 
-# ---- an advice must not restate the statement ledger ---------------
+# ---- an advice beside the statement ledger --------------------------
 #
 # The advice and the statement walker read the SAME archive, and most
 # of the advices are issued for payments the account's own statement
 # went on to print in its ledger. The statement mints its id, so the
-# primary key cannot recognise the pair — the movement itself has to.
+# primary key cannot recognise the pair. Both are written; the adapter
+# keeps the ledger's row where it holds the advice's movement.
 
 def _stmt_row(conn, account, *, booking=_PRE, credit=None, debit=None,
               value=None, desc="CREDIT"):
@@ -781,87 +676,20 @@ def _stmt_row(conn, account, *, booking=_PRE, credit=None, debit=None,
         loader._insert_hist_transactions(
             conn, 1700000000,
             [_mv(account, booking, credit=credit, debit=debit, desc=desc,
-                 value=value)],
-            {})
+                 value=value)])
 
 
-def test_an_advice_does_not_restate_what_the_statement_printed(tmp_path):
-    # The duplicate the compound key cannot catch: one payment, two ids,
-    # one account — and two withdrawals in every consumer that sums them.
+def test_an_advice_is_written_beside_the_statement_row(tmp_path):
     conn = fresh_db(tmp_path)
     _stmt_row(conn, _IBAN_B, debit=12345.67, desc="PAYMENT ORDER")
     with conn:
         n = loader._insert_advice_transactions(
             conn, 1, [_advice(_IBAN_B, debit=12345.67)])
 
-    assert n == 0
-    ids = [r[0] for r in conn.execute(
-        "SELECT transaction_external_id FROM transactions").fetchall()]
-    assert len(ids) == 1 and ids[0].startswith("stmt:")
-    conn.close()
-
-
-def test_the_match_reads_the_column_and_never_the_stored_sign(tmp_path):
-    # DESIGN.md §3.6: the export writes the sheet's signed cell and the
-    # PDF eras the unsigned figure they print. The same movement is the
-    # same movement whichever convention recorded it.
-    conn = fresh_db(tmp_path)
-    _seed_export_row(conn, "9876543210", _IBAN_B, debit=-12345.67)
-    with conn:
-        n = loader._insert_advice_transactions(
-            conn, 1, [_advice(_IBAN_B, debit=12345.67)])
-
-    assert n == 0
-    conn.close()
-
-
-def test_an_advice_for_a_movement_of_its_own_still_lands(tmp_path):
-    # The check is on the movement, not on the day: a second payment on
-    # the same account and day is a row the ledger does not hold.
-    conn = fresh_db(tmp_path)
-    _stmt_row(conn, _IBAN_B, debit=12345.67, desc="PAYMENT ORDER")
-    with conn:
-        n = loader._insert_advice_transactions(
-            conn, 1, [_advice(_IBAN_B, debit=999.99)])
-
     assert n == 1
-    assert conn.execute(
-        "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 2
-    conn.close()
-
-
-def test_a_ledger_row_excuses_only_one_advice(tmp_path):
-    # Two distinct transfers of one amount, into one account, on one day
-    # is a shape the archive really holds (an FX leg and a same-currency
-    # leg arriving together). The ledger row that explains the first must
-    # not swallow the second.
-    conn = fresh_db(tmp_path)
-    _stmt_row(conn, _IBAN_B, credit=12345.67)
-    with conn:
-        n = loader._insert_advice_transactions(conn, 1, [
-            _advice(_IBAN_B, credit=12345.67, txn="0000036ED0000123"),
-            _advice(_IBAN_B, credit=12345.67, txn="0000036ED0000456"),
-        ])
-
-    assert n == 1
-    assert conn.execute(
-        "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 2
-    conn.close()
-
-
-def test_a_back_valued_advice_matches_on_either_date(tmp_path):
-    # The two eras do not agree on which date they file a back-valued
-    # payment under, so either lining up is enough to call it one
-    # movement — the alternative is writing it twice.
-    conn = fresh_db(tmp_path)
-    _stmt_row(conn, _IBAN_B, booking=_PRE, value=_POST, debit=12345.67,
-              desc="PAYMENT ORDER")
-    row = _advice(_IBAN_B, debit=12345.67, booking=_PRE)
-    row["value_date"] = card_parsers.ts("2024-06-01")
-    with conn:
-        n = loader._insert_advice_transactions(conn, 1, [row])
-
-    assert n == 0
+    ids = sorted(r[0] for r in conn.execute(
+        "SELECT transaction_external_id FROM transactions").fetchall())
+    assert ids[0] == _ADVICE_TXN and ids[1].startswith("stmt:")
     conn.close()
 
 
@@ -902,11 +730,10 @@ def test_a_second_load_of_one_archive_adds_nothing(tmp_path):
     conn.close()
 
 
-def test_the_conflict_clause_still_guards_a_row_the_content_check_misses(
-        tmp_path):
+def test_the_export_keeps_its_row_under_a_shared_key(tmp_path):
     # The export restated the same transaction number with a corrected
-    # amount, so nothing about the movement lines up any more — and the
-    # key, which is what the two feeds share, has to hold the line.
+    # amount. The key, which is what the two feeds share, keeps the
+    # export's row.
     conn = fresh_db(tmp_path)
     _seed_export_row(conn, _ADVICE_TXN, _IBAN_B, debit=-999.99)
     with conn:
@@ -943,7 +770,7 @@ def _archive_walk_saw(tmp_path, doc_type: str) -> bool:
     dump = home / "20260101T000000Z"
     (dump / "documents").mkdir(parents=True)
 
-    loader._load_historical_from_pdfs(conn, 1700000000, dump, _parses(), {})
+    loader._load_historical_from_pdfs(conn, 1700000000, dump, _parses())
 
     purged = conn.execute(
         "SELECT COUNT(*) c FROM transactions").fetchone()["c"] == 0
@@ -1030,12 +857,12 @@ def test_a_reader_that_raises_is_logged_and_tried_again(tmp_path, monkeypatch,
     monkeypatch.setattr(pdf_parsers, "parse_contract_note", raises)
     parses = loader.DocumentParses(ParseCache(), workers=1)
     with conn:
-        loader._load_historical_from_pdfs(conn, 1700000000, dump, parses, {})
+        loader._load_historical_from_pdfs(conn, 1700000000, dump, parses)
     assert caplog.text.count("PDF parse failed for note.pdf") == 1
     assert parses.cache.get(loader._parse_key("sha-note", "note", label),
                             loader._namespaces()["contract_note"]) is None
     with conn:
-        loader._load_historical_from_pdfs(conn, 1700000000, dump, parses, {})
+        loader._load_historical_from_pdfs(conn, 1700000000, dump, parses)
     assert len(calls) == 2
     conn.close()
 
@@ -1076,12 +903,9 @@ def test_the_extractions_are_cached_beside_the_parse_cache():
         parsecache.default_dir("ubs-web").parent)
 
 
-def test_the_walk_writes_the_advices_after_the_statement_ledger(tmp_path):
-    # The advice is listed FIRST here, which is the order that breaks a
-    # pass that writes each document as it comes back: the movement it
-    # restates would not be in silver yet to be recognised, and the load
-    # would book the payment twice — or not, depending on which PDF
-    # worker happened to finish first.
+def test_the_walk_writes_the_advice_and_the_statement_ledger(tmp_path):
+    # The advice is listed FIRST here. Both documents' rows are written,
+    # whichever PDF worker finished first.
     conn = fresh_db(tmp_path)
     _seed_doc(conn, "adv", "sha-adv", "Credit Advice")
     _seed_doc(conn, "stmt", "sha-stmt", "Account Statement")
@@ -1095,12 +919,11 @@ def test_the_walk_writes_the_advices_after_the_statement_ledger(tmp_path):
     })
 
     with conn:
-        loader._load_historical_from_pdfs(conn, 1700000000, dump,
-                                          parses, {})
+        loader._load_historical_from_pdfs(conn, 1700000000, dump, parses)
 
-    ids = [r[0] for r in conn.execute(
-        "SELECT transaction_external_id FROM transactions").fetchall()]
-    assert len(ids) == 1 and ids[0].startswith("stmt:")
+    ids = sorted(r[0] for r in conn.execute(
+        "SELECT transaction_external_id FROM transactions").fetchall())
+    assert ids[0] == _ADVICE_TXN and ids[1].startswith("stmt:")
     conn.close()
 
 
@@ -1522,7 +1345,7 @@ def test_a_new_supplied_document_derives_without_a_new_dump(
 
     walked: list[Path] = []
     monkeypatch.setattr(loader, "_load_historical_from_pdfs",
-                        lambda _c, _t, d, _cache, _floors: walked.append(d)
+                        lambda _c, _t, d, _cache: walked.append(d)
                         or (0, 0, 0, 0))
 
     # Nothing new: the parsers have not moved and nothing was supplied.
@@ -1548,7 +1371,7 @@ def test_a_dump_without_an_archive_does_not_hold_back_the_derive(
 
     walked: list[Path] = []
 
-    def _fake_walk(conn, _snapshot_at, dump_dir, _cache, _floors):
+    def _fake_walk(conn, _snapshot_at, dump_dir, _cache):
         # The real walk's own early return: no archive, nothing walked.
         if not (dump_dir / "documents").is_dir():
             return (0, 0, 0, 0)
@@ -1619,7 +1442,7 @@ def test_main_loads_only_the_loadable_dumps(tmp_path, monkeypatch):
     _run_dir(bronze_dir, "20260104T000000Z", None)
     loaded: list[Path] = []
     monkeypatch.setattr(loader, "load_dump",
-                        lambda _c, d, _v, _cache, _floors: loaded.append(d))
+                        lambda _c, d, _v, _cache: loaded.append(d))
     db = tmp_path / "ubs-web.db"
     assert loader.main(["--silver-db", str(db),
                         "--bronze-dir", str(bronze_dir)]) == 0
@@ -1874,7 +1697,7 @@ def test_the_walk_writes_securities_advices_and_re_derives_them(tmp_path):
             "securities_advice", [_securities_advice("call", amount)])})
         with conn:
             loader._load_historical_from_pdfs(conn, 1700000000, dump,
-                                              parses, {})
+                                              parses)
 
     walk(12345.67)
     walk(13579.24)      # a re-derive replaces the row rather than adding one
@@ -1909,7 +1732,7 @@ def test_the_walk_writes_quarterly_reports_and_re_derives_them(tmp_path):
             "private_market_report", _report("report", lines))})
         with conn:
             loader._load_historical_from_pdfs(conn, 1700000000, dump,
-                                              parses, {})
+                                              parses)
 
     walk(3)
     walk(2)     # a re-derive replaces the lines rather than keeping a third
@@ -1982,7 +1805,7 @@ def test_the_walk_writes_statement_trades_and_re_derives_them(tmp_path):
             "statement_of_assets", {"positions": [], "trades": list(trades)})})
         with conn:
             loader._load_historical_from_pdfs(conn, 1700000000, dump,
-                                              parses, {})
+                                              parses)
 
     walk(_statement_trade(1, 100.0), _statement_trade(2, -50.0))
     walk(_statement_trade(1, 100.0), _statement_trade(2, -50.0))
@@ -2138,7 +1961,7 @@ def _write_statement_movement(conn, _root: Path, snapshot_at: int,
                               variant: str) -> None:
     row = dict(_mv(_IBAN_A, _PRE, credit=100.0),
                counterparty=f"Example {variant.title()} Name")
-    loader._insert_hist_transactions(conn, snapshot_at, [row], {})
+    loader._insert_hist_transactions(conn, snapshot_at, [row])
 
 
 @pytest.mark.parametrize("table, write", [

@@ -296,7 +296,7 @@ compound primary key was built for (§3.6 above, migration 0001): the
 missing leg lands beside the leg the export already holds, and a
 consumer that pairs legs on a shared transaction number finds both.
 
-Three consequences follow from sharing the export's id space rather
+Two consequences follow from sharing the export's id space rather
 than minting one:
 
 - **An advice never overwrites.** It states four facts — direction,
@@ -305,33 +305,15 @@ than minting one:
   counterparty and the trade date. Because the two feeds meet on the
   same key here, the insert is `ON CONFLICT DO NOTHING`: the advice
   fills a hole, it does not restate a row that already has an owner.
-- **An advice never restates a movement the statement era already
-  printed.** Against the statement the key argues the other way: a
-  statement row is keyed by a minted `stmt:` hash, so the very booking
-  an advice names can already sit on the same account under an id the
-  primary key can never collide with, an advice having been issued for
-  a payment the account's own statement went on to print in its ledger.
-  Writing it again would not fill a hole, it would book the payment
-  twice, which is the phantom flow this path exists to remove. So the
-  movement is looked for by its CONTENT before an advice is written —
-  same account, same currency, either date, same column, same
-  magnitude — and an advice that finds it is dropped in favour of the
-  ledger row, which carries a booking type and reconciled against the
-  statement's printed running balance.
-  Each existing row can excuse at most one advice, so two genuinely
-  distinct same-day payments of one amount both still land; and the
-  advices are written after every statement in the same pass, so a
-  statement listed after its advice in the archive still counts
-  against it.
-- **The MT940 floor does not gate it.** That floor exists because the
-  statement era mints ids of its own, so a statement and the feed
-  recording one booking produce two rows nothing can recognise as one.
-  An advice carries the feed's own id, so an overlap there collides on
-  the key and the first rule resolves it in the richer row's favour —
-  and the floor is keyed by account, while the whole value of an
-  advice is the leg on the account the feed does not cover at all. What
-  the floor would have caught against the statement era, the content
-  check above catches on the movement itself.
+- **An advice is written beside the statement ledger.** A statement row
+  is keyed by a minted `stmt:` hash, so the very booking an advice names
+  can sit on the same account under an id the primary key never collides
+  with: an advice is often issued for a payment the account's own
+  statement goes on to print. Both rows are written. The UBS adapter
+  keeps the ledger's row where it holds the advice's movement (same
+  account, currency, column and magnitude, on either date), one advice
+  per ledger row. The ledger row carries a booking type and reconciled
+  against the statement's printed running balance.
 
 The price is that the prefix rule above does not identify the rail
 on its own: an advice row has no prefix and is not an export row. What
@@ -365,10 +347,10 @@ The PDF archive reaches further back than the export window and the
 feed, and its coverage runs forward into both. Silver keeps each era's
 rows as it finds them: the statement loader dedups only *within* the
 archive (the same booking printed on a monthly and an annual statement
-hashes identically, so the upsert collapses it) and stops each account
-at its MT940 floor, but nothing in silver reconciles a statement row
-against the export's or the feed's record of the same booking — the
-ids do not meet, and silver does not decide merge policy. The wealthdb
+hashes identically, so the upsert collapses it), but nothing in silver
+reconciles a statement row against the export's or the feed's record of
+the same booking — the ids do not meet, and silver does not decide merge
+policy. The wealthdb
 UBS adapter owns that reconciliation: see the reconcile table in
 [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
@@ -401,9 +383,10 @@ them were never printed. The row ids are the movement's content hash
 suffixed with the payment's position, so a batch re-read from the annual
 statement still dedups against the monthly one, and identical amounts
 inside one batch stay apart. `payload.multi_leg` records the position,
-the count and the rail. A batch row written by a load that predates the
-split is retired when its payments land, so the total is never counted
-both whole and in parts.
+the count and the rail. A statement that prints the batch whole beside
+one that lists its payments leaves both in silver, under the movement's
+id and its payments' ids. The UBS adapter keeps the payments, so the
+total is never counted both whole and in parts.
 
 ### 3.7 Documents (PDFs)
 
