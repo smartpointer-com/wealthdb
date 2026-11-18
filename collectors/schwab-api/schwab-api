@@ -48,7 +48,6 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME=schwab-api
-ENV_PREFIX=SCHWAB_API
 
 cmd="${1:-help}"
 
@@ -98,28 +97,16 @@ case "$cmd" in
         shift
         host_resolve_dirs "$cmd" "$@"
         host_source_env_file
-        py="$(host_python)"
         token="$SECRETS_DIR/schwab-api-token.json"
         case "$cmd" in
             download)
-                exec "$py" "$HERE/download.py" --token-path "$token" \
-                    --bronze-dir "$DATA_DIR" \
-                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-                ;;
+                host_run download.py --token-path "$token" --bronze-dir "$DATA_DIR" ;;
             load)
-                exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" \
-                    --bronze-dir "$DATA_DIR" \
-                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-                ;;
+                host_run load.py --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" ;;
             prune)
-                exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
-                    --debug-dir "$DEBUG_DIR" \
-                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-                ;;
+                host_run prune.py --bronze-dir "$DATA_DIR" --debug-dir "$DEBUG_DIR" ;;
             recompress)
-                exec "$py" "$HERE/recompress.py" --bronze-dir "$DATA_DIR" \
-                    ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-                ;;
+                host_run recompress.py --bronze-dir "$DATA_DIR" ;;
         esac
         ;;
     *)

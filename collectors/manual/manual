@@ -24,7 +24,6 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME=manual
-ENV_PREFIX=MANUAL
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/host-lib.sh"
 
@@ -72,9 +71,7 @@ EOF
         ;;
     load)
         host_resolve_dirs "$cmd" "$@"
-        py="$(host_python)"
-        exec "$py" "$HERE/load.py" --bronze-dir "$DATA_DIR" --silver-db "$SILVER_DB" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        host_run load.py --bronze-dir "$DATA_DIR" --silver-db "$SILVER_DB"
         ;;
     *)
         echo "manual: unknown command '$cmd' (expected: load | download | login | prune | help)" >&2

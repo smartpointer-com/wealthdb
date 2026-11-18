@@ -33,61 +33,28 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME=refdata
-ENV_PREFIX=REFDATA
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/host-lib.sh"
 
-cmd="${1:-help}"
-[[ $# -gt 0 ]] && shift || true
-
-case "$cmd" in
-    -h|--help|help)
-        host_print_banner "${BASH_SOURCE[0]}"
-        exit 0
-        ;;
-    login|download|load|prune|compact)
-        ;;
-    *)
-        echo "refdata: unknown command '$cmd' (expected: login|download|load|prune|compact)" >&2
-        exit 2
-        ;;
-esac
-
-host_resolve_dirs "$cmd" "$@"
+host_begin login download load prune compact -- "$@"
 host_source_env_file
 # FINRA's credential reaches only the verbs that ask FINRA. download
 # keeps it from the engine it asks for the wanted list (wanted.py).
-case "$cmd" in
+case "$VERB" in
     login|download) host_source_env_file finra ;;
 esac
-py="$(host_python)"
 
-case "$cmd" in
+case "$VERB" in
     login)
         # No provider mints a session. `--check` asks each enabled
         # provider for its cheapest answer instead.
-        if host_has_flag --check ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}; then
-            exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
-                ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        fi
-        echo "refdata: no-op. No provider has a session to mint." >&2
-        echo "To probe each enabled provider, run \`./refdata login --check\`." >&2
-        exit 0
+        host_login_probe download.py --bronze-dir "$DATA_DIR" <<'EOF'
+refdata: no-op. No provider has a session to mint.
+To probe each enabled provider, run `./refdata login --check`.
+EOF
         ;;
-    download)
-        exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        ;;
-    load)
-        exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        ;;
-    prune)
-        exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        ;;
-    compact)
-        exec "$py" "$HERE/compact.py" --bronze-dir "$DATA_DIR" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        ;;
+    download) host_run download.py --bronze-dir "$DATA_DIR" ;;
+    load)     host_run load.py --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" ;;
+    prune)    host_run prune.py --bronze-dir "$DATA_DIR" ;;
+    compact)  host_run compact.py --bronze-dir "$DATA_DIR" ;;
 esac

@@ -2,14 +2,21 @@
 # .py directly on a host venv rather than in a container — the pure
 # host-venv collectors and the host-side subcommands of the hybrid
 # ones. The host-venv analogue of wrapper-lib.sh: no Docker, no
-# mounts — it resolves the secrets / data / silver paths the same way and
-# runs the collector's own .py under its .venv.
+# mounts — it resolves the secrets / data / silver paths the same way
+# (paths-lib.sh) and runs the collector's own .py under its .venv.
 #
 # Caller must SET (before sourcing):
 #   HERE         absolute path to the wrapper's own directory. Convention:
 #                HERE="$(cd "$(dirname "$0")" && pwd)".
 #   NAME         short collector name, e.g. "schwab-api".
-#   ENV_PREFIX   upper-snake env-var prefix, e.g. "SCHWAB_API".
+# Caller MAY SET:
+#   ENV_PREFIX   upper-snake env-var prefix, derived from NAME when unset
+#                (see paths-lib.sh).
+#
+# A host wrapper reads, in order:
+#   host_begin VERB... -- "$@"   help, the verb check, the paths
+#   host_source_env_file         where the collector takes a credential
+#   case "$VERB" in ... esac     one host_run or host_login_probe per verb
 #
 # host_resolve_dirs "$@" POPULATES (for the caller):
 #   SECRETS_DIR, DATA_DIR, SILVER_DB  — the resolved paths.
@@ -22,17 +29,12 @@
 #                                       ${ENV_PREFIX}_SILVER_DB names the
 #                                       silver DB, else 0.
 #
-# bash 3.2 compatibility: avoids namerefs / associative arrays; indirect
-# expansion (${!var}) reads the per-prefix override variables.
+# bash 3.2 compatibility: avoids namerefs / associative arrays.
 
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
-
-# _host_envvar SUFFIX DEFAULT — echo ${ENV_PREFIX}_${SUFFIX} or DEFAULT.
-_host_envvar() {
-    local var="${ENV_PREFIX}_$1"
-    echo "${!var:-$2}"
-}
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/paths-lib.sh"
 
 # host_python — the interpreter to run the collector's .py with. Prefers the
 # collector's own .venv (built by `make build-<name>`); falls back to a
@@ -45,89 +47,79 @@ host_python() {
     fi
 }
 
-# host_verb_takes_silver — is `$1` a subcommand that consumes the silver DB?
-# The set defaults to just `load`; a wrapper with another silver-consuming
-# verb sets SILVER_SUBCOMMANDS to REPLACE that default. Mirrors
-# wrapper-lib.sh's function of the same shape.
-host_verb_takes_silver() {
-    local want="$1" v
-    local -a verbs
-    if [[ -n "${SILVER_SUBCOMMANDS+x}" ]]; then
-        verbs=(${SILVER_SUBCOMMANDS[@]+"${SILVER_SUBCOMMANDS[@]}"})
-    else
-        verbs=(load)
-    fi
-    for v in ${verbs[@]+"${verbs[@]}"}; do
-        [[ "$want" == "$v" ]] && return 0
-    done
-    return 1
-}
-
-# host_resolve_dirs VERB [args...] — resolve the secrets / data / silver paths
-# with the same precedence as the Docker wrappers (highest first):
-#   1. --secrets-dir / --data-dir / --silver-db CLI flag
-#   2. the per-collector ${ENV_PREFIX}_SECRETS_DIR / _DATA_DIR / _SILVER_DB
-#   3. the fleet-wide WEALTHDB_SECRETS_DIR / WEALTHDB_DATA_ROOT
-#   4. the ~/.secrets and ${XDG_DATA_HOME:-~/.local/share}/wealthdb/<name>
-#      defaults
-# SILVER_DB defaults to <data-dir>/<name>.db. Recognised flags are consumed;
-# the rest land in FORWARD_ARGS.
+# host_resolve_dirs VERB [args...] — resolve the secrets / data / silver
+# paths by the precedence of paths-lib.sh. The dir flags among args are
+# consumed and the rest land in FORWARD_ARGS. SILVER_DB defaults to
+# <data-dir>/<name>.db. VERB is the subcommand being run: a --silver-db
+# on a verb that does not read the silver DB exits 2.
 #
-# DEBUG_DIR is the host-side debug/trace cache (screenshots, HTML captures,
-# Playwright traces) — outside the bronze tree, and resolved exactly as
-# wrapper-lib.sh resolves HOST_DEBUG so a hybrid collector's Docker and
-# host-side halves always name the same dir. It has no CLI flag here: the
-# verbs that write it are the containerised ones. Unlike DATA_DIR it is NOT
-# created — a debug dir that does not exist means no debug output was ever
-# written, which `prune` treats as a no-op.
-#
-# VERB is the subcommand being run. --silver-db only means something on a
-# verb that builds the silver DB, so on any other verb it is rejected: the
-# wrapper consumes the flag and only the `load` arm reads SILVER_DB, so
-# swallowing it would look honoured. The ${ENV_PREFIX}_SILVER_DB env var is
-# ambient config naming where silver lives, not a per-verb assertion, so a
-# non-silver verb ignores it rather than failing.
+# DEBUG_DIR is resolved exactly as wrapper-lib.sh resolves HOST_DEBUG, so
+# a hybrid collector's Docker and host-side halves always name the same
+# dir. Unlike DATA_DIR it is NOT created — a debug dir that does not exist
+# means no debug output was ever written, which `prune` treats as a no-op.
 host_resolve_dirs() {
-    local verb="${1:-}"
-    shift || true
-    local secrets_default="${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}"
-    SECRETS_DIR="$(_host_envvar SECRETS_DIR "$secrets_default")"
-
-    # Default data root follows the XDG Base Directory spec
-    # ($XDG_DATA_HOME, falling back to ~/.local/share).
-    local data_default="${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/$NAME"
-    [[ -n "${WEALTHDB_DATA_ROOT:-}" ]] && data_default="${WEALTHDB_DATA_ROOT%/}/$NAME"
-    DATA_DIR="$(_host_envvar DATA_DIR "$data_default")"
-
-    DEBUG_DIR="$(_host_envvar DEBUG_DIR "${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/debug/$NAME")"
-
-    SILVER_DB="$(_host_envvar SILVER_DB "")"
-    SILVER_DB_GIVEN=0
-    [[ -n "$SILVER_DB" ]] && SILVER_DB_GIVEN=1
-
-    FORWARD_ARGS=()
-    local silver_from_flag=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --secrets-dir)   SECRETS_DIR="$2"; shift 2 ;;
-            --secrets-dir=*) SECRETS_DIR="${1#*=}"; shift ;;
-            --data-dir)      DATA_DIR="$2"; shift 2 ;;
-            --data-dir=*)    DATA_DIR="${1#*=}"; shift ;;
-            --silver-db)     SILVER_DB="$2"; silver_from_flag=1; shift 2 ;;
-            --silver-db=*)   SILVER_DB="${1#*=}"; silver_from_flag=1; shift ;;
-            *)               FORWARD_ARGS+=("$1"); shift ;;
-        esac
-    done
-    if [[ $silver_from_flag == 1 ]] && ! host_verb_takes_silver "$verb"; then
-        echo "$NAME: --silver-db does not apply to '${verb:-<no subcommand>}'" \
-             "— it is only read by: $(host_silver_verbs_str)." >&2
-        exit 2
-    fi
-    [[ $silver_from_flag == 1 ]] && SILVER_DB_GIVEN=1
+    collector_default_paths
+    collector_parse_dir_flags "${1:-}" "${@:2}"
+    FORWARD_ARGS=("${FORWARD_ARGS[@]:1}")
     [[ -z "$SILVER_DB" ]] && SILVER_DB="$DATA_DIR/$NAME.db"
     mkdir -p "$DATA_DIR"
     # Same reasoning as the Docker wrappers: per-collector, owner-only.
     chmod 700 "$DATA_DIR"
+}
+
+# host_begin VERB... -- [ARGS...] — the start of a host wrapper. With no
+# ARGS, or help / --help / -h as the first, print the wrapper's banner and
+# exit 0. A first arg that is none of the VERBs exits 2, before any
+# directory is made or any env file read. Otherwise set VERB to it and
+# resolve the paths of the rest (host_resolve_dirs).
+host_begin() {
+    local -a verbs=()
+    while [[ "$1" != -- ]]; do
+        verbs+=("$1")
+        shift
+    done
+    shift
+    VERB="${1:-help}"
+    [[ $# -gt 0 ]] && shift
+    case "$VERB" in
+        -h|--help|help)
+            host_print_banner "${BASH_SOURCE[1]}"
+            exit 0
+            ;;
+    esac
+    local v known=0
+    for v in "${verbs[@]}"; do
+        [[ "$VERB" == "$v" ]] && known=1
+    done
+    if [[ $known == 0 ]]; then
+        local IFS='|'
+        echo "$NAME: unknown command '$VERB' (expected: ${verbs[*]})" >&2
+        exit 2
+    fi
+    host_resolve_dirs "$VERB" "$@"
+}
+
+# host_run SCRIPT [ARGS...] — exec the collector's SCRIPT on its
+# interpreter (host_python) with ARGS, then FORWARD_ARGS. ARGS name the
+# resolved paths, so a flag in FORWARD_ARGS overrides them (argparse
+# last-wins).
+host_run() {
+    local py script="$1"
+    shift
+    py="$(host_python)"
+    exec "$py" "$HERE/$script" "$@" ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+}
+
+# host_login_probe SCRIPT [ARGS...] — the `login` of a collector with no
+# session to mint. With --check among FORWARD_ARGS, host_run SCRIPT ARGS:
+# the script probes the credential or the source. Otherwise print the
+# notice read from stdin and exit 0.
+host_login_probe() {
+    if host_has_flag --check ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}; then
+        host_run "$@"
+    fi
+    cat >&2
+    exit 0
 }
 
 # host_print_banner FILE — print FILE's leading comment banner (every
@@ -145,15 +137,6 @@ host_has_flag() {
         [[ "$a" == "$flag" ]] && return 0
     done
     return 1
-}
-
-# The silver-consuming verbs as a display string, for the reject message.
-host_silver_verbs_str() {
-    if [[ -n "${SILVER_SUBCOMMANDS+x}" ]]; then
-        echo "${SILVER_SUBCOMMANDS[*]}"
-    else
-        echo "load"
-    fi
 }
 
 # host_source_env_file [FILE] — source $SECRETS_DIR/<FILE>.env, so the

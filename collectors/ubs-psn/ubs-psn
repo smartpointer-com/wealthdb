@@ -28,62 +28,30 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME=ubs-psn
-ENV_PREFIX=UBS_PSN
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/host-lib.sh"
 
-cmd="${1:-help}"
-[[ $# -gt 0 ]] && shift || true
-
-case "$cmd" in
-    -h|--help|help)
-        host_print_banner "${BASH_SOURCE[0]}"
-        exit 0
-        ;;
-    login|download|load|prune)
-        ;;
-    *)
-        echo "ubs-psn: unknown command '$cmd' (expected: login|download|load|prune)" >&2
-        exit 2
-        ;;
-esac
-
-host_resolve_dirs "$cmd" "$@"
+host_begin login download load prune -- "$@"
 host_source_env_file
-py="$(host_python)"
 
-case "$cmd" in
+case "$VERB" in
     login)
         # PSN mints no session — the RSA key IS the credential — so a bare
         # `login` is a no-op. `--check` is a real probe: download.py opens and
         # closes one authenticated SSH session, consuming no files.
-        if host_has_flag --check ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}; then
-            exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
-                --key "$SECRETS_DIR/ubs_psn_key" \
-                ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        fi
-        cat >&2 <<'EOF'
+        host_login_probe download.py --bronze-dir "$DATA_DIR" \
+            --key "$SECRETS_DIR/ubs_psn_key" <<'EOF'
 ubs-psn: no-op. UBS PSN is an SSH-key-authenticated SFTP delivery — there is
 no interactive login / MFA session to mint. To verify the key is accepted
 (connect + host-key check, no files consumed), run:
   ./ubs-psn login --check
 EOF
-        exit 0
         ;;
     download)
         # download.py reads the login id from UBS_PSN_CLIENT_ID, which
         # host_source_env_file exported; --client-id overrides it.
-        exec "$py" "$HERE/download.py" --bronze-dir "$DATA_DIR" \
-            --key "$SECRETS_DIR/ubs_psn_key" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+        host_run download.py --bronze-dir "$DATA_DIR" --key "$SECRETS_DIR/ubs_psn_key"
         ;;
-    load)
-        exec "$py" "$HERE/load.py" --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        ;;
-    prune)
-        # --bronze-dir first so an override in FORWARD_ARGS wins.
-        exec "$py" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
-            ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
-        ;;
+    load)  host_run load.py --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR" ;;
+    prune) host_run prune.py --bronze-dir "$DATA_DIR" ;;
 esac

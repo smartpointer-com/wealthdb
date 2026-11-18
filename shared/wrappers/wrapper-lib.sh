@@ -22,8 +22,8 @@
 #   ENV_PREFIX   upper-cased env-var prefix. Used to derive both override
 #                knobs (${ENV_PREFIX}_SECRETS_DIR etc.) and the
 #                force-replace switch (${ENV_PREFIX}_FORCE_REPLACE).
-#                wrapper_init derives it from NAME when unset:
-#                "fidelity-web" gives "FIDELITY_WEB".
+#                wrapper_init derives it from NAME when unset (see
+#                paths-lib.sh): "fidelity-web" gives "FIDELITY_WEB".
 #
 # Caller MAY SET (before sourcing) to opt in to features:
 #   HAS_DEBUG=1       Mount $HOST_DEBUG → /debug. Required for collectors
@@ -47,7 +47,7 @@
 #                     empty, no verb gets one.
 #   SILVER_SUBCOMMANDS
 #                     Bash array of the subcommands that read --silver-db.
-#                     Replaces the default (load).
+#                     Replaces the default (load); see paths-lib.sh.
 #   HAS_ENV_FILE=1    Source the credentials env file host-side before
 #                     `docker run`, so the ENV_VARS it sets are forwarded
 #                     (see wrapper_source_env_file).
@@ -68,20 +68,15 @@
 # Internals
 # ----------------------------------------------------------------------
 
-# The repository root, from this file's place in it, and the image-tag
-# and env-file helpers beside this file.
+# The repository root, from this file's place in it, and the image-tag,
+# env-file and path helpers beside this file.
 _WRAPPER_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/image-tag.sh"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
-
-# _envvar SUFFIX DEFAULT — echo the value of ${ENV_PREFIX}_${SUFFIX},
-# or DEFAULT if unset/empty.
-_envvar() {
-    local var="${ENV_PREFIX}_$1"
-    echo "${!var:-$2}"
-}
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/paths-lib.sh"
 
 # _abs_dir DIR — echo the existing directory DIR as an absolute path.
 # `docker run -v` reads a bare relative source such as `mydata` as a
@@ -115,33 +110,21 @@ wrapper_source_cfg() {
     fi
 }
 
-# Directory resolution precedence (highest first):
-#   1. a --secrets-dir / --data-dir / --silver-db CLI flag (parsed later,
-#      in wrapper_resolve_dir_args, so it overrides everything here)
-#   2. the per-collector ${ENV_PREFIX}_SECRETS_DIR / _DATA_DIR env var
-#   3. the fleet-wide WEALTHDB_SECRETS_DIR / WEALTHDB_DATA_ROOT env var
-#      (lets an orchestrator set one knob for all)
-#   4. the ~/.secrets and ${XDG_DATA_HOME:-~/.local/share}/wealthdb/<name>
-#      defaults
+# The mount sources follow the precedence of paths-lib.sh. A
+# --secrets-dir / --data-dir / --silver-db flag is parsed later, in
+# wrapper_resolve_dir_args, so it overrides everything here.
 wrapper_init() {
-    : "${ENV_PREFIX:=$(printf '%s' "$NAME" | tr 'a-z-' 'A-Z_')}"
+    collector_default_paths
     wealthdb_export_image_tag "$_WRAPPER_ROOT" || exit 2
-    IMAGE="$(_envvar IMAGE "wealthdb/${NAME}:${WEALTHDB_IMAGE_TAG}")"
-    CONTAINER_NAME="$(_envvar CONTAINER "$NAME")"
+    IMAGE="$(_collector_envvar IMAGE "wealthdb/${NAME}:${WEALTHDB_IMAGE_TAG}")"
+    CONTAINER_NAME="$(_collector_envvar CONTAINER "$NAME")"
 
-    local secrets_default="${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}"
-    HOST_SECRETS="$(_envvar SECRETS_DIR "$secrets_default")"
-
-    # Default data root follows the XDG Base Directory spec
-    # ($XDG_DATA_HOME, falling back to ~/.local/share).
-    local data_default="${XDG_DATA_HOME:-$HOME/.local/share}/wealthdb/$NAME"
-    [[ -n "${WEALTHDB_DATA_ROOT:-}" ]] && data_default="${WEALTHDB_DATA_ROOT%/}/$NAME"
-    HOST_DATA="$(_envvar DATA_DIR "$data_default")"
-
+    HOST_SECRETS="$SECRETS_DIR"
+    HOST_DATA="$DATA_DIR"
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         # Debug/trace cache under the XDG cache dir, namespaced per
         # collector like the startupCache below.
-        HOST_DEBUG="$(_envvar DEBUG_DIR "${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/debug/$NAME")"
+        HOST_DEBUG="$DEBUG_DIR"
     fi
 
     # Host cache dir for the browsers' relocated startupCache (see
@@ -159,75 +142,31 @@ wrapper_init() {
     HOST_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/$NAME"
 }
 
-# wrapper_verb_takes_silver — is `$1` a subcommand that consumes the silver
-# DB? The set defaults to just `load`. A wrapper with another
-# silver-consuming verb sets SILVER_SUBCOMMANDS to REPLACE that default —
-# e.g. SILVER_SUBCOMMANDS=(load fetch-prices) for cointracking.
-wrapper_verb_takes_silver() {
-    local want="$1" v
-    local -a verbs
-    if [[ -n "${SILVER_SUBCOMMANDS+x}" ]]; then
-        verbs=(${SILVER_SUBCOMMANDS[@]+"${SILVER_SUBCOMMANDS[@]}"})
-    else
-        verbs=(load)
-    fi
-    for v in ${verbs[@]+"${verbs[@]}"}; do
-        [[ "$want" == "$v" ]] && return 0
-    done
-    return 1
-}
-
-# Parse the uniform directory-override flags out of the forwarded args:
-#   --secrets-dir DIR   override HOST_SECRETS (the /secrets mount source)
-#   --data-dir    DIR   override HOST_DATA    (the /data mount source —
+# wrapper_resolve_dir_args ARGS... — consume the uniform directory-override
+# flags (collector_parse_dir_flags) and map them onto the mounts:
+#   --secrets-dir DIR   overrides HOST_SECRETS (the /secrets mount source)
+#   --data-dir    DIR   overrides HOST_DATA    (the /data mount source —
 #                       holds both the bronze dumps and the silver DB)
-#   --silver-db   PATH  put the silver DB at an explicit HOST path outside
+#   --silver-db   PATH  puts the silver DB at an explicit HOST path outside
 #                       the data dir: bind-mounts its parent to /silver and
 #                       rewrites the flag to the in-container path (the inner
 #                       load.py accepts --silver-db, default /data/<name>.db)
-# Both `--flag VALUE` and `--flag=VALUE` forms are accepted. Recognised
-# flags are CONSUMED; everything else is collected into FORWARD_ARGS for the
-# container. SILVER_MOUNT holds the extra `-v` args (empty unless a silver
-# path is in play).
-#
-# --silver-db only means something on a verb that builds the silver DB, so
-# on any other verb it is rejected here rather than forwarded into a parser
-# that would reject it naming an in-container path the caller never typed.
-# The ${PREFIX}_SILVER_DB env var is different: it is ambient config naming
-# where silver lives, so a non-silver verb ignores it rather than failing
-# every `login` in a shell that exports it.
-# bash 3.2 safe (no namerefs / associative arrays).
+# Everything else is left in FORWARD_ARGS for the container. SILVER_MOUNT
+# holds the extra `-v` args (empty unless a silver path is in play), and
+# only a verb that reads the silver DB gets one.
 wrapper_resolve_dir_args() {
-    FORWARD_ARGS=()
+    SECRETS_DIR="$HOST_SECRETS"
+    DATA_DIR="$HOST_DATA"
+    collector_parse_dir_flags "$@"
+    HOST_SECRETS="$SECRETS_DIR"
+    HOST_DATA="$DATA_DIR"
     SILVER_MOUNT=()
-    local silver silver_from_flag=0
-    silver="$(_envvar SILVER_DB "")"
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --secrets-dir)   HOST_SECRETS="$2"; shift 2 ;;
-            --secrets-dir=*) HOST_SECRETS="${1#*=}"; shift ;;
-            --data-dir)      HOST_DATA="$2"; shift 2 ;;
-            --data-dir=*)    HOST_DATA="${1#*=}"; shift ;;
-            --silver-db)     silver="$2"; silver_from_flag=1; shift 2 ;;
-            --silver-db=*)   silver="${1#*=}"; silver_from_flag=1; shift ;;
-            *)               FORWARD_ARGS+=("$1"); shift ;;
-        esac
-    done
-    # The subcommand is the first arg that isn't one of the dir flags.
-    local sub="${FORWARD_ARGS[0]:-}"
-    if ! wrapper_verb_takes_silver "$sub"; then
-        if [[ $silver_from_flag == 1 ]]; then
-            echo "$NAME: --silver-db does not apply to '${sub:-<no subcommand>}'" \
-                 "— it is only read by: $(wrapper_silver_verbs_str)." >&2
-            exit 2
-        fi
-        return
-    fi
-    if [[ -n "$silver" ]]; then
+    collector_verb_takes_silver "${FORWARD_ARGS[0]:-}" || return 0
+    if [[ -n "$SILVER_DB" ]]; then
         local d b
-        mkdir -p "$(dirname "$silver")"
-        d="$(_abs_dir "$(dirname "$silver")")"
-        b="$(basename "$silver")"
+        mkdir -p "$(dirname "$SILVER_DB")"
+        d="$(_abs_dir "$(dirname "$SILVER_DB")")"
+        b="$(basename "$SILVER_DB")"
         SILVER_MOUNT=(-v "$d:/silver")
         FORWARD_ARGS+=(--silver-db "/silver/$b")
     fi
@@ -245,19 +184,10 @@ wrapper_resolve_dir_args() {
 wrapper_source_env_file() {
     [[ "${HAS_ENV_FILE:-0}" == "1" ]] || return 0
     local f
-    f="$(_envvar ENV_FILE "$HOST_SECRETS/$NAME.env")"
+    f="$(_collector_envvar ENV_FILE "$HOST_SECRETS/$NAME.env")"
     [[ -f "$f" ]] || return 0
     wealthdb_source_bash "$f" ||
         echo "${NAME}: env file $f has a bash syntax error; not sourcing it" >&2
-}
-
-# The silver-consuming verbs as a display string, for the reject message.
-wrapper_silver_verbs_str() {
-    if [[ -n "${SILVER_SUBCOMMANDS+x}" ]]; then
-        echo "${SILVER_SUBCOMMANDS[*]}"
-    else
-        echo "load"
-    fi
 }
 
 # The mount lines for the "Mounted into the container:" block in usage().
@@ -336,25 +266,11 @@ wrapper_build() {
 # dispatcher promises them on every verb): --data-dir retargets the
 # bronze root, and --secrets-dir, meaningless to a bronze file-walk, is
 # absorbed rather than forwarded. --silver-db is rejected, as on every
-# other verb that does not read it. Both `--flag VALUE` and
-# `--flag=VALUE`; everything else forwards to prune.py.
+# other verb that does not read it. Everything else forwards to prune.py.
 wrapper_host_prune() {
-    shift  # drop "prune"
-    local bronze="$HOST_DATA"
-    local -a rest=()
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --data-dir)      bronze="$2"; shift 2 ;;
-            --data-dir=*)    bronze="${1#*=}"; shift ;;
-            --secrets-dir)   shift 2 ;;
-            --secrets-dir=*) shift ;;
-            --silver-db|--silver-db=*)
-                echo "$NAME: --silver-db does not apply to 'prune'" \
-                     "— it is only read by: $(wrapper_silver_verbs_str)." >&2
-                exit 2 ;;
-            *)               rest+=("$1"); shift ;;
-        esac
-    done
+    DATA_DIR="$HOST_DATA"
+    collector_parse_dir_flags "$@"
+    local -a rest=("${FORWARD_ARGS[@]:1}")
     # Before "$rest" so an explicit --debug-dir in the forwarded args wins
     # (argparse last-wins), matching --bronze-dir's treatment.
     local -a debug_args=()
@@ -362,7 +278,7 @@ wrapper_host_prune() {
         debug_args=(--debug-dir "$HOST_DEBUG")
     fi
     exec env PYTHONPATH="$HERE/../../shared/collectorkit:${PYTHONPATH:-}" \
-        python3 "$HERE/prune.py" --bronze-dir "$bronze" \
+        python3 "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
         ${debug_args[@]+"${debug_args[@]}"} \
         ${rest[@]+"${rest[@]}"}
 }

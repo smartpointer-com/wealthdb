@@ -199,8 +199,10 @@ The wrapper therefore:
   source accepts it for uniformity but warns it cannot narrow its fetch,
   rather than silently ignoring or rejecting it.
 
-That precedence is not hand-written; it comes from sourcing the matching
-shared library and setting a small config block.
+That precedence is not hand-written. It lives once, in
+[`shared/wrappers/paths-lib.sh`](../shared/wrappers/paths-lib.sh), which
+both wrapper libraries source. A wrapper sources the matching library
+and sets a small config block.
 
 A **Docker** wrapper sources
 [`shared/wrappers/wrapper-lib.sh`](../shared/wrappers/wrapper-lib.sh)
@@ -230,14 +232,21 @@ themselves. The library bind-mounts the dirs listed under Docker mounts
 and Caches (plus `/silver`, `/debug`, `/app` when applicable) and runs
 as `--user $(id -u):$(id -g)`.
 
-A **host-venv** wrapper (for tools that need no browser) sources
-[`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh) and calls
-`host_resolve_dirs "$@"` (which populates `SECRETS_DIR` / `DATA_DIR` /
-`SILVER_DB` / `FORWARD_ARGS`), `host_source_env_file [FILE]` (which
-sources `<secrets>/<name>.env`, or, given FILE, another source's
-`<secrets>/<FILE>.env`, overridden by `<FILE>_ENV_FILE` in upper snake
-case), and `host_python` (the collector's `.venv`), then execs the
-right `.py` with the resolved paths and `FORWARD_ARGS`.
+A **host-venv** wrapper (for tools that need no browser) sets `NAME`,
+sources [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh)
+and calls these:
+
+- `host_begin VERB... -- "$@"` prints the banner as help and rejects an
+  unknown verb. It then sets `VERB` and resolves `SECRETS_DIR`,
+  `DATA_DIR`, `SILVER_DB` and `FORWARD_ARGS`.
+- `host_source_env_file [FILE]` sources `<secrets>/<name>.env`. Given
+  FILE, it sources another source's `<secrets>/<FILE>.env`, overridden
+  by `<FILE>_ENV_FILE` in upper snake case.
+- `host_run SCRIPT [ARGS...]` execs the `.py` on the collector's `.venv`
+  with ARGS, then `FORWARD_ARGS`.
+- `host_login_probe SCRIPT [ARGS...]` is the `login` of a source with no
+  session. `--check` runs SCRIPT; a bare `login` prints the notice on
+  its stdin.
 
 ### Collector CLI conventions
 

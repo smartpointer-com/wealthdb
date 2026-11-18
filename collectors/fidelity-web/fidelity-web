@@ -12,7 +12,7 @@
 # host venv (`make build-fidelity-web` builds it from requirements.txt
 # with collectorkit editable-installed):
 #   * `load` runs the silver loader host-side via the venv python
-#     (host_python) — the loader decompresses zstd bronze in Python
+#     (host_run) — the loader decompresses zstd bronze in Python
 #     (SQLite silver, no native .zst streaming) so the venv carries
 #     zstandard + pdfplumber. Running host-side saves the docker-spin
 #     overhead and lets the loader run while a `download` container is
@@ -25,7 +25,7 @@
 #     human-driven first-time profile-seed.
 #
 # The common docker-run plumbing lives in shared/wrappers/wrapper-lib.sh;
-# host_python comes from shared/wrappers/host-lib.sh.
+# host_run comes from shared/wrappers/host-lib.sh.
 
 set -euo pipefail
 
@@ -39,10 +39,10 @@ VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/wrapper-lib.sh"
-# host-lib.sh provides host_python (the collector's .venv python, built
-# by `make build-fidelity-web`) for the file-only host-side verbs
-# (load / prune / recompress). It only defines functions; no globals
-# clash with wrapper-lib.sh.
+# host-lib.sh provides host_resolve_dirs and host_run (the collector's
+# .venv python, built by `make build-fidelity-web`) for the file-only
+# host-side verbs (load / prune / recompress). It only defines
+# functions, and host_resolve_dirs resolves its paths afresh.
 # shellcheck disable=SC1091
 source "$HERE/../../shared/wrappers/host-lib.sh"
 wrapper_init
@@ -132,7 +132,7 @@ fidelity-web: 'login' folds into 'download' — nothing to persist.
 EOF
 
 # The file-only verbs (load / prune / recompress) run host-side on the
-# collector's .venv python (via host_python): pure file walks + SQLite /
+# collector's .venv python (via host_run): pure file walks + SQLite /
 # zstd work that needs no Camoufox / Playwright / container, and running
 # host-side bypasses the single-writer safety guard so it can run while a
 # `download` container is mid-flight (an in-flight dump is protected by
@@ -151,10 +151,7 @@ EOF
 if [[ "${1:-}" == "load" ]]; then
     shift
     host_resolve_dirs load "$@"
-    exec "$(host_python)" "$HERE/load.py" \
-        --silver-db "$SILVER_DB" \
-        --bronze-dir "$DATA_DIR" \
-        ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    host_run load.py --silver-db "$SILVER_DB" --bronze-dir "$DATA_DIR"
 fi
 
 # `./fidelity-web prune [args...]` — reclaim disk (host-side walk): the
@@ -164,9 +161,7 @@ fi
 if [[ "${1:-}" == "prune" ]]; then
     shift
     host_resolve_dirs prune "$@"
-    exec "$(host_python)" "$HERE/prune.py" --bronze-dir "$DATA_DIR" \
-        --debug-dir "$DEBUG_DIR" \
-        ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    host_run prune.py --bronze-dir "$DATA_DIR" --debug-dir "$DEBUG_DIR"
 fi
 
 # `./fidelity-web recompress [args...]` — one-time backlog sweep converting
@@ -176,8 +171,7 @@ fi
 if [[ "${1:-}" == "recompress" ]]; then
     shift
     host_resolve_dirs recompress "$@"
-    exec "$(host_python)" "$HERE/recompress.py" --bronze-dir "$DATA_DIR" \
-        ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
+    host_run recompress.py --bronze-dir "$DATA_DIR"
 fi
 
 wrapper_main "$@"
