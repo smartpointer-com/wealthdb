@@ -87,9 +87,13 @@ RECOVERY_DEADLINE_S = 180
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
     """Capture the scrubbed HTML and a viewport PNG at a navigation
     landmark into the `--screenshot-dir` host path (None captures
-    nothing). Never raises. Shared by login.py's sign-in landmarks.
+    nothing). The login credentials (login.py's LOGIN_ID_ENV and
+    PASSWORD_ENV) and the session are masked out of the markup. Never
+    raises. Shared by login.py's sign-in landmarks.
     """
-    debugcap.capture_landmark(page, screenshot_dir, label, log=log)
+    debugcap.landmark_capturer(
+        screenshot_dir, user_env="SCHWAB_LOGIN_ID",
+        pass_env="SCHWAB_PASSWORD", session=True, log=log)(page, label)
 
 # ============================================================
 # Account enumeration

@@ -352,14 +352,16 @@ def enumerate_account_dimensions(page):
 
 def capture(page, capture_dir, label):
     """Save HTML + PNG of the current page state into `capture_dir`
-    (None captures nothing). Never raises.
+    (None captures nothing), the credentials and the session masked out
+    of the markup. Never raises.
 
     The walk phases pass ``<run>/screenshots/`` (under ``--debug``); the
     sign-in, MFA, ``--check`` and logout landmarks pass the
     ``--screenshot-dir`` host path. The screenshot is capped at 5 s.
     """
-    debugcap.capture_landmark(page, capture_dir, label, log=log,
-                              png_timeout_ms=5_000)
+    debugcap.landmark_capturer(
+        capture_dir, user_env=USERNAME_ENVS, pass_env=PASSWORD_ENVS,
+        session=True, log=log, png_timeout_ms=5_000)(page, label)
 
 
 def dump_dom_inventory(page, capture_dir, label):

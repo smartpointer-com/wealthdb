@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import download
+import login
 
 
 # --------------------------------------------------------------------
@@ -792,3 +793,32 @@ def test_the_dry_run_plan_follows_only_and_no_cards():
 
     assert download.dry_run_plan(download.parse_args(
         ["--dry-run", "--only", "cards", "--no-cards"]), 2) == "nothing"
+
+
+class _CapturePage:
+    """The slice of a page a landmark capture touches."""
+
+    def __init__(self, html="<html></html>", *, shot_raises=False):
+        self._html, self._shot_raises = html, shot_raises
+        self.context = types.SimpleNamespace(cookies=lambda: [])
+
+    def content(self):
+        return self._html
+
+    def evaluate(self, script):
+        return self._html
+
+    def screenshot(self, **kwargs):
+        if self._shot_raises:
+            raise RuntimeError("synthetic screenshot failure")
+        Path(kwargs["path"]).write_bytes(b"png")
+
+
+def test_a_failed_landmark_screenshot_never_raises(tmp_path, monkeypatch):
+    # A debug capture must not take down the walk it diagnoses.
+    monkeypatch.setenv(login.CONTRACT_NUMBER_ENV, "12345678")
+    download.maybe_screenshot(
+        _CapturePage("<div>12345678</div>", shot_raises=True),
+        tmp_path, "home-rendered")
+    (html,) = tmp_path.glob("*-home-rendered.html")
+    assert "12345678" not in html.read_text()

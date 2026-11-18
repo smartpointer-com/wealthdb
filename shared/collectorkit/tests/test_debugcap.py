@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import sys
+import types
 import unittest
 from unittest import mock
 import urllib.error
@@ -1487,6 +1488,81 @@ class CaptureLandmarkTest(unittest.TestCase):
         out = self._one(".html").read_text()
         self.assertNotIn("s3cr3t", out)
         self.assertNotIn("example-user", out)
+
+
+class LandmarkCapturerTest(unittest.TestCase):
+    """landmark_capturer: a landmark capture that always masks."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name) / "shots"
+        env = mock.patch.dict("os.environ", {"EX_USER": "example-user",
+                                             "EX_ALT": "example-alt-user",
+                                             "EX_PASS": "p@ss+word"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _html(self):
+        (found,) = self.dir.glob("*-signin.html")
+        return found.read_text()
+
+    def test_masks_the_named_credentials_by_value(self):
+        capture = debugcap.landmark_capturer(
+            self.dir, user_env=("EX_USER", "EX_ALT"), pass_env="EX_PASS",
+            log=log)
+        capture(_LandmarkPage("<div>example-user example-alt-user "
+                              "p@ss+word</div>"), "signin")
+        out = self._html()
+        for secret in ("example-user", "example-alt-user", "p@ss+word"):
+            self.assertNotIn(secret, out)
+        self.assertEqual(out.count(debugcap.REDACTED), 3)
+
+    def test_reads_the_credentials_at_the_first_capture(self):
+        # The env file is sourced after the capture is wired, before the
+        # first landmark.
+        capture = debugcap.landmark_capturer(self.dir, user_env="EX_LATE",
+                                             log=log)
+        with mock.patch.dict("os.environ", {"EX_LATE": "late-user-value"}):
+            capture(_LandmarkPage("<div>late-user-value</div>"), "signin")
+        self.assertNotIn("late-user-value", self._html())
+
+    def test_masks_the_session_jar(self):
+        page = _LandmarkPage("<meta content='EXAMPLESESSIONVALUE'>")
+        page.context = types.SimpleNamespace(cookies=lambda: [
+            {"name": "s", "value": "EXAMPLESESSIONVALUE"}])
+        debugcap.landmark_capturer(self.dir, session=True, log=log)(
+            page, "signin")
+        self.assertNotIn("EXAMPLESESSIONVALUE", self._html())
+
+    def test_blanks_password_inputs_with_nothing_named(self):
+        debugcap.landmark_capturer(self.dir, log=log)(
+            _LandmarkPage('<input type="password" value="typed">'), "signin")
+        self.assertNotIn("typed", self._html())
+
+    def test_no_dir_captures_nothing(self):
+        page = _LandmarkPage()
+        debugcap.landmark_capturer(None, user_env="EX_USER", log=log)(
+            page, "signin")
+        self.assertIsNone(page.shot)
+
+    def test_never_raises(self):
+        page = _LandmarkPage(content_raises=True, shot_raises=True)
+        page.evaluate = mock.Mock(side_effect=RuntimeError("gone"))
+        page.context = types.SimpleNamespace(
+            cookies=mock.Mock(side_effect=RuntimeError("closed")))
+        with self.assertLogs(log, level="WARNING"):
+            debugcap.landmark_capturer(self.dir, session=True, log=log)(
+                page, "signin")
+
+    def test_the_screenshot_keeps_its_cap(self):
+        page = _LandmarkPage()
+        debugcap.landmark_capturer(self.dir, log=log, png_timeout_ms=5_000)(
+            page, "signin")
+        self.assertEqual(page.shot["timeout"], 5_000)
 
 
 class StopTraceTest(unittest.TestCase):

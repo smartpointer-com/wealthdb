@@ -268,6 +268,14 @@ def open_camoufox_context(profile_dir: Path, trace: bool):
                                    humanize=False, geoip=False, logger=log)
 
 
+def _capture(page, screenshot_dir: Path | None, label: str) -> None:
+    """A sign-in landmark into `screenshot_dir` (None captures nothing),
+    the Schwab login credentials masked out of the markup. Never
+    raises."""
+    debugcap.landmark_capturer(screenshot_dir, user_env="SCHWAB_LOGIN_ID",
+                               pass_env="SCHWAB_PASSWORD", log=log)(page, label)
+
+
 def _scopes(page) -> list:
     """The page itself, then each of its child frames: every place a
     login, 2FA or error element may render."""
@@ -610,8 +618,7 @@ def select_all_link_accounts(page, screenshot_dir=None, seen=None) -> int:
         except Exception as e:
             log.warning("on the account-link page but could not read the "
                         "checkboxes (%s) — capturing DOM for refinement", e)
-        debugcap.capture_landmark(page, screenshot_dir, "025-account-link",
-                                  log=log)
+        _capture(page, screenshot_dir, "025-account-link")
     n = _check_visible_checkboxes(page)
     if n:
         log.info("auto-ticked %d previously-unselected account checkbox(es)", n)
@@ -647,7 +654,8 @@ def _explore_dump(page, screenshot_dir, state) -> None:
     try:
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         (screenshot_dir / f"{label}.html").write_text(
-            debugcap.scrub_dom(page.content()), encoding="utf-8")
+            debugcap.scrub_dom(page.content(), debugcap.env_redactor(
+                "SCHWAB_LOGIN_ID", "SCHWAB_PASSWORD")), encoding="utf-8")
         try:
             page.screenshot(path=str(screenshot_dir / f"{label}.png"),
                             full_page=True, timeout=4_000)
@@ -775,11 +783,9 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
             page.goto(ctx.authorization_url, wait_until="domcontentloaded")
         except Exception as e:
             log.warning("initial navigation reported: %s", e)
-        debugcap.capture_landmark(page, args.screenshot_dir, "01-authorize",
-                                  log=log)
+        _capture(page, args.screenshot_dir, "01-authorize")
         prefill_login(page, login_id, password)
-        debugcap.capture_landmark(page, args.screenshot_dir, "02-prefilled",
-                                  log=log)
+        _capture(page, args.screenshot_dir, "02-prefilled")
 
         try:
             if args.cli_mfa:
@@ -799,8 +805,7 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
                                               args.screenshot_dir,
                                               args.cli_mfa, args.explore)
         except LoginFlowError as exc:
-            debugcap.capture_landmark(page, args.screenshot_dir, "99-terminal",
-                                      log=log)
+            _capture(page, args.screenshot_dir, "99-terminal")
             debugcap.stop_trace_if_active(context, args.trace,
                                           args.screenshot_dir, "login-terminal",
                                           log=log)
@@ -808,8 +813,7 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
             return exc.exit_code
         finally:
             bodies.flush()
-        debugcap.capture_landmark(page, args.screenshot_dir, "03-postconsent",
-                                  log=log)
+        _capture(page, args.screenshot_dir, "03-postconsent")
         if received_url is None:
             debugcap.stop_trace_if_active(context, args.trace,
                                           args.screenshot_dir, "login-timeout",

@@ -32,7 +32,7 @@ from qr import (  # noqa: F401
     _upscale_qr_png,
 )
 
-from collectorkit import bronze, cli, debugcap, envfile, launch, session
+from collectorkit import cli, debugcap, envfile, launch, session
 
 log = logging.getLogger("ubs-web.login")
 
@@ -174,12 +174,12 @@ def resolve_contract_number(args: argparse.Namespace) -> str:
 # ============================================================
 
 def maybe_screenshot(page, screenshot_dir: Path | None, label: str) -> None:
-    if screenshot_dir is None:
-        return
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-    path = screenshot_dir / f"{bronze.ts_slug()}-{label}.png"
-    page.screenshot(path=str(path), full_page=True)
-    log.debug("wrote screenshot %s", path)
+    """Capture the scrubbed HTML and a viewport PNG at a landmark into
+    the `--screenshot-dir` host path (None captures nothing), the
+    contract number and the session masked out of the markup. Never
+    raises."""
+    debugcap.landmark_capturer(screenshot_dir, user_env=CONTRACT_NUMBER_ENV,
+                               session=True, log=log)(page, label)
 
 
 def _start_trace(context) -> None:

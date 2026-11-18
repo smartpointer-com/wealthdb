@@ -10,6 +10,7 @@ fallback click, never more.
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -344,3 +345,35 @@ def test_an_interrupt_exits_130(monkeypatch, tmp_path):
         raise KeyboardInterrupt
     _signed_in_run(monkeypatch, interrupted)
     assert _run(tmp_path) == 130
+
+
+class _CapturePage:
+    """The slice of a page a landmark capture touches."""
+
+    def __init__(self, html="<html></html>", *, shot_raises=False):
+        self._html, self._shot_raises = html, shot_raises
+        self.context = types.SimpleNamespace(cookies=lambda: [])
+
+    def content(self):
+        return self._html
+
+    def evaluate(self, script):
+        return self._html
+
+    def screenshot(self, **kwargs):
+        if self._shot_raises:
+            raise RuntimeError("synthetic screenshot failure")
+        Path(kwargs["path"]).write_bytes(b"png")
+
+
+def test_a_landmark_masks_the_login_credentials(tmp_path, monkeypatch):
+    # A sign-in capture masks the credentials by value, not only the
+    # password inputs.
+    monkeypatch.setenv(login.LOGIN_ID_ENV, "example-login")
+    monkeypatch.setenv(login.PASSWORD_ENV, "example-password")
+    login.maybe_screenshot(
+        _CapturePage("<div>example-login example-password</div>"),
+        tmp_path, "signin")
+    (html,) = tmp_path.glob("*-signin.html")
+    text = html.read_text()
+    assert "example-login" not in text and "example-password" not in text

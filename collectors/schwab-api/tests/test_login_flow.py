@@ -432,3 +432,35 @@ def test_token_writer_is_owner_only_from_the_first_write(tmp_path):
     login._token_writer(token_path)(bundle, refresh_token="x")
     assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
     assert json.loads(token_path.read_text(encoding="utf-8")) == bundle
+
+
+class _CapturePage:
+    """The slice of a page a landmark capture touches."""
+
+    def __init__(self, html="<html></html>", *, shot_raises=False):
+        self._html, self._shot_raises = html, shot_raises
+        self.context = types.SimpleNamespace(cookies=lambda: [])
+
+    def content(self):
+        return self._html
+
+    def evaluate(self, script):
+        return self._html
+
+    def screenshot(self, **kwargs):
+        if self._shot_raises:
+            raise RuntimeError("synthetic screenshot failure")
+        Path(kwargs["path"]).write_bytes(b"png")
+
+
+def test_a_sign_in_landmark_masks_the_login_credentials(tmp_path,
+                                                        monkeypatch):
+    # A sign-in capture masks the credentials by value, not only the
+    # password inputs.
+    monkeypatch.setenv("SCHWAB_LOGIN_ID", "example-login")
+    monkeypatch.setenv("SCHWAB_PASSWORD", "example-password")
+    login._capture(_CapturePage("<div>example-login example-password</div>"),
+                   tmp_path, "01-authorize")
+    (html,) = tmp_path.glob("*-01-authorize.html")
+    text = html.read_text()
+    assert "example-login" not in text and "example-password" not in text

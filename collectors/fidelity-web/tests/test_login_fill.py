@@ -19,6 +19,7 @@ towards a lockout.
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -134,3 +135,34 @@ def test_the_username_selectors_match_a_tokenised_autocomplete():
     assert "input#dom-username-input" in cands
     assert any("autocomplete~=username" in c for c in cands)
     assert not any("autocomplete=username]" in c for c in cands)
+
+
+class _CapturePage:
+    """The slice of a page a landmark capture touches."""
+
+    def __init__(self, html="<html></html>", *, shot_raises=False):
+        self._html, self._shot_raises = html, shot_raises
+        self.context = types.SimpleNamespace(cookies=lambda: [])
+
+    def content(self):
+        return self._html
+
+    def evaluate(self, script):
+        return self._html
+
+    def screenshot(self, **kwargs):
+        if self._shot_raises:
+            raise RuntimeError("synthetic screenshot failure")
+        Path(kwargs["path"]).write_bytes(b"png")
+
+
+def test_a_capture_masks_the_login_credentials(tmp_path, monkeypatch):
+    # A sign-in capture masks the credentials by value, not only the
+    # password inputs.
+    monkeypatch.setenv(download.USERNAME_ENVS[0], "example-user")
+    monkeypatch.setenv(download.PASSWORD_ENVS[1], "example-password")
+    download.capture(_CapturePage("<div>example-user example-password</div>"),
+                     tmp_path, "signin")
+    (html,) = tmp_path.glob("*-signin.html")
+    text = html.read_text()
+    assert "example-user" not in text and "example-password" not in text
