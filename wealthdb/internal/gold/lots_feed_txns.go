@@ -1,6 +1,7 @@
 package gold
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -45,6 +46,10 @@ func lotClassify(kind string, qty float64, action canonical.TxAction) lots.Class
 }
 
 func (f *lotFeed) readTransactions(ctx context.Context, db *sql.DB) error {
+	facts, err := loadInstrumentFacts(ctx, db)
+	if err != nil {
+		return fmt.Errorf("lots: read transactions: %w", err)
+	}
 	rows, err := db.QueryContext(ctx, `
 SELECT silver_source_id, transaction_external_id, occurred_at, account_external_id,
        instrument_external_id, instrument_hint, kind, currency,
@@ -52,7 +57,8 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
        COALESCE(TRY_CAST(json_extract_string(payload, '$.fee_amount') AS DOUBLE), 0),
        COALESCE(json_extract_string(payload, '$.fee_currency'), ''),
        CASE WHEN json_extract_string(payload, '$.`+canonical.PayloadEquityTransferLedger+`') = 'true'
-            THEN COALESCE(TRY_CAST(json_extract_string(payload, '$.`+canonical.PayloadCostBasis+`') AS DOUBLE), 0) ELSE 0 END
+            THEN COALESCE(TRY_CAST(json_extract_string(payload, '$.`+canonical.PayloadCostBasis+`') AS DOUBLE), 0) ELSE 0 END,
+       COALESCE(asset_class, ''), COALESCE(vehicle, '')
   FROM transactions
  WHERE `+inBoundList("silver_source_id")+`
    AND (instrument_external_id IS NOT NULL OR instrument_hint IS NOT NULL)
@@ -63,16 +69,16 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			src, txn, acct, kind, ccy string
-			inst, hint                sql.NullString
-			at                        int64
-			qty, amt                  sql.NullFloat64
-			action                    canonical.TxAction
-			fee, ledgerCost           float64
-			feeCcy                    string
+			src, txn, acct, kind, ccy, class, vehicle string
+			inst, hint                                sql.NullString
+			at                                        int64
+			qty, amt                                  sql.NullFloat64
+			action                                    canonical.TxAction
+			fee, ledgerCost                           float64
+			feeCcy                                    string
 		)
 		if err := rows.Scan(&src, &txn, &at, &acct, &inst, &hint, &kind, &ccy, &qty, &amt, &action, &fee, &feeCcy,
-			&ledgerCost); err != nil {
+			&ledgerCost, &class, &vehicle); err != nil {
 			return fmt.Errorf("lots: read transactions: %w", err)
 		}
 		s := f.sources[src]
@@ -124,8 +130,13 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
 		case lots.Gone:
 			ev.Kind, ev.Disposal = lots.Dispose, c.Disposal
 		case lots.In, lots.Out:
+			// The holding, and the row's asset class and vehicle where it
+			// states them, else its instrument's, as the returns netter
+			// reads them.
+			fa := facts[acctKey(src, inst.String)]
 			f.legs = append(f.legs, lotLeg{src: s, key: k, inst: name, txn: txn, acct: acct, at: at, qty: q,
-				in: c.Action == lots.In, cost: ledgerCost})
+				in: c.Action == lots.In, cost: ledgerCost, exact: exactQuantity(cmp.Or(class, fa.class), cmp.Or(vehicle, fa.vehicle)),
+				ids: holdingIdentityOf(s.kind, name, fa)})
 			continue
 		case lots.Corporate:
 			f.corp = append(f.corp, lotCorpLeg{src: s, key: k, acct: acct, txn: txn, at: at,

@@ -340,39 +340,49 @@ macro of its own:
     out, one coin in. The two legs move one holding in opposite
     directions, at most 7 days apart (`lots.PairWindow`), in the same
     quantity (`sameQuantity`). What the same quantity is depends on the
-    holding's asset class, the row's own where it states one, else its
-    instrument's:
-    - **Crypto** (asset class `crypto`): within 5% of the larger
-      (`lots.PairTolerance`), so a network fee taken in kind still pairs,
-      and its value reads as a loss.
-    - **Every other class, and a class gold does not state:** a security
-      (a share, an option contract, a unit of a fund, a bond) never
-      arrives short, so only the exact quantity pairs, up to float noise
-      (1e-9 of the larger). 100 shares out and 99 in do not pair.
+    holding's asset class and vehicle, each the row's own where it states
+    one, else its instrument's:
+    - **A coin** (asset class `crypto`, vehicle `physical`): within 5% of
+      the larger (`lots.PairTolerance`), so a network fee taken in kind
+      still pairs, and its value reads as a loss.
+    - **Everything else:** a security (a share, an option contract, a unit
+      of a fund, a bond) never arrives short, so only the exact quantity
+      pairs, up to float noise (1e-9 of the larger). 100 shares out and 99
+      in do not pair. This includes a share of a fund or trust that holds
+      coins (class `crypto`, vehicle `etf` or `fund`), and a class or
+      vehicle gold does not state.
 
-    Each leg, in day order, takes the open leg of the closest quantity. A holding is the instrument's ISIN, else its
-    CUSIP, where gold describes one, so shares moved between two banks
-    pair. Without one, it is the instrument id among the sources of one
-    kind. A leg that states no quantity pairs only through a stored pair.
-    One leg pairs with one leg: a move split over two receipts pairs at
-    most one of them. Whatever the price did between the two days is
-    return (`pairInKind`). The value netter still runs first, over every
-    leg, but pairs two legs only where both are cash or both moved one
-    holding in the same quantity; the legs that moved a holding and are
-    left then pair by holding and quantity. A leg that funds a debut funds
-    it by quantity where the legs moved the same quantity the first
-    valuation holds, by the same rule: the first value stands for them at the debut's
-    prices, by the holding's share of that value (`movedLegs.fundedAt`).
-    So the price move up to the debut is return, and a shortfall, a fee in
-    kind, is a loss. The shares are read only where the first valuation
-    holds positions in one currency and no cash. Elsewhere, and where the
-    quantities differ more, a leg funds its debut by its value, and a first
-    value below that value books the difference as capital that left:
-    nothing says the same holding arrived.
+    The value netter runs first, over every leg, but pairs two legs only
+    where both are cash or both moved one holding in the same quantity.
+    The legs that moved a holding and are left then pair by holding and
+    quantity (`pairInKind`):
+    - **Pairing.** Each leg, in day order, takes the open leg of the
+      closest quantity, the latest on a tie. One leg pairs with one leg:
+      a move split over two receipts pairs at most one of them. A leg
+      that states no quantity pairs only through a stored pair. Whatever
+      the price did between the two days is return.
+    - **Identity.** Two legs move one holding where any identity of
+      their instruments agrees: the same ISIN, the same CUSIP, or the
+      same instrument id among the sources of one kind
+      (`holdingUnion`). So shares moved between two banks pair by ISIN,
+      and a leg whose instrument states an ISIN still pairs with one
+      whose instrument states only the CUSIP, or only the id, both
+      share.
+    - **Funding a debut.** A leg that funds a debut funds it by quantity
+      where the legs moved the same quantity the first valuation holds
+      (`sameQuantity`). The first value then stands for them at the
+      debut's prices, by the holding's share of that value
+      (`movedLegs.fundedAt`). So the price move up to the debut is
+      return, and a shortfall, a fee in kind, is a loss. Each holding's
+      part of the first value is read only where the first valuation
+      holds positions in one currency and no cash. Elsewhere, and where
+      the quantities are not the same, a leg funds its debut by its
+      value. A first value below that value then books the difference as
+      capital that left: nothing says the same holding arrived.
   - **Cash.** A leg that names no instrument pairs by value:
     ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar
     days; FX-normalized via `value_outccy`. It is deterministic:
-    `netTransfers` sorts stably by `(|amount|, day, id)`.
+    `netMatch` sorts stably by `(|amount|, day, id)`.
 - **Stored transfer pairs** (opt-in, DESIGN.md §5.8) are the one
   sanctioned crossing of that deposit/withdrawal line. A pair the load
   stored binds in every entity that holds both legs in the window, at any
@@ -383,7 +393,12 @@ macro of its own:
   closure books it. Such an entity is tagged `cross_source_netted=N`. The
   stored evidence is exactly what the within-entity heuristic lacks. Their
   legs are withheld from the netter's candidates, and `--netting off`
-  disables them along with the netter. Off ⇒ byte-identical.
+  disables them along with the netter. Off ⇒ byte-identical. Where both
+  legs moved one holding in quantities that are not the same (a security
+  at all, a coin beyond 5%), the pair binds the quantity both legs hold.
+  The larger leg's rest, at its share of the leg's value, stays a transfer
+  nothing pairs: a flow, counted in `unmatched_transfers`. A coin short
+  within 5% pairs whole: the shortfall is the network's fee.
 - **Money in transit.** Between a pair's two legs the money is in neither
   account, and it is still the household's. For a pair the value netter's
   rule would not pair (a stored pair whose legs are days or a price move
@@ -396,10 +411,9 @@ macro of its own:
   funding leg of a debut is carried when the first value appears. Where the
   sending account would stop counting the money only on or after the day
   the receiving one shows it, there is no transit and nothing is carried.
-  Such a
-  pair leaves TWR and MWR as if the money never left: cash legs of one
-  amount into a debut have no net effect. A pair the value netter's rule
-  pairs, and a stored pair whose both legs are live, keep their own
+  Such a pair leaves TWR and MWR as if the money never left: cash legs of
+  one amount into a debut have no net effect. A pair the value netter's
+  rule pairs, and a stored pair whose both legs are live, keep their own
   reading.
 - **Explicit closure** is detected only when an account's value series ends
   in a ~0 carry tail (`|v| < valueTol`) — mere staleness never triggers it.
@@ -537,9 +551,9 @@ chained TWR below −100%.
 - **Netting interaction:** stored pairs and transfer/journal netting run
   over the full candidate set (pre-debut legs included) **before**
   subsumption, so genuine internal pairs annihilate and only a
-  constituent's own surviving pre-debut/closure capital is subsumed. A surviving journal-OUT sits on an
-  *alive* account whose value series reflects the drop, so it is real, not
-  an orphaned phantom.
+  constituent's own surviving pre-debut/closure capital is subsumed. A
+  surviving journal-OUT sits on an *alive* account whose value series
+  reflects the drop, so it is real, not an orphaned phantom.
 - **A cancelled pre-debut leg reduces onboarding** by its signed amount,
   where the partner's account is on the spine by then and shows the leg by
   the window's end. The debut value holds that money and the pair's other

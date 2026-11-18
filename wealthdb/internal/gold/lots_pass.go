@@ -13,7 +13,7 @@ import (
 // lotsEngineVersion enters every input fingerprint. A change to what the
 // engine, the feed or a registered policy makes of the same input bumps
 // it, so the next pass replays.
-const lotsEngineVersion = 2
+const lotsEngineVersion = 4
 
 // LotsOptions configure a lot pass.
 type LotsOptions struct {
@@ -118,7 +118,7 @@ func lotFingerprints(ctx context.Context, db *sql.DB, f *lotFeed, cfg lots.Confi
 WITH ids AS (SELECT unnest(?::VARCHAR[]) id),
      t AS (SELECT silver_source_id s, count(*) n, bit_xor(hash(transaction_external_id, occurred_at, account_external_id,
                   instrument_external_id, instrument_hint, kind, currency, quantity, net_amount, description, action,
-                  payload::VARCHAR)) h
+                  payload::VARCHAR, asset_class, vehicle)) h
              FROM transactions WHERE silver_source_id IN (SELECT id FROM ids) GROUP BY 1),
      p AS (SELECT silver_source_id s, count(*) n, bit_xor(hash(snapshot_at, account_external_id, position_key,
                   instrument_external_id, currency, quantity, asset_class, vehicle,
@@ -131,7 +131,7 @@ WITH ids AS (SELECT unnest(?::VARCHAR[]) id),
                   instrument_external_id, instrument_hint, description, quantity, book_value, disposal_date,
                   settlement_date, acquisition_date, tax_year, is_primary)) h
              FROM realized_lots WHERE silver_source_id IN (SELECT id FROM ids) GROUP BY 1),
-     i AS (SELECT silver_source_id s, bit_xor(hash(instrument_external_id, cusip, symbol)) h
+     i AS (SELECT silver_source_id s, bit_xor(hash(instrument_external_id, cusip, symbol, asset_class, vehicle)) h
              FROM instruments WHERE silver_source_id IN (SELECT id FROM ids) GROUP BY 1),
      a AS (SELECT src s, bit_xor(hash(acct, pid)) h FROM portfolio_acct_map() GROUP BY 1),
      x AS (SELECT count(*) n, bit_xor(hash(from_ccy, to_ccy, day, rate)) h FROM fx_daily),

@@ -156,9 +156,10 @@ func TradingPolicy() Policy {
 	return Policy{Mode: Fill, Grain: GrainAccount, Fees: FeesUnknown}
 }
 
-// A transfer out and a transfer in of the same instrument pair when
-// they fall within PairWindow seconds of each other and their
-// quantities within PairTolerance of the larger.
+// A transfer out and a transfer in of one holding pair within
+// PairWindow of each other, counted in calendar days (gold's
+// inKindWindowDay). A coin's quantities pair within PairTolerance of the
+// larger; a security's only exactly (gold's sameQuantity).
 const (
 	PairWindow    = 7 * 86400
 	PairTolerance = 0.05

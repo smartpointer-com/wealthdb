@@ -1230,19 +1230,25 @@ aggregate containing BOTH accounts double-represents the move (the
   them. With the block off, returns reads no stored pair.
 - **Which pairs bind:** every pair whose two legs are external flows of the
   currency's dataset, across sources and inside one. A leg whose partner is no
-  flow (a card's, one with no FX path) stays a plain flow. The transferLike
-  netter pairs the legs no stored pair claimed (journal legs, which the
-  matcher does not pair, among them): a leg that moved a holding by holding
-  and quantity, a coin within 5% and a security only on the exact
-  quantity, and a leg of cash by value in the reporting currency
-  (RETURNS-NOTES "Netting and closure").
+  flow (a card's, one with no FX path) stays a plain flow. The netter pairs
+  the legs no stored pair claimed, journal legs among them, which the matcher
+  does not pair. It pairs:
+  - a coin (class `crypto`, vehicle `physical`) by holding and quantity,
+    within 5%;
+  - a security by holding and quantity, only on the exact quantity;
+  - cash by value in the reporting currency.
+
+  RETURNS-NOTES "Netting and closure" has the rule.
 - **Netting is per entity**: a linked pair nets only in aggregates that hold
   BOTH legs in the window: both accounts in the entity (post
   `returns_exclude`) and both days inside it. The gap between the two days
   does not matter: where the pair settles, the chain carries the money
-  between them, as if it never left (RETURNS-NOTES "Money in transit").
+  between them, as if it never left (RETURNS-NOTES "Netting and closure").
   Where the legs moved one holding in the same quantity, what its price did
-  between them is return. Where both legs are live the pair drops. A leg on
+  between them is return. Where a linked pair moved one holding in quantities
+  that are not the same, it binds the quantity both legs hold; the larger
+  leg's rest stays a flow, counted in `unmatched_transfers`. Where both legs
+  are live the pair drops. A leg on
   or before its account's debut funds the debut instead, so the debut
   onboards only what the move did not bring in. A leg in a zero tail is the
   closure's. A pair across sources therefore keeps counting each leg at the
@@ -1250,7 +1256,8 @@ aggregate containing BOTH accounts double-represents the move (the
   pair inside one source nets there too. The accounts grain nets no pair.
 - **Quality:** entities that netted pairs tag `cross_source_netted=N`, the
   pairs inside one source among them; their `unmatched_transfers` count
-  shrinks accordingly. The pairs obey `--netting off` like the heuristic
+  shrinks accordingly, apart from a linked pair's rest (above). The pairs
+  obey `--netting off` like the heuristic
   netter — the diagnostic view shows every raw leg.
 - **Off by default.** Absent block or `enabled: false` ⇒ no pair is read;
   output is byte-identical to the per-source heuristics alone. A run that

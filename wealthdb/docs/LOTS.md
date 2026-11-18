@@ -154,10 +154,34 @@ Which snapshots observe:
 ### 3.4 Transfers
 
 A move one row of the equity-transfer ledger states (DESIGN.md §13.9)
-pairs its two legs first. Every other transfer out and transfer in
-of the same instrument pair when they fall within 7 days of each
-other and their quantities within 5%. Every pair then follows these
-rules:
+pairs its two legs first, where they name one instrument at sources of
+one kind. Every other transfer out and transfer in of the same holding
+pair when they fall within 7 calendar days of each other in the same
+quantity, as the returns engine pairs them (RETURNS-NOTES "Netting and
+closure"):
+
+- **The same holding** is one where any identity of the two
+  instruments agrees: the same ISIN, the same CUSIP, or the same
+  instrument id among the sources of one kind, whose ids mean the same
+  thing. So shares moved between two brokers pair by ISIN whatever their
+  kinds, and a sender whose instrument states an ISIN still pairs with a
+  receiver whose instrument states only the CUSIP, or only the id, both
+  share.
+- **7 calendar days** count days, not hours: a receipt late on the 7th
+  day after the departure still pairs, one on the 8th does not.
+
+What the same quantity is depends on the asset class and vehicle, each
+the row's own where it states one, else the instrument's:
+
+- **A coin** (class `crypto`, vehicle `physical`) can arrive short by a
+  network fee, so its quantities pair within 5% of the larger.
+- **Everything else is a security** (a share, an option contract, a fund
+  unit, a bond): a share of a fund or trust that holds coins (class
+  `crypto`, vehicle `etf` or `fund`), and a class or vehicle gold does not
+  state, among them. A security never arrives short, so only the exact
+  quantity pairs: 100 shares out and 99 in do not.
+
+Every pair then follows these rules:
 
 - **Across keys** they are a move. The lots leave the giving key by its
   method at the departure, and open on the receiving key with their
@@ -166,14 +190,21 @@ rules:
   before its departure moves the lots at the receipt. The sender's
   snapshots until the departure still show them, so they are not
   reconciled.
-- **Across sources** they pair only between sources of one kind, whose
-  instrument ids mean the same thing.
+- **Across sources** they are a move as well: the lots leave one source
+  and open at the other.
 - **Inside one key** (two wallets of one pooled portfolio) nothing
   moves.
-- **What the receipt falls short by** leaves as a fee: a disposal of
-  that quantity at its market value.
-- **What the receipt exceeds the send by** opens a lot of unknown cost
-  and unknown date.
+- **The quantity both legs hold** moves. A pair the ledger links can
+  differ in quantity; one the quantities pair cannot, beyond the
+  tolerance.
+- **For a coin within the tolerance,** what the receipt falls short by
+  leaves as a fee: a disposal of that quantity at its market value. What
+  the receipt exceeds the send by opens a lot of unknown cost and unknown
+  date.
+- **For a security, and a coin beyond it,** the rest on the larger side
+  is a transfer nothing pairs, a finding (`unpaired_transfer`), never a
+  fee: 100 shares linked to 99 move 99, and the 100th leaves with no
+  proceeds.
 
 A transfer in nothing pairs opens a lot of unknown cost and unknown
 date. A row of the equity-transfer ledger (DESIGN.md §13.9) that

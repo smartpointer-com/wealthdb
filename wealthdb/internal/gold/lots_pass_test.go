@@ -374,8 +374,11 @@ func TestLotPassPoolsAPortfolio(t *testing.T) {
 	t.Parallel()
 	// Two wallets of one portfolio: a coin bought in W1 sweeps to W2
 	// minus a network fee; the pool's basis is shared by quantity, the
-	// fee is a disposal at market value, and nothing moves.
+	// fee is a disposal at market value, and nothing moves. The
+	// instrument is a coin, so it pairs short of the quantity sent.
 	db, ctx := lotFixture(t, `
+        INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, first_seen_at, last_seen_at)
+            VALUES ('lot-src', 'COIN', 'crypto', 'physical', 1, 1);
         INSERT INTO portfolios (silver_source_id, portfolio_external_id, display_name, first_seen_at, last_seen_at)
             VALUES ('lot-src', 'P', 'Pool', 1, 1);
         INSERT INTO accounts (silver_source_id, account_external_id, account_kind, portfolio_external_id, first_seen_at, last_seen_at) VALUES

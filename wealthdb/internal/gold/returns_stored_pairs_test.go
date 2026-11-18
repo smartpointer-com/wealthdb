@@ -76,8 +76,7 @@ func TestStoredPairFundsADebutAtAnyGap(t *testing.T) {
 // leaves TWR and MWR as if the money never left the household: between the
 // legs it is in neither account, and the chain carries it at its value. The
 // household reads as one account that held the money throughout. (A pair
-// whose both legs are live drops as it always has, and keeps its legs' own
-// days.)
+// whose both legs are live drops, and keeps its legs' own days.)
 func TestStoredPairCarriesMoneyInTransit(t *testing.T) {
 	t.Parallel()
 	d0, d1, d2, d3, d4 := dy(2024, time.January, 2), dy(2024, time.February, 1), dy(2024, time.February, 15),
@@ -136,8 +135,8 @@ func rateText(r *float64) string {
 // also comes in from outside meanwhile. One withdrawal shows only days
 // later, in a valuation that also holds a fall no flow records, so the
 // chain cannot read its move early, and another account is valued and
-// takes money from outside in between. The household reads as one account that held the money
-// throughout.
+// takes money from outside in between. The household reads as one account
+// that held the money throughout.
 func TestStoredPairsFundADebutAtSeveralGaps(t *testing.T) {
 	t.Parallel()
 	day := func(m time.Month, d int) int64 { return dy(2024, m, d) }

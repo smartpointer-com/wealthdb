@@ -33,6 +33,14 @@ type lotLeg struct {
 	// cost is the cost basis a hand-kept equity-transfer ledger row
 	// states for what it moved (loader.TransferEntry), 0 when none.
 	cost float64
+	// exact: the holding moves only whole, so the leg pairs only on the
+	// exact quantity (exactQuantity).
+	exact bool
+	// ids are the identities of the holding the leg moved, and hold the
+	// holding they name among the feed's legs (holdingUnion), as the
+	// quantity rule pairs it.
+	ids  holdingIdentity
+	hold string
 }
 
 // lotCorpLeg is one leg of a corporate action, before grouping.
@@ -71,27 +79,52 @@ SELECT silver_source_id, transaction_external_id, far_silver_source_id, far_tran
 	return rows.Err()
 }
 
-// pairable reports whether out and recv may pair: two legs of one
+// pairable reports whether a link may pair out and recv: two legs of one
 // source, or of two sources of one kind, whose instrument ids mean the
 // same thing.
 func pairable(out, recv *lotLeg) bool {
 	return out.src == recv.src || out.src.kind == recv.src.kind
 }
 
+// lotLegs are a feed's transfer legs, sorted by holding, then time, for
+// pairByQuantity. The holding names the instrument across sources
+// (holdingUnion), so no further rule restricts a pair, and the window counts
+// calendar days, as returns does.
+type lotLegs []lotLeg
+
+func (l lotLegs) holding(i int) string { return l[i].hold }
+func (l lotLegs) at(i int) int64       { return EpochDay(l[i].at) }
+func (l lotLegs) in(i int) bool        { return l[i].in }
+func (l lotLegs) qty(i int) float64    { return l[i].qty }
+func (l lotLegs) exact(i int) bool     { return l[i].exact }
+func (l lotLegs) may(int, int) bool    { return true }
+
 // pairTransfers pairs the legs of each move a link states (readLinks)
 // first, where they are of one instrument and pairable. It pairs each
-// other transfer in with a transfer out of the same instrument within
-// lots.PairWindow and lots.PairTolerance. Inside one key (a pooled
-// portfolio) a pair cancels: nothing moves. Across keys a
-// pair is a move; across sources only between sources of one kind,
-// whose instrument ids mean the same thing. Either way, what the
-// receipt falls short by leaves as a fee in kind, and what it exceeds
-// the send by opens a lot of unknown cost. What pairs with nothing is a
+// other transfer in with a transfer out of the same holding as returns
+// does: one holding where the ISIN, the CUSIP or the instrument id among
+// the sources of one kind agrees (holdingUnion), within 7 calendar days
+// (inKindWindowDay), in the same quantity (sameQuantity): a coin within
+// lots.PairTolerance, a security only exactly, the closest quantity first
+// (pairByQuantity). Inside one key (a pooled portfolio) a pair cancels:
+// nothing moves. Across keys a pair is a move, across sources too. Either
+// way the common
+// quantity moves. For a coin within the tolerance, what the receipt falls
+// short by leaves as a fee in kind, and what it exceeds the send by opens
+// a lot of unknown cost. For a security, and a coin beyond it, the rest is
+// a transfer nothing pairs (excessIsTransfer). What pairs with nothing is a
 // receipt of unknown cost, or a departure with no proceeds.
 func (f *lotFeed) pairTransfers() {
 	legs := f.legs
+	u := newHoldingUnion()
+	for i := range legs {
+		u.add(legs[i].ids)
+	}
+	for i := range legs {
+		legs[i].hold = u.key(legs[i].ids)
+	}
 	slices.SortStableFunc(legs, func(a, b lotLeg) int {
-		if c := cmp.Compare(a.inst, b.inst); c != 0 {
+		if c := cmp.Compare(a.hold, b.hold); c != 0 {
 			return c
 		}
 		if c := cmp.Compare(a.at, b.at); c != 0 {
@@ -124,56 +157,7 @@ func (f *lotFeed) pairTransfers() {
 			}
 		}
 	}
-	// open lists the earlier legs of the instrument still unpaired, per
-	// direction (outs, ins), oldest first: a leg looks only at the other
-	// direction's, within the window, latest first.
-	var open [2][]int
-	dir := func(l *lotLeg) int {
-		if l.in {
-			return 1
-		}
-		return 0
-	}
-	for i := range legs {
-		a := &legs[i]
-		if i == 0 || legs[i-1].inst != a.inst {
-			open[0], open[1] = open[0][:0], open[1][:0]
-		}
-		if mate[i] >= 0 {
-			continue
-		}
-		other := 1 - dir(a)
-		q := open[other][:0]
-		for _, j := range open[other] {
-			if mate[j] < 0 && a.at-legs[j].at <= lots.PairWindow {
-				q = append(q, j)
-			}
-		}
-		open[other] = q
-		best, bestDiff := -1, math.Inf(1)
-		for x := len(q) - 1; x >= 0; x-- {
-			b := &legs[q[x]]
-			out, recv := b, a
-			if b.in {
-				out, recv = a, b
-			}
-			if !pairable(out, recv) {
-				continue
-			}
-			diff := math.Abs(out.qty - recv.qty)
-			if diff > lots.PairTolerance*math.Max(out.qty, recv.qty) {
-				continue
-			}
-			if diff < bestDiff {
-				best, bestDiff = q[x], diff
-			}
-		}
-		if best >= 0 {
-			mate[i], mate[best] = best, i
-		} else {
-			open[dir(a)] = append(open[dir(a)], i)
-		}
-	}
+	pairByQuantity(lotLegs(legs), inKindWindowDay, mate)
 	for i := range legs {
 		a := legs[i]
 		j := mate[i]
@@ -208,11 +192,12 @@ func (f *lotFeed) unpaired(l lotLeg) {
 	f.findings = append(f.findings, lots.Finding{Kind: lots.FindUnpairedTransfer, Key: l.key, Account: l.acct, At: l.at, Qty: l.qty, Txn: l.txn})
 }
 
-// pair moves a paired transfer's lots: they leave at the departure and
-// arrive at the receipt, so a sale on either side between the two
-// relieves what each side held. A receipt recorded before its
-// departure moves the lots at the receipt; the sender's snapshots until
-// the departure still show them, and are not reconciled (lots.Flight).
+// pair moves a paired transfer's lots, the quantity both legs hold: they
+// leave at the departure and arrive at the receipt, so a sale on either
+// side between the two relieves what each side held. A receipt recorded
+// before its departure moves the lots at the receipt; the sender's
+// snapshots until the departure still show them, and are not reconciled
+// (lots.Flight).
 func (f *lotFeed) pair(out, in lotLeg) {
 	moved := math.Min(out.qty, in.qty)
 	if out.key != in.key {
@@ -228,12 +213,25 @@ func (f *lotFeed) pair(out, in lotLeg) {
 		f.add(lots.Event{At: in.at, Kind: lots.Arrive, Key: in.key, Transit: f.transits, Txn: in.txn,
 			Account: in.acct}, lotAux{})
 	}
+	// What one side holds beyond the other: a transfer of its own where
+	// the holding moves only whole, or a coin is short beyond the
+	// tolerance (excessIsTransfer), else a coin's network fee or a lot of
+	// unknown cost.
+	rest := excessIsTransfer(out.qty, in.qty, out.exact || in.exact)
 	switch {
+	case out.qty-moved > lots.Tolerance(out.qty) && rest:
+		l := out
+		l.qty = out.qty - moved
+		f.unpaired(l)
 	case out.qty-moved > lots.Tolerance(out.qty):
 		// The receipt is short by a network fee: that quantity left as
 		// a fee, at its market value.
 		f.add(lots.Event{At: out.at, Kind: lots.Dispose, Key: out.key, Txn: out.txn, Account: out.acct,
 			Qty: out.qty - moved, Disposal: lots.DisposeFee}, lotAux{fmv: true})
+	case in.qty-moved > lots.Tolerance(in.qty) && rest:
+		l := in
+		l.qty, l.cost = in.qty-moved, 0
+		f.unpaired(l)
 	case in.qty-moved > lots.Tolerance(in.qty):
 		ev := lots.Event{At: in.at, Kind: lots.Acquire, Key: in.key, Txn: in.txn, Account: in.acct,
 			Qty: in.qty - moved, AcqDay: lots.NoDay, Origin: lots.OriginTransferIn}

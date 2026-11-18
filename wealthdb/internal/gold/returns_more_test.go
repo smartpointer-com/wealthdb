@@ -70,16 +70,16 @@ func params(level string, from, to int64) ReturnParams {
 		Method: "both", Period: "total", Annualize: "auto", Netting: true, Inception: "full"}
 }
 
-// TestNetTransfers covers the heuristic internal-transfer matching directly
-// against netTransfers (the ownership-free case: legs with no account).
-func TestNetTransfers(t *testing.T) {
+// TestNetMatch covers the heuristic internal-transfer matching directly
+// against netMatch (the ownership-free case: legs with no account).
+func TestNetMatch(t *testing.T) {
 	t.Parallel()
 	net := func(fs ...returns.Flow) (int, int) {
 		legs := make([]flowLeg, len(fs))
 		for i, f := range fs {
 			legs[i] = flowLeg{Flow: f}
 		}
-		kept, unmatched := netTransfers(legs, func(flowLeg, flowLeg) {})
+		kept, unmatched := netMatch(legs, func(flowLeg, flowLeg) {}, nil)
 		return len(kept), unmatched
 	}
 	// Opposite pair, same magnitude, within ±3 days ⇒ netted (internal move).

@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
@@ -51,6 +50,9 @@ type flowLeg struct {
 	acct     *accountData
 	region   region
 	nettable bool
+	// rest is the share of the leg's quantity a stored pair leaves over
+	// (storedPairing.rest), split off; 0 for a whole leg.
+	rest float64
 }
 
 // onSpine says the leg's account holds value by the leg's day.
@@ -146,7 +148,7 @@ func (m *movedLegs) fund(l flowLeg) {
 		m.fundedHeld[l.acct] = map[string]heldFunding{}
 	}
 	f := m.fundedHeld[l.acct][h.holding]
-	f.qty += h.qty
+	f.qty += h.qty * (1 - l.rest)
 	f.value += l.Amount
 	f.exact = f.exact || h.exact
 	m.fundedHeld[l.acct][h.holding] = f
@@ -171,10 +173,9 @@ func (m *movedLegs) byQuantity(a *accountData, h string) bool {
 // fundedAt is what a's first value v holds through moves (funded). A holding
 // whose funding legs moved the quantity the first valuation holds
 // (byQuantity) funds it by its share of v, at the debut's prices, so the price
-// move up to the debut is return, and it funds at most that share. Every other
-// leg funds it by its value: where that value is above v, the debut books the
-// difference as capital that left, since nothing says the same holding
-// arrived.
+// move up to the debut is return. Every other leg funds it by its value: where
+// that value is above v, the debut books the difference as capital that left,
+// since nothing says the same holding arrived.
 func (m *movedLegs) fundedAt(a *accountData, v float64) float64 {
 	held := m.fundedHeld[a]
 	var hs []string
@@ -345,8 +346,14 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 		gap
 		moves []returns.Flow
 	}
+	// Without a carry, the confirmed gaps' moves are the whole answer.
+	var out []returns.Flow
+	carrying := len(m.carries) > 0
 	var read []gapMoves
-	confirmed := map[gap]bool{}
+	var confirmed map[gap]bool
+	if carrying {
+		confirmed = map[gap]bool{}
+	}
 	for _, a := range assets {
 		gaps, cd := map[int64][]returns.Flow{}, a.closureDay()
 		for _, f := range m.moves[a] {
@@ -355,11 +362,18 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 			}
 		}
 		for _, on := range slices.Sorted(maps.Keys(gaps)) {
-			if a.confirms(on, winTo, gaps[on]) {
+			switch {
+			case !a.confirms(on, winTo, gaps[on]):
+			case carrying:
 				read = append(read, gapMoves{gap{a, on}, gaps[on]})
 				confirmed[gap{a, on}] = true
+			default:
+				out = append(out, gaps[on]...)
 			}
 		}
+	}
+	if !carrying {
+		return out
 	}
 	type leg struct {
 		a  *accountData
@@ -381,7 +395,6 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 		carried[leg{c.in.acct, c.in.ID}] = true
 		carries = append(carries, returns.Flow{Day: from, ValuedOn: c.to, Amount: c.in.Amount, ID: c.in.ID})
 	}
-	var out []returns.Flow
 	for _, g := range read {
 		for _, f := range g.moves {
 			if !carried[leg{g.a, f.ID}] {
@@ -403,7 +416,7 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 //     would be flows on their own the pair drops; otherwise it settles as
 //     a netted pair. The netter then cancels opposite transfer-like legs no
 //     stored pair claimed: a leg that moved a holding by holding and
-//     quantity (pairInKind), a leg of cash by value (netTransfers). It runs
+//     quantity (pairInKind), a leg of cash by value (netMatch). It runs
 //     over every such leg, pre-debut and zero-tail legs included, so an
 //     internal pair whose other leg sits on a live account still cancels.
 //     A deposit or withdrawal never nets by heuristic (RETURNS-NOTES);
@@ -413,10 +426,11 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 //     series cannot show yet or any more, less those amounts;
 //  5. the flows are sorted by day.
 //
-// The flows are appended in a fixed order: each account's deposits and
-// withdrawals in member order, then the transfer-like legs pairing keeps, then
-// the synthetic flows. sortFlows is not stable, so that order fixes the
-// series' order; its sums are compensated and do not follow it.
+// The flows are appended in a fixed order: each account's legs no pair claims
+// (deposits, withdrawals and a stored pair's rest) in member order, then the
+// transfer-like legs pairing keeps, then the synthetic flows. sortFlows is
+// not stable, so that order fixes the series' order; its sums are
+// compensated and do not follow it.
 func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, aggregate bool) ([]returns.Flow, []string, []returns.Flow) {
 	if !aggregate {
 		// Accounts grain, single constituent: every policy-external flow is exact.
@@ -446,13 +460,27 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 	var flows []returns.Flow
 	var cand []flowLeg
 	var held map[string]flowLeg
+	unpairedRest := 0
 	moved := newMovedLegs()
 	for _, a := range assets {
 		key := acctKey(a.src, a.acct)
 		for f, nettable := range a.legs(winFrom, winTo) {
 			f.ValuedOn = a.valuedOn(f.Day)
 			l := flowLeg{Flow: f, acct: a, region: a.region(f.Day, w), nettable: nettable}
-			switch k := acctKey(key, f.ID); {
+			// Only a bound stored pair keys its legs; with none, every
+			// stored lookup below misses.
+			var k string
+			if stored.pairs > 0 {
+				k = acctKey(key, f.ID)
+			}
+			if share := stored.rest[k]; share > 0 {
+				// What the pair leaves over is a transfer of its own.
+				var r flowLeg
+				l, r = splitRest(l, share)
+				flows = moved.settle(flows, r, fateOf(r))
+				unpairedRest++
+			}
+			switch {
 			case stored.drops[k]:
 				flows = moved.settle(flows, l, fateInside)
 			case stored.settled[k]:
@@ -478,6 +506,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 	if p.Netting {
 		var unmatched int
 		kept, unmatched = netLegs(cand, func(a, b flowLeg, transit bool) { moved.pair(a, b, w, transit) })
+		unmatched += unpairedRest
 		if unmatched > 0 {
 			tags = append(tags, fmt.Sprintf("unmatched_transfers=%d", unmatched))
 		}
@@ -738,6 +767,12 @@ type storedPairing struct {
 	// settles as a netted pair does (movedLegs.pair).
 	settled map[string]bool
 	settle  [][2]string
+	// rest is, for the larger leg of a pair that moved one holding in
+	// quantities whose difference is a transfer of its own
+	// (excessIsTransfer), the share of its quantity beyond the other's:
+	// that part stays an unpaired transfer. A pair whose legs name two
+	// holdings binds whole.
+	rest map[string]float64
 	// pairs counts every pair that binds.
 	pairs int
 }
@@ -797,6 +832,19 @@ func storedPairs(assets []*accountData, winFrom, winTo int64) storedPairing {
 				continue // a leg binds in one pair only
 			}
 			out.pairs++
+			hx, okx := a.inKind[f.ID]
+			hy, oky := partner.inKind[link.txID]
+			if okx && oky && hx.holding == hy.holding && hx.qty > 0 && hy.qty > 0 &&
+				excessIsTransfer(hx.qty, hy.qty, hx.exact || hy.exact) {
+				if out.rest == nil {
+					out.rest = map[string]float64{}
+				}
+				if hx.qty > hy.qty {
+					out.rest[me] = (hx.qty - hy.qty) / hx.qty
+				} else {
+					out.rest[other] = (hy.qty - hx.qty) / hy.qty
+				}
+			}
 			if live(a, f.Day) && live(partner, link.day) {
 				out.drops[me], out.drops[other] = true, true
 				continue
@@ -808,32 +856,36 @@ func storedPairs(assets []*accountData, winFrom, winTo int64) storedPairing {
 	return out
 }
 
+// splitRest splits off share of l's quantity, at its share of the value: the
+// part a stored pair pairs, and the rest, which keeps the leg's days and
+// takes an id of its own.
+func splitRest(l flowLeg, share float64) (paired, rest flowLeg) {
+	rest = l
+	rest.Amount = l.Amount * share
+	rest.ID = l.ID + "\x00rest"
+	paired = l
+	paired.Amount = l.Amount - rest.Amount
+	paired.rest = share
+	return paired, rest
+}
+
 // netLegs cancels the transfer-like legs no stored pair claimed and hands
 // each matched pair to pair, positive leg first, with whether it carries its
-// transit (carriesTransit). The value netter runs first, over every leg, as
-// it always has, but pairs two legs only where they may pair (mayNet): two
-// legs of cash, or two legs of one holding and quantity. The legs that moved
-// a holding and are left then pair by holding and quantity (pairInKind). It
-// returns the legs left unpaired, in the value netter's order, and their
-// count.
+// transit (carriesTransit). The value netter runs first, over every leg, but
+// pairs two legs only where they may pair (mayNet): two legs of cash, or two
+// legs of one holding and quantity. The legs that moved a holding and are
+// left then pair by holding and quantity (pairInKind). It returns the legs
+// left unpaired, in the value netter's order, and their count.
 func netLegs(cand []flowLeg, pair func(pos, neg flowLeg, transit bool)) (kept []flowLeg, unmatched int) {
-	byValue := func(pos, neg flowLeg) { pair(pos, neg, false) }
-	inKind := false
-	for _, l := range cand {
-		if _, ok := l.acct.inKind[l.ID]; ok {
-			inKind = true
-			break
-		}
-	}
-	if !inKind {
-		return netTransfers(cand, byValue)
-	}
-	kept, _ = netMatch(cand, byValue, mayNet)
+	kept, _ = netMatch(cand, func(pos, neg flowLeg) { pair(pos, neg, false) }, mayNet)
 	var held []flowLeg
 	for _, l := range kept {
 		if _, ok := l.acct.inKind[l.ID]; ok {
 			held = append(held, l)
 		}
+	}
+	if len(held) == 0 {
+		return kept, len(kept)
 	}
 	paired := map[*accountData]map[string]bool{}
 	mark := func(l flowLeg) {
@@ -870,49 +922,38 @@ func mayNet(pos, neg flowLeg) bool {
 	return hp.holding == hn.holding && hp.qty > 0 && hn.qty > 0 && sameQuantity(hp.qty, hn.qty, hp.exact || hn.exact)
 }
 
-// The in-kind pairing rule: two legs pair within a week of each other
-// (lots.PairWindow), in the same quantity (sameQuantity). For a coin that is
-// within 5% of the larger (lots.PairTolerance), the lot engine's rule: a
-// network fee can take the rest. A security pairs only on the exact quantity,
-// up to float noise (exactTolerance).
-const (
-	inKindWindowDay = lots.PairWindow / SecondsPerDay
-	inKindTolerance = lots.PairTolerance
-	exactTolerance  = 1e-9
-)
-
-// sameQuantity says two quantities of one holding are the same: exactly,
-// up to float noise, where exact (exactQuantity), else within
-// inKindTolerance of the larger.
-func sameQuantity(a, b float64, exact bool) bool {
-	tol := inKindTolerance
-	if exact {
-		tol = exactTolerance
-	}
-	return math.Abs(a-b) <= tol*math.Max(a, b)
+// inKindLeg is a leg that moved a holding, as pairInKind pairs it.
+type inKindLeg struct {
+	flowLeg
+	heldMove
 }
+
+// inKindLegs are legs that moved a holding, sorted by holding, then day, for
+// pairByQuantity. A leg that states no quantity pairs with none.
+type inKindLegs []inKindLeg
+
+func (l inKindLegs) holding(i int) string { return l[i].heldMove.holding }
+func (l inKindLegs) at(i int) int64       { return l[i].Day }
+func (l inKindLegs) in(i int) bool        { return l[i].Amount >= 0 }
+func (l inKindLegs) qty(i int) float64    { return l[i].heldMove.qty }
+func (l inKindLegs) exact(i int) bool     { return l[i].heldMove.exact }
+func (l inKindLegs) may(i, j int) bool    { return l[i].heldMove.qty > 0 && l[j].heldMove.qty > 0 }
 
 // pairInKind pairs legs that moved a holding (accountData.inKind) by holding
 // and quantity, never by value: one coin out, one coin in. Two legs pair
 // where they move one holding in opposite directions, within inKindWindowDay
 // of each other, in the same quantity (sameQuantity); a coin's shortfall is
-// a fee in kind, whose value is a loss. Each leg, in
-// day order within its holding, takes the open leg of the other direction
-// whose quantity is closest, the latest on a tie, as the lot engine pairs
-// transfers (lotFeed.pairTransfers). A leg that states no quantity pairs
-// only through a stored link. It hands each pair to pair, positive leg first,
-// in the order of their earlier legs, and returns the legs left unpaired, in
-// that order, and their count.
-func pairInKind(cand []flowLeg, pair func(pos, neg flowLeg)) (kept []flowLeg, unmatched int) {
-	type leg struct {
-		flowLeg
-		heldMove
-	}
-	legs := make([]leg, len(cand))
+// a fee in kind, whose value is a loss. Each leg, in day order within its
+// holding, takes the open leg of the other direction whose quantity is
+// closest, the latest on a tie (pairByQuantity). A leg that states no
+// quantity pairs only through a stored link. It hands each pair to pair,
+// positive leg first, in the order of their earlier legs.
+func pairInKind(cand []flowLeg, pair func(pos, neg flowLeg)) {
+	legs := make(inKindLegs, len(cand))
 	for i, l := range cand {
-		legs[i] = leg{l, l.acct.inKind[l.ID]}
+		legs[i] = inKindLeg{l, l.acct.inKind[l.ID]}
 	}
-	slices.SortStableFunc(legs, func(a, b leg) int {
+	slices.SortStableFunc(legs, func(a, b inKindLeg) int {
 		if c := strings.Compare(a.holding, b.holding); c != 0 {
 			return c
 		}
@@ -927,72 +968,20 @@ func pairInKind(cand []flowLeg, pair func(pos, neg flowLeg)) (kept []flowLeg, un
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
-	dir := func(l leg) int {
-		if l.Amount >= 0 {
-			return 1
-		}
-		return 0
-	}
 	mate := make([]int, len(legs))
 	for i := range mate {
 		mate[i] = -1
 	}
-	// open lists the earlier legs of the holding still unpaired, per
-	// direction, oldest first.
-	var open [2][]int
-	for i, a := range legs {
-		if i == 0 || legs[i-1].holding != a.holding {
-			open[0], open[1] = open[0][:0], open[1][:0]
-		}
-		if a.qty == 0 {
-			continue
-		}
-		other := 1 - dir(a)
-		q := open[other][:0]
-		for _, j := range open[other] {
-			if mate[j] < 0 && a.Day-legs[j].Day <= inKindWindowDay {
-				q = append(q, j)
-			}
-		}
-		open[other] = q
-		best, bestDiff := -1, math.Inf(1)
-		for x := len(q) - 1; x >= 0; x-- {
-			b := legs[q[x]]
-			diff := math.Abs(a.qty - b.qty)
-			if sameQuantity(a.qty, b.qty, a.exact || b.exact) && diff < bestDiff {
-				best, bestDiff = q[x], diff
-			}
-		}
-		if best >= 0 {
-			mate[i], mate[best] = best, i
-		} else {
-			open[dir(a)] = append(open[dir(a)], i)
-		}
-	}
-	for i, l := range legs {
-		switch j := mate[i]; {
-		case j < 0:
-			kept = append(kept, l.flowLeg)
-			unmatched++
-		case j > i:
-			pos, neg := l.flowLeg, legs[j].flowLeg
+	pairByQuantity(legs, inKindWindowDay, mate)
+	for i, j := range mate {
+		if j > i {
+			pos, neg := legs[i].flowLeg, legs[j].flowLeg
 			if pos.Amount < 0 {
 				pos, neg = neg, pos
 			}
 			pair(pos, neg)
 		}
 	}
-	return kept, unmatched
-}
-
-// netTransfers greedily matches opposite-direction legs of cash (largest
-// first) whose output-currency magnitudes agree within ε and whose days are
-// within the netting window, and hands each matched pair to pair, positive leg
-// first, in match order. The deterministic (|amount|, day, id) tie-break means
-// internal pairs cancel the same way whatever a leg's region. Returns the legs
-// left unpaired, positive ones first, and their count.
-func netTransfers(cand []flowLeg, pair func(pos, neg flowLeg)) (kept []flowLeg, unmatched int) {
-	return netMatch(cand, pair, nil)
 }
 
 // valueMatches is the value netter's rule for a leg in and a leg out: their
@@ -1006,8 +995,13 @@ func valueMatches(pos, neg returns.Flow) bool {
 	return math.Abs(pos.Amount+neg.Amount) <= eps && absDay(pos.Day-neg.Day) <= nettingWindowDay
 }
 
-// netMatch is netTransfers over the pairs may allows, every pair where may
-// is nil.
+// netMatch greedily matches opposite-direction legs (largest first) whose
+// output-currency magnitudes agree within ε and whose days are within the
+// netting window (valueMatches), where may allows the pair (every pair
+// where may is nil), and hands each matched pair to pair, positive leg
+// first, in match order. The deterministic (|amount|, day, id) tie-break
+// means internal pairs cancel the same way whatever a leg's region. It
+// returns the legs left unpaired, positive ones first, and their count.
 func netMatch(cand []flowLeg, pair func(pos, neg flowLeg), may func(pos, neg flowLeg) bool) (kept []flowLeg, unmatched int) {
 	var pos, neg []flowLeg
 	for _, f := range cand {
