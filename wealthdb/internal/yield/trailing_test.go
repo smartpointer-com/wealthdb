@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-func ymd(y, m, d int) time.Time { return time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC) }
-
 func period(start, end time.Time, v float64) Period {
 	return Period{Start: start, End: end, Value: v}
 }
@@ -19,10 +17,9 @@ func period(start, end time.Time, v float64) Period {
 // earlier for growth. The figures are invented.
 func TestTrailingTwelveMonths(t *testing.T) {
 	t.Parallel()
-	day := ymd(2026, 6, 15)
 	var quarters []Period
 	for i := 0; i < 8; i++ {
-		start := ymd(2024, 4, 1).AddDate(0, 3*i, 0)
+		start := date(2024, 4, 1).AddDate(0, 3*i, 0)
 		quarters = append(quarters, period(start, start.AddDate(0, 3, -1), float64(i+1)))
 	}
 	check := func(what string, ps []Period, years int, want float64, ok bool) {
@@ -35,14 +32,14 @@ func TestTrailingTwelveMonths(t *testing.T) {
 	check("quarters", quarters, 0, 5+6+7+8, true)
 	check("a year earlier", quarters, 1, 1+2+3+4, true)
 	ytd := []Period{
-		period(ymd(2024, 7, 1), ymd(2025, 3, 31), 5), // nine months
-		period(ymd(2024, 7, 1), ymd(2025, 6, 30), 8), // the fiscal year
-		period(ymd(2025, 7, 1), ymd(2025, 9, 30), 1), // the first quarter
-		period(ymd(2025, 7, 1), ymd(2025, 12, 31), 3),
-		period(ymd(2025, 7, 1), ymd(2026, 3, 31), 6),
+		period(*date(2024, 7, 1), *date(2025, 3, 31), 5), // nine months
+		period(*date(2024, 7, 1), *date(2025, 6, 30), 8), // the fiscal year
+		period(*date(2025, 7, 1), *date(2025, 9, 30), 1), // the first quarter
+		period(*date(2025, 7, 1), *date(2025, 12, 31), 3),
+		period(*date(2025, 7, 1), *date(2026, 3, 31), 6),
 	}
 	check("year to date", ytd, 0, 3+2+1+3, true)
-	stale := []Period{period(ymd(2025, 1, 1), ymd(2025, 12, 31), 7), period(ymd(2025, 10, 1), ymd(2025, 12, 31), 2)}
+	stale := []Period{period(*date(2025, 1, 1), *date(2025, 12, 31), 7), period(*date(2025, 10, 1), *date(2025, 12, 31), 2)}
 	check("a fiscal year", stale, 0, 7, true)
 	check("nothing", nil, 0, 0, false)
 }

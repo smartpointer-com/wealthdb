@@ -13,12 +13,12 @@ import (
 // each held to the Go that states it.
 
 // yieldKinds are the yield report's kinds.
-var yieldKinds = []yield.Kind{yield.KindDeposit, yield.KindTermDeposit, yield.KindMoneyMarket, yield.KindBond,
-	yield.KindBill, yield.KindFloating, yield.KindNote, yield.KindBondFund, yield.KindEquityFund,
-	yield.KindMultiAsset, yield.KindStock, yield.KindLiability, yield.KindOther}
+var yieldKinds = yield.Kinds()
 
 // web_yield's is_cash holds the kinds `wealthdb yield cash` lists, and
-// rate_sensitive names only kinds the yield report has.
+// rate_sensitive the kinds whose value moves with rates, which only the
+// view states (docs/YIELD.md §3): a bond, a bill, a floating note, or a
+// bond, multi-asset or money-market fund.
 func TestWebYieldKindFlags(t *testing.T) {
 	t.Parallel()
 	db, ctx := openEmpty(t)
@@ -59,8 +59,11 @@ func TestWebYieldKindFlags(t *testing.T) {
 	if !slices.Equal(cash, want) {
 		t.Errorf("is_cash holds %v; Book.Cash lists %v", cash, want)
 	}
-	if len(sensitive) == 0 {
-		t.Error("rate_sensitive holds no kind")
+	want = []string{string(yield.KindBond), string(yield.KindBill), string(yield.KindFloating),
+		string(yield.KindBondFund), string(yield.KindMultiAsset), string(yield.KindMoneyMarket)}
+	slices.Sort(want)
+	if !slices.Equal(sensitive, want) {
+		t.Errorf("rate_sensitive holds %v, want %v", sensitive, want)
 	}
 }
 

@@ -13,13 +13,11 @@ import (
 // yield to worst wins over its yield to maturity.
 func TestFundLines(t *testing.T) {
 	t.Parallel()
-	day := ymd(2026, 6, 15)
-	m1, m2 := ymd(2031, 6, 15), ymd(2028, 6, 15)
-	lines := []FundLine{{Weight: 40, Maturity: &m1}, {Weight: 20, Kind: "Floating", Floats: true}, {Weight: 10, Defaulted: true},
-		{Weight: 10, InKind: true}, {Weight: 20, Maturity: &m2}}
-	five, four, three, two := 5.0, 4.0, 3.0, 2.0
-	infos := []LineInfo{{Yield: &five, Duration: &four}, {}, {}, {}, {Yield: &three, Duration: &two}}
-	s := SummarizeLines(lines, infos, day, false)
+	m1 := date(2031, 6, 15)
+	lines := []FundLine{{Weight: 40, Maturity: m1}, {Weight: 20, Kind: "Floating", Floats: true}, {Weight: 10, Defaulted: true},
+		{Weight: 10, InKind: true}, {Weight: 20, Maturity: date(2028, 6, 15)}}
+	infos := []LineInfo{{Yield: num(5), Duration: num(4)}, {}, {}, {}, {Yield: num(3), Duration: num(2)}}
+	s := summarizeLines(lines, infos, day, false)
 	if s.CoveredPct != 60 || s.FloatingPct != 20 || s.DefaultPct != 10 || s.PaidInKindPct != 10 {
 		t.Errorf("shares %+v", s)
 	}
@@ -27,24 +25,23 @@ func TestFundLines(t *testing.T) {
 		t.Errorf("yield %v duration %v", *s.Yield, *s.Duration)
 	}
 	in := &Inputs{Conventions: map[string]canonical.YieldConvention{}}
-	coupon, rate := 4.0, 0.9 // euros per dollar
-	l := FundLine{Value: 1000, Quantity: 1000, Currency: "EUR", Maturity: &m1, Coupon: &coupon, Rate: &rate}
-	info := ReadLine(in, l, day)
+	l := FundLine{Value: 1000, Quantity: 1000, Currency: "EUR", Maturity: m1, Coupon: num(4),
+		Rate: num(0.9)} // euros per dollar
+	info := readLine(in, l, day)
 	if math.Abs(*info.Price-90) > 1e-9 || *info.Yield <= 4 {
 		t.Errorf("price %v yield %v", *info.Price, *info.Yield)
 	}
-	ytm, ytw := 5.0, 4.5
-	l.YTM, l.YTW = &ytm, &ytw
-	if info := ReadLine(in, l, day); *info.Yield != 4.5 {
+	l.YTM, l.YTW = num(5), num(4.5)
+	if info := readLine(in, l, day); *info.Yield != 4.5 {
 		t.Errorf("to worst %v", *info.Yield)
 	}
 	// A line in default, or paid in kind, implies nothing.
 	l.YTM, l.YTW, l.Defaulted = nil, nil, true
-	if info := ReadLine(in, l, day); info.Yield != nil || !info.Default {
+	if info := readLine(in, l, day); info.Yield != nil || !info.Default {
 		t.Errorf("in default %+v", info)
 	}
 	l.Defaulted, l.InKind = false, true
-	if info := ReadLine(in, l, day); info.Yield != nil {
+	if info := readLine(in, l, day); info.Yield != nil {
 		t.Errorf("in kind %+v", info)
 	}
 }
@@ -56,12 +53,10 @@ func TestFundLines(t *testing.T) {
 // line of type other is a derivative.
 func TestALinesShareOfTheWholeFund(t *testing.T) {
 	t.Parallel()
-	day := ymd(2026, 6, 15)
-	bill, note, expiry := ymd(2026, 12, 15), ymd(2031, 6, 15), ymd(2026, 9, 15)
-	zero, four := 0.0, 4.0
-	lines := []FundLine{{Weight: 30, Maturity: &bill, Coupon: &zero}, {Weight: 10, Maturity: &note, Coupon: &four},
-		{Weight: 15, Class: "public_equity"}, {Weight: 5, Maturity: &expiry}, {Weight: 0, Class: "other"}}
-	s := SummarizeLines(lines, make([]LineInfo, len(lines)), day, false)
+	lines := []FundLine{{Weight: 30, Maturity: date(2026, 12, 15), Coupon: num(0)},
+		{Weight: 10, Maturity: date(2031, 6, 15), Coupon: num(4)},
+		{Weight: 15, Class: "public_equity"}, {Weight: 5, Maturity: date(2026, 9, 15)}, {Weight: 0, Class: "other"}}
+	s := summarizeLines(lines, make([]LineInfo, len(lines)), day, false)
 	if s.DebtPct != 40 || s.ShortDebtPct != 30 || s.EquityPct != 15 || !s.Derivatives {
 		t.Errorf("shares %+v", s)
 	}

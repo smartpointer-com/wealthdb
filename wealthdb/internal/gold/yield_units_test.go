@@ -61,6 +61,7 @@ func TestAPaymentsUnits(t *testing.T) {
 		read:    map[yield.InstrumentKey][][2]int64{},
 		last:    map[string]int64{"src": 60},
 	}
+	keysOf := func(acct, iid string) []unitKey { return u.KeysOf(in.PortfolioKeys("src", acct, iid)) }
 	u.addChange(ik, unitChange{at: 30, k: 2, ok: true})
 	u.addChange(ik, unitChange{at: 50, k: 10, ok: true})
 	u.cover()
@@ -77,13 +78,13 @@ func TestAPaymentsUnits(t *testing.T) {
 		{"GONE", 35, 0, false},
 		{"DEPOT", 5, 0, false},
 	} {
-		got, units := u.quantity(u.KeysOf("src", c.acct, "QSTK"), c.end)
+		got, units := u.quantity(keysOf(c.acct, "QSTK"), c.end)
 		if (got == nil) != (c.want == 0) || (got != nil && *got != c.want) || units != c.units {
 			t.Errorf("%s at %d: %v %v, want %v %v", c.acct, c.end, fmtFloatPtr(got), units, c.want, c.units)
 		}
 	}
 	u.addChange(ik, unitChange{at: 50, k: 5, ok: true})
-	if _, units := u.quantity(u.KeysOf("src", "DEPOT", "QSTK"), 35); !units {
+	if _, units := u.quantity(keysOf("DEPOT", "QSTK"), 35); !units {
 		t.Error("two accounts that disagree at one snapshot")
 	}
 	// DEPOT states no quantity at 40: from 20 to 50 no account held it
@@ -93,10 +94,10 @@ func TestAPaymentsUnits(t *testing.T) {
 		{At: 50, Prev: 40, Qty: q(1000)}}
 	u.read = map[yield.InstrumentKey][][2]int64{}
 	u.cover()
-	if _, units := u.quantity(u.KeysOf("src", "DEPOT", "QSTK"), 15); !units {
+	if _, units := u.quantity(keysOf("DEPOT", "QSTK"), 15); !units {
 		t.Error("a span no account held through")
 	}
-	if _, units := u.quantity(u.KeysOf("src", "DEPOT", "QSTK"), 55); units {
+	if _, units := u.quantity(keysOf("DEPOT", "QSTK"), 55); units {
 		t.Error("a payment after the span")
 	}
 	// A cash account of another portfolio reads the one account of its
@@ -104,10 +105,10 @@ func TestAPaymentsUnits(t *testing.T) {
 	in.Accounts[yield.AccountKey{Source: "src", Account: "OTHER"}] = yield.Account{Portfolio: "Q"}
 	u.Points[unitKey{Source: "src", Account: "DEPOT", Instrument: "QONE"}] = []yield.UnitPoint{{At: 10, Qty: q(40)}}
 	u.Accounts[yield.InstrumentKey{Source: "src", Instrument: "QONE"}] = []string{"DEPOT"}
-	if got, _ := u.quantity(u.KeysOf("src", "OTHER", "QONE"), 15); got == nil || *got != 40 {
+	if got, _ := u.quantity(keysOf("OTHER", "QONE"), 15); got == nil || *got != 40 {
 		t.Errorf("the one account: %v", fmtFloatPtr(got))
 	}
-	if got, _ := u.quantity(u.KeysOf("src", "OTHER", "QSTK"), 15); got != nil {
+	if got, _ := u.quantity(keysOf("OTHER", "QSTK"), 15); got != nil {
 		t.Errorf("two accounts: %v", fmtFloatPtr(got))
 	}
 }
@@ -123,8 +124,11 @@ func TestAPaymentsUnits(t *testing.T) {
 func TestAQuantityBetweenSnapshots(t *testing.T) {
 	t.Parallel()
 	q := func(x float64) *float64 { return &x }
-	out, in, stray := unitKey{Source: "src", Account: "B1", Instrument: "QOUT"}, unitKey{Source: "src", Account: "B1", Instrument: "QIN"}, unitKey{Source: "src", Account: "B1", Instrument: "QSTRAY"}
-	corp, gone := unitKey{Source: "src", Account: "B2", Instrument: "QCORP"}, unitKey{Source: "src", Account: "B2", Instrument: "QGONE"}
+	out := unitKey{Source: "src", Account: "B1", Instrument: "QOUT"}
+	in := unitKey{Source: "src", Account: "B1", Instrument: "QIN"}
+	stray := unitKey{Source: "src", Account: "B1", Instrument: "QSTRAY"}
+	corp := unitKey{Source: "src", Account: "B2", Instrument: "QCORP"}
+	gone := unitKey{Source: "src", Account: "B2", Instrument: "QGONE"}
 	u := &yieldUnits{
 		snaps: map[accountKey][]int64{{"src", "B1"}: {10, 20, 30, 40}, {"src", "B2"}: {10, 50, 60}},
 		Holders: &yield.Holders{Points: map[unitKey][]yield.UnitPoint{
@@ -413,7 +417,7 @@ func TestADividendIsPaidOnWhatItsAccountHeld(t *testing.T) {
 			150/mean*100)
 	}
 	// The income views name SOLD's lines by its sold positions.
-	got, err := IncomeReceived(ctx, db, in, ymd(2025, 7, 1).Unix(), ymd(2026, 6, 30).Unix()+86399)
+	got, err := incomeReceived(ctx, db, in, ymd(2025, 7, 1).Unix(), ymd(2026, 6, 30).Unix()+86399)
 	if err != nil {
 		t.Fatal(err)
 	}

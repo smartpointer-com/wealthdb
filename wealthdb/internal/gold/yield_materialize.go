@@ -51,8 +51,8 @@ var yieldMaterialized = []string{"report_yield_positions", "report_yield_buckets
 // instant of instants, oldest first, in each currency of currencies. The
 // last instant is today: its books give the projection, the income
 // received and the cash flow plan, and its inputs the benchmarks of
-// every instant of yieldInstants. A test passes one instant or one
-// currency to assert one table.
+// every instant. A test passes one instant or one currency to assert one
+// table.
 func materializeYield(ctx context.Context, tx *sql.Tx, instants []int64, currencies []string, computedAt int64,
 	lookback int) (int, error) {
 	toEpoch := instants[len(instants)-1]
@@ -84,7 +84,7 @@ func materializeYield(ctx context.Context, tx *sql.Tx, instants []int64, currenc
 			now = base.in
 		}
 	}
-	if err := m.benchmarks(ctx, mix, now, toEpoch); err != nil {
+	if err := m.benchmarks(ctx, mix, now, instants); err != nil {
 		return 0, err
 	}
 	if err := m.projection(today); err != nil {
@@ -318,7 +318,7 @@ func (m *yieldMaterializer) received(today map[string]*yield.Book, toEpoch int64
 		if b == nil {
 			continue
 		}
-		got, err := IncomeReceived(m.ctx, m.tx, b.In, math.MinInt64, toEpoch)
+		got, err := incomeReceived(m.ctx, m.tx, b.In, math.MinInt64, toEpoch)
 		if err != nil {
 			return fmt.Errorf("MaterializeYield: %w", err)
 		}

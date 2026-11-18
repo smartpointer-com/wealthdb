@@ -22,6 +22,9 @@ type UnitPoint struct {
 	Qty      *float64
 }
 
+// Holds says the point holds some of its instrument.
+func (p UnitPoint) Holds() bool { return p.Qty != nil && *p.Qty > lots.Tolerance(*p.Qty) }
+
 // Holders are what tells which account's holding a line of the inputs
 // In moves or is paid on, over time, where HoldingOf tells it at the
 // instant: the quantities of the instruments paid in each account that
@@ -53,13 +56,12 @@ func (in *Inputs) PortfolioKeys(src, acct, iid string) []UnitKey {
 	return keys
 }
 
-// KeysOf are the keys a payment to account acct of the instrument iid
-// names reads its quantities under (PortfolioKeys): its own where the
-// account held it, else its portfolio's accounts', else that of the one
-// account of its source that held it. A bank books a dividend to a cash
-// account beside the custody account, or in another portfolio.
-func (h *Holders) KeysOf(src, acct, iid string) []UnitKey {
-	all := h.In.PortfolioKeys(src, acct, iid)
+// KeysOf are the keys a payment reads its quantities under, of all, the
+// PortfolioKeys of its account and the instrument it names: its own
+// where the account held it, else its portfolio's accounts', else that
+// of the one account of its source that held it. A bank books a dividend
+// to a cash account beside the custody account, or in another portfolio.
+func (h *Holders) KeysOf(all []UnitKey) []UnitKey {
 	if _, ok := h.Points[all[0]]; ok {
 		return all[:1]
 	}
@@ -69,7 +71,7 @@ func (h *Holders) KeysOf(src, acct, iid string) []UnitKey {
 			keys = append(keys, k)
 		}
 	}
-	own := all[0].Instrument
+	src, own := all[0].Source, all[0].Instrument
 	if accts := h.Accounts[InstrumentKey{Source: src, Instrument: own}]; len(keys) == 0 && len(accts) == 1 {
 		keys = []UnitKey{{src, accts[0], own}}
 	}
@@ -120,6 +122,5 @@ func (h *Holders) TradeKey(key UnitKey, iid string, t UnitTrade) UnitKey {
 func (h *Holders) holdsAt(k UnitKey, t UnitTrade) bool {
 	ps := h.Points[k]
 	i := sort.Search(len(ps), func(i int) bool { return ps[i].At > t.At })
-	holds := func(p UnitPoint) bool { return p.Qty != nil && *p.Qty > lots.Tolerance(*p.Qty) }
-	return (i > 0 && holds(ps[i-1])) || (t.Qty > 0 && i < len(ps) && holds(ps[i]))
+	return (i > 0 && ps[i-1].Holds()) || (t.Qty > 0 && i < len(ps) && ps[i].Holds())
 }

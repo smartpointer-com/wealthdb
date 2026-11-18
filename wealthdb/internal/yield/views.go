@@ -104,7 +104,7 @@ func (b *Book) Cash() []CashRow {
 			continue
 		}
 		r := CashRow{Position: p}
-		if p.Kind != KindMoneyMarket {
+		if !kinds[p.Kind].fund {
 			tiers := tiersOf(b.In, p.Holding, b.In.Day)
 			r.Tiers = len(tiers)
 			if len(tiers) > 0 {

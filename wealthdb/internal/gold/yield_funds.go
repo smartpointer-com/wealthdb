@@ -13,16 +13,16 @@ import (
 
 // fundRead is what gold says of one fund at an instant: its figures, and
 // its composition's lines with what each says of its security
-// (yield.ReadLine). None of it depends on the output currency.
+// (yield.ReadLines). None of it depends on the output currency.
 type fundRead struct {
 	fund  *yield.Fund
 	lines yield.FundLines
 }
 
-// heldFunds are the keys of the funds the inputs hold directly, sorted.
-func heldFunds(in *yield.Inputs) []string {
+// heldFunds are the keys of the funds of holdings, sorted.
+func heldFunds(holdings []yield.Holding) []string {
 	keys := map[string]bool{}
-	for _, h := range in.Holdings {
+	for _, h := range holdings {
 		if (h.Vehicle == "etf" || h.Vehicle == "fund") && h.SecurityID != "" {
 			keys[h.SecurityID] = true
 		}
@@ -36,7 +36,7 @@ func heldFunds(in *yield.Inputs) []string {
 func (b *yieldBase) readFunds(ctx context.Context, db querier) error {
 	held := map[string]bool{}
 	for _, v := range b.valued {
-		for _, k := range heldFunds(&yield.Inputs{Holdings: v.holdings}) {
+		for _, k := range heldFunds(v.holdings) {
 			held[k] = true
 		}
 	}
@@ -54,16 +54,13 @@ func (b *yieldBase) readFunds(ctx context.Context, db querier) error {
 // pickFunds gives in the funds it holds directly (readFunds) and the
 // lines of its own holdings (yield.PickLines).
 func (b *yieldBase) pickFunds(in *yield.Inputs) {
-	keys := heldFunds(in)
+	keys := heldFunds(in.Holdings)
 	if len(keys) == 0 {
 		return
 	}
-	for _, k := range keys {
-		in.Funds[k] = b.funds[k].fund
-	}
 	lines := make(map[string]*yield.FundLines, len(keys))
 	for _, k := range keys {
-		lines[k] = &b.funds[k].lines
+		in.Funds[k], lines[k] = b.funds[k].fund, &b.funds[k].lines
 	}
 	yield.PickLines(in, lines, keys)
 }
@@ -75,11 +72,11 @@ func (b *yieldBase) pickFunds(in *yield.Inputs) {
 // of its composition at the instant say, and the share of its filing's
 // lines that float, with the name the filing gives it.
 func readYieldFunds(ctx context.Context, db querier, in *yield.Inputs, keys []string) (map[string]*fundRead, error) {
-	out, err := readFundFigures(ctx, db, in, keys)
+	list, args := sqlList(keys)
+	out, err := readFundFigures(ctx, db, in, keys, list, args)
 	if err != nil {
 		return nil, err
 	}
-	list, args := sqlList(keys, "")
 	if err := readFundFilings(ctx, db, in, out, list, args); err != nil {
 		return nil, err
 	}
@@ -89,14 +86,30 @@ func readYieldFunds(ctx context.Context, db querier, in *yield.Inputs, keys []st
 	return out, nil
 }
 
+// fundFields maps the fund_characteristics fields the report reads to
+// the figure each fills.
+var fundFields = map[string]func(f *yield.Fund) **yield.Dated{
+	"yield_to_maturity":               func(f *yield.Fund) **yield.Dated { return &f.YieldToMaturity },
+	"yield_to_worst":                  func(f *yield.Fund) **yield.Dated { return &f.YieldToWorst },
+	"effective_duration":              func(f *yield.Fund) **yield.Dated { return &f.Duration },
+	"sec_yield":                       func(f *yield.Fund) **yield.Dated { return &f.SECYield },
+	"distribution_yield":              func(f *yield.Fund) **yield.Dated { return &f.DistributionYield },
+	"trailing_yield":                  func(f *yield.Fund) **yield.Dated { return &f.TrailingYield },
+	"seven_day_yield":                 func(f *yield.Fund) **yield.Dated { return &f.SevenDayYield },
+	"weighted_average_maturity_years": func(f *yield.Fund) **yield.Dated { return &f.MaturityYears },
+	"weighted_average_maturity":       func(f *yield.Fund) **yield.Dated { return &f.MaturityYears },
+	"price_earnings":                  func(f *yield.Fund) **yield.Dated { return &f.PriceEarnings },
+}
+
 // readFundFigures is readYieldFunds' figures and rate sensitivities
-// alone: neither the filing's lines nor the composition's.
-func readFundFigures(ctx context.Context, db querier, in *yield.Inputs, keys []string) (map[string]*fundRead, error) {
+// alone: neither the filing's lines nor the composition's. list and args
+// are keys' sqlList.
+func readFundFigures(ctx context.Context, db querier, in *yield.Inputs, keys []string, list string,
+	args func(...any) []any) (map[string]*fundRead, error) {
 	out := make(map[string]*fundRead, len(keys))
 	for _, k := range keys {
 		out[k] = &fundRead{fund: &yield.Fund{}}
 	}
-	list, args := sqlList(keys, "")
 	fields := slices.Sorted(maps.Keys(fundFields))
 	if err := scanAll(ctx, db, `
 SELECT exposure_key(fund_ref) AS key, field, value::DOUBLE, as_of
@@ -196,7 +209,7 @@ SELECT f.fund_ref, COALESCE(f.fund_name, ''),
 // default flag or arrears flag takes what the filing of the fund whose
 // lines they are states of its security (fund_filing_kinds),
 // as exposure_leaves reads its coupon kind. It keeps each fund's
-// lines and what each says of its security (yield.ReadLine) in out, for
+// lines and what each says of its security (yield.ReadLines) in out, for
 // every currency's yield.PickLines.
 func readFundLines(ctx context.Context, db querier, in *yield.Inputs, out map[string]*fundRead, list string,
 	args func(...any) []any) error {
@@ -250,14 +263,8 @@ SELECT ln.fund_ref, ln.as_of, ln.aged, COALESCE(ln.key, ''), COALESCE(ln.weight,
 		return err
 	}
 	for key, c := range comps {
-		day := time.Unix(c.asOf, 0).UTC()
-		infos := make([]yield.LineInfo, len(c.lines))
-		for i, l := range c.lines {
-			infos[i] = yield.ReadLine(in, l, day)
-		}
 		f := out[key]
-		f.lines = yield.FundLines{Lines: c.lines, Infos: infos}
-		f.fund.Lines = yield.SummarizeLines(c.lines, infos, day, c.aged)
+		f.lines, f.fund.Lines = yield.ReadLines(in, c.lines, time.Unix(c.asOf, 0).UTC(), c.aged)
 	}
 	return nil
 }

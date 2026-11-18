@@ -263,7 +263,7 @@ func TestAFloatingRateFundThroughTheReports(t *testing.T) {
 
 	// income positions 2026 and income projection 2026.
 	w := yield.Window{From: ymd(2026, 1, 1), To: ymd(2026, 12, 31).Add(24*time.Hour - time.Second)}
-	received, err := IncomeReceived(ctx, db, in, w.From.Unix(), at)
+	received, err := incomeReceived(ctx, db, in, w.From.Unix(), at)
 	if err != nil {
 		t.Fatal(err)
 	}

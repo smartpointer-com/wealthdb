@@ -344,7 +344,7 @@ func TestTheRollTerm(t *testing.T) {
 	in := inputs()
 	h := bondHolding("broker", "A", "QB", 10000, 10000)
 	pj := &projector{in: in}
-	m := &Measures{Kind: KindBond}
+	m := &working{Measures: Measures{Kind: KindBond}}
 	if got := pj.term(h, m, *date(2027, 6, 15)); got != 12 {
 		t.Errorf("term left %d", got)
 	}

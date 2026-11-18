@@ -102,9 +102,7 @@ func TestMaterializeYieldReceivesTheWholeHistory(t *testing.T) {
 	enrichtest.SeedIncome(t, db,
 		enrichtest.Income{Source: "test-src", Txn: "OLD1", Signature: "sig-tenant", Detailed: "INCOME_RENTAL", Provenance: "rule"},
 	)
-	if _, err := MaterializeYield(ctx, db, MaterializeParams{ToEpoch: at, ComputedAt: 42, CashflowLookback: 12}); err != nil {
-		t.Fatal(err)
-	}
+	materializeYieldToday(t, ctx, db, at)
 	var first string
 	if err := db.QueryRowContext(ctx, `SELECT CAST(min(day) AS VARCHAR) FROM web_yield_received WHERE currency = 'CHF'`).
 		Scan(&first); err != nil || first != "2023-03-01" {

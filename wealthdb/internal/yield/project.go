@@ -693,14 +693,14 @@ func (pj *projector) matures(h Holding, m *working, day time.Time, principal flo
 	case c == nil || c.Zero == nil:
 		pj.rollAt(h, day, principal, *own, typ, RungRollConstant)
 	default:
-		pj.rollCurve(h, c, day, pj.term(h, &m.Measures, day), principal, *own, typ)
+		pj.rollCurve(h, c, day, pj.term(h, m, day), principal, *own, typ)
 	}
 }
 
 // term is the months a holding rolls for, at least one: its original
 // term, maturity less the day the term began (a term deposit's rate's
 // first day), else less the day it was bought, else the term left today.
-func (pj *projector) term(h Holding, m *Measures, maturity time.Time) int {
+func (pj *projector) term(h Holding, m *working, maturity time.Time) int {
 	from := pj.in.Day
 	if h.Acquired != nil {
 		from = *h.Acquired

@@ -77,16 +77,19 @@ func weighted(mix []benchmarkFundRow, figure func(key string) *float64) *float64
 	return &sum
 }
 
-// benchmarks writes every benchmark's yield and duration at the
-// yieldInstants of toEpoch. in is today's inputs. A fund's lines are read
-// today alone: an unheld fund has one composition, and a
+// benchmarks writes every benchmark's yield and duration at each instant
+// of instants, oldest first, the last today. in is today's base
+// (yieldBase.in): its instant, its day and its conventions. A fund's
+// lines are read today alone: an unheld fund has one composition, and a
 // bond fund's thousands of lines cost more than the rest of the fund. An
 // earlier instant takes today's lines, which say nothing of it but its
 // share of debt.
-func (m *yieldMaterializer) benchmarks(ctx context.Context, mix []benchmarkFundRow, in *yield.Inputs, toEpoch int64) error {
+func (m *yieldMaterializer) benchmarks(ctx context.Context, mix []benchmarkFundRow, in *yield.Inputs,
+	instants []int64) error {
 	if len(mix) == 0 {
 		return nil
 	}
+	toEpoch := instants[len(instants)-1]
 	seen := map[string]bool{}
 	byName := map[string][]benchmarkFundRow{}
 	for _, f := range mix {
@@ -99,12 +102,14 @@ func (m *yieldMaterializer) benchmarks(ctx context.Context, mix []benchmarkFundR
 		return fmt.Errorf("MaterializeYield benchmarks: %w", err)
 	}
 	names := slices.Sorted(maps.Keys(byName))
-	for _, at := range yieldInstants(toEpoch) {
+	list, args := sqlList(keys)
+	for _, at := range instants {
 		read, day := today, in.Day
 		if at != toEpoch {
 			t := time.Unix(at, 0).UTC()
 			day = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-			if read, err = readFundFigures(ctx, m.tx, &yield.Inputs{AsOf: at, Day: day}, keys); err != nil {
+			if read, err = readFundFigures(ctx, m.tx, &yield.Inputs{AsOf: at, Day: day}, keys, list,
+				args); err != nil {
 				return fmt.Errorf("MaterializeYield benchmarks: %w", err)
 			}
 			for k, r := range read {

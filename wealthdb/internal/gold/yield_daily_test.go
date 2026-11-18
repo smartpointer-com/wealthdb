@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"math"
 	"math/rand"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -160,56 +162,44 @@ SELECT silver_source_id, account_external_id, 'cash:' || currency, amount::DOUBL
 	}
 }
 
-// A fund's lines say how much of it is debt and how much equity, by the
-// class each line's asset type maps to: a fund classed as equity whose
-// lines are bonds is a bond fund, and its lines give its duration.
-func TestAFundsLinesNameItsDebt(t *testing.T) {
+// A holding's daily amounts in another currency than its own convert at
+// the instant's rates, its own as they are; where no rate converts them
+// they count nothing. The holding and its amounts are invented: valued in
+// francs for its first hundred days, in kronor, which no rate converts,
+// for the next hundred, and in dollars since.
+func TestADailyAmountNoRateConverts(t *testing.T) {
 	t.Parallel()
-	db, ctx := openMigrated(t)
-	snap := ymd(2026, 6, 30).Unix()
-	execEach(t, db,
-		`INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency,
-		    first_seen_at, last_seen_at) VALUES ('src', 'B', 'brokerage', 'Brokerage', 'USD', 0, 0)`,
-		`INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, symbol, name, currency,
-		    first_seen_at, last_seen_at) VALUES
-		    ('src', 'QFX', 'public_equity', 'etf', 'QFX', 'Example Bond Fund A', 'USD', 0, 0),
-		    ('src', 'QEQ', 'fixed_income', 'etf', 'QEQ', 'Example Income Fund', 'USD', 0, 0)`,
-		`INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key, instrument_external_id,
-		    asset_class, vehicle, currency, quantity, market_value) VALUES
-		    ('src', `+itoa(snap)+`, 'B', 'QFX', 'QFX', 'public_equity', 'etf', 'USD', 10, 1000),
-		    ('src', `+itoa(snap)+`, 'B', 'QEQ', 'QEQ', 'fixed_income', 'etf', 'USD', 10, 1000)`,
-		`INSERT INTO fund_compositions (silver_source_id, fund_ref, as_of, basis, provider, line_count, currency) VALUES
-		    ('ref', 'symbol:QFX', `+itoa(snap)+`, 'holdings', 'testprov', 3, 'USD'),
-		    ('ref', 'symbol:QEQ', `+itoa(snap)+`, 'holdings', 'testprov', 2, 'USD')`,
-		`INSERT INTO fund_lines (silver_source_id, fund_ref, as_of, basis, line_no, security_key, name, asset_type, weight,
-		    currency, maturity, coupon, modified_duration) VALUES
-		    ('ref', 'symbol:QFX', `+itoa(snap)+`, 'holdings', 1, 'isin:XX00000000F1', 'EXAMPLE NOTE', 'Fixed Income', 60,
-		     'USD', DATE '2031-01-15', 3, 4),
-		    ('ref', 'symbol:QFX', `+itoa(snap)+`, 'holdings', 2, 'isin:XX00000000F2', 'EXAMPLE BOND', NULL, 30,
-		     'USD', DATE '2036-01-15', 4, 7),
-		    ('ref', 'symbol:QFX', `+itoa(snap)+`, 'holdings', 3, NULL, 'DOLLAR CASH', 'Cash', 10, 'USD', NULL, NULL, NULL),
-		    ('ref', 'symbol:QEQ', `+itoa(snap)+`, 'holdings', 1, 'isin:XX00000000E1', 'EXAMPLE CO', 'Equity', 80,
-		     'USD', NULL, NULL, NULL),
-		    ('ref', 'symbol:QEQ', `+itoa(snap)+`, 'holdings', 2, 'isin:XX00000000E2', 'EXAMPLE NOTE', 'Fixed Income', 20,
-		     'USD', DATE '2031-01-15', 3, 4)`)
-	rebuildExposureWithDefaults(t, db, ctx)
-	in, err := YieldInputs(ctx, db, snap+86399, "USD")
-	if err != nil {
-		t.Fatal(err)
+	k := yield.HoldingKey{Source: "src", Account: "A", PositionKey: "QSTK"}
+	in := &yield.Inputs{Currency: "USD", FXRates: map[string]float64{"CHF": 1.25},
+		Holdings: []yield.Holding{{HoldingKey: k, Currency: "USD"}}, Daily: map[yield.HoldingKey]yield.Daily{},
+		FormerDaily: map[yield.InstrumentKey][]yield.Daily{}}
+	b := &yieldBase{amounts: map[amountKey]*yield.Daily{
+		{k, "CHF"}: {Days: 365, Currency: "CHF", Spans: []yield.Span{{From: 0, To: 100, Amount: 4000}}},
+		{k, "SEK"}: {Days: 365, Currency: "SEK", Spans: []yield.Span{{From: 100, To: 200, Amount: 50000}}},
+		{k, "USD"}: {Days: 365, Currency: "USD", Spans: []yield.Span{{From: 200, To: 365, Amount: 5000}}},
+	}}
+	b.daily(in)
+	want := []yield.Span{{From: 0, To: 100, Amount: 5000}, {From: 200, To: 365, Amount: 5000}}
+	if d := in.Daily[k]; d.Days != 365 || d.Currency != "USD" || !slices.Equal(d.Spans, want) {
+		t.Errorf("daily %+v, want spans %+v", d, want)
 	}
-	fx, eq := in.Funds["symbol:QFX"].Lines, in.Funds["symbol:QEQ"].Lines
-	if fx == nil || fx.DebtPct != 90 || fx.EquityPct != 0 || fx.DurationPct != 90 || eq == nil || eq.DebtPct != 20 ||
-		eq.EquityPct != 80 {
-		t.Fatalf("lines %+v %+v", fx, eq)
-	}
-	kinds := map[string]yield.Kind{}
-	for _, p := range yield.Compute(in).Positions {
-		kinds[p.Instrument] = p.Kind
-		if p.Instrument == "QFX" && (p.Duration == nil || math.Abs(*p.Duration-(60*4+30*7)/90.0) > 1e-9) {
-			t.Errorf("duration %v", p.Duration)
+}
+
+// cashKindRank orders the balance kinds as cash_chosen does, so a
+// holding's daily cash reads the balance its holdings read.
+func TestCashKindRankIsCashChosens(t *testing.T) {
+	t.Parallel()
+	var body string
+	for _, s := range mustDerived(t).stmts {
+		if s.name == "cash_chosen" {
+			body = s.sql
 		}
 	}
-	if kinds["QFX"] != yield.KindBondFund || kinds["QEQ"] != yield.KindEquityFund {
-		t.Errorf("kinds %v", kinds)
+	got := regexp.MustCompile(`(?s)CASE cb\.balance_kind\s.*?\sEND`).FindString(body)
+	if got == "" {
+		t.Fatal("cash_chosen orders by no CASE cb.balance_kind")
+	}
+	if norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }; norm(got) != norm(cashKindRank) {
+		t.Errorf("cash_chosen orders by\n%s\nnot cashKindRank\n%s", norm(got), norm(cashKindRank))
 	}
 }

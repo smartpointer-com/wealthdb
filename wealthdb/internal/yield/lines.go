@@ -22,7 +22,7 @@ type FundLine struct {
 }
 
 // FundLines are a fund's lines at an instant and what each says of its
-// security (ReadLine), in the same order.
+// security (readLine), in the same order.
 type FundLines struct {
 	Lines []FundLine
 	Infos []LineInfo
@@ -53,13 +53,24 @@ func PickLines(in *Inputs, funds map[string]*FundLines, keys []string) {
 	}
 }
 
-// ReadLine is what one fund line says of its security on day: its price
+// ReadLines are a fund's lines on day and what each says of its security
+// (readLine), and their summary (summarizeLines), marked Aged where
+// aged is.
+func ReadLines(in *Inputs, lines []FundLine, day time.Time, aged bool) (FundLines, *LineSummary) {
+	infos := make([]LineInfo, len(lines))
+	for i, l := range lines {
+		infos[i] = readLine(in, l, day)
+	}
+	return FundLines{Lines: lines, Infos: infos}, summarizeLines(lines, infos, day, aged)
+}
+
+// readLine is what one fund line says of its security on day: its price
 // in its own currency (per 100 of face for a line with a coupon and a
 // maturity, per unit otherwise, its value read at the exchange rate it
 // was valued at), and the yield (to worst where it states one) and
 // modified duration it states, else those its price implies. A line in
 // default or arrears, or paid in kind, implies no yield.
-func ReadLine(in *Inputs, l FundLine, day time.Time) LineInfo {
+func readLine(in *Inputs, l FundLine, day time.Time) LineInfo {
 	info := LineInfo{Coupon: l.Coupon, Maturity: l.Maturity, CouponKind: l.Kind, Currency: l.Currency,
 		Duration: first(l.Modified, l.Duration), Default: l.Defaulted}
 	if !l.Defaulted && !l.InKind {
@@ -94,15 +105,15 @@ func ReadLine(in *Inputs, l FundLine, day time.Time) LineInfo {
 	return info
 }
 
-// SummarizeLines is the LineSummary of a fund's lines on day, given
-// what each says of its security (ReadLine). A line is debt where its
+// summarizeLines is the LineSummary of a fund's lines on day, given
+// what each says of its security (readLine). A line is debt where its
 // asset type maps to fixed income, or maps to nothing and the line is a
 // bond: it states a coupon or a yield, floats, or is in default or paid
 // in kind. It is equity where its type maps to public equity or real
 // estate, and a derivative where it maps to other or foreign exchange.
 // The debt and equity shares are of the whole fund, as exposure reads a
 // partial composition: what the lines leave out of 100% is neither.
-func SummarizeLines(lines []FundLine, infos []LineInfo, day time.Time, aged bool) *LineSummary {
+func summarizeLines(lines []FundLine, infos []LineInfo, day time.Time, aged bool) *LineSummary {
 	s := &LineSummary{AsOf: day, Aged: aged}
 	var total, wy, sy, wd, sd, wm, sm float64
 	yearOut := day.AddDate(1, 0, 0)

@@ -309,7 +309,7 @@ func measure(in *Inputs, h Holding) working {
 		if m.Maturity != nil {
 			years = *m.Maturity
 		}
-		if m.Duration != nil && m.Kind != KindDeposit && m.Kind != KindTermDeposit {
+		if m.Duration != nil && kinds[m.Kind].heldIn != HeldInCash {
 			years = *m.Duration
 		}
 		m.Buckets = map[string]map[string]float64{h.Currency: fixedincome.BucketAt(years, *m.DV01)}
@@ -360,7 +360,7 @@ func dv01(value, modified float64) *float64 {
 // term deposit lasts to its end. A card's balance takes no rate and no
 // tag: the bill is paid in full, so it earns and costs nothing, and no
 // rate is missing.
-func measureDeposit(in *Inputs, h Holding, m *working) {
+func measureDeposit(in *Inputs, h Holding, _ Terms, m *working) {
 	m.Duration, m.Maturity, m.DV01 = ptr(0), ptr(0), ptr(0)
 	if onCard(in, h) {
 		return
@@ -748,7 +748,7 @@ func fundBuckets(f *Fund, h Holding) map[string]map[string]float64 {
 
 // measureEquityFund: an equity fund's earnings yield is the inverse of
 // the P/E ratio its page states; its dividend yield is equityIncome's.
-func measureEquityFund(in *Inputs, h Holding, m *working) {
+func measureEquityFund(in *Inputs, h Holding, _ Terms, m *working) {
 	f := in.Funds[h.SecurityID]
 	if f != nil && f.PriceEarnings != nil && f.PriceEarnings.Value > 0 {
 		m.EarningsYield = ptr(100 / f.PriceEarnings.Value)
@@ -835,7 +835,7 @@ func paidNothing(in *Inputs, h Holding, m *working) {
 // measureStock: a stock's earnings yield is its trailing twelve months'
 // earnings per share over its price, its dividend yield its indicated
 // dividend over its price.
-func measureStock(in *Inputs, h Holding, m *working) {
+func measureStock(in *Inputs, h Holding, _ Terms, m *working) {
 	f := in.Securities[h.SecurityID]
 	price := m.Price
 	if price != nil && *price > 0 && (f.Currency == "" || f.Currency == h.Currency) {

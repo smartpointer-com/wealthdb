@@ -248,15 +248,14 @@ SELECT silver_source_id, account_external_id, snapshot_at FROM account_grid ORDE
 // it held none or stated none, else to its source's last snapshot. The
 // spans of every account of an instrument merge where they meet.
 func (u *yieldUnits) cover() {
-	holds := func(p yield.UnitPoint) bool { return p.Qty != nil && *p.Qty > lots.Tolerance(*p.Qty) }
 	for k, ps := range u.Points {
 		ik := yield.InstrumentKey{Source: k.Source, Instrument: k.Instrument}
 		for j := 0; j < len(ps); j++ {
-			if !holds(ps[j]) {
+			if !ps[j].Holds() {
 				continue
 			}
 			from := ps[j].At
-			for j+1 < len(ps) && holds(ps[j+1]) {
+			for j+1 < len(ps) && ps[j+1].Holds() {
 				j++
 			}
 			to := u.last[k.Source]

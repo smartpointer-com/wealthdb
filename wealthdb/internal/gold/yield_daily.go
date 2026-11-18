@@ -13,9 +13,9 @@ import (
 )
 
 // readAmounts reads each position's amount on each day of the twelve
-// months to the instant, one yield.Daily per currency it is valued in,
-// and the instrument it names: a position as positions_at reads it on the
-// day, a cash balance as cash_chosen does, a day it was not held as zero.
+// months to the instant, one yield.Daily per currency its snapshots state
+// it in, and the instrument it names: a position as positions_at reads it
+// on the day, a cash balance as cash_chosen does, a day it was not held as zero.
 // Both read a day at its last second, the instant's own day at the instant,
 // and take each account's active snapshot at it (pos_active_at,
 // cash_active_at). So an observation's amounts hold over its span

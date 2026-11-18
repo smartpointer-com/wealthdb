@@ -1,5 +1,10 @@
 package yield
 
+import (
+	"maps"
+	"slices"
+)
+
 // kindSpec is what a kind of holding does (Kind). measure sets its
 // figures and project adds its income to the projection; gap is the
 // yield its gap compares with its benchmark (gapYield), stated the yield
@@ -23,11 +28,10 @@ type kindSpec struct {
 var kinds map[Kind]kindSpec
 
 func init() {
-	deposit := func(in *Inputs, h Holding, _ Terms, m *working) { measureDeposit(in, h, m) }
 	kinds = map[Kind]kindSpec{
-		KindDeposit: {measure: deposit, project: (*projector).projectDeposit, gap: rateGap, heldIn: HeldInCash,
+		KindDeposit: {measure: measureDeposit, project: (*projector).projectDeposit, gap: rateGap, heldIn: HeldInCash,
 			missing: missingRateOf, cash: true},
-		KindTermDeposit: {measure: deposit, project: (*projector).projectTermDeposit, gap: rateGap,
+		KindTermDeposit: {measure: measureDeposit, project: (*projector).projectTermDeposit, gap: rateGap,
 			heldIn: HeldInCash, missing: missingRateOf, cash: true},
 		KindMoneyMarket: {measure: measureFund, project: (*projector).projectMoneyMarket, gap: rateGap,
 			heldIn: HeldInFunds, missing: missingFiguresOf, fund: true, cash: true},
@@ -41,15 +45,17 @@ func init() {
 			heldIn: HeldInBonds, missing: missingTermsOf(false)},
 		KindBondFund: {measure: measureFund, project: (*projector).projectBondFund, gap: rateGap,
 			stated: statedBondFund, heldIn: HeldInFunds, missing: missingFiguresOf, fund: true},
-		KindEquityFund: {measure: func(in *Inputs, h Holding, _ Terms, m *working) { measureEquityFund(in, h, m) },
-			project: (*projector).projectEquityFund, gap: noGap, stated: statedEquityFund, heldIn: HeldInBonds,
-			missing: missingDividendOf, fund: true},
+		KindEquityFund: {measure: measureEquityFund, project: (*projector).projectEquityFund, gap: noGap,
+			stated: statedEquityFund, heldIn: HeldInBonds, missing: missingDividendOf, fund: true},
 		KindMultiAsset: {measure: measureMultiAsset, project: (*projector).projectEquityFund, gap: impliedGap,
 			stated: statedEquityFund, heldIn: HeldInFunds, missing: missingDividendOf, fund: true},
-		KindStock: {measure: func(in *Inputs, h Holding, _ Terms, m *working) { measureStock(in, h, m) },
-			project: (*projector).projectStock, gap: noGap, heldIn: HeldInBonds, missing: missingDividendOf},
+		KindStock: {measure: measureStock, project: (*projector).projectStock, gap: noGap, heldIn: HeldInBonds,
+			missing: missingDividendOf},
 		KindLiability: {measure: measureLiability, gap: rateGap, heldIn: HeldInLiabilities,
 			missing: missingTermsOf(false)},
 		KindOther: {measure: measureOther, project: (*projector).projectOther, gap: rateGap, heldIn: HeldInBonds},
 	}
 }
+
+// Kinds are the kinds of holding, sorted.
+func Kinds() []Kind { return slices.Sorted(maps.Keys(kinds)) }

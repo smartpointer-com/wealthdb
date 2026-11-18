@@ -35,7 +35,7 @@ func YieldSecurities(ctx context.Context, db *sql.DB, b *yield.Book) ([]yield.Se
 		}
 		rows[i] = r
 	}
-	if err := YieldSecurityFacts(ctx, db, b.In, keys); err != nil {
+	if err := yieldSecurityFacts(ctx, db, b.In, keys); err != nil {
 		return nil, fmt.Errorf("YieldSecurities: %w", err)
 	}
 	return b.Securities(rows), nil
@@ -55,14 +55,14 @@ func (b *yieldBase) readSecurities(ctx context.Context, db querier) error {
 			}
 		}
 	}
-	return YieldSecurityFacts(ctx, db, b.in, keys)
+	return yieldSecurityFacts(ctx, db, b.in, keys)
 }
 
-// YieldSecurityFacts gives each security of keys its trailing twelve
+// yieldSecurityFacts gives each security of keys its trailing twelve
 // months of each reported figure (yield.Facts), into in.Securities. A
 // figure counts by its period's end: one a later filing restated reads
 // restated, on any day.
-func YieldSecurityFacts(ctx context.Context, db querier, in *yield.Inputs, keys map[string]bool) error {
+func yieldSecurityFacts(ctx context.Context, db querier, in *yield.Inputs, keys map[string]bool) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -71,7 +71,7 @@ func YieldSecurityFacts(ctx context.Context, db querier, in *yield.Inputs, keys 
 	// The key column is named by its table: exposure_key's subquery
 	// would read a bare security_key in a WHERE condition as
 	// security_aliases' own.
-	list, args := sqlList(slices.Sorted(maps.Keys(keys)), "")
+	list, args := sqlList(slices.Sorted(maps.Keys(keys)))
 	if err := scanAll(ctx, db, `
 SELECT exposure_key(f.security_key) AS key, f.field, f.period_start, f.as_of, f.value::DOUBLE, COALESCE(f.unit, '')
   FROM security_period_facts f
@@ -98,25 +98,20 @@ SELECT exposure_key(f.security_key) AS key, f.field, f.period_start, f.as_of, f.
 	}
 	for key, byField := range facts {
 		var f yield.Facts
+		ttm := func(field string, years int) *float64 {
+			if v, ok := yield.Trailing(byField[field], in.Day, years); ok {
+				return &v
+			}
+			return nil
+		}
 		f.Currency, _, _ = strings.Cut(units[key], "/")
-		if eps, ok := yield.Trailing(byField["eps_diluted"], in.Day, 0); ok {
-			f.EPS = &eps
-			if v, ok := yield.Trailing(byField["eps_diluted"], in.Day, 1); ok {
-				f.EPSYearAgo = &v
-			}
+		if f.EPS = ttm("eps_diluted", 0); f.EPS != nil {
+			f.EPSYearAgo = ttm("eps_diluted", 1)
 		}
-		if v, ok := yield.Trailing(byField["dividends_per_share"], in.Day, 0); ok {
-			f.DPS = &v
-			if w, ok := yield.Trailing(byField["dividends_per_share"], in.Day, 1); ok {
-				f.DPSYearAgo = &w
-			}
+		if f.DPS = ttm("dividends_per_share", 0); f.DPS != nil {
+			f.DPSYearAgo = ttm("dividends_per_share", 1)
 		}
-		if v, ok := yield.Trailing(byField["operating_income"], in.Day, 0); ok {
-			f.OperatingIncome = &v
-		}
-		if v, ok := yield.Trailing(byField["interest_expense"], in.Day, 0); ok {
-			f.InterestExpense = &v
-		}
+		f.OperatingIncome, f.InterestExpense = ttm("operating_income", 0), ttm("interest_expense", 0)
 		in.Securities[key] = f
 	}
 	return nil

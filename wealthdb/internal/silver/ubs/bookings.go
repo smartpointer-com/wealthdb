@@ -41,7 +41,8 @@ type bookingFacts struct {
 type settlement int
 
 const (
-	settlesUnstated settlement = iota
+	// The zero value: a type that states no settlement.
+	_ settlement = iota
 	// settlesTrade: a securities trade, whose side (buy or sell) follows
 	// the cash direction (securitiesSide).
 	settlesTrade

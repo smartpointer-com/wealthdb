@@ -36,8 +36,9 @@ func YieldInputs(ctx context.Context, db querier, asOf int64, ccy string) (*yiel
 // them.
 type yieldBase struct {
 	in *yield.Inputs
-	// amounts is each position's amount day by day, in each currency it
-	// is valued in (readAmounts), and instrument the instrument of each.
+	// amounts is each position's amount day by day, in each currency a
+	// snapshot states it in (readAmounts), and instrument the instrument
+	// of each.
 	amounts    map[amountKey]*yield.Daily
 	instrument map[yield.HoldingKey]string
 	// lag is the lag of the record day of the dividends of each instrument
@@ -94,8 +95,8 @@ type yieldShared struct {
 
 // readYieldBase reads the instant asOf's yieldBase, valued in each
 // currency of currencies. The positions read as receipts, the dividend
-// calendar and the settlement cycles come from shared, read on the first
-// instant that needs them.
+// calendar, the settlement cycles and the learned gaps come from shared,
+// read on the first instant that needs them.
 func readYieldBase(ctx context.Context, db querier, asOf int64, shared *yieldShared,
 	currencies []string) (*yieldBase, error) {
 	day := time.Unix(asOf, 0).UTC()
@@ -317,35 +318,6 @@ SELECT silver_source_id, account_external_id, COALESCE(currency, ''), side, tier
 		in.Rates[k] = append(in.Rates[k], r)
 		return nil
 	}, in.AsOf)
-}
-
-// fundFields maps the fund_characteristics fields the report reads to
-// the figure each fills.
-var fundFields = map[string]func(f *yield.Fund) **yield.Dated{
-	"yield_to_maturity":               func(f *yield.Fund) **yield.Dated { return &f.YieldToMaturity },
-	"yield_to_worst":                  func(f *yield.Fund) **yield.Dated { return &f.YieldToWorst },
-	"effective_duration":              func(f *yield.Fund) **yield.Dated { return &f.Duration },
-	"sec_yield":                       func(f *yield.Fund) **yield.Dated { return &f.SECYield },
-	"distribution_yield":              func(f *yield.Fund) **yield.Dated { return &f.DistributionYield },
-	"trailing_yield":                  func(f *yield.Fund) **yield.Dated { return &f.TrailingYield },
-	"seven_day_yield":                 func(f *yield.Fund) **yield.Dated { return &f.SevenDayYield },
-	"weighted_average_maturity_years": func(f *yield.Fund) **yield.Dated { return &f.MaturityYears },
-	"weighted_average_maturity":       func(f *yield.Fund) **yield.Dated { return &f.MaturityYears },
-	"price_earnings":                  func(f *yield.Fund) **yield.Dated { return &f.PriceEarnings },
-}
-
-// sqlList is a DuckDB list of one `?` per value, each cast by cast (""
-// for none, "::BIGINT"), and the arguments that fill it, more after
-// them.
-func sqlList[T any](vs []T, cast string) (string, func(more ...any) []any) {
-	list := "[" + strings.Repeat("?"+cast+", ", len(vs)-1) + "?" + cast + "]"
-	return list, func(more ...any) []any {
-		out := make([]any, 0, len(vs)+len(more))
-		for _, v := range vs {
-			out = append(out, v)
-		}
-		return append(out, more...)
-	}
 }
 
 func readDeclaredDividends(ctx context.Context, db querier, in *yield.Inputs) error {

@@ -109,7 +109,7 @@ func (b *yieldBase) attribution(in *yield.Inputs) *incomeAttribution {
 // documents, read under its account's keys (yield.Holders.KeysOf, quantity,
 // span, firstHeld), its record day the one the dividend calendar states
 // or derives, else the one its issuer's learned gap gives, else the one
-// its market's lag gives (yield.RecordOf, calendarOf, gapOf, lagOf).
+// its market's lag gives (yield.RecordOf, recordOf, gapOf).
 // Where the calendar gives the days, the quantity reads as the ex day
 // began, and that day is its record window alone; where a learned gap
 // gives them, it reads the same way across the gap's window
@@ -130,10 +130,10 @@ func (b *yieldBase) attribute(in *yield.Inputs, ids []holdingID) *incomeAttribut
 			if paysPerShare(l.Type) {
 				start := day.Truncate(24 * time.Hour).Unix()
 				pay := time.Unix(start, 0).UTC()
-				keys := b.units.KeysOf(l.Source, l.Account, l.Instrument)
+				under := in.PortfolioKeys(l.Source, l.Account, l.Instrument)
+				keys := b.units.KeysOf(under)
 				p.Quantity, p.Units = b.units.quantity(keys, start)
-				lag := b.lagOf(in, l)
-				events, share, market, security := b.calendarOf(in, l)
+				lag, events, share, market, security := b.recordOf(in, under)
 				learned := b.gapOf(security, share, market)
 				readDay, source := yield.RecordOf(events, pay, lag, learned, share, market, b.cycles)
 				p.RecordSource = source
@@ -220,29 +220,22 @@ func unitIDs(in *yield.Inputs, lines []incomeLine) map[yield.InstrumentKey]bool 
 	return paid
 }
 
-// lagOf is the lag of the record day of the dividend a line pays
-// (yieldBase.lag), under the first id its instrument reads under that has
-// one (yield.Inputs.PortfolioKeys).
-func (b *yieldBase) lagOf(in *yield.Inputs, l incomeLine) yield.Lag {
-	for _, k := range in.PortfolioKeys(l.Source, l.Account, l.Instrument) {
-		if lag := b.lag[yield.InstrumentKey{Source: l.Source, Instrument: k.Instrument}]; lag.Days > 0 {
-			return lag
-		}
-	}
-	return yield.Lag{}
-}
-
-// calendarOf is what the dividend calendar states of the security a
-// line pays (yieldBase.calendar), whether it is a share
+// recordOf is what derives the record day of the dividend a line pays,
+// whose instrument reads under ids (yield.Inputs.PortfolioKeys): the lag
+// of its record day (yieldBase.lag), what the dividend calendar states
+// of its security (yieldBase.calendar), whether it is a share
 // (yieldBase.share), the market whose settlement cycle derives its
-// record day (yieldBase.market), and the security: each under the first
-// id its instrument reads under that has one
-// (yield.Inputs.PortfolioKeys), as lagOf reads its lag. The security is
-// the instrument's as a position names it (yield.Inputs.HeldSecurity).
-func (b *yieldBase) calendarOf(in *yield.Inputs, l incomeLine) (events []yield.CalendarEvent, share bool,
-	market, security string) {
-	for _, k := range in.PortfolioKeys(l.Source, l.Account, l.Instrument) {
-		ik := yield.InstrumentKey{Source: l.Source, Instrument: k.Instrument}
+// record day (yieldBase.market), and the security. The lag, the market
+// and the security are those of the first id that has one, and it is a
+// share where any id is. The security is the instrument's as a position
+// names it (yield.Inputs.HeldSecurity).
+func (b *yieldBase) recordOf(in *yield.Inputs, ids []yield.UnitKey) (lag yield.Lag, events []yield.CalendarEvent,
+	share bool, market, security string) {
+	for _, k := range ids {
+		ik := yield.InstrumentKey{Source: k.Source, Instrument: k.Instrument}
+		if l := b.lag[ik]; lag.Days == 0 && l.Days > 0 {
+			lag = l
+		}
 		if security == "" {
 			security = in.HeldSecurity[ik]
 		}
@@ -251,7 +244,7 @@ func (b *yieldBase) calendarOf(in *yield.Inputs, l incomeLine) (events []yield.C
 		}
 		share = share || b.share[ik]
 	}
-	return b.calendar[security], share, market, security
+	return lag, b.calendar[security], share, market, security
 }
 
 // gapOf is the gap learned of the issuer of a security (yieldBase.gaps):
@@ -279,14 +272,12 @@ func paysPerShare(t yield.IncomeType) bool {
 }
 
 // incomeLine is one income transaction of a type the projection counts:
-// its amount in its currency, its value in the output currency (nil
-// where no rate converts it), and its description.
+// its amount in its currency and its description.
 type incomeLine struct {
 	Source, Account, Instrument, Currency, Description string
 	At                                                 int64
 	Type                                               yield.IncomeType
 	Amount                                             float64
-	Value                                              *float64
 }
 
 // couponOf reads an account's interest line that names no instrument but
@@ -342,16 +333,6 @@ func lineHolding(in *yield.Inputs, l *incomeLine) (yield.HoldingKey, bool) {
 	return key, held
 }
 
-// incomeLines calls fn with each income line of [from, to], oldest
-// first: an income transaction of a type the projection counts, in ccy
-// at its day's rate.
-func incomeLines(ctx context.Context, db querier, from, to int64, ccy string, fn func(incomeLine)) error {
-	return incomeLinesIn(ctx, db, from, to, []string{ccy}, func(l incomeLine, values []*float64) {
-		l.Value = values[0]
-		fn(l)
-	})
-}
-
 // incomeLinesIn calls fn with each income line of [from, to], oldest
 // first, and its value in each currency of currencies, in their order, at
 // its day's rate (nil where no rate converts it).
@@ -404,20 +385,20 @@ SELECT l.silver_source_id, l.account_external_id, COALESCE(l.instrument_external
 	}, args...)
 }
 
-// IncomeReceived is every income line of [from, to] that the income
+// incomeReceived is every income line of [from, to] that the income
 // projection counts as received, each named by the holding of the book
 // it belongs to, else by the sold position that holds it (lineHolding),
 // else by its account: a payment of interest by the account's cash in its
 // currency, a line that names an instrument by its account and that
 // instrument, by the id the matching folds it into, as Sold names a sold
 // position, and any other by the account and its type.
-func IncomeReceived(ctx context.Context, db querier, in *yield.Inputs, from, to int64) ([]yield.ReceivedLine, error) {
+func incomeReceived(ctx context.Context, db querier, in *yield.Inputs, from, to int64) ([]yield.ReceivedLine, error) {
 	var out []yield.ReceivedLine
-	err := incomeLines(ctx, db, from, to, in.Currency, func(l incomeLine) {
+	err := incomeLinesIn(ctx, db, from, to, []string{in.Currency}, func(l incomeLine, values []*float64) {
 		key, held := lineHolding(in, &l)
 		r := yield.ReceivedLine{Day: time.Unix(l.At, 0).UTC(), Type: l.Type}
-		if l.Value != nil {
-			r.Value = *l.Value
+		if values[0] != nil {
+			r.Value = *values[0]
 		}
 		switch {
 		case held:
@@ -434,7 +415,7 @@ func IncomeReceived(ctx context.Context, db querier, in *yield.Inputs, from, to 
 		out = append(out, r)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("IncomeReceived: %w", err)
+		return nil, fmt.Errorf("incomeReceived: %w", err)
 	}
 	return out, nil
 }
@@ -488,14 +469,14 @@ func ForwardIncome(ctx context.Context, db querier, p ForwardParams) (*Forward, 
 	if err != nil {
 		return nil, err
 	}
-	received, err := IncomeReceived(ctx, db, b.In, w.From.Unix(), min(w.To.Unix(), p.At))
+	received, err := incomeReceived(ctx, db, b.In, w.From.Unix(), min(w.To.Unix(), p.At))
 	if err != nil {
 		return nil, err
 	}
 	f := &Forward{Book: b, Window: w, Amounts: b.Amounts(received, w, p.Assumptions)}
 	lw := yield.Window{From: w.From.AddDate(-1, 0, 0), To: w.To.AddDate(-1, 0, 0)}
 	if lw.To.Unix() <= p.At {
-		prior, err := IncomeReceived(ctx, db, b.In, lw.From.Unix(), lw.To.Unix())
+		prior, err := incomeReceived(ctx, db, b.In, lw.From.Unix(), lw.To.Unix())
 		if err != nil {
 			return nil, err
 		}

@@ -82,7 +82,7 @@ SELECT key, ex_day, record_day, pay_day, estimated FROM named
 // the arguments they take; `named` keys a JPX row no lookup lists as
 // NULL.
 func calendarCTEs() (string, []any) {
-	exchanges, args := sqlList(japaneseExchanges, "")
+	exchanges, args := sqlList(japaneseExchanges)
 	return `
 WITH tse AS (
     SELECT DISTINCT 'jpx:' || code AS ref, exposure_key(security_key) AS key

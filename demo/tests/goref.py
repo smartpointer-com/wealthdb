@@ -231,7 +231,7 @@ def yield_records():
 def fund_fields():
     """The fund_characteristics fields the yield report reads (gold's
     fundFields)."""
-    t = (INTERNAL / "gold" / "yield_inputs.go").read_text()
+    t = (INTERNAL / "gold" / "yield_funds.go").read_text()
     body = re.search(r"var fundFields = map\[string\].*?\{\n(.*?)\n\}", t, re.S).group(1)
     return set(re.findall(r'^\s*"(\w+)":', body, re.M))
 

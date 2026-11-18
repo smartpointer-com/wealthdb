@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -40,6 +41,19 @@ func scanRows[T any](ctx context.Context, db *sql.DB, label, q string, args []an
 type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// sqlList is a DuckDB list of one `?` per value of vs, which is not
+// empty, and the arguments that fill it, more after them.
+func sqlList[T any](vs []T) (string, func(more ...any) []any) {
+	list := "[" + strings.Repeat("?, ", len(vs)-1) + "?]"
+	return list, func(more ...any) []any {
+		out := make([]any, 0, len(vs)+len(more))
+		for _, v := range vs {
+			out = append(out, v)
+		}
+		return append(out, more...)
+	}
 }
 
 // scanAll runs a query and hands each row to scan.

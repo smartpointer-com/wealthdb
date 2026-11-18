@@ -94,14 +94,11 @@ func dump(v any) string {
 }
 
 // seedYieldBookShared is seedYieldBookFX's book with a fund's
-// distribution received, and each pair's rate stored in one direction:
-// fx_daily picks either of a stored rate and the reciprocal of its
-// opposite of one snapshot, which differ in their last bits. Invented.
+// distribution received. Invented.
 func seedYieldBookShared(t *testing.T) (*sql.DB, context.Context, int64) {
 	t.Helper()
 	db, ctx, at := seedYieldBookFX(t)
-	execEach(t, db, `DELETE FROM fx_rates WHERE base_currency = 'USD'`,
-		`INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
+	execEach(t, db, `INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id, kind,
 		    currency, net_amount, instrument_external_id) VALUES
 		    ('test-src', 'D1', `+itoa(ymd(2026, 3, 16).Unix())+`, 'A', 'dividend', 'USD', 12, 'IDXF')`)
 	enrichtest.SeedIncome(t, db, ruleIncome("D1", "sig-fund", "INCOME_DIVIDENDS"))

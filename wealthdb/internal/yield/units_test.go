@@ -40,7 +40,6 @@ func TestAWholeFactor(t *testing.T) {
 // explains, or one the legs state otherwise, is not ok.
 func TestAChangeOfUnits(t *testing.T) {
 	t.Parallel()
-	v := func(x float64) *float64 { return &x }
 	for _, c := range []struct {
 		what  string
 		s     UnitStep
@@ -72,21 +71,21 @@ func TestAChangeOfUnits(t *testing.T) {
 			Trades: []UnitTrade{{At: 1, Qty: 20}, {At: 2, Qty: 120, Corp: true}}}, 2, false},
 		{"a 3-for-2 split with its leg", UnitStep{Before: 100, After: 150,
 			Trades: []UnitTrade{{At: 1, Qty: 50, Corp: true}}}, 1, true},
-		{"a 10-for-1 change the price shows", UnitStep{Before: 200, After: 2000, ValueBefore: v(10000),
-			ValueAfter: v(10460)}, 10, false},
-		{"a buy, then a 10-for-1 change", UnitStep{Before: 200, After: 2200, ValueBefore: v(10000),
-			ValueAfter: v(10460), Trades: []UnitTrade{{At: 1, Qty: 20}}}, 10, false},
-		{"a 10-for-1 change, then a buy", UnitStep{Before: 200, After: 2020, ValueBefore: v(10000),
-			ValueAfter: v(10460), Trades: []UnitTrade{{At: 1, Qty: 20}}}, 10, false},
-		{"a 1-for-10 change the price shows", UnitStep{Before: 2000, After: 200, ValueBefore: v(10000),
-			ValueAfter: v(9800)}, 0.1, false},
-		{"a buy no transaction records", UnitStep{Before: 100, After: 200, ValueBefore: v(5000),
-			ValueAfter: v(10100)}, 1, false},
+		{"a 10-for-1 change the price shows", UnitStep{Before: 200, After: 2000, ValueBefore: num(10000),
+			ValueAfter: num(10460)}, 10, false},
+		{"a buy, then a 10-for-1 change", UnitStep{Before: 200, After: 2200, ValueBefore: num(10000),
+			ValueAfter: num(10460), Trades: []UnitTrade{{At: 1, Qty: 20}}}, 10, false},
+		{"a 10-for-1 change, then a buy", UnitStep{Before: 200, After: 2020, ValueBefore: num(10000),
+			ValueAfter: num(10460), Trades: []UnitTrade{{At: 1, Qty: 20}}}, 10, false},
+		{"a 1-for-10 change the price shows", UnitStep{Before: 2000, After: 200, ValueBefore: num(10000),
+			ValueAfter: num(9800)}, 0.1, false},
+		{"a buy no transaction records", UnitStep{Before: 100, After: 200, ValueBefore: num(5000),
+			ValueAfter: num(10100)}, 1, false},
 		{"a doubling with no price", UnitStep{Before: 100, After: 200}, 1, false},
-		{"a 3-for-2 change the price shows", UnitStep{Before: 100, After: 150, ValueBefore: v(3000),
-			ValueAfter: v(3100)}, 1, true},
-		{"a sale no transaction records", UnitStep{Before: 100, After: 90, ValueBefore: v(3000),
-			ValueAfter: v(2600)}, 1, false},
+		{"a 3-for-2 change the price shows", UnitStep{Before: 100, After: 150, ValueBefore: num(3000),
+			ValueAfter: num(3100)}, 1, true},
+		{"a sale no transaction records", UnitStep{Before: 100, After: 90, ValueBefore: num(3000),
+			ValueAfter: num(2600)}, 1, false},
 		{"a position opened", UnitStep{Before: 0, After: 100}, 1, false},
 	} {
 		k, ok := c.s.Change()
