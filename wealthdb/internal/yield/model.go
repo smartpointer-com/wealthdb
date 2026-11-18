@@ -16,6 +16,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/fixedincome"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/returns"
 )
 
 // Inputs is what the report and the projection read at one instant.
@@ -317,13 +318,14 @@ type Curve struct {
 // Received is income received, by type, in the output currency.
 type Received map[IncomeType]float64
 
-// Total is the income of every type.
+// Total is the income of every type, an exact sum (returns.Sum): the
+// same whatever order the map yields the types in.
 func (r Received) Total() float64 {
-	t := 0.0
+	var t returns.Sum
 	for _, v := range r {
-		t += v
+		t.Add(v)
 	}
-	return t
+	return t.Total()
 }
 
 // AccountPayment is one payment an account received that names no
