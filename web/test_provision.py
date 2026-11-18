@@ -216,6 +216,21 @@ CARD_DEFS = p.card_defs()
 _BASE_CARDS = {n: c for n, c in CARD_DEFS.items() if not n.endswith(p.PRIVACY_SUFFIX)}
 CARDS = cards_of(CARD_DEFS)
 VIZ = {n: c.viz for n, c in CARD_DEFS.items()}
+
+
+def tooltip_names(viz):
+    """The column names a card's tooltip columns key: Metabase keys a
+    column as JSON.stringify(["name", column]); a key of another shape
+    reads as None, which no check accepts."""
+    out = []
+    for key in viz.get("graph.tooltip_columns") or []:
+        try:
+            k = json.loads(key)
+        except (TypeError, ValueError):
+            k = None
+        out.append(k[1] if isinstance(k, list) and len(k) == 2 and k[0] == "name"
+                   and json.dumps(k, separators=(",", ":")) == key else None)
+    return out
 EXEMPT = {n for n, c in CARD_DEFS.items() if c.exempt}
 # The card a twin's tile shows in place of its base's, by base
 # dashboard, where it is not the base card's privacy variant.
@@ -2404,9 +2419,6 @@ section("a twin's name drops an address")
 
 # The example columns_privacy_test.go pins too.
 ADDRESS_NAME = "Sample Loan, Invented Way 7b, 12345 Nowhere"
-# A card a twin shows with a name in its output that needs no twin_name:
-# a stock's name, off public reference data, and no holding's own label.
-_NAME_SAFE = {"Dividend yield against payout"}
 
 
 def output_columns(sql):
@@ -2439,12 +2451,13 @@ _twin_natives = {n: sql_of(q) for n, (_d, _desc, q) in CARDS.items()
                  if (n.endswith(p.PRIVACY_SUFFIX) or n in EXEMPT) and sql_of(q)}
 _named = {n for n, q in _twin_natives.items() if any(re.search(r"\bname\b", x) for x in output_columns(q))}
 check("the cards a twin shows with a name in their output are these",
-      _named == _NAME_SAFE | {"Top 100 positions (privacy)", "Top securities (privacy)",
+      _named == {"Top 100 positions (privacy)", "Top securities (privacy)",
                               "Yield against duration (privacy)", "Received and expected by position (privacy)",
-                              "Expected payments (privacy)"}, sorted(_named))
-check("...and each but the safe ones wraps it in twin_name",
-      all(sqlkit.ADDRESS_PATTERN in _twin_natives[n] for n in _named - _NAME_SAFE),
-      [n for n in _named - _NAME_SAFE if sqlkit.ADDRESS_PATTERN not in _twin_natives[n]])
+                              "Expected payments (privacy)", "Dividend yield against payout (privacy)"},
+      sorted(_named))
+check("...and each wraps it in twin_name",
+      all(sqlkit.ADDRESS_PATTERN in _twin_natives[n] for n in _named),
+      [n for n in _named if sqlkit.ADDRESS_PATTERN not in _twin_natives[n]])
 check("a base card keeps the name whole",
       not any(sqlkit.ADDRESS_PATTERN in sql_of(q) for n, (_d, _desc, q) in CARDS.items()
               if n not in _twin_natives))
@@ -2520,13 +2533,13 @@ check("every Exposure bar plots a share, labelled, with the value in its tooltip
       bool(_ex_bars) and all(
           v.get("graph.metrics") in (["share_pct"], ["class_share_pct"])
           and v.get("graph.show_values") is True
-          and (v.get("graph.tooltip_columns") or [])[:1] == ["value"]
+          and tooltip_names(v)[:1] == ["value"]
           and any(c.get("suffix") == "%" for c in v.get("column_settings", {}).values())
           for v in _ex_bars.values()),
-      [n for n, v in _ex_bars.items() if (v.get("graph.tooltip_columns") or [])[:1] != ["value"]])
+      [n for n, v in _ex_bars.items() if tooltip_names(v)[:1] != ["value"]])
 check("...and its privacy card plots the share with no value to show",
       all(VIZ[n].get("graph.metrics") in (["share_pct"], ["class_share_pct"])
-          and "value" not in VIZ[n].get("graph.tooltip_columns", [])
+          and "value" not in tooltip_names(VIZ[n])
           for n in _ex_twin if n in CARDS and CARDS[n][0] in ("bar", "row")))
 # A ring takes no second bar, and it cannot draw the negative share a
 # loan leaves a class or a currency.
@@ -2561,7 +2574,7 @@ _ex_at = {t[0]: t for t in _ex_spec}
 check("the legal situs tile is a bar of the shares by situs, the value in its tooltip",
       CARDS[_situs][0] == "bar" and VIZ[_situs].get("graph.dimensions") == ["situs"]
       and VIZ[_situs].get("graph.metrics") == ["share_pct"]
-      and VIZ[_situs].get("graph.tooltip_columns") == ["value"]
+      and tooltip_names(VIZ[_situs]) == ["value"]
       and "GROUP BY ALL" in _ex_sql[_situs] and "SELECT situs AS situs" in _ex_sql[_situs])
 check("...placed under the country map and the region table",
       all(_ex_at[_situs][1] >= _ex_at[n][1] + _ex_at[n][4]
@@ -2804,8 +2817,23 @@ check("the issuers twin hides an issuer named by a holding's own key, gold's, an
       _holding_prefix and _holding_prefix.group(1))
 _credit = "Debt by credit rating, share of debt and cash"
 check("the credit bars carry the grade and the unknown share in the tooltip",
-      VIZ[_credit]["graph.tooltip_columns"] == ["value", "grade", "unknown_pct"]
-      and VIZ[p.privacy_name(_credit)]["graph.tooltip_columns"] == ["grade", "unknown_pct"])
+      tooltip_names(VIZ[_credit]) == ["value", "grade", "unknown_pct"]
+      and tooltip_names(VIZ[p.privacy_name(_credit)]) == ["grade", "unknown_pct"])
+# Metabase matches a tooltip column by its key, ["name","<column>"]; a
+# plain name matches nothing, and the tooltip then shows nothing more.
+_tt = {n: tooltip_names(v) for n, v in VIZ.items() if v.get("graph.tooltip_columns")}
+check("every tooltip column is a Metabase column key the card's query returns",
+      bool(_tt) and all(c is not None and c in _output_columns(sql_of(CARDS[n][2])) for n, cs in _tt.items() for c in cs),
+      {n: cs for n, cs in _tt.items() if any(c is None or c not in _output_columns(sql_of(CARDS[n][2])) for c in cs)})
+_scatters = {n: tooltip_names(VIZ[n]) for n in VIZ if CARDS.get(n, ("",))[0] == "scatter"
+             and n.removesuffix(p.PRIVACY_SUFFIX) in ("Yield against duration", "Dividend yield against payout",
+                                                      "Unrealized gain vs. percent")}
+check("a scatter's tooltip names the holding and where it is held; a twin names no account",
+      len(_scatters) == 5 and all({"symbol", "name"} <= set(cs)
+                                  and bool({"source", "held_in"} & set(cs) if n.endswith(p.PRIVACY_SUFFIX)
+                                           else {"account", "held_in"} & set(cs))
+                                  and not (n.endswith(p.PRIVACY_SUFFIX) and "account" in cs)
+                                  for n, cs in _scatters.items()), _scatters)
 # Each bucket is a share of its class, every bucket but (none), as the
 # CLI's class_share is: the bars sum to 100.
 for _n in _ex_debt:
@@ -2975,7 +3003,7 @@ check("the column reader reads a card's columns, through a CTE's star",
       _output_columns(_y_sql["Cash against its benchmark (privacy)"]))
 _y_exempt = [n for n in _y_tiles if n in EXEMPT]
 _y_priv = [p.privacy_name(n) for n in _y_tiles if n not in EXEMPT] + _y_exempt
-_LABELS = {*_LABELS, "benchmark_duration"}
+_LABELS = {*_LABELS, "benchmark_duration", "source", "held_in"}
 _y_money = {n: [c for c in _output_columns(_y_sql[n]) if not c.endswith("_pct") and c not in _LABELS]
             for n in _y_priv}
 check("no Yield privacy or exempt card carries an amount: shares, rates, years and labels alone",
@@ -6203,9 +6231,10 @@ if duckdb is not None:
     _ga = _both_ways(
         "CREATE TABLE web_gains (currency TEXT, missing_basis TEXT, period TIMESTAMP, at_end BOOLEAN,"
         " silver_source_id TEXT, account_external_id TEXT, instrument_key TEXT, symbol TEXT, name TEXT,"
-        " asset_class TEXT, cost_basis DOUBLE, value DOUBLE, unrealized_end DOUBLE)",
+        " account TEXT, asset_class TEXT, cost_basis DOUBLE, value DOUBLE, unrealized_end DOUBLE)",
         {"web_gains": [("USD", p.sqlkit.DEFAULT_MISSING_BASIS, "2026-10-01", True, src, "acct-1", "k-1", sym, None,
-                        "equity", 100.0, 120.0, 20.0) for src, sym in (("src-b", "AAA"), ("src-a", "ZZZ"))]},
+                        "Account (src brokerage)", "equity", 100.0, 120.0, 20.0)
+                       for src, sym in (("src-b", "AAA"), ("src-a", "ZZZ"))]},
         ["Unrealized gain vs. percent"])
     _pinned(_ga, {"Unrealized gain vs. percent": (0, ["ZZZ", "AAA"])})
 
@@ -6213,8 +6242,8 @@ if duckdb is not None:
     # by payout.
     _dy = _both_ways(
         "CREATE TABLE web_yield (as_of_day DATE, currency TEXT, kind TEXT, symbol TEXT, name TEXT,"
-        " payout_pct DOUBLE, dividend_yield_pct DOUBLE)",
-        {"web_yield": [("2026-10-31", "USD", "stock", "S", n, pay, 3.0)
+        " payout_pct DOUBLE, dividend_yield_pct DOUBLE, silver_source_id TEXT, account_label TEXT)",
+        {"web_yield": [("2026-10-31", "USD", "stock", "S", n, pay, 3.0, "src", "Account (src brokerage)")
                        for n, pay in (("Beta", 50.0), ("Alpha", 60.0), ("Alpha", 20.0))]},
         ["Dividend yield against payout"])
     _pinned(_dy, {"Dividend yield against payout": (2, [20.0, 60.0, 50.0])})

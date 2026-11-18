@@ -513,8 +513,10 @@ value it is earned on. The projected income would then repeat the
 income yield beside it, so its twin shows the horizon's monthly average
 as a share of its biggest month instead. The cash table ranks its rows,
 names no account, and gives each its share of the credit balances. The
-cards of rates, years and securities alone are exempt: the yields, the
-dividend scatter and the two charts over time.
+cards of rates, years and securities alone are exempt: the yields and
+the two charts over time. A scatter's tooltip names the holding and
+where it is held: the account on the base card, the source alone on the
+twin. So the dividend scatter has a twin.
 
 The **Cash Flow** dashboard's bridge tiles read `web_bridge`, the months
 of `wealthdb returns bridge` a refresh stores in `report_bridge` (§8).
@@ -1261,6 +1263,9 @@ legend entry on Exposure's bars:
   value when the query is bound. This holds only for a card with one
   number: a chart whose saved breakout column is gone plots every number
   a run returns.
+- A tooltip column is set by its Metabase column key,
+  `["name","<column>"]` (`sqlkit.tooltip_viz`): a plain name matches
+  no column, and the tooltip then shows nothing more.
 - Exposure's bars carry a value for the tooltip, so they keep the
   `series` column under None, with `Portfolio` alone in it. Metabase
   colours a bar with no breakout by its metric's column. `series_settings`

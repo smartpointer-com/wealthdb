@@ -2,7 +2,7 @@
 
 import sqlkit
 from sqlkit import (ALL_SOURCES_SERIES, LINES_VIZ, native_tags, _native_where,
-                    _percent_viz, PRIVACY_DESC, range_filters, _series_order, _series_viz)
+                    _percent_viz, PRIVACY_DESC, range_filters, _series_order, _series_viz, tooltip_viz)
 
 
 def missing_basis_tag():
@@ -236,7 +236,7 @@ def gains_cards(f):
         "scatter",
         "Each position held at the window's end, its unrealized gain "
         "against its percent of cost basis, sized by value.",
-        end + f"SELECT {position} AS position,\n"
+        end + "SELECT symbol, name, account,\n"
         "       asset_class,\n"
         "       unrealized_end / cost_basis AS unrealized_pct,\n"
         "       unrealized_end AS unrealized,\n"
@@ -247,7 +247,7 @@ def gains_cards(f):
         # so one colour, per asset class.
         {"graph.dimensions": ["unrealized_pct", "asset_class"],
          "graph.metrics": ["unrealized"],
-         "scatter.bubble": "value",
+         "scatter.bubble": "value", **tooltip_viz("symbol", "name", "account"),
          **_percent_viz("unrealized_pct")})
     native("Positions in the green", "scalar",
         "Positions held at the window's end with an unrealized gain.",

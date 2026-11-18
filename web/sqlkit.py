@@ -169,6 +169,13 @@ def _share_viz(*cols, decimals=None):
     return {"column_settings": {f'["name","{c}"]': fmt for c in cols}}
 
 
+def tooltip_viz(*cols):
+    """Viz settings that add columns `cols` to a chart's tooltip.
+    Metabase keys a column as JSON.stringify(["name", column]), so a
+    plain name matches no column and adds nothing."""
+    return {"graph.tooltip_columns": [f'["name","{c}"]' for c in cols]}
+
+
 def currency_tag():
     """The required {{currency}} text variable: the one a native card
     picks its value column with (_ccy_case). It defaults to

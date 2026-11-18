@@ -3,7 +3,7 @@
 from sqlkit import (BENCHMARK_TAG, _ccy_case, _columns_with_benchmark, EARNING_VALUE, EXPOSURE_FILTERS,
                     HORIZON_MONTHS, LINES_VIZ, native_tags, _native_where, part_income, PARTS_AHEAD,
                     PARTS_FROM, PEAK, _peak_cte, PICKED_BENCHMARK, PRIVACY_DESC, PROJECTION_TAGS, _share_viz,
-                    twin_name, _window_end)
+                    tooltip_viz, twin_name, _window_end)
 
 
 def _rate(x):
@@ -116,7 +116,7 @@ def yield_cards(f):
          f"       {_rate('implied_pct')} AS implied_yield_pct" + (share if privacy else money) +
          "\n  FROM e\n GROUP BY 1\n ORDER BY sum(value) DESC, 1",
          {"graph.dimensions": ["holding_currency"], "graph.metrics": ["income_yield_pct", "implied_yield_pct"],
-          "graph.show_values": True, "graph.tooltip_columns": ["share_pct" if privacy else "value"],
+          "graph.show_values": True, **tooltip_viz("share_pct" if privacy else "value"),
           **_share_viz("income_yield_pct", "implied_yield_pct", *(["share_pct"] if privacy else []))})
 
     # The worst paid first: the balances no gap is known for, then the
@@ -142,17 +142,22 @@ def yield_cards(f):
              f"  FROM c\n ORDER BY {cash_order}, account",
              _share_viz("rate_pct", "benchmark_pct", "gap_pct"))
 
+    # A dot's tooltip names its holding and where it is held: the account
+    # on the base card, the source alone on the twin, which names no
+    # account.
     size = "share_pct" if privacy else "value"
+    where = "source" if privacy else "account"
     card("Yield against duration", "scatter",
          "Each bond and rate-sensitive fund at the window's end, duration across, implied "
          f"yield up, sized by {'share' if privacy else 'value'}.",
          end + "\nSELECT holding_currency AS currency, duration, implied_pct AS implied_yield_pct, symbol, "
-         + (f"{twin_name('name')} AS name,\n       100 * value / NULLIF(sum(value) OVER (), 0) AS share_pct"
-            if privacy else "name,\n       value") +
+         + (f"{twin_name('name')} AS name, silver_source_id AS source,\n"
+            "       100 * value / NULLIF(sum(value) OVER (), 0) AS share_pct"
+            if privacy else "name, account_label AS account,\n       value") +
          "\n  FROM e\n WHERE rate_sensitive\n"
          "   AND duration IS NOT NULL AND implied_pct IS NOT NULL\n ORDER BY value DESC",
          {"graph.dimensions": ["duration", "currency"], "graph.metrics": ["implied_yield_pct"],
-          "scatter.bubble": size, "graph.tooltip_columns": ["symbol", "name", size],
+          "scatter.bubble": size, **tooltip_viz("symbol", "name", where, size),
           **_share_viz("implied_yield_pct", *(["share_pct"] if privacy else []))})
 
     # DV01 per curve currency and tenor: a group of bars per currency, the
@@ -224,14 +229,17 @@ def yield_cards(f):
              {"graph.dimensions": ["holding_currency"], "graph.metrics": ["income_change"],
               "graph.show_values": True})
 
+    held_in = "silver_source_id" if privacy else "account_label"
     card("Dividend yield against payout", "scatter",
          "Each stock's payout ratio against its dividend yield at the window's end. A payout "
          "above 100% is not covered by earnings.",
-         end + "\nSELECT DISTINCT symbol, name, payout_pct, dividend_yield_pct\n  FROM e\n"
+         end + f"\nSELECT symbol, {twin_name('name') + ' AS name' if privacy else 'name'}, payout_pct, dividend_yield_pct,\n"
+         f"       string_agg(DISTINCT {held_in}, '; ' ORDER BY {held_in}) AS held_in\n  FROM e\n"
          " WHERE kind = 'stock'\n   AND payout_pct IS NOT NULL AND dividend_yield_pct IS NOT NULL\n"
+         " GROUP BY ALL\n"
          " ORDER BY dividend_yield_pct DESC, symbol, name, payout_pct",
          {"graph.dimensions": ["payout_pct"], "graph.metrics": ["dividend_yield_pct"],
-          "graph.tooltip_columns": ["symbol", "name"], **_share_viz("payout_pct", "dividend_yield_pct")}, exempt=True)
+          **tooltip_viz("symbol", "name", "held_in"), **_share_viz("payout_pct", "dividend_yield_pct")})
 
     # Two charts, not one: a yield and a duration differ in unit, and one
     # chart would need an axis for each.
@@ -277,7 +285,7 @@ def yield_cards(f):
          ("" if privacy else ",\n       count(*) AS holdings") +
          "\n  FROM t\n GROUP BY 1\n ORDER BY share_pct DESC, 1",
          {"graph.dimensions": ["tag"], "graph.metrics": ["share_pct"], "graph.show_values": True,
-          **({} if privacy else {"graph.tooltip_columns": ["value", "holdings"]}), **_share_viz("share_pct")})
+          **({} if privacy else tooltip_viz("value", "holdings")), **_share_viz("share_pct")})
 
 
 # The Yield dashboards' filters over web_yield and web_yield_curve: the

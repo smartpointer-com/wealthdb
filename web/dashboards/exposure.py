@@ -3,7 +3,7 @@
 from sqlkit import (BENCHMARK_COLOR, BENCHMARK_SERIES, BENCHMARK_TAG, _beside, _beside_viz,
                     _columns_with_benchmark, EXPOSURE_FILTERS, HOLDING_KEY_PREFIX, native_tags, NO_BENCHMARK,
                     PICKED_BENCHMARK, PORTFOLIO_SERIES, PRIVACY_DESC, _share_viz, STACKED_VIZ,
-                    _table_columns, twin_name, _window_end)
+                    _table_columns, tooltip_viz, twin_name, _window_end)
 
 
 # The colour Metabase gives each share column on its own, kept for the
@@ -62,7 +62,7 @@ def exposure_cards(f):
                                       BENCHMARK_SERIES: {"color": BENCHMARK_COLOR}}
         cols = ([] if privacy else ["value"]) + list(tooltip)
         if cols:
-            viz["graph.tooltip_columns"] = cols
+            viz.update(tooltip_viz(*cols))
         return viz
 
     def at_end(name, display, desc, dim, label, dimension=None):
