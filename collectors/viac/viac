@@ -9,7 +9,6 @@ set -euo pipefail
 
 NAME=viac
 ENV_VARS=(VIAC_LOGIN VIAC_PASSWORD)
-HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # named container; refuse to clobber a live login
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

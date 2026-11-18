@@ -12,9 +12,7 @@
 
 set -euo pipefail
 
-# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
-# x11vnc / camoufox-cache bootstrap, baked into the base image at
-# /opt/entrypoint-lib.sh.
+# The verb engine, baked into the base image (shared/images/entrypoint-lib.sh).
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -26,7 +24,8 @@ case "$verb" in
     login)
         # Folds into `download` (§L). `login --check` reads the profile's
         # device-trust cookie: no browser, no network.
-        login_folds plain login.py -- "$@" <<'EOF'
+        login_folds plain login.py -- "$@"
+        cat >&2 <<'EOF'
 amex: 'login' folds into 'download' — the sign-in budget is too small to spend one on a separate verb (DESIGN.md §L).
   Run 'download', or 'login --check' to report whether this device is registered.
 EOF

@@ -48,6 +48,7 @@ Mounted into the container:
   <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-schwab-web/xdgcache/wealthdb/schwab-web  ->  /cache/collector
   <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web    ->  /debug
+  <TMP>/w-schwab-web/tree/collectors/schwab-web  ->  /app
 
 Override mounts via env:
   SCHWAB_WEB_SECRETS_DIR=/path/to/secrets
@@ -119,6 +120,7 @@ Mounted into the container:
   <TMP>/w-schwab-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-schwab-web/xdgcache/wealthdb/schwab-web  ->  /cache/collector
   <TMP>/w-schwab-web/xdgcache/wealthdb/debug/schwab-web    ->  /debug
+  <TMP>/w-schwab-web/tree/collectors/schwab-web  ->  /app
 
 Override mounts via env:
   SCHWAB_WEB_SECRETS_DIR=/path/to/secrets

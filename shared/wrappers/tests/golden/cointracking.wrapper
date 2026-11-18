@@ -81,6 +81,7 @@ Mounted into the container:
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-cointracking/xdgcache/wealthdb/cointracking  ->  /cache/collector
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking    ->  /debug
+  <TMP>/w-cointracking/tree/collectors/cointracking  ->  /app
 
 Override mounts via env:
   COINTRACKING_SECRETS_DIR=/path/to/secrets
@@ -186,6 +187,7 @@ Mounted into the container:
   <TMP>/w-cointracking/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-cointracking/xdgcache/wealthdb/cointracking  ->  /cache/collector
   <TMP>/w-cointracking/xdgcache/wealthdb/debug/cointracking    ->  /debug
+  <TMP>/w-cointracking/tree/collectors/cointracking  ->  /app
 
 Override mounts via env:
   COINTRACKING_SECRETS_DIR=/path/to/secrets

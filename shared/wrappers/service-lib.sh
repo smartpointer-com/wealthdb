@@ -15,6 +15,9 @@
 #                  unset, the published port.
 # _is_running and _exists read CONTAINER at call time.
 
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/envfile-lib.sh"
+
 SERVICE_ENV="WEALTHDB_$(printf '%s' "$SERVICE" | tr '[:lower:]' '[:upper:]')"
 
 _require_docker() {

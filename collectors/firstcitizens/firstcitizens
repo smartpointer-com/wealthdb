@@ -19,7 +19,6 @@ set -euo pipefail
 NAME=firstcitizens
 ENV_VARS=(FIRSTCITIZENS_USERNAME FIRSTCITIZENS_PASSWORD)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
 VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
 

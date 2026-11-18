@@ -41,6 +41,7 @@ Mounted into the container:
   <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-firstcitizens/xdgcache/wealthdb/firstcitizens  ->  /cache/collector
   <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens    ->  /debug
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens  ->  /app
 
 Override mounts via env:
   FIRSTCITIZENS_SECRETS_DIR=/path/to/secrets
@@ -97,6 +98,7 @@ Mounted into the container:
   <TMP>/w-firstcitizens/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-firstcitizens/xdgcache/wealthdb/firstcitizens  ->  /cache/collector
   <TMP>/w-firstcitizens/xdgcache/wealthdb/debug/firstcitizens    ->  /debug
+  <TMP>/w-firstcitizens/tree/collectors/firstcitizens  ->  /app
 
 Override mounts via env:
   FIRSTCITIZENS_SECRETS_DIR=/path/to/secrets

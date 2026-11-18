@@ -48,7 +48,8 @@ case "$VERB" in
     login)
         # No provider mints a session. `--check` asks each enabled
         # provider for its cheapest answer instead.
-        host_login_probe download.py --bronze-dir "$DATA_DIR" <<'EOF'
+        host_login_probe download.py --bronze-dir "$DATA_DIR"
+        cat >&2 <<'EOF'
 refdata: no-op. No provider has a session to mint.
 To probe each enabled provider, run `./refdata login --check`.
 EOF

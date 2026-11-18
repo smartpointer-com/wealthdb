@@ -11,8 +11,7 @@ set -euo pipefail
 NAME=swissquote
 ENV_VARS=(SWISSQUOTE_USERNAME SWISSQUOTE_PASSWORD)
 HAS_DEBUG=1         # /debug mount for login.py --screenshot-dir / --trace
-HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
-# No /app mount of the checkout, no safety guard and no VNC subcommand.
+# No safety guard and no VNC subcommand.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091

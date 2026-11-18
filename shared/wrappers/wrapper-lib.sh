@@ -10,6 +10,11 @@
 #   4. calls `wrapper_main "$@"`, which dispatches build and prune and
 #      runs every other verb on the common docker-run path.
 #
+# Every verb mounts $HERE over /app, so a run uses the checkout's source
+# and a code edit needs no rebuild. The image holds no source: its
+# Dockerfile copies requirements.txt alone, and a direct `docker run`
+# mounts the checkout too.
+#
 # Caller must SET (before sourcing):
 #   HERE         absolute path to the wrapper's own directory. Convention:
 #                HERE="$(cd "$(dirname "$0")" && pwd)" at the top of each
@@ -29,11 +34,6 @@
 #   HAS_DEBUG=1       Mount $HOST_DEBUG → /debug. Required for collectors
 #                     whose --screenshot-dir / --trace flags write under
 #                     /debug.
-#   HAS_APP_MOUNT=1   Mount $HERE over /app on every verb, so a run uses
-#                     the checkout's source and a code edit needs no
-#                     rebuild. The image then holds no source (its
-#                     Dockerfile copies requirements.txt alone), and a
-#                     direct `docker run` mounts the checkout too.
 #   HAS_SAFETY=1      Refuse to clobber a RUNNING container with the same
 #                     name. Required where a docker rm -f mid-MFA would
 #                     burn a 2FA prompt or evict a VNC handoff. Override
@@ -200,6 +200,7 @@ wrapper_mounts_help() {
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         echo "  $HOST_DEBUG    ->  /debug"
     fi
+    echo "  $HERE  ->  /app"
 }
 
 # ----------------------------------------------------------------------
@@ -208,10 +209,9 @@ wrapper_mounts_help() {
 
 # Implement `./<wrapper> build [extra args]`. When the image's label
 # matches a hash of its inputs and of its base image, print that it is
-# unchanged and exit. The inputs are this directory; with HAS_APP_MOUNT=1
-# they are the Dockerfile and requirements.txt alone, since such an
-# image holds no source and an edit to the code or the docs leaves it
-# as it is. Returning would fall through into docker run. Extra
+# unchanged and exit. The inputs are the Dockerfile and requirements.txt
+# alone: the image holds no source, so an edit to the code or the docs
+# leaves it as it is. Returning would fall through into docker run. Extra
 # arguments are passed through, and the image is built. A hash that
 # fails (no python3 on the host) builds an unlabeled image, which is
 # never skipped.
@@ -225,14 +225,10 @@ wrapper_mounts_help() {
 wrapper_build() {
     shift  # drop "build"
     # The base image's id is part of the inputs: a rebuilt base is a
-    # different image even when this directory did not change.
+    # different image even when its own inputs did not change.
     _wfrom="$(wealthdb_from_id "$HERE/Dockerfile")"
-    if [[ "${HAS_APP_MOUNT:-0}" == "1" ]]; then
-        _winputs=("$HERE/Dockerfile" "$HERE/requirements.txt")
-    else
-        _winputs=("$HERE")
-    fi
-    _whash="$(wealthdb_inputs_hash "${_winputs[@]}" -- "$_wfrom")" || _whash=
+    _whash="$(wealthdb_inputs_hash "$HERE/Dockerfile" "$HERE/requirements.txt" \
+        -- "$_wfrom")" || _whash=
     if wealthdb_build_unchanged "$IMAGE" "$_whash" "$#"; then
         exit 0
     fi
@@ -388,15 +384,13 @@ wrapper_safety_guard() {
 # Common dispatch
 # ----------------------------------------------------------------------
 
-# wrapper_login_folds [PASS_FLAG...] -- ARGS... — the `login` of a
-# collector whose sign-in folds into `download`. When ARGS name the
-# `login` verb and hold none of the PASS_FLAGs, print the notice read
-# from stdin and exit 0 without starting a container. That keeps an
-# orchestrator's login -> download -> load from tripping, saves a
-# container start, and keeps `login` from reaching the container's
-# util-linux /bin/login. A PASS_FLAG, such as a session probe's
-# `--check` or a help flag, takes `login` to the container. Returns
-# otherwise.
+# wrapper_login_folds [PASS_FLAG...] -- ARGS... — is this the bare
+# `login` of a collector whose sign-in folds into `download`? True when
+# ARGS name the `login` verb and hold none of the PASS_FLAGs. The caller
+# then prints its notice and exits 0 without starting a container. That
+# keeps an orchestrator's login -> download -> load from tripping and
+# saves a container start. A PASS_FLAG, such as a session probe's
+# `--check` or a help flag, takes `login` to the container.
 wrapper_login_folds() {
     local -a pass=()
     while [[ $# -gt 0 && "$1" != -- ]]; do
@@ -404,15 +398,14 @@ wrapper_login_folds() {
         shift
     done
     shift
-    [[ "${1:-}" == login ]] || return 0
+    [[ "${1:-}" == login ]] || return 1
     local a p
     for a in "$@"; do
         for p in ${pass[@]+"${pass[@]}"}; do
-            [[ "$a" == "$p" ]] && return 0
+            [[ "$a" == "$p" ]] && return 1
         done
     done
-    cat >&2
-    exit 0
+    return 0
 }
 
 # wrapper_wants_help [args...] — are the args a request for the
@@ -487,9 +480,7 @@ wrapper_main() {
     if [[ "${HAS_DEBUG:-0}" == "1" ]]; then
         docker_args+=(-v "$HOST_DEBUG:/debug")
     fi
-    if [[ "${HAS_APP_MOUNT:-0}" == "1" ]]; then
-        docker_args+=(-v "$HERE:/app")
-    fi
+    docker_args+=(-v "$HERE:/app")
 
     exec docker run "${docker_args[@]}" "$IMAGE" "$@"
 }

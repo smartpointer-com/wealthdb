@@ -43,6 +43,7 @@ Mounted into the container:
   <TMP>/w-chase/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-chase/xdgcache/wealthdb/chase  ->  /cache/collector
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase    ->  /debug
+  <TMP>/w-chase/tree/collectors/chase  ->  /app
 
 Override mounts via env:
   CHASE_SECRETS_DIR=/path/to/secrets
@@ -100,6 +101,7 @@ Mounted into the container:
   <TMP>/w-chase/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-chase/xdgcache/wealthdb/chase  ->  /cache/collector
   <TMP>/w-chase/xdgcache/wealthdb/debug/chase    ->  /debug
+  <TMP>/w-chase/tree/collectors/chase  ->  /app
 
 Override mounts via env:
   CHASE_SECRETS_DIR=/path/to/secrets

@@ -135,29 +135,22 @@ run() {
     exec python3 "/app/$script" ${fixed[@]+"${fixed[@]}"} "$@"
 }
 
-# login_folds [DISPLAY SCRIPT] -- [ARGS...] — the `login` of a collector
-# whose sign-in folds into `download`. Print the notice read from stdin
-# and exit 0. Given SCRIPT, a help flag among ARGS execs it, and so does
-# `--check`, a session probe, after starting DISPLAY (as `run` does).
+# login_folds DISPLAY SCRIPT -- [ARGS...] — the session probe in the
+# `login` of a collector whose sign-in folds into `download`. A help flag
+# among ARGS execs SCRIPT, and so does `--check`, after starting DISPLAY
+# (as `run` does). Returns otherwise, and the caller prints its notice.
+# The notice is never this call's stdin, so SCRIPT reads the
+# entrypoint's own.
 login_folds() {
-    local display="" script=""
-    if [[ "$1" != -- ]]; then
-        display="$1"
-        script="$2"
-        shift 2
-    fi
-    shift
-    if [[ -n "$script" ]]; then
-        exec_if_help "$script" "$@"
-        local a
-        for a in "$@"; do
-            if [[ "$a" == --check ]]; then
-                run "$display" "$script" -- "$@"
-            fi
-        done
-    fi
-    cat >&2
-    exit 0
+    local display="$1" script="$2"
+    shift 3
+    exec_if_help "$script" "$@"
+    local a
+    for a in "$@"; do
+        if [[ "$a" == --check ]]; then
+            run "$display" "$script" -- "$@"
+        fi
+    done
 }
 
 # entrypoint_common VERB [ARGS...] — the verbs every image answers

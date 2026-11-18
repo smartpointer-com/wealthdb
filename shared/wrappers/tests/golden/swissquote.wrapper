@@ -22,6 +22,7 @@ Mounted into the container:
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-swissquote/xdgcache/wealthdb/swissquote  ->  /cache/collector
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote    ->  /debug
+  <TMP>/w-swissquote/tree/collectors/swissquote  ->  /app
 
 Override mounts via env:
   SWISSQUOTE_SECRETS_DIR=/path/to/secrets
@@ -56,6 +57,7 @@ Mounted into the container:
   <TMP>/w-swissquote/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-swissquote/xdgcache/wealthdb/swissquote  ->  /cache/collector
   <TMP>/w-swissquote/xdgcache/wealthdb/debug/swissquote    ->  /debug
+  <TMP>/w-swissquote/tree/collectors/swissquote  ->  /app
 
 Override mounts via env:
   SWISSQUOTE_SECRETS_DIR=/path/to/secrets

@@ -48,8 +48,6 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME=schwab-api
-# The login container's build and run: the checkout's source over /app.
-HAS_APP_MOUNT=1
 
 cmd="${1:-help}"
 
@@ -89,11 +87,11 @@ case "$cmd" in
         # hack). `recompress` is the manual sweep converting plain-JSON
         # dumps to the .json.zst form download writes. `prune` walks the
         # bronze tree plus the trace cache the containerised `login`
-        # writes — DEBUG_DIR resolves the same there as it does in
-        # wrapper-lib, so both halves name one dir. The
-        # default dir flags come first so an explicit flag in the
-        # forwarded args overrides them (argparse last-wins); in-flight
-        # dumps and captures are protected by the verb's own age guard.
+        # writes. Both halves take DEBUG_DIR from collector_default_paths,
+        # so they name one dir. The default dir flags come first so an
+        # explicit flag in the forwarded args overrides them (argparse
+        # last-wins); in-flight dumps and captures are protected by the
+        # verb's own age guard.
         # shellcheck disable=SC1091
         source "$HERE/../../shared/wrappers/host-lib.sh"
         shift

@@ -548,7 +548,7 @@ def main(argv=None) -> int:
                     "files (see the module docstring).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    # Data-root resolution matches the collector wrappers (host-lib.sh):
+    # Data-root resolution matches collector_default_paths (paths-lib.sh):
     # the fleet-wide WEALTHDB_DATA_ROOT holds every collector's subtree,
     # falling back to the XDG default. The wrappers append /<collector>;
     # dedup sweeps the whole root, so it uses the root itself.

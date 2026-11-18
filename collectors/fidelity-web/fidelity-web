@@ -32,7 +32,6 @@ set -euo pipefail
 NAME=fidelity-web
 ENV_VARS=(FIDELITY_WEB_USERNAME FIDELITY_WEB_PASSWORD FIDELITY_USERNAME FIDELITY_PASSWORD)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live MFA / VNC handoff
 VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
 
@@ -124,28 +123,20 @@ fi
 # login-and-exit persists nothing, and no flag passes through. Use
 # `download` (login is folded in) or `vnc-login` for the first-time /
 # re-auth VNC-assisted profile seed.
-wrapper_login_folds -- "$@" <<'EOF'
+if wrapper_login_folds -- "$@"; then
+    cat >&2 <<'EOF'
 fidelity-web: 'login' folds into 'download' — nothing to persist.
   The Fidelity session is browser-lifetime only. Use instead:
     vnc-login   first-time / re-auth via VNC-assisted MFA
     download    one-shot login -> walk (login is folded in)
 EOF
+    exit 0
+fi
 
-# The file-only verbs (load / prune / recompress) run host-side on the
-# collector's .venv python (via host_run): pure file walks + SQLite /
-# zstd work that needs no Camoufox / Playwright / container, and running
-# host-side bypasses the single-writer safety guard so it can run while a
-# `download` container is mid-flight (an in-flight dump is protected by
-# prune's own age guard). Each resolves the uniform directory-override
-# flags through the shared host helper. `host_resolve_dirs <verb> "$@"`
-# consumes --data-dir / --secrets-dir / --silver-db (both `--flag VALUE`
-# and `--flag=VALUE`). It sets DATA_DIR (the bronze tree), SILVER_DB
-# (<data>/fidelity-web.db by default, or ${FIDELITY_WEB_SILVER_DB}) and
-# DEBUG_DIR (the /debug mount source), and leaves the rest in
-# FORWARD_ARGS. It takes the verb, so --silver-db is rejected on prune /
-# recompress, which never read it. These verbs thus honour the dir flags
-# like every other, and --help / the real flags reach the inner .py's
-# argparse rather than a hand-rolled help that hides --force et al.
+# The file-only verbs run host-side on the collector's .venv (host_run).
+# They need no browser, and they bypass the single-writer guard, so they
+# can run while a download is mid-flight (prune's own age guard protects
+# an in-flight dump). Each resolves the dir flags with host_resolve_dirs.
 
 # `./fidelity-web load [args...]` — parse bronze → silver SQLite.
 if [[ "${1:-}" == "load" ]]; then
@@ -156,8 +147,8 @@ fi
 
 # `./fidelity-web prune [args...]` — reclaim disk (host-side walk): the
 # bronze tree, plus the /debug cache the container's --screenshot-dir /
-# --trace write to. host_resolve_dirs resolves DEBUG_DIR exactly as
-# wrapper-lib resolves HOST_DEBUG, so both halves name the same dir.
+# --trace write to. Both halves take DEBUG_DIR from
+# collector_default_paths, so they name the same dir.
 if [[ "${1:-}" == "prune" ]]; then
     shift
     host_resolve_dirs prune "$@"

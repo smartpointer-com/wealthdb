@@ -16,7 +16,6 @@ set -euo pipefail
 NAME=schwab-web
 ENV_VARS=(SCHWAB_LOGIN_ID SCHWAB_PASSWORD)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live MFA/VNC session
 VNC_SUBCOMMANDS=(vnc-login)   # the browser-over-VNC verb
 
@@ -97,11 +96,14 @@ fi
 # spin. schwab-web is a one-shot scraper: the Firefox session is minted
 # inside `download` (CLI-MFA on stdin) and persists nothing separately, so
 # there is no standalone login step and no flag passes through.
-wrapper_login_folds -- "$@" <<'EOF'
+if wrapper_login_folds -- "$@"; then
+    cat >&2 <<'EOF'
 schwab-web: 'login' folds into 'download' — nothing to persist.
   This one-shot scraper mints its session inside 'download'
   (CLI-MFA prompt on stdin). Run 'download' directly, or
   'vnc-login' when the CLI-MFA selectors drift.
 EOF
+    exit 0
+fi
 
 wrapper_main "$@"

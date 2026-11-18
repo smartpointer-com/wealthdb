@@ -1,9 +1,8 @@
 # Build context excludes for the base images (context is shared/).
 #
 # base-python and base-playwright do `COPY collectorkit /opt/collectorkit`
-# — a whole-directory copy, so unlike the collectors' copy-these-files
-# Dockerfiles, everything living under shared/collectorkit lands in the
-# image and in the layer's cache key.
+# — a whole-directory copy, so everything under shared/collectorkit
+# lands in the image and in the layer's cache key.
 #
 # The tooling writes into that same tree: `make test-collectorkit` builds
 # its venv at shared/collectorkit/.venv (29MB) and pytest leaves

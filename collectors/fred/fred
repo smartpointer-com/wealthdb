@@ -40,7 +40,8 @@ case "$VERB" in
         # `login` is a no-op. `--check` is a real probe: download.py resolves
         # the key and asks FRED for one observation, so a key that is present
         # but rejected fails here rather than at the next download.
-        host_login_probe download.py <<'EOF'
+        host_login_probe download.py
+        cat >&2 <<'EOF'
 fred: no-op. FRED is an API-key-authenticated REST source — there is no
 interactive login / session to mint. Put your key in ~/.secrets/fred.env
 (FRED_API_KEY=...), then run `./fred download`. To verify the key is

@@ -22,8 +22,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/shared/wrappers/image-tag.sh"
-# shellcheck disable=SC1091
-. "$ROOT/shared/wrappers/envfile-lib.sh"
 wealthdb_export_image_tag "$ROOT" || exit 2
 WEALTHDB="${WEALTHDB_BIN:-$ROOT/wealthdb/wealthdb}"
 # The helpers mcp shares with web; the server listens on the published

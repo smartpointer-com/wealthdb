@@ -228,7 +228,9 @@ exit: 0
 --- stdout
 --- stderr
 schwab-web: 'login' folds into 'download' — nothing to persist.
-  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'.
+  This one-shot scraper mints its session inside 'download'
+  (CLI-MFA prompt on stdin). Run 'download' directly, or
+  'vnc-login' when the CLI-MFA selectors drift.
 === login --help
 --- calls
 lib: mkdir
@@ -238,7 +240,9 @@ exit: 0
 --- stdout
 --- stderr
 schwab-web: 'login' folds into 'download' — nothing to persist.
-  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'.
+  This one-shot scraper mints its session inside 'download'
+  (CLI-MFA prompt on stdin). Run 'download' directly, or
+  'vnc-login' when the CLI-MFA selectors drift.
 === login --check
 --- calls
 lib: mkdir
@@ -248,7 +252,9 @@ exit: 0
 --- stdout
 --- stderr
 schwab-web: 'login' folds into 'download' — nothing to persist.
-  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'.
+  This one-shot scraper mints its session inside 'download'
+  (CLI-MFA prompt on stdin). Run 'download' directly, or
+  'vnc-login' when the CLI-MFA selectors drift.
 === download --dry-run --lookback 1w
 --- calls
 lib: mkdir

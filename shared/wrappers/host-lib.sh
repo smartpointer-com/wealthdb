@@ -16,7 +16,9 @@
 # A host wrapper reads, in order:
 #   host_begin VERB... -- "$@"   help, the verb check, the paths
 #   host_source_env_file         where the collector takes a credential
-#   case "$VERB" in ... esac     one host_run or host_login_probe per verb
+#   case "$VERB" in ... esac     one host_run per verb; a `login` with
+#                                no session calls host_login_probe,
+#                                then prints its notice
 #
 # host_resolve_dirs "$@" POPULATES (for the caller):
 #   SECRETS_DIR, DATA_DIR, SILVER_DB  — the resolved paths.
@@ -53,9 +55,9 @@ host_python() {
 # <data-dir>/<name>.db. VERB is the subcommand being run: a --silver-db
 # on a verb that does not read the silver DB exits 2.
 #
-# DEBUG_DIR is resolved exactly as wrapper-lib.sh resolves HOST_DEBUG, so
-# a hybrid collector's Docker and host-side halves always name the same
-# dir. Unlike DATA_DIR it is NOT created — a debug dir that does not exist
+# DEBUG_DIR comes from collector_default_paths, like wrapper-lib.sh's
+# HOST_DEBUG, so a hybrid collector's halves name one dir. Unlike
+# DATA_DIR it is NOT created — a debug dir that does not exist
 # means no debug output was ever written, which `prune` treats as a no-op.
 host_resolve_dirs() {
     collector_default_paths
@@ -110,16 +112,15 @@ host_run() {
     exec "$py" "$HERE/$script" "$@" ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}
 }
 
-# host_login_probe SCRIPT [ARGS...] — the `login` of a collector with no
-# session to mint. With --check among FORWARD_ARGS, host_run SCRIPT ARGS:
-# the script probes the credential or the source. Otherwise print the
-# notice read from stdin and exit 0.
+# host_login_probe SCRIPT [ARGS...] — the session probe in the `login`
+# of a collector with no session to mint. With --check among
+# FORWARD_ARGS, host_run SCRIPT ARGS: the script probes the credential or
+# the source. Returns otherwise, and the caller prints its notice. The
+# notice is never this call's stdin, so SCRIPT reads the wrapper's own.
 host_login_probe() {
     if host_has_flag --check ${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}; then
         host_run "$@"
     fi
-    cat >&2
-    exit 0
 }
 
 # host_print_banner FILE — print FILE's leading comment banner (every
@@ -154,7 +155,7 @@ host_source_env_file() {
     local name="$NAME" prefix="$ENV_PREFIX" var f
     if [[ -n "${1:-}" ]]; then
         name="$1"
-        prefix="$(printf '%s' "$name" | tr 'a-z-' 'A-Z_')"
+        prefix="$(collector_env_prefix "$name")"
     fi
     var="${prefix}_ENV_FILE"
     f="${!var:-$SECRETS_DIR/$name.env}"

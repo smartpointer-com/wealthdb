@@ -26,6 +26,7 @@ Mounted into the container:
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web  ->  /cache/collector
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web    ->  /debug
+  <TMP>/w-ubs-web/tree/collectors/ubs-web  ->  /app
 
 Override mounts via env:
   UBS_WEB_SECRETS_DIR=/path/to/secrets
@@ -67,6 +68,7 @@ Mounted into the container:
   <TMP>/w-ubs-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-ubs-web/xdgcache/wealthdb/ubs-web  ->  /cache/collector
   <TMP>/w-ubs-web/xdgcache/wealthdb/debug/ubs-web    ->  /debug
+  <TMP>/w-ubs-web/tree/collectors/ubs-web  ->  /app
 
 Override mounts via env:
   UBS_WEB_SECRETS_DIR=/path/to/secrets

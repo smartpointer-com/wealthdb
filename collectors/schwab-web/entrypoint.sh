@@ -8,9 +8,7 @@
 
 set -euo pipefail
 
-# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
-# x11vnc / camoufox-cache bootstrap, baked into the base image at
-# /opt/entrypoint-lib.sh.
+# The verb engine, baked into the base image (shared/images/entrypoint-lib.sh).
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -30,9 +28,11 @@ case "$verb" in
     load)                run plain load.py -- "$@" ;;
     collapse-statements) run plain dedup.py -- "$@" ;;
     login)
-        login_folds -- "$@" <<'EOF'
+        cat >&2 <<'EOF'
 schwab-web: 'login' folds into 'download' — nothing to persist.
-  Run 'download' (one-shot CLI-MFA scrape), or 'vnc-login'.
+  This one-shot scraper mints its session inside 'download'
+  (CLI-MFA prompt on stdin). Run 'download' directly, or
+  'vnc-login' when the CLI-MFA selectors drift.
 EOF
         ;;
     prune|sh|bash) entrypoint_common "$verb" "$@" ;;

@@ -55,7 +55,6 @@ WORKDIR /app
 COPY collectorkit /opt/collectorkit
 RUN pip install /opt/collectorkit
 
-# Shared Xvfb / x11vnc / browser-cache bootstrap, sourced by the entrypoint
-# of every collector that runs a browser headed. One copy here rather than
-# the same ~50 lines pasted into each entrypoint.
+# The entrypoint engine (verb dispatch, Xvfb / x11vnc and the
+# browser-cache link), sourced by every collector's entrypoint.
 COPY images/entrypoint-lib.sh /opt/entrypoint-lib.sh

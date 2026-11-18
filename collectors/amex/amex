@@ -23,7 +23,6 @@ set -euo pipefail
 NAME=amex
 ENV_VARS=(AMEX_USERNAME AMEX_PASSWORD)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 HAS_SAFETY=1        # refuse to evict a live container mid-2FA / mid-VNC
 VNC_SUBCOMMANDS=(explore vnc-login)   # the browser-over-VNC verbs
 
@@ -99,9 +98,12 @@ fi
 # `-h` pass through too: the parser's usage is what the footer below
 # promises for every subcommand, and printing it must not be traded for the
 # fold notice.
-wrapper_login_folds --check --help -h -- "$@" <<'EOF'
+if wrapper_login_folds --check --help -h -- "$@"; then
+    cat >&2 <<'EOF'
 amex: 'login' folds into 'download' — the sign-in budget is too small to spend one on a separate verb (DESIGN.md §L).
   Run 'download', or 'login --check' to report whether this device is registered.
 EOF
+    exit 0
+fi
 
 wrapper_main "$@"

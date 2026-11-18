@@ -6,9 +6,7 @@
 
 set -euo pipefail
 
-# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
-# x11vnc / camoufox-cache bootstrap, baked into the base image at
-# /opt/entrypoint-lib.sh.
+# The verb engine, baked into the base image (shared/images/entrypoint-lib.sh).
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -22,11 +20,9 @@ case "$verb" in
     load)       run plain load.py --bronze-dir /data --silver-db /data/fidelity-web.db -- "$@" ;;
     recompress) run plain recompress.py -- "$@" ;;
     login)
-        login_folds -- "$@" <<'EOF'
+        cat >&2 <<'EOF'
 fidelity-web: 'login' folds into 'download' — nothing to persist.
-  The Fidelity session is browser-lifetime only, so
-  there's nothing to persist from a login-and-exit.
-  Use instead:
+  The Fidelity session is browser-lifetime only. Use instead:
     vnc-login   first-time / re-auth via VNC-assisted MFA
     download    one-shot login -> walk (login is folded in)
 EOF

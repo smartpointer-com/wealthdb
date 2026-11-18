@@ -43,6 +43,7 @@ Mounted into the container:
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at  ->  /cache/collector
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at    ->  /debug
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at  ->  /app
 
 Override mounts via env:
   RAIFFEISEN_AT_SECRETS_DIR=/path/to/secrets
@@ -101,6 +102,7 @@ Mounted into the container:
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/raiffeisen_at  ->  /cache/collector
   <TMP>/w-raiffeisen_at/xdgcache/wealthdb/debug/raiffeisen_at    ->  /debug
+  <TMP>/w-raiffeisen_at/tree/collectors/raiffeisen_at  ->  /app
 
 Override mounts via env:
   RAIFFEISEN_AT_SECRETS_DIR=/path/to/secrets

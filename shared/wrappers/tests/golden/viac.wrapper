@@ -28,6 +28,7 @@ Mounted into the container:
   <TMP>/w-viac/xdgdata/wealthdb/viac     ->  /data
   <TMP>/w-viac/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-viac/xdgcache/wealthdb/viac  ->  /cache/collector
+  <TMP>/w-viac/tree/collectors/viac  ->  /app
 
 Override mounts via env:
   VIAC_SECRETS_DIR=/path/to/secrets
@@ -74,6 +75,7 @@ Mounted into the container:
   <TMP>/w-viac/xdgdata/wealthdb/viac     ->  /data
   <TMP>/w-viac/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-viac/xdgcache/wealthdb/viac  ->  /cache/collector
+  <TMP>/w-viac/tree/collectors/viac  ->  /app
 
 Override mounts via env:
   VIAC_SECRETS_DIR=/path/to/secrets

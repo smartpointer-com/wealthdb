@@ -7,9 +7,9 @@
 # .image-tag stops the wrapper. A build whose inputs hash matches the
 # image's wealthdb.inputs label is skipped, for the engine, a collector
 # and the shared bases; an extra argument, a changed input or a rebuilt
-# base image builds. A HAS_APP_MOUNT collector's inputs are its
-# Dockerfile and requirements.txt alone. The wrappers run from a copy of the tree, so the
-# checkout's own .image-tag plays no part. A stubbed docker on PATH
+# base image builds. A collector's inputs are its Dockerfile and
+# requirements.txt alone. The wrappers run from a copy of the tree, so
+# the checkout's own .image-tag plays no part. A stubbed docker on PATH
 # records the argv; nothing real is built.
 set -uo pipefail
 # The makes this test starts read only what it gives them: an outer
@@ -250,6 +250,7 @@ fi
 skipdir="$TMP/skipcol"
 mkdir -p "$skipdir"
 printf 'FROM wealthdb/base-python:${WEALTHDB_IMAGE_TAG}\n' > "$skipdir/Dockerfile"
+printf 'requests>=2\n' > "$skipdir/requirements.txt"
 cat > "$TMP/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = build ]; then
@@ -270,98 +271,63 @@ done
 printf '%s\n' "${STUB_ID:-sha256:from}"
 STUB
 chmod +x "$TMP/bin/docker"
-skiphash="$(hash_of "$skipdir" -- sha256:from)"
-out="$(
-    export PATH="$TMP/bin:$PATH" STUB_LABEL="$skiphash" WEALTHDB_IMAGE_TAG=feature
-    NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=(); HERE="$skipdir"
-    unset TESTCOL_IMAGE
-    # shellcheck disable=SC1091
-    source "$TREE/shared/wrappers/wrapper-lib.sh"
-    wrapper_init
-    wrapper_build build
-)"
+# skip_build LABEL [ARGS...]: `build ARGS` of a collector in skipdir
+# whose image carries LABEL.
+skip_build() {
+    (
+        export PATH="$TMP/bin:$PATH" STUB_LABEL="$1" WEALTHDB_IMAGE_TAG=feature
+        shift
+        NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=(); HERE="$skipdir"
+        unset TESTCOL_IMAGE
+        # shellcheck disable=SC1091
+        source "$TREE/shared/wrappers/wrapper-lib.sh"
+        wrapper_init
+        wrapper_build build "$@"
+    )
+}
+skiphash="$(hash_of "$skipdir/Dockerfile" "$skipdir/requirements.txt" -- sha256:from)"
+out="$(skip_build "$skiphash")"
 if grep -qx 'build: wealthdb/testcol:feature unchanged' <<<"$out" \
     && ! grep -qx BUILT <<<"$out"; then
     ok "a labeled image is not rebuilt"
 else
     bad "a labeled image is not rebuilt ($out)"
 fi
-out="$(
-    export PATH="$TMP/bin:$PATH" STUB_LABEL=other WEALTHDB_IMAGE_TAG=feature
-    NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=(); HERE="$skipdir"
-    unset TESTCOL_IMAGE
-    # shellcheck disable=SC1091
-    source "$TREE/shared/wrappers/wrapper-lib.sh"
-    wrapper_init
-    wrapper_build build
-)"
+out="$(skip_build other)"
 if grep -qx BUILT <<<"$out"; then
     ok "a different label rebuilds the image"
 else
     bad "a different label rebuilds the image ($out)"
 fi
-out="$(
-    export PATH="$TMP/bin:$PATH" STUB_LABEL="$skiphash" WEALTHDB_IMAGE_TAG=feature
-    NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=(); HERE="$skipdir"
-    unset TESTCOL_IMAGE
-    # shellcheck disable=SC1091
-    source "$TREE/shared/wrappers/wrapper-lib.sh"
-    wrapper_init
-    wrapper_build build --no-cache
-)"
+out="$(skip_build "$skiphash" --no-cache)"
 if grep -qx BUILT <<<"$out"; then
     ok "extra build arguments rebuild a labeled image"
 else
     bad "extra build arguments rebuild a labeled image ($out)"
 fi
-
-out="$(
-    export PATH="$TMP/bin:$PATH" STUB_LABEL="$skiphash" STUB_ID=sha256:rebuilt WEALTHDB_IMAGE_TAG=feature
-    NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=(); HERE="$skipdir"
-    unset TESTCOL_IMAGE
-    # shellcheck disable=SC1091
-    source "$TREE/shared/wrappers/wrapper-lib.sh"
-    wrapper_init
-    wrapper_build build
-)"
+out="$(STUB_ID=sha256:rebuilt skip_build "$skiphash")"
 if grep -qx BUILT <<<"$out"; then
     ok "a rebuilt base image rebuilds the collector"
 else
     bad "a rebuilt base image rebuilds the collector ($out)"
 fi
-# A HAS_APP_MOUNT image holds no source: its inputs are the Dockerfile
-# and requirements.txt, so a doc or code edit beside them builds nothing
-# and an edit to requirements.txt builds.
-mountdir="$TMP/mountcol"
-mkdir -p "$mountdir"
-cp "$skipdir/Dockerfile" "$mountdir/"
-printf 'requests>=2\n' > "$mountdir/requirements.txt"
-mount_build() {
-    (
-        export PATH="$TMP/bin:$PATH" STUB_LABEL="$1" WEALTHDB_IMAGE_TAG=feature
-        NAME=testcol; ENV_PREFIX=TESTCOL; ENV_VARS=(); HERE="$mountdir"; HAS_APP_MOUNT=1
-        unset TESTCOL_IMAGE
-        # shellcheck disable=SC1091
-        source "$TREE/shared/wrappers/wrapper-lib.sh"
-        wrapper_init
-        wrapper_build build
-    )
-}
-mounthash="$(hash_of "$mountdir/Dockerfile" "$mountdir/requirements.txt" -- sha256:from)"
-printf 'notes\n' > "$mountdir/README.md"
-printf 'print(1)\n' > "$mountdir/download.py"
-out="$(mount_build "$mounthash")"
+# The image holds no source: its inputs are the Dockerfile and
+# requirements.txt, so a doc or code edit beside them builds nothing and
+# an edit to requirements.txt builds.
+printf 'notes\n' > "$skipdir/README.md"
+printf 'print(1)\n' > "$skipdir/download.py"
+out="$(skip_build "$skiphash")"
 if grep -qx 'build: wealthdb/testcol:feature unchanged' <<<"$out"; then
-    ok "a mounted image ignores an edit to its code or docs"
+    ok "an edit to the code or docs builds nothing"
 else
-    bad "a mounted image ignores an edit to its code or docs"
+    bad "an edit to the code or docs builds nothing ($out)"
 fi
-printf 'requests>=3\n' > "$mountdir/requirements.txt"
-out="$(mount_build "$mounthash")"
+printf 'requests>=3\n' > "$skipdir/requirements.txt"
+out="$(skip_build "$skiphash")"
 if grep -qx BUILT <<<"$out"; then
-    ok "a mounted image rebuilds on a requirements edit"
+    ok "a requirements edit rebuilds the image"
 else
-    bad "a mounted image rebuilds on a requirements edit"
+    bad "a requirements edit rebuilds the image ($out)"
 fi
 
 from="$(. "$TREE/shared/wrappers/image-tag.sh"; WEALTHDB_IMAGE_TAG=feature wealthdb_from_ref "$skipdir/Dockerfile")"

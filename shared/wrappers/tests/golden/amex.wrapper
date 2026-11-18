@@ -48,6 +48,7 @@ Mounted into the container:
   <TMP>/w-amex/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-amex/xdgcache/wealthdb/amex  ->  /cache/collector
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex    ->  /debug
+  <TMP>/w-amex/tree/collectors/amex  ->  /app
 
 Override mounts via env:
   AMEX_SECRETS_DIR=/path/to/secrets
@@ -112,6 +113,7 @@ Mounted into the container:
   <TMP>/w-amex/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-amex/xdgcache/wealthdb/amex  ->  /cache/collector
   <TMP>/w-amex/xdgcache/wealthdb/debug/amex    ->  /debug
+  <TMP>/w-amex/tree/collectors/amex  ->  /app
 
 Override mounts via env:
   AMEX_SECRETS_DIR=/path/to/secrets

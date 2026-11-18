@@ -245,9 +245,7 @@ exit: 0
 --- stdout
 --- stderr
 fidelity-web: 'login' folds into 'download' — nothing to persist.
-  The Fidelity session is browser-lifetime only, so
-  there's nothing to persist from a login-and-exit.
-  Use instead:
+  The Fidelity session is browser-lifetime only. Use instead:
     vnc-login   first-time / re-auth via VNC-assisted MFA
     download    one-shot login -> walk (login is folded in)
 === login --help
@@ -259,9 +257,7 @@ exit: 0
 --- stdout
 --- stderr
 fidelity-web: 'login' folds into 'download' — nothing to persist.
-  The Fidelity session is browser-lifetime only, so
-  there's nothing to persist from a login-and-exit.
-  Use instead:
+  The Fidelity session is browser-lifetime only. Use instead:
     vnc-login   first-time / re-auth via VNC-assisted MFA
     download    one-shot login -> walk (login is folded in)
 === login --check
@@ -273,9 +269,7 @@ exit: 0
 --- stdout
 --- stderr
 fidelity-web: 'login' folds into 'download' — nothing to persist.
-  The Fidelity session is browser-lifetime only, so
-  there's nothing to persist from a login-and-exit.
-  Use instead:
+  The Fidelity session is browser-lifetime only. Use instead:
     vnc-login   first-time / re-auth via VNC-assisted MFA
     download    one-shot login -> walk (login is folded in)
 === download --dry-run --lookback 1w

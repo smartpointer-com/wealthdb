@@ -34,6 +34,12 @@ _collector_envvar() {
     echo "${!var:-$2}"
 }
 
+# collector_env_prefix NAME — echo NAME's env-var prefix, in upper snake
+# case: "fidelity-web" gives "FIDELITY_WEB".
+collector_env_prefix() {
+    printf '%s' "$1" | tr 'a-z-' 'A-Z_'
+}
+
 # collector_default_paths — derive ENV_PREFIX when unset, then set
 # SECRETS_DIR, DATA_DIR and DEBUG_DIR from the environment and the
 # defaults. DEBUG_DIR is the debug/trace cache (screenshots, HTML
@@ -41,7 +47,7 @@ _collector_envvar() {
 # the verbs that write it run in a container, and a hybrid collector's
 # halves name the same dir through this one rule.
 collector_default_paths() {
-    : "${ENV_PREFIX:=$(printf '%s' "$NAME" | tr 'a-z-' 'A-Z_')}"
+    : "${ENV_PREFIX:=$(collector_env_prefix "$NAME")}"
     local secrets_default="${WEALTHDB_SECRETS_DIR:-$HOME/.secrets}"
     SECRETS_DIR="$(_collector_envvar SECRETS_DIR "$secrets_default")"
 

@@ -37,7 +37,8 @@ case "$VERB" in
     login)
         # No portal mints a session. `--check` asks each one for its
         # cheapest answer instead.
-        host_login_probe download.py <<'EOF'
+        host_login_probe download.py
+        cat >&2 <<'EOF'
 curves: no-op. The portals are public; there is no session to mint.
 To ask each portal for its cheapest answer, run `./curves login --check`.
 EOF

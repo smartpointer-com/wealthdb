@@ -54,6 +54,7 @@ Mounted into the container:
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-equityzen/xdgcache/wealthdb/equityzen  ->  /cache/collector
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen    ->  /debug
+  <TMP>/w-equityzen/tree/collectors/equityzen  ->  /app
 
 Override mounts via env:
   EQUITYZEN_SECRETS_DIR=/path/to/secrets
@@ -123,6 +124,7 @@ Mounted into the container:
   <TMP>/w-equityzen/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-equityzen/xdgcache/wealthdb/equityzen  ->  /cache/collector
   <TMP>/w-equityzen/xdgcache/wealthdb/debug/equityzen    ->  /debug
+  <TMP>/w-equityzen/tree/collectors/equityzen  ->  /app
 
 Override mounts via env:
   EQUITYZEN_SECRETS_DIR=/path/to/secrets

@@ -38,6 +38,7 @@ Mounted into the container:
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-relevate/xdgcache/wealthdb/relevate  ->  /cache/collector
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate    ->  /debug
+  <TMP>/w-relevate/tree/collectors/relevate  ->  /app
 
 Override mounts via env (or in <TMP>/w-relevate/xdgconfig/relevate.cfg):
   RELEVATE_SECRETS_DIR=/path/to/secrets
@@ -98,6 +99,7 @@ Mounted into the container:
   <TMP>/w-relevate/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-relevate/xdgcache/wealthdb/relevate  ->  /cache/collector
   <TMP>/w-relevate/xdgcache/wealthdb/debug/relevate    ->  /debug
+  <TMP>/w-relevate/tree/collectors/relevate  ->  /app
 
 Override mounts via env (or in <TMP>/w-relevate/xdgconfig/relevate.cfg):
   RELEVATE_SECRETS_DIR=/path/to/secrets

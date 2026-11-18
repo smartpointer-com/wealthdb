@@ -62,9 +62,9 @@ NAME=col
 source "$HERE/../host-lib.sh"
 host_begin login load -- "\$@"
 case "\$VERB" in
-    login) host_login_probe probe.py --key "\$SECRETS_DIR/k" <<'NOTE'
-col: no-op.
-NOTE
+    login)
+        host_login_probe probe.py --key "\$SECRETS_DIR/k"
+        echo "col: no-op." >&2
         ;;
     load) host_run load.py --bronze-dir "\$DATA_DIR" ;;
 esac

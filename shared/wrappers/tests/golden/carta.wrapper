@@ -57,6 +57,7 @@ Mounted into the container:
   <TMP>/w-carta/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-carta/xdgcache/wealthdb/carta  ->  /cache/collector
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta    ->  /debug
+  <TMP>/w-carta/tree/collectors/carta  ->  /app
 
 Override mounts via env:
   CARTA_SECRETS_DIR=/path/to/secrets
@@ -130,6 +131,7 @@ Mounted into the container:
   <TMP>/w-carta/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-carta/xdgcache/wealthdb/carta  ->  /cache/collector
   <TMP>/w-carta/xdgcache/wealthdb/debug/carta    ->  /debug
+  <TMP>/w-carta/tree/collectors/carta  ->  /app
 
 Override mounts via env:
   CARTA_SECRETS_DIR=/path/to/secrets

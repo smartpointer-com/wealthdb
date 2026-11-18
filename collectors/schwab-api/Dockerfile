@@ -14,9 +14,9 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install -r requirements.txt
 
-# No source: every run of the login container mounts the checkout over
-# /app (HAS_APP_MOUNT in the wrapper), entrypoint.sh included, so the
-# image holds only what the code runs on.
+# No source: every run of the login container mounts the checkout
+# over /app, entrypoint.sh included, so the image holds only what the
+# code runs on.
 
 # Image default user is root. The wrapper runs the container with
 # `--user $(id -u):$(id -g)` so files written to /secrets have

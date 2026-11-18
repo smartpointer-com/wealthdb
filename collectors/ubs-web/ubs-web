@@ -10,7 +10,6 @@ set -euo pipefail
 NAME=ubs-web
 ENV_VARS=(UBS_CONTRACT_NUMBER)
 HAS_DEBUG=1
-HAS_APP_MOUNT=1     # the checkout's source over /app on every verb
 VNC_SUBCOMMANDS=(explore)    # the only browser-over-VNC verb
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

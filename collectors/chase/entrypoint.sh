@@ -11,9 +11,7 @@
 
 set -euo pipefail
 
-# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
-# x11vnc / camoufox-cache bootstrap, baked into the base image at
-# /opt/entrypoint-lib.sh.
+# The verb engine, baked into the base image (shared/images/entrypoint-lib.sh).
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
@@ -29,7 +27,8 @@ case "$verb" in
     vnc-login) run vnc:vnc-login login.py --no-cli-mfa --bronze-dir /data -- "$@" ;;
     login)
         # `login --check` is a read-only session probe under Xvfb.
-        login_folds xvfb login.py -- "$@" <<'EOF'
+        login_folds xvfb login.py -- "$@"
+        cat >&2 <<'EOF'
 chase: 'login' folds into 'download' — nothing to persist (the session dies with Firefox; §F).
   Run 'download' (one-shot login + scrape), or 'login --check' to probe a session.
 EOF

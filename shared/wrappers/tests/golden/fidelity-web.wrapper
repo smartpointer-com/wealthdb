@@ -52,6 +52,7 @@ Mounted into the container:
   <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-fidelity-web/xdgcache/wealthdb/fidelity-web  ->  /cache/collector
   <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web    ->  /debug
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web  ->  /app
 
 Override mounts via env:
   FIDELITY_WEB_SECRETS_DIR=/path/to/secrets
@@ -127,6 +128,7 @@ Mounted into the container:
   <TMP>/w-fidelity-web/xdgcache/wealthdb/startupcache  ->  /cache/startupcache
   <TMP>/w-fidelity-web/xdgcache/wealthdb/fidelity-web  ->  /cache/collector
   <TMP>/w-fidelity-web/xdgcache/wealthdb/debug/fidelity-web    ->  /debug
+  <TMP>/w-fidelity-web/tree/collectors/fidelity-web  ->  /app
 
 Override mounts via env:
   FIDELITY_WEB_SECRETS_DIR=/path/to/secrets

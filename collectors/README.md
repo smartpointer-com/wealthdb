@@ -211,9 +211,6 @@ with `-e`). `ENV_PREFIX` is `NAME` in upper snake case unless the
 wrapper sets it. It may opt into these knobs:
 
 - `HAS_DEBUG`: a `/debug` mount for `--screenshot-dir` and `--trace`.
-- `HAS_APP_MOUNT`: the checkout's source over `/app` on every verb.
-  The image then holds no source, so only an edit to the Dockerfile
-  or `requirements.txt` rebuilds it.
 - `HAS_SAFETY`: refuse to clobber a live container mid-MFA.
 - `VNC_SUBCOMMANDS`: the verbs that get a forwarded VNC port.
 - `HAS_ENV_FILE`: source the credentials env file on the host, so the
@@ -229,8 +226,8 @@ A bare `login` then prints a notice and starts no container. `wrapper_main`
 runs `build`, and runs `prune` on the host through
 `wrapper_host_prune`; fidelity-web and schwab-api route `prune`
 themselves. The library bind-mounts the dirs listed under Docker mounts
-and Caches (plus `/silver`, `/debug`, `/app` when applicable) and runs
-as `--user $(id -u):$(id -g)`.
+and Caches, plus the checkout over `/app` (and `/silver` and `/debug`
+when applicable), and runs as `--user $(id -u):$(id -g)`.
 
 A **host-venv** wrapper (for tools that need no browser) sets `NAME`,
 sources [`shared/wrappers/host-lib.sh`](../shared/wrappers/host-lib.sh)
@@ -244,9 +241,9 @@ and calls these:
   by `<FILE>_ENV_FILE` in upper snake case.
 - `host_run SCRIPT [ARGS...]` execs the `.py` on the collector's `.venv`
   with ARGS, then `FORWARD_ARGS`.
-- `host_login_probe SCRIPT [ARGS...]` is the `login` of a source with no
-  session. `--check` runs SCRIPT; a bare `login` prints the notice on
-  its stdin.
+- `host_login_probe SCRIPT [ARGS...]` is the probe in the `login` of a
+  source with no session. `--check` runs SCRIPT. Otherwise it returns,
+  and the wrapper prints its notice.
 
 ### Collector CLI conventions
 
@@ -761,22 +758,27 @@ of `collectors/`); **the presence of a Dockerfile decides the runtime.**
 
 - A **Docker** collector has a `Dockerfile` + `entrypoint.sh`. The
   Dockerfile `FROM`s a shared base
-  ([`shared/images/`](../shared/images/)): `wealthdb/base-python`
-  (REST/no-browser, ships `collectorkit`), `wealthdb/base-playwright`
-  (Chromium, plus Xvfb/x11vnc and the shared entrypoint bootstrap so a
-  browser can be run headed and driven over VNC), or
-  `wealthdb/base-camoufox` (that, plus a stealth-patched Firefox).
+  ([`shared/images/`](../shared/images/)). Each base ships
+  `collectorkit` and the shared entrypoint engine at
+  `/opt/entrypoint-lib.sh`. `wealthdb/base-python` is for REST and
+  no-browser collectors. `wealthdb/base-playwright` adds Chromium and
+  Xvfb/x11vnc, so a browser can run headed and be driven over VNC.
+  `wealthdb/base-camoufox` adds a stealth-patched Firefox to that.
   `requirements.txt` is copied and `pip install`ed, and nothing more:
-  the wrapper mounts the checkout over `/app` (`HAS_APP_MOUNT`), so a
-  run uses the checkout's code. `entrypoint.sh` maps the subcommand to
-  the right script. A collectorkit test (`test_collector_images.py`)
-  checks the rule.
+  the wrapper mounts the checkout over `/app`, so a run uses the
+  checkout's code. A collectorkit test (`test_collector_images.py`)
+  checks the rule. `entrypoint.sh` maps the subcommand to the right
+  script. Each verb is one line,
+  `run plain|xvfb|vnc:LABEL SCRIPT [FIXED...] -- "$@"`, from
+  [`shared/images/entrypoint-lib.sh`](../shared/images/entrypoint-lib.sh).
+  A `login` that folds into `download` calls `login_folds` for its
+  session probe, then prints its notice.
   `make build-<name>` runs `<wrapper> build`, and the bases come from
   `make base-images`. A build is skipped when the image's
   `wealthdb.inputs` label matches a hash of its inputs and its base
-  image's id. The inputs are the collector directory, or the Dockerfile
-  and `requirements.txt` with `HAS_APP_MOUNT`. An extra argument to `build` always builds. A
-  host without `python3` always builds.
+  image's id. The inputs are the Dockerfile and `requirements.txt`. An
+  extra argument to `build` always builds. A host without `python3`
+  always builds.
 - A **host-venv** collector has only `requirements.txt` (no Dockerfile).
   `make build-<name>` creates `.venv` and installs `requirements.txt`
   plus `-e shared/collectorkit`.

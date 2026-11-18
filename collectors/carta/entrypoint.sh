@@ -14,9 +14,7 @@
 
 set -euo pipefail
 
-# The verb dispatch (run, login_folds, entrypoint_common) and the Xvfb /
-# x11vnc / camoufox-cache bootstrap, baked into the base image at
-# /opt/entrypoint-lib.sh.
+# The verb engine, baked into the base image (shared/images/entrypoint-lib.sh).
 # shellcheck source=/dev/null
 source /opt/entrypoint-lib.sh
 
