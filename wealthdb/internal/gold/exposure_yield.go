@@ -65,12 +65,16 @@ type ExposureIssuerRow struct {
 	Quality                                                   string
 }
 
-// ExposureIssuers runs report_exposure_issuers.
+// ExposureIssuers runs report_exposure_issuers in the macro's ranking,
+// the largest value as printed first, then by issuer: issuers of one
+// printed value keep their order whatever the last bits of their sums.
+// The (none) row comes last.
 func ExposureIssuers(ctx context.Context, db *sql.DB, asOf int64, ccy string) ([]ExposureIssuerRow, error) {
 	return scanRows(ctx, db, "ExposureIssuers", `
 SELECT issuer, lei, CAST(value::DECIMAL(28,4) AS VARCHAR), share_pct, cumulative_share_pct, equity_pct, debt_pct,
        cash_pct, securities, quality
-  FROM report_exposure_issuers(?, ?)`, []any{asOf, ccy}, func(r *ExposureIssuerRow) []any {
+  FROM report_exposure_issuers(?, ?)
+ ORDER BY issuer = '(none)', CAST(value AS DECIMAL(28,4)) DESC, issuer, lei`, []any{asOf, ccy}, func(r *ExposureIssuerRow) []any {
 		return []any{&r.Issuer, str(&r.LEI), dec(&r.Value), flt(&r.SharePct), flt(&r.CumulativeSharePct),
 			flt(&r.EquityPct), flt(&r.DebtPct), flt(&r.CashPct), &r.Securities, &r.Quality}
 	})

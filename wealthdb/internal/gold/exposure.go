@@ -217,7 +217,9 @@ type ExposureSecurityRow struct {
 	Quality                                        string
 }
 
-// ExposureSecurities runs report_exposure_securities.
+// ExposureSecurities runs report_exposure_securities, the largest value
+// as printed first, then by security, so securities of one printed value
+// keep their order whatever the last bits of their sums.
 func ExposureSecurities(ctx context.Context, db *sql.DB, asOf int64, ccy, country string) ([]ExposureSecurityRow, error) {
 	return scanRows(ctx, db, "ExposureSecurities", `
 SELECT security, name, ticker, asset_class, sector, country, currency,
@@ -225,7 +227,7 @@ SELECT security, name, ticker, asset_class, sector, country, currency,
        CAST(direct_value::DECIMAL(28,4) AS VARCHAR), CAST(via_funds_value::DECIMAL(28,4) AS VARCHAR),
        funds, share_pct, quality
   FROM report_exposure_securities(?, ?, p_country := ?)
- ORDER BY abs(value) DESC, security`, []any{asOf, ccy, country}, func(r *ExposureSecurityRow) []any {
+ ORDER BY abs(CAST(value AS DECIMAL(28,4))) DESC, security`, []any{asOf, ccy, country}, func(r *ExposureSecurityRow) []any {
 		return []any{&r.Security, str(&r.Name), str(&r.Ticker), str(&r.AssetClass), str(&r.Sector), str(&r.Country),
 			str(&r.Ccy), dec(&r.MarketCap), str(&r.Size), dec(&r.Value), dec(&r.DirectValue), dec(&r.ViaFundsValue),
 			&r.Funds, flt(&r.SharePct), &r.Quality}
