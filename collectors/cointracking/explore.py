@@ -20,15 +20,11 @@ clean.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import logging
 import re
 import sys
 from pathlib import Path
 
-from collectorkit import cli, debugcap, explore
-
-log = logging.getLogger("cointracking.explore")
+from collectorkit import explore
 
 DEFAULT_URL = "https://cointracking.info"
 DEFAULT_PROFILE_DIR = Path("/secrets/cointracking-profile")
@@ -65,53 +61,26 @@ CLICK_RECORDER_JS = explore.click_recorder_js(
     password_selector=PWD_SELECTOR, otp_selector=None)
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=__doc__.strip(),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    explore.add_args(p, url=DEFAULT_URL, env_file=DEFAULT_ENV_FILE,
-                     profile_dir=DEFAULT_PROFILE_DIR, dom_snapshots=False)
-    return p.parse_args(argv)
-
-
-def _prefill(page, username: str, password: str, filled: set) -> bool:
-    """Pre-fill the login form on a cointracking.info frame, each field at
-    most once per page. Never submits: login and 2FA are driven by hand in
-    the VNC session."""
-    return explore.prefill_login(
-        page, username, password, filled, host_re=HOST_RE,
-        user_selector=USER_SELECTOR, password_selector=PWD_SELECTOR, log=log)
-
-
 # What the person at the VNC session is asked to do.
 WALK = ("log in via VNC, click through the pages download scrapes.")
 
 
-def main(argv: list[str]) -> int:
-    args = parse_args(argv)
-    cli.configure_logging(args.verbose)
-    explore.prepare_profile(args.profile_dir, fresh=args.fresh, log=log,
-                            note="2FA will be required on next login")
-    username, password, prefill = explore.load_credentials(
-        args.env_file, (USER_ENV,), (PASS_ENV,),
-        no_prefill=args.no_prefill, host="cointracking.info", log=log)
-    filled: set = set()
+SITE = explore.Site(
+    name="cointracking", url=DEFAULT_URL, profile_dir=DEFAULT_PROFILE_DIR,
+    env_file=DEFAULT_ENV_FILE, user_envs=(USER_ENV,), pass_envs=(PASS_ENV,),
+    host="cointracking.info", host_re=HOST_RE, user_selector=USER_SELECTOR,
+    password_selector=PWD_SELECTOR, event_prefix=EVENT_PREFIX,
+    init_js=CLICK_RECORDER_JS, walk=WALK,
+    fresh_note="2FA will be required on next login",
+    dom_snapshots=False, poll_prefill=False)
 
-    with contextlib.ExitStack() as stack:
-        session = explore.Session.from_args(
-            stack, args, redact=debugcap.secret_redactor(username, password),
-            log=log)
-        context = session.open_camoufox(stack, args.profile_dir)
-        session.attach(
-            context, init_js=CLICK_RECORDER_JS, event_prefix=EVENT_PREFIX,
-            prefill=(lambda page: _prefill(
-                page, username, password, filled)) if prefill else None)
-        session.open(args.url)
-        session.record(WALK, max_duration=args.max_duration,
-                       poll_prefill=False)
-    session.report()
-    return 0
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    return explore.parser(SITE, __doc__).parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    return explore.main(SITE, argv, __doc__)
 
 
 if __name__ == "__main__":

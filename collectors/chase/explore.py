@@ -33,13 +33,12 @@ Recording stops when the last browser window is closed or after
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import re
 import sys
 from pathlib import Path
 
-from collectorkit import cli, debugcap, explore
+from collectorkit import explore
 
 log = logging.getLogger("chase.explore")
 
@@ -86,16 +85,6 @@ CLICK_RECORDER_JS = explore.click_recorder_js(
     EVENT_PREFIX, host_re=HOST_RE, user_selector=USER_SELECTOR)
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=__doc__.strip(),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    explore.add_args(p, url=DEFAULT_URL, env_file=DEFAULT_ENV_FILE,
-                     profile_dir=DEFAULT_PROFILE_DIR, dom_snapshots=True)
-    return p.parse_args(argv)
-
-
 def _maybe_prefill_login(page, username: str, password: str,
                          filled: set) -> bool:
     """Fill a Chase login form at most once per page
@@ -117,30 +106,21 @@ WALK = ("walk the three discovery flows (DESIGN.md §3): 1) log in via VNC, "
         "and run every export format offered (CSV/QFX/QIF/QBO).")
 
 
-def main(argv: list[str]) -> int:
-    args = parse_args(argv)
-    cli.configure_logging(args.verbose)
-    explore.prepare_profile(args.profile_dir, fresh=args.fresh, log=log,
-                            note="the full 2FA challenge will fire on next "
-                                 "login")
-    username, password, prefill = explore.load_credentials(
-        args.env_file, (USER_ENV,), (PASS_ENV,), no_prefill=args.no_prefill,
-        host="chase.com", log=log)
-    filled: set = set()
+SITE = explore.Site(
+    name="chase", url=DEFAULT_URL, profile_dir=DEFAULT_PROFILE_DIR,
+    env_file=DEFAULT_ENV_FILE, user_envs=(USER_ENV,), pass_envs=(PASS_ENV,),
+    host="chase.com", host_re=HOST_RE, user_selector=USER_SELECTOR,
+    event_prefix=EVENT_PREFIX, init_js=CLICK_RECORDER_JS, walk=WALK,
+    fresh_note="the full 2FA challenge will fire on next login",
+    observe_re=HOST_RE, label="chase")
 
-    with contextlib.ExitStack() as stack:
-        session = explore.Session.from_args(
-            stack, args, redact=debugcap.secret_redactor(username, password),
-            log=log, observe=HOST_RE, label="chase")
-        context = session.open_camoufox(stack, args.profile_dir)
-        session.attach(
-            context, init_js=CLICK_RECORDER_JS, event_prefix=EVENT_PREFIX,
-            prefill=(lambda page: _maybe_prefill_login(
-                page, username, password, filled)) if prefill else None)
-        session.open(args.url)
-        session.record(WALK, max_duration=args.max_duration)
-    session.report()
-    return 0
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    return explore.parser(SITE, __doc__).parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    return explore.main(SITE, argv, __doc__, prefill=_maybe_prefill_login)
 
 
 if __name__ == "__main__":

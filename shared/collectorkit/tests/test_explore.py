@@ -438,6 +438,110 @@ class SessionTest(_Tmp):
                          ["started", "stopped"])
 
 
+def _site(**kwargs):
+    fields = dict(
+        name="example", url="https://www.example.com/",
+        profile_dir=Path("/secrets/example-profile"),
+        env_file=Path("/secrets/example.env"),
+        user_envs=("EXAMPLE_USERNAME",), pass_envs=("EXAMPLE_PASSWORD",),
+        host="example.com", host_re=re.compile(r"(^|\.)example\.com$"),
+        user_selector="input#user", event_prefix="__EX__ ",
+        init_js="/* detector */", walk="walk it.", fresh_note="a note")
+    fields.update(kwargs)
+    return explore.Site(**fields)
+
+
+class MainTest(_Tmp):
+    """explore.main: one session of a declared site, with no browser."""
+
+    def setUp(self):
+        super().setUp()
+        self.context = _Context()
+        env = {"EXAMPLE_USERNAME": USERNAME, "EXAMPLE_PASSWORD": PASSWORD,
+               "XDG_CACHE_HOME": str(self.root / "cache")}
+        for patch in (
+                mock.patch.dict("os.environ", env, clear=True),
+                mock.patch.dict(sys.modules, _playwright_stub()),
+                mock.patch.object(explore.launch, "prepare_profile_dir"),
+                mock.patch.object(explore.Session, "open_camoufox",
+                                  lambda s, stack, profile: self.context)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def _argv(self, *extra):
+        return ["--debug-dir", str(self.root / "debug"),
+                "--profile-dir", str(self.root / "profile"),
+                "--env-file", str(self.root / "absent.env"),
+                "--max-duration", "0", *extra]
+
+    def _events(self):
+        return [json.loads(line) for line in
+                (self.root / "debug" / "clicks.jsonl").read_text().splitlines()]
+
+    def test_a_session_runs_start_to_stop(self):
+        self.assertEqual(explore.main(_site(), self._argv(), "doc"), 0)
+        self.assertEqual(self.context.init_scripts, ["/* detector */"])
+        events = self._events()
+        self.assertEqual([e["kind"] for e in events], ["started", "stopped"])
+        self.assertEqual(events[0]["url"], "https://www.example.com/")
+        explore.launch.prepare_profile_dir.assert_called_once_with(
+            self.root / "profile")
+
+    def test_the_parser_takes_the_site_defaults(self):
+        args = explore.parser(_site(), "doc").parse_args([])
+        self.assertEqual(args.url, "https://www.example.com/")
+        self.assertEqual(args.profile_dir, Path("/secrets/example-profile"))
+        self.assertEqual(args.env_file, Path("/secrets/example.env"))
+        self.assertEqual(args.dom_interval, 3)
+        args = explore.parser(_site(dom_snapshots=False), "doc").parse_args([])
+        self.assertFalse(hasattr(args, "dom_interval"))
+
+    def test_the_default_fill_writes_the_site_controls(self):
+        site = _site(password_selector="input#pw",
+                     user_alt_selector="select#user")
+        with mock.patch.object(explore, "prefill_login",
+                               return_value=False) as fill:
+            explore.main(site, self._argv(), "doc")
+        page, username, password, filled = fill.call_args.args
+        self.assertEqual((username, password, filled), (USERNAME, PASSWORD,
+                                                        set()))
+        kwargs = fill.call_args.kwargs
+        self.assertIs(kwargs["host_re"], site.host_re)
+        self.assertEqual(
+            (kwargs["user_selector"], kwargs["password_selector"],
+             kwargs["user_alt_selector"], kwargs["log"].name),
+            ("input#user", "input#pw", "select#user", "example.explore"))
+
+    def test_a_harness_fill_replaces_the_default(self):
+        calls = []
+        with mock.patch.object(explore, "prefill_login") as default:
+            explore.main(_site(), self._argv(), "doc",
+                         prefill=lambda *a: calls.append(a) or False)
+        default.assert_not_called()
+        self.assertEqual(calls[0][1:], (USERNAME, PASSWORD, set()))
+
+    def test_no_prefill_fills_nothing(self):
+        calls = []
+        explore.main(_site(), self._argv("--no-prefill"), "doc",
+                     prefill=lambda *a: calls.append(a) or False)
+        self.assertEqual(calls, [])
+
+    def test_the_logs_mask_the_credentials_read(self):
+        explore.main(_site(), self._argv(
+            "--url", f"https://www.example.com/{USERNAME}"), "doc")
+        clicks = (self.root / "debug" / "clicks.jsonl").read_text()
+        self.assertNotIn(USERNAME, clicks)
+        self.assertIn(debugcap.REDACTED, clicks)
+
+    def test_the_walk_and_the_poll_reach_the_recorder(self):
+        with mock.patch.object(explore.Session, "record",
+                               return_value="timeout") as record:
+            explore.main(_site(poll_prefill=False), self._argv(), "doc")
+        self.assertEqual(record.call_args.args, ("walk it.",))
+        self.assertEqual(record.call_args.kwargs,
+                         {"max_duration": 0, "poll_prefill": False})
+
+
 # A minimal DOM for running the detector script under node: the document
 # holds a username field, a password field and a code field, each with a
 # typed value the click log must never carry.

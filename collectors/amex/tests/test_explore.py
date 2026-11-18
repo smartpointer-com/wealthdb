@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import explore  # noqa: E402
+from collectorkit import debugcap  # noqa: E402
 from collectorkit import explore as kit_explore  # noqa: E402
 
 USERNAME = "example-user"
@@ -153,9 +154,9 @@ def test_the_har_is_redacted_of_every_credential_it_recorded(tmp_path):
     # suite, rather than per collector.
     har = tmp_path / "network.har"
     har.write_text(json.dumps(_har()), encoding="utf-8")
-    redact = explore.debugcap.secret_redactor("example-user", "p@ss+word")
+    redact = debugcap.secret_redactor("example-user", "p@ss+word")
 
-    assert explore.debugcap.redact_har(har, redact, log=explore.log)
+    assert debugcap.redact_har(har, redact, log=explore.log)
 
     blob = har.read_text(encoding="utf-8")
     for secret in ("SYNTHETICKEY", "SYNTHETICJAR", "SYNTHETICBEARER",
@@ -167,7 +168,7 @@ def test_the_har_is_redacted_of_every_credential_it_recorded(tmp_path):
     # credential, and which cookies an endpoint set is a diagnostic.
     for half in ("request", "response"):
         assert [c["name"] for c in entry[half]["cookies"]] == ["session"]
-        assert entry[half]["cookies"][0]["value"] == explore.debugcap.REDACTED
+        assert entry[half]["cookies"][0]["value"] == debugcap.REDACTED
     # Header and field NAMES survive — that a request carried a bearer, and
     # that the form posts a Password field, is exactly the diagnostic.
     assert [h["name"] for h in entry["request"]["headers"]] == [
@@ -185,7 +186,7 @@ def test_a_form_field_named_password_goes_even_when_its_value_is_unknown(
     # still can.
     har = tmp_path / "network.har"
     har.write_text(json.dumps(_har()), encoding="utf-8")
-    assert explore.debugcap.redact_har(har, log=explore.log)
+    assert debugcap.redact_har(har, log=explore.log)
     blob = har.read_text(encoding="utf-8")
     assert "p@ss+word" not in blob and "p%40ss%2Bword" not in blob
 

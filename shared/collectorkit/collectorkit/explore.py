@@ -27,7 +27,8 @@ What stays in each collector's own ``explore.py`` is what is particular to
 its source: the entry URL, the host gate, the credential env names and the
 sign-in form's selectors. :func:`click_recorder_js` builds the in-page
 detector from them, :func:`prefill_login` fills the form, and
-:class:`Session` composes the rest. The fill and its credentials are
+:class:`Session` composes the rest. A Camoufox harness declares them as a
+:class:`Site` and hands it to :func:`main`, which runs the session. The fill and its credentials are
 :mod:`collectorkit.loginform` (a collector's ``login.py`` often reuses
 them), and the profile prep is :func:`collectorkit.launch.prepare_profile`;
 both are re-exported here.
@@ -40,6 +41,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import dataclasses
 import json
 import logging
 import re
@@ -53,7 +55,7 @@ from urllib.parse import urlparse
 from collectorkit import bronze, cli, debugcap, launch
 # The form fill and the profile prep, re-exported: harnesses and logins
 # read them from here.
-from collectorkit.launch import prepare_profile  # noqa: F401
+from collectorkit.launch import prepare_profile
 from collectorkit.loginform import (  # noqa: F401
     DEFAULT_OTP_SELECTOR,
     DEFAULT_PASSWORD_SELECTOR,
@@ -784,3 +786,106 @@ class Session:
                      "`playwright show-trace chunk-NNN.zip`). UNREDACTED: a "
                      "trace carries the typed credential — never commit it",
                      self.trace_chunks_dir, self.chunks)
+
+
+# ---- one harness run -------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class Site:
+    """What a Camoufox explore harness knows of its source. The rest of a
+    run is the same for every such harness, and :func:`main` composes it.
+
+    - `name` is the collector; the run logs as ``<name>.explore``.
+    - `url`, `profile_dir` and `env_file` are the flags' defaults.
+    - `user_envs` and `pass_envs` name the credentials; the first set
+      name of each wins.
+    - `host` is the origin the fill is gated to, as the log names it.
+      `host_re` is the gate itself, and `user_selector`,
+      `password_selector` and `user_alt_selector` are the controls the
+      fill writes to (see :func:`prefill_login`).
+    - `init_js` is the in-page detector (:func:`click_recorder_js`). It
+      reports through console lines tagged `event_prefix`.
+    - `walk` tells the person at the VNC session what to do, and
+      `fresh_note` what ``--fresh`` costs the next sign-in.
+    - `observe_re` gates the DOM snapshots to the site's frames, and
+      `label` names those frames in the log.
+    - `dom_snapshots` offers ``--dom-interval``. `poll_prefill` offers
+      the fill on the wait loop's poll, not only when a form mounts.
+    """
+    name: str
+    url: str
+    profile_dir: Path
+    env_file: Path
+    user_envs: tuple[str, ...]
+    pass_envs: tuple[str, ...]
+    host: str
+    host_re: re.Pattern
+    user_selector: str
+    event_prefix: str
+    init_js: str
+    walk: str
+    fresh_note: str
+    password_selector: str = DEFAULT_PASSWORD_SELECTOR
+    user_alt_selector: str | None = None
+    observe_re: re.Pattern | None = None
+    label: str = "site"
+    dom_snapshots: bool = True
+    poll_prefill: bool = True
+
+
+def parser(site: Site, doc: str) -> argparse.ArgumentParser:
+    """The harness's argument parser: its module docstring `doc` as the
+    description, and the shared flags with the site's defaults."""
+    p = argparse.ArgumentParser(
+        description=doc.strip(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_args(p, url=site.url, env_file=site.env_file,
+             profile_dir=site.profile_dir, dom_snapshots=site.dom_snapshots)
+    return p
+
+
+def main(site: Site, argv: list[str], doc: str,
+         prefill: Callable | None = None) -> int:
+    """One explore session of `site`, from the command line `argv`: ready
+    the profile, read the credentials, record until the browser closes,
+    then report where the artefacts are. `doc` is the harness's docstring.
+
+    `prefill(page, username, password, filled)` fills the sign-in form
+    and says whether it filled anything. Without it, :func:`prefill_login`
+    fills the site's own selectors. Nothing is filled when a credential is
+    missing or ``--no-prefill`` is given.
+    """
+    log = logging.getLogger(f"{site.name}.explore")
+    args = parser(site, doc).parse_args(argv)
+    cli.configure_logging(args.verbose)
+    prepare_profile(args.profile_dir, fresh=args.fresh, log=log,
+                    note=site.fresh_note)
+    username, password, ready = load_credentials(
+        args.env_file, site.user_envs, site.pass_envs,
+        no_prefill=args.no_prefill, host=site.host, log=log)
+
+    def site_fill(page, username: str, password: str, filled: set) -> bool:
+        return prefill_login(
+            page, username, password, filled, host_re=site.host_re,
+            user_selector=site.user_selector,
+            password_selector=site.password_selector,
+            user_alt_selector=site.user_alt_selector, log=log)
+
+    fill = prefill or site_fill
+    filled: set = set()
+
+    with contextlib.ExitStack() as stack:
+        session = Session.from_args(
+            stack, args, redact=debugcap.secret_redactor(username, password),
+            log=log, observe=site.observe_re, label=site.label)
+        context = session.open_camoufox(stack, args.profile_dir)
+        session.attach(
+            context, init_js=site.init_js, event_prefix=site.event_prefix,
+            prefill=(lambda page: fill(
+                page, username, password, filled)) if ready else None)
+        session.open(args.url)
+        session.record(site.walk, max_duration=args.max_duration,
+                       poll_prefill=site.poll_prefill)
+    session.report()
+    return 0

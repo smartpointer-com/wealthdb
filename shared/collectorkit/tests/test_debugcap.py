@@ -501,11 +501,17 @@ class CollectorRedactionTest(unittest.TestCase):
         # scan reaching nothing would pass vacuously. Stated as the invariant
         # every harness must satisfy rather than as a collector count, it
         # holds at any point in history and cannot rot as sources are added.
+        # A harness that runs through explore.main gets the redactor main
+        # builds — the shared route, scanned here with the rest.
         harnesses = sorted(COLLECTORS.glob("*/explore.py"))
         self.assertTrue(harnesses, "no explore harness found to scan")
+        self.assertIn("debugcap.secret_redactor(",
+                      KIT_EXPLORE.read_text(encoding="utf-8"))
         for path in harnesses:
-            self.assertIn(
-                "debugcap.secret_redactor(", path.read_text(encoding="utf-8"),
+            text = path.read_text(encoding="utf-8")
+            self.assertTrue(
+                "debugcap.secret_redactor(" in text
+                or "explore.main(" in text,
                 f"{path} does not route its captures through "
                 f"collectorkit.debugcap.secret_redactor()")
 

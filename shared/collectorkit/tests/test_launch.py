@@ -505,13 +505,15 @@ class PersistentProfileStartupCacheTest(unittest.TestCase):
             len(list(_persistent_profile_files())), 12)
 
     def test_each_persistent_profile_redirects_startup_cache(self):
-        # explore.prepare_profile and launch.persistent_camoufox are shared
-        # routes to launch.prepare_profile_dir, each pinned in its own suite.
+        # explore.prepare_profile (and explore.main, which calls it) and
+        # launch.persistent_camoufox are shared routes to
+        # launch.prepare_profile_dir, each pinned in its own suite.
         missing = []
         for path, text in _persistent_profile_files():
             if ("launch.prepare_profile_dir" not in text
                     and "launch.redirect_startup_cache" not in text
                     and "explore.prepare_profile(" not in text
+                    and "explore.main(" not in text
                     and "launch.persistent_camoufox(" not in text):
                 missing.append(str(path.relative_to(COLLECTORS.parent)))
         self.assertEqual(

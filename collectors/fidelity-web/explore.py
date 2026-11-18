@@ -35,15 +35,11 @@ bronze + silver tree under `/data` stays clean.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import logging
 import re
 import sys
 from pathlib import Path
 
-from collectorkit import cli, debugcap, explore
-
-log = logging.getLogger("fidelity-web.explore")
+from collectorkit import explore
 
 # The standard signin — the same entry download.py drives. The DAF hop
 # is taken from the post-auth session, so recording starts on known
@@ -103,16 +99,6 @@ CLICK_RECORDER_JS = explore.click_recorder_js(
     password_selector=PWD_SELECTOR, otp_selector=OTP_SELECTOR)
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=__doc__.strip(),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    explore.add_args(p, url=DEFAULT_URL, env_file=DEFAULT_ENV_FILE,
-                     profile_dir=DEFAULT_PROFILE_DIR, dom_snapshots=True)
-    return p.parse_args(argv)
-
-
 # What the person at the VNC session is asked to walk (DESIGN.md §12).
 WALK = ("walk the DAF discovery flows (DESIGN.md §12): 1) sign in on the "
         "standard Fidelity form (2FA by hand); 2) open the Fidelity "
@@ -124,34 +110,24 @@ WALK = ("walk the DAF discovery flows (DESIGN.md §12): 1) sign in on the "
         "control (they move real money).")
 
 
-def main(argv: list[str]) -> int:
-    args = parse_args(argv)
-    cli.configure_logging(args.verbose)
-    explore.prepare_profile(args.profile_dir, fresh=args.fresh, log=log,
-                            note="Akamai trust + device trust are discarded; "
-                                 "complete the login fully by hand over VNC "
-                                 "to re-seed both")
-    username, password, prefill = explore.load_credentials(
-        args.env_file, USERNAME_ENVS, PASSWORD_ENVS,
-        no_prefill=args.no_prefill, host="fidelity.com", log=log)
-    filled: set = set()
+SITE = explore.Site(
+    name="fidelity-web", url=DEFAULT_URL, profile_dir=DEFAULT_PROFILE_DIR,
+    env_file=DEFAULT_ENV_FILE, user_envs=USERNAME_ENVS,
+    pass_envs=PASSWORD_ENVS, host="fidelity.com", host_re=PREFILL_HOST_RE,
+    user_selector=USER_SELECTOR, password_selector=PWD_SELECTOR,
+    user_alt_selector=USER_SELECT_SELECTOR, event_prefix=EVENT_PREFIX,
+    init_js=CLICK_RECORDER_JS, walk=WALK,
+    fresh_note=("Akamai trust + device trust are discarded; complete the "
+                "login fully by hand over VNC to re-seed both"),
+    observe_re=OBSERVE_HOST_RE, label="fidelity")
 
-    with contextlib.ExitStack() as stack:
-        session = explore.Session.from_args(
-            stack, args, redact=debugcap.secret_redactor(username, password),
-            log=log, observe=OBSERVE_HOST_RE, label="fidelity")
-        context = session.open_camoufox(stack, args.profile_dir)
-        session.attach(
-            context, init_js=CLICK_RECORDER_JS, event_prefix=EVENT_PREFIX,
-            prefill=(lambda page: explore.prefill_login(
-                page, username, password, filled, host_re=PREFILL_HOST_RE,
-                user_selector=USER_SELECTOR, password_selector=PWD_SELECTOR,
-                user_alt_selector=USER_SELECT_SELECTOR,
-                log=log)) if prefill else None)
-        session.open(args.url)
-        session.record(WALK, max_duration=args.max_duration)
-    session.report()
-    return 0
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    return explore.parser(SITE, __doc__).parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    return explore.main(SITE, argv, __doc__)
 
 
 if __name__ == "__main__":
