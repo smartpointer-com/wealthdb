@@ -583,7 +583,7 @@ func TestAStatementDividendLinksByItsValor(t *testing.T) {
 	}
 }
 
-// TestAStatementCopyOfAGrossedLineStillFolds: the era fold keys the feed
+// TestAStatementCopyOfAGrossedLineStillFolds: the reconcile table keys the feed
 // line on the amount it credited, which the statement prints too. The
 // line reading the gross does not stop its statement copy folding away.
 func TestAStatementCopyOfAGrossedLineStillFolds(t *testing.T) {
@@ -639,7 +639,7 @@ func TestAnExportDividendReadsTheGrossItStates(t *testing.T) {
 		divIBAN, divDay+6*86400, exportPayload(d1, "Dividend;Reversal", gross("-1000.00 CHF"))); err != nil {
 		t.Fatal(err)
 	}
-	// The statement's copy of the first row folds onto it: the era fold
+	// The statement's copy of the first row folds onto it: the reconcile table
 	// keys both on the amount credited.
 	seedWebTxRaw(t, r, divStmt, divIBAN, divDay, "CHF", 650, "DIVIDEND",
 		statementPayload("DIVIDEND", "VN "+divValor+" XXXXXXS9", "EXAMPLE AG"))

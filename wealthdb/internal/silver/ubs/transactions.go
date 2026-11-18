@@ -15,10 +15,10 @@ import (
 // movement pairs a web-side mirror in the same-day offset veto (see
 // buildSameDayOffsetVeto); those are demoted to a non-flow kind here, exactly
 // as the web loop demotes its half — a pair must drop on both sides or the
-// survivor books a one-sided phantom external flow. hints.withheld names the
-// conversion mirrors and the cash legs an export row records instead, which
-// are not emitted. Both are empty when the merged connection has no web
-// subsource.
+// survivor books a one-sided phantom external flow. hints.rc is the
+// reconcile table's verdict (reconcile.go): the MT940 lines a trade
+// confirmation keeps are not emitted, nor the conversion mirrors and the
+// cash legs it withholds. Without it the stream reconciles the feed alone.
 // hints.securities links a dividend line past its confirmation and names
 // the reversals that are dividend reversals (psnHints). Without a web
 // subsource the stream builds the feed's own.
@@ -40,9 +40,11 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 		return nil, err
 	}
 	ibans := roster.cashAccountIBANs()
-	settled, err := r.buildSettlementFold(ctx, ibans)
-	if err != nil {
-		return nil, err
+	rc := hints.rc
+	if rc == nil {
+		if rc, err = reconcile(ctx, nil, r, nil); err != nil {
+			return nil, err
+		}
 	}
 	coverage, err := r.cashCoverage(ctx)
 	if err != nil {
@@ -52,7 +54,7 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 	if err != nil {
 		return nil, err
 	}
-	cashLegs, err := r.corporateActionCashLegs(ctx, w, coverage, ibans, hints.withheld)
+	cashLegs, err := r.corporateActionCashLegs(ctx, w, coverage, ibans, rc.withheld)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +76,7 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 			c := row.currency.String
 			currencyISO = &c
 		}
-		if settled.covers(row) {
+		if row.kind == "cash_movement" && rc.lostTo(recFeed, eventID) != "" {
 			return nil
 		}
 
@@ -119,7 +121,7 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 		// the one gold holds and the feed row still names it.
 		if m, ok := mirrors.bySource[eventID]; ok {
 			tx.Payload = withStatedConversion(tx.Payload, m)
-			if !hints.withheld[m.tx.TransactionExternalID] {
+			if !rc.withheld[m.tx.TransactionExternalID] {
 				mirror := m.tx
 				if hints.veto[mirror.TransactionExternalID] {
 					mirror.Payload, mirror.Kind = markReturnsInternal(mirror.Payload, mirror.Kind)
@@ -172,7 +174,7 @@ type tradeConfirmationPayload struct {
 	SecurityName          string `json:"security_name"`
 	// SettlementDateUnix is `:98A::SETT//`, the day the cash leg hits
 	// the account. It is the day the MT940 statement books that leg
-	// on, which is what pairs the two records (settlementFold).
+	// on, which is what pairs the two records (settlementKey).
 	SettlementDateUnix int64 `json:"settlement_date_unix"`
 }
 
@@ -205,50 +207,6 @@ type corporateActionPayload struct {
 	CAEV string `json:"caev"`
 }
 
-// A securities trade reaches PSN twice, on two rails that share no id:
-// the MT515 confirmation of the trade and the MT940 `:61:` line for the
-// cash leg settling it. Both name the same cash account and the same
-// figure, so left alone one trade is two rows in the ledger — and every
-// count, turnover and per-instrument total built over it is doubled.
-//
-// The confirmation is the one that survives, and that is the rail's
-// property rather than a per-row judgement: it carries the instrument,
-// the quantity, the price and the side, where the statement line
-// carries a bare booking code (`B37?`) and no security at all. So the
-// fold drops the cash line, exactly as buildEraFold drops the
-// reconstruction and keeps the machine-readable record.
-//
-// Only a line the bank itself typed as a securities settlement is
-// eligible: `:61:` NSEC, or NMSC, the miscellaneous code the bank books
-// a fund redemption's cash under. A trade the MT940 feed never carried — the
-// minor-currency cash accounts it does not deliver — has nothing to
-// fold and keeps its confirmation, which is why the confirmation is
-// also the rail that reads completely.
-//
-// The whole silver, unwindowed, for buildEraFold's reason: whether a
-// booking is recorded twice depends on silver's contents alone and
-// never on which slice of time a load happens to cover. A window that
-// held the cash line but not its confirmation would otherwise emit the
-// duplicate the next window folds away.
-type settlementFold struct {
-	// unpaired counts the confirmations still to be matched at each
-	// key, and covers spends one per cash leg it folds. A set would
-	// fold EVERY leg that hashes to a key against a single
-	// confirmation: two NSEC lines on one account, day, currency and
-	// magnitude — one settling a trade, one not — would both vanish,
-	// and the second booking's money would leave the cash ledger
-	// entirely. Counting bounds the fold at N legs for N
-	// confirmations, which is buildEraFold's 1:1 rule in the form a
-	// streaming pass can hold.
-	//
-	// Which of two indistinguishable legs is folded is left to row
-	// order, and deliberately: at equal account, day, currency and
-	// magnitude the two differ only in their id, so no field the
-	// ledger carries can prefer one.
-	unpaired map[settlementKey]int
-	ibans    map[string]string
-}
-
 // settlementKey is the identity the two rails' id schemes cannot
 // express: one cash account, one currency, one figure, one settlement
 // day (UTC; both rails date the settlement to the day and neither
@@ -277,70 +235,6 @@ func newSettlementKey(account, currency string, amount *canonical.Decimal, settl
 		amount:   abs.String(),
 		day:      utcDay(settlementUnix),
 	}, true
-}
-
-// buildSettlementFold reads every trade confirmation the silver holds
-// and records the cash leg each one settles. Each caller spends a fold
-// of its own (covers).
-func (r *psnReader) buildSettlementFold(ctx context.Context, ibans map[string]string) (*settlementFold, error) {
-	out := &settlementFold{unpaired: map[settlementKey]int{}, ibans: ibans}
-	feed, err := r.feed(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range feed.events {
-		row := &feed.events[i]
-		if row.kind != "trade_confirmation" {
-			continue
-		}
-		var p tradeConfirmationPayload
-		if err := json.Unmarshal([]byte(row.payload), &p); err != nil {
-			return nil, fmt.Errorf("ubs buildSettlementFold payload: %w", err)
-		}
-		currency := p.NetCurrency
-		if currency == "" && row.currency.Valid {
-			currency = row.currency.String
-		}
-		key, ok := newSettlementKey(
-			cashIBAN(ibans, p.CashAccountExternalID), currency,
-			p.NetAmount, p.SettlementDateUnix)
-		if ok {
-			out.unpaired[key]++
-		}
-	}
-	return out, nil
-}
-
-// covers reports whether an event is the cash leg of a trade a
-// confirmation already records in full, and SPENDS that confirmation:
-// each one folds at most one leg, so a second leg at the same key
-// survives and reaches gold on its own classification. That is the
-// conservative direction — a duplicate row is visible and fixable, a
-// vanished booking is not.
-func (f *settlementFold) covers(row *feedRow) bool {
-	if f == nil || len(f.unpaired) == 0 || row.kind != "cash_movement" || !row.decoded {
-		return false
-	}
-	p := row.pl
-	switch strings.ToUpper(strings.TrimSpace(p.TxnType)) {
-	case "NSEC", "NMSC":
-	default:
-		return false
-	}
-	acct := row.account
-	if p.Account != "" {
-		acct = p.Account
-	}
-	currency := p.Funds
-	if currency == "" && row.currency.Valid {
-		currency = row.currency.String
-	}
-	key, ok := newSettlementKey(cashIBAN(f.ibans, acct), currency, p.Amount, row.at)
-	if !ok || f.unpaired[key] == 0 {
-		return false
-	}
-	f.unpaired[key]--
-	return true
 }
 
 // isSellSide reports whether a trade confirmation's side is the one
@@ -514,8 +408,8 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 	// the canonical sign would book as one it paid. The reversal of a
 	// debit (`RD`) returns money and is positive: a returned payment
 	// reads as a withdrawal, which the canonical sign would book as a
-	// second payment. The stream, the era fold and the offset veto all
-	// project the row here, so they read the one sign.
+	// second payment. The stream, the reconcile table and the offset veto
+	// all project the row here, so they read the one sign.
 	tx.GrossAmount = canonical.ApplyCanonicalSign(tx.Kind, tx.GrossAmount)
 	switch {
 	case reversal != "" && tx.NetAmount != nil:

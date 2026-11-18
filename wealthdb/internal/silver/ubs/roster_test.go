@@ -62,7 +62,7 @@ func TestAPortfolioTradeSettlesOnAnAccountTheNewestBatchLeftUnchanged(t *testing
 	silvertest.Exec(t, psnDB, `
 INSERT INTO cash_accounts (snapshot_at, relationship_id, account_external_id, portfolio_external_id, payload)
 VALUES (2, 'R1', '`+ptxCashHKD+`', '`+ptxPortfolio+`', '{"AcctCcyIsoCd":"HKD","AcctTpDesc":"Changed"}')`)
-	tx, ok := emitPortfolio(t, r, psnDB, nil)["ptx:REF1@"+ptxSafe]
+	tx, ok := emitPortfolio(t, r, psnDB)["ptx:REF1@"+ptxSafe]
 	if !ok || tx.AccountExternalID != ptxCashUSD {
 		t.Errorf("trade booked = %v on %q, want it on the portfolio's USD cash account", ok, tx.AccountExternalID)
 	}

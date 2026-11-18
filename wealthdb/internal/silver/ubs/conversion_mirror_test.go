@@ -228,7 +228,7 @@ func TestTheExportsRecordOutranksTheCounterLeg(t *testing.T) {
 
 // TestAStatementCopyFoldsOntoTheCounterLeg: a later annual statement
 // reconstructs the JPY credit; it is a second record of the booking the
-// counter-leg holds, and the era fold drops it as it drops any statement
+// counter-leg holds, and the reconcile table drops it as it drops any statement
 // copy of a feed row.
 func TestAStatementCopyFoldsOntoTheCounterLeg(t *testing.T) {
 	r := newWebTxFixture(t)
@@ -246,7 +246,7 @@ func TestAStatementCopyFoldsOntoTheCounterLeg(t *testing.T) {
 }
 
 // TestAMergedPassReadsEachIndexOnce: the merged pass asks for the feed's
-// coverage and its conversion mirrors from the web cut, the era fold,
+// coverage and its conversion mirrors from the reconcile table,
 // the offset veto and the PSN stream, and for the valor index from the
 // cash and portfolio passes. Each is read once and kept. Once the pass
 // has run, closed silvers fail every read, so each still answering shows

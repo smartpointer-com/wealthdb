@@ -27,36 +27,26 @@ import (
 // costs one wrong narrative rather than a duplicated or vanished
 // booking.
 //
-// Two folds DO drop a web row for being a second record of a booking,
-// and both decide on an exact identity rather than a heuristic on ids.
-// The era fold (buildEraFold) works inside the web silver's own two
-// eras against the machine-readable records: a statement reconstruction
+// The rows the reconcile table (reconcile.go) gives another record of
+// the booking DO drop, and each of its rules decides on an exact
+// identity rather than a heuristic on ids: a statement reconstruction
 // whose account, value day, signed amount and currency match an export
-// or MT940 row is not emitted, because the row that matched it already
-// carries the booking, and so is an export row a confirmation's cash leg
-// records; it never folds two rows of one era. The seam
-// (buildSeamBankRefs) covers the days the first PSN dump's statements
-// reach back over, where the cut excludes neither copy, and matches on
-// the bank's own number for the entry. Both verdicts reach the offset
-// veto, which must not count a row nothing emits.
+// or feed record, an export copy of a confirmation's cash leg, and a row
+// the MT940 feed holds under the bank's own number for the entry. Those
+// verdicts reach the offset veto, which must not count a row nothing
+// emits.
 //
-// The second return value is what this pass decided that a LATER pass
-// needs (webTxOutcome).
-func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rels []RelationshipPair) (silver.TransactionStream, webTxOutcome, error) {
+// The second return value is what this pass decided that the PSN stream
+// needs (psnHints).
+func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.Window, psn *psnReader, rc *reconciliation) (silver.TransactionStream, psnHints, error) {
 	if !w.HasChanges {
-		return silver.NewTransactionStream(canonical.TransactionBatch{}), webTxOutcome{}, nil
+		return silver.NewTransactionStream(canonical.TransactionBatch{}), psnHints{}, nil
 	}
-	pass, err := r.newWebTxPass(ctx, psn, rels)
+	pass, err := r.newWebTxPass(ctx, psn, rc)
 	if err != nil {
-		return nil, webTxOutcome{}, err
+		return nil, psnHints{}, err
 	}
 	out := canonical.TransactionBatch{}
-	// Per (cash account, currency, settlement day), how many securities
-	// settlements this pass EMITS. The portfolio pass folds its own
-	// copy of a trade against it, and only an emitted row may be
-	// counted: a booking this pass dropped is one gold will not hold,
-	// and folding against it would lose the trade from both rails.
-	settled := map[settledDayKey]int{}
 	summaries, folded := 0, 0
 	err = r.eachWebRow(ctx, func(row *webRow) error {
 		if row.valueDate < w.Start || row.valueDate > w.End {
@@ -79,13 +69,10 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 		if e.withheld {
 			out.Transactions = append(out.Transactions, e.tax)
 		}
-		if e.tx.Kind == canonical.TxKindBuy || e.tx.Kind == canonical.TxKindSell {
-			settled[newSettledDayKey(row.account, row.currency, row.valueDate)]++
-		}
 		return nil
 	})
 	if err != nil {
-		return nil, webTxOutcome{}, err
+		return nil, psnHints{}, err
 	}
 	if summaries > 0 {
 		log.Printf("ubs adapter: dropped %d period-close row(s) — a zero-amount summary or service-price line, not a booking", summaries)
@@ -93,18 +80,16 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	if folded > 0 {
 		log.Printf("ubs adapter: folded %d web row(s) into another feed's record of the same booking — one booking, one row", folded)
 	}
-	return silver.NewTransactionStream(out), webTxOutcome{
-		hints: psnHints{veto: pass.psnVeto, carry: pass.fold.psn, withheld: pass.withheld,
-			securities: pass.dividends},
-		settled: settled,
-	}, nil
+	return silver.NewTransactionStream(out), psnHints{veto: pass.psnVeto, securities: pass.dividends, rc: rc}, nil
 }
 
 // webTxPass is what the web cash pass resolves once per read, before it
-// walks the rows: the cut, the indexes a row is resolved against, and
-// the folds and veto that decide which rows are emitted and how.
+// walks the rows: the reconcile table's verdict, the indexes a row is
+// resolved against, and the veto that decides how a row is emitted.
 type webTxPass struct {
-	cut      psnCut
+	// rc decides which rows are emitted: the cut and the rest of the
+	// reconcile table.
+	rc       *reconciliation
 	ownIBANs map[string]bool
 	// valorToISIN turns the valor beside a statement-era trade's free
 	// text into the instrument gold holds; such a trade carries no id.
@@ -114,30 +99,13 @@ type webTxPass struct {
 	dividends        *dividendSecurities
 	mt940Start       int64
 	mortgageAccounts map[string]string
-	fold             *eraFold
-	seam             map[webTxTextKey]bool
 	offsetVeto       map[string]bool
 	psnVeto          map[string]bool
-	// withheld names the conversion mirrors (buildSameDayOffsetVeto) and
-	// the cash legs (buildEraFold) an export row records instead; the PSN
-	// stream does not emit them.
-	withheld map[string]bool
 }
 
-func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []RelationshipPair) (*webTxPass, error) {
-	var (
-		p   webTxPass
-		err error
-	)
-	if p.cut.startByRel, err = buildPSNStartByWebRel(ctx, psn, rels); err != nil {
-		return nil, err
-	}
-	if p.cut.relOfAccount, err = r.buildAccountToRelMap(ctx); err != nil {
-		return nil, err
-	}
-	if p.cut.coverage, err = psn.cashCoverage(ctx); err != nil {
-		return nil, err
-	}
+func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rc *reconciliation) (*webTxPass, error) {
+	p := webTxPass{rc: rc}
+	var err error
 	if p.ownIBANs, err = r.buildOwnIBANSet(ctx); err != nil {
 		return nil, err
 	}
@@ -153,49 +121,27 @@ func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rels []Rel
 	if p.mortgageAccounts, err = r.buildMortgageAccountIndex(ctx); err != nil {
 		return nil, err
 	}
-	// Both folds run BEFORE the offset veto, and their verdicts reach it
-	// together: a web row either fold suppresses is not in the ledger, so
-	// it must not consume an offset-veto match either. The veto's universe
-	// is the EMITTED rows, and a suppressed row is represented there by
-	// its PSN counterpart; leave it in and it can win the mirror its
-	// counterpart needed, demoting one leg of a pair while the other keeps
-	// its flow kind — the one-sided phantom flow the veto exists to
-	// prevent.
-	if p.fold, err = r.buildEraFold(ctx, psn, p.cut); err != nil {
-		return nil, err
-	}
-	if p.seam, err = r.buildSeamBankRefs(ctx, psn); err != nil {
-		return nil, err
-	}
+	// The reconcile table's verdict comes BEFORE the offset veto: a web
+	// row it gives another record is not in the ledger, so it must not
+	// consume an offset-veto match either. The veto's universe is the
+	// EMITTED rows, and a suppressed row is represented there by its PSN
+	// counterpart; leave it in and it can win the mirror its counterpart
+	// needed, demoting one leg of a pair while the other keeps its flow
+	// kind — the one-sided phantom flow the veto exists to prevent.
 	if err := r.recordExportGrosses(ctx, &p); err != nil {
 		return nil, err
 	}
-	if p.offsetVeto, p.psnVeto, p.withheld, err = r.buildSameDayOffsetVeto(ctx, psn, &p); err != nil {
+	if p.offsetVeto, p.psnVeto, err = r.buildSameDayOffsetVeto(ctx, psn, &p); err != nil {
 		return nil, err
 	}
-	for id := range p.fold.withheld {
-		p.withheld[id] = true
-	}
 	return &p, nil
-}
-
-// foldedAway reports whether another feed's record of the row's booking
-// is the one gold keeps. The era fold (buildEraFold) drops a statement
-// reconstruction of a booking the export or the MT940 feed also records,
-// and an export copy of a confirmation's cash leg; the seam
-// (buildSeamBankRefs) drops a web row the MT940 feed's first statements
-// reach back over, where the cut excludes neither copy. Both are counted
-// so the drop is visible on the load summary.
-func (p *webTxPass) foldedAway(row *webRow) bool {
-	return p.fold.drop[row.emittedID()] ||
-		p.seam[webTxTextKey{account: row.account, txnNo: webTxNumber(row.txID)}]
 }
 
 // project turns one web row into the transaction gold holds before any
 // gross (emit), or reports false for a statement's period summary, which
 // is not a booking.
 func (p *webTxPass) project(row *webRow) (canonical.TransactionChange, bool) {
-	pl, pdfBackfill, hint := row.pl, row.pdfBackfill, row.hint
+	pl, pdfBackfill := row.pl, row.pdfBackfill
 	kind, net := row.kind, row.net
 	// The row's own amount, so the transaction shares no value with the
 	// ledger every pass reads.
@@ -203,21 +149,11 @@ func (p *webTxPass) project(row *webRow) (canonical.TransactionChange, bool) {
 	netAmount := &signed
 	netPtr := net
 
-	// A statement's period summary is not a booking. The "Turnover
-	// total" line a statement prints before its closing balance carries
-	// no date, so the collector's parser attaches it to the booking that
-	// precedes it — at a period close the zero-amount service-price or
-	// interest line — and that row reaches silver with the totals as its
-	// only narrative and an amount of zero. The same line under a real
-	// fee or interest amount is a booking and is kept (bookingLines;
-	// docs/adapters/ubs.md §7). The CSV feed prints the same close as a
-	// zero-amount service-price row with no booking type.
-	//
 	// newWebRow reads an undecodable payload as a PDF backfill,
 	// which routes the row through pdfCashIsExternal (INTERNAL on the
 	// zero value) rather than letting it skip the gate and keep its
 	// deposit/withdrawal kind.
-	if net.IsZero() && (pdfBackfill && isStatementSummary(pl) || !pdfBackfill && isServicePriceClose(hint)) {
+	if row.periodSummary() {
 		return canonical.TransactionChange{}, false
 	}
 	statedMortgage := p.resolveCounterAccount(&pl)
@@ -275,11 +211,12 @@ func (p *webTxPass) project(row *webRow) (canonical.TransactionChange, bool) {
 				pl.BookingType, strings.Join(pl.Continuation, " ")+" "+text.description)
 		}
 	}
-	// This export row kept a booking whose statement copy the era fold
-	// dropped. Per column and only downward (richerText), the statement's
-	// reading fills what this row left empty or as a bare code; the
-	// amount, the value date, the kind and the id stay this row's.
-	if alt, ok := p.fold.web[row.emittedID()]; ok {
+	// This export row kept a booking whose statement copy the reconcile
+	// table dropped. Per column and only downward (richerText), the
+	// statement's reading fills what this row left empty or as a bare
+	// code; the amount, the value date, the kind and the id stay this
+	// row's.
+	if alt, ok := p.rc.carried(row); ok {
 		text = text.or(alt)
 	}
 	description := silver.StrPtrIfNonEmpty(text.description)
@@ -316,8 +253,8 @@ const (
 	webEmitted webSkip = iota
 	// webCut: the row falls on the feed's side of the cut (psnCut).
 	webCut
-	// webFolded: another feed's record of the booking is the one gold
-	// keeps (foldedAway).
+	// webFolded: another record of the booking is the one gold keeps
+	// (reconcile).
 	webFolded
 	// webSummary: a statement's period summary, no booking (project).
 	webSummary
@@ -333,17 +270,17 @@ type webEmission struct {
 }
 
 // skip is why the pass emits nothing for a row whatever it projects to:
-// the cut, else a fold. webEmitted where neither drops it. emit and the
-// offset veto's web half (webOffsetLegs) both read it, so the veto counts
-// no row the stream drops.
+// the cut, else another rule of the reconcile table. webEmitted where
+// none drops it. emit and the offset veto's web half (webOffsetLegs)
+// both read it, so the veto counts no row the stream drops.
 func (p *webTxPass) skip(row *webRow) webSkip {
-	switch {
-	case p.cut.excludes(row.account, row.valueDate):
+	switch p.rc.webLostTo(row) {
+	case "":
+		return webEmitted
+	case ruleCut:
 		return webCut
-	case p.foldedAway(row):
-		return webFolded
 	}
-	return webEmitted
+	return webFolded
 }
 
 // emit is what the pass emits for a web row: the cut and the folds
@@ -452,6 +389,20 @@ type webTxRow struct {
 	valueDate                        int64
 	debit, credit                    sql.NullFloat64
 	counterparty, descKind           sql.NullString
+}
+
+// periodSummary reports whether the row is a statement's period summary,
+// which is no booking. The "Turnover total" line a statement prints
+// before its closing balance carries no date, so the collector's parser
+// attaches it to the booking that precedes it — at a period close the
+// zero-amount service-price or interest line — and that row reaches
+// silver with the totals as its only narrative and an amount of zero.
+// The same line under a real fee or interest amount is a booking and is
+// kept (bookingLines; docs/adapters/ubs.md §7). The CSV feed prints the
+// same close as a zero-amount service-price row with no booking type.
+func (row *webRow) periodSummary() bool {
+	return row.net.IsZero() && (row.pdfBackfill && isStatementSummary(row.pl) ||
+		!row.pdfBackfill && isServicePriceClose(row.hint))
 }
 
 // emittedID is the id the row reaches gold under. Web silver keys a

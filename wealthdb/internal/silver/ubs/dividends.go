@@ -239,8 +239,8 @@ func webStatedGross(p webTxPayload, currency string, moved canonical.Decimal) (c
 // exportGross is the gross the export pass books a web row at
 // (webTxPass.emit): the gross a dividend credit's row states
 // (webStatedGross), unless the row is a PDF backfill. false for any other
-// row. The era fold reads it too (buildEraFold), so it withholds a cash
-// leg only where the leg's export copy books a gross.
+// row. The reconcile table reads it too, so it withholds a cash leg only
+// where the leg's export copy books a gross.
 func exportGross(kind canonical.TxKind, p webTxPayload, pdfBackfill bool, currency string,
 	net *canonical.Decimal) (canonical.Decimal, bool) {
 	if kind != canonical.TxKindDividend || net == nil || pdfBackfill {
@@ -567,7 +567,7 @@ type dividendConfirmations map[string]cashConfirmation
 // answer on either side leaves the key unpaired, and its lines take the
 // other roads.
 //
-// The whole silver, unwindowed, for the settlement fold's reason: which
+// The whole silver, unwindowed, for the reconcile table's reason: which
 // line pairs with which confirmation depends on silver's contents, never
 // on the slice of time a load covers.
 func (r *psnReader) buildDividendConfirmations(ctx context.Context, ibans map[string]string) (dividendConfirmations, error) {
@@ -795,7 +795,7 @@ type takenCredit struct {
 // on one day go in id order. A reversal that finds no credit is a dividend
 // reversal only where its line says so.
 //
-// The whole silver, unwindowed, for the settlement fold's reason: which
+// The whole silver, unwindowed, for the reconcile table's reason: which
 // credit a reversal takes back depends on silver's contents, never on the
 // slice of time a load covers.
 func (d *dividendSecurities) matchReversals(ctx context.Context, r *psnReader) error {

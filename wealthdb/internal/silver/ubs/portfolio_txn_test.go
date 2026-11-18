@@ -129,16 +129,20 @@ func newPortfolioPSN(t *testing.T) *sql.DB {
 	return db
 }
 
-// emitPortfolio runs the pass over the full window and keys the result
-// by transaction id.
-func emitPortfolio(t *testing.T, r *webReader, psnDB *sql.DB, settled map[settledDayKey]int) map[string]canonical.TransactionChange {
+// emitPortfolio runs the pass over the full window, after the reconcile
+// table over both silvers, and keys the result by transaction id.
+func emitPortfolio(t *testing.T, r *webReader, psnDB *sql.DB) map[string]canonical.TransactionChange {
 	t.Helper()
 	var psn *psnReader
 	if psnDB != nil {
 		psn = &psnReader{db: psnDB}
 	}
+	rc, err := reconcile(context.Background(), r, psn, nil)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
 	batch, err := r.portfolioTransactions(context.Background(),
-		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, psn, settled)
+		canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, psn, rc)
 	if err != nil {
 		t.Fatalf("portfolioTransactions: %v", err)
 	}
@@ -156,7 +160,7 @@ func emitPortfolio(t *testing.T, r *webReader, psnDB *sql.DB, settled map[settle
 func TestPortfolioTradeBooksOnTheSettlingCashAccount(t *testing.T) {
 	r := newPortfolioTxFixture(t)
 	seedPortfolioTx(t, r, ptxTrade("ptx:REF1"))
-	rows := emitPortfolio(t, r, newPortfolioPSN(t), nil)
+	rows := emitPortfolio(t, r, newPortfolioPSN(t))
 
 	tx, ok := rows["ptx:REF1@"+ptxSafe]
 	if !ok {
@@ -200,7 +204,7 @@ func TestPortfolioDisposalBooksCashArriving(t *testing.T) {
 	row.quantity, row.value = -100.0, -2500.0
 	seedPortfolioTx(t, r, row)
 
-	tx := emitPortfolio(t, r, newPortfolioPSN(t), nil)["ptx:REF1@"+ptxSafe]
+	tx := emitPortfolio(t, r, newPortfolioPSN(t))["ptx:REF1@"+ptxSafe]
 	if tx.Kind != canonical.TxKindSell {
 		t.Errorf("kind = %q, want sell", tx.Kind)
 	}
@@ -218,7 +222,7 @@ func TestPortfolioUnknownBookingTypeStillSettles(t *testing.T) {
 	row.bookingType = "Some Booking Type Invented Next Year"
 	seedPortfolioTx(t, r, row)
 
-	tx := emitPortfolio(t, r, newPortfolioPSN(t), nil)["ptx:REF1@"+ptxSafe]
+	tx := emitPortfolio(t, r, newPortfolioPSN(t))["ptx:REF1@"+ptxSafe]
 	if tx.Kind != canonical.TxKindBuy {
 		t.Errorf("kind = %q, want buy from the figure's sign", tx.Kind)
 	}
@@ -235,7 +239,7 @@ func TestPortfolioForeignSettlementConvertsToTheCashCurrency(t *testing.T) {
 		valuationCcy: "USD", value: 5000.0, isin: ptxISIN,
 	})
 
-	tx := emitPortfolio(t, r, newPortfolioPSN(t), nil)["ptx:REF1@"+ptxSafe]
+	tx := emitPortfolio(t, r, newPortfolioPSN(t))["ptx:REF1@"+ptxSafe]
 	if tx.AccountExternalID != ptxCashHKD {
 		t.Errorf("account = %q, want the HKD cash account", tx.AccountExternalID)
 	}
@@ -257,7 +261,7 @@ func TestPortfolioForeignSettlementWithoutARateIsRefused(t *testing.T) {
 	seedPortfolioTx(t, r, row)
 	// Booking 5'000 as HKD would be a plausible number in the wrong
 	// money, which reads as a closed gap and is not one.
-	if rows := emitPortfolio(t, r, newPortfolioPSN(t), nil); len(rows) != 0 {
+	if rows := emitPortfolio(t, r, newPortfolioPSN(t)); len(rows) != 0 {
 		t.Errorf("emitted %d row(s), want none", len(rows))
 	}
 }
@@ -272,7 +276,7 @@ func TestPortfolioRowWithoutASettlementCurrencyUsesTheValuationOne(t *testing.T)
 		value: -250.0, valor: "10000001",
 	})
 
-	tx := emitPortfolio(t, r, newPortfolioPSN(t), nil)["ptx:REF1@"+ptxSafe]
+	tx := emitPortfolio(t, r, newPortfolioPSN(t))["ptx:REF1@"+ptxSafe]
 	if tx.AccountExternalID != ptxCashUSD || tx.Currency != "USD" {
 		t.Errorf("booked on %q/%q, want the USD cash account", tx.AccountExternalID, tx.Currency)
 	}
@@ -296,7 +300,7 @@ func TestPortfolioRowsWithoutAValueSettleNothing(t *testing.T) {
 		id: "ptx:FX", bookingType: "Purchase FX Spot", price: 0.5,
 	})
 
-	if rows := emitPortfolio(t, r, newPortfolioPSN(t), nil); len(rows) != 0 {
+	if rows := emitPortfolio(t, r, newPortfolioPSN(t)); len(rows) != 0 {
 		t.Errorf("emitted %d row(s), want none", len(rows))
 	}
 }
@@ -315,7 +319,7 @@ func TestPortfolioFreeOfPaymentTransferSettlesNothing(t *testing.T) {
 		seedPortfolioTx(t, r, row)
 	}
 
-	if rows := emitPortfolio(t, r, newPortfolioPSN(t), nil); len(rows) != 0 {
+	if rows := emitPortfolio(t, r, newPortfolioPSN(t)); len(rows) != 0 {
 		t.Errorf("emitted %d row(s), want none", len(rows))
 	}
 }
@@ -343,18 +347,23 @@ func TestPortfolioTradeTheConfirmationSettlesIsFolded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if rows := emitPortfolio(t, r, psnDB, nil); len(rows) != 0 {
+	if rows := emitPortfolio(t, r, psnDB); len(rows) != 0 {
 		t.Errorf("emitted %d row(s), want none — the confirmation carries it", len(rows))
 	}
+}
+
+// seedSettledTrade is the cash pass's record of a securities settlement
+// on the portfolio's USD cash account.
+func seedSettledTrade(t *testing.T, r *webReader, day int64) {
+	t.Helper()
+	seedWebTxRaw(t, r, "WEB1", ptxCashUSD, day, "USD", -2500, "SECURITIES PURCHASE", `{}`)
 }
 
 func TestPortfolioTradeTheCashLedgerAlreadyHoldsIsFolded(t *testing.T) {
 	r := newPortfolioTxFixture(t)
 	seedPortfolioTx(t, r, ptxTrade("ptx:REF1"))
-	settled := map[settledDayKey]int{
-		newSettledDayKey(ptxCashUSD, "USD", ptxSettleDay): 1,
-	}
-	if rows := emitPortfolio(t, r, newPortfolioPSN(t), settled); len(rows) != 0 {
+	seedSettledTrade(t, r, ptxSettleDay)
+	if rows := emitPortfolio(t, r, newPortfolioPSN(t)); len(rows) != 0 {
 		t.Errorf("emitted %d row(s), want none — the cash pass carries it", len(rows))
 	}
 }
@@ -367,10 +376,8 @@ func TestPortfolioFoldKeepsTheTradesTheOtherRailDidNotCarry(t *testing.T) {
 	for _, id := range []string{"ptx:REF1", "ptx:REF2", "ptx:REF3"} {
 		seedPortfolioTx(t, r, ptxTrade(id))
 	}
-	settled := map[settledDayKey]int{
-		newSettledDayKey(ptxCashUSD, "USD", ptxSettleDay): 1,
-	}
-	if rows := emitPortfolio(t, r, newPortfolioPSN(t), settled); len(rows) != 2 {
+	seedSettledTrade(t, r, ptxSettleDay)
+	if rows := emitPortfolio(t, r, newPortfolioPSN(t)); len(rows) != 2 {
 		t.Errorf("emitted %d row(s), want 2 — one of three was already held", len(rows))
 	}
 }
@@ -379,17 +386,15 @@ func TestPortfolioFoldKeepsTheTradesTheOtherRailDidNotCarry(t *testing.T) {
 func TestPortfolioFoldDoesNotReachAcrossDays(t *testing.T) {
 	r := newPortfolioTxFixture(t)
 	seedPortfolioTx(t, r, ptxTrade("ptx:REF1"))
-	settled := map[settledDayKey]int{
-		newSettledDayKey(ptxCashUSD, "USD", ptxSettleDay-86400): 1,
-	}
-	if rows := emitPortfolio(t, r, newPortfolioPSN(t), settled); len(rows) != 1 {
+	seedSettledTrade(t, r, ptxSettleDay-86400)
+	if rows := emitPortfolio(t, r, newPortfolioPSN(t)); len(rows) != 1 {
 		t.Errorf("emitted %d row(s), want 1", len(rows))
 	}
 }
 
-// The MT940 line for a trade's cash leg is folded away by the feed's
-// own settlement fold in favour of the confirmation. Counting both
-// would fold two of this list's rows for one of the bank's bookings.
+// The MT940 line for a trade's cash leg is folded away by its
+// confirmation in the reconcile table. Counting both would fold two of
+// this list's rows for one of the bank's bookings.
 func TestPortfolioFoldCountsOneSettlementPerConfirmedTrade(t *testing.T) {
 	r := newPortfolioTxFixture(t)
 	seedPortfolioTx(t, r, ptxTrade("ptx:REF1"))
@@ -412,7 +417,7 @@ func TestPortfolioFoldCountsOneSettlementPerConfirmedTrade(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if rows := emitPortfolio(t, r, psnDB, nil); len(rows) != 1 {
+	if rows := emitPortfolio(t, r, psnDB); len(rows) != 1 {
 		t.Errorf("emitted %d row(s), want 1 — the two feed rows are one booking", len(rows))
 	}
 }
@@ -435,7 +440,7 @@ func TestPortfolioAmbiguousCashAccountEmitsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if rows := emitPortfolio(t, r, psnDB, nil); len(rows) != 0 {
+	if rows := emitPortfolio(t, r, psnDB); len(rows) != 0 {
 		t.Errorf("emitted %d row(s), want none", len(rows))
 	}
 }
@@ -443,14 +448,14 @@ func TestPortfolioAmbiguousCashAccountEmitsNothing(t *testing.T) {
 func TestPortfolioWithoutTheFeedsMasterDataEmitsNothing(t *testing.T) {
 	r := newPortfolioTxFixture(t)
 	seedPortfolioTx(t, r, ptxTrade("ptx:REF1"))
-	if rows := emitPortfolio(t, r, nil, nil); len(rows) != 0 {
+	if rows := emitPortfolio(t, r, nil); len(rows) != 0 {
 		t.Errorf("emitted %d row(s), want none", len(rows))
 	}
 }
 
 func TestPortfolioSilverWithoutTheListLoadsUnchanged(t *testing.T) {
 	r := newWebTxFixture(t)
-	if rows := emitPortfolio(t, r, newPortfolioPSN(t), nil); len(rows) != 0 {
+	if rows := emitPortfolio(t, r, newPortfolioPSN(t)); len(rows) != 0 {
 		t.Errorf("emitted %d row(s), want none", len(rows))
 	}
 }
@@ -472,7 +477,7 @@ func TestPortfolioValorResolvesTheInstrumentWhereNoISINIsStated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tx := emitPortfolio(t, r, psnDB, nil)["ptx:REF1@"+ptxSafe]
+	tx := emitPortfolio(t, r, psnDB)["ptx:REF1@"+ptxSafe]
 	if tx.InstrumentExternalID == nil || *tx.InstrumentExternalID != ptxISIN {
 		t.Errorf("instrument = %v, want %s resolved from the valor", tx.InstrumentExternalID, ptxISIN)
 	}
@@ -484,7 +489,7 @@ func TestPortfolioUnresolvedValorBecomesTheHint(t *testing.T) {
 	row.isin, row.valor = nil, "10000001"
 	seedPortfolioTx(t, r, row)
 
-	tx := emitPortfolio(t, r, newPortfolioPSN(t), nil)["ptx:REF1@"+ptxSafe]
+	tx := emitPortfolio(t, r, newPortfolioPSN(t))["ptx:REF1@"+ptxSafe]
 	if tx.InstrumentExternalID != nil {
 		t.Errorf("instrument = %v, want none", tx.InstrumentExternalID)
 	}
@@ -506,7 +511,7 @@ func TestPortfolioPriceIsDroppedWhenItContradictsTheValue(t *testing.T) {
 		valuationCcy: "USD", value: -250.0, valor: "10000001",
 	})
 
-	tx := emitPortfolio(t, r, newPortfolioPSN(t), nil)["ptx:REF1@"+ptxSafe]
+	tx := emitPortfolio(t, r, newPortfolioPSN(t))["ptx:REF1@"+ptxSafe]
 	if tx.Price != nil {
 		t.Errorf("price = %v, want none", tx.Price)
 	}
@@ -525,7 +530,7 @@ func TestPortfolioPriceSurvivesTheValuesOwnRounding(t *testing.T) {
 		valuationCcy: "USD", value: -5.0, isin: ptxISIN,
 	})
 
-	tx := emitPortfolio(t, r, newPortfolioPSN(t), nil)["ptx:REF1@"+ptxSafe]
+	tx := emitPortfolio(t, r, newPortfolioPSN(t))["ptx:REF1@"+ptxSafe]
 	if tx.Price == nil {
 		t.Error("price dropped, want it kept within the value's own rounding")
 	}

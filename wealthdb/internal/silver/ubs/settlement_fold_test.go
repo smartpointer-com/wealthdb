@@ -8,7 +8,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// The settlement fold. A securities trade reaches PSN on two rails that
+// Confirmation over settlement line. A securities trade reaches PSN on two rails that
 // share no id — the MT515 confirmation and the MT940 `:61:` line for the
 // cash leg settling it — so one trade is two rows unless something
 // matches them on the booking. These tests pin that match: what folds,
@@ -208,15 +208,15 @@ func TestARedemptionsMiscellaneousCashLegFolds(t *testing.T) {
 	}
 }
 
-// TestTheSeamKeysOnTheReferenceAndTheAccount pins the seam set's KEY,
-// which is the half that decides what gets dropped: the bank stamps one
-// Transaction no. on both legs of an inter-account transfer, so a key
-// built on the reference alone would drop a leg the feed never held.
+// TestTheSeamKeysOnTheReferenceAndTheAccount pins the key of the rule
+// that drops a web row the feed holds under the bank's own number: the
+// bank stamps one Transaction no. on both legs of an inter-account
+// transfer, so a key built on the reference alone would drop a leg the
+// feed never held.
 //
-// That the drop then happens, and that a booking PSN never carried
-// survives it, is pinned end to end against the merged stream by
-// TestASeamDroppedRowDoesNotConsumeAVetoMatch (offset_veto_test.go) —
-// this test would pass with the seam wired to nothing.
+// That a dropped row also leaves the offset veto alone is pinned end to
+// end against the merged stream by
+// TestASeamDroppedRowDoesNotConsumeAVetoMatch (offset_veto_test.go).
 func TestTheSeamKeysOnTheReferenceAndTheAccount(t *testing.T) {
 	const (
 		sharedRef = "AW00000XX0000000"
@@ -244,20 +244,25 @@ func TestTheSeamKeysOnTheReferenceAndTheAccount(t *testing.T) {
 		t.Fatalf("seed psn movement: %v", err)
 	}
 
-	refs, err := (&webReader{}).buildSeamBankRefs(context.Background(), &psnReader{db: psnDB})
+	const other = "CH00OTHER00000000000"
+	r := newWebTxFixture(t)
+	seedWebTx(t, r, sharedRef, acct, day, "CHF", -99, false)
+	seedWebTx(t, r, webOnly, acct, day, "CHF", -99, false)
+	seedWebTx(t, r, sharedRef, other, day, "CHF", 99, false)
+	rc, err := reconcile(context.Background(), r, &psnReader{db: psnDB}, nil)
 	if err != nil {
-		t.Fatalf("buildSeamBankRefs: %v", err)
+		t.Fatalf("reconcile: %v", err)
 	}
-	if !refs[webTxTextKey{account: acct, txnNo: sharedRef}] {
-		t.Error("the booking PSN holds is not in the seam set")
+	if got := rc.lostTo(recExport, sharedRef+"@"+acct); got != ruleFeedOverWebByRef {
+		t.Errorf("the booking PSN holds stands (%q); want it dropped", got)
 	}
-	if refs[webTxTextKey{account: acct, txnNo: webOnly}] {
-		t.Error("a booking PSN never held is in the seam set — the web copy would be lost")
+	if got := rc.lostTo(recExport, webOnly+"@"+acct); got != "" {
+		t.Errorf("a booking PSN never held lost to %q — the web copy would be lost", got)
 	}
 	// The reference alone is not the identity: an inter-account
 	// transfer's two legs share it and are two bookings.
-	if refs[webTxTextKey{account: "CH00OTHER00000000000", txnNo: sharedRef}] {
-		t.Error("the seam set matched on the reference without the account")
+	if got := rc.lostTo(recExport, sharedRef+"@"+other); got != "" {
+		t.Errorf("the rule matched on the reference without the account (%q)", got)
 	}
 }
 

@@ -369,7 +369,7 @@ hashes identically, so the upsert collapses it) and stops each account
 at its MT940 floor, but nothing in silver reconciles a statement row
 against the export's or the feed's record of the same booking — the
 ids do not meet, and silver does not decide merge policy. The wealthdb
-UBS adapter owns that reconciliation: see the era fold in
+UBS adapter owns that reconciliation: see the reconcile table in
 [the adapter doc](../../wealthdb/docs/adapters/ubs.md).
 
 **A batch order becomes its payments.** The statement books a batch of

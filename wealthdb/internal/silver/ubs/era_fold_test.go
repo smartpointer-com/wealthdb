@@ -7,7 +7,7 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// The era fold. Three eras record the UBS cash ledger — statement
+// The reconcile table across eras. Three eras record the UBS cash ledger — statement
 // reconstructions, the account-statement export and the MT940 feed — over
 // overlapping periods and with disjoint id schemes, so an entry recorded by
 // two of them reaches gold twice unless something matches them on the booking

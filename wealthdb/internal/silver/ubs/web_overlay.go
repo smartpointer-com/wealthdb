@@ -3,7 +3,6 @@ package ubs
 import (
 	"context"
 	"database/sql"
-	"sort"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
@@ -69,44 +68,6 @@ type webTxTextKey struct {
 	txnNo   string
 }
 
-// buildSeamBankRefs is the set of bookings the MT940 feed already holds,
-// keyed by the bank's own number for the entry and the account it sits
-// on — the same identity psnWebTextFold carries text along.
-//
-// The hard cut is placed at the first PSN DUMP, because that is the day
-// PSN's coverage becomes complete and a cut placed any earlier would
-// drop web bookings PSN never carried. But the first dump's MT940
-// statements reach back over the days before it, so the seam has a
-// short window where both feeds hold the same entry and neither side's
-// window excludes it. The web copy is the one dropped, matching what
-// the cut does on every later day: the MT940 row reaches gold and the
-// export's text is folded onto it.
-//
-// The bank reference is an exact identity, not a signature over amounts
-// — the export prints it as "Transaction no." and the `:61:` line
-// repeats it verbatim — so this drops only an entry the two feeds agree
-// is one booking. Paired with the account because an inter-account
-// transfer's two legs share the reference and are two bookings.
-func (r *webReader) buildSeamBankRefs(ctx context.Context, psn *psnReader) (map[webTxTextKey]bool, error) {
-	out := map[webTxTextKey]bool{}
-	err := psn.eachCashMovement(ctx, func(row *feedRow) error {
-		m := row.pl
-		if !row.decoded || m.BankRef == "" {
-			return nil
-		}
-		acct := row.account
-		if m.Account != "" {
-			acct = m.Account
-		}
-		out[webTxTextKey{account: acct, txnNo: m.BankRef}] = true
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // transactionTextByKey returns the narrative columns every web
 // transaction projects (projectWebTxText), keyed by (account,
 // "Transaction no."). The PSN-side text fold (merge.go) reads it for
@@ -149,7 +110,7 @@ func (r *webReader) transactionTextByKey(ctx context.Context) (map[webTxTextKey]
 	return out, nil
 }
 
-// --- the era fold ---------------------------------------------------------
+// --- the booking key -----------------------------------------------------
 
 // statementIDPrefix marks a `ubs-web` transaction the collector
 // reconstructed from a printed Account Statement rather than read from a
@@ -209,7 +170,7 @@ func txBookingKey(tx canonical.TransactionChange) (bookingKey, bool) {
 //
 // A zero amount is not a booking anything can be matched on: it names no
 // sum, and a day can carry many zero-amount period-close lines that are
-// unrelated to each other. ok=false excludes those from the fold, which
+// unrelated to each other. ok=false excludes those from every match, which
 // costs nothing — a duplicated zero moves no total.
 func bookingCents(amt *canonical.Decimal) (string, bool) {
 	if amt == nil || amt.IsZero() {
@@ -234,246 +195,23 @@ func bookingCurrency(ccy string) string {
 	return c
 }
 
-// eraFold is the cross-era cash dedup: which web rows describe a booking
-// another era also records, and what text each one leaves behind for the
-// row that keeps it. The rows dropped are statement rows, and the export
-// copies of a confirmation's cash leg.
-type eraFold struct {
-	// drop holds the emitted web keys (`<txn no>@<account>`) of the web
-	// rows folded away.
-	drop map[string]bool
-	// web maps the emitted web key of a surviving export row to the text
-	// of the statement row folded into it.
-	web map[string]webTxText
-	// psn maps the id of a surviving feed row (an MT940 line, a conversion
-	// mirror, a confirmation's cash leg) to the text of the rows folded
-	// into it.
-	psn map[string]webTxText
-	// withheld names the cash legs whose export copy is the record
-	// instead: the leg reads no gross and the copy states one.
-	withheld map[string]bool
-}
-
-// carry records text for the feed row to take. A second copy folded into
-// the row fills only what the first left empty or as a bare code.
-func (f *eraFold) carry(id string, text webTxText) {
-	if have, ok := f.psn[id]; ok {
-		text = have.or(text)
-	}
-	f.psn[id] = text
-}
-
 // psnHints is what the web-side transaction pass decided about rows the
 // PSN stream will emit: ids to demote to a non-flow kind (the offset
-// veto's PSN half) and text to carry onto a row whose statement or export
-// duplicate the era fold dropped. Both are computed on the web side
-// because both are decisions about a PAIR of rows that straddles the two
-// silvers.
+// veto's PSN half), computed on the web side because it is a decision
+// about a PAIR of rows that straddles the two silvers, and the reconcile
+// table's verdict over both silvers.
 type psnHints struct {
-	veto  map[string]bool
-	carry map[string]webTxText
-	// withheld names the rows the PSN stream books beside the feed that
-	// an export row records instead: conversion mirrors
-	// (buildSameDayOffsetVeto) and cash legs (buildEraFold). The stream
-	// leaves them out.
-	withheld map[string]bool
+	veto map[string]bool
 	// securities is what a dividend line is linked by past its
 	// confirmation, and which reversal of a credit is a dividend
 	// reversal (dividends.go), read over both silvers. The web pass's
 	// offset veto reads the same value, so the veto and the stream
 	// agree on which reversal is no deposit or withdrawal.
 	securities *dividendSecurities
-}
-
-// webTxOutcome is what the web cash pass decided that a later pass
-// needs. Both halves are by-products of the row loop rather than
-// separate reads: the pass has already resolved every cut, fold and
-// classification by the time it emits, and re-deriving any of that
-// downstream would be re-deriving it from different inputs.
-type webTxOutcome struct {
-	// hints is what the PSN stream reads (psnHints).
-	hints psnHints
-	// settled counts the securities settlements the pass EMITTED, per
-	// cash account, currency and settlement day. The portfolio pass
-	// folds its own record of a trade against it — see
-	// portfolioSettledDays.
-	settled map[settledDayKey]int
-}
-
-// buildEraFold pairs each statement reconstruction with the export or feed
-// record of the same booking, and each export copy of a confirmation's
-// cash leg with the leg, so one booking reaches gold as one row.
-//
-// The statement archive, the account-statement export and the MT940 feed
-// cover overlapping periods and share no id, so an entry printed on a
-// statement and also exported (or fed) reaches the cash ledger twice —
-// once under each era's id — and every total built over that ledger counts
-// it twice. The fold is the cross-era identity the id schemes cannot
-// express: same account, same value day, same signed amount, same
-// currency.
-//
-// The statement copy is the one dropped. The export and the feed are the
-// bank's own machine-readable record of the entry; the statement row is
-// reconstructed from a printed document, one parse further from the bank.
-// Which of the two survives is therefore not a per-row judgement — the era
-// decides it. The one export row dropped is the copy of a cash leg
-// (below).
-//
-// Two rows of the SAME era are never folded. Two identical payments on one
-// day are an ordinary thing for a ledger to hold, and within one era they
-// carry distinct ids because they are distinct bookings; only the
-// cross-era signature says "recorded twice". Pairing is 1:1 and
-// deterministic (ids sorted, exports before feed rows), so a day holding
-// two statement rows and one export row folds exactly one of them and
-// leaves the other standing.
-//
-// A confirmation's cash leg (cashLegKeys) is the feed's record of a
-// payment on an account the feed does not speak for, where the cut gives
-// the export every day. It is keyed on the amount it posted, which is what
-// the export row moved. The export copy folds into it, 1:1, before any
-// statement row is paired: the leg carries the confirmation's security,
-// gross and tax. A statement copy then folds onto it as onto any feed row.
-// Where the leg reads no gross and its export copy states one
-// (webStatedGross), the copy is the record instead: it stays, at its
-// gross, and the leg is withheld.
-//
-// The whole silver, unwindowed, for the reason buildSameDayOffsetVeto reads
-// it whole: whether an entry is recorded twice depends only on silver's
-// contents, never on which slice of time a load happens to cover. The
-// per-relationship hard cut IS applied, because a row the cut suppresses is
-// not in the ledger and must not consume a match.
-func (r *webReader) buildEraFold(ctx context.Context, psn *psnReader, cut psnCut) (*eraFold, error) {
-	out := &eraFold{
-		drop:     map[string]bool{},
-		web:      map[string]webTxText{},
-		psn:      map[string]webTxText{},
-		withheld: map[string]bool{},
-	}
-	if r == nil {
-		return out, nil
-	}
-
-	legs, err := psn.cashLegKeys(ctx, cut.coverage)
-	if err != nil {
-		return nil, err
-	}
-
-	// foldRow is a web row the fold may drop, the text it leaves, and for
-	// an export copy of a cash leg whether it states a gross.
-	type foldRow struct {
-		key     string
-		text    webTxText
-		grossed bool
-	}
-	statements := map[bookingKey][]foldRow{}
-	exports := map[bookingKey][]foldRow{}
-	err = r.eachWebRow(ctx, func(row *webRow) error {
-		if cut.excludes(row.account, row.valueDate) {
-			return nil
-		}
-		// Classified by the same hint the transaction pass uses, so the
-		// key carries the cash the row is emitted with: a dividend's
-		// amount credited, before any gross.
-		kind, net := row.kind, row.signed
-		k, ok := newBookingKey(row.account, row.valueDate, net, row.currency)
-		if !ok {
-			return nil
-		}
-		f := foldRow{key: row.emittedID()}
-		exported := !isStatementEraID(row.txID)
-		if exported && len(legs[k]) == 0 {
-			exports[k] = append(exports[k], f)
-			return nil
-		}
-		// A statement row and an export copy of a cash leg leave their text.
-		f.text, _, _ = projectWebTxText(row.counterparty.String, row.descKind.String, row.pl, row.pdfBackfill)
-		if !exported {
-			statements[k] = append(statements[k], f)
-			return nil
-		}
-		// The gross the export pass books the copy at (exportGross).
-		_, f.grossed = exportGross(kind, row.pl, row.pdfBackfill, row.currency, net)
-		exports[k] = append(exports[k], f)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	for k, ls := range legs {
-		exp := exports[k]
-		sort.Slice(ls, func(i, j int) bool { return ls[i].id < ls[j].id })
-		sort.Slice(exp, func(i, j int) bool { return exp[i].key < exp[j].key })
-		n := min(len(ls), len(exp))
-		var kept []foldRow
-		for i := range n {
-			if !ls[i].grossed && exp[i].grossed {
-				out.withheld[ls[i].id] = true
-				kept = append(kept, exp[i])
-				continue
-			}
-			out.drop[exp[i].key] = true
-			out.carry(ls[i].id, exp[i].text)
-		}
-		exports[k] = append(kept, exp[n:]...)
-	}
-	if len(statements) == 0 {
-		return out, nil
-	}
-
-	feed := map[bookingKey][]string{}
-	err = psn.eachCashMovement(ctx, func(row *feedRow) error {
-		// The cash the line moves, as the stream projects it
-		// (feedRow.project).
-		tx, _, ok := row.project()
-		if !ok {
-			return nil
-		}
-		if k, ok := txBookingKey(tx); ok {
-			feed[k] = append(feed[k], row.eventID)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	// A conversion mirror is the feed's record of the other account's
-	// booking (conversionMirrors), and a statement copy of that booking
-	// folds onto it like any other. Keyed as the mirror is emitted.
-	mirrors, err := psn.conversionMirrors(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for id, m := range mirrors.byID {
-		if k, ok := txBookingKey(m.tx); ok {
-			feed[k] = append(feed[k], id)
-		}
-	}
-	for k, ls := range legs {
-		for _, l := range ls {
-			if !out.withheld[l.id] {
-				feed[k] = append(feed[k], l.id)
-			}
-		}
-	}
-
-	for k, ss := range statements {
-		exp, fd := exports[k], feed[k]
-		if len(exp)+len(fd) == 0 {
-			continue
-		}
-		sort.Slice(ss, func(i, j int) bool { return ss[i].key < ss[j].key })
-		sort.Slice(exp, func(i, j int) bool { return exp[i].key < exp[j].key })
-		sort.Strings(fd)
-		for i, s := range ss {
-			switch {
-			case i < len(exp):
-				out.drop[s.key] = true
-				out.web[exp[i].key] = s.text
-			case i-len(exp) < len(fd):
-				out.drop[s.key] = true
-				out.carry(fd[i-len(exp)], s.text)
-			}
-		}
-	}
-	return out, nil
+	// rc is the reconcile table's verdict: which feed lines a
+	// confirmation keeps, which mirrors and cash legs another record
+	// carries instead (withheld), and the text a dropped copy leaves
+	// on the record that kept its booking. nil where no web pass ran;
+	// the stream then reconciles the feed alone.
+	rc *reconciliation
 }

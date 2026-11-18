@@ -39,26 +39,27 @@ import (
 //   Realized lots (RealizedLots, realized.go) come from web alone.
 //
 //   Transactions
-//     - Hard cut at PSN-start per relationship, on the accounts the
-//       MT940 feed speaks for (psnCut) — see transactionsBeforePSNStart
-//       for why an overlap merge isn't safe here. The cut sits at the
-//       first PSN dump, whose MT940 statements reach back over the days
-//       before it, so a seam fold (buildSeamBankRefs) drops the web
-//       copy of a booking the feed already holds, found by the bank's
-//       own number for the entry. An account the feed is not delivered
-//       for is the web side's on every day; what the feed says about
-//       such an account from the other side of a movement is booked on
-//       it by the PSN stream (conversionMirrors,
-//       corporateActionCashLegs).
-//     - An era fold (buildEraFold) collapses a booking that two eras
-//       both recorded: a statement reconstruction whose account,
-//       value day, signed amount and currency match an export or
-//       MT940 row is dropped, and its narrative is carried onto the
-//       row that kept the booking. So is an export row a
-//       confirmation's cash leg records. One booking, one row.
-//     - Inside PSN, a settlement fold (buildSettlementFold) does the
-//       same for the two rails that record one trade: the MT515
-//       confirmation keeps it, the MT940 cash leg settling it drops.
+//     - Which record of a booking gold keeps is one ordered table of
+//       rules over both silvers (reconcile.go), decided before any
+//       stream emits. Its first rule is the hard cut at PSN-start per
+//       relationship, on the accounts the MT940 feed speaks for
+//       (psnCut) — see transactionsBeforePSNStart for why an overlap
+//       merge isn't safe here. The cut sits at the first PSN dump,
+//       whose MT940 statements reach back over the days before it, so
+//       a later rule drops the web copy of a booking the feed already
+//       holds, found by the bank's own number for the entry. An
+//       account the feed is not delivered for is the web side's on
+//       every day; what the feed says about such an account from the
+//       other side of a movement is booked on it by the PSN stream
+//       (conversionMirrors, corporateActionCashLegs).
+//     - The other rules collapse a booking that two records hold: a
+//       statement reconstruction whose account, value day, signed
+//       amount and currency match an export or feed record is
+//       dropped, and its narrative is carried onto the record that
+//       kept the booking; so is an export row a confirmation's cash
+//       leg records. Inside PSN, the MT515 confirmation keeps a trade
+//       and the MT940 cash leg settling it drops. One booking, one
+//       row.
 //     - The PSN stream is wrapped in a text fold
 //       (psnWebTextFold) that fills a narrative column the
 //       MT940 feed left as a bare code from the account-statement
@@ -259,15 +260,27 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 // overlap merge.
 func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silver.TransactionStream, error) {
 	streams := make([]silver.TransactionStream, 0, 2)
+	// Which record of a booking gold keeps is one decision over both
+	// silvers (reconcile.go), taken before any pass emits.
+	var rc *reconciliation
+	if w.HasChanges {
+		var err error
+		if rc, err = reconcile(ctx, c.web, c.psn, c.relationships); err != nil {
+			if c.web != nil {
+				return nil, fmt.Errorf("ubs web Transactions: %w", err)
+			}
+			return nil, fmt.Errorf("ubs psn Transactions: %w", err)
+		}
+	}
 	// The web side builds the same-day offset veto over both feeds and hands
 	// back the PSN half, so a vetoed pair drops on both sides of the seam.
-	var hints psnHints
+	hints := psnHints{rc: rc}
 	if c.web != nil {
-		s, outcome, err := c.web.transactionsBeforePSNStart(ctx, w, c.psn, c.relationships)
+		s, h, err := c.web.transactionsBeforePSNStart(ctx, w, c.psn, rc)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web Transactions: %w", err)
 		}
-		hints = outcome.hints
+		hints = h
 		streams = append(streams, s)
 		// Cards are web-only and the PSN cut does not touch them: there
 		// is no PSN row for the seam to arbitrate against. They ride as
@@ -285,10 +298,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		// settled them. Also its own stream, and for the stronger
 		// reason: the cut decides which of two records of one booking
 		// gold keeps, and this pass emits only where neither of the
-		// other rails recorded the booking at all. What it folds
-		// against is what the cash pass just emitted, which is why it
-		// runs after it.
-		portfolio, err := c.web.portfolioTransactions(ctx, w, c.psn, outcome.settled)
+		// other rails recorded the booking at all.
+		portfolio, err := c.web.portfolioTransactions(ctx, w, c.psn, rc)
 		if err != nil {
 			return nil, fmt.Errorf("ubs web portfolio Transactions: %w", err)
 		}
@@ -313,8 +324,8 @@ func (c *Connection) Transactions(ctx context.Context, w canonical.Window) (silv
 		// Outermost, so the export's own record of the entry — found by the
 		// bank's number for it — fills a bare column first, and the dropped
 		// statement copy only fills what is still bare after that.
-		if len(hints.carry) > 0 {
-			s = silver.MapTransactions(s, psnStatementCarry{texts: hints.carry}.apply)
+		if rc != nil && len(rc.psnText) > 0 {
+			s = silver.MapTransactions(s, psnStatementCarry{texts: rc.psnText}.apply)
 		}
 		streams = append(streams, s)
 	}
@@ -363,22 +374,22 @@ func (s psnWebTextFold) apply(batch *canonical.TransactionBatch) {
 	}
 }
 
-// psnStatementCarry is the PSN half of the era fold: it carries the
-// narrative of a statement reconstruction the web side dropped onto the
-// MT940 row that kept the booking, and that of an export row onto the
-// confirmation's cash leg that kept it.
+// psnStatementCarry is the PSN half of the text a dropped copy leaves
+// (reconcile.go): it carries the narrative of a statement reconstruction
+// the web side dropped onto the MT940 row that kept the booking, and that
+// of an export row onto the confirmation's cash leg that kept it.
 //
 // The three eras of the cash ledger overlap in time and share no id, so an
 // entry printed on a statement and also carried by the feed reaches gold
 // twice unless something matches them on the booking itself — account,
-// value day, signed amount, currency (buildEraFold). The machine-readable
-// record survives; this is what stops the fold from also losing what the
+// value day, signed amount, currency (bookingKey). The machine-readable
+// record survives; this is what stops the table from also losing what the
 // printed one said. Per column and only downward (richerText), exactly as
 // the export-side fold above: a column that is empty or a bare code takes
 // the statement's value, a column that already says something keeps it.
 //
-// Keyed on the surviving row's id, decided on the web side where both eras
-// are in hand, so nothing is re-matched here. No row is added or dropped
+// Keyed on the surviving row's id, decided where both silvers are in
+// hand, so nothing is re-matched here. No row is added or dropped
 // by this stream, and the amount, the value date, the kind and the id are
 // the surviving row's, byte for byte.
 type psnStatementCarry struct {

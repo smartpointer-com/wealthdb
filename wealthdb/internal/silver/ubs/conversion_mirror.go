@@ -29,8 +29,8 @@ import (
 // stated amount in the stated currency, on the same value day. Only
 // where nothing else records it: the feed does not speak for the
 // account on that day (psnCashCoverage), and the export did not emit
-// the booking either (the web pass withholds a mirror whose booking it
-// already carries — see buildSameDayOffsetVeto).
+// the booking either (the reconcile table withholds a mirror whose
+// booking the export already carries).
 //
 // What it closes is the hole the header of portfolio_txn.go names: an
 // account the bank sends no MT940 for had its conversions on no rail at
@@ -50,7 +50,7 @@ import (
 //
 // A statement copy of the mirrored leg, reconstructed from a later
 // annual statement, folds onto the mirror like any statement copy of a
-// feed row (buildEraFold): the derived row keeps the booking and takes
+// feed row (reconcile.go): the derived row keeps the booking and takes
 // the statement's narrative.
 
 // conversionMirror is one such counter-leg: the feed row it was read
@@ -123,7 +123,7 @@ type mirrorPayload struct {
 
 // conversionMirrors is readConversionMirrors over the feed's own
 // coverage. The first call reads them and later calls return the same
-// set: the era fold, the offset veto and the PSN stream all ask.
+// set: the reconcile table, the offset veto and the PSN stream all ask.
 func (r *psnReader) conversionMirrors(ctx context.Context) (*conversionMirrors, error) {
 	if r == nil || r.db == nil {
 		return r.readConversionMirrors(ctx, nil)
@@ -140,7 +140,7 @@ func (r *psnReader) conversionMirrors(ctx context.Context) (*conversionMirrors, 
 // readConversionMirrors reads every conversion the feed describes whose
 // other account it does not speak for, and builds the missing leg.
 //
-// The whole silver, unwindowed, for buildEraFold's reason: which
+// The whole silver, unwindowed, for the reconcile table's reason: which
 // bookings exist depends on silver's contents alone, never on which
 // slice of time a load covers. The emitting loop selects by the feed
 // row's own date.

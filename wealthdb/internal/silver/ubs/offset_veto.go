@@ -83,29 +83,21 @@ func (l offsetLeg) booking() offsetBooking {
 // twin (a shared Transaction no. — UBS stamps both sides of an
 // inter-account transfer with one number) and the loose offsets among the
 // legs left (pairSameDayOffsets).
-func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, p *webTxPass) (webVeto, psnVeto, withheld map[string]bool, err error) {
+func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, p *webTxPass) (webVeto, psnVeto map[string]bool, err error) {
 	legs, err := r.webOffsetLegs(ctx, p)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	psnLegs, err := psn.offsetLegs(ctx, p.dividends)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	// A conversion mirror stands in for a booking no feed carries. Where
-	// the export DOES carry it — the account is outside the MT940
-	// delivery but inside the export's — the export's row is the bank's
-	// own record and the mirror is withheld, here and in the PSN stream
-	// alike, so the booking is one leg in the veto's universe and one
-	// row in gold.
-	withheld = map[string]bool{}
-	exported := map[offsetBooking]bool{}
-	for _, l := range legs {
-		exported[l.booking()] = true
-	}
+	// the export DOES carry it, the reconcile table withholds the mirror,
+	// here and in the PSN stream alike, so the booking is one leg in the
+	// veto's universe and one row in gold.
 	for _, l := range psnLegs {
-		if isMirrorID(l.txID) && exported[l.booking()] {
-			withheld[l.txID] = true
+		if isMirrorID(l.txID) && p.rc.withheld[l.txID] {
 			continue
 		}
 		legs = append(legs, l)
@@ -121,7 +113,7 @@ func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, 
 	}
 	consumed := vetoConversions(slices.Clone(legs), record)
 	pairSameDayOffsets(legs, consumed, record)
-	return webVeto, psnVeto, withheld, nil
+	return webVeto, psnVeto, nil
 }
 
 // webOffsetLegs reads the web half of the offset veto's universe: every
@@ -138,7 +130,8 @@ func (r *webReader) webOffsetLegs(ctx context.Context, p *webTxPass) ([]offsetLe
 		// The amount the row will REACH GOLD with, not the raw column
 		// difference: the two web eras write the amount columns to
 		// different conventions, and only the adapter's own projection
-		// resolves them (the rule `bookingKey` names for the era fold).
+		// resolves them (the rule `bookingKey` names for the reconcile
+		// table).
 		// Differencing the raw columns would read every export-era
 		// withdrawal as a positive figure, where it could mirror nothing.
 		kind, netAmount := row.kind, row.signed

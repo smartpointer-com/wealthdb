@@ -576,7 +576,7 @@ func (c cashConfirmation) legOf(coverage psnCashCoverage, ibans map[string]strin
 // account the feed does not speak for (cashLeg), on a payment day in the
 // window: a leg occurs on that day, and a load replaces the window's rows
 // by the day they occur. withheld names the legs an export row records
-// instead (buildEraFold); they are not booked.
+// instead (reconcile.go); they are not booked.
 func (r *psnReader) corporateActionCashLegs(ctx context.Context, w canonical.Window, coverage psnCashCoverage, ibans map[string]string, withheld map[string]bool) ([]canonical.TransactionChange, error) {
 	confirmations, err := r.cashConfirmations(ctx)
 	if err != nil {
@@ -597,45 +597,6 @@ func (r *psnReader) corporateActionCashLegs(ctx context.Context, w canonical.Win
 		out = append(out, tx)
 		if taxed {
 			out = append(out, tax)
-		}
-	}
-	return out, nil
-}
-
-// cashLegRef is a cash leg a confirmation books, as the era fold reads
-// it: its id, and whether it reads a gross.
-type cashLegRef struct {
-	id      string
-	grossed bool
-}
-
-// cashLegKeys maps, over the whole silver, the booking key of each cash
-// leg the confirmations book (legOf) onto the legs. The key holds the
-// amount posted: what moved, and what any other record of the payment
-// states, not the gross the leg reads. The era fold folds such a record
-// into its leg (buildEraFold).
-func (r *psnReader) cashLegKeys(ctx context.Context, coverage psnCashCoverage) (map[bookingKey][]cashLegRef, error) {
-	roster, err := r.roster(ctx)
-	if err != nil {
-		return nil, err
-	}
-	ibans := roster.cashAccountIBANs()
-	confirmations, err := r.cashConfirmations(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := map[bookingKey][]cashLegRef{}
-	for _, c := range confirmations {
-		tx, _, _, ok, err := c.cashLeg(coverage, ibans)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-		posted := c.move.posted
-		if k, ok := newBookingKey(tx.AccountExternalID, c.move.paymentDay, &posted, c.move.postedCcy); ok {
-			out[k] = append(out[k], cashLegRef{id: tx.TransactionExternalID, grossed: tx.GrossAmount != nil})
 		}
 	}
 	return out, nil

@@ -18,9 +18,10 @@ import (
 // with a suffix of its own (`_assign_export_txn_ids`), which is not part
 // of anything the bank wrote and has to come off wherever the id is read
 // AS a number: the reference this adapter publishes for the matcher to
-// pair legs on, the PSN seam fold, and the narrative overlay. Left on,
-// the row simply matches nothing — silently, because a reference that
-// pairs nothing looks exactly like a movement that has no twin.
+// pair legs on, the reconcile table's match on the bank's number, and
+// the narrative overlay. Left on, the row simply matches nothing —
+// silently, because a reference that pairs nothing looks exactly like a
+// movement that has no twin.
 //
 // A statement-era id comes back whole. Those are the collector's own
 // content hashes, `#` and all, where the suffix names a LEG of a split

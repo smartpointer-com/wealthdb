@@ -88,86 +88,6 @@ func newSettledDayKey(account, currency string, at int64) settledDayKey {
 	}
 }
 
-// portfolioSettledDays counts, per settledDayKey, the securities
-// settlements gold already holds from the other two rails — so this
-// list's copy of one is not added a second time.
-//
-// webSettled is the web cash pass's own count, accumulated from the
-// rows it EMITTED: after its per-relationship hard cut, its era fold
-// and its seam fold. Counting silver instead would count a booking
-// recorded in two eras twice and fold two of this list's rows for one
-// of the bank's.
-//
-// The feed's half is rebuilt here for the same reason. A trade reaches
-// it twice — as an MT515 confirmation and as the MT940 line for the
-// cash leg — and the settlement fold drops the line and keeps the
-// confirmation. So confirmations are counted whole, and cash lines
-// only where that same builder leaves them standing.
-//
-// The feed's half is read unwindowed, as every fold in this adapter
-// reads: whether a booking is recorded twice depends on silver's
-// contents alone, never on which slice of time a load happens to
-// cover.
-func (r *webReader) portfolioSettledDays(ctx context.Context, psn *psnReader, webSettled map[settledDayKey]int) (map[settledDayKey]int, error) {
-	out := make(map[settledDayKey]int, len(webSettled))
-	for k, n := range webSettled {
-		out[k] = n
-	}
-	if psn == nil || psn.db == nil {
-		return out, nil
-	}
-	roster, err := psn.roster(ctx)
-	if err != nil {
-		return nil, err
-	}
-	ibans := roster.cashAccountIBANs()
-	settled, err := psn.buildSettlementFold(ctx, ibans)
-	if err != nil {
-		return nil, err
-	}
-	feed, err := psn.feed(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range feed.events {
-		row := &feed.events[i]
-		var currencyISO *string
-		if row.currency.Valid {
-			c := row.currency.String
-			currencyISO = &c
-		}
-		switch row.kind {
-		case "trade_confirmation":
-			var p tradeConfirmationPayload
-			if err := json.Unmarshal([]byte(row.payload), &p); err != nil {
-				continue
-			}
-			currency := p.NetCurrency
-			if currency == "" && currencyISO != nil {
-				currency = *currencyISO
-			}
-			// The confirmation dates the trade to its execution and
-			// says separately when the cash lands. It is the landing
-			// that shares a day with the list's value date.
-			at := p.SettlementDateUnix
-			if at == 0 {
-				at = row.at
-			}
-			out[newSettledDayKey(cashIBAN(ibans, p.CashAccountExternalID), currency, at)]++
-		case "cash_movement":
-			if settled.covers(row) {
-				continue
-			}
-			tx, err := buildTransaction(row.eventID, row.at, row.account, row.kind, currencyISO, row.payload, ibans)
-			if err != nil || (tx.Kind != canonical.TxKindBuy && tx.Kind != canonical.TxKindSell) {
-				continue
-			}
-			out[newSettledDayKey(tx.AccountExternalID, tx.Currency, tx.OccurredAt)]++
-		}
-	}
-	return out, nil
-}
-
 // portfolioCashKind reports the ledger kind for one row of the
 // portfolio transaction list, and whether the row settles against cash
 // at all.
@@ -246,20 +166,112 @@ func portfolioTradePrice(quantity, price sql.NullFloat64, amount float64) *canon
 	return &d
 }
 
+// listRow is one row of the portfolio transaction list that settles
+// cash (portfolioCashKind), resolved to the cash booking it makes: the
+// portfolio's cash account of the settlement currency, and the amount in
+// that currency. cashAccount is "" where no one account answers, and
+// priced is false where the value cannot be read in the settlement
+// currency; neither books.
+type listRow struct {
+	txID, account, bookingType, payload string
+	valueDate                           int64
+	securityName, valor, isin           sql.NullString
+	quantity, transPrice                sql.NullFloat64
+
+	kind        canonical.TxKind
+	currency    string
+	cashAccount string
+	amount      float64
+	priced      bool
+}
+
+// settles reports whether the row books: its cash account is named and
+// its amount read.
+func (l *listRow) settles() bool { return l.cashAccount != "" && l.priced }
+
+// emittedID is the id the row reaches gold under. Silver keys these by
+// (id, custody account) so that a booking reported against two accounts
+// — a transfer between them — stays two rows. Gold's key is the id
+// alone, so the pair is folded into one here.
+func (l *listRow) emittedID() string { return l.txID + "@" + l.account }
+
+// portfolioListRows reads every row of the list that settles cash, in
+// the list's order (value date, then id), each resolved against the
+// account master data (listRow). None without the list or without a
+// portfolio cash account in the roster.
+func (r *webReader) portfolioListRows(ctx context.Context, roster *psnRoster) ([]*listRow, error) {
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
+	ok, err := r.hasTable(ctx, "portfolio_transactions")
+	if err != nil || !ok {
+		return nil, err
+	}
+	cashAccounts := roster.portfolioCashAccounts()
+	if len(cashAccounts) == 0 {
+		return nil, nil
+	}
+	portfolioOf := roster.portfolioOfSafekeeping()
+	const q = `
+SELECT transaction_external_id, safekeeping_account_external_id, value_date,
+       booking_type, security_name, valor, isin, quantity,
+       settlement_currency_iso, valuation_currency_iso,
+       trans_price, exchange_rate, trans_value, payload
+  FROM portfolio_transactions
+ ORDER BY value_date, transaction_external_id`
+	var out []*listRow
+	err = silver.ScanRows(ctx, r.db, "ubs-web portfolio transactions", q, func(rows *sql.Rows) error {
+		var (
+			l                           listRow
+			settlementCcy, valuationCcy sql.NullString
+			exchangeRate, txValue       sql.NullFloat64
+		)
+		if err := rows.Scan(&l.txID, &l.account, &l.valueDate, &l.bookingType,
+			&l.securityName, &l.valor, &l.isin, &l.quantity,
+			&settlementCcy, &valuationCcy,
+			&l.transPrice, &exchangeRate, &txValue, &l.payload); err != nil {
+			return fmt.Errorf("ubs-web portfolio transactions scan: %w", err)
+		}
+		kind, isCash := portfolioCashKind(l.bookingType, txValue)
+		if !isCash {
+			return nil
+		}
+		l.kind = kind
+		// Which currency the cash moved in. A row that states none
+		// settled in the currency it was valued in — the portfolio's
+		// own, which is the only other currency it names.
+		l.currency = bookingCurrency(settlementCcy.String)
+		if !settlementCcy.Valid || settlementCcy.String == "" {
+			l.currency = bookingCurrency(valuationCcy.String)
+		}
+		l.cashAccount = cashAccounts[portfolioCashKey{
+			portfolio: portfolioOf[l.account],
+			currency:  l.currency,
+		}]
+		if l.cashAccount != "" {
+			l.amount, l.priced = portfolioSettlementAmount(
+				txValue.Float64, l.currency, bookingCurrency(valuationCcy.String), exchangeRate)
+		}
+		out = append(out, &l)
+		return nil
+	})
+	return out, err
+}
+
 // portfolioTransactions emits the managed portfolios' securities
 // settlements, on the cash accounts that paid for them.
 //
 // No PSN cutoff applies and none could: the cut arbitrates between two
 // records of one cash booking, and the question here is the opposite
 // one — whether any rail recorded this booking at all. That is what
-// the settled-day fold answers, row by row.
+// the reconcile table's last rule answers, row by row (rc).
 //
 // Nothing is emitted without the account master data. A trade booked
 // against a custody account rather than the cash account that paid
 // would sit outside every cash reconciliation gold has, and a rail
 // added to close a reconciliation gap must not open one somewhere
 // else.
-func (r *webReader) portfolioTransactions(ctx context.Context, w canonical.Window, psn *psnReader, webSettled map[settledDayKey]int) (canonical.TransactionBatch, error) {
+func (r *webReader) portfolioTransactions(ctx context.Context, w canonical.Window, psn *psnReader, rc *reconciliation) (canonical.TransactionBatch, error) {
 	var out canonical.TransactionBatch
 	if !w.HasChanges {
 		return out, nil
@@ -272,8 +284,7 @@ func (r *webReader) portfolioTransactions(ctx context.Context, w canonical.Windo
 	if err != nil {
 		return out, err
 	}
-	cashAccounts := roster.portfolioCashAccounts()
-	if len(cashAccounts) == 0 {
+	if len(roster.portfolioCashAccounts()) == 0 {
 		var n int
 		if err := r.db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM portfolio_transactions`).Scan(&n); err != nil {
@@ -284,120 +295,70 @@ func (r *webReader) portfolioTransactions(ctx context.Context, w canonical.Windo
 		}
 		return out, nil
 	}
-	portfolioOf := roster.portfolioOfSafekeeping()
 	valorToISIN, err := r.valorIndex(ctx, psn)
 	if err != nil {
 		return out, err
 	}
-	settled, err := r.portfolioSettledDays(ctx, psn, webSettled)
-	if err != nil {
-		return out, err
-	}
 
-	const q = `
-SELECT transaction_external_id, safekeeping_account_external_id, value_date,
-       booking_type, security_name, valor, isin, quantity,
-       settlement_currency_iso, valuation_currency_iso,
-       trans_price, exchange_rate, trans_value, payload
-  FROM portfolio_transactions
- WHERE value_date BETWEEN ? AND ?
- ORDER BY value_date, transaction_external_id`
 	folded, unplaced, unpriced := 0, 0, 0
-	if err := silver.ScanRows(ctx, r.db, "ubs-web portfolio transactions", q, func(rows *sql.Rows) error {
-		var (
-			txID, account, bookingType, payload         string
-			valueDate                                   int64
-			securityName, valor, isin                   sql.NullString
-			settlementCcy, valuationCcy                 sql.NullString
-			quantity, transPrice, exchangeRate, txValue sql.NullFloat64
-		)
-		if err := rows.Scan(&txID, &account, &valueDate, &bookingType,
-			&securityName, &valor, &isin, &quantity,
-			&settlementCcy, &valuationCcy,
-			&transPrice, &exchangeRate, &txValue, &payload); err != nil {
-			return fmt.Errorf("ubs-web portfolio transactions scan: %w", err)
+	for _, l := range rc.list {
+		if l.valueDate < w.Start || l.valueDate > w.End {
+			continue
 		}
-		kind, isCash := portfolioCashKind(bookingType, txValue)
-		if !isCash {
-			return nil
-		}
-		// Which currency the cash moved in. A row that states none
-		// settled in the currency it was valued in — the portfolio's
-		// own, which is the only other currency it names.
-		currency := bookingCurrency(settlementCcy.String)
-		if !settlementCcy.Valid || settlementCcy.String == "" {
-			currency = bookingCurrency(valuationCcy.String)
-		}
-		cashAccount, ok := cashAccounts[portfolioCashKey{
-			portfolio: portfolioOf[account],
-			currency:  currency,
-		}]
-		if !ok {
+		switch {
+		case l.cashAccount == "":
 			unplaced++
-			return nil
-		}
-		amount, ok := portfolioSettlementAmount(
-			txValue.Float64, currency, bookingCurrency(valuationCcy.String), exchangeRate)
-		if !ok {
+			continue
+		case !l.priced:
 			unpriced++
-			return nil
-		}
-		key := newSettledDayKey(cashAccount, currency, valueDate)
-		if settled[key] > 0 {
-			settled[key]--
+			continue
+		case rc.lostTo(recList, l.emittedID()) != "":
 			folded++
-			return nil
+			continue
 		}
 
-		net := canonical.NewDecimalFromFloat(math.Abs(amount))
+		net := canonical.NewDecimalFromFloat(math.Abs(l.amount))
 		tx := canonical.TransactionChange{
-			// Silver keys these by (id, custody account) so that a
-			// booking reported against two accounts — a transfer
-			// between them — stays two rows. Gold's key is the id
-			// alone, so the pair is folded into one here.
-			TransactionExternalID: txID + "@" + account,
+			TransactionExternalID: l.emittedID(),
 			// The settlement day: when the cash moved, which is what
 			// the balance it has to reconcile against moved on.
-			OccurredAt:        valueDate,
-			AccountExternalID: cashAccount,
-			Kind:              kind,
-			Currency:          currency,
+			OccurredAt:        l.valueDate,
+			AccountExternalID: l.cashAccount,
+			Kind:              l.kind,
+			Currency:          l.currency,
 			// One figure, not two. The list states a gross value and
 			// no commission, so carrying it as both the gross and the
 			// net would assert a commission of zero.
-			NetAmount: canonical.ApplyCanonicalSign(kind, &net),
-			Price:     portfolioTradePrice(quantity, transPrice, amount),
+			NetAmount: canonical.ApplyCanonicalSign(l.kind, &net),
+			Price:     portfolioTradePrice(l.quantity, l.transPrice, l.amount),
 			// The security as the bank labels it. A name is a hint,
 			// never an identity — the ISIN beside it is the identity.
-			Description: silver.StrPtrIfNonEmpty(securityName.String),
+			Description: silver.StrPtrIfNonEmpty(l.securityName.String),
 			// The bank's own booking type, verbatim, as the cash rail
 			// carries its own: the closest thing a bank has to a
 			// provider category, and the vocabulary a reader needs to
 			// see a type this adapter classified by direction alone.
-			ProviderCategory: silver.StrPtrIfNonEmpty(bookingType),
-			Payload:          json.RawMessage(payload),
+			ProviderCategory: silver.StrPtrIfNonEmpty(l.bookingType),
+			Payload:          json.RawMessage(l.payload),
 		}
-		if quantity.Valid {
+		if l.quantity.Valid {
 			// Unsigned, as the sibling feed's confirmations state it:
 			// the kind carries the direction, and two rails on one
 			// account disagreeing about the sign of a quantity would
 			// be read as two different trades.
-			q := canonical.NewDecimalFromFloat(math.Abs(quantity.Float64))
+			q := canonical.NewDecimalFromFloat(math.Abs(l.quantity.Float64))
 			tx.Quantity = &q
 		}
 		switch {
-		case isin.Valid && isin.String != "":
-			id := isin.String
+		case l.isin.Valid && l.isin.String != "":
+			id := l.isin.String
 			tx.InstrumentExternalID = &id
 		default:
 			// The valor identifies the security where the export
 			// states no ISIN; a stated ISIN outranks it.
-			tx.InstrumentExternalID, tx.InstrumentHint = resolveValor(valorToISIN, valor.String)
+			tx.InstrumentExternalID, tx.InstrumentHint = resolveValor(valorToISIN, l.valor.String)
 		}
 		out.Transactions = append(out.Transactions, tx)
-		return nil
-	}, w.Start, w.End); err != nil {
-		return out, err
 	}
 	if folded > 0 {
 		log.Printf("ubs adapter: folded %d portfolio trade(s) another rail already settles — one booking, one row", folded)

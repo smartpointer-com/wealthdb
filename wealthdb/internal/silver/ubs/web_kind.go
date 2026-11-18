@@ -12,7 +12,7 @@ import (
 // webProjectedNet is the signed amount a `ubs-web` cash row projects into
 // gold, plus the kind and the raw column net it was derived from. It is the
 // single definition of that derivation: the transaction loop emits what it
-// returns and the era fold (buildEraFold) keys on it, so one booking's
+// returns and the reconcile table keys on it (bookingKey), so one booking's
 // amount is the same number whichever era recorded it.
 //
 // It has to be a shared definition because the two web eras do not agree on

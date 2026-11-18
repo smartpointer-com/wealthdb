@@ -190,7 +190,7 @@ func seedExportEraDebit(t *testing.T, r *webReader, txID, acct string, day int64
 }
 
 // TestTheOffsetVetoPairsAcrossTheTwoEraConventions is the regression the
-// era fold's own rule already named: "only the projection resolves" the
+// booking key's own rule already named: "only the projection resolves" the
 // two eras' column conventions.
 //
 // The veto bucketed legs on the raw column difference. The export signs
