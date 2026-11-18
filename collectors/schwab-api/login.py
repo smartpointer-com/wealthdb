@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import logging
 import os
 import sys
@@ -55,14 +54,22 @@ from pathlib import Path
 
 import _tokenclient
 import oauth_landmarks as lm
+# The token file's age report, and the consent drive's guard with
+# the error it raises; each name is bound here too.
+from tokeninfo import (  # noqa: F401
+    REFRESH_TOKEN_TTL_SECONDS,
+    read_token_creation_time,
+    print_token_age,
+)
+from guard import (  # noqa: F401
+    LoginFlowError,
+    AdvanceGuard,
+)
 
 from collectorkit import cli, debugcap, envfile, launch, session
 
 log = logging.getLogger("schwab-login")
 
-# Schwab refresh tokens are valid for 7 days from issue. Surfaced as a
-# constant so --check output matches the actual cap.
-REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
 # Env files sourced (first existing path of each set, container then host
 # form). schwab-api.env carries the OAuth app credentials; schwab-web.env
@@ -193,52 +200,10 @@ def source_env_files(explicit: Path | None = None) -> None:
 # Token-file inspection (--check)
 # ============================================================
 
-def read_token_creation_time(path: Path) -> datetime | None:
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            blob = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        log.warning("Could not parse token file %s: %s", path, exc)
-        return None
-    ts = blob.get("creation_timestamp")
-    if isinstance(ts, (int, float)):
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-    except OSError:
-        return None
-
-
 # Exit codes of --check.
 CHECK_NO_TOKEN = 1        # no token file to check
 CHECK_REJECTED = 3        # Schwab refused the token (expired, revoked, bad client)
 CHECK_PROBE_FAILED = 4    # the probe call failed (HTTP status, network)
-
-
-def print_token_age(token_path: Path) -> None:
-    """Print when the token file was issued and when its refresh token
-    runs out by the 7-day cap. An estimate from the file alone: the
-    probe in :func:`cmd_check` is what proves the token."""
-    issued = read_token_creation_time(token_path)
-    print(f"Token file:        {token_path}")
-    if issued is None:
-        print("Issued (UTC):      unknown (no issue timestamp in the file)")
-        return
-    age = datetime.now(timezone.utc) - issued
-    remaining_s = REFRESH_TOKEN_TTL_SECONDS - age.total_seconds()
-    print(f"Issued (UTC):      {issued.isoformat(timespec='seconds')}")
-    print(f"Age:               {age}")
-    if remaining_s <= 0:
-        print("Estimated expiry:  EXPIRED by the 7-day cap.")
-        return
-    renew_by = datetime.fromtimestamp(
-        issued.timestamp() + REFRESH_TOKEN_TTL_SECONDS, tz=timezone.utc,
-    )
-    print(f"Estimated expiry:  {renew_by.isoformat(timespec='seconds')} "
-          f"({remaining_s / 3600:.1f}h from now)")
-    if remaining_s / 3600 < 24:
-        print("WARNING: refresh window expires in under 24 hours. "
-              "Re-run login soon.")
 
 
 def probe_token(args: argparse.Namespace) -> int:
@@ -361,20 +326,6 @@ def prefill_login(page, login_id: str | None, password: str | None,
 def _prompt_for_mfa_code() -> str:
     return cli.prompt_on_stderr(
         "Schwab 2FA: enter your code, then press Enter.")
-
-
-class LoginFlowError(RuntimeError):
-    """Terminal login-flow failure: the run stops, reports, and exits
-    nonzero. Re-running login is the recovery path — there are no in-run
-    retries (see DESIGN.md §3.1, "Failure discipline")."""
-
-    exit_code = 8
-
-    def __init__(self, message: str, *, page_text: str = "",
-                 locked: bool = False):
-        super().__init__(message)
-        self.page_text = page_text
-        self.locked = locked
 
 
 class TerminalPageError(LoginFlowError):
@@ -542,52 +493,6 @@ def classify_page(page, callback_url: str) -> str:
     if _login_form_present(page):
         return "login"
     return "unknown"
-
-
-class AdvanceGuard:
-    """Budget + progress guard for the consent-drive loop.
-
-    Two invariants (DESIGN.md §3.1, "Failure discipline"): a page that did not
-    change since the last advance click is never clicked again, and a
-    page that stops changing at all — clicked or not — fails the run
-    after STALL_LIMIT_S instead of spinning. CLICK_BUDGET caps total
-    advance clicks well above the flow's three known pages."""
-
-    CLICK_BUDGET = 8
-    STALL_LIMIT_S = 60.0
-
-    def __init__(self):
-        self.clicks = 0
-        self._sig = None
-        self._sig_since = time.monotonic()
-        self._clicked_sig = None
-
-    def observe(self, kind: str, sig: str) -> None:
-        """Track the page state; raise once it has stalled too long."""
-        now = time.monotonic()
-        if sig != self._sig:
-            self._sig = sig
-            self._sig_since = now
-            return
-        if now - self._sig_since > self.STALL_LIMIT_S:
-            raise LoginFlowError(
-                f"page stopped changing for {int(self.STALL_LIMIT_S)}s "
-                f"while driving the consent flow (state: {kind}); not "
-                f"clicking further — re-run login, or drive it over VNC "
-                f"(vnc-login)")
-
-    def may_click(self) -> bool:
-        """Whether an advance click is allowed: the page must have
-        changed since the last click. Budget exhaustion raises."""
-        if self.clicks >= self.CLICK_BUDGET:
-            raise LoginFlowError(
-                f"advance-click budget ({self.CLICK_BUDGET}) exhausted "
-                f"without reaching the callback; not clicking further")
-        return self._sig != self._clicked_sig
-
-    def record_click(self) -> None:
-        self.clicks += 1
-        self._clicked_sig = self._sig
 
 
 def _page_signature(page) -> str:
