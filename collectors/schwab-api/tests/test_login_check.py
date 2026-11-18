@@ -57,12 +57,13 @@ def token(tmp_path):
 
 @pytest.fixture
 def no_env_files(monkeypatch, tmp_path):
-    """Keep the default env files out of the run, so the credentials come
-    from the command line only."""
+    """Keep the default env files out of the run. The client id comes
+    from the command line; the secret, which takes no flag, from the
+    environment."""
     monkeypatch.setattr(login, "_ENV_FILE_SETS", ())
     monkeypatch.delenv("SCHWAB_API_ENV_FILE", raising=False)
     monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
-    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", CLIENT_SECRET)
 
 
 def _wire(monkeypatch, client):
@@ -79,8 +80,7 @@ def _wire(monkeypatch, client):
 
 def _check(token: Path) -> int:
     return login.main(["--check", "--token-path", str(token),
-                       "--client-id", CLIENT_ID,
-                       "--client-secret", CLIENT_SECRET])
+                       "--client-id", CLIENT_ID])
 
 
 def test_alive_token_reports_age_then_alive(monkeypatch, token, no_env_files,
@@ -147,6 +147,24 @@ def test_missing_credentials_exit_before_any_call(monkeypatch, token,
     with pytest.raises(SystemExit, match="SCHWAB_CLIENT_ID"):
         login.main(["--check", "--token-path", str(token)])
     assert built == []
+
+
+def test_a_missing_secret_exits_before_any_call(monkeypatch, token,
+                                               no_env_files):
+    built = _wire(monkeypatch, FakeClient())
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET")
+    with pytest.raises(SystemExit) as caught:
+        _check(token)
+    assert str(caught.value) == ("Missing credential: set "
+                                 "SCHWAB_CLIENT_SECRET in the env file.")
+    assert built == []
+
+
+def test_the_secret_takes_no_flag(capsys):
+    # A secret on the command line shows in `ps` and the shell history.
+    with pytest.raises(SystemExit):
+        login.parse_args(["--client-secret", CLIENT_SECRET])
+    assert "--client-secret" in capsys.readouterr().err
 
 
 def test_expired_estimate_still_defers_to_the_probe(monkeypatch, tmp_path,

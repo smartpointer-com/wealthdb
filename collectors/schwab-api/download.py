@@ -23,7 +23,7 @@ script reports refresh failure.
 
 Usage:
     download.py --token-path <file> --bronze-dir <dir> \\
-                [--client-id <id>] [--client-secret <secret>] \\
+                [--client-id <id>] \\
                 [--lookback PRESET|YYYY-MM-DD] \\
                 [--dry-run]
 """
@@ -154,13 +154,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Schwab OAuth Client ID. Falls back to the SCHWAB_CLIENT_ID "
              "environment variable if omitted.",
-    )
-    p.add_argument(
-        "--client-secret",
-        default=None,
-        help="Schwab OAuth Client Secret. Falls back to the SCHWAB_CLIENT_SECRET "
-             "environment variable if omitted. Avoid passing on the command "
-             "line in shared environments — prefer the env var.",
     )
     # --lookback — the shared contract's one window flag; it names a
     # start and the window runs from there to today. Schwab caps each
@@ -494,7 +487,7 @@ def run(args: argparse.Namespace) -> int:
         )
 
     client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID", "--client-id")
-    client_secret = envfile.resolve_credential(args.client_secret, "SCHWAB_CLIENT_SECRET", "--client-secret")
+    client_secret = _tokenclient.client_secret()
 
     # The run dir is settled before the first request so --debug's trace can
     # cover the account-hash listing too — the call that forces the token

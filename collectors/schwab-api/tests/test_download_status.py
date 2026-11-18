@@ -33,7 +33,10 @@ ACCT_HASH = "HASH00000000000000000001"
 
 def _stub_schwab(monkeypatch, *, open_orders_raises: bool = False) -> None:
     """Install a fake ``schwab`` module + stub every network boundary
-    download.run() touches, so run() executes end-to-end offline."""
+    download.run() touches, so run() executes end-to-end offline. The
+    client secret comes from the environment, as the wrapper's env file
+    sets it."""
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "synthetic-secret")
     fake = types.ModuleType("schwab")
     fake.auth = types.SimpleNamespace(
         client_from_token_file=lambda **_kw: object())
@@ -62,7 +65,7 @@ def _argv(token: Path, dest: Path, *extra: str) -> list[str]:
     # cover the run-status lifecycle, not the marketdata fetch — skip it so
     # they stay offline and their terminal-artefact assertions hold.
     return ["--token-path", str(token), "--bronze-dir", str(dest),
-            "--client-id", "synthetic-id", "--client-secret", "synthetic-secret",
+            "--client-id", "synthetic-id",
             "--no-instruments", *extra]
 
 

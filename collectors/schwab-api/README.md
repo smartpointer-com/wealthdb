@@ -79,7 +79,7 @@ failure discipline.
 2. Put the app's **Client ID** and **Client Secret** in
    `~/.secrets/schwab-api.env` as `SCHWAB_CLIENT_ID` and
    `SCHWAB_CLIENT_SECRET`. The wrapper sources the file. `--client-id`
-   and `--client-secret` override them.
+   overrides the id. The secret takes no flag.
 3. `login` signs in with the Schwab web login. It reads
    `SCHWAB_LOGIN_ID` and `SCHWAB_PASSWORD` from
    `~/.secrets/schwab-web.env`, the file the

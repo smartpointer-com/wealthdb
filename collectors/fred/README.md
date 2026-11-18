@@ -139,9 +139,10 @@ The in-flight guard (`--min-age-hours`) protects a long backfill that
 is still running.
 
 **Credentials.** The API key lives in `~/.secrets/fred.env` as
-`FRED_API_KEY=...`, and the wrapper sources it. `download.py --api-key`
-takes the key directly, with `FRED_API_KEY` as the fallback. A free key
-comes from <https://fred.stlouisfed.org/docs/api/api_key.html>.
+`FRED_API_KEY=...`, and the wrapper sources it. A direct `download.py`
+run reads the key from the environment or from `--env-file`. No flag
+takes it. A free key comes from
+<https://fred.stlouisfed.org/docs/api/api_key.html>.
 
 **API version.** The collector uses FRED's classic ("v1") endpoint
 `https://api.stlouisfed.org/fred/series/observations` with the `api_key`

@@ -63,9 +63,14 @@ def fred(monkeypatch) -> _FakeFred:
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _api_key(_no_ambient_credential, monkeypatch):
+    # The key reaches download.py from the environment alone.
+    monkeypatch.setenv("FRED_API_KEY", API_KEY)
+
+
 def _download(bronze: Path, *extra: str) -> int:
-    return download.main(["--bronze-dir", str(bronze), "--api-key", API_KEY,
-                          *extra])
+    return download.main(["--bronze-dir", str(bronze), *extra])
 
 
 def _run_dir(bronze: Path) -> Path:

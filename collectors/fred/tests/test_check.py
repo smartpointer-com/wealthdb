@@ -33,11 +33,26 @@ def test_check_parses_and_needs_no_bronze_dir():
     assert args.bronze_dir is None
 
 
-def test_bare_download_still_requires_bronze_dir():
+def test_the_key_takes_no_flag(capsys):
+    # A secret on the command line shows in `ps` and the shell history.
+    with pytest.raises(SystemExit):
+        download.parse_args(["--api-key", "SYNTHETIC"])
+    assert "--api-key" in capsys.readouterr().err
+
+
+def test_a_missing_key_names_its_variable():
+    with pytest.raises(SystemExit) as caught:
+        download.main(["--check"])
+    assert str(caught.value) == ("Missing credential: set FRED_API_KEY in "
+                                 "the env file.")
+
+
+def test_bare_download_still_requires_bronze_dir(monkeypatch):
     # The probe's relaxation of --bronze-dir must not leak into the download
     # path.
+    monkeypatch.setenv("FRED_API_KEY", "SYNTHETIC")
     with pytest.raises(SystemExit):
-        download.main(["--api-key", "SYNTHETIC"])
+        download.main([])
 
 
 def test_accepted_key_returns_zero(monkeypatch):
@@ -106,7 +121,8 @@ def test_main_check_probes_and_writes_nothing(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(download, "fetch_observations",
                         lambda *a, **k: calls.append(a) or {"observations": []})
-    rc = download.main(["--check", "--api-key", "SYNTHETIC"])
+    monkeypatch.setenv("FRED_API_KEY", "SYNTHETIC")
+    rc = download.main(["--check"])
     assert rc == 0
     assert len(calls) == 1          # exactly one probe request
     assert not list(tmp_path.iterdir())
@@ -120,9 +136,9 @@ def test_check_refuses_a_malformed_base_url_without_showing_the_key(
     requests = []
     monkeypatch.setattr(urllib.request, "urlopen",
                         lambda req, timeout=None: requests.append(req))
+    monkeypatch.setenv("FRED_API_KEY", "SYNTHETIC_KEY")
     with caplog.at_level(logging.DEBUG), pytest.raises(SystemExit) as caught:
-        download.main(["--check", "--api-key", "SYNTHETIC_KEY",
-                       "--base-url", "api.example.invalid/x"])
+        download.main(["--check", "--base-url", "api.example.invalid/x"])
     assert caught.value.code != 0
     assert requests == []
     out = capsys.readouterr()

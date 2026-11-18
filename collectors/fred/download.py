@@ -28,7 +28,7 @@ from the starting point it names to today. The default is ~90 days and
 clamps the window to each series' own start.
 
 Usage:
-    download.py --bronze-dir <dir> [--api-key KEY] [--series ID,...]
+    download.py --bronze-dir <dir> [--series ID,...]
                 [--lookback PRESET|YYYY-MM-DD] [--dry-run]
 """
 
@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import urllib.error
 import urllib.parse
@@ -142,11 +143,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "resolved (also honours the FRED_ENV_FILE env var). The wrapper "
              "already sources <secrets-dir>/fred.env, so this is for running "
              "download.py directly.",
-    )
-    p.add_argument(
-        "--api-key", default=None,
-        help="FRED API key. Falls back to the FRED_API_KEY environment "
-             "variable (sourced from <secrets>/fred.env by the wrapper).",
     )
     p.add_argument(
         "--base-url", type=_endpoint, default=DEFAULT_BASE_URL,
@@ -256,8 +252,12 @@ def main(argv: list[str] | None = None) -> int:
     # A direct `download.py` run needs no wrapper: the named file is
     # sourced through bash, as the wrapper sources it, and its values win.
     envfile.load(args.env_file, env_var="FRED_ENV_FILE", logger=log)
-    api_key = envfile.resolve_credential(args.api_key, "FRED_API_KEY",
-                                         "--api-key")
+    # The key comes from the environment alone: on the command line it
+    # would show in `ps` and the shell history.
+    api_key = os.environ.get("FRED_API_KEY")
+    if not api_key:
+        raise SystemExit("Missing credential: set FRED_API_KEY in the env "
+                         "file.")
     if args.check:
         return _check_credential(args.base_url, api_key)
     if args.bronze_dir is None:

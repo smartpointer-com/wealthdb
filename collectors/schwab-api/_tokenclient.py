@@ -13,7 +13,19 @@ login.py.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+
+def client_secret() -> str:
+    """The OAuth app's Client Secret, from SCHWAB_CLIENT_SECRET alone.
+    It takes no command-line flag: a secret there leaks into `ps` and
+    the shell history."""
+    secret = os.environ.get("SCHWAB_CLIENT_SECRET")
+    if not secret:
+        raise SystemExit("Missing credential: set SCHWAB_CLIENT_SECRET in "
+                         "the env file.")
+    return secret
 
 
 def client_from_token_file(token_path: Path, client_id: str,
@@ -71,8 +83,7 @@ def explain_token_failure(err: Exception) -> str:
     if "invalid_client" in detail.lower():
         lines.append(
             "This is a client-credential problem, not the token: check "
-            "SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET (or --client-id / "
-            "--client-secret)."
+            "SCHWAB_CLIENT_ID / SCHWAB_CLIENT_SECRET (or --client-id)."
         )
     else:
         lines += [

@@ -103,11 +103,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Schwab OAuth Client ID (falls back to SCHWAB_CLIENT_ID).",
     )
     p.add_argument(
-        "--client-secret", default=None,
-        help="Schwab OAuth Client Secret (falls back to SCHWAB_CLIENT_SECRET). "
-             "Prefer the env var over the command line.",
-    )
-    p.add_argument(
         "--callback-url", default=lm.DEFAULT_CALLBACK_URL,
         help=f"OAuth callback URL registered with the Schwab app "
              f"(default: {lm.DEFAULT_CALLBACK_URL}). Must match the portal "
@@ -214,8 +209,7 @@ def probe_token(args: argparse.Namespace) -> int:
     never printed: it holds the plain account numbers."""
     client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
                                            "--client-id")
-    client_secret = envfile.resolve_credential(
-        args.client_secret, "SCHWAB_CLIENT_SECRET", "--client-secret")
+    client_secret = _tokenclient.client_secret()
     try:
         client = _tokenclient.client_from_token_file(
             args.token_path, client_id, client_secret)
@@ -737,9 +731,7 @@ def cmd_login_browser(args: argparse.Namespace) -> int:
 
     client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
                                    "--client-id")
-    client_secret = envfile.resolve_credential(args.client_secret,
-                                       "SCHWAB_CLIENT_SECRET",
-                                       "--client-secret")
+    client_secret = _tokenclient.client_secret()
     login_id = os.environ.get("SCHWAB_LOGIN_ID")
     password = os.environ.get("SCHWAB_PASSWORD")
 
@@ -936,9 +928,7 @@ def cmd_login_manual(args: argparse.Namespace) -> int:
         raise SystemExit("schwab-py is not installed.") from None
     client_id = envfile.resolve_credential(args.client_id, "SCHWAB_CLIENT_ID",
                                    "--client-id")
-    client_secret = envfile.resolve_credential(args.client_secret,
-                                       "SCHWAB_CLIENT_SECRET",
-                                       "--client-secret")
+    client_secret = _tokenclient.client_secret()
     args.token_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         schwab_auth.client_from_manual_flow(

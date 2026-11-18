@@ -22,9 +22,9 @@ matter here, but keep the surface to observations).
 ## 2. The API key is the only credential
 
 - `FRED_API_KEY` reaches the tool via the environment only, sourced from
-  `~/.secrets/fred.env` — never hard-code it, never add a `--api-key
-  <value>` example with a real key, never commit it or paste it into a
-  tracked file / log. Use `--api-key VALUE` with the env fallback (root
-  [AGENTS.md](../../AGENTS.md) §3), which is what `download.py` does.
+  `~/.secrets/fred.env`. It takes no command-line flag: a secret there
+  leaks into `ps` and the shell history (root
+  [AGENTS.md](../../AGENTS.md) §3). Never hard-code it, never commit it,
+  and never paste it into a tracked file or a log.
 - When debugging the live API, build request URLs so the key is not
   echoed to stdout/logs (it travels in the query string).

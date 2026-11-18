@@ -38,9 +38,9 @@ def _run(monkeypatch, tmp_path, *extra, resp=None):
     monkeypatch.setattr(
         urllib.request, "urlopen",
         _fake_urlopen(FakeResponse(_obs_doc()) if resp is None else resp))
+    monkeypatch.setenv("FRED_API_KEY", SECRET)
     return download.main([
-        "--bronze-dir", str(tmp_path), "--api-key", SECRET,
-        "--series", "DEXSZUS", *extra,
+        "--bronze-dir", str(tmp_path), "--series", "DEXSZUS", *extra,
     ])
 
 
