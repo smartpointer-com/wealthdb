@@ -334,6 +334,55 @@ def spending_cards(f):
             + "\n ORDER BY net_spend DESC, occurred_at DESC, account, merchant_name, category, subcategory\n LIMIT 50",
             {})
     fee_cards(f)
+    vs_year_cards(f)
+
+
+def vs_year_cards(f):
+    """The Spending dashboard's two tiles against last year, or on the
+    twin their privacy variants. They read
+    `wealthdb spending categories --vs-last-year` by month and primary
+    category (web_spending_vs_year): each month beside the same month a
+    year earlier on one row, so the Time range picks the months of both
+    sides at once. The rows stop at the last whole month. The tiles take
+    Currency, the Time range and Category, and decline Source and
+    Account: the rows are the household's.
+
+    On a twin each side is a share of its own window's net spend, and
+    the change stays."""
+    privacy = f.privacy
+    tags = native_tags("web_spending_vs_year", VS_YEAR_FILTERS)
+    card = f.using(tags=tags, tail=" Whole months only." + (PRIVACY_DESC if privacy else "")).card
+    rows = ("WITH c AS (\n"
+            "  SELECT category, sum(net_spend)::DOUBLE AS net_spend,\n"
+            "         sum(net_spend_year_before)::DOUBLE AS year_before,\n"
+            "         string_agg(DISTINCT NULLIF(quality, ''), ' ' ORDER BY NULLIF(quality, '')) AS quality\n"
+            "    FROM web_spending_vs_year" + _native_where(tags, "   ")
+            + "\n     AND currency = {{currency}}\n   GROUP BY 1)")
+    if privacy:
+        rows += (",\nt AS (SELECT NULLIF(sum(net_spend), 0) AS now_total,"
+                 " NULLIF(sum(year_before), 0) AS before_total FROM c)")
+    now, before = (("100 * net_spend / (SELECT now_total FROM t) AS net_spend_pct",
+                    "100 * year_before / (SELECT before_total FROM t) AS year_before_pct") if privacy
+                   else ("net_spend", "year_before"))
+    metrics = ["net_spend_pct", "year_before_pct"] if privacy else ["net_spend", "year_before"]
+    order = "\n ORDER BY net_spend - year_before DESC, category"
+    card("Spending against last year", "bar",
+         "Net spend by primary category beside the same months a year earlier.",
+         rows + f"\nSELECT category, {now},\n       {before}\n  FROM c\n ORDER BY net_spend DESC, category",
+         {"graph.dimensions": ["category"], "graph.metrics": metrics,
+          "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
+          "series_settings": {metrics[0]: {"title": "This window"}, metrics[1]: {"title": "A year earlier"}},
+          **(_share_viz(*metrics) if privacy else {})})
+    money = f"{now},\n       {before}" + ("" if privacy else ",\n       net_spend - year_before AS change")
+    card("Categories against last year", "table",
+         "Which categories grew against the same months a year earlier. Quality no_year_before marks a "
+         "year before gold's first line.",
+         rows + f"\nSELECT category, {money},\n       change_pct(net_spend, year_before) AS change_pct,\n"
+         "       quality\n  FROM c" + order,
+         _share_viz(*metrics, "change_pct", decimals=1) if privacy
+         else {"column_settings": {**_share_viz("change_pct", decimals=1)["column_settings"],
+                                   **{f'["name","{c}"]': {"decimals": 0}
+                                      for c in ("net_spend", "year_before", "change")}}})
 
 
 # The fee tiles' detailed groups, in stacking order (gold's fee_group),
@@ -432,6 +481,11 @@ CARD_BALANCE_FILTERS = {**range_filters("as_of_day"),
                         "account": ("account_label", "string/=")}
 
 FEE_FILTERS = {**range_filters("day"), "account": ("account_label", "string/=")}
+
+# The tiles against last year read the household's months, so they take
+# no source and no account (vs_year_cards). The category is the primary
+# label, as on web_spending, and the twin keeps it.
+VS_YEAR_FILTERS = {"time_range": ("month", "date/all-options"), "category": ("category", "string/=")}
 
 # The same specs for the privacy twin, WITHOUT the account filter. A
 # field filter's widget is a dropdown of the values its column takes, so

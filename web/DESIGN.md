@@ -559,6 +559,16 @@ source and kind, as an account does. On the twin an
 entity is its source, its kind and its rank. Rates and returns stay, and
 fees read as shares of the window's fees.
 
+Its two tiles against last year read `web_spending_vs_year`. Web
+refresh stores each month and primary category on one row with the same
+month a year earlier, so the Time range picks the months of both sides
+at once. A field filter has no date math, so a card could not shift a
+picked window itself. The rows stop at the last whole month. The tiles
+take Currency, the Time range and Category. The rows are the
+household's, so they take no Source and no Account. Every figure is
+`wealthdb spending categories --vs-last-year` by month. On the twin each
+side is a share of its own window, and the change stays.
+
 The **Income** dashboard also puts what was received beside what is
 expected, as `wealthdb income`'s forward views do
 ([wealthdb/docs/INCOME.md](../wealthdb/docs/INCOME.md) §12), but over
@@ -845,8 +855,10 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
-- 0213: its matcher pool reads a coin's dust as zero, so the dust
-  stays out of the transfer pairs the flows read;
+- 0213: it lacks `web_spending_vs_year` and `change_pct`, which the
+  Spending tiles against last year read, and its matcher pool reads a
+  coin's dust as zero, so the dust stays out of the transfer pairs the
+  flows read;
 - 0212: its key endings ignore the snapshot coverage a source states,
   so an account a covering run leaves out stands past its end;
 - 0209: its `fee_rate_pct` takes no day count, which the Fee rate by
@@ -1370,8 +1382,9 @@ again and that a changed one is. Three behaviours are worth naming:
   aborts the run (exit 3 for the older one).
 
 The SQL of many cards also runs on an invented book under DuckDB: the
-projections, the bridge, the cash flow statement, the fee tiles and the
-Exposure and Allocation cards among them. So the tests need the
+projections, the bridge, the cash flow statement, the fee tiles, the
+tiles against last year and the Exposure and Allocation cards among
+them. So the tests need the
 `duckdb` Python module, and fail without it. `make
 test-web` runs them in a venv of its own, `web/.venv`, that holds it
 (`web/requirements-test.txt`). Whether Metabase *accepts* a payload

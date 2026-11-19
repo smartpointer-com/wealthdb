@@ -151,6 +151,8 @@ DASHBOARDS = (
             # where", the fee tiles what each portfolio paid (web_fees);
             # the card-balances chart reads web_card_balances_history,
             # and the transaction list is the bottom of the drill-down.
+            # Below it the categories stand against the same months a
+            # year earlier (web_spending_vs_year).
             Row(3, (("Spend — monthly trend", 8), ("Net spend", 8), ("Uncategorized share", 8))),
             Row(9, (("Spending by month", 24),)),
             Row(8, (("Spending by category", 12), ("Spending by subcategory", 12))),
@@ -158,6 +160,7 @@ DASHBOARDS = (
             Row(8, (("Fees by portfolio", 10), ("Fee rate by portfolio", 14))),
             Row(6, (("Card balances over time", 24),)),
             Row(8, (("Largest transactions", 24),)),
+            Row(8, (("Spending against last year", 12), ("Categories against last year", 12))),
         )),
     Dashboard(
         "Income",

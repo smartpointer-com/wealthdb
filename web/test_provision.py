@@ -1432,21 +1432,26 @@ if spend_layouts:
            pickers.ACCOUNT_PARAM_ID, pickers.CATEGORY_PARAM_ID])
     tiles = [dc for dc in body["dashcards"] if dc["card_id"] is not None]
     check("every tile plus the switch link is present",
-          len(tiles) == 12 and len(body["dashcards"]) == 13)
+          len(tiles) == 14 and len(body["dashcards"]) == 15)
     FEE_IDS = {card_ids[c] for c in ("Fees by portfolio", "Fee rate by portfolio")}
+    VS_YEAR_IDS = {card_ids[c] for c in ("Spending against last year", "Categories against last year")}
     check("every picker lands on every tile",
           all({m["parameter_id"] for m in dc["parameter_mappings"]} ==
               {pickers.SPEND_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID,
                pickers.ACCOUNT_PARAM_ID, pickers.CATEGORY_PARAM_ID}
               for dc in tiles
               if dc["card_id"] != card_ids["Card balances over time"]
-              and dc["card_id"] not in FEE_IDS | ROW_SHARE_IDS),
+              and dc["card_id"] not in FEE_IDS | ROW_SHARE_IDS | VS_YEAR_IDS),
           json.dumps([[m["parameter_id"] for m in dc["parameter_mappings"]]
                       for dc in tiles]))
     for dc in (dc for dc in tiles if dc["card_id"] in FEE_IDS):
         check("a fee tile takes Currency, Time range, Source and Account, and declines Category",
               {m["parameter_id"] for m in dc["parameter_mappings"]} ==
               {pickers.SPEND_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.SOURCE_PARAM_ID, pickers.ACCOUNT_PARAM_ID})
+    for dc in (dc for dc in tiles if dc["card_id"] in VS_YEAR_IDS):
+        check("a tile against last year takes Currency, Time range and Category, and declines Source and Account",
+              {m["parameter_id"] for m in dc["parameter_mappings"]} ==
+              {pickers.SPEND_CURRENCY_PARAM_ID, pickers.TIME_PARAM_ID, pickers.CATEGORY_PARAM_ID})
     balances = [dc for dc in tiles
                 if dc["card_id"] == card_ids["Card balances over time"]][0]
     check("the card-balances tile takes every picker but the category one",
@@ -3682,6 +3687,10 @@ check("every privacy-exempt card is provisioned, with no privacy variant", not _
 
 section("the reporting currencies")
 
+_vs_multi = _latest_definition("report_spending_vs_year_multi")
+check("the rows against last year are written in every reporting currency",
+      all(f"'{c}'" in _vs_multi for c in sqlkit.REPORTING_CURRENCIES), _vs_multi)
+
 # The currency list is one contract in three places: the value columns
 # gold's `_multi` macros and serving views carry, the partitions the
 # returns materializer writes, and every picker, CASE and unpivot here.
@@ -3699,13 +3708,15 @@ check("the Gains picker offers exactly the engine's readings of a missing cost b
 
 # The long views carry a row set per currency, written by their
 # materializers from the same materializeCurrencies list, the cash flow
-# projection's look-back parts among them. The projection's
+# projection's look-back parts among them, or by their macro's arms
+# (web_spending_vs_year). The projection's
 # parts and principals are in each holding's currency, with its rate to
 # every reporting currency beside it; its rates table, the days the
 # income received covers and the stock positions' sizes hold no money.
 # web_sources_observed carries serving_sources_latest's columns whole.
 _LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers", "web_exposure_securities",
-               "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan", "web_bridge"}
+               "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan", "web_bridge",
+               "web_spending_vs_year"}
 _FX_TABLES = {"web_yield_parts": "report_yield_parts", "web_yield_events": "report_yield_events"}
 _missing = {v: [c for c in sqlkit.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
@@ -5576,6 +5587,44 @@ if duckdb is not None:
           and all(_near(t[2], b[1]) and _near(t[3], b[2]) for t, b in zip(_tr, _r.values(), strict=True)), _tr)
     check("...and with one source picked its entities hold all the fees",
           _near(_fee_card("Fee rate by portfolio (privacy)", source=["src-b"])[0][1], 100))
+
+    # Two categories over two whole months, each beside the same month a
+    # year earlier, in dollars; a franc is 0.8 of each dollar figure:
+    # - Food: 100 against 80 in January, 50 against 70 in February;
+    # - Travel: 0 against 40 in January, 30 against 0 in February.
+    # January's year before lies before the first line.
+    _vs = duckdb.connect()
+    _vs.execute("CREATE TABLE web_spending_vs_year (month TIMESTAMP, currency TEXT, category TEXT,"
+                " net_spend DECIMAL(28,4), net_spend_year_before DECIMAL(28,4), quality TEXT);"
+                + _latest_definition("change_pct"))
+    _vs_rows = [("2026-01-01", "Food", 100, 80, "no_year_before"), ("2026-01-01", "Travel", 0, 40, "no_year_before"),
+                ("2026-02-01", "Food", 50, 70, ""), ("2026-02-01", "Travel", 30, 0, "")]
+    _vs.executemany("INSERT INTO web_spending_vs_year VALUES (?, ?, ?, ?, ?, ?)",
+                    [(m, c, cat, n * k, b * k, q) for m, cat, n, b, q in _vs_rows
+                     for c, k in (("USD", 1), ("CHF", 0.8))])
+
+    def _vs_card(name, **values):
+        return _vs.execute(_render(CARDS[name][2], values)).fetchall()
+
+    check("the bars set each category's window beside the same months a year earlier, largest first",
+          _vs_card("Spending against last year") == [("Food", 150, 150), ("Travel", 30, 40)],
+          _vs_card("Spending against last year"))
+    check("...in the picked currency", _vs_card("Spending against last year", currency="CHF")[0] == ("Food", 120, 120))
+    _vt = _vs_card("Categories against last year", time_range=["2026-02-01", "2026-02-28"])
+    check("the table orders by what grew, the change blank where the year before is zero",
+          _vt == [("Travel", 30, 0, 30, None, None), ("Food", 50, 70, -20, -100 * 20 / 70, None)], _vt)
+    _vq = {r[0]: r[-1] for r in _vs_card("Categories against last year")}
+    check("...and names the months a year before gold's first line", _vq == {"Food": "no_year_before",
+                                                                                "Travel": "no_year_before"}, _vq)
+    _vc = _vs_card("Categories against last year", category=["Travel"])
+    check("a picked category keeps its rows alone", [r[0] for r in _vc] == ["Travel"], _vc)
+    _tw = _vs_card("Categories against last year (privacy)", time_range=["2026-01-01", "2026-01-31"])
+    check("the twin shows each side as a share of its own window and keeps the change",
+          _tw == [("Food", 100, 80 * 100 / 120, 25, "no_year_before"),
+                  ("Travel", 0, 40 * 100 / 120, -100, "no_year_before")], _tw)
+    _tb = _vs_card("Spending against last year (privacy)")
+    check("...its bars shares that sum to 100 on each side",
+          _near(sum(r[1] for r in _tb), 100) and _near(sum(r[2] for r in _tb), 100), _tb)
 
 section("the benchmarks")
 
