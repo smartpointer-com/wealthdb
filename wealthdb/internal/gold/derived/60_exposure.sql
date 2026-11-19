@@ -14,9 +14,15 @@ CREATE MACRO exposure_settings_row() AS TABLE (
       FROM exposure_settings
 );
 
--- exposure_quality: an aggregate over a group of leaves, each flag the
--- group's leaves carry with the share of the group's gross value it
--- covers ("proxy=12%", "aged=<1%"), comma-separated in a fixed order.
+-- exposure_gross: a leaf's gross value as the decimal the quality
+-- shares sum. A float sum follows the order of its rows, so a share on a
+-- rounding boundary would print one point apart from one run to the next.
+CREATE MACRO exposure_gross(p_value) AS
+    CAST(abs(p_value) AS DECIMAL(38,12));
+
+-- exposure_flag_share: the flag with the share of the total its part
+-- covers, in whole percent ("proxy=12%"), "<1" below one percent; none
+-- where the part is empty.
 CREATE MACRO exposure_flag_share(p_flag, p_part, p_total) AS
     CASE WHEN COALESCE(p_part, 0) > 0 AND p_total > 0 THEN
          p_flag || '=' || CASE WHEN 100 * p_part / p_total < 1 THEN '<1'
@@ -27,16 +33,16 @@ CREATE MACRO exposure_flag_share(p_flag, p_part, p_total) AS
 -- covers ("proxy=12%", "aged=<1%"), comma-separated in a fixed order.
 CREATE MACRO exposure_quality(p_flags, p_value) AS
     array_to_string(list_filter([
-        exposure_flag_share('proxy', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'proxy')), SUM(abs(p_value))),
-        exposure_flag_share('declared', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'declared')), SUM(abs(p_value))),
-        exposure_flag_share('aged', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'aged')), SUM(abs(p_value))),
-        exposure_flag_share('forward', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'forward')), SUM(abs(p_value))),
-        exposure_flag_share('partial', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'partial')), SUM(abs(p_value))),
-        exposure_flag_share('unmapped', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'unmapped')), SUM(abs(p_value))),
-        exposure_flag_share('by_name', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'by_name')), SUM(abs(p_value))),
-        exposure_flag_share('opaque', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'opaque')), SUM(abs(p_value))),
-        exposure_flag_share('undeclared', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'undeclared')), SUM(abs(p_value))),
-        exposure_flag_share('unmatched', SUM(abs(p_value)) FILTER (WHERE list_contains(p_flags, 'unmatched')), SUM(abs(p_value)))
+        exposure_flag_share('proxy', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'proxy')), SUM(exposure_gross(p_value))),
+        exposure_flag_share('declared', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'declared')), SUM(exposure_gross(p_value))),
+        exposure_flag_share('aged', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'aged')), SUM(exposure_gross(p_value))),
+        exposure_flag_share('forward', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'forward')), SUM(exposure_gross(p_value))),
+        exposure_flag_share('partial', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'partial')), SUM(exposure_gross(p_value))),
+        exposure_flag_share('unmapped', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'unmapped')), SUM(exposure_gross(p_value))),
+        exposure_flag_share('by_name', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'by_name')), SUM(exposure_gross(p_value))),
+        exposure_flag_share('opaque', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'opaque')), SUM(exposure_gross(p_value))),
+        exposure_flag_share('undeclared', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'undeclared')), SUM(exposure_gross(p_value))),
+        exposure_flag_share('unmatched', SUM(exposure_gross(p_value)) FILTER (WHERE list_contains(p_flags, 'unmatched')), SUM(exposure_gross(p_value)))
     ], lambda x: x IS NOT NULL), ',');
 
 -- exposure_public: a holding of a listed kind, which a source can
@@ -62,13 +68,13 @@ CREATE MACRO exposure_situs_at(p_asof) AS TABLE (
 -- ("declared=12%,isin=80%"), in the rule's order.
 CREATE MACRO exposure_situs_quality(p_basis, p_value) AS
     array_to_string(list_filter([
-        exposure_flag_share('declared', SUM(abs(p_value)) FILTER (WHERE p_basis = 'declared'), SUM(abs(p_value))),
-        exposure_flag_share('underlying', SUM(abs(p_value)) FILTER (WHERE p_basis = 'underlying'), SUM(abs(p_value))),
-        exposure_flag_share('isin', SUM(abs(p_value)) FILTER (WHERE p_basis = 'isin'), SUM(abs(p_value))),
-        exposure_flag_share('domicile', SUM(abs(p_value)) FILTER (WHERE p_basis = 'domicile'), SUM(abs(p_value))),
-        exposure_flag_share('custody', SUM(abs(p_value)) FILTER (WHERE p_basis = 'custody'), SUM(abs(p_value))),
-        exposure_flag_share('country', SUM(abs(p_value)) FILTER (WHERE p_basis = 'country'), SUM(abs(p_value))),
-        exposure_flag_share('unknown', SUM(abs(p_value)) FILTER (WHERE p_basis = 'unknown'), SUM(abs(p_value)))
+        exposure_flag_share('declared', SUM(exposure_gross(p_value)) FILTER (WHERE p_basis = 'declared'), SUM(exposure_gross(p_value))),
+        exposure_flag_share('underlying', SUM(exposure_gross(p_value)) FILTER (WHERE p_basis = 'underlying'), SUM(exposure_gross(p_value))),
+        exposure_flag_share('isin', SUM(exposure_gross(p_value)) FILTER (WHERE p_basis = 'isin'), SUM(exposure_gross(p_value))),
+        exposure_flag_share('domicile', SUM(exposure_gross(p_value)) FILTER (WHERE p_basis = 'domicile'), SUM(exposure_gross(p_value))),
+        exposure_flag_share('custody', SUM(exposure_gross(p_value)) FILTER (WHERE p_basis = 'custody'), SUM(exposure_gross(p_value))),
+        exposure_flag_share('country', SUM(exposure_gross(p_value)) FILTER (WHERE p_basis = 'country'), SUM(exposure_gross(p_value))),
+        exposure_flag_share('unknown', SUM(exposure_gross(p_value)) FILTER (WHERE p_basis = 'unknown'), SUM(exposure_gross(p_value)))
     ], lambda x: x IS NOT NULL), ',');
 
 -- instrument_terms_at: each instrument's terms on a day: instrument_terms
@@ -1500,7 +1506,7 @@ CREATE MACRO report_exposure_credit(p_asof, p_ccy) AS TABLE (
            100 * COALESCE(SUM(value) FILTER (WHERE direct), 0) / NULLIF(t.total, 0) AS direct_pct,
            100 * COALESCE(SUM(value) FILTER (WHERE NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            concat_ws(',', nullif(exposure_quality(flags, value), ''),
-                     exposure_flag_share('unknown', SUM(abs(value)) FILTER (WHERE unknown), SUM(abs(value))))
+                     exposure_flag_share('unknown', SUM(exposure_gross(value)) FILTER (WHERE unknown), SUM(exposure_gross(value))))
                AS quality
       FROM l, t
      GROUP BY bucket, t.total, t.described

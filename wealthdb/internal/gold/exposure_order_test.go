@@ -146,3 +146,40 @@ func TestExposureBucketAndIssuerReadersKeepTheMacroOrder(t *testing.T) {
 		}
 	}
 }
+
+// A quality share on a rounding boundary prints the same in every row
+// order. The proxy leaves sum to 37.5% of the group's gross value, so a
+// float sum would print 37 or 38 by the order it adds them in; the test
+// first shows that it does, so the values stay on the boundary.
+func TestExposureQualityShareIgnoresRowOrder(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	leaves := [][2]string{{"0.1", "proxy"}, {"0.2", "proxy"}, {"-0.3", "proxy"}, {"0.4", ""}, {"0.6", ""}}
+	floats, texts := map[int]bool{}, map[string]bool{}
+	for _, order := range [][]int{{0, 1, 2, 3, 4}, {1, 3, 4, 2, 0}, {2, 1, 0, 4, 3}, {4, 1, 3, 2, 0}} {
+		values, args := "", []any{}
+		for i, k := range order {
+			if i > 0 {
+				values += ", "
+			}
+			values += "(?::DOUBLE, CASE WHEN ? = '' THEN [] ELSE [?] END, ?)"
+			args = append(args, leaves[k][0], leaves[k][1], leaves[k][1], i)
+		}
+		// A one-row-at-a-time cursor adds the floats in the order given.
+		var float int
+		var text string
+		if err := db.QueryRowContext(ctx, `SELECT CAST(round(100 * SUM(abs(v)) FILTER (WHERE flags <> []) /
+		       SUM(abs(v))) AS INTEGER), exposure_quality(flags, v)
+		  FROM (SELECT v, flags FROM (VALUES `+values+`) t(v, flags, n) ORDER BY n)`, args...).
+			Scan(&float, &text); err != nil {
+			t.Fatal(err)
+		}
+		floats[float], texts[text] = true, true
+	}
+	if len(floats) < 2 {
+		t.Fatalf("the float sums agree (%v): the fixture is no boundary", floats)
+	}
+	if len(texts) != 1 || !texts["proxy=38%"] {
+		t.Errorf("quality reads %v, want proxy=38%% in every order", texts)
+	}
+}

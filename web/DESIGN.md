@@ -875,6 +875,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0217: its exposure quality texts sum in the order the rows arrive,
+  so a share on a rounding boundary can print one point apart;
 - 0216: it lacks `web_private` over `report_private_markets`, which the
   Private Markets cards read;
 - 0213: it lacks `web_spending_vs_year` and `change_pct`, which the
