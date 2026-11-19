@@ -372,8 +372,10 @@ macro of its own:
       where the legs moved the same quantity the first valuation holds
       (`sameQuantity`). The first value then stands for them at the
       debut's prices, by the holding's share of that value
-      (`movedLegs.fundedAt`). So the price move up to the debut is
-      return, and a shortfall, a fee in kind, is a loss. Each holding's
+      (`movedLegs.heldAt`). So the price move up to the debut is
+      return, and a shortfall, a fee in kind, is a loss. After a zero
+      first value the debut is the late one ("Staggered-inception
+      subsumption"), and its valuation is the one read. Each holding's
       part of the first value is read only where the first valuation
       holds positions in one currency and no cash. Elsewhere, and where
       the quantities are not the same, a leg funds its debut by its
@@ -406,7 +408,7 @@ macro of its own:
   by holding and quantity alone), the chain carries the money
   (`movedLegs.rolled`). The carry runs from the day the chain stops
   counting it in the sending account until the receiving account's value
-  shows it: the debut for a leg that funds one, else the leg's valuation.
+  shows it: the valuation a leg funds (below), else the leg's valuation.
   It runs whether or not either valuation confirms the legs, so every
   funding leg of a debut is carried when the first value appears. Where the
   sending account would stop counting the money only on or after the day
@@ -564,6 +566,20 @@ chained TWR below −100%.
   amount may be negative: an account that passed on more than it kept. What
   happens before a first valuation is capital in either direction, never
   performance. Guard: `TestFundedDebutBooksNoNewMoney`.
+- **A zero first value holds none of the money moved in before it.** Such
+  money funds the account's first nonzero valuation instead, the late
+  debut (`lateDebut`). The chain carries it until then, whatever the gap,
+  for a pair the value netter finds too. The late debut books what its
+  value shows beyond the account's own legs since the zero, less what the
+  money brought, as a debut would: the rest is capital either way. A coin
+  moved in funds it by quantity, at that day's prices. The account's own
+  later legs keep their own reading. Money the account paid out before
+  the zero funds the zero itself, since a zero is what paying out
+  everything leaves. Where no nonzero value follows, the zero is the only
+  valuation, and it says none of the money is there: the money moved in
+  funds the zero and leaves as capital on it. Per-entity-once books a late
+  debut in the step of its day. Guards: `TestZeroDebutFundsItsFirstNonzeroValue`,
+  `TestLateDebutBooksWhatItsValueDoesNotHold`, `TestZeroDebutThatStaysZeroPaysOut`.
 - **The same holds at a closure.** A leg the closure day first shows,
   cancelled against money that stays inside, leaves the synthetic closure
   flow.

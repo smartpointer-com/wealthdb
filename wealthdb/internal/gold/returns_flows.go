@@ -66,6 +66,13 @@ func (l flowLeg) shown(w daySpan) bool { return l.onSpine() && l.ValuedOn != 0 &
 // the first value, alone or in its per-entity-once group's step.
 func (l flowLeg) funds() bool { return l.region == regionPreDebut && onboardsFirstValue(l.acct) }
 
+// fundsLate says a leg that funds its account's debut brought money in before
+// a zero first value that a nonzero one follows (lateDebut). That valuation,
+// the first to show the money, is the debut the leg funds. A leg that took
+// money out funds the zero itself: a zero is what paying out everything
+// leaves.
+func (l flowLeg) fundsLate() bool { return l.Amount > 0 && l.acct.lateDebut() != 0 }
+
 // closes says the closure day is the first valuation to show the leg, so the
 // synthetic closure would book it again.
 func (l flowLeg) closes(w daySpan) bool {
@@ -135,11 +142,16 @@ func pairFate(l, partner flowLeg, w daySpan) fate {
 	return fateDropped
 }
 
-// fund records a leg that funds its account's debut, by its value. A leg
-// that moved a holding the first value holds is also kept by holding, so
-// fundedAt can value it at the debut instead.
+// fund records a leg that funds its account's debut, by its value: the first
+// valuation (funded), or the late debut (late). A leg that moved a holding
+// the valuation it funds holds is also kept by holding, so heldAt can value
+// it at that valuation instead.
 func (m *movedLegs) fund(l flowLeg) {
-	m.funded[l.acct] += l.Amount
+	if l.fundsLate() {
+		m.late[l.acct] += l.Amount
+	} else {
+		m.funded[l.acct] += l.Amount
+	}
 	h, ok := l.acct.inKind[l.ID]
 	if !ok || h.qty <= 0 || l.Amount <= 0 || l.acct.debut[h.holding].qty <= 0 {
 		return
@@ -163,20 +175,56 @@ type heldFunding struct {
 }
 
 // byQuantity says the legs that funded a's debut with holding h moved the
-// quantity its first valuation holds (sameQuantity): one holding, one unit.
-// Only then does the first value stand for them.
+// quantity the valuation they fund holds (sameQuantity): one holding, one
+// unit. Only then does that value stand for them.
 func (m *movedLegs) byQuantity(a *accountData, h string) bool {
 	f, d := m.fundedHeld[a][h], a.debut[h]
 	return f.qty > 0 && sameQuantity(f.qty, d.qty, f.exact)
 }
 
-// fundedAt is what a's first value v holds through moves (funded). A holding
-// whose funding legs moved the quantity the first valuation holds
-// (byQuantity) funds it by its share of v, at the debut's prices, so the price
-// move up to the debut is return. Every other leg funds it by its value: where
-// that value is above v, the debut books the difference as capital that left,
-// since nothing says the same holding arrived.
+// fundedAt is what a's first value v holds through moves (funded), at its
+// holdings (heldAt). Where a late debut follows a zero first value, the money
+// that came in funds that one (lateAt), and the zero holds what a paid out,
+// at the legs' values.
 func (m *movedLegs) fundedAt(a *accountData, v float64) float64 {
+	if a.lateDebut() != 0 {
+		return m.funded[a]
+	}
+	return m.heldAt(a, m.funded[a], v)
+}
+
+// lateAt is what a's late debut value v holds through the moves before its
+// zero first value (late).
+func (m *movedLegs) lateAt(a *accountData, v float64) float64 { return m.heldAt(a, m.late[a], v) }
+
+// lateShown is a's late debut, where legs before its zero first value fund it
+// (late) and the window holds it, with what its value there shows beyond a's
+// own legs since the zero: those legs are flows or inside moves of their own.
+func (m *movedLegs) lateShown(a *accountData, w daySpan) (day int64, shown float64, ok bool) {
+	if _, funded := m.late[a]; !funded {
+		return 0, 0, false
+	}
+	d := a.lateDebut()
+	if d > w.to {
+		return 0, 0, false
+	}
+	return d, valueOn(a, d) - a.netIn(a.firstDay(), d), true
+}
+
+// valueOn is a's value on day, 0 where it holds none.
+func valueOn(a *accountData, day int64) float64 {
+	v, _ := a.valueAt(day)
+	return v
+}
+
+// heldAt is what the value v of the valuation a's legs fund holds through
+// moves that sum to funded. A holding whose funding legs moved the quantity
+// that valuation holds (byQuantity) funds it by its share of v, at that
+// day's prices, so the price move up to it is return. Every other leg funds
+// it by its value: where that value is above v, the debut books the
+// difference as capital that left, since nothing says the same holding
+// arrived.
+func (m *movedLegs) heldAt(a *accountData, funded, v float64) float64 {
 	held := m.fundedHeld[a]
 	var hs []string
 	for _, h := range slices.Sorted(maps.Keys(held)) {
@@ -185,10 +233,10 @@ func (m *movedLegs) fundedAt(a *accountData, v float64) float64 {
 		}
 	}
 	if len(hs) == 0 {
-		return m.funded[a]
+		return funded
 	}
 	var s returns.Sum
-	s.Add(m.funded[a])
+	s.Add(funded)
 	for _, h := range hs {
 		s.Add(v*a.debut[h].share - held[h].value)
 	}
@@ -208,9 +256,12 @@ func (a *accountData) zeroesBeforeLastDay() bool {
 // valuations (rolled).
 type movedLegs struct {
 	funded map[*accountData]float64 // onboarding: what the first value holds through moves, signed, at the legs' values
-	// fundedHeld is the part of funded that moved a holding the first value
-	// holds (accountData.debut), by holding, which fundedAt may value at the
-	// debut instead.
+	// late is what a late debut holds through the moves that came in before
+	// the zero first value (fundsLate), at the legs' values.
+	late map[*accountData]float64
+	// fundedHeld is the part of funded, or of late, that moved a holding the
+	// valuation it funds holds (accountData.debut), by holding, which heldAt
+	// may value at that valuation instead.
 	fundedHeld map[*accountData]map[string]heldFunding
 	closing    map[*accountData]float64        // closure: what the last value holds that stays inside or left already, signed
 	exits      map[*accountData]float64        // closure: what the zero tail's surviving legs moved out of the entity, signed
@@ -228,9 +279,10 @@ type movedLegs struct {
 }
 
 func newMovedLegs() *movedLegs {
-	return &movedLegs{funded: map[*accountData]float64{}, fundedHeld: map[*accountData]map[string]heldFunding{},
-		closing: map[*accountData]float64{},
-		exits:   map[*accountData]float64{}, moves: map[*accountData][]returns.Flow{},
+	return &movedLegs{funded: map[*accountData]float64{}, late: map[*accountData]float64{},
+		fundedHeld: map[*accountData]map[string]heldFunding{},
+		closing:    map[*accountData]float64{},
+		exits:      map[*accountData]float64{}, moves: map[*accountData][]returns.Flow{},
 		fundedFrom: map[*accountData]map[int64]float64{}, passIn: map[*accountData][]returns.Flow{}}
 }
 
@@ -250,8 +302,8 @@ func (m *movedLegs) add(a *accountData, f returns.Flow) { m.moves[a] = append(m.
 // legs the money is in neither account, and still the household's.
 type carry struct {
 	out, in flowLeg
-	// to is the day the receiving account's value shows the money: its debut
-	// for a leg that funds it, else the leg's own valuation.
+	// to is the day the receiving account's value shows the money: the
+	// debut a leg funds, else the leg's own valuation.
 	to int64
 }
 
@@ -282,10 +334,10 @@ func (m *movedLegs) settle(flows []returns.Flow, l flowLeg, f fate) []returns.Fl
 }
 
 // pair settles two legs the netter cancelled. They stay what the accounts moved
-// only where neither leg is dropped; with transit, the receiving leg's money
-// is carried between the legs instead (carry). A funding leg leaves its debut's
-// onboarding, and its partner's legs that the funding explains are marked on
-// the partner's valuation day. Money leaving a closing account stays inside
+// only where neither leg is dropped; with transit, or into a late debut, the
+// receiving leg's money is carried between the legs instead (carry). A
+// funding leg leaves its debut's onboarding, and its partner's legs that the
+// funding explains are marked on the partner's valuation day. Money leaving a closing account stays inside
 // where the partner is shown or funds a debut, so the final-day closure leaves
 // it out. A zero-tail exit leg that money came in on is passed through.
 func (m *movedLegs) pair(a, b flowLeg, w daySpan, transit bool) {
@@ -293,13 +345,18 @@ func (m *movedLegs) pair(a, b flowLeg, w daySpan, transit bool) {
 	if fates[0] != fateDropped && fates[1] != fateDropped {
 		m.add(a.acct, a.Flow)
 		m.add(b.acct, b.Flow)
-		if transit {
-			out, in := b, a
-			if a.Amount < 0 {
-				out, in = a, b
-			}
+		out, in := b, a
+		if a.Amount < 0 {
+			out, in = a, b
+		}
+		// A late debut is days or years on, whatever the value netter says.
+		late := in.funds() && in.fundsLate()
+		if transit || late {
 			to := in.ValuedOn
-			if in.funds() {
+			switch {
+			case late:
+				to = in.acct.lateDebut()
+			case in.funds():
 				to = in.acct.firstDay()
 			}
 			if to != 0 && out.ValuedOn != 0 {
@@ -531,7 +588,9 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 // onboarding appends the synthetic onboarding flows: a late constituent's whole
 // arrival, booked as its debut value less what pairing found the entity held
 // already (movedLegs). Its real pre-debut legs took no flow, so no near-day dedup
-// is needed.
+// is needed. Where its first value is zero and a nonzero one follows, the
+// money that came in before the zero is booked on that late debut instead
+// (lateShown), and the zero books what the account paid out before it.
 //
 // OnboardScope splits the onboarding GRAIN — the AMOUNT booked when a
 // constituent debuts after w.from:
@@ -576,6 +635,11 @@ func (m *movedLegs) onboarding(flows []returns.Flow, assets []*accountData, w da
 			if of, ok := returns.FundedOnboardingFlow(debut, v, m.fundedAt(a, v)); ok {
 				flows = append(flows, of)
 			}
+			if d, shown, ok := m.lateShown(a, w); ok {
+				if of, ok := returns.FundedOnboardingFlow(d, shown, m.lateAt(a, valueOn(a, d))); ok {
+					flows = append(flows, of)
+				}
+			}
 		}
 	}
 	// Per-entity-once: onboard the aggregate step-up at each distinct post-w.from
@@ -587,8 +651,8 @@ func (m *movedLegs) onboarding(flows []returns.Flow, assets []*accountData, w da
 	// booked by source id, so same-day steps reach the day sort in one order.
 	for _, src := range slices.Sorted(maps.Keys(perEntityGroups)) {
 		grp := perEntityGroups[src]
-		for _, day := range groupDebutDays(grp, w.from, w.to) {
-			step := groupOnboardStep(grp, day, m)
+		for _, day := range groupDebutDays(grp, w, m) {
+			step := groupOnboardStep(grp, day, w, m)
 			if of, ok := returns.OnboardingFlow(day, step); ok {
 				flows = append(flows, of)
 			}
@@ -676,17 +740,24 @@ func passThrough(in []returns.Flow, exits float64) []returns.Flow {
 }
 
 // groupDebutDays returns the ascending, de-duplicated set of days on which a
-// per-entity-once source group gains a constituent after winFrom (a constituent's
-// firstDay() in (winFrom, winTo]). The aggregate step-up is booked on each such
-// day.
-func groupDebutDays(grp []*accountData, winFrom, winTo int64) []int64 {
+// per-entity-once source group gains a constituent after w.from (a constituent's
+// firstDay() in (w.from, w.to]), or a late debut that legs fund (lateShown).
+// The aggregate step-up is booked on each such day.
+func groupDebutDays(grp []*accountData, w daySpan, moved *movedLegs) []int64 {
 	seen := map[int64]bool{}
 	var out []int64
-	for _, a := range grp {
-		d := a.firstDay()
-		if d > winFrom && d <= winTo && !seen[d] {
+	add := func(d int64) {
+		if !seen[d] {
 			seen[d] = true
 			out = append(out, d)
+		}
+	}
+	for _, a := range grp {
+		if d := a.firstDay(); d > w.from && d <= w.to {
+			add(d)
+		}
+		if d, _, ok := moved.lateShown(a, w); ok {
+			add(d)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
@@ -718,11 +789,19 @@ func groupDebutDays(grp []*accountData, winFrom, winTo int64) []int64 {
 // the debut value. An internal cash->securities move (new securities +X, funding
 // cash -X) therefore nets to 0; a genuine external inflow landing straight as a
 // new account (no sibling drop) onboards its full value; same-day deposits and
-// market moves on siblings do not touch the step-up. Floored at 0 so a debut day
-// dominated by sibling drops can never book negative onboarding.
-func groupOnboardStep(grp []*accountData, day int64, moved *movedLegs) float64 {
+// market moves on siblings do not touch the step-up. A late debut on `day` adds
+// what it shows less what its legs brought (lateShown), as a debut would.
+// Floored at 0 so a debut day dominated by sibling drops can never book
+// negative onboarding.
+func groupOnboardStep(grp []*accountData, day int64, w daySpan, moved *movedLegs) float64 {
 	var debutValue, siblingFundingDrop float64
 	for _, a := range grp {
+		// A late debut on day is the debut its legs fund: what it shows
+		// beyond its own later legs, less what those legs brought.
+		if d, shown, ok := moved.lateShown(a, w); ok && d == day {
+			debutValue += shown - moved.lateAt(a, valueOn(a, d))
+			continue
+		}
 		newlyDebuts := a.firstDay() == day
 		if newlyDebuts {
 			var first float64

@@ -536,10 +536,12 @@ type accountData struct {
 	// moved, for the legs that name one; nil when none does. The netter
 	// pairs such a leg by holding and quantity (pairInKind).
 	inKind map[string]heldMove
-	// debut is what the account's first valuation holds, by holding, for an
-	// account whose transfer-like legs on or before its debut moved a
-	// holding; nil otherwise, or where the first valuation holds cash or
-	// prices its holdings in more than one currency (loadDebutHoldings).
+	// debut is what the valuation that the money coming in before the
+	// account's debut funds holds, by holding: its first valuation, or its
+	// first nonzero one after a zero first value (fundedDay). It is read for
+	// an account whose transfer-like legs on or before its debut moved a
+	// holding; nil otherwise, or where that valuation holds cash or prices
+	// its holdings in more than one currency (loadDebutHoldings).
 	debut map[string]debutHolding
 
 	// twin is the same account in residueCurrency's dataset, nil where the
@@ -548,9 +550,10 @@ type accountData struct {
 	// residue is the dataset's cache of residue decisions (residueEnds).
 	residue *residueCache
 
-	// The zero tail, cached by cacheTail: lastNonzeroDay and zeroingDay.
-	tailKnown            bool
-	lastNonzero, zeroing int64
+	// The zero tail and head, cached by cacheTail: lastNonzeroDay,
+	// zeroingDay and lateDebut.
+	tailKnown                     bool
+	lastNonzero, zeroing, lateDay int64
 }
 
 // residueCache holds each entity's residue decision, read once on its
@@ -693,12 +696,46 @@ func (a *accountData) findZeroingDay() int64 {
 }
 
 // cacheTail stores lastNonzeroDay and zeroingDay, which walk back over the
-// zero tail and are read for every flow of a closed account. The series must
-// not change afterwards (finalize calls it).
+// zero tail and are read for every flow of a closed account, and lateDebut,
+// which walks over a zero head. The series must not change afterwards
+// (finalize calls it).
 func (a *accountData) cacheTail() {
 	a.tailKnown = false
-	a.lastNonzero, a.zeroing = a.findLastNonzeroDay(), a.findZeroingDay()
+	a.lastNonzero, a.zeroing, a.lateDay = a.findLastNonzeroDay(), a.findZeroingDay(), a.findLateDebut()
 	a.tailKnown = true
+}
+
+// lateDebut is the first nonzero valuation of an account whose first value is
+// zero, 0 where the first value is not zero or no nonzero value follows it.
+// A zero first value holds none of the money that came in before it: that
+// money funds this valuation instead, the first to show it, and is in
+// transit until then.
+func (a *accountData) lateDebut() int64 {
+	if a.tailKnown {
+		return a.lateDay
+	}
+	return a.findLateDebut()
+}
+
+func (a *accountData) findLateDebut() int64 {
+	if len(a.series) == 0 || math.Abs(a.series[0].val) >= valueTol {
+		return 0
+	}
+	for _, dv := range a.series[1:] {
+		if math.Abs(dv.val) >= valueTol {
+			return dv.day
+		}
+	}
+	return 0
+}
+
+// fundedDay is the valuation the money that came in on or before a's debut
+// funds: the late debut where there is one, else the debut.
+func (a *accountData) fundedDay() int64 {
+	if d := a.lateDebut(); d != 0 {
+		return d
+	}
+	return a.firstDay()
 }
 
 // lastNonzeroDay returns the day of the last carry-forward value that is still
@@ -1176,8 +1213,8 @@ func nameHoldings(byCcy map[string]map[string]*accountData) *holdingUnion {
 type debutHolding struct{ qty, share float64 }
 
 // loadDebutHoldings reads, for every account a leg moved a holding into on or
-// before its debut, the holdings of its first valuation (accountData.debut):
-// the positions of the day's last snapshot. A share is the position's market
+// before its debut, the holdings of the valuation such legs fund (fundedDay,
+// accountData.debut): the positions of the day's last snapshot. A share is the position's market
 // value over all of them, so it is read only where every position states one
 // in a single currency and the account holds no cash then. A holding is
 // named as the legs name it (u). Each currency's
@@ -1193,7 +1230,7 @@ func loadDebutHoldings(ctx context.Context, q querier, facts map[string]instrume
 		for _, a := range byKey {
 			for f := range a.legs(0, a.firstDay()) {
 				if _, ok := a.inKind[f.ID]; ok {
-					r := ref{a.src, a.acct, a.firstDay()}
+					r := ref{a.src, a.acct, a.fundedDay()}
 					accts[r] = append(accts[r], a)
 					break
 				}

@@ -1250,7 +1250,9 @@ aggregate containing BOTH accounts double-represents the move (the
   leg's rest stays a flow, counted in `unmatched_transfers`. Where both legs
   are live the pair drops. A leg on
   or before its account's debut funds the debut instead, so the debut
-  onboards only what the move did not bring in. A leg in a zero tail is the
+  onboards only what the move did not bring in. Money moved in before a
+  zero first value funds the first nonzero valuation, and the chain
+  carries it until then. A leg in a zero tail is the
   closure's. A pair across sources therefore keeps counting each leg at the
   sources and portfolios grains, the real boundary flow it is for them; a
   pair inside one source nets there too. The accounts grain nets no pair.
