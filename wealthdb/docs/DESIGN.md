@@ -1251,10 +1251,10 @@ aggregate containing BOTH accounts double-represents the move (the
   leg's rest stays a flow, counted in `unmatched_transfers`. Where both legs
   are live the pair drops. A leg on
   or before its account's debut funds the debut instead, so the debut
-  onboards only what the move did not bring in. Money moved in before a
-  zero first value funds the first nonzero valuation, and the chain
-  carries it until then. A leg in a zero tail is the
-  closure's. A pair across sources therefore keeps counting each leg at the
+  onboards only what the move did not bring in. A zero first value is no
+  valuation: money moved in before it, paired or not, funds the first
+  nonzero valuation, and the chain carries a pair's money until then.
+  A leg in a zero tail is the closure's. A pair across sources therefore keeps counting each leg at the
   sources and portfolios grains, the real boundary flow it is for them; a
   pair inside one source nets there too. The accounts grain nets no pair.
 - **Quality:** entities that netted pairs tag `cross_source_netted=N`, the

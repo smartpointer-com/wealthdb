@@ -230,6 +230,114 @@ func TestZeroDebutInASinceYearWindow(t *testing.T) {
 	}
 }
 
+// TestZeroIsNoValuation pins that a zero first value is no valuation of
+// the money moved in before it. Every leg in before the zero, paired or
+// not, funds the first nonzero valuation, the debut: a wire from an
+// untracked bank, a transfer in from an untracked account, and a move from
+// a tracked account beside a deposit. The household then reads, flow for
+// flow, as the same household without the zero, in every window: one that
+// opens before the legs, between the legs and the zero, at the zero,
+// between the zero and the first nonzero value, and after it.
+func TestZeroIsNoValuation(t *testing.T) {
+	t.Parallel()
+	d0, leg, zero, debut, end := dy(2024, time.January, 2), dy(2024, time.January, 20), dy(2024, time.February, 2),
+		dy(2024, time.April, 30), dy(2024, time.June, 28)
+	steady := []snap{{d0, 20000}, {leg, 20000}, {debut, 20000}, {end, 20400}}
+	for _, tc := range []struct {
+		name  string
+		a     []snap // the live account's valuations
+		aLegs []txn
+		b     []snap // the zero-debut account's valuations, the zero first
+		bLegs []txn
+		flows []returns.Flow // since inception
+	}{
+		{"a wire from an untracked bank", steady, nil,
+			[]snap{{zero, 0}, {debut, 10050}, {end, 10100}},
+			[]txn{{leg, canonical.TxKindDeposit, 10000}},
+			[]returns.Flow{{Day: EpochDay(debut), Amount: 10050, Synthetic: true}}},
+		{"a transfer in from an untracked account", steady, nil,
+			[]snap{{zero, 0}, {debut, 10050}, {end, 10100}},
+			[]txn{{leg, canonical.TxKindTransferIn, 10000}},
+			[]returns.Flow{{Day: EpochDay(debut), Amount: 10050, Synthetic: true}}},
+		{"a move from a tracked account beside a deposit",
+			[]snap{{d0, 30000}, {leg, 20000}, {debut, 20000}, {end, 20400}},
+			[]txn{{leg, canonical.TxKindTransferOut, -10000}},
+			[]snap{{zero, 0}, {debut, 12100}, {end, 12200}},
+			[]txn{{leg, canonical.TxKindTransferIn, 10000}, {leg, canonical.TxKindDeposit, 2000}},
+			[]returns.Flow{{Day: EpochDay(debut), Amount: 2100, Synthetic: true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			seed := func(b []snap) (*sql.DB, context.Context) {
+				db, ctx := openMigrated(t)
+				seedReturnsSource(t, db, ctx, "s1", "schwab")
+				seedAcct(t, db, ctx, "s1", "A", canonical.AccountKindBrokerage, nil, tc.a, tc.aLegs)
+				seedAcct(t, db, ctx, "s1", "B", canonical.AccountKindBrokerage, nil, b, tc.bLegs)
+				return db, ctx
+			}
+			zeroed, ctx := seed(tc.b)
+			plain, _ := seed(tc.b[1:])
+			if flows, _ := globalFlows(t, zeroed, ctx, params("global", 0, end)); !slices.EqualFunc(flows, tc.flows, sameFlow) {
+				t.Errorf("flows = %+v, want %+v", flows, tc.flows)
+			}
+			for _, from := range []int64{0, dy(2024, time.January, 25), zero, dy(2024, time.March, 15), dy(2024, time.May, 15)} {
+				p := params("global", from, end)
+				got, _ := globalFlows(t, zeroed, ctx, p)
+				want, _ := globalFlows(t, plain, ctx, p)
+				if !slices.EqualFunc(got, want, sameFlow) {
+					t.Errorf("from %d: flows = %+v, want %+v as without the zero", EpochDay(from), got, want)
+				}
+				g, w := globalSummary(t, zeroed, ctx, p), globalSummary(t, plain, ctx, p)
+				if g.TWR == nil || w.TWR == nil || math.Abs(*g.TWR-*w.TWR) > 1e-9 {
+					t.Errorf("from %d: TWR = %s, want %s as without the zero", EpochDay(from), rateText(g.TWR), rateText(w.TWR))
+				}
+			}
+		})
+	}
+}
+
+// TestZeroDebutKeepsItsReading pins what a zero first value leaves as it
+// was: money paid out before it, with nothing moved in, leaves the later
+// value to read as the account's own; money moved in before a zero no
+// nonzero value follows never shows; and a first value that is not zero
+// books what it shows.
+func TestZeroDebutKeepsItsReading(t *testing.T) {
+	t.Parallel()
+	d0, leg, zero, dep, debut, end := dy(2024, time.January, 2), dy(2024, time.January, 20), dy(2024, time.February, 2),
+		dy(2024, time.March, 15), dy(2024, time.April, 30), dy(2024, time.June, 28)
+	for _, tc := range []struct {
+		name  string
+		b     []snap
+		bLegs []txn
+		flows []returns.Flow
+	}{
+		{"paid out before the zero, nothing moved in",
+			[]snap{{zero, 0}, {debut, 3100}, {end, 3100}},
+			[]txn{{leg, canonical.TxKindWithdrawal, -500}, {dep, canonical.TxKindDeposit, 3000}},
+			[]returns.Flow{{Day: EpochDay(dep), Amount: 3000}}},
+		{"moved in before a zero that stays zero",
+			[]snap{{zero, 0}, {end, 0}},
+			[]txn{{leg, canonical.TxKindDeposit, 300}},
+			nil},
+		{"a first value that is not zero",
+			[]snap{{zero, 10050}, {end, 10100}},
+			[]txn{{leg, canonical.TxKindDeposit, 10000}},
+			[]returns.Flow{{Day: EpochDay(zero), Amount: 10050, Synthetic: true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db, ctx := openMigrated(t)
+			seedReturnsSource(t, db, ctx, "s1", "schwab")
+			seedAcct(t, db, ctx, "s1", "A", canonical.AccountKindBrokerage, nil,
+				[]snap{{d0, 20000}, {end, 20400}}, nil)
+			seedAcct(t, db, ctx, "s1", "B", canonical.AccountKindBrokerage, nil, tc.b, tc.bLegs)
+			if flows, _ := globalFlows(t, db, ctx, params("global", 0, end)); !slices.EqualFunc(flows, tc.flows, sameFlow) {
+				t.Errorf("flows = %+v, want %+v", flows, tc.flows)
+			}
+		})
+	}
+}
+
 // TestLateDebutBooksWhatItsValueDoesNotHold pins how the first nonzero
 // valuation funds the legs before a zero first value, as a debut would: it
 // shows the money that came in, beyond the account's own legs since the
@@ -354,10 +462,26 @@ func TestPerEntityOnceLateDebutCarriesItsFunding(t *testing.T) {
 	if want := (returns.Flow{Day: 10, ValuedOn: 200, Amount: 10000, ID: "in"}); !slices.Contains(rolled, want) {
 		t.Errorf("rolled = %+v, want the carry %+v", rolled, want)
 	}
+	// Money from outside the group funds a late debut too: the step is all
+	// it shows.
+	ext := &accountData{src: "u", acct: "EXT", rpolicy: once,
+		series:      []dayVal{{11, 0}, {200, 3000}, {300, 3000}},
+		snapDays:    []int64{11, 200, 300},
+		nonTransfer: []returns.Flow{{Day: 10, Amount: 2900, ID: "dep"}}}
+	idle := &accountData{src: "u", acct: "IDLE", rpolicy: once,
+		series: []dayVal{{0, 20000}, {300, 20000}}, snapDays: []int64{0, 300}}
+	for _, a := range []*accountData{ext, idle} {
+		a.cacheTail()
+	}
+	flows, _, _ = entityFlows([]*accountData{idle, ext}, params("sources", 0, 0), 0, 300, true)
+	if want := []returns.Flow{{Day: 200, Amount: 3000, Synthetic: true}}; !slices.EqualFunc(flows, want, sameFlow) {
+		t.Errorf("flows = %+v, want the step on the late debut %+v", flows, want)
+	}
 }
 
 // TestLateDebutAgreesAcrossPaths pins that web-materialize, which loads every
-// currency at once, and a CLI run read a late debut alike, in every currency.
+// currency at once, and a CLI run read a late debut alike, in every currency:
+// one a paired leg funds, and one a deposit nothing pairs funds.
 func TestLateDebutAgreesAcrossPaths(t *testing.T) {
 	t.Parallel()
 	d0, d1, d2, d3, d4 := dy(2024, time.January, 2), dy(2024, time.February, 1), dy(2024, time.February, 2),
@@ -369,6 +493,8 @@ func TestLateDebutAgreesAcrossPaths(t *testing.T) {
 		[]snap{{d0, 20000}, {d1, 10000}, {d3, 10000}, {d4, 10000}}, []txn{{d1, canonical.TxKindTransferOut, -10000}})
 	seedAcct(t, db, ctx, "s1", "B", canonical.AccountKindBrokerage, nil,
 		[]snap{{d2, 0}, {d3, 10000}, {d4, 10500}}, []txn{{d1, canonical.TxKindTransferIn, 10000}})
+	seedAcct(t, db, ctx, "s1", "C", canonical.AccountKindBrokerage, nil,
+		[]snap{{d2, 0}, {d3, 1000}, {d4, 1000}}, []txn{{d1, canonical.TxKindDeposit, 1000}})
 	seedFX(t, db, dy(2024, time.January, 1), "USD", "CHF", "0.90")
 	seedFX(t, db, dy(2024, time.January, 1), "USD", "EUR", "0.95")
 	seedFX(t, db, dy(2024, time.January, 1), "USD", "GBP", "0.80")
@@ -391,8 +517,8 @@ func TestLateDebutAgreesAcrossPaths(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: materialized %+v, CLI %+v", ccy, got, want)
 		}
-		if g, _ := summaryFor(got, ""); g.TWR == nil || math.Abs(*g.TWR-0.025) > 1e-6 {
-			t.Errorf("%s: TWR = %s, want the household's 2.5%%", ccy, rateText(g.TWR))
+		if g, _ := summaryFor(got, ""); g.TWR == nil || math.Abs(*g.TWR-500.0/21000) > 1e-6 {
+			t.Errorf("%s: TWR = %s, want the household's 500 on 21000", ccy, rateText(g.TWR))
 		}
 	}
 }
