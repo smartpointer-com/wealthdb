@@ -149,6 +149,10 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 - **Why net worth moved** — `wealthdb -r returns bridge 2025 --period total`
   (`end_net_worth = start_net_worth + net_saved + onboarded + gain`; whole
   months; `-C +net_flow,+debt_repaid` splits `net_saved`)
+- **Debt paid down** (mortgages and cards together) —
+  `wealthdb -r returns bridge 2025 --period total -C +debt_repaid`
+  (`debt_repaid` is the net fall in what is owed; a mortgage's interest
+  is not in it, and a card that grew is netted in)
 - **What a private fund took and gave back** — `wealthdb -r returns private`
   (`paid_in`, `distributed`, `nav` at its `marked_at`, `dpi`, `tvpi`,
   `irr_pct` since the first call; the last row is the total)
