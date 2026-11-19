@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Behaviour test of the Makefile's generated collector rules, from dry
 # runs in a copy of the tree holding one collector of each runtime:
-#   - only a Docker collector's build depends on the shared bases;
+#   - only a Docker collector's build depends on the shared bases, and
+#     its tests build base-camoufox without the browser;
 #   - a Docker collector's tests run in its image directly, not through
 #     its wrapper: no secrets or data mount and no fixed container name;
 #     they run on a tmpfs copy of the checkout at /app;
@@ -74,6 +75,8 @@ lacks "the test mounts no secrets" ":/secrets" "$out"
 lacks "the test mounts no data" ":/data" "$out"
 lacks "the test takes no fixed container name" "--name" "$out"
 lacks "the test does not go through the wrapper" "collectors/dock/dock sh" "$out"
+has "a Docker collector's build bakes the Camoufox browser in" "mode=bundle;" "$(dry build-dock)"
+has "a Docker collector's tests build base-camoufox without the browser" "mode=none;" "$out"
 has "a host-venv collector tests on its venv" \
     "collectors/host/.venv/bin/python -m pytest" "$(dry test-host)"
 has "a hybrid tests on its host venv" \
@@ -185,6 +188,7 @@ has "site-shots mounts the checkout read-only" "-v \"$TREE:/repo:ro\"" "$out"
 lacks "site-shots mounts no secrets" ":/secrets" "$out"
 has "site-shots runs as the caller" "--user \"\$(id -u):\$(id -g)\" -e HOME=/tmp" "$out"
 has "site-shots sources the shared browser bootstrap" "source /opt/entrypoint-lib.sh" "$out"
+has "site-shots bakes the Camoufox browser in" "mode=bundle;" "$out"
 has "clean runs clean-site" "==> clean site" "$(dry clean)"
 lacks "an exported SHOW prints no value" "--show"     "$(cd "$TREE" && env SHOW=1 WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" make -n pii 2>&1)"
 has "SHOW on the command line prints them" "--show"     "$(cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" make -n pii SHOW=1 2>&1)"

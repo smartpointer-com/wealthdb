@@ -304,6 +304,20 @@ def prepare_profile(profile_dir: Path, *, fresh: bool, note: str,
 # ---- the sign-in browser -----------------------------------------------------
 
 
+def require_browser(camoufox_cls: type) -> None:
+    """Stop a launch of the real `camoufox_cls` in an image built without the
+    browser (base-camoufox's CAMOUFOX_BROWSER=none, the image the unit tests
+    run in), which would otherwise try to download it at sign-in. A stand-in
+    class from a test passes, and so does every launch in an image with the
+    browser."""
+    if (os.environ.get("WEALTHDB_CAMOUFOX_BROWSER") == "none"
+            and camoufox_cls.__module__.partition(".")[0] == "camoufox"):
+        raise SystemExit("this image has no Camoufox browser: it is a test "
+                         "build (CAMOUFOX_BROWSER=none). Build the collector "
+                         "with `make build-<name>` or `make all`, then run "
+                         "it again")
+
+
 def headed_camoufox(profile_dir: Path, *, humanize: bool = True,
                     geoip: bool = True, **options):
     """An unentered Camoufox on the persistent `profile_dir`, with the fleet's
@@ -314,6 +328,7 @@ def headed_camoufox(profile_dir: Path, *, humanize: bool = True,
     WebRTC blocking)."""
     from camoufox.sync_api import Camoufox
 
+    require_browser(Camoufox)
     return Camoufox(
         persistent_context=True,
         user_data_dir=str(profile_dir),

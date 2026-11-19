@@ -10,6 +10,9 @@ profile migration on first start, killing a login with nothing but a
 masked TargetClosedError.
 
 This fetches one reviewed build instead, so rebuilds are reproducible.
+A build already in the cache, unpacked there from the local archive
+(camoufox-archive.py), is kept; only the GeoLite2 database and an
+add-on the cache lacks are then fetched.
 Bumping the pin is a deliberate act: change the build arg in
 base-camoufox.Dockerfile and re-validate the collectors against their
 sources' bot detection (the browser build, camoufox-py, and Playwright
@@ -43,14 +46,15 @@ def _patch(cls: type, name: str, fn) -> None:
     setattr(cls, name, fn)
 
 
-def main(pin: str) -> int:
-    version, sep, release = pin.partition("-")
-    if not sep or not version or not release:
-        print(f"fetch-camoufox: bad pin {pin!r}; expected "
-              f"<version>-<release>, e.g. 152.0.4-beta.26",
-              file=sys.stderr)
-        return 2
+def _installed() -> str | None:
+    """The build in the cache, or None when it holds none."""
+    try:
+        return Version.from_path().full_string
+    except FileNotFoundError:
+        return None
 
+
+def _fetch(version: str, release: str, pin: str) -> None:
     # The fetcher's constructor looks up the newest supported release
     # through the GitHub API, which serves 60 unauthenticated calls an
     # hour per address; a shared CI runner can exhaust that. The pin makes
@@ -73,6 +77,18 @@ def main(pin: str) -> int:
     if read != (url, version, release):
         _stale("CamoufoxFetcher.url/version/release over _url and _version_obj")
     fetcher.install()
+
+
+def main(pin: str) -> int:
+    version, sep, release = pin.partition("-")
+    if not sep or not version or not release:
+        print(f"fetch-camoufox: bad pin {pin!r}; expected "
+              f"<version>-<release>, e.g. 152.0.4-beta.26",
+              file=sys.stderr)
+        return 2
+
+    if _installed() != pin:
+        _fetch(version, release, pin)
 
     installed = Version.from_path()
     if installed.full_string != pin:

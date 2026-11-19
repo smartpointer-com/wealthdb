@@ -7,6 +7,8 @@
 #     each for cmd/wealthdb and every other package;
 #   - demo: the demo household through the engine;
 #   - collectors: the shared base images and every collector's suite;
+#     base-camoufox is built without its browser (CAMOUFOX_BROWSER=none),
+#     which the unit tests never start;
 #   - rest: every other suite of `make test`;
 #   - check: passes only when every job above has.
 # .github/ci-suites.sh splits the Makefile's suite list between the
@@ -189,7 +191,7 @@ jobs:
           for _ in $(seq 300); do [ -e "$m" ] && break; sleep 2; done
           [ -e "$m" ] || { echo "freeing disk space did not finish in 10 minutes" >&2; exit 1; }
           [ "$(cat "$m")" = 0 ] || { echo "freeing disk space failed" >&2; exit 1; }
-          make test SUITES="$(echo "$split" | sed -n 's/^collectors=//p')"
+          make test CAMOUFOX_BROWSER=none SUITES="$(echo "$split" | sed -n 's/^collectors=//p')"
 
   rest:
     runs-on: ubuntu-24.04

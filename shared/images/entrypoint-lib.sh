@@ -22,9 +22,10 @@
 
 VFB_DISPLAY=99
 
-# Symlink the pre-staged camoufox cache (fetched at image build time by
-# fetch-camoufox.py and copied to /opt) into the runtime user's
-# $HOME/.cache/camoufox so camoufox skips its first-run download. HOME is
+# Symlink the pre-staged camoufox cache (staged in /opt at image build
+# time, see base-camoufox.Dockerfile) into the runtime user's
+# $HOME/.cache/camoufox so camoufox skips its first-run download. An
+# image built without the browser has no cache to link. HOME is
 # /tmp inside the container (set by the wrapper for the non-root user). The
 # symlink is always replaced, so a stale /tmp/.cache/camoufox from a
 # previous container with a different runtime uid doesn't shadow it.

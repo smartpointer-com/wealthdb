@@ -362,6 +362,7 @@ def main(argv: list[str]) -> int:
             debugcap.capture_page(page, debug_dir, name, log=log,
                                   redact=redact)
 
+    launch.require_browser(Camoufox)
     profile = Path(tempfile.mkdtemp(prefix="angellist-dl-"))
     launched = False
     try:

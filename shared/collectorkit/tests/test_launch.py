@@ -261,6 +261,31 @@ class LaunchSitesHardenedTest(unittest.TestCase):
         self.assertEqual(unhardened, [], "unhardened browser launch(es):\n"
                          + "\n".join(unhardened))
 
+    def test_every_camoufox_launch_checks_for_the_browser(self):
+        # A function that constructs Camoufox(...) calls require_browser
+        # first, so a sign-in in an image built without the browser stops
+        # with a clear message instead of downloading it.
+        unchecked = []
+        for path in [*_collector_py_files(skip_tests=True), *KIT_LAUNCH_SITES]:
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+                launches = [n.lineno for n in calls
+                            if isinstance(n.func, ast.Name)
+                            and n.func.id == "Camoufox"]
+                checks = [n.lineno for n in calls
+                          if getattr(n.func, "id", None) == "require_browser"
+                          or getattr(n.func, "attr", None) == "require_browser"]
+                for lineno in launches:
+                    if not any(c < lineno for c in checks):
+                        rel = path.relative_to(COLLECTORS.parent)
+                        unchecked.append(f"{rel}:{lineno}")
+        self.assertEqual(unchecked, [], "Camoufox launch(es) without "
+                         "launch.require_browser(Camoufox) before them:\n"
+                         + "\n".join(unchecked))
+
     def test_scan_finds_the_known_launch_sites(self):
         # Guards the guard: an AST matcher that silently matches nothing
         # would make the test above vacuously pass.
@@ -605,6 +630,47 @@ class LiveUrlTest(unittest.TestCase):
     def test_a_failed_read_falls_back_to_the_cached_url(self):
         self.assertEqual(launch.live_url(_EvalPage(RuntimeError("navigating"))),
                          "https://www.example.com/cached")
+
+
+class RequireBrowserTest(unittest.TestCase):
+    """A launch of the real Camoufox stops in an image built without the
+    browser; a test's stand-in and an image with the browser pass."""
+
+    REAL = type("Camoufox", (), {"__module__": "camoufox.sync_api"})
+    STAND_IN = type("Camoufox", (), {})
+
+    def _check(self, mode, cls):
+        env = {} if mode is None else {"WEALTHDB_CAMOUFOX_BROWSER": mode}
+        with mock.patch.dict(os.environ, env, clear=True):
+            launch.require_browser(cls)
+
+    def test_the_real_browser_stops_in_an_image_without_it(self):
+        with self.assertRaises(SystemExit) as stop:
+            self._check("none", self.REAL)
+        self.assertIn("CAMOUFOX_BROWSER=none", str(stop.exception.code))
+        self.assertIn("make all", str(stop.exception.code))
+
+    def test_a_stand_in_passes_in_an_image_without_the_browser(self):
+        self._check("none", self.STAND_IN)
+
+    def test_the_real_browser_passes_with_it(self):
+        self._check("bundle", self.REAL)
+        self._check(None, self.REAL)
+
+    def test_headed_camoufox_checks_before_it_constructs(self):
+        import sys
+        import types
+        built = []
+        real = type("Camoufox", (), {"__module__": "camoufox.sync_api",
+                                     "__init__": lambda self, **kw: built.append(kw)})
+        camoufox = types.ModuleType("camoufox")
+        camoufox.sync_api = types.SimpleNamespace(Camoufox=real)
+        with mock.patch.dict(sys.modules, {"camoufox": camoufox,
+                                           "camoufox.sync_api": camoufox.sync_api}), \
+                mock.patch.dict(os.environ, {"WEALTHDB_CAMOUFOX_BROWSER": "none"}), \
+                self.assertRaises(SystemExit):
+            launch.headed_camoufox(Path("/nonexistent"))
+        self.assertEqual(built, [])
 
 
 class PersistentCamoufoxTest(unittest.TestCase):

@@ -7,7 +7,8 @@
 # .image-tag stops the wrapper. A build whose inputs hash matches the
 # image's wealthdb.inputs label is skipped, for the engine, a collector
 # and the shared bases; an extra argument, a changed input or a rebuilt
-# base image builds. A collector's inputs are its Dockerfile and
+# base image builds. base-camoufox takes its browser mode and the local
+# archive, and a test build keeps one that carries the browser. A collector's inputs are its Dockerfile and
 # requirements.txt alone. The wrappers run from a copy of the tree, so
 # the checkout's own .image-tag plays no part. A stubbed docker on PATH
 # records the argv; nothing real is built.
@@ -426,5 +427,52 @@ if grep -q 'build base image wealthdb/base-python:feature (--pull)' <<<"$out" \
 else
     bad "update-bases pulls and builds a labeled base ($out)"
 fi
+
+# base-camoufox takes its browser mode as a build argument, and in
+# bundle mode the local archive's directory as a build context when that
+# directory exists. A none build keeps a base-camoufox that differs only
+# in carrying the browser; a bundle build replaces one without it.
+camo_hash() {
+    (
+        mode="$1"
+        cd "$TREE" || exit 1
+        set --
+        for x in shared/images/*; do
+            case "$x" in *.Dockerfile) ;; *) set -- "$@" "$x" ;; esac
+        done
+        hash_of shared/images/base-camoufox.Dockerfile shared/collectorkit "$@" \
+            shared/.dockerignore -- sha256:from "browser=$mode"
+    )
+}
+camo_bases() {
+    label="$1"
+    shift
+    (cd "$TREE" && run_env STUB_LABEL="$label" WEALTHDB_IMAGE_TAG=feature \
+        make --no-print-directory "$@" 2>&1)
+}
+# update-bases prints each build's argv; base-images keeps it in a log.
+camo_block() { sed -n '/build base image wealthdb\/base-camoufox/,$p' <<<"$1"; }
+out="$(camo_bases none update-bases)"
+has_item "base-camoufox bakes in the browser by default" "CAMOUFOX_BROWSER=bundle" "$(camo_block "$out")"
+lacks_item "no archive directory, no archive context" "--build-context" "$(camo_block "$out")"
+lacks "the other bases take no browser mode" "CAMOUFOX_BROWSER" \
+    "$(sed '/build base image wealthdb\/base-camoufox/,$d' <<<"$out")"
+mkdir -p "$TMP/cache/wealthdb/camoufox"
+out="$(camo_bases none update-bases)"
+has_item "the archive directory is a build context" \
+    "camoufox-archive=$TMP/cache/wealthdb/camoufox" "$(camo_block "$out")"
+out="$(camo_bases none update-bases CAMOUFOX_BROWSER=none)"
+has_item "a none build leaves the browser out" "CAMOUFOX_BROWSER=none" "$(camo_block "$out")"
+lacks_item "a none build takes no archive context" "--build-context" "$(camo_block "$out")"
+out="$(camo_bases "$(camo_hash bundle)" base-images CAMOUFOX_BROWSER=none)"
+has "a none build keeps a base-camoufox with the browser" \
+    "build: wealthdb/base-camoufox:feature unchanged" "$out"
+out="$(camo_bases "$(camo_hash none)" base-images)"
+has "a bundle build replaces a base-camoufox without the browser" \
+    "build base image wealthdb/base-camoufox:feature (browser: bundle)" "$out"
+out="$(camo_bases "$(camo_hash bundle)" update-bases CAMOUFOX_BROWSER=none)"
+has "update-bases builds a none base-camoufox over one with the browser" \
+    "build base image wealthdb/base-camoufox:feature (browser: none)" "$out"
+rm -r "$TMP/cache/wealthdb/camoufox"
 
 summary "image tag tests"

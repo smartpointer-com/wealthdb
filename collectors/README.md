@@ -830,6 +830,39 @@ of `collectors/`); **the presence of a Dockerfile decides the runtime.**
 
 `make build-collectors` / `make all` builds everything.
 
+### The Camoufox browser
+
+`wealthdb/base-camoufox` carries one pinned build of the Camoufox
+browser. `CAMOUFOX_BUILD` in
+[`base-camoufox.Dockerfile`](../shared/images/base-camoufox.Dockerfile)
+names it.
+
+- The build takes the browser from a local archive when there is one:
+  `${XDG_CACHE_HOME:-$HOME/.cache}/wealthdb/camoufox/camoufox-cache-<build>-lin.<arch>.tgz`.
+  `<arch>` is `arm64` or `amd64`.
+- Without the archive, the build downloads the browser from the
+  Camoufox releases on GitHub.
+- The build checks the archive against a SHA-256 checksum. The
+  Dockerfile pins one per architecture, next to `CAMOUFOX_BUILD`. The
+  checksum covers what the archive holds: each file's path, mode and
+  content. Any other checksum stops the build.
+- `make camoufox-archive` writes the archive again. It reads the browser
+  from the image `wealthdb/base-camoufox:keep-<build>`, a working
+  base-camoufox kept under a tag of its own
+  (`docker tag wealthdb/base-camoufox:latest wealthdb/base-camoufox:keep-<build>`).
+  It checks the new archive against the pinned checksum.
+  `CAMOUFOX_KEEP=<image>` reads another image.
+- The archive also holds the uBlock Origin add-on. Without the archive,
+  the build downloads it with the browser. The build always downloads
+  the GeoLite2 location database.
+- `make all`, `make build-<name>` and `make update` build the image
+  with the browser.
+- The test images carry no browser. `make test-<name>` and CI build
+  base-camoufox with `CAMOUFOX_BROWSER=none`. The unit tests run on
+  fixtures and never start a browser. A sign-in in such an image stops
+  at once with a message. A test build keeps a base-camoufox that is up
+  to date and carries the browser.
+
 ### Unit tests
 
 Tests live in `tests/` (or `test_*.py`); `make test-<name>` builds the
