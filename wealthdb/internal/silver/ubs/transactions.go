@@ -16,9 +16,9 @@ import (
 // buildSameDayOffsetVeto); those are demoted to a non-flow kind here, exactly
 // as the web loop demotes its half — a pair must drop on both sides or the
 // survivor books a one-sided phantom external flow. hints.rc is the
-// reconcile table's verdict (reconcile.go): the MT940 lines a trade
-// confirmation keeps are not emitted, nor the conversion mirrors and the
-// cash legs it withholds. Without it the stream reconciles the feed alone.
+// reconcile table's verdict (reconcile.go), which the caller always
+// passes: the MT940 lines that give way to a trade confirmation are not
+// emitted, nor the conversion mirrors and the cash legs it withholds.
 // hints.securities links a dividend line past its confirmation and names
 // the reversals that are dividend reversals (psnHints). Without a web
 // subsource the stream builds the feed's own.
@@ -41,11 +41,6 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 	}
 	ibans := roster.cashAccountIBANs()
 	rc := hints.rc
-	if rc == nil {
-		if rc, err = reconcile(ctx, nil, r, nil); err != nil {
-			return nil, err
-		}
-	}
 	coverage, err := r.cashCoverage(ctx)
 	if err != nil {
 		return nil, err

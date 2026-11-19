@@ -29,10 +29,12 @@ import (
 //
 // The rows the reconcile table (reconcile.go) gives another record of
 // the booking DO drop, and each of its rules decides on an exact
-// identity rather than a heuristic on ids: a statement reconstruction
-// whose account, value day, signed amount and currency match an export
-// or feed record, an export copy of a confirmation's cash leg, and a row
-// the MT940 feed holds under the bank's own number for the entry. Those
+// identity rather than a heuristic on ids: a statement movement printed
+// whole beside its split legs, an advice the ledger holds, a statement
+// reconstruction whose account, value day, signed amount and currency
+// match an export or feed record, an export copy of a confirmation's
+// cash leg, and a row the MT940 feed holds under the bank's own number
+// for the entry. Those
 // verdicts reach the offset veto, which must not count a row nothing
 // emits.
 //
@@ -47,7 +49,7 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 		return nil, psnHints{}, err
 	}
 	out := canonical.TransactionBatch{}
-	summaries, folded := 0, 0
+	zeros, folded := 0, 0
 	err = r.eachWebRow(ctx, func(row *webRow) error {
 		if row.valueDate < w.Start || row.valueDate > w.End {
 			return nil
@@ -59,8 +61,8 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 		case skip == webFolded:
 			folded++
 			return nil
-		case skip == webSummary:
-			summaries++
+		case skip == webNoBooking:
+			zeros++
 			return nil
 		case skip != webEmitted:
 			return nil
@@ -74,11 +76,11 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	if err != nil {
 		return nil, psnHints{}, err
 	}
-	if summaries > 0 {
-		log.Printf("ubs adapter: dropped %d period-close row(s) — a zero-amount summary or service-price line, not a booking", summaries)
+	if zeros > 0 {
+		log.Printf("ubs adapter: dropped %d zero-amount row(s): no money moved, not a booking", zeros)
 	}
 	if folded > 0 {
-		log.Printf("ubs adapter: folded %d web row(s) into another feed's record of the same booking — one booking, one row", folded)
+		log.Printf("ubs adapter: folded %d web row(s) into another record of the same booking — one booking, one row", folded)
 	}
 	return silver.NewTransactionStream(out), psnHints{veto: pass.psnVeto, securities: pass.dividends, rc: rc}, nil
 }
@@ -153,7 +155,7 @@ func (p *webTxPass) project(row *webRow) (canonical.TransactionChange, bool) {
 	// which routes the row through pdfCashIsExternal (INTERNAL on the
 	// zero value) rather than letting it skip the gate and keep its
 	// deposit/withdrawal kind.
-	if row.periodSummary() {
+	if row.movesNothing() {
 		return canonical.TransactionChange{}, false
 	}
 	statedMortgage := p.resolveCounterAccount(&pl)
@@ -256,8 +258,9 @@ const (
 	// webFolded: another record of the booking is the one gold keeps
 	// (reconcile).
 	webFolded
-	// webSummary: a statement's period summary, no booking (project).
-	webSummary
+	// webNoBooking: the row moves no money (movesNothing), no booking
+	// (project).
+	webNoBooking
 )
 
 // webEmission is what the web pass emits for one row: the transaction,
@@ -283,17 +286,17 @@ func (p *webTxPass) skip(row *webRow) webSkip {
 	return webFolded
 }
 
-// emit is what the pass emits for a web row: the cut and the folds
-// (skip), the projection, and an export dividend's gross. The stream and
-// the record of grosses (recordExportGrosses) both read it, so they agree
-// on every row.
+// emit is what the pass emits for a web row: the reconcile table's
+// verdict (skip), the projection, and an export dividend's gross. The
+// stream and the record of grosses (recordExportGrosses) both read it, so
+// they agree on every row.
 func (p *webTxPass) emit(row *webRow) (webEmission, webSkip, error) {
 	if skip := p.skip(row); skip != webEmitted {
 		return webEmission{}, skip, nil
 	}
 	tx, ok := p.project(row)
 	if !ok {
-		return webEmission{}, webSummary, nil
+		return webEmission{}, webNoBooking, nil
 	}
 	e := webEmission{tx: tx}
 	gross, ok := exportGross(tx.Kind, row.pl, row.pdfBackfill, tx.Currency, tx.NetAmount)
@@ -310,8 +313,8 @@ func (p *webTxPass) emit(row *webRow) (webEmission, webSkip, error) {
 // emits at a gross (emit), over every window. A reversal of the credit on
 // the feed takes that gross back (reversedGross). Only a row the
 // projection's own kind reads as a dividend credit can be one, so the
-// rest are not projected. It needs the cut and the folds, not the offset
-// veto: the veto changes only deposits and withdrawals.
+// rest are not projected. It needs the reconcile table's verdict (skip),
+// not the offset veto: the veto changes only deposits and withdrawals.
 func (r *webReader) recordExportGrosses(ctx context.Context, p *webTxPass) error {
 	return r.eachWebRow(ctx, func(row *webRow) error {
 		net, ok := row.dividendCredit()
@@ -392,7 +395,7 @@ type webTxRow struct {
 	counterparty, descKind           sql.NullString
 }
 
-// periodSummary reports whether the row moves no money and is no
+// movesNothing reports whether the row moves no money and is no
 // booking. A statement line of amount zero moves nothing, whatever it
 // says: a service-price close, a low booking amount, or the "Turnover
 // total" line a statement prints before its closing balance, which the
@@ -401,7 +404,7 @@ type webTxRow struct {
 // bookings and are kept (bookingLines; docs/adapters/ubs.md §7). The CSV
 // feed prints a period close as a zero-amount service-price row with no
 // booking type, and an advice's zero line restates a summary.
-func (row *webRow) periodSummary() bool {
+func (row *webRow) movesNothing() bool {
 	return row.net.IsZero() && (isStatementEraID(row.txID) ||
 		row.pdfBackfill && isStatementSummary(row.pl) ||
 		!row.pdfBackfill && isServicePriceClose(row.hint))

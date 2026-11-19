@@ -7,12 +7,13 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// The reconcile table across eras. Three eras record the UBS cash ledger — statement
-// reconstructions, the account-statement export and the MT940 feed — over
-// overlapping periods and with disjoint id schemes, so an entry recorded by
-// two of them reaches gold twice unless something matches them on the booking
-// itself. These tests pin that match: what folds, what survives, whose
-// identity the survivor keeps, and what the dropped copy leaves behind.
+// The reconcile table across the records of the UBS cash ledger.
+// Statement reconstructions, the account-statement export, payment
+// advices and the MT940 feed record it over overlapping periods and with
+// disjoint id schemes, so an entry recorded by two of them reaches gold
+// twice unless something matches them on the booking itself. These tests
+// pin that match: what folds, what survives, whose identity the survivor
+// keeps, and what the dropped copy leaves behind.
 //
 // Every id, amount, payee and date below is invented.
 
@@ -69,11 +70,11 @@ func countOnDay(got map[string]canonical.TransactionChange, day int64) int {
 	return n
 }
 
-// TestEraFoldExportKeepsTheBooking: a statement reconstruction and the
-// export's record of the same booking — one account, one value day, one
-// signed amount, one currency — project as ONE row, and it is the export's:
-// its id, its amount and its own narrative all stand.
-func TestEraFoldExportKeepsTheBooking(t *testing.T) {
+// TestStatementCopyExportKeepsTheBooking: a statement reconstruction and
+// the export's record of the same booking — one account, one value day,
+// one signed amount, one currency — project as ONE row, and it is the
+// export's: its id, its amount and its own narrative all stand.
+func TestStatementCopyExportKeepsTheBooking(t *testing.T) {
 	const day = 400 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -103,12 +104,12 @@ func TestEraFoldExportKeepsTheBooking(t *testing.T) {
 	})
 }
 
-// TestEraFoldKeysOnTheEmittedAmount: an export row whose booking type
-// column holds no type is classified by the type its narrative leads
+// TestStatementCopyKeysOnTheEmittedAmount: an export row whose booking
+// type column holds no type is classified by the type its narrative leads
 // with, and that kind can sign the amount differently from the bare
 // direction. The fold keys on the amount the row is EMITTED with, or a
 // statement copy of the same booking finds no match and both reach gold.
-func TestEraFoldKeysOnTheEmittedAmount(t *testing.T) {
+func TestStatementCopyKeysOnTheEmittedAmount(t *testing.T) {
 	const day = 405 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -130,10 +131,10 @@ func TestEraFoldKeysOnTheEmittedAmount(t *testing.T) {
 	}
 }
 
-// TestEraFoldFeedKeepsTheBooking: the same across the silver seam — a
-// statement reconstruction whose booking the MT940 feed also carries projects
-// once, as the feed's event.
-func TestEraFoldFeedKeepsTheBooking(t *testing.T) {
+// TestStatementCopyFeedKeepsTheBooking: the same across the silver seam —
+// a statement reconstruction whose booking the MT940 feed also carries
+// projects once, as the feed's event.
+func TestStatementCopyFeedKeepsTheBooking(t *testing.T) {
 	const day = 410 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -161,13 +162,13 @@ func TestEraFoldFeedKeepsTheBooking(t *testing.T) {
 	})
 }
 
-// TestEraFoldLeavesSameEraRepeatsAlone: two identical payments on one day are
-// an ordinary thing for a ledger to hold. Within one era they carry distinct
-// ids because they are distinct bookings, so neither pair folds — not two
-// export rows, not two statement rows. Pairing is 1:1 for the same reason: a
-// day holding two statement copies and one export row folds exactly one of
-// them and leaves the other standing.
-func TestEraFoldLeavesSameEraRepeatsAlone(t *testing.T) {
+// TestStatementCopyLeavesSameEraRepeatsAlone: two identical payments on
+// one day are an ordinary thing for a ledger to hold. Within one era they
+// carry distinct ids because they are distinct bookings, so neither pair
+// folds — not two export rows, not two statement rows. Pairing is 1:1 for
+// the same reason: a day holding two statement copies and one export row
+// folds exactly one of them and leaves the other standing.
+func TestStatementCopyLeavesSameEraRepeatsAlone(t *testing.T) {
 	const exportDay, statementDay, mixedDay = 420 * 86400, 421 * 86400, 422 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -215,13 +216,14 @@ func TestEraFoldLeavesSameEraRepeatsAlone(t *testing.T) {
 	}
 }
 
-// TestEraFoldLeavesUnmatchedStatementAlone: a statement reconstruction no
-// other era records is the only account of its booking and reaches gold
-// exactly as it did — same id, amount, day and narrative. Only an exact
-// booking signature folds: same day and amount on ANOTHER account, the same
-// amount on another day, and the same figure in another currency are each a
-// different booking, and a row alongside them that does match still folds.
-func TestEraFoldLeavesUnmatchedStatementAlone(t *testing.T) {
+// TestStatementCopyLeavesUnmatchedStatementAlone: a statement
+// reconstruction no other era records is the only account of its booking
+// and reaches gold exactly as it did — same id, amount, day and narrative.
+// Only an exact booking signature folds: same day and amount on ANOTHER
+// account, the same amount on another day, and the same figure in another
+// currency are each a different booking, and a row alongside them that
+// does match still folds.
+func TestStatementCopyLeavesUnmatchedStatementAlone(t *testing.T) {
 	const day = 430 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -270,11 +272,12 @@ func TestEraFoldLeavesUnmatchedStatementAlone(t *testing.T) {
 	}
 }
 
-// TestEraFoldCarriesWhatTheSurvivorLacks: the fold drops a row, never what it
-// said. Where the export's record left a column empty or as a bare code, the
-// dropped statement's reading of the same booking fills it — per column and
-// only downward, so nothing the survivor already said is overwritten.
-func TestEraFoldCarriesWhatTheSurvivorLacks(t *testing.T) {
+// TestStatementCopyCarriesWhatTheSurvivorLacks: the fold drops a row,
+// never what it said. Where the export's record left a column empty or as
+// a bare code, the dropped statement's reading of the same booking fills
+// it — per column and only downward, so nothing the survivor already said
+// is overwritten.
+func TestStatementCopyCarriesWhatTheSurvivorLacks(t *testing.T) {
 	const day = 440 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -305,18 +308,18 @@ func TestEraFoldCarriesWhatTheSurvivorLacks(t *testing.T) {
 	}
 }
 
-// TestEraFoldPairsAcrossTheSignConventions is the fold's central shape and
-// the reason its key is built on the adapter's projection rather than on the
-// silver columns. The two web eras write the amount columns to different
-// conventions: a statement reconstruction carries the figure a statement
-// PRINTS, and a statement prints a debit as a positive figure in its debit
-// column, while the export carries the sheet's own cell, which already states
-// the direction in its sign. The raw column net therefore comes out with
-// opposite signs for one booking. Both eras nonetheless say "debit" by
-// putting the figure in the debit column, which is what decides the kind and
-// so the projected sign — so both project the same negative amount, and the
-// fold pairs them.
-func TestEraFoldPairsAcrossTheSignConventions(t *testing.T) {
+// TestStatementCopyPairsAcrossTheSignConventions is the fold's central
+// shape and the reason its key is built on the adapter's projection rather
+// than on the silver columns. The two web eras write the amount columns to
+// different conventions: a statement reconstruction carries the figure a
+// statement PRINTS, and a statement prints a debit as a positive figure in
+// its debit column, while the export carries the sheet's own cell, which
+// already states the direction in its sign. The raw column net therefore
+// comes out with opposite signs for one booking. Both eras nonetheless say
+// "debit" by putting the figure in the debit column, which is what decides
+// the kind and so the projected sign — so both project the same negative
+// amount, and the fold pairs them.
+func TestStatementCopyPairsAcrossTheSignConventions(t *testing.T) {
 	const day = 450 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -348,11 +351,11 @@ func TestEraFoldPairsAcrossTheSignConventions(t *testing.T) {
 	}
 }
 
-// TestEraFoldPairsAnUnsignedKind: interest pins no direction, so each era's
-// row keeps the sign it states. The statement's debit is a printed figure
-// and is subtracted; the export's debit cell is signed and is added. Both
-// land on one negative amount, and the pair folds.
-func TestEraFoldPairsAnUnsignedKind(t *testing.T) {
+// TestStatementCopyPairsAnUnsignedKind: interest pins no direction, so
+// each era's row keeps the sign it states. The statement's debit is a
+// printed figure and is subtracted; the export's debit cell is signed and
+// is added. Both land on one negative amount, and the pair folds.
+func TestStatementCopyPairsAnUnsignedKind(t *testing.T) {
 	const day = 455 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -378,14 +381,14 @@ func TestEraFoldPairsAnUnsignedKind(t *testing.T) {
 	}
 }
 
-// TestEraFoldKeepsABookingAndItsReversal: equal magnitude, opposite
-// direction, one day, one account is a booking and the bank's correction of
-// it — two real entries, not one recorded twice. The key is signed for
+// TestStatementCopyKeepsABookingAndItsReversal: equal magnitude, opposite
+// direction, one day, one account is a booking and the bank's correction
+// of it — two real entries, not one recorded twice. The key is signed for
 // exactly this reason: a magnitude-only match would fold them and delete a
 // real booking. Both here are the export's own rows, so the same-era rule
-// forbids the fold too; the control pair on the same day proves the fold is
-// live in this fixture.
-func TestEraFoldKeepsABookingAndItsReversal(t *testing.T) {
+// forbids the fold too; the control pair on the same day proves the fold
+// is live in this fixture.
+func TestStatementCopyKeepsABookingAndItsReversal(t *testing.T) {
 	const day = 460 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -416,12 +419,12 @@ func TestEraFoldKeepsABookingAndItsReversal(t *testing.T) {
 	}
 }
 
-// TestEraFoldKeepsACrossEraReversalApart: the same guard where the booking
-// and its correction reach gold from DIFFERENT eras. The reversal keeps the
-// sign its own record carries — a clawback is money out however the era
-// spells it — so it never keys onto the entry it corrects, and the fold has
-// no way to collapse the two.
-func TestEraFoldKeepsACrossEraReversalApart(t *testing.T) {
+// TestStatementCopyKeepsACrossEraReversalApart: the same guard where the
+// booking and its correction reach gold from DIFFERENT eras. The reversal
+// keeps the sign its own record carries — a clawback is money out however
+// the era spells it — so it never keys onto the entry it corrects, and the
+// fold has no way to collapse the two.
+func TestStatementCopyKeepsACrossEraReversalApart(t *testing.T) {
 	const day = 470 * 86400
 	r := newWebTxFixture(t)
 	seedWebAccount(t, r, textAcct)
@@ -633,6 +636,84 @@ func TestAnAdviceTheExportHoldsGivesWay(t *testing.T) {
 	if _, ok := got["EXP0000001@"+textAcct]; !ok {
 		t.Error("the export's row was not emitted")
 	}
+}
+
+// A ledger row takes one advice whichever date it matched on. An advice
+// on the row's value date and another on its booking date are two
+// movements the row cannot both be: the first by id goes, the second
+// stands.
+func TestALedgerRowExcusesOneAdviceAcrossItsDates(t *testing.T) {
+	const (
+		day    = 420 * 86400
+		booked = 418 * 86400
+	)
+	r := newWebTxFixture(t)
+	seedWebAccount(t, r, textAcct)
+	seedRailEraAnchor(t, r)
+	seedDatedRow(t, r, foldStmtA, day, booked, 80.0, nil, "E-BANKING PAYMENT ORDER",
+		statementPayload("E-BANKING PAYMENT ORDER", "EXAMPLE PAYEE"))
+	seedDatedRow(t, r, "ADV0000001", day, booked-86400, 80.0, nil, "", advicePayload)
+	seedDatedRow(t, r, "ADV0000002", day+86400, booked, 80.0, nil, "", advicePayload)
+	got := drainTx(t, emitWebStream(t, r))
+	_, first := got["ADV0000001@"+textAcct]
+	_, second := got["ADV0000002@"+textAcct]
+	if first || !second {
+		t.Errorf("advices emitted: first %v, second %v; want only the second", first, second)
+	}
+}
+
+// adviceCandidate is an advice debiting figure on day, as the table
+// reads it.
+func adviceCandidate(id string, day int64, figure float64) *candidate {
+	row := newWebRow(webTxRow{txID: id, account: textAcct, currency: "CHF",
+		payload: advicePayload, valueDate: day, debit: sql.NullFloat64{Float64: figure, Valid: true}})
+	return &candidate{kind: webRecordKind(&row), id: row.emittedID(), web: &row}
+}
+
+// runReconcileRules runs the table over records, as reconcile does.
+func runReconcileRules(cut psnCut, records []*candidate) {
+	for _, rule := range reconcileRules(cut, nil, splitMovements(records)) {
+		rule.apply(records)
+	}
+}
+
+// An advice is a web row like the others to the cut and to the feed's
+// bank number: on a covered account from the PSN start it is the feed's,
+// and a feed line that repeats its number holds it.
+func TestAnAdviceGivesWayToTheFeed(t *testing.T) {
+	const day = 420 * 86400
+	t.Run("the cut", func(t *testing.T) {
+		cut := psnCut{
+			startByRel:   map[string]int64{"R1": day},
+			relOfAccount: map[string]string{textAcct: "R1"},
+			coverage:     psnCashCoverage{textAcct: day - 86400},
+		}
+		before, after := adviceCandidate("ADV0000001", day-86400, 80), adviceCandidate("ADV0000002", day, 80)
+		runReconcileRules(cut, []*candidate{before, after})
+		if before.kind != recAdvice {
+			t.Fatalf("kind = %v, want an advice", before.kind)
+		}
+		if before.lostTo != "" {
+			t.Errorf("an advice before the PSN start lost to %q", before.lostTo)
+		}
+		if after.lostTo != ruleCut {
+			t.Errorf("an advice from the PSN start lost to %q, want %q", after.lostTo, ruleCut)
+		}
+	})
+	t.Run("the bank number", func(t *testing.T) {
+		held, other := adviceCandidate("ADV0000001", day, 80), adviceCandidate("ADV0000002", day, 80)
+		feed := &candidate{kind: recFeed, id: "mt940:A1", feed: &feedRow{
+			eventID: "mt940:A1", account: textAcct, kind: "cash_movement", at: day, decoded: true,
+			pl: cashMovementPayload{Account: textAcct, BankRef: "ADV0000001"},
+		}}
+		runReconcileRules(psnCut{}, []*candidate{held, other, feed})
+		if held.lostTo != ruleFeedOverWebByRef {
+			t.Errorf("the advice the feed holds lost to %q, want %q", held.lostTo, ruleFeedOverWebByRef)
+		}
+		if other.lostTo != "" {
+			t.Errorf("an advice the feed does not hold lost to %q", other.lostTo)
+		}
+	})
 }
 
 // An export dividend books at its gross with the tax withheld beside it;

@@ -201,6 +201,15 @@ func (row *feedRow) projectCash() (canonical.TransactionChange, bool) {
 	return tx, true
 }
 
+// bookedAccount is the account a cash movement books on: the one its
+// decoded payload names, else the event's.
+func (row *feedRow) bookedAccount() string {
+	if row.decoded && row.pl.Account != "" {
+		return row.pl.Account
+	}
+	return row.account
+}
+
 // project is the cash movement as the transaction stream emits it, and
 // its decoded payload. Every pass that keys on a feed line reads it
 // here, so each reads the account, currency, kind and signed cash the

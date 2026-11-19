@@ -41,8 +41,8 @@ import (
 //   Transactions
 //     - Which record of a booking gold keeps is one ordered table of
 //       rules over both silvers (reconcile.go), decided before any
-//       stream emits. Its first rule is the hard cut at PSN-start per
-//       relationship, on the accounts the MT940 feed speaks for
+//       stream emits. One of its rules is the hard cut at PSN-start
+//       per relationship, on the accounts the MT940 feed speaks for
 //       (psnCut) — see transactionsBeforePSNStart for why an overlap
 //       merge isn't safe here. The cut sits at the first PSN dump,
 //       whose MT940 statements reach back over the days before it, so
@@ -52,12 +52,13 @@ import (
 //       every day; what the feed says about such an account from the
 //       other side of a movement is booked on it by the PSN stream
 //       (conversionMirrors, corporateActionCashLegs).
-//     - The other rules collapse a booking that two records hold: a
-//       statement reconstruction whose account, value day, signed
-//       amount and currency match an export or feed record is
-//       dropped, and its narrative is carried onto the record that
-//       kept the booking; so is an export row a confirmation's cash
-//       leg records. Inside PSN, the MT515 confirmation keeps a trade
+//     - The other rules collapse a booking that two records hold. A
+//       statement movement printed whole beside its split legs is
+//       dropped, and so is an advice the ledger holds. A statement
+//       reconstruction whose account, value day, signed amount and
+//       currency match an export or feed record is dropped, and its
+//       narrative is carried onto the record that kept the booking;
+//       so is an export row a confirmation's cash leg records. Inside PSN, the MT515 confirmation keeps a trade
 //       and the MT940 cash leg settling it drops. One booking, one
 //       row.
 //     - The PSN stream is wrapped in a text fold

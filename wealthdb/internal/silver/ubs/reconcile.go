@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
@@ -78,14 +80,7 @@ const (
 	// recList: a row of the portfolio transaction list that settles cash
 	// (portfolioListRows).
 	recList
-	recordKinds
 )
-
-var recordKindNames = [recordKinds]string{
-	"statement", "export", "advice", "feed", "mirror", "leg", "confirmation", "list",
-}
-
-func (k recordKind) String() string { return recordKindNames[k] }
 
 // webRecordKind is the kind of a web row: a statement reconstruction, an
 // advice, or an export row. An advice is known by the marker its payload
@@ -105,8 +100,6 @@ type candidate struct {
 	kind recordKind
 	// id is the id the record reaches gold under.
 	id string
-	// day is the record's own date, unix seconds.
-	day int64
 
 	// The record itself; which field is set follows the kind.
 	web          *webRow                   // statement, export, advice
@@ -223,9 +216,9 @@ func reconcileRules(cut psnCut, ibans map[string]string, split map[webTxTextKey]
 		},
 	}, {
 		// An advice states one movement and nothing else. Where the
-		// ledger holds it, on either of the advice's two dates, the
-		// ledger's row is the record: it carries the booking type and
-		// reconciled against the statement's printed balance.
+		// ledger holds it on the same value date or on the same booking
+		// date, the ledger's row is the record: it carries the booking
+		// type and reconciled against the statement's printed balance.
 		name:    ruleWebOverAdvice,
 		losers:  []recordKind{recAdvice},
 		winners: []recordKind{recStatement, recExport},
@@ -243,8 +236,9 @@ func reconcileRules(cut psnCut, ibans map[string]string, split map[webTxTextKey]
 		owns:   func(c *candidate) bool { return cut.excludes(c.web.account, c.web.valueDate) },
 	}, {
 		// A cash leg carries the confirmation's security, gross and tax.
-		// Its export copy goes, unless only the copy states a gross: the
-		// copy then stands, at its gross, and the leg goes.
+		// Its web copy (an export row or an advice) goes, unless only the
+		// copy states a gross: the copy then stands, at its gross, and
+		// the leg goes.
 		name:    ruleLegOverExport,
 		losers:  []recordKind{recExport, recAdvice},
 		winners: []recordKind{recLeg},
@@ -285,13 +279,14 @@ func reconcileRules(cut psnCut, ibans map[string]string, split map[webTxTextKey]
 		match:   anyWinner,
 		key:     bankRefKeyOf,
 	}, {
-		// Where the export carries a conversion's other leg, the mirror
-		// of it goes.
+		// Where a web row carries a conversion's other leg, the mirror of
+		// it goes. A web row keys here only as a deposit or a
+		// withdrawal, the kinds a mirror books.
 		name:    ruleWebOverMirror,
 		losers:  []recordKind{recMirror},
 		winners: []recordKind{recStatement, recExport, recAdvice},
 		match:   anyWinner,
-		key:     offsetBookingOf,
+		key:     transferBookingKeyOf,
 	}, {
 		// A trade reaches the feed twice, as its confirmation and as the
 		// MT940 line settling its cash. The confirmation keeps it.
@@ -301,8 +296,8 @@ func reconcileRules(cut psnCut, ibans map[string]string, split map[webTxTextKey]
 		match:   oneToOne,
 		key:     func(c *candidate) (any, bool) { return settlementKeyOf(c, ibans) },
 	}, {
-		// A list row goes while another rail holds a securities
-		// settlement on its cash account, currency and day.
+		// Each securities settlement another rail holds on a cash
+		// account, currency and day excuses one list row on that key.
 		name:    ruleSettledOverList,
 		losers:  []recordKind{recList},
 		winners: []recordKind{recStatement, recExport, recAdvice, recConfirmation, recFeed},
@@ -381,32 +376,18 @@ func bankRefKeyOf(c *candidate) (any, bool) {
 		if !row.decoded || row.pl.BankRef == "" {
 			return nil, false
 		}
-		acct := row.account
-		if row.pl.Account != "" {
-			acct = row.pl.Account
-		}
-		return webTxTextKey{account: acct, txnNo: row.pl.BankRef}, true
+		return webTxTextKey{account: row.bookedAccount(), txnNo: row.pl.BankRef}, true
 	}
 	return nil, false
 }
 
-// offsetBookingOf is a deposit or withdrawal's booking as the offset veto
-// reads it (offsetLeg.booking): a web row of either kind, and a mirror.
-func offsetBookingOf(c *candidate) (any, bool) {
-	switch c.kind {
-	case recStatement, recExport, recAdvice:
-		row := c.web
-		if row.kind != canonical.TxKindDeposit && row.kind != canonical.TxKindWithdrawal || row.signed == nil {
-			return nil, false
-		}
-		return offsetLeg{acct: row.account, amt: row.signed.InexactFloat64(),
-			day: utcDay(row.valueDate), ccy: row.currency}.booking(), true
-	case recMirror:
-		tx := c.mirror.tx
-		amt, _ := tx.NetAmount.Float64()
-		return offsetLeg{acct: tx.AccountExternalID, amt: amt, day: utcDay(tx.OccurredAt), ccy: tx.Currency}.booking(), true
+// transferBookingKeyOf is bookingKeyOf for a mirror and for a web row
+// that is a deposit or a withdrawal.
+func transferBookingKeyOf(c *candidate) (any, bool) {
+	if c.web != nil && c.web.kind != canonical.TxKindDeposit && c.web.kind != canonical.TxKindWithdrawal {
+		return nil, false
 	}
-	return nil, false
+	return bookingKeyOf(c)
 }
 
 // settlementKeyOf is a securities settlement as both PSN rails state it
@@ -426,15 +407,11 @@ func settlementKeyOf(c *candidate, ibans map[string]string) (any, bool) {
 		default:
 			return nil, false
 		}
-		acct := row.account
-		if p.Account != "" {
-			acct = p.Account
-		}
 		currency := p.Funds
 		if currency == "" && row.currency.Valid {
 			currency = row.currency.String
 		}
-		return newSettlementKey(cashIBAN(ibans, acct), currency, p.Amount, row.at)
+		return newSettlementKey(cashIBAN(ibans, row.bookedAccount()), currency, p.Amount, row.at)
 	case recConfirmation:
 		p := c.confirmation
 		return newSettlementKey(cashIBAN(ibans, p.CashAccountExternalID), c.confirmationCurrency(),
@@ -452,7 +429,7 @@ func settledDayKeyOf(c *candidate, ibans map[string]string) (any, bool) {
 		return newSettledDayKey(l.cashAccount, l.currency, l.valueDate), true
 	case recStatement, recExport, recAdvice:
 		row := c.web
-		if row.kind != canonical.TxKindBuy && row.kind != canonical.TxKindSell || row.periodSummary() {
+		if row.kind != canonical.TxKindBuy && row.kind != canonical.TxKindSell || row.movesNothing() {
 			return nil, false
 		}
 		return newSettledDayKey(row.account, row.currency, row.valueDate), true
@@ -466,14 +443,8 @@ func settledDayKeyOf(c *candidate, ibans map[string]string) (any, bool) {
 		}
 		return newSettledDayKey(cashIBAN(ibans, c.confirmation.CashAccountExternalID), c.confirmationCurrency(), at), true
 	case recFeed:
-		row := c.feed
-		var currencyISO *string
-		if row.currency.Valid {
-			ccy := row.currency.String
-			currencyISO = &ccy
-		}
-		tx, err := buildTransaction(row.eventID, row.at, row.account, row.kind, currencyISO, row.payload, ibans)
-		if err != nil || tx.Kind != canonical.TxKindBuy && tx.Kind != canonical.TxKindSell {
+		tx, _, ok := c.feed.project()
+		if !ok || tx.Kind != canonical.TxKindBuy && tx.Kind != canonical.TxKindSell {
 			return nil, false
 		}
 		return newSettledDayKey(tx.AccountExternalID, tx.Currency, tx.OccurredAt), true
@@ -501,24 +472,16 @@ func (c *candidate) exportGrossed() bool {
 
 // apply runs one rule over the candidates still standing.
 func (rule *reconcileRule) apply(all []*candidate) {
-	is := func(kinds []recordKind, c *candidate) bool {
-		for _, k := range kinds {
-			if c.kind == k {
-				return true
-			}
-		}
-		return false
-	}
 	switch rule.match {
 	case byAuthority:
 		for _, c := range all {
-			if c.stands() && is(rule.losers, c) && rule.owns(c) {
+			if c.stands() && slices.Contains(rule.losers, c.kind) && rule.owns(c) {
 				c.lostTo = rule.name
 			}
 		}
 		return
 	case firstFree:
-		rule.applyFirstFree(all, is)
+		rule.applyFirstFree(all)
 		return
 	}
 	// Both sides are taken before any verdict, so a record this rule
@@ -531,14 +494,14 @@ func (rule *reconcileRule) apply(all []*candidate) {
 			continue
 		}
 		switch {
-		case is(rule.losers, c):
+		case slices.Contains(rule.losers, c.kind):
 			if k, ok := rule.key(c); ok {
 				if _, seen := losers[k]; !seen {
 					lostKeys = append(lostKeys, k)
 				}
 				losers[k] = append(losers[k], c)
 			}
-		case is(rule.winners, c):
+		case slices.Contains(rule.winners, c.kind):
 			if k, ok := rule.key(c); ok {
 				winners[k] = append(winners[k], c)
 			}
@@ -574,7 +537,7 @@ func (rule *reconcileRule) apply(all []*candidate) {
 }
 
 // applyFirstFree is apply for a firstFree rule.
-func (rule *reconcileRule) applyFirstFree(all []*candidate, is func([]recordKind, *candidate) bool) {
+func (rule *reconcileRule) applyFirstFree(all []*candidate) {
 	var losers []*candidate
 	winners := make([]map[any][]*candidate, len(rule.keys))
 	for i := range winners {
@@ -583,9 +546,9 @@ func (rule *reconcileRule) applyFirstFree(all []*candidate, is func([]recordKind
 	for _, c := range all {
 		switch {
 		case !c.stands():
-		case is(rule.losers, c):
+		case slices.Contains(rule.losers, c.kind):
 			losers = append(losers, c)
-		case is(rule.winners, c):
+		case slices.Contains(rule.winners, c.kind):
 			for i, key := range rule.keys {
 				if k, ok := key(c); ok {
 					winners[i][k] = append(winners[i][k], c)
@@ -631,7 +594,7 @@ type recordRef struct {
 
 // reconciliation is the table's verdict over one connection's silvers.
 type reconciliation struct {
-	// cut is the hard cut the first rule applied.
+	// cut is the hard cut its rule (ruleCut) applied.
 	cut psnCut
 	// records is every candidate, in the order read.
 	records []*candidate
@@ -656,15 +619,23 @@ func (rc *reconciliation) lostTo(kind recordKind, id string) string {
 	return ""
 }
 
+// webCandidate is a web row's candidate; nil where it is none.
+func (rc *reconciliation) webCandidate(row *webRow) *candidate {
+	return rc.byRef[recordRef{webRecordKind(row), row.emittedID()}]
+}
+
 // webLostTo is lostTo for a web row.
 func (rc *reconciliation) webLostTo(row *webRow) string {
-	return rc.lostTo(webRecordKind(row), row.emittedID())
+	if c := rc.webCandidate(row); c != nil {
+		return c.lostTo
+	}
+	return ""
 }
 
 // carried is the text the records a web row replaced carry onto it.
 func (rc *reconciliation) carried(row *webRow) (webTxText, bool) {
-	c, ok := rc.byRef[recordRef{webRecordKind(row), row.emittedID()}]
-	if !ok || c.text == nil {
+	c := rc.webCandidate(row)
+	if c == nil || c.text == nil {
 		return webTxText{}, false
 	}
 	return *c.text, true
@@ -687,7 +658,7 @@ func reconcile(ctx context.Context, web *webReader, psn *psnReader, rels []Relat
 // readCandidates reads the cut and every candidate: the web ledger, the
 // feed's cash movements and trade confirmations, the mirrors and cash
 // legs the adapter books, and the list rows that settle cash. Each in
-// the order its rail is read.
+// the order its rail is read, the mirrors by id.
 func readCandidates(ctx context.Context, web *webReader, psn *psnReader, rels []RelationshipPair) (*reconciliation, map[string]string, error) {
 	rc := &reconciliation{}
 	var err error
@@ -715,7 +686,7 @@ func readCandidates(ctx context.Context, web *webReader, psn *psnReader, rels []
 	for i := range ledger {
 		row := &ledger[i]
 		rc.records = append(rc.records, &candidate{
-			kind: webRecordKind(row), id: row.emittedID(), day: row.valueDate, web: row,
+			kind: webRecordKind(row), id: row.emittedID(), web: row,
 		})
 	}
 	feed, err := psn.feed(ctx)
@@ -726,13 +697,13 @@ func readCandidates(ctx context.Context, web *webReader, psn *psnReader, rels []
 		row := &feed.events[i]
 		switch row.kind {
 		case "cash_movement":
-			rc.records = append(rc.records, &candidate{kind: recFeed, id: row.eventID, day: row.at, feed: row})
+			rc.records = append(rc.records, &candidate{kind: recFeed, id: row.eventID, feed: row})
 		case "trade_confirmation":
 			var p tradeConfirmationPayload
 			if err := json.Unmarshal([]byte(row.payload), &p); err != nil {
-				return nil, nil, fmt.Errorf("ubs buildSettlementFold payload: %w", err)
+				return nil, nil, fmt.Errorf("ubs trade confirmation payload (event_id=%s): %w", row.eventID, err)
 			}
-			rc.records = append(rc.records, &candidate{kind: recConfirmation, id: row.eventID, day: row.at,
+			rc.records = append(rc.records, &candidate{kind: recConfirmation, id: row.eventID,
 				feed: row, confirmation: &p})
 		}
 	}
@@ -741,9 +712,9 @@ func readCandidates(ctx context.Context, web *webReader, psn *psnReader, rels []
 		if err != nil {
 			return nil, nil, err
 		}
-		for _, m := range mirrors.byID {
-			rc.records = append(rc.records, &candidate{kind: recMirror, id: m.tx.TransactionExternalID,
-				day: m.tx.OccurredAt, mirror: &m})
+		for _, id := range slices.Sorted(maps.Keys(mirrors.byID)) {
+			m := mirrors.byID[id]
+			rc.records = append(rc.records, &candidate{kind: recMirror, id: id, mirror: &m})
 		}
 		confirmations, err := psn.cashConfirmations(ctx)
 		if err != nil {
@@ -760,15 +731,14 @@ func readCandidates(ctx context.Context, web *webReader, psn *psnReader, rels []
 			leg := &legRecord{grossed: tx.GrossAmount != nil}
 			posted := c.move.posted
 			leg.key, leg.keyed = newBookingKey(tx.AccountExternalID, c.move.paymentDay, &posted, c.move.postedCcy)
-			rc.records = append(rc.records, &candidate{kind: recLeg, id: tx.TransactionExternalID,
-				day: c.move.paymentDay, leg: leg})
+			rc.records = append(rc.records, &candidate{kind: recLeg, id: tx.TransactionExternalID, leg: leg})
 		}
 		if rc.list, err = web.portfolioListRows(ctx, roster); err != nil {
 			return nil, nil, err
 		}
 		for _, l := range rc.list {
-			if l.settles() {
-				rc.records = append(rc.records, &candidate{kind: recList, id: l.emittedID(), day: l.valueDate, list: l})
+			if l.books() {
+				rc.records = append(rc.records, &candidate{kind: recList, id: l.emittedID(), list: l})
 			}
 		}
 	}
@@ -802,9 +772,8 @@ func (rc *reconciliation) index() {
 			if !c.stands() {
 				rc.withheld[c.id] = true
 			}
-		}
-		switch c.kind {
-		case recFeed, recMirror, recLeg:
+			fallthrough
+		case recFeed:
 			if c.text != nil {
 				rc.psnText[c.id] = *c.text
 			}

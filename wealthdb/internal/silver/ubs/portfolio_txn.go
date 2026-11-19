@@ -64,8 +64,9 @@ type portfolioCashKey struct {
 	currency  string
 }
 
-// settledDayKey identifies "a securities settlement the ledger already
-// holds": one cash account, one currency, one settlement day.
+// settledDayKey identifies a securities settlement as the reconcile
+// table's list rule keys it (ruleSettledOverList): one cash account, one
+// currency, one settlement day.
 //
 // It carries no amount, deliberately. The three rails state different
 // amounts for the same trade — this one the gross value, the statement
@@ -79,7 +80,7 @@ type settledDayKey struct {
 }
 
 // newSettledDayKey is the one place the key is composed, so every rail
-// that counts into it normalises the same way.
+// keys by it the same way.
 func newSettledDayKey(account, currency string, at int64) settledDayKey {
 	return settledDayKey{
 		account:  account,
@@ -185,9 +186,9 @@ type listRow struct {
 	priced      bool
 }
 
-// settles reports whether the row books: its cash account is named and
+// books reports whether the row books: its cash account is named and
 // its amount read.
-func (l *listRow) settles() bool { return l.cashAccount != "" && l.priced }
+func (l *listRow) books() bool { return l.cashAccount != "" && l.priced }
 
 // emittedID is the id the row reaches gold under. Silver keys these by
 // (id, custody account) so that a booking reported against two accounts

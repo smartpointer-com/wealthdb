@@ -41,10 +41,7 @@ func (r *psnReader) cashCoverage(ctx context.Context) (psnCashCoverage, error) {
 	return r.coverage.Get(func() (psnCashCoverage, error) {
 		out := psnCashCoverage{}
 		err := r.eachCashMovement(ctx, func(row *feedRow) error {
-			acct := row.account
-			if row.decoded && row.pl.Account != "" {
-				acct = row.pl.Account
-			}
+			acct := row.bookedAccount()
 			if start, ok := out[acct]; !ok || row.at < start {
 				out[acct] = row.at
 			}

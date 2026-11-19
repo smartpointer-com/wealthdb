@@ -8,11 +8,12 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 )
 
-// Confirmation over settlement line. A securities trade reaches PSN on two rails that
-// share no id — the MT515 confirmation and the MT940 `:61:` line for the
-// cash leg settling it — so one trade is two rows unless something
-// matches them on the booking. These tests pin that match: what folds,
-// what survives, and which account the survivor names.
+// Confirmation over settlement line. A securities trade reaches PSN on
+// two rails that share no id — the MT515 confirmation and the MT940
+// `:61:` line for the cash leg settling it — so one trade is two rows
+// unless something matches them on the booking. These tests pin that
+// match: what folds, what survives, and which account the survivor
+// names.
 //
 // Every id, account, ISIN, figure and date below is invented, and the
 // dates sit in a decade the source cannot have booked in.

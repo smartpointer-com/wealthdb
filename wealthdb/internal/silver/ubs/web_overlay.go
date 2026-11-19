@@ -208,10 +208,10 @@ type psnHints struct {
 	// offset veto reads the same value, so the veto and the stream
 	// agree on which reversal is no deposit or withdrawal.
 	securities *dividendSecurities
-	// rc is the reconcile table's verdict: which feed lines a
-	// confirmation keeps, which mirrors and cash legs another record
+	// rc is the reconcile table's verdict: which feed lines give way
+	// to a confirmation, which mirrors and cash legs another record
 	// carries instead (withheld), and the text a dropped copy leaves
-	// on the record that kept its booking. nil where no web pass ran;
-	// the stream then reconciles the feed alone.
+	// on the record that kept its booking. Never nil where the window
+	// has changes.
 	rc *reconciliation
 }

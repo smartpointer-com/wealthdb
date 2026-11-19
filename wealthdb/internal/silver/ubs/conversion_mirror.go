@@ -178,10 +178,7 @@ func (r *psnReader) readConversionMirrors(ctx context.Context, coverage psnCashC
 		if !holders[normalizeHolderName(narrativeBeneficiary(p.Narrative))] {
 			return nil
 		}
-		source := row.account
-		if p.Account != "" {
-			source = p.Account
-		}
+		source := row.bookedAccount()
 		target := cashOf[portfolioCashKey{portfolio: portfolioOf[source], currency: bookingCurrency(currency)}]
 		if target == "" || target == source || coverage.speaksFor(target, row.at) {
 			return nil

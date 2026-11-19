@@ -76,10 +76,19 @@ func psnRowsWith(t *testing.T, db *sql.DB, hints psnHints) map[string]canonical.
 	return psnRowsIn(t, db, canonical.Window{Start: 0, End: 1 << 40, HasChanges: true}, hints)
 }
 
-// psnRowsIn drains the feed's transaction stream over the window.
+// psnRowsIn drains the feed's transaction stream over the window. Where
+// hints carry no verdict, the table runs over the feed alone.
 func psnRowsIn(t *testing.T, db *sql.DB, w canonical.Window, hints psnHints) map[string]canonical.TransactionChange {
 	t.Helper()
-	stream, err := (&psnReader{db: db}).Transactions(context.Background(), w, hints)
+	r := &psnReader{db: db}
+	if hints.rc == nil {
+		rc, err := reconcile(context.Background(), nil, r, nil)
+		if err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		hints.rc = rc
+	}
+	stream, err := r.Transactions(context.Background(), w, hints)
 	if err != nil {
 		t.Fatalf("Transactions: %v", err)
 	}

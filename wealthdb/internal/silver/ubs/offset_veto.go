@@ -40,20 +40,6 @@ type offsetLeg struct {
 	statedAmt string
 }
 
-// offsetBooking is a leg's own booking — account, value day, currency
-// and signed figure — the identity two records of one entry share.
-type offsetBooking struct {
-	acct string
-	day  int64
-	ccy  string
-	amt  string
-}
-
-func (l offsetLeg) booking() offsetBooking {
-	return offsetBooking{acct: l.acct, day: l.day, ccy: bookingCurrency(l.ccy),
-		amt: strconv.FormatFloat(l.amt, 'f', 2, 64)}
-}
-
 // buildSameDayOffsetVeto pairs cash rows that offset each other on the same
 // value day — same currency, equal amount (within offsetVetoEps), opposite
 // direction, different own account — and returns the emitted-row keys of the
@@ -69,13 +55,13 @@ func (l offsetLeg) booking() offsetBooking {
 // account books the mirror leg on the same value day. That mirror's membership
 // in the own-account universe is the IBAN-free form of the same-relationship
 // test, and it works across the feed seams (PDF ↔ MT940 ↔ PSN) where the ID
-// schemes differ. The probe covers the EMITTED universe: web rows the pass
-// neither cuts nor folds away (a dropped web row is represented by the row
-// that kept its booking and must not consume a match) plus PSN cash
+// schemes differ. The probe covers the EMITTED universe: web rows the
+// reconcile table leaves standing (a dropped web row is represented by the
+// row that kept its booking and must not consume a match) plus PSN cash
 // movements, over the FULL silver rather than the load window — a row's
 // classification depends only on silver contents, never on load slicing; a
 // mirror leg that lands in a later dump is picked up on the next `reload`.
-// The web half reads the pass's own verdict on each row (skip), so a fold
+// The web half reads the pass's own verdict on each row (skip), so a rule
 // that drops a web row from the stream drops it here too.
 //
 // Matching is 1:1 and deterministic: first the currency conversions
@@ -121,7 +107,7 @@ func (r *webReader) buildSameDayOffsetVeto(ctx context.Context, psn *psnReader, 
 func (r *webReader) webOffsetLegs(ctx context.Context, p *webTxPass) ([]offsetLeg, error) {
 	var legs []offsetLeg
 	err := r.eachWebRow(ctx, func(row *webRow) error {
-		// A row the cut or a fold drops is not in the ledger: its booking
+		// A row the reconcile table drops is not in the ledger: its booking
 		// is represented by the row that kept it, and letting the dropped
 		// copy stand here would let one booking consume two mirrors.
 		if p.skip(row) != webEmitted {

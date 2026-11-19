@@ -296,18 +296,18 @@ in order:
 - The one exception is `NDIV` on an `RC`: the bank taking back a
   dividend. It reads as a dividend reversal (§7, *Dividends: the
   security and the gross*).
-- The mark gives a reversal's sign, whatever kind it reads as.
-  `buildTransaction` signs an `RC` negative: it takes back a credit. It
-  signs an `RD` positive: it returns a debit, such as a payment that
-  came back. So the stream, the reconcile table and the offset veto read
-  one sign.
+- The mark gives every line's sign, whatever kind it reads as
+  (`markSigned`). A `C` and an `RD` (a returned payment) bring money in.
+  A `D` and an `RC` (a credit taken back) take money out. A line with no
+  mark is signed by its kind. So the stream, the reconcile table and the
+  offset veto read one sign.
 - An `NSEC` line whose trade the MT515 rail also confirms never reaches
   the floor. The reconcile table (§7) drops it in favour of the
   confirmation, which names the security.
 
 ## 7. Transactions across the feeds
 
-Three eras record the cash ledger:
+Four kinds of record state the cash ledger:
 
 | Era | Silver rows | Ids |
 | --- | --- | --- |
@@ -333,13 +333,13 @@ candidates the rules before it left standing.
 | # | Rule | Loses | Wins | Key | Match |
 | --- | --- | --- | --- | --- | --- |
 | 1 | split legs over their movement | statement | — | a leg `<id>#1` stands | authority |
-| 2 | web over advice | advice | statement, export | account, currency, column, magnitude, either date | first free |
+| 2 | web over advice | advice | statement, export | account, currency, column, magnitude, the same value or booking date | first free |
 | 3 | the cut | statement, export, advice | — | PSN start, account covered | authority |
 | 4 | leg over export | export, advice | cash leg | booking | 1:1 |
 | 5 | export over statement | statement | export | booking | 1:1 |
 | 6 | feed over statement | statement | feed, mirror, cash leg | booking | 1:1 |
 | 7 | feed over web by number | statement, export, advice | feed | account, bank number | any |
-| 8 | web over mirror | mirror | statement, export, advice | booking, as the offset veto reads it | any |
+| 8 | web over mirror | mirror | statement, export, advice | booking (deposits and withdrawals) | any |
 | 9 | confirmation over settlement line | feed `NSEC` or `NMSC` | MT515 | settlement | 1:1 |
 | 10 | settlement over list | list row | statement, export, advice, MT515, feed | cash account, currency, day | 1:1 |
 
@@ -353,8 +353,8 @@ candidates the rules before it left standing.
   losers in the order the silver lists them.
 - **Any** drops every loser while one winner holds the key.
 - **First free** takes the advices in id order. Each goes to the first
-  ledger row by id that holds its movement on either of its two dates
-  and that no earlier advice took.
+  ledger row by id that states its movement on the same value date or
+  on the same booking date, and that no earlier advice took.
 - **No rule pairs two records of one kind.** Two identical payments on
   one day are two bookings.
 - **The whole silver**, unwindowed. Whether a booking is recorded twice
@@ -561,8 +561,8 @@ number the bank wrote.
 Three passes read the reference:
 
 - The era text fold and rule 7 of the reconcile table match an export
-  row to its MT940 copy on (account, number). The account is part of the key
-  because the two legs of a transfer share the number.
+  row to its MT940 copy on (account, number). The account is part of
+  the key because the two legs of a transfer share the number.
 - The internal-transfer matcher pairs on it ahead of amounts
   ([../SPENDING.md](../SPENDING.md) §3, *The reference road*). That
   reaches a conversion between two own accounts, whose legs carry
@@ -683,7 +683,7 @@ eras land on one signed number.
 - Survivors that gain a payee are re-keyed (`SignatureVersion` 8,
   [../SPENDING.md](../SPENDING.md) §4).
 - The adapter logs how many web rows the table dropped on each load,
-  beside the dropped period summaries.
+  beside the dropped zero-amount rows.
 
 ### A trade on two PSN rails
 
@@ -725,9 +725,9 @@ it. For a short window both feeds hold an entry and neither side's
 window excludes it.
 
 Rule 7 of the reconcile table closes that window on (account, bank
-reference). That is an exact identity, not a signature over amounts. The web copy
-is dropped, as the cut does on every later day: the MT940 row reaches
-gold and the export's text folds onto it.
+reference). That is an exact identity, not a signature over amounts.
+The web copy is dropped, as the cut does on every later day: the MT940
+row reaches gold and the export's text folds onto it.
 
 ### The accounts the feed does not speak for
 
@@ -1144,14 +1144,15 @@ is positive: the tax taken back with the dividend.
 
 The reconcile table and the veto leave the pair whole:
 
-- The booking key holds the amount the MT940 line and the export row
-  credited, as `buildTransaction` and `webProjectedNet` project them; a
-  reversal's the amount it took back; a confirmation's cash leg's the
-  amount it posted. A statement copy prints that amount, so it still
+- The booking key holds the amount each record moved. For the MT940
+  line and the export row, it is the amount credited, as
+  `buildTransaction` and `webProjectedNet` project them. For a reversal,
+  it is the amount taken back. For a confirmation's cash leg, it is the
+  amount posted. A statement copy prints that amount, so it still
   pairs with the row booked gross. A tax row has no statement copy and
   is no candidate.
-- Rule 9 reads `NSEC` and `NMSC` lines and the offset veto deposits and
-  withdrawals. Neither reads a dividend, a dividend reversal or a tax
+- Rule 9 reads `NSEC` and `NMSC` lines. The offset veto reads deposits
+  and withdrawals. Neither reads a dividend, a dividend reversal or a tax
   row.
 - The tax row's payload carries no bank reference. So the era text fold
   leaves its text alone, and the reference road of the transfer matcher
@@ -1356,9 +1357,8 @@ through unnegated. Gold migration 0037's note about "the adapter negating
 the provider's owed-positive figure" describes chase's silver, not this
 one.
 
-Amounts still pass through `canonical.ApplyCanonicalSign`, because the
-card kinds have a fixed direction: a `purchase` comes out negative and a
-`refund` / `card_payment` positive whatever the row said.
+Each row keeps its sign. The kind is read off that sign (§10.2), so the
+kind and the amount always agree.
 
 ### 10.2 `transactions.kind`
 
