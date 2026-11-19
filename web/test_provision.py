@@ -3716,7 +3716,7 @@ check("the Gains picker offers exactly the engine's readings of a missing cost b
 # web_sources_observed carries serving_sources_latest's columns whole.
 _LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers", "web_exposure_securities",
                "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan", "web_bridge",
-               "web_spending_vs_year"}
+               "web_spending_vs_year", "web_private"}
 _FX_TABLES = {"web_yield_parts": "report_yield_parts", "web_yield_events": "report_yield_events"}
 _missing = {v: [c for c in sqlkit.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
@@ -5625,6 +5625,53 @@ if duckdb is not None:
     _tb = _vs_card("Spending against last year (privacy)")
     check("...its bars shares that sum to 100 on each side",
           _near(sum(r[1] for r in _tb), 100) and _near(sum(r[2] for r in _tb), 100), _tb)
+
+section("the Private Markets dashboard")
+
+check("Private Markets carries the table and the chart, the twin the table's twin and the same chart",
+      [t[0] for t in DEFS["Private Markets"][3]] == ["Private holdings", "Multiples by holding"]
+      and [t[0] for t in DEFS["Private Markets (privacy)"][3]] == ["Private holdings (privacy)", "Multiples by holding"]
+      and "Multiples by holding" in EXEMPT, [t[0] for t in DEFS["Private Markets (privacy)"][3]])
+check("...it takes the Currency picker alone",
+      [x["slug"] for x in p.dashboard_parameters("Private Markets")] == ["currency"]
+      and [x["slug"] for x in p.dashboard_parameters("Private Markets (privacy)")] == ["currency"])
+for _n in ("Private holdings", "Private holdings (privacy)", "Multiples by holding"):
+    check(f"'{_n}' reads `returns private`'s rows in the picked currency",
+          "FROM web_private" in sql_of(CARDS[_n][2]) and "currency = {{currency}}" in sql_of(CARDS[_n][2])
+          and set(CARDS[_n][2]["native"]["template-tags"]) == {"currency"})
+_pt = sql_of(CARDS["Private holdings (privacy)"][2])
+check("...the twin's table keeps the multiples and drops the money and the account",
+      all(c in _pt for c in ("dpi", "tvpi", "marked_at", "holding"))
+      and not any(c in _pt.split("FROM p")[0] for c in ("paid_in", "distributed", "nav", "account_label")), _pt)
+
+if duckdb is not None:
+    _pm = duckdb.connect()
+    _pm.execute("CREATE TABLE web_private (currency TEXT, is_total BOOLEAN, silver_source_id TEXT,"
+                " account_external_id TEXT, account_label TEXT, instrument_external_id TEXT, holding TEXT,"
+                " first_call TIMESTAMP, paid_in DECIMAL(28,4), distributed DECIMAL(28,4), nav DECIMAL(28,4),"
+                " marked_at TIMESTAMP, dpi DOUBLE, tvpi DOUBLE, quality TEXT)")
+    _pm.executemany("INSERT INTO web_private VALUES (?, ?, ?, 'a', 'Investor (src-1 custody)', ?, ?, ?, ?, ?, ?,"
+                    " ?, ?, ?, '')", [
+                        (c, False, "src-1", "f", "Fund", dt.datetime(2025, 1, 15), 100 * r, 18 * r, 101 * r,
+                         dt.datetime(2026, 9, 30), 0.18, 1.19) for c, r in (("USD", 1), ("CHF", 0.9))] + [
+                        (c, False, "src-1", "s", "SPV", dt.datetime(2025, 2, 10), 10 * r, 22 * r, 0, None,
+                         2.2, 2.2) for c, r in (("USD", 1), ("CHF", 0.9))] + [
+                        (c, True, "", "", "Total", dt.datetime(2025, 1, 15), 110 * r, 40 * r, 101 * r,
+                         dt.datetime(2026, 9, 30), 40 / 110, 141 / 110) for c, r in (("USD", 1), ("CHF", 0.9))])
+
+    def _pmr(name, currency="USD"):
+        return _pm.execute(_render(CARDS[name][2], {"currency": currency})).fetchall()
+
+    _ph = _pmr("Private holdings", "CHF")
+    check("the table holds the picked currency's rows, by first call, the total last",
+          [r[0] for r in _ph] == ["Fund", "SPV", "Total"] and float(_ph[0][3]) == 90, _ph)
+    _mb = _pmr("Multiples by holding")
+    check("...the chart a bar per holding, its parts adding up to its TVPI, the largest first",
+          [r[0] for r in _mb] == ["SPV (src-1)", "Fund (src-1)"]
+          and all(_near(r[1] + r[2], t) for r, t in zip(_mb, (2.2, 1.19), strict=True)), _mb)
+    check("...the twin's table the same rows and multiples", [(r[0], r[4], r[5]) for r in
+                                                             _pmr("Private holdings (privacy)")]
+          == [(r[0], r[7], r[8]) for r in _pmr("Private holdings")])
 
 section("the benchmarks")
 

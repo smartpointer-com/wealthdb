@@ -93,6 +93,10 @@ GAINS_MISSING_PARAM_ID = "aa5df113"
 
 GAINS_ASSET_CLASS_PARAM_ID = "aa5df123"
 
+# The Private Markets dashboards' currency picker: a static list, landing
+# on the cards' {{currency}} variable.
+PRIVATE_CURRENCY_PARAM_ID = "aa5df125"
+
 # The Exposure dashboard's picker ids and filters: the currency (a row
 # filter, as on Gains), the time range over the month ends, the source,
 # the tax wrapper and the asset class of each leaf.
@@ -178,6 +182,8 @@ PICKERS = (
     Picker("currency", ("Exposure",), EXPOSURE_CURRENCY_PARAM_ID, "Currency", "choice",
            REPORTING_CURRENCIES, _configured_currency),
     Picker("currency", ("Yield",), YIELD_CURRENCY_PARAM_ID, "Currency", "choice",
+           REPORTING_CURRENCIES, _configured_currency),
+    Picker("currency", ("Private Markets",), PRIVATE_CURRENCY_PARAM_ID, "Currency", "choice",
            REPORTING_CURRENCIES, _configured_currency),
     # "past12months~": the trailing ~ means "include this month".
     # Without it Metabase takes the previous 12 COMPLETE months, which

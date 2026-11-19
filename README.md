@@ -150,7 +150,8 @@ Every report is available in three places:
 
 - the command line, as a table, CSV or JSON;
 - a set of local dashboards (`wealthdb web`) for net worth, allocation,
-  returns, gains, spending, income, cash flow, exposure and yield;
+  returns, gains, spending, income, cash flow, exposure, yield and
+  private markets;
 - AI agents, over MCP (`wealthdb mcp`).
 
 A privacy mode hides amounts and account numbers, for a screen others

@@ -20,11 +20,12 @@ from dashboards.freshness import (freshness_cards)
 from dashboards.gains import (gains_cards)
 from dashboards.exposure import (exposure_cards)
 from dashboards.yields import (yield_cards)
+from dashboards.private import (private_cards)
 
 
 # Every family of cards, in the order their cards are saved.
 FAMILIES = (overview_cards, allocation_cards, spending_cards, income_cards, cashflow_cards, returns_cards,
-            freshness_cards, gains_cards, exposure_cards, yield_cards)
+            freshness_cards, gains_cards, exposure_cards, yield_cards, private_cards)
 
 
 def card_defs():
@@ -341,6 +342,19 @@ DASHBOARDS = (
             Row(10, (("Source freshness", 24),)),
             Row(8, (("Mark age", 24),)),
         )),
+    Dashboard(
+        "Private Markets",
+        "What each private fund or SPV took, what it gave back and what it is "
+        "marked at, since its first call. Marks are old by nature, so each "
+        "shows its date. " + PREDEFINED_NOTE,
+        "The multiples and the marks' dates show as they are. Money columns "
+        "and account names are redacted. " + PREDEFINED_NOTE,
+        ("currency",), (), (
+            # The figures, then the multiples they make, one bar per
+            # holding.
+            Row(9, (("Private holdings", 24),)),
+            Row(8, (("Multiples by holding", 24),)),
+        ), redacts=True),
 )
 
 DASHBOARDS_BY_NAME = {d.name: d for d in DASHBOARDS}

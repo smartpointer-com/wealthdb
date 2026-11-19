@@ -231,6 +231,9 @@ ten dashboards. Their pickers:
   picker lists the classes `web_yield` and `web_yield_curve` carry,
   through the `report_yield_classes` model.
 - **Data Freshness**: no pickers.
+- **Private Markets**: a required currency, and no other picker. Its
+  total row is `wealthdb returns private`'s, over every holding, so a
+  Source picker would leave it out of step with the rows shown.
 
 All of them are definitions only (SQL), with no data baked in.
 
@@ -766,6 +769,23 @@ snapshot at the read while the marks keep their dates. Both sources
 models carry the read as `observed_at` and the mark as `valued_at`, so
 the privacy twin's table reads them too.
 
+**Private Markets** shows what each private fund or SPV took, what it
+gave back and what it is marked at, since its first call
+(`wealthdb returns private`, wealthdb/docs/RETURNS-NOTES.md, "Private
+markets"). It reads `web_private`, over the `serving_private` table,
+one row set per reporting currency:
+
+- *Private holdings*: a table of paid in, distributed, NAV, the mark's
+  date, DPI, TVPI and the quality, one row per holding, then the total.
+- *Multiples by holding*: one bar per holding, DPI stacked under what
+  is still marked per unit paid in, so the bar's height is its TVPI.
+
+The twin's table keeps the multiples and the marks' dates and drops the
+money and the account, as the Returns twin drops its money columns. A
+holding's name stays. The chart holds multiples only, so the twin shows
+it as it is. The money-weighted return the CLI's `irr_pct` holds is not
+on the dashboard.
+
 The **Wealth Overview** charts net worth over time stacked by source.
 Below it, it charts the asset classes over time: each day's classes as
 shares of that day's total, stacked to 100. The query computes the
@@ -855,6 +875,7 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0214: it lacks `web_private`, which the Private Markets cards read;
 - 0213: it lacks `web_spending_vs_year` and `change_pct`, which the
   Spending tiles against last year read, and its matcher pool reads a
   coin's dust as zero, so the dust stays out of the transfer pairs the
@@ -1237,7 +1258,9 @@ rows verbatim, for the reason §7 gives. They are:
   position;
 - every transaction line: all of them, and the spending, income and
   cash flow lines;
-- each month end's marked share (`serving_marks`).
+- each month end's marked share (`serving_marks`);
+- each private holding's figures at the latest snapshot
+  (`serving_private`).
 
 Each table is one macro's output. `web-materialize` rewrites them all
 in one transaction, so a reader sees all old or all new. A Go test
@@ -1347,8 +1370,8 @@ view is not above zero, which no mix can be scaled to.
 The Cumulative return line starts on the first year the benchmark covers
 whole, at the `(all sources)` line's level that year.
 
-Wealth Overview, Spending, Income, Cash Flow, Gains and Data Freshness
-have no benchmark.
+Wealth Overview, Spending, Income, Cash Flow, Gains, Data Freshness and
+Private Markets have no benchmark.
 
 ## Testing
 

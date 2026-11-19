@@ -6,8 +6,9 @@ optional and fully dockerized (no host Java or Metabase). It only reads
 the data, and it is reachable only over an SSH tunnel plus Metabase's
 own login.
 
-It comes with ten dashboards: Wealth Overview, Allocation, Returns,
-Gains, Spending, Income, Cash Flow, Exposure, Yield and Data Freshness.
+It comes with eleven dashboards: Wealth Overview, Allocation, Returns,
+Gains, Spending, Income, Cash Flow, Exposure, Yield, Data Freshness and
+Private Markets.
 Each but Gains has a privacy twin that shows shares (%) instead of
 amounts.
 
