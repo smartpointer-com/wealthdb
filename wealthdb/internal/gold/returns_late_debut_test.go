@@ -237,7 +237,7 @@ func TestZeroDebutInASinceYearWindow(t *testing.T) {
 // a tracked account beside a deposit. The household then reads, flow for
 // flow, as the same household without the zero, in every window: one that
 // opens before the legs, between the legs and the zero, at the zero,
-// between the zero and the first nonzero value, and after it.
+// between the zero and the first nonzero value, on it, and after it.
 func TestZeroIsNoValuation(t *testing.T) {
 	t.Parallel()
 	d0, leg, zero, debut, end := dy(2024, time.January, 2), dy(2024, time.January, 20), dy(2024, time.February, 2),
@@ -280,7 +280,7 @@ func TestZeroIsNoValuation(t *testing.T) {
 			if flows, _ := globalFlows(t, zeroed, ctx, params("global", 0, end)); !slices.EqualFunc(flows, tc.flows, sameFlow) {
 				t.Errorf("flows = %+v, want %+v", flows, tc.flows)
 			}
-			for _, from := range []int64{0, dy(2024, time.January, 25), zero, dy(2024, time.March, 15), dy(2024, time.May, 15)} {
+			for _, from := range []int64{0, dy(2024, time.January, 25), zero, dy(2024, time.March, 15), debut, dy(2024, time.May, 15)} {
 				p := params("global", from, end)
 				got, _ := globalFlows(t, zeroed, ctx, p)
 				want, _ := globalFlows(t, plain, ctx, p)

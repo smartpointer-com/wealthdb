@@ -1235,7 +1235,7 @@ aggregate containing BOTH accounts double-represents the move (the
   the legs no stored pair claimed, journal legs among them, which the matcher
   does not pair. It pairs:
   - a coin (class `crypto`, vehicle `physical`) by holding and quantity,
-    within 5%;
+    by the coin rule (SPENDING.md §3);
   - a security by holding and quantity, only on the exact quantity;
   - cash by value in the reporting currency.
 

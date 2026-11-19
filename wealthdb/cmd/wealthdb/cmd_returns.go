@@ -464,8 +464,9 @@ identity).
 
 An account joins at its first valuation, which books its value as
 capital, less what moved in from accounts already counted. A zero
-first value is no valuation of the money moved in before it: the
-first nonzero value is the account's debut.
+first value is no valuation of money moved in before it. That money
+funds the first nonzero value instead, which is then the account's
+debut.
 
 Available columns:
   ` + joinColumnNames(registry) + `

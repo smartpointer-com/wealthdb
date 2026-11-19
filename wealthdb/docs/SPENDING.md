@@ -578,9 +578,8 @@ names it by that amount too.
 **A coin pairs by the coin rule.** A leg moves a coin when its
 instrument is its currency and that instrument is a coin: asset class
 `crypto`, vehicle `physical`, the row's own where it states them, else
-the instrument's. A currency an account holds as cash is money, whatever
-an instrument of its name says. A coin leg's amount is a quantity of
-the coin, so a cent and the absolute cap are no bound for it. Two coin
+the instrument's. A coin leg's amount is a quantity of the coin, so a
+cent and the absolute cap are no bound for it. Two coin
 legs are one transfer when all of these hold:
 
 - the receipt lies within 2 days of the withdrawal, in either order,
@@ -590,9 +589,9 @@ legs are one transfer when all of these hold:
   coin sent and 100 USD's worth, and always less than a quarter of the
   coin sent.
 
-The USD price is the coin's own rate on the withdrawal's day, from
-`fx_daily`, the rate its USD value reads. A coin with no rate may lose
-1% of what it sent. Among several candidates the smallest shortfall
+The USD price is the coin's own rate in `fx_daily` on the withdrawal's
+day, the latest one at most 7 days old. A coin with no such rate may
+lose 1% of what it sent. Among several candidates the smallest shortfall
 wins, then the nearest day. So a small withdrawal never takes the
 receipt of a larger one beside it. The same rule pairs a coin in
 returns and in the lot engine (RETURNS-NOTES "Netting and closure",

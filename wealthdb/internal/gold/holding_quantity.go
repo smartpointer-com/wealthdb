@@ -2,7 +2,6 @@ package gold
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"math"
 
@@ -93,20 +92,16 @@ func (u *holdingUnion) key(h holdingIdentity) string {
 	return ts[0]
 }
 
-// exactQuantity says a holding of asset class and vehicle moves only whole:
+// IsCoin says a holding of asset class and vehicle is a coin, class crypto
+// held physical, which can arrive short by a network fee, so its legs pair
+// by the coin rule (coinQuantities). Every other holding moves only whole:
 // a security, a share, an option contract, a unit of a fund or a bond,
 // never arrives short, so its legs pair, and fund a debut, only on the exact
-// quantity. A coin, class crypto held physical, can arrive short by a network
-// fee, so it pairs by the coin rule (coinQuantities). A share of a fund that
-// holds coins (class crypto, vehicle etf or fund) is a security, and so is a
-// class or vehicle gold does not state.
-func exactQuantity(class, vehicle string) bool {
-	return class != string(canonical.AssetClassCrypto) || vehicle != string(canonical.VehiclePhysical)
+// quantity. A share of a fund that holds coins (class crypto, vehicle etf or
+// fund) is a security, and so is a class or vehicle gold does not state.
+func IsCoin(class, vehicle string) bool {
+	return class == string(canonical.AssetClassCrypto) && vehicle == string(canonical.VehiclePhysical)
 }
-
-// IsCoin says a holding of asset class and vehicle is a coin: one that can
-// arrive short by a network fee (exactQuantity).
-func IsCoin(class, vehicle string) bool { return !exactQuantity(class, vehicle) }
 
 // The in-kind pairing rule for a security: two legs pair within 7 calendar
 // days of each other (lots.PairWindow, counted in days, not hours), only on
@@ -127,7 +122,8 @@ const (
 //   - The fee, sent less received, is at most the larger of coinFeeShare of
 //     the sent quantity and coinFeeUSD's worth at the coin's USD price on
 //     the sending leg's day, and always less than coinFeeShareMax of it. A
-//     coin with no price that day may lose coinFeeUnpriced of it.
+//     coin with no price that day, none quoted within marketRateMaxAge
+//     days before it, may lose coinFeeUnpriced of it.
 //
 // Among several candidates the smallest relative shortfall wins, then the
 // nearest day, so two transfers of nearby sizes never pair crosswise.
@@ -175,51 +171,23 @@ func coinShortfall(sent, received float64) float64 { return math.Abs(sent-receiv
 
 // CoinUSD is coin's USD price on day: fx_daily's direct rate at or before
 // the day, the rate an amount in the coin converts to USD at, 0 where gold
-// has none.
+// quotes none within marketRateMaxAge days before it (DailyRates.Market).
 func CoinUSD(r *DailyRates, coin string, day int64) float64 {
 	if r == nil {
 		return 0
 	}
-	x, ok := r.Direct(coin, "USD", day)
+	x, ok := r.Market(coin, "USD", day)
 	if !ok || !(x > 0) {
 		return 0
 	}
 	return x
 }
 
-// LoadCoinUSD reads the USD rates of coins from fx_daily, for CoinUSD.
-// Nil for no coins.
-func LoadCoinUSD(ctx context.Context, q interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-}, coins []string) (*DailyRates, error) {
-	if len(coins) == 0 {
-		return nil, nil
-	}
-	rows, err := q.QueryContext(ctx, `
-		SELECT from_ccy, to_ccy, day, rate FROM fx_daily
-		 WHERE to_ccy = 'USD' AND list_contains(?, from_ccy)
-		 ORDER BY 1, 2, 3`, coins)
-	if err != nil {
-		return nil, fmt.Errorf("gold: read coin prices: %w", err)
-	}
-	defer rows.Close()
-	r := &DailyRates{pairs: map[[2]string][]dayRate{}}
-	for rows.Next() {
-		var from, to string
-		var d dayRate
-		if err := rows.Scan(&from, &to, &d.day, &d.rate); err != nil {
-			return nil, fmt.Errorf("gold: read coin prices: %w", err)
-		}
-		k := [2]string{from, to}
-		r.pairs[k] = append(r.pairs[k], d)
-	}
-	return r, rows.Err()
-}
-
 // quantitiesAgree says sent and received of one holding are what one
 // transfer of it moves, whatever their days: the exact quantity for a
 // security (exact), the coin rule's quantities for a coin, at usd, the
-// coin's USD price on the sending leg's day.
+// coin's USD price on the day the rule reads (the sending leg's, or a
+// funding leg's for a debut).
 func quantitiesAgree(sent, received, usd float64, exact bool) bool {
 	if exact {
 		return math.Abs(sent-received) <= exactTolerance*math.Max(sent, received)
@@ -248,7 +216,8 @@ type moveLegs interface {
 	in(i int) bool
 	// qty is the quantity leg i moved, unsigned.
 	qty(i int) float64
-	// exact says leg i pairs only on the exact quantity (exactQuantity).
+	// exact says leg i pairs only on the exact quantity: it moved no coin
+	// (IsCoin).
 	exact(i int) bool
 	// usd is the USD price of leg i's coin on its day (CoinUSD), 0 for
 	// none and for a security.

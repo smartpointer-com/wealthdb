@@ -1266,7 +1266,7 @@ func TestMatcherPoolDropsALegWithNoAmount(t *testing.T) {
 		t.Fatalf("seed legs: %v", err)
 	}
 
-	legs, _, err := loadMatcherPool(ctx, db, nil, passEvidence{})
+	legs, _, err := loadMatcherPool(ctx, db, nil, passEvidence{}, nil)
 	if err != nil {
 		t.Fatalf("loadMatcherPool: %v", err)
 	}

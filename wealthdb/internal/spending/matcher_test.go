@@ -153,29 +153,36 @@ func TestACoinsDustPairsOnItsQuantity(t *testing.T) {
 // pairs, though the fee is a large share of it and beyond the 1% a coin
 // with no price may lose, and a smaller withdrawal beside a larger one
 // never takes the larger one's receipt. A leg is a coin's where its
-// instrument is its currency and a coin held physical. The same legs pair
-// as cash does, within a cent, in a currency no instrument calls a coin,
-// and in one an account holds as cash: that is money, whatever an
-// instrument of its name says.
+// instrument is its currency and a coin held physical. A price quoted more
+// than a week before the leg is no price that day. The same legs pair as
+// cash does, within a cent, in a currency no instrument calls a coin, and
+// in one whose instrument is cash.
 func TestCoinLegsPairByTheCoinRule(t *testing.T) {
+	asCoin := map[string]string{"fee:out": "fee:in", "b:large": "c:in"}
+	asCash := map[string]string{"fee:out": "fee:in", "a:small": "c:in"}
 	for _, c := range []struct {
-		name       string
-		coin, cash bool
-	}{{"a coin", true, false}, {"no coin", false, false}, {"a coin's name held as cash", true, true}} {
+		name, class, vehicle string
+		priced               []int64
+		want                 map[string]string
+	}{
+		{"a coin", "crypto", "physical", []int64{10, 20}, asCoin},
+		{"a coin with a stale price", "crypto", "physical", []int64{1}, map[string]string{"b:large": "c:in"}},
+		{"no coin", "", "", nil, asCash},
+		{"a cash instrument", "cash", "demand_deposit", []int64{10, 20}, asCash},
+	} {
 		db, ctx := openGold(t)
-		if c.coin {
+		if c.class != "" {
 			if _, err := db.ExecContext(ctx, `
                 INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, first_seen_at, last_seen_at)
-                    VALUES ('bank', 'BTC', 'crypto', 'physical', 1, 1), ('other-bank', 'BTC', 'crypto', 'physical', 1, 1);
-                INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
-                    VALUES ('bank', ?, 'USD', 'BTC', 30000)`, day(1)); err != nil {
+                    VALUES ('bank', 'BTC', ?, ?, 1, 1), ('other-bank', 'BTC', ?, ?, 1, 1)`,
+				c.class, c.vehicle, c.class, c.vehicle); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if c.cash {
+		for _, d := range c.priced {
 			if _, err := db.ExecContext(ctx, `
-                INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
-                    VALUES ('bank', ?, 'CASH1', 'BTC', 'closing', 1)`, day(1)); err != nil {
+                INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+                    VALUES ('bank', ?, 'USD', 'BTC', 30000)`, day(d)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -195,12 +202,8 @@ func TestCoinLegsPairByTheCoinRule(t *testing.T) {
             SELECT transaction_external_id, far_transaction_external_id
               FROM transfer_links
              WHERE far_transaction_external_id IS NOT NULL AND silver_source_id = 'bank'`)
-		want := map[string]string{"fee:out": "fee:in", "b:large": "c:in"}
-		if !c.coin || c.cash {
-			want = map[string]string{"fee:out": "fee:in", "a:small": "c:in"}
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("%s: links = %v, want %v", c.name, got, want)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: links = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

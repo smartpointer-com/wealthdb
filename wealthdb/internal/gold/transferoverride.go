@@ -142,15 +142,30 @@ func indexLegs(legs []TransferLeg) legIndex {
 }
 
 // legsAt are the legs s names: those on its account, day and currency whose
-// amount answers to s's (TransferLeg.answers).
+// amount answers to s's (TransferLeg.answers). Of the coin legs that
+// answer, only those nearest s's amount are named: the coin rule's bound
+// can hold two legs of one day, and an exact amount, or a rounded one,
+// means the leg it is written from.
 func (idx legIndex) legsAt(s TransferOverrideSelector) []LegRef {
-	var out []LegRef
+	var out, coins []LegRef
+	nearest := math.Inf(1)
 	for _, l := range idx[legDay{s.Source, s.Account, s.Currency, EpochDay(s.Day)}] {
-		if l.answers(s.Amount) {
-			out = append(out, LegRef{l.Group, l.Owner, l.ID})
+		if !l.answers(s.Amount) {
+			continue
+		}
+		ref := LegRef{l.Group, l.Owner, l.ID}
+		if !l.Coin {
+			out = append(out, ref)
+			continue
+		}
+		switch d := math.Abs(l.Amt - s.Amount); {
+		case d < nearest:
+			nearest, coins = d, append(coins[:0], ref)
+		case d == nearest:
+			coins = append(coins, ref)
 		}
 	}
-	return out
+	return append(out, coins...)
 }
 
 // answers says l is the leg a selector of amount names. A coin's leg

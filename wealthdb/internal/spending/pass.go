@@ -261,7 +261,11 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 	if err != nil {
 		return nil, err
 	}
-	legs, poolNarratives, err := loadMatcherPool(ctx, tx, opts.MatchNames, evidence)
+	rates, err := gold.LoadDailyRates(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	legs, poolNarratives, err := loadMatcherPool(ctx, tx, opts.MatchNames, evidence, rates)
 	if err != nil {
 		return nil, err
 	}
@@ -270,10 +274,6 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 		return nil, fmt.Errorf("spending: transfer overrides: %w", err)
 	}
 	res.UnmatchedTransferOverrides = len(unresolvedOverrides)
-	rates, err := gold.LoadDailyRates(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
 	pairs := matchTransferPairs(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides, rates)
 	res.IdleTransferMatches = len(gold.IdleTransferMatches(opts.TransferOverrides, legs, pairs))
 	matched := matchedPartners(pairs)

@@ -177,8 +177,8 @@ own where it states one, else the instrument's:
   departure, in either order. It is at most 0.1% more than the coin sent,
   or short by a fee of at most the larger of 0.1% of the coin sent and
   100 USD's worth at the coin's rate that day, and less than a quarter of
-  it. A coin with no rate may lose 1%. The smallest shortfall pairs
-  first.
+  it. The rate is the latest one at most 7 days old. A coin with no such
+  rate may lose 1%. The smallest shortfall pairs first.
 - **Everything else is a security** (a share, an option contract, a fund
   unit, a bond): a share of a fund or trust that holds coins (class
   `crypto`, vehicle `etf` or `fund`), and a class or vehicle gold does not

@@ -433,9 +433,10 @@ macro of its own:
   surfaces as two external flows, not silently cancelled. A leg pairs by
   what it moved:
   - **In kind.** A leg whose transaction names an instrument moved a
-    holding. It pairs by holding and quantity, never by value: one coin
-    out, one coin in. The two legs move one holding in opposite
-    directions as one move (`oneMove`). What one move is depends on the
+    holding, unless the instrument is money: class `cash` outside a fund,
+    such as a wallet's balance in a fiat currency. It pairs by holding
+    and quantity, never by value: one coin out, one coin in. The two legs
+    move one holding in opposite directions as one move (`oneMove`). What one move is depends on the
     holding's asset class and vehicle, each the row's own where it states
     one, else its instrument's:
     - **A coin** (asset class `crypto`, vehicle `physical`) pairs by the
@@ -444,8 +445,9 @@ macro of its own:
       in either order. It is at most 0.1% more than the coin sent. Or it
       is short by a fee of at most the larger of 0.1% of the coin sent
       and 100 USD's worth at the coin's rate that day, and less than a
-      quarter of it. A coin with no rate may lose 1%. So a network fee
-      taken in kind still pairs, and its value reads as a loss.
+      quarter of it. The rate is the latest one at most 7 days old. A
+      coin with no such rate may lose 1%. So a network fee taken in kind
+      still pairs, and its value reads as a loss.
     - **Everything else:** a security (a share, an option contract, a unit
       of a fund, a bond) never arrives short. Its legs pair at most 7 days
       apart (`lots.PairWindow`), on the exact quantity only, up to float
@@ -455,7 +457,9 @@ macro of its own:
       not state.
 
     The value netter runs first, over every leg, but pairs two legs only
-    where both are cash or both moved one holding in the same quantity.
+    where both are cash or both moved one holding as one move (a
+    security on the exact quantity, a coin by the coin rule, its days
+    included).
     The legs that moved a holding and are left then pair by holding and
     quantity (`pairInKind`):
     - **Pairing.** Each leg, in day order, takes the open leg of the
@@ -482,11 +486,12 @@ macro of its own:
       subsumption"), and its valuation is the one read. Each holding's
       part of the first value is read only where the first valuation
       holds positions in one currency and no cash. Elsewhere, and where
-      the quantities do not agree, a leg funds its debut by its value. A first value below that value then books the difference as
-      capital that left: nothing says the same holding arrived.
-  - **Cash.** A leg that names no instrument pairs by value:
-    ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar
-    days; FX-normalized via `value_outccy`. It is deterministic:
+      the quantities do not agree, a leg funds its debut by its value. A
+      first value below that value then books the difference as capital
+      that left: nothing says the same holding arrived.
+  - **Cash.** A leg that names no instrument, or names money, pairs by
+    value: ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3
+    calendar days; FX-normalized via `value_outccy`. It is deterministic:
     `netMatch` sorts stably by `(|amount|, day, id)`.
 - **Stored transfer pairs** (opt-in, DESIGN.md §5.8) are the one
   sanctioned crossing of that deposit/withdrawal line. A pair the load
@@ -682,9 +687,9 @@ chained TWR below −100%.
   and a coin moved in funds it by quantity, at that day's prices. The
   account's own later legs keep their own reading. The household reads
   as it would without the zero, in every window: one that opens before
-  the legs, between them and the zero, at the zero, or between the zero
-  and the late debut. Per-entity-once books a late debut in the step of
-  its day. Three cases keep the zero:
+  the legs, between them and the zero, at the zero, between the zero and
+  the late debut, or on it. Per-entity-once books a late debut in the
+  step of its day. Three cases keep the zero:
   - Money the account paid out before the zero funds the zero itself,
     since a zero is what paying out everything leaves.
   - Where no nonzero value follows, every valuation says none of the

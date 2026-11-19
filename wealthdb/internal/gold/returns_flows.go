@@ -171,7 +171,8 @@ func (m *movedLegs) fund(l flowLeg) {
 
 // heldFunding is what the legs funding a debut moved of one holding: the
 // quantity, the legs' value, whether any pairs only on the exact quantity,
-// and a coin's USD price on the first such leg's day.
+// and a coin's USD price on the day of the first funding leg that states
+// one.
 type heldFunding struct {
 	qty, value, usd float64
 	exact           bool
@@ -219,6 +220,13 @@ func (a *accountData) lateShown(w daySpan) (day int64, shown float64, ok bool) {
 // movedInBeforeZero says some leg of a, paired or not, moved money in on or
 // before its first valuation.
 func (a *accountData) movedInBeforeZero() bool {
+	if a.tailKnown {
+		return a.movedInZero
+	}
+	return a.findMovedInBeforeZero()
+}
+
+func (a *accountData) findMovedInBeforeZero() bool {
 	first := a.firstDay()
 	for _, flows := range [2][]returns.Flow{a.nonTransfer, a.transferLike} {
 		for _, f := range flows {

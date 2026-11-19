@@ -34,7 +34,7 @@ func TestLotRatesBridgeInTheReportsOrder(t *testing.T) {
 	if x, ok := r.rate("BTC", "EUR", 12); !ok || x != 90 {
 		t.Errorf("BTC in EUR = %v %v, want the CHF bridge's 90", x, ok)
 	}
-	if _, ok := r.rate("BTC", "EUR", 10+lotRateMaxAge+1); ok {
-		t.Error("a rate older than lotRateMaxAge must price nothing")
+	if _, ok := r.rate("BTC", "EUR", 10+marketRateMaxAge+1); ok {
+		t.Error("a rate older than marketRateMaxAge must price nothing")
 	}
 }

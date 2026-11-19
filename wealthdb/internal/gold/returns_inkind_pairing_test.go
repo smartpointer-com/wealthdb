@@ -176,7 +176,7 @@ func TestRunReturnsPairsInKindByHolding(t *testing.T) {
 				[]snap{{a, 5000}, {tc.in, 5000 + tc.inAmt}, {k, 5000 + tc.inAmt}}, nil)
 			if tc.price > 0 {
 				inTx(t, db, ctx, func(w *Writer) error {
-					return w.InsertFxRates(ctx, []canonical.FxRateChange{{SilverSourceID: tc.srcA, SnapshotAt: a,
+					return w.InsertFxRates(ctx, []canonical.FxRateChange{{SilverSourceID: tc.srcA, SnapshotAt: out,
 						BaseCurrency: "USD", QuoteCurrency: tc.instA, MidRate: canonical.NewDecimalFromInt(tc.price)}})
 				})
 			}
@@ -213,8 +213,8 @@ func TestRunReturnsPairsInKindByHolding(t *testing.T) {
 // move and the first valuation is return, and a fee taken in kind is a
 // loss. The household reads as one account that held the coin throughout.
 // Where the first valuation holds another quantity than moved in, beyond
-// the coin rule, the legs are not one unit of one holding, and the leg
-// funds the debut by its value.
+// the coin rule at the coin's price on the funding leg's day, the legs are
+// not one unit of one holding, and the leg funds the debut by its value.
 func TestInKindFundedDebutReadsThePriceMoveAsReturn(t *testing.T) {
 	t.Parallel()
 	d0, d1, d2, d3 := dy(2024, time.January, 2), dy(2024, time.February, 1), dy(2024, time.March, 1), dy(2024, time.June, 3)
@@ -225,14 +225,23 @@ func TestInKindFundedDebutReadsThePriceMoveAsReturn(t *testing.T) {
 		// byValue: the quantities differ, so the leg funds by its value
 		// and the debut onboards the rest.
 		byValue bool
-	}{{"the price falls", "1", 21000, false}, {"a fee in kind and a price fall", "0.9995", 19990, false},
-		{"three hundredths short of what moved in", "0.97", 20370, true},
-		{"twice the quantity moved in", "2", 42000, true}} {
+		price   int64 // the coin's USD price on the move's day, 0 for none
+	}{{"the price falls", "1", 21000, false, 0}, {"a fee in kind and a price fall", "0.9995", 19990, false, 0},
+		{"three hundredths short of what moved in", "0.97", 20370, true, 0},
+		{"twice the quantity moved in", "2", 42000, true, 0},
+		{"half a percent short where the coin has no price", "0.995", 20900, false, 0},
+		{"half a percent short, beyond the fee its price allows", "0.995", 20900, true, 30000}} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			end := eod(2024, time.June, 3)
 			moved, ctx := openMigrated(t)
 			seedReturnsSource(t, moved, ctx, "ct", "cointracking")
+			if tc.price > 0 {
+				inTx(t, moved, ctx, func(w *Writer) error {
+					return w.InsertFxRates(ctx, []canonical.FxRateChange{{SilverSourceID: "ct", SnapshotAt: d1,
+						BaseCurrency: "USD", QuoteCurrency: "BTC", MidRate: canonical.NewDecimalFromInt(tc.price)}})
+				})
+			}
 			seedAcct(t, moved, ctx, "ct", "EX", canonical.AccountKindCrypto, nil,
 				[]snap{{d0, 40000}, {d1, 10000}, {d2, 10000}, {d3, 10000}}, nil)
 			seedHoldingMove(t, moved, ctx, "ct", "EX", "out", d1, canonical.TxKindTransferOut, "BTC", "-1", -30000)
@@ -597,5 +606,52 @@ func TestRunReturnsPairsWhereAnyIdentityAgrees(t *testing.T) {
 	})
 	if flows, tags := globalFlows(t, db, ctx, params("global", 0, eod(2024, time.December, 2))); len(flows) != 0 || len(tags) != 0 {
 		t.Errorf("flows %v, tags %v: want the move inside", flows, tags)
+	}
+}
+
+// TestAFiatInstrumentNetsAsCash: a crypto tracker's leg in a fiat currency
+// names that currency as its instrument, of class cash. It is money, not a
+// holding moved in kind, so it nets by value as cash does: between two
+// wallets short by a fee, and with a bank's cash leg.
+func TestAFiatInstrumentNetsAsCash(t *testing.T) {
+	t.Parallel()
+	a, out, in, k := dy(2024, time.January, 2), dy(2024, time.March, 1), dy(2024, time.March, 2), dy(2024, time.December, 2)
+	for _, tc := range []struct {
+		name     string
+		bankSide bool // the money leaves a bank's cash, not a wallet
+	}{{"between two wallets, short by a fee", false}, {"from a bank's cash", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db, ctx := openMigrated(t)
+			seedReturnsSource(t, db, ctx, "ct", "cointracking")
+			fiat := func(acct, id string, at int64, kind canonical.TxKind, qty string, amt int64) {
+				q, err := canonical.NewDecimalFromString(qty)
+				if err != nil {
+					t.Fatal(err)
+				}
+				inst := "EUR"
+				inTx(t, db, ctx, func(w *Writer) error {
+					return w.InsertTransactions(ctx, []canonical.TransactionChange{{
+						SilverSourceID: "ct", TransactionExternalID: id, OccurredAt: at, AccountExternalID: acct,
+						InstrumentExternalID: &inst, Kind: kind, Currency: "USD", NetAmount: decp(amt), Quantity: &q,
+						AssetClass: canonical.AssetClassCash, Vehicle: canonical.VehicleDemandDeposit}})
+				})
+			}
+			if tc.bankSide {
+				seedReturnsSource(t, db, ctx, "bk", "schwab")
+				seedAcct(t, db, ctx, "bk", "A", canonical.AccountKindBrokerage, nil,
+					[]snap{{a, 30000}, {out, 29000}, {k, 29000}}, []txn{{out, canonical.TxKindTransferOut, -1000}})
+			} else {
+				seedAcct(t, db, ctx, "ct", "A", canonical.AccountKindCrypto, nil,
+					[]snap{{a, 30000}, {out, 29000}, {k, 29000}}, nil)
+				fiat("A", "out", out, canonical.TxKindTransferOut, "-1000", -1000)
+			}
+			seedAcct(t, db, ctx, "ct", "B", canonical.AccountKindCrypto, nil,
+				[]snap{{a, 5000}, {in, 5998}, {k, 5998}}, nil)
+			fiat("B", "in", in, canonical.TxKindTransferIn, "998", 998)
+			if flows, tags := globalFlows(t, db, ctx, params("global", 0, eod(2024, time.December, 2))); len(flows) != 0 || len(tags) != 0 {
+				t.Errorf("flows %v, tags %v: want the move inside, its fee a loss", flows, tags)
+			}
+		})
 	}
 }

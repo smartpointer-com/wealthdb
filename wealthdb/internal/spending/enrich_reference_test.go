@@ -186,7 +186,7 @@ func TestTheMatcherPoolCarriesTheReference(t *testing.T) {
 	stampMovementReference(t, db, ctx, "bank", "T-REF-IN", "TXNO-6")
 
 	evidence := passEvidenceOf(t, db, ctx)
-	legs, _, err := loadMatcherPool(ctx, db, nil, evidence)
+	legs, _, err := loadMatcherPool(ctx, db, nil, evidence, nil)
 	if err != nil {
 		t.Fatalf("loadMatcherPool: %v", err)
 	}

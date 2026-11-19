@@ -144,7 +144,7 @@ func TestLotPassPairsACoinByTheCoinRule(t *testing.T) {
 			t.Parallel()
 			db, ctx := lotFixture(t, fmt.Sprintf(`
             INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES
-                ('lot-src', 1*86400, 'USD', 'XYZ', 30000);
+                ('lot-src', 9*86400, 'USD', 'XYZ', 30000);
             INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
                                       instrument_external_id, kind, currency, quantity, net_amount, asset_class, vehicle) VALUES
                 ('lot-src', 'b1', 1*86400,  'A', 'XYZ', 'buy',          'USD', 0.1, -3000, NULL, NULL),

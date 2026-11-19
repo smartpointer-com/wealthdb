@@ -136,7 +136,7 @@ SELECT silver_source_id, transaction_external_id, occurred_at, account_external_
 			// the coin rule.
 			fa := facts[acctKey(src, inst.String)]
 			leg := lotLeg{src: s, key: k, inst: name, txn: txn, acct: acct, at: at, qty: q,
-				in: c.Action == lots.In, cost: ledgerCost, exact: exactQuantity(cmp.Or(class, fa.class), cmp.Or(vehicle, fa.vehicle)),
+				in: c.Action == lots.In, cost: ledgerCost, exact: !IsCoin(cmp.Or(class, fa.class), cmp.Or(vehicle, fa.vehicle)),
 				ids: holdingIdentityOf(s.kind, name, fa)}
 			if !leg.exact {
 				leg.usd = CoinUSD(f.rates.daily, name, EpochDay(at))

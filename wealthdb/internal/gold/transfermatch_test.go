@@ -935,3 +935,71 @@ func TestALedgerLineBindsCoinLegsAtAnyGap(t *testing.T) {
 		t.Errorf("an amount of the other sign names %v, want none", got)
 	}
 }
+
+// TestALedgerLineNamesTheNearestCoinLeg: two withdrawals of one coin on one
+// day lie inside each other's coin-rule bound, so a selector answers to
+// both. It names the nearer alone: an exact amount binds its own leg, never
+// its neighbour, for a match and for a one-legged unmatch alike.
+func TestALedgerLineNamesTheNearestCoinLeg(t *testing.T) {
+	t.Parallel()
+	legs := []TransferLeg{
+		coinLeg("wallet", "near", 100, -1.002, 30000),
+		coinLeg("wallet", "exact", 100, -1.0, 30000),
+		coinLeg("vault", "in", 101, 0.999, 30000),
+	}
+	sel := func(owner string, day int64, amount float64) *TransferOverrideSelector {
+		return &TransferOverrideSelector{Source: "wallets", Account: owner, Day: day * SecondsPerDay, Amount: amount, Currency: "BTC"}
+	}
+	if !legs[0].answers(-1.0) {
+		t.Fatal("fixture is wrong: the neighbour must answer to the exact amount too")
+	}
+	idx := indexLegs(legs)
+	if got := idx.legsAt(*sel("wallet", 100, -1.0)); len(got) != 1 || got[0].ID != "exact" {
+		t.Errorf("an exact amount names %v, want its own leg alone", got)
+	}
+	o, unresolved, err := ResolveTransferOverrides([]TransferOverrideRule{
+		{Verb: VerbMatch, A: *sel("wallet", 100, -1.0), B: sel("vault", 101, 0.999)},
+	}, legs)
+	if err != nil || len(unresolved) != 0 {
+		t.Fatalf("resolve: %v, unresolved %v", err, unresolved)
+	}
+	got := MatchTransferLegs(append([]TransferLeg(nil), legs...), TransferMatchOpts{WindowDays: 5, Overrides: o})
+	if want := map[string]string{"exact": "in"}; !reflect.DeepEqual(pairIDs(got), want) || got[0].By != MatchedByOverride {
+		t.Errorf("pairs = %v, want %v by the ledger", got, want)
+	}
+	o, _, err = ResolveTransferOverrides([]TransferOverrideRule{
+		{Verb: VerbUnmatch, A: *sel("wallet", 100, -1.0)},
+	}, legs)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	got = MatchTransferLegs(append([]TransferLeg(nil), legs...), TransferMatchOpts{WindowDays: 5, Overrides: o})
+	if want := map[string]string{"near": "in"}; !reflect.DeepEqual(pairIDs(got), want) {
+		t.Errorf("pairs = %v, want %v: the unmatch isolates the exact leg alone", got, want)
+	}
+}
+
+// TestACoinReversalPairsByTheCoinRule: the reversal phase pairs a coin sent
+// and returned to its own wallet by the coin rule, as every banded phase
+// does: within two days whatever the window, short by a fee it allows.
+func TestACoinReversalPairsByTheCoinRule(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		window int
+		back   TransferLeg
+		paired bool
+	}{
+		{"short by a fee, two days on, past the window", 1, coinLeg("wallet", "back", 102, 0.999, 30000), true},
+		{"three days on, inside the window", 5, coinLeg("wallet", "back", 103, 1.0, 30000), false},
+		{"short by more than the fee bound", 5, coinLeg("wallet", "back", 101, 0.99, 30000), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			legs := []TransferLeg{coinLeg("wallet", "out", 100, -1.0, 30000), tc.back}
+			got := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: tc.window, TolerancePct: 0.5, SameAccountReversals: true})
+			if paired := len(got) == 1 && got[0].By == MatchedByReversal; paired != tc.paired || len(got) > 1 {
+				t.Errorf("pairs = %v, want a reversal %t", got, tc.paired)
+			}
+		})
+	}
+}

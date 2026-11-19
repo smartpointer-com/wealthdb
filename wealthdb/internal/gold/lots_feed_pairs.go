@@ -33,8 +33,8 @@ type lotLeg struct {
 	// cost is the cost basis a hand-kept equity-transfer ledger row
 	// states for what it moved (loader.TransferEntry), 0 when none.
 	cost float64
-	// exact: the holding moves only whole, so the leg pairs only on the
-	// exact quantity (exactQuantity).
+	// exact: the holding moves only whole, no coin (IsCoin), so the leg
+	// pairs only on the exact quantity.
 	exact bool
 	// usd is a coin's USD price on the leg's day (CoinUSD), 0 for none
 	// and for a security.

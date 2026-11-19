@@ -555,9 +555,10 @@ type accountData struct {
 	residue *residueCache
 
 	// The zero tail and head, cached by cacheTail: lastNonzeroDay,
-	// zeroingDay and lateDebut.
+	// zeroingDay, lateDebut and movedInBeforeZero.
 	tailKnown                     bool
 	lastNonzero, zeroing, lateDay int64
+	movedInZero                   bool
 }
 
 // residueCache holds each entity's residue decision, read once on its
@@ -700,12 +701,14 @@ func (a *accountData) findZeroingDay() int64 {
 }
 
 // cacheTail stores lastNonzeroDay and zeroingDay, which walk back over the
-// zero tail and are read for every flow of a closed account, and lateDebut,
-// which walks over a zero head. The series must not change afterwards
-// (finalize calls it).
+// zero tail and are read for every flow of a closed account, lateDebut,
+// which walks over a zero head, and movedInBeforeZero, which walks the
+// flows.
+// The series and the flows must not change afterwards (finalize calls it).
 func (a *accountData) cacheTail() {
 	a.tailKnown = false
 	a.lastNonzero, a.zeroing, a.lateDay = a.findLastNonzeroDay(), a.findZeroingDay(), a.findLateDebut()
+	a.movedInZero = a.findMovedInBeforeZero()
 	a.tailKnown = true
 }
 
@@ -1005,11 +1008,22 @@ type flowTxnRow struct {
 
 // holding is what the row moved, with what gold states of its instrument
 // (loadInstrumentFacts): its identity, and its asset class and vehicle, each
-// the row's own where it states one.
+// the row's own where it states one. An instrument that is money (isMoney)
+// is no holding: the row moved cash, and nets as cash does.
 func (r flowTxnRow) holding(facts map[string]instrumentFacts) heldRef {
 	f := facts[acctKey(r.src, r.inst)]
 	f.class, f.vehicle = cmp.Or(r.class, f.class), cmp.Or(r.vehicle, f.vehicle)
+	if isMoney(f.class, f.vehicle) {
+		return heldRef{}
+	}
 	return heldRef{inst: r.inst, facts: f, qty: r.qty}
+}
+
+// isMoney says an instrument of asset class and vehicle is money itself:
+// class cash, not in a fund. A wallet's balance in a fiat currency is one.
+// A unit of a money-market fund is a security, which moves in kind.
+func isMoney(class, vehicle string) bool {
+	return class == string(canonical.AssetClassCash) && vehicle != string(canonical.VehicleFund)
 }
 
 // loadFlowTxns reads every transaction's flow-relevant fields, its net amount
@@ -1177,8 +1191,8 @@ type heldRef struct {
 // heldMove is what a transfer-like leg moved in kind: its holding, a key
 // two legs share where they move one holding (holdingUnion, set once every
 // leg is read), its identities, the quantity, unsigned (0 when the leg
-// states none), whether it pairs only on the exact quantity
-// (exactQuantity), and a coin's USD price on the leg's day (0 for none).
+// states none), whether it pairs only on the exact quantity (it moved no
+// coin, IsCoin), and a coin's USD price on the leg's day (0 for none).
 type heldMove struct {
 	holding string
 	ids     holdingIdentity
@@ -1190,7 +1204,7 @@ type heldMove struct {
 // move is r's identities, quantity and quantity rule.
 func (r heldRef) move(srcKind string) heldMove {
 	return heldMove{ids: holdingIdentityOf(srcKind, r.inst, r.facts), qty: r.qty,
-		exact: exactQuantity(r.facts.class, r.facts.vehicle), usd: r.usd}
+		exact: !IsCoin(r.facts.class, r.facts.vehicle), usd: r.usd}
 }
 
 // heldRefs is what each of txns moved (flowTxnRow.holding), a coin with its
@@ -1206,7 +1220,7 @@ func heldRefs(ctx context.Context, q querier, txns []flowTxnRow, facts map[strin
 			coins = append(coins, h.inst)
 		}
 	}
-	rates, err := LoadCoinUSD(ctx, q, coins)
+	rates, err := loadCoinUSD(ctx, q, coins)
 	if err != nil || rates == nil {
 		return out, err
 	}
