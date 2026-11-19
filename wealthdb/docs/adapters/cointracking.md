@@ -91,10 +91,10 @@ dimensions-only batch at the window's end.
 
 - **`asset_class`** is `crypto` and **`vehicle`** is `physical` for
   every position: coins and tokens held directly in a wallet or
-  exchange account. The pair is one constant (`taxonomy` in
-  [`classmap.go`](../../internal/silver/cointracking/classmap.go)),
-  since CT only describes digital assets held directly
-  ([../TAXONOMY.md](../TAXONOMY.md)).
+  exchange account ([../TAXONOMY.md](../TAXONOMY.md)). The instrument
+  of a fiat ticker is `cash` × `demand_deposit`, as its balance is
+  cash. Both come from `taxonomy` in
+  [`classmap.go`](../../internal/silver/cointracking/classmap.go).
 
 ## 6. Instruments
 

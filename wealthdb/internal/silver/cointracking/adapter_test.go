@@ -94,7 +94,7 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 	// Drain to the snapshot batch carrying the 2024-01-01 holdings.
 	var crypto canonical.PositionChange
 	var cash canonical.CashBalanceChange
-	var btcInst canonical.InstrumentChange
+	var btcInst, usdInst canonical.InstrumentChange
 	var nPos, nCash int
 	for _, batch := range silvertest.Snapshots(t, conn, w) {
 		for _, p := range batch.Positions {
@@ -106,8 +106,11 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 			cash = c
 		}
 		for _, ins := range batch.Instruments {
-			if ins.InstrumentExternalID == "BTC" {
+			switch ins.InstrumentExternalID {
+			case "BTC":
 				btcInst = ins
+			case "USD":
+				usdInst = ins
 			}
 		}
 	}
@@ -118,6 +121,14 @@ func TestSnapshotsCryptoPositionAndFiatCash(t *testing.T) {
 	}
 	if btcInst.Vehicle != canonical.VehiclePhysical {
 		t.Errorf("instrument vehicle = %q, want physical", btcInst.Vehicle)
+	}
+
+	// A fiat ticker's instrument is money, as its balance is.
+	if usdInst.AssetClass != canonical.AssetClassCash || usdInst.Vehicle != canonical.VehicleDemandDeposit {
+		t.Errorf("USD instrument = (%q, %q), want (cash, demand_deposit)", usdInst.AssetClass, usdInst.Vehicle)
+	}
+	if !canonical.ValidTaxonomyPair(usdInst.AssetClass, usdInst.Vehicle) {
+		t.Errorf("(%q, %q) is not a valid taxonomy pair", usdInst.AssetClass, usdInst.Vehicle)
 	}
 
 	if nPos != 1 {

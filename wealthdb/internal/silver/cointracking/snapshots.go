@@ -252,7 +252,7 @@ SELECT
 		}
 		name := coinNameFor(ticker)
 		sym := ticker
-		acNew, vehicle := taxonomy()
+		acNew, vehicle := taxonomy(ticker)
 		change := canonical.InstrumentChange{
 			InstrumentExternalID: ticker,
 			AssetClass:           acNew,
@@ -417,7 +417,7 @@ SELECT
 			return nil
 		}
 		instrumentKey := ticker
-		acNew, vehicle := taxonomy()
+		acNew, vehicle := taxonomy(ticker)
 		change := canonical.PositionChange{
 			SnapshotAt:           snap,
 			AccountExternalID:    walletID,
