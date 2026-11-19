@@ -58,6 +58,7 @@ demo -r holdings accounts
 demo -r holdings positions -x CHF
 demo -r returns sources --method both --period total
 demo -r returns bridge 2025 --period quarterly
+demo -r returns private
 demo -r spending categories 2025 --period annual
 demo -r spending fees 2025
 demo -r income summary 2025 --period annual -C +withheld

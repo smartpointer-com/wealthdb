@@ -605,6 +605,46 @@ class TestToToday(unittest.TestCase):
         (statement,) = report(self.root, "cashflow", "summary", str(last), "--period", "total", "-C", "+fees")
         self.assertGreaterEqual(amount(cat, "net_spend_USD") - amount(statement, "fees_USD"), fee)
 
+    def test_the_private_holdings_read_their_calls_distributions_and_marks(self):
+        """The fund reads its calls, its distribution and its last mark; the
+        SPV its subscription and the shares it paid out in kind, with no
+        NAV left once it exited. The multiples hold in every currency, and
+        the total adds the money up."""
+        private = spec.load().spec["private"]
+        fund, spv = private["fund"], private["spv"]
+
+        def upto(events, day=TODAY):
+            return sum(Decimal(e["amount"]) for e in events if dates.parse(e["date"]) <= day)
+
+        mark = max((m for m in fund["marks"] if dates.parse(m["date"]) <= TODAY), key=lambda m: m["date"])
+        at = dates.parse(mark["date"])
+        nav = (upto(fund["calls"], at) * Decimal(mark["multiple"]) - upto(fund["distributions"], at)
+               + upto(fund["calls"]) - upto(fund["calls"], at) - upto(fund["distributions"])
+               + upto(fund["distributions"], at))
+        rows = report(self.root, "returns", "private")
+        by = {r["holding"]: r for r in rows}
+        (f,) = [r for name, r in by.items() if "Fund" in name]
+        self.assertEqual((amount(f, "paid_in_USD"), amount(f, "distributed_USD"), amount(f, "nav_USD")),
+                         (upto(fund["calls"]), upto(fund["distributions"]), nav), f)
+        self.assertEqual(f["marked_at"], mark["date"])
+        (s,) = [r for name, r in by.items() if "SPV" in name]
+        self.assertEqual(amount(s, "paid_in_USD"), Decimal(spv["amount"]))
+        if dates.parse(spv["exit"]["date"]) <= TODAY:
+            self.assertEqual((amount(s, "nav_USD"), s["quality"]), (0, "exited"), s)
+            self.assertTrue(s["marked_at"], s)
+            self.assertGreater(amount(s, "distributed_USD"), 0)
+        self.assertEqual(rows[-1]["holding"], "Total")
+        for ccy in ("USD", "CHF", "EUR", "GBP"):
+            rows = report(self.root, "returns", "private", "-x", ccy, "-C", "all")
+            *held, total = rows
+            for r in rows:
+                paid, back, value = (amount(r, f"{c}_{ccy}") for c in ("paid_in", "distributed", "nav"))
+                self.assertAlmostEqual(float(r["dpi"]), float(back / paid), places=2)
+                self.assertAlmostEqual(float(r["tvpi"]), float((back + value) / paid), places=2)
+                self.assertTrue(r["irr_pct"], r)
+            for c in ("paid_in", "distributed", "nav"):
+                self.assertEqual(amount(total, f"{c}_{ccy}"), sum(amount(r, f"{c}_{ccy}") for r in held))
+
     def test_the_fund_and_the_home_lower_the_marked_share(self):
         rows = report(self.root, "status", "--marks")
         shares = [Decimal(r["marked_pct"]) for r in rows]
