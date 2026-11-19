@@ -360,6 +360,26 @@ func TestMCPGainsHoldingsRefusals(t *testing.T) {
 	})
 }
 
+// TestMCPSpendingVsLastYear: vs_last_year belongs to categories and to
+// the periods that fall on the same days a year earlier, and the header
+// says a call set it.
+func TestMCPSpendingVsLastYear(t *testing.T) {
+	t.Parallel()
+	cs := connect(t, newTestMCP(setupSpendingGold(t), false), time.Now())
+	refusals(t, cs, "spending", []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"view": "summary", "vs_last_year": true}, "spending: vs_last_year belongs to view=categories"},
+		{map[string]any{"view": "categories", "vs_last_year": true, "period": "weekly"},
+			"spending: vs_last_year takes a monthly, quarterly, annual or total period"},
+	})
+	if h := callHeader(t, cs, "spending", map[string]any{"view": "categories", "vs_last_year": true}); !strings.Contains(h,
+		"vs_last_year") {
+		t.Errorf("vs_last_year: header %q", h)
+	}
+}
+
 // TestMCPYieldRefusals: converted belongs to the aggregate views; a
 // series takes a period, a view that has one and a window, not an as_of
 // day or a window after today. A converted or a series call says so in

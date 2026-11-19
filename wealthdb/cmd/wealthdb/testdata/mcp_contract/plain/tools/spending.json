@@ -1,7 +1,7 @@
 {
   "name": "spending",
   "title": "Spending",
-  "description": "What was spent over a window (default: the last twelve months). view=summary: per period. categories: per period and category, with its share. transactions: the lines with merchant and category. fees: what each portfolio, or account outside one, paid in fees, net of refunds, beside its mean value, annualized fee rate and return; a trust's or a plan's fees count. spend and refunds are positive; net_spend = spend - refunds. Card payments, transfers and mortgage payments are never spending: they are in cashflow. Example: {view: \"categories\", from: \"2025\", to: \"2025\"}.",
+  "description": "What was spent over a window (default: the last twelve months). view=summary: per period. categories: per period and category, with its share; with vs_last_year beside the same days a year earlier. transactions: the lines with merchant and category. fees: what each portfolio, or account outside one, paid in fees, net of refunds, beside its mean value, annualized fee rate and return; a trust's or a plan's fees count. spend and refunds are positive; net_spend = spend - refunds. Card payments, transfers and mortgage payments are never spending: they are in cashflow. Example: {view: \"categories\", from: \"2025\", to: \"2025\"}.",
   "inputSchema": {
     "properties": {
       "account": {
@@ -101,6 +101,10 @@
           "fees"
         ],
         "type": "string"
+      },
+      "vs_last_year": {
+        "description": "categories only: each row beside the same days a year earlier: year_before, change_pct (blank where the year before is zero) and quality; period monthly, quarterly, annual or total (default false).",
+        "type": "boolean"
       }
     },
     "type": "object"

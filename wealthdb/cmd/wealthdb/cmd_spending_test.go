@@ -491,6 +491,46 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 		}
 	})
 
+	t.Run("vs-last-year sets the year before beside each row", func(t *testing.T) {
+		// The fixture's lines run from 5 May 2026, so a window from 5 May
+		// 2027 reads them as the year before and spends nothing itself.
+		so, se, code := run(t, "-c", cfg, "spending", "categories", "2027-05-05", "2027-06-30",
+			"--period", "total", "--level", "detailed", "--vs-last-year", "-f", "csv")
+		if code != 0 {
+			t.Fatalf("exit=%d stderr=%s", code, se)
+		}
+		lines := strings.Split(strings.TrimSpace(so), "\n")
+		if !strings.HasSuffix(lines[0], ",net_spend_USD,share_pct,year_before_USD,change_pct,quality") {
+			t.Errorf("header = %q, want the plain columns then year_before, change_pct and quality", lines[0])
+		}
+		var groceries string
+		for _, l := range lines[1:] {
+			if strings.Contains(l, "Groceries") {
+				groceries = l
+			}
+		}
+		// No share: the window spent nothing at all.
+		if !strings.HasSuffix(groceries, ",0,0.00,0.00,0.00,n/a,80.00,-100.00,in_progress") {
+			t.Errorf("groceries = %q, want nothing spent against 80 the year before, -100%%, in progress", groceries)
+		}
+		// From a day earlier, the year before starts before gold's lines.
+		so, _, code = run(t, "-c", cfg, "spending", "categories", "2027-05-04", "2027-06-30", "--vs-last-year")
+		if code != 0 || !strings.Contains(so, "no_year_before") {
+			t.Errorf("from 4 May, exit=%d, want no_year_before:\n%s", code, so)
+		}
+		// The privacy twin keeps the change and hides both amounts.
+		so, _, code = run(t, "-c", cfg, "spending", "categories", "2027-05-05", "2027-06-30",
+			"--period", "total", "--level", "detailed", "--vs-last-year", "-p")
+		if code != 0 || strings.Contains(so, "80.00") || !strings.Contains(so, "-100.00") {
+			t.Errorf("-p exit=%d, want the change without the amounts:\n%s", code, so)
+		}
+		// Without the flag the view is the plain one.
+		so, _, _ = spending("categories")
+		if strings.Contains(so, "year_before") || strings.Contains(so, "vs_last_year") {
+			t.Errorf("the plain view shows the year before:\n%s", so)
+		}
+	})
+
 	t.Run("categories reconcile with the summary", func(t *testing.T) {
 		so, _, code := spending("categories", "--period", "total", "-f", "csv")
 		if code != 0 {
@@ -643,6 +683,8 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 			{"summary", "-C", "nope"},
 			{"summary", "-x", "DOLLARS"},
 			{"summary", "-x", "U5D"},
+			{"summary", "--vs-last-year"},
+			{"categories", "--vs-last-year", "--period", "weekly"},
 		} {
 			if _, _, code := run(t, append([]string{"-c", cfg, "spending"}, bad...)...); code != 2 {
 				t.Errorf("%v exit=%d, want 2", bad, code)

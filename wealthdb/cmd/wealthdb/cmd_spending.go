@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"strings"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
@@ -30,9 +32,16 @@ var spendingFamily = &family{
 						return gold.SpendingSummary(ctx, db, req.from, req.to, req.currency, part)
 					})
 			}},
-		{name: "categories", total: flowTotal, principal: fixedColumn("net_spend"), header: periodLevelHeader,
+		{name: "categories", total: flowTotal, principal: fixedColumn("net_spend"), header: spendCategoryHeader,
+			takes: []string{"vs_last_year"},
 			build: func(_ *config.Config, req request) *report {
 				part := reportPeriods[req.period]
+				if req.vsLastYear {
+					return newReport(buildSpendCategoryVsColumnRegistry(req.currency, req.period), defaultSpendCategoryVsColumns,
+						func(ctx context.Context, db *sql.DB) ([]gold.SpendCategoryVsRow, error) {
+							return gold.SpendingCategoriesVsLastYear(ctx, db, req.from, req.to, req.currency, part, req.level)
+						})
+				}
 				return newReport(buildSpendCategoryColumnRegistry(req.currency, req.period), defaultSpendCategoryColumns,
 					func(ctx context.Context, db *sql.DB) ([]gold.SpendCategoryRow, error) {
 						return gold.SpendingCategories(ctx, db, req.from, req.to, req.currency, part, req.level)
@@ -61,6 +70,7 @@ var spendingFamily = &family{
 	options: []option{
 		{name: "period", cli: []string{"period"}, choices: reportPeriodNames, def: [2]string{"monthly", "total"}},
 		{name: "level", cli: []string{"level"}, choices: categoryLevels, def: [2]string{"primary", "primary"}},
+		{name: "vs_last_year", cli: []string{"vs-last-year"}, kind: optFlag, only: true},
 	},
 	window:   trailingYear,
 	currency: true,
@@ -78,6 +88,11 @@ var spendingFamily = &family{
 		if req.level, err = choose(in, "spending", "level"); err != nil {
 			return err
 		}
+		// A day or a week a year earlier is no bucket of the same kind.
+		if req.vsLastYear = in.on("vs_last_year"); req.vsLastYear && !slices.Contains(vsLastYearPeriods, req.period) {
+			return errs.Newf(errs.ExitUsage, "spending: %s takes a %s period", in.spell("vs_last_year"),
+				orList(vsLastYearPeriods))
+		}
 		// A category filter is a name search, and names live in the
 		// detailed vocabulary: "groceries" is a detailed category under
 		// "Food and drink".
@@ -87,6 +102,20 @@ var spendingFamily = &family{
 		}
 		return nil
 	},
+}
+
+// vsLastYearPeriods are the periods --vs-last-year takes: buckets that
+// fall on the same days a year earlier.
+var vsLastYearPeriods = []string{"monthly", "quarterly", "annual", "total"}
+
+// spendCategoryHeader is the categories view's header: its period and
+// level, and vs_last_year where it is set.
+func spendCategoryHeader(req request) []string {
+	h := periodLevelHeader(req)
+	if req.vsLastYear {
+		h = append(h, "vs_last_year")
+	}
+	return h
 }
 
 // categoryLevels are the `--level` vocabularies of spending's and
@@ -114,9 +143,15 @@ var defaultSpendSummaryColumns = []string{
 }
 
 func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.SpendCategoryRow] {
-	return []columnSpec[gold.SpendCategoryRow]{
-		asDate(strCol("period", func(r gold.SpendCategoryRow) string { return periodLabel(r.PeriodStart, period) })),
-		asDate(strCol("period_start", func(r gold.SpendCategoryRow) string { return periodStart(r.PeriodStart) })),
+	return spendCategoryColumns(outCcy, period, func(r gold.SpendCategoryRow) gold.SpendCategoryRow { return r })
+}
+
+// spendCategoryColumns are the categories view's columns over a row of
+// type T, read off the category row that row returns.
+func spendCategoryColumns[T any](outCcy, period string, row func(T) gold.SpendCategoryRow) []columnSpec[T] {
+	return []columnSpec[T]{
+		asDate(strCol("period", func(r T) string { return periodLabel(row(r).PeriodStart, period) })),
+		asDate(strCol("period_start", func(r T) string { return periodStart(row(r).PeriodStart) })),
 		// The category is taxonomy — a vocabulary value, not an
 		// identifier — and stays legible under -p, like asset_class
 		// and the other taxonomy labels. Two spellings of the same
@@ -124,19 +159,33 @@ func buildSpendCategoryColumnRegistry(outCcy, period string) []columnSpec[gold.S
 		// the value it groups on. The label is the default because it
 		// is what a person reads; the id is there for a caller
 		// scripting against a stable key.
-		strCol("category", func(r gold.SpendCategoryRow) string { return r.CategoryLabel }),
-		strCol("category_id", func(r gold.SpendCategoryRow) string { return r.Category }),
-		countCol("txn_count", func(r gold.SpendCategoryRow) int64 { return r.TxnCount }),
-		outCcyCol("spend", outCcy, func(r gold.SpendCategoryRow) *string { return r.Spend }),
-		outCcyCol("refunds", outCcy, func(r gold.SpendCategoryRow) *string { return r.Refunds }),
-		outCcyCol("net_spend", outCcy, func(r gold.SpendCategoryRow) *string { return r.NetSpend }),
-		ratioCol("share", func(r gold.SpendCategoryRow) *float64 { return r.Share }),
+		strCol("category", func(r T) string { return row(r).CategoryLabel }),
+		strCol("category_id", func(r T) string { return row(r).Category }),
+		countCol("txn_count", func(r T) int64 { return row(r).TxnCount }),
+		outCcyCol("spend", outCcy, func(r T) *string { return row(r).Spend }),
+		outCcyCol("refunds", outCcy, func(r T) *string { return row(r).Refunds }),
+		outCcyCol("net_spend", outCcy, func(r T) *string { return row(r).NetSpend }),
+		ratioCol("share", func(r T) *float64 { return row(r).Share }),
 	}
 }
 
 var defaultSpendCategoryColumns = []string{
 	"period", "category", "txn_count", "spend", "refunds", "net_spend", "share",
 }
+
+// buildSpendCategoryVsColumnRegistry is the categories view's columns
+// with --vs-last-year: the plain view's, then the year before, the
+// change and what the comparison misses.
+func buildSpendCategoryVsColumnRegistry(outCcy, period string) []columnSpec[gold.SpendCategoryVsRow] {
+	return append(spendCategoryColumns(outCcy, period, func(r gold.SpendCategoryVsRow) gold.SpendCategoryRow {
+		return r.SpendCategoryRow
+	}),
+		outCcyCol("year_before", outCcy, func(r gold.SpendCategoryVsRow) *string { return r.YearBefore }),
+		pctCol("change", func(r gold.SpendCategoryVsRow) *float64 { return r.ChangePct }),
+		strCol("quality", func(r gold.SpendCategoryVsRow) string { return r.Quality }))
+}
+
+var defaultSpendCategoryVsColumns = append(slices.Clone(defaultSpendCategoryColumns), "year_before", "change", "quality")
 
 func buildSpendTransactionColumnRegistry(outCcy string, kindOf func(string) string,
 	categories typedCategories) []columnSpec[gold.SpendTransactionRow] {
@@ -210,7 +259,8 @@ func spendingUsage() string {
 	// fees, the side view, has a usage text of its own.
 	available, defaults := columnSets(spendingFamily, 13, spendingFamily.ladder(), request{currency: "CCY", period: "monthly"}, nil)
 	return `usage: wealthdb spending <view> [FROM [TO]] [--period P] [--level L]
-                         [-f FORMAT] [-C COLS] [-F COND]... [-x CCY] [-p]
+                         [--vs-last-year] [-f FORMAT] [-C COLS] [-F COND]...
+                         [-x CCY] [-p]
 
 What the tracked accounts spent. Every account counts unless the
 config takes it out; what makes a row spending is its KIND, not the
@@ -245,6 +295,10 @@ Flags:
                     primary is about a dozen broad groups ("Food and
                     drink"); a category someone names — groceries,
                     restaurants, flights — is detailed
+  --vs-last-year    categories only: each row beside the same days a year
+                    earlier: year_before, change_pct (blank where the year
+                    before is zero) and quality. The period is monthly,
+                    quarterly, annual or total
   -f, --format      table | csv | csv_plain | json
   -C, --columns     comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta
   -F, --filter COND keep the rows where COND holds; repeatable;
@@ -261,6 +315,11 @@ account, grep the table or take -f json and filter in jq.
 
 Categories reconcile: for any period and level, the category rows of a
 bucket sum to that bucket's summary row.
+
+Against last year, quality names what a comparison misses:
+no_year_before (gold's lines start after the year before does) and
+in_progress (the bucket has not ended yet). Each side converts at its
+own historic rates, so a currency move can read as a change.
 
 A category of '(uncategorized)' is the backlog — rows no rule, matcher,
 provider or model could place. 'wealthdb categorize' works it down.

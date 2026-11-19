@@ -118,6 +118,10 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 - **Spent in a window / by category** — `wealthdb -r spending summary 2025 --period total` /
   `wealthdb -r spending categories 2025 --period total` (`--level detailed`
   for groceries, restaurants, flights …, then `| grep -i grocer`)
+- **Which categories grew against last year** —
+  `wealthdb -r spending categories 2025 --period total --vs-last-year`
+  (`year_before` is the same days a year earlier; `change_pct` is blank
+  where it is zero; `quality` `no_year_before` means gold starts later)
 - **Purchases over an amount** — `wealthdb -r spending transactions 2025 -F "value <= -500"`
   (money leaving is negative; the table ends with the count)
 - **Biggest purchases in a month** —
@@ -162,7 +166,7 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 | Trades, dividends, fees, cash in and out | `transactions` | — |
 | How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts`; `stated` (a statement's periods beside the engine's; no `-x`, no return flags); `bridge` (why net worth moved; no return flags) |
 | **Gained or lost**; cost basis; tax lots | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
-| **Spent**, on what; **fees** per portfolio | `spending` | `summary`, `categories`, `transactions`, `fees` |
+| **Spent**, on what, against last year; **fees** per portfolio | `spending` | `summary`, `categories` (`--vs-last-year`), `transactions`, `fees` |
 | **Received**, from whom; what the holdings are **expected to pay** | `income` | `summary`, `types`, `transactions`; forward: `projection`, `calendar`, `sources`, `portfolios`, `accounts`, `positions` |
 | Where the cash came from and went; mortgage and plan payments; the months ahead | `cashflow` | `summary`, `flows`, `sankey`, `transactions`, `coverage`, `projection` |
 
@@ -197,7 +201,8 @@ columns (names, `all`, or `+add,-drop`) · neither on `holdings global`
 `securities`, `issuers`, `funds`) and on
 `yield global|sources|portfolios|accounts|curve`; of income's forward
 views only `projection`, never `total` · `--level` on `spending`,
-`income`, `cashflow` · `--converted` on `yield`'s aggregates: one row per
+`income`, `cashflow` · `--vs-last-year` on `spending categories` ·
+`--converted` on `yield`'s aggregates: one row per
 entity across currencies · `--rates forward`, `--maturing roll|idle`,
 `--shift -50` on income's forward views and `cashflow projection`.
 

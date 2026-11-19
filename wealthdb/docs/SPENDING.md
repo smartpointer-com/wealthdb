@@ -1883,7 +1883,8 @@ enrichment pass share one definition of what a catch-all is.
 
 Three views, one per report macro, with the grain in a positional and
 everything else in a flag, as the returns family does, and a fourth,
-`fees`, below. DESIGN.md §4.12 has the flags.
+`fees`, below. `categories` also reads against last year (below).
+DESIGN.md §4.12 has the flags.
 
 | view | a row is |
 |---|---|
@@ -2087,6 +2088,42 @@ pseudonym otherwise. A typed name, such as the nickname or a category
 from the config, prints as a pseudonym such as `nickname-1`
 ([DESIGN.md §4.6](DESIGN.md), *Typed names*). Spending categories,
 provenance and `share_pct` stay legible, like the returns percentages.
+
+### Against last year
+
+`wealthdb spending categories --vs-last-year` says which categories
+grew. Each row stands beside the same bucket of the window a year
+earlier. Three columns follow the plain view's:
+
+| column | reads |
+|---|---|
+| `year_before` | the category's `net_spend` over the same days a year earlier |
+| `change_pct` | the change from `year_before`, in percent of its size. Blank where `year_before` is zero |
+| `quality` | `no_year_before`, `in_progress` |
+
+Both sides cover the same days. A window from 15 March compares with
+the year before from 15 March, and 29 February compares with 28
+February. A category that only one side has reads 0 on the other.
+
+`--period` is `monthly`, `quarterly`, `annual` or `total`. A day or a
+week a year earlier is a different weekday, so those two are refused.
+
+The macro `report_spending_categories_vs` defines the figures. The MCP
+`spending` tool takes the same option as `vs_last_year`, and the
+Spending dashboard's two tiles read the same macro by month and primary
+category (web/DESIGN.md). `-p` hides both amounts and keeps
+`change_pct`. The dashboard's twin shows each side as a share of its
+own window.
+
+Limits:
+
+- `in_progress`: the bucket has not ended, so this side is still
+  accruing. The dashboard's rows stop at the last whole month.
+- Each side converts at its own lines' historic rates, so a currency
+  move can read as a change.
+- `no_year_before`: gold's first spending line falls after the year
+  before starts, so the first year has little or nothing to compare
+  with.
 
 ### Fees by portfolio
 

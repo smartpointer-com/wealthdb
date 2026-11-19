@@ -80,6 +80,7 @@ type request struct {
 	withCash     bool              // holdings positions
 	country      string            // exposure: risk | domicile
 	converted    bool              // yield: one row per entity in the output currency
+	vsLastYear   bool              // spending categories: each row beside the year before
 	assumptions  yield.Assumptions // income's forward views: rate path, maturing rule, shift
 	series       []seriesPoint     // exposure and yield --period: the instants of a series
 	newestFirst  bool              // transactions, gains realized

@@ -725,6 +725,7 @@ flag. A fourth view, `fees`, states what each portfolio cost. It takes
 | `[FROM [TO]]` | trailing twelve months | Positional window, same grammar as `transactions` (`YYYY` / `YYYY-MM` / `YYYY-MM-DD`, an explicit pair, `-` for an open bound). |
 | `--period` | `monthly` | `daily` \| `weekly` \| `monthly` \| `quarterly` \| `annual` \| `total`. Maps onto the `date_trunc` part `report_spending_*` buckets by; `total` collapses the window into one bucket. |
 | `--level` | `primary` | `primary` \| `detailed` — the category vocabulary `categories` groups by. `summary` and `transactions` ignore it; `fees` refuses it. |
+| `--vs-last-year` | off | `categories` only: each row beside the same bucket a year earlier, with `year_before`, `change_pct` and `quality`. Refused with `--period daily` or `weekly` (docs/SPENDING.md §7). |
 | `-f`, `--format` | `table` | `table` \| `csv` \| `csv_plain` \| `json`. |
 | `-C`, `--columns` | `default` | Per-view column set: columns by name or printed header, `default`, `all`, or a `+ADD,-REMOVE` delta. |
 | `-F`, `--filter` | none | Repeatable. Keeps the rows where every condition holds. It reads the printed columns after the report has run. `wealthdb help filter` lists the operators. |
@@ -3279,7 +3280,7 @@ spend-side kinds, with the category resolved, less own-account moves,
 capital deployed, debt repayments and crossings to untracked plans.
 [SPENDING.md §1 and §2](SPENDING.md) list the excluded values and say
 why `card_spend` and `gift` stay in.
-Three reports sit over it, with VARCHAR money in one currency for the
+Four reports sit over it, with VARCHAR money in one currency for the
 CLI. The transaction-grain report also has the `_multi` sibling §10.8
 describes, with DECIMAL money in every reporting currency. The web
 reads that one (`web_spending`, below) and buckets the lines itself:
@@ -3289,11 +3290,13 @@ reads that one (`web_spending`, below) and buckets the lines itself:
 | `report_spending_summary(f, t, ccy, period)` | one row per period bucket |
 | `report_spending_categories(f, t, ccy, period, level)` | one row per (bucket, category), plus its share |
 | `report_spending_transactions(f, t, ccy)` | one row per spending line |
+| `report_spending_categories_vs(f, t, ccy, period, level)` | the categories rows, each beside the same bucket a year earlier |
 
 `wealthdb spending <view>` (§4.12) is one view per macro and adds
 nothing to them: the `--period` name maps to the `date_trunc` part,
-`--level` passes through, and the Go side is a positional scan plus a
-column registry.
+`--level` passes through, `--vs-last-year` picks the fourth macro for
+`categories`, and the Go side is a positional scan plus a column
+registry.
 
 - **Sign-split magnitudes.** `net_amount` is canonically signed, so a plain SUM
   is neither a period's spending nor its returns. `spend` and `refunds` are both
@@ -3344,7 +3347,13 @@ like tables:
   kept: a paid-off card is at zero, and dropping the row would leave the
   series owing money forever.
 
-Both views label an account through the shared `account_label` macro:
+A third serving view, **`web_spending_vs_year`**, reads
+`serving_spending_vs_year`, the rows of `report_spending_vs_year_multi()`:
+`report_spending_categories_vs` by month and primary category in every
+reporting currency, through the last whole month, one row per
+(**currency**, month, category).
+
+The first two views label an account through the shared `account_label` macro:
 `<name> (<source> <kind>)`, where the name falls back to the account's id
 when an adapter leaves it unset. A name alone says neither which
 institution holds the account nor whether it is a deposit account or a

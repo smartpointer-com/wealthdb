@@ -117,6 +117,32 @@ func SpendingCategories(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int6
 		})
 }
 
+// SpendCategoryVsRow is a category row beside the same bucket a year
+// earlier (report_spending_categories_vs). YearBefore is the category's
+// net spend there, "0" where it spent nothing; ChangePct the change in
+// percent of its magnitude, nil where it is zero; Quality the tags of
+// what the comparison misses.
+type SpendCategoryVsRow struct {
+	SpendCategoryRow
+	YearBefore *string
+	ChangePct  *float64
+	Quality    string
+}
+
+// SpendingCategoriesVsLastYear is SpendingCategories with each row
+// beside the same bucket of the window a year earlier. `period` is
+// month, quarter, year or total; the caller validates it.
+func SpendingCategoriesVsLastYear(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, period, level string) ([]SpendCategoryVsRow, error) {
+	return scanRows(ctx, db, "SpendingCategoriesVsLastYear", `SELECT * FROM report_spending_categories_vs(?, ?, ?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy, period, level}, func(r *SpendCategoryVsRow) []any {
+			return []any{
+				i64(&r.PeriodStart), &r.Category, &r.CategoryLabel, &r.TxnCount,
+				dec(&r.Spend), dec(&r.Refunds), dec(&r.NetSpend), flt(&r.Share),
+				dec(&r.YearBefore), flt(&r.ChangePct), &r.Quality,
+			}
+		})
+}
+
 // SpendingTransactions returns the spending population at transaction
 // grain over [fromEpoch, toEpoch], with net_amount converted to
 // outCcy at occurred_at. Ordered by (occurred_at, silver_source_id,

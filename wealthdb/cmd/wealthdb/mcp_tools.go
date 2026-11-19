@@ -245,7 +245,7 @@ Example: {from: "last month", to: "last month", kind: "dividend"}.`,
 	{
 		title: "Spending",
 		description: "What was spent over a window (default: the last twelve months). " +
-			"view=summary: per period. categories: per period and category, with its share. transactions: the lines with merchant and category. " +
+			"view=summary: per period. categories: per period and category, with its share; with vs_last_year beside the same days a year earlier. transactions: the lines with merchant and category. " +
 			"fees: what each portfolio, or account outside one, paid in fees, net of refunds, beside its mean value, annualized fee rate and return; a trust's or a plan's fees count. " +
 			"spend and refunds are positive; net_spend = spend - refunds. Card payments, transfers and mortgage payments are never spending: they are in cashflow. " +
 			`Example: {view: "categories", from: "2025", to: "2025"}.`,
@@ -255,9 +255,11 @@ Example: {from: "last month", to: "last month", kind: "dividend"}.`,
 			stringParam("level", "Category vocabulary of the categories view: primary (default, broad groups) or detailed.", categoryLevels...),
 			sourceParam, accountParam,
 			stringParam("category", `Keep categories whose label or id contains this (e.g. "groceries"); implies level=detailed.`),
+			param{name: "vs_last_year", kind: paramBoolean, doc: takenBy(spendingFamily, "vs_last_year") +
+				"each row beside the same days a year earlier: year_before, change_pct (blank where the year before is zero) and quality; period monthly, quarterly, annual or total (default false)."},
 			scopedParam(spendingFamily, "merchant", "keep only rows whose merchant contains this text."),
 		),
-		notes: `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there. fees is per portfolio, else per account outside one: fees are the primary BANK_FEES lines net of refunds, trading costs and fund costs are not in them, fee_rate_pct is fees over mean_value annualized and blank where the mean value is not above zero, and twr_pct is the entity's monthly returns chained over the months that end in the window, blank where returns has none. Returns stay net of fees.
+		notes: `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there. fees is per portfolio, else per account outside one: fees are the primary BANK_FEES lines net of refunds, trading costs and fund costs are not in them, fee_rate_pct is fees over mean_value annualized and blank where the mean value is not above zero, and twr_pct is the entity's monthly returns chained over the months that end in the window, blank where returns has none. Returns stay net of fees. With vs_last_year, quality reads no_year_before (gold's lines start after the year before does) or in_progress (the bucket has not ended); each side converts at its own historic rates.
 Example: {view: "transactions", from: "2025-03", to: "2025-03", sort: "-value", limit: 10}.`,
 		family: spendingFamily,
 	},

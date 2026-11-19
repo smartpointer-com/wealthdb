@@ -134,6 +134,14 @@ CREATE VIEW web_spending AS
            value_usd, value_chf, value_eur, value_gbp
       FROM serving_spending_transactions;
 
+-- web_spending_vs_year: each month and primary category beside the same
+-- month a year earlier. The time range lands on month, so a picked
+-- window takes each month whose first day falls inside it.
+CREATE VIEW web_spending_vs_year AS
+    SELECT epoch_ms(month * 1000) AS month, currency, category,
+           net_spend, net_spend_year_before, quality
+      FROM serving_spending_vs_year;
+
 CREATE VIEW web_cashflow AS
     WITH lines AS (
         SELECT t.*,

@@ -1356,6 +1356,124 @@ CREATE MACRO report_spending_categories(p_from, p_to, p_ccy, p_period, p_level) 
      ORDER BY period_start, net_val DESC, category
 );
 
+-- ============================================================
+-- Spending against the year before (docs/SPENDING.md §7)
+--
+-- report_spending_categories_vs sets each bucket of a window beside
+-- the same bucket of the same window a year earlier. It is the one
+-- definition `spending categories --vs-last-year`, the MCP option and
+-- the Spending dashboard's tiles (serving_spending_vs_year) read.
+-- ============================================================
+
+-- spend_year_before: the epoch second one calendar year before p_at. A
+-- 29 February lands on the 28th. An instant past year 9999 stays
+-- itself, so an open end does not overflow.
+CREATE MACRO spend_year_before(p_at) AS (
+    CASE WHEN p_at >= 253402300800 THEN p_at
+         ELSE CAST(epoch(epoch_ms(CAST(p_at AS BIGINT) * 1000) - INTERVAL 1 YEAR) AS BIGINT)
+    END
+);
+
+-- change_pct: the change from p_before to p_now in percent of p_before's
+-- magnitude, so a rise reads positive whatever the sign of p_before.
+-- None where p_before is zero or either side is missing.
+CREATE MACRO change_pct(p_now, p_before) AS
+    CAST(100 * (p_now - p_before) AS DOUBLE) / NULLIF(abs(p_before), 0)::DOUBLE;
+
+-- report_spending_categories_vs: report_spending_categories over the
+-- window, each row beside `year_before`, its category's net_spend in
+-- the same bucket of the window a year earlier, and `change_pct`. Each
+-- side converts at its own lines' historic rates.
+--
+-- A category that only one side has spent nothing on the other: its
+-- money reads 0 there, and on this side its txn_count and share read 0
+-- too. Both sides cover the same days of their buckets, so a window
+-- that cuts a bucket cuts the year before alike.
+--
+-- `quality` names what the comparison misses:
+--   * no_year_before: gold's first spending line falls on a day after
+--     the year before starts in this bucket, so that side covers part
+--     of it or none of it;
+--   * in_progress: the bucket ends after now, so this side is still
+--     accruing.
+-- p_period is 'month', 'quarter', 'year' or 'total'.
+CREATE MACRO report_spending_categories_vs(p_from, p_to, p_ccy, p_period, p_level) AS TABLE (
+    WITH cur AS (
+        SELECT * FROM report_spending_categories(p_from, p_to, p_ccy, p_period, p_level)),
+    prev AS (
+        SELECT CASE WHEN period_start IS NOT NULL
+                    THEN CAST(epoch(epoch_ms(period_start * 1000) + INTERVAL 1 YEAR) AS BIGINT)
+               END AS period_start,
+               category, category_label, CAST(net_spend AS DECIMAL(28,4)) AS net_val
+          FROM report_spending_categories(spend_year_before(p_from), spend_year_before(p_to),
+                                          p_ccy, p_period, p_level)),
+    first_line AS (
+        SELECT min(occurred_at) AS first_at FROM spend_enrichment_population(0, p_to)),
+    paired AS (
+        SELECT COALESCE(c.period_start, p.period_start) AS period_start,
+               COALESCE(c.category, p.category) AS category,
+               COALESCE(c.category_label, p.category_label) AS category_label,
+               COALESCE(c.txn_count, 0) AS txn_count,
+               c.category IS NULL AS absent,
+               c.spend, c.refunds, c.share,
+               CASE WHEN c.category IS NULL THEN 0 ELSE CAST(c.net_spend AS DECIMAL(28,4)) END AS net_val,
+               CASE WHEN p.category IS NULL THEN 0 ELSE p.net_val END AS before_val
+          FROM cur c
+          FULL OUTER JOIN prev p
+            ON p.period_start IS NOT DISTINCT FROM c.period_start AND p.category = c.category),
+    bounded AS (
+        SELECT *,
+               greatest(COALESCE(period_start, p_from), p_from) AS side_from,
+               least(CASE WHEN period_start IS NULL THEN p_to
+                          ELSE CAST(epoch(epoch_ms(period_start * 1000)
+                                    + to_months(CASE p_period WHEN 'quarter' THEN 3
+                                                              WHEN 'year' THEN 12 ELSE 1 END)) AS BIGINT) - 1
+                     END, p_to) AS side_to
+          FROM paired)
+    SELECT b.period_start, b.category, b.category_label, b.txn_count,
+           CASE WHEN b.absent THEN '0.0000' ELSE b.spend END AS spend,
+           CASE WHEN b.absent THEN '0.0000' ELSE b.refunds END AS refunds,
+           CAST(b.net_val AS VARCHAR) AS net_spend,
+           CASE WHEN NOT b.absent THEN b.share
+                WHEN max(b.share) OVER (PARTITION BY b.period_start) IS NOT NULL THEN 0.0
+           END AS share,
+           CAST(b.before_val AS VARCHAR) AS year_before,
+           change_pct(b.net_val, b.before_val) AS change_pct,
+           concat_ws(' ',
+               CASE WHEN f.first_at IS NULL OR f.first_at // 86400 > spend_year_before(b.side_from) // 86400
+                    THEN 'no_year_before' END,
+               CASE WHEN b.side_to > CAST(epoch(now()) AS BIGINT) THEN 'in_progress' END) AS quality
+      FROM bounded b, first_line f
+     ORDER BY b.period_start, b.net_val DESC, b.category
+);
+
+-- spend_month_start_today: the epoch second the current UTC month
+-- opens.
+CREATE MACRO spend_month_start_today() AS (
+    CAST(epoch(date_trunc('month', epoch_ms(epoch_ms(now())))) AS BIGINT)
+);
+
+-- report_spending_vs_year_multi: report_spending_categories_vs by month
+-- and primary category, in every reporting currency, through the last
+-- whole month, so no month compares part of itself with a whole one.
+-- The category is the primary label: the value the Spending
+-- dashboard's Category picker offers.
+CREATE MACRO report_spending_vs_year_multi() AS TABLE (
+    WITH v AS (
+        SELECT 'USD' AS currency, * FROM report_spending_categories_vs(0, spend_month_start_today() - 1, 'USD', 'month', 'primary')
+        UNION ALL
+        SELECT 'CHF', * FROM report_spending_categories_vs(0, spend_month_start_today() - 1, 'CHF', 'month', 'primary')
+        UNION ALL
+        SELECT 'EUR', * FROM report_spending_categories_vs(0, spend_month_start_today() - 1, 'EUR', 'month', 'primary')
+        UNION ALL
+        SELECT 'GBP', * FROM report_spending_categories_vs(0, spend_month_start_today() - 1, 'GBP', 'month', 'primary'))
+    SELECT currency, period_start AS month, category_label AS category,
+           CAST(net_spend AS DECIMAL(28,4)) AS net_spend,
+           CAST(year_before AS DECIMAL(28,4)) AS net_spend_year_before,
+           quality
+      FROM v
+);
+
 -- The transaction reports carry both classifications, ours first.
 CREATE MACRO report_spending_transactions(p_from, p_to, p_ccy) AS TABLE (
     SELECT silver_source_id, transaction_external_id, occurred_at,
