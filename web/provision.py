@@ -11,7 +11,9 @@ command line, where `ps` would show it.
 
 Exit status: 0 when provisioned, EXIT_STALE_SNAPSHOT (3) when the
 mounted gold snapshot is older than the cards need (MIN_GOLD_SCHEMA),
-and 1 on any other failure.
+EXIT_UNVERIFIED (4) when setup was done before and the admin login
+fails, so nothing is checked or changed, and 1 on any other failure.
+Both 0 and 3 mean that the server reads the file --gold-path names.
 
 With --dump FILE it opens no connection: it writes every model, card
 and dashboard payload a provision into an empty collection sends, with
@@ -63,6 +65,8 @@ def main(client=None):
     ap.add_argument("--base")
     ap.add_argument("--email")
     ap.add_argument("--gold-path")
+    ap.add_argument("--spill-dir", default="",
+                    help="the directory DuckDB spills under, one subdirectory per --gold-path")
     ap.add_argument("--db-name", default="gold")
     ap.add_argument("--default-currency", default="USD")
     ap.add_argument("--missing-basis", default=MISSING_BASIS_READINGS[0], choices=MISSING_BASIS_READINGS)
@@ -124,13 +128,15 @@ def main(client=None):
     if not sid:
         if setup_done:
             print("provision: couldn't verify admin login (password changed?) — leaving as-is")
-            return 0
+            return EXIT_UNVERIFIED
         print(f"provision: login failed: {body.get('message')}", file=sys.stderr)
         return 1
 
     client = client.with_auth(session=sid)
-    db_id = ensure_database(client, a.db_name, a.gold_path)
+    db_id = ensure_database(client, a.db_name, a.gold_path, a.spill_dir)
     if db_id is None:
+        return 1
+    if not reads_gold_path(client, db_id, a.gold_path):
         return 1
 
     status = check_gold_schema(client, db_id)
@@ -384,6 +390,30 @@ MIN_GOLD_SCHEMA = 213
 # `wealthdb web refresh` mends this one and the browser wizard does not.
 EXIT_STALE_SNAPSHOT = 3
 
+# main()'s exit status when setup was done before and the admin login
+# fails. It leaves everything as it was and confirms nothing, so web/web
+# cannot take it for a server that reads the new snapshot.
+EXIT_UNVERIFIED = 4
+
+# SERVED_PATH_PROBE asks for the file the server's DuckDB has open.
+SERVED_PATH_PROBE = "SELECT path FROM duckdb_databases() WHERE database_name = current_database()"
+
+
+def reads_gold_path(client, db_id, gold_path):
+    """Whether the server's connection reads `gold_path`, probed through
+    the driver. The driver's DuckDB keeps one open database per path, and
+    Metabase drops its connections when the database's settings change,
+    so a new path is opened afresh. web/web gives each snapshot a path of
+    its own; this is the check that the server took it up."""
+    rows = probe_rows(client, db_id, SERVED_PATH_PROBE)
+    served = rows[0][0] if rows and rows[0] else None
+    if served == gold_path:
+        return True
+    reads = f"reads {served}, not {gold_path}" if served else "does not say which file it reads"
+    print(f"provision: the gold database {reads}; leaving the existing cards untouched",
+          file=sys.stderr)
+    return False
+
 
 def gold_schema_version(client, db_id):
     """The mounted gold snapshot's schema version, probed through the
@@ -507,9 +537,12 @@ def ensure_synced(client, db_id, tries=20, delay=3):
     return None
 
 
-def ensure_database(client, db_name, gold_path):
+def ensure_database(client, db_name, gold_path, spill_dir=""):
     """Add the gold DuckDB connection, or converge an existing one's
     settings. Returns the database id, or None on failure.
+
+    A new `gold_path` is a change of settings, and Metabase then closes
+    the connections it holds, so the next query opens the new file.
 
     DuckDB runs in-process in the Metabase JVM; without a cap it helps
     itself to 80% of the machine's RAM and the kernel OOM-kills the JVM
@@ -529,14 +562,23 @@ def ensure_database(client, db_name, gold_path):
 
     Lowering `threads` instead does NOT trade off the same way — it
     makes matters worse, because a query that cannot parallelise holds
-    its intermediates longer. Spill goes to the driver's hard-wired
-    "<database_file>.tmp", which web/web mounts writable. Do NOT move
-    these into init_sql: that runs per connection, and DuckDB refuses to
-    re-SET a used temp_directory, which breaks every query after the
-    first connection cycle ("" converges the key away from older
-    provisions)."""
+    its intermediates longer. Spill goes to a directory of its own
+    under `spill_dir`, which web/web mounts writable, named after the
+    file: the driver's own "<database_file>.tmp" sits on the read-only
+    snapshot mount. The setting travels in the driver's additional
+    options, which it forwards as instance-level JDBC config like the two
+    keys above. One directory per file: while the old file's DuckDB
+    closes, it deletes the spill files in its directory, and the new
+    file's DuckDB may spill already. Without `spill_dir` the driver's own
+    path stands. Do NOT move these into init_sql: that runs per
+    connection, and DuckDB refuses to re-SET a used temp_directory,
+    which breaks every query after the first connection cycle (""
+    converges the key away from older provisions)."""
     details = {"database_file": gold_path, "read_only": True,
                "memory_limit": "4GB", "threads": "8", "init_sql": ""}
+    if spill_dir:
+        spill = os.path.join(spill_dir, os.path.basename(gold_path) + ".tmp")
+        details["additional-options"] = f"temp_directory={spill}"
 
     db_id, cur = None, None
     st, dbs = client.get("/api/database")
@@ -566,8 +608,11 @@ def ensure_database(client, db_name, gold_path):
             print(f"provision: could not update database settings ({st}): "
                   f"{body.get('message')}", file=sys.stderr)
             return None
-        print(f"provision: database '{db_name}' present; connection "
-              "settings converged (memory limit, spill dir)")
+        if cur.get("database_file") != gold_path:
+            print(f"provision: database '{db_name}' now reads {gold_path}")
+        else:
+            print(f"provision: database '{db_name}' present; connection "
+                  "settings converged (memory limit, spill dir)")
         return db_id
     print(f"provision: database '{db_name}' already present")
     return db_id

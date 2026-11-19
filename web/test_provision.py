@@ -633,9 +633,10 @@ class FakeAPI(FakeClient):
     probes, and records every call so the test can assert what did NOT
     happen (a sync must not be attempted for a stale snapshot)."""
 
-    def __init__(self, views, tables, version=None):
+    def __init__(self, views, tables, version=None, served="/gold/wealthdb.db"):
         self.views, self.tables, self.calls = views, tables, []
         self.version = p.MIN_GOLD_SCHEMA if version is None else version
+        self.served = served
 
     def call(self, path, method="GET", data=None, timeout=None):
         self.calls.append((method, path))
@@ -644,6 +645,8 @@ class FakeAPI(FakeClient):
         if path == "/api/dataset":
             if self.views is None:                      # probe unanswerable
                 return 500, {}
+            if data["native"]["query"] == p.SERVED_PATH_PROBE:
+                return 202, {"data": {"rows": [[self.served]]}}
             if "schema_meta" in data["native"]["query"]:
                 return 202, {"data": {"rows": [[self.version]]}}
             return 202, {"data": {"rows": [[v] for v in self.views]}}
@@ -811,6 +814,76 @@ api = FakeMetabase(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]))
 api.version = "unreadable"
 check("...and onto one whose version cannot be read with 1, at the probe",
       run_main(api) == 1 and ("POST", "/api/dataset") in api.calls, str(api.calls))
+
+section("the server reads the file --gold-path names")
+
+# web/web takes a 0 or a 3 for a server that reads the new snapshot, and
+# serves on without recreating the container. Any other status recreates it.
+api = FakeMetabase(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]),
+                   version=p.MIN_GOLD_SCHEMA - 1, served="/gold/wealthdb-1.db")
+check("a server that still reads another file fails the run with 1",
+      run_main(api) == 1, str(api.calls))
+check("...before the schema check",
+      not [c for c in api.calls if c[1] == "/api/dataset"][1:], str(api.calls))
+api = FakeMetabase(None, tables_for(ALL_VIEWS + ["report_returns"]))
+check("...as does a probe that does not answer", run_main(api) == 1, str(api.calls))
+check("the statuses web/web reads are distinct",
+      len({0, 1, 2, p.EXIT_STALE_SNAPSHOT, p.EXIT_UNVERIFIED}) == 5)
+
+
+class UnverifiedLoginAPI(FakeMetabase):
+    """FakeMetabase set up before, whose admin login fails."""
+
+    def call(self, path, method="GET", data=None, timeout=None):
+        if path == "/api/session":
+            self.calls.append((method, path))
+            return 401, {"message": "Password did not match"}
+        return super().call(path, method, data, timeout)
+
+
+api = UnverifiedLoginAPI(ALL_VIEWS, tables_for(ALL_VIEWS + ["report_returns"]))
+check("an admin login that fails after setup exits with a status of its own",
+      run_main(api) == p.EXIT_UNVERIFIED, str(api.calls))
+check("...changing nothing",
+      [c for c in api.calls if c[0] != "GET"] == [("POST", "/api/session")], str(api.calls))
+
+
+class SwitchAPI(FakeClient):
+    """A fake client holding one gold database that reads `path`; a PUT
+    records the details it sends."""
+
+    def __init__(self, details):
+        self.details, self.puts = details, []
+
+    def call(self, path, method="GET", data=None, timeout=None):
+        if method == "PUT":
+            self.puts.append(data["details"])
+            return 200, {}
+        return 200, {"data": [{"id": 4, "name": "gold", "engine": "duckdb", "details": self.details}]}
+
+
+_base = {"database_file": "/gold/wealthdb-1.db", "read_only": True, "memory_limit": "4GB",
+         "threads": "8", "init_sql": "", "additional-options": "temp_directory=/spill/wealthdb-1.db.tmp"}
+api = SwitchAPI(dict(_base))
+with quiet():
+    _id = p.ensure_database(api, "gold", "/gold/wealthdb-2.db", "/spill")
+check("a new gold path is sent as the database's settings", _id == 4 and len(api.puts) == 1, api.puts)
+check("...reading the new file, spilling in a directory of its own",
+      api.puts and (api.puts[0]["database_file"], api.puts[0]["additional-options"])
+      == ("/gold/wealthdb-2.db", "temp_directory=/spill/wealthdb-2.db.tmp"), api.puts)
+api = SwitchAPI(dict(_base))
+with quiet():
+    p.ensure_database(api, "gold", "/gold/wealthdb-1.db", "/spill/")
+check("the path the database reads already is not sent again", api.puts == [], api.puts)
+api = SwitchAPI({k: v for k, v in _base.items() if k != "additional-options"})
+with quiet():
+    p.ensure_database(api, "gold", "/gold/wealthdb-1.db")
+check("without a spill directory the driver's own spill path stands", api.puts == [], api.puts)
+
+api = FakeAPI([], [], served="/gold/wealthdb-2.db")
+with quiet():
+    _got = (p.reads_gold_path(api, 4, "/gold/wealthdb-2.db"), p.reads_gold_path(api, 4, "/gold/wealthdb-3.db"))
+check("the served path probe tells the file the server reads", _got == (True, False), _got)
 
 # ---- the (uncategorized) label is a cross-repo contract -----------------
 

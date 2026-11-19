@@ -108,7 +108,8 @@ A fourth invariant, same weight (DESIGN.md §7): **keep the memory
 discipline**. DuckDB runs in-process in the Metabase JVM — do not remove
 the container/JVM caps in `web/web`, the `memory_limit`/`threads`
 connection details in `provision.py`, or the writable spill mount at
-`<database_file>.tmp`; and never move DuckDB settings into `init_sql`
+`/spill` and its `temp_directory` in the connection's additional
+options; and never move DuckDB settings into `init_sql`
 (it runs per pooled connection, and re-`SET`ting a used
 `temp_directory` breaks every later query).
 

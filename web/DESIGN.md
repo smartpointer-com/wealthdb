@@ -28,16 +28,34 @@ read-only connection open continuously, which would make every
 up — a load does not queue behind the connection.
 
 So Metabase never touches the live file. `web start` copies the gold
-DB to `…/web/snapshot/wealthdb.db` and mounts *that* read-only.
-`web refresh` copies gold again when it is newer than the snapshot. It
-recreates the container when the running one does not serve the
-current snapshot. Where the file system can clone (APFS), the copy is
+DB to `…/web/snapshot/wealthdb.db` and mounts *that directory*
+read-only. `web refresh` copies gold again when it is newer than the
+snapshot. Where the file system can clone (APFS), the copy is
 a clone. Either way the copy keeps gold's mtime, so a gold write during
 the copy makes the next refresh copy again. Loads never contend with
 the server; dashboards show data as of the last refresh (run
 `web refresh` after `wealthdb load`). The copy is atomic
 (temp + `mv`) and refuses to run if a `.wal` sidecar is present (gold
 mid-write / not checkpointed), so a torn copy is never captured.
+
+A refresh keeps a running server. Metabase reads the snapshot under a
+serving name, `wealthdb-<inode>.db`, a hard link of the copy:
+
+- A new copy is a new inode, so its name is one the server never
+  opened. The driver's DuckDB keeps one open database per path, so a
+  path it had open could hand back the old file.
+- Provisioning points the gold database at the new name. A change of
+  the database's settings makes Metabase close its connections, so the
+  next query opens the new file.
+- Provisioning then asks the server which file it reads
+  (`duckdb_databases()`). Only that answer counts as served.
+- Without that answer the container is recreated. A provisioning
+  failure, a changed admin password, provisioning turned off and a
+  container that mounts the snapshot file rather than its directory
+  all take this path. Start links every serving name to the current
+  snapshot first, so a new container reads it under any name.
+- Once the server reads the new name, the other names are removed. An
+  old snapshot then keeps no blocks on disk.
 
 Start and refresh print each step's wall time on stderr
 (`web: timing: <step> <seconds>s`). Provisioning prints its wait for
@@ -976,10 +994,15 @@ Four settings work together, each load-bearing:
   per pooled connection, and DuckDB refuses to re-`SET` a used
   `temp_directory` — the second connection then poisons every query
   after it.
-- **A writable spill mount** — the driver hard-wires DuckDB's
+- **A writable spill mount** — the driver sets DuckDB's
   `temp_directory` to `<database_file>.tmp`, which sits on the read-only
-  snapshot mount. `web/web` mounts a host directory at exactly that path
-  so memory-capped queries spill to disk instead of failing.
+  snapshot mount. So `web/web` mounts a host directory at `/spill`, and
+  `provision.py` names `/spill/<serving name>.tmp` in the connection's
+  additional options, which the driver applies after its own path.
+  Memory-capped queries then spill to disk instead of failing. Each
+  file spills in a directory of its own. A DuckDB that closes deletes
+  the spill files in its directory, and during a swap the new file's
+  DuckDB may spill already.
 - **Container caps** (`--memory 8g`, `-Xmx2g`, `MALLOC_ARENA_MAX=2`) —
   the backstop: a runaway kills only this container, never the VM; the
   heap cannot auto-size against the container cap; glibc does not hoard
@@ -1325,9 +1348,11 @@ failed generation, and — against a stubbed engine — the `_materialize`
 invocation, the engine's own error line and status repeated on a
 failure, `web_refresh`'s materialize-then-snapshot ordering and the
 steps' timing lines. It checks the refresh skips too: an unchanged
-gold is not copied, a container that does not serve the
-snapshot's inode is restarted, and a failed copy keeps the old
-snapshot. Against a stubbed `provision.py`, it checks that a stale
+gold is not copied, and a failed copy keeps the old snapshot. A
+running container that does not serve the snapshot's inode takes up
+the new one when provisioning confirms it, and is recreated when it
+does not. Start links the serving names to the current snapshot.
+Against a stubbed `provision.py`, it checks that a stale
 snapshot fails `web start` and `web refresh` without the browser hint.
 It then runs [`test_provision.py`](test_provision.py), which asserts
 everything provisioning builds *before* it talks to the API. The

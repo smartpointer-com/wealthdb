@@ -24,6 +24,8 @@ cat "$tmp/engine-out" 2>/dev/null || true
 EOF
 chmod +x "$tmp/engine-stub"
 export WEALTHDB_BIN="$tmp/engine-stub"
+# The knobs resolve under $tmp, never in a real web data directory.
+export WEALTHDB_WEB_DATA_DIR="$tmp/web-data"
 
 # shellcheck source=/dev/null
 source "$HERE/web"
@@ -79,8 +81,8 @@ check "detached"          "-d"                                                  
 check "container name"    "--name wealthdb-metabase"                            "$joined"
 check "memory cap"        "--memory 8g"                                         "$joined"
 check "H2 volume"         "/data/web/metabase:/metabase-data"                   "$joined"
-check "snapshot RO mount" "/data/web/snapshot/wealthdb.db:/gold/wealthdb.db:ro" "$joined"
-check "spill mount"       "/data/web/spill:/gold/wealthdb.db.tmp"               "$joined"
+check "snapshot dir RO mount" "/data/web/snapshot:/gold:ro"                     "$joined"
+check "spill mount"       "/data/web/spill:/spill"                              "$joined"
 check "publish IPv4"      "127.0.0.1:3000:3000"                                 "$joined"
 check "publish IPv6"      "[::1]:3000:3000"                                     "$joined"
 check "aggregated row cap"   "MB_AGGREGATED_QUERY_ROW_LIMIT=100000"             "$joined"
@@ -311,45 +313,67 @@ python3 -c 'import os,sys; os.utime(sys.argv[1], (1, 1))' "$tmp/snap/wealthdb.db
 ) >"$seq_old" 2>&1
 check "an older snapshot is copied" "SNAPSHOT_RAN" "$(cat "$seq_old")"
 
-echo "== a running container on an older inode is restarted without a copy =="
-seq_inode="$tmp/refresh-inode"
-python3 -c 'import os,sys; os.utime(sys.argv[1], None)' "$tmp/snap/wealthdb.db"
-rm -f "$tmp/snap/wealthdb.db.served"
-(
-    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/snap/wealthdb.db"; }
-    _materialize() { :; }
-    _snapshot()    { echo SNAPSHOT_RAN; }
-    _mtime()       { echo now; }
-    _is_running()  { return 0; }
-    web_stop()     { echo STOPPED > "$tmp/did-stop"; }
-    web_start()    { echo STARTED; }
-    web_refresh
-) >"$seq_inode" 2>&1
-if [ -f "$tmp/did-stop" ]; then pass "an unmarked snapshot restarts"; else fail "an unmarked snapshot restarts"; fi
-check "an unmarked snapshot starts" "STARTED" "$(cat "$seq_inode")"
-check_not "an unmarked snapshot is not copied" "SNAPSHOT_RAN" "$(cat "$seq_inode")"
+# swap_refresh PROVISION_STATUS SERVED: web_refresh on a running
+# container whose marker names an older snapshot than the one in place
+# (a copy taken by this refresh, or by one that died before the server
+# took it up), with _provision stubbed to set PROV_RC and PROV_SERVED.
+# The snapshot directory holds the old snapshot's serving name, which
+# links the old inode. Prints refresh's output and its status; the stub
+# records the snapshot inode it saw in $tmp/swap/provisioned.
+swap_refresh() {
+    rm -rf "$tmp/swap" && mkdir -p "$tmp/swap"
+    : > "$tmp/swap/wealthdb.db"
+    (
+        prov_rc="$1" prov_served="$2"
+        _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/swap/wealthdb.db"; }
+        _load_config
+        _mark_snapshot_served
+        ln "$SNAP" "$tmp/swap/$(_serving_name)"
+        cp "$SNAP" "$SNAP.new" && mv "$SNAP.new" "$SNAP"
+        _materialize() { :; }
+        _snapshot()    { echo SNAPSHOT_RAN; }
+        _mtime()       { echo now; }
+        _is_running()  { return 0; }
+        # "link" stands for a link _provision cannot make: it fails
+        # before provision.py runs, PROV_RC still 0.
+        _provision()   { _stat st_ino "$SNAP" > "$tmp/swap/provisioned"
+                         if [ "$prov_rc" = link ]; then PROV_RC=0 PROV_SERVED=0; return 1; fi
+                         PROV_RC="$prov_rc" PROV_SERVED="$prov_served"; }
+        # refresh sends the stop's output to /dev/null.
+        web_stop()     { echo STOPPED >&2; }
+        web_start()    { echo STARTED; }
+        web_refresh
+        echo "rc=$?"
+    ) 2>&1
+}
 
-echo "== a running container on a swapped-in snapshot is restarted without a copy =="
-# A refresh that copied and died before the restart leaves the marker
-# naming the inode the container still serves.
-seq_swap="$tmp/refresh-swap"
-rm -f "$tmp/did-stop"
-(
-    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/snap/wealthdb.db"; }
-    _load_config
-    _mark_snapshot_served
-    cp "$SNAP" "$SNAP.new" && mv "$SNAP.new" "$SNAP"
-    _materialize() { :; }
-    _snapshot()    { echo SNAPSHOT_RAN; }
-    _mtime()       { echo now; }
-    _is_running()  { return 0; }
-    web_stop()     { echo STOPPED > "$tmp/did-stop"; }
-    web_start()    { echo STARTED; }
-    web_refresh
-) >"$seq_swap" 2>&1
-if [ -f "$tmp/did-stop" ]; then pass "a swapped snapshot restarts"; else fail "a swapped snapshot restarts"; fi
-check "a swapped snapshot starts" "STARTED" "$(cat "$seq_swap")"
-check_not "a swapped snapshot is not copied" "SNAPSHOT_RAN" "$(cat "$seq_swap")"
+echo "== a running container takes up a swapped-in snapshot without a restart =="
+out="$(swap_refresh 0 1)"
+check     "the new snapshot is provisioned"  "$(_stat st_ino "$tmp/swap/wealthdb.db")" "$(cat "$tmp/swap/provisioned")"
+check_not "...with no copy"                  "SNAPSHOT_RAN" "$out"
+check_not "...no stop"                       "STOPPED"      "$out"
+check_not "...and no start"                  "STARTED"      "$out"
+check     "...and refresh succeeds"          "rc=0"         "$out"
+check_eq  "the marker names the new snapshot" "$(_stat st_ino "$tmp/swap/wealthdb.db")" \
+          "$(cat "$tmp/swap/wealthdb.db.served")"
+check_eq  "the old serving name is removed" "wealthdb.db wealthdb.db.served" \
+          "$(cd "$tmp/swap" && ls | grep -v provisioned | tr '\n' ' ' | sed 's/ $//')"
+
+echo "== a confirmed swap passes a stale snapshot's status on =="
+out="$(swap_refresh 3 1)"
+check     "a stale swap exits 3"      "rc=3"    "$out"
+check_not "...without a restart"      "STOPPED" "$out"
+
+echo "== an unconfirmed swap recreates the container =="
+for case in "1 0" "0 0" "link 0"; do
+    out="$(swap_refresh $case)"
+    check "provision ($case): the container is stopped" "STOPPED" "$out"
+    check "...and started"                 "STARTED" "$out"
+    check "...saying why"                  "did not confirm it reads the new snapshot" "$out"
+done
+out="$(WEALTHDB_WEB_NO_PROVISION=1 swap_refresh 0 1)"
+check     "with provisioning off, the container is recreated" "STARTED" "$out"
+if [ -f "$tmp/swap/provisioned" ]; then fail "...without provisioning first"; else pass "...without provisioning first"; fi
 
 echo "== a failed copy keeps the old snapshot =="
 # The copy runs under _timed, with errexit off: _snapshot itself must
@@ -428,18 +452,50 @@ else fail "web_refresh materializes, then snapshots"; printf '       got sequenc
 echo "== _provision: the admin password reaches provision.py by env, never argv =="
 # A python3 stub records its argv and the env var; run in a subshell so
 # the override does not leak into the provision.py hand-off below.
+mkdir -p "$tmp/prov" && : > "$tmp/prov/wealthdb.db"
 (
     python3() {
+        case "$1" in *provision.py) ;; *) command python3 "$@"; return ;; esac
         printf '%s\n' "$@" > "$tmp/prov-args"
         printf '%s' "${WEALTHDB_WEB_ADMIN_PASSWORD:-}" > "$tmp/prov-env"
     }
-    PORT=3000 DATA_DIR="$tmp" WEALTHDB_WEB_ADMIN_PASSWORD="Synthetic-pw-1!"
+    PORT=3000 DATA_DIR="$tmp" SNAP="$tmp/prov/wealthdb.db" WEALTHDB_WEB_ADMIN_PASSWORD="Synthetic-pw-1!"
     _provision 2>/dev/null
 )
+prov_ino="$(_stat st_ino "$tmp/prov/wealthdb.db")"
 check_not "password not in argv"     "Synthetic-pw-1!" "$(cat "$tmp/prov-args" 2>/dev/null)"
 check_not "no --password flag"       "--password"      "$(cat "$tmp/prov-args" 2>/dev/null)"
 check     "password in the env var"  "Synthetic-pw-1!" "$(cat "$tmp/prov-env" 2>/dev/null)"
 check     "the source colours live beside the web data" "$tmp/source-colors.json" "$(cat "$tmp/prov-args" 2>/dev/null)"
+check     "the database reads the snapshot's serving name" "/gold/wealthdb-$prov_ino.db" \
+          "$(tr '\n' ' ' < "$tmp/prov-args" 2>/dev/null)"
+check     "...spilling under the spill mount" "--spill-dir /spill" "$(tr '\n' ' ' < "$tmp/prov-args" 2>/dev/null)"
+check_eq  "...which links the snapshot" "$prov_ino" "$(_stat st_ino "$tmp/prov/wealthdb-$prov_ino.db")"
+
+echo "== _provision reads provision.py's status =="
+# prov_status STATUS prints PROV_RC and PROV_SERVED after provision.py
+# exits with STATUS.
+prov_status() {
+    (
+        stub_rc="$1"
+        python3() { case "$1" in *provision.py) return "$stub_rc" ;; *) command python3 "$@" ;; esac; }
+        PORT=3000 DATA_DIR="$tmp" SNAP="$tmp/prov/wealthdb.db" WEALTHDB_WEB_ADMIN_PASSWORD="Synthetic-pw-1!"
+        _provision 2>/dev/null
+        echo "$PROV_RC $PROV_SERVED"
+    )
+}
+check_eq "a clean provision confirms the serving name"  "0 1" "$(prov_status 0)"
+check_eq "...as does a stale snapshot's"                "3 1" "$(prov_status 3)"
+check_eq "a failure confirms nothing"                   "1 0" "$(prov_status 1)"
+check_eq "an unverified login is no failure, and confirms nothing" "0 0" "$(prov_status 4)"
+out="$(
+    PORT=3000 DATA_DIR="$tmp" SNAP="$tmp/prov/missing.db" WEALTHDB_WEB_ADMIN_PASSWORD="Synthetic-pw-1!"
+    python3() { if [ "${1##*/}" = provision.py ]; then echo PROVISION_RAN; else command python3 "$@"; fi; }
+    _provision 2>&1; echo "rc=$? served=$PROV_SERVED"
+)"
+check     "a link it cannot make stops it" "could not link the snapshot" "$out"
+check     "...and fails, confirming nothing" "rc=1 served=0"            "$out"
+check_not "...before provision.py runs"    "PROVISION_RAN"              "$out"
 
 echo "== web start and refresh read provision.py's exit status =="
 # web_start against stubs, in a subshell: no Docker, a snapshot already
@@ -476,6 +532,9 @@ err="$(cat "$tmp/start-err")"
 check_eq  "any other failure leaves start's status 0"  "0"              "$rc"
 check     "...and points at the browser"   "finish setup in the browser"  "$err"
 check_not "...not at refresh"              "re-snapshots a migrated gold" "$err"
+rc="$(start_with 4)"
+check_eq  "an unverified login leaves start's status 0"  "0"            "$rc"
+check     "...and prints the login"        "log in as"     "$(cat "$tmp/start-err")"
 rc="$(start_with 0)"
 check_eq  "a clean provision starts with status 0"  "0"                 "$rc"
 check     "...and prints the login"        "log in as"     "$(cat "$tmp/start-err")"
@@ -503,7 +562,7 @@ echo "== provisioning stops on a password it cannot save =="
 # It runs under _timed with errexit off: the step itself must stop it,
 # before provision.py creates an admin whose password is saved nowhere.
 prov_err="$(
-    DATA_DIR="$tmp/no-such-dir/web"
+    DATA_DIR="$tmp/no-such-dir/web" SNAP="$tmp/prov/wealthdb.db"
     unset WEALTHDB_WEB_ADMIN_PASSWORD
     python3() { if [ "${1##*/}" = provision.py ]; then echo PROVISION_RAN; else command python3 "$@"; fi; }
     _provision 2>&1; echo "rc=$?"
@@ -514,7 +573,7 @@ check_not "...before provision.py runs" "PROVISION_RAN" "$prov_err"
 
 echo "== provisioning stops on a password it cannot generate =="
 prov_err="$(
-    DATA_DIR="$tmp/gen-fail"
+    DATA_DIR="$tmp/gen-fail" SNAP="$tmp/prov/wealthdb.db"
     mkdir -p "$DATA_DIR"
     unset WEALTHDB_WEB_ADMIN_PASSWORD
     openssl() { return 1; }
@@ -549,6 +608,42 @@ check_not "...without asking the engine" "could not read settings" "$cfg_out"
 check_eq "start records the snapshot inode it serves" \
     "$(_stat st_ino "$tmp/start/snapshot/wealthdb.db")" \
     "$(cat "$tmp/start/snapshot/wealthdb.db.served" 2>/dev/null)"
+# start_links SERVED: web_start over a snapshot directory that holds a
+# serving name of an older snapshot, with _provision stubbed to set
+# PROV_SERVED. Prints the inodes the names link when the server comes
+# up and after start, as "NAME:INODE" pairs.
+start_links() {
+    rm -rf "$tmp/links" && mkdir -p "$tmp/links/snapshot"
+    (
+        prov_served="$1"
+        SNAP="$tmp/links/snapshot/wealthdb.db"
+        : > "$SNAP.old"
+        ln "$SNAP.old" "$tmp/links/snapshot/wealthdb-1.db"
+        : > "$SNAP"
+        _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
+        _is_running()  { return 1; }
+        _exists()      { return 1; }
+        names() { for f in "$tmp/links/snapshot"/wealthdb-*.db; do
+                      [ -e "$f" ] && printf '%s:%s ' "${f##*/}" "$(_stat st_ino "$f")"; done; }
+        docker()       { echo "at run: $(names)" > "$tmp/links/at-run"; }
+        _provision()   { PROV_RC=0 PROV_SERVED="$prov_served"; ln -f "$SNAP" "$(dirname "$SNAP")/$(_serving_name)"; }
+        _start_banner() { :; }
+        DATA_DIR="$tmp/links" H2_DIR="$tmp/links/metabase" SPILL_DIR="$tmp/links/spill"
+        BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
+        web_start 2>/dev/null
+        cat "$tmp/links/at-run"
+        echo "after: $(names)"
+    )
+}
+out="$(start_links 1)"
+cur="$(_stat st_ino "$tmp/links/snapshot/wealthdb.db")"
+check    "start links an older serving name to the current snapshot" "at run: wealthdb-1.db:$cur" "$out"
+check_eq "...and keeps only the current one once provisioning confirms it" \
+         "after: wealthdb-$cur.db:$cur" "$(echo "$out" | grep '^after' | sed 's/ $//')"
+out="$(start_links 0)"
+cur="$(_stat st_ino "$tmp/links/snapshot/wealthdb.db")"
+check    "unconfirmed, start keeps the older name, on the current snapshot" "wealthdb-1.db:$cur" \
+         "$(echo "$out" | grep '^after')"
 # A start with no snapshot yet materializes and takes one, timing both.
 out="$(
     _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
@@ -574,6 +669,7 @@ rc="$(
     _snapshot()    { :; }
     _mtime()       { echo now; }
     _is_running()  { return 0; }
+    _provision()   { PROV_RC=1 PROV_SERVED=0; }
     web_stop()     { :; }
     web_start()    { return 3; }
     web_refresh >/dev/null 2>&1
@@ -589,6 +685,7 @@ out="$(
     _snapshot()    { :; }
     _mtime()       { echo now; }
     _is_running()  { return 0; }
+    _provision()   { PROV_RC=1 PROV_SERVED=0; }
     web_stop()     { :; }
     web_start()    { :; }
     web_refresh 2>&1
