@@ -19,8 +19,9 @@ gold DB, never the live file. The snapshot is mounted `:ro`. Never:
 The one narrow carve-out: before snapshotting, `web refresh` (and the
 initial snapshot in `web start`) invokes the **engine's** hidden
 `web-materialize` subcommand. It rewrites the serving tables, the
-`report_returns` (with `report_bridge` and the benchmark tables),
-`report_gains`, `report_exposure*` and `report_yield_*` tables and
+`report_returns` (with `report_bridge`, `report_private_markets` and the
+benchmark tables), `report_gains`, `report_exposure*` and
+`report_yield_*` tables and
 `report_cashflow_plan` in live gold (DESIGN.md §8). That is
 an engine-owned write, not a web write path:
 

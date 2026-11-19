@@ -601,8 +601,8 @@ CREATE VIEW web_private AS
                                                       p.silver_source_id, a.account_kind) END AS account_label,
            p.instrument_external_id, p.holding,
            epoch_ms(p.first_call * 1000) AS first_call, p.paid_in, p.distributed, p.nav,
-           epoch_ms(p.marked_at * 1000) AS marked_at, p.dpi, p.tvpi, p.quality
-      FROM serving_private p
+           epoch_ms(p.marked_at * 1000) AS marked_at, p.dpi, p.tvpi, 100 * p.irr AS irr_pct, p.quality
+      FROM report_private_markets p
       LEFT JOIN accounts a ON a.silver_source_id = p.silver_source_id
            AND a.account_external_id = p.account_external_id;
 

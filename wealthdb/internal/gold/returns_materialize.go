@@ -104,10 +104,11 @@ func rewriteTables(ctx context.Context, db *sql.DB, op string, begin beginTx, ta
 }
 
 // returnsMaterialized are the tables MaterializeReturns rewrites.
-var returnsMaterialized = []string{"report_returns", "benchmark_returns", "benchmark_mwr", "report_bridge"}
+var returnsMaterialized = []string{"report_returns", "benchmark_returns", "benchmark_mwr", "report_bridge",
+	"report_private_markets"}
 
-// MaterializeReturns rewrites report_returns, the benchmark tables and the
-// bridge. It writes the full returns matrix — every grain × period ×
+// MaterializeReturns rewrites report_returns, the benchmark tables, the
+// bridge and the private-markets rows. It writes the full returns matrix — every grain × period ×
 // currency, each partition the verbatim output of one CLI-default RunReturns
 // (method both, netting on, inception full, annualize auto, since-inception
 // window, window_from_year=0) — plus, for each grain × currency × year in the
@@ -117,7 +118,8 @@ var returnsMaterialized = []string{"report_returns", "benchmark_returns", "bench
 // every (grain, period) and windowed computation without re-querying — the
 // loaded data depends only on the currency, never the grain, period or
 // window. The benchmark tables (computeBenchmarks) and the bridge
-// (computeMaterialBridge) read the same datasets. Everything is computed
+// (computeMaterialBridge) read the same datasets; the private-markets rows
+// (computeMaterialPrivate) are RunPrivate's in each currency. Everything is computed
 // before the tables are rewritten (rewriteTables), so the write needs no pin.
 // Returns the row count of report_returns and the benchmark tables.
 func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
@@ -173,6 +175,10 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 	if err != nil {
 		return 0, err
 	}
+	private, err := computeMaterialPrivate(ctx, db)
+	if err != nil {
+		return 0, err
+	}
 
 	return rewriteTables(ctx, db, "MaterializeReturns", beginPlain, returnsMaterialized, func(tx *sql.Tx) (int, error) {
 		n, err := writeReturnRows(ctx, tx, parts, p.ComputedAt)
@@ -184,6 +190,9 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 			return 0, fmt.Errorf("MaterializeReturns: %w", err)
 		}
 		if err := bridge.write(ctx, tx, p.ComputedAt); err != nil {
+			return 0, fmt.Errorf("MaterializeReturns: %w", err)
+		}
+		if err := private.write(ctx, tx, p.ComputedAt); err != nil {
 			return 0, fmt.Errorf("MaterializeReturns: %w", err)
 		}
 		return n + k, nil

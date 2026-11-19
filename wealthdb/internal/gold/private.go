@@ -129,3 +129,52 @@ func withPrivateIRR(r *PrivateRow, legs []privateLeg) {
 	start, end := EpochDay(r.FirstCall)-1, EpochDay(r.EndAt)
 	r.IRR, r.Quality = solveIRR(returns.XIRR, 0, nav, start, end, flowsIn(flows, start, end), false, r.Quality)
 }
+
+// ---- materialization -----------------------------------------------------
+
+const privateCols = `computed_at, currency, is_total, silver_source_id, account_external_id,
+    instrument_external_id, holding, first_call, paid_in, distributed, nav, marked_at, end_at,
+    dpi, tvpi, irr, quality`
+
+// privateMaterial is each reporting currency's rows of `returns private`.
+type privateMaterial map[string][]PrivateRow
+
+// computeMaterialPrivate is RunPrivate in every reporting currency, the
+// rows report_private_markets holds.
+func computeMaterialPrivate(ctx context.Context, db *sql.DB) (privateMaterial, error) {
+	out := privateMaterial{}
+	for _, ccy := range materializeCurrencies {
+		rows, err := RunPrivate(ctx, db, ccy)
+		if err != nil {
+			return nil, err
+		}
+		out[ccy] = rows
+	}
+	return out, nil
+}
+
+// write inserts report_private_markets' rows, currency by currency, each
+// as the CLI prints it.
+func (m privateMaterial) write(ctx context.Context, tx *sql.Tx, computedAt int64) error {
+	type ref struct {
+		ccy string
+		row int
+	}
+	var refs []ref
+	for _, ccy := range materializeCurrencies {
+		for j := range m[ccy] {
+			refs = append(refs, ref{ccy, j})
+		}
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	return insertColumns(ctx, tx, "report_private_markets", "report_private_markets", privateCols, len(refs),
+		func(i int, args []any) []any {
+			ccy := refs[i].ccy
+			r := &m[ccy][refs[i].row]
+			return append(args, computedAt, ccy, r.IsTotal, r.SilverSourceID, r.AccountExternalID, r.InstrumentID,
+				r.Holding, r.FirstCall, r.PaidIn, r.Distributed, r.NAV, r.MarkedAt, r.EndAt,
+				r.DPI, r.TVPI, r.IRR, strings.Join(r.Quality, ";"))
+		})
+}

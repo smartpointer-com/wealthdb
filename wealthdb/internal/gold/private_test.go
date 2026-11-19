@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,6 +189,67 @@ func TestPrivateMarketsHistoricFX(t *testing.T) {
 	// Each holding's money rounds to the cent before the multiples.
 	if !isNear(fund.TVPI, (375.0+2625)/2111.11) {
 		t.Errorf("FUND CHF tvpi %v", fund.TVPI)
+	}
+}
+
+// report_private_markets holds the CLI's rows in every currency, and
+// web_private serves them: the dashboard and `returns private` agree.
+func TestPrivateMarketsTableIsTheCLIsRows(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedPrivateFixture(t, db, ctx)
+	m, err := computeMaterialPrivate(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.write(ctx, tx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	type cut struct {
+		holding, paid, back, nav, quality string
+		marked                            *int64
+		dpi, tvpi, irr                    *float64
+	}
+	for _, ccy := range MaterializedCurrencies() {
+		want, err := RunPrivate(ctx, db, ccy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := scanRows(ctx, db, "web_private", `
+			SELECT holding, CAST(paid_in AS VARCHAR), CAST(distributed AS VARCHAR), COALESCE(CAST(nav AS VARCHAR), ''),
+			       quality, CAST(epoch(marked_at) AS BIGINT), dpi, tvpi, irr_pct / 100
+			  FROM web_private WHERE currency = ? ORDER BY is_total, first_call, instrument_external_id`,
+			[]any{ccy}, func(c *cut) []any {
+				return []any{&c.holding, &c.paid, &c.back, &c.nav, &c.quality, i64(&c.marked),
+					flt(&c.dpi), flt(&c.tvpi), flt(&c.irr)}
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: %d rows in the table, %d from the CLI", ccy, len(got), len(want))
+		}
+		eqF := func(a, b *float64) bool { return (a == nil) == (b == nil) && (a == nil || math.Abs(*a-*b) < 1e-12) }
+		for i, w := range want {
+			g := got[i]
+			nav := ""
+			if w.NAV != nil {
+				nav = *w.NAV
+			}
+			if g.holding != w.Holding || cents(t, &g.paid) != cents(t, w.PaidIn) || cents(t, &g.back) != cents(t, w.Distributed) ||
+				(nav == "") != (g.nav == "") || nav != "" && cents(t, &g.nav) != cents(t, w.NAV) ||
+				g.quality != strings.Join(w.Quality, ";") || (g.marked == nil) != (w.MarkedAt == nil) ||
+				!eqF(g.dpi, w.DPI) || !eqF(g.tvpi, w.TVPI) || !eqF(g.irr, w.IRR) {
+				t.Errorf("%s row %d: table %+v, CLI %+v", ccy, i, g, w)
+			}
+		}
 	}
 }
 

@@ -5640,8 +5640,8 @@ for _n in ("Private holdings", "Private holdings (privacy)", "Multiples by holdi
           "FROM web_private" in sql_of(CARDS[_n][2]) and "currency = {{currency}}" in sql_of(CARDS[_n][2])
           and set(CARDS[_n][2]["native"]["template-tags"]) == {"currency"})
 _pt = sql_of(CARDS["Private holdings (privacy)"][2])
-check("...the twin's table keeps the multiples and drops the money and the account",
-      all(c in _pt for c in ("dpi", "tvpi", "marked_at", "holding"))
+check("...the twin's table keeps the multiples and the IRR and drops the money and the account",
+      all(c in _pt for c in ("dpi", "tvpi", "irr_pct", "marked_at", "holding"))
       and not any(c in _pt.split("FROM p")[0] for c in ("paid_in", "distributed", "nav", "account_label")), _pt)
 
 if duckdb is not None:
@@ -5649,15 +5649,15 @@ if duckdb is not None:
     _pm.execute("CREATE TABLE web_private (currency TEXT, is_total BOOLEAN, silver_source_id TEXT,"
                 " account_external_id TEXT, account_label TEXT, instrument_external_id TEXT, holding TEXT,"
                 " first_call TIMESTAMP, paid_in DECIMAL(28,4), distributed DECIMAL(28,4), nav DECIMAL(28,4),"
-                " marked_at TIMESTAMP, dpi DOUBLE, tvpi DOUBLE, quality TEXT)")
+                " marked_at TIMESTAMP, dpi DOUBLE, tvpi DOUBLE, irr_pct DOUBLE, quality TEXT)")
     _pm.executemany("INSERT INTO web_private VALUES (?, ?, ?, 'a', 'Investor (src-1 custody)', ?, ?, ?, ?, ?, ?,"
-                    " ?, ?, ?, '')", [
+                    " ?, ?, ?, ?, '')", [
                         (c, False, "src-1", "f", "Fund", dt.datetime(2025, 1, 15), 100 * r, 18 * r, 101 * r,
-                         dt.datetime(2026, 9, 30), 0.18, 1.19) for c, r in (("USD", 1), ("CHF", 0.9))] + [
+                         dt.datetime(2026, 9, 30), 0.18, 1.19, 12.5) for c, r in (("USD", 1), ("CHF", 0.9))] + [
                         (c, False, "src-1", "s", "SPV", dt.datetime(2025, 2, 10), 10 * r, 22 * r, 0, None,
-                         2.2, 2.2) for c, r in (("USD", 1), ("CHF", 0.9))] + [
+                         2.2, 2.2, 80.0) for c, r in (("USD", 1), ("CHF", 0.9))] + [
                         (c, True, "", "", "Total", dt.datetime(2025, 1, 15), 110 * r, 40 * r, 101 * r,
-                         dt.datetime(2026, 9, 30), 40 / 110, 141 / 110) for c, r in (("USD", 1), ("CHF", 0.9))])
+                         dt.datetime(2026, 9, 30), 40 / 110, 141 / 110, 20.0) for c, r in (("USD", 1), ("CHF", 0.9))])
 
     def _pmr(name, currency="USD"):
         return _pm.execute(_render(CARDS[name][2], {"currency": currency})).fetchall()
@@ -5669,9 +5669,9 @@ if duckdb is not None:
     check("...the chart a bar per holding, its parts adding up to its TVPI, the largest first",
           [r[0] for r in _mb] == ["SPV (src-1)", "Fund (src-1)"]
           and all(_near(r[1] + r[2], t) for r, t in zip(_mb, (2.2, 1.19), strict=True)), _mb)
-    check("...the twin's table the same rows and multiples", [(r[0], r[4], r[5]) for r in
-                                                             _pmr("Private holdings (privacy)")]
-          == [(r[0], r[7], r[8]) for r in _pmr("Private holdings")])
+    check("...the twin's table the same rows, multiples and IRR", [(r[0], r[4], r[5], r[6]) for r in
+                                                                    _pmr("Private holdings (privacy)")]
+          == [(r[0], r[7], r[8], r[9]) for r in _pmr("Private holdings")])
 
 section("the benchmarks")
 

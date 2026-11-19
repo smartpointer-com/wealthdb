@@ -1428,8 +1428,8 @@ CREATE MACRO report_marks_multi() AS TABLE (
 --   * Sums are decimals, so they do not follow the order rows add in. A
 --     holding's money rounds once, to the cent, and the total adds the
 --     cents, so it is the sum of the rows as they print.
---   * serving_private holds report_private_multi at the latest snapshot.
---     web_private serves it.
+--   * report_private_markets holds `wealthdb returns private`'s rows,
+--     the money-weighted return with them. web_private serves it.
 -- ============================================================
 
 -- private_legs: every leg of a private holding up to p_asof, in p_ccy.
@@ -1594,12 +1594,4 @@ CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
       LEFT JOIN instrument_labels() il ON il.silver_source_id = r.silver_source_id
            AND il.instrument_external_id = r.instrument_external_id
      ORDER BY r.is_total, r.silver_source_id, r.account_external_id, r.first_call, r.instrument_external_id
-);
-
--- report_private_multi: report_private in every reporting currency.
-CREATE MACRO report_private_multi(p_asof) AS TABLE (
-    SELECT 'USD' AS currency, * FROM report_private(p_asof, 'USD')
-    UNION ALL SELECT 'CHF', * FROM report_private(p_asof, 'CHF')
-    UNION ALL SELECT 'EUR', * FROM report_private(p_asof, 'EUR')
-    UNION ALL SELECT 'GBP', * FROM report_private(p_asof, 'GBP')
 );

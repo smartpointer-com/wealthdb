@@ -772,19 +772,19 @@ the privacy twin's table reads them too.
 **Private Markets** shows what each private fund or SPV took, what it
 gave back and what it is marked at, since its first call
 (`wealthdb returns private`, wealthdb/docs/RETURNS-NOTES.md, "Private
-markets"). It reads `web_private`, over the `serving_private` table,
-one row set per reporting currency:
+markets"). It reads `web_private`, over the `report_private_markets`
+table (§8), one row set per reporting currency:
 
 - *Private holdings*: a table of paid in, distributed, NAV, the mark's
-  date, DPI, TVPI and the quality, one row per holding, then the total.
+  date, DPI, TVPI, the IRR and the quality, one row per holding, then
+  the total.
 - *Multiples by holding*: one bar per holding, DPI stacked under what
   is still marked per unit paid in, so the bar's height is its TVPI.
 
-The twin's table keeps the multiples and the marks' dates and drops the
-money and the account, as the Returns twin drops its money columns. A
-holding's name stays. The chart holds multiples only, so the twin shows
-it as it is. The money-weighted return the CLI's `irr_pct` holds is not
-on the dashboard.
+The twin's table keeps the multiples, the IRR and the marks' dates and
+drops the money and the account, as the Returns twin drops its money
+columns. A holding's name stays. The chart holds multiples only, so the
+twin shows it as it is.
 
 The **Wealth Overview** charts net worth over time stacked by source.
 Below it, it charts the asset classes over time: each day's classes as
@@ -875,7 +875,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
-- 0214: it lacks `web_private`, which the Private Markets cards read;
+- 0216: it lacks `web_private` over `report_private_markets`, which the
+  Private Markets cards read;
 - 0213: it lacks `web_spending_vs_year` and `change_pct`, which the
   Spending tiles against last year read, and its matcher pool reads a
   coin's dust as zero, so the dust stays out of the transfer pairs the
@@ -1064,8 +1065,9 @@ inception overrides and exclusions, the transfer-netting heuristic,
 synthetic onboarding. A SQL re-implementation would be a second returns
 engine that drifts. So the existing engine computes and the result is
 **materialized** into `report_returns` (migration 0026). It,
-`report_bridge`, `report_gains`, the `report_exposure` tables, the
-`report_yield` tables and the serving tables (below) are gold's
+`report_bridge`, `report_private_markets`, `report_gains`, the
+`report_exposure` tables, the `report_yield` tables and the serving
+tables (below) are gold's
 *derived* tables;
 everything else is loader-written source of truth or computed on read.
 
@@ -1086,6 +1088,11 @@ stay CLI-only.
 the rows of `wealthdb returns bridge --period monthly -x <CCY>`, off the
 same datasets and in the same transaction. Its money has two decimals,
 so a window's months sum in SQL to the CLI's bucket.
+
+`report_private_markets` (migration 0215) holds the rows of `wealthdb
+returns private -x <CCY>` in each reporting currency, the total
+included, in the same transaction. Its IRR is the engine's solver, so a
+macro cannot hold it; a Go test holds the table to the CLI's rows.
 
 The 64 partitions are cheap because the loaded data depends only on the
 currency, never the grain or period: `RunReturns` is split into a load
@@ -1258,9 +1265,7 @@ rows verbatim, for the reason §7 gives. They are:
   position;
 - every transaction line: all of them, and the spending, income and
   cash flow lines;
-- each month end's marked share (`serving_marks`);
-- each private holding's figures at the latest snapshot
-  (`serving_private`).
+- each month end's marked share (`serving_marks`).
 
 Each table is one macro's output. `web-materialize` rewrites them all
 in one transaction, so a reader sees all old or all new. A Go test

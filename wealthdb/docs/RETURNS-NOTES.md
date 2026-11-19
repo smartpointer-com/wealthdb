@@ -279,9 +279,11 @@ Limits:
 - The view carries no volatility or other risk figure. Marks are too old
   and too sparse for one.
 
-`web refresh` writes `report_private_multi` to `serving_private`, and the
-Private Markets dashboard reads it through `web_private`. Guards:
-`TestPrivateMarkets`, `TestPrivateMarketsHistoricFX`, `TestPrivateView`.
+`web refresh` writes the view's rows in every reporting currency to
+`report_private_markets`, and the Private Markets dashboard reads them
+through `web_private`, the IRR with them. Guards: `TestPrivateMarkets`,
+`TestPrivateMarketsHistoricFX`, `TestPrivateMarketsTableIsTheCLIsRows`,
+`TestPrivateView`.
 
 ## The math (`internal/returns`)
 

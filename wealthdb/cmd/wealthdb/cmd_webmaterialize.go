@@ -34,7 +34,8 @@ func init() {
 // run applies (returnsCfgSettings) — each base partition is the
 // verbatim output of a bare
 // `wealthdb returns <grain> --period <granularity> --method both -x <CCY>`.
-// report_gains holds the monthly gains rows per reporting currency, the
+// report_private_markets holds the rows of `wealthdb returns private -x
+// <CCY>` per reporting currency. report_gains holds the monthly gains rows per reporting currency, the
 // rows `wealthdb gains <grain> --period monthly -x <CCY>` sums.
 // report_exposure holds the look-through at every month end and today
 // per reporting currency; an instant's class totals are those of
