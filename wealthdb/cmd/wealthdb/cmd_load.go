@@ -510,6 +510,11 @@ func printPassSummary(stdout io.Writer, res *spending.Result) {
 			"not loaded yet, or the ledger row describes none\n",
 			res.UnmatchedTransferOverrides)
 	}
+	if res.IdleTransferMatches > 0 {
+		fmt.Fprintf(stdout, "spending: %d transfer override `match` line(s) named both legs but paired none — "+
+			"the two legs read as one direction, or another line took one\n",
+			res.IdleTransferMatches)
+	}
 	if res.ReimbursementPairs > 0 || res.UnmatchedReimbursements > 0 || res.UnlinkedReimbursements > 0 {
 		fmt.Fprintf(stdout, "spending: %d reimbursement pair(s) from the ledger, %d ledger line(s) naming none; "+
 			"%d repayment(s) no road links (a `reimburse` line links one)\n",

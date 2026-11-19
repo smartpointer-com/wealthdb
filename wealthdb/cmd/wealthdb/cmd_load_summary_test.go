@@ -58,6 +58,7 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 		FamilyResult:               spend,
 		Income:                     income,
 		UnmatchedTransferOverrides: 2,
+		IdleTransferMatches:        5,
 		ReimbursementPairs:         3,
 		UnmatchedReimbursements:    1,
 		UnlinkedReimbursements:     4,
@@ -74,6 +75,7 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 		"income: 5 payer verdict(s) carried forward",
 		"income: 6 payer verdict(s) left behind",
 		"spending: 2 merchant verdict(s) carried forward",
+		"spending: 5 transfer override `match` line(s) named both legs but paired none",
 		"spending: 3 reimbursement pair(s) from the ledger, 1 ledger line(s) naming none; " +
 			"4 repayment(s) no road links (a `reimburse` line links one)",
 	} {
@@ -104,6 +106,9 @@ func TestLoadPrintsBothFamilyBlocks(t *testing.T) {
 	}
 	if override > strings.Index(got, "income: 4 row(s)") {
 		t.Errorf("the transfer-override line prints after the income block:\n%s", got)
+	}
+	if strings.Index(got, "paired none") > strings.Index(got, "income: 4 row(s)") {
+		t.Errorf("the idle match line prints after the income block:\n%s", got)
 	}
 	// The reimbursement line is spending's too: the repayments net in
 	// spending, and the ledger that links them is the override ledger.

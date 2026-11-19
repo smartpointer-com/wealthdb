@@ -731,7 +731,9 @@ movement: the clerk stamped a number, the holder was there.
 A rule that names no leg is **reported, not dropped** — the pass counts
 it exactly as it counts an unmatched pin. An override is something a
 person wrote down about a row they believe exists, so one that quietly
-does nothing is the worst outcome available.
+does nothing is the worst outcome available. So is a `match` line that
+names both legs but pairs none. Its two legs read as one direction, or
+another line took one of them first.
 
 The ledger is read once and handed to BOTH matchers. The core is
 shared, so a pair the holder has settled must be settled the same way

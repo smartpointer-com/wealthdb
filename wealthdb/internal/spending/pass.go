@@ -123,6 +123,10 @@ type Result struct {
 	// about a row they believe exists, so one that quietly does
 	// nothing is worse than one that says so.
 	UnmatchedTransferOverrides int
+	// IdleTransferMatches is the number of `match` lines that named a
+	// leg on each side but paired none (gold.IdleTransferMatches),
+	// reported for the same reason.
+	IdleTransferMatches int
 
 	// ReimbursementPairs is the number of ledger `reimburse` lines that
 	// named a repayment and its outflow, UnmatchedReimbursements the lines
@@ -271,6 +275,7 @@ func RunDeterministicPass(ctx context.Context, db *sql.DB, opts Options) (*Resul
 		return nil, err
 	}
 	pairs := matchTransferPairs(legs, opts.MatchWindowDays, opts.MatchTolerancePct, overrides, rates)
+	res.IdleTransferMatches = len(gold.IdleTransferMatches(opts.TransferOverrides, legs, pairs))
 	matched := matchedPartners(pairs)
 	res.Cashflow.AmbiguousReferences = evidence.ambiguousRefs
 

@@ -670,7 +670,9 @@ func (b banded) candidates(d TransferLeg, admit func(d, c TransferLeg) bool) []i
 // nearer coincidence — which is the whole reason to state it. A forced pair
 // whose legs are not both in the pool is silently absent: the pool is the
 // caller's business, and a leg it never offered is not this file's to
-// complain about.
+// complain about. So is one whose debit is not negative, or whose leg an
+// earlier forced pair took; the caller reports its line
+// (IdleTransferMatches).
 func matchForcedPairs(debits, credits []TransferLeg, used, claimed []bool, opts TransferMatchOpts, claim func(di, ci int, by TransferMatchPhase)) {
 	if len(opts.Overrides.forced) == 0 {
 		return

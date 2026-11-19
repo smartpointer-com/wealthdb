@@ -113,3 +113,42 @@ func TestTransferOverridesRejectContradictions(t *testing.T) {
 		t.Error("a leg forced to pair with itself must be rejected")
 	}
 }
+
+// A `match` line that names a leg on each side but pairs none is returned:
+// two legs of one direction, a zero amount reading as a credit, or a leg
+// another line took first. A line that pairs, or that names no leg, is not.
+func TestIdleTransferMatchesNamesALineThatPairsNothing(t *testing.T) {
+	t.Parallel()
+	day := int64(100) * SecondsPerDay
+	sel := func(owner string, amount float64) *TransferOverrideSelector {
+		return &TransferOverrideSelector{Source: "bank", Account: owner, Day: day, Amount: amount, Currency: "USD"}
+	}
+	legs := []TransferLeg{
+		leg("bank", "checking", "out", 100, -500),
+		leg("bank", "savings", "in", 100, 500),
+		leg("bank", "broker", "in", 100, 500),
+		leg("bank", "wallet", "zero", 100, 0),
+		leg("bank", "card", "credit", 100, 20),
+	}
+	rules := []TransferOverrideRule{
+		{Verb: VerbMatch, A: *sel("checking", -500), B: sel("savings", 500)},
+		{Verb: VerbMatch, A: *sel("checking", -500), B: sel("broker", 500)},
+		{Verb: VerbMatch, A: *sel("wallet", -0.004), B: sel("card", 20)},
+		{Verb: VerbMatch, A: *sel("nowhere", -500), B: sel("savings", 500)},
+	}
+	o, unresolved, err := ResolveTransferOverrides(rules, legs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unresolved) != 1 {
+		t.Fatalf("unresolved = %v, want the line naming no leg", unresolved)
+	}
+	pairs := MatchTransferLegs(legs, TransferMatchOpts{WindowDays: 5, Overrides: o})
+	idle := IdleTransferMatches(rules, legs, pairs)
+	if len(idle) != 2 {
+		t.Fatalf("idle = %v, want the zero-amount line and one of the two on one debit", idle)
+	}
+	if idle[0].B.Account != "broker" && idle[0].B.Account != "savings" || idle[1].A.Account != "wallet" {
+		t.Errorf("idle = %v, want a line on the shared debit, then the zero-amount line", idle)
+	}
+}

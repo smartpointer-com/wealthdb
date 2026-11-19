@@ -112,8 +112,27 @@ type TransferOverrideSelector struct {
 	Source   string
 	Account  string  // gold account_external_id
 	Day      int64   // UTC midnight of occurred_at, Unix seconds
-	Amount   float64 // net_amount as gold stores it: canonical sign
+	Amount   float64 // the leg's amount as the matcher reads it (TransferLeg.Amt)
 	Currency string
+}
+
+// legsAt are the legs s names: those on its account, day and currency whose
+// amount is s's within a cent.
+func legsAt(s TransferOverrideSelector, legs []TransferLeg) []LegRef {
+	var out []LegRef
+	for _, l := range legs {
+		if l.Group != s.Source || l.Owner != s.Account || l.Ccy != s.Currency {
+			continue
+		}
+		if l.Day != EpochDay(s.Day) {
+			continue
+		}
+		if diff := l.Amt - s.Amount; diff > TransferMatchMinEps || diff < -TransferMatchMinEps {
+			continue
+		}
+		out = append(out, LegRef{l.Group, l.Owner, l.ID})
+	}
+	return out
 }
 
 // TransferOverrideRule is one line of the ledger before resolution.
@@ -141,22 +160,6 @@ type TransferOverrideRule struct {
 // list is returned rather than raised, so a caller can warn and carry on
 // rather than fail a whole pass over one stale line.
 func ResolveTransferOverrides(rules []TransferOverrideRule, legs []TransferLeg) (TransferOverrides, []TransferOverrideRule, error) {
-	find := func(s TransferOverrideSelector) []LegRef {
-		var out []LegRef
-		for _, l := range legs {
-			if l.Group != s.Source || l.Owner != s.Account || l.Ccy != s.Currency {
-				continue
-			}
-			if l.Day != EpochDay(s.Day) {
-				continue
-			}
-			if diff := l.Amt - s.Amount; diff > TransferMatchMinEps || diff < -TransferMatchMinEps {
-				continue
-			}
-			out = append(out, LegRef{l.Group, l.Owner, l.ID})
-		}
-		return out
-	}
 	var (
 		isolated  []LegRef
 		forbidden [][2]LegRef
@@ -167,7 +170,7 @@ func ResolveTransferOverrides(rules []TransferOverrideRule, legs []TransferLeg) 
 		if r.Verb == VerbReimburse {
 			continue // pairs no transfer: the spending pass reads it
 		}
-		as := find(r.A)
+		as := legsAt(r.A, legs)
 		if len(as) == 0 {
 			unmatched = append(unmatched, r)
 			continue
@@ -180,7 +183,7 @@ func ResolveTransferOverrides(rules []TransferOverrideRule, legs []TransferLeg) 
 			isolated = append(isolated, as...)
 			continue
 		}
-		bs := find(*r.B)
+		bs := legsAt(*r.B, legs)
 		if len(bs) == 0 {
 			unmatched = append(unmatched, r)
 			continue
@@ -211,4 +214,41 @@ func ResolveTransferOverrides(rules []TransferOverrideRule, legs []TransferLeg) 
 	}
 	o, err := newTransferOverrides(isolated, forbidden, forced)
 	return o, unmatched, err
+}
+
+// IdleTransferMatches returns the `match` rules that name a leg on both
+// sides but that no pair of the matcher answers to: no override pair joins
+// a leg of the one side and a leg of the other. Such a line resolves, so
+// ResolveTransferOverrides does not report it, and still does nothing. Its
+// two legs read as one direction (two debits, or two credits, a zero
+// amount among them), or both sides name one leg, or another line claimed
+// a leg first. It is reported for the reason an unresolved line is.
+func IdleTransferMatches(rules []TransferOverrideRule, legs []TransferLeg, pairs []TransferMatchPair) []TransferOverrideRule {
+	forced := map[string]bool{}
+	for _, p := range pairs {
+		if p.By == MatchedByOverride {
+			forced[pairKey(LegRef{p.Debit.Group, p.Debit.Owner, p.Debit.ID},
+				LegRef{p.Credit.Group, p.Credit.Owner, p.Credit.ID})] = true
+		}
+	}
+	var idle []TransferOverrideRule
+	for _, r := range rules {
+		if r.Verb != VerbMatch || r.B == nil {
+			continue
+		}
+		as, bs := legsAt(r.A, legs), legsAt(*r.B, legs)
+		if len(as) == 0 || len(bs) == 0 {
+			continue // unresolved: ResolveTransferOverrides reports it
+		}
+		paired := false
+		for _, a := range as {
+			for _, b := range bs {
+				paired = paired || forced[pairKey(a, b)]
+			}
+		}
+		if !paired {
+			idle = append(idle, r)
+		}
+	}
+	return idle
 }
