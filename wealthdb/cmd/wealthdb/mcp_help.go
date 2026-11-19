@@ -260,6 +260,7 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - tracking_netted: (view=bridge) net_flow and onboarded had opposite signs, so the smaller size reads as a move into or out of tracking, in neither column.
 - no_mark: (view=private) the holding never had a value, so nav, tvpi and irr_pct are blank.
 - exited: (view=private) the holding has left the holdings, so nav is 0 and marked_at is its last line's mark.
+- at_cost: (view=private) the source carries the NAV at cost, before any valuation, so tvpi reads 1 and irr_pct 0 by construction.
 - call_after_mark, distribution_after_mark: (view=private) a call, or a distribution or exit, came after the mark, so tvpi reads low, or high.
 - exit_unvalued=N: (view=private) N exits in kind state no value.
 - unpriced=N: (view=private) N legs or lines have no rate to the currency and leave the figures.

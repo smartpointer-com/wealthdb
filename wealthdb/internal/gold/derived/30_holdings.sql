@@ -1473,6 +1473,12 @@ CREATE MACRO private_legs(p_asof, p_ccy) AS TABLE (
               l.transaction_external_id
 );
 
+-- at_cost marks a NAV whose every line the source carries at cost, not
+-- at a valuation of its own: what moved in before any mark. AngelList
+-- states it as a position's valuation_basis cost, Carta's fund carry as
+-- called_capital. Its multiples read 1 and its IRR 0 by construction.
+-- A mark plus what moved in since (mark_plus_cost) is a mark.
+--
 -- report_private: one row per private holding at p_asof, in p_ccy, then
 -- the total. A holding with no money in, out or marked is left out.
 -- paid_in is the calls, net of refunds; distributed the cash and the
@@ -1486,8 +1492,9 @@ CREATE MACRO private_legs(p_asof, p_ccy) AS TABLE (
 -- day a money-weighted return ends: the later of the NAV's snapshot and
 -- the last leg. The total adds the money and pools the multiples: its nav is
 -- NULL where a holding's is, and its marked_at is the oldest mark.
--- quality names what a figure misses: no_mark, exited, call_after_mark,
--- distribution_after_mark, exit_unvalued=N, unpriced=N; on the total,
+-- quality names what a figure misses: no_mark, exited, at_cost,
+-- call_after_mark, distribution_after_mark, exit_unvalued=N, unpriced=N;
+-- on the total,
 -- each tag with the count of holdings it holds on.
 CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
     WITH legs AS (SELECT * FROM private_legs(p_asof, p_ccy)),
@@ -1508,11 +1515,15 @@ CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
     lines AS (
         SELECT p.silver_source_id, p.account_external_id, p.instrument_external_id, p.snapshot_at,
                COALESCE(p.valued_at, p.snapshot_at) AS marked_at, p.market_value,
+               COALESCE(json_extract_string(pp.payload, '$.valuation_basis') IN ('cost', 'called_capital'),
+                        FALSE) AS at_cost,
                CAST(fx_pick(p.market_value, p.currency, p_ccy,
                             o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(38,10)) AS value_x
           FROM positions_at([p_asof]) p
           JOIN f ON f.silver_source_id = p.silver_source_id AND f.account_external_id = p.account_external_id
            AND f.instrument_external_id = p.instrument_external_id
+          JOIN positions pp ON pp.silver_source_id = p.silver_source_id AND pp.snapshot_at = p.snapshot_at
+           AND pp.account_external_id = p.account_external_id AND pp.position_key = p.position_key
           ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = p.currency AND o0.to_ccy = p_ccy AND o0.day <= (p.snapshot_at // 86400)
           ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = p.currency AND o1.to_ccy = 'CHF' AND o1.day <= (p.snapshot_at // 86400)
           ASOF LEFT JOIN fx_daily o2 ON o2.from_ccy = 'CHF' AND o2.to_ccy = p_ccy AND o2.day <= (p.snapshot_at // 86400)
@@ -1521,7 +1532,7 @@ CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
     navs AS (
         SELECT silver_source_id, account_external_id, instrument_external_id,
                MAX(snapshot_at) AS nav_at, MIN(marked_at) AS marked_at, SUM(value_x) AS nav,
-               SUM(market_value) <> 0 AS valued,
+               SUM(market_value) <> 0 AS valued, bool_and(at_cost) AS at_cost,
                COUNT(*) FILTER (WHERE value_x IS NULL) AS lines_unpriced
           FROM lines
          GROUP BY ALL),
@@ -1541,6 +1552,7 @@ CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
                f.legs_unpriced + COALESCE(n.lines_unpriced, 0) AS unpriced,
                s.silver_source_id IS NULL AS no_mark,
                n.nav_at IS NULL AND s.silver_source_id IS NOT NULL AS exited,
+               COALESCE(n.at_cost, FALSE) AS at_cost,
                f.moved OR COALESCE(n.valued, FALSE) AS invested,
                n.marked_at IS NOT NULL AND f.last_call > n.marked_at // 86400 AS call_after_mark,
                n.marked_at IS NOT NULL AND f.last_back > n.marked_at // 86400 AS back_after_mark
@@ -1558,6 +1570,7 @@ CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
                GREATEST(COALESCE(nav_at, 0), last_leg * 86400) AS end_at,
                concat_ws(';', CASE WHEN no_mark THEN 'no_mark' END,
                               CASE WHEN exited THEN 'exited' END,
+                              CASE WHEN at_cost THEN 'at_cost' END,
                               CASE WHEN call_after_mark THEN 'call_after_mark' END,
                               CASE WHEN back_after_mark THEN 'distribution_after_mark' END,
                               CASE WHEN exits_unvalued > 0 THEN 'exit_unvalued=' || exits_unvalued END,
@@ -1569,6 +1582,7 @@ CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
                MAX(GREATEST(COALESCE(nav_at, 0), last_leg * 86400)),
                concat_ws(';', CASE WHEN count_if(no_mark) > 0 THEN 'no_mark=' || count_if(no_mark) END,
                               CASE WHEN count_if(exited) > 0 THEN 'exited=' || count_if(exited) END,
+                              CASE WHEN count_if(at_cost) > 0 THEN 'at_cost=' || count_if(at_cost) END,
                               CASE WHEN count_if(call_after_mark) > 0
                                    THEN 'call_after_mark=' || count_if(call_after_mark) END,
                               CASE WHEN count_if(back_after_mark) > 0

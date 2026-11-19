@@ -261,6 +261,10 @@ Quality tags:
   `irr_pct` are blank.
 - `exited`: the holding has left the holdings, so `nav` is 0 and
   `marked_at` is the mark of its last line.
+- `at_cost`: the source carries the NAV at cost, before any valuation
+  of its own, so `tvpi` reads 1 and `irr_pct` 0 by construction. AngelList
+  states such a line as `valuation_basis: cost`, Carta's fund carry as
+  `called_capital`. A mark plus what moved in since is a mark.
 - `call_after_mark`: a call came after the mark. The NAV leaves it out
   until the next mark, so `tvpi` reads low.
 - `distribution_after_mark`: a distribution or an exit came after the

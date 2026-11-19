@@ -111,6 +111,8 @@ The quality column says what a row misses:
   no_mark                  no value was ever recorded: nav, tvpi and
                            irr_pct are blank
   exited                   the holding has left the holdings: nav is 0
+  at_cost                  the source carries the NAV at cost, before
+                           any valuation: tvpi reads 1 and irr_pct 0
   call_after_mark          a call came after the mark
   distribution_after_mark  a distribution or exit came after the mark
   exit_unvalued=N          N exits in kind state no value

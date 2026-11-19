@@ -3,6 +3,7 @@ package gold
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"math"
 	"slices"
 	"strings"
@@ -262,5 +263,42 @@ func TestPrivateMarketsUnpriced(t *testing.T) {
 	rows, _ := privateRows(t, db, ctx, "EUR")
 	if f := rows["FUND"]; !slices.Contains(f.Quality, "unpriced=5") || f.IRR != nil {
 		t.Errorf("FUND in EUR %+v: four legs and a line have no rate", f)
+	}
+}
+
+// A NAV a source carries at cost, before any mark of its own, says so:
+// the multiples read 1 and the IRR 0 by construction, not by a valuation.
+// AngelList states it as valuation_basis cost, Carta's fund carry as
+// called_capital. A mark plus what moved in since is a mark.
+func TestPrivateMarketsAtCost(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedPrivateFixture(t, db, ctx)
+	dec31 := dy(2024, time.December, 31)
+	for _, c := range []struct{ inst, basis string }{
+		{"CARRY", "cost"}, {"CALLED", "called_capital"}, {"MARKED", "mark_plus_cost"},
+	} {
+		inst := c.inst
+		inTx(t, db, ctx, func(w *Writer) error {
+			if err := w.InsertTransactions(ctx, []canonical.TransactionChange{{SilverSourceID: "pm",
+				TransactionExternalID: "c-" + inst, OccurredAt: dy(2024, time.October, 1), AccountExternalID: "INV",
+				InstrumentExternalID: &inst, Kind: canonical.TxKindContribution, Currency: "USD", NetAmount: decp(-400)}}); err != nil {
+				return err
+			}
+			return w.InsertPositions(ctx, []canonical.PositionChange{{SilverSourceID: "pm", AccountExternalID: "INV",
+				SnapshotAt: dec31, PositionKey: inst, InstrumentExternalID: &inst,
+				AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleFund, Currency: "USD",
+				ValuedAt: dy(2024, time.October, 1), MarketValue: decp(400),
+				Payload: json.RawMessage(`{"valuation_basis": "` + c.basis + `"}`)}})
+		})
+	}
+	rows, _ := privateRows(t, db, ctx, "USD")
+	for inst, want := range map[string]bool{"CARRY": true, "CALLED": true, "MARKED": false, "FUND": false} {
+		if got := slices.Contains(rows[inst].Quality, "at_cost"); got != want {
+			t.Errorf("%s quality %v, at_cost %v", inst, rows[inst].Quality, want)
+		}
+	}
+	if !slices.Contains(rows[""].Quality, "at_cost=2") {
+		t.Errorf("total quality %v: it counts the holdings at cost", rows[""].Quality)
 	}
 }
