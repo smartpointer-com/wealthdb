@@ -592,6 +592,20 @@ CREATE VIEW web_marks AS
       FROM serving_marks
      WHERE currency = 'USD';
 
+-- web_private: the Private Markets tiles read `wealthdb returns private`'s
+-- rows, one set per reporting currency, each holding with its account's
+-- label, the total last.
+CREATE VIEW web_private AS
+    SELECT p.currency, p.is_total, p.silver_source_id, p.account_external_id,
+           CASE WHEN NOT p.is_total THEN account_label(a.display_name, p.account_external_id,
+                                                      p.silver_source_id, a.account_kind) END AS account_label,
+           p.instrument_external_id, p.holding,
+           epoch_ms(p.first_call * 1000) AS first_call, p.paid_in, p.distributed, p.nav,
+           epoch_ms(p.marked_at * 1000) AS marked_at, p.dpi, p.tvpi, p.quality
+      FROM serving_private p
+      LEFT JOIN accounts a ON a.silver_source_id = p.silver_source_id
+           AND a.account_external_id = p.account_external_id;
+
 -- ============================================================
 -- A portfolio's fee base leaves out its debts (docs/SPENDING.md §7).
 --

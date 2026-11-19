@@ -43,6 +43,7 @@ var servingTables = []servingTable{
 	{"serving_cashflow_transactions", "report_cashflow_transactions_multi(0, " + latestArg + ")"},
 	{"serving_marks", "report_marks_multi()"},
 	{"serving_spending_vs_year", "report_spending_vs_year_multi()"},
+	{"serving_private", "report_private_multi(" + latestArg + ")"},
 }
 
 // servingMaterialized are the tables MaterializeServingTables rewrites.

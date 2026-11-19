@@ -24,7 +24,17 @@ func computeMWR(v0, v1 float64, winFrom, winTo int64, flows []returns.Flow, asse
 // solve, or nil with the mwr_* flag that says why there is none.
 func solveMWR(solve func(v0, v1 float64, from, to int64, flows []returns.Flow) (float64, error),
 	v0, v1 float64, winFrom, winTo int64, windowFlows []returns.Flow, assets []*accountData, q []string) (*float64, []string) {
-	if allNavOnly(assets) || len(windowFlows) == 0 {
+	if allNavOnly(assets) {
+		return nil, append(q, "mwr_no_flows")
+	}
+	return solveIRR(solve, v0, v1, winFrom, winTo, windowFlows, anyNavOnly(assets), q)
+}
+
+// solveIRR is solveMWR on flows that are every flow there was, or, with
+// incomplete, a part of them, which a rate found says (mwr_incomplete_flows).
+func solveIRR(solve func(v0, v1 float64, from, to int64, flows []returns.Flow) (float64, error),
+	v0, v1 float64, winFrom, winTo int64, windowFlows []returns.Flow, incomplete bool, q []string) (*float64, []string) {
+	if len(windowFlows) == 0 {
 		return nil, append(q, "mwr_no_flows")
 	}
 	// If the entity's net invested capital over the window — the opening base plus
@@ -59,7 +69,7 @@ func solveMWR(solve func(v0, v1 float64, from, to int64, flows []returns.Flow) (
 		}
 		return nil, q
 	}
-	if anyNavOnly(assets) {
+	if incomplete {
 		q = append(q, "mwr_incomplete_flows")
 	}
 	if returns.MWRSignChanges(v0, v1, winFrom, winTo, windowFlows) > 1 {
