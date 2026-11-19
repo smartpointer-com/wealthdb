@@ -3617,6 +3617,10 @@ and at the end of today:
   holding's value in that currency, over the holding's dollar value. A
   holding no rate converts to US dollars is left out in every currency.
 
+One statement walks up to 15 month ends. DuckDB plans the walk and
+looks up the rates once for all of them, which is most of the cost of
+one month end. A larger batch is faster and holds more memory at once.
+
 The walk with each leaf's debt and issuer dimensions
 (`exposure_yield_leaves`) costs several times the plain one, so two more
 tables hold it at today and the last second of each of the 12 months

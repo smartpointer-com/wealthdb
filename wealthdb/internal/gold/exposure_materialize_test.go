@@ -241,6 +241,57 @@ func checkMaterializedWrappers(t *testing.T, ctx context.Context, db *sql.DB, at
 	}
 }
 
+// A month end's rows are the same whichever instants share its
+// statement: one statement per instant writes what one for all writes,
+// each value to the bit.
+func TestExposureMonthEndsIgnoreTheirStatement(t *testing.T) {
+	t.Parallel()
+	db, ctx := openExposureFixture(t)
+	tx, _, err := beginPinned(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback() //nolint:errcheck — the test writes nothing to keep
+	if _, err := tx.ExecContext(ctx, `DELETE FROM report_exposure`); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := FirstHoldingsAt(ctx, tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instants := PeriodEnds(first, exAsOf+45*86400, 1)
+	if len(instants) < 3 {
+		t.Fatalf("instants %v: the test needs several", instants)
+	}
+	n1, err := materializeMonthEnds(ctx, tx, instants, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n2, err := materializeMonthEnds(ctx, tx, instants, len(instants), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored, differ int
+	if err := tx.QueryRowContext(ctx, `SELECT count(DISTINCT as_of) FROM report_exposure`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM (
+	    (SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = 1
+	     EXCEPT ALL
+	     SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = 2)
+	    UNION ALL
+	    (SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = 2
+	     EXCEPT ALL
+	     SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = 1))`).
+		Scan(&differ); err != nil {
+		t.Fatal(err)
+	}
+	if n1 == 0 || n1 != n2 || stored != len(instants) || differ != 0 {
+		t.Errorf("one per statement %d rows, all in one %d, %d of %d instants stored, %d rows differ",
+			n1, n2, stored, len(instants), differ)
+	}
+}
+
 // An empty gold materializes nothing.
 func TestMaterializeExposureOnAnEmptyGold(t *testing.T) {
 	t.Parallel()
