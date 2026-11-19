@@ -64,7 +64,9 @@ type request struct {
 	currency string
 	// from and to bound a window, inclusive, in epoch seconds; from 0
 	// is an open start. asOf is the as-of instant of holdings, exposure
-	// and yield, and today on income's forward views.
+	// and yield. On a trailing-year window it is the last second of
+	// today, which income's forward views and spending's in_progress
+	// tag read.
 	from, to int64
 	asOf     int64
 

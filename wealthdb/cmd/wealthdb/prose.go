@@ -129,6 +129,15 @@ func tagNotes(tags []tagNote) string {
 	return b.String()
 }
 
+// tagNames are the tags alone, in order.
+func tagNames(tags []tagNote) []string {
+	names := make([]string, len(tags))
+	for i, q := range tags {
+		names[i] = q.tag
+	}
+	return names
+}
+
 // tagList are tags as the MCP help lists them: one "- tag: meaning."
 // line each.
 func tagList(tags []tagNote) string {

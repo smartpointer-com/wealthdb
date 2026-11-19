@@ -738,9 +738,9 @@ movement: the clerk stamped a number, the holder was there.
 A rule that names no leg is **reported, not dropped** — the pass counts
 it exactly as it counts an unmatched pin. An override is something a
 person wrote down about a row they believe exists, so one that quietly
-does nothing is the worst outcome available. So is a `match` line that
-names both legs but pairs none. Its two legs read as one direction, or
-another line took one of them first.
+does nothing is the worst outcome available. A `match` line that names
+both legs but pairs none is reported too. Its two legs read as one
+direction, one of them is zero, or another line took one of them first.
 
 The ledger is read once and handed to BOTH matchers. The core is
 shared, so a pair the holder has settled must be settled the same way
@@ -2098,12 +2098,14 @@ earlier. Three columns follow the plain view's:
 | column | reads |
 |---|---|
 | `year_before` | the category's `net_spend` over the same days a year earlier |
-| `change_pct` | the change from `year_before`, in percent of its size. Blank where `year_before` is zero |
+| `change_pct` | the change from `year_before`, in percent of its size. Blank where `year_before` is zero or has no rate |
 | `quality` | `no_year_before`, `in_progress` |
 
 Both sides cover the same days. A window from 15 March compares with
-the year before from 15 March, and 29 February compares with 28
-February. A category that only one side has reads 0 on the other.
+the year before from 15 March. A window from 29 February starts the
+year before on 28 February. A window through 28 February ends the year
+before on the 29th where that year has one. A category that only one
+side has reads 0 on the other.
 
 `--period` is `monthly`, `quarterly`, `annual` or `total`. A day or a
 week a year earlier is a different weekday, so those two are refused.
@@ -2117,8 +2119,8 @@ own window.
 
 Limits:
 
-- `in_progress`: the bucket has not ended, so this side is still
-  accruing. The dashboard's rows stop at the last whole month.
+- `in_progress`: the bucket's part of the window ends today or later,
+  so this side is still accruing. The dashboard's rows stop at the last whole month.
 - Each side converts at its own lines' historic rates, so a currency
   move can read as a change.
 - `no_year_before`: gold's first spending line falls after the year

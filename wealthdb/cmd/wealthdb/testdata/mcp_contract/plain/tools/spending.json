@@ -103,7 +103,7 @@
         "type": "string"
       },
       "vs_last_year": {
-        "description": "categories only: each row beside the same days a year earlier: year_before, change_pct (blank where the year before is zero) and quality; period monthly, quarterly, annual or total (default false).",
+        "description": "categories only: each row beside the same days a year earlier, with year_before, change_pct and quality. change_pct is blank where the year before is zero or has no rate. The period is monthly, quarterly, annual or total (default false).",
         "type": "boolean"
       }
     },

@@ -243,7 +243,8 @@ func checkMaterializedWrappers(t *testing.T, ctx context.Context, db *sql.DB, at
 
 // A month end's rows are the same whichever instants share its
 // statement: one statement per instant writes what one for all writes,
-// each value to the bit.
+// and what batches with a short last one write, each value to the bit.
+// An empty list writes nothing.
 func TestExposureMonthEndsIgnoreTheirStatement(t *testing.T) {
 	t.Parallel()
 	db, ctx := openExposureFixture(t)
@@ -271,24 +272,44 @@ func TestExposureMonthEndsIgnoreTheirStatement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var stored, differ int
+	// Batches of all but one: the last batch holds one instant.
+	n3, err := materializeMonthEnds(ctx, tx, instants, len(instants)-1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := materializeMonthEnds(ctx, tx, nil, exposureMonthEndsPerStatement, 4); err != nil || n != 0 {
+		t.Errorf("no instants: %d rows, %v", n, err)
+	}
+	var stored int
 	if err := tx.QueryRowContext(ctx, `SELECT count(DISTINCT as_of) FROM report_exposure`).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM (
-	    (SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = 1
-	     EXCEPT ALL
-	     SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = 2)
-	    UNION ALL
-	    (SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = 2
-	     EXCEPT ALL
-	     SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = 1))`).
-		Scan(&differ); err != nil {
-		t.Fatal(err)
+	// differ counts the rows one run wrote and the other did not, and the
+	// instants whose row counts the two disagree on.
+	differ := func(a, b int) int {
+		var rows, counts int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM (
+		    (SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = ?
+		     EXCEPT ALL
+		     SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = ?)
+		    UNION ALL
+		    (SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = ?
+		     EXCEPT ALL
+		     SELECT * EXCLUDE (computed_at) REPLACE (CAST(value AS VARCHAR) AS value) FROM report_exposure WHERE computed_at = ?))`,
+			a, b, b, a).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM (
+		    SELECT as_of FROM report_exposure WHERE computed_at IN (?, ?)
+		     GROUP BY as_of HAVING count(*) FILTER (WHERE computed_at = ?) <> count(*) FILTER (WHERE computed_at = ?))`,
+			a, b, a, b).Scan(&counts); err != nil {
+			t.Fatal(err)
+		}
+		return rows + counts
 	}
-	if n1 == 0 || n1 != n2 || stored != len(instants) || differ != 0 {
-		t.Errorf("one per statement %d rows, all in one %d, %d of %d instants stored, %d rows differ",
-			n1, n2, stored, len(instants), differ)
+	if n1 == 0 || n1 != n2 || n1 != n3 || stored != len(instants) || differ(1, 2) != 0 || differ(1, 3) != 0 {
+		t.Errorf("one per statement %d rows, all in one %d, a short last batch %d, %d of %d instants stored, "+
+			"%d and %d rows differ", n1, n2, n3, stored, len(instants), differ(1, 2), differ(1, 3))
 	}
 }
 

@@ -536,12 +536,12 @@ type accountData struct {
 	// moved, for the legs that name one; nil when none does. The netter
 	// pairs such a leg by holding and quantity (pairInKind).
 	inKind map[string]heldMove
-	// debut is what the valuation that the money coming in before the
-	// account's debut funds holds, by holding: its first valuation, or its
-	// first nonzero one after a zero first value (fundedDay). It is read for
-	// an account whose transfer-like legs on or before its debut moved a
-	// holding; nil otherwise, or where that valuation holds cash or prices
-	// its holdings in more than one currency (loadDebutHoldings).
+	// debut is what the funded valuation holds, by holding (fundedDay): the
+	// first valuation, or the first nonzero one after a zero first value.
+	// It is read for an account whose transfer-like legs on or before its
+	// debut moved a holding; nil otherwise, or where that valuation holds
+	// cash or prices its holdings in more than one currency
+	// (loadDebutHoldings).
 	debut map[string]debutHolding
 
 	// twin is the same account in residueCurrency's dataset, nil where the
@@ -1208,16 +1208,16 @@ func nameHoldings(byCcy map[string]map[string]*accountData) *holdingUnion {
 	return u
 }
 
-// debutHolding is one holding of a debut's first valuation: the quantity
-// held and its share of the valuation's value.
+// debutHolding is one holding of the valuation a debut's legs fund
+// (fundedDay): the quantity held and its share of the valuation's value.
 type debutHolding struct{ qty, share float64 }
 
 // loadDebutHoldings reads, for every account a leg moved a holding into on or
 // before its debut, the holdings of the valuation such legs fund (fundedDay,
-// accountData.debut): the positions of the day's last snapshot. A share is the position's market
-// value over all of them, so it is read only where every position states one
-// in a single currency and the account holds no cash then. A holding is
-// named as the legs name it (u). Each currency's
+// accountData.debut): the positions of the day's last snapshot. A share is
+// the position's market value over all of them, so it is read only where
+// every position states one in a single currency and the account holds no
+// cash then. A holding is named as the legs name it (u). Each currency's
 // account reads its own debut day: where FX starts later in one currency,
 // its value, and so its debut, starts later too.
 func loadDebutHoldings(ctx context.Context, q querier, facts map[string]instrumentFacts, u *holdingUnion, byCcy map[string]map[string]*accountData) error {

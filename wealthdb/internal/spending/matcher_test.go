@@ -126,8 +126,8 @@ func TestACoinsDustPairsOnItsQuantity(t *testing.T) {
 	idle := sel("bank", "CASH1", day(80), 0.004, "USD")
 	res := runPass(t, db, ctx, Options{TransferOverrides: []gold.TransferOverrideRule{
 		{Verb: gold.VerbMatch, A: sel("bank", "CUST1", day(40), -0.00000377, "ETH"), B: &late},
-		// A share's leg in the share's own currency is no coin's: its zero
-		// stays a zero, a credit, and the line pairs two credits.
+		// A share's leg is no coin's: its instrument is not its currency,
+		// so its zero stays a zero and pairs in no phase.
 		{Verb: gold.VerbMatch, A: sel("bank", "BRK1", day(80), 0, "USD"), B: &idle},
 	}})
 	got := scanPairs(t, db, `

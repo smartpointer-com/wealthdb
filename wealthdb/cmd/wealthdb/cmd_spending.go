@@ -39,7 +39,7 @@ var spendingFamily = &family{
 				if req.vsLastYear {
 					return newReport(buildSpendCategoryVsColumnRegistry(req.currency, req.period), defaultSpendCategoryVsColumns,
 						func(ctx context.Context, db *sql.DB) ([]gold.SpendCategoryVsRow, error) {
-							return gold.SpendingCategoriesVsLastYear(ctx, db, req.from, req.to, req.currency, part, req.level)
+							return gold.SpendingCategoriesVsLastYear(ctx, db, req.from, req.to, req.currency, part, req.level, req.asOf)
 						})
 				}
 				return newReport(buildSpendCategoryColumnRegistry(req.currency, req.period), defaultSpendCategoryColumns,
@@ -107,6 +107,23 @@ var spendingFamily = &family{
 // vsLastYearPeriods are the periods --vs-last-year takes: buckets that
 // fall on the same days a year earlier.
 var vsLastYearPeriods = []string{"monthly", "quarterly", "annual", "total"}
+
+// vsLastYearDoc is what --vs-last-year and the MCP option add to a row,
+// in the words both front ends print.
+var vsLastYearDoc = "each row beside the same days a year earlier, with year_before, change_pct and quality. " +
+	"change_pct is blank where the year before is zero or has no rate. The period is " +
+	orList(vsLastYearPeriods)
+
+// spendVsYearTags are the quality tags of a row against last year
+// (report_spending_categories_vs).
+var spendVsYearTags = []tagNote{
+	{"no_year_before", "gold's lines start after the year before does"},
+	{"in_progress", "the bucket's part of the window has not ended"},
+}
+
+// vsLastYearRatesDoc says how the two sides of a row against last year
+// convert, in the words both front ends print.
+const vsLastYearRatesDoc = "Each side converts at its own historic rates, so a currency move can read as a change."
 
 // spendCategoryHeader is the categories view's header: its period and
 // level, and vs_last_year where it is set.
@@ -295,10 +312,7 @@ Flags:
                     primary is about a dozen broad groups ("Food and
                     drink"); a category someone names — groceries,
                     restaurants, flights — is detailed
-  --vs-last-year    categories only: each row beside the same days a year
-                    earlier: year_before, change_pct (blank where the year
-                    before is zero) and quality. The period is monthly,
-                    quarterly, annual or total
+  --vs-last-year    ` + strings.Join(wrapWords("categories only: "+vsLastYearDoc, 54), "\n"+strings.Repeat(" ", 20)) + `
   -f, --format      table | csv | csv_plain | json
   -C, --columns     comma-separated names, 'default', 'all', or a +ADD,-REMOVE delta
   -F, --filter COND keep the rows where COND holds; repeatable;
@@ -316,10 +330,8 @@ account, grep the table or take -f json and filter in jq.
 Categories reconcile: for any period and level, the category rows of a
 bucket sum to that bucket's summary row.
 
-Against last year, quality names what a comparison misses:
-no_year_before (gold's lines start after the year before does) and
-in_progress (the bucket has not ended yet). Each side converts at its
-own historic rates, so a currency move can read as a change.
+Against last year, quality names what a comparison misses:` + tagNotes(spendVsYearTags) + `
+` + strings.Join(wrapWords(vsLastYearRatesDoc, 70), "\n") + `
 
 A category of '(uncategorized)' is the backlog — rows no rule, matcher,
 provider or model could place. 'wealthdb categorize' works it down.

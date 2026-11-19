@@ -35,7 +35,7 @@ The returns quality column gives the reason for every n/a and tags every approxi
 - at_cost: (view=private) the source carries the NAV at cost, before any valuation, so tvpi reads 1 and irr_pct 0 by construction.
 - call_after_mark, distribution_after_mark: (view=private) a call, or a distribution or exit, came after the mark, so tvpi reads low, or high.
 - exit_unvalued=N: (view=private) N exits in kind state no value.
-- unpriced=N: (view=private) N legs or lines have no rate to the currency and leave the figures.
+- unpriced=N: (view=private) N legs or lines have no rate to the currency: the sums leave them out, and an unpriced leg blanks irr_pct.
 Other tags name their reason the same way.
 
 On spending view=fees, quality says what a row misses, beside the return's tags:
@@ -127,3 +127,7 @@ On cashflow's projection, quality lists what a row rests on:
 - trailing: the other parts are monthly averages of the look-back.
 - terms: a mortgage's instalments end at its terms' maturity.
 - thin: the look-back holds under 6 months.
+
+On spending view=categories with vs_last_year, quality says what the comparison misses:
+- no_year_before: gold's lines start after the year before does.
+- in_progress: the bucket's part of the window has not ended.

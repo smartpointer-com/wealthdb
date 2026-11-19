@@ -494,7 +494,8 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 	t.Run("vs-last-year sets the year before beside each row", func(t *testing.T) {
 		// The fixture's lines run from 5 May 2026, so a window from 5 May
 		// 2027 reads them as the year before and spends nothing itself.
-		so, se, code := run(t, "-c", cfg, "spending", "categories", "2027-05-05", "2027-06-30",
+		// The window ends after fixtureToday, so it is in progress.
+		so, se, code := runToday(t, "-c", cfg, "spending", "categories", "2027-05-05", "2027-06-30",
 			"--period", "total", "--level", "detailed", "--vs-last-year", "-f", "csv")
 		if code != 0 {
 			t.Fatalf("exit=%d stderr=%s", code, se)
@@ -514,7 +515,7 @@ func TestSpendingCLIEndToEnd(t *testing.T) {
 			t.Errorf("groceries = %q, want nothing spent against 80 the year before, -100%%, in progress", groceries)
 		}
 		// From a day earlier, the year before starts before gold's lines.
-		so, _, code = run(t, "-c", cfg, "spending", "categories", "2027-05-04", "2027-06-30", "--vs-last-year")
+		so, _, code = runToday(t, "-c", cfg, "spending", "categories", "2027-05-04", "2027-06-30", "--vs-last-year")
 		if code != 0 || !strings.Contains(so, "no_year_before") {
 			t.Errorf("from 4 May, exit=%d, want no_year_before:\n%s", code, so)
 		}
@@ -746,6 +747,21 @@ func TestSpendingTransactionsCarriesBothClassifications(t *testing.T) {
 	} {
 		if !strings.Contains(so, want) {
 			t.Errorf("spending transactions is missing %q:\n%s", want, so)
+		}
+	}
+}
+
+// Every tag of a row against last year reaches the CLI usage and the MCP
+// quality help.
+func TestSpendVsYearTagsReachBothFrontEnds(t *testing.T) {
+	t.Parallel()
+	usage := spendingUsage()
+	for _, q := range spendVsYearTags {
+		if !strings.Contains(usage, "\n    "+q.tag+" ") {
+			t.Errorf("usage does not list the %s tag", q.tag)
+		}
+		if !strings.Contains(qualityHelp, "\n- "+q.tag+": "+q.meaning+".") {
+			t.Errorf("describe topic=quality does not list the %s tag", q.tag)
 		}
 	}
 }

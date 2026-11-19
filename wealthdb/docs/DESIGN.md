@@ -118,7 +118,7 @@ wealthdb reload  <id>... | -a         (RW)    Reset then load; -a builds a fresh
 wealthdb compact [--dry-run]          (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
 wealthdb lots rebuild [--force]       (RW)    Replay the trades into lots: the cost basis no source states (docs/LOTS.md).
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
-wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global; and two side views: stated, a document's stated periods, and bridge, why net worth moved.
+wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global; and three side views: stated, a document's stated periods; bridge, why net worth moved; and private, each private fund's calls, distributions and mark.
 wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check.
 wealthdb exposure <view> [flags]      (RO)    What is really owned, every fund looked through: classes, sectors, sizes, countries, currencies, credit, maturities, coupons, cycles, situs, securities, issuers, funds, coverage.
 wealthdb yield   <view> [flags]       (RO)    What the holdings earn and how they move with rates: global, sources, portfolios, accounts, positions, securities, funds, cash, curve, coverage.
@@ -1758,6 +1758,8 @@ is documented where it is used:
 - `report_returns` (migration `0026`) — §10.9.
 - `report_bridge` (migration `0177`) — the net worth bridge by month
   ([RETURNS-NOTES.md](RETURNS-NOTES.md), "The net worth bridge").
+- `report_private_markets` (migration `0215`) — each private holding's
+  figures ([RETURNS-NOTES.md](RETURNS-NOTES.md), "Private markets").
 - `report_gains` (migration `0117`) — §10.13.
 - The exposure tables: the reference and config tables (migrations
   `0125` and `0128`) — §7.6; the derived tables (migrations `0126` and
@@ -3294,7 +3296,7 @@ reads that one (`web_spending`, below) and buckets the lines itself:
 | `report_spending_summary(f, t, ccy, period)` | one row per period bucket |
 | `report_spending_categories(f, t, ccy, period, level)` | one row per (bucket, category), plus its share |
 | `report_spending_transactions(f, t, ccy)` | one row per spending line |
-| `report_spending_categories_vs(f, t, ccy, period, level)` | the categories rows, each beside the same bucket a year earlier |
+| `report_spending_categories_vs(f, t, ccy, period, level, today)` | the categories rows, each beside the same bucket a year earlier |
 
 `wealthdb spending <view>` (§4.12) is one view per macro and adds
 nothing to them: the `--period` name maps to the `date_trunc` part,
@@ -3352,10 +3354,10 @@ like tables:
   series owing money forever.
 
 A third serving view, **`web_spending_vs_year`**, reads
-`serving_spending_vs_year`, the rows of `report_spending_vs_year_multi()`:
+`serving_spending_vs_year`, the rows of `report_spending_vs_year_multi(today)`:
 `report_spending_categories_vs` by month and primary category in every
-reporting currency, through the last whole month, one row per
-(**currency**, month, category).
+reporting currency, through the last whole month before the refresh's
+day, one row per (**currency**, month, category).
 
 The first two views label an account through the shared `account_label` macro:
 `<name> (<source> <kind>)`, where the name falls back to the account's id
@@ -3585,7 +3587,9 @@ The macros:
   `unknown` where none is stated and `(none)` where the class has
   none;
 - `exposure_quality(flags, value)` and `exposure_situs_quality(basis,
-  value)`: the aggregates behind the `quality` columns;
+  value)`: the aggregates behind the `quality` columns. Each share sums
+  gross values as decimals (`exposure_gross`), so it prints the same in
+  every row order; `exposure_flag_share` prints one share;
 - `exposure_divergence(asof)`: how far each fund read from a report lies
   from its proxy, by sector and by country;
 - `report_exposure_classes`, `_sectors`, `_sizes`, `_countries`,
@@ -3617,9 +3621,9 @@ and at the end of today:
   holding's value in that currency, over the holding's dollar value. A
   holding no rate converts to US dollars is left out in every currency.
 
-One statement walks up to 15 month ends. DuckDB plans the walk and
-looks up the rates once for all of them, which is most of the cost of
-one month end. A larger batch is faster and holds more memory at once.
+One statement walks up to 15 of these instants. DuckDB plans the walk
+and looks up the rates once for all of them, which is most of the cost
+of one instant. A larger batch is faster and holds more memory at once.
 
 The walk with each leaf's debt and issuer dimensions
 (`exposure_yield_leaves`) costs several times the plain one, so two more

@@ -26,7 +26,7 @@ type PrivateRow struct {
 	PaidIn      *string // the calls, net of refunds
 	Distributed *string // cash and exits in kind back
 	NAV         *string // nil where the holding never had a value
-	MarkedAt    *int64  // epoch seconds; nil with no line at the as-of
+	MarkedAt    *int64  // epoch seconds; its last line's once exited, nil where it never had one (no_mark)
 	EndAt       int64   // epoch seconds: the later of the NAV's snapshot and the last leg
 
 	DPI, TVPI *float64
@@ -41,7 +41,7 @@ const privateAsOf = MaxEpoch
 
 // RunPrivate is the private-markets view in outCcy: report_private's rows,
 // each with the IRR of its legs (private_legs) and its NAV, the total with
-// the pooled IRR of every leg.
+// the pooled IRR of the listed holdings' legs.
 func RunPrivate(ctx context.Context, db *sql.DB, outCcy string) ([]PrivateRow, error) {
 	rows, err := scanRows(ctx, db, "RunPrivate",
 		`SELECT is_total, silver_source_id, account_external_id, display_name, nickname,
@@ -62,11 +62,24 @@ func RunPrivate(ctx context.Context, db *sql.DB, outCcy string) ([]PrivateRow, e
 	if err != nil {
 		return nil, err
 	}
+	byKey := map[[3]string][]privateLeg{}
+	for _, l := range legs {
+		byKey[l.key] = append(byKey[l.key], l)
+	}
+	// The total pools the legs of the holdings listed: a holding the view
+	// leaves out moved no money, and its legs move no rate.
+	var pooled []privateLeg
 	for i := range rows {
-		if rows[i].quality != "" {
-			rows[i].Quality = strings.Split(rows[i].quality, ";")
+		r := &rows[i]
+		if r.quality != "" {
+			r.Quality = strings.Split(r.quality, ";")
 		}
-		withPrivateIRR(&rows[i], legs)
+		own := pooled
+		if !r.IsTotal {
+			own = byKey[[3]string{r.SilverSourceID, r.AccountExternalID, r.InstrumentID}]
+			pooled = append(pooled, own...)
+		}
+		withPrivateIRR(r, own)
 	}
 	return rows, nil
 }
@@ -107,27 +120,25 @@ func loadPrivateLegs(ctx context.Context, db *sql.DB, outCcy string) ([]privateL
 }
 
 // withPrivateIRR sets r's IRR: the engine's money-weighted rate (solveIRR)
-// of the legs, none held before the first call, and the NAV received on
-// the day the return ends. The total pools every holding's legs. A row
-// with no NAV (no_mark), or with a leg of no rate (unpriced), has none;
-// solveIRR's mwr_* flag says why where it finds none.
+// of its legs, none held before the first call, and the NAV received on
+// the day the return ends. A row with no NAV (no_mark), or with a leg of
+// no rate (unpriced), has none; solveIRR's mwr_* flag says why where it
+// finds none. A rate stands wherever it is unique, so a holding that has
+// paid back more than it took and still holds a value has one.
 func withPrivateIRR(r *PrivateRow, legs []privateLeg) {
 	nav, ok := parseFloatPtr(r.NAV)
 	if !ok {
 		return
 	}
-	var flows []returns.Flow
+	flows := make([]returns.Flow, 0, len(legs))
 	for _, l := range legs {
-		if !r.IsTotal && l.key != [3]string{r.SilverSourceID, r.AccountExternalID, r.InstrumentID} {
-			continue
-		}
 		if l.paid == nil {
 			return
 		}
 		flows = append(flows, returns.Flow{Day: l.day, Amount: *l.paid})
 	}
 	start, end := EpochDay(r.FirstCall)-1, EpochDay(r.EndAt)
-	r.IRR, r.Quality = solveIRR(returns.XIRR, 0, nav, start, end, flowsIn(flows, start, end), false, r.Quality)
+	r.IRR, r.Quality = solveIRR(returns.XIRR, 0, nav, start, end, flowsIn(flows, start, end), false, true, r.Quality)
 }
 
 // ---- materialization -----------------------------------------------------

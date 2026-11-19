@@ -1250,14 +1250,10 @@ func TestMatcherPoolKinds(t *testing.T) {
 // net_amount straight out of gold, where it is nullable, so an
 // adapter that books a movement without one lands a leg here that
 // cannot be oriented: it can neither fund nor be funded, and it is
-// dropped before pairing. It still belongs to the enrichment
-// population, so it keeps its signature and its place in the backlog.
-//
-// The counter-leg is a debit a cent away from zero, which is what
-// makes the test sensitive: admit the null leg as an amount of zero
-// and it reads as a credit whose gap to that debit is exactly the
-// matcher's absolute floor, so the pair forms and both rows leave the
-// spending base. Every value is invented.
+// dropped before pairing, not offered as a zero. It still belongs to
+// the enrichment population, so it keeps its signature and its place
+// in the backlog. The debit beside it is offered as usual. Every value
+// is invented.
 func TestMatcherPoolDropsALegWithNoAmount(t *testing.T) {
 	db, ctx := openGold(t)
 	if _, err := db.ExecContext(ctx, `
@@ -1270,9 +1266,17 @@ func TestMatcherPoolDropsALegWithNoAmount(t *testing.T) {
 		t.Fatalf("seed legs: %v", err)
 	}
 
+	legs, _, err := loadMatcherPool(ctx, db, nil, passEvidence{})
+	if err != nil {
+		t.Fatalf("loadMatcherPool: %v", err)
+	}
+	if len(legs) != 1 || legs[0].ID != "W-TINY" {
+		t.Errorf("pool = %+v, want W-TINY alone: a leg with no amount cannot be oriented", legs)
+	}
+
 	res := runPass(t, db, ctx, Options{})
 	if res.MatcherRows != 0 {
-		t.Errorf("MatcherRows = %d, want 0: a leg with no amount cannot be oriented", res.MatcherRows)
+		t.Errorf("MatcherRows = %d, want 0", res.MatcherRows)
 	}
 	if got := signatureOf(t, db, ctx, "bank", "W-NULL"); got != "TRANSFER TO SAVINGS" {
 		t.Errorf("W-NULL signature = %q, want the narrative's own key", got)
@@ -1283,7 +1287,7 @@ func TestMatcherPoolDropsALegWithNoAmount(t *testing.T) {
 	base := spendingBaseIDs(t, db, ctx)
 	for _, id := range []string{"W-NULL", "W-TINY"} {
 		if _, ok := base[id]; !ok {
-			t.Errorf("%s fell out of the spending base; the unoriented leg paired", id)
+			t.Errorf("%s fell out of the spending base", id)
 		}
 	}
 }

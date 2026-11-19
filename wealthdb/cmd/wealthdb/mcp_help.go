@@ -224,7 +224,7 @@ Every result header states the dates it used, as ISO dates.`
 // exposure and yield quality columns, of income's forward views and of
 // the cash flow projection.
 var qualityHelp = returnsGainsQualityHelp + "\n\n" + exposureQualityHelp() + "\n\n" + yieldQualityHelp() + "\n\n" +
-	incomeForwardQualityHelp() + "\n\n" + cashflowPlanQualityHelp()
+	incomeForwardQualityHelp() + "\n\n" + cashflowPlanQualityHelp() + "\n\n" + spendVsYearQualityHelp()
 
 const returnsGainsQualityHelp = `The returns quality column gives the reason for every n/a and tags every approximation. Common tags:
 - since_data_inception: the return runs from the entity's first snapshot, not from when the account opened.
@@ -263,7 +263,7 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - at_cost: (view=private) the source carries the NAV at cost, before any valuation, so tvpi reads 1 and irr_pct 0 by construction.
 - call_after_mark, distribution_after_mark: (view=private) a call, or a distribution or exit, came after the mark, so tvpi reads low, or high.
 - exit_unvalued=N: (view=private) N exits in kind state no value.
-- unpriced=N: (view=private) N legs or lines have no rate to the currency and leave the figures.
+- unpriced=N: (view=private) N legs or lines have no rate to the currency: the sums leave them out, and an unpriced leg blanks irr_pct.
 Other tags name their reason the same way.
 
 On spending view=fees, quality says what a row misses, beside the return's tags:
@@ -325,6 +325,12 @@ func incomeForwardQualityHelp() string {
 // projection (cashflowPlanTags).
 func cashflowPlanQualityHelp() string {
 	return "On cashflow's projection, quality lists what a row rests on:" + tagList(cashflowPlanTags)
+}
+
+// spendVsYearQualityHelp lists the quality tags of spending's rows
+// against last year (spendVsYearTags).
+func spendVsYearQualityHelp() string {
+	return "On spending view=categories with vs_last_year, quality says what the comparison misses:" + tagList(spendVsYearTags)
 }
 
 func (s *mcpServer) privacyHelp() string {

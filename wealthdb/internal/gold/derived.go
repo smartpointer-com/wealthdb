@@ -332,11 +332,12 @@ func derivedDrops(ctx context.Context, tx *sql.Tx) ([]string, error) {
 
 // reshapeServing re-creates st's table, empty, with the columns of its
 // macro, where the table is absent or its columns differ. LIMIT 0 takes
-// the columns and computes nothing. The rows dropped are a cache: the
-// materialize key holds the engine's hash, so the next refresh refills
-// them.
+// the columns and computes nothing, and any today gives the same
+// columns. The rows dropped are a cache: the materialize key holds the
+// engine's hash, so the next refresh refills them.
 func reshapeServing(ctx context.Context, tx *sql.Tx, st servingTable) error {
-	want, err := columnsOf(ctx, tx, `SELECT * FROM `+st.source)
+	source := st.call(0)
+	want, err := columnsOf(ctx, tx, `SELECT * FROM `+source)
 	if err != nil {
 		return err
 	}
@@ -352,7 +353,7 @@ func reshapeServing(ctx context.Context, tx *sql.Tx, st servingTable) error {
 		return nil
 	}
 	_, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+st.table+`;
-	    CREATE TABLE `+st.table+` AS SELECT * FROM `+st.source+` LIMIT 0`)
+	    CREATE TABLE `+st.table+` AS SELECT * FROM `+source+` LIMIT 0`)
 	return err
 }
 

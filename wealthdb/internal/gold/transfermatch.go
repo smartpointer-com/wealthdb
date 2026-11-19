@@ -280,10 +280,10 @@ const referenceMatchMaxDays = 90
 //     its reversal on its own account (reversals).
 //
 // A leg whose amount is zero moved nothing and pairs in no phase, a forced
-// one included. A banded pair must agree on native currency, sit within opts.WindowDays of
-// each other, and differ in amount by no more than the tolerance. A debit
-// whose currency has no credits at all is skipped, so a cross-currency
-// movement pairs only in phases 1 to 3 and 6.
+// one included. A banded pair must agree on native currency, sit within
+// opts.WindowDays of each other, and differ in amount by no more than the
+// tolerance. A debit whose currency has no credits at all is skipped, so a
+// cross-currency movement pairs only in phases 1 to 3 and 6.
 //
 // The result is deterministic. Legs are sorted by (day, group, owner, id) —
 // the slice is sorted IN PLACE — and each debit in that order ranks the
@@ -672,8 +672,8 @@ func (b banded) candidates(d TransferLeg, admit func(d, c TransferLeg) bool) []i
 // whose legs are not both in the pool is silently absent: the pool is the
 // caller's business, and a leg it never offered is not this file's to
 // complain about. So is one whose debit is not negative, whose credit is not
-// positive, or whose leg an earlier forced pair took; the caller reports its line
-// (IdleTransferMatches).
+// positive, or whose leg an earlier forced pair took; the caller reports its
+// line (IdleTransferMatches).
 func matchForcedPairs(debits, credits []TransferLeg, used, claimed []bool, opts TransferMatchOpts, claim func(di, ci int, by TransferMatchPhase)) {
 	if len(opts.Overrides.forced) == 0 {
 		return

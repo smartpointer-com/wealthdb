@@ -11,9 +11,9 @@
 -- IF NOT EXISTS keeps this replayable (see gold.Migrate's REPLAY note).
 -- ============================================================
 
--- report_private_markets: money is in cents, days are epoch seconds,
--- the multiples and the IRR are ratios, NULL where the CLI prints a
--- blank. quality is `;`-separated.
+-- report_private_markets: money rounds to the cent, as the CLI prints
+-- it; days are epoch seconds; the multiples and the IRR are ratios,
+-- NULL where the CLI prints a blank. quality is `;`-separated.
 CREATE TABLE IF NOT EXISTS report_private_markets (
     computed_at            BIGINT        NOT NULL,
     currency               TEXT          NOT NULL,

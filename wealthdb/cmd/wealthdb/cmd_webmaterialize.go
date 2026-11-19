@@ -27,16 +27,17 @@ func init() {
 // day, it returns without writing.
 // The serving tables hold the daily histories, the latest holdings and
 // every transaction line the serving views read, each its report
-// macro's rows verbatim (gold.MaterializeServingTables). report_returns holds the
-// full RunReturns matrix (every grain × period × reporting currency,
-// plus the per-year windowed since-<year> summaries) with the
+// macro's rows verbatim (gold.MaterializeServingTables). report_returns
+// holds the full RunReturns matrix (every grain × period × reporting
+// currency, plus the per-year windowed since-<year> summaries) with the
 // CLI-default knobs and the same wealthdb.cfg returns settings a CLI
 // run applies (returnsCfgSettings) — each base partition is the
 // verbatim output of a bare
 // `wealthdb returns <grain> --period <granularity> --method both -x <CCY>`.
 // report_private_markets holds the rows of `wealthdb returns private -x
-// <CCY>` per reporting currency. report_gains holds the monthly gains rows per reporting currency, the
-// rows `wealthdb gains <grain> --period monthly -x <CCY>` sums.
+// <CCY>` per reporting currency. report_gains holds the monthly gains
+// rows per reporting currency, the rows
+// `wealthdb gains <grain> --period monthly -x <CCY>` sums.
 // report_exposure holds the look-through at every month end and today
 // per reporting currency; an instant's class totals are those of
 // `wealthdb exposure classes -d <day> -x <CCY>`. The yield tables hold

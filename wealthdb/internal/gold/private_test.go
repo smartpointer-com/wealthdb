@@ -176,6 +176,75 @@ func TestPrivateMarkets(t *testing.T) {
 	}
 }
 
+// A holding that has paid back more than it took and still holds a value
+// has the unique IRR of its legs, the shape of a successful fund.
+func TestPrivateMarketsIRRPastPayback(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedPrivateFixture(t, db, ctx)
+	inst, dec31 := "WIN", dy(2024, time.December, 31)
+	inTx(t, db, ctx, func(w *Writer) error {
+		if err := w.InsertTransactions(ctx, []canonical.TransactionChange{
+			{SilverSourceID: "pm", TransactionExternalID: "w1", OccurredAt: dy(2024, time.February, 1), AccountExternalID: "INV",
+				InstrumentExternalID: &inst, Kind: canonical.TxKindContribution, Currency: "USD", NetAmount: decp(-1000)},
+			{SilverSourceID: "pm", TransactionExternalID: "w2", OccurredAt: dy(2024, time.August, 1), AccountExternalID: "INV",
+				InstrumentExternalID: &inst, Kind: canonical.TxKindDistribution, Currency: "USD", NetAmount: decp(1500)},
+		}); err != nil {
+			return err
+		}
+		return w.InsertPositions(ctx, []canonical.PositionChange{{SilverSourceID: "pm", AccountExternalID: "INV",
+			SnapshotAt: dec31, PositionKey: inst, InstrumentExternalID: &inst,
+			AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleFund, Currency: "USD",
+			ValuedAt: dec31, MarketValue: decp(500)}})
+	})
+	rows, _ := privateRows(t, db, ctx, "USD")
+	win := rows["WIN"]
+	want, err := returns.XIRR(0, 500, EpochDay(dy(2024, time.February, 1))-1, EpochDay(dec31), []returns.Flow{
+		{Day: EpochDay(dy(2024, time.February, 1)), Amount: 1000}, {Day: EpochDay(dy(2024, time.August, 1)), Amount: -1500}})
+	if err != nil || !isNear(win.IRR, want) || slices.Contains(win.Quality, "mwr_negative_net_capital") {
+		t.Errorf("WIN irr %v quality %v, want %v (%v)", win.IRR, win.Quality, want, err)
+	}
+}
+
+// The total's IRR pools the legs of the holdings it lists: a call
+// refunded whole is no holding, and its legs move no rate.
+func TestPrivateMarketsTotalIRR(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedPrivateFixture(t, db, ctx)
+	inst, dec31 := "GHOST", dy(2024, time.December, 31)
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertPositions(ctx, []canonical.PositionChange{{SilverSourceID: "pm", AccountExternalID: "INV",
+			SnapshotAt: dec31, PositionKey: inst, InstrumentExternalID: &inst,
+			AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleFund, Currency: "USD",
+			ValuedAt: dec31, MarketValue: decp(100)}})
+	})
+	rows, order := privateRows(t, db, ctx, "USD")
+	if slices.Contains(order, "REFUND") {
+		t.Fatalf("rows %v: REFUND moved no money", order)
+	}
+	total := rows[""]
+	if cents(t, total.NAV) != 210000+50000+10000 {
+		t.Fatalf("total nav %v, want FUND, LATE and GHOST", total.NAV)
+	}
+	at := func(y int, m time.Month, d int, paid float64) returns.Flow {
+		return returns.Flow{Day: EpochDay(dy(y, m, d)), Amount: paid}
+	}
+	// FUND, LATE, SPV, VOID and GHOST.
+	flows := []returns.Flow{
+		at(2024, time.January, 10, 1000), at(2024, time.June, 10, 1000), at(2024, time.June, 20, -100),
+		at(2024, time.September, 10, -300),
+		at(2024, time.January, 15, 500), at(2024, time.November, 1, 500),
+		at(2024, time.February, 1, 200), at(2024, time.July, 1, -600),
+		at(2024, time.February, 1, 50), at(2024, time.July, 1, 0),
+		at(2024, time.April, 1, 100),
+	}
+	want, err := returns.XIRR(0, 2700, EpochDay(dy(2024, time.January, 10))-1, EpochDay(dec31), flows)
+	if err != nil || !nearPtr(total.IRR, &want, 1e-9) {
+		t.Errorf("total irr %v, want %v (%v): the listed holdings' legs alone", total.IRR, want, err)
+	}
+}
+
 // Each leg converts at its own day's rate and the NAV at its snapshot's;
 // the multiples move with the currency.
 func TestPrivateMarketsHistoricFX(t *testing.T) {
@@ -237,7 +306,6 @@ func TestPrivateMarketsTableIsTheCLIsRows(t *testing.T) {
 		if len(got) != len(want) {
 			t.Fatalf("%s: %d rows in the table, %d from the CLI", ccy, len(got), len(want))
 		}
-		eqF := func(a, b *float64) bool { return (a == nil) == (b == nil) && (a == nil || math.Abs(*a-*b) < 1e-12) }
 		for i, w := range want {
 			g := got[i]
 			nav := ""
@@ -247,7 +315,7 @@ func TestPrivateMarketsTableIsTheCLIsRows(t *testing.T) {
 			if g.holding != w.Holding || cents(t, &g.paid) != cents(t, w.PaidIn) || cents(t, &g.back) != cents(t, w.Distributed) ||
 				(nav == "") != (g.nav == "") || nav != "" && cents(t, &g.nav) != cents(t, w.NAV) ||
 				g.quality != strings.Join(w.Quality, ";") || (g.marked == nil) != (w.MarkedAt == nil) ||
-				!eqF(g.dpi, w.DPI) || !eqF(g.tvpi, w.TVPI) || !eqF(g.irr, w.IRR) {
+				!nearPtr(g.dpi, w.DPI, 1e-12) || !nearPtr(g.tvpi, w.TVPI, 1e-12) || !nearPtr(g.irr, w.IRR, 1e-12) {
 				t.Errorf("%s row %d: table %+v, CLI %+v", ccy, i, g, w)
 			}
 		}
@@ -263,6 +331,10 @@ func TestPrivateMarketsUnpriced(t *testing.T) {
 	rows, _ := privateRows(t, db, ctx, "EUR")
 	if f := rows["FUND"]; !slices.Contains(f.Quality, "unpriced=5") || f.IRR != nil {
 		t.Errorf("FUND in EUR %+v: four legs and a line have no rate", f)
+	}
+	// A zero is zero in every currency: VOID's exit of no value is priced.
+	if v := rows["VOID"]; !slices.Contains(v.Quality, "unpriced=1") {
+		t.Errorf("VOID in EUR %+v: its call alone has no rate", v)
 	}
 }
 

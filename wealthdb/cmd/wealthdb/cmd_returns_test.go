@@ -234,7 +234,7 @@ func TestReturnsCfgSettingsTransferMatching(t *testing.T) {
 // side views refuse it.
 func TestCheckReturnsBenchmarkWholeOnly(t *testing.T) {
 	t.Parallel()
-	for _, v := range []string{"accounts", "portfolios", "sources", "stated", "bridge", "private"} {
+	for _, v := range []string{"accounts", "portfolios", "sources", "stated", "bridge"} {
 		if checkReturnsBenchmark(v, "spx") == nil {
 			t.Errorf("%s: a benchmark is accepted", v)
 		}

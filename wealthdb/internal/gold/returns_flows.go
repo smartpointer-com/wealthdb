@@ -198,17 +198,39 @@ func (m *movedLegs) fundedAt(a *accountData, v float64) float64 {
 func (m *movedLegs) lateAt(a *accountData, v float64) float64 { return m.heldAt(a, m.late[a], v) }
 
 // lateShown is a's late debut, where legs before its zero first value fund it
-// (late) and the window holds it, with what its value there shows beyond a's
-// own legs since the zero: those legs are flows or inside moves of their own.
+// and the window holds it, with what its value there shows beyond a's own
+// legs since the zero: those legs are flows or inside moves of their own. The
+// legs fund it where pairing found them (late), or where the window opens
+// between the zero and the late debut (fundedBefore).
 func (m *movedLegs) lateShown(a *accountData, w daySpan) (day int64, shown float64, ok bool) {
-	if _, funded := m.late[a]; !funded {
+	d := a.lateDebut()
+	if d == 0 || d > w.to {
 		return 0, 0, false
 	}
-	d := a.lateDebut()
-	if d > w.to {
+	if _, funded := m.late[a]; !funded && !a.fundedBefore(w.from) {
 		return 0, 0, false
 	}
 	return d, valueOn(a, d) - a.netIn(a.firstDay(), d), true
+}
+
+// fundedBefore says a window from `from` opens between a's zero first value
+// and its late debut, after money came in on or before the zero. The window
+// holds none of those legs, so its opening value holds none of their money,
+// paired or not: the late debut shows it, as a debut after `from` shows the
+// money moved in before the window.
+func (a *accountData) fundedBefore(from int64) bool {
+	first := a.firstDay()
+	if first > from || a.lateDebut() <= from {
+		return false
+	}
+	for _, flows := range [2][]returns.Flow{a.nonTransfer, a.transferLike} {
+		for _, f := range flows {
+			if f.Day <= first && f.Amount > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // valueOn is a's value on day, 0 where it holds none.
@@ -337,9 +359,10 @@ func (m *movedLegs) settle(flows []returns.Flow, l flowLeg, f fate) []returns.Fl
 // only where neither leg is dropped; with transit, or into a late debut, the
 // receiving leg's money is carried between the legs instead (carry). A
 // funding leg leaves its debut's onboarding, and its partner's legs that the
-// funding explains are marked on the partner's valuation day. Money leaving a closing account stays inside
-// where the partner is shown or funds a debut, so the final-day closure leaves
-// it out. A zero-tail exit leg that money came in on is passed through.
+// funding explains are marked on the partner's valuation day. Money leaving a
+// closing account stays inside where the partner is shown or funds a debut, so
+// the final-day closure leaves it out. A zero-tail exit leg that money came in
+// on is passed through.
 func (m *movedLegs) pair(a, b flowLeg, w daySpan, transit bool) {
 	fates := [2]fate{pairFate(a, b, w), pairFate(b, a, w)}
 	if fates[0] != fateDropped && fates[1] != fateDropped {
@@ -635,10 +658,10 @@ func (m *movedLegs) onboarding(flows []returns.Flow, assets []*accountData, w da
 			if of, ok := returns.FundedOnboardingFlow(debut, v, m.fundedAt(a, v)); ok {
 				flows = append(flows, of)
 			}
-			if d, shown, ok := m.lateShown(a, w); ok {
-				if of, ok := returns.FundedOnboardingFlow(d, shown, m.lateAt(a, valueOn(a, d))); ok {
-					flows = append(flows, of)
-				}
+		}
+		if d, shown, ok := m.lateShown(a, w); ok {
+			if of, ok := returns.FundedOnboardingFlow(d, shown, m.lateAt(a, valueOn(a, d))); ok {
+				flows = append(flows, of)
 			}
 		}
 	}

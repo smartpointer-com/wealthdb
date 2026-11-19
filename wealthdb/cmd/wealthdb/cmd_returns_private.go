@@ -9,11 +9,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
-// privateRefusedFlags are the returns flags that have no meaning on the
-// private view: it reads every leg since each holding's first call, and
-// its return is the money-weighted one.
-var privateRefusedFlags = []string{"method", "period", "annualize", "netting", "inception", "benchmark"}
-
 // checkPrivateWindow refuses a window: the view reads every leg since a
 // holding's first call, to the latest snapshot. today is the end of the
 // current day, the default window's end.
@@ -97,8 +92,10 @@ Each leg converts at its own day's rate, and the NAV at its snapshot's,
 so every currency reads at historic FX. A holding's money rounds to the
 cent, and the total adds the cents. The total's dpi and tvpi pool the
 holdings: the sums' ratios, not an average of the rows' ratios. Its
-irr_pct pools every leg, and its marked_at is the oldest mark. A
-holding with no value leaves the total's nav and tvpi blank.
+irr_pct pools the legs of every holding listed, and its marked_at is
+the oldest mark. A holding with no value leaves the total's nav, tvpi
+and irr_pct blank. The total is over every holding: a filter keeps or
+drops it as a row, never recomputes it.
 
 What the figures miss:
   - A call after the last mark sits outside the NAV until the next mark,
@@ -117,7 +114,8 @@ The quality column says what a row misses:
   distribution_after_mark  a distribution or exit came after the mark
   exit_unvalued=N          N exits in kind state no value
   unpriced=N               N legs or lines have no rate to the output
-                           currency: the figures leave them out
+                           currency: the sums leave them out, and a
+                           leg with none leaves irr_pct blank
 and the returns engine's mwr_* tags on irr_pct. On the total each tag
 counts the holdings it holds on.
 

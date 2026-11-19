@@ -18,10 +18,11 @@ import (
 // (exposure_leaves' direct): a forward held directly holds its legs
 // directly. Each value is an exact sum of its leaves (exposureSum).
 //
-// One statement walks many instants: the leaves and the holdings are
-// read per instant (LATERAL), and DuckDB plans and runs the walk once
-// for all of them. Its planning and its rate lookups, most of the cost
-// of one instant's walk, are paid once.
+// One statement walks a list of instants: the leaves and the holdings are
+// read per instant (LATERAL), and DuckDB plans and runs one walk for the
+// list. Its planning and its rate lookups, most of the cost of one
+// instant's walk, are paid once per statement
+// (exposureMonthEndsPerStatement).
 var exposureInsertSQL = `INSERT INTO report_exposure BY NAME
 WITH i AS (SELECT unnest(CAST($1 AS BIGINT[])) AS instant),
 ` + scaledLeavesSQL(`l AS (SELECT i.instant, x.* FROM i, LATERAL exposure_leaves(i.instant, 'USD') x)`) + `
@@ -32,16 +33,10 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, instant AS as_of,
   FROM s
  GROUP BY ALL`
 
-// exposureInstantsHoldingsSQL is one currency's holdings at each instant
-// of exposureInsertSQL's i, for scaledLeavesSQL.
-const exposureInstantsHoldingsSQL = `SELECT '%s' AS out_ccy, i.instant, x.src, x.acct, x.position_key, x.value, x.snap
-      FROM i, LATERAL exposure_holdings(i.instant, '%s') x WHERE x.value IS NOT NULL`
-
-// exposureMonthEndsPerStatement is how many instants one exposureInsertSQL
-// walks. A walk holds every instant's leaves at once. A larger batch
-// pays the planning and the rate lookups fewer times, so it is faster,
-// and it holds more memory at once; the bound keeps the walk beside the
-// other containers of a host.
+// exposureMonthEndsPerStatement is the most instants one
+// exposureInsertSQL walks. A walk holds every instant's leaves at once. A
+// larger batch pays the planning and the rate lookups fewer times, so it
+// is faster, and it holds more memory: the bound caps the walk's memory.
 const exposureMonthEndsPerStatement = 15
 
 // exposureSum is the exact sum of the DOUBLE expression x, as a DOUBLE:
@@ -95,18 +90,23 @@ s AS (SELECT l.*, h.out_ccy, COALESCE(h.value / NULLIF(usd.v, 0), zero.k) AS k, 
        WHERE usd.v <> 0 OR (l.value <> 0 AND zero.k IS NOT NULL))`
 }
 
-// exposureHoldingsSQL is one currency's holdings at the instant $1, for
-// scaledLeavesSQL.
-const exposureHoldingsSQL = `SELECT '%s' AS out_ccy, CAST($1 AS BIGINT) AS instant, src, acct, position_key, value, snap
-      FROM exposure_holdings(CAST($1 AS BIGINT), '%s') WHERE value IS NOT NULL`
+// exposureHoldingsSQL is one currency (%[1]s) of the holdings h of
+// scaledLeavesSQL: its instant column (%[2]s), the rows the instant comes
+// from ahead of the macro (%[3]s), and the instant the macro reads (%[4]s).
+const exposureHoldingsSQL = `SELECT '%[1]s' AS out_ccy, %[2]s, x.src, x.acct, x.position_key, x.value, x.snap
+      FROM %[3]sexposure_holdings(%[4]s, '%[1]s') x WHERE x.value IS NOT NULL`
 
-// exposureHoldingParts is the UNION of the holdings query q
-// (exposureHoldingsSQL or exposureInstantsHoldingsSQL) over every
-// reporting currency.
-func exposureHoldingParts(q string) string {
+// exposureHoldingParts is the UNION of exposureHoldingsSQL over every
+// reporting currency: at each instant of exposureInsertSQL's i, or, not
+// instants, at the instant $1.
+func exposureHoldingParts(instants bool) string {
+	col, from, at := "CAST($1 AS BIGINT) AS instant", "", "CAST($1 AS BIGINT)"
+	if instants {
+		col, from, at = "i.instant", "i, LATERAL ", "i.instant"
+	}
 	parts := make([]string, len(materializeCurrencies))
 	for i, c := range materializeCurrencies {
-		parts[i] = fmt.Sprintf(q, c, c)
+		parts[i] = fmt.Sprintf(exposureHoldingsSQL, c, col, from, at)
 	}
 	return strings.Join(parts, "\n    UNION ALL ")
 }
@@ -172,7 +172,7 @@ func materializeExposure(ctx context.Context, tx *sql.Tx, instants, recent []int
 // statements of per instants each, stamped computedAt. It returns the
 // number of rows written.
 func materializeMonthEnds(ctx context.Context, tx *sql.Tx, instants []int64, per int, computedAt int64) (int, error) {
-	insert := fmt.Sprintf(exposureInsertSQL, exposureHoldingParts(exposureInstantsHoldingsSQL))
+	insert := fmt.Sprintf(exposureInsertSQL, exposureHoldingParts(true))
 	n := 0
 	for chunk := range slices.Chunk(instants, per) {
 		res, err := tx.ExecContext(ctx, insert, chunk, computedAt)

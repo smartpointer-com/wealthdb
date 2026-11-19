@@ -27,16 +27,20 @@ func solveMWR(solve func(v0, v1 float64, from, to int64, flows []returns.Flow) (
 	if allNavOnly(assets) {
 		return nil, append(q, "mwr_no_flows")
 	}
-	return solveIRR(solve, v0, v1, winFrom, winTo, windowFlows, anyNavOnly(assets), q)
+	return solveIRR(solve, v0, v1, winFrom, winTo, windowFlows, anyNavOnly(assets), false, q)
 }
 
 // solveIRR is solveMWR on flows that are every flow there was, or, with
 // incomplete, a part of them, which a rate found says (mwr_incomplete_flows).
+// With uniqueStands, a rate stands wherever the flows change sign once, an
+// end value held or not: a private holding that has paid back more than it
+// took and still holds a value has the unique IRR of a successful fund.
 func solveIRR(solve func(v0, v1 float64, from, to int64, flows []returns.Flow) (float64, error),
-	v0, v1 float64, winFrom, winTo int64, windowFlows []returns.Flow, incomplete bool, q []string) (*float64, []string) {
+	v0, v1 float64, winFrom, winTo int64, windowFlows []returns.Flow, incomplete, uniqueStands bool, q []string) (*float64, []string) {
 	if len(windowFlows) == 0 {
 		return nil, append(q, "mwr_no_flows")
 	}
+	signChanges := returns.MWRSignChanges(v0, v1, winFrom, winTo, windowFlows)
 	// If the entity's net invested capital over the window — the opening base plus
 	// the total net external flow (deposits minus withdrawals) — is zero or below,
 	// the investor has on net been repaid at least everything they committed, so
@@ -53,8 +57,9 @@ func solveIRR(solve func(v0, v1 float64, from, to int64, flows []returns.Flow) (
 	// sold above its invested basis). Its IRR is unique and well-defined; blanking
 	// it would deny an MWR to precisely the gains the flow-counting policies
 	// exist to surface, while losses (net capital still positive) compute one.
+	// With uniqueStands the end value need not be ~0.
 	if mwrNetCapitalNonPositive(v0, windowFlows) &&
-		(v1 > valueTol || returns.MWRSignChanges(v0, v1, winFrom, winTo, windowFlows) != 1) {
+		(signChanges != 1 || (v1 > valueTol && !uniqueStands)) {
 		return nil, append(q, "mwr_negative_net_capital")
 	}
 	rate, err := solve(v0, v1, winFrom, winTo, windowFlows)
@@ -72,7 +77,7 @@ func solveIRR(solve func(v0, v1 float64, from, to int64, flows []returns.Flow) (
 	if incomplete {
 		q = append(q, "mwr_incomplete_flows")
 	}
-	if returns.MWRSignChanges(v0, v1, winFrom, winTo, windowFlows) > 1 {
+	if signChanges > 1 {
 		q = append(q, "mwr_nonunique")
 	}
 	return &rate, q

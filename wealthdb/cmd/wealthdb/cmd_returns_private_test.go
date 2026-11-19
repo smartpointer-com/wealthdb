@@ -188,4 +188,8 @@ func TestPrivateViewInMCP(t *testing.T) {
 		!strings.Contains(err.Error(), "private takes no period") {
 		t.Errorf("period passed through MCP: %v", err)
 	}
+	if _, err := callTool(t, s, "returns", map[string]any{"view": "private", "benchmark": "spx"}); err == nil ||
+		!strings.Contains(err.Error(), "private takes no benchmark") {
+		t.Errorf("benchmark passed through MCP: %v", err)
+	}
 }

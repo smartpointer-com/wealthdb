@@ -16,14 +16,23 @@ const (
 	debtDimensionCycle    = "cycle"
 )
 
+// oneInstantLeaves is the leaves l of scaledLeavesSQL at the instant $1:
+// the rows of the leaves macro, in US dollars, materialized or not.
+func oneInstantLeaves(macro string, materialized bool) string {
+	m := ""
+	if materialized {
+		m = "MATERIALIZED "
+	}
+	return "l AS " + m + "(\n    SELECT CAST($1 AS BIGINT) AS instant, * FROM " + macro + "(CAST($1 AS BIGINT), 'USD'))"
+}
+
 // exposureDebtSQL is the instant's buckets of the four debt and equity
 // views (EXPOSURE.md §7) per reporting currency, source and tax wrapper:
 // each leaf in each dimension as exposure_debt_buckets gives it, valued
 // in each reporting currency (scaledLeavesSQL). Each dimension sums to
 // the instant's net worth.
 var exposureDebtSQL = `INSERT INTO report_exposure_debt BY NAME
-WITH ` + scaledLeavesSQL(`l AS (
-    SELECT CAST($1 AS BIGINT) AS instant, * FROM exposure_debt_buckets(CAST($1 AS BIGINT), 'USD'))`) + `
+WITH ` + scaledLeavesSQL(oneInstantLeaves("exposure_debt_buckets", false)) + `
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, src AS silver_source_id,
        wrapper AS tax_wrapper, dimension, bucket, unknown, ` + exposureSum("value * k") + ` AS value
   FROM s
@@ -42,8 +51,7 @@ const exposureIssuersShown = 100
 // running one and the total among them, are exact (exposureSum), so the
 // ranks and shares never follow row order.
 var exposureIssuersSQL = `INSERT INTO report_exposure_issuer_ranks BY NAME
-WITH ` + scaledLeavesSQL(`l AS MATERIALIZED (
-    SELECT CAST($1 AS BIGINT) AS instant, * FROM exposure_yield_leaves(CAST($1 AS BIGINT), 'USD'))`) + `,
+WITH ` + scaledLeavesSQL(oneInstantLeaves("exposure_yield_leaves", true)) + `,
 g AS (
     SELECT out_ccy, COALESCE(issuer_key, '(none)') AS ik,
            CASE WHEN COALESCE(issuer_key, '(none)') = '(none)' THEN '(none)'
@@ -76,8 +84,7 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
 // absolute value as its weight, so a card that takes the label of the
 // heaviest slice gives the view's.
 var exposureSecuritiesSQL = `INSERT INTO report_exposure_security_slices BY NAME
-WITH ` + scaledLeavesSQL(`l AS (
-    SELECT CAST($1 AS BIGINT) AS instant, * FROM exposure_labeled_leaves(CAST($1 AS BIGINT), 'USD'))`) + `,
+WITH ` + scaledLeavesSQL(oneInstantLeaves("exposure_labeled_leaves", false)) + `,
 g AS (SELECT s.*, abs(s.value * s.k) AS w FROM s)
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, src AS silver_source_id,
        wrapper AS tax_wrapper, asset_class, security, MAX(name) AS name, MAX(ticker) AS ticker,
@@ -99,7 +106,7 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
 // dimensions costs several times the plain one, and the securities are
 // many rows an instant.
 func materializeExposureRecent(ctx context.Context, tx *sql.Tx, recent []int64, computedAt int64) (int, error) {
-	holdings := exposureHoldingParts(exposureHoldingsSQL)
+	holdings := exposureHoldingParts(false)
 	stmts := []string{fmt.Sprintf(exposureDebtSQL, holdings),
 		fmt.Sprintf(exposureIssuersSQL, holdings, exposureIssuersShown),
 		fmt.Sprintf(exposureSecuritiesSQL, holdings)}

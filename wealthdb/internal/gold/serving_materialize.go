@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -11,8 +12,19 @@ import (
 const latestArg = "9223372036854775807"
 
 // servingTable is a table that holds a report macro's rows verbatim:
-// source is the macro's call.
+// source is the macro's call. A source that names todayArg reads today
+// there (call).
 type servingTable struct{ table, source string }
+
+// todayArg stands, in a serving source, for the last second of the day
+// the tables are materialized on.
+const todayArg = "$today"
+
+// call is the source with today, the last second of a day, in place of
+// todayArg.
+func (s servingTable) call(today int64) string {
+	return strings.ReplaceAll(s.source, todayArg, strconv.FormatInt(today, 10))
+}
 
 // macro is the name of the macro the table's rows come from.
 func (s servingTable) macro() string {
@@ -42,7 +54,7 @@ var servingTables = []servingTable{
 	{"serving_income_transactions", "report_income_transactions_multi(0, " + latestArg + ")"},
 	{"serving_cashflow_transactions", "report_cashflow_transactions_multi(0, " + latestArg + ")"},
 	{"serving_marks", "report_marks_multi()"},
-	{"serving_spending_vs_year", "report_spending_vs_year_multi()"},
+	{"serving_spending_vs_year", "report_spending_vs_year_multi(" + todayArg + ")"},
 }
 
 // servingMaterialized are the tables MaterializeServingTables rewrites.
@@ -59,13 +71,13 @@ var servingMaterialized = func() []string {
 // and every transaction line, each its report macro's rows. A macro
 // computes its whole output on every read, a history every day from
 // the first snapshot, whatever a query asks for, so the dashboards read
-// the output from a table instead. It reads no field of the params. It
-// returns the number of rows written.
-func MaterializeServingTables(ctx context.Context, db *sql.DB, _ MaterializeParams) (int, error) {
+// the output from a table instead. Of the params it reads ToEpoch, the
+// last second of today, alone. It returns the number of rows written.
+func MaterializeServingTables(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
 	return rewriteTables(ctx, db, "MaterializeServingTables", beginPinned, servingMaterialized, func(tx *sql.Tx) (int, error) {
 		total := 0
 		for _, s := range servingTables {
-			res, err := tx.ExecContext(ctx, `INSERT INTO `+s.table+` SELECT * FROM `+s.source)
+			res, err := tx.ExecContext(ctx, `INSERT INTO `+s.table+` SELECT * FROM `+s.call(p.ToEpoch))
 			if err != nil {
 				return 0, fmt.Errorf("MaterializeServingTables %s: %w", s.table, err)
 			}

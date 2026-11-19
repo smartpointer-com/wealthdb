@@ -79,12 +79,27 @@ type vsRow struct {
 	hasNet, hasBefore bool
 }
 
+// vsToday is the today of the reads of the fixture's past windows: the
+// last second of a day after every line.
+var vsToday = endOfDay(2026, time.July, 15)
+
+// endOfDay is the last second of a UTC day.
+func endOfDay(y int, m time.Month, d int) int64 {
+	return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC).Unix() - 1
+}
+
 func readVsYear(t *testing.T, db *sql.DB, ctx context.Context, from, to int64, period string) map[[2]string]vsRow {
+	t.Helper()
+	return readVsYearIn(t, db, ctx, "USD", from, to, period, vsToday)
+}
+
+// readVsYearIn is readVsYear in ccy, on today.
+func readVsYearIn(t *testing.T, db *sql.DB, ctx context.Context, ccy string, from, to int64, period string, today int64) map[[2]string]vsRow {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, `
         SELECT COALESCE(strftime(epoch_ms(period_start * 1000), '%Y-%m'), 'total'), category, txn_count,
                CAST(net_spend AS DOUBLE), CAST(year_before AS DOUBLE), share, change_pct, quality
-          FROM report_spending_categories_vs(?, ?, 'USD', ?, 'detailed')`, from, to, period)
+          FROM report_spending_categories_vs(?, ?, ?, ?, 'detailed', ?)`, from, to, ccy, period, today)
 	if err != nil {
 		t.Fatalf("report_spending_categories_vs: %v", err)
 	}
@@ -150,12 +165,12 @@ func TestSpendingVsYearKeepsThePlainRows(t *testing.T) {
 	var differ int
 	if err := db.QueryRowContext(ctx, `
         WITH plain AS (SELECT row_number() OVER () AS n, * FROM report_spending_categories(?, ?, 'USD', 'month', 'primary')),
-             vs AS (SELECT row_number() OVER () AS n, * FROM report_spending_categories_vs(?, ?, 'USD', 'month', 'primary')
+             vs AS (SELECT row_number() OVER () AS n, * FROM report_spending_categories_vs(?, ?, 'USD', 'month', 'primary', ?)
                      WHERE txn_count > 0)
         SELECT count(*) FROM plain p FULL JOIN vs v USING (n)
          WHERE (p.period_start, p.category, p.category_label, p.txn_count, p.spend, p.refunds, p.net_spend, p.share)
                IS DISTINCT FROM (v.period_start, v.category, v.category_label, v.txn_count, v.spend, v.refunds, v.net_spend, v.share)`,
-		from, to, from, to).Scan(&differ); err != nil {
+		from, to, from, to, vsToday).Scan(&differ); err != nil {
 		t.Fatal(err)
 	}
 	if differ != 0 {
@@ -193,18 +208,22 @@ func TestSpendingVsYearTagsAMissingYear(t *testing.T) {
 func TestSpendingVsYearTagsTheCurrentMonth(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
-	now := time.Now().UTC()
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Unix()
-	lastMonth := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	today := endOfDay(2025, time.March, 15)
+	monthStart := time.Date(2025, time.March, 1, 0, 0, 0, 0, time.UTC).Unix()
+	lastMonth := time.Date(2025, time.February, 1, 0, 0, 0, 0, time.UTC).Unix()
 	seedSpendVsYearFixture(t, db, ctx, [2]int64{monthStart, -5}, [2]int64{monthStart - 86400, -7})
-	got := readVsYear(t, db, ctx, monthStart, monthStart+40*86400, "month")
-	key := [2]string{time.Unix(monthStart, 0).UTC().Format("2006-01"), "FOOD_AND_DRINK_GROCERIES"}
-	if r := got[key]; r.net != 5 || r.quality != "in_progress" {
+	got := readVsYearIn(t, db, ctx, "USD", monthStart, monthStart+40*86400, "month", today)
+	if r := got[[2]string{"2025-03", "FOOD_AND_DRINK_GROCERIES"}]; r.net != 5 || r.quality != "in_progress" {
 		t.Errorf("the current month = %+v, want 5, in_progress", r)
+	}
+	// The same month read after it ended is whole.
+	got = readVsYearIn(t, db, ctx, "USD", monthStart, monthStart+40*86400, "month", endOfDay(2025, time.April, 1))
+	if r := got[[2]string{"2025-03", "FOOD_AND_DRINK_GROCERIES"}]; r.quality != "" {
+		t.Errorf("March read in April = %+v, want no quality", r)
 	}
 	rows, err := db.QueryContext(ctx, `
         SELECT currency, count(*), max(month), count(*) FILTER (WHERE quality LIKE '%in_progress%')
-          FROM report_spending_vs_year_multi() GROUP BY 1 ORDER BY 1`)
+          FROM report_spending_vs_year_multi(?) GROUP BY 1 ORDER BY 1`, today)
 	if err != nil {
 		t.Fatalf("report_spending_vs_year_multi: %v", err)
 	}
@@ -229,6 +248,87 @@ func TestSpendingVsYearTagsTheCurrentMonth(t *testing.T) {
 	}
 }
 
+// TestSpendingVsYearBuckets: quarter and year buckets read in_progress
+// while today falls in them, a window that cuts a bucket cuts the year
+// before alike and reads whole, and a window through 28 February
+// reaches the 29th a year earlier.
+func TestSpendingVsYearBuckets(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedSpendVsYearFixture(t, db, ctx)
+	from, to := dy(2025, time.January, 1)-12*3600, endOfDay(2025, time.December, 31)
+	groc := func(got map[[2]string]vsRow, bucket string) vsRow {
+		return got[[2]string{bucket, "FOOD_AND_DRINK_GROCERIES"}]
+	}
+	for _, tc := range []struct {
+		period, bucket string
+		today          int64
+		want           string
+	}{
+		{"quarter", "2025-01", endOfDay(2025, time.February, 15), "in_progress"},
+		{"quarter", "2025-01", endOfDay(2025, time.March, 31), "in_progress"},
+		{"quarter", "2025-01", endOfDay(2025, time.April, 1), ""},
+		{"year", "2025-01", endOfDay(2025, time.June, 30), "in_progress"},
+		{"year", "2025-01", endOfDay(2026, time.January, 1), ""},
+	} {
+		r := groc(readVsYearIn(t, db, ctx, "USD", from, to, tc.period, tc.today), tc.bucket)
+		if r.net != 80 || r.before != 80 || r.quality != tc.want {
+			t.Errorf("%s on %s = %+v, want 80 against 80, quality %q",
+				tc.period, time.Unix(tc.today, 0).UTC().Format("2006-01-02"), r, tc.want)
+		}
+	}
+
+	// To 15 January: the lodging lines of the 20th fall outside both
+	// sides, and the cut quarter reads whole.
+	cut := readVsYear(t, db, ctx, from, endOfDay(2025, time.January, 15), "quarter")
+	if r := groc(cut, "2025-01"); r.net != 80 || r.before != 80 || r.quality != "" {
+		t.Errorf("the cut quarter's groceries = %+v, want 80 against 80, no quality", r)
+	}
+	if len(cut) != 1 {
+		t.Errorf("the cut quarter = %v, want groceries alone", cut)
+	}
+
+	feb := readVsYear(t, db, ctx, dy(2025, time.February, 1)-12*3600, endOfDay(2025, time.February, 28), "month")
+	if r := feb[[2]string{"2025-02", "FOOD_AND_DRINK_RESTAURANT"}]; r.before != 40 {
+		t.Errorf("February to the 28th: restaurants = %+v, want the 40 of 29 February 2024", r)
+	}
+}
+
+// TestSpendingVsYearWithoutARate: a side with no rate to the output
+// currency reads a blank year_before and change_pct, never a zero.
+func TestSpendingVsYearWithoutARate(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedSpendVsYearFixture(t, db, ctx)
+	// A flight in a currency gold holds no rate for, a year before one in
+	// dollars.
+	for i, l := range []struct {
+		at       int64
+		ccy, net string
+	}{{dy(2023, time.June, 20), "JPY", "-3000"}, {dy(2024, time.June, 20), "USD", "-30"}} {
+		id := "T-RATE-" + strconv.Itoa(i)
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at,
+                                      account_external_id, kind, currency, net_amount, description)
+            VALUES ('test-src', ?, ?, 'CARD1', 'purchase', ?, CAST(? AS DECIMAL(28,4)), 'SHOP')`,
+			id, l.at, l.ccy, l.net); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO spend_txn_enrichment (silver_source_id, transaction_external_id,
+                                              merchant_signature, signature_version,
+                                              spend_detailed, provenance, assigned_at)
+            VALUES ('test-src', ?, 'sig-shop', 1, 'TRAVEL_FLIGHTS', 'provider', 100)`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := readVsYear(t, db, ctx, dy(2024, time.June, 1)-12*3600, endOfDay(2024, time.June, 30), "month")
+	r := got[[2]string{"2024-06", "TRAVEL_FLIGHTS"}]
+	if r.net != 30 || r.hasBefore || r.change.Valid {
+		t.Errorf("June 2024 flights = %+v, want 30, a blank year_before and change_pct", r)
+	}
+}
+
 // TestSpendYearBefore: a calendar year back, 29 February to the 28th,
 // and an open end left alone.
 func TestSpendYearBefore(t *testing.T) {
@@ -246,6 +346,29 @@ func TestSpendYearBefore(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Errorf("spend_year_before(%d) = %d, want %d", tc.at, got, tc.want)
+		}
+	}
+}
+
+// TestSpendYearBeforeEnd: a window end maps as the exclusive bound after
+// it, so 28 February's end reaches through the 29th a year earlier; an
+// open end stays itself.
+func TestSpendYearBeforeEnd(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	for _, tc := range []struct{ at, want int64 }{
+		{endOfDay(2025, time.February, 28), endOfDay(2024, time.February, 29)},
+		{endOfDay(2024, time.February, 29), endOfDay(2023, time.February, 28)},
+		{dy(2025, time.March, 1), dy(2024, time.March, 1)},
+		{253402300799, 253402300799},
+		{math.MaxInt64, math.MaxInt64},
+	} {
+		var got int64
+		if err := db.QueryRowContext(ctx, `SELECT spend_year_before_end(?)`, tc.at).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Errorf("spend_year_before_end(%d) = %d, want %d", tc.at, got, tc.want)
 		}
 	}
 }

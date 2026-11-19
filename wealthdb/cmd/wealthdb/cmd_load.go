@@ -512,7 +512,7 @@ func printPassSummary(stdout io.Writer, res *spending.Result) {
 	}
 	if res.IdleTransferMatches > 0 {
 		fmt.Fprintf(stdout, "spending: %d transfer override `match` line(s) named both legs but paired none — "+
-			"the two legs read as one direction, or another line took one\n",
+			"the legs read as one direction, one is zero, or another line took one\n",
 			res.IdleTransferMatches)
 	}
 	if res.ReimbursementPairs > 0 || res.UnmatchedReimbursements > 0 || res.UnlinkedReimbursements > 0 {

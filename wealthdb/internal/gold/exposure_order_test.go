@@ -165,7 +165,8 @@ func TestExposureQualityShareIgnoresRowOrder(t *testing.T) {
 			values += "(?::DOUBLE, CASE WHEN ? = '' THEN [] ELSE [?] END, ?)"
 			args = append(args, leaves[k][0], leaves[k][1], leaves[k][1], i)
 		}
-		// A one-row-at-a-time cursor adds the floats in the order given.
+		// Five rows sum on one thread, in the subquery's order, so the float
+		// control adds them in the order given.
 		var float int
 		var text string
 		if err := db.QueryRowContext(ctx, `SELECT CAST(round(100 * SUM(abs(v)) FILTER (WHERE flags <> []) /

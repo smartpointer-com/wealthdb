@@ -16,6 +16,30 @@ func init() {
 	register("returns", routeReport(returnsFamily))
 }
 
+// returnsOptions are the returns family's options.
+var returnsOptions = []option{
+	{name: "method", cli: []string{"method"}, choices: returnsMethods, def: [2]string{"twr", "both"}},
+	{name: "period", cli: []string{"period"}, choices: returnsPeriods, def: [2]string{"quarterly", "total"}},
+	{name: "annualize", cli: []string{"annualize"}, choices: returnsAnnualize, def: [2]string{"auto", "auto"}},
+	{name: "netting", cli: []string{"netting"}, kind: optOnOff, choices: []string{"on", "off"},
+		def: [2]string{"on", "true"}},
+	{name: "inception", cli: []string{"inception"}, choices: returnsInception, def: [2]string{"full", "full"}},
+	{name: "benchmark", cli: []string{"benchmark"}},
+}
+
+// returnsOptionNames are every returns option's name: what the stated
+// and private views refuse. The stated view's document fixes the periods
+// and computes no return of its own (-x is refused beside them); the
+// private view reads every leg since each holding's first call, and its
+// return is the money-weighted one.
+var returnsOptionNames = func() []string {
+	names := make([]string, len(returnsOptions))
+	for i, o := range returnsOptions {
+		names[i] = o.name
+	}
+	return names
+}()
+
 // returnsFamily are the views `wealthdb returns <view>` supports: the
 // four reconciling grains, coarsest first, then three side views, which
 // are no grain of them: `stated`, the documents' stated periods beside
@@ -28,7 +52,7 @@ var returnsFamily = &family{
 		// The stated view carries no return: "value" is the engine's
 		// ending value.
 		view{name: "stated", side: true, principal: fixedColumn("end_value"), usage: returnsStatedUsage,
-			refuses:     statedRefusedFlags,
+			refuses:     returnsOptionNames,
 			refuseWhy:   " — the periods and the currency are the document's",
 			ownCurrency: "each period in the currency its document states",
 			build: func(cfg *config.Config, req request) *report {
@@ -43,20 +67,12 @@ var returnsFamily = &family{
 			}},
 		// On the private view, "value" is what each holding is marked at.
 		view{name: "private", side: true, principal: fixedColumn("nav"), usage: returnsPrivateUsage,
-			refuses: privateRefusedFlags, checkWindow: checkPrivateWindow,
+			refuses: returnsOptionNames, checkWindow: checkPrivateWindow,
 			build: func(_ *config.Config, req request) *report {
 				return returnsPrivateReport(req)
 			}},
 	),
-	options: []option{
-		{name: "method", cli: []string{"method"}, choices: returnsMethods, def: [2]string{"twr", "both"}},
-		{name: "period", cli: []string{"period"}, choices: returnsPeriods, def: [2]string{"quarterly", "total"}},
-		{name: "annualize", cli: []string{"annualize"}, choices: returnsAnnualize, def: [2]string{"auto", "auto"}},
-		{name: "netting", cli: []string{"netting"}, kind: optOnOff, choices: []string{"on", "off"},
-			def: [2]string{"on", "true"}},
-		{name: "inception", cli: []string{"inception"}, choices: returnsInception, def: [2]string{"full", "full"}},
-		{name: "benchmark", cli: []string{"benchmark"}},
-	},
+	options:  returnsOptions,
 	window:   sinceInception,
 	currency: true,
 	narrow:   "from/to or a filter",

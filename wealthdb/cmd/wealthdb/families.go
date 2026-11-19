@@ -651,8 +651,8 @@ func runReport(ctx context.Context, g globalFlags, fam *family, view string, arg
 
 // readWindow reads the CLI's window off in into req under the family's
 // rule: the as-of date (-d), or FROM [TO] with the family's default, the
-// view's own parser for a forward view. A family with forward views
-// reads them at today.
+// view's own parser for a forward view. A trailing-year family reads
+// today too: its forward views and the in_progress tag read it.
 func (fam *family) readWindow(in cliOptions, v *view, prefix string, now time.Time, cfg *config.Config, req *request) error {
 	fs := in.fs
 	var err error
@@ -684,9 +684,7 @@ func (fam *family) readWindow(in cliOptions, v *view, prefix string, now time.Ti
 		if cfg != nil {
 			horizon = cfg.YieldHorizon()
 		}
-		if fam.forwardViews() != nil {
-			req.asOf = anchorToDay(now.UTC(), true).Unix()
-		}
+		req.asOf = anchorToDay(now.UTC(), true).Unix()
 		req.from, req.to, err = reportWindow(fs, prefix, now, horizon, v.window)
 		return err
 	case pastMonth:

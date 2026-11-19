@@ -131,10 +131,12 @@ type SpendCategoryVsRow struct {
 
 // SpendingCategoriesVsLastYear is SpendingCategories with each row
 // beside the same bucket of the window a year earlier. `period` is
-// month, quarter, year or total; the caller validates it.
-func SpendingCategoriesVsLastYear(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, period, level string) ([]SpendCategoryVsRow, error) {
-	return scanRows(ctx, db, "SpendingCategoriesVsLastYear", `SELECT * FROM report_spending_categories_vs(?, ?, ?, ?, ?)`,
-		[]any{fromEpoch, toEpoch, outCcy, period, level}, func(r *SpendCategoryVsRow) []any {
+// month, quarter, year or total; the caller validates it. today is the
+// last second of today: a bucket whose part of the window ends on or
+// after it is in progress.
+func SpendingCategoriesVsLastYear(ctx context.Context, db *sql.DB, fromEpoch, toEpoch int64, outCcy, period, level string, today int64) ([]SpendCategoryVsRow, error) {
+	return scanRows(ctx, db, "SpendingCategoriesVsLastYear", `SELECT * FROM report_spending_categories_vs(?, ?, ?, ?, ?, ?)`,
+		[]any{fromEpoch, toEpoch, outCcy, period, level, today}, func(r *SpendCategoryVsRow) []any {
 			return []any{
 				i64(&r.PeriodStart), &r.Category, &r.CategoryLabel, &r.TxnCount,
 				dec(&r.Spend), dec(&r.Refunds), dec(&r.NetSpend), flt(&r.Share),

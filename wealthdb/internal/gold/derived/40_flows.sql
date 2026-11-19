@@ -126,15 +126,28 @@ CREATE MACRO detailed_stays_in_income(p_detailed) AS (
 -- passes a valid part INSIDE the call and nulls the result outside it.
 -- The timestamp comes from epoch_ms, not to_timestamp, which yields a
 -- TIMESTAMP WITH TIME ZONE and would truncate in the session's zone
--- rather than UTC. Any other part is passed through to date_trunc, so
--- an unrecognised one raises rather than bucketing wrongly; validating
--- the choice belongs to the caller.
+-- rather than UTC, and from a BIGINT, so a literal instant does not
+-- overflow an INTEGER. Any other part is passed through to date_trunc,
+-- so an unrecognised one raises rather than bucketing wrongly;
+-- validating the choice belongs to the caller.
 CREATE MACRO spend_period_bucket(p_period, p_at) AS (
     CASE WHEN p_period = 'total' THEN NULL
          ELSE CAST(epoch(date_trunc(
                   CASE WHEN p_period = 'total' THEN 'month' ELSE p_period END,
-                  epoch_ms(p_at * 1000))) AS BIGINT)
+                  epoch_ms(CAST(p_at AS BIGINT) * 1000))) AS BIGINT)
     END
+);
+
+-- spend_match_amount: the amount the transfer matcher compares for one
+-- transactions row. It is net_amount, but the quantity for a coin's leg
+-- in the coin itself (the instrument is the currency) whose amount
+-- net_amount's four places round to zero. A coin's dust then keeps its
+-- size and its sign, and pairs, while every other leg reads net_amount
+-- as stored. The quantity is kept to eight places. The pool and the
+-- matcher audit read it here.
+CREATE MACRO spend_match_amount(p_net, p_quantity, p_instrument, p_currency) AS (
+    CASE WHEN p_net = 0 AND p_quantity <> 0 AND p_instrument = p_currency
+         THEN p_quantity ELSE p_net END
 );
 
 -- spend_matcher_pool: the legs the internal-transfer matcher may pair,
@@ -184,18 +197,12 @@ CREATE MACRO spend_period_bucket(p_period, p_at) AS (
 -- out-of-scope account reads `internal_transfer` there instead of
 -- NULL. That is the label the pass has evidence for.
 --
--- match_amount is the amount the matcher compares: net_amount, but the
--- quantity for a coin's leg in the coin itself (the instrument is the
--- currency) whose amount net_amount's four places round to zero. A
--- coin's dust then keeps its size and its sign, and pairs, while every
--- other leg reads net_amount as stored. The quantity is kept to eight
--- places.
+-- match_amount is the amount the matcher compares (spend_match_amount).
 CREATE MACRO spend_matcher_pool(p_from, p_to) AS TABLE (
     SELECT t.silver_source_id, t.transaction_external_id, t.occurred_at,
            t.account_external_id, t.kind, t.currency, t.net_amount,
-           CASE WHEN t.net_amount = 0 AND t.quantity <> 0
-                     AND t.instrument_external_id = t.currency
-                THEN t.quantity ELSE t.net_amount END AS match_amount,
+           spend_match_amount(t.net_amount, t.quantity,
+                              t.instrument_external_id, t.currency) AS match_amount,
            t.description, t.counterparty, t.provider_category
       FROM transactions t
      WHERE t.occurred_at BETWEEN p_from AND p_to
@@ -1374,30 +1381,41 @@ CREATE MACRO spend_year_before(p_at) AS (
     END
 );
 
+-- spend_year_before_end: the window end a year before the window end
+-- p_to. The end maps as an exclusive bound, the second after it, so a
+-- window through 28 February reaches through the 29th a year earlier.
+-- An open end stays itself before the `+ 1` can overflow.
+CREATE MACRO spend_year_before_end(p_to) AS (
+    CASE WHEN p_to >= 253402300799 THEN p_to
+         ELSE spend_year_before(p_to + 1) - 1
+    END
+);
+
 -- change_pct: the change from p_before to p_now in percent of p_before's
 -- magnitude, so a rise reads positive whatever the sign of p_before.
--- None where p_before is zero or either side is missing.
+-- NULL where p_before is zero or either side is NULL.
 CREATE MACRO change_pct(p_now, p_before) AS
     CAST(100 * (p_now - p_before) AS DOUBLE) / NULLIF(abs(p_before), 0)::DOUBLE;
 
 -- report_spending_categories_vs: report_spending_categories over the
 -- window, each row beside `year_before`, its category's net_spend in
 -- the same bucket of the window a year earlier, and `change_pct`. Each
--- side converts at its own lines' historic rates.
+-- side converts at its own lines' historic rates. p_today is the last
+-- second of today.
 --
--- A category that only one side has spent nothing on the other: its
--- money reads 0 there, and on this side its txn_count and share read 0
--- too. Both sides cover the same days of their buckets, so a window
--- that cuts a bucket cuts the year before alike.
+-- A category only one side has reads 0 on the other side, and on this
+-- side its txn_count and share read 0 too. Both sides cover the same
+-- days of their buckets, so a window that cuts a bucket cuts the year
+-- before alike.
 --
 -- `quality` names what the comparison misses:
 --   * no_year_before: gold's first spending line falls on a day after
 --     the year before starts in this bucket, so that side covers part
 --     of it or none of it;
---   * in_progress: the bucket ends after now, so this side is still
---     accruing.
+--   * in_progress: the bucket's part of the window ends today or
+--     later, so this side is still accruing.
 -- p_period is 'month', 'quarter', 'year' or 'total'.
-CREATE MACRO report_spending_categories_vs(p_from, p_to, p_ccy, p_period, p_level) AS TABLE (
+CREATE MACRO report_spending_categories_vs(p_from, p_to, p_ccy, p_period, p_level, p_today) AS TABLE (
     WITH cur AS (
         SELECT * FROM report_spending_categories(p_from, p_to, p_ccy, p_period, p_level)),
     prev AS (
@@ -1405,7 +1423,7 @@ CREATE MACRO report_spending_categories_vs(p_from, p_to, p_ccy, p_period, p_leve
                     THEN CAST(epoch(epoch_ms(period_start * 1000) + INTERVAL 1 YEAR) AS BIGINT)
                END AS period_start,
                category, category_label, CAST(net_spend AS DECIMAL(28,4)) AS net_val
-          FROM report_spending_categories(spend_year_before(p_from), spend_year_before(p_to),
+          FROM report_spending_categories(spend_year_before(p_from), spend_year_before_end(p_to),
                                           p_ccy, p_period, p_level)),
     first_line AS (
         SELECT min(occurred_at) AS first_at FROM spend_enrichment_population(0, p_to)),
@@ -1424,11 +1442,7 @@ CREATE MACRO report_spending_categories_vs(p_from, p_to, p_ccy, p_period, p_leve
     bounded AS (
         SELECT *,
                greatest(COALESCE(period_start, p_from), p_from) AS side_from,
-               least(CASE WHEN period_start IS NULL THEN p_to
-                          ELSE CAST(epoch(epoch_ms(period_start * 1000)
-                                    + to_months(CASE p_period WHEN 'quarter' THEN 3
-                                                              WHEN 'year' THEN 12 ELSE 1 END)) AS BIGINT) - 1
-                     END, p_to) AS side_to
+               cashflow_period_end(p_period, period_start, p_to) AS side_to
           FROM paired)
     SELECT b.period_start, b.category, b.category_label, b.txn_count,
            CASE WHEN b.absent THEN '0.0000' ELSE b.spend END AS spend,
@@ -1442,31 +1456,26 @@ CREATE MACRO report_spending_categories_vs(p_from, p_to, p_ccy, p_period, p_leve
            concat_ws(' ',
                CASE WHEN f.first_at IS NULL OR f.first_at // 86400 > spend_year_before(b.side_from) // 86400
                     THEN 'no_year_before' END,
-               CASE WHEN b.side_to > CAST(epoch(now()) AS BIGINT) THEN 'in_progress' END) AS quality
+               CASE WHEN b.side_to >= p_today THEN 'in_progress' END) AS quality
       FROM bounded b, first_line f
      ORDER BY b.period_start, b.net_val DESC, b.category
 );
 
--- spend_month_start_today: the epoch second the current UTC month
--- opens.
-CREATE MACRO spend_month_start_today() AS (
-    CAST(epoch(date_trunc('month', epoch_ms(epoch_ms(now())))) AS BIGINT)
-);
-
 -- report_spending_vs_year_multi: report_spending_categories_vs by month
 -- and primary category, in every reporting currency, through the last
--- whole month, so no month compares part of itself with a whole one.
--- The category is the primary label: the value the Spending
--- dashboard's Category picker offers.
-CREATE MACRO report_spending_vs_year_multi() AS TABLE (
+-- whole month before p_today's (the last second of today), so no month
+-- compares part of itself with a whole one. The category is the
+-- primary label: the value the Spending dashboard's Category picker
+-- offers.
+CREATE MACRO report_spending_vs_year_multi(p_today) AS TABLE (
     WITH v AS (
-        SELECT 'USD' AS currency, * FROM report_spending_categories_vs(0, spend_month_start_today() - 1, 'USD', 'month', 'primary')
+        SELECT 'USD' AS currency, * FROM report_spending_categories_vs(0, spend_period_bucket('month', p_today) - 1, 'USD', 'month', 'primary', p_today)
         UNION ALL
-        SELECT 'CHF', * FROM report_spending_categories_vs(0, spend_month_start_today() - 1, 'CHF', 'month', 'primary')
+        SELECT 'CHF', * FROM report_spending_categories_vs(0, spend_period_bucket('month', p_today) - 1, 'CHF', 'month', 'primary', p_today)
         UNION ALL
-        SELECT 'EUR', * FROM report_spending_categories_vs(0, spend_month_start_today() - 1, 'EUR', 'month', 'primary')
+        SELECT 'EUR', * FROM report_spending_categories_vs(0, spend_period_bucket('month', p_today) - 1, 'EUR', 'month', 'primary', p_today)
         UNION ALL
-        SELECT 'GBP', * FROM report_spending_categories_vs(0, spend_month_start_today() - 1, 'GBP', 'month', 'primary'))
+        SELECT 'GBP', * FROM report_spending_categories_vs(0, spend_period_bucket('month', p_today) - 1, 'GBP', 'month', 'primary', p_today))
     SELECT currency, period_start AS month, category_label AS category,
            CAST(net_spend AS DECIMAL(28,4)) AS net_spend,
            CAST(year_before AS DECIMAL(28,4)) AS net_spend_year_before,

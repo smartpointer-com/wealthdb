@@ -9,11 +9,6 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/gold"
 )
 
-// statedRefusedFlags are the returns flags that have no meaning on the
-// stated view: the document fixes the periods, and the view computes no
-// return of its own. -x is refused beside them.
-var statedRefusedFlags = []string{"method", "period", "annualize", "netting", "inception", "benchmark"}
-
 // returnsStatedReport runs the reconciliation with the config's returns
 // settings, so its engine figures are the ones `returns accounts` prints.
 func returnsStatedReport(req request, cfg *config.Config) *report {

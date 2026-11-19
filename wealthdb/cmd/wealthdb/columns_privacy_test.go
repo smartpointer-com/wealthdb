@@ -994,13 +994,10 @@ func typedLabelCalls(s *mcpServer, today time.Time) []typedLabelCall {
 			if spec.name == "cashflow" && view == "projection" {
 				window = [2]string{fwdFrom.AddDate(0, 1, 0).Format(time.DateOnly), fwd[1]}
 			}
-			// A view that refuses the window (returns private) runs without one.
-			from, _ := time.Parse(time.DateOnly, window[0])
-			to, _ := time.Parse(time.DateOnly, window[1])
-			v := fam.view(view)
-			refused := v != nil && v.checkWindow != nil && v.checkWindow(from.Unix(), to.Unix()+86399, today.Unix()) != nil
+			// returns private takes no window. Every other view runs on the
+			// fixture's, so one that refuses it fails its call.
 			switch {
-			case refused:
+			case spec.name == "returns" && view == "private":
 			case fam.window == asOfDate:
 				c.args["as_of"] = "2026-06-30"
 				c.cli = append(c.cli, "-d", "2026-06-30")

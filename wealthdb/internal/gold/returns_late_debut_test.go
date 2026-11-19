@@ -145,6 +145,91 @@ func TestZeroDebutFundsItsFirstNonzeroValue(t *testing.T) {
 	}
 }
 
+// TestZeroDebutInsideTheWindowsOpening pins a window that opens at a zero
+// first value, or between it and the first nonzero one. The window holds
+// none of the legs that moved the money in, and its opening value none of
+// the money: the first nonzero valuation shows it, and onboards it, as a
+// debut after the window opens onboards what moved in before. The cash
+// household then reads as if the money never left; a window that opens
+// before the zero reads as TestZeroDebutFundsItsFirstNonzeroValue pins.
+func TestZeroDebutInsideTheWindowsOpening(t *testing.T) {
+	t.Parallel()
+	d0, d1, d2, d3, d4 := dy(2024, time.January, 2), dy(2024, time.February, 1), dy(2024, time.February, 2),
+		dy(2024, time.April, 30), dy(2024, time.June, 28)
+	end := eod(2024, time.June, 28)
+	moved, ctx := openMigrated(t)
+	seedReturnsSource(t, moved, ctx, "s1", "schwab")
+	seedAcct(t, moved, ctx, "s1", "A", canonical.AccountKindBrokerage, nil,
+		[]snap{{d0, 20000}, {d1, 10000}, {d3, 10000}, {d4, 10000}}, []txn{{d1, canonical.TxKindTransferOut, -10000}})
+	seedAcct(t, moved, ctx, "s1", "B", canonical.AccountKindBrokerage, nil,
+		[]snap{{d2, 0}, {d3, 10000}, {d4, 10500}}, []txn{{d1, canonical.TxKindTransferIn, 10000}})
+	kept, _ := openMigrated(t)
+	seedReturnsSource(t, kept, ctx, "s1", "schwab")
+	seedAcct(t, kept, ctx, "s1", "R", canonical.AccountKindBrokerage, nil,
+		[]snap{{d0, 20000}, {d1, 20000}, {d2, 20000}, {d3, 20000}, {d4, 20500}}, nil)
+	for _, tc := range []struct {
+		name  string
+		from  int64
+		flows []returns.Flow
+	}{
+		{"before the zero", dy(2024, time.January, 20), nil},
+		{"at the zero", d2, []returns.Flow{{Day: EpochDay(d3), Amount: 10000, Synthetic: true}}},
+		{"inside the gap", dy(2024, time.April, 1), []returns.Flow{{Day: EpochDay(d3), Amount: 10000, Synthetic: true}}},
+		{"after the late debut", dy(2024, time.May, 15), nil},
+	} {
+		p := params("global", tc.from, end)
+		if flows, _ := globalFlows(t, moved, ctx, p); !slices.EqualFunc(flows, tc.flows, sameFlow) {
+			t.Errorf("%s: flows = %+v, want %+v", tc.name, flows, tc.flows)
+		}
+		got, want := globalSummary(t, moved, ctx, p), globalSummary(t, kept, ctx, p)
+		if got.TWR == nil || want.TWR == nil || math.Abs(*got.TWR-*want.TWR) > 1e-9 {
+			t.Errorf("%s: TWR = %s, want %s as if the money never left", tc.name, rateText(got.TWR), rateText(want.TWR))
+		}
+	}
+}
+
+// TestZeroDebutInASinceYearWindow pins the materialized since-year summary
+// whose 1 January falls between a zero first value and the first nonzero
+// one: it reads the late debut as capital, as the CLI window does, and the
+// summary from a year before the zero reads as since inception.
+func TestZeroDebutInASinceYearWindow(t *testing.T) {
+	t.Parallel()
+	d0, d1, d2, d3, d4 := dy(2023, time.November, 1), dy(2023, time.December, 1), dy(2023, time.December, 2),
+		dy(2024, time.March, 29), dy(2024, time.June, 28)
+	seed := func(t *testing.T, moved bool) (*sql.DB, context.Context) {
+		db, ctx := openMigrated(t)
+		seedReturnsSource(t, db, ctx, "s1", "schwab")
+		if moved {
+			seedAcct(t, db, ctx, "s1", "A", canonical.AccountKindBrokerage, nil,
+				[]snap{{d0, 20000}, {d1, 10000}, {d3, 10000}, {d4, 10000}}, []txn{{d1, canonical.TxKindTransferOut, -10000}})
+			seedAcct(t, db, ctx, "s1", "B", canonical.AccountKindBrokerage, nil,
+				[]snap{{d2, 0}, {d3, 10000}, {d4, 10500}}, []txn{{d1, canonical.TxKindTransferIn, 10000}})
+		} else {
+			seedAcct(t, db, ctx, "s1", "R", canonical.AccountKindBrokerage, nil,
+				[]snap{{d0, 20000}, {d1, 20000}, {d2, 20000}, {d3, 20000}, {d4, 20500}}, nil)
+		}
+		if _, err := MaterializeReturns(ctx, db, MaterializeParams{ToEpoch: eod(2024, time.June, 28), ComputedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+		return db, ctx
+	}
+	twr := func(t *testing.T, db *sql.DB, ctx context.Context, year int) float64 {
+		var v float64
+		if err := db.QueryRowContext(ctx, `SELECT twr FROM report_returns WHERE grain = 'global'
+			AND granularity = 'total' AND is_summary AND currency = 'USD' AND window_from_year = ?`, year).Scan(&v); err != nil {
+			t.Fatalf("window %d: %v", year, err)
+		}
+		return v
+	}
+	moved, mctx := seed(t, true)
+	kept, kctx := seed(t, false)
+	for _, year := range []int{2023, 2024} {
+		if got, want := twr(t, moved, mctx, year), twr(t, kept, kctx, year); math.Abs(got-want) > 1e-9 {
+			t.Errorf("since %d: TWR = %v, want %v as if the money never left", year, got, want)
+		}
+	}
+}
+
 // TestLateDebutBooksWhatItsValueDoesNotHold pins how the first nonzero
 // valuation funds the legs before a zero first value, as a debut would: it
 // shows the money that came in, beyond the account's own legs since the

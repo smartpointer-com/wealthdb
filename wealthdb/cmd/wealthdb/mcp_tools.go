@@ -140,11 +140,11 @@ Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 		title: "Returns",
 		description: "How investments performed over a window (default: since the first snapshot), as twr and mwr %, after fees and taxes. " +
 			"view=global: the whole portfolio. sources, portfolios: per entity, best-effort. accounts: per account, exact. " +
-			"stated: a document's stated periods beside the engine's figures; it takes no " + orList(append(slices.Clone(statedRefusedFlags), "currency")) + ". " +
+			"stated: a document's stated periods beside the engine's figures; it takes no " + orList(append(slices.Clone(returnsOptionNames), "currency")) + ". " +
 			"bridge: why net worth moved, for the whole household: end_net_worth = start_net_worth + net_saved + onboarded + gain; whole months; it takes no " +
 			orList(append(slices.Clone(bridgeRefusedFlags), "source", "account")) + ". " +
 			"private: each private fund or SPV since its first call, to the latest snapshot: paid_in, distributed, nav, marked_at, dpi, tvpi, irr_pct, then the total; it takes no " +
-			orList(append(slices.Clone(privateRefusedFlags), "from", "to")) + ". " +
+			orList(append(slices.Clone(returnsOptionNames), "from", "to")) + ". " +
 			"One row per entity for the whole window unless period adds buckets. quality names the reason for every n/a. " +
 			`Example: {view: "accounts", from: "2025", to: "2025"}.`,
 		params: rowParams(true,
@@ -258,10 +258,10 @@ Example: {from: "last month", to: "last month", kind: "dividend"}.`,
 			sourceParam, accountParam,
 			stringParam("category", `Keep categories whose label or id contains this (e.g. "groceries"); implies level=detailed.`),
 			param{name: "vs_last_year", kind: paramBoolean, doc: takenBy(spendingFamily, "vs_last_year") +
-				"each row beside the same days a year earlier: year_before, change_pct (blank where the year before is zero) and quality; period monthly, quarterly, annual or total (default false)."},
+				vsLastYearDoc + " (default false)."},
 			scopedParam(spendingFamily, "merchant", "keep only rows whose merchant contains this text."),
 		),
-		notes: `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there. fees is per portfolio, else per account outside one: fees are the primary BANK_FEES lines net of refunds, trading costs and fund costs are not in them, fee_rate_pct is fees over mean_value annualized and blank where the mean value is not above zero, and twr_pct is the entity's monthly returns chained over the months that end in the window, blank where returns has none. Returns stay net of fees. With vs_last_year, quality reads no_year_before (gold's lines start after the year before does) or in_progress (the bucket has not ended); each side converts at its own historic rates.
+		notes: `spend and refunds are positive; net_spend = spend - refunds. The category rows of a period sum to its summary row. (uncategorized) is what no rule or model has placed yet. The transactions view keeps the ledger sign: a purchase is negative there. fees is per portfolio, else per account outside one: fees are the primary BANK_FEES lines net of refunds, trading costs and fund costs are not in them, fee_rate_pct is fees over mean_value annualized and blank where the mean value is not above zero, and twr_pct is the entity's monthly returns chained over the months that end in the window, blank where returns has none. Returns stay net of fees. With vs_last_year, quality reads ` + orList(tagNames(spendVsYearTags)) + ` (describe topic=quality). ` + vsLastYearRatesDoc + `
 Example: {view: "transactions", from: "2025-03", to: "2025-03", sort: "-value", limit: 10}.`,
 		family: spendingFamily,
 	},

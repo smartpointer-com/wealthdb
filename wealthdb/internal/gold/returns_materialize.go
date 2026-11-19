@@ -108,20 +108,21 @@ var returnsMaterialized = []string{"report_returns", "benchmark_returns", "bench
 	"report_private_markets"}
 
 // MaterializeReturns rewrites report_returns, the benchmark tables, the
-// bridge and the private-markets rows. It writes the full returns matrix — every grain × period ×
-// currency, each partition the verbatim output of one CLI-default RunReturns
-// (method both, netting on, inception full, annualize auto, since-inception
-// window, window_from_year=0) — plus, for each grain × currency × year in the
-// data's span, a since-that-year total summary (window_from_year=Y) for the
-// dashboard's start-year rescoping. The currencies are loaded in a single
-// pass over the `_multi` report macros, and each currency's dataset drives
-// every (grain, period) and windowed computation without re-querying — the
-// loaded data depends only on the currency, never the grain, period or
-// window. The benchmark tables (computeBenchmarks) and the bridge
-// (computeMaterialBridge) read the same datasets; the private-markets rows
-// (computeMaterialPrivate) are RunPrivate's in each currency. Everything is computed
-// before the tables are rewritten (rewriteTables), so the write needs no pin.
-// Returns the row count of report_returns and the benchmark tables.
+// bridge and the private-markets rows. It writes the full returns matrix —
+// every grain × period × currency, each partition the verbatim output of one
+// CLI-default RunReturns (method both, netting on, inception full, annualize
+// auto, since-inception window, window_from_year=0) — plus, for each grain ×
+// currency × year in the data's span, a since-that-year total summary
+// (window_from_year=Y) for the dashboard's start-year rescoping. The
+// currencies are loaded in a single pass over the `_multi` report macros, and
+// each currency's dataset drives every (grain, period) and windowed
+// computation without re-querying — the loaded data depends only on the
+// currency, never the grain, period or window. The benchmark tables
+// (computeBenchmarks) and the bridge (computeMaterialBridge) read the same
+// datasets; the private-markets rows (computeMaterialPrivate) are
+// RunPrivate's in each currency. Everything is computed before the tables are
+// rewritten (rewriteTables), so the write needs no pin. Returns the row count
+// of report_returns and the benchmark tables.
 func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
 	fx, err := loadFxBounds(ctx, db)
 	if err != nil {

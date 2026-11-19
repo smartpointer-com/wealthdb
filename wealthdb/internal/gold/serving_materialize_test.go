@@ -9,12 +9,16 @@ import (
 	"time"
 )
 
+// servingParams are the params the tests materialize the serving tables
+// with: today is a day after every fixture's lines.
+var servingParams = MaterializeParams{ToEpoch: time.Date(2030, time.January, 16, 0, 0, 0, 0, time.UTC).Unix() - 1}
+
 // mustMaterializeServing fills the serving tables from the macros, as a
 // refresh does: a test that reads a serving view calls it after its last
 // write.
 func mustMaterializeServing(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
-	if _, err := MaterializeServingTables(ctx, db, MaterializeParams{}); err != nil {
+	if _, err := MaterializeServingTables(ctx, db, servingParams); err != nil {
 		t.Fatalf("materialize serving tables: %v", err)
 	}
 }
@@ -30,16 +34,17 @@ func countRows(t *testing.T, db *sql.DB, ctx context.Context, from string) int {
 }
 
 // assertTablesHoldTheMacros checks that every serving table holds its
-// macro's rows, no more and no fewer.
+// macro's rows on servingParams' today, no more and no fewer.
 func assertTablesHoldTheMacros(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
 	for _, h := range servingTables {
-		if got, want := countRows(t, db, ctx, h.table), countRows(t, db, ctx, h.source); got != want {
-			t.Errorf("%s has %d rows, %s %d", h.table, got, h.source, want)
+		source := h.call(servingParams.ToEpoch)
+		if got, want := countRows(t, db, ctx, h.table), countRows(t, db, ctx, source); got != want {
+			t.Errorf("%s has %d rows, %s %d", h.table, got, source, want)
 		}
 		for _, q := range []string{
-			"SELECT * FROM " + h.table + " EXCEPT ALL SELECT * FROM " + h.source,
-			"SELECT * FROM " + h.source + " EXCEPT ALL SELECT * FROM " + h.table,
+			"SELECT * FROM " + h.table + " EXCEPT ALL SELECT * FROM " + source,
+			"SELECT * FROM " + source + " EXCEPT ALL SELECT * FROM " + h.table,
 		} {
 			if n := countRows(t, db, ctx, "("+q+")"); n != 0 {
 				t.Errorf("%s: %d row(s) in one and not the other", h.table, n)
@@ -64,7 +69,7 @@ func TestMaterializeServingTablesHoldsTheMacrosRows(t *testing.T) {
 		t.Fatal("the fixture materialized no transaction line; the comparison below proves nothing")
 	}
 	assertTablesHoldTheMacros(t, db, ctx)
-	if _, err := MaterializeServingTables(ctx, db, MaterializeParams{}); err != nil {
+	if _, err := MaterializeServingTables(ctx, db, servingParams); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	assertTablesHoldTheMacros(t, db, ctx)
@@ -163,7 +168,7 @@ func TestWebHistoryViewsCarryTheWrapperAndClass(t *testing.T) {
         VALUES ('test-src', ?, 'IRA1', 'USD', 'current', CAST('50' AS DECIMAL(28,4)))`, snap); err != nil {
 		t.Fatalf("seed retirement cash: %v", err)
 	}
-	if _, err := MaterializeServingTables(ctx, db, MaterializeParams{}); err != nil {
+	if _, err := MaterializeServingTables(ctx, db, servingParams); err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
 

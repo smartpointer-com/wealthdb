@@ -142,9 +142,9 @@ func TestSideViewsRefuseTheirSiblingsOptions(t *testing.T) {
 		tool, view, cmd string
 		names           []string
 	}{
-		{"returns", "stated", "returns", statedRefusedFlags},
+		{"returns", "stated", "returns", returnsOptionNames},
 		{"returns", "bridge", "returns", bridgeRefusedFlags},
-		{"returns", "private", "returns", privateRefusedFlags},
+		{"returns", "private", "returns", returnsOptionNames},
 		{"spending", "fees", "spending", feesRefusedFlags},
 	} {
 		for _, name := range c.names {

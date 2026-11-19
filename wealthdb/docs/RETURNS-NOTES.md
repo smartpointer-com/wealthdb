@@ -227,9 +227,10 @@ One row per holding, then the total:
 | `tvpi` | `(distributed + nav) / paid_in` |
 | `irr_pct` | the money-weighted return since the first call, a yearly rate |
 
-An SPV that pays out cash books a `sell`, as AngelList and EquityZen do,
-so `distributed` counts a sale as a distribution. Without it an SPV that
-exited for cash would read a TVPI of 0.
+An SPV that pays out cash books a `sell`, as AngelList does, so
+`distributed` counts a sale as a distribution. Without it an SPV that
+exited for cash would read a TVPI of 0. An SPV bought as a `buy`
+(EquityZen) is a direct holding: it is in `wealthdb gains`.
 
 **One definition.** The macro `report_private` computes every figure but
 the IRR, from `private_legs`. The IRR is the engine's own solver
@@ -245,9 +246,11 @@ its snapshot's. The multiples therefore move with the output currency.
 total adds the cents, so it is the sum of the rows as they print. `dpi`
 and `tvpi` pool the holdings: they are the ratios of the sums, not an
 average of the rows' ratios, and both mean what a fund's own DPI and
-TVPI mean. `irr_pct` pools every leg. The total's `marked_at` is the
-oldest mark, and a holding with no value leaves the total's `nav` and
-`tvpi` blank.
+TVPI mean. `irr_pct` pools the legs of every holding listed. The
+total's `marked_at` is the oldest mark, and a holding with no value
+leaves the total's `nav`, `tvpi` and `irr_pct` blank. The total is over
+every holding: a filter keeps or drops it as a row, never recomputes
+it.
 
 **No mark, no NAV.** Every row has a mark but one: a holding that never
 had a value. Its `nav`, `tvpi` and `irr_pct` are blank, never zero, and
@@ -272,7 +275,8 @@ Quality tags:
 - `exit_unvalued=N`: N exits in kind state no value. `distributed` misses
   them.
 - `unpriced=N`: N legs or lines have no rate to the output currency. The
-  sums and the IRR leave them out.
+  sums leave them out, and a leg with none leaves `irr_pct` blank. A
+  zero needs no rate.
 
 On the total each tag counts the holdings it holds on.
 
@@ -668,10 +672,16 @@ chained TWR below −100%.
   moved in funds it by quantity, at that day's prices. The account's own
   later legs keep their own reading. Money the account paid out before
   the zero funds the zero itself, since a zero is what paying out
-  everything leaves. Where no nonzero value follows, the zero is the only
-  valuation, and it says none of the money is there: the money moved in
-  funds the zero and leaves as capital on it. Per-entity-once books a late
-  debut in the step of its day. Guards: `TestZeroDebutFundsItsFirstNonzeroValue`,
+  everything leaves. Where no nonzero value follows, every valuation says
+  none of the money is there: the money moved in funds the zero and
+  leaves as capital on it. A window that opens at the zero, or between it
+  and the late debut, holds none of the legs that moved the money in, and
+  its opening value none of the money. The late debut onboards what it
+  shows beyond the account's own legs since the zero, as a debut after the
+  window opens onboards what moved in before. Per-entity-once books a late
+  debut in the step of its day. Guards:
+  `TestZeroDebutFundsItsFirstNonzeroValue`,
+  `TestZeroDebutInsideTheWindowsOpening`, `TestZeroDebutInASinceYearWindow`,
   `TestLateDebutBooksWhatItsValueDoesNotHold`, `TestZeroDebutThatStaysZeroPaysOut`.
 - **The same holds at a closure.** A leg the closure day first shows,
   cancelled against money that stays inside, leaves the synthetic closure

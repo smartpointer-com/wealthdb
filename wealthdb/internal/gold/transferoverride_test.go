@@ -115,8 +115,8 @@ func TestTransferOverridesRejectContradictions(t *testing.T) {
 }
 
 // A `match` line that names a leg on each side but pairs none is returned:
-// two legs of one direction, a zero amount reading as a credit, or a leg
-// another line took first. A line that pairs, or that names no leg, is not.
+// two legs of one direction, a zero-amount leg, or a leg another line took
+// first. A line that pairs, or that names no leg, is not.
 func TestIdleTransferMatchesNamesALineThatPairsNothing(t *testing.T) {
 	t.Parallel()
 	day := int64(100) * SecondsPerDay
