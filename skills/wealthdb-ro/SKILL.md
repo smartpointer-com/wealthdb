@@ -148,6 +148,9 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 - **Why net worth moved** — `wealthdb -r returns bridge 2025 --period total`
   (`end_net_worth = start_net_worth + net_saved + onboarded + gain`; whole
   months; `-C +net_flow,+debt_repaid` splits `net_saved`)
+- **What a private fund took and gave back** — `wealthdb -r returns private`
+  (`paid_in`, `distributed`, `nav` at its `marked_at`, `dpi`, `tvpi`,
+  `irr_pct` since the first call; the last row is the total)
 - **What each portfolio cost** — `wealthdb -r spending fees 2025` (fees net
   of refunds, `fee_rate_pct` annualized on the mean value, `twr_pct`
   beside it; a vehicle's fees count, trading and fund costs do not)
@@ -164,7 +167,7 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 | What is **really owned** once funds are looked through; where holdings legally sit | `exposure` | `classes`, `sectors`, `sizes`, `countries`, `currencies`, `credit`, `maturities`, `coupons`, `cycles`, `situs`, `securities`, `issuers`, `funds`, `coverage` |
 | What the holdings **yield**; rates, duration, rate risk; cash against its benchmark | `yield` | `global`, `sources`, `portfolios`, `accounts`, `positions`, `securities`, `funds`, `cash`, `curve`, `coverage` |
 | Trades, dividends, fees, cash in and out | `transactions` | — |
-| How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts`; `stated` (a statement's periods beside the engine's; no `-x`, no return flags); `bridge` (why net worth moved; no return flags) |
+| How something **performed** (return %) | `returns` | `global`, `sources`, `portfolios`, `accounts`; `stated` (a statement's periods beside the engine's; no `-x`, no return flags); `bridge` (why net worth moved; no return flags); `private` (each private fund: paid in, distributed, NAV, DPI, TVPI, IRR; no window, no return flags) |
 | **Gained or lost**; cost basis; tax lots | `gains` | `summary`, `sources`, `portfolios`, `accounts`, `positions`, `realized`, `lots`, `coverage`, `check` |
 | **Spent**, on what, against last year; **fees** per portfolio | `spending` | `summary`, `categories` (`--vs-last-year`), `transactions`, `fees` |
 | **Received**, from whom; what the holdings are **expected to pay** | `income` | `summary`, `types`, `transactions`; forward: `projection`, `calendar`, `sources`, `portfolios`, `accounts`, `positions` |

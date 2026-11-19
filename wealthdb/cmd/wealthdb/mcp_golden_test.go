@@ -106,6 +106,7 @@ func TestMCPMatchesCLI(t *testing.T) {
 				"transactions", map[string]any{"from": "2026-05-01", "to": "2026-06-30", "filter": "kind != dividend"}},
 		)},
 		{"returns", setupReturnsGold, append(returnsCases(), holdingsCases()...)},
+		{"private", setupPrivateGold, privateCases()},
 		{"gains", setupGainsGold, gainsCases()},
 		{"exposure", func(t *testing.T) string { return setupExposureGold(t) }, exposureCases()},
 		{"yield", setupYieldGold, append(yieldCases(), forwardIncomeCases()...)},
@@ -279,6 +280,16 @@ func cashflowCases() []goldenCase {
 	}
 }
 
+// privateCases are the private view's: it reads since each first call,
+// with no window and no --method.
+func privateCases() []goldenCase {
+	return []goldenCase{
+		{"returns private", []string{"returns", "private"}, "returns", map[string]any{"view": "private"}},
+		{"returns private in CHF", []string{"returns", "private", "-x", "CHF"}, "returns",
+			map[string]any{"view": "private", "currency": "CHF"}},
+	}
+}
+
 func returnsCases() []goldenCase {
 	var out []goldenCase
 	for _, v := range returnsFamily.names() {
@@ -287,6 +298,9 @@ func returnsCases() []goldenCase {
 			out = append(out, goldenCase{"returns stated", []string{"returns", "stated"}, "returns",
 				map[string]any{"view": v}})
 			continue
+		}
+		if v == "private" {
+			continue // privateCases, over a fixture of its own
 		}
 		if v == "bridge" {
 			// The bridge computes no return: no --method.

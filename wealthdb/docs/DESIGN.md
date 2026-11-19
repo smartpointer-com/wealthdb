@@ -3254,9 +3254,13 @@ flow, and the stated ending value against its end value. The stated
 figures create no flow. `wealthdb returns stated -h` lists its
 columns.
 
-`returns bridge` is the other side view. It says why net worth moved
+`returns bridge` is another side view. It says why net worth moved
 in each period, for the whole household
 ([RETURNS-NOTES.md](RETURNS-NOTES.md), "The net worth bridge").
+
+`returns private` is the third. It shows each private fund or SPV:
+what it took, what it gave back, its mark, DPI, TVPI and IRR
+([RETURNS-NOTES.md](RETURNS-NOTES.md), "Private markets").
 
 [RETURNS-NOTES.md](RETURNS-NOTES.md) owns the method: the snapshot-aligned
 headline, flow classification per source, card invisibility, staggered

@@ -196,6 +196,93 @@ Guards: `TestBridgeReadsTheCommonCases`,
 `TestBridgeGainIsReturnsGainPlusFXOnDebt`,
 `TestMaterializeBridgeIsTheCLIsRows`.
 
+## Private markets
+
+`wealthdb returns private` says what each private fund or SPV took,
+what it gave back and what it is marked at. It reads gold alone.
+
+**Which holdings it lists.** A private holding is an instrument in one
+account that a `contribution` line names: a capital call, or an SPV
+subscription. The rule reads the cash legs, not a source or a taxonomy,
+so it holds for every private-market source. Two kinds stay out:
+
+- A private company's shares bought directly are a `buy`. Their cost
+  and their sale are in `wealthdb gains`.
+- Founder stock and options have no cash leg at all.
+
+A holding with no money in, out or marked is no investment, and the
+view leaves it out: a call refunded whole, or a call of no amount. The
+test reads the legs and the lines in their own currency, so every
+output currency lists the same holdings.
+
+One row per holding, then the total:
+
+| column | reads |
+|---|---|
+| `paid_in` | the `contribution` lines, net of refunds |
+| `distributed` | the `distribution` and `sell` lines, and the exits in kind: a `transfer_out` of the holding, at the value it states |
+| `nav` | the holding's lines at the latest snapshot. It is 0 once the holding has left the holdings, and blank where it never had a value |
+| `marked_at` | the oldest mark of those lines, `coalesce(valued_at, snapshot_at)`; for a holding that has left, the mark of its last line |
+| `dpi` | `distributed / paid_in` |
+| `tvpi` | `(distributed + nav) / paid_in` |
+| `irr_pct` | the money-weighted return since the first call, a yearly rate |
+
+An SPV that pays out cash books a `sell`, as AngelList and EquityZen do,
+so `distributed` counts a sale as a distribution. Without it an SPV that
+exited for cash would read a TVPI of 0.
+
+**One definition.** The macro `report_private` computes every figure but
+the IRR, from `private_legs`. The IRR is the engine's own solver
+(`solveIRR`, the money-weighted code of every grain): the legs as flows,
+nothing held before the first call, and the NAV received on `end_date`,
+the later of the NAV's snapshot and the last leg. So
+`irr_pct` carries the engine's `mwr_*` tags where it has no answer.
+
+**Historic FX.** Each leg converts at its own day's rate, and the NAV at
+its snapshot's. The multiples therefore move with the output currency.
+
+**The total.** Each holding's money rounds once, to the cent, and the
+total adds the cents, so it is the sum of the rows as they print. `dpi`
+and `tvpi` pool the holdings: they are the ratios of the sums, not an
+average of the rows' ratios, and both mean what a fund's own DPI and
+TVPI mean. `irr_pct` pools every leg. The total's `marked_at` is the
+oldest mark, and a holding with no value leaves the total's `nav` and
+`tvpi` blank.
+
+**No mark, no NAV.** Every row has a mark but one: a holding that never
+had a value. Its `nav`, `tvpi` and `irr_pct` are blank, never zero, and
+it says `no_mark`. A holding that had lines and has left reads a NAV of
+0, a real one: gold holds it no more. Its multiples and IRR are final,
+its `marked_at` is its last line's mark, and it says `exited`.
+
+Quality tags:
+
+- `no_mark`: the holding never had a value, so `nav`, `tvpi` and
+  `irr_pct` are blank.
+- `exited`: the holding has left the holdings, so `nav` is 0 and
+  `marked_at` is the mark of its last line.
+- `call_after_mark`: a call came after the mark. The NAV leaves it out
+  until the next mark, so `tvpi` reads low.
+- `distribution_after_mark`: a distribution or an exit came after the
+  mark. A NAV not yet marked down for it reads `tvpi` high.
+- `exit_unvalued=N`: N exits in kind state no value. `distributed` misses
+  them.
+- `unpriced=N`: N legs or lines have no rate to the output currency. The
+  sums and the IRR leave them out.
+
+On the total each tag counts the holdings it holds on.
+
+Limits:
+
+- Marks are old by nature, so `marked_at` always shows.
+- Commitments and unfunded capital are not in gold.
+- The view carries no volatility or other risk figure. Marks are too old
+  and too sparse for one.
+
+`web refresh` writes `report_private_multi` to `serving_private`, and the
+Private Markets dashboard reads it through `web_private`. Guards:
+`TestPrivateMarkets`, `TestPrivateMarketsHistoricFX`, `TestPrivateView`.
+
 ## The math (`internal/returns`)
 
 - **All returns math is float64.** Money is exact (DECIMAL) up to the

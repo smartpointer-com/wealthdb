@@ -30,7 +30,7 @@ var instructionsBody = `wealthdb holds a household's complete financial picture 
 
 Pick the tool by the question:
 - what is held, where, and what it is worth (today or on a date); net worth; total cash (view=global); one account or one institution -> holdings
-- how investments performed, as a return % -> returns; why net worth moved, what was saved against what was gained, the household's total debt repaid (debt_repaid) -> returns (view=bridge)
+- how investments performed, as a return % -> returns; why net worth moved, what was saved against what was gained, the household's total debt repaid (debt_repaid) -> returns (view=bridge); what each private fund or SPV was paid, gave back and is marked at, its DPI, TVPI or IRR -> returns (view=private)
 - what was gained or lost (P&L), realized or unrealized; a year's realized gains; the unrealized gain now (to=today); a holding's cost basis -> gains
 - what is really owned once every fund is looked through: allocation by asset class, sector, country, region or currency; debt by credit, maturity or coupon; the largest issuers; how much of one company is held through funds -> exposure
 - what the holdings yield or earn; interest rates, duration, DV01; a bond's credit rating; cash against its benchmark -> yield
@@ -258,6 +258,11 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - debt_unpriced: (view=bridge) a debt has no rate to the currency; its fall is left to gain.
 - bridge_gap: (view=bridge) net worth less returns' value is not the mortgages and cards; gain holds the difference.
 - tracking_netted: (view=bridge) net_flow and onboarded had opposite signs, so the smaller size reads as a move into or out of tracking, in neither column.
+- no_mark: (view=private) the holding never had a value, so nav, tvpi and irr_pct are blank.
+- exited: (view=private) the holding has left the holdings, so nav is 0 and marked_at is its last line's mark.
+- call_after_mark, distribution_after_mark: (view=private) a call, or a distribution or exit, came after the mark, so tvpi reads low, or high.
+- exit_unvalued=N: (view=private) N exits in kind state no value.
+- unpriced=N: (view=private) N legs or lines have no rate to the currency and leave the figures.
 Other tags name their reason the same way.
 
 On spending view=fees, quality says what a row misses, beside the return's tags:

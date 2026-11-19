@@ -72,6 +72,7 @@ var corpusFixtures = []struct {
 	{"yield", setupYieldGold},
 	{"benchmark", setupBenchmarkGold},
 	{"typedlabel", setupTypedLabelGold},
+	{"private", setupPrivateGold},
 }
 
 func TestReportCorpus(t *testing.T) {

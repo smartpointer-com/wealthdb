@@ -143,10 +143,12 @@ Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 			"stated: a document's stated periods beside the engine's figures; it takes no " + orList(append(slices.Clone(statedRefusedFlags), "currency")) + ". " +
 			"bridge: why net worth moved, for the whole household: end_net_worth = start_net_worth + net_saved + onboarded + gain; whole months; it takes no " +
 			orList(append(slices.Clone(bridgeRefusedFlags), "source", "account")) + ". " +
+			"private: each private fund or SPV since its first call, to the latest snapshot: paid_in, distributed, nav, marked_at, dpi, tvpi, irr_pct, then the total; it takes no " +
+			orList(append(slices.Clone(privateRefusedFlags), "from", "to")) + ". " +
 			"One row per entity for the whole window unless period adds buckets. quality names the reason for every n/a. " +
 			`Example: {view: "accounts", from: "2025", to: "2025"}.`,
 		params: rowParams(true,
-			stringParam("view", "Grain (default global); stated and bridge are side views.", returnsFamily.names()...),
+			stringParam("view", "Grain (default global); stated, bridge and private are side views.", returnsFamily.names()...),
 			stringParam("method", "twr, mwr or both (default both).", returnsMethods...),
 			stringParam("period", "Bucket size (default total: one row per entity for the whole window).", returnsPeriods...),
 			stringParam("annualize", "auto (default; only spans of a year or more), always, never.", returnsAnnualize...),
@@ -155,7 +157,7 @@ Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 			stringParam("benchmark", benchmarkParamDoc("view=global only: the benchmark beside each row, over the days both sides have.")),
 			sourceParam, accountParam,
 		),
-		notes: `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences. bridge explains net worth: end_net_worth = start_net_worth + net_saved + onboarded + gain. net_saved = net_flow + debt_repaid, onboarded is value that entered or left tracking, gain is the residual, returns' gain plus the FX move on debt. It reads whole months for the whole household.
+		notes: `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences. bridge explains net worth: end_net_worth = start_net_worth + net_saved + onboarded + gain. net_saved = net_flow + debt_repaid, onboarded is value that entered or left tracking, gain is the residual, returns' gain plus the FX move on debt. It reads whole months for the whole household. private: dpi = distributed / paid_in, tvpi = (distributed + nav) / paid_in; irr_pct is the money-weighted return since the first call. Marks are old by nature, so read marked_at.
 Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
 		family: returnsFamily,
 	},

@@ -413,7 +413,7 @@ func TestDerivedCarries(t *testing.T) {
 		"holdings": {"sources": {"source"}, "portfolios": {"source"}, "accounts": {"source", "account", "tax_wrapper"},
 			"positions": {"source", "account", "symbol", "asset_class"}},
 		"returns": {"sources": {"source"}, "portfolios": {"source"}, "accounts": {"source", "account"},
-			"stated": {"source", "account"}},
+			"stated": {"source", "account"}, "private": {"source", "account"}},
 		"gains": {"sources": {"source"}, "portfolios": {"source"}, "accounts": {"source", "account", "tax_wrapper"},
 			"positions": {"source", "account", "symbol", "asset_class"}, "realized": {"source", "account", "symbol", "term"},
 			"lots": {"source", "account", "symbol", "term"}, "coverage": {"source", "account", "tax_wrapper"},

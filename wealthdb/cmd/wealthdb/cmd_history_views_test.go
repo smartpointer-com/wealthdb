@@ -144,6 +144,7 @@ func TestSideViewsRefuseTheirSiblingsOptions(t *testing.T) {
 	}{
 		{"returns", "stated", "returns", statedRefusedFlags},
 		{"returns", "bridge", "returns", bridgeRefusedFlags},
+		{"returns", "private", "returns", privateRefusedFlags},
 		{"spending", "fees", "spending", feesRefusedFlags},
 	} {
 		for _, name := range c.names {

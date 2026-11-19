@@ -994,11 +994,17 @@ func typedLabelCalls(s *mcpServer, today time.Time) []typedLabelCall {
 			if spec.name == "cashflow" && view == "projection" {
 				window = [2]string{fwdFrom.AddDate(0, 1, 0).Format(time.DateOnly), fwd[1]}
 			}
-			switch fam.window {
-			case asOfDate:
+			// A view that refuses the window (returns private) runs without one.
+			from, _ := time.Parse(time.DateOnly, window[0])
+			to, _ := time.Parse(time.DateOnly, window[1])
+			v := fam.view(view)
+			refused := v != nil && v.checkWindow != nil && v.checkWindow(from.Unix(), to.Unix()+86399, today.Unix()) != nil
+			switch {
+			case refused:
+			case fam.window == asOfDate:
 				c.args["as_of"] = "2026-06-30"
 				c.cli = append(c.cli, "-d", "2026-06-30")
-			case noWindow:
+			case fam.window == noWindow:
 			default:
 				c.args["from"], c.args["to"] = window[0], window[1]
 				c.cli = append(c.cli, window[0], window[1])
@@ -1106,8 +1112,11 @@ func TestPrivacyHidesTypedAccountNames(t *testing.T) {
 			t.Run(c.name, func(t *testing.T) {
 				t.Parallel()
 				cfg := copyFixture(t, cfg)
-				full, priv := onFixtureToday(newTestMCP(cfg, false)), onFixtureToday(newTestMCP(cfg, true))
 				tool, _, _ := strings.Cut(c.name, " ")
+				if tool == "returns" && c.args["view"] == "private" {
+					withPrivateLegs(t, cfg)
+				}
+				full, priv := onFixtureToday(newTestMCP(cfg, false)), onFixtureToday(newTestMCP(cfg, true))
 				plain, err := callTool(t, full, tool, c.args)
 				if err != nil {
 					t.Fatalf("%s: %v", c.name, err)

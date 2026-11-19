@@ -17,10 +17,11 @@ func init() {
 }
 
 // returnsFamily are the views `wealthdb returns <view>` supports: the
-// four reconciling grains, coarsest first, then two side views, which
+// four reconciling grains, coarsest first, then three side views, which
 // are no grain of them: `stated`, the documents' stated periods beside
-// the accounts' figures, and `bridge`, why net worth moved. Per-position
-// gains are the gains report's.
+// the accounts' figures, `bridge`, why net worth moved, and `private`,
+// each private fund's calls, distributions and mark. Per-position gains
+// are the gains report's.
 var returnsFamily = &family{
 	name: "returns",
 	views: append(returnsGrainViews(),
@@ -39,6 +40,12 @@ var returnsFamily = &family{
 			header: periodHeader,
 			build: func(cfg *config.Config, req request) *report {
 				return returnsBridgeReport(req, cfg)
+			}},
+		// On the private view, "value" is what each holding is marked at.
+		view{name: "private", side: true, principal: fixedColumn("nav"), usage: returnsPrivateUsage,
+			refuses: privateRefusedFlags, checkWindow: checkPrivateWindow,
+			build: func(_ *config.Config, req request) *report {
+				return returnsPrivateReport(req)
 			}},
 	),
 	options: []option{
@@ -69,6 +76,8 @@ var returnsFamily = &family{
 			var err error
 			req.period, err = choose(in, "returns", "period")
 			return err
+		case "private":
+			return nil
 		}
 		for _, o := range []struct {
 			name string
@@ -391,6 +400,8 @@ Also:
                ('wealthdb returns stated -h')
   bridge       why net worth moved: saved, onboarded and gained
                ('wealthdb returns bridge -h')
+  private      each private fund or SPV: paid in, distributed, NAV,
+               DPI, TVPI and IRR ('wealthdb returns private -h')
 
 Plumbing (cash accounts, deposit-bank sources, config returns_hide ids)
 emits no rows of its own at any view, and neither does a portfolio or
