@@ -197,8 +197,10 @@ BASE_IMAGES := base-python base-playwright base-camoufox
 
 # CAMOUFOX_BROWSER is base-camoufox's browser mode: bundle bakes in the
 # Camoufox browser, none leaves it out. The tests build with none
-# (test-<collector> below), so they need neither the local archive nor
-# a download. Every other build bakes the browser in. bundle takes the
+# (test-<collector> below), so on a machine without a base-camoufox they
+# need neither the local archive nor a download. A none build keeps the
+# browser of a base-camoufox that has it (BUILD_BASES). Every other
+# build bakes the browser in. bundle takes the
 # browser from the local archive in CAMOUFOX_ARCHIVE_DIR when there is
 # one, and downloads it otherwise (shared/images/base-camoufox.Dockerfile).
 # camoufox-archive writes that archive from the image CAMOUFOX_KEEP.
@@ -221,10 +223,12 @@ CAMOUFOX_KEEP = wealthdb/base-camoufox:keep-$(CAMOUFOX_BUILD)
 # hash that fails builds the base without a label. base-camoufox's
 # inputs also hold its browser mode, which reaches the build as an
 # argument, with the archive directory as a build context in bundle
-# mode. A none build keeps a base-camoufox whose inputs differ only in
-# its bundled browser, so a test run never strips the browser from an
-# image that is up to date. BUILD_BASES runs after LOCKED, which has
-# sourced image-tag.sh.
+# mode. Without pull, a none build never replaces a base-camoufox that
+# carries the browser: one whose WEALTHDB_CAMOUFOX_BROWSER is not none,
+# or that has no such variable. It builds that one in bundle mode,
+# stale or not, so a test run never strips the browser from the image
+# the live runs start. With no image at the tag (CI), it builds none.
+# BUILD_BASES runs after LOCKED, which has sourced image-tag.sh.
 #
 # --provenance=false on every docker build: buildx attaches a provenance
 # attestation by default, and it embeds build metadata, so the image digest
@@ -250,9 +254,15 @@ for img in $(BASE_IMAGES); do \
 		pull=--pull; \
 		docker pull "$$(wealthdb_from_ref "$$f")" || exit 1; \
 	fi; \
-	mode=; set --; \
+	mode=; why=; set --; \
 	if [ "$$img" = base-camoufox ]; then \
 		mode=$(CAMOUFOX_BROWSER); \
+		if [ "$$mode" = none ] && [ -z "$(2)" ] && \
+			have=$$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+				"wealthdb/$$img:$(TAG)" 2>/dev/null) && \
+			! printf '%s\n' "$$have" | grep -qx 'WEALTHDB_CAMOUFOX_BROWSER=none'; then \
+			mode=bundle; why=", as the image there carries it"; \
+		fi; \
 		set -- --build-arg "CAMOUFOX_BROWSER=$$mode"; \
 		if [ "$$mode" = bundle ] && [ -d "$(CAMOUFOX_ARCHIVE_DIR)" ]; then \
 			set -- "$$@" --build-context "camoufox-archive=$(CAMOUFOX_ARCHIVE_DIR)"; \
@@ -262,11 +272,7 @@ for img in $(BASE_IMAGES); do \
 	if wealthdb_build_unchanged "wealthdb/$$img:$(TAG)" "$$hash" $(if $(2),1,0); then \
 		continue; \
 	fi; \
-	if [ "$$mode" = none ] && [ -z "$(2)" ] && bundled=$$(inputs browser=bundle) && \
-		wealthdb_build_unchanged "wealthdb/$$img:$(TAG)" "$$bundled" 0; then \
-		continue; \
-	fi; \
-	echo "==> build base image wealthdb/$$img:$(TAG)$${pull:+ ($$pull)}$${mode:+ (browser: $$mode)}"; \
+	echo "==> build base image wealthdb/$$img:$(TAG)$${pull:+ ($$pull)}$${mode:+ (browser: $$mode$$why)}"; \
 	docker build $(if $(1),--progress=plain) $$pull --provenance=false \
 		$${hash:+--label "wealthdb.inputs=$$hash"} \
 		--build-arg WEALTHDB_IMAGE_TAG=$(TAG) "$$@" \
@@ -283,9 +289,16 @@ base-images:
 # image CAMOUFOX_KEEP into CAMOUFOX_ARCHIVE_DIR and checked against the
 # checksum base-camoufox.Dockerfile pins for its CPU architecture. A
 # mismatch keeps the archive that is there and prints the new checksum,
-# which is the one to pin when CAMOUFOX_KEEP holds a new build.
+# which is the one to pin when CAMOUFOX_KEEP holds a new build. A
+# CAMOUFOX_KEEP built without the browser writes nothing.
 camoufox-archive:
 	@arch=$$(docker image inspect -f '{{.Architecture}}' "$(CAMOUFOX_KEEP)") || exit 1; \
+	if docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(CAMOUFOX_KEEP)" | \
+		grep -qx 'WEALTHDB_CAMOUFOX_BROWSER=none'; then \
+		echo "camoufox-archive: $(CAMOUFOX_KEEP) is a build without the browser" >&2; \
+		echo "camoufox-archive: (CAMOUFOX_BROWSER=none); keep an image built by make all" >&2; \
+		exit 1; \
+	fi; \
 	out="$(CAMOUFOX_ARCHIVE_DIR)/camoufox-cache-$(CAMOUFOX_BUILD)-lin.$$arch.tgz"; \
 	pin=$$(sed -n "s/^ARG CAMOUFOX_SUM_$$(echo "$$arch" | tr a-z A-Z)=//p" \
 		shared/images/base-camoufox.Dockerfile); \
@@ -346,10 +359,11 @@ test-collectorkit:
 	@$(CK_VENV)/bin/python -m pytest -q -p no:cacheprovider $(CK_DIR)/tests
 
 # The test files run side by side, and each one's output prints once all
-# have finished, in file order.
+# have finished, in file order. PYTHON names the interpreter the archive
+# test runs, so its unpack has tarfile's extraction filters.
 test-wrappers:
 	@echo "==> test wrappers (shared/wrappers)"
-	@shared/wrappers/fanout.sh -j $(NCPU) -- 'bash "$$1"' shared/wrappers/tests/test_*.sh
+	@PYTHON=$(PYTHON) shared/wrappers/fanout.sh -j $(NCPU) -- 'bash "$$1"' shared/wrappers/tests/test_*.sh
 
 # The privacy check the hooks and CI run (shared/pii): stdlib only, so
 # it runs on the host interpreter, no venv.
@@ -879,7 +893,8 @@ help:
 	@echo "  make build-<name>       build one collector (e.g. build-schwab-web)"
 	@echo "  make test-<name>        test one collector  (e.g. test-schwab-web)"
 	@echo "  make base-images        build the shared bases; skip one whose inputs did not change"
-	@echo "                          (CAMOUFOX_BROWSER=none: base-camoufox without its browser)"
+	@echo "                          (CAMOUFOX_BROWSER=none: base-camoufox without its browser,"
+	@echo "                          unless the one there has it)"
 	@echo "  make camoufox-archive   write the local Camoufox browser archive from the image"
 	@echo "                          wealthdb/base-camoufox:keep-<build> (CAMOUFOX_KEEP=)"
 	@echo ""

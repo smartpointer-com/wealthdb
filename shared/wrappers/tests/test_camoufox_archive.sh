@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Behaviour test of the local Camoufox browser archive:
 #   - camoufox-archive.py's checksum covers each entry's path, mode and
-#     content and each link's target, and not the order tar wrote them in
-#     or how gzip packed them;
+#     content and each link's target, and not the order tar wrote them in,
+#     how gzip packed them or a ./ before each name;
+#   - it refuses an entry listed twice, one that is not a file, directory
+#     or symbolic link, and an archive without its camoufox-cache/ entry;
 #   - unpack checks the archive first: a wrong or missing checksum, an
 #     entry outside camoufox-cache/ or an existing destination unpacks
 #     nothing;
 #   - `make camoufox-archive` writes the archive from the kept image when
 #     its checksum is the pinned one, and otherwise keeps the archive that
-#     is there.
+#     is there. A kept image built without the browser writes nothing.
 # A stub docker stands in for the kept image; nothing real is built.
 set -uo pipefail
 # The makes this test starts read only what it gives them: an outer
@@ -26,7 +28,9 @@ trap 'rm -rf "$TMP"' EXIT
 # macOS tar would add an AppleDouble entry for each file's attributes.
 export COPYFILE_DISABLE=1
 ARC="$ROOT/shared/images/camoufox-archive.py"
-arc() { python3 -I "$ARC" "$@"; }
+# unpack needs tarfile's extraction filters, which an older python3 on
+# PATH may lack; make test-wrappers names a newer one in PYTHON.
+arc() { "${PYTHON:-python3}" -I "$ARC" "$@"; }
 
 # A tree of every entry kind, then two archives of it: one in tar's
 # order, one in reverse order and packed harder.
@@ -60,6 +64,29 @@ printf 'pref\n' > "$SRC/camoufox-cache/sub/prefs.js"
 ln -sfn camoufox-bin "$SRC/camoufox-cache/link"
 changed "a changed link target changes the checksum"
 ln -sfn sub/prefs.js "$SRC/camoufox-cache/link"
+(cd "$SRC" && tar -czf "$TMP/dot.tgz" ./camoufox-cache)
+if [ "$(arc sum "$TMP/dot.tgz")" = "$sum_a" ]; then
+    ok "a ./ before each name keeps the checksum"
+else
+    bad "a ./ before each name keeps the checksum"
+fi
+# refused WHAT ARCHIVE: the checksum of ARCHIVE fails, saying WHAT.
+refused() {
+    out="$(arc sum "$2" 2>&1)"; rc=$?
+    if [ "$rc" -eq 1 ] && grep -qF "$1" <<<"$out"; then ok "$3"
+    else bad "$3 (exit $rc: $out)"; fi
+}
+(cd "$SRC" && tar -cf "$TMP/twice.tar" camoufox-cache && tar -rf "$TMP/twice.tar" camoufox-cache/sub/prefs.js \
+    && gzip -c "$TMP/twice.tar" > "$TMP/twice.tgz")
+refused "in the archive twice" "$TMP/twice.tgz" "an entry listed twice is refused"
+HARD="$TMP/hard"
+mkdir -p "$HARD/camoufox-cache"
+printf 'h\n' > "$HARD/camoufox-cache/one"
+ln "$HARD/camoufox-cache/one" "$HARD/camoufox-cache/two"
+(cd "$HARD" && tar -czf "$TMP/hard.tgz" camoufox-cache)
+refused "is not a file, a directory or a symbolic link" "$TMP/hard.tgz" "a hard link is refused"
+(cd "$SRC" && tar --no-recursion -czf "$TMP/notop.tgz" camoufox-cache/camoufox-bin)
+refused "no camoufox-cache/ directory" "$TMP/notop.tgz" "an archive without its top directory is refused"
 
 if arc unpack "$TMP/a.tgz" "$sum_a" "$TMP/out" \
     && [ "$(cat "$TMP/out/sub/prefs.js")" = pref ] \
@@ -96,6 +123,18 @@ if [ "$rc" -eq 1 ] && [ ! -e "$TMP/outside" ] && grep -q 'outside camoufox-cache
 else
     bad "an entry outside camoufox-cache/ unpacks nothing (exit $rc: $out)"
 fi
+# A link out of the tree passes the checksum and fails the extraction,
+# which leaves no partial tree behind.
+ESC="$TMP/esc"
+mkdir -p "$ESC/src/camoufox-cache" "$ESC/out"
+ln -s /etc/hosts "$ESC/src/camoufox-cache/hosts"
+(cd "$ESC/src" && tar -czf "$ESC/esc.tgz" camoufox-cache)
+out="$(arc unpack "$ESC/esc.tgz" "$(arc sum "$ESC/esc.tgz")" "$ESC/out/tree" 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && [ -z "$(ls -A "$ESC/out")" ]; then
+    ok "a failed extraction leaves nothing behind"
+else
+    bad "a failed extraction leaves nothing behind (exit $rc: $out; left: $(ls -A "$ESC/out"))"
+fi
 
 # make camoufox-archive, in a copy of the tree whose Dockerfile pins the
 # first archive's checksum. The stub answers the image's architecture
@@ -111,7 +150,7 @@ cat > "$TMP/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
 case "${1:-}" in
-    image) echo arm64 ;;
+    image) case "$*" in *.Config.Env*) printf '%s\n' "${STUB_ENV:-}" ;; *) echo arm64 ;; esac ;;
     run) cat "$STUB_TAR" ;;
 esac
 STUB
@@ -137,6 +176,14 @@ if [ "$rc" -ne 0 ] && cmp -s "$DEST" "$TMP/a.tgz" && grep -qF "$(arc sum "$TMP/c
     ok "another checksum keeps the archive there, prints the new one and leaves no temporary file"
 else
     bad "another checksum keeps the archive there, prints the new one and leaves no temporary file (exit $rc: $out)"
+fi
+: > "$TMP/docker.log"
+out="$(STUB_ENV=WEALTHDB_CAMOUFOX_BROWSER=none archive "$TMP/c.tgz")"; rc=$?
+if [ "$rc" -ne 0 ] && grep -qF 'is a build without the browser' <<<"$out" \
+    && ! grep -q '^run ' "$TMP/docker.log" && cmp -s "$DEST" "$TMP/a.tgz"; then
+    ok "a kept image without the browser writes nothing and says so"
+else
+    bad "a kept image without the browser writes nothing and says so (exit $rc: $out)"
 fi
 
 summary "camoufox archive tests"

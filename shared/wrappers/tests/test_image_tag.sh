@@ -8,10 +8,11 @@
 # image's wealthdb.inputs label is skipped, for the engine, a collector
 # and the shared bases; an extra argument, a changed input or a rebuilt
 # base image builds. base-camoufox takes its browser mode and the local
-# archive, and a test build keeps one that carries the browser. A collector's inputs are its Dockerfile and
-# requirements.txt alone. The wrappers run from a copy of the tree, so
-# the checkout's own .image-tag plays no part. A stubbed docker on PATH
-# records the argv; nothing real is built.
+# archive, and a test build keeps one that carries the browser. A
+# collector's inputs are its Dockerfile and requirements.txt alone. The
+# wrappers run from a copy of the tree, so the checkout's own .image-tag
+# plays no part. A stubbed docker on PATH records the argv; nothing real
+# is built.
 set -uo pipefail
 # The makes this test starts read only what it gives them: an outer
 # make's flags and command-line variables (make test-wrappers X=…) stay
@@ -246,8 +247,10 @@ else
 fi
 
 # An image whose label matches that hash is not built. The stub returns
-# the label on the inputs inspect and STUB_ID on any other inspect, and
-# prints BUILT and its argv on a build and PULLED and the image on a pull.
+# the label on the inputs inspect, STUB_ENV on the environment inspect
+# (an image that is not there with STUB_NO_IMAGE) and STUB_ID on any
+# other inspect, and prints BUILT and its argv on a build and PULLED and
+# the image on a pull.
 skipdir="$TMP/skipcol"
 mkdir -p "$skipdir"
 printf 'FROM wealthdb/base-python:${WEALTHDB_IMAGE_TAG}\n' > "$skipdir/Dockerfile"
@@ -267,6 +270,9 @@ fi
 for a in "$@"; do
     case "$a" in
         *wealthdb.inputs*) printf '%s\n' "${STUB_LABEL:-}"; exit 0 ;;
+        *.Config.Env*)
+            [ -n "${STUB_NO_IMAGE:-}" ] && exit 1
+            printf '%s\n' "${STUB_ENV:-}"; exit 0 ;;
     esac
 done
 printf '%s\n' "${STUB_ID:-sha256:from}"
@@ -430,8 +436,9 @@ fi
 
 # base-camoufox takes its browser mode as a build argument, and in
 # bundle mode the local archive's directory as a build context when that
-# directory exists. A none build keeps a base-camoufox that differs only
-# in carrying the browser; a bundle build replaces one without it.
+# directory exists. A none build never replaces a base-camoufox that
+# carries the browser, up to date or stale; a bundle build replaces one
+# without it.
 camo_hash() {
     (
         mode="$1"
@@ -464,9 +471,24 @@ has_item "the archive directory is a build context" \
 out="$(camo_bases none update-bases CAMOUFOX_BROWSER=none)"
 has_item "a none build leaves the browser out" "CAMOUFOX_BROWSER=none" "$(camo_block "$out")"
 lacks_item "a none build takes no archive context" "--build-context" "$(camo_block "$out")"
-out="$(camo_bases "$(camo_hash bundle)" base-images CAMOUFOX_BROWSER=none)"
+out="$(STUB_ENV=WEALTHDB_CAMOUFOX_BROWSER=bundle \
+    camo_bases "$(camo_hash bundle)" base-images CAMOUFOX_BROWSER=none)"
 has "a none build keeps a base-camoufox with the browser" \
     "build: wealthdb/base-camoufox:feature unchanged" "$out"
+# A stale one is rebuilt with the browser, and so is one from before
+# the browser mode, which has no such variable. Only one built without
+# the browser, or none at all, is built without it.
+kept="build base image wealthdb/base-camoufox:feature (browser: bundle, as the image there carries it)"
+out="$(STUB_ENV=WEALTHDB_CAMOUFOX_BROWSER=bundle camo_bases stale base-images CAMOUFOX_BROWSER=none)"
+has "a none build rebuilds a stale base-camoufox with the browser" "$kept" "$out"
+out="$(STUB_ENV=PATH=/usr/bin camo_bases stale base-images CAMOUFOX_BROWSER=none)"
+has "a none build rebuilds a base-camoufox without the mode variable with the browser" "$kept" "$out"
+out="$(STUB_ENV=WEALTHDB_CAMOUFOX_BROWSER=none camo_bases stale base-images CAMOUFOX_BROWSER=none)"
+has "a none build rebuilds a base-camoufox without the browser as none" \
+    "build base image wealthdb/base-camoufox:feature (browser: none)" "$out"
+out="$(STUB_NO_IMAGE=1 camo_bases stale base-images CAMOUFOX_BROWSER=none)"
+has "a none build with no base-camoufox there builds none" \
+    "build base image wealthdb/base-camoufox:feature (browser: none)" "$out"
 out="$(camo_bases "$(camo_hash none)" base-images)"
 has "a bundle build replaces a base-camoufox without the browser" \
     "build base image wealthdb/base-camoufox:feature (browser: bundle)" "$out"

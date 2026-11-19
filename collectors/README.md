@@ -844,24 +844,31 @@ names it.
   Camoufox releases on GitHub.
 - The build checks the archive against a SHA-256 checksum. The
   Dockerfile pins one per architecture, next to `CAMOUFOX_BUILD`. The
-  checksum covers what the archive holds: each file's path, mode and
-  content. Any other checksum stops the build.
+  checksum covers what the archive holds: each entry's path, the mode
+  of each file and directory, each file's content and each link's
+  target. Any other checksum stops the build.
+- An architecture with no pinned checksum takes no archive. An archive
+  of it stops the build. `make camoufox-archive` prints the checksum to
+  pin.
 - `make camoufox-archive` writes the archive again. It reads the browser
-  from the image `wealthdb/base-camoufox:keep-<build>`, a working
-  base-camoufox kept under a tag of its own
+  from the image `wealthdb/base-camoufox:keep-<build>`. That is a
+  base-camoufox built with the browser (by `make all`), kept under a
+  tag of its own
   (`docker tag wealthdb/base-camoufox:latest wealthdb/base-camoufox:keep-<build>`).
-  It checks the new archive against the pinned checksum.
+  An image without the browser writes nothing. The target checks the
+  new archive against the pinned checksum.
   `CAMOUFOX_KEEP=<image>` reads another image.
 - The archive also holds the uBlock Origin add-on. Without the archive,
   the build downloads it with the browser. The build always downloads
   the GeoLite2 location database.
 - `make all`, `make build-<name>` and `make update` build the image
   with the browser.
-- The test images carry no browser. `make test-<name>` and CI build
-  base-camoufox with `CAMOUFOX_BROWSER=none`. The unit tests run on
-  fixtures and never start a browser. A sign-in in such an image stops
-  at once with a message. A test build keeps a base-camoufox that is up
-  to date and carries the browser.
+- `make test-<name>` and CI build base-camoufox without the browser
+  (`CAMOUFOX_BROWSER=none`). The unit tests run on fixtures and never
+  start a browser. A sign-in in such an image stops at once with a
+  message.
+- A test build never replaces a base-camoufox that carries the browser:
+  it rebuilds that one with the browser.
 
 ### Unit tests
 

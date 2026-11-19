@@ -1,8 +1,8 @@
 # Shared base for the camoufox-using collectors.
-# Layers camoufox-pinned Playwright and a pre-fetched Firefox bundle
-# onto base-playwright, which already carries Xvfb/x11vnc and the shared
-# entrypoint bootstrap (/opt/entrypoint-lib.sh) that each collector's
-# entrypoint.sh sources.
+# Layers camoufox-pinned Playwright and, unless built with
+# CAMOUFOX_BROWSER=none, the pinned Firefox bundle onto base-playwright,
+# which already carries Xvfb/x11vnc and the shared entrypoint bootstrap
+# (/opt/entrypoint-lib.sh) that each collector's entrypoint.sh sources.
 # Collectors FROM this skip their own camoufox setup; their
 # requirements.txt only needs to add per-collector extras (pdfplumber,
 # pypdfium2, pytest).

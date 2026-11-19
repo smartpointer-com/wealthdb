@@ -4,7 +4,8 @@
 The archive is a gzipped tar of base-camoufox's /opt/camoufox-cache: the
 browser build and its add-on, under the one top directory camoufox-cache/.
 Its checksum is a SHA-256 over what it holds, not over its bytes: each
-entry's path, type and mode, each file's content and each link's target.
+entry's path and type, each file's and directory's mode, each file's
+content and each link's target.
 Two archives of one tree have one checksum, whatever order tar wrote
 them in and however gzip packed them.
 
@@ -21,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import os
 import posixpath
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -80,9 +82,13 @@ def unpack(archive: str, want: str, dest: str) -> None:
     if os.path.lexists(dest):
         raise ArchiveError(f"{dest} exists")
     tmp = tempfile.mkdtemp(dir=os.path.dirname(os.path.abspath(dest)))
-    with tarfile.open(archive, "r:gz") as tar:
-        tar.extractall(tmp, filter="data")
-    os.rename(os.path.join(tmp, TOP), dest)
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            tar.extractall(tmp, filter="data")
+        os.rename(os.path.join(tmp, TOP), dest)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
     os.rmdir(tmp)
 
 
