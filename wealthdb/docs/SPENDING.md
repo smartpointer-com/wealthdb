@@ -640,7 +640,12 @@ or account is its own institution speaking and names nothing. Then:
 - the named phases pair as many legs as they can — a debit takes its
   best free candidate, and one left with none moves an earlier debit to
   that debit's other candidate — so a run of identical transfers
-  between two accounts leaves no leg stranded.
+  between two accounts leaves no leg stranded;
+- a deposit dated on or after its withdrawal wins over an earlier one.
+  A debit left holding an earlier deposit moves to its best candidate
+  dated on or after its own day, when no other debit holds that one and
+  its amount is no further off. No other pair moves, and the deposit
+  it leaves goes back to the pool.
 
 With no names configured the matcher pairs on amount and day alone.
 

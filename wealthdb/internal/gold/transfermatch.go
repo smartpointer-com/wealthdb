@@ -291,7 +291,9 @@ const referenceMatchMaxDays = 90
 // leg of its own source before another source's, earliest on ties. The amount
 // phase is greedy and one-to-one: a credit claimed by an earlier debit is out
 // of the pool for every later one, and it never backtracks. The named phase
-// does, but only for a debit left with no free candidate (banded.maximal).
+// does, but only for a debit left with no free candidate, and it prefers a
+// free credit dated on or after its debit to one dated before
+// (banded.maximal).
 //
 // Returned pairs follow the phases, and within each banded phase the debit
 // order. Legs that found no partner are simply absent — the caller keeps
@@ -490,8 +492,10 @@ type ccyPart struct {
 // debit to another of its own (an augmenting path). So one debit's nearest choice
 // never strands a later debit that had no other — the shape of a run of
 // identical transfers between two accounts, where the nearest day is not the
-// right partner as often as not. Returns the pairs in debit order and the
-// debits left.
+// right partner as often as not. A debit left holding a credit dated before
+// it then takes its best candidate dated on or after its own day, where that
+// one is free and no further off in amount. Returns the pairs in debit order
+// and the debits left.
 func (b banded) maximal(debits []TransferLeg, admit func(d, c TransferLeg) bool) ([]TransferMatchPair, []TransferLeg) {
 	cands := make([][]int, len(debits))
 	for di, d := range debits {
@@ -530,6 +534,36 @@ func (b banded) maximal(debits []TransferLeg, admit func(d, c TransferLeg) bool)
 	credit := make(map[int]int, len(holder)) // debit index → credit index
 	for ci, di := range holder {
 		credit[di] = ci
+	}
+	// A deposit dated on or after its withdrawal's day wins over an
+	// earlier one: money arrives after it leaves more often than before.
+	// A debit holding a credit dated before its own day moves to its best
+	// candidate dated on or after it, where no debit holds that one and
+	// it is no further off in amount. Only a free credit is taken, so no
+	// other pair moves and the number of pairs stays; the credit left
+	// goes back to the pool. The pass repeats until no debit moves, as a
+	// move frees a credit another debit may be waiting for; a debit that
+	// moved holds a later credit and never moves again.
+	for moved := true; moved; {
+		moved = false
+		for di, d := range debits {
+			ci, ok := credit[di]
+			if !ok || b.credits[ci].Day >= d.Day {
+				continue
+			}
+			for _, cj := range cands[di] {
+				c := b.credits[cj]
+				if c.Day < d.Day {
+					continue
+				}
+				if _, held := holder[cj]; !held && math.Abs(d.Amt+c.Amt) <= math.Abs(d.Amt+b.credits[ci].Amt) {
+					delete(holder, ci)
+					holder[cj], credit[di] = di, cj
+					moved = true
+				}
+				break
+			}
+		}
 	}
 	var out []TransferMatchPair
 	var left []TransferLeg

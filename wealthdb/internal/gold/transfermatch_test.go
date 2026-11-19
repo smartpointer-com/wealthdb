@@ -673,6 +673,78 @@ func TestNamedPairsStrandNoLegANearerChoiceWouldStrand(t *testing.T) {
 	}
 }
 
+// A named debit takes a free deposit dated on or after its own day over an
+// earlier one, though the earlier one is as near or nearer, and the deposit
+// it leaves goes back to the pool for a later phase.
+func TestANamedPairPrefersADepositOnOrAfterItsWithdrawal(t *testing.T) {
+	t.Parallel()
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
+	for _, tc := range []struct {
+		name         string
+		early, later int64
+	}{
+		{"a tie in days", 99, 101},
+		{"the earlier nearer", 99, 102},
+		{"the later on the same day", 98, 100},
+	} {
+		got := pairIDs(MatchTransferLegs([]TransferLeg{
+			namedLeg("bank", "checking", "named", 100, -1000, "exchange"),
+			leg("exchange", "wallet", "early", tc.early, 1000),
+			leg("exchange", "wallet", "later", tc.later, 1000),
+			leg("bank", "savings", "silent", tc.early, -1000),
+		}, opts))
+		want := map[string]string{"named": "later", "silent": "early"}
+		if !maps.Equal(got, want) {
+			t.Errorf("%s: pairs = %v, want %v", tc.name, got, want)
+		}
+	}
+}
+
+// The preference moves a debit only to a deposit no other debit holds, and
+// never to one further off in amount: a pair without such an alternative
+// stays as it was.
+func TestTheDateOrderPreferenceMovesNoOtherPair(t *testing.T) {
+	t.Parallel()
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
+	// The later deposit is the other debit's own.
+	held := pairIDs(MatchTransferLegs([]TransferLeg{
+		namedLeg("bank", "checking", "first", 100, -1000, "exchange"),
+		namedLeg("bank", "checking", "second", 101, -1000, "exchange"),
+		leg("exchange", "wallet", "early", 98, 1000),
+		leg("exchange", "wallet", "later", 102, 1000),
+	}, opts))
+	if want := map[string]string{"first": "early", "second": "later"}; !maps.Equal(held, want) {
+		t.Errorf("held: pairs = %v, want %v", held, want)
+	}
+	// The later deposit is short by a fee, the earlier one exact.
+	gap := pairIDs(MatchTransferLegs([]TransferLeg{
+		namedLeg("bank", "checking", "named", 100, -1000, "exchange"),
+		leg("exchange", "wallet", "exact", 99, 1000),
+		leg("exchange", "wallet", "short", 101, 998),
+	}, opts))
+	if want := map[string]string{"named": "exact"}; !maps.Equal(gap, want) {
+		t.Errorf("gap: pairs = %v, want %v", gap, want)
+	}
+}
+
+// A debit moves only to its best candidate dated on or after it, never past
+// a held one to a farther one, and a move frees a deposit an earlier debit,
+// already passed over, then takes: no two pairs cross.
+func TestTheDateOrderPreferenceRepeatsUntilNoDebitMoves(t *testing.T) {
+	t.Parallel()
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5}
+	got := pairIDs(MatchTransferLegs([]TransferLeg{
+		namedLeg("bank", "checking", "first", 100, -1000, "exchange"),
+		namedLeg("bank", "checking", "second", 103, -1000, "exchange"),
+		leg("exchange", "wallet", "a", 99, 1000),
+		leg("exchange", "wallet", "b", 101, 1000),
+		leg("exchange", "wallet", "c", 105, 1000),
+	}, opts))
+	if want := map[string]string{"first": "b", "second": "c"}; !maps.Equal(got, want) {
+		t.Errorf("pairs = %v, want %v", got, want)
+	}
+}
+
 // Where both narratives name each other, that pair is claimed before a credit
 // that names only a group can be taken by a silent debit of that group.
 func TestMutuallyNamedPairsOutrankOneSidedOnes(t *testing.T) {
