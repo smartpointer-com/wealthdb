@@ -2,6 +2,7 @@ package gold
 
 import (
 	"fmt"
+	"math"
 	"sort"
 )
 
@@ -113,8 +114,9 @@ type TransferOverrideSelector struct {
 	Account string // gold account_external_id
 	Day     int64  // UTC midnight of occurred_at, Unix seconds
 	// Amount: for match and unmatch, the matcher's amount (TransferLeg.Amt,
-	// the pool's match_amount); for reimburse, net_amount as gold stores it
-	// (the pins key).
+	// the pool's match_amount), within a cent, or for a coin's leg as the
+	// coin rule reads it (TransferLeg.answers); for reimburse, net_amount
+	// as gold stores it (the pins key).
 	Amount   float64
 	Currency string
 }
@@ -140,16 +142,38 @@ func indexLegs(legs []TransferLeg) legIndex {
 }
 
 // legsAt are the legs s names: those on its account, day and currency whose
-// amount is s's within a cent.
+// amount answers to s's (TransferLeg.answers).
 func (idx legIndex) legsAt(s TransferOverrideSelector) []LegRef {
 	var out []LegRef
 	for _, l := range idx[legDay{s.Source, s.Account, s.Currency, EpochDay(s.Day)}] {
-		if diff := l.Amt - s.Amount; diff > TransferMatchMinEps || diff < -TransferMatchMinEps {
-			continue
+		if l.answers(s.Amount) {
+			out = append(out, LegRef{l.Group, l.Owner, l.ID})
 		}
-		out = append(out, LegRef{l.Group, l.Owner, l.ID})
 	}
 	return out
+}
+
+// answers says l is the leg a selector of amount names. A coin's leg
+// answers where the two amounts have one sign and the smaller is what a
+// transfer of the larger delivers (coinQuantities, at l's price): a cent
+// is no bound in a coin's own unit, too wide for one coin and too narrow
+// for another. Every other leg answers within a cent.
+func (l TransferLeg) answers(amount float64) bool {
+	if !l.Coin {
+		diff := l.Amt - amount
+		return diff <= TransferMatchMinEps && diff >= -TransferMatchMinEps
+	}
+	if l.Amt == amount {
+		return true
+	}
+	if (l.Amt < 0) != (amount < 0) {
+		return false
+	}
+	larger, smaller := math.Abs(l.Amt), math.Abs(amount)
+	if smaller > larger {
+		larger, smaller = smaller, larger
+	}
+	return coinQuantities(larger, smaller, l.USD)
 }
 
 // TransferOverrideRule is one line of the ledger before resolution.

@@ -1,6 +1,7 @@
 package spending
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -308,7 +309,13 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 //
 // Each leg carries the reference and the counter leg its source stated
 // (evidence), because this is the one place a leg is built. Its amount
-// is the pool's match_amount: a coin's dust keeps its size.
+// is the pool's match_amount: a coin's dust keeps its size. A leg that
+// moves a coin in the coin itself is a coin leg and carries the coin's
+// USD price on its day (gold.LoadCoinUSD): its instrument is its
+// currency, the asset class and vehicle (the row's own, else its
+// instrument's) are a coin's (gold.IsCoin), and no account holds that
+// currency as cash. A currency held as cash is money, whatever an
+// instrument of its name says, and pairs as cash.
 //
 // Most of the pool is outside the population — the pool spans every
 // account and admits the income kinds — and the enrichment table takes
@@ -329,11 +336,20 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName, 
         SELECT p.silver_source_id, p.account_external_id, p.transaction_external_id,
                p.occurred_at, p.currency, CAST(p.match_amount AS DOUBLE),
                COALESCE(p.counterparty, ''), COALESCE(p.description, ''),
-               COALESCE(p.provider_category, ''), COALESCE(a.portfolio_external_id, '')
+               COALESCE(p.provider_category, ''), COALESCE(a.portfolio_external_id, ''),
+               COALESCE(t.instrument_external_id = p.currency, false),
+               COALESCE(t.asset_class, ''), COALESCE(i.asset_class, ''),
+               COALESCE(t.vehicle, ''), COALESCE(i.vehicle, '')
           FROM spend_matcher_pool(?, ?) p
+          JOIN transactions t
+            ON t.silver_source_id = p.silver_source_id
+           AND t.transaction_external_id = p.transaction_external_id
           LEFT JOIN accounts a
             ON a.silver_source_id = p.silver_source_id
            AND a.account_external_id = p.account_external_id
+          LEFT JOIN instruments i
+            ON i.silver_source_id = t.silver_source_id
+           AND i.instrument_external_id = t.instrument_external_id
          ORDER BY p.silver_source_id, p.transaction_external_id`, int64(0), gold.MaxEpoch)
 	if err != nil {
 		return nil, nil, fmt.Errorf("spending: read matcher pool: %w", err)
@@ -342,15 +358,20 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName, 
 
 	var legs []gold.TransferLeg
 	narratives := map[txKey]candidate{}
+	var coins []string
+	seen := map[string]bool{}
 	for rows.Next() {
 		var (
-			leg        gold.TransferLeg
-			occurredAt int64
-			amount     sql.NullFloat64
-			row        candidate
+			leg                                    gold.TransferLeg
+			occurredAt                             int64
+			amount                                 sql.NullFloat64
+			row                                    candidate
+			ownUnit                                bool
+			class, instClass, vehicle, instVehicle string
 		)
 		if err := rows.Scan(&leg.Group, &leg.Owner, &leg.ID, &occurredAt,
-			&leg.Ccy, &amount, &row.counterparty, &row.description, &row.providerCategory, &row.portfolio); err != nil {
+			&leg.Ccy, &amount, &row.counterparty, &row.description, &row.providerCategory, &row.portfolio,
+			&ownUnit, &class, &instClass, &vehicle, &instVehicle); err != nil {
 			return nil, nil, fmt.Errorf("spending: scan matcher pool: %w", err)
 		}
 		row.account, row.occurredAt = leg.Owner, occurredAt
@@ -361,6 +382,11 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName, 
 		}
 		leg.Day = gold.EpochDay(occurredAt)
 		leg.Amt = amount.Float64
+		leg.Coin = ownUnit && gold.IsCoin(cmp.Or(class, instClass), cmp.Or(vehicle, instVehicle))
+		if leg.Coin && !seen[leg.Ccy] {
+			seen[leg.Ccy] = true
+			coins = append(coins, leg.Ccy)
+		}
 		leg.Rail, leg.RailPartner = legRail(row.counterparty, row.description)
 		leg.Signature = Normalize(row.counterparty, row.description)
 		leg.Reversal = reversalRe.MatchString(row.counterparty + " " + row.description)
@@ -376,7 +402,45 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName, 
 	if err := rows.Err(); err != nil {
 		return nil, nil, fmt.Errorf("spending: read matcher pool: %w", err)
 	}
+	if len(coins) == 0 {
+		return legs, narratives, nil
+	}
+	money, err := cashCurrencies(ctx, tx, coins)
+	if err != nil {
+		return nil, nil, err
+	}
+	rates, err := gold.LoadCoinUSD(ctx, tx, coins)
+	if err != nil {
+		return nil, nil, fmt.Errorf("spending: read matcher pool: %w", err)
+	}
+	for i := range legs {
+		if legs[i].Coin && money[legs[i].Ccy] {
+			legs[i].Coin = false
+		}
+		if legs[i].Coin {
+			legs[i].USD = gold.CoinUSD(rates, legs[i].Ccy, legs[i].Day)
+		}
+	}
 	return legs, narratives, nil
+}
+
+// cashCurrencies are those of ccys an account holds as cash.
+func cashCurrencies(ctx context.Context, tx querier, ccys []string) (map[string]bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+        SELECT DISTINCT currency FROM cash_balances WHERE list_contains(?, currency)`, ccys)
+	if err != nil {
+		return nil, fmt.Errorf("spending: read cash currencies: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, fmt.Errorf("spending: read cash currencies: %w", err)
+		}
+		out[c] = true
+	}
+	return out, rows.Err()
 }
 
 func loadSilverKinds(ctx context.Context, tx *sql.Tx) (map[string]string, error) {

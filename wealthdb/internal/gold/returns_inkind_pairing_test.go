@@ -14,7 +14,9 @@ import (
 
 // TestNetLegsPairsInKindByHolding pins the in-kind rule on the netter's
 // candidates: a leg that moved a holding pairs by holding and quantity,
-// never by value, and a leg of cash by value alone.
+// never by value, and a leg of cash by value alone. A coin pairs by the
+// coin rule: within two days, short by a fee it allows (1% of the coin
+// sent where it has no price, as here, unless the leg states one).
 func TestNetLegsPairsInKindByHolding(t *testing.T) {
 	t.Parallel()
 	type leg struct {
@@ -22,6 +24,7 @@ func TestNetLegsPairsInKindByHolding(t *testing.T) {
 		amount  float64
 		holding string // "" for cash
 		qty     float64
+		usd     float64 // the coin's USD price, 0 for none
 	}
 	for _, tc := range []struct {
 		name  string
@@ -32,37 +35,51 @@ func TestNetLegsPairsInKindByHolding(t *testing.T) {
 		transit bool
 	}{
 		{"one coin out, one coin in at a moved price",
-			[]leg{{10, -1000, "BTC", 1}, {12, 1080, "BTC", 1}}, [][2]int{{1, 0}}, true},
-		{"a week apart pairs",
-			[]leg{{10, -1000, "BTC", 1}, {17, 1000, "BTC", 1}}, [][2]int{{1, 0}}, true},
-		{"eight days apart does not",
-			[]leg{{10, -1000, "BTC", 1}, {18, 1000, "BTC", 1}}, nil, false},
-		{"a fee in kind inside the tolerance pairs",
-			[]leg{{10, -1000, "BTC", 1}, {10, 960, "BTC", 0.96}}, [][2]int{{1, 0}}, true},
+			[]leg{{10, -1000, "BTC", 1, 0}, {12, 1080, "BTC", 1, 0}}, [][2]int{{1, 0}}, true},
+		{"two days apart pairs, the receipt first",
+			[]leg{{12, -1000, "BTC", 1, 0}, {10, 1080, "BTC", 1, 0}}, [][2]int{{1, 0}}, true},
+		{"three days apart does not",
+			[]leg{{10, -1000, "BTC", 1, 0}, {13, 1080, "BTC", 1, 0}}, nil, false},
+		{"a fee within 1% of an unpriced coin pairs",
+			[]leg{{10, -1000, "BTC", 1, 0}, {10, 950, "BTC", 0.995, 0}}, [][2]int{{1, 0}}, true},
 		{"a quantity short by more does not",
-			[]leg{{10, -1000, "BTC", 1}, {10, 940, "BTC", 0.94}}, nil, false},
+			[]leg{{10, -1000, "BTC", 1, 0}, {10, 980, "BTC", 0.98, 0}}, nil, false},
+		{"a fee worth under 100 USD pairs, however large a share",
+			[]leg{{10, -150, "BTC", 0.005, 30000}, {11, 135, "BTC", 0.0045, 30000}}, [][2]int{{1, 0}}, true},
+		{"a fee worth more does not",
+			[]leg{{10, -1500, "BTC", 0.05, 30000}, {10, 1350, "BTC", 0.045, 30000}}, nil, false},
+		{"a quarter lost is no fee, however cheap the coin",
+			[]leg{{10, -10, "TOKEN", 1000, 0.01}, {10, 7, "TOKEN", 700, 0.01}}, nil, false},
+		{"more received than sent within 0.1% pairs",
+			[]leg{{10, -1000, "BTC", 1, 30000}, {10, 1080, "BTC", 1.0009, 30000}}, [][2]int{{1, 0}}, true},
+		{"more received beyond it does not",
+			[]leg{{10, -1000, "BTC", 1, 30000}, {10, 1080, "BTC", 1.002, 30000}}, nil, false},
 		{"two holdings of one value do not",
-			[]leg{{10, -1000, "BTC", 1}, {10, 1000, "ETH", 20}}, nil, false},
+			[]leg{{10, -1000, "BTC", 1, 0}, {10, 1000, "ETH", 20, 0}}, nil, false},
 		{"a holding and cash of one value do not",
-			[]leg{{10, -1000, "BTC", 1}, {10, 1000, "", 0}}, nil, false},
+			[]leg{{10, -1000, "BTC", 1, 0}, {10, 1000, "", 0, 0}}, nil, false},
 		{"a leg that states no quantity does not",
-			[]leg{{10, -1000, "BTC", 0}, {10, 1000, "BTC", 1}}, nil, false},
-		{"a leg takes the open leg of the closest quantity",
-			[]leg{{10, -1000, "BTC", 1}, {10, -990, "BTC", 0.99}, {11, 1100, "BTC", 0.99}},
+			[]leg{{10, -1000, "BTC", 0, 0}, {10, 1000, "BTC", 1, 0}}, nil, false},
+		{"a leg takes the open leg of the smallest shortfall",
+			[]leg{{10, -1000, "BTC", 1, 0}, {10, -990, "BTC", 0.99, 0}, {11, 1100, "BTC", 0.99, 0}},
 			[][2]int{{2, 1}}, true},
 		{"the latest open leg of one quantity on a tie",
-			[]leg{{9, -1000, "BTC", 1}, {10, -990, "BTC", 1}, {11, 1100, "BTC", 1}},
+			[]leg{{9, -1000, "BTC", 1, 0}, {10, -990, "BTC", 1, 0}, {11, 1100, "BTC", 1, 0}},
 			[][2]int{{2, 1}}, true},
 		{"1.0 BTC out, 0.9995 in, a day later at a moved price",
-			[]leg{{10, -1000, "BTC", 1}, {11, 1050, "BTC", 0.9995}}, [][2]int{{1, 0}}, true},
+			[]leg{{10, -1000, "BTC", 1, 0}, {11, 1050, "BTC", 0.9995, 0}}, [][2]int{{1, 0}}, true},
 		{"100 shares out, 99 in: no pair",
-			[]leg{{10, -1000, "SHARE", 100}, {11, 1050, "SHARE", 99}}, nil, false},
+			[]leg{{10, -1000, "SHARE", 100, 0}, {11, 1050, "SHARE", 99, 0}}, nil, false},
 		{"100 shares out, 100 in at a moved price",
-			[]leg{{10, -1000, "SHARE", 100}, {11, 1050, "SHARE", 100}}, [][2]int{{1, 0}}, true},
+			[]leg{{10, -1000, "SHARE", 100, 0}, {11, 1050, "SHARE", 100, 0}}, [][2]int{{1, 0}}, true},
+		{"shares a week apart pair",
+			[]leg{{10, -1000, "SHARE", 100, 0}, {17, 1050, "SHARE", 100, 0}}, [][2]int{{1, 0}}, true},
+		{"shares eight days apart do not",
+			[]leg{{10, -1000, "SHARE", 100, 0}, {18, 1050, "SHARE", 100, 0}}, nil, false},
 		{"100 shares out, 99 in at one value: the value netter may not pair them either",
-			[]leg{{10, -1000, "SHARE", 100}, {10, 1000, "SHARE", 99}}, nil, false},
+			[]leg{{10, -1000, "SHARE", 100, 0}, {10, 1000, "SHARE", 99, 0}}, nil, false},
 		{"cash pairs by value",
-			[]leg{{10, -1000, "", 0}, {12, 1003, "", 0}}, [][2]int{{1, 0}}, false},
+			[]leg{{10, -1000, "", 0, 0}, {12, 1003, "", 0, 0}}, [][2]int{{1, 0}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -74,7 +91,7 @@ func TestNetLegsPairsInKindByHolding(t *testing.T) {
 				ids[id] = i
 				if l.holding != "" {
 					// A holding named SHARE is a security: exact quantities.
-					a.inKind[id] = heldMove{holding: l.holding, qty: l.qty, exact: l.holding == "SHARE"}
+					a.inKind[id] = heldMove{holding: l.holding, qty: l.qty, exact: l.holding == "SHARE", usd: l.usd}
 				}
 				cand = append(cand, flowLeg{Flow: returns.Flow{Day: l.day, Amount: l.amount, ID: id}, acct: a, nettable: true})
 			}
@@ -122,9 +139,10 @@ func seedHoldingMove(t *testing.T, db *sql.DB, ctx context.Context, src, acct, i
 func TestRunReturnsPairsInKindByHolding(t *testing.T) {
 	t.Parallel()
 	a, out, k := dy(2024, time.January, 2), dy(2024, time.March, 1), dy(2024, time.December, 2)
-	// Five days on at a moved price, outside the value netter's reach; a day
-	// on at the same value, inside it.
-	late, next := dy(2024, time.March, 6), dy(2024, time.March, 2)
+	// Five days on at a moved price, outside the value netter's reach; two
+	// days on at a moved price, outside it too; a day on at the same value,
+	// inside it.
+	late, soon, next := dy(2024, time.March, 6), dy(2024, time.March, 3), dy(2024, time.March, 2)
 	for _, tc := range []struct {
 		name string
 		// The two sources and the instruments their legs name; isin, where
@@ -133,13 +151,17 @@ func TestRunReturnsPairsInKindByHolding(t *testing.T) {
 		in, inAmt                                    int64
 		qIn                                          string // the quantity received of the 2 sent
 		pairs                                        bool
+		price                                        int64 // the coin's USD price, 0 for none
 	}{
-		{"one coin between two wallets of one source", "ct", "cointracking", "BTC", "ct", "cointracking", "BTC", "", late, 10600, "2", true},
-		{"a coin short by a network fee", "ct", "cointracking", "BTC", "ct", "cointracking", "BTC", "", late, 10600, "1.99", true},
-		{"shares between brokers of one identity", "s1", "schwab", "SPX1", "s2", "ubs", "CH-SPX", "XX0000000001", late, 10600, "2", true},
-		{"shares never arrive short", "s1", "schwab", "SPX1", "s2", "ubs", "CH-SPX", "XX0000000001", late, 10600, "1.99", false},
-		{"one id at two kinds of source names no one holding", "s1", "schwab", "SPX1", "s2", "ubs", "SPX1", "", next, 10000, "2", false},
-		{"two holdings of one value", "ct", "cointracking", "BTC", "ct", "cointracking", "ETH", "", next, 10000, "2", false},
+		{"one coin between two wallets of one source", "ct", "cointracking", "BTC", "ct", "cointracking", "BTC", "", soon, 10600, "2", true, 0},
+		{"a coin short by a network fee", "ct", "cointracking", "BTC", "ct", "cointracking", "BTC", "", soon, 10600, "1.99", true, 0},
+		{"a coin five days on", "ct", "cointracking", "BTC", "ct", "cointracking", "BTC", "", late, 10600, "2", false, 0},
+		{"a coin short by a fee its price allows", "ct", "cointracking", "BTC", "ct", "cointracking", "BTC", "", soon, 10600, "1.95", true, 1000},
+		{"the same fee where the coin has no price", "ct", "cointracking", "BTC", "ct", "cointracking", "BTC", "", soon, 10600, "1.95", false, 0},
+		{"shares between brokers of one identity", "s1", "schwab", "SPX1", "s2", "ubs", "CH-SPX", "XX0000000001", late, 10600, "2", true, 0},
+		{"shares never arrive short", "s1", "schwab", "SPX1", "s2", "ubs", "CH-SPX", "XX0000000001", late, 10600, "1.99", false, 0},
+		{"one id at two kinds of source names no one holding", "s1", "schwab", "SPX1", "s2", "ubs", "SPX1", "", next, 10000, "2", false, 0},
+		{"two holdings of one value", "ct", "cointracking", "BTC", "ct", "cointracking", "ETH", "", next, 10000, "2", false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -152,6 +174,12 @@ func TestRunReturnsPairsInKindByHolding(t *testing.T) {
 				[]snap{{a, 30000}, {out, 20000}, {k, 20000}}, nil)
 			seedAcct(t, db, ctx, tc.srcB, "B", canonical.AccountKindBrokerage, nil,
 				[]snap{{a, 5000}, {tc.in, 5000 + tc.inAmt}, {k, 5000 + tc.inAmt}}, nil)
+			if tc.price > 0 {
+				inTx(t, db, ctx, func(w *Writer) error {
+					return w.InsertFxRates(ctx, []canonical.FxRateChange{{SilverSourceID: tc.srcA, SnapshotAt: a,
+						BaseCurrency: "USD", QuoteCurrency: tc.instA, MidRate: canonical.NewDecimalFromInt(tc.price)}})
+				})
+			}
 			seedHoldingMove(t, db, ctx, tc.srcA, "A", "out", out, canonical.TxKindTransferOut, tc.instA, "-2", -10000)
 			seedHoldingMove(t, db, ctx, tc.srcB, "B", "in", tc.in, canonical.TxKindTransferIn, tc.instB, tc.qIn, tc.inAmt)
 			if tc.isin != "" {
@@ -185,8 +213,8 @@ func TestRunReturnsPairsInKindByHolding(t *testing.T) {
 // move and the first valuation is return, and a fee taken in kind is a
 // loss. The household reads as one account that held the coin throughout.
 // Where the first valuation holds another quantity than moved in, beyond
-// the in-kind tolerance, the legs are not one unit of one holding, and the
-// leg funds the debut by its value.
+// the coin rule, the legs are not one unit of one holding, and the leg
+// funds the debut by its value.
 func TestInKindFundedDebutReadsThePriceMoveAsReturn(t *testing.T) {
 	t.Parallel()
 	d0, d1, d2, d3 := dy(2024, time.January, 2), dy(2024, time.February, 1), dy(2024, time.March, 1), dy(2024, time.June, 3)
@@ -197,7 +225,8 @@ func TestInKindFundedDebutReadsThePriceMoveAsReturn(t *testing.T) {
 		// byValue: the quantities differ, so the leg funds by its value
 		// and the debut onboards the rest.
 		byValue bool
-	}{{"the price falls", "1", 21000, false}, {"a fee in kind and a price fall", "0.97", 20370, false},
+	}{{"the price falls", "1", 21000, false}, {"a fee in kind and a price fall", "0.9995", 19990, false},
+		{"three hundredths short of what moved in", "0.97", 20370, true},
 		{"twice the quantity moved in", "2", 42000, true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -257,7 +286,7 @@ func TestInKindFundedDebutReadsThePriceMoveAsReturn(t *testing.T) {
 
 // TestInKindFundingByValueKeepsCapitalOut pins that a leg funds a debut by
 // quantity only where the wallet's first valuation shows it held: the same
-// holding, the quantity moved within the tolerance. Otherwise it funds by its
+// holding, the quantity moved within the coin rule. Otherwise it funds by its
 // value, and a first value below it books the difference as capital that
 // left, as the value netter does: when the first valuation also holds
 // cash, so its holdings are not read, and when it holds a ten-thousandth of
@@ -319,9 +348,9 @@ func TestInKindFundingByValueKeepsCapitalOut(t *testing.T) {
 
 // TestHoldingReadsItsAssetClass pins where a leg's asset class and vehicle
 // come from, each the row's own where it states one, else its instrument's,
-// and that only a coin, class crypto held physical, pairs within the
-// tolerance: a share of a fund that holds coins, any other class, and a
-// class or vehicle gold does not state pair on the exact quantity.
+// and that only a coin, class crypto held physical, pairs by the coin
+// rule: a share of a fund that holds coins, any other class, and a class
+// or vehicle gold does not state pair on the exact quantity.
 func TestHoldingReadsItsAssetClass(t *testing.T) {
 	t.Parallel()
 	crypto, physical := string(canonical.AssetClassCrypto), string(canonical.VehiclePhysical)
@@ -355,7 +384,7 @@ func TestHoldingReadsItsAssetClass(t *testing.T) {
 // security in unequal quantities pairs what both legs hold: 100 shares
 // leave A and 99 land in B, linked. The 99 stay inside the household, the
 // 100th leaves it, a flow at its share of the leg's value, counted unmatched.
-// A coin short within the tolerance pairs whole: the shortfall is a fee.
+// A coin short within the coin rule pairs whole: the shortfall is a fee.
 // So does a pair whose legs name two holdings, whose quantities say nothing
 // of each other.
 func TestStoredSecurityPairLeavesItsRestUnpaired(t *testing.T) {
@@ -367,7 +396,7 @@ func TestStoredSecurityPairLeavesItsRestUnpaired(t *testing.T) {
 		flow                          float64 // the global flow the rest books
 	}{
 		{"shares", "SPX1", "SPX1", "-100", "99", 9900, -100},
-		{"a coin within the tolerance", "BTC", "BTC", "-100", "99", 9900, 0},
+		{"a coin within the coin rule", "BTC", "BTC", "-100", "99", 9900, 0},
 		{"more shares received", "SPX1", "SPX1", "-99", "100", 10100, 101},
 		{"two holdings", "SPX1", "SPX2", "-100", "1000", 9900, 0},
 	} {

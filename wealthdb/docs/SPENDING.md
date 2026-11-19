@@ -575,6 +575,30 @@ to eight places, instead. The dust keeps its size and its sign, and it
 pairs like any other leg (the pool's `match_amount`). An override line
 names it by that amount too.
 
+**A coin pairs by the coin rule.** A leg moves a coin when its
+instrument is its currency and that instrument is a coin: asset class
+`crypto`, vehicle `physical`, the row's own where it states them, else
+the instrument's. A currency an account holds as cash is money, whatever
+an instrument of its name says. A coin leg's amount is a quantity of
+the coin, so a cent and the absolute cap are no bound for it. Two coin
+legs are one transfer when all of these hold:
+
+- the receipt lies within 2 days of the withdrawal, in either order,
+  as venues stamp the two ends at different times;
+- the coin received is at most 0.1% more than the coin sent;
+- the fee, sent less received, is at most the larger of 0.1% of the
+  coin sent and 100 USD's worth, and always less than a quarter of the
+  coin sent.
+
+The USD price is the coin's own rate on the withdrawal's day, from
+`fx_daily`, the rate its USD value reads. A coin with no rate may lose
+1% of what it sent. Among several candidates the smallest shortfall
+wins, then the nearest day. So a small withdrawal never takes the
+receipt of a larger one beside it. The same rule pairs a coin in
+returns and in the lot engine (RETURNS-NOTES "Netting and closure",
+[LOTS.md](LOTS.md) §3.4). Every other leg pairs on the window and the
+tolerance below, as cash.
+
 The core pairs in **seven phases**, each withdrawing the legs it claims
 before the next one looks, in the order of what the evidence is worth:
 
@@ -594,7 +618,8 @@ before the next one looks, in the order of what the evidence is worth:
    account's leg that reads as its reversal (below).
 
 Phases 4 to 7 are windowed. `window_days` bounds all four, and
-`tolerance_pct` bounds the named, amount and reversal phases. The
+`tolerance_pct` bounds the named, amount and reversal phases. Two coin
+legs take the coin rule's days and amounts instead. The
 converted phase has its own band of 1%, and it needs a name: one leg's
 narrative must name the other's account. The first three read what
 the holder or the source said, so there is no band to draw around
@@ -710,7 +735,10 @@ transaction id. The columns are `verb`, `silver_source_id`, `account`,
 names with a `_b` suffix for the second, and an optional `note`.
 Columns are found by header name, and a column the format does not
 know is refused, as in the pins. `account` is an
-`account_external_id`; a nickname does not resolve here.
+`account_external_id`; a nickname does not resolve here. An amount
+names a leg within a cent. A coin's leg it names by the coin rule
+instead: the two amounts have one sign, and the smaller is what a
+transfer of the larger would deliver.
 
 | verb | legs given | meaning |
 |---|---|---|
@@ -720,7 +748,8 @@ know is refused, as in the pins. `account` is an
 | `reimburse` | both | the leg with the positive amount repays the other, an outflow; it pairs no transfer (*Reimbursements*, below) |
 
 `match` exists for the movement whose halves no window can reach: a
-bank posting its side of an ACH days after the other side credited.
+bank posting its side of an ACH days after the other side credited, or
+a coin staked and returned weeks later with its reward.
 Forced pairs are asserted first of all and withdrawn from the pool, so
 a stated pair cannot lose either half to a nearer coincidence.
 

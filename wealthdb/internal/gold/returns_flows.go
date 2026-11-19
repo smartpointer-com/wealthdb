@@ -163,23 +163,27 @@ func (m *movedLegs) fund(l flowLeg) {
 	f.qty += h.qty * (1 - l.rest)
 	f.value += l.Amount
 	f.exact = f.exact || h.exact
+	if f.usd == 0 {
+		f.usd = h.usd
+	}
 	m.fundedHeld[l.acct][h.holding] = f
 }
 
 // heldFunding is what the legs funding a debut moved of one holding: the
-// quantity, the legs' value, and whether any pairs only on the exact
-// quantity.
+// quantity, the legs' value, whether any pairs only on the exact quantity,
+// and a coin's USD price on the first such leg's day.
 type heldFunding struct {
-	qty, value float64
-	exact      bool
+	qty, value, usd float64
+	exact           bool
 }
 
 // byQuantity says the legs that funded a's debut with holding h moved the
-// quantity the valuation they fund holds (sameQuantity): one holding, one
-// unit. Only then does that value stand for them.
+// quantity the valuation they fund holds, as one transfer would deliver it
+// (quantitiesAgree): one holding, one unit. Only then does that value stand
+// for them.
 func (m *movedLegs) byQuantity(a *accountData, h string) bool {
 	f, d := m.fundedHeld[a][h], a.debut[h]
-	return f.qty > 0 && sameQuantity(f.qty, d.qty, f.exact)
+	return f.qty > 0 && quantitiesAgree(f.qty, d.qty, f.usd, f.exact)
 }
 
 // fundedAt is what a's first value v holds through moves (funded), at its
@@ -865,7 +869,8 @@ type storedPairing struct {
 	settle  [][2]string
 	// rest is, for the larger leg of a pair that moved one holding in
 	// quantities whose difference is a transfer of its own
-	// (excessIsTransfer), the share of its quantity beyond the other's:
+	// (excessIsTransfer, whatever the gap between their days), the share
+	// of its quantity beyond the other's:
 	// that part stays an unpaired transfer. A pair whose legs name two
 	// holdings binds whole.
 	rest map[string]float64
@@ -930,8 +935,12 @@ func storedPairs(assets []*accountData, winFrom, winTo int64) storedPairing {
 			out.pairs++
 			hx, okx := a.inKind[f.ID]
 			hy, oky := partner.inKind[link.txID]
+			sent, received := hx, hy
+			if f.Amount >= 0 {
+				sent, received = hy, hx
+			}
 			if okx && oky && hx.holding == hy.holding && hx.qty > 0 && hy.qty > 0 &&
-				excessIsTransfer(hx.qty, hy.qty, hx.exact || hy.exact) {
+				excessIsTransfer(sent.qty, received.qty, sent.usd, hx.exact || hy.exact) {
 				if out.rest == nil {
 					out.rest = map[string]float64{}
 				}
@@ -1008,14 +1017,19 @@ func netLegs(cand []flowLeg, pair func(pos, neg flowLeg, transit bool)) (kept []
 }
 
 // mayNet says the value netter may pair pos and neg: both are legs of cash,
-// or both moved one holding in the same quantity (sameQuantity).
+// or both moved one holding as one move: a security in the exact quantity,
+// a coin by the coin rule (neg sends, pos receives).
 func mayNet(pos, neg flowLeg) bool {
 	hp, okP := pos.acct.inKind[pos.ID]
 	hn, okN := neg.acct.inKind[neg.ID]
 	if !okP || !okN {
 		return okP == okN
 	}
-	return hp.holding == hn.holding && hp.qty > 0 && hn.qty > 0 && sameQuantity(hp.qty, hn.qty, hp.exact || hn.exact)
+	if hp.holding != hn.holding || !(hp.qty > 0) || !(hn.qty > 0) {
+		return false
+	}
+	exact := hp.exact || hn.exact
+	return (exact || coinDays(pos.Day, neg.Day)) && quantitiesAgree(hn.qty, hp.qty, hn.usd, exact)
 }
 
 // inKindLeg is a leg that moved a holding, as pairInKind pairs it.
@@ -1033,17 +1047,19 @@ func (l inKindLegs) at(i int) int64       { return l[i].Day }
 func (l inKindLegs) in(i int) bool        { return l[i].Amount >= 0 }
 func (l inKindLegs) qty(i int) float64    { return l[i].heldMove.qty }
 func (l inKindLegs) exact(i int) bool     { return l[i].heldMove.exact }
+func (l inKindLegs) usd(i int) float64    { return l[i].heldMove.usd }
 func (l inKindLegs) may(i, j int) bool    { return l[i].heldMove.qty > 0 && l[j].heldMove.qty > 0 }
 
 // pairInKind pairs legs that moved a holding (accountData.inKind) by holding
 // and quantity, never by value: one coin out, one coin in. Two legs pair
-// where they move one holding in opposite directions, within inKindWindowDay
-// of each other, in the same quantity (sameQuantity); a coin's shortfall is
-// a fee in kind, whose value is a loss. Each leg, in day order within its
-// holding, takes the open leg of the other direction whose quantity is
-// closest, the latest on a tie (pairByQuantity). A leg that states no
-// quantity pairs only through a stored link. It hands each pair to pair,
-// positive leg first, in the order of their earlier legs.
+// where they move one holding in opposite directions as one move (oneMove):
+// a security within inKindWindowDay of each other on the exact quantity, a
+// coin by the coin rule. A coin's shortfall is a fee in kind, whose value is
+// a loss. Each leg, in day order within its holding, takes the open leg of
+// the other direction that ranks best, the latest on a tie
+// (pairByQuantity). A leg that states no quantity pairs only through a
+// stored link. It hands each pair to pair, positive leg first, in the order
+// of their earlier legs.
 func pairInKind(cand []flowLeg, pair func(pos, neg flowLeg)) {
 	legs := make(inKindLegs, len(cand))
 	for i, l := range cand {

@@ -147,3 +147,60 @@ func TestACoinsDustPairsOnItsQuantity(t *testing.T) {
 		t.Errorf("unmatched %d, idle %d; want 0 and 1", res.UnmatchedTransferOverrides, res.IdleTransferMatches)
 	}
 }
+
+// A coin's legs pair by the coin rule at the coin's USD price on the day
+// (gold's fx_daily): a small transfer short by a fee worth a few dollars
+// pairs, though the fee is a large share of it and beyond the 1% a coin
+// with no price may lose, and a smaller withdrawal beside a larger one
+// never takes the larger one's receipt. A leg is a coin's where its
+// instrument is its currency and a coin held physical. The same legs pair
+// as cash does, within a cent, in a currency no instrument calls a coin,
+// and in one an account holds as cash: that is money, whatever an
+// instrument of its name says.
+func TestCoinLegsPairByTheCoinRule(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		coin, cash bool
+	}{{"a coin", true, false}, {"no coin", false, false}, {"a coin's name held as cash", true, true}} {
+		db, ctx := openGold(t)
+		if c.coin {
+			if _, err := db.ExecContext(ctx, `
+                INSERT INTO instruments (silver_source_id, instrument_external_id, asset_class, vehicle, first_seen_at, last_seen_at)
+                    VALUES ('bank', 'BTC', 'crypto', 'physical', 1, 1), ('other-bank', 'BTC', 'crypto', 'physical', 1, 1);
+                INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate)
+                    VALUES ('bank', ?, 'USD', 'BTC', 30000)`, day(1)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if c.cash {
+			if _, err := db.ExecContext(ctx, `
+                INSERT INTO cash_balances (silver_source_id, snapshot_at, account_external_id, currency, balance_kind, amount)
+                    VALUES ('bank', ?, 'CASH1', 'BTC', 'closing', 1)`, day(1)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := db.ExecContext(ctx, `
+            INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
+                                      instrument_external_id, kind, currency, quantity, net_amount) VALUES
+                ('bank', 'fee:out', ?, 'CUST1', 'BTC', 'withdrawal', 'BTC', -0.002, -0.002),
+                ('other-bank', 'fee:in', ?, 'CUST2', 'BTC', 'deposit', 'BTC', 0.0017, 0.0017),
+                ('bank', 'a:small', ?, 'BRK1', 'BTC', 'withdrawal', 'BTC', -0.01, -0.01),
+                ('bank', 'b:large', ?, 'CUST1', 'BTC', 'withdrawal', 'BTC', -0.02, -0.02),
+                ('other-bank', 'c:in', ?, 'CUST2', 'BTC', 'deposit', 'BTC', 0.0199, 0.0199)`,
+			day(10), day(11), day(20), day(20), day(21)); err != nil {
+			t.Fatal(err)
+		}
+		runPass(t, db, ctx, Options{})
+		got := scanPairs(t, db, `
+            SELECT transaction_external_id, far_transaction_external_id
+              FROM transfer_links
+             WHERE far_transaction_external_id IS NOT NULL AND silver_source_id = 'bank'`)
+		want := map[string]string{"fee:out": "fee:in", "b:large": "c:in"}
+		if !c.coin || c.cash {
+			want = map[string]string{"fee:out": "fee:in", "a:small": "c:in"}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: links = %v, want %v", c.name, got, want)
+		}
+	}
+}

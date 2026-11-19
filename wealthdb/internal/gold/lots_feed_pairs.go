@@ -36,6 +36,9 @@ type lotLeg struct {
 	// exact: the holding moves only whole, so the leg pairs only on the
 	// exact quantity (exactQuantity).
 	exact bool
+	// usd is a coin's USD price on the leg's day (CoinUSD), 0 for none
+	// and for a security.
+	usd float64
 	// ids are the identities of the holding the leg moved, and hold the
 	// holding they name among the feed's legs (holdingUnion), as the
 	// quantity rule pairs it.
@@ -97,23 +100,23 @@ func (l lotLegs) at(i int) int64       { return EpochDay(l[i].at) }
 func (l lotLegs) in(i int) bool        { return l[i].in }
 func (l lotLegs) qty(i int) float64    { return l[i].qty }
 func (l lotLegs) exact(i int) bool     { return l[i].exact }
+func (l lotLegs) usd(i int) float64    { return l[i].usd }
 func (l lotLegs) may(int, int) bool    { return true }
 
 // pairTransfers pairs the legs of each move a link states (readLinks)
 // first, where they are of one instrument and pairable. It pairs each
 // other transfer in with a transfer out of the same holding as returns
 // does: one holding where the ISIN, the CUSIP or the instrument id among
-// the sources of one kind agrees (holdingUnion), within 7 calendar days
-// (inKindWindowDay), in the same quantity (sameQuantity): a coin within
-// lots.PairTolerance, a security only exactly, the closest quantity first
-// (pairByQuantity). Inside one key (a pooled portfolio) a pair cancels:
-// nothing moves. Across keys a pair is a move, across sources too. Either
-// way the common
-// quantity moves. For a coin within the tolerance, what the receipt falls
-// short by leaves as a fee in kind, and what it exceeds the send by opens
-// a lot of unknown cost. For a security, and a coin beyond it, the rest is
-// a transfer nothing pairs (excessIsTransfer). What pairs with nothing is a
-// receipt of unknown cost, or a departure with no proceeds.
+// the sources of one kind agrees (holdingUnion), one move by oneMove: a
+// security within 7 calendar days (inKindWindowDay) on the exact quantity,
+// a coin by the coin rule, the best ranked first (pairByQuantity). Inside
+// one key (a pooled portfolio) a pair cancels: nothing moves. Across keys a
+// pair is a move, across sources too. Either way the common quantity moves.
+// For a coin within the coin rule, what the receipt falls short by leaves
+// as a fee in kind, and what it exceeds the send by opens a lot of unknown
+// cost. For a security, and a coin beyond the rule, the rest is a transfer
+// nothing pairs (excessIsTransfer). What pairs with nothing is a receipt of
+// unknown cost, or a departure with no proceeds.
 func (f *lotFeed) pairTransfers() {
 	legs := f.legs
 	u := newHoldingUnion()
@@ -214,10 +217,10 @@ func (f *lotFeed) pair(out, in lotLeg) {
 			Account: in.acct}, lotAux{})
 	}
 	// What one side holds beyond the other: a transfer of its own where
-	// the holding moves only whole, or a coin is short beyond the
-	// tolerance (excessIsTransfer), else a coin's network fee or a lot of
+	// the holding moves only whole, or a coin's quantities are beyond the
+	// coin rule (excessIsTransfer), else a coin's network fee or a lot of
 	// unknown cost.
-	rest := excessIsTransfer(out.qty, in.qty, out.exact || in.exact)
+	rest := excessIsTransfer(out.qty, in.qty, out.usd, out.exact || in.exact)
 	switch {
 	case out.qty-moved > lots.Tolerance(out.qty) && rest:
 		l := out

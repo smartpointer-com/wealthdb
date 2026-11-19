@@ -170,7 +170,9 @@ type SpendingTransferMatching struct {
 	WindowDays *int `json:"window_days,omitempty"`
 	// TolerancePct is the relative amount tolerance in percent of the
 	// larger leg (an absolute floor of 0.01 always applies, so 0 means
-	// exact-to-a-cent). Covers a transfer fee deducted in transit.
+	// exact-to-a-cent). Covers a transfer fee deducted in transit. Two
+	// legs of a coin pair by the coin rule instead, whatever the window
+	// and the tolerance (docs/SPENDING.md §3).
 	TolerancePct *float64 `json:"tolerance_pct,omitempty"`
 	// Names say which narratives name which account as the other side of a
 	// movement (docs/SPENDING.md §3). A pair one of whose legs names the

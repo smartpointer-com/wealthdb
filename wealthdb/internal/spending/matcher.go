@@ -29,7 +29,10 @@ import (
 //     (`payload.$.bank_ref`, loadPassEvidence), the other leg a
 //     source describes (`payload.$.counter_currency` / `$.counter_amount`),
 //     the card rail (legRail) and the accounts a narrative names
-//     (legNames, from spending.internal_transfer_matching.names).
+//     (legNames, from spending.internal_transfer_matching.names);
+//   - a leg that moves a coin in the coin itself is a coin leg, with the
+//     coin's USD price on its day, and pairs by the coin rule
+//     (loadMatcherPool, gold.TransferLeg.Coin).
 //
 // Every pair records the phase that asserted it (gold.TransferMatchPhase):
 // a reference or described-counter pair legitimately disagrees in amount

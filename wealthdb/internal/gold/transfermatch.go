@@ -54,6 +54,14 @@ type TransferLeg struct {
 	// credit. A zero amount moved nothing, so its leg pairs in no phase.
 	Amt float64
 
+	// Coin says the leg moves a coin and Ccy is that coin: its amount is
+	// a quantity of it. Two coin legs agree in day and amount by the coin
+	// rule (coinQuantities), not by the window and the tolerance, and
+	// the override ledger's selector names one by that rule too. USD is
+	// the coin's USD price on the leg's day (CoinUSD), 0 for none.
+	Coin bool
+	USD  float64
+
 	// Rail names the payment rail the leg's own narrative announces, in
 	// whatever vocabulary the caller uses; empty when the narrative announces
 	// none, which is the common case. RailPartner is the rail this leg
@@ -155,12 +163,13 @@ func (l TransferLeg) names(other TransferLeg) bool {
 // are offered is the caller's business, not a knob: every leg handed in is
 // a candidate.
 type TransferMatchOpts struct {
-	// WindowDays is the maximum |day distance| between the two legs.
+	// WindowDays is the maximum |day distance| between the two legs. Two
+	// coin legs pair by the coin rule's days instead (banded.agree).
 	WindowDays int
 	// TolerancePct is the permitted amount gap as a percent of the larger
 	// leg, floored at TransferMatchMinEps absolute — so 0 means
 	// exact-to-a-cent, and the default of 0.5 covers a wire fee deducted in
-	// transit.
+	// transit. Two coin legs pair by the coin rule's amounts instead.
 	TolerancePct float64
 	// ToleranceMaxAbs caps the tolerance in absolute currency units, whatever
 	// TolerancePct works out to; zero leaves it uncapped. A transit fee is
@@ -282,7 +291,8 @@ const referenceMatchMaxDays = 90
 // A leg whose amount is zero moved nothing and pairs in no phase, a forced
 // one included. A banded pair must agree on native currency, sit within
 // opts.WindowDays of each other, and differ in amount by no more than the
-// tolerance. A debit whose currency has no credits at all is skipped, so a
+// tolerance; two coin legs instead agree by the coin rule (banded.agree).
+// A debit whose currency has no credits at all is skipped, so a
 // cross-currency movement pairs only in phases 1 to 3 and 6.
 //
 // The result is deterministic. Legs are sorted by (day, group, owner, id) —
@@ -429,10 +439,9 @@ func (b banded) converted(debits []TransferLeg) ([]TransferMatchPair, []Transfer
 
 // reversals is the reversal phase: each debit no phase paired, in order,
 // takes the free credit on its own account that reads as its reversal
-// (sameOwnerRoundTrip), within the window and the tolerance, the nearest
+// (sameOwnerRoundTrip), agreeing in day and amount (agree), the nearest
 // in day, earliest on ties. The holder's blocks still hold.
 func (b banded) reversals(debits []TransferLeg) []TransferMatchPair {
-	window := int64(b.opts.WindowDays)
 	var out []TransferMatchPair
 	for _, d := range debits {
 		cp := b.parts[d.Ccy]
@@ -440,12 +449,13 @@ func (b banded) reversals(debits []TransferLeg) []TransferMatchPair {
 			continue
 		}
 		best, bestDist := -1, int64(0)
-		lo := sort.Search(len(cp.days), func(k int) bool { return cp.days[k] >= d.Day-window })
-		for k := lo; k < len(cp.idx) && cp.days[k] <= d.Day+window; k++ {
+		reach := b.reach(d)
+		lo := sort.Search(len(cp.days), func(k int) bool { return cp.days[k] >= d.Day-reach })
+		for k := lo; k < len(cp.idx) && cp.days[k] <= d.Day+reach; k++ {
 			i := cp.idx[k]
 			c := b.credits[i]
 			if b.used[i] || !sameAccount(d, c) || !sameOwnerRoundTrip(d, c) ||
-				math.Abs(d.Amt+c.Amt) > b.tolerance(d, c) || b.opts.Overrides.blocks(d, c) {
+				!b.agree(d, c) || b.opts.Overrides.blocks(d, c) {
 				continue
 			}
 			dist := c.Day - d.Day
@@ -597,6 +607,26 @@ func (b banded) greedy(debits []TransferLeg) ([]TransferMatchPair, []TransferLeg
 	return out, left
 }
 
+// agree says d and c agree in day and amount as a banded pair: two coin
+// legs by the coin rule, sent d and received c, at d's price; any other
+// pair within the window and the tolerance.
+func (b banded) agree(d, c TransferLeg) bool {
+	if d.Coin && c.Coin {
+		return coinDays(d.Day, c.Day) && coinQuantities(-d.Amt, c.Amt, d.USD)
+	}
+	return absDay(c.Day-d.Day) <= int64(b.opts.WindowDays) && math.Abs(d.Amt+c.Amt) <= b.tolerance(d, c)
+}
+
+// reach is how many days either side of d's day a banded phase looks for
+// its partner: the window, and for a coin at least the coin rule's days.
+func (b banded) reach(d TransferLeg) int64 {
+	w := int64(b.opts.WindowDays)
+	if d.Coin && w < coinTransferDays {
+		w = coinTransferDays
+	}
+	return w
+}
+
 // tolerance is the amount gap a banded pair of d and c may show: the
 // percentage of the larger leg, floored at a cent and capped at the
 // absolute maximum.
@@ -612,9 +642,11 @@ func (b banded) tolerance(d, c TransferLeg) float64 {
 }
 
 // candidates are the free credits d may pair with in a banded phase —
-// same currency, inside the window and the tolerance, pairable, and admitted
+// same currency, agreeing in day and amount (agree), pairable, and admitted
 // by admit when one is given — best first: the smallest amount gap, then the
 // nearest day, then an account of d's own source before one of another.
+// For d fixed, the smallest gap is the smallest relative shortfall, the
+// coin rule's order.
 func (b banded) candidates(d TransferLeg, admit func(d, c TransferLeg) bool) []int {
 	cp := b.parts[d.Ccy]
 	if cp == nil {
@@ -627,22 +659,16 @@ func (b banded) candidates(d TransferLeg, admit func(d, c TransferLeg) bool) []i
 		affinity int // 0 own source, 1 another source
 	}
 	var out []cand
-	window := int64(b.opts.WindowDays)
-	lo := sort.Search(len(cp.days), func(k int) bool { return cp.days[k] >= d.Day-window })
-	for k := lo; k < len(cp.idx) && cp.days[k] <= d.Day+window; k++ {
+	reach := b.reach(d)
+	lo := sort.Search(len(cp.days), func(k int) bool { return cp.days[k] >= d.Day-reach })
+	for k := lo; k < len(cp.idx) && cp.days[k] <= d.Day+reach; k++ {
 		i := cp.idx[k]
 		c := b.credits[i]
-		if b.used[i] || !pairableLegs(d, c, b.opts) || (admit != nil && !admit(d, c)) {
+		if b.used[i] || !pairableLegs(d, c, b.opts) || (admit != nil && !admit(d, c)) || !b.agree(d, c) {
 			continue
 		}
-		dist := c.Day - d.Day
-		if dist < 0 {
-			dist = -dist
-		}
+		dist := absDay(c.Day - d.Day)
 		gap := math.Abs(d.Amt + c.Amt)
-		if gap > b.tolerance(d, c) {
-			continue
-		}
 		affinity := 1
 		if c.Group == d.Group {
 			affinity = 0

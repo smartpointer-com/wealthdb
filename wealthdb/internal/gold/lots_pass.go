@@ -13,7 +13,7 @@ import (
 // lotsEngineVersion enters every input fingerprint. A change to what the
 // engine, the feed or a registered policy makes of the same input bumps
 // it, so the next pass replays.
-const lotsEngineVersion = 4
+const lotsEngineVersion = 5
 
 // LotsOptions configure a lot pass.
 type LotsOptions struct {

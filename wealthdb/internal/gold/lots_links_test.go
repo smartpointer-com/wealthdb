@@ -122,12 +122,53 @@ func TestLotPassPairsASecurityOnlyOnTheExactQuantity(t *testing.T) {
 	}
 }
 
+// A coin pairs by the coin rule, as the matcher and returns pair it: 0.1
+// coin leaves A, and B receives it short by a fee worth a few dollars at the
+// coin's price that day, within two days either way. Three days apart, or
+// short by a fee worth more than 100 USD and more than 0.1%, the receipt
+// arrives at a cost nothing states.
+func TestLotPassPairsACoinByTheCoinRule(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name       string
+		inDay      int
+		in         float64
+		wantPaired bool
+	}{
+		{"short by a fee worth 30 USD, a day later", 11, 0.099, true},
+		{"received two days before it left", 8, 0.099, true},
+		{"three days later", 13, 0.099, false},
+		{"short by a fee worth 150 USD", 11, 0.095, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			db, ctx := lotFixture(t, fmt.Sprintf(`
+            INSERT INTO fx_rates (silver_source_id, snapshot_at, base_currency, quote_currency, mid_rate) VALUES
+                ('lot-src', 1*86400, 'USD', 'XYZ', 30000);
+            INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
+                                      instrument_external_id, kind, currency, quantity, net_amount, asset_class, vehicle) VALUES
+                ('lot-src', 'b1', 1*86400,  'A', 'XYZ', 'buy',          'USD', 0.1, -3000, NULL, NULL),
+                ('lot-src', 'o1', 10*86400, 'A', 'XYZ', 'transfer_out', 'USD', -0.1, -3000, 'crypto', 'physical'),
+                ('lot-src', 'i1', %[1]d*86400, 'B', 'XYZ', 'transfer_in', 'USD', %[2]v, 3000, 'crypto', 'physical');
+            INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+                                   instrument_external_id, asset_class, currency, quantity, market_value) VALUES
+                ('lot-src', 20*86400, 'B', 'XYZ', 'XYZ', 'crypto', 'USD', %[2]v, 3000);`, c.inDay, c.in))
+			rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
+			got := queryFloat(t, db, `SELECT book_value FROM positions WHERE account_external_id = 'B'`)
+			if paired := !math.IsNaN(got); paired != c.wantPaired {
+				t.Errorf("B's basis %v: paired %t, want %t", got, paired, c.wantPaired)
+			}
+		})
+	}
+}
+
 // A linked move of a security pairs what both legs hold and leaves the
 // rest unpaired, never a fee: 100 shares leave A, the ledger links them to
 // 99 that land in B. The 99 move with A's cost, the 100th leaves A as a
 // transfer nothing pairs, a finding, and no fee is realized. Where 100
 // land for 99 sent, the 100th is B's receipt nothing pairs. A coin keeps
-// its fee within the tolerance.
+// its fee within the coin rule: here up to a quarter of what it sent, as
+// the coin is cheap and 100 USD buys far more of it.
 func TestLotPassLeavesALinkedSecurityExcessUnpaired(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -137,8 +178,8 @@ func TestLotPassLeavesALinkedSecurityExcessUnpaired(t *testing.T) {
 	}{
 		{"shares", "public_equity", "stock", 100, 99, false},
 		{"more shares received", "public_equity", "stock", 99, 100, false},
-		{"a coin within the tolerance", "crypto", "physical", 100, 99, true},
-		{"a coin beyond it", "crypto", "physical", 100, 90, false},
+		{"a coin within the coin rule", "crypto", "physical", 100, 90, true},
+		{"a coin beyond it", "crypto", "physical", 100, 70, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()

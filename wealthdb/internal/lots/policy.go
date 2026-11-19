@@ -156,14 +156,11 @@ func TradingPolicy() Policy {
 	return Policy{Mode: Fill, Grain: GrainAccount, Fees: FeesUnknown}
 }
 
-// A transfer out and a transfer in of one holding pair within
+// A transfer out and a transfer in of one security pair within
 // PairWindow of each other, counted in calendar days (gold's
-// inKindWindowDay). A coin's quantities pair within PairTolerance of the
-// larger; a security's only exactly (gold's sameQuantity).
-const (
-	PairWindow    = 7 * 86400
-	PairTolerance = 0.05
-)
+// inKindWindowDay), and only on the exact quantity. A coin pairs by
+// gold's coin rule (coinQuantities).
+const PairWindow = 7 * 86400
 
 // ShadowPolicy is TradingPolicy in shadow mode at the average method:
 // for a source that states an average cost and no lots, where a gap in

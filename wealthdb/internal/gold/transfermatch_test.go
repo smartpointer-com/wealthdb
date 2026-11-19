@@ -809,3 +809,129 @@ func TestAZeroAmountLegPairsInNoPhase(t *testing.T) {
 		t.Errorf("a forced pair with a zero-amount leg: %+v", got)
 	}
 }
+
+// coinLeg is a matcher input that moves a coin, its amount a quantity of
+// it, at usd dollars a coin (0 for no price that day).
+func coinLeg(owner, id string, day int64, amt, usd float64) TransferLeg {
+	return TransferLeg{Group: "wallets", Owner: owner, ID: id, Day: day, Ccy: "BTC", Amt: amt, Coin: true, USD: usd}
+}
+
+// TestCoinLegsPairByTheCoinRule pins the coin rule in the banded phases:
+// within two days either way, at most 0.1% more received, a fee up to the
+// larger of 0.1% and 100 USD's worth and under a quarter, 1% where the coin
+// has no price. A cent and the 40-unit cap are no bound in a coin's unit.
+func TestCoinLegsPairByTheCoinRule(t *testing.T) {
+	t.Parallel()
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, ToleranceMaxAbs: DefaultTransferFeeCap}
+	for _, c := range []struct {
+		name    string
+		out, in TransferLeg
+		pairs   bool
+	}{
+		{"a small transfer short by a fee worth under 100 USD",
+			coinLeg("a", "out", 100, -0.002, 30000), coinLeg("b", "in", 100, 0.0017, 30000), true},
+		{"a fee worth over 100 USD",
+			coinLeg("a", "out", 100, -0.1, 30000), coinLeg("b", "in", 100, 0.095, 30000), false},
+		{"a token worth fractions of a cent short by a tenth",
+			coinLeg("a", "out", 100, -1e6, 0.0001), coinLeg("b", "in", 100, 9e5, 0.0001), true},
+		{"a token short by three tenths, worth under 100 USD",
+			coinLeg("a", "out", 100, -1e6, 0.0001), coinLeg("b", "in", 100, 7e5, 0.0001), false},
+		{"a 30% loss",
+			coinLeg("a", "out", 100, -0.01, 30000), coinLeg("b", "in", 100, 0.007, 30000), false},
+		{"a surplus within 0.1%",
+			coinLeg("a", "out", 100, -1, 30000), coinLeg("b", "in", 100, 1.0005, 30000), true},
+		{"a surplus over 0.1%",
+			coinLeg("a", "out", 100, -1, 30000), coinLeg("b", "in", 100, 1.002, 30000), false},
+		{"three days apart",
+			coinLeg("a", "out", 100, -1, 30000), coinLeg("b", "in", 103, 1, 30000), false},
+		{"two days apart, the receipt first",
+			coinLeg("a", "out", 102, -1, 30000), coinLeg("b", "in", 100, 1, 30000), true},
+		{"no price: a fee of half a percent",
+			coinLeg("a", "out", 100, -1, 0), coinLeg("b", "in", 100, 0.995, 0), true},
+		{"no price: a fee of 2%",
+			coinLeg("a", "out", 100, -1, 0), coinLeg("b", "in", 100, 0.98, 0), false},
+	} {
+		got := MatchTransferLegs([]TransferLeg{c.out, c.in}, opts)
+		if (len(got) == 1) != c.pairs {
+			t.Errorf("%s: pairs %v, want a pair %t", c.name, got, c.pairs)
+		}
+	}
+	// A currency that is money pairs as before: the window and the cent.
+	cash := []TransferLeg{leg("bank", "a", "out", 100, -0.01), leg("bank", "b", "in", 103, 0.005)}
+	if got := MatchTransferLegs(cash, opts); len(got) != 1 {
+		t.Errorf("cash legs three days apart within a cent = %v, want one pair", got)
+	}
+	// The coin's days hold under a narrower window too.
+	narrow := opts
+	narrow.WindowDays = 0
+	if got := MatchTransferLegs([]TransferLeg{coinLeg("a", "out", 100, -1, 30000), coinLeg("b", "in", 102, 1, 30000)}, narrow); len(got) != 1 {
+		t.Errorf("coin legs two days apart at a window of 0 = %v, want one pair", got)
+	}
+}
+
+// TestCoinDustNeverPairsCrosswise: a small leg sorts first and the larger
+// leg's partner is within a cent of it, but a receipt of twice what it
+// sent is no transfer of it. The larger leg takes its own partner, and the
+// small one stays unpaired. Of two receipts of nearby sizes, each sender
+// takes the one of the smallest shortfall.
+func TestCoinDustNeverPairsCrosswise(t *testing.T) {
+	t.Parallel()
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, ToleranceMaxAbs: DefaultTransferFeeCap}
+	got := MatchTransferLegs([]TransferLeg{
+		coinLeg("a1", "small", 100, -0.01, 30000),
+		coinLeg("a2", "large", 100, -0.02, 30000),
+		coinLeg("b", "in", 101, 0.0199, 30000),
+	}, opts)
+	if want := map[string]string{"large": "in"}; !reflect.DeepEqual(pairIDs(got), want) {
+		t.Errorf("pairs = %v, want %v", pairIDs(got), want)
+	}
+	got = MatchTransferLegs([]TransferLeg{
+		coinLeg("a1", "first", 100, -0.0110, 30000),
+		coinLeg("a2", "second", 100, -0.0100, 30000),
+		coinLeg("b", "in-second", 101, 0.0099, 30000),
+		coinLeg("c", "in-first", 101, 0.0108, 30000),
+	}, opts)
+	if want := map[string]string{"first": "in-first", "second": "in-second"}; !reflect.DeepEqual(pairIDs(got), want) {
+		t.Errorf("pairs = %v, want %v", pairIDs(got), want)
+	}
+}
+
+// TestALedgerLineBindsCoinLegsAtAnyGap: a coin staked and returned weeks
+// later with its reward pairs only as the ledger states it, and the
+// ledger's selector names a coin's leg by the coin rule, not by a cent: a
+// cent of a coin would also name the smaller leg beside it.
+func TestALedgerLineBindsCoinLegsAtAnyGap(t *testing.T) {
+	t.Parallel()
+	legs := []TransferLeg{
+		coinLeg("wallet", "stake", 100, -1.2, 30000),
+		coinLeg("wallet", "small", 100, -1.195, 30000),
+		coinLeg("staking", "returned", 121, 1.25, 30000),
+	}
+	opts := TransferMatchOpts{WindowDays: 5}
+	if got := MatchTransferLegs(append([]TransferLeg(nil), legs...), opts); len(got) != 0 {
+		t.Fatalf("fixture is wrong: three weeks and a surplus pair nothing unaided, got %v", got)
+	}
+	sel := func(owner string, day int64, amount float64) *TransferOverrideSelector {
+		return &TransferOverrideSelector{Source: "wallets", Account: owner, Day: day * SecondsPerDay, Amount: amount, Currency: "BTC"}
+	}
+	o, unresolved, err := ResolveTransferOverrides([]TransferOverrideRule{
+		{Verb: VerbMatch, A: *sel("wallet", 100, -1.2), B: sel("staking", 121, 1.25)},
+	}, legs)
+	if err != nil || len(unresolved) != 0 {
+		t.Fatalf("resolve: %v, unresolved %v", err, unresolved)
+	}
+	opts.Overrides = o
+	got := MatchTransferLegs(legs, opts)
+	if want := map[string]string{"stake": "returned"}; !reflect.DeepEqual(pairIDs(got), want) || got[0].By != MatchedByOverride {
+		t.Errorf("pairs = %v, want %v by the ledger", got, want)
+	}
+	// The selector names the leg a person reads off, rounded: the coin
+	// rule's share, not the coin's sixth decimal.
+	idx := indexLegs(legs)
+	if got := idx.legsAt(*sel("wallet", 100, -1.2001)); len(got) != 1 || got[0].ID != "stake" {
+		t.Errorf("a rounded amount names %v, want the stake alone", got)
+	}
+	if got := idx.legsAt(*sel("wallet", 100, 1.2)); len(got) != 0 {
+		t.Errorf("an amount of the other sign names %v, want none", got)
+	}
+}

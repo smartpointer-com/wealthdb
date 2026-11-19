@@ -435,26 +435,32 @@ macro of its own:
   - **In kind.** A leg whose transaction names an instrument moved a
     holding. It pairs by holding and quantity, never by value: one coin
     out, one coin in. The two legs move one holding in opposite
-    directions, at most 7 days apart (`lots.PairWindow`), in the same
-    quantity (`sameQuantity`). What the same quantity is depends on the
+    directions as one move (`oneMove`). What one move is depends on the
     holding's asset class and vehicle, each the row's own where it states
     one, else its instrument's:
-    - **A coin** (asset class `crypto`, vehicle `physical`): within 5% of
-      the larger (`lots.PairTolerance`), so a network fee taken in kind
-      still pairs, and its value reads as a loss.
+    - **A coin** (asset class `crypto`, vehicle `physical`) pairs by the
+      coin rule, the rule the transfer matcher applies (SPENDING.md §3,
+      "The matcher"). The receipt lies within 2 days of the withdrawal,
+      in either order. It is at most 0.1% more than the coin sent. Or it
+      is short by a fee of at most the larger of 0.1% of the coin sent
+      and 100 USD's worth at the coin's rate that day, and less than a
+      quarter of it. A coin with no rate may lose 1%. So a network fee
+      taken in kind still pairs, and its value reads as a loss.
     - **Everything else:** a security (a share, an option contract, a unit
-      of a fund, a bond) never arrives short, so only the exact quantity
-      pairs, up to float noise (1e-9 of the larger). 100 shares out and 99
-      in do not pair. This includes a share of a fund or trust that holds
-      coins (class `crypto`, vehicle `etf` or `fund`), and a class or
-      vehicle gold does not state.
+      of a fund, a bond) never arrives short. Its legs pair at most 7 days
+      apart (`lots.PairWindow`), on the exact quantity only, up to float
+      noise (1e-9 of the larger). 100 shares out and 99 in do not pair.
+      This includes a share of a fund or trust that holds coins (class
+      `crypto`, vehicle `etf` or `fund`), and a class or vehicle gold does
+      not state.
 
     The value netter runs first, over every leg, but pairs two legs only
     where both are cash or both moved one holding in the same quantity.
     The legs that moved a holding and are left then pair by holding and
     quantity (`pairInKind`):
     - **Pairing.** Each leg, in day order, takes the open leg of the
-      closest quantity, the latest on a tie. One leg pairs with one leg:
+      smallest shortfall (for a security, the closest quantity), the
+      latest on a tie. One leg pairs with one leg:
       a move split over two receipts pairs at most one of them. A leg
       that states no quantity pairs only through a stored pair. Whatever
       the price did between the two days is return.
@@ -466,17 +472,17 @@ macro of its own:
       whose instrument states only the CUSIP, or only the id, both
       share.
     - **Funding a debut.** A leg that funds a debut funds it by quantity
-      where the legs moved the same quantity the first valuation holds
-      (`sameQuantity`). The first value then stands for them at the
-      debut's prices, by the holding's share of that value
-      (`movedLegs.heldAt`). So the price move up to the debut is
+      where the first valuation holds what the legs moved, as one move
+      would deliver it (`quantitiesAgree`: the coin rule's quantities for
+      a coin, the exact quantity for a security). The first value then
+      stands for them at the debut's prices, by the holding's share of
+      that value (`movedLegs.heldAt`). So the price move up to the debut is
       return, and a shortfall, a fee in kind, is a loss. After a zero
       first value the debut is the late one ("Staggered-inception
       subsumption"), and its valuation is the one read. Each holding's
       part of the first value is read only where the first valuation
       holds positions in one currency and no cash. Elsewhere, and where
-      the quantities are not the same, a leg funds its debut by its
-      value. A first value below that value then books the difference as
+      the quantities do not agree, a leg funds its debut by its value. A first value below that value then books the difference as
       capital that left: nothing says the same holding arrived.
   - **Cash.** A leg that names no instrument pairs by value:
     ε = max(1.00 outCcy, 0.5% of the larger leg); window ±3 calendar
@@ -493,11 +499,12 @@ macro of its own:
   stored evidence is exactly what the within-entity heuristic lacks. Their
   legs are withheld from the netter's candidates, and `--netting off`
   disables them along with the netter. Off ⇒ byte-identical. Where both
-  legs moved one holding in quantities that are not the same (a security
-  at all, a coin beyond 5%), the pair binds the quantity both legs hold.
-  The larger leg's rest, at its share of the leg's value, stays a transfer
-  nothing pairs: a flow, counted in `unmatched_transfers`. A coin short
-  within 5% pairs whole: the shortfall is the network's fee.
+  legs moved one holding in quantities that are not one move's (a
+  security at all, a coin beyond the coin rule's quantities), the pair
+  binds the quantity both legs hold. The larger leg's rest, at its share
+  of the leg's value, stays a transfer nothing pairs: a flow, counted in
+  `unmatched_transfers`. A coin within the coin rule pairs whole: the
+  shortfall is the network's fee.
 - **Money in transit.** Between a pair's two legs the money is in neither
   account, and it is still the household's. For a pair the value netter's
   rule would not pair (a stored pair whose legs are days or a price move

@@ -156,9 +156,8 @@ Which snapshots observe:
 A move one row of the equity-transfer ledger states (DESIGN.md §13.9)
 pairs its two legs first, where they name one instrument at sources of
 one kind. Every other transfer out and transfer in of the same holding
-pair when they fall within 7 calendar days of each other in the same
-quantity, as the returns engine pairs them (RETURNS-NOTES "Netting and
-closure"):
+pair when they are one move, as the returns engine pairs them
+(RETURNS-NOTES "Netting and closure"):
 
 - **The same holding** is one where any identity of the two
   instruments agrees: the same ISIN, the same CUSIP, or the same
@@ -167,19 +166,26 @@ closure"):
   kinds, and a sender whose instrument states an ISIN still pairs with a
   receiver whose instrument states only the CUSIP, or only the id, both
   share.
-- **7 calendar days** count days, not hours: a receipt late on the 7th
-  day after the departure still pairs, one on the 8th does not.
+- **Days** count calendar days, not hours.
 
-What the same quantity is depends on the asset class and vehicle, each
-the row's own where it states one, else the instrument's:
+What one move is depends on the asset class and vehicle, each the row's
+own where it states one, else the instrument's:
 
 - **A coin** (class `crypto`, vehicle `physical`) can arrive short by a
-  network fee, so its quantities pair within 5% of the larger.
+  network fee, so it pairs by the coin rule the transfer matcher applies
+  (SPENDING.md §3, "The matcher"). The receipt lies within 2 days of the
+  departure, in either order. It is at most 0.1% more than the coin sent,
+  or short by a fee of at most the larger of 0.1% of the coin sent and
+  100 USD's worth at the coin's rate that day, and less than a quarter of
+  it. A coin with no rate may lose 1%. The smallest shortfall pairs
+  first.
 - **Everything else is a security** (a share, an option contract, a fund
   unit, a bond): a share of a fund or trust that holds coins (class
   `crypto`, vehicle `etf` or `fund`), and a class or vehicle gold does not
-  state, among them. A security never arrives short, so only the exact
-  quantity pairs: 100 shares out and 99 in do not.
+  state, among them. A security never arrives short. Its legs pair within
+  7 calendar days, on the exact quantity only: 100 shares out and 99 in
+  do not. A receipt late on the 7th day after the departure still pairs,
+  one on the 8th does not.
 
 Every pair then follows these rules:
 
@@ -195,9 +201,9 @@ Every pair then follows these rules:
 - **Inside one key** (two wallets of one pooled portfolio) nothing
   moves.
 - **The quantity both legs hold** moves. A pair the ledger links can
-  differ in quantity; one the quantities pair cannot, beyond the
-  tolerance.
-- **For a coin within the tolerance,** what the receipt falls short by
+  differ in quantity; one the quantities pair cannot, beyond the coin
+  rule.
+- **For a coin within the coin rule,** what the receipt falls short by
   leaves as a fee: a disposal of that quantity at its market value. What
   the receipt exceeds the send by opens a lot of unknown cost and unknown
   date.

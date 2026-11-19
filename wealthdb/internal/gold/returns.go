@@ -313,11 +313,15 @@ func loadReturnsDatasets(ctx context.Context, db *sql.DB, src spineSource, fx fx
 	if err != nil {
 		return nil, err
 	}
+	helds, err := heldRefs(ctx, db, txns, idents)
+	if err != nil {
+		return nil, err
+	}
 	// A link binds where both its legs are flows of a currency's dataset,
 	// and the attached flows can differ by currency where FX is unresolved.
 	flows := map[string]attachedFlows{}
-	for _, t := range txns {
-		held := t.holding(idents)
+	for k, t := range txns {
+		held := helds[k]
 		for i, ccy := range src.currencies {
 			attached := attachOneFlow(byCcy[ccy], fx, ccy, t.src, t.acct, canonical.TxKind(t.kind),
 				t.occurredAt, t.txID, t.ccy, t.values[i], t.returnsInternal, held)
@@ -1161,28 +1165,57 @@ type attachedFlows map[txRef]attachedFlow
 // heldRef is the holding a transaction row moved, as the row names it: the
 // instrument ("" for cash), what gold states of it (its identities across
 // sources, and its asset class and vehicle, the row's own where it states
-// them), and the quantity, unsigned.
+// them), the quantity, unsigned, and a coin's USD price on the row's day
+// (CoinUSD).
 type heldRef struct {
 	inst  string
 	facts instrumentFacts
 	qty   float64
+	usd   float64
 }
 
 // heldMove is what a transfer-like leg moved in kind: its holding, a key
 // two legs share where they move one holding (holdingUnion, set once every
 // leg is read), its identities, the quantity, unsigned (0 when the leg
-// states none), and whether it pairs only on the exact quantity
-// (exactQuantity).
+// states none), whether it pairs only on the exact quantity
+// (exactQuantity), and a coin's USD price on the leg's day (0 for none).
 type heldMove struct {
 	holding string
 	ids     holdingIdentity
 	qty     float64
 	exact   bool
+	usd     float64
 }
 
 // move is r's identities, quantity and quantity rule.
 func (r heldRef) move(srcKind string) heldMove {
-	return heldMove{ids: holdingIdentityOf(srcKind, r.inst, r.facts), qty: r.qty, exact: exactQuantity(r.facts.class, r.facts.vehicle)}
+	return heldMove{ids: holdingIdentityOf(srcKind, r.inst, r.facts), qty: r.qty,
+		exact: exactQuantity(r.facts.class, r.facts.vehicle), usd: r.usd}
+}
+
+// heldRefs is what each of txns moved (flowTxnRow.holding), a coin with its
+// USD price on the row's day, read for the coins the rows move only.
+func heldRefs(ctx context.Context, q querier, txns []flowTxnRow, facts map[string]instrumentFacts) ([]heldRef, error) {
+	out := make([]heldRef, len(txns))
+	seen := map[string]bool{}
+	var coins []string
+	for k, t := range txns {
+		out[k] = t.holding(facts)
+		if h := out[k]; h.inst != "" && IsCoin(h.facts.class, h.facts.vehicle) && !seen[h.inst] {
+			seen[h.inst] = true
+			coins = append(coins, h.inst)
+		}
+	}
+	rates, err := LoadCoinUSD(ctx, q, coins)
+	if err != nil || rates == nil {
+		return out, err
+	}
+	for k, t := range txns {
+		if h := &out[k]; seen[h.inst] && IsCoin(h.facts.class, h.facts.vehicle) {
+			h.usd = CoinUSD(rates, h.inst, EpochDay(t.occurredAt))
+		}
+	}
+	return out, nil
 }
 
 // nameHoldings sets the holding of every leg that moved one, over every
