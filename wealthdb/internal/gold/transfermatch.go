@@ -50,9 +50,8 @@ type TransferLeg struct {
 	Day int64  // epoch day
 	Ccy string // NATIVE currency of Amt — the partition key (see MatchTransferLegs)
 
-	// Amt is signed: negative is a debit (the sending leg), zero or positive a
-	// credit. Zero amounts pair with nothing useful and are best filtered by
-	// the caller; they are treated as credits here.
+	// Amt is signed: negative is a debit (the sending leg), positive a
+	// credit. A zero amount moved nothing, so its leg pairs in no phase.
 	Amt float64
 
 	// Rail names the payment rail the leg's own narrative announces, in
@@ -280,7 +279,8 @@ const referenceMatchMaxDays = 90
 //  7. REVERSAL pairs, under SameAccountReversals: a leg still unpaired and
 //     its reversal on its own account (reversals).
 //
-// A banded pair must agree on native currency, sit within opts.WindowDays of
+// A leg whose amount is zero moved nothing and pairs in no phase, a forced
+// one included. A banded pair must agree on native currency, sit within opts.WindowDays of
 // each other, and differ in amount by no more than the tolerance. A debit
 // whose currency has no credits at all is skipped, so a cross-currency
 // movement pairs only in phases 1 to 3 and 6.
@@ -317,9 +317,10 @@ func MatchTransferLegs(legs []TransferLeg, opts TransferMatchOpts) []TransferMat
 	})
 	var debits, credits []TransferLeg
 	for _, l := range legs {
-		if l.Amt < 0 {
+		switch {
+		case l.Amt < 0:
 			debits = append(debits, l)
-		} else {
+		case l.Amt > 0:
 			credits = append(credits, l)
 		}
 	}
@@ -396,7 +397,7 @@ func (b banded) converted(debits []TransferLeg) ([]TransferMatchPair, []Transfer
 		lo := sort.Search(len(b.credits), func(k int) bool { return b.credits[k].Day >= d.Day-window })
 		for ci := lo; ci < len(b.credits) && b.credits[ci].Day <= d.Day+window; ci++ {
 			c := b.credits[ci]
-			if b.used[ci] || c.Ccy == d.Ccy || c.Amt <= 0 || !pairableLegs(d, c, b.opts) || !namedByEither(d, c) {
+			if b.used[ci] || c.Ccy == d.Ccy || !pairableLegs(d, c, b.opts) || !namedByEither(d, c) {
 				continue
 			}
 			rate, ok := b.opts.Rate(d.Ccy, c.Ccy, d.Day)
@@ -670,8 +671,8 @@ func (b banded) candidates(d TransferLeg, admit func(d, c TransferLeg) bool) []i
 // nearer coincidence — which is the whole reason to state it. A forced pair
 // whose legs are not both in the pool is silently absent: the pool is the
 // caller's business, and a leg it never offered is not this file's to
-// complain about. So is one whose debit is not negative, or whose leg an
-// earlier forced pair took; the caller reports its line
+// complain about. So is one whose debit is not negative, whose credit is not
+// positive, or whose leg an earlier forced pair took; the caller reports its line
 // (IdleTransferMatches).
 func matchForcedPairs(debits, credits []TransferLeg, used, claimed []bool, opts TransferMatchOpts, claim func(di, ci int, by TransferMatchPhase)) {
 	if len(opts.Overrides.forced) == 0 {
@@ -701,16 +702,16 @@ func matchForcedPairs(debits, credits []TransferLeg, used, claimed []bool, opts 
 // The tests are the same for every phase above the amount pass, and they are
 // why an assertion is not simply obeyed: a source can name a movement it did
 // not make. The credit must still be free, the two legs must sit on different
-// accounts — a leg is not its own counterparty — a zero credit funds nothing,
-// and the holder's own ledger still outranks the source, so a blocked pair
-// stays blocked however plainly the source asserts it.
+// accounts — a leg is not its own counterparty — and the holder's own
+// ledger still outranks the source, so a blocked pair stays blocked however
+// plainly the source asserts it.
 //
 // maxDays is the one test that varies, and it varies with the strength of the
 // claim: a reference is an identity and survives a settlement lag, while a
 // description is matched rather than read and is only ever offered against
 // the same day's legs (maxDays 0).
 func assertedPairHolds(d, c TransferLeg, creditUsed bool, maxDays int64, opts TransferMatchOpts) bool {
-	if creditUsed || sameAccount(d, c) || c.Amt == 0 {
+	if creditUsed || sameAccount(d, c) {
 		return false
 	}
 	if dist := c.Day - d.Day; dist > maxDays || dist < -maxDays {
@@ -735,7 +736,6 @@ func assertedPairHolds(d, c TransferLeg, creditUsed bool, maxDays int64, opts Tr
 //     reference are the bank's own bookkeeping;
 //   - the reference names exactly one debit and one credit among the legs
 //     offered;
-//   - the credit is not zero;
 //   - the legs sit within referenceMatchMaxDays of each other.
 //
 // A pair the holder unmatched stays refused. The partner rail and the names a

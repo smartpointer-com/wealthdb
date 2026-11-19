@@ -568,6 +568,13 @@ bank), **every** account in gold participates whatever its kind and
 whether or not spending is scoped to it, and amounts and currencies
 are **native**, converted only in the converted phase.
 
+A leg's amount is its `net_amount`, which gold keeps to four places.
+A coin's leg booked in the coin itself can be smaller than that. Its
+`net_amount` then reads zero, so the matcher reads its quantity, kept
+to eight places, instead. The dust keeps its size and its sign, and it
+pairs like any other leg (the pool's `match_amount`). An override line
+names it by that amount too.
+
 The core pairs in **seven phases**, each withdrawing the legs it claims
 before the next one looks, in the order of what the evidence is worth:
 

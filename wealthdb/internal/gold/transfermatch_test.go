@@ -780,3 +780,32 @@ func TestATieGoesToTheDebitsOwnSource(t *testing.T) {
 		t.Errorf("pairs = %+v, want journal-out→journal-in", got)
 	}
 }
+
+// A leg whose amount is zero moved nothing: it pairs in no phase, neither
+// as the credit a small debit would take inside the cent's floor nor as
+// half of a forced pair.
+func TestAZeroAmountLegPairsInNoPhase(t *testing.T) {
+	t.Parallel()
+	opts := TransferMatchOpts{WindowDays: 5, TolerancePct: 0.5, SameAccountReversals: true}
+	if got := MatchTransferLegs([]TransferLeg{
+		leg("bank", "checking", "small", 100, -0.005),
+		leg("broker", "cash", "zero", 100, 0),
+		namedLeg("bank", "savings", "named", 100, -0.004, "broker"),
+		signedLeg("bank", "checking", "back", 101, 0, "", true),
+	}, opts); len(got) != 0 {
+		t.Errorf("pairs with a zero-amount leg: %+v", got)
+	}
+	forced, err := newTransferOverrides(nil, nil, []ForcedPair{{
+		Debit: LegRef{"bank", "checking", "out"}, Credit: LegRef{"broker", "cash", "zero"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Overrides = forced
+	if got := MatchTransferLegs([]TransferLeg{
+		leg("bank", "checking", "out", 100, -500),
+		leg("broker", "cash", "zero", 100, 0),
+	}, opts); len(got) != 0 {
+		t.Errorf("a forced pair with a zero-amount leg: %+v", got)
+	}
+}

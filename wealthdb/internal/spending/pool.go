@@ -307,7 +307,8 @@ func loadPopulation(ctx context.Context, tx querier, fam family) ([]candidate, e
 // other.
 //
 // Each leg carries the reference and the counter leg its source stated
-// (evidence), because this is the one place a leg is built.
+// (evidence), because this is the one place a leg is built. Its amount
+// is the pool's match_amount: a coin's dust keeps its size.
 //
 // Most of the pool is outside the population — the pool spans every
 // account and admits the income kinds — and the enrichment table takes
@@ -326,7 +327,7 @@ func loadMatcherPool(ctx context.Context, tx querier, names []CounterpartyName, 
 	// filing, would otherwise admit nothing it reaches here.
 	rows, err := tx.QueryContext(ctx, `
         SELECT p.silver_source_id, p.account_external_id, p.transaction_external_id,
-               p.occurred_at, p.currency, CAST(p.net_amount AS DOUBLE),
+               p.occurred_at, p.currency, CAST(p.match_amount AS DOUBLE),
                COALESCE(p.counterparty, ''), COALESCE(p.description, ''),
                COALESCE(p.provider_category, ''), COALESCE(a.portfolio_external_id, '')
           FROM spend_matcher_pool(?, ?) p

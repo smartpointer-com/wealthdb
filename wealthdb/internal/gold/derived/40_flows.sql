@@ -183,9 +183,19 @@ CREATE MACRO spend_period_bucket(p_period, p_at) AS (
 -- spend_txn_categories() onto every transaction, so a paired leg on an
 -- out-of-scope account reads `internal_transfer` there instead of
 -- NULL. That is the label the pass has evidence for.
+--
+-- match_amount is the amount the matcher compares: net_amount, but the
+-- quantity for a coin's leg in the coin itself (the instrument is the
+-- currency) whose amount net_amount's four places round to zero. A
+-- coin's dust then keeps its size and its sign, and pairs, while every
+-- other leg reads net_amount as stored. The quantity is kept to eight
+-- places.
 CREATE MACRO spend_matcher_pool(p_from, p_to) AS TABLE (
     SELECT t.silver_source_id, t.transaction_external_id, t.occurred_at,
            t.account_external_id, t.kind, t.currency, t.net_amount,
+           CASE WHEN t.net_amount = 0 AND t.quantity <> 0
+                     AND t.instrument_external_id = t.currency
+                THEN t.quantity ELSE t.net_amount END AS match_amount,
            t.description, t.counterparty, t.provider_category
       FROM transactions t
      WHERE t.occurred_at BETWEEN p_from AND p_to

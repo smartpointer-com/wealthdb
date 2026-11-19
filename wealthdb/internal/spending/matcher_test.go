@@ -100,3 +100,50 @@ func TestReversalWording(t *testing.T) {
 		}
 	}
 }
+
+// A coin's dust, whose amount in the coin itself net_amount's four places
+// round to zero, pairs on its quantity: it keeps its size and its sign. A
+// ledger `match` line names it by that amount and pairs it where the window
+// cannot reach, and a line that names both legs but pairs none is counted.
+func TestACoinsDustPairsOnItsQuantity(t *testing.T) {
+	db, ctx := openGold(t)
+	if _, err := db.ExecContext(ctx, `
+        INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
+                                  instrument_external_id, kind, currency, quantity, net_amount) VALUES
+            ('bank', 'dust:out', ?, 'CUST1', 'ETH', 'withdrawal', 'ETH', -0.00000913, 0),
+            ('other-bank', 'dust:in', ?, 'CUST2', 'ETH', 'deposit', 'ETH', 0.00000913, 0),
+            ('bank', 'late:out', ?, 'CUST1', 'ETH', 'withdrawal', 'ETH', -0.00000377, 0),
+            ('other-bank', 'late:in', ?, 'CUST2', 'ETH', 'deposit', 'ETH', 0.00000377, 0),
+            ('bank', 'share:in', ?, 'BRK1', 'VTI', 'deposit', 'USD', 3, 0),
+            ('bank', 'cash:in', ?, 'CASH1', NULL, 'deposit', 'USD', NULL, 0.004)`,
+		day(10), day(10), day(40), day(60), day(80), day(80)); err != nil {
+		t.Fatal(err)
+	}
+	sel := func(source, account string, at int64, amount float64, ccy string) gold.TransferOverrideSelector {
+		return gold.TransferOverrideSelector{Source: source, Account: account, Day: at, Amount: amount, Currency: ccy}
+	}
+	late := sel("other-bank", "CUST2", day(60), 0.00000377, "ETH")
+	idle := sel("bank", "CASH1", day(80), 0.004, "USD")
+	res := runPass(t, db, ctx, Options{TransferOverrides: []gold.TransferOverrideRule{
+		{Verb: gold.VerbMatch, A: sel("bank", "CUST1", day(40), -0.00000377, "ETH"), B: &late},
+		// A share's leg in the share's own currency is no coin's: its zero
+		// stays a zero, a credit, and the line pairs two credits.
+		{Verb: gold.VerbMatch, A: sel("bank", "BRK1", day(80), 0, "USD"), B: &idle},
+	}})
+	got := scanPairs(t, db, `
+        SELECT silver_source_id || '/' || transaction_external_id,
+               far_transaction_external_id || '|' || evidence
+          FROM transfer_links WHERE far_transaction_external_id IS NOT NULL`)
+	want := map[string]string{
+		"bank/dust:out":      "dust:in|amount",
+		"other-bank/dust:in": "dust:out|amount",
+		"bank/late:out":      "late:in|ledger",
+		"other-bank/late:in": "late:out|ledger",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("links = %v, want %v", got, want)
+	}
+	if res.UnmatchedTransferOverrides != 0 || res.IdleTransferMatches != 1 {
+		t.Errorf("unmatched %d, idle %d; want 0 and 1", res.UnmatchedTransferOverrides, res.IdleTransferMatches)
+	}
+}
