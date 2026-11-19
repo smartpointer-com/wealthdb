@@ -41,7 +41,7 @@ def card_defs():
     cards show shares (%) instead of money, each recomputing its
     denominator in-query with the dashboard's filters applied and naming
     it (PRIVACY_DESC), or redact the money columns where the figures are
-    ratios already (Returns). A card that shows no monetary value
+    ratios already (Returns, Private Markets). A card that shows no monetary value
     (percentages, indices, days, source names) is exempt: the twin shows
     it as it is."""
     cards = {}
@@ -140,10 +140,11 @@ DASHBOARDS = (
     Dashboard(
         "Spending",
         "Where the money goes over the window, by month, category, merchant "
-        "and account, what each portfolio paid in fees, and what the cards "
-        "owe. Own-account moves are not spend. " + PREDEFINED_NOTE,
+        "and account, each portfolio's fees, what the cards owe, and each "
+        "category against a year earlier. Own-account moves are not spend. " + PREDEFINED_NOTE,
         "Values are shares (%) of the window's net spend, of its biggest "
-        "month or of its fees. Merchant and account labels are redacted. " + PREDEFINED_NOTE,
+        "month, of its fees, or of the same window a year earlier. Merchant "
+        "and account labels are redacted. " + PREDEFINED_NOTE,
         ("currency", "time_range", "source", "account", "category"), ("account",), (
             # The three headline figures, then the shape of the window
             # (months x category), then the two breakdown levels side by
@@ -151,9 +152,9 @@ DASHBOARDS = (
             # down. Merchants and accounts answer "to whom" and "from
             # where", the fee tiles what each portfolio paid (web_fees);
             # the card-balances chart reads web_card_balances_history,
-            # and the transaction list is the bottom of the drill-down.
-            # Below it the categories stand against the same months a
-            # year earlier (web_spending_vs_year).
+            # and the transaction list ends the drill-down. The last row
+            # sets each category against the same months a year earlier
+            # (web_spending_vs_year).
             Row(3, (("Spend — monthly trend", 8), ("Net spend", 8), ("Uncategorized share", 8))),
             Row(9, (("Spending by month", 24),)),
             Row(8, (("Spending by category", 12), ("Spending by subcategory", 12))),

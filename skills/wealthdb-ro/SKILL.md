@@ -121,7 +121,8 @@ range. `-d YYYY-MM-DD` is the as-of day of `holdings`, `exposure`, `yield`.
 - **Which categories grew against last year** —
   `wealthdb -r spending categories 2025 --period total --vs-last-year`
   (`year_before` is the same days a year earlier; `change_pct` is blank
-  where it is zero; `quality` `no_year_before` means gold starts later)
+  where `year_before` is zero; `quality` `no_year_before` means gold
+  starts later, `in_progress` that the bucket's part of the window has not ended)
 - **Purchases over an amount** — `wealthdb -r spending transactions 2025 -F "value <= -500"`
   (money leaving is negative; the table ends with the count)
 - **Biggest purchases in a month** —

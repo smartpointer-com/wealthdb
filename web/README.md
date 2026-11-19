@@ -9,8 +9,9 @@ own login.
 It comes with eleven dashboards: Wealth Overview, Allocation, Returns,
 Gains, Spending, Income, Cash Flow, Exposure, Yield, Data Freshness and
 Private Markets.
-Each but Gains has a privacy twin that shows shares (%) instead of
-amounts.
+Each but Gains has a privacy twin. It shows shares (%) instead of
+amounts, or hides the money where the figures are ratios already
+(Returns, Private Markets).
 
 Part of the **wealthdb** suite — see [the architecture
 overview](../DESIGN.md). Run it via the main wrapper:

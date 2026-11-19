@@ -569,8 +569,8 @@ def ensure_database(client, db_name, gold_path, spill_dir=""):
     options, which it forwards as instance-level JDBC config like the two
     keys above. One directory per file: while the old file's DuckDB
     closes, it deletes the spill files in its directory, and the new
-    file's DuckDB may spill already. Without `spill_dir` the driver's own
-    path stands. Do NOT move these into init_sql: that runs per
+    file's DuckDB may spill already. Without `spill_dir` the database
+    keeps the spill path it has, the driver's own where it has none. Do NOT move these into init_sql: that runs per
     connection, and DuckDB refuses to re-SET a used temp_directory,
     which breaks every query after the first connection cycle (""
     converges the key away from older provisions)."""

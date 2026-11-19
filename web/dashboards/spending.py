@@ -351,7 +351,8 @@ def vs_year_cards(f):
     the change stays."""
     privacy = f.privacy
     tags = native_tags("web_spending_vs_year", VS_YEAR_FILTERS)
-    card = f.using(tags=tags, tail=" Whole months only." + (PRIVACY_DESC if privacy else "")).card
+    tail = " Whole months only, for the whole household."
+    card = f.using(tags=tags, tail=tail + (PRIVACY_DESC if privacy else "")).card
     rows = ("WITH c AS (\n"
             "  SELECT category, sum(net_spend)::DOUBLE AS net_spend,\n"
             "         sum(net_spend_year_before)::DOUBLE AS year_before,\n"

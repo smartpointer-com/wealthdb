@@ -39,23 +39,36 @@ the server; dashboards show data as of the last refresh (run
 mid-write / not checkpointed), so a torn copy is never captured.
 
 A refresh keeps a running server. Metabase reads the snapshot under a
-serving name, `wealthdb-<inode>.db`, a hard link of the copy:
+serving name, `wealthdb-<inode>-<mtime>.db`, a hard link of the copy:
 
 - A new copy is a new inode, so its name is one the server never
-  opened. The driver's DuckDB keeps one open database per path, so a
-  path it had open could hand back the old file.
+  opened. A file system may give a later copy a freed inode number.
+  That copy is newer, so its mtime still makes the name new.
+- The driver's DuckDB keeps one open database per path, so a path it
+  had open could hand back the old file.
 - Provisioning points the gold database at the new name. A change of
   the database's settings makes Metabase close its connections, so the
   next query opens the new file.
 - Provisioning then asks the server which file it reads
   (`duckdb_databases()`). Only that answer counts as served.
+- A record beside the snapshot names the serving name the server reads.
+  Start writes the current snapshot's, and a refresh the one
+  provisioning confirms.
+- A refresh whose gold is unchanged and whose record matches keeps the
+  container and only provisions again.
 - Without that answer the container is recreated. A provisioning
-  failure, a changed admin password, provisioning turned off and a
-  container that mounts the snapshot file rather than its directory
-  all take this path. Start links every serving name to the current
+  failure, a changed admin password and provisioning turned off all
+  take this path. So does a container that mounts the snapshot file
+  rather than its directory: its record names no serving name, so it
+  never matches. Start links every serving name to the current
   snapshot first, so a new container reads it under any name.
-- Once the server reads the new name, the other names are removed. An
-  old snapshot then keeps no blocks on disk.
+- A serving name that cannot be linked keeps the running container,
+  which still reads the previous snapshot. Refresh fails, and the next
+  one tries again.
+- Once the server reads the new name, the other names are removed.
+  The file's space returns once the server closes it.
+- Start removes the spill directories that killed DuckDBs left (§7),
+  while no container runs.
 
 Start and refresh print each step's wall time on stderr
 (`web: timing: <step> <seconds>s`). Provisioning prints its wait for
@@ -149,7 +162,7 @@ data. They sit in a `wealthdb (pre-defined)` collection:
 No card reads a model. Every card is native SQL over gold.
 
 On top of the models, provisioning creates pre-defined questions and
-ten dashboards. Their pickers:
+eleven dashboards. Their pickers:
 
 - **Wealth Overview**: a required currency, a time range, a source, a
   *Tax wrapper* picker, and an *Asset class* picker. Its own tiles are
@@ -951,6 +964,9 @@ no probe by name sees:
 
 On such a snapshot `provision.py` exits 3, where any other failure exits
 1. `web start`, `web restart` and `web refresh` then exit 3 as well.
+An admin login that fails after setup exits 4. Provisioning then
+changed nothing, so start and refresh take it as no failure, one that
+confirms no snapshot.
 They name `wealthdb web refresh` instead of the browser wizard and leave
 Metabase running with the cards it had. A Metabase listing that fails
 aborts the run too. Read as empty, it would create a second collection,
@@ -1040,7 +1056,8 @@ Four settings work together, each load-bearing:
   Memory-capped queries then spill to disk instead of failing. Each
   file spills in a directory of its own. A DuckDB that closes deletes
   the spill files in its directory, and during a swap the new file's
-  DuckDB may spill already.
+  DuckDB may spill already. A killed DuckDB leaves its files, and
+  `web start` removes them before the server comes up.
 - **Container caps** (`--memory 8g`, `-Xmx2g`, `MALLOC_ARENA_MAX=2`) —
   the backstop: a runaway kills only this container, never the VM; the
   heap cannot auto-size against the container cap; glibc does not hoard
@@ -1393,9 +1410,11 @@ invocation, the engine's own error line and status repeated on a
 failure, `web_refresh`'s materialize-then-snapshot ordering and the
 steps' timing lines. It checks the refresh skips too: an unchanged
 gold is not copied, and a failed copy keeps the old snapshot. A
-running container that does not serve the snapshot's inode takes up
-the new one when provisioning confirms it, and is recreated when it
-does not. Start links the serving names to the current snapshot.
+running container that does not serve the snapshot's serving name
+takes up the new one when provisioning confirms it, and is recreated
+when it does not, or kept when the name cannot be linked. Start links
+the serving names to the current snapshot and clears killed spill
+directories.
 Against a stubbed `provision.py`, it checks that a stale
 snapshot fails `web start` and `web refresh` without the browser hint.
 It then runs [`test_provision.py`](test_provision.py), which asserts

@@ -220,6 +220,10 @@ web_start() {
     fi
     _exists && docker rm "$CONTAINER" >/dev/null 2>&1 || true
     mkdir -p "$H2_DIR" "$(dirname "$SNAP")" "$SPILL_DIR"
+    # A DuckDB that was killed leaves its spill files behind, and no
+    # later one reuses a directory named after another file. With no
+    # container left, no DuckDB has one open.
+    if ! _exists; then rm -rf "$SPILL_DIR"/wealthdb-*.db.tmp; fi
     if [ ! -f "$SNAP" ]; then
         _timed materialize _materialize
         echo "web: taking initial gold snapshot…" >&2
@@ -313,24 +317,32 @@ p = sys.argv[2]
 print(getattr(os.stat(p), sys.argv[1]) if os.path.exists(p) else 0)' "$1" "$2"
 }
 
-# _mark_snapshot_served records the snapshot inode the container just
-# mounted. The snapshot keeps gold's mtime, so mtime cannot tell a file
-# the container opened from one swapped in after it started.
+# _mark_snapshot_served records the serving name of the snapshot the
+# server reads: at start, the one every serving name links; after a
+# confirmed refresh, the new one. The snapshot keeps gold's mtime, so
+# mtime alone cannot tell a file the server reads from one swapped in
+# after it started. A marker in any other form matches no name, so a
+# container started by another version is recreated.
 _mark_snapshot_served() {
-    _stat st_ino "$SNAP" > "${SNAP}.served"
+    _serving_name > "${SNAP}.served"
 }
 
 _snapshot_served() {
     [ -f "$SNAP" ] && [ -f "${SNAP}.served" ] \
-        && [ "$(_stat st_ino "$SNAP")" = "$(tr -d '[:space:]' < "${SNAP}.served")" ]
+        && [ "$(_serving_name)" = "$(tr -d '[:space:]' < "${SNAP}.served")" ]
 }
 
 # _serving_name prints the name the server reads the snapshot under, a
-# hard link of it named after its inode. A new snapshot is a new inode,
-# so the running server has never opened its name. The driver's DuckDB
-# keeps one open database per path, so a path the server had open
-# could hand back the old file; a new name opens the new one.
-_serving_name() { printf 'wealthdb-%s.db\n' "$(_stat st_ino "$SNAP")"; }
+# hard link of it named after its inode and mtime. A new snapshot is a
+# new inode, so the running server has never opened its name. A file
+# system may hand a freed inode number to a later copy, but a later
+# copy carries a newer gold's mtime, so the names still differ. The
+# driver's DuckDB keeps one open database per path, so a path the
+# server had open could hand back the old file; a new name opens the
+# new one.
+_serving_name() {
+    printf 'wealthdb-%s-%s.db\n' "$(_stat st_ino "$SNAP")" "$(_stat st_mtime_ns "$SNAP")"
+}
 
 # _serving_links prints the path of every serving name in the snapshot
 # directory.
@@ -361,8 +373,9 @@ _relink_snapshots() {
 }
 
 # _prune_links removes every serving name but the current snapshot's.
-# It runs once the server reads the current one: an old name keeps an
-# old snapshot's blocks on disk.
+# It runs once the server reads the current one. An old name keeps an
+# old snapshot on disk; once the name goes, the file's space returns
+# when the server closes it.
 _prune_links() {
     local keep l
     keep="$(dirname "$SNAP")/$(_serving_name)"
@@ -390,6 +403,7 @@ web_refresh() {
         echo "web: snapshot unchanged" >&2
         if [ "$running" -eq 1 ]; then
             _timed provision _provision
+            if [ "$PROV_SERVED" = 1 ]; then _prune_links; fi
             return "$PROV_RC"
         fi
         return 0
@@ -405,16 +419,26 @@ web_refresh() {
         # name, which makes Metabase close the connections to the old
         # file, and confirms that the server reads the new one. It also
         # converges the cards, so new or renamed report models show up.
-        if [ "${WEALTHDB_WEB_NO_PROVISION:-0}" != 1 ] \
-            && _timed provision _provision && [ "$PROV_SERVED" = 1 ]; then
-            _mark_snapshot_served
-            _prune_links
-            return "$PROV_RC"
+        if [ "${WEALTHDB_WEB_NO_PROVISION:-0}" != 1 ]; then
+            _timed provision _provision
+            if [ "$PROV_SERVED" = 1 ]; then
+                _mark_snapshot_served
+                _prune_links
+                return "$PROV_RC"
+            fi
+            # A new container could not link the snapshot either, so
+            # the running one keeps serving. Its marker still names the
+            # old snapshot, and the next refresh tries again.
+            if [ "${PROV_LINKED:-0}" != 1 ]; then
+                echo "web: $CONTAINER keeps serving the previous snapshot." >&2
+                return 1
+            fi
         fi
         # Without that confirmation the container is recreated, and the
         # new one reads the current snapshot under every name. A
         # container that mounts the snapshot file rather than its
-        # directory takes this path too.
+        # directory takes this path too: its marker names no serving
+        # name, so even an unchanged snapshot comes this way.
         echo "web: Metabase did not confirm it reads the new snapshot; recreating $CONTAINER" >&2
         _timed stop web_stop >/dev/null
         web_start
@@ -435,10 +459,10 @@ _gen_password() {
 }
 
 # _materialize refreshes the serving tables and the report_returns (with
-# report_bridge and the benchmark tables), report_gains,
-# report_exposure*, report_yield_* and report_cashflow_plan tables in
-# LIVE gold via the engine's hidden web-materialize subcommand,
-# so the snapshot taken next carries them as fresh as the holdings. An
+# report_bridge, report_private_markets and the benchmark tables),
+# report_gains, report_exposure*, report_yield_* and
+# report_cashflow_plan tables in LIVE gold via the engine's hidden
+# web-materialize subcommand, so the snapshot taken next carries them as fresh as the holdings. An
 # engine-owned write, mutually exclusive with `wealthdb load` under the
 # engine's write mutex (a concurrent load makes it fail, not wait); it
 # runs BEFORE _snapshot, so a failure aborts under web_main's `set -e`
@@ -451,7 +475,7 @@ _gen_password() {
 # its inputs did not change, so an unchanged gold keeps its mtime and
 # the snapshot is not copied again.
 _materialize() {
-    echo "web: materializing serving tables, returns and the bridge, gains, exposure, yield and the cash flow projection into gold …" >&2
+    echo "web: materializing serving tables, returns, the bridge and the private funds, gains, exposure, yield and the cash flow projection into gold …" >&2
     local log rc=0 cfg=()
     log="$(mktemp "${TMPDIR:-/tmp}/wealthdb-web-materialize.XXXXXX")" || return 1
     trap 'rm -f "$log"; trap - RETURN' RETURN
@@ -494,12 +518,13 @@ PROV_UNVERIFIED=4
 # ~/.secrets/wealthdb-web.env); an unset password is generated once and
 # saved (chmod 600). Sets PROV_LOGIN for the start banner, PROV_RC to
 # provision.py's exit status (0 when it does not run, and for a login it
-# could not verify), and PROV_SERVED to 1 when provision.py confirmed
-# the server reads the serving name. Start and refresh run it under
+# could not verify), PROV_LINKED to 1 once the serving name links the
+# snapshot, and PROV_SERVED to 1 when provision.py confirmed the server
+# reads the serving name. Start and refresh run it under
 # _timed, with errexit off, so a password it cannot read, generate or
 # save, or a link it cannot make, stops it here.
 _provision() {
-    PROV_RC=0 PROV_SERVED=0
+    PROV_RC=0 PROV_SERVED=0 PROV_LINKED=0
     if [ "${WEALTHDB_WEB_NO_PROVISION:-0}" = 1 ]; then
         echo "web: auto-provision disabled (WEALTHDB_WEB_NO_PROVISION=1)." >&2
         return 0
@@ -507,6 +532,7 @@ _provision() {
     local name
     name="$(_serving_name)" && _link_snapshot "$(dirname "$SNAP")/$name" \
         || { echo "web: could not link the snapshot as $name" >&2; return 1; }
+    PROV_LINKED=1
     local email pwfile pw pwhint
     email="${WEALTHDB_WEB_ADMIN_EMAIL:-admin@wealthdb.local}"
     pwfile="$DATA_DIR/admin-password.txt"

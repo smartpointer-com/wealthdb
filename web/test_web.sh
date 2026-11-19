@@ -72,11 +72,15 @@ WEALTHDB_WEB_IMAGE=other/mb:1 WEALTHDB_IMAGE_TAG=feature _resolve_knobs
 check "WEALTHDB_WEB_IMAGE wins"      "other/mb:1"                "$IMAGE"
 
 echo "== _docker_run_args (dual-stack, read-only snapshot mount) =="
-PORT=3000 BIND=both IMAGE=wealthdb/metabase:latest CONTAINER=wealthdb-metabase \
-    H2_DIR=/data/web/metabase SNAP=/data/web/snapshot/wealthdb.db \
-    SPILL_DIR=/data/web/spill
-_docker_run_args
-joined="${DOCKER_ARGS[*]}"
+# In a subshell: the paths stand for a real data directory, and no
+# later step may write beside them.
+joined="$(
+    PORT=3000 BIND=both IMAGE=wealthdb/metabase:latest CONTAINER=wealthdb-metabase \
+        H2_DIR=/data/web/metabase SNAP=/data/web/snapshot/wealthdb.db \
+        SPILL_DIR=/data/web/spill
+    _docker_run_args
+    printf '%s' "${DOCKER_ARGS[*]}"
+)"
 check "detached"          "-d"                                                  "$joined"
 check "container name"    "--name wealthdb-metabase"                            "$joined"
 check "memory cap"        "--memory 8g"                                         "$joined"
@@ -289,7 +293,7 @@ mkdir -p "$tmp/snap" && : > "$tmp/snap/wealthdb.db"
     _snapshot()    { echo SNAPSHOT_RAN; }
     _mtime()       { echo now; }
     _is_running()  { return 0; }
-    _provision()   { echo PROVISIONED; }
+    _provision()   { echo PROVISIONED; PROV_RC=0 PROV_SERVED=0; }
     web_stop()     { echo STOPPED; }
     web_refresh
 ) >"$seq_same" 2>&1
@@ -297,6 +301,57 @@ check "unchanged gold skips the snapshot" "web: snapshot unchanged" "$(cat "$seq
 check_not "unchanged gold does not copy" "SNAPSHOT_RAN" "$(cat "$seq_same")"
 check "unchanged gold still provisions" "PROVISIONED" "$(cat "$seq_same")"
 check_not "unchanged gold does not restart" "STOPPED" "$(cat "$seq_same")"
+
+echo "== a marker in another form recreates the container on an unchanged gold =="
+# A container of another version mounts the snapshot file, and its
+# marker holds the bare inode. Pointed at a serving name, it cannot read
+# it, so even an unchanged refresh recreates it.
+seq_oldmark="$tmp/refresh-oldmark"
+(
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/snap/wealthdb.db"; }
+    _load_config
+    _stat st_ino "$SNAP" > "$SNAP.served"
+    _materialize() { :; }
+    _snapshot()    { echo SNAPSHOT_RAN; }
+    _mtime()       { echo now; }
+    _is_running()  { return 0; }
+    _provision()   { PROV_RC=1 PROV_SERVED=0 PROV_LINKED=1; }
+    web_stop()     { echo STOPPED; }
+    web_start()    { echo STARTED; }
+    web_refresh
+) >"$seq_oldmark" 2>&1
+check_not "an old marker is no unchanged snapshot" "web: snapshot unchanged" "$(cat "$seq_oldmark")"
+check_not "...the snapshot is not copied"          "SNAPSHOT_RAN"            "$(cat "$seq_oldmark")"
+check     "...and the container is recreated"      "STARTED"                 "$(cat "$seq_oldmark")"
+
+echo "== an unchanged refresh that confirms the snapshot prunes kept names =="
+rm -rf "$tmp/keep" && mkdir -p "$tmp/keep" && : > "$tmp/keep/wealthdb.db" && : > "$tmp/keep/old.db"
+ln "$tmp/keep/old.db" "$tmp/keep/wealthdb-1.db"
+(
+    _load_config() { GOLD_DB="$tmp/gold.db"; SNAP="$tmp/keep/wealthdb.db"; }
+    _load_config
+    python3 -c 'import os,sys; os.utime(sys.argv[1], None)' "$SNAP"
+    _mark_snapshot_served
+    _materialize() { :; }
+    _is_running()  { return 0; }
+    _provision()   { PROV_RC=0 PROV_SERVED=1 PROV_LINKED=1; ln -f "$SNAP" "$(dirname "$SNAP")/$(_serving_name)"; }
+    web_refresh >/dev/null 2>&1
+)
+check_eq "only the current serving name is left" \
+    "old.db wealthdb-$(_stat st_ino "$tmp/keep/wealthdb.db")-$(_stat st_mtime_ns "$tmp/keep/wealthdb.db").db wealthdb.db wealthdb.db.served" \
+    "$(cd "$tmp/keep" && ls | tr '\n' ' ' | sed 's/ $//')"
+
+echo "== the serving name tells apart copies that share an inode number =="
+# A freed inode number may name a later copy. That copy is newer, so
+# its name differs.
+mkdir -p "$tmp/reuse" && : > "$tmp/reuse/wealthdb.db"
+python3 -c 'import os,sys; os.utime(sys.argv[1], ns=(1000, 1000))' "$tmp/reuse/wealthdb.db"
+first="$(SNAP="$tmp/reuse/wealthdb.db" _serving_name)"
+python3 -c 'import os,sys; os.utime(sys.argv[1], ns=(2000, 2000))' "$tmp/reuse/wealthdb.db"
+check_eq "the name carries the inode and the mtime" \
+    "wealthdb-$(_stat st_ino "$tmp/reuse/wealthdb.db")-1000.db" "$first"
+check_eq "...so the same inode with a newer mtime is a new name" \
+    "wealthdb-$(_stat st_ino "$tmp/reuse/wealthdb.db")-2000.db" "$(SNAP="$tmp/reuse/wealthdb.db" _serving_name)"
 
 echo "== a snapshot older than gold is copied =="
 seq_old="$tmp/refresh-old"
@@ -337,8 +392,8 @@ swap_refresh() {
         # "link" stands for a link _provision cannot make: it fails
         # before provision.py runs, PROV_RC still 0.
         _provision()   { _stat st_ino "$SNAP" > "$tmp/swap/provisioned"
-                         if [ "$prov_rc" = link ]; then PROV_RC=0 PROV_SERVED=0; return 1; fi
-                         PROV_RC="$prov_rc" PROV_SERVED="$prov_served"; }
+                         if [ "$prov_rc" = link ]; then PROV_RC=0 PROV_SERVED=0 PROV_LINKED=0; return 1; fi
+                         PROV_RC="$prov_rc" PROV_SERVED="$prov_served" PROV_LINKED=1; }
         # refresh sends the stop's output to /dev/null.
         web_stop()     { echo STOPPED >&2; }
         web_start()    { echo STARTED; }
@@ -354,8 +409,8 @@ check_not "...with no copy"                  "SNAPSHOT_RAN" "$out"
 check_not "...no stop"                       "STOPPED"      "$out"
 check_not "...and no start"                  "STARTED"      "$out"
 check     "...and refresh succeeds"          "rc=0"         "$out"
-check_eq  "the marker names the new snapshot" "$(_stat st_ino "$tmp/swap/wealthdb.db")" \
-          "$(cat "$tmp/swap/wealthdb.db.served")"
+check_eq  "the marker names the new snapshot's serving name" \
+          "$(SNAP="$tmp/swap/wealthdb.db" _serving_name)" "$(cat "$tmp/swap/wealthdb.db.served")"
 check_eq  "the old serving name is removed" "wealthdb.db wealthdb.db.served" \
           "$(cd "$tmp/swap" && ls | grep -v provisioned | tr '\n' ' ' | sed 's/ $//')"
 
@@ -365,12 +420,21 @@ check     "a stale swap exits 3"      "rc=3"    "$out"
 check_not "...without a restart"      "STOPPED" "$out"
 
 echo "== an unconfirmed swap recreates the container =="
-for case in "1 0" "0 0" "link 0"; do
+for case in "1 0" "0 0"; do
     out="$(swap_refresh $case)"
     check "provision ($case): the container is stopped" "STOPPED" "$out"
     check "...and started"                 "STARTED" "$out"
     check "...saying why"                  "did not confirm it reads the new snapshot" "$out"
 done
+echo "== a serving name that cannot be linked keeps the running container =="
+out="$(swap_refresh link 0)"
+check_not "the container is not stopped" "STOPPED" "$out"
+check_not "...nor started"               "STARTED" "$out"
+check     "...saying what serves"        "keeps serving the previous snapshot" "$out"
+check     "...and refresh fails"         "rc=1"    "$out"
+check_eq  "...with the marker on the old snapshot, so the next refresh tries again" \
+          "$(cat "$tmp/swap/wealthdb.db.served")" \
+          "$(cd "$tmp/swap" && ls wealthdb-*.db)"
 out="$(WEALTHDB_WEB_NO_PROVISION=1 swap_refresh 0 1)"
 check     "with provisioning off, the container is recreated" "STARTED" "$out"
 if [ -f "$tmp/swap/provisioned" ]; then fail "...without provisioning first"; else pass "...without provisioning first"; fi
@@ -422,7 +486,7 @@ python3 -c 'import os,sys; os.utime(sys.argv[1], None)' "$tmp/snap/wealthdb.db"
     _snapshot()    { echo SNAPSHOT_RAN; }
     _mtime()       { echo now; }
     _is_running()  { return 0; }
-    _provision()   { PROV_RC=3; return 0; }
+    _provision()   { PROV_RC=3 PROV_SERVED=0; return 0; }
     web_stop()     { echo STOPPED; }
     web_refresh
 ) >"$seq_stale" 2>&1
@@ -467,10 +531,11 @@ check_not "password not in argv"     "Synthetic-pw-1!" "$(cat "$tmp/prov-args" 2
 check_not "no --password flag"       "--password"      "$(cat "$tmp/prov-args" 2>/dev/null)"
 check     "password in the env var"  "Synthetic-pw-1!" "$(cat "$tmp/prov-env" 2>/dev/null)"
 check     "the source colours live beside the web data" "$tmp/source-colors.json" "$(cat "$tmp/prov-args" 2>/dev/null)"
-check     "the database reads the snapshot's serving name" "/gold/wealthdb-$prov_ino.db" \
+prov_name="$(SNAP="$tmp/prov/wealthdb.db" _serving_name)"
+check     "the database reads the snapshot's serving name" "/gold/$prov_name" \
           "$(tr '\n' ' ' < "$tmp/prov-args" 2>/dev/null)"
 check     "...spilling under the spill mount" "--spill-dir /spill" "$(tr '\n' ' ' < "$tmp/prov-args" 2>/dev/null)"
-check_eq  "...which links the snapshot" "$prov_ino" "$(_stat st_ino "$tmp/prov/wealthdb-$prov_ino.db")"
+check_eq  "...which links the snapshot" "$prov_ino" "$(_stat st_ino "$tmp/prov/$prov_name")"
 
 echo "== _provision reads provision.py's status =="
 # prov_status STATUS prints PROV_RC and PROV_SERVED after provision.py
@@ -605,9 +670,33 @@ check_not "...without asking the engine" "could not read settings" "$cfg_out"
     rm -f "$SNAP.served"
     web_start >/dev/null 2>&1
 )
-check_eq "start records the snapshot inode it serves" \
-    "$(_stat st_ino "$tmp/start/snapshot/wealthdb.db")" \
+check_eq "start records the serving name of the snapshot it serves" \
+    "$(SNAP="$tmp/start/snapshot/wealthdb.db" _serving_name)" \
     "$(cat "$tmp/start/snapshot/wealthdb.db.served" 2>/dev/null)"
+# start_spill: web_start over a spill directory that holds a killed
+# DuckDB's leftovers. Prints what the directory holds when the server
+# comes up. EXISTS is 1 for a container start cannot remove.
+start_spill() {
+    rm -rf "$tmp/spill" && mkdir -p "$tmp/spill/spill/wealthdb-1-2.db.tmp" "$tmp/spill/spill/other"
+    : > "$tmp/spill/spill/wealthdb-1-2.db.tmp/duckdb_temp_storage-0.tmp"
+    (
+        exists="$1"
+        _load_config() { ENABLED=1; PORT=3000; GOLD_DB="$tmp/gold.db"; }
+        _is_running()  { return 1; }
+        _exists()      { [ "$exists" = 1 ]; }
+        docker()       { case "$1" in run) ls "$SPILL_DIR" | tr '\n' ' ' > "$tmp/spill/at-run" ;; esac; }
+        DATA_DIR="$tmp/spill" H2_DIR="$tmp/spill/metabase" SPILL_DIR="$tmp/spill/spill"
+        SNAP="$tmp/spill/snapshot/wealthdb.db" BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
+        WEALTHDB_WEB_NO_PROVISION=1
+        mkdir -p "$(dirname "$SNAP")" && : > "$SNAP"
+        web_start >/dev/null 2>&1
+        sed 's/ $//' "$tmp/spill/at-run"
+    )
+}
+check_eq "start clears a killed DuckDB's spill directory before the server comes up" \
+    "other" "$(start_spill 0)"
+check_eq "...but not while a container it could not remove remains" \
+    "other wealthdb-1-2.db.tmp" "$(start_spill 1)"
 # start_links SERVED: web_start over a snapshot directory that holds a
 # serving name of an older snapshot, with _provision stubbed to set
 # PROV_SERVED. Prints the inodes the names link when the server comes
@@ -626,7 +715,7 @@ start_links() {
         names() { for f in "$tmp/links/snapshot"/wealthdb-*.db; do
                       [ -e "$f" ] && printf '%s:%s ' "${f##*/}" "$(_stat st_ino "$f")"; done; }
         docker()       { echo "at run: $(names)" > "$tmp/links/at-run"; }
-        _provision()   { PROV_RC=0 PROV_SERVED="$prov_served"; ln -f "$SNAP" "$(dirname "$SNAP")/$(_serving_name)"; }
+        _provision()   { PROV_RC=0 PROV_SERVED="$prov_served" PROV_LINKED=1; ln -f "$SNAP" "$(dirname "$SNAP")/$(_serving_name)"; }
         _start_banner() { :; }
         DATA_DIR="$tmp/links" H2_DIR="$tmp/links/metabase" SPILL_DIR="$tmp/links/spill"
         BIND=v4 IMAGE=img CONTAINER=wealthdb-metabase
@@ -639,7 +728,7 @@ out="$(start_links 1)"
 cur="$(_stat st_ino "$tmp/links/snapshot/wealthdb.db")"
 check    "start links an older serving name to the current snapshot" "at run: wealthdb-1.db:$cur" "$out"
 check_eq "...and keeps only the current one once provisioning confirms it" \
-         "after: wealthdb-$cur.db:$cur" "$(echo "$out" | grep '^after' | sed 's/ $//')"
+         "after: $(SNAP="$tmp/links/snapshot/wealthdb.db" _serving_name):$cur" "$(echo "$out" | grep '^after' | sed 's/ $//')"
 out="$(start_links 0)"
 cur="$(_stat st_ino "$tmp/links/snapshot/wealthdb.db")"
 check    "unconfirmed, start keeps the older name, on the current snapshot" "wealthdb-1.db:$cur" \
@@ -669,7 +758,7 @@ rc="$(
     _snapshot()    { :; }
     _mtime()       { echo now; }
     _is_running()  { return 0; }
-    _provision()   { PROV_RC=1 PROV_SERVED=0; }
+    _provision()   { PROV_RC=1 PROV_SERVED=0 PROV_LINKED=1; }
     web_stop()     { :; }
     web_start()    { return 3; }
     web_refresh >/dev/null 2>&1
@@ -685,7 +774,7 @@ out="$(
     _snapshot()    { :; }
     _mtime()       { echo now; }
     _is_running()  { return 0; }
-    _provision()   { PROV_RC=1 PROV_SERVED=0; }
+    _provision()   { PROV_RC=1 PROV_SERVED=0 PROV_LINKED=1; }
     web_stop()     { :; }
     web_start()    { :; }
     web_refresh 2>&1
@@ -715,6 +804,11 @@ want="$("$prov_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import d
 bout="$(CONTAINER=c PORT=1 _start_banner 2>&1 | tr -s ' \n' ' ')"
 check_eq "the start banner names every base dashboard, in DASHBOARDS' order" "$want" \
     "$(printf '%s' "$bout" | sed -n 's/.*questions and the \(.*\) dashboards, most .*/\1/p')"
+
+# web/web reads provision.py's exit statuses by number.
+check_eq "web/web's provision statuses are provision.py's" \
+    "$("$prov_python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import provision as p; print(p.EXIT_STALE_SNAPSHOT, p.EXIT_UNVERIFIED)' "$HERE" 2>&1)" \
+    "$PROV_STALE_SNAPSHOT $PROV_UNVERIFIED"
 
 # Everything provisioning builds before it talks to the API is a pure
 # function of its declarations, so it asserts statically. The

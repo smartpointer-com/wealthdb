@@ -15,9 +15,9 @@ PRIVATE_PRIVACY_DESC = " Money columns and account names are redacted."
 def private_cards(f):
     """The Private Markets dashboard's cards, or on the twin the privacy
     variant of its table. They read `wealthdb returns private` over
-    web_private, the rows a refresh stores with their IRR: one row per private holding, each a fund or SPV a
-    capital call names, then the total, one row set per reporting
-    currency. The Currency picker lands on the {{currency}} variable, and
+    web_private, the rows a refresh stores with their IRR: one row per
+    private holding, each a fund or SPV a capital call names, then the
+    total, one row set per reporting currency. The Currency picker lands on the {{currency}} variable, and
     the dashboard takes no other: the total is the CLI's, over every
     holding, so a Source picker would leave it out of step with the rows
     shown.
@@ -28,7 +28,7 @@ def private_cards(f):
     never what is held. The chart shows multiples only, so the twin shows
     it as it is."""
     tags = native_tags("web_private", {})
-    base = ("SELECT * FROM web_private\n WHERE currency = {{currency}}")
+    base = "SELECT * FROM web_private\n WHERE currency = {{currency}}"
     if f.privacy:
         desc = "Each private fund or SPV since its first call: its multiples, its IRR and its mark's date."
         cols = "holding, silver_source_id, first_call, marked_at, dpi, tvpi, irr_pct, quality"

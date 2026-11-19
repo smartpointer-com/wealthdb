@@ -827,8 +827,6 @@ check("...before the schema check",
       not [c for c in api.calls if c[1] == "/api/dataset"][1:], str(api.calls))
 api = FakeMetabase(None, tables_for(ALL_VIEWS + ["report_returns"]))
 check("...as does a probe that does not answer", run_main(api) == 1, str(api.calls))
-check("the statuses web/web reads are distinct",
-      len({0, 1, 2, p.EXIT_STALE_SNAPSHOT, p.EXIT_UNVERIFIED}) == 5)
 
 
 class UnverifiedLoginAPI(FakeMetabase):

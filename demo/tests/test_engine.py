@@ -618,9 +618,10 @@ class TestToToday(unittest.TestCase):
 
         mark = max((m for m in fund["marks"] if dates.parse(m["date"]) <= TODAY), key=lambda m: m["date"])
         at = dates.parse(mark["date"])
-        nav = (upto(fund["calls"], at) * Decimal(mark["multiple"]) - upto(fund["distributions"], at)
-               + upto(fund["calls"]) - upto(fund["calls"], at) - upto(fund["distributions"])
-               + upto(fund["distributions"], at))
+        # The mark, rolled forward by the calls and distributions after it.
+        marked = upto(fund["calls"], at) * Decimal(mark["multiple"]) - upto(fund["distributions"], at)
+        nav = (marked + (upto(fund["calls"]) - upto(fund["calls"], at))
+               - (upto(fund["distributions"]) - upto(fund["distributions"], at)))
         rows = report(self.root, "returns", "private")
         by = {r["holding"]: r for r in rows}
         (f,) = [r for name, r in by.items() if "Fund" in name]
