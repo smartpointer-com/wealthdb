@@ -39,16 +39,17 @@ class Dashboard(NamedTuple):
     twin's blurb, naming what its figures are shares of; None for a
     dashboard with no twin. `pickers` are the slugs of its pickers in
     their order (PICKERS), `twin_drops` those the twin leaves out.
-    `rows` lay its tiles out (layout). `redacts`: the twin redacts money
-    columns where the others show shares, and the switch link of both
-    says so."""
+    `rows` lay its tiles out (layout). `redacts` is set where the twin
+    redacts money columns, as the others show shares: what its switch
+    link says the twin does with the money. It is empty for a twin of
+    shares alone."""
     name: str
     desc: str
     twin_desc: str
     pickers: tuple
     twin_drops: tuple
     rows: tuple
-    redacts: bool = False
+    redacts: str = ""
 
 
 def layout(rows, twin=False):
@@ -91,11 +92,11 @@ class Layout(NamedTuple):
     """One dashboard as dashboard_defs lays it out: its blurb, the slugs
     of its pickers, the name of its twin or base (None for a dashboard
     with no twin), its tiles (card, row, col, size_x, size_y) and its
-    headings (row, text, display), and whether its twin redacts
-    (Dashboard.redacts)."""
+    headings (row, text, display), and what its twin does with money it
+    redacts (Dashboard.redacts)."""
     desc: str
     pickers: tuple
     sibling: str
     tiles: list
     headings: list
-    redacts: bool
+    redacts: str

@@ -41,7 +41,7 @@ def card_defs():
     cards show shares (%) instead of money, each recomputing its
     denominator in-query with the dashboard's filters applied and naming
     it (PRIVACY_DESC), or redact the money columns where the figures are
-    ratios already (Returns, Private Markets). A card that shows no monetary value
+    ratios already (Returns, the Private Markets table). A card that shows no monetary value
     (percentages, indices, days, source names) is exempt: the twin shows
     it as it is."""
     cards = {}
@@ -136,7 +136,7 @@ DASHBOARDS = (
             Row(8, (("Returns by source", 24),)),
             Row(8, (("Money-weighted return over time", 24),)),
             Row(8, (("Value against the benchmark", 24),)),
-        ), redacts=True),
+        ), redacts="money columns redacted"),
     Dashboard(
         "Spending",
         "Where the money goes over the window, by month, category, merchant "
@@ -348,14 +348,20 @@ DASHBOARDS = (
         "What each private fund or SPV took, what it gave back and what it is "
         "marked at, since its first call. Marks are old by nature, so each "
         "shows its date. " + PREDEFINED_NOTE,
-        "The multiples and the marks' dates show as they are. Money columns "
-        "and account names are redacted. " + PREDEFINED_NOTE,
+        "The multiples and the marks' dates show as they are. The table drops "
+        "the money and the account names. The charts show money as shares of "
+        "the total paid in. " + PREDEFINED_NOTE,
         ("currency",), (), (
             # The figures, then the multiples they make, one bar per
-            # holding.
+            # holding; the gain against the multiple beside the
+            # vintages; the cash flows over time; last, the gain by
+            # holding, which shows how few make most of it.
             Row(9, (("Private holdings", 24),)),
             Row(8, (("Multiples by holding", 24),)),
-        ), redacts=True),
+            Row(9, (("Gain against multiple", 12), ("By vintage year", 12))),
+            Row(8, (("Cash flows to date", 24),)),
+            Row(8, (("Gain by holding", 24),)),
+        ), redacts="money columns redacted or shown as shares"),
 )
 
 DASHBOARDS_BY_NAME = {d.name: d for d in DASHBOARDS}

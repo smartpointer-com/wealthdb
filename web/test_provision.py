@@ -3707,14 +3707,14 @@ check("the Gains picker offers exactly the engine's readings of a missing cost b
 # The long views carry a row set per currency, written by their
 # materializers from the same materializeCurrencies list, the cash flow
 # projection's look-back parts among them, or by their macro's arms
-# (web_spending_vs_year). The projection's
+# (web_spending_vs_year, web_private_flows). The projection's
 # parts and principals are in each holding's currency, with its rate to
 # every reporting currency beside it; its rates table, the days the
 # income received covers and the stock positions' sizes hold no money.
 # web_sources_observed carries serving_sources_latest's columns whole.
 _LONG_VIEWS = {"web_gains", "web_exposure", "web_exposure_debt", "web_exposure_issuers", "web_exposure_securities",
                "web_yield", "web_yield_curve", "web_yield_received", "web_cashflow_plan", "web_bridge",
-               "web_spending_vs_year", "web_private"}
+               "web_spending_vs_year", "web_private", "web_private_flows"}
 _FX_TABLES = {"web_yield_parts": "report_yield_parts", "web_yield_events": "report_yield_events"}
 _missing = {v: [c for c in sqlkit.REPORTING_CURRENCIES
                 if not re.search(rf"_{c.lower()}\b", _latest_definition(v))]
@@ -5626,50 +5626,121 @@ if duckdb is not None:
 
 section("the Private Markets dashboard")
 
-check("Private Markets carries the table and the chart, the twin the table's twin and the same chart",
-      [t[0] for t in DEFS["Private Markets"][3]] == ["Private holdings", "Multiples by holding"]
-      and [t[0] for t in DEFS["Private Markets (privacy)"][3]] == ["Private holdings (privacy)", "Multiples by holding"]
+_PM_CHARTS = ("Gain against multiple", "By vintage year", "Cash flows to date", "Gain by holding")
+check("Private Markets carries the table, the multiples and the charts of the gain, the vintages and the "
+      "cash flows; the twin the twins of all but the multiples",
+      [t[0] for t in DEFS["Private Markets"][3]] == ["Private holdings", "Multiples by holding", *_PM_CHARTS]
+      and [t[0] for t in DEFS["Private Markets (privacy)"][3]]
+      == ["Private holdings (privacy)", "Multiples by holding", *(p.privacy_name(n) for n in _PM_CHARTS)]
       and "Multiples by holding" in EXEMPT, [t[0] for t in DEFS["Private Markets (privacy)"][3]])
 check("...it takes the Currency picker alone",
       [x["slug"] for x in p.dashboard_parameters("Private Markets")] == ["currency"]
       and [x["slug"] for x in p.dashboard_parameters("Private Markets (privacy)")] == ["currency"])
-for _n in ("Private holdings", "Private holdings (privacy)", "Multiples by holding"):
+for _n in ("Private holdings", "Private holdings (privacy)", "Multiples by holding",
+           *(_c for _b in _PM_CHARTS for _c in (_b, p.privacy_name(_b)))):
+    _view = "web_private_flows" if _n.startswith("Cash flows") else "web_private"
     check(f"'{_n}' reads `returns private`'s rows in the picked currency",
-          "FROM web_private" in sql_of(CARDS[_n][2]) and "currency = {{currency}}" in sql_of(CARDS[_n][2])
+          f"FROM {_view}\n" in sql_of(CARDS[_n][2]) and "currency = {{currency}}" in sql_of(CARDS[_n][2])
           and set(CARDS[_n][2]["native"]["template-tags"]) == {"currency"})
 _pt = sql_of(CARDS["Private holdings (privacy)"][2])
 check("...the twin's table keeps the multiples and the IRR and drops the money and the account",
       all(c in _pt for c in ("dpi", "tvpi", "irr_pct", "marked_at", "holding"))
       and not any(c in _pt.split("FROM p")[0] for c in ("paid_in", "distributed", "nav", "account_label")), _pt)
+check("...the twin's charts name no account",
+      not any("account_label" in sql_of(CARDS[p.privacy_name(n)][2]) for n in _PM_CHARTS))
 
 if duckdb is not None:
+    # Three holdings: a fund still held, an SPV exited and a late call
+    # with no mark yet, which leaves the total's NAV blank. The cards
+    # read gold's own web_private and web_private_flows, over stand-ins
+    # of the tables they serve.
+    def _epoch(*ymd):
+        return int(dt.datetime(*ymd, tzinfo=dt.timezone.utc).timestamp())
+
     _pm = duckdb.connect()
-    _pm.execute("CREATE TABLE web_private (currency TEXT, is_total BOOLEAN, silver_source_id TEXT,"
-                " account_external_id TEXT, account_label TEXT, instrument_external_id TEXT, holding TEXT,"
-                " first_call TIMESTAMP, paid_in DECIMAL(28,4), distributed DECIMAL(28,4), nav DECIMAL(28,4),"
-                " marked_at TIMESTAMP, dpi DOUBLE, tvpi DOUBLE, irr_pct DOUBLE, quality TEXT)")
-    _pm.executemany("INSERT INTO web_private VALUES (?, ?, ?, 'a', 'Investor (src-1 custody)', ?, ?, ?, ?, ?, ?,"
-                    " ?, ?, ?, ?, '')", [
-                        (c, False, "src-1", "f", "Fund", dt.datetime(2025, 1, 15), 100 * r, 18 * r, 101 * r,
-                         dt.datetime(2026, 9, 30), 0.18, 1.19, 12.5) for c, r in (("USD", 1), ("CHF", 0.9))] + [
-                        (c, False, "src-1", "s", "SPV", dt.datetime(2025, 2, 10), 10 * r, 22 * r, 0, None,
-                         2.2, 2.2, 80.0) for c, r in (("USD", 1), ("CHF", 0.9))] + [
-                        (c, True, "", "", "Total", dt.datetime(2025, 1, 15), 110 * r, 40 * r, 101 * r,
-                         dt.datetime(2026, 9, 30), 40 / 110, 141 / 110, 20.0) for c, r in (("USD", 1), ("CHF", 0.9))])
+    _pm.execute(_migration_objects(215))
+    _pm.execute("CREATE TABLE accounts (silver_source_id TEXT, account_external_id TEXT, display_name TEXT,"
+                " account_kind TEXT)")
+    _pm.execute("INSERT INTO accounts VALUES ('src-1', 'a', 'Investor', 'custody')")
+    _pm.execute("CREATE TABLE serving_private_flows (currency TEXT, quarter BIGINT, called DECIMAL(28,4),"
+                " distributed DECIMAL(28,4), net DECIMAL(28,4), called_to_date DECIMAL(28,4),"
+                " distributed_to_date DECIMAL(28,4), net_to_date DECIMAL(28,4), quality TEXT)")
+    for _o in ("account_display_name", "account_label", "web_private", "web_private_flows"):
+        _pm.execute(_latest_definition(_o))
+    _pm.executemany("INSERT INTO report_private_markets VALUES (0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)", [
+                        (c, False, "src-1", "a", "f", "Fund", _epoch(2025, 1, 15), 100 * r, 18 * r, 101 * r,
+                         _epoch(2026, 9, 30), 0.18, 1.19, 0.125, "") for c, r in (("USD", 1), ("CHF", 0.9))] + [
+                        (c, False, "src-1", "a", "s", "SPV", _epoch(2025, 2, 10), 10 * r, 22 * r, 0, None,
+                         2.2, 2.2, 0.8, "exited") for c, r in (("USD", 1), ("CHF", 0.9))] + [
+                        (c, False, "src-1", "a", "l", "Late", _epoch(2026, 3, 2), 5 * r, 0, None, None,
+                         0.0, None, None, "no_mark") for c, r in (("USD", 1), ("CHF", 0.9))] + [
+                        (c, True, "", "", "", "Total", _epoch(2025, 1, 15), 115 * r, 40 * r, None,
+                         _epoch(2026, 9, 30), 40 / 115, None, 0.2, "no_mark=1;exited=1")
+                        for c, r in (("USD", 1), ("CHF", 0.9))])
+    _pm.executemany("INSERT INTO serving_private_flows VALUES (?, ?, ?, ?, ?, ?, ?, ?, '')", [
+        (c, _epoch(y, m, 1), a * r, b * r, (b - a) * r, at * r, bt * r, (bt - at) * r)
+        for c, r in (("USD", 1), ("CHF", 0.9))
+        for y, m, a, b, at, bt in ((2025, 1, 110, 0, 110, 0), (2025, 7, 0, 40, 110, 40), (2026, 1, 5, 0, 115, 40))])
+    _pg = _pm.execute("SELECT holding, account_label, gain FROM web_private WHERE currency = 'USD'"
+                      " ORDER BY is_total, first_call").fetchall()
+    check("web_private's gain is what came back and is still marked less what was paid in, none without a NAV",
+          [(h, a, g if g is None else float(g)) for h, a, g in _pg]
+          == [("Fund", "Investor (src-1 custody)", 19), ("SPV", "Investor (src-1 custody)", 12),
+              ("Late", "Investor (src-1 custody)", None), ("Total", None, None)], _pg)
 
     def _pmr(name, currency="USD"):
         return _pm.execute(_render(CARDS[name][2], {"currency": currency})).fetchall()
 
     _ph = _pmr("Private holdings", "CHF")
     check("the table holds the picked currency's rows, by first call, the total last",
-          [r[0] for r in _ph] == ["Fund", "SPV", "Total"] and float(_ph[0][3]) == 90, _ph)
+          [r[0] for r in _ph] == ["Fund", "SPV", "Late", "Total"] and float(_ph[0][3]) == 90, _ph)
     _mb = _pmr("Multiples by holding")
     check("...the chart a bar per holding, its parts adding up to its TVPI, the largest first",
-          [r[0] for r in _mb] == ["SPV (src-1)", "Fund (src-1)"]
-          and all(_near(r[1] + r[2], t) for r, t in zip(_mb, (2.2, 1.19), strict=True)), _mb)
+          [r[0] for r in _mb] == ["SPV (src-1)", "Fund (src-1)", "Late (src-1)"]
+          and all(_near(r[1] + r[2], t) for r, t in zip(_mb[:2], (2.2, 1.19), strict=True)), _mb)
     check("...the twin's table the same rows, multiples and IRR", [(r[0], r[4], r[5], r[6]) for r in
                                                                     _pmr("Private holdings (privacy)")]
           == [(r[0], r[7], r[8], r[9]) for r in _pmr("Private holdings")])
+
+    _gm = _pmr("Gain against multiple", "CHF")
+    check("the scatter a dot per marked holding, its gain against its TVPI, sized by what it paid in, "
+          "the exited apart",
+          [(r[0], r[2], r[3]) for r in _gm] == [("Fund", "held", 1.19), ("SPV", "exited", 2.2)]
+          and [(float(r[4]), float(r[5])) for r in _gm] == [(19 * 0.9, 90), (12 * 0.9, 9)], _gm)
+    _gt = _pmr("Gain against multiple (privacy)", "CHF")
+    check("...the twin each gain and size a share of the total paid in, the source for the account",
+          [r[1] for r in _gt] == ["src-1", "src-1"]
+          and all(_near(r[4], 100 * g / 115) and _near(r[5], 100 * q / 115)
+                  for r, g, q in zip(_gt, (19, 12), (100, 10), strict=True)), _gt)
+
+    _vy = _pmr("By vintage year")
+    check("the vintages add their holdings' money and pool their TVPI, none with a holding unmarked",
+          [(r[0], float(r[1]), r[2] and float(r[2]), float(r[3]), r[5]) for r in _vy]
+          == [("2025", 40, 101, 110, 2), ("2026", 0, None, 5, 1)]
+          and _near(_vy[0][4], 141 / 110) and _vy[1][4] is None, _vy)
+    _vt = _pmr("By vintage year (privacy)", "CHF")
+    check("...the twin's money shares of the total paid in, the TVPI as it is",
+          _near(sum(r[3] for r in _vt), 100) and _near(_vt[0][1], 100 * 40 / 115) and _near(_vt[0][4], 141 / 110),
+          _vt)
+
+    _cf = _pmr("Cash flows to date", "CHF")
+    check("the cash flows add up by quarter, the net what came back less what was called",
+          [tuple(float(v) for v in r[1:]) for r in _cf]
+          == [(99.0, 0.0, -99.0), (99.0, 36.0, -63.0), (103.5, 36.0, -67.5)], _cf)
+    _ct = _pmr("Cash flows to date (privacy)")
+    check("...the twin's shares of all the capital called",
+          _near(_ct[-1][1], 100) and _near(_ct[-1][2], 100 * 40 / 115) and _near(_ct[0][3], -100 * 110 / 115), _ct)
+
+    _gh = _pmr("Gain by holding")
+    check("the gain by holding the largest first, with the share of the holdings' gain up to each",
+          [(r[0], float(r[1])) for r in _gh] == [("Fund (src-1)", 19), ("SPV (src-1)", 12)]
+          and _near(_gh[0][2], 100 * 19 / 31) and _near(_gh[1][2], 100), _gh)
+    _gw = _pmr("Gain by holding (privacy)")
+    check("...the twin each gain a share of the total paid in, the line as it is",
+          _near(_gw[0][1], 100 * 19 / 115) and [r[2] for r in _gw] == [r[2] for r in _gh], _gw)
+    _pm.execute("UPDATE report_private_markets SET nav = 0 WHERE holding = 'Fund'")
+    check("...no share of the gain where the holdings' gain is not positive",
+          [r[2] for r in _pmr("Gain by holding")] == [None, None], _pmr("Gain by holding"))
 
 section("the benchmarks")
 

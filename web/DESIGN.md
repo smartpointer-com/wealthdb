@@ -786,18 +786,46 @@ the privacy twin's table reads them too.
 gave back and what it is marked at, since its first call
 (`wealthdb returns private`, wealthdb/docs/RETURNS-NOTES.md, "Private
 markets"). It reads `web_private`, over the `report_private_markets`
-table (§8), one row set per reporting currency:
+table (§8), one row set per reporting currency. A holding's gain there
+is what it distributed plus its NAV, less what it paid in. It has none
+where it has no NAV.
 
 - *Private holdings*: a table of paid in, distributed, NAV, the mark's
   date, DPI, TVPI, the IRR and the quality, one row per holding, then
   the total.
 - *Multiples by holding*: one bar per holding, DPI stacked under what
   is still marked per unit paid in, so the bar's height is its TVPI.
+- *Gain against multiple*: one dot per holding, its gain against its
+  TVPI, sized by what it paid in. Exited holdings and those still held
+  have a colour each. It shows the power law with the money: a high
+  multiple on a small ticket weighs little.
+- *By vintage year*: per year of the first call, what came back and
+  what is still marked as stacked bars, and what was paid in as a line.
+  The tooltip shows the vintage's TVPI and its number of holdings.
+- *Cash flows to date*: the capital called, the capital distributed and
+  their net, added up quarter by quarter. The net is the J-curve: it
+  dips while the calls come in and climbs as money comes back. It reads
+  `web_private_flows`, over the `serving_private_flows` table (§8):
+  the legs the total counts, per quarter. Its last quarter's figures
+  are the total's paid in and distributed, but for the cents each
+  quarter rounds.
+- *Gain by holding*: one bar per holding, the largest gain first, and a
+  line of the share of the holdings' gain the holdings up to it make. It
+  shows how few holdings make most of the gain. The line is blank where
+  the holdings' gain is not positive.
+
+A chart's figure for many holdings adds their money and pools their
+multiples. No chart defines its own paid in or distributed. An exit in
+kind that names no holding belongs to no holding and no vintage. Only
+the total row and the cash flows count it.
 
 The twin's table keeps the multiples, the IRR and the marks' dates and
 drops the money and the account, as the Returns twin drops its money
-columns. A holding's name stays. The chart holds multiples only, so the
-twin shows it as it is.
+columns. A holding's name stays. The multiples chart holds multiples
+only, so the twin shows it as it is. The other twin charts show each
+sum of money as a share of the total paid in, or, on the cash flows,
+of all the capital called. A multiple, a count and a share of the gain
+show as they are, and a holding's source stands in for its account.
 
 The **Wealth Overview** charts net worth over time stacked by source.
 Below it, it charts the asset classes over time: each day's classes as
@@ -891,7 +919,8 @@ these schema versions falls short of the cards:
 - 0219: its private-markets rows count no exit in kind that names its
   holding in the ledger's `holding` column, and their total counts no
   exit that names none, so the Private Markets cards read such an SPV
-  as paying nothing back;
+  as paying nothing back; and it lacks `web_private`'s `gain` and
+  `web_private_flows`, which the Private Markets charts read;
 - 0218: its private-markets rows do not say which NAV a source carries
   at cost, which the Private holdings cards show in their quality;
 - 0217: its exposure quality texts sum in the order the rows arrive,
@@ -1290,7 +1319,9 @@ rows verbatim, for the reason §7 gives. They are:
   position;
 - every transaction line: all of them, and the spending, income and
   cash flow lines;
-- each month end's marked share (`serving_marks`).
+- each month end's marked share (`serving_marks`);
+- the private holdings' cash flows per quarter
+  (`serving_private_flows`).
 
 Each table is one macro's output. `web-materialize` rewrites them all
 in one transaction, so a reader sees all old or all new. A Go test

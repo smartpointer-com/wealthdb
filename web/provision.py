@@ -986,13 +986,13 @@ def dashboard_payloads(defs, cards, model_ids, card_ids, dash_ids, titles, descs
         # The pickers of the filter bar: an inline picker renders on the
         # tiles it reaches instead (inline_parameters).
         bar = [x for x in parameters if x["id"] not in INLINE_PICKERS]
-        # A dashboard whose twin redacts (Dashboard.redacts) says
-        # "redacted" where the others say "shares".
+        # A dashboard whose twin redacts (Dashboard.redacts) says what
+        # the twin does with the money where the others say "shares".
         privacy = name.endswith(PRIVACY_SUFFIX)
         if d.redacts:
             label = ("Switch to the full view — money columns included"
                      if privacy else
-                     "Switch to the privacy view — money columns redacted")
+                     f"Switch to the privacy view — {d.redacts}")
         else:
             label = ("Switch to absolute values" if privacy else
                      "Switch to the privacy view — values as shares (%), "
