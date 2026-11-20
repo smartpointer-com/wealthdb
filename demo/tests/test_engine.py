@@ -526,7 +526,11 @@ class TestToToday(unittest.TestCase):
     def test_a_holding_held_most_of_the_year_has_its_realized_yield(self):
         """A holding held for more than half the year has a realized
         yield; one thin, near zero on most of its days, has none and was
-        bought within half a year."""
+        bought within half a year. A cash balance has no purchase date,
+        so the test reads the rule itself, on twelve days thirty days
+        apart: a thin balance holds nothing, or under a tenth of those
+        days' mean in size, on half of them or more. The twelve stand in
+        for the year's days, so the bound is half, not more than half."""
         rows = report(self.root, "yield", "positions", "-d", TODAY.isoformat(), "-C", "all")
         bought = {(r["account_id"], r["position_key"]): r["acquisition_date"]
                   for r in report(self.root, "holdings", "positions", "-d", TODAY.isoformat(), "-C", "all")}
@@ -534,7 +538,21 @@ class TestToToday(unittest.TestCase):
         self.assertTrue([r for r in rows if r["realized_yield_pct"]])
         for r in rows:
             self.assertEqual(r["realized_yield_pct"] == "", r in thin, r["position_key"])
+        cash = {(r["account_id"], r["position_key"]) for r in thin if r["position_key"].startswith("cash:")}
+        days = [TODAY - dt.timedelta(days=30 * k) for k in range(12)]
+        sampled = collections.defaultdict(lambda: [Decimal(0)] * len(days))
+        for i, day in enumerate(days):
+            for c in report(self.root, "yield", "cash", "-d", day.isoformat(), "-C", "all"):
+                key = (c["account_id"], "cash:" + c["currency"])
+                if not c["symbol"] and key in cash:
+                    sampled[key][i] += abs(amount(c, "value_USD"))
+        for key in cash:
+            values = sampled[key]
+            mean = sum(values) / len(values)
+            self.assertGreaterEqual(2 * sum(not v or v < mean / 10 for v in values), len(values), (key, values))
         for r in thin:
+            if r["position_key"].startswith("cash:"):
+                continue
             day = bought.get((r["account_id"], r["position_key"]))
             self.assertTrue(day and (TODAY - dates.parse(day)).days < 183, (r["position_key"], day))
 
