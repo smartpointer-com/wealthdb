@@ -293,6 +293,14 @@ def report_models():
             "SELECT DISTINCT asset_class FROM web_gains",
             "The asset classes the gains rows carry, `unknown` where nothing classes a "
             "position. It backs the Gains dashboard's Asset class picker."),
+        # The holdings the private-markets rows list, with their source,
+        # class and vehicle: the Private Markets dashboard's Asset
+        # class, Vehicle and Holding pickers list them. It backs those
+        # pickers alone.
+        "report_private_holdings": (
+            "SELECT DISTINCT silver_source_id, holding, asset_class, vehicle FROM web_private WHERE NOT is_total",
+            "The private holdings, each with its source, asset class and vehicle. It backs the Private "
+            "Markets dashboard's Asset class, Vehicle and Holding pickers."),
         "report_benchmarks": (
             "SELECT benchmark FROM web_benchmarks",
             "The benchmarks, built-in and configured, and None. It backs the "

@@ -218,6 +218,10 @@ def render(query, values, fields, today):
                 return "(" + " AND ".join(ends or ["1 = 1"]) + ")"
             vs = v if isinstance(v, list) else [v]
             lits = [str(x) if tag.get("widget-type", "").startswith("number") else _literal(x) for x in vs]
+            # "Is not" keeps the rows that hold none of the values, a
+            # blank cell among them.
+            if tag.get("widget-type") == "string/!=":
+                return f"({ref} IS NULL OR {ref} NOT IN ({', '.join(lits)}))"
             return f"{ref} = {lits[0]}" if len(lits) == 1 else f"{ref} IN ({', '.join(lits)})"
         if isinstance(v, list):
             v = v[0]

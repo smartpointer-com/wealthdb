@@ -94,8 +94,15 @@ GAINS_MISSING_PARAM_ID = "aa5df113"
 GAINS_ASSET_CLASS_PARAM_ID = "aa5df123"
 
 # The Private Markets dashboards' currency picker: a static list, landing
-# on the cards' {{currency}} variable.
+# on the cards' {{currency}} variable. Their asset class, vehicle and
+# holding pickers list the holdings' own values (report_private_holdings).
 PRIVATE_CURRENCY_PARAM_ID = "aa5df125"
+
+PRIVATE_ASSET_CLASS_PARAM_ID = "aa5df126"
+
+PRIVATE_VEHICLE_PARAM_ID = "aa5df127"
+
+PRIVATE_HOLDING_PARAM_ID = "aa5df128"
 
 # The Exposure dashboard's picker ids and filters: the currency (a row
 # filter, as on Gains), the time range over the month ends, the source,
@@ -119,6 +126,7 @@ class Picker(NamedTuple):
     it. `dashboards` are the base dashboards whose picker of `slug` it
     is, None for any dashboard no other row names. `kind`: `list`, a
     multi-select text picker over a Column, no default = all values;
+    `exclude`, the same that keeps the values it does not hold;
     `choice`, a required single value over a fixed tuple of values or a
     Column; `number`, a required number, its values from a Column if one
     is given; `day` and `range`, a date and a date range; `text`, a free
@@ -235,13 +243,24 @@ PICKERS = (
           (_WEALTH, ASSET_PARAM_ID, "report_asset_classes_history"),
           (("Gains",), GAINS_ASSET_CLASS_PARAM_ID, "report_gains_classes"),
           (("Exposure",), EXPOSURE_ASSET_CLASS_PARAM_ID, "report_asset_classes_history"),
-          (("Yield",), YIELD_ASSET_CLASS_PARAM_ID, "report_yield_classes"))),
+          (("Yield",), YIELD_ASSET_CLASS_PARAM_ID, "report_yield_classes"),
+          (("Private Markets",), PRIVATE_ASSET_CLASS_PARAM_ID, "report_private_holdings"))),
     # The vehicle filter reaches only the Top-positions tiles, which list
     # individual holdings, and renders on them: the breakdowns each group
     # by a taxonomy dimension, so filtering them by the vehicle would
     # mostly self-select. Its values are the positions' vehicles.
     Picker("vehicle", None, VEHICLE_PARAM_ID, "Vehicle", "list",
            Column("report_positions_history", "vehicle"), inline=True),
+    # On Private Markets every card lists or adds up holdings, so the
+    # vehicle reaches them all, from the bar, over the holdings' own
+    # vehicles. Its Holding picker leaves the holdings it holds out:
+    # the question it answers is the figures without one or two
+    # holdings, the one that dwarfs the others or one with no cost. A
+    # holding's name is no account's, so the twin carries both.
+    Picker("vehicle", ("Private Markets",), PRIVATE_VEHICLE_PARAM_ID, "Vehicle", "list",
+           Column("report_private_holdings", "vehicle")),
+    Picker("holding", ("Private Markets",), PRIVATE_HOLDING_PARAM_ID, "Holding is not", "exclude",
+           Column("report_private_holdings", "holding")),
     # The account picker targets `display_name` — the model's name for
     # the account LABEL (account_label) — and NOT `account_external_id`:
     # a picker lists the raw values of the column it is bound to and
@@ -332,7 +351,8 @@ def picker_payload(x):
         out.update({"type": "number/=", "sectionId": "number", "isMultiSelect": False,
                     "default": [default], "required": True})
     else:
-        out.update({"type": "string/=", "sectionId": "string", "isMultiSelect": x.kind == "list"})
+        out.update({"type": "string/!=" if x.kind == "exclude" else "string/=", "sectionId": "string",
+                    "isMultiSelect": x.kind in ("list", "exclude")})
         if x.kind == "choice":
             out.update({"default": [default], "required": True, "values_query_type": "list"})
     if isinstance(x.source, Column):

@@ -11,7 +11,8 @@ Gains, Spending, Income, Cash Flow, Exposure, Yield, Data Freshness and
 Private Markets.
 Each but Gains has a privacy twin. It shows shares (%) instead of
 amounts, or hides the money where the figures are ratios already
-(Returns, the Private Markets table).
+(Returns, the Private Markets table). Allocation and Private Markets
+read their figures as of a picked day.
 
 Part of the **wealthdb** suite — see [the architecture
 overview](../DESIGN.md). Run it via the main wrapper:

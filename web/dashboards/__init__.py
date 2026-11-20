@@ -345,13 +345,13 @@ DASHBOARDS = (
         )),
     Dashboard(
         "Private Markets",
-        "What each private fund or SPV took, what it gave back and what it is "
-        "marked at, since its first call. Marks are old by nature, so each "
-        "shows its date. " + PREDEFINED_NOTE,
+        "What each private holding took, gave back and is marked at, since "
+        "its first call, as of a day. Marks are old by nature, so each shows "
+        "its date. " + PREDEFINED_NOTE,
         "The multiples and the marks' dates show as they are. The table drops "
         "the money and the account names. The charts show money as shares of "
         "the total paid in. " + PREDEFINED_NOTE,
-        ("currency",), (), (
+        ("currency", "as_of_day", "source", "asset_class", "vehicle", "holding"), (), (
             # The figures, then the multiples they make, one bar per
             # holding; the gain against the multiple beside the
             # vintages; the cash flows over time; last, the gain by

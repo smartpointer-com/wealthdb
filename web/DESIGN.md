@@ -244,9 +244,17 @@ eleven dashboards. Their pickers:
   picker lists the classes `web_yield` and `web_yield_curve` carry,
   through the `report_yield_classes` model.
 - **Data Freshness**: no pickers.
-- **Private Markets**: a required currency, and no other picker. Its
-  total row is `wealthdb returns private`'s, over every holding, so a
-  Source picker would leave it out of step with the rows shown.
+- **Private Markets**: a required currency and As of day, then Source,
+  Asset class, Vehicle and Holding. The day reads the latest stored
+  instant on or before it, through `web_private_calendar`. The Holding
+  picker is "is not": it leaves the holdings it holds out. Its class,
+  vehicle and holding lists come off the `report_private_holdings`
+  model. Every card takes every picker. While the pickers keep every
+  holding, the table's total is `wealthdb returns private`'s, the IRR
+  with it. With holdings left out, it adds up what the rows shown state
+  and pools their DPI and TVPI as the CLI's total does, and its IRR is
+  blank. The twin carries every
+  picker: a holding's name is no account's.
 
 All of them are definitions only (SQL), with no data baked in.
 
@@ -782,37 +790,49 @@ snapshot at the read while the marks keep their dates. Both sources
 models carry the read as `observed_at` and the mark as `valued_at`, so
 the privacy twin's table reads them too.
 
-**Private Markets** shows what each private fund or SPV took, what it
-gave back and what it is marked at, since its first call
-(`wealthdb returns private`, wealthdb/docs/RETURNS-NOTES.md, "Private
-markets"). It reads `web_private`, over the `report_private_markets`
-table (§8), one row set per reporting currency. A holding's gain there
-is what it distributed plus its NAV, less what it paid in. It has none
-where it has no NAV.
+**Private Markets** shows what each private holding took, what it gave
+back and what it is marked at, since its first call, as of the picked
+day (`wealthdb returns private -d`, wealthdb/docs/RETURNS-NOTES.md,
+"Private markets"). It reads `web_private`, over the
+`report_private_markets` table (§8), one row set per reporting currency
+and stored instant: every quarter end and the day of the refresh. A
+holding's gain there is what it distributed plus its NAV, less what it
+paid in. It has none where it has no NAV or no cost.
 
-- *Private holdings*: a table of paid in, distributed, NAV, the mark's
-  date, DPI, TVPI, the IRR and the quality, one row per holding, then
-  the total.
+- *Private holdings*: a table of the class, vehicle, status, paid in,
+  distributed, NAV, the mark's date, DPI, TVPI, the IRR and the
+  quality, one row per holding, then the total. A total over fewer
+  holdings than the day's says `filtered`.
 - *Multiples by holding*: one bar per holding, DPI stacked under what
   is still marked per unit paid in, so the bar's height is its TVPI.
+  A bar is labelled by the holding's name and source. Where a source
+  holds two of one name, such as one fund in two portfolios, a number
+  by their accounts tells them apart. The Holding picker reads the name,
+  so it leaves out every holding of that name.
 - *Gain against multiple*: one dot per holding, its gain against its
-  TVPI, sized by what it paid in. Exited holdings and those still held
-  have a colour each. It shows the power law with the money: a high
-  multiple on a small ticket weighs little.
+  TVPI, sized by what it paid in. Each status has a colour: held,
+  partially exited and exited. The TVPI axis is logarithmic, so one
+  holding at many times its cost leaves the others readable. A TVPI of 0
+  has no place on it, so a holding written off is left out. It shows the
+  power law with the money: a high multiple on a small ticket weighs
+  little.
 - *By vintage year*: per year of the first call, what came back and
   what is still marked as stacked bars, and what was paid in as a line.
   The tooltip shows the vintage's TVPI and its number of holdings.
 - *Cash flows to date*: the capital called, the capital distributed and
-  their net, added up quarter by quarter. The net is the J-curve: it
-  dips while the calls come in and climbs as money comes back. It reads
-  `web_private_flows`, over the `serving_private_flows` table (§8):
-  the legs the total counts, per quarter. Its last quarter's figures
-  are the total's paid in and distributed, but for the cents each
-  quarter rounds.
+  their net, added up quarter by quarter, up to the picked day. The net
+  is the J-curve: it dips while the calls come in and climbs as money
+  comes back. It reads `web_private_flows`, over the
+  `serving_private_flows` table (§8): the legs the total counts, per
+  holding and quarter, at the latest snapshot. The exits in kind that
+  name no holding count while the pickers keep every holding, as the
+  total counts them. The last quarter's figures are the total's paid in
+  and distributed, but for the cents each row rounds.
 - *Gain by holding*: one bar per holding, the largest gain first, and a
   line of the share of the holdings' gain the holdings up to it make. It
   shows how few holdings make most of the gain. The line is blank where
-  the holdings' gain is not positive.
+  the holdings' gain is not positive. Its bars are labelled as the
+  multiples' are.
 
 A chart's figure for many holdings adds their money and pools their
 multiples. No chart defines its own paid in or distributed. An exit in
@@ -916,6 +936,10 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0221: its private-markets rows hold one instant, list only the
+  holdings a contribution names and carry no class, vehicle or status,
+  and it lacks `web_private_calendar`, so the Private Markets pickers
+  reach nothing; its private cash flows carry no holding;
 - 0219: its private-markets rows count no exit in kind that names its
   holding in the ledger's `holding` column, and their total counts no
   exit that names none, so the Private Markets cards read such an SPV
@@ -1143,10 +1167,12 @@ the rows of `wealthdb returns bridge --period monthly -x <CCY>`, off the
 same datasets and in the same transaction. Its money has two decimals,
 so a window's months sum in SQL to the CLI's bucket.
 
-`report_private_markets` (migration 0215) holds the rows of `wealthdb
-returns private -x <CCY>` in each reporting currency, the total
-included, in the same transaction. Its IRR is the engine's solver, so a
-macro cannot hold it; a Go test holds the table to the CLI's rows.
+`report_private_markets` (migrations 0215 and 0220) holds the rows of
+`wealthdb returns private -d <DAY> -x <CCY>` in each reporting currency,
+the total included, at every quarter end since the first call and at
+the end of the refresh's day, in the same transaction. Its IRR is the
+engine's solver, so a macro cannot hold it; a Go test holds the table to
+the CLI's rows.
 
 The 64 partitions are cheap because the loaded data depends only on the
 currency, never the grain or period: `RunReturns` is split into a load
@@ -1320,7 +1346,7 @@ rows verbatim, for the reason §7 gives. They are:
 - every transaction line: all of them, and the spending, income and
   cash flow lines;
 - each month end's marked share (`serving_marks`);
-- the private holdings' cash flows per quarter
+- the private holdings' cash flows per holding and quarter
   (`serving_private_flows`).
 
 Each table is one macro's output. `web-materialize` rewrites them all
