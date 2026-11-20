@@ -4578,7 +4578,9 @@ and it shows in the transactions report. Columns:
 reference and is not used by the returns math. `account` accepts
 either the gold `account_external_id` or an account nickname
 (resolved at load). A row whose value is not yet known is left at 0
-— a placeholder that books nothing until filled in.
+— a placeholder that books nothing until filled in. Every row holds as
+many fields as the header, or the parse fails and names the line, so a
+note that holds a comma is quoted.
 
 Mechanics (`internal/loader/transfers.go`): ledger transactions get
 a deterministic `xfer:`-prefixed synthetic id keyed on the row's

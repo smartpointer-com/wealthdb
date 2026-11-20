@@ -19,7 +19,8 @@ import (
 
 // requiredTransferCols are the equity-transfer ledger CSV columns every
 // file must carry. Lookup is by header name, so the columns may come in
-// any order; `quantity`, `cost_basis`, `instrument`, `note`,
+// any order, and every row holds as many fields as the header;
+// `quantity`, `cost_basis`, `instrument`, `note`, `holding`,
 // `to_silver_source_id` and `to_account` are optional.
 var requiredTransferCols = []string{"silver_source_id", "account", "occurred_at", "direction", "value", "currency"}
 
@@ -39,10 +40,17 @@ type TransferEntry struct {
 	CostBasis      float64
 	Instrument     string
 	Note           string
+	// Holding is the source's instrument id of the private holding an
+	// out-leg distributes, where the leg moves another instrument: an
+	// SPV's exit in the listed shares it received. Empty on an in-leg.
+	Holding string
 	// PairSource and PairID name the other leg of a move one ledger
 	// row states (movementLegs): its silver_source_id and synthetic
 	// id. Empty on a row that states one side only.
 	PairSource, PairID string
+	// Line is the ledger line that states the leg, for the errors of
+	// the checks that run after the parse.
+	Line int
 }
 
 // ParseTransferLedger reads the equity-transfer ledger CSV at path and returns
@@ -80,10 +88,19 @@ func parseTransferLedger(r io.Reader) (map[string][]TransferEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("equity_transfers: %w", err)
 		}
+		// A note with an unquoted comma spills into the next column, and
+		// a field of the note would read as that column's value. A short
+		// row has lost a field, and which one the parse cannot tell.
+		if n, want := row.Fields(), len(lr.Columns()); n > want {
+			return nil, fmt.Errorf("equity_transfers: line %d: %d fields, the header names %d: quote a note that holds a comma", line, n, want)
+		} else if n < want {
+			return nil, fmt.Errorf("equity_transfers: line %d: %d fields, the header names %d: every row holds a field for every column, a blank one included", line, n, want)
+		}
 		e, err := transferFromRecord(row)
 		if err != nil {
 			return nil, fmt.Errorf("equity_transfers: line %d: %w", line, err)
 		}
+		e.Line = line
 		legs, err := movementLegs(e, row.Get("to_silver_source_id"), row.Get("to_account"))
 		if err != nil {
 			return nil, fmt.Errorf("equity_transfers: line %d: %w", line, err)
@@ -103,12 +120,16 @@ func transferFromRecord(row ledgercsv.Row) (TransferEntry, error) {
 		Currency:       strings.ToUpper(row.Get("currency")),
 		Instrument:     row.Get("instrument"),
 		Note:           row.Get("note"),
+		Holding:        row.Get("holding"),
 	}
 	if e.SilverSourceID == "" || e.Account == "" {
 		return e, fmt.Errorf("silver_source_id and account are required")
 	}
 	if e.Direction != "in" && e.Direction != "out" {
 		return e, fmt.Errorf("direction must be 'in' or 'out', got %q", e.Direction)
+	}
+	if e.Holding != "" && e.Direction != "out" {
+		return e, fmt.Errorf("holding names the private holding an exit distributes: direction must be 'out', got %q", e.Direction)
 	}
 	if len(e.Currency) != 3 {
 		return e, fmt.Errorf("currency must be a 3-letter ISO code, got %q", row.Get("currency"))
@@ -140,7 +161,8 @@ func transferFromRecord(row ledgercsv.Row) (TransferEntry, error) {
 // its own account: it states the sending leg and the receiving one,
 // alike but for the account and the direction, each naming the other.
 // Those two legs are the two rows a file states the move with
-// otherwise, ids included. A row that names none is its one leg.
+// otherwise, ids included. A holding is the sender's alone. A row that
+// names none is its one leg.
 func movementLegs(e TransferEntry, toSource, toAccount string) ([]TransferEntry, error) {
 	if toSource == "" && toAccount == "" {
 		return []TransferEntry{e}, nil
@@ -152,7 +174,7 @@ func movementLegs(e TransferEntry, toSource, toAccount string) ([]TransferEntry,
 		return nil, fmt.Errorf("a row with to_account is the sender's: direction must be 'out', got %q", e.Direction)
 	}
 	in := e
-	in.SilverSourceID, in.Account, in.Direction = toSource, toAccount, "in"
+	in.SilverSourceID, in.Account, in.Direction, in.Holding = toSource, toAccount, "in", ""
 	e.PairSource, e.PairID = in.SilverSourceID, in.syntheticID()
 	in.PairSource, in.PairID = e.SilverSourceID, e.syntheticID()
 	return []TransferEntry{e, in}, nil
@@ -201,8 +223,9 @@ func (e TransferEntry) toChange(account string) canonical.TransactionChange {
 }
 
 // syntheticID is a deterministic, ledger-marked id so re-loads collapse onto the
-// same row. Keyed on the natural content of the entry (not Value/CostBasis, so
-// correcting an amount in place updates the same transaction).
+// same row. Keyed on the natural content of the entry (not Value/CostBasis or
+// Holding, so correcting an amount or naming a holding in place updates the
+// same transaction).
 func (e TransferEntry) syntheticID() string {
 	h := sha256.Sum256([]byte(strings.Join([]string{
 		e.SilverSourceID, e.Account, strconv.FormatInt(e.OccurredAt, 10),
@@ -218,7 +241,9 @@ func (e TransferEntry) payload() json.RawMessage {
 		Instrument string  `json:"instrument,omitempty"`
 		PairSource string  `json:"pair_silver_source_id,omitempty"`
 		PairID     string  `json:"pair_transaction_external_id,omitempty"`
-	}{Ledger: true, CostBasis: e.CostBasis, Instrument: e.Instrument, PairSource: e.PairSource, PairID: e.PairID})
+		Holding    string  `json:"holding,omitempty"`
+	}{Ledger: true, CostBasis: e.CostBasis, Instrument: e.Instrument, PairSource: e.PairSource, PairID: e.PairID,
+		Holding: e.Holding})
 	return b
 }
 
@@ -226,7 +251,10 @@ func (e TransferEntry) payload() json.RawMessage {
 // any previously-injected ledger rows for the source (so edits are picked up on
 // re-load) and inserts the current set, resolving each entry's account by
 // account_external_id or nickname (gold.NewAccountResolver, the one resolution
-// every account-keyed ledger shares). Runs inside the load transaction.
+// every account-keyed ledger shares). An out-leg's holding must be a private
+// holding of its account, an instrument a contribution of that account names:
+// the private-markets view counts the leg as that holding's distribution.
+// Runs inside the load transaction, after the adapter's own transactions.
 func applyTransferLedger(ctx context.Context, tx *sql.Tx, sourceID string, entries []TransferEntry) (int, error) {
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM transactions WHERE silver_source_id = ? AND transaction_external_id LIKE ?`,
@@ -246,6 +274,9 @@ func applyTransferLedger(ctx context.Context, tx *sql.Tx, sourceID string, entri
 		if err != nil {
 			return 0, fmt.Errorf("apply equity_transfers: %w", err)
 		}
+		if err := checkTransferHolding(ctx, tx, sourceID, acct, e); err != nil {
+			return 0, err
+		}
 		ch := e.toChange(acct)
 		ch.SilverSourceID = sourceID
 		batch = append(batch, ch)
@@ -254,4 +285,26 @@ func applyTransferLedger(ctx context.Context, tx *sql.Tx, sourceID string, entri
 		return 0, fmt.Errorf("apply equity_transfers: insert: %w", err)
 	}
 	return len(batch), nil
+}
+
+// checkTransferHolding refuses an out-leg whose holding no contribution of
+// its account names: the leg would count as no holding's distribution. The
+// error names the row by its line, account and date, as
+// checkTransferSources does.
+func checkTransferHolding(ctx context.Context, tx *sql.Tx, sourceID, account string, e TransferEntry) error {
+	if e.Holding == "" {
+		return nil
+	}
+	var held bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM transactions
+		 WHERE silver_source_id = ? AND account_external_id = ? AND instrument_external_id = ? AND kind = ?)`,
+		sourceID, account, e.Holding, string(canonical.TxKindContribution)).Scan(&held); err != nil {
+		return fmt.Errorf("apply equity_transfers: holding: %w", err)
+	}
+	if !held {
+		return fmt.Errorf("equity_transfers: line %d: the row of account %q on %s: holding %q is no private "+
+			"holding of the account: none of its contributions names it",
+			e.Line, e.Account, time.Unix(e.OccurredAt, 0).UTC().Format(time.DateOnly), e.Holding)
+	}
+	return nil
 }

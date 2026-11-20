@@ -203,9 +203,9 @@ func TestTransferLedgerNamesConfiguredSources(t *testing.T) {
 	}{
 		{"configured", "src-a,ACC-1,2024-03-01,out,100,USD,src-b,ACC-2\n", ""},
 		{"sender", "src-x,ACC-1,2024-03-01,out,100,USD,,\n",
-			`equity_transfers: the row of account "ACC-1" on 2024-03-01: silver_source_id "src-x" is no configured source`},
+			`equity_transfers: line 2: the row of account "ACC-1" on 2024-03-01: silver_source_id "src-x" is no configured source`},
 		{"receiver", "src-a,ACC-1,2024-03-01,out,100,USD,src-y,ACC-2\n",
-			`equity_transfers: the row of to_account "ACC-2" on 2024-03-01: to_silver_source_id "src-y" is no configured source`},
+			`equity_transfers: line 2: the row of to_account "ACC-2" on 2024-03-01: to_silver_source_id "src-y" is no configured source`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

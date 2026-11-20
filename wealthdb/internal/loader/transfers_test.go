@@ -101,7 +101,7 @@ func TestParseTransferLedgerOneRowMove(t *testing.T) {
 		if got.syntheticID() != want.syntheticID() {
 			t.Errorf("%s: id %s, the two-row form's %s", src, got.syntheticID(), want.syntheticID())
 		}
-		got.PairSource, got.PairID = "", ""
+		got.PairSource, got.PairID, got.Line = "", "", want.Line
 		if got != want {
 			t.Errorf("%s: leg %+v, the two-row form's %+v", src, got, want)
 		}

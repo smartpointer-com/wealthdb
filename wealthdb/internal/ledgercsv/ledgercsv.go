@@ -87,6 +87,10 @@ type Row struct {
 	col map[string]int
 }
 
+// Fields is the number of fields the record holds, a blank trailing
+// one included.
+func (r Row) Fields() int { return len(r.rec) }
+
 // Get returns the named column's field, trimmed. A column the header
 // does not name, or a field past the record's end, reads as "".
 func (r Row) Get(name string) string {
