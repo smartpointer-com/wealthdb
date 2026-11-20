@@ -582,10 +582,11 @@ macro of its own:
       would deliver it (`quantitiesAgree`: the coin rule's quantities for
       a coin, the exact quantity for a security). The first value then
       stands for them at the debut's prices, by the holding's share of
-      that value (`movedLegs.heldAt`). So the price move up to the debut is
-      return, and a shortfall, a fee in kind, is a loss. After a zero
-      first value the debut is the late one ("Staggered-inception
-      subsumption"), and its valuation is the one read. Each holding's
+      that value (`movedLegs.fundedAt`). So the price move up to the debut
+      is return, and a shortfall, a fee in kind, is a loss. Where a zero
+      first value is no valuation, the debut is the first nonzero one
+      ("Staggered-inception subsumption"), and its valuation is the one
+      read. Each holding's
       part of the first value is read only where the first valuation
       holds positions in one currency and no cash. Elsewhere, and where
       the quantities do not agree, a leg funds its debut by its value. A
@@ -778,32 +779,41 @@ chained TWR below −100%.
   happens before a first valuation is capital in either direction, never
   performance. Guard: `TestFundedDebutBooksNoNewMoney`.
 - **A zero first value is no valuation.** It holds none of the money
-  moved in before it. Every leg that moved money in on or before the
-  zero, paired or not, funds the account's first nonzero valuation
-  instead, the late debut (`lateDebut`). A deposit from outside and a
-  transfer in from an untracked account fund it, as a move from a
-  tracked account does. The late debut books what its value shows beyond
-  the account's own legs since the zero, less what the paired legs
-  brought, as a debut books its first value: the rest is capital either
-  way. The chain carries a pair's money until then, whatever the gap,
-  and a coin moved in funds it by quantity, at that day's prices. The
-  account's own later legs keep their own reading. The household reads
-  as it would without the zero, in every window: one that opens before
-  the legs, between them and the zero, at the zero, between the zero and
-  the late debut, or on it. Per-entity-once books a late debut in the
-  step of its day. Three cases keep the zero:
-  - Money the account paid out before the zero funds the zero itself,
-    since a zero is what paying out everything leaves.
+  moved in before the account's first nonzero valuation. The test is the
+  net of every leg on or before that valuation, paired or not
+  (`movesInBy`). Where it moves money in, the engine drops the zero head
+  (`readZeroHead`), and the first nonzero valuation is the debut:
+  - Every leg on or before it funds it, as for any debut. A deposit
+    from outside, a transfer in from an untracked account and a move
+    from a tracked account all count.
+  - A round trip before the zero moves nothing in.
+  - Money moved in after the zero funds the debut too.
+  - A net within the value netter's tolerance counts as none, so FX
+    between the legs of a round trip does not read as money in.
+  - The legs are netted in USD, as the post-exit residue is decided
+    ("One decision, in USD"). Every reporting currency then drops the
+    same zero, so the account debuts on the same day in each.
+
+  The household reads, flow for flow, as the same household without the
+  zero, in every window: one that opens before the legs, between them
+  and the zero, at the zero, between the zero and the debut, or on it.
+  Two cases keep the zero:
+  - Where the legs move more out than in, or nothing at all, the zero is
+    the first valuation. Money paid out before it funds the zero, since a
+    zero is what paying out everything leaves. A later value reads as the
+    account's own.
   - Where no nonzero value follows, every valuation says none of the
     money is there. The money moved in funds the zero: a pair's money
     leaves as capital on it, and money from outside never counts.
-  - Where no money moved in before the zero, the account reads from the
-    zero on.
 
-  Guards: `TestZeroIsNoValuation`, `TestZeroDebutKeepsItsReading`,
-  `TestZeroDebutFundsItsFirstNonzeroValue`,
+  Guards: `TestZeroIsNoValuation`, `TestZeroHeadShapes`,
+  `TestMovesInByNetsTheLegs`, `TestReadZeroHeadDropsOnlyAFundedZero`,
+  `TestZeroDebutKeepsItsReading`, `TestZeroDebutFundsItsFirstNonzeroValue`,
   `TestZeroDebutInsideTheWindowsOpening`, `TestZeroDebutInASinceYearWindow`,
-  `TestLateDebutBooksWhatItsValueDoesNotHold`, `TestZeroDebutThatStaysZeroPaysOut`.
+  `TestZeroHeadDebutBooksWhatItsValueDoesNotHold`,
+  `TestZeroDebutThatStaysZeroPaysOut`,
+  `TestPerEntityOnceZeroDebutCarriesItsFunding`,
+  `TestZeroHeadAgreesAcrossPaths`, `TestZeroHeadDecidesOnceAcrossCurrencies`.
 - **The same holds at a closure.** A leg the closure day first shows,
   cancelled against money that stays inside, leaves the synthetic closure
   flow.

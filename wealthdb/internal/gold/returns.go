@@ -319,9 +319,18 @@ func loadReturnsDatasets(ctx context.Context, db *sql.DB, src spineSource, fx fx
 	}
 	// A link binds where both its legs are flows of a currency's dataset,
 	// and the attached flows can differ by currency where FX is unresolved.
+	// heads holds each account's flows in residueCurrency, which decide its
+	// zero head in every currency (readZeroHead).
 	flows := map[string]attachedFlows{}
+	heads := map[string][]returns.Flow{}
 	for k, t := range txns {
 		held := helds[k]
+		key := acctKey(t.src, t.acct)
+		if a := firstLoaded(byCcy, src.currencies, key); a != nil && a.externalFlow(canonical.TxKind(t.kind), t.txID, t.returnsInternal) {
+			if v, ok := parseFloatPtr(t.values[src.residue]); ok {
+				heads[key] = append(heads[key], returns.Flow{Day: EpochDay(t.occurredAt), Amount: v})
+			}
+		}
 		for i, ccy := range src.currencies {
 			attached := attachOneFlow(byCcy[ccy], fx, ccy, t.src, t.acct, canonical.TxKind(t.kind),
 				t.occurredAt, t.txID, t.ccy, t.values[i], t.returnsInternal, held)
@@ -337,6 +346,11 @@ func loadReturnsDatasets(ctx context.Context, db *sql.DB, src spineSource, fx fx
 	if s.TransferMatching {
 		if links, err = loadStoredTransferLinks(ctx, db); err != nil {
 			return nil, err
+		}
+	}
+	for _, byKey := range byCcy {
+		for k, a := range byKey {
+			a.readZeroHead(heads[k])
 		}
 	}
 	if err := loadDebutHoldings(ctx, db, idents, nameHoldings(byCcy), byCcy); err != nil {
@@ -540,9 +554,8 @@ type accountData struct {
 	// moved, for the legs that name one; nil when none does. The netter
 	// pairs such a leg by holding and quantity (pairInKind).
 	inKind map[string]heldMove
-	// debut is what the funded valuation holds, by holding (fundedDay): the
-	// first valuation, or the first nonzero one after a zero first value.
-	// It is read for an account whose transfer-like legs on or before its
+	// debut is what the account's first valuation holds, by holding. It
+	// is read for an account whose transfer-like legs on or before its
 	// debut moved a holding; nil otherwise, or where that valuation holds
 	// cash or prices its holdings in more than one currency
 	// (loadDebutHoldings).
@@ -554,11 +567,9 @@ type accountData struct {
 	// residue is the dataset's cache of residue decisions (residueEnds).
 	residue *residueCache
 
-	// The zero tail and head, cached by cacheTail: lastNonzeroDay,
-	// zeroingDay, lateDebut and movedInBeforeZero.
-	tailKnown                     bool
-	lastNonzero, zeroing, lateDay int64
-	movedInZero                   bool
+	// The zero tail, cached by cacheTail: lastNonzeroDay and zeroingDay.
+	tailKnown            bool
+	lastNonzero, zeroing int64
 }
 
 // residueCache holds each entity's residue decision, read once on its
@@ -701,30 +712,64 @@ func (a *accountData) findZeroingDay() int64 {
 }
 
 // cacheTail stores lastNonzeroDay and zeroingDay, which walk back over the
-// zero tail and are read for every flow of a closed account, lateDebut,
-// which walks over a zero head, and movedInBeforeZero, which walks the
-// flows.
-// The series and the flows must not change afterwards (finalize calls it).
+// zero tail and are read for every flow of a closed account.
+// The series must not change afterwards (finalize calls it).
 func (a *accountData) cacheTail() {
 	a.tailKnown = false
-	a.lastNonzero, a.zeroing, a.lateDay = a.findLastNonzeroDay(), a.findZeroingDay(), a.findLateDebut()
-	a.movedInZero = a.findMovedInBeforeZero()
+	a.lastNonzero, a.zeroing = a.findLastNonzeroDay(), a.findZeroingDay()
 	a.tailKnown = true
 }
 
-// lateDebut is the first nonzero valuation of an account whose first value is
-// zero, 0 where the first value is not zero or no nonzero value follows it.
-// A zero first value holds none of the money that came in before it: that
-// money funds this valuation instead, the first to show it, and is in
-// transit until then.
-func (a *accountData) lateDebut() int64 {
-	if a.tailKnown {
-		return a.lateDay
+// readZeroHead reads a zero first value that a nonzero one follows. Where
+// a's legs on or before the first nonzero valuation, paired or not, moved
+// money in on net (movesInBy), the zero is no valuation: it drops, and the
+// account debuts on the first nonzero valuation, which every leg on or
+// before it funds, as if the zero were never read. Otherwise the zero is
+// the account's first valuation. legs are a's flows in residueCurrency, so
+// FX between them cannot split the decision across reporting currencies.
+// Nothing may have read a's debut yet (loadReturnsDatasets).
+func (a *accountData) readZeroHead(legs []returns.Flow) {
+	d := a.firstNonzeroAfterZero()
+	if d == 0 || !movesInBy(legs, d) {
+		return
 	}
-	return a.findLateDebut()
+	a.series = a.series[sort.Search(len(a.series), func(k int) bool { return a.series[k].day >= d }):]
+	a.snapDays = a.snapDays[sort.Search(len(a.snapDays), func(k int) bool { return a.snapDays[k] >= d }):]
 }
 
-func (a *accountData) findLateDebut() int64 {
+// movesInBy says the legs dated on or before day moved money in on net. A
+// net within the value netter's tolerance of the larger side (nettingEps)
+// is none, so the FX between the legs of a round trip does not read as
+// money in.
+func movesInBy(legs []returns.Flow, day int64) bool {
+	var in, out returns.Sum
+	for _, f := range legs {
+		switch {
+		case f.Day > day:
+		case f.Amount > 0:
+			in.Add(f.Amount)
+		default:
+			out.Add(f.Amount)
+		}
+	}
+	return in.Total()+out.Total() > nettingEps(in.Total(), out.Total())
+}
+
+// firstLoaded is the account under key in the first of ccys whose dataset
+// holds it, nil where none does. Its policy is the same in every currency.
+func firstLoaded(byCcy map[string]map[string]*accountData, ccys []string, key string) *accountData {
+	for _, ccy := range ccys {
+		if a := byCcy[ccy][key]; a != nil {
+			return a
+		}
+	}
+	return nil
+}
+
+// firstNonzeroAfterZero is the first nonzero valuation of an account whose
+// first value is zero, 0 where the first value is not zero or no nonzero
+// value follows it.
+func (a *accountData) firstNonzeroAfterZero() int64 {
 	if len(a.series) == 0 || math.Abs(a.series[0].val) >= valueTol {
 		return 0
 	}
@@ -734,15 +779,6 @@ func (a *accountData) findLateDebut() int64 {
 		}
 	}
 	return 0
-}
-
-// fundedDay is the valuation the money that came in on or before a's debut
-// funds: the late debut where there is one, else the debut.
-func (a *accountData) fundedDay() int64 {
-	if d := a.lateDebut(); d != 0 {
-		return d
-	}
-	return a.firstDay()
 }
 
 // lastNonzeroDay returns the day of the last carry-forward value that is still
@@ -993,7 +1029,10 @@ type flowTxnRow struct {
 	kind       string
 	ccy        string
 	txID       string
-	values     []*string // the net amount in each currency of the load
+	// values is the net amount in each currency of the load, then in
+	// residueCurrency where the load holds no column of it
+	// (spineSource.residue).
+	values []*string
 	// returnsInternal is the adapter's own verdict that this row is
 	// conduit churn rather than owner capital — read only under the
 	// policy's ExternalOnly (see attachOneFlow).
@@ -1027,10 +1066,10 @@ func isMoney(class, vehicle string) bool {
 }
 
 // loadFlowTxns reads every transaction's flow-relevant fields, its net amount
-// in each currency of src, in the report_transactions macro's own total order
-// (occurred_at, silver_source_id, transaction_external_id) — the order
-// TransactionsBetween's ascending path relies on, so the flow sequence is
-// identical to the wide loader.
+// in each currency of src and in residueCurrency, in the report_transactions
+// macro's own total order (occurred_at, silver_source_id,
+// transaction_external_id) — the order TransactionsBetween's ascending path
+// relies on, so the flow sequence is identical to the wide loader.
 func loadFlowTxns(ctx context.Context, db *sql.DB, src spineSource) ([]flowTxnRow, error) {
 	rows, err := db.QueryContext(ctx, src.transactions, src.transactionsArgs...)
 	if err != nil {
@@ -1041,7 +1080,7 @@ func loadFlowTxns(ctx context.Context, db *sql.DB, src spineSource) ([]flowTxnRo
 		out []flowTxnRow
 		cur flowTxnRow
 	)
-	vals := make([]sql.NullString, len(src.currencies))
+	vals := make([]sql.NullString, max(len(src.currencies), src.residue+1))
 	dest := []any{&cur.src, &cur.acct, &cur.occurredAt, &cur.kind, &cur.ccy, &cur.txID}
 	for i := range vals {
 		dest = append(dest, &vals[i])
@@ -1081,24 +1120,44 @@ type spineSource struct {
 	// in values' place, in report_transactions' own order.
 	transactions     string
 	transactionsArgs []any
+	// residue is the index among a transactions row's values of its amount
+	// in residueCurrency: that currency's own column where the load holds
+	// it, else one more after the load's currencies. readZeroHead reads it.
+	residue int
 	// decimal is a transactions query's amount as the loader keeps it.
 	decimal func(sql.NullString) *string
 }
 
 // flowTxnJoin is the part of a transactions query after its value columns:
 // the adapter's conduit verdict, and the instrument, quantity and asset
-// class and vehicle the row moved.
+// class and vehicle the row moved. Its second verb takes further joins.
 const flowTxnJoin = `,
 	        COALESCE(t.payload ->> '` + canonical.PayloadReturnsFlow + `' = 'internal', FALSE) AS returns_internal,
 	        COALESCE(t.instrument_external_id, t.instrument_hint), CAST(t.quantity AS DOUBLE), t.asset_class, t.vehicle
 	   FROM %s r
 	   LEFT JOIN transactions t
 	          ON t.silver_source_id        = r.silver_source_id
-	         AND t.transaction_external_id = r.transaction_external_id
+	         AND t.transaction_external_id = r.transaction_external_id%s
 	  ORDER BY r.occurred_at, r.silver_source_id, r.transaction_external_id`
 
-// oneCurrency reads report_accounts_history and report_transactions in ccy.
+// residueValue is a transaction's net amount in residueCurrency, as
+// report_transactions_multi converts it, over the joins residueFX adds.
+const (
+	residueValue = `CAST(CAST(fx_reporting_value(t.net_amount, t.currency, '` + residueCurrency +
+		`', fxl, fxb) AS DECIMAL(28,4)) AS VARCHAR)`
+	residueFX = `
+	   ASOF LEFT JOIN fx_reporting_legs fxl    ON fxl.from_ccy = t.currency AND fxl.day <= (t.occurred_at // 86400)
+	   ASOF LEFT JOIN fx_reporting_bridges fxb ON fxb.day <= (t.occurred_at // 86400)`
+)
+
+// oneCurrency reads report_accounts_history and report_transactions in ccy,
+// and each transaction's amount in residueCurrency besides where ccy is
+// another.
 func oneCurrency(ccy string) spineSource {
+	cols, joins, residue := "", "", 0
+	if ccy != residueCurrency {
+		cols, joins, residue = ", "+residueValue, residueFX, 1
+	}
 	return spineSource{currencies: []string{ccy}, op: "RunReturns",
 		history: `SELECT as_of_day, silver_source_id, account_external_id, account_kind,
 		        display_name, base_currency, portfolio_external_id, total_value_outccy
@@ -1106,9 +1165,9 @@ func oneCurrency(ccy string) spineSource {
 		  ORDER BY silver_source_id, account_external_id, as_of_day`,
 		historyArgs: []any{ccy},
 		transactions: `SELECT r.silver_source_id, r.account_external_id, r.occurred_at, r.kind,
-		        r.currency, r.transaction_external_id, r.value_outccy` +
-			fmt.Sprintf(flowTxnJoin, "report_transactions(?, ?, ?)"),
-		transactionsArgs: []any{int64(0), MaxEpoch, ccy},
+		        r.currency, r.transaction_external_id, r.value_outccy` + cols +
+			fmt.Sprintf(flowTxnJoin, "report_transactions(?, ?, ?)", joins),
+		transactionsArgs: []any{int64(0), MaxEpoch, ccy}, residue: residue,
 		// The amounts read as the transactions view shows them.
 		decimal: trimmedDecimalPtr}
 }
@@ -1123,19 +1182,7 @@ func oneCurrency(ccy string) spineSource {
 // the day-0 clamp check.
 func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct string, kind canonical.TxKind, occurredAt int64, txID, txCcy string, valueOut *string, returnsInternal bool, held heldRef) bool {
 	a := byKey[acctKey(src, acct)]
-	if a == nil {
-		return false
-	}
-	// The silver-side pre-tag ExternalOnly describes: an adapter that can
-	// tell owner capital from conduit churn says so on the row. It is read
-	// only under ExternalOnly, so a source that tags nothing is unaffected.
-	// It is a tag rather than a rewritten KIND because the spending
-	// population reads the kind too, so a kind could not carry a
-	// returns-only verdict without erasing the row from spending as well.
-	if a.rpolicy.ExternalOnly && returnsInternal {
-		return false
-	}
-	if !a.rpolicy.Flow.IsExternal(kind, strings.HasPrefix(txID, canonical.LedgerTransferIDPrefix)) {
+	if a == nil || !a.externalFlow(kind, txID, returnsInternal) {
 		return false
 	}
 	val, ok := parseFloatPtr(valueOut)
@@ -1162,6 +1209,20 @@ func attachOneFlow(byKey map[string]*accountData, fx fxBounds, outCcy, src, acct
 		a.nonTransfer = append(a.nonTransfer, f)
 	}
 	return true
+}
+
+// externalFlow says a's policy reads a transaction of kind as an external
+// flow. The silver-side pre-tag ExternalOnly describes: an adapter that can
+// tell owner capital from conduit churn says so on the row. It is read only
+// under ExternalOnly, so a source that tags nothing is unaffected. It is a
+// tag rather than a rewritten KIND because the spending population reads
+// the kind too, so a kind could not carry a returns-only verdict without
+// erasing the row from spending as well.
+func (a *accountData) externalFlow(kind canonical.TxKind, txID string, returnsInternal bool) bool {
+	if a.rpolicy.ExternalOnly && returnsInternal {
+		return false
+	}
+	return a.rpolicy.Flow.IsExternal(kind, strings.HasPrefix(txID, canonical.LedgerTransferIDPrefix))
 }
 
 // txRef names one transaction.
@@ -1255,18 +1316,18 @@ func nameHoldings(byCcy map[string]map[string]*accountData) *holdingUnion {
 	return u
 }
 
-// debutHolding is one holding of the valuation a debut's legs fund
-// (fundedDay): the quantity held and its share of the valuation's value.
+// debutHolding is one holding of the first valuation, which a debut's legs
+// fund: the quantity held and its share of the valuation's value.
 type debutHolding struct{ qty, share float64 }
 
 // loadDebutHoldings reads, for every account a leg moved a holding into on or
-// before its debut, the holdings of the valuation such legs fund (fundedDay,
-// accountData.debut): the positions of the day's last snapshot. A share is
-// the position's market value over all of them, so it is read only where
-// every position states one in a single currency and the account holds no
-// cash then. A holding is named as the legs name it (u). Each currency's
-// account reads its own debut day: where FX starts later in one currency,
-// its value, and so its debut, starts later too.
+// before its debut, the holdings of that first valuation (accountData.debut):
+// the positions of the day's last snapshot. A share is the position's market
+// value over all of them, so it is read only where every position states one
+// in a single currency and the account holds no cash then. A holding is
+// named as the legs name it (u). Each currency's account reads its own debut
+// day: where FX starts later in one currency, its value, and so its debut,
+// starts later too.
 func loadDebutHoldings(ctx context.Context, q querier, facts map[string]instrumentFacts, u *holdingUnion, byCcy map[string]map[string]*accountData) error {
 	type ref struct {
 		src, acct string
@@ -1277,7 +1338,7 @@ func loadDebutHoldings(ctx context.Context, q querier, facts map[string]instrume
 		for _, a := range byKey {
 			for f := range a.legs(0, a.firstDay()) {
 				if _, ok := a.inKind[f.ID]; ok {
-					r := ref{a.src, a.acct, a.fundedDay()}
+					r := ref{a.src, a.acct, a.firstDay()}
 					accts[r] = append(accts[r], a)
 					break
 				}
