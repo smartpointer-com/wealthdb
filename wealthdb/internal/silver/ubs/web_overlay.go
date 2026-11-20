@@ -208,6 +208,11 @@ type psnHints struct {
 	// offset veto reads the same value, so the veto and the stream
 	// agree on which reversal is no deposit or withdrawal.
 	securities *dividendSecurities
+	// funds is what a cash line no other road links to an instrument is
+	// read against: the private-equity funds its account's portfolios
+	// hold, and the cash lines the funds' corporate actions pair with
+	// (private_funds.go), read over both silvers.
+	funds *privateFunds
 	// rc is the reconcile table's verdict: which feed lines give way
 	// to a confirmation, which mirrors and cash legs another record
 	// carries instead (withheld), and the text a dropped copy leaves

@@ -44,10 +44,11 @@ import (
 // only the two whose kind is settled by the event indicator: DVCA is a
 // dividend, INTR is interest. A capital call confirmed as OTHR, an
 // optional dividend taken in shares, an exchange — anything else — is
-// left to the rails that already carry it. The cash option's own
-// confirmation block (CACONF) states the movement and the rates; another
-// option's block, such as the shares a choice of dividend delivered,
-// says nothing about the cash.
+// left to the rails that already carry it; on a private-equity fund, the
+// line that carries it takes the fund (private_funds.go). The cash
+// option's own confirmation block (CACONF) states the movement and the
+// rates; another option's block, such as the shares a choice of dividend
+// delivered, says nothing about the cash.
 //
 // A confirmation's message function (`:23G:`) says whether its statement
 // holds. NEWM is a new confirmation. CANC cancels one the bank sent
@@ -504,31 +505,54 @@ func (r *psnReader) cashConfirmations(ctx context.Context) ([]cashConfirmation, 
 	return r.confirmations.Get(func() ([]cashConfirmation, error) { return r.readCashConfirmations(ctx) })
 }
 
-// readCashConfirmations is cashConfirmations' read.
-func (r *psnReader) readCashConfirmations(ctx context.Context) ([]cashConfirmation, error) {
-	var all []caRow
-	if err := silver.ScanRows(ctx, r.db, "ubs cashConfirmations", `
+// corporateActions are the silver's corporate-action confirmations, each
+// parsed, in id order, and what a cancellation or a reversal withdraws
+// (withdrawals). A payload that does not decode is left out.
+type corporateActions struct {
+	all  []caRow
+	gone map[string]string
+}
+
+// corporateActions reads them once per connection: the whole silver,
+// unwindowed. None for a nil reader.
+func (r *psnReader) corporateActions(ctx context.Context) (corporateActions, error) {
+	if r == nil || r.db == nil {
+		return corporateActions{}, nil
+	}
+	return r.actions.Get(func() (corporateActions, error) {
+		var all []caRow
+		if err := silver.ScanRows(ctx, r.db, "ubs corporate actions", `
 SELECT event_external_id, timestamp, payload
   FROM events
  WHERE kind = 'corporate_action_confirmation'
  ORDER BY event_external_id`, func(rows *sql.Rows) error {
-		var (
-			row     caRow
-			payload string
-		)
-		if err := rows.Scan(&row.eventID, &row.at, &payload); err != nil {
-			return fmt.Errorf("ubs cashConfirmations scan: %w", err)
-		}
-		if err := json.Unmarshal([]byte(payload), &row.f); err != nil {
+			var (
+				row     caRow
+				payload string
+			)
+			if err := rows.Scan(&row.eventID, &row.at, &payload); err != nil {
+				return fmt.Errorf("ubs corporate actions scan: %w", err)
+			}
+			if err := json.Unmarshal([]byte(payload), &row.f); err != nil {
+				return nil
+			}
+			row.m = parseCorporateAction(row.f)
+			all = append(all, row)
 			return nil
+		}); err != nil {
+			return corporateActions{}, err
 		}
-		row.m = parseCorporateAction(row.f)
-		all = append(all, row)
-		return nil
-	}); err != nil {
+		return corporateActions{all: all, gone: withdrawals(all)}, nil
+	})
+}
+
+// readCashConfirmations is cashConfirmations' read.
+func (r *psnReader) readCashConfirmations(ctx context.Context) ([]cashConfirmation, error) {
+	actions, err := r.corporateActions(ctx)
+	if err != nil {
 		return nil, err
 	}
-	gone := withdrawals(all)
+	all, gone := actions.all, actions.gone
 	stated := map[statementKey]bool{}
 	out := []cashConfirmation{}
 	for _, row := range all {

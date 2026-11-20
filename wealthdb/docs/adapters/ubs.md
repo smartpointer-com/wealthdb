@@ -930,6 +930,77 @@ Where the lookup finds nothing, two weaker claims follow, in order:
 
 A dividend names its security in other ways (below).
 
+### The private-equity fund a cash row names
+
+A capital call settles under the bank's own booking type, as a buy of
+the fund's units. Other rows that move a fund's cash state no
+instrument:
+
+- a distribution or a return of capital, credited as a plain credit;
+- a call paid by payment order;
+- a statement line whose valor the index does not know.
+
+Such a row takes the fund by one of two roads (`private_funds.go`).
+
+First, the fund's corporate action. A confirmation on a fund whose cash
+option moves cash names the line that books it. The pair is the cash
+account, the payment day, the amount posted, signed by the `CRDB` mark,
+and its currency, as for a dividend (*Dividends: the security and the
+gross*). A confirmation that stands counts. The pair holds only where
+one line answers, and the confirmations that answer name one fund. The
+line is a feed line, or a web row the reconcile table leaves standing.
+A credit then books as `distribution`, a debit as `buy`. The
+confirmation keeps its marker and books no cash leg.
+
+Else the text names the fund. Such a row takes it where all of these
+hold:
+
+- No other road links it to an instrument.
+- Its kind is a buy, a sell, a deposit or a withdrawal. The first road
+  asks this of its line too, and the last condition below.
+- Its text names exactly one private-equity fund of its account's
+  portfolios. It names a fund by the fund's ISIN, by its valor, or by
+  one of its names whole. A valor is a whole number of five digits or
+  more; leading zeros do not count. A name has two words or more.
+  Case, spacing and punctuation do not count. A name the text holds
+  only inside another fund's longer name does not count: "X Partners
+  II" names that fund, not "X Partners".
+- It is no move between the relationship's own accounts. The same-day
+  offset veto found no mirror for it, its counter account is no own
+  one, and its narrative names no internal transfer.
+
+An MT940 line states no counter account. On the feed, the offset veto
+and the narrative tell such a move.
+
+The fund is an instrument the adapter classifies `(private_equity,
+fund)`, as it emits it (§4). Its names are the feed's long and short
+names and every description the statements of assets print for it. Its
+valors are the feed's, a Swiss ISIN's own, and those the statements of
+assets print. The text is the row's narrative, its promoted valor, and
+an MT940 line's customer reference.
+
+The valor index above answers for the whole relationship and reads only
+a promoted valor, so it drops a valor two securities share, and it sees
+none in free text. This search runs only over the funds of the row's own
+portfolios. So it reads a valor in free text, and a valor two
+securities share. A portfolio holds the funds the feed's holdings and
+the statements of assets place in it. A cash account belongs to the
+portfolios the feed's master data and the printed cash positions place
+it in, as for a dividend's ticker (below).
+
+The row then books as its kind says:
+
+| Kind | Books as |
+| --- | --- |
+| `buy`, `sell` | the same kind |
+| `withdrawal` | `buy`: a call paid in |
+| `deposit` | `distribution`: cash the fund paid out |
+
+On an MT940 line the mark says which side a reversal undoes. `RC`
+takes back a credit: a distribution, negative. `RD` takes back a
+debit: a buy, positive. The amount, the day and the id stay the row's.
+A row that names no fund, or several, stays as it is.
+
 ### Dividends: the security and the gross
 
 UBS books a dividend to the cash account it credits, beside the custody

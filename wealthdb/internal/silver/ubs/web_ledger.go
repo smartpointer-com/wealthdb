@@ -82,7 +82,7 @@ func (r *webReader) transactionsBeforePSNStart(ctx context.Context, w canonical.
 	if folded > 0 {
 		log.Printf("ubs adapter: folded %d web row(s) into another record of the same booking — one booking, one row", folded)
 	}
-	return silver.NewTransactionStream(out), psnHints{veto: pass.psnVeto, securities: pass.dividends, rc: rc}, nil
+	return silver.NewTransactionStream(out), psnHints{veto: pass.psnVeto, securities: pass.dividends, funds: pass.funds, rc: rc}, nil
 }
 
 // webTxPass is what the web cash pass resolves once per read, before it
@@ -98,7 +98,11 @@ type webTxPass struct {
 	valorToISIN map[string]string
 	// dividends links a dividend line that states no ISIN to its
 	// security, by its valor or its ticker (dividends.go).
-	dividends        *dividendSecurities
+	dividends *dividendSecurities
+	// funds links a row no other road links to a private-equity fund:
+	// the fund whose corporate action it books, else the one its text
+	// names (private_funds.go).
+	funds            *privateFunds
 	mt940Start       int64
 	mortgageAccounts map[string]string
 	offsetVeto       map[string]bool
@@ -114,7 +118,19 @@ func (r *webReader) newWebTxPass(ctx context.Context, psn *psnReader, rc *reconc
 	if p.valorToISIN, err = r.valorIndex(ctx, psn); err != nil {
 		return nil, err
 	}
-	if p.dividends, err = buildDividendSecurities(ctx, psn, r, p.valorToISIN); err != nil {
+	places, err := cashAccountPortfolios(ctx, psn, r)
+	if err != nil {
+		return nil, err
+	}
+	if p.dividends, err = buildDividendSecurities(ctx, psn, r, p.valorToISIN, places); err != nil {
+		return nil, err
+	}
+	if p.funds, err = buildPrivateFunds(ctx, psn, r, places); err != nil {
+		return nil, err
+	}
+	if err := p.funds.pairConfirmations(ctx, psn, r, rc, func(row *webRow) bool {
+		return p.skip(row) == webEmitted
+	}); err != nil {
 		return nil, err
 	}
 	if p.mt940Start, err = r.mt940FeedStart(ctx); err != nil {
@@ -159,30 +175,12 @@ func (p *webTxPass) project(row *webRow) (canonical.TransactionChange, bool) {
 		return canonical.TransactionChange{}, false
 	}
 	statedMortgage := p.resolveCounterAccount(&pl)
-	returnsInternal := p.returnsInternal(row, kind, pl, pdfBackfill)
-
-	// The verdict is stamped here, before the sign is pinned: a
-	// payload that cannot carry it demotes the kind instead
-	// (markReturnsInternal), and the sign must then be read off the
-	// kind the row ENDS with.
-	rowPayload := withBankRef(withCounterAccount(
-		withResolvedMortgage(json.RawMessage(row.payload), statedMortgage, pl.CounterAccount),
-		pl.CounterAccount), webBankRef(row.txID))
-	counterCcy, counterAmt := counterLegFromNarrative(pl)
-	rowPayload = withCounterLeg(rowPayload, counterCcy, counterAmt)
-	if returnsInternal {
-		rowPayload, kind = markReturnsInternal(rowPayload, kind)
-	}
-	if !webReversal(row.descKind.String, isStatementEraID(row.txID), row.debit, row.credit) {
-		netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
-	}
-
 	// The narrative columns, the instrument id and the payer's message
 	// all fall out of one projection (projectWebTxText, which carries
 	// the per-column contract); the era text fold (merge.go) reads the
 	// same projection, so one booking's text is the same string
-	// whichever side of the seam it reaches gold from. The kind is
-	// already classified above and no text read here can move it.
+	// whichever side of the seam it reaches gold from. Of the text, only
+	// the fund a row names (below) moves the kind.
 	text, instrumentID, message := projectWebTxText(row.counterparty.String, row.descKind.String, pl, pdfBackfill)
 	// The statement era's own road to the instrument. An id the export
 	// era stated in Description1 outranks a looked-up one, and nothing
@@ -203,6 +201,21 @@ func (p *webTxPass) project(row *webRow) (canonical.TransactionChange, bool) {
 		instrumentID, instrHint = p.dividends.webDividendSecurity(row.account, pl, pdfBackfill)
 	default:
 		instrumentID, instrHint = resolveValor(p.valorToISIN, pl.SecurityValor)
+		// Else the private-equity fund whose corporate action the row
+		// books, else the one its text names, unless the row moves cash
+		// between the relationship's own accounts. It then books as what
+		// it is, before the flow verdict and the sign read the kind.
+		if instrumentID == nil && !p.betweenOwnAccounts(row, pl, pdfBackfill) {
+			isin, k, ok := p.funds.pairedLink(row.emittedID(), kind)
+			if !ok {
+				isin, k, ok = p.funds.link(row.account, kind, row.counterparty.String, row.descKind.String,
+					pl.BookingType, pl.SecurityValor, pl.Description1, pl.Description2, pl.Description3,
+					strings.Join(pl.Continuation, " "))
+			}
+			if ok {
+				instrumentID, instrHint, kind = &isin, "", k
+			}
+		}
 		// An unidentified security is not an unknown ASSET CLASS: what
 		// a trade says it traded, where the booking type says it, draws
 		// it in its real class rather than as an untracked destination.
@@ -213,6 +226,24 @@ func (p *webTxPass) project(row *webRow) (canonical.TransactionChange, bool) {
 				pl.BookingType, strings.Join(pl.Continuation, " ")+" "+text.description)
 		}
 	}
+	returnsInternal := p.returnsInternal(row, kind, pl, pdfBackfill)
+
+	// The verdict is stamped here, before the sign is pinned: a
+	// payload that cannot carry it demotes the kind instead
+	// (markReturnsInternal), and the sign must then be read off the
+	// kind the row ENDS with.
+	rowPayload := withBankRef(withCounterAccount(
+		withResolvedMortgage(json.RawMessage(row.payload), statedMortgage, pl.CounterAccount),
+		pl.CounterAccount), webBankRef(row.txID))
+	counterCcy, counterAmt := counterLegFromNarrative(pl)
+	rowPayload = withCounterLeg(rowPayload, counterCcy, counterAmt)
+	if returnsInternal {
+		rowPayload, kind = markReturnsInternal(rowPayload, kind)
+	}
+	if !webReversal(row.descKind.String, isStatementEraID(row.txID), row.debit, row.credit) {
+		netAmount = canonical.ApplyCanonicalSign(kind, &netPtr)
+	}
+
 	// This export row kept a booking whose statement copy the reconcile
 	// table dropped. Per column and only downward (richerText), the
 	// statement's reading fills what this row left empty or as a bare
@@ -383,6 +414,17 @@ func (p *webTxPass) returnsInternal(row *webRow, kind canonical.TxKind, pl webTx
 	return p.offsetVeto[row.emittedID()] ||
 		p.ownIBANs[normalizeIBAN(pl.CounterAccount)] ||
 		pdfBackfill && !pdfCashIsExternal(pl, p.ownIBANs, kind == canonical.TxKindWithdrawal, railEra)
+}
+
+// betweenOwnAccounts reports whether a row moves cash between the
+// relationship's own accounts: the same-day offset veto found its
+// mirror, its counter account is an own one, or, on a PDF backfill, its
+// narrative names an internal transfer (pdfInternalTransfer). Such a row
+// pays no fund itself, whatever its text says.
+func (p *webTxPass) betweenOwnAccounts(row *webRow, pl webTxPayload, pdfBackfill bool) bool {
+	return p.offsetVeto[row.emittedID()] ||
+		p.ownIBANs[normalizeIBAN(pl.CounterAccount)] ||
+		pdfBackfill && pdfInternalTransfer(pl)
 }
 
 // webTxRow is the columns of one row of the web silver's transactions

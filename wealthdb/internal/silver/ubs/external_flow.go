@@ -137,7 +137,13 @@ func pdfInternalTransfer(p webTxPayload) bool {
 	if !isPaymentAdvice(p) && !bookingOf(p.BookingType).transfer {
 		return false
 	}
-	blob := strings.ToUpper(strings.Join(p.Continuation, " "))
+	return namesInternalTransfer(strings.Join(p.Continuation, " "))
+}
+
+// namesInternalTransfer reports whether a narrative carries a marker of
+// internalTransferMarkers, in any case.
+func namesInternalTransfer(text string) bool {
+	blob := strings.ToUpper(text)
 	for _, m := range internalTransferMarkers {
 		if strings.Contains(blob, m) {
 			return true

@@ -135,26 +135,21 @@ func (r *webReader) fundHolders(ctx context.Context, psn *psnReader, safekeeping
 		}
 		out[isin][account] = true
 	}
-	if psn != nil && psn.db != nil {
-		if err := eachPair(ctx, psn.db, `SELECT DISTINCT isin, safekeeping_external_id FROM holdings`,
-			func(isin, account string) { add(isin, account) }); err != nil {
-			return nil, fmt.Errorf("ubs psn fund holders: %w", err)
-		}
-	}
-	ok, err := r.hasTable(ctx, "historical_position_snapshots")
+	pairs, err := psn.holdingPairs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if ok {
-		if err := eachPair(ctx, r.db, `
-SELECT DISTINCT instrument_isin, portfolio_external_id
-  FROM historical_position_snapshots
- WHERE instrument_isin IS NOT NULL`,
-			func(isin, portfolio string) {
-				account, _ := statementSecuritiesAccount(safekeepingByPortfolio, portfolio)
-				add(isin, account)
-			}); err != nil {
-			return nil, fmt.Errorf("ubs-web fund holders: %w", err)
+	for _, h := range pairs {
+		add(h.isin, h.safekeeping)
+	}
+	printed, err := r.printedPositions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range printed {
+		if p.isin.Valid {
+			account, _ := statementSecuritiesAccount(safekeepingByPortfolio, p.portfolio.String)
+			add(p.isin.String, account)
 		}
 	}
 	return out, nil

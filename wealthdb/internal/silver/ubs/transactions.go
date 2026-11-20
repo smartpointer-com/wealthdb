@@ -20,8 +20,9 @@ import (
 // passes: the MT940 lines that give way to a trade confirmation are not
 // emitted, nor the conversion mirrors and the cash legs it withholds.
 // hints.securities links a dividend line past its confirmation and names
-// the reversals that are dividend reversals (psnHints). Without a web
-// subsource the stream builds the feed's own.
+// the reversals that are dividend reversals, and hints.funds a line to the
+// private-equity fund whose corporate action it books or that it names
+// (psnHints). Without a web subsource the stream builds the feed's own.
 //
 // Beside the events, the stream books rows the feed does not carry:
 //
@@ -56,6 +57,19 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 	dividends, err := r.dividends(ctx, ibans, coverage, hints.securities)
 	if err != nil {
 		return nil, err
+	}
+	funds := hints.funds
+	if funds == nil {
+		places, err := cashAccountPortfolios(ctx, r, nil)
+		if err != nil {
+			return nil, err
+		}
+		if funds, err = buildPrivateFunds(ctx, r, nil, places); err != nil {
+			return nil, err
+		}
+		if err := funds.pairConfirmations(ctx, r, nil, rc, nil); err != nil {
+			return nil, err
+		}
 	}
 
 	feed, err := r.feed(ctx)
@@ -98,6 +112,22 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 			if !reversed && tx.Kind == canonical.TxKindDividend {
 				if tax, taxed, err = dividends.settle(&tx, p); err != nil {
 					return fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
+				}
+			}
+			// A line no road above linked takes the private-equity fund
+			// whose corporate action it books, else the one its narrative
+			// names, and books as what it is (private_funds.go). A line
+			// the offset veto pairs, or whose narrative names an internal
+			// transfer, moves cash between own accounts and pays no fund
+			// itself. An MT940 line states no counter account.
+			if tx.InstrumentExternalID == nil && !hints.veto[eventID] && !namesInternalTransfer(p.Narrative) {
+				isin, k, ok := funds.pairedLink(eventID, tx.Kind)
+				if !ok {
+					isin, k, ok = funds.link(tx.AccountExternalID, markedFlow(tx.Kind, p.CreditDebit),
+						p.Narrative, p.CustomerRef)
+				}
+				if ok {
+					tx.InstrumentExternalID, tx.Kind = &isin, k
 				}
 			}
 		}
@@ -373,6 +403,24 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 	}
 
 	return tx, nil
+}
+
+// markedFlow is the side of a booking a deposit or withdrawal line makes
+// or undoes, by its mark: a credit and a credit taken back (`RC`) are a
+// deposit's side, a debit and a returned debit (`RD`) a withdrawal's. The
+// line's amount (markSigned) says which way the money moved. Any other
+// kind, or a line with no mark, keeps its kind.
+func markedFlow(kind canonical.TxKind, mark string) canonical.TxKind {
+	if kind != canonical.TxKindDeposit && kind != canonical.TxKindWithdrawal {
+		return kind
+	}
+	switch strings.ToUpper(strings.TrimSpace(mark)) {
+	case "C", "RC":
+		return canonical.TxKindDeposit
+	case "D", "RD":
+		return canonical.TxKindWithdrawal
+	}
+	return kind
 }
 
 // markSigned is an MT940 line's amount signed by its credit/debit mark.

@@ -387,7 +387,7 @@ type dividendSecurities struct {
 	currencies map[string]bool
 	// portfolios maps a cash account onto the portfolios the account
 	// master data and the printed statements place it in.
-	portfolios map[string][]string
+	portfolios accountPortfolios
 	// credits are the dividend credits any rail states, each day's per
 	// rail (addCredit): the evidence a reversal of a credit reverses a
 	// dividend, and the credits a reversal takes back (matchReversals).
@@ -440,29 +440,23 @@ func (d *dividendSecurities) byTicker(account, ticker string) (string, bool) {
 
 // buildDividendSecurities reads what roads 2 and 3 need: the valor index
 // the caller holds, the tickers the printed statements' custody positions
-// print, and the portfolios each cash account belongs to. Then it reads
-// every dividend credit both silvers state, and pairs each reversal of a
-// credit with the credit it takes back. A nil or absent side contributes
-// nothing.
-func buildDividendSecurities(ctx context.Context, psn *psnReader, web *webReader, valors map[string]string) (*dividendSecurities, error) {
+// print, and places, the portfolios each cash account belongs to
+// (cashAccountPortfolios). Then it reads every dividend credit both
+// silvers state, and pairs each reversal of a credit with the credit it
+// takes back. A nil or absent side contributes nothing.
+func buildDividendSecurities(ctx context.Context, psn *psnReader, web *webReader, valors map[string]string,
+	places accountPortfolios) (*dividendSecurities, error) {
 	d := &dividendSecurities{
 		valors:     valors,
 		tickers:    map[string]map[string]string{},
 		currencies: map[string]bool{},
-		portfolios: map[string][]string{},
+		portfolios: places,
 		credits:    map[creditKey]map[int64]railCounts{},
 		reversals:  map[string]takenCredit{},
 		booked:     map[creditKey][]bookedGross{},
 	}
 	if err := web.addCustodyTickers(ctx, d); err != nil {
 		return nil, err
-	}
-	roster, err := psn.roster(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for account, portfolio := range roster.portfolioOfCashAccount() {
-		d.addPortfolio(account, portfolio)
 	}
 	// The credits resolve their security by the roads above, so they
 	// are read last.
@@ -493,31 +487,93 @@ func (d *dividendSecurities) addTicker(portfolio, ticker, isin string) {
 	byTicker[ticker] = isin
 }
 
-// addPortfolio places a cash account in a portfolio, once.
-func (d *dividendSecurities) addPortfolio(account, portfolio string) {
+// accountPortfolios maps a cash account onto the portfolios it belongs
+// to (cashAccountPortfolios).
+type accountPortfolios map[string][]string
+
+// add places a cash account in a portfolio, once.
+func (a accountPortfolios) add(account, portfolio string) {
 	if account == "" || portfolio == "" {
 		return
 	}
-	for _, p := range d.portfolios[account] {
+	for _, p := range a[account] {
 		if p == portfolio {
 			return
 		}
 	}
-	d.portfolios[account] = append(d.portfolios[account], portfolio)
+	a[account] = append(a[account], portfolio)
+}
+
+// cashAccountPortfolios places each cash account in the portfolio each
+// printed cash position places it in, and in the one the feed's master
+// data does. A nil or absent side contributes nothing.
+func cashAccountPortfolios(ctx context.Context, psn *psnReader, web *webReader) (accountPortfolios, error) {
+	out := accountPortfolios{}
+	printed, err := web.printedPositions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range printed {
+		if !p.isin.Valid {
+			out.add(p.account.String, p.portfolio.String)
+		}
+	}
+	roster, err := psn.roster(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for account, portfolio := range roster.portfolioOfCashAccount() {
+		out.add(account, portfolio)
+	}
+	return out, nil
+}
+
+// printedPosition is one distinct line of the printed statements of
+// assets, as the passes that read it need it. A cash position states no
+// ISIN.
+type printedPosition struct {
+	portfolio, account, isin, valor, description, currency, valuedIn sql.NullString
+}
+
+// printedPositions reads the printed statements of assets once per
+// connection (silver.Lazy): every distinct line, by its portfolio, its
+// account (a cash position's), its ISIN, the valor printed beside it,
+// its description and its two currencies. None where the silver has no
+// such table.
+func (r *webReader) printedPositions(ctx context.Context) ([]printedPosition, error) {
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
+	return r.printed.Get(func() ([]printedPosition, error) {
+		ok, err := r.hasTable(ctx, "historical_position_snapshots")
+		if err != nil || !ok {
+			return nil, err
+		}
+		out := []printedPosition{}
+		err = silver.ScanRows(ctx, r.db, "ubs-web printed positions", `
+SELECT DISTINCT portfolio_external_id, account_external_id, instrument_isin,
+       json_extract(payload, '$.valor'), description, currency_iso, market_value_currency
+  FROM historical_position_snapshots`, func(rows *sql.Rows) error {
+			var p printedPosition
+			if err := rows.Scan(&p.portfolio, &p.account, &p.isin, &p.valor, &p.description, &p.currency,
+				&p.valuedIn); err != nil {
+				return fmt.Errorf("ubs-web printed positions scan: %w", err)
+			}
+			out = append(out, p)
+			return nil
+		})
+		return out, err
+	})
 }
 
 // addCustodyTickers reads the printed statements of assets: the ticker
-// closing each custody position's description, under its portfolio; each
-// cash position's account under the same portfolio; and every currency
-// they print, the precious-metals positions' included
-// (preciousMetalsTotals). One table names all three, so they agree on how
-// a portfolio is spelled.
+// closing each custody position's description, under its portfolio, and
+// every currency they print, the precious-metals positions' included
+// (preciousMetalsTotals). The table also places the cash accounts
+// (cashAccountPortfolios), so they agree on how a portfolio is spelled.
 func (r *webReader) addCustodyTickers(ctx context.Context, d *dividendSecurities) error {
-	if r == nil || r.db == nil {
-		return nil
-	}
-	ok, err := r.hasTable(ctx, "historical_position_snapshots")
-	if err != nil || !ok {
+	printed, err := r.printedPositions(ctx)
+	if err != nil || printed == nil {
 		return err
 	}
 	metals, err := r.preciousMetalsTotals(ctx, canonical.Window{Start: math.MinInt64, End: math.MaxInt64})
@@ -527,28 +583,20 @@ func (r *webReader) addCustodyTickers(ctx context.Context, d *dividendSecurities
 	for _, h := range metals {
 		d.currencies[h.ccy] = true
 	}
-	return silver.ScanRows(ctx, r.db, "ubs-web addCustodyTickers", `
-SELECT DISTINCT portfolio_external_id, account_external_id, instrument_isin,
-       description, currency_iso, market_value_currency
-  FROM historical_position_snapshots`, func(rows *sql.Rows) error {
-		var portfolio, account, isin, description, ccy, valuedIn sql.NullString
-		if err := rows.Scan(&portfolio, &account, &isin, &description, &ccy, &valuedIn); err != nil {
-			return fmt.Errorf("ubs-web addCustodyTickers scan: %w", err)
-		}
-		for _, c := range []string{ccy.String, valuedIn.String} {
+	for _, p := range printed {
+		for _, c := range []string{p.currency.String, p.valuedIn.String} {
 			if c = strings.ToUpper(strings.TrimSpace(c)); c != "" {
 				d.currencies[c] = true
 			}
 		}
-		if !isin.Valid {
-			d.addPortfolio(account.String, portfolio.String)
-			return nil
+		if !p.isin.Valid {
+			continue
 		}
-		if ticker := closingTicker(description.String); ticker != "" && looksLikeISIN(isin.String) {
-			d.addTicker(portfolio.String, ticker, isin.String)
+		if ticker := closingTicker(p.description.String); ticker != "" && looksLikeISIN(p.isin.String) {
+			d.addTicker(p.portfolio.String, ticker, p.isin.String)
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // dividendConfirmations maps an MT940 dividend line's event id onto the
@@ -1084,7 +1132,11 @@ func (r *psnReader) dividends(ctx context.Context, ibans map[string]string, cove
 		if err != nil {
 			return psnDividends{}, err
 		}
-		if securities, err = buildDividendSecurities(ctx, r, nil, valors); err != nil {
+		places, err := cashAccountPortfolios(ctx, r, nil)
+		if err != nil {
+			return psnDividends{}, err
+		}
+		if securities, err = buildDividendSecurities(ctx, r, nil, valors, places); err != nil {
 			return psnDividends{}, err
 		}
 	}

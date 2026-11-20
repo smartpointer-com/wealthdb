@@ -20,6 +20,9 @@ type webReader struct {
 	valors silver.Lazy[map[string]string]
 	// rows is the ledger, read once (ledger).
 	rows silver.Lazy[[]webRow]
+	// printed is the printed statements of assets, read once
+	// (printedPositions).
+	printed silver.Lazy[[]printedPosition]
 
 	// parts is the file's optional schema (schema).
 	parts silver.Lazy[webSchema]
