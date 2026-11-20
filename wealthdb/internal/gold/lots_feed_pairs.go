@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/lots"
 )
 
@@ -33,6 +35,8 @@ type lotLeg struct {
 	// cost is the cost basis a hand-kept equity-transfer ledger row
 	// states for what it moved (loader.TransferEntry), 0 when none.
 	cost float64
+	// valued: the row states an amount other than zero.
+	valued bool
 	// exact: the holding moves only whole, no coin (IsCoin), so the leg
 	// pairs only on the exact quantity.
 	exact bool
@@ -116,7 +120,9 @@ func (l lotLegs) may(int, int) bool    { return true }
 // as a fee in kind, and what it exceeds the send by opens a lot of unknown
 // cost. For a security, and a coin beyond the rule, the rest is a transfer
 // nothing pairs (excessIsTransfer). What pairs with nothing is a receipt of
-// unknown cost, or a departure with no proceeds.
+// unknown cost, or a departure with no proceeds. A receipt the
+// equity-transfer ledger states stands for the source's own record of it
+// (dropTwins) before anything pairs.
 func (f *lotFeed) pairTransfers() {
 	legs := f.legs
 	u := newHoldingUnion()
@@ -135,6 +141,7 @@ func (f *lotFeed) pairTransfers() {
 		}
 		return cmp.Compare(a.txn, b.txn)
 	})
+	legs = f.dropTwins(legs)
 	mate := make([]int, len(legs))
 	for i := range mate {
 		mate[i] = -1
@@ -175,6 +182,73 @@ func (f *lotFeed) pairTransfers() {
 		f.pair(a, legs[j])
 	}
 	f.legs = nil
+}
+
+// dropTwins drops the source's own record of each receipt the
+// equity-transfer ledger states. A broker books shares that arrive from
+// a transfer agent or an SPV's exit as a transfer in at no value, and
+// the ledger row states the same receipt with its value and cost: two
+// lots for one arrival. The twin of a ledger receipt is a transfer in
+// of the same source, account and instrument, on the exact quantity,
+// with no amount or a zero one, no in-kind link of its own (only a
+// future link writer could give a non-ledger leg one), and within the 7
+// calendar days a security's two legs pair within (inKindWindowDay), in
+// either order: the two records of one arrival lie no further apart
+// than the two legs of one move. The nearest in days is the twin, the
+// earlier on a tie, and each twin stands for one ledger row. The ledger
+// row opens the lot, on its own day and at its cost; the twin opens none. A
+// receipt that states a value of its own, or another quantity, is a
+// receipt of its own. legs are in pairTransfers' order.
+func (f *lotFeed) dropTwins(legs []lotLeg) []lotLeg {
+	type twinKey struct {
+		key  int32
+		acct string
+	}
+	ledger := func(l *lotLeg) bool { return strings.HasPrefix(l.txn, canonical.LedgerTransferIDPrefix) }
+	twins := map[twinKey][]int{}
+	for i := range legs {
+		l := &legs[i]
+		if l.in && !l.valued && !ledger(l) {
+			if _, linked := f.links[[2]string{l.src.id, l.txn}]; !linked {
+				k := twinKey{l.key, l.acct}
+				twins[k] = append(twins[k], i)
+			}
+		}
+	}
+	if len(twins) == 0 {
+		return legs
+	}
+	drop := make([]bool, len(legs))
+	dropped := false
+	for i := range legs {
+		l := &legs[i]
+		if !l.in || !ledger(l) {
+			continue
+		}
+		best, gap := -1, int64(0)
+		for _, j := range twins[twinKey{l.key, l.acct}] {
+			d := absDay(EpochDay(legs[j].at) - EpochDay(l.at))
+			if drop[j] || d > inKindWindowDay || !quantitiesAgree(l.qty, legs[j].qty, 0, true) {
+				continue
+			}
+			if best < 0 || d < gap {
+				best, gap = j, d
+			}
+		}
+		if best >= 0 {
+			drop[best], dropped = true, true
+		}
+	}
+	if !dropped {
+		return legs
+	}
+	kept := legs[:0]
+	for i, l := range legs {
+		if !drop[i] {
+			kept = append(kept, l)
+		}
+	}
+	return kept
 }
 
 func (f *lotFeed) unpaired(l lotLeg) {

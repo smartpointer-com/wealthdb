@@ -218,6 +218,25 @@ states a cost basis opens at that cost instead, and a basis config
 states for the instrument (§7) costs what neither does. A transfer out nothing
 pairs relieves lots with no proceeds.
 
+A source often books the shares a ledger row brings in as a transfer in
+of its own, at no value. That is one arrival recorded twice, and the
+ledger row stands for both, before anything pairs:
+
+- **The twin** is a transfer in of the same source, account and
+  instrument, on the exact quantity. It states no amount or a zero one,
+  and no link names it.
+- **The window** is the 7 calendar days a security's two legs pair
+  within, in either order: the two records of one arrival lie no
+  further apart than the two legs of one move.
+- **The nearest** such receipt is the twin, the earlier on a tie. One
+  twin stands for one ledger row.
+- **The ledger row** opens the lot, on its own day and at its cost.
+  The twin opens none and pairs with nothing.
+
+A receipt that states a value of its own, or another quantity, is a
+receipt of its own. A transfer out the source books beside a ledger
+out-row is not a twin: it stays, and pairs or relieves as any other.
+
 ### 3.5 Corporate actions
 
 A corporate action's rule is its action. A row that states none is a

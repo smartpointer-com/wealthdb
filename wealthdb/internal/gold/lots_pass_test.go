@@ -500,6 +500,81 @@ func TestLotPassTakesALedgerReceiptsStatedBasis(t *testing.T) {
 	}
 }
 
+// The source books the shares a ledger row states as a transfer in of
+// its own, at no value: one arrival, so one lot, at the ledger's cost,
+// and the sale realizes against it. A collected receipt with a value of
+// its own, another quantity or account, a link, or more than 7 days away
+// is a receipt of its own, and opens its own lot. Of two candidates the
+// nearest is the twin, the earlier on a tie, and one ledger row has one
+// twin; kept names the collected receipts that open a lot, "none" for
+// none.
+func TestLotPassTakesALedgerReceiptForItsTwin(t *testing.T) {
+	t.Parallel()
+	const second = `,
+                ('lot-src', 'xfer:2', 10*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 900,
+                 '{"equity_transfer_ledger":true,"cost_basis":140,"instrument":"XYZ"}')`
+	for _, c := range []struct {
+		name, twin, links string
+		wantLots          float64
+		ledger, kept      string
+	}{
+		{"same day", `('lot-src', 'r1', 10*86400 + 3600, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0)`, "", 1, "", ""},
+		{"a day before, no amount", `('lot-src', 'r1', 9*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, NULL)`, "", 1, "", ""},
+		{"a journal", `('lot-src', 'r1', 12*86400, 'A', 'XYZ', 'journal', 'USD', 10, 0)`, "", 1, "", ""},
+		{"valued", `('lot-src', 'r1', 10*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 900)`, "", 2, "", ""},
+		{"another quantity", `('lot-src', 'r1', 10*86400, 'A', 'XYZ', 'transfer_in', 'USD', 9, 0)`, "", 2, "", ""},
+		{"another account", `('lot-src', 'r1', 10*86400, 'B', 'XYZ', 'transfer_in', 'USD', 10, 0)`, "", 2, "", ""},
+		{"8 days before", `('lot-src', 'r1', 2*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0)`, "", 2, "", ""},
+		{"linked", `('lot-src', 'r1', 10*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0)`, `
+            INSERT INTO transfer_links (silver_source_id, transaction_external_id, far_silver_source_id,
+                                        far_account_external_id, far_transaction_external_id, evidence, measure) VALUES
+                ('lot-src', 'r1', 'lot-src', 'B', 'o9', 'equity-ledger', 'in_kind');`, 2, "", ""},
+		{"7 days before", `('lot-src', 'r1', 3*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0)`, "", 1, "", ""},
+		{"the nearer of two", `('lot-src', 'r1', 8*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0),
+                ('lot-src', 'r2', 11*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0)`, "", 2, "", "r1"},
+		{"the earlier on a tie", `('lot-src', 'r1', 9*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0),
+                ('lot-src', 'r2', 11*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0)`, "", 2, "", "r2"},
+		{"two twins", `('lot-src', 'r1', 10*86400 + 3600, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0),
+                ('lot-src', 'r2', 10*86400 + 7200, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0)`, "", 2, "", "r2"},
+		{"two ledger rows, one twin", `('lot-src', 'r1', 10*86400 + 3600, 'A', 'XYZ', 'transfer_in', 'USD', 10, 0)`,
+			"", 2, second, "none"},
+	} {
+		db, ctx := lotFixture(t, `
+            INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
+                                      instrument_external_id, kind, currency, quantity, net_amount) VALUES
+                `+c.twin+`,
+                ('lot-src', 's1', 30*86400 + 3600, 'A', 'XYZ', 'sell', 'USD', -10, 1000);
+            INSERT INTO transactions (silver_source_id, transaction_external_id, occurred_at, account_external_id,
+                                      instrument_external_id, kind, currency, quantity, net_amount, payload) VALUES
+                ('lot-src', 'xfer:1', 10*86400, 'A', 'XYZ', 'transfer_in', 'USD', 10, 900,
+                 '{"equity_transfer_ledger":true,"cost_basis":140,"instrument":"XYZ"}')`+c.ledger+`;
+            INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+                                   instrument_external_id, asset_class, currency, quantity, market_value) VALUES
+                ('lot-src', 13*86400, 'A', 'XYZ', 'XYZ', 'public_equity', 'USD', 10, 900),
+                ('lot-src', 40*86400, 'A', 'XYZ', 'XYZ', 'public_equity', 'USD', 0, 0);`+c.links)
+		rebuild(t, db, ctx, fillCfg(lots.FIFO), false)
+		if n := queryFloat(t, db, `SELECT count(*) FROM lots WHERE origin = 'transfer_in'`); n != c.wantLots {
+			t.Errorf("%s: %v receipt lots, want %v", c.name, n, c.wantLots)
+		}
+		if c.kept != "" {
+			if got := queryString(t, db, `SELECT COALESCE(string_agg(origin_transaction_external_id, ','
+			        ORDER BY origin_transaction_external_id), 'none') FROM lots
+			         WHERE origin = 'transfer_in' AND origin_transaction_external_id NOT LIKE 'xfer:%'`); got != c.kept {
+				t.Errorf("%s: the receipts %q open a lot, want %q", c.name, got, c.kept)
+			}
+		}
+		if c.wantLots == 1 {
+			got := queryFloat(t, db, `SELECT sum(book_value) FROM lot_realized WHERE transaction_external_id = 's1'`)
+			if !closeEnough(got, 140) {
+				t.Errorf("%s: the sale's cost %v, want the ledger's 140", c.name, got)
+			}
+			if n := queryFloat(t, db, `SELECT count(*) FROM lot_findings WHERE finding IN ('seed', 'implied')`); n != 0 {
+				t.Errorf("%s: %v seeds or implied disposals", c.name, n)
+			}
+		}
+	}
+}
+
 func TestLotPassPairsAcrossSourcesOfOneKindOnly(t *testing.T) {
 	t.Parallel()
 	// The same instrument leaves one source and arrives at another the

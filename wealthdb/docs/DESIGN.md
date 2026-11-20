@@ -4650,6 +4650,11 @@ The vehicle's source must admit the two ledger kinds in its returns
 policy (angellist and manual do). Cost basis is the vehicle's entry, on
 both rows, for reference.
 
+The receiving account's own record of the shares is often a transfer in
+at no value. The lot engine reads the ledger's in-row for it: one lot,
+opened on the row's day at the cost the row states, and no second lot
+(LOTS.md §3.4).
+
 Both rows name the listed stock, not the vehicle. That is right for the
 receiving account and for cost basis. The private-markets view
 (RETURNS-NOTES.md, "Private markets") lists the vehicle by its own
