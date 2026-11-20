@@ -135,6 +135,15 @@ func parseAsOf(s string, now time.Time) (int64, error) {
 	return t.Unix(), nil
 }
 
+// viewAsOf is the as-of a windowless view reads (returns private): the
+// end of the day s names, else the latest snapshot.
+func viewAsOf(s string, now time.Time) (int64, error) {
+	if strings.TrimSpace(s) == "" {
+		return gold.PrivateLatest, nil
+	}
+	return parseAsOf(s, now)
+}
+
 // errFromAfterTo refuses an explicit range whose from is after its to.
 var errFromAfterTo = errors.New("from > to")
 

@@ -678,6 +678,11 @@ func (fam *family) readWindow(in cliOptions, v *view, prefix string, now time.Ti
 				return errs.Newf(errs.ExitUsage, "%s: %s", prefix, err.Error())
 			}
 		}
+		if v.takesOption("as_of") {
+			if req.asOf, err = viewAsOf(in.str("as_of"), now); err != nil {
+				return errs.Newf(errs.ExitUsage, "%s: %s", prefix, err.Error())
+			}
+		}
 		return nil
 	case trailingYear:
 		horizon := 0

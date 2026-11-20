@@ -119,7 +119,7 @@ wealthdb holdings positions -f csv     # CSV for scripting
 wealthdb returns accounts 2025         # per-account TWR for 2025, by quarter
 wealthdb returns global --method both  # whole-portfolio TWR and MWR since the first snapshot
 wealthdb returns bridge 2025           # why net worth moved in 2025, by quarter
-wealthdb returns private               # each private fund: paid in, distributed, NAV, TVPI, IRR
+wealthdb returns private               # each private holding: paid in, distributed, NAV, TVPI, IRR
 wealthdb gains summary 2025            # realized and unrealized gains in 2025, by month
 wealthdb gains check 2025              # the rebuilt cost basis against what the statements say
 wealthdb exposure sectors              # sector weights, every fund looked through

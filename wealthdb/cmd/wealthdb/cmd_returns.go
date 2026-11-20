@@ -25,17 +25,21 @@ var returnsOptions = []option{
 		def: [2]string{"on", "true"}},
 	{name: "inception", cli: []string{"inception"}, choices: returnsInception, def: [2]string{"full", "full"}},
 	{name: "benchmark", cli: []string{"benchmark"}},
+	// The private view's as-of day; no other view takes it.
+	{name: "as_of", cli: []string{"d", "as-of"}, only: true},
 }
 
-// returnsOptionNames are every returns option's name: what the stated
-// and private views refuse. The stated view's document fixes the periods
-// and computes no return of its own (-x is refused beside them); the
-// private view reads every leg since each holding's first call, and its
-// return is the money-weighted one.
+// returnsOptionNames are the name of every returns option the grains
+// take: what the stated and private views refuse. The stated view's
+// document fixes the periods and computes no return of its own (-x is
+// refused beside them); the private view reads every leg since each
+// holding's first call, and its return is the money-weighted one.
 var returnsOptionNames = func() []string {
-	names := make([]string, len(returnsOptions))
-	for i, o := range returnsOptions {
-		names[i] = o.name
+	var names []string
+	for _, o := range returnsOptions {
+		if !o.only {
+			names = append(names, o.name)
+		}
 	}
 	return names
 }()
@@ -44,8 +48,8 @@ var returnsOptionNames = func() []string {
 // four reconciling grains, coarsest first, then three side views, which
 // are no grain of them: `stated`, the documents' stated periods beside
 // the accounts' figures, `bridge`, why net worth moved, and `private`,
-// each private fund's calls, distributions and mark. Per-position gains
-// are the gains report's.
+// each private holding's calls, distributions and mark. Per-position
+// gains are the gains report's.
 var returnsFamily = &family{
 	name: "returns",
 	views: append(returnsGrainViews(),
@@ -67,7 +71,8 @@ var returnsFamily = &family{
 			}},
 		// On the private view, "value" is what each holding is marked at.
 		view{name: "private", side: true, principal: fixedColumn("nav"), usage: returnsPrivateUsage,
-			refuses: returnsOptionNames, checkWindow: checkPrivateWindow,
+			refuses: returnsOptionNames, checkWindow: checkPrivateWindow, takes: []string{"as_of"},
+			header: privateHeader,
 			build: func(_ *config.Config, req request) *report {
 				return returnsPrivateReport(req)
 			}},
@@ -416,8 +421,9 @@ Also:
                ('wealthdb returns stated -h')
   bridge       why net worth moved: saved, onboarded and gained
                ('wealthdb returns bridge -h')
-  private      each private fund or SPV: paid in, distributed, NAV,
-               DPI, TVPI and IRR ('wealthdb returns private -h')
+  private      each private fund, SPV, private stock or note: paid in,
+               distributed, NAV, DPI, TVPI and IRR, as of a day (-d)
+               ('wealthdb returns private -h')
 
 Plumbing (cash accounts, deposit-bank sources, config returns_hide ids)
 emits no rows of its own at any view, and neither does a portfolio or

@@ -115,8 +115,8 @@ func TestPrivateView(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, se)
 	}
 	header, _, _ := strings.Cut(out, "\n")
-	if want := "silver_source,account,holding,first_call,paid_in_USD,distributed_USD,nav_USD,marked_at," +
-		"dpi,tvpi,irr_pct,quality"; header != want {
+	if want := "silver_source,account,holding,asset_class,vehicle,status,first_call,paid_in_USD,distributed_USD," +
+		"nav_USD,marked_at,dpi,tvpi,irr_pct,quality"; header != want {
 		t.Errorf("header = %s", header)
 	}
 	rows := csvRows(t, out)
@@ -129,8 +129,12 @@ func TestPrivateView(t *testing.T) {
 		t.Errorf("fund row %v", fund)
 	}
 	if spv["holding"] != "SPV" || spv["distributed_USD"] != "25000.00" || spv["nav_USD"] != "0.00" ||
-		spv["dpi"] != "2.50" || spv["marked_at"] != "2024-03-31" || spv["quality"] != "exited" {
+		spv["dpi"] != "2.50" || spv["marked_at"] != "2024-03-31" || spv["quality"] != "exited" ||
+		spv["status"] != "exited" || spv["asset_class"] != "private_equity" {
 		t.Errorf("spv row %v", spv)
+	}
+	if fund["status"] != "held" || fund["vehicle"] != "fund" || total["status"] != "" {
+		t.Errorf("fund %v, total %v", fund, total)
 	}
 	if total["holding"] != "Total" || total["paid_in_USD"] != "90000.00" || total["tvpi"] != "1.29" {
 		t.Errorf("total row %v", total)
@@ -139,6 +143,32 @@ func TestPrivateView(t *testing.T) {
 	if _, se, code := runToday(t, "-c", cfg, "returns", "private", "2024"); code == 0 ||
 		!strings.Contains(se, "takes no window") {
 		t.Errorf("a window passed: exit %d: %s", code, se)
+	}
+}
+
+// -d reads the view as of a day: the legs up to it and the NAV of the
+// last snapshot on or before it. The grains take no -d.
+func TestPrivateViewAsOf(t *testing.T) {
+	t.Parallel()
+	cfg := setupPrivateGold(t)
+	out, se, code := runToday(t, "-c", cfg, "returns", "private", "-d", "2024-06-30", "-f", "csv")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, se)
+	}
+	rows := csvRows(t, out)
+	if len(rows) != 3 {
+		t.Fatalf("%d rows:\n%s", len(rows), out)
+	}
+	fund, spv := rows[0], rows[1]
+	if fund["paid_in_USD"] != "80000.00" || fund["nav_USD"] != "40000.00" || fund["marked_at"] != "2024-03-31" {
+		t.Errorf("fund on June 30 %v", fund)
+	}
+	if spv["distributed_USD"] != "0.00" || spv["nav_USD"] != "12000.00" || spv["status"] != "held" {
+		t.Errorf("spv on June 30 %v: its exit is in August", spv)
+	}
+	if _, se, code := runToday(t, "-c", cfg, "returns", "accounts", "-d", "2024-06-30"); code == 0 ||
+		!strings.Contains(se, "-d") {
+		t.Errorf("-d passed on accounts: exit %d: %s", code, se)
 	}
 }
 
@@ -179,6 +209,25 @@ func TestPrivateViewInMCP(t *testing.T) {
 	}
 	if !strings.Contains(res, "Example Ventures Fund I") || !strings.Contains(res, "tvpi") {
 		t.Errorf("result:\n%s", res)
+	}
+	res, err = callTool(t, s, "returns", map[string]any{"view": "private", "as_of": "2024-06-30", "format": "csv"})
+	if err != nil || !strings.Contains(res, "as of 2024-06-30") || !strings.Contains(res, "40000.00") {
+		t.Errorf("returns private as of June 30 (%v):\n%s", err, res)
+	}
+	// asset_class keeps the holdings of that class. The total is no
+	// holding's: the filter drops it and never recomputes it.
+	res, err = callTool(t, s, "returns", map[string]any{"view": "private", "asset_class": "private_equity", "format": "csv"})
+	if err != nil || !strings.Contains(res, "Example Ventures Fund I") || !strings.Contains(res, "SPV") ||
+		strings.Contains(res, "Total") {
+		t.Errorf("returns private of private_equity (%v):\n%s", err, res)
+	}
+	res, err = callTool(t, s, "returns", map[string]any{"view": "private", "asset_class": "private_debt", "format": "csv"})
+	if err != nil || !strings.Contains(res, "0 rows") || strings.Contains(res, "Example Ventures Fund I") {
+		t.Errorf("returns private of private_debt (%v):\n%s", err, res)
+	}
+	if _, err := callTool(t, s, "returns", map[string]any{"view": "accounts", "as_of": "2024-06-30"}); err == nil ||
+		!strings.Contains(err.Error(), "as_of belongs to view=private") {
+		t.Errorf("as_of passed on accounts through MCP: %v", err)
 	}
 	if _, err := callTool(t, s, "returns", map[string]any{"view": "private", "from": "2024"}); err == nil ||
 		!strings.Contains(err.Error(), "takes no window") {

@@ -30,7 +30,7 @@ var instructionsBody = `wealthdb holds a household's complete financial picture 
 
 Pick the tool by the question:
 - what is held, where, and what it is worth (today or on a date); net worth; total cash (view=global); one account or one institution -> holdings
-- how investments performed, as a return % -> returns; why net worth moved, what was saved against what was gained, the household's total debt repaid (debt_repaid) -> returns (view=bridge); what each private fund or SPV was paid, gave back and is marked at, its DPI, TVPI or IRR -> returns (view=private)
+- how investments performed, as a return % -> returns; why net worth moved, what was saved against what was gained, the household's total debt repaid (debt_repaid) -> returns (view=bridge); what each private fund, SPV or private stock was paid, gave back and is marked at, its DPI, TVPI or IRR -> returns (view=private)
 - what was gained or lost (P&L), realized or unrealized; a year's realized gains; the unrealized gain now (to=today); a holding's cost basis -> gains
 - what is really owned once every fund is looked through: allocation by asset class, sector, country, region or currency; debt by credit, maturity or coupon; the largest issuers; how much of one company is held through funds -> exposure
 - what the holdings yield or earn; interest rates, duration, DV01; a bond's credit rating; cash against its benchmark -> yield
@@ -258,8 +258,10 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - debt_unpriced: (view=bridge) a debt has no rate to the currency; its fall is left to gain.
 - bridge_gap: (view=bridge) net worth less returns' value is not the mortgages and cards; gain holds the difference.
 - tracking_netted: (view=bridge) net_flow and onboarded had opposite signs, so the smaller size reads as a move into or out of tracking, in neither column.
-- no_mark: (view=private) the holding never had a value, so nav, tvpi and irr_pct are blank.
-- exited: (view=private) the holding has left the holdings, so nav is 0 and marked_at is its last line's mark.
+- no_mark: (view=private) the holding never had a value but 0 and nothing came back, so nav, tvpi and irr_pct are blank.
+- no_cost: (view=private) no call and no stated cost, so paid_in, dpi, tvpi and irr_pct are blank.
+- paid_in_from_cost: (view=private) paid_in is the holding's stated cost on its acquisition day, not a cash leg.
+- exited: (view=private) the status is exited: nav is 0 after something came back, or the holding left the holdings.
 - at_cost: (view=private) the source carries the NAV at cost, before any valuation, so tvpi reads 1 and irr_pct 0 by construction.
 - call_after_mark, distribution_after_mark: (view=private) a call, or a distribution or exit, came after the mark, so tvpi reads low, or high.
 - exit_unvalued=N: (view=private) N exits in kind state no value.

@@ -1,7 +1,7 @@
 {
   "name": "returns",
   "title": "Returns",
-  "description": "How investments performed over a window (default: since the first snapshot), as twr and mwr %, after fees and taxes. view=global: the whole portfolio. sources, portfolios: per entity, best-effort. accounts: per account, exact. stated: a document's stated periods beside the engine's figures; it takes no method, period, annualize, netting, inception, benchmark or currency. bridge: why net worth moved, for the whole household: end_net_worth = start_net_worth + net_saved + onboarded + gain; whole months; it takes no method, annualize, netting, inception, benchmark, source or account. private: each private fund or SPV since its first call, to the latest snapshot: paid_in, distributed, nav, marked_at, dpi, tvpi, irr_pct, then the total; it takes no method, period, annualize, netting, inception, benchmark, from or to. One row per entity for the whole window unless period adds buckets. quality names the reason for every n/a. Example: {view: \"accounts\", from: \"2025\", to: \"2025\"}.",
+  "description": "How investments performed over a window (default: since the first snapshot), as twr and mwr %, after fees and taxes. view=global: the whole portfolio. sources, portfolios: per entity, best-effort. accounts: per account, exact. stated: a document's stated periods beside the engine's figures; it takes no method, period, annualize, netting, inception, benchmark or currency. bridge: why net worth moved, for the whole household: end_net_worth = start_net_worth + net_saved + onboarded + gain; whole months; it takes no method, annualize, netting, inception, benchmark, source or account. private: each private equity or private debt holding (fund, SPV, private stock, note) since its first call, to the latest snapshot or as_of: asset_class, vehicle, status, paid_in, distributed, nav, marked_at, dpi, tvpi, irr_pct, then the total; it takes no method, period, annualize, netting, inception, benchmark, from or to. One row per entity for the whole window unless period adds buckets. quality names the reason for every n/a. Example: {view: \"accounts\", from: \"2025\", to: \"2025\"}.",
   "inputSchema": {
     "properties": {
       "account": {
@@ -15,6 +15,14 @@
           "always",
           "never"
         ],
+        "type": "string"
+      },
+      "as_of": {
+        "description": "private only: the day the view reads (default: the latest snapshot).",
+        "type": "string"
+      },
+      "asset_class": {
+        "description": "private only: keep only this asset class (private_equity or private_debt).",
         "type": "string"
       },
       "benchmark": {

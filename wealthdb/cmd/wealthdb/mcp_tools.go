@@ -143,7 +143,7 @@ Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 			"stated: a document's stated periods beside the engine's figures; it takes no " + orList(append(slices.Clone(returnsOptionNames), "currency")) + ". " +
 			"bridge: why net worth moved, for the whole household: end_net_worth = start_net_worth + net_saved + onboarded + gain; whole months; it takes no " +
 			orList(append(slices.Clone(bridgeRefusedFlags), "source", "account")) + ". " +
-			"private: each private fund or SPV since its first call, to the latest snapshot: paid_in, distributed, nav, marked_at, dpi, tvpi, irr_pct, then the total; it takes no " +
+			"private: each private equity or private debt holding (fund, SPV, private stock, note) since its first call, to the latest snapshot or as_of: asset_class, vehicle, status, paid_in, distributed, nav, marked_at, dpi, tvpi, irr_pct, then the total; it takes no " +
 			orList(append(slices.Clone(returnsOptionNames), "from", "to")) + ". " +
 			"One row per entity for the whole window unless period adds buckets. quality names the reason for every n/a. " +
 			`Example: {view: "accounts", from: "2025", to: "2025"}.`,
@@ -155,9 +155,11 @@ Example: {view: "accounts", tax_wrapper: "roth_ira"}.`,
 			param{name: "netting", kind: paramBoolean, doc: "Net internal transfers at coarse grains (default true)."},
 			stringParam("inception", "full (default) or strict.", returnsInception...),
 			stringParam("benchmark", benchmarkParamDoc("view=global only: the benchmark beside each row, over the days both sides have.")),
+			stringParam("as_of", takenBy(returnsFamily, "as_of")+"the day the view reads (default: the latest snapshot)."),
 			sourceParam, accountParam,
+			scopedParam(returnsFamily, "asset_class", "keep only this asset class (private_equity or private_debt)."),
 		),
-		notes: `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences. bridge explains net worth: end_net_worth = start_net_worth + net_saved + onboarded + gain. net_saved = net_flow + debt_repaid, onboarded is value that entered or left tracking, gain is the residual, returns' gain plus the FX move on debt. It reads whole months for the whole household. private: dpi = distributed / paid_in, tvpi = (distributed + nav) / paid_in; irr_pct is the money-weighted return since the first call. Marks are old by nature, so read marked_at.
+		notes: `The quality column explains every n/a (describe topic=quality). accounts is exact; the coarser views are best-effort, and returns do not add up across views. stated sets each period a document states for an account (stated net additions, ending value) against the engine's monthly figures for it, in the stated currency; flow_gap and value_gap are the differences. bridge explains net worth: end_net_worth = start_net_worth + net_saved + onboarded + gain. net_saved = net_flow + debt_repaid, onboarded is value that entered or left tracking, gain is the residual, returns' gain plus the FX move on debt. It reads whole months for the whole household. private: dpi = distributed / paid_in, tvpi = (distributed + nav) / paid_in; irr_pct is the money-weighted return since the first call; status is held, partially_exited or exited. Marks are old by nature, so read marked_at.
 Example: {view: "sources", from: "2024", to: "2025", period: "annual", method: "twr"}.`,
 		family: returnsFamily,
 	},
@@ -910,9 +912,17 @@ func resolveDates(fam *family, a *toolArgs, now time.Time, horizon int, req *req
 	case sinceInception:
 		req.asOf = anchorToDay(now.UTC(), true).Unix()
 		req.from, req.to, err = parseReturnsWindow(args, now)
-		if check := fam.view(req.view).checkWindow; err == nil && check != nil {
+		v := fam.view(req.view)
+		if check := v.checkWindow; err == nil && check != nil {
 			// The refusal names the bounds in words both front ends read.
-			return check(req.from, req.to, req.asOf)
+			if err := check(req.from, req.to, req.asOf); err != nil {
+				return err
+			}
+		}
+		if err == nil && v.takesOption("as_of") {
+			if req.asOf, err = viewAsOf(a.str("as_of"), now); err != nil {
+				return fmt.Errorf("as_of %q is not a date; use %s", a.str("as_of"), dateDoc)
+			}
 		}
 	case pastMonth:
 		req.from, req.to, err = parseDateRange(args, now)
