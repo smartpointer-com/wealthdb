@@ -24,7 +24,7 @@ func checkPrivateWindow(fromEpoch, toEpoch, today int64) error {
 func returnsPrivateReport(req request) *report {
 	kindOf, loadKinds := sourceKinds()
 	fetch := func(ctx context.Context, db *sql.DB) ([]gold.PrivateRow, error) {
-		return gold.RunPrivate(ctx, db, req.currency)
+		return gold.RunPrivate(ctx, db, gold.PrivateLatest, req.currency)
 	}
 	return withLoads(newReport(buildPrivateColumnRegistry(req.currency, kindOf), defaultPrivateColumns, fetch),
 		loadKinds)

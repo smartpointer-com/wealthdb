@@ -120,9 +120,10 @@ var returnsMaterialized = []string{"report_returns", "benchmark_returns", "bench
 // currency, never the grain, period or window. The benchmark tables
 // (computeBenchmarks) and the bridge (computeMaterialBridge) read the same
 // datasets; the private-markets rows (computeMaterialPrivate) are
-// RunPrivate's in each currency. Everything is computed before the tables are
-// rewritten (rewriteTables), so the write needs no pin. Returns the row count
-// of report_returns and the benchmark tables.
+// RunPrivate's in each currency, at every quarter end and today.
+// Everything is computed before the tables are rewritten (rewriteTables),
+// so the write needs no pin. Returns the row count of report_returns and
+// the benchmark tables.
 func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (int, error) {
 	fx, err := loadFxBounds(ctx, db)
 	if err != nil {
@@ -176,7 +177,7 @@ func MaterializeReturns(ctx context.Context, db *sql.DB, p MaterializeParams) (i
 	if err != nil {
 		return 0, err
 	}
-	private, err := computeMaterialPrivate(ctx, db)
+	private, err := computeMaterialPrivate(ctx, db, p.ToEpoch)
 	if err != nil {
 		return 0, err
 	}

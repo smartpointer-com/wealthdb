@@ -1419,88 +1419,311 @@ CREATE MACRO report_marks_multi() AS TABLE (
 -- ============================================================
 -- Private markets (docs/RETURNS-NOTES.md, "Private markets").
 --
---   * A private holding is a source's instrument in one account that a
---     contribution line names: a capital call or an SPV subscription.
---     A private company's shares bought directly are a buy, and founder
---     stock has no cash leg, so neither is one.
+--   * A private holding is a source's instrument whose asset class is
+--     private equity or private debt, in any vehicle but a listed fund
+--     (private_class), or one a contribution line names: a capital call
+--     or an SPV subscription. The class is the instrument's, else the
+--     holding's latest line's, else its latest leg's.
+--   * One holding is one instrument identity (its ISIN, else its id) in
+--     one portfolio, or in one account outside any portfolio: a fund a
+--     custody account holds and a cash account of the same portfolio
+--     pays for is one holding (private_holdings).
+--   * Paid in is the calls, buys and fees on the holding. A holding with
+--     none takes its stated cost: each line's book value on its
+--     acquisition date.
 --   * Every leg converts at its own day's rate, and the NAV at its
 --     snapshot's day, so each reporting currency reads at historic FX.
 --   * Sums are decimals, so they do not follow the order rows add in. A
 --     holding's money rounds once, to the cent, and the total adds the
 --     cents, so it is the sum of the rows as they print.
---   * report_private_markets holds `wealthdb returns private`'s rows,
---     the money-weighted return with them. web_private serves it.
---   * serving_private_flows holds the same legs per quarter, in every
---     reporting currency. web_private_flows serves it.
+--   * The macros read a list of instants, and each row names its own in
+--     as_of: a leg counts at every instant on or after it, a NAV is the
+--     lines held at the instant.
+--   * report_private_markets holds `wealthdb returns private`'s rows at
+--     every quarter end and today, the money-weighted return with them.
+--     web_private serves it.
+--   * serving_private_flows holds the legs per holding and quarter, in
+--     every reporting currency. web_private_flows serves it.
 -- ============================================================
 
+-- private_class: whether an instrument of asset class p_class, held
+-- through p_vehicle, is a private holding's: private equity or private
+-- debt, in any vehicle but a listed fund.
+CREATE MACRO private_class(p_class, p_vehicle) AS
+    p_class IN ('private_equity', 'private_debt') AND p_vehicle IS DISTINCT FROM 'etf';
+
+-- private_group: the group a source's account p_account belongs to for
+-- the private holdings, its portfolio p_portfolio, else the account.
+CREATE MACRO private_group(p_portfolio, p_account) AS
+    COALESCE('p:' || p_portfolio, 'a:' || p_account);
+
+-- private_holdings: every key of a private holding at p_asof, a source's
+-- instrument in one account, with the holding it belongs to. A leg up to
+-- p_asof names a key (a contribution, buy, fee, distribution, sale or
+-- transfer out), or a line of a snapshot up to it. The keys of one
+-- holding share a group (private_group) and an identity, the instrument's
+-- ISIN, else its id. The holding is named by its key that holds the
+-- latest line, else by its key with the first leg: holding_account and
+-- holding_instrument. Its asset class and vehicle are that key's: the
+-- instrument row's, else the latest line's, else the latest leg's that
+-- states one. A line of a class that is no private one is read only for
+-- a key a contribution names, for its class. The legs and lines read are
+-- only those of an instrument whose identity some instrument row, line or
+-- leg states a private class for, or a contribution names (cand): no
+-- other one can be a private holding's.
+CREATE MACRO private_holdings(p_asof) AS TABLE (
+    WITH named AS (
+        SELECT silver_source_id, instrument_external_id FROM instruments
+         WHERE asset_class IN ('private_equity', 'private_debt')
+        UNION
+        SELECT silver_source_id, instrument_external_id FROM positions
+         WHERE instrument_external_id IS NOT NULL AND snapshot_at <= p_asof
+           AND asset_class IN ('private_equity', 'private_debt')
+        UNION
+        SELECT silver_source_id, instrument_external_id FROM transactions
+         WHERE instrument_external_id IS NOT NULL AND occurred_at <= p_asof
+           AND (kind = 'contribution' OR asset_class IN ('private_equity', 'private_debt')
+                AND kind IN ('buy', 'fee', 'distribution', 'sell', 'transfer_out'))),
+    ids AS (
+        SELECT DISTINCT n.silver_source_id, COALESCE(i.isin, n.instrument_external_id) AS identity
+          FROM named n
+          LEFT JOIN instruments i ON i.silver_source_id = n.silver_source_id
+           AND i.instrument_external_id = n.instrument_external_id),
+    cand AS (
+        SELECT silver_source_id, identity AS instrument_external_id FROM ids
+        UNION
+        SELECT i.silver_source_id, i.instrument_external_id
+          FROM instruments i
+          SEMI JOIN ids d ON d.silver_source_id = i.silver_source_id AND d.identity = i.isin),
+    tx AS (
+        SELECT t.silver_source_id, t.account_external_id, t.instrument_external_id,
+               bool_or(t.kind = 'contribution') AS called, MIN(t.occurred_at) AS first_at,
+               arg_max(t.asset_class, t.occurred_at) FILTER (WHERE t.asset_class IS NOT NULL) AS asset_class,
+               arg_max(t.vehicle, t.occurred_at) FILTER (WHERE t.vehicle IS NOT NULL) AS vehicle
+          FROM transactions t
+          SEMI JOIN cand c ON c.silver_source_id = t.silver_source_id
+           AND c.instrument_external_id = t.instrument_external_id
+         WHERE t.occurred_at <= p_asof
+           AND t.kind IN ('contribution', 'buy', 'fee', 'distribution', 'sell', 'transfer_out')
+         GROUP BY ALL),
+    ln AS (
+        SELECT p.silver_source_id, p.account_external_id, p.instrument_external_id, MAX(p.snapshot_at) AS last_at,
+               arg_max(p.asset_class, p.snapshot_at) AS asset_class, arg_max(p.vehicle, p.snapshot_at) AS vehicle
+          FROM positions p
+          SEMI JOIN cand d ON d.silver_source_id = p.silver_source_id
+           AND d.instrument_external_id = p.instrument_external_id
+          LEFT JOIN instruments i ON i.silver_source_id = p.silver_source_id
+           AND i.instrument_external_id = p.instrument_external_id
+          LEFT JOIN tx c ON c.called AND c.silver_source_id = p.silver_source_id
+           AND c.account_external_id = p.account_external_id AND c.instrument_external_id = p.instrument_external_id
+         WHERE p.snapshot_at <= p_asof
+           AND (c.instrument_external_id IS NOT NULL
+                OR private_class(COALESCE(i.asset_class, p.asset_class), COALESCE(i.vehicle, p.vehicle)))
+         GROUP BY ALL),
+    k AS (
+        SELECT COALESCE(t.silver_source_id, l.silver_source_id) AS silver_source_id,
+               COALESCE(t.account_external_id, l.account_external_id) AS account_external_id,
+               COALESCE(t.instrument_external_id, l.instrument_external_id) AS instrument_external_id,
+               COALESCE(t.called, FALSE) AS called, t.first_at, l.last_at,
+               COALESCE(l.asset_class, t.asset_class) AS asset_class, COALESCE(l.vehicle, t.vehicle) AS vehicle
+          FROM tx t
+          FULL JOIN ln l ON l.silver_source_id = t.silver_source_id AND l.account_external_id = t.account_external_id
+           AND l.instrument_external_id = t.instrument_external_id),
+    m AS (
+        SELECT k.silver_source_id, k.account_external_id, k.instrument_external_id, k.called, k.first_at, k.last_at,
+               private_group(a.portfolio_external_id, k.account_external_id) AS holding_group,
+               COALESCE(i.isin, k.instrument_external_id) AS identity,
+               COALESCE(i.asset_class, k.asset_class) AS asset_class, COALESCE(i.vehicle, k.vehicle) AS vehicle
+          FROM k
+          LEFT JOIN instruments i ON i.silver_source_id = k.silver_source_id
+           AND i.instrument_external_id = k.instrument_external_id
+          LEFT JOIN accounts a ON a.silver_source_id = k.silver_source_id
+           AND a.account_external_id = k.account_external_id),
+    r AS (
+        SELECT *,
+               first_value(account_external_id) OVER h AS holding_account,
+               first_value(instrument_external_id) OVER h AS holding_instrument,
+               first_value(asset_class) OVER h AS holding_class, first_value(vehicle) OVER h AS holding_vehicle,
+               bool_or(called OR private_class(asset_class, vehicle))
+                   OVER (PARTITION BY silver_source_id, holding_group, identity) AS private
+          FROM m
+        WINDOW h AS (PARTITION BY silver_source_id, holding_group, identity
+                     ORDER BY last_at DESC NULLS LAST, first_at NULLS LAST, account_external_id, instrument_external_id
+                     ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING))
+    SELECT silver_source_id, account_external_id, instrument_external_id, holding_group,
+           holding_account, holding_instrument, holding_class AS asset_class, holding_vehicle AS vehicle
+      FROM r
+     WHERE private
+);
+
 -- private_legs: every leg of a private holding, and every exit in kind
--- out of a private holding's account that is no holding's, up to p_asof,
--- in p_ccy. leg is call (a contribution, a refund of one negative), distribution
--- (a distribution, or a sale: cash back) or in_kind (a transfer out: an
--- exit in kind, at the value its row states). An exit in kind is the
--- holding's when it moves the holding, or when its payload's holding
+-- out of a private holding's group that is no holding's, in p_ccy, a row
+-- for each instant of p_instants it falls on or before (as_of). A leg
+-- names its holding by the holding's account and instrument
+-- (private_holdings), and its group. leg is call (money in: a
+-- contribution, a buy or a fee on the holding, a refund of one negative),
+-- distribution (cash back: a distribution or a sale, and the interest,
+-- dividends and coupons of a private debt holding) or in_kind (a transfer
+-- out: an exit in kind, at the value its row states). An exit in kind is
+-- the holding's when it moves the holding, or when its payload's holding
 -- names it: an SPV's exit in the listed shares it received names the
--- shares as its instrument. paid is what the holder paid in: positive on
--- a call, negative on what came back; paid_own is the same in the leg's
--- own currency. paid is NULL with no rate to p_ccy, except that a zero
--- reads zero in every currency. unvalued marks an exit in kind that
--- states no value: its paid is zero. unattributed marks an exit in kind
--- out of an account that holds a private holding, which is no holding's:
--- its instrument_external_id is its own, and only the total counts it.
--- An exit of an instrument the account bought or took in moves a direct
--- holding, and one of cash names no instrument: neither is a leg.
-CREATE MACRO private_legs(p_asof, p_ccy) AS TABLE (
-    WITH held AS (
-        SELECT DISTINCT silver_source_id, account_external_id, instrument_external_id
-          FROM transactions
-         WHERE kind = 'contribution' AND instrument_external_id IS NOT NULL AND occurred_at <= p_asof),
-    accts AS (SELECT DISTINCT silver_source_id, account_external_id FROM held),
+-- shares as its instrument. A transfer out that a transfer in of the same
+-- identity into another account of its group answers on its day, of the
+-- same quantity where both state one, is a move inside the group and no
+-- leg. paid is what the holder paid in: positive on a call, negative on
+-- what came back; paid_own is the same in the leg's own currency. paid is
+-- NULL with no rate to p_ccy, except that a zero reads zero in every
+-- currency. unvalued marks an exit in kind that states no value: its paid
+-- is zero. unattributed marks an equity-transfer ledger out-row out of a
+-- group that holds a private holding, which is no holding's: its account
+-- and instrument are its own, and only the total counts it. A ledger exit
+-- of an instrument the group bought or took in moves a direct holding, and
+-- one of cash names no instrument: neither is a leg, nor is any other
+-- transfer out that no holding claims. from_cost marks the calls of a
+-- holding with no call of its own up to the instant: one per line it
+-- holds at the instant, else per line of its last snapshot, the line's
+-- book value on its acquisition date, where every one of those lines
+-- states both.
+CREATE MACRO private_legs(p_instants, p_ccy) AS TABLE (
+    WITH ins AS (SELECT DISTINCT unnest(p_instants) AS as_of),
+    held AS (SELECT * FROM private_holdings(list_max(p_instants))),
+    groups AS (SELECT DISTINCT silver_source_id, holding_group FROM held),
+    t0 AS (
+        SELECT t.*, private_group(a.portfolio_external_id, t.account_external_id) AS holding_group,
+               COALESCE(i.isin, t.instrument_external_id) AS identity
+          FROM transactions t
+          LEFT JOIN accounts a ON a.silver_source_id = t.silver_source_id
+           AND a.account_external_id = t.account_external_id
+          LEFT JOIN instruments i ON i.silver_source_id = t.silver_source_id
+           AND i.instrument_external_id = t.instrument_external_id
+          SEMI JOIN groups g ON g.silver_source_id = t.silver_source_id
+           AND g.holding_group = private_group(a.portfolio_external_id, t.account_external_id)
+         WHERE t.occurred_at <= list_max(p_instants)),
     direct AS (
-        SELECT DISTINCT b.silver_source_id, b.account_external_id, b.instrument_external_id
-          FROM transactions b
-          SEMI JOIN accts a ON a.silver_source_id = b.silver_source_id
-           AND a.account_external_id = b.account_external_id
-         WHERE b.kind IN ('buy', 'transfer_in') AND b.instrument_external_id IS NOT NULL
-           AND b.occurred_at <= p_asof),
-    legs AS (
-        SELECT t.silver_source_id, t.account_external_id,
-               COALESCE(h.instrument_external_id, t.instrument_external_id) AS instrument_external_id,
-               t.transaction_external_id, t.occurred_at // 86400 AS day,
-               CASE t.kind WHEN 'contribution' THEN 'call' WHEN 'transfer_out' THEN 'in_kind'
-                           ELSE 'distribution' END AS leg,
+        SELECT DISTINCT silver_source_id, holding_group, instrument_external_id
+          FROM t0
+         WHERE kind IN ('buy', 'transfer_in') AND instrument_external_id IS NOT NULL),
+    moved_in AS (
+        SELECT silver_source_id, holding_group, account_external_id, identity, occurred_at // 86400 AS day,
+               abs(quantity) AS quantity
+          FROM t0
+         WHERE kind = 'transfer_in' AND instrument_external_id IS NOT NULL),
+    tx AS (
+        SELECT t.silver_source_id, COALESCE(h.holding_account, t.account_external_id) AS account_external_id,
+               COALESCE(h.holding_instrument, t.instrument_external_id) AS instrument_external_id,
+               t.holding_group, t.transaction_external_id, t.occurred_at, t.occurred_at // 86400 AS day,
+               CASE WHEN t.kind IN ('contribution', 'buy', 'fee') THEN 'call' WHEN t.kind = 'transfer_out' THEN 'in_kind'
+                    ELSE 'distribution' END AS leg,
                t.currency,
                CASE WHEN t.kind = 'transfer_out' THEN -abs(COALESCE(t.net_amount, 0))
                     ELSE -t.net_amount END AS paid_own,
                t.kind = 'transfer_out' AND COALESCE(t.net_amount, 0) = 0 AS unvalued,
-               h.instrument_external_id IS NULL AS unattributed
-          FROM transactions t
-          SEMI JOIN accts a ON a.silver_source_id = t.silver_source_id
-           AND a.account_external_id = t.account_external_id
+               h.holding_instrument IS NULL AS unattributed,
+               FALSE AS from_cost
+          FROM t0 t
           LEFT JOIN held h ON h.silver_source_id = t.silver_source_id
            AND h.account_external_id = t.account_external_id
            AND h.instrument_external_id = CASE WHEN t.kind = 'transfer_out'
                    THEN COALESCE(json_extract_string(t.payload, '$.holding'), t.instrument_external_id)
                    ELSE t.instrument_external_id END
           LEFT JOIN direct d ON d.silver_source_id = t.silver_source_id
-           AND d.account_external_id = t.account_external_id
+           AND d.holding_group = t.holding_group
            AND d.instrument_external_id = t.instrument_external_id
-         WHERE t.kind IN ('contribution', 'distribution', 'sell', 'transfer_out')
-           AND t.occurred_at <= p_asof
-           AND (h.instrument_external_id IS NOT NULL
+         WHERE (t.kind IN ('contribution', 'buy', 'fee', 'distribution', 'sell', 'transfer_out')
+                OR t.kind IN ('interest', 'dividend', 'coupon') AND h.asset_class = 'private_debt')
+           AND (h.holding_instrument IS NOT NULL
                 OR t.kind = 'transfer_out' AND t.instrument_external_id IS NOT NULL
-                   AND d.instrument_external_id IS NULL))
-    SELECT l.silver_source_id, l.account_external_id, l.instrument_external_id,
-           l.transaction_external_id, l.day, l.leg, l.currency, l.unvalued, l.unattributed, l.paid_own,
+                   AND d.instrument_external_id IS NULL
+                   AND COALESCE(json_extract_string(t.payload, '$.equity_transfer_ledger'), '') = 'true')
+           AND NOT (t.kind = 'transfer_out' AND EXISTS (
+                   SELECT 1 FROM moved_in m
+                    WHERE m.silver_source_id = t.silver_source_id AND m.holding_group = t.holding_group
+                      AND m.account_external_id <> t.account_external_id AND m.identity = t.identity
+                      AND m.day = t.occurred_at // 86400
+                      AND (m.quantity IS NULL OR t.quantity IS NULL OR m.quantity = abs(t.quantity))))),
+    -- Each holding's first call, and the keys of the holdings with none
+    -- up to an instant, with their lines.
+    called AS (
+        SELECT silver_source_id, account_external_id, instrument_external_id, MIN(occurred_at) AS first_call
+          FROM tx
+         WHERE leg = 'call' AND NOT unattributed
+         GROUP BY ALL),
+    bare AS (
+        SELECT i.as_of, h.*
+          FROM ins i CROSS JOIN held h
+          LEFT JOIN called c ON c.silver_source_id = h.silver_source_id AND c.account_external_id = h.holding_account
+           AND c.instrument_external_id = h.holding_instrument
+         WHERE c.first_call IS NULL OR c.first_call > i.as_of),
+    lines AS (
+        SELECT p.silver_source_id, p.account_external_id AS key_account, p.instrument_external_id AS key_instrument,
+               b.holding_account AS account_external_id, b.holding_instrument AS instrument_external_id,
+               b.holding_group, p.snapshot_at, p.account_external_id || ':' || p.position_key AS position_key,
+               p.currency, p.book_value, p.acquisition_date
+          FROM positions p
+          JOIN (SELECT DISTINCT silver_source_id, account_external_id, instrument_external_id, holding_account,
+                       holding_instrument, holding_group FROM bare) b
+            ON b.silver_source_id = p.silver_source_id AND b.account_external_id = p.account_external_id
+           AND b.instrument_external_id = p.instrument_external_id
+         WHERE p.snapshot_at <= list_max(p_instants)),
+    -- The lines a bare holding holds at the instant: each of its keys'
+    -- lines in that key's account's snapshot at the instant.
+    account_snaps AS (
+        SELECT DISTINCT p.silver_source_id, p.account_external_id, p.snapshot_at
+          FROM positions p
+          SEMI JOIN lines l ON l.silver_source_id = p.silver_source_id AND l.key_account = p.account_external_id
+         WHERE p.snapshot_at <= list_max(p_instants)),
+    at_snap AS (
+        SELECT b.as_of, b.silver_source_id, b.account_external_id, b.instrument_external_id, s.snapshot_at
+          FROM bare b
+          ASOF JOIN account_snaps s ON s.silver_source_id = b.silver_source_id
+           AND s.account_external_id = b.account_external_id AND s.snapshot_at <= b.as_of),
+    now_lines AS (
+        SELECT a.as_of, l.*
+          FROM at_snap a
+          JOIN lines l ON l.silver_source_id = a.silver_source_id AND l.key_account = a.account_external_id
+           AND l.key_instrument = a.instrument_external_id AND l.snapshot_at = a.snapshot_at),
+    -- A bare holding that holds no line at the instant reads the lines of
+    -- its last snapshot before it.
+    snaps AS (
+        SELECT DISTINCT silver_source_id, account_external_id, instrument_external_id, snapshot_at FROM lines),
+    away AS (
+        SELECT DISTINCT b.as_of, b.silver_source_id, b.holding_account AS account_external_id,
+               b.holding_instrument AS instrument_external_id
+          FROM bare b
+          ANTI JOIN now_lines c ON c.as_of = b.as_of AND c.silver_source_id = b.silver_source_id
+           AND c.account_external_id = b.holding_account AND c.instrument_external_id = b.holding_instrument),
+    last_lines AS (
+        SELECT g.as_of, l.*
+          FROM away g
+          ASOF JOIN snaps s ON s.silver_source_id = g.silver_source_id
+           AND s.account_external_id = g.account_external_id
+           AND s.instrument_external_id = g.instrument_external_id AND s.snapshot_at <= g.as_of
+          JOIN lines l ON l.silver_source_id = s.silver_source_id AND l.account_external_id = s.account_external_id
+           AND l.instrument_external_id = s.instrument_external_id AND l.snapshot_at = s.snapshot_at),
+    cost AS (
+        SELECT l.as_of, l.silver_source_id, l.account_external_id, l.instrument_external_id, l.holding_group,
+               'cost:' || l.position_key AS transaction_external_id,
+               CAST(epoch(l.acquisition_date) AS BIGINT) AS occurred_at,
+               CAST(epoch(l.acquisition_date) AS BIGINT) // 86400 AS day, 'call' AS leg, l.currency,
+               l.book_value AS paid_own, FALSE AS unvalued, FALSE AS unattributed, TRUE AS from_cost
+          FROM (SELECT * FROM now_lines UNION ALL SELECT * FROM last_lines) l
+        QUALIFY bool_and(l.book_value IS NOT NULL AND l.acquisition_date IS NOT NULL)
+                    OVER (PARTITION BY l.as_of, l.silver_source_id, l.account_external_id, l.instrument_external_id)),
+    every AS (
+        SELECT i.as_of, t.* FROM ins i JOIN tx t ON t.occurred_at <= i.as_of
+        UNION ALL BY NAME
+        SELECT * FROM cost)
+    SELECT l.as_of, l.silver_source_id, l.account_external_id, l.instrument_external_id, l.holding_group,
+           l.transaction_external_id, l.day, l.leg, l.currency, l.unvalued, l.unattributed, l.from_cost, l.paid_own,
            CAST(fx_pick_keep_zero(l.paid_own, l.currency, p_ccy,
                         o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(38,10)) AS paid
-      FROM legs l
+      FROM every l
       ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = l.currency AND o0.to_ccy = p_ccy AND o0.day <= l.day
       ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = l.currency AND o1.to_ccy = 'CHF' AND o1.day <= l.day
       ASOF LEFT JOIN fx_daily o2 ON o2.from_ccy = 'CHF' AND o2.to_ccy = p_ccy AND o2.day <= l.day
       ASOF LEFT JOIN fx_daily o3 ON o3.from_ccy = l.currency AND o3.to_ccy = 'USD' AND o3.day <= l.day
       ASOF LEFT JOIN fx_daily o4 ON o4.from_ccy = 'USD' AND o4.to_ccy = p_ccy AND o4.day <= l.day
-     ORDER BY l.silver_source_id, l.account_external_id, l.instrument_external_id, l.day,
+     ORDER BY l.as_of, l.silver_source_id, l.account_external_id, l.instrument_external_id, l.day,
               l.transaction_external_id
 );
 
@@ -1510,33 +1733,55 @@ CREATE MACRO private_legs(p_asof, p_ccy) AS TABLE (
 -- called_capital. Its multiples read 1 and its IRR 0 by construction.
 -- A mark plus what moved in since (mark_plus_cost) is a mark.
 --
--- report_private: one row per private holding at p_asof, in p_ccy, then
--- the total. A holding with no money in, out or marked is left out.
--- paid_in is the calls, net of refunds; distributed the cash and the
--- exits in kind that came back; the total's also the unattributed exits
--- out of the accounts of the holdings it lists. nav is the value of the
--- holding's lines at p_asof. It is 0 where the holding had lines before
--- and has none now, which exited says, and NULL where it never had one,
--- which no_mark says. marked_at is the oldest mark of its lines at p_asof,
+-- report_private: one row per private holding at each instant of
+-- p_instants (as_of), in p_ccy, then the instant's total. A holding is
+-- named by its account and instrument (private_holdings), and its lines
+-- are those of every key it has. A holding with no money in, out or
+-- marked is left out. paid_in is the calls, net of refunds, blank where
+-- the holding has none (no_cost); distributed the cash and the exits in
+-- kind that came back; the total's also the unattributed exits out of
+-- the groups of the holdings it lists. nav is the value of the holding's
+-- lines at the instant. It is 0 where the holding had lines before and
+-- has none now, and NULL where it never had one, or where its lines never
+-- stated a value but zero and nothing came back, which no_mark says.
+-- marked_at is the oldest mark of its lines at the instant,
 -- coalesce(valued_at, snapshot_at), else the mark of its last line
--- before it left. dpi is distributed over paid_in, tvpi distributed plus
--- nav over paid_in. end_at is the day a money-weighted return ends: the
--- later of the NAV's snapshot and the last leg. The total adds the money
--- and pools the multiples: its nav is NULL where a holding's is, and its
--- marked_at is the oldest mark. quality names what a figure misses:
--- no_mark, exited, at_cost, call_after_mark, distribution_after_mark,
--- exit_unvalued=N, unpriced=N; on the total, each tag with the count of
--- holdings it holds on, and unattributed_exit=N the exits it counts. The
--- total's exit_unvalued and unpriced count those exits too: the holdings
--- plus the unattributed exits that state no value, or have no rate.
-CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
-    WITH legs AS (SELECT * FROM private_legs(p_asof, p_ccy)),
+-- before it left. first_call is the day of the first call, else of the
+-- first leg, else of the first line. status is exited where the NAV is 0
+-- after something came back or once the holding left, partially_exited
+-- where something came back and it is still held, else held. dpi is
+-- distributed over paid_in, tvpi distributed plus nav over paid_in.
+-- end_at is the day a money-weighted return ends: the later of the NAV's
+-- snapshot and the last leg, else the last line. The total adds what
+-- the holdings state: a blank adds nothing, and no_cost and no_mark
+-- count the holdings it leaves out. Its dpi pools the holdings with a
+-- paid_in, its tvpi those with a paid_in and a nav, the unattributed
+-- exits in both; its marked_at is the oldest mark. holding_group is the
+-- holding's group, '' on the total. quality names what a figure misses:
+-- no_mark, no_cost, paid_in_from_cost, exited, at_cost, call_after_mark,
+-- distribution_after_mark, exit_unvalued=N, unpriced=N; on the total,
+-- each tag with the count of holdings it holds on, and
+-- unattributed_exit=N the exits it counts. The total's exit_unvalued and
+-- unpriced count those exits too: the holdings plus the unattributed
+-- exits that state no value, or have no rate.
+CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
+    WITH ins AS (SELECT DISTINCT unnest(p_instants) AS as_of),
+    legs AS (SELECT * FROM private_legs(p_instants, p_ccy)),
+    held AS (SELECT * FROM private_holdings(list_max(p_instants))),
+    holdings AS (
+        SELECT DISTINCT silver_source_id, holding_account AS account_external_id,
+               holding_instrument AS instrument_external_id, holding_group, asset_class, vehicle
+          FROM held),
     f AS (
-        SELECT silver_source_id, account_external_id, instrument_external_id,
+        SELECT as_of, silver_source_id, account_external_id, instrument_external_id,
                MIN(day) FILTER (WHERE leg = 'call') AS first_call,
+               MIN(day) AS first_leg,
                MAX(day) FILTER (WHERE leg = 'call') AS last_call,
                MAX(day) FILTER (WHERE leg <> 'call') AS last_back,
                MAX(day) AS last_leg,
+               COUNT(*) FILTER (WHERE leg = 'call') > 0 AS called,
+               COUNT(*) FILTER (WHERE leg <> 'call') > 0 AS backed,
+               bool_or(from_cost) AS from_cost,
                COALESCE(SUM(paid) FILTER (WHERE leg = 'call'), 0) AS paid_in,
                COALESCE(-SUM(paid) FILTER (WHERE leg <> 'call'), 0) AS distributed,
                COALESCE(SUM(paid_own) FILTER (WHERE leg = 'call'), 0) <> 0
@@ -1546,72 +1791,126 @@ CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
           FROM legs
          WHERE NOT unattributed
          GROUP BY ALL),
+    -- Each holding's snapshots up to the last instant, each with its
+    -- oldest mark, the first, and whether a line up to it ever stated a
+    -- value other than zero.
+    marks AS (
+        SELECT p.silver_source_id, h.holding_account AS account_external_id,
+               h.holding_instrument AS instrument_external_id, p.snapshot_at,
+               MIN(COALESCE(p.valued_at, p.snapshot_at)) AS mark,
+               MIN(p.snapshot_at) OVER (PARTITION BY p.silver_source_id, h.holding_account,
+                                                     h.holding_instrument) AS first_line,
+               bool_or(bool_or(COALESCE(p.market_value, 0) <> 0))
+                   OVER (PARTITION BY p.silver_source_id, h.holding_account, h.holding_instrument
+                         ORDER BY p.snapshot_at ROWS UNBOUNDED PRECEDING) AS valued_by
+          FROM positions p
+          JOIN held h ON h.silver_source_id = p.silver_source_id
+           AND h.account_external_id = p.account_external_id AND h.instrument_external_id = p.instrument_external_id
+         WHERE p.snapshot_at <= list_max(p_instants)
+         GROUP BY 1, 2, 3, 4),
+    seen AS (
+        SELECT i.as_of, m.silver_source_id, m.account_external_id, m.instrument_external_id,
+               m.snapshot_at AS last_line, m.mark AS last_mark, m.first_line, m.valued_by
+          FROM ins i CROSS JOIN holdings h
+          ASOF JOIN marks m ON m.silver_source_id = h.silver_source_id
+           AND m.account_external_id = h.account_external_id
+           AND m.instrument_external_id = h.instrument_external_id AND m.snapshot_at <= i.as_of),
+    base AS (
+        SELECT as_of, silver_source_id, account_external_id, instrument_external_id FROM f
+        UNION
+        SELECT as_of, silver_source_id, account_external_id, instrument_external_id FROM seen),
     lines AS (
-        SELECT p.silver_source_id, p.account_external_id, p.instrument_external_id, p.snapshot_at,
-               COALESCE(p.valued_at, p.snapshot_at) AS marked_at, p.market_value,
-               COALESCE(json_extract_string(pp.payload, '$.valuation_basis') IN ('cost', 'called_capital'),
+        SELECT pk.instant AS as_of, p.silver_source_id, h.holding_account AS account_external_id,
+               h.holding_instrument AS instrument_external_id,
+               p.snapshot_at, COALESCE(p.valued_at, p.snapshot_at) AS marked_at, p.market_value,
+               COALESCE(json_extract_string(p.payload, '$.valuation_basis') IN ('cost', 'called_capital'),
                         FALSE) AS at_cost,
                CAST(fx_pick_keep_zero(p.market_value, p.currency, p_ccy,
                             o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(38,10)) AS value_x
-          FROM positions_at([p_asof]) p
-          JOIN f ON f.silver_source_id = p.silver_source_id AND f.account_external_id = p.account_external_id
-           AND f.instrument_external_id = p.instrument_external_id
-          JOIN positions pp ON pp.silver_source_id = p.silver_source_id AND pp.snapshot_at = p.snapshot_at
-           AND pp.account_external_id = p.account_external_id AND pp.position_key = p.position_key
+          FROM pos_active_at(p_instants) pk
+          JOIN positions p ON p.silver_source_id = pk.src AND p.account_external_id = pk.acct
+           AND p.snapshot_at = pk.snap
+          JOIN held h ON h.silver_source_id = p.silver_source_id
+           AND h.account_external_id = p.account_external_id AND h.instrument_external_id = p.instrument_external_id
+          JOIN base b ON b.as_of = pk.instant AND b.silver_source_id = p.silver_source_id
+           AND b.account_external_id = h.holding_account AND b.instrument_external_id = h.holding_instrument
           ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = p.currency AND o0.to_ccy = p_ccy AND o0.day <= (p.snapshot_at // 86400)
           ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = p.currency AND o1.to_ccy = 'CHF' AND o1.day <= (p.snapshot_at // 86400)
           ASOF LEFT JOIN fx_daily o2 ON o2.from_ccy = 'CHF' AND o2.to_ccy = p_ccy AND o2.day <= (p.snapshot_at // 86400)
           ASOF LEFT JOIN fx_daily o3 ON o3.from_ccy = p.currency AND o3.to_ccy = 'USD' AND o3.day <= (p.snapshot_at // 86400)
           ASOF LEFT JOIN fx_daily o4 ON o4.from_ccy = 'USD' AND o4.to_ccy = p_ccy AND o4.day <= (p.snapshot_at // 86400)),
     navs AS (
-        SELECT silver_source_id, account_external_id, instrument_external_id,
+        SELECT as_of, silver_source_id, account_external_id, instrument_external_id,
                MAX(snapshot_at) AS nav_at, MIN(marked_at) AS marked_at, SUM(value_x) AS nav,
                SUM(market_value) <> 0 AS valued, bool_and(at_cost) AS at_cost,
                COUNT(*) FILTER (WHERE value_x IS NULL) AS lines_unpriced
           FROM lines
          GROUP BY ALL),
-    seen AS (
-        SELECT p.silver_source_id, p.account_external_id, p.instrument_external_id,
-               arg_max(COALESCE(p.valued_at, p.snapshot_at),
-                       (p.snapshot_at, -COALESCE(p.valued_at, p.snapshot_at))) AS last_mark
-          FROM positions p
-          JOIN f ON f.silver_source_id = p.silver_source_id AND f.account_external_id = p.account_external_id
-           AND f.instrument_external_id = p.instrument_external_id
-         WHERE p.snapshot_at <= p_asof
-         GROUP BY ALL),
+    -- A holding whose lines never stated a value other than zero up to
+    -- the instant, and from which nothing came back, was never valued: a
+    -- zero that was never anything else is no mark. One marked before
+    -- and at zero now is written off, and keeps its zero.
+    v AS (
+        SELECT b.*, s.silver_source_id IS NULL
+                    OR NOT s.valued_by AND NOT COALESCE(f.backed, FALSE) AS no_mark
+          FROM base b
+          LEFT JOIN f ON f.as_of = b.as_of AND f.silver_source_id = b.silver_source_id
+           AND f.account_external_id = b.account_external_id AND f.instrument_external_id = b.instrument_external_id
+          LEFT JOIN seen s ON s.as_of = b.as_of AND s.silver_source_id = b.silver_source_id
+           AND s.account_external_id = b.account_external_id AND s.instrument_external_id = b.instrument_external_id),
     h AS (
-        SELECT f.* REPLACE (ROUND(f.paid_in, 2) AS paid_in, ROUND(f.distributed, 2) AS distributed),
-               n.nav_at, COALESCE(n.marked_at, s.last_mark) AS marked_at,
-               GREATEST(COALESCE(n.nav_at, 0), f.last_leg * 86400) AS end_at,
-               CASE WHEN n.nav_at IS NOT NULL THEN ROUND(n.nav, 2) WHEN s.silver_source_id IS NOT NULL THEN 0 END AS nav,
-               f.legs_unpriced + COALESCE(n.lines_unpriced, 0) AS unpriced,
-               s.silver_source_id IS NULL AS no_mark,
-               n.nav_at IS NULL AND s.silver_source_id IS NOT NULL AS exited,
-               COALESCE(n.at_cost, FALSE) AS at_cost,
-               f.moved OR COALESCE(n.valued, FALSE) AS invested,
-               n.marked_at IS NOT NULL AND f.last_call > n.marked_at // 86400 AS call_after_mark,
-               n.marked_at IS NOT NULL AND f.last_back > n.marked_at // 86400 AS back_after_mark
-          FROM f
-          LEFT JOIN navs n ON n.silver_source_id = f.silver_source_id
-           AND n.account_external_id = f.account_external_id AND n.instrument_external_id = f.instrument_external_id
-          LEFT JOIN seen s ON s.silver_source_id = f.silver_source_id
-           AND s.account_external_id = f.account_external_id AND s.instrument_external_id = f.instrument_external_id),
+        SELECT b.as_of, b.silver_source_id, b.account_external_id, b.instrument_external_id,
+               COALESCE(f.first_call, f.first_leg, s.first_line // 86400) AS first_day,
+               COALESCE(f.called, FALSE) AS called, COALESCE(f.backed, FALSE) AS backed,
+               COALESCE(f.from_cost, FALSE) AS from_cost,
+               CASE WHEN f.called THEN ROUND(f.paid_in, 2) END AS paid_in,
+               ROUND(COALESCE(f.distributed, 0), 2) AS distributed,
+               n.nav_at, CASE WHEN NOT b.no_mark THEN COALESCE(n.marked_at, s.last_mark) END AS marked_at,
+               GREATEST(COALESCE(n.nav_at, 0), COALESCE(f.last_leg * 86400, s.last_line, 0)) AS end_at,
+               CASE WHEN b.no_mark THEN NULL WHEN n.nav_at IS NOT NULL THEN ROUND(n.nav, 2) ELSE 0 END AS nav,
+               COALESCE(f.legs_unpriced, 0) + COALESCE(n.lines_unpriced, 0) AS unpriced,
+               COALESCE(f.exits_unvalued, 0) AS exits_unvalued,
+               b.no_mark,
+               n.nav_at IS NULL AND s.silver_source_id IS NOT NULL AS gone,
+               COALESCE(n.at_cost, FALSE) AND NOT b.no_mark AS at_cost,
+               COALESCE(f.moved, FALSE) OR COALESCE(n.valued, FALSE) AS invested,
+               NOT b.no_mark AND n.marked_at IS NOT NULL AND f.last_call > n.marked_at // 86400 AS call_after_mark,
+               NOT b.no_mark AND n.marked_at IS NOT NULL AND f.last_back > n.marked_at // 86400 AS back_after_mark
+          FROM v b
+          LEFT JOIN f ON f.as_of = b.as_of AND f.silver_source_id = b.silver_source_id
+           AND f.account_external_id = b.account_external_id AND f.instrument_external_id = b.instrument_external_id
+          LEFT JOIN navs n ON n.as_of = b.as_of AND n.silver_source_id = b.silver_source_id
+           AND n.account_external_id = b.account_external_id AND n.instrument_external_id = b.instrument_external_id
+          LEFT JOIN seen s ON s.as_of = b.as_of AND s.silver_source_id = b.silver_source_id
+           AND s.account_external_id = b.account_external_id AND s.instrument_external_id = b.instrument_external_id),
     -- A holding with no money in, out or marked, in its own currency, is
-    -- no investment: a call refunded whole, or one of no amount.
-    k AS (SELECT * FROM h WHERE invested),
+    -- no investment: a call refunded whole, one of no amount, or a line
+    -- of no cost and no value, or one that has left with nothing moved.
+    k AS (
+        SELECT h.*, h.gone OR COALESCE(h.nav = 0 AND h.backed, FALSE) AS exited, c.holding_group
+          FROM h
+          JOIN holdings c ON c.silver_source_id = h.silver_source_id AND c.account_external_id = h.account_external_id
+           AND c.instrument_external_id = h.instrument_external_id
+         WHERE h.invested),
     -- The exits in kind no holding names, out of a listed holding's
-    -- account: what they return rounds once, to the cent.
+    -- group: what they return rounds once, to the cent.
     u AS (
-        SELECT COUNT(*) AS exits, ROUND(COALESCE(-SUM(l.paid), 0), 2) AS back, MAX(l.day) AS last_leg,
+        SELECT l.as_of, COUNT(*) AS exits, ROUND(COALESCE(-SUM(l.paid), 0), 2) AS back, MAX(l.day) AS last_leg,
                COUNT(*) FILTER (WHERE l.unvalued) AS exits_unvalued,
                COUNT(*) FILTER (WHERE l.paid IS NULL) AS exits_unpriced
           FROM legs l
-          SEMI JOIN k ON k.silver_source_id = l.silver_source_id AND k.account_external_id = l.account_external_id
-         WHERE l.unattributed),
+          SEMI JOIN k ON k.as_of = l.as_of AND k.silver_source_id = l.silver_source_id
+           AND k.holding_group = l.holding_group
+         WHERE l.unattributed
+         GROUP BY l.as_of),
     pr AS (
-        SELECT FALSE AS is_total, silver_source_id, account_external_id, instrument_external_id,
-               first_call * 86400 AS first_call, paid_in, distributed, nav, marked_at, end_at,
+        SELECT as_of, FALSE AS is_total, silver_source_id, account_external_id, instrument_external_id, holding_group,
+               first_day * 86400 AS first_call, paid_in, distributed, nav, marked_at, end_at,
+               CASE WHEN exited THEN 'exited' WHEN backed THEN 'partially_exited' ELSE 'held' END AS status,
+               paid_in AS dpi_paid, distributed AS dpi_back, paid_in AS tvpi_paid, distributed + nav AS tvpi_value,
                concat_ws(';', CASE WHEN no_mark THEN 'no_mark' END,
+                              CASE WHEN NOT called THEN 'no_cost' END,
+                              CASE WHEN from_cost THEN 'paid_in_from_cost' END,
                               CASE WHEN exited THEN 'exited' END,
                               CASE WHEN at_cost THEN 'at_cost' END,
                               CASE WHEN call_after_mark THEN 'call_after_mark' END,
@@ -1620,91 +1919,105 @@ CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
                               CASE WHEN unpriced > 0 THEN 'unpriced=' || unpriced END) AS quality
           FROM k
         UNION ALL
-        SELECT TRUE, '', '', '', MIN(first_call) * 86400, SUM(paid_in), SUM(distributed) + ANY_VALUE(u.back),
-               CASE WHEN bool_or(nav IS NULL) THEN NULL ELSE SUM(nav) END, MIN(marked_at),
-               GREATEST(MAX(end_at), COALESCE(ANY_VALUE(u.last_leg) * 86400, 0)),
+        SELECT k.as_of, TRUE, '', '', '', '', MIN(first_day) * 86400,
+               SUM(paid_in),
+               SUM(distributed) + COALESCE(ANY_VALUE(u.back), 0),
+               SUM(nav), MIN(marked_at),
+               GREATEST(MAX(end_at), COALESCE(ANY_VALUE(u.last_leg) * 86400, 0)), NULL,
+               SUM(paid_in), SUM(distributed) FILTER (WHERE paid_in IS NOT NULL) + COALESCE(ANY_VALUE(u.back), 0),
+               SUM(paid_in) FILTER (WHERE nav IS NOT NULL),
+               SUM(distributed + nav) FILTER (WHERE paid_in IS NOT NULL) + COALESCE(ANY_VALUE(u.back), 0),
                concat_ws(';', CASE WHEN count_if(no_mark) > 0 THEN 'no_mark=' || count_if(no_mark) END,
+                              CASE WHEN count_if(NOT called) > 0 THEN 'no_cost=' || count_if(NOT called) END,
+                              CASE WHEN count_if(from_cost) > 0 THEN 'paid_in_from_cost=' || count_if(from_cost) END,
                               CASE WHEN count_if(exited) > 0 THEN 'exited=' || count_if(exited) END,
                               CASE WHEN count_if(at_cost) > 0 THEN 'at_cost=' || count_if(at_cost) END,
                               CASE WHEN count_if(call_after_mark) > 0
                                    THEN 'call_after_mark=' || count_if(call_after_mark) END,
                               CASE WHEN count_if(back_after_mark) > 0
                                    THEN 'distribution_after_mark=' || count_if(back_after_mark) END,
-                              CASE WHEN count_if(k.exits_unvalued > 0) + ANY_VALUE(u.exits_unvalued) > 0
+                              CASE WHEN count_if(k.exits_unvalued > 0) + COALESCE(ANY_VALUE(u.exits_unvalued), 0) > 0
                                    THEN 'exit_unvalued=' || (count_if(k.exits_unvalued > 0)
-                                                             + ANY_VALUE(u.exits_unvalued)) END,
+                                                             + COALESCE(ANY_VALUE(u.exits_unvalued), 0)) END,
                               CASE WHEN ANY_VALUE(u.exits) > 0 THEN 'unattributed_exit=' || ANY_VALUE(u.exits) END,
-                              CASE WHEN count_if(unpriced > 0) + ANY_VALUE(u.exits_unpriced) > 0
-                                   THEN 'unpriced=' || (count_if(unpriced > 0) + ANY_VALUE(u.exits_unpriced)) END)
-          FROM k CROSS JOIN u
-        HAVING COUNT(*) > 0)
-    SELECT r.is_total, r.silver_source_id, r.account_external_id,
+                              CASE WHEN count_if(unpriced > 0) + COALESCE(ANY_VALUE(u.exits_unpriced), 0) > 0
+                                   THEN 'unpriced=' || (count_if(unpriced > 0)
+                                                        + COALESCE(ANY_VALUE(u.exits_unpriced), 0)) END)
+          FROM k
+          LEFT JOIN u ON u.as_of = k.as_of
+         GROUP BY k.as_of)
+    SELECT r.as_of, r.is_total, r.silver_source_id, r.account_external_id,
            a.display_name, a.nickname, r.instrument_external_id,
            CASE WHEN r.is_total THEN 'Total' ELSE COALESCE(il.name, il.symbol, r.instrument_external_id) END AS holding,
+           c.asset_class, c.vehicle, r.status, r.holding_group,
            r.first_call,
            CAST(r.paid_in AS DECIMAL(28,4)) AS paid_in,
            CAST(r.distributed AS DECIMAL(28,4)) AS distributed,
            CAST(r.nav AS DECIMAL(28,4)) AS nav,
            r.marked_at, r.end_at,
-           CASE WHEN r.paid_in > 0 THEN CAST(r.distributed / r.paid_in AS DOUBLE) END AS dpi,
-           CASE WHEN r.paid_in > 0 THEN CAST((r.distributed + r.nav) / r.paid_in AS DOUBLE) END AS tvpi,
+           CASE WHEN r.dpi_paid > 0 THEN CAST(r.dpi_back / r.dpi_paid AS DOUBLE) END AS dpi,
+           CASE WHEN r.tvpi_paid > 0 THEN CAST(r.tvpi_value / r.tvpi_paid AS DOUBLE) END AS tvpi,
            r.quality
       FROM pr r
+      LEFT JOIN holdings c ON c.silver_source_id = r.silver_source_id AND c.account_external_id = r.account_external_id
+           AND c.instrument_external_id = r.instrument_external_id
       LEFT JOIN accounts a ON a.silver_source_id = r.silver_source_id AND a.account_external_id = r.account_external_id
       LEFT JOIN instrument_labels() il ON il.silver_source_id = r.silver_source_id
            AND il.instrument_external_id = r.instrument_external_id
-     ORDER BY r.is_total, r.silver_source_id, r.account_external_id, r.first_call, r.instrument_external_id
+     ORDER BY r.as_of, r.is_total, r.silver_source_id, r.account_external_id, r.first_call, r.instrument_external_id
 );
 
 -- report_private_flows_multi: the private holdings' cash flows per
--- calendar quarter at p_asof, in every reporting currency, a row per
--- currency and quarter a leg falls in. The legs are those
--- report_private's total counts: the legs of the holdings it lists and
--- the exits in kind out of their accounts that name no holding. It lists
--- the same holdings in every currency, as whether one is listed reads
--- its own currency's money, so the list is read once. called is the
--- calls net of refunds, distributed the cash and the exits in kind that
--- came back, net what came back less what was called. Each rounds once,
--- to the cent. Each _to_date column adds the currency's quarters up to
--- the row's, so the last row's match the total's but for the cents each
--- quarter rounds. quarter is the epoch second that opens the quarter, in
--- UTC. quality names what a figure misses: unpriced=N legs with no rate
--- to the currency, which add nothing, and exit_unvalued=N exits in kind
--- that state no value.
+-- holding and calendar quarter at p_asof, in every reporting currency, a
+-- row per currency, quarter and holding a leg falls in. The legs are
+-- those report_private's total counts: the legs of the holdings it lists
+-- and the exits in kind out of their groups that name no holding, which
+-- a row per account and quarter marked unattributed holds, with no
+-- holding, class or vehicle. It lists the same holdings in every
+-- currency, as whether one is listed reads its own currency's money, so
+-- the list is read once. called is the calls net of refunds, distributed
+-- the cash and the exits in kind that came back, net what came back less
+-- what was called. Each rounds once, to the cent, so the rows add up to
+-- the total's figures but for the cents each row rounds. quarter is the
+-- epoch second that opens the quarter, in UTC. quality names what a
+-- figure misses: unpriced=N legs with no rate to the currency, which add
+-- nothing, and exit_unvalued=N exits in kind that state no value.
 CREATE MACRO report_private_flows_multi(p_asof) AS TABLE (
     WITH listed AS (
-        SELECT silver_source_id, account_external_id, instrument_external_id
-          FROM report_private(p_asof, 'USD')
+        SELECT silver_source_id, account_external_id, instrument_external_id, holding_group, holding,
+               asset_class, vehicle
+          FROM report_private([p_asof], 'USD')
          WHERE NOT is_total),
     legs AS (
-        SELECT 'USD' AS out_ccy, * FROM private_legs(p_asof, 'USD')
-        UNION ALL SELECT 'CHF', * FROM private_legs(p_asof, 'CHF')
-        UNION ALL SELECT 'EUR', * FROM private_legs(p_asof, 'EUR')
-        UNION ALL SELECT 'GBP', * FROM private_legs(p_asof, 'GBP')),
+        SELECT 'USD' AS out_ccy, * FROM private_legs([p_asof], 'USD')
+        UNION ALL SELECT 'CHF', * FROM private_legs([p_asof], 'CHF')
+        UNION ALL SELECT 'EUR', * FROM private_legs([p_asof], 'EUR')
+        UNION ALL SELECT 'GBP', * FROM private_legs([p_asof], 'GBP')),
     counted AS (
-        SELECT l.*
+        SELECT l.out_ccy, l.day, l.leg, l.paid, l.unvalued, l.unattributed, l.silver_source_id, l.account_external_id,
+               k.instrument_external_id, k.holding, k.asset_class, k.vehicle
           FROM legs l
-          SEMI JOIN listed k ON k.silver_source_id = l.silver_source_id
-           AND k.account_external_id = l.account_external_id
-           AND (l.unattributed OR k.instrument_external_id = l.instrument_external_id)),
+          SEMI JOIN listed a ON a.silver_source_id = l.silver_source_id AND a.holding_group = l.holding_group
+          LEFT JOIN listed k ON NOT l.unattributed AND k.silver_source_id = l.silver_source_id
+           AND k.account_external_id = l.account_external_id AND k.instrument_external_id = l.instrument_external_id
+         WHERE l.unattributed OR k.instrument_external_id IS NOT NULL),
     q AS (
         SELECT out_ccy, CAST(epoch(date_trunc('quarter', epoch_ms(day * 86400000))) AS BIGINT) AS quarter,
+               silver_source_id, account_external_id, instrument_external_id, holding, asset_class, vehicle,
+               unattributed,
                ROUND(COALESCE(SUM(paid) FILTER (WHERE leg = 'call'), 0), 2) AS called,
                ROUND(COALESCE(-SUM(paid) FILTER (WHERE leg <> 'call'), 0), 2) AS distributed,
                COUNT(*) FILTER (WHERE paid IS NULL) AS unpriced,
                COUNT(*) FILTER (WHERE unvalued) AS unvalued
           FROM counted
-         GROUP BY 1, 2)
-    SELECT out_ccy AS currency, quarter,
+         GROUP BY ALL)
+    SELECT out_ccy AS currency, quarter, silver_source_id, account_external_id, instrument_external_id, holding,
+           asset_class, vehicle, unattributed,
            CAST(called AS DECIMAL(28,4)) AS called,
            CAST(distributed AS DECIMAL(28,4)) AS distributed,
            CAST(distributed - called AS DECIMAL(28,4)) AS net,
-           CAST(SUM(called) OVER w AS DECIMAL(28,4)) AS called_to_date,
-           CAST(SUM(distributed) OVER w AS DECIMAL(28,4)) AS distributed_to_date,
-           CAST(SUM(distributed - called) OVER w AS DECIMAL(28,4)) AS net_to_date,
            concat_ws(';', CASE WHEN unpriced > 0 THEN 'unpriced=' || unpriced END,
                           CASE WHEN unvalued > 0 THEN 'exit_unvalued=' || unvalued END) AS quality
       FROM q
-    WINDOW w AS (PARTITION BY out_ccy ORDER BY quarter ROWS UNBOUNDED PRECEDING)
-     ORDER BY currency, quarter
+     ORDER BY currency, quarter, silver_source_id, account_external_id, unattributed, instrument_external_id
 );

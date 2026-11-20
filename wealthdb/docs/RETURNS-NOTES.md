@@ -198,39 +198,73 @@ Guards: `TestBridgeReadsTheCommonCases`,
 
 ## Private markets
 
-`wealthdb returns private` says what each private fund or SPV took,
-what it gave back and what it is marked at. It reads gold alone.
+`wealthdb returns private` says what each private holding took, what it
+gave back and what it is marked at. It reads gold alone. `-d DATE` reads
+it as of a day: the legs up to the end of that day, and the NAV from the
+last snapshot on or before it.
 
 **Which holdings it lists.** A private holding is an instrument in one
-account that a `contribution` line names: a capital call, or an SPV
-subscription. The rule reads the cash legs, not a source or a taxonomy,
-so it holds for every private-market source. Two kinds stay out:
+account whose asset class is `private_equity` or `private_debt`, in any
+vehicle but a listed fund (`etf`). The rule holds for every source and
+every way the holding was funded:
 
-- A private company's shares bought directly are a `buy`. Their cost
-  and their sale are in `wealthdb gains`.
-- Founder stock and options have no cash leg at all.
+- a fund called with `contribution` lines, or bought with `buy` lines;
+- an SPV, a private company's stock, a convertible note or a loan;
+- a holding that only a source's positions state, with no cash leg.
+
+An instrument a `contribution` line names is a private holding whatever
+its class, so a fund of another class that calls capital is listed too.
+
+The class is the instrument's row's. Where a source writes no instrument
+row, it is the holding's latest line's, else its latest leg's.
+
+**One holding, one row.** A holding is one instrument in one portfolio,
+or in one account outside any portfolio. The instrument is known by its
+ISIN where gold states one, else by its id. A bank that keeps a fund on a
+custody account and pays its calls from a cash account of the same
+portfolio therefore has one row for it. The row names the account that
+holds the latest line, else the account of the first leg. The same fund
+in two portfolios is two holdings.
+
+A move of the holding between two accounts of its portfolio is no exit.
+A `transfer_out` counts for nothing where a `transfer_in` of the same
+instrument into another account of the portfolio answers it on its day,
+of the same quantity where both rows state one.
 
 A holding with no money in, out or marked is no investment, and the
-view leaves it out: a call refunded whole, or a call of no amount. The
-test reads the legs and the lines in their own currency, so every
-output currency lists the same holdings.
+view leaves it out: a call refunded whole, a call of no amount, or a
+line with no cost and no value. The test reads the legs and the lines in
+their own currency, so every output currency lists the same holdings.
 
 One row per holding, then the total:
 
 | column | reads |
 |---|---|
-| `paid_in` | the `contribution` lines, net of refunds |
-| `distributed` | the `distribution` and `sell` lines, and the exits in kind: a `transfer_out` of the holding, or one whose `holding` names it, at the value it states |
+| `asset_class`, `vehicle` | the instrument's class and vehicle |
+| `status` | `held` where nothing came back; `partially_exited` where something came back and the NAV is not 0; `exited` where the NAV is 0 after something came back, or once the holding has left the holdings |
+| `first_call` | the day of the first call; with none, of the first leg, else of the first line |
+| `paid_in` | the `contribution`, `buy` and `fee` lines on the holding, net of refunds |
+| `distributed` | the `distribution` and `sell` lines, a `private_debt` holding's `interest`, `dividend` and `coupon` lines (the cash a loan or a note returns), and the exits in kind: a `transfer_out` of the holding, or one whose `holding` names it, at the value it states |
 | `nav` | the holding's lines at the latest snapshot. It is 0 once the holding has left the holdings, and blank where it never had a value |
 | `marked_at` | the oldest mark of those lines, `coalesce(valued_at, snapshot_at)`; for a holding that has left, the mark of its last line |
 | `dpi` | `distributed / paid_in` |
 | `tvpi` | `(distributed + nav) / paid_in` |
 | `irr_pct` | the money-weighted return since the first call, a yearly rate |
 
+**A holding with no call.** A source that states positions only has no
+cash leg for what was paid. Such a holding reads its stated cost: each
+line it holds at the day gives one call, its book value on its
+acquisition date. Its lines in each account count, whenever each
+account's snapshot is. A holding that has left reads the lines of its
+last snapshot. The IRR reads those calls as any other, and the row says
+`paid_in_from_cost`. Where a line states no cost or no acquisition date,
+the holding has no `paid_in`, `dpi`, `tvpi` or `irr_pct`, and it says
+`no_cost`. The rule reads each day for itself: a day before a holding's
+first call reads its stated cost.
+
 An SPV that pays out cash books a `sell`, as AngelList does, so
 `distributed` counts a sale as a distribution. Without it an SPV that
-exited for cash would read a TVPI of 0. An SPV bought as a `buy`
-(EquityZen) is a direct holding: it is in `wealthdb gains`.
+exited for cash would read a TVPI of 0.
 
 **Exits in kind.** An SPV that pays out in listed shares is a pair of
 equity-transfer ledger rows (DESIGN.md §13.9). Both name the shares, not
@@ -258,32 +292,60 @@ its snapshot's. The multiples therefore move with the output currency.
 total adds the cents, so it is the sum of the rows as they print. `dpi`
 and `tvpi` pool the holdings: they are the ratios of the sums, not an
 average of the rows' ratios, and both mean what a fund's own DPI and
-TVPI mean. `irr_pct` pools the legs of every holding listed. The
-total's `marked_at` is the oldest mark, and a holding with no value
-leaves the total's `nav`, `tvpi` and `irr_pct` blank. The total is over
-every holding: a filter keeps or drops it as a row, never recomputes
-it.
+TVPI mean. The total's `marked_at` is the oldest mark. The total never
+goes blank because one holding lacks a figure:
+
+- its money adds what the holdings state, and `no_mark=N` and
+  `no_cost=N` count the holdings it leaves out;
+- `dpi` pools the holdings with a `paid_in`, and `tvpi` those with a
+  `paid_in` and a `nav`;
+- `irr_pct` pools the legs and NAVs of the holdings that have their own
+  IRR's inputs: a `paid_in`, a `nav` and a rate for every leg.
+
+The total is over every holding: a filter keeps or drops it as a row,
+never recomputes it.
 
 The total also counts every exit in kind out of a listed holding's
-account that no holding claims: a `transfer_out` of an instrument that
-no `contribution`, `buy` or `transfer_in` of the account names, with no
-`holding`. Shares the account bought or took in are a direct holding,
-and cash is no exit in kind, so neither counts. Such an exit is in the
-total's `distributed`, `dpi`, `tvpi` and `irr_pct`, and the total says
+portfolio, or its account outside one, that no holding claims: an
+equity-transfer ledger out-row with no `holding`, of an instrument that
+no `buy` or `transfer_in` there names. Shares the portfolio bought or
+took in are a direct holding, and cash is no exit in kind, so neither
+counts. A source's own `transfer_out` that no holding claims is no
+private distribution either: a bank delivers listed shares out of a
+portfolio that also holds a fund. Such an exit is in the total's
+`distributed`, `dpi`, `tvpi` and `irr_pct`, and the total says
 `unattributed_exit=N`. Then the total is more than the sum of the rows.
 
 **No mark, no NAV.** Every row has a mark but one: a holding that never
 had a value. Its `nav`, `tvpi` and `irr_pct` are blank, never zero, and
-it says `no_mark`. A holding that had lines and has left reads a NAV of
-0, a real one: gold holds it no more. Its multiples and IRR are final,
-its `marked_at` is its last line's mark, and it says `exited`.
+it says `no_mark`. A zero that was never anything else is no value
+either: a source may carry a fund at 0 until it values it. So a holding
+whose lines never stated a value but 0 up to the day, and from which
+nothing came back, has no mark. One marked above 0 before and at 0 now
+is written off and keeps its 0.
+
+A holding that had a value and has left reads a NAV of 0, a real one:
+gold holds it no more. Its multiples and IRR are final, and its
+`marked_at` is its last line's mark. A holding that has left is
+`exited`, valued or not, as is a holding still listed at a NAV of 0
+after something came back. A holding written off with nothing back is
+still `held`. A holding that has left with no money in or out is no
+investment and is not listed, whatever its lines were marked at.
+
+The IRR stands wherever the solver finds one. A holding or a total that
+has paid back more than it took and still holds a value has one, and
+`mwr_nonunique` says where its flows change sign more than once.
 
 Quality tags:
 
-- `no_mark`: the holding never had a value, so `nav`, `tvpi` and
-  `irr_pct` are blank.
-- `exited`: the holding has left the holdings, so `nav` is 0 and
-  `marked_at` is the mark of its last line.
+- `no_mark`: the holding never had a value other than 0, and nothing
+  came back, so `nav`, `tvpi` and `irr_pct` are blank.
+- `no_cost`: the holding has no call and states no cost, so
+  `paid_in`, `dpi`, `tvpi` and `irr_pct` are blank.
+- `paid_in_from_cost`: `paid_in` is the holding's stated cost on its
+  acquisition date, not a cash leg.
+- `exited`: the status is `exited`, so `nav` is 0. Once the holding has
+  left the holdings, `marked_at` is the mark of its last line.
 - `at_cost`: the source carries the NAV at cost, before any valuation
   of its own, so `tvpi` reads 1 and `irr_pct` 0 by construction. AngelList
   states such a line as `valuation_basis: cost`, Carta's fund carry as
@@ -312,15 +374,26 @@ Limits:
 - The view carries no volatility or other risk figure. Marks are too old
   and too sparse for one.
 
-`web refresh` writes the view's rows in every reporting currency to
-`report_private_markets`, and the Private Markets dashboard reads them
-through `web_private`, the IRR with them. The macro
-`report_private_flows_multi` adds the legs the total counts per quarter,
-in every reporting currency, and `serving_private_flows` holds it for
-the dashboard's cash flows. Guards:
-`TestPrivateMarkets`, `TestPrivateMarketsHistoricFX`,
-`TestPrivateMarketsTableIsTheCLIsRows`, `TestPrivateFlowsAreTheTotalsLegs`,
-`TestPrivateView`.
+`web refresh` writes the view's rows to `report_private_markets`: in
+every reporting currency, at every quarter end since the total's
+`first_call` and at the end of the refresh's day. Each row's figures are
+`-d`'s at its day. The rows name a holding, its account, class and
+vehicle as at the refresh, as the holdings group then. The Private Markets dashboard reads
+them through `web_private`, the IRR with them. The macros take a list of
+instants, so one pass per currency computes every quarter end. The
+returns engine solves each IRR once per distinct set of legs, NAV and
+days, so an exited holding is solved once for all its later quarters.
+The macro `report_private_flows_multi` adds the legs the total counts
+per holding and quarter, in every reporting currency, and
+`serving_private_flows` holds it for the dashboard's cash flows. Guards:
+`TestPrivateMarkets`, `TestPrivateMarketsListing`,
+`TestPrivateMarketsStatus`, `TestPrivateMarketsAsOf`,
+`TestPrivateMarketsHistoricFX`, `TestPrivateMarketsTableIsTheCLIsRows`,
+`TestPrivateMaterialStartsAtTheFirstLine`,
+`TestPrivateMarketsPortfolioHolding`, `TestPrivateMarketsPortfolioMoves`,
+`TestPrivateMarketsNeverValued`, `TestPrivateMarketsDebtIncome`,
+`TestPrivateIRRPastPaybackPooled`, `TestPrivateFlowsAreTheTotalsLegs`,
+`TestPrivateView`, `TestPrivateViewAsOf`.
 
 ## The math (`internal/returns`)
 

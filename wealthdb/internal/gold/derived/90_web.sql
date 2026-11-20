@@ -593,14 +593,15 @@ CREATE VIEW web_marks AS
      WHERE currency = 'USD';
 
 -- web_private: the Private Markets tiles read `wealthdb returns private`'s
--- rows, one set per reporting currency, each holding with its account's
--- label, the total last. gain is what came back and is still marked
--- less what was paid in, none where the NAV is none.
+-- rows, one set per reporting currency and as-of instant (a quarter end
+-- or the day of the refresh), each holding with its account's label, the
+-- instant's total last. gain is what came back and is still marked less
+-- what was paid in, none where the NAV or the cost is none.
 CREATE VIEW web_private AS
-    SELECT p.currency, p.is_total, p.silver_source_id, p.account_external_id,
+    SELECT epoch_ms(p.as_of * 1000) AS as_of, p.currency, p.is_total, p.silver_source_id, p.account_external_id,
            CASE WHEN NOT p.is_total THEN account_label(a.display_name, p.account_external_id,
                                                       p.silver_source_id, a.account_kind) END AS account_label,
-           p.instrument_external_id, p.holding,
+           p.instrument_external_id, p.holding, p.asset_class, p.vehicle, p.status,
            epoch_ms(p.first_call * 1000) AS first_call, p.paid_in, p.distributed, p.nav,
            epoch_ms(p.marked_at * 1000) AS marked_at, p.dpi, p.tvpi, 100 * p.irr AS irr_pct, p.quality,
            p.distributed + p.nav - p.paid_in AS gain
@@ -608,11 +609,28 @@ CREATE VIEW web_private AS
       LEFT JOIN accounts a ON a.silver_source_id = p.silver_source_id
            AND a.account_external_id = p.account_external_id;
 
--- web_private_flows: the private holdings' cash flows per quarter, one
--- row set per reporting currency, the quarter as a timestamp.
+-- web_private_calendar: the as-of instant the Private Markets cards read
+-- for a chosen day. as_of_day is every day from the first stored
+-- instant's through the later of the last's and tomorrow, UTC; as_of is
+-- the latest stored instant on or before the day's end. A day before
+-- the first instant has no row.
+CREATE VIEW web_private_calendar AS
+    WITH s AS (SELECT DISTINCT as_of FROM report_private_markets),
+    b AS (
+        SELECT min(as_of) // 86400 * 86400 AS lo,
+               greatest(max(as_of) // 86400 * 86400, CAST(epoch(now()) AS BIGINT) // 86400 * 86400 + 86400) AS hi
+          FROM s),
+    d AS (SELECT unnest(range(lo, hi + 1, 86400)) AS day FROM b WHERE lo IS NOT NULL)
+    SELECT epoch_ms(d.day * 1000) AS as_of_day, epoch_ms(s.as_of * 1000) AS as_of
+      FROM d ASOF JOIN s ON d.day + 86399 >= s.as_of;
+
+-- web_private_flows: the private holdings' cash flows per holding and
+-- quarter, one row set per reporting currency, the quarter as a
+-- timestamp. A row marked unattributed holds the exits in kind out of an
+-- account that name no holding.
 CREATE VIEW web_private_flows AS
-    SELECT currency, epoch_ms(quarter * 1000) AS quarter, called, distributed, net,
-           called_to_date, distributed_to_date, net_to_date, quality
+    SELECT currency, epoch_ms(quarter * 1000) AS quarter, silver_source_id, account_external_id,
+           instrument_external_id, holding, asset_class, vehicle, unattributed, called, distributed, net, quality
       FROM serving_private_flows;
 
 -- ============================================================
