@@ -608,3 +608,86 @@ func TestPrivateMarketsUnattributedExit(t *testing.T) {
 		t.Errorf("total irr %v, want %v (%v): the exit is one of its flows, on its day", total.IRR, want, err)
 	}
 }
+
+// report_private_flows_multi holds the legs the total counts, per
+// quarter: the listed holdings' and the exit out of their account that
+// names no holding, but no leg of a holding the view leaves out, of a
+// buy or of another account, and none of the exits of no private
+// holding (seedExitsOfNoPrivateHolding). What it adds up to is the
+// total's paid in and distributed.
+func TestPrivateFlowsAreTheTotalsLegs(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedSPVExit(t, db, ctx, `{"equity_transfer_ledger":true,"cost_basis":400,"instrument":"PUB"}`,
+		dy(2025, time.January, 15))
+	seedExitsOfNoPrivateHolding(t, db, ctx, dy(2025, time.January, 15))
+	// A call refunded whole across the CHF's move: no investment, though
+	// its legs differ in CHF.
+	back := "BACK"
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertTransactions(ctx, []canonical.TransactionChange{
+			{SilverSourceID: "pm", TransactionExternalID: "b1", OccurredAt: dy(2024, time.June, 20),
+				AccountExternalID: "INV", InstrumentExternalID: &back, Kind: canonical.TxKindContribution,
+				Currency: "USD", NetAmount: decp(-300)},
+			{SilverSourceID: "pm", TransactionExternalID: "b2", OccurredAt: dy(2024, time.July, 10),
+				AccountExternalID: "INV", InstrumentExternalID: &back, Kind: canonical.TxKindContribution,
+				Currency: "USD", NetAmount: decp(300)}})
+	})
+	type flow struct {
+		quarter                    int64
+		called, back, net, quality string
+		calledTo, backTo, netTo    string
+	}
+	got, err := scanRows(ctx, db, "report_private_flows_multi", `
+		SELECT quarter, CAST(called AS VARCHAR), CAST(distributed AS VARCHAR), CAST(net AS VARCHAR), quality,
+		       CAST(called_to_date AS VARCHAR), CAST(distributed_to_date AS VARCHAR), CAST(net_to_date AS VARCHAR)
+		  FROM report_private_flows_multi(?) WHERE currency = 'USD'`,
+		[]any{privateAsOf}, func(f *flow) []any {
+			return []any{&f.quarter, &f.called, &f.back, &f.net, &f.quality, &f.calledTo, &f.backTo, &f.netTo}
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type want struct {
+		quarter      int64
+		called, back int64
+		quality      string
+	}
+	// A quarter opens at midnight, UTC.
+	q := func(y int, m time.Month, d int) int64 { return EpochDay(dy(y, m, d)) * 86400 }
+	wants := []want{
+		{q(2024, time.January, 1), 2150, 0, ""},
+		{q(2024, time.April, 1), 1000, 0, ""},
+		{q(2024, time.July, 1), 0, 900, "exit_unvalued=1"},
+		{q(2024, time.October, 1), 500, 0, ""},
+		{q(2025, time.January, 1), 0, 1000, ""},
+	}
+	if len(got) != len(wants) {
+		t.Fatalf("%d quarters %+v, want %d", len(got), got, len(wants))
+	}
+	var calledTo, backTo int64
+	for i, w := range wants {
+		g := got[i]
+		calledTo, backTo = calledTo+w.called, backTo+w.back
+		if g.quarter != w.quarter || cents(t, &g.called) != 100*w.called || cents(t, &g.back) != 100*w.back ||
+			cents(t, &g.net) != 100*(w.back-w.called) || g.quality != w.quality ||
+			cents(t, &g.calledTo) != 100*calledTo || cents(t, &g.backTo) != 100*backTo ||
+			cents(t, &g.netTo) != 100*(backTo-calledTo) {
+			t.Errorf("quarter %d: %+v, want %+v", i, g, w)
+		}
+	}
+	rows, _ := privateRows(t, db, ctx, "USD")
+	if last := got[len(got)-1]; cents(t, &last.calledTo) != cents(t, rows[""].PaidIn) ||
+		cents(t, &last.backTo) != cents(t, rows[""].Distributed) {
+		t.Errorf("to date %s and %s, the total %s", last.calledTo, last.backTo, privateRowText(rows[""]))
+	}
+	// Each currency converts at the legs' own days: the first quarter's
+	// calls at 0.90 USD to the CHF. The refunded call stays out of the
+	// third quarter's.
+	chf, err := scanRows(ctx, db, "report_private_flows_multi", `SELECT CAST(called AS VARCHAR)
+		  FROM report_private_flows_multi(?) WHERE currency = 'CHF'`,
+		[]any{privateAsOf}, func(c *string) []any { return []any{c} })
+	if err != nil || len(chf) != len(wants) || cents(t, &chf[0]) != 238889 || cents(t, &chf[2]) != 0 {
+		t.Errorf("CHF called %v (%v), want 2388.89 first and 0 third", chf, err)
+	}
+}

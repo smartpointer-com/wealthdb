@@ -594,17 +594,26 @@ CREATE VIEW web_marks AS
 
 -- web_private: the Private Markets tiles read `wealthdb returns private`'s
 -- rows, one set per reporting currency, each holding with its account's
--- label, the total last.
+-- label, the total last. gain is what came back and is still marked
+-- less what was paid in, none where the NAV is none.
 CREATE VIEW web_private AS
     SELECT p.currency, p.is_total, p.silver_source_id, p.account_external_id,
            CASE WHEN NOT p.is_total THEN account_label(a.display_name, p.account_external_id,
                                                       p.silver_source_id, a.account_kind) END AS account_label,
            p.instrument_external_id, p.holding,
            epoch_ms(p.first_call * 1000) AS first_call, p.paid_in, p.distributed, p.nav,
-           epoch_ms(p.marked_at * 1000) AS marked_at, p.dpi, p.tvpi, 100 * p.irr AS irr_pct, p.quality
+           epoch_ms(p.marked_at * 1000) AS marked_at, p.dpi, p.tvpi, 100 * p.irr AS irr_pct, p.quality,
+           p.distributed + p.nav - p.paid_in AS gain
       FROM report_private_markets p
       LEFT JOIN accounts a ON a.silver_source_id = p.silver_source_id
            AND a.account_external_id = p.account_external_id;
+
+-- web_private_flows: the private holdings' cash flows per quarter, one
+-- row set per reporting currency, the quarter as a timestamp.
+CREATE VIEW web_private_flows AS
+    SELECT currency, epoch_ms(quarter * 1000) AS quarter, called, distributed, net,
+           called_to_date, distributed_to_date, net_to_date, quality
+      FROM serving_private_flows;
 
 -- ============================================================
 -- A portfolio's fee base leaves out its debts (docs/SPENDING.md §7).

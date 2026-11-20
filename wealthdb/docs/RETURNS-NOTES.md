@@ -314,8 +314,12 @@ Limits:
 
 `web refresh` writes the view's rows in every reporting currency to
 `report_private_markets`, and the Private Markets dashboard reads them
-through `web_private`, the IRR with them. Guards: `TestPrivateMarkets`,
-`TestPrivateMarketsHistoricFX`, `TestPrivateMarketsTableIsTheCLIsRows`,
+through `web_private`, the IRR with them. The macro
+`report_private_flows_multi` adds the legs the total counts per quarter,
+in every reporting currency, and `serving_private_flows` holds it for
+the dashboard's cash flows. Guards:
+`TestPrivateMarkets`, `TestPrivateMarketsHistoricFX`,
+`TestPrivateMarketsTableIsTheCLIsRows`, `TestPrivateFlowsAreTheTotalsLegs`,
 `TestPrivateView`.
 
 ## The math (`internal/returns`)

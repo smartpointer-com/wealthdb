@@ -1430,6 +1430,8 @@ CREATE MACRO report_marks_multi() AS TABLE (
 --     cents, so it is the sum of the rows as they print.
 --   * report_private_markets holds `wealthdb returns private`'s rows,
 --     the money-weighted return with them. web_private serves it.
+--   * serving_private_flows holds the same legs per quarter, in every
+--     reporting currency. web_private_flows serves it.
 -- ============================================================
 
 -- private_legs: every leg of a private holding, and every exit in kind
@@ -1652,4 +1654,57 @@ CREATE MACRO report_private(p_asof, p_ccy) AS TABLE (
       LEFT JOIN instrument_labels() il ON il.silver_source_id = r.silver_source_id
            AND il.instrument_external_id = r.instrument_external_id
      ORDER BY r.is_total, r.silver_source_id, r.account_external_id, r.first_call, r.instrument_external_id
+);
+
+-- report_private_flows_multi: the private holdings' cash flows per
+-- calendar quarter at p_asof, in every reporting currency, a row per
+-- currency and quarter a leg falls in. The legs are those
+-- report_private's total counts: the legs of the holdings it lists and
+-- the exits in kind out of their accounts that name no holding. It lists
+-- the same holdings in every currency, as whether one is listed reads
+-- its own currency's money, so the list is read once. called is the
+-- calls net of refunds, distributed the cash and the exits in kind that
+-- came back, net what came back less what was called. Each rounds once,
+-- to the cent. Each _to_date column adds the currency's quarters up to
+-- the row's, so the last row's match the total's but for the cents each
+-- quarter rounds. quarter is the epoch second that opens the quarter, in
+-- UTC. quality names what a figure misses: unpriced=N legs with no rate
+-- to the currency, which add nothing, and exit_unvalued=N exits in kind
+-- that state no value.
+CREATE MACRO report_private_flows_multi(p_asof) AS TABLE (
+    WITH listed AS (
+        SELECT silver_source_id, account_external_id, instrument_external_id
+          FROM report_private(p_asof, 'USD')
+         WHERE NOT is_total),
+    legs AS (
+        SELECT 'USD' AS out_ccy, * FROM private_legs(p_asof, 'USD')
+        UNION ALL SELECT 'CHF', * FROM private_legs(p_asof, 'CHF')
+        UNION ALL SELECT 'EUR', * FROM private_legs(p_asof, 'EUR')
+        UNION ALL SELECT 'GBP', * FROM private_legs(p_asof, 'GBP')),
+    counted AS (
+        SELECT l.*
+          FROM legs l
+          SEMI JOIN listed k ON k.silver_source_id = l.silver_source_id
+           AND k.account_external_id = l.account_external_id
+           AND (l.unattributed OR k.instrument_external_id = l.instrument_external_id)),
+    q AS (
+        SELECT out_ccy, CAST(epoch(date_trunc('quarter', epoch_ms(day * 86400000))) AS BIGINT) AS quarter,
+               ROUND(COALESCE(SUM(paid) FILTER (WHERE leg = 'call'), 0), 2) AS called,
+               ROUND(COALESCE(-SUM(paid) FILTER (WHERE leg <> 'call'), 0), 2) AS distributed,
+               COUNT(*) FILTER (WHERE paid IS NULL) AS unpriced,
+               COUNT(*) FILTER (WHERE unvalued) AS unvalued
+          FROM counted
+         GROUP BY 1, 2)
+    SELECT out_ccy AS currency, quarter,
+           CAST(called AS DECIMAL(28,4)) AS called,
+           CAST(distributed AS DECIMAL(28,4)) AS distributed,
+           CAST(distributed - called AS DECIMAL(28,4)) AS net,
+           CAST(SUM(called) OVER w AS DECIMAL(28,4)) AS called_to_date,
+           CAST(SUM(distributed) OVER w AS DECIMAL(28,4)) AS distributed_to_date,
+           CAST(SUM(distributed - called) OVER w AS DECIMAL(28,4)) AS net_to_date,
+           concat_ws(';', CASE WHEN unpriced > 0 THEN 'unpriced=' || unpriced END,
+                          CASE WHEN unvalued > 0 THEN 'exit_unvalued=' || unvalued END) AS quality
+      FROM q
+    WINDOW w AS (PARTITION BY out_ccy ORDER BY quarter ROWS UNBOUNDED PRECEDING)
+     ORDER BY currency, quarter
 );
