@@ -76,7 +76,9 @@ money in, out or marked, such as a call refunded whole, is left out.
 
   paid_in      the calls, net of refunds
   distributed  what came back: distributions, sales, and exits in kind
-               at the value their transfer states
+               at the value their transfer states. An exit in other
+               shares counts for the holding whose holding_id its
+               ledger row's holding column names
   nav          the holding's value at the latest snapshot; 0 once it
                has left the holdings, blank where it never had a value
   marked_at    the day of that value's mark, or of its last line's once
@@ -95,7 +97,9 @@ holdings: the sums' ratios, not an average of the rows' ratios. Its
 irr_pct pools the legs of every holding listed, and its marked_at is
 the oldest mark. A holding with no value leaves the total's nav, tvpi
 and irr_pct blank. The total is over every holding: a filter keeps or
-drops it as a row, never recomputes it.
+drops it as a row, never recomputes it. The total also counts each exit
+in kind out of a listed holding's account that names no holding, unless
+the account bought the shares or took them in.
 
 What the figures miss:
   - A call after the last mark sits outside the NAV until the next mark,
@@ -113,11 +117,14 @@ The quality column says what a row misses:
   call_after_mark          a call came after the mark
   distribution_after_mark  a distribution or exit came after the mark
   exit_unvalued=N          N exits in kind state no value
+  unattributed_exit=N      on the total: N exits in kind name no
+                           holding; the total counts them, no row does
   unpriced=N               N legs or lines have no rate to the output
                            currency: the sums leave them out, and a
                            leg with none leaves irr_pct blank
 and the returns engine's mwr_* tags on irr_pct. On the total each tag
-counts the holdings it holds on.
+counts the holdings it holds on; exit_unvalued and unpriced also count
+the exits that name no holding.
 
 Flags:
   -f, --format      table | csv | csv_plain | json

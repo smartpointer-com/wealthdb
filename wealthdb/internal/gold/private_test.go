@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -372,5 +373,238 @@ func TestPrivateMarketsAtCost(t *testing.T) {
 	}
 	if !slices.Contains(rows[""].Quality, "at_cost=2") {
 		t.Errorf("total quality %v: it counts the holdings at cost", rows[""].Quality)
+	}
+}
+
+// seedSPVExit adds SPVX to the private-markets fixture: a subscription,
+// one mark, and an exit in kind out of the account that delivers PUB,
+// the listed shares the SPV received, at a stated value. payload is the
+// exit's, as the equity-transfer ledger writes it; an empty one seeds no
+// exit. GHOST gets a value, so the total has a NAV and an IRR.
+func seedSPVExit(t *testing.T, db *sql.DB, ctx context.Context, payload string, exitAt int64) {
+	t.Helper()
+	seedPrivateFixture(t, db, ctx)
+	spv, pub, ghost := "SPVX", "PUB", "GHOST"
+	mar31, dec31 := dy(2024, time.March, 31), dy(2024, time.December, 31)
+	txs := []canonical.TransactionChange{{SilverSourceID: "pm", TransactionExternalID: "x1",
+		OccurredAt: dy(2024, time.March, 1), AccountExternalID: "INV", InstrumentExternalID: &spv,
+		Kind: canonical.TxKindContribution, Currency: "USD", NetAmount: decp(-400)}}
+	if payload != "" {
+		txs = append(txs, canonical.TransactionChange{SilverSourceID: "pm",
+			TransactionExternalID: canonical.LedgerTransferIDPrefix + "x2", OccurredAt: exitAt,
+			AccountExternalID: "INV", InstrumentExternalID: &pub, Kind: canonical.TxKindTransferOut,
+			Currency: "USD", Quantity: decp(-10), NetAmount: decp(-1000), Payload: json.RawMessage(payload)})
+	}
+	// An exit in kind out of an account that holds no private holding is
+	// no private leg.
+	txs = append(txs, canonical.TransactionChange{SilverSourceID: "pm",
+		TransactionExternalID: canonical.LedgerTransferIDPrefix + "x3", OccurredAt: exitAt,
+		AccountExternalID: "BRK", InstrumentExternalID: &pub, Kind: canonical.TxKindTransferOut,
+		Currency: "USD", NetAmount: decp(-700)})
+	inTx(t, db, ctx, func(w *Writer) error {
+		if err := w.InsertTransactions(ctx, txs); err != nil {
+			return err
+		}
+		line := func(inst string, at int64, value int64) canonical.PositionChange {
+			i := inst
+			return canonical.PositionChange{SilverSourceID: "pm", AccountExternalID: "INV", SnapshotAt: at,
+				PositionKey: inst, InstrumentExternalID: &i, AssetClass: canonical.AssetClassPrivateEquity,
+				Vehicle: canonical.VehicleFund, Currency: "USD", ValuedAt: at, MarketValue: decp(value)}
+		}
+		return w.InsertPositions(ctx, []canonical.PositionChange{line(spv, mar31, 400), line(ghost, dec31, 100)})
+	})
+}
+
+// privateRowText is a row's figures, for comparing two rows.
+func privateRowText(r PrivateRow) string {
+	s := func(p *string) string {
+		if p == nil {
+			return "-"
+		}
+		return *p
+	}
+	f := func(p *float64) string {
+		if p == nil {
+			return "-"
+		}
+		return strconv.FormatFloat(*p, 'g', -1, 64)
+	}
+	return strings.Join([]string{s(r.PaidIn), s(r.Distributed), s(r.NAV), strconv.FormatInt(r.EndAt, 10),
+		f(r.DPI), f(r.TVPI), f(r.IRR), strings.Join(r.Quality, ";")}, " ")
+}
+
+// The flows of TestPrivateMarketsTotalIRR's total: FUND, LATE, SPV,
+// VOID and GHOST, then SPVX's subscription.
+func privateFixtureFlows() []returns.Flow {
+	at := func(y int, m time.Month, d int, paid float64) returns.Flow {
+		return returns.Flow{Day: EpochDay(dy(y, m, d)), Amount: paid}
+	}
+	return []returns.Flow{
+		at(2024, time.January, 10, 1000), at(2024, time.June, 10, 1000), at(2024, time.June, 20, -100),
+		at(2024, time.September, 10, -300),
+		at(2024, time.January, 15, 500), at(2024, time.November, 1, 500),
+		at(2024, time.February, 1, 200), at(2024, time.July, 1, -600),
+		at(2024, time.February, 1, 50), at(2024, time.July, 1, 0),
+		at(2024, time.April, 1, 100),
+		at(2024, time.March, 1, 400),
+	}
+}
+
+// seedExitsOfNoPrivateHolding adds exits in kind, on day at, that are no
+// private holding's: of DIRECT, which INV bought, and of XIN, which it
+// took in; a transfer of cash out of INV; and of PUB2 out of INV2, whose
+// one holding is a call refunded whole, so the view lists none of it.
+func seedExitsOfNoPrivateHolding(t *testing.T, db *sql.DB, ctx context.Context, at int64) {
+	t.Helper()
+	tx := func(id, acct, inst string, on int64, kind canonical.TxKind, amount int64) canonical.TransactionChange {
+		c := canonical.TransactionChange{SilverSourceID: "pm", TransactionExternalID: id, OccurredAt: on,
+			AccountExternalID: acct, Kind: kind, Currency: "USD", NetAmount: decp(amount)}
+		if inst != "" {
+			c.InstrumentExternalID = &inst
+		}
+		return c
+	}
+	jan := dy(2024, time.January, 20)
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertTransactions(ctx, []canonical.TransactionChange{
+			tx("o1", "INV", "DIRECT", at, canonical.TxKindTransferOut, -900),
+			tx("o2", "INV", "XIN", jan, canonical.TxKindTransferIn, 250),
+			tx("o3", "INV", "XIN", at, canonical.TxKindTransferOut, -250),
+			tx("o4", "INV", "", at, canonical.TxKindTransferOut, -300),
+			tx("o5", "INV2", "REF2", jan, canonical.TxKindContribution, -300),
+			tx("o6", "INV2", "REF2", dy(2024, time.February, 20), canonical.TxKindContribution, 300),
+			tx("o7", "INV2", "PUB2", at, canonical.TxKindTransferOut, -800),
+		})
+	})
+}
+
+// None of those exits moves a figure: a row or the total.
+func TestPrivateMarketsExitsOfNoPrivateHolding(t *testing.T) {
+	t.Parallel()
+	exit := dy(2025, time.January, 15)
+	db, ctx := openMigrated(t)
+	seedSPVExit(t, db, ctx, "", exit)
+	seedExitsOfNoPrivateHolding(t, db, ctx, exit)
+	bare, bctx := openMigrated(t)
+	seedSPVExit(t, bare, bctx, "", exit)
+	rows, order := privateRows(t, db, ctx, "USD")
+	base, baseOrder := privateRows(t, bare, bctx, "USD")
+	if !slices.Equal(order, baseOrder) {
+		t.Fatalf("rows %v, without the exits %v", order, baseOrder)
+	}
+	for _, k := range order {
+		if got, want := privateRowText(rows[k]), privateRowText(base[k]); got != want {
+			t.Errorf("%q: %s, without the exits %s", k, got, want)
+		}
+	}
+}
+
+// On the total, exit_unvalued and unpriced count the holdings and the
+// unattributed exits: an exit that states no value, and one with no
+// rate to the output currency, which also blanks the IRR.
+func TestPrivateMarketsUnattributedExitQuality(t *testing.T) {
+	t.Parallel()
+	exit := dy(2025, time.January, 15)
+	db, ctx := openMigrated(t)
+	seedSPVExit(t, db, ctx, "", exit)
+	pub, pub2 := "PUB", "PUB2"
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertTransactions(ctx, []canonical.TransactionChange{
+			{SilverSourceID: "pm", TransactionExternalID: "u1", OccurredAt: exit, AccountExternalID: "INV",
+				InstrumentExternalID: &pub, Kind: canonical.TxKindTransferOut, Currency: "JPY", NetAmount: decp(-1000)},
+			{SilverSourceID: "pm", TransactionExternalID: "u2", OccurredAt: exit, AccountExternalID: "INV",
+				InstrumentExternalID: &pub2, Kind: canonical.TxKindTransferOut, Currency: "USD", NetAmount: decp(0)},
+		})
+	})
+	bare, bctx := openMigrated(t)
+	seedSPVExit(t, bare, bctx, "", exit)
+	rows, _ := privateRows(t, db, ctx, "USD")
+	base, _ := privateRows(t, bare, bctx, "USD")
+	total, want := rows[""], base[""]
+	if !slices.Contains(total.Quality, "unattributed_exit=2") || !slices.Contains(total.Quality, "unpriced=1") ||
+		slices.ContainsFunc(want.Quality, func(q string) bool { return strings.HasPrefix(q, "unpriced=") }) {
+		t.Errorf("total quality %v, without the exits %v: the exit with no rate is unpriced", total.Quality, want.Quality)
+	}
+	unvalued := func(q []string) int {
+		for _, tag := range q {
+			if n, ok := strings.CutPrefix(tag, "exit_unvalued="); ok {
+				v, _ := strconv.Atoi(n)
+				return v
+			}
+		}
+		return 0
+	}
+	if unvalued(total.Quality) != unvalued(want.Quality)+1 {
+		t.Errorf("total quality %v, without the exits %v: the exit of no value is unvalued", total.Quality, want.Quality)
+	}
+	if cents(t, total.Distributed) != cents(t, want.Distributed) || total.IRR != nil || want.IRR == nil {
+		t.Errorf("total %s, without the exits %s: the sums leave the unpriced exit out, and the IRR is blank",
+			privateRowText(total), privateRowText(want))
+	}
+}
+
+// An SPV that exits in the listed shares it received: the out-leg names
+// the shares, and its holding the SPV. The exit is the SPV's
+// distribution, at the value the leg states, on its day.
+func TestPrivateMarketsExitInKindNamesItsHolding(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	exit := dy(2024, time.August, 1)
+	seedSPVExit(t, db, ctx, `{"equity_transfer_ledger":true,"cost_basis":400,"instrument":"PUB","holding":"SPVX"}`, exit)
+	rows, order := privateRows(t, db, ctx, "USD")
+	if slices.Contains(order, "PUB") {
+		t.Fatalf("rows %v: the delivered shares are no holding", order)
+	}
+	spv := rows["SPVX"]
+	if cents(t, spv.Distributed) != 100000 || cents(t, spv.NAV) != 0 || !isNear(spv.DPI, 2.5) || !isNear(spv.TVPI, 2.5) ||
+		!slices.Equal(spv.Quality, []string{"exited"}) || EpochDay(spv.EndAt) != EpochDay(exit) {
+		t.Errorf("SPVX %s, ends %d: the exit is its distribution, on its day", privateRowText(spv), spv.EndAt)
+	}
+	want, err := returns.XIRR(0, 0, EpochDay(dy(2024, time.March, 1))-1, EpochDay(exit), []returns.Flow{
+		{Day: EpochDay(dy(2024, time.March, 1)), Amount: 400}, {Day: EpochDay(exit), Amount: -1000}})
+	if err != nil || !isNear(spv.IRR, want) {
+		t.Errorf("SPVX irr %v, want %v (%v)", spv.IRR, want, err)
+	}
+	total := rows[""]
+	if cents(t, total.Distributed) != 90000+100000 || slices.ContainsFunc(total.Quality, isUnattributedTag) {
+		t.Errorf("total %s: it adds the holding's exit, which is attributed", privateRowText(total))
+	}
+	flows := append(privateFixtureFlows(), returns.Flow{Day: EpochDay(exit), Amount: -1000})
+	want, err = returns.XIRR(0, 2100+500+100, EpochDay(dy(2024, time.January, 10))-1,
+		EpochDay(dy(2024, time.December, 31)), flows)
+	if err != nil || !nearPtr(total.IRR, &want, 1e-9) {
+		t.Errorf("total irr %v, want %v (%v)", total.IRR, want, err)
+	}
+}
+
+func isUnattributedTag(q string) bool { return strings.HasPrefix(q, "unattributed_exit=") }
+
+// The same exit with no holding named is no holding's: the SPV reads as
+// it does with no exit at all. The total counts the exit, out of the
+// account of a listed holding, and says so.
+func TestPrivateMarketsUnattributedExit(t *testing.T) {
+	t.Parallel()
+	exit := dy(2025, time.January, 15) // after every holding's last day
+	db, ctx := openMigrated(t)
+	seedSPVExit(t, db, ctx, `{"equity_transfer_ledger":true,"cost_basis":400,"instrument":"PUB"}`, exit)
+	bare, bctx := openMigrated(t)
+	seedSPVExit(t, bare, bctx, "", exit)
+	rows, order := privateRows(t, db, ctx, "USD")
+	base, baseOrder := privateRows(t, bare, bctx, "USD")
+	if !slices.Equal(order, baseOrder) {
+		t.Fatalf("rows %v, without the exit %v", order, baseOrder)
+	}
+	if got, want := privateRowText(rows["SPVX"]), privateRowText(base["SPVX"]); got != want {
+		t.Errorf("SPVX %s, without the exit %s", got, want)
+	}
+	total := rows[""]
+	if cents(t, total.Distributed) != cents(t, base[""].Distributed)+100000 || EpochDay(total.EndAt) != EpochDay(exit) ||
+		!slices.Contains(total.Quality, "unattributed_exit=1") || slices.ContainsFunc(base[""].Quality, isUnattributedTag) {
+		t.Errorf("total %s ends %d, without the exit %s", privateRowText(total), total.EndAt, privateRowText(base[""]))
+	}
+	flows := append(privateFixtureFlows(), returns.Flow{Day: EpochDay(exit), Amount: -1000})
+	want, err := returns.XIRR(0, 2100+500+100, EpochDay(dy(2024, time.January, 10))-1, EpochDay(exit), flows)
+	if err != nil || !nearPtr(total.IRR, &want, 1e-9) {
+		t.Errorf("total irr %v, want %v (%v): the exit is one of its flows, on its day", total.IRR, want, err)
 	}
 }

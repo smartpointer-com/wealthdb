@@ -982,7 +982,7 @@ Example config file:
 | --- | --- | --- |
 | `gold_db` | string | Filesystem path to the DuckDB file. Created by `wealthdb init`. Expanded as above. |
 | `default_currency` | string | ISO 4217. The output currency of every command that values money, and of the MCP server, when `-x`/`--currency` is not given. When it is a reporting currency (USD, CHF, EUR or GBP, §10.8), the web dashboards open in it too. |
-| `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors do not capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. Expanded as above; a missing file is a no-op. See §13.9. |
+| `equity_transfers` | string | Optional. Filesystem path to a CSV ledger of equity transfers in/out of a tracked account that the collectors do not capture as valued flows. The loader injects each row as a canonical `transfer_in`/`transfer_out` transaction. An out-leg's optional `holding` names the private holding the exit pays out of, for the private-markets view. Expanded as above; a missing file is a no-op. See §13.9. |
 | `web` | object | Optional. Enables the dockerized Metabase BI server driven by `wealthdb web` (host-side). See [web/README.md](../../web/README.md). |
 | `web.enabled` | bool | `true` to allow `wealthdb web start`. Absent block or `false` = the server is not configured. |
 | `web.port` | integer | Host loopback port Metabase is published on (127.0.0.1 + [::1] → container 3000). Default 3000. |
@@ -4569,9 +4569,10 @@ and it shows in the transactions report. Columns:
 
 - required: `silver_source_id, account, occurred_at (YYYY-MM-DD),
   direction (in|out), value, currency`;
-- optional: `quantity, cost_basis, instrument, note,
-  to_silver_source_id, to_account`. The last two state a whole move
-  (below).
+- optional: `quantity, cost_basis, instrument, note, holding,
+  to_silver_source_id, to_account`. `holding` names the private
+  holding an exit pays out of (below). The last two state a whole
+  move (below).
 
 `value` is the market value at transfer — the capital flow;
 `cost_basis` (the pre-transfer basis) rides along in the payload for
@@ -4645,11 +4646,33 @@ The vehicle's own mark follows its statements, so its value catches up at
 the next one; over any window holding the whole exit the totals agree.
 The vehicle's source must admit the two ledger kinds in its returns
 policy (angellist and manual do). Cost basis is the vehicle's entry, on
-both rows, for reference:
+both rows, for reference.
+
+Both rows name the listed stock, not the vehicle. That is right for the
+receiving account and for cost basis. The private-markets view
+(RETURNS-NOTES.md, "Private markets") lists the vehicle by its own
+instrument, though. So the out-row's `holding` names the vehicle:
+
+- It is the source's own instrument id of the vehicle.
+  `wealthdb returns private -C +holding_id` prints it.
+- The view counts the exit as that holding's distribution, at the
+  row's value, on its day.
+- Only an out-row takes one. A `holding` on an in-row fails the parse.
+  A one-row move gives it to the sending leg.
+- The account must hold it: a contribution of that account names the
+  instrument. Otherwise the load fails and names the row's line.
+- It changes no id, no lot and no cost basis.
+- An out-row of an instrument no contribution names, with no
+  `holding`, is no holding's exit. The view's total still counts it
+  and says `unattributed_exit=N`, unless the account bought the
+  instrument or took it in.
+
+The two rows, with the vehicle `spv-example-co`:
 
 ```
-angellist, lp-account, 2098-03-04, out, 500, 10000, 42000, USD, XMPL, Example Co SPV: 500 XMPL to the brokerage
-schwab,    Brokerage,  2098-03-04, in,  500, 10000, 42000, USD, XMPL, Example Co SPV: 500 XMPL received
+silver_source_id,account,occurred_at,direction,quantity,cost_basis,value,currency,instrument,note,holding
+angellist,lp-account,2098-03-04,out,500,10000,42000,USD,XMPL,Example Co SPV: 500 XMPL to the brokerage,spv-example-co
+schwab,Brokerage,2098-03-04,in,500,10000,42000,USD,XMPL,Example Co SPV: 500 XMPL received,
 ```
 
 ### 13.10 Spending and income pins ledgers

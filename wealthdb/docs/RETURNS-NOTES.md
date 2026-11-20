@@ -220,7 +220,7 @@ One row per holding, then the total:
 | column | reads |
 |---|---|
 | `paid_in` | the `contribution` lines, net of refunds |
-| `distributed` | the `distribution` and `sell` lines, and the exits in kind: a `transfer_out` of the holding, at the value it states |
+| `distributed` | the `distribution` and `sell` lines, and the exits in kind: a `transfer_out` of the holding, or one whose `holding` names it, at the value it states |
 | `nav` | the holding's lines at the latest snapshot. It is 0 once the holding has left the holdings, and blank where it never had a value |
 | `marked_at` | the oldest mark of those lines, `coalesce(valued_at, snapshot_at)`; for a holding that has left, the mark of its last line |
 | `dpi` | `distributed / paid_in` |
@@ -231,6 +231,18 @@ An SPV that pays out cash books a `sell`, as AngelList does, so
 `distributed` counts a sale as a distribution. Without it an SPV that
 exited for cash would read a TVPI of 0. An SPV bought as a `buy`
 (EquityZen) is a direct holding: it is in `wealthdb gains`.
+
+**Exits in kind.** An SPV that pays out in listed shares is a pair of
+equity-transfer ledger rows (DESIGN.md §13.9). Both name the shares, not
+the SPV. The out-row's `holding` column names the SPV, by the id
+`-C +holding_id` prints. The view then counts the exit as the SPV's
+distribution:
+
+- at the value the row states, on the row's day;
+- in `dpi`, `tvpi` and the IRR's flows.
+
+The exit ends the SPV's figures. A later gain on the shares belongs to
+the broker's position.
 
 **One definition.** The macro `report_private` computes every figure but
 the IRR, from `private_legs`. The IRR is the engine's own solver
@@ -251,6 +263,14 @@ total's `marked_at` is the oldest mark, and a holding with no value
 leaves the total's `nav`, `tvpi` and `irr_pct` blank. The total is over
 every holding: a filter keeps or drops it as a row, never recomputes
 it.
+
+The total also counts every exit in kind out of a listed holding's
+account that no holding claims: a `transfer_out` of an instrument that
+no `contribution`, `buy` or `transfer_in` of the account names, with no
+`holding`. Shares the account bought or took in are a direct holding,
+and cash is no exit in kind, so neither counts. Such an exit is in the
+total's `distributed`, `dpi`, `tvpi` and `irr_pct`, and the total says
+`unattributed_exit=N`. Then the total is more than the sum of the rows.
 
 **No mark, no NAV.** Every row has a mark but one: a holding that never
 had a value. Its `nav`, `tvpi` and `irr_pct` are blank, never zero, and
@@ -274,11 +294,16 @@ Quality tags:
   mark. A NAV not yet marked down for it reads `tvpi` high.
 - `exit_unvalued=N`: N exits in kind state no value. `distributed` misses
   them.
+- `unattributed_exit=N`, on the total only: N exits in kind name no
+  holding. The total counts them, and no row does. To give one to its
+  holding, write the holding's id in the ledger row's `holding` column.
 - `unpriced=N`: N legs or lines have no rate to the output currency. The
   sums leave them out, and a leg with none leaves `irr_pct` blank. A
   zero needs no rate.
 
-On the total each tag counts the holdings it holds on.
+On the total each tag counts the holdings it holds on. Its
+`exit_unvalued` and `unpriced` also count the unattributed exits that
+state no value or have no rate.
 
 Limits:
 

@@ -35,6 +35,7 @@ The returns quality column gives the reason for every n/a and tags every approxi
 - at_cost: (view=private) the source carries the NAV at cost, before any valuation, so tvpi reads 1 and irr_pct 0 by construction.
 - call_after_mark, distribution_after_mark: (view=private) a call, or a distribution or exit, came after the mark, so tvpi reads low, or high.
 - exit_unvalued=N: (view=private) N exits in kind state no value.
+- unattributed_exit=N: (view=private, the total) N exits in kind name no holding: the total counts them, no row does.
 - unpriced=N: (view=private) N legs or lines have no rate to the currency: the sums leave them out, and an unpriced leg blanks irr_pct.
 Other tags name their reason the same way.
 

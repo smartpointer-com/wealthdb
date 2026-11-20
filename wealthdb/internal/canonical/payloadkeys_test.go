@@ -29,3 +29,21 @@ func TestTxnEvidenceProjectsEveryKey(t *testing.T) {
 		}
 	}
 }
+
+// TestPrivateLegsReadsTheHoldingKey: private_legs() reads the holding an
+// equity-transfer out-leg names by the name declared here.
+func TestPrivateLegsReadsTheHoldingKey(t *testing.T) {
+	t.Parallel()
+	b, err := os.ReadFile("../gold/derived/30_holdings.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body, ok := strings.Cut(string(b), "CREATE MACRO private_legs(")
+	if !ok {
+		t.Fatal("no private_legs() macro in derived/30_holdings.sql")
+	}
+	body, _, _ = strings.Cut(body, ");\n")
+	if !strings.Contains(body, "'$."+PayloadHolding+"'") {
+		t.Errorf("private_legs() does not read $.%s", PayloadHolding)
+	}
+}

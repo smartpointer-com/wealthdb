@@ -41,7 +41,8 @@ const privateAsOf = MaxEpoch
 
 // RunPrivate is the private-markets view in outCcy: report_private's rows,
 // each with the IRR of its legs (private_legs) and its NAV, the total with
-// the pooled IRR of the listed holdings' legs.
+// the pooled IRR of the listed holdings' legs and of the unattributed exits
+// out of their accounts.
 func RunPrivate(ctx context.Context, db *sql.DB, outCcy string) ([]PrivateRow, error) {
 	rows, err := scanRows(ctx, db, "RunPrivate",
 		`SELECT is_total, silver_source_id, account_external_id, display_name, nickname,
@@ -63,21 +64,36 @@ func RunPrivate(ctx context.Context, db *sql.DB, outCcy string) ([]PrivateRow, e
 		return nil, err
 	}
 	byKey := map[[3]string][]privateLeg{}
+	var unattributed []privateLeg
 	for _, l := range legs {
+		if l.unattributed {
+			unattributed = append(unattributed, l)
+			continue
+		}
 		byKey[l.key] = append(byKey[l.key], l)
 	}
 	// The total pools the legs of the holdings listed: a holding the view
-	// leaves out moved no money, and its legs move no rate.
+	// leaves out moved no money, and its legs move no rate. It also pools
+	// the unattributed exits out of the listed holdings' accounts, as
+	// report_private counts them.
 	var pooled []privateLeg
+	listed := map[[2]string]bool{}
 	for i := range rows {
 		r := &rows[i]
 		if r.quality != "" {
 			r.Quality = strings.Split(r.quality, ";")
 		}
 		own := pooled
-		if !r.IsTotal {
+		if r.IsTotal {
+			for _, l := range unattributed {
+				if listed[[2]string{l.key[0], l.key[1]}] {
+					own = append(own, l)
+				}
+			}
+		} else {
 			own = byKey[[3]string{r.SilverSourceID, r.AccountExternalID, r.InstrumentID}]
 			pooled = append(pooled, own...)
+			listed[[2]string{r.SilverSourceID, r.AccountExternalID}] = true
 		}
 		withPrivateIRR(r, own)
 	}
@@ -85,18 +101,21 @@ func RunPrivate(ctx context.Context, db *sql.DB, outCcy string) ([]PrivateRow, e
 }
 
 // privateLeg is one leg of private_legs: the holder's capital in, positive
-// on a call and negative on what came back, nil with no rate.
+// on a call and negative on what came back, nil with no rate. An
+// unattributed leg is an exit in kind no holding names.
 type privateLeg struct {
-	key  [3]string // source, account, instrument
-	day  int64
-	paid *float64
+	key          [3]string // source, account, instrument
+	day          int64
+	paid         *float64
+	unattributed bool
 }
 
 // loadPrivateLegs reads every private leg in outCcy, by holding, in the
 // macro's order.
 func loadPrivateLegs(ctx context.Context, db *sql.DB, outCcy string) ([]privateLeg, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT silver_source_id, account_external_id, instrument_external_id, day, CAST(paid AS DOUBLE)
+		SELECT silver_source_id, account_external_id, COALESCE(instrument_external_id, ''), day,
+		       CAST(paid AS DOUBLE), unattributed
 		  FROM private_legs(?, ?)`, privateAsOf, outCcy)
 	if err != nil {
 		return nil, fmt.Errorf("private legs: %w", err)
@@ -108,7 +127,7 @@ func loadPrivateLegs(ctx context.Context, db *sql.DB, outCcy string) ([]privateL
 			l privateLeg
 			p sql.NullFloat64
 		)
-		if err := rows.Scan(&l.key[0], &l.key[1], &l.key[2], &l.day, &p); err != nil {
+		if err := rows.Scan(&l.key[0], &l.key[1], &l.key[2], &l.day, &p, &l.unattributed); err != nil {
 			return nil, fmt.Errorf("private legs scan: %w", err)
 		}
 		if p.Valid {

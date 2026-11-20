@@ -888,6 +888,10 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0219: its private-markets rows count no exit in kind that names its
+  holding in the ledger's `holding` column, and their total counts no
+  exit that names none, so the Private Markets cards read such an SPV
+  as paying nothing back;
 - 0218: its private-markets rows do not say which NAV a source carries
   at cost, which the Private holdings cards show in their quality;
 - 0217: its exposure quality texts sum in the order the rows arrive,
