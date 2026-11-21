@@ -25,6 +25,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import load  # noqa: E402
+from conftest import undo_document_derivations  # noqa: E402
 import silver_retail  # noqa: E402
 import silver_statements  # noqa: E402
 from collectorkit import incremental  # noqa: E402
@@ -159,8 +160,8 @@ def test_apply_migrations_creates_schema(conn):
     )
     names = [r[0] for r in cur.fetchall()]
     assert names == [
-        "accounts", "closed_lots", "documents", "dump_runs",
-        "historical_position_snapshots", "open_lots", "parser_generations",
+        "accounts", "closed_lots", "document_derivations", "documents",
+        "dump_runs", "historical_position_snapshots", "open_lots",
         "portfolios", "positions", "schema_meta", "stated_periods",
         "transactions",
     ]
@@ -764,19 +765,31 @@ def test_a_parse_failure_is_never_cached(migrated, tmp_path, monkeypatch):
 
 
 def _generation(db, scope):
+    """The one generation every document of ``scope`` is recorded under."""
     conn = sqlite3.connect(db)
     try:
-        return conn.execute("SELECT generation FROM parser_generations "
-                            "WHERE scope = ?", (scope,)).fetchone()[0]
+        [generation] = {g for (g,) in conn.execute(
+            "SELECT generation FROM document_derivations WHERE scope = ?",
+            (scope,))}
+        return generation
     finally:
         conn.close()
+
+
+def _record_earlier_parser(db, scope):
+    """Record every document of ``scope`` under an earlier parser."""
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE document_derivations SET generation = "
+                 "'an-earlier-parser' WHERE scope = ?", (scope,))
+    conn.commit()
+    conn.close()
 
 
 def test_a_new_statement_parser_re_derives_the_dumps_loaded_before(
         tmp_path, monkeypatch):
     """When the 529 parser changes, the next load re-derives the
     statements of every dump loaded before, with no new dump in bronze,
-    and stamps the generation in use."""
+    and records the generation in use."""
     monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
     bronze = tmp_path / "bronze"
     _write_dump(bronze, "20260401T000000Z")
@@ -795,11 +808,7 @@ def test_a_new_statement_parser_re_derives_the_dumps_loaded_before(
             conn.close()
 
     assert [r[2] for r in run(1.5, "pc1")] == [1.5]
-    conn = sqlite3.connect(db)
-    load.silver.stamp_generation(conn, load.STATEMENT_GENERATION_SCOPE,
-                                 "an-earlier-parser")
-    conn.commit()
-    conn.close()
+    _record_earlier_parser(db, load.STATEMENT_GENERATION_SCOPE)
     # The earlier parser's namespace held the old result; the new one
     # parses again.
     assert [r[2] for r in run(2.5, "pc2")] == [2.5]
@@ -1468,29 +1477,24 @@ def test_a_force_names_the_loaded_dumps_whose_bronze_is_gone(
             f"{bronze} any more (20260401T000000Z)") in caplog.text
 
 
-def _stale(db, scope, generation):
+def _moved(db, scope, generation):
     conn = sqlite3.connect(db)
     try:
-        return load.silver.stale_generation(conn, scope, generation)
+        return load.derivations.generation_moved(conn, scope, generation)
     finally:
         conn.close()
 
 
 def test_a_failed_re_derivation_leaves_the_generation_stale(
         tmp_path, monkeypatch):
-    """A re-derivation that rolls back keeps the older parser's rows, and
-    the stamp a dump loaded in the same run writes is dropped again, so
-    the next load still re-derives."""
+    """A re-derivation that rolls back keeps the older parser's rows and
+    their records, so the next load still re-derives."""
     monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
     bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
     first = _write_dump(bronze, "20260401T000000Z")
     _counting_parser(monkeypatch, _PARSED)
     assert _main(tmp_path, bronze, db) == 0
-    conn = sqlite3.connect(db)
-    load.silver.stamp_generation(conn, load.STATEMENT_GENERATION_SCOPE,
-                                 "an-earlier-parser")
-    conn.commit()
-    conn.close()
+    _record_earlier_parser(db, load.STATEMENT_GENERATION_SCOPE)
 
     second = _write_dump(bronze, "20260402T000000Z")
     (second / "documents" / "Statement3312026.pdf").write_bytes(
@@ -1505,7 +1509,7 @@ def test_a_failed_re_derivation_leaves_the_generation_stale(
                         breaks_on_the_first_dump)
     assert _main(tmp_path, bronze, db) == 0
 
-    assert _stale(db, load.STATEMENT_GENERATION_SCOPE,
+    assert _moved(db, load.STATEMENT_GENERATION_SCOPE,
                   load._STATEMENT_PARSER_VERSION)
     conn = sqlite3.connect(db)
     try:
@@ -1518,10 +1522,86 @@ def test_a_failed_re_derivation_leaves_the_generation_stale(
         conn.close()
 
 
-def test_a_statement_with_no_holdings_stamps_its_generation(
+def test_a_statement_gone_from_bronze_keeps_its_rows_after_a_re_derivation(
+        tmp_path, monkeypatch, caplog):
+    """A moved parser re-derives the statements bronze still holds. The
+    record of one whose dump is gone is dropped, its rows stay, and the
+    load after reads the scope as current."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    first = _write_dump(bronze, "20260401T000000Z")
+    second = _write_dump(bronze, "20260402T000000Z")
+    (second / "documents" / "Statement3312026.pdf").write_bytes(
+        b"%PDF-1.4 another statement\n")
+    _counting_parser(monkeypatch, _PARSED)
+    assert _main(tmp_path, bronze, db) == 0
+    _record_earlier_parser(db, load.STATEMENT_GENERATION_SCOPE)
+    shutil.rmtree(first)
+
+    with caplog.at_level("INFO", logger="fidelity-web.load"):
+        assert _main(tmp_path, bronze, db) == 0
+    assert "re-deriving the statements of 1 dump(s)" in caplog.text
+    assert "1 document(s) not read again" in caplog.text
+    assert _generation(db, load.STATEMENT_GENERATION_SCOPE) == \
+        load._STATEMENT_PARSER_VERSION
+    caplog.clear()
+    with caplog.at_level("INFO", logger="fidelity-web.load"):
+        assert _main(tmp_path, bronze, db) == 0
+    assert "re-deriving" not in caplog.text
+
+
+def test_a_moved_scope_with_no_statement_left_in_bronze_reads_as_current(
+        tmp_path, monkeypatch, caplog):
+    """A moved parser whose statements are all gone from bronze has
+    nothing to re-derive: the load drops the older records, the rows
+    stay, and the load after reads the scope as current."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    first = _write_dump(bronze, "20260401T000000Z")
+    _counting_parser(monkeypatch, _PARSED)
+    assert _main(tmp_path, bronze, db) == 0
+    _record_earlier_parser(db, load.STATEMENT_GENERATION_SCOPE)
+    shutil.rmtree(first)
+    second = _write_dump(bronze, "20260402T000000Z")
+    (second / "documents" / "Statement3312026.pdf").unlink()
+
+    with caplog.at_level("INFO", logger="fidelity-web.load"):
+        assert _main(tmp_path, bronze, db) == 0
+    assert "1 document(s) not read again" in caplog.text
+    assert not _moved(db, load.STATEMENT_GENERATION_SCOPE,
+                      load._STATEMENT_PARSER_VERSION)
+    conn = sqlite3.connect(db)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM document_derivations WHERE scope = ?",
+        (load.STATEMENT_GENERATION_SCOPE,)).fetchone() == (0,)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM historical_position_snapshots").fetchone()[0]
+    conn.close()
+
+
+def test_a_scope_with_no_stamp_is_re_derived_after_the_migration(
+        tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    _write_dump(bronze, "20260401T000000Z")
+    _counting_parser(monkeypatch, _PARSED)
+    assert _main(tmp_path, bronze, db) == 0
+    conn = sqlite3.connect(db)
+    undo_document_derivations(conn)
+    conn.execute("DELETE FROM parser_generations")
+    conn.commit()
+    conn.close()
+    with caplog.at_level("INFO", logger="fidelity-web.load"):
+        assert _main(tmp_path, bronze, db) == 0
+    assert "historical: re-deriving the statements of 1 dump(s)" in caplog.text
+    assert _generation(db, load.STATEMENT_GENERATION_SCOPE) == \
+        load._STATEMENT_PARSER_VERSION
+
+
+def test_a_statement_with_no_holdings_records_its_generation(
         tmp_path, monkeypatch, caplog):
     """A statement that parses to no row is read the same way by the
-    next load, so it stamps the generation and is not re-derived."""
+    next load, so it is recorded and is not re-derived."""
     monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
     bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
     _write_dump(bronze, "20260401T000000Z")
@@ -1534,6 +1614,79 @@ def test_a_statement_with_no_holdings_stamps_its_generation(
     assert "re-deriving" not in caplog.text
 
 
+def _statement_records(db):
+    """``(content_sha256, generation, row_count)`` of each 529 statement
+    record, sorted."""
+    conn = sqlite3.connect(db)
+    try:
+        return sorted(conn.execute(
+            "SELECT content_sha256, generation, row_count "
+            "FROM document_derivations WHERE scope = ?",
+            (load.STATEMENT_GENERATION_SCOPE,)))
+    finally:
+        conn.close()
+
+
+def test_a_statement_that_never_parsed_is_read_once_its_parser_moves(
+        tmp_path, monkeypatch):
+    """A statement whose parse fails is recorded with no rows, so a moved
+    parser reads it again, also when no statement of the scope ever
+    parsed."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    dump = _write_dump(bronze, "20260401T000000Z")
+    sha = load.bronze.sha256_file(dump / "documents" / "Statement3312026.pdf")[0]
+    _counting_parser(monkeypatch, {"_error": "synthetic layout"})
+    assert _main(tmp_path, bronze, db) == 0
+    assert _statement_records(db) == [(sha, load._STATEMENT_PARSER_VERSION, 0)]
+
+    calls = _counting_parser(monkeypatch, _PARSED)
+    monkeypatch.setattr(load, "_STATEMENT_PARSER_VERSION",
+                        "stmt529.a-later-parser")
+    assert _main(tmp_path, bronze, db) == 0
+    assert len(calls) == 1
+    assert _statement_records(db) == [(sha, "stmt529.a-later-parser", 1)]
+    calls.clear()
+    assert _main(tmp_path, bronze, db) == 0
+    assert calls == []
+
+
+@pytest.mark.parametrize("second_parses", [False, True])
+def test_a_re_derivation_records_its_failed_parses_once_one_parsed(
+        tmp_path, monkeypatch, second_parses):
+    """A re-derivation in which no statement parses records no failure:
+    the older records stay, and the next load tries again. Once one has
+    parsed, each that failed is recorded with no rows."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    first = _write_dump(bronze, "20260401T000000Z")
+    second = _write_dump(bronze, "20260402T000000Z")
+    (second / "documents" / "Statement3312026.pdf").write_bytes(
+        b"%PDF-1.4 another statement\n")
+    shas = [load.bronze.sha256_file(d / "documents" / "Statement3312026.pdf")[0]
+            for d in (first, second)]
+    _counting_parser(monkeypatch, _PARSED)
+    assert _main(tmp_path, bronze, db) == 0
+    _record_earlier_parser(db, load.STATEMENT_GENERATION_SCOPE)
+    shutil.rmtree(tmp_path / "pc")  # the earlier parser's parses
+
+    def parse(path, **_cache):
+        if second_parses and Path(path).parents[1] == second:
+            return _PARSED
+        return {"_error": "synthetic layout"}
+    monkeypatch.setattr(load.pdf_readers, "parse_statement_pdf", parse)
+    assert _main(tmp_path, bronze, db) == 0
+    if second_parses:
+        assert _statement_records(db) == sorted([
+            (shas[0], load._STATEMENT_PARSER_VERSION, 0),
+            (shas[1], load._STATEMENT_PARSER_VERSION, 1)])
+    else:
+        assert _statement_records(db) == sorted(
+            (sha, "an-earlier-parser", 1) for sha in shas)
+    assert _moved(db, load.STATEMENT_GENERATION_SCOPE,
+                  load._STATEMENT_PARSER_VERSION) is not second_parses
+
+
 def test_a_load_sweeps_the_cache_entries_no_parser_reads(
         tmp_path, monkeypatch):
     monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
@@ -1543,15 +1696,16 @@ def test_a_load_sweeps_the_cache_entries_no_parser_reads(
         dump / "documents" / "Statement3312026.pdf")[0]
     _counting_parser(monkeypatch, _PARSED)
     pc = tmp_path / "pc"
-    (pc / "extract").mkdir(parents=True)
+    pc.mkdir()
+    (tmp_path / "extract").mkdir()
     old_sidecar = pc / f"{'ab' * 32}.stmt529.{'0' * 32}.{'1' * 32}.json"
     old_sidecar.write_text("{}")
     key = load.extract.extraction_key(load.pdf_readers.STATEMENT_TEXT)
-    kept, old = (pc / "extract" / f"{'cd' * 32}.{k}.json.gz"
+    kept, old = (tmp_path / "extract" / f"{'cd' * 32}.{k}.json.gz"
                  for k in (key, "0" * 32))
     for f in (kept, old):
         f.write_bytes(b"")
-    other = pc / "extract" / "notes.txt"
+    other = tmp_path / "extract" / "notes.txt"
     other.write_text("not a cache entry")
 
     assert _main(tmp_path, bronze, db) == 0
@@ -1559,6 +1713,27 @@ def test_a_load_sweeps_the_cache_entries_no_parser_reads(
     assert not old_sidecar.exists() and not old.exists()
     assert kept.exists() and other.exists()
     assert (pc / f"{sha}.{load._STATEMENT_PARSER_VERSION}.json").is_file()
+
+
+def test_an_extraction_cache_inside_the_parse_cache_moves_beside_it(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    _write_dump(bronze, "20260401T000000Z")
+    _counting_parser(monkeypatch, _PARSED)
+    key = load.extract.extraction_key(load.pdf_readers.STATEMENT_TEXT)
+    entry = f"{'cd' * 32}.{key}.json.gz"
+    (tmp_path / "pc" / "extract").mkdir(parents=True)
+    (tmp_path / "pc" / "extract" / entry).write_bytes(b"")
+
+    assert _main(tmp_path, bronze, db) == 0
+    assert (tmp_path / "extract" / entry).is_file()
+    assert not (tmp_path / "pc" / "extract").exists()
+
+    (tmp_path / "pc" / "extract").mkdir()
+    assert _main(tmp_path, bronze, db) == 0
+    assert not (tmp_path / "pc" / "extract").exists()
+    assert (tmp_path / "extract" / entry).is_file()
 
 
 def test_the_supplied_pass_masks_account_numbers_in_its_log(migrated, caplog):
@@ -1646,7 +1821,7 @@ def test_a_failed_supplied_pass_rolls_back(migrated, tmp_path, monkeypatch):
 
     assert _activity_rows(migrated) == before
     assert migrated.execute(
-        "SELECT COUNT(*) FROM parser_generations").fetchone()[0] == 0
+        "SELECT COUNT(*) FROM document_derivations").fetchone()[0] == 0
 
 
 def _daf_statement_dump(root, ts):
@@ -1660,12 +1835,11 @@ def _daf_statement_dump(root, ts):
     return root / ts
 
 
-def test_runs_with_every_statement_kind_loaded_one_at_a_time_give_one_force(
-        tmp_path, monkeypatch):
-    """The 529 statements cross-walk as of their own dump, a DAF
-    statement rides along, and the supplied statements match a feed
-    that grows from load to load. One at a time or in one `--force`,
-    silver comes out the same."""
+def _every_statement_kind(tmp_path, monkeypatch):
+    """Three dumps whose 529 statements cross-walk as of their own dump,
+    a DAF statement in the second, and a supplied statement whose wire
+    only the last dump's feed carries, each parse stubbed. Returns the
+    bronze dir and the supplied dir."""
     monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
     src = tmp_path / "src"
     dumps = [_write_dump(src, ts) for ts in (
@@ -1706,11 +1880,98 @@ def test_runs_with_every_statement_kind_loaded_one_at_a_time_give_one_force(
              "description": "Wire Tfr To Bank WD00000001 A PLACEHOLDER"}]}]}
     supplied = _supplied_dir(tmp_path / "supplied", supplied_statement)
     _stub_supplied(monkeypatch, supplied_statement)
+    return src, supplied
 
-    incremental.check(
-        load.main,
-        lambda db, bronze: ["--silver-db", str(db), "--bronze-dir",
-                            str(bronze), "--parse-cache-dir",
-                            str(tmp_path / "pc"), "--supplied-statements-dir",
-                            str(supplied)],
-        sorted(src.iterdir()), tmp_path / "work")
+
+def _every_kind_argv(tmp_path, supplied):
+    return lambda db, bronze: [
+        "--silver-db", str(db), "--bronze-dir", str(bronze),
+        "--parse-cache-dir", str(tmp_path / "pc"),
+        "--supplied-statements-dir", str(supplied)]
+
+
+def test_runs_with_every_statement_kind_loaded_one_at_a_time_give_one_force(
+        tmp_path, monkeypatch):
+    """One at a time or in one `--force`, silver comes out the same."""
+    src, supplied = _every_statement_kind(tmp_path, monkeypatch)
+    incremental.check(load.main, _every_kind_argv(tmp_path, supplied),
+                      sorted(src.iterdir()), tmp_path / "work")
+
+
+def _records(db):
+    conn = sqlite3.connect(db)
+    try:
+        return sorted(conn.execute(
+            "SELECT content_sha256, scope, generation, row_count "
+            "FROM document_derivations"))
+    finally:
+        conn.close()
+
+
+def _rows_but_records(db):
+    """Every table's rows, the derivation records left out."""
+    rows = incremental.silver_rows(db)
+    del rows["document_derivations"]
+    return rows
+
+
+def test_a_silver_migrated_from_its_stamps_derives_nothing_again(
+        tmp_path, monkeypatch, caplog):
+    """Migration 0016 seeds the records from the stamps the passes wrote:
+    the next load finds every statement and every 1099 whose lots silver
+    holds recorded as it would record it, re-derives nothing, and silver
+    stays as it was."""
+    src, supplied = _every_statement_kind(tmp_path, monkeypatch)
+    db = tmp_path / "silver.db"
+    argv = _every_kind_argv(tmp_path, supplied)(db, src)
+    assert load.main(argv) == 0
+    # The dumps' stub 1099s do not read, so the load records them with no
+    # rows. The migration seeds no such copy: it seeds the copies whose
+    # lots silver holds.
+    unread = [r for r in _records(db)
+              if r[1] == load.CONSOLIDATED_1099_GENERATION_SCOPE]
+    assert {r[2:] for r in unread} == {
+        (load._CONSOLIDATED_1099_PARSER_VERSION, 0)}
+    records = [r for r in _records(db) if r not in unread]
+    assert {r[1] for r in records} == {
+        load.STATEMENT_GENERATION_SCOPE, load.DAF_GENERATION_SCOPE,
+        load.SUPPLIED_GENERATION_SCOPE}
+    rows = _rows_but_records(db)
+    conn = sqlite3.connect(db)
+    undo_document_derivations(conn)
+    conn.close()
+
+    with caplog.at_level("INFO", logger="fidelity-web.load"):
+        assert load.main(argv) == 0
+    assert _records(db) == records
+    assert _rows_but_records(db) == rows
+    for said in ("re-deriving", "the parser has changed", "not read again"):
+        assert said not in caplog.text
+
+
+def test_migration_0016_that_fails_leaves_the_silver_at_0015(tmp_path):
+    """0016 is one transaction: a failure part way leaves no table it
+    created, so the next load applies it again from the start."""
+    old = tmp_path / "migrations"
+    old.mkdir()
+    for f in sorted(MIGRATIONS_DIR.glob("00*.sql")):
+        if f.name < "0016":
+            (old / f.name).write_text(f.read_text(encoding="utf-8"))
+    db = tmp_path / "silver.db"
+    conn = sqlite3.connect(db)
+    load.silver.apply_migrations(conn, old)
+    # The seed reads the stamps, so without their table it fails after
+    # document_derivations is created.
+    conn.execute("ALTER TABLE parser_generations RENAME TO set_aside")
+    conn.commit()
+    with pytest.raises(sqlite3.OperationalError):
+        load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+    conn.close()
+
+    conn = sqlite3.connect(db)
+    assert load.silver.current_schema_version(conn) == 15
+    assert not load.silver.has_table(conn, "document_derivations")
+    conn.execute("ALTER TABLE set_aside RENAME TO parser_generations")
+    conn.commit()
+    assert load.silver.apply_migrations(conn, MIGRATIONS_DIR) == 16
+    conn.close()

@@ -24,3 +24,24 @@ def migrated():
     load.silver.apply_migrations(c, MIGRATIONS_DIR)
     yield c
     c.close()
+
+
+def undo_document_derivations(conn):
+    """Put a silver back as the code before migration 0016 left it: each
+    scope's one generation stamped in parser_generations, as its pass
+    wrote it, and no document_derivations."""
+    assert all(n == 1 for (n,) in conn.execute(
+        "SELECT COUNT(DISTINCT generation) FROM document_derivations "
+        "GROUP BY scope"))
+    conn.executescript("""
+        CREATE TABLE parser_generations (
+            scope      TEXT    NOT NULL PRIMARY KEY,
+            generation TEXT    NOT NULL,
+            stamped_at INTEGER NOT NULL
+        );
+        INSERT INTO parser_generations
+            SELECT scope, MIN(generation), 0 FROM document_derivations
+             GROUP BY scope;
+        DROP TABLE document_derivations;
+        DELETE FROM schema_meta WHERE silver_schema_version = 16;
+    """)

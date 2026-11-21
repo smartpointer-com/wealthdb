@@ -396,7 +396,7 @@ databases always conform to the latest schema.
 | `closed_lots` | event | synthetic `lot_id` (content plus an occurrence index within the document) | `document_kind` (`form_1099b` / `statement` / `closed_positions`), `account_external_id`, `tax_year`, `form_prepared`, `security_name`, `instrument_key`, `cusip`, `action`, `quantity`, `acquired_date` (ISO, or the form's own `Various` / `Unknown`), `disposed_date`, `settlement_date`, `proceeds`, `cost_basis`, `accrued_market_discount`, `wash_sale_disallowed`, `realized_gain_loss`, `fees`, `federal_tax_withheld`, `term` (`SHORT` / `LONG`), `covered`, `form_8949_box`, `specific_share_id`, `corrected`, `currency`, `source_sha256`; rest in `payload`. One row per realized lot as a source states it: the Form 1099-B lots of a Consolidated 1099 (§4.6), the sales of a supplied statement (§4.5), and the positions page's closed lots for a tax year (§8.3.1). The names and values match schwab-web's `closed_lots`. The same sale in two sources stays twice. Gold keeps every row and marks one kind per account and tax year as primary: the 1099-B, else the closed positions, else the statements. A statement sale has no `tax_year`, so gold takes its settlement year. A sale that settled in January after a December trade takes December's year, read off the 1099-B or the closed positions. |
 | `open_lots` | snapshot | `(snapshot_at, account_external_id, instrument_key, lot_index)` | `cusip`, `quantity`, `unit_cost`, `cost_basis`, `acquired_date` (ISO), `unrealized_gain_loss`, `current_value`, `term` (`SHORT` / `LONG`), `covered` (not stated; NULL), `currency`, `source_sha256`; the printed cells in `payload`. One row per open lot, as the positions page's lot table prints it (§8.3.1). `snapshot_at` is the dump that fetched the table; an unchanged position keeps the rows of its last fetch. Gold gives a position the lots of its latest fetch while their quantities and costs still sum to the position's. A lot carried past its fetch has no market value, and keeps its term only while that cannot have changed. |
 | `stated_periods` | snapshot | `(period_end, account_external_id, source_sha256)` | `period_start`, `beginning_value`, `ending_value`, `accrual`, `net_additions` (signed: in positive), `net_gain`, `income`, `fees` (positive), `currency`; the cells as read in `payload`. One account's period summary as a document states it; NULL where it states nothing. fidelity-web writes no row; the svb month-end workbook fills it in svb's brokerage DB. |
-| `parser_generations` | meta | `scope` | `generation`, `stamped_at`. Which generation of a document parser produced the rows a pass is holding — the same namespace the parse cache is keyed on. See §4.5. |
+| `document_derivations` | meta | `(content_sha256, scope)` | `generation`, `derived_at`, `row_count`. Which generation of a document parser read each document a pass has read, and the rows it gave (`collectorkit.derivations`) — the same namespace the parse cache is keyed on. See §4.5. |
 
 Notes:
 - `currency` defaults to `'USD'` on both `positions` and
@@ -646,14 +646,14 @@ avoids this by keeping every text column out of its id (§3.3).
 Each pass therefore drops what it is about to re-derive, at whichever
 grain that family of rows can be named at:
 
-- **Activity rows** — scope-wide, gated on the stamp in
-  `parser_generations`. The `stmt_` id prefix names exactly the rows
+- **Activity rows** — scope-wide, when the supplied pass's generation
+  has moved. The `stmt_` id prefix names exactly the rows
   the supplied pass writes, so nothing escapes the purge, including a
   row whose statement has since left the tree. The purge is held until
   the first statement has actually parsed: spending it ahead of the
   walk would empty the ledger on a run where PDF extraction broke and
-  then re-derive nothing. Unspent it leaves the generation unstamped, so the
-  next load tries the whole thing again.
+  then re-derive nothing. Unspent it leaves the older records in place,
+  so the next load tries the whole thing again.
 - **Holdings rows** — per document, every time the document is
   re-parsed. Three passes share that table and only `source_sha256`
   says which PDF a row came from, so the document is the largest
@@ -678,6 +678,27 @@ fails to parse, fails its signature guard or fails reconciliation
 keeps whatever it wrote before — stale rows beat no rows when nothing
 can re-derive them.
 
+Each pass records each document it has read in `document_derivations`
+(`collectorkit.derivations`): its scope, the parser generation and the
+rows it gave. A statement that fails reconciliation or its signature
+guard is recorded with none. A parse that fails leaves the document's
+rows as they are:
+
+- The supplied pass records nothing for it. It reads every PDF at each
+  load, so it tries such a document again then.
+- A dump pass records it with no rows. The 1099 pass does the same for
+  a copy whose account, tax year or prepared date it cannot read. A
+  dump pass tries such a document again once its parser moves, also
+  when no document of its scope ever parsed.
+- A re-derivation in which no document parses records no failure. The
+  older records stay, and the next load tries again.
+
+A generation has moved when a document of its scope is recorded under
+another one. Once a pass has re-derived every document it can still
+read, it drops the records of its scope left under another generation.
+They are documents gone from bronze, whose rows stay, and the supplied
+statements that did not parse.
+
 The generation itself is not hand-maintained: it is the namespace the
 parse cache is already keyed on. It holds three things:
 
@@ -689,7 +710,7 @@ parse cache is already keyed on. It holds three things:
 
 A parser module reads an extracted document and imports nothing that
 extracts. `pdf_readers.py` does the extraction and keeps each document's
-text and words in the `extract/` directory of the parse cache. So a
+text and words in the `extract/` directory beside the parse cache. So a
 parser edit re-parses from there without opening a PDF, and an engine
 upgrade reads every PDF again.
 

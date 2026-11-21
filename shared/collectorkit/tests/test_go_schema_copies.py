@@ -65,7 +65,7 @@ COPIES = {
     "fidelity-web": Copy((
         "fidelity/testdata/silver_schema.sql",
         "fidelity/testdata/lots_schema.sql"), {
-        "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
+        "schema_meta": VERSION, "document_derivations": BOOKKEEPING,
         "documents": UNREAD}),
     "firstcitizens": Copy(("firstcitizens/testdata/silver_schema.sql",), {
         "document_derivations": BOOKKEEPING}),

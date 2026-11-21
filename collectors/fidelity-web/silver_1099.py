@@ -44,8 +44,9 @@ def _held_1099_forms(conn):
 
 
 def _latest_1099_copies(copies):
-    """The copy to keep of each form among ``copies``:
-    ``(account, tax_year) -> (prepared, path, sha)``.
+    """The copy to keep of each form among ``copies``, and the sha256 of
+    each copy that names no form: ``({(account, tax_year): (prepared,
+    path, sha)}, [sha])``.
 
     Fidelity re-renders a Consolidated 1099 on every download, so one
     form arrives in every dump with new bytes. A form is its account and
@@ -55,8 +56,9 @@ def _latest_1099_copies(copies):
     first arrived, which later loads keep. So a `load --force` keeps
     the same copy, and no load re-parses a re-rendered form. Only the
     identities are read by then; the lots are parsed for the copies
-    kept."""
-    chosen = {}
+    kept. A copy names no form when its identity does not read or
+    states no account, tax year or prepared date."""
+    chosen, unreadable = {}, []
     for dump, path, sha, ident in copies:
         key = (ident.get("account_external_id"), ident.get("tax_year"))
         if "_error" in ident or None in key or not ident.get("prepared"):
@@ -64,11 +66,12 @@ def _latest_1099_copies(copies):
                 "1099: %s/%s states no account, tax year or prepared "
                 "date; skipping (%s)", dump.name, path.name,
                 ident.get("_error", "unrecognised layout"))
+            unreadable.append(sha)
             continue
         best = chosen.get(key)
         if best is None or ident["prepared"] > best[0]:
             chosen[key] = (ident["prepared"], path, sha)
-    return chosen
+    return chosen, unreadable
 
 
 def _file_1099_documents(conn, copies):

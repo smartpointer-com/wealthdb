@@ -24,6 +24,7 @@ import load  # noqa: E402
 from collectorkit import incremental  # noqa: E402
 import pdf_readers  # noqa: E402
 import silver_retail  # noqa: E402
+from conftest import undo_document_derivations  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 ACCT = "100000001"
@@ -254,12 +255,12 @@ def test_rederiving_drops_the_rows_of_an_earlier_parser(
     assert [r[3] for r in _held(migrated)] == [90.0]
 
 
-def test_a_run_where_nothing_parses_keeps_the_rows_and_the_stamp_owed(
+def test_a_run_where_nothing_parses_keeps_the_rows_and_the_records(
         migrated, tmp_path, stub_1099):
     d1 = _form(tmp_path / "20260301T000000Z", "Consolidated_Form_1099.pdf",
                prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
     load._load_consolidated_1099s(migrated, [d1], rederive=True)
-    migrated.execute("DELETE FROM parser_generations")
+    migrated.execute("UPDATE document_derivations SET generation = 'older'")
     migrated.commit()
 
     _form(d1, "Consolidated_Form_1099.pdf", prepared="2026-02-15",
@@ -268,7 +269,50 @@ def test_a_run_where_nothing_parses_keeps_the_rows_and_the_stamp_owed(
 
     assert len(_held(migrated)) == 1
     assert migrated.execute(
-        "SELECT COUNT(*) FROM parser_generations").fetchone()[0] == 0
+        "SELECT generation FROM document_derivations").fetchall() == [
+            ("older",)]
+
+
+@pytest.mark.parametrize("reader", ["read_consolidated_1099_identity",
+                                    "parse_consolidated_1099_pdf"])
+def test_a_form_that_never_read_is_read_once_its_parser_moves(
+        tmp_path, stub_1099, monkeypatch, reader):
+    """A copy whose identity or lots do not read is recorded with no
+    rows, so a moved parser reads it again, also when no form of the
+    scope ever read."""
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)  # parse in-process
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    _form(_run(bronze, "20260301T000000Z"), "Consolidated_Form_1099.pdf",
+          prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
+    argv = ["--silver-db", str(db), "--bronze-dir", str(bronze),
+            "--parse-cache-dir", str(tmp_path / "pc")]
+
+    def held_and_records():
+        conn = sqlite3.connect(db)
+        try:
+            return len(_held(conn)), conn.execute(
+                "SELECT generation, row_count FROM document_derivations "
+                "WHERE scope = ?",
+                (load.CONSOLIDATED_1099_GENERATION_SCOPE,)).fetchall()
+        finally:
+            conn.close()
+
+    reads = getattr(pdf_readers, reader)
+
+    def unreadable(*_a, **_k):
+        raise ValueError("synthetic layout")
+    monkeypatch.setattr(pdf_readers, reader, unreadable)
+    assert load.main(argv) == 0
+    assert held_and_records() == (
+        0, [(load._CONSOLIDATED_1099_PARSER_VERSION, 0)])
+
+    monkeypatch.setattr(pdf_readers, reader, reads)
+    monkeypatch.setattr(load, "_CONSOLIDATED_1099_PARSER_VERSION",
+                        "1099.a-later-parser")
+    monkeypatch.setattr(load, "_CONSOLIDATED_1099_IDENTITY_VERSION",
+                        "1099.a-later-parser.identity")
+    assert load.main(argv) == 0
+    assert held_and_records() == (1, [("1099.a-later-parser", 1)])
 
 
 def test_a_form_that_names_no_account_is_skipped(migrated, tmp_path, stub_1099):
@@ -289,21 +333,47 @@ def _dumps_for_1099s(conn, dumps, pending):
 def test_the_pass_reads_every_dump_only_when_its_parser_moved(
         migrated, tmp_path, stub_1099):
     dumps, pending = ["d1", "d2"], ["d2"]
-    assert _dumps_for_1099s(migrated, dumps, pending) == (dumps, True)
-
-    load.silver.stamp_generation(
-        migrated, load.CONSOLIDATED_1099_GENERATION_SCOPE,
-        load._CONSOLIDATED_1099_PARSER_VERSION)
     assert _dumps_for_1099s(migrated, dumps, pending) == (pending, False)
 
+    load.derivations.record_derivation(
+        migrated, "ab" * 32, load.CONSOLIDATED_1099_GENERATION_SCOPE,
+        "an-earlier-parser", 1)
+    assert _dumps_for_1099s(migrated, dumps, pending) == (dumps, True)
 
-def test_a_completed_pass_stamps_its_generation(migrated, tmp_path, stub_1099):
+
+def test_a_completed_pass_records_its_generation(migrated, tmp_path,
+                                                 stub_1099):
+    d1 = _form(tmp_path / "20260301T000000Z", "Consolidated_Form_1099.pdf",
+               prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
+    load.derivations.record_derivation(
+        migrated, "ab" * 32, load.CONSOLIDATED_1099_GENERATION_SCOPE,
+        "an-earlier-parser", 1)
+    migrated.commit()
+    load._load_consolidated_1099s(migrated, [d1], rederive=True)
+    assert migrated.execute(
+        "SELECT generation, row_count FROM document_derivations").fetchall(
+        ) == [(load._CONSOLIDATED_1099_PARSER_VERSION, 1)]
+
+
+def test_a_silver_migrated_from_its_stamp_reads_only_new_dumps(
+        migrated, tmp_path, stub_1099):
     d1 = _form(tmp_path / "20260301T000000Z", "Consolidated_Form_1099.pdf",
                prepared="2026-02-15", lots=[_lot(100.0, 90.0)])
     load._load_consolidated_1099s(migrated, [d1], rederive=True)
-    assert not load.silver.stale_generation(
-        migrated, load.CONSOLIDATED_1099_GENERATION_SCOPE,
-        load._CONSOLIDATED_1099_PARSER_VERSION)
+    records = migrated.execute(
+        "SELECT content_sha256, scope, generation, row_count "
+        "FROM document_derivations").fetchall()
+    assert [r[2:] for r in records] == [
+        (load._CONSOLIDATED_1099_PARSER_VERSION, 1)]
+    undo_document_derivations(migrated)
+
+    load.silver.apply_migrations(migrated, MIGRATIONS_DIR)
+
+    assert migrated.execute(
+        "SELECT content_sha256, scope, generation, row_count "
+        "FROM document_derivations").fetchall() == records
+    assert _dumps_for_1099s(migrated, ["d1", "d2"], ["d2"]) == (
+        ["d2"], False)
 
 
 def test_both_namings_of_a_consolidated_1099_are_candidates(tmp_path):
@@ -422,23 +492,25 @@ def test_a_copy_already_held_is_filed_by_a_later_pass(
     assert len(stub_1099) == 1
 
 
-def test_migration_0013_sends_the_1099_pass_over_every_dump(tmp_path):
-    old = tmp_path / "migrations"
+def test_migration_0013_drops_the_1099_stamp(tmp_path):
+    old, at_0013 = tmp_path / "migrations", tmp_path / "migrations-0013"
     old.mkdir()
+    at_0013.mkdir()
     for mig in sorted(MIGRATIONS_DIR.glob("*.sql")):
         if mig.name < "0013":
             shutil.copy(mig, old)
+        if mig.name < "0014":
+            shutil.copy(mig, at_0013)
     conn = sqlite3.connect(":memory:")
     load.silver.apply_migrations(conn, old)
     for scope in (load.CONSOLIDATED_1099_GENERATION_SCOPE,
                   load.SUPPLIED_GENERATION_SCOPE):
-        load.silver.stamp_generation(conn, scope, "generation")
+        conn.execute("INSERT INTO parser_generations VALUES (?, ?, 0)",
+                     (scope, "generation"))
     conn.commit()
 
-    load.silver.apply_migrations(conn, MIGRATIONS_DIR)
+    load.silver.apply_migrations(conn, at_0013)
 
-    assert _dumps_for_1099s(conn, ["d1", "d2"], ["d2"]) == (
-        ["d1", "d2"], True)
     assert conn.execute("SELECT scope FROM parser_generations").fetchall() == [
         (load.SUPPLIED_GENERATION_SCOPE,)]
 
