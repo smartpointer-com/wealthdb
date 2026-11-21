@@ -72,6 +72,7 @@ find its positions row in the same way.
 | `realized_lots` | `realized_lots` | Read whole on every load — see §11. |
 | `compositions`, `lines`, `attributes`, `counterparties`, `securities`, `security_facts`, `fund_risk`, `fund_returns`, `characteristics`, `period_facts` | the reference tables | After the snapshots, by `as_of` — see §12. |
 | `rates` | `rate_observations` | After the reference records, by `as_of` — see §12. |
+| `capital_accounts` | `capital_accounts` | After the rate observations, by `as_of` — see §12. |
 
 ## 4. Account taxonomy
 
@@ -390,9 +391,19 @@ collector's `rates` table column for column, so one reader serves both
 kinds (`silver.NewRateStream`). One row is one series on one day, in
 percent.
 
+The `capital_accounts` table carries a private holding's capital
+account as its manager states it, column for column of gold's
+`capital_accounts`. One row is one instrument on one day and one
+document (`source_ref`, '' where one document states it): the
+commitment, what was called and paid in, what remains unfunded, what
+came back, the value still held, and the manager's own multiples. A
+figure is NULL where the statement holds none. `account_id` is NULL
+where the row names the holding by its instrument alone.
+
 Every `as_of` must lie inside the window of the run that adds the row
 (§8). `Snapshots` emits the window's reference records after its
-snapshots, and its rate observations after those.
+snapshots, its rate observations after those, and its capital accounts
+last.
 
 A file can predate some of these tables:
 
@@ -404,3 +415,4 @@ A file can predate some of these tables:
   `coupon_kind` on; those fields are then absent.
 - A file without `dividend_events` states no distributions.
 - A file without `rates` states no rate observations.
+- A file without `capital_accounts` states no capital accounts.

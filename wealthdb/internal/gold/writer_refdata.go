@@ -32,7 +32,8 @@ func (w *Writer) InsertReference(ctx context.Context, b *canonical.SnapshotBatch
 	inserts = append(inserts,
 		func() error { return w.insertRateObservations(ctx, b.RateObservations) },
 		func() error { return w.insertStatedPeriods(ctx, b.StatedPeriods) },
-		func() error { return w.insertExposureReports(ctx, b.ExposureReports) })
+		func() error { return w.insertExposureReports(ctx, b.ExposureReports) },
+		func() error { return w.insertCapitalAccounts(ctx, b.CapitalAccounts) })
 	for _, insert := range inserts {
 		if err := insert(); err != nil {
 			return err
@@ -289,6 +290,27 @@ INSERT INTO exposure_reports (
 			r := &batch[i]
 			return append(args, r.SilverSourceID, r.InstrumentExternalID, r.AsOf, dims[i],
 				nullableJSON(r.Source), nullableEnumValue(r.Note))
+		})
+}
+
+func (w *Writer) insertCapitalAccounts(ctx context.Context, batch []canonical.CapitalAccountChange) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	const head = `
+INSERT INTO capital_accounts (
+    silver_source_id, account_external_id, instrument_external_id, as_of, source_ref, currency,
+    commitment, called, paid_in, unfunded, distributed, nav, tvpi, dpi, payload
+) VALUES `
+	return InsertChunked(ctx, w.tx, "capital_accounts", head,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, len(batch),
+		func(i int, args []any) []any {
+			r := &batch[i]
+			return append(args,
+				r.SilverSourceID, strText(r.AccountExternalID), r.InstrumentExternalID, r.AsOf, r.SourceRef,
+				r.Currency, nullable(r.Commitment), nullable(r.Called), nullable(r.PaidIn), nullable(r.Unfunded),
+				nullable(r.Distributed), nullable(r.NAV), nullable(r.TVPI), nullable(r.DPI),
+				nullableJSON(r.Payload))
 		})
 }
 

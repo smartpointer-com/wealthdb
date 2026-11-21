@@ -31,7 +31,7 @@ Columns (* = shown by default; columns=all shows every one):
   accounts: silver_source*, entity*, entity_id, period*, start_date, end_date, start_USD*, end_USD*, net_flow_USD*, gain_USD*, twr_pct*, twr_ann_pct, mwr_pct*, mwr_ann_pct, benchmark_twr_pct, compared_twr_pct, excess_pct, benchmark_mwr_pct, compared_mwr_pct, compared_from, compared_to, benchmark_quality, quality*
   stated: silver_source*, account*, account_id, period*, start_date, end_date, currency*, stated_beginning, stated_ending*, stated_accrual, stated_net_additions*, stated_net_gain, stated_income, stated_fees, start_value, end_value*, net_flow*, flow_gap*, value_gap*, document, quality*
   bridge: period*, start_date, end_date, start_net_worth_USD*, net_saved_USD*, onboarded_USD*, gain_USD*, end_net_worth_USD*, net_flow_USD, debt_repaid_USD, bridge_gap_USD, quality*
-  private: silver_source*, account*, account_id, holding*, holding_id, asset_class*, vehicle*, status*, first_call*, paid_in_USD*, distributed_USD*, nav_USD*, marked_at*, end_date, dpi*, tvpi*, irr_pct*, quality*
+  private: silver_source*, account*, account_id, holding*, holding_id, asset_class*, vehicle*, status*, first_call*, paid_in_USD*, commitment_USD*, unfunded_USD*, distributed_USD*, nav_USD*, marked_at*, end_date, dpi*, tvpi*, irr_pct*, stated_tvpi, stated_dpi, stated_as_of, quality*
 
 Filters each view takes (a filter the view lacks moves the call to the first finer view that has it):
   global: none

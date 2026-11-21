@@ -26,7 +26,9 @@ import (
 // listing drops out at the first dump that omitted it (removals), a snapshot
 // time where the roster is emitted without it and every other position keeps
 // its own mark date (ValuedAt). When the LAST holding leaves, that date gets
-// the exit-day zero snapshot instead (silver.ClosureMarkerBatch).
+// the exit-day zero snapshot instead (silver.ClosureMarkerBatch). The
+// funds' capital accounts dated in the window close the stream
+// (capitalAccounts).
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -73,6 +75,13 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		return nil, err
 	}
 	inKind.LogClamped(kindName)
+	capital, err := c.capitalAccounts(ctx, w, acct)
+	if err != nil {
+		return nil, err
+	}
+	if len(capital) > 0 {
+		batches = append(batches, canonical.SnapshotBatch{CapitalAccounts: capital})
+	}
 	return silver.NewSnapshotStream(batches), nil
 }
 

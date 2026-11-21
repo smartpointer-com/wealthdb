@@ -1021,6 +1021,9 @@ class Simulation:
             if day == dates.parse(mark["date"]):
                 fund["nav"] = fund["called"] * D(mark["multiple"]) - fund["distributed"]
                 self._mark_fund(day, f, marked=day)
+                # The manager's quarterly capital account, at its mark.
+                self.book.capital_account(f["account"], f["instrument"], day, commitment=D(f["commitment"]),
+                                          called=fund["called"], distributed=fund["distributed"], nav=fund["nav"])
         s = self.spec["private"]["spv"]
         if day == dates.parse(s["date"]):
             amount = D(s["amount"])
@@ -1028,8 +1031,14 @@ class Simulation:
             self._txn(s["account"], day, "contribution", -amount, instrument=s["instrument"],
                       desc=f"SPV SUBSCRIPTION {self._instrument_name(s['instrument'], day)}")
             self.book.set_mark(s["account"], s["instrument"], amount, day, book=amount)
+            # An SPV calls its whole commitment at the subscription.
+            self.book.capital_account(s["account"], s["instrument"], day, commitment=amount, called=amount,
+                                      distributed=ZERO, nav=amount)
         if day == dates.parse(s["markup"]["date"]):
-            self.book.set_mark(s["account"], s["instrument"], D(s["amount"]) * D(s["markup"]["multiple"]), day)
+            value = D(s["amount"]) * D(s["markup"]["multiple"])
+            self.book.set_mark(s["account"], s["instrument"], value, day)
+            self.book.capital_account(s["account"], s["instrument"], day, commitment=D(s["amount"]),
+                                      called=D(s["amount"]), distributed=ZERO, nav=value)
         ex = s["exit"]
         if day == dates.parse(ex["date"]):
             self._spv_exit(day, s, ex)
@@ -1051,11 +1060,14 @@ class Simulation:
         """The SPV pays out in listed shares that land in the brokerage:
         one equity-transfer ledger row out of the venture account, one into
         the brokerage, same day, same value. The SPV holding leaves the
-        venture account's snapshot that day."""
+        venture account's snapshot that day, and its last capital account
+        states the exit's value as distributed."""
         shares = D(ex["shares"])
         value = cents(shares * self.market.price(ex["listed"]))
         spv = self.book.account(s["account"])
         basis = spv.holdings.pop(s["instrument"]).book
+        self.book.capital_account(s["account"], s["instrument"], day, commitment=D(s["amount"]),
+                                  called=D(s["amount"]), distributed=value, nav=ZERO)
         self.book.add_units(ex["to"], ex["listed"], shares, basis, day)
         name = self.inputs.instruments[ex["listed"]]["name"]
         for source, aid, direction, instrument, qty in (

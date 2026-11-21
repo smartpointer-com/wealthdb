@@ -29,7 +29,9 @@ import (
 // gets the exit-day zero snapshot instead (silver.ClosureMarkerBatch).
 // The K-1 period ends are snapshot times too: a book value steps down
 // there (inKind). So is each ledger movement into or out of a held
-// position (carry.go): its value moves at cost there.
+// position (carry.go): its value moves at cost there. The positions'
+// capital accounts dated in the window close the stream
+// (capitalAccounts).
 func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.SnapshotStream, error) {
 	if !w.HasChanges {
 		return silver.NewSnapshotStream(nil), nil
@@ -95,6 +97,13 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	}
 	if len(insts) > 0 {
 		batches = append(batches, canonical.SnapshotBatch{Instruments: insts})
+	}
+	capital, err := c.capitalAccounts(ctx, w, account)
+	if err != nil {
+		return nil, err
+	}
+	if len(capital) > 0 {
+		batches = append(batches, canonical.SnapshotBatch{CapitalAccounts: capital})
 	}
 	return silver.NewSnapshotStream(batches), nil
 }

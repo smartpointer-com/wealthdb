@@ -76,6 +76,12 @@ func setupPrivateGold(t *testing.T) string {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	inv := "INV000123456"
+	if err := w.InsertReference(ctx, &canonical.SnapshotBatch{CapitalAccounts: []canonical.CapitalAccountChange{{
+		SilverSourceID: "carta", AccountExternalID: &inv, InstrumentExternalID: "FUND", AsOf: dec31, Currency: "USD",
+		Commitment: d(120000), Called: d(80000), PaidIn: d(80000), Distributed: d(0), NAV: d(91234)}}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -106,7 +112,8 @@ func withPrivateLegs(t *testing.T, cfg string) {
 }
 
 // The default columns are the design's; a holding reads by its name, the
-// total last.
+// total last. A holding's capital account gives its commitment and its
+// stated multiples.
 func TestPrivateView(t *testing.T) {
 	t.Parallel()
 	cfg := setupPrivateGold(t)
@@ -115,8 +122,8 @@ func TestPrivateView(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, se)
 	}
 	header, _, _ := strings.Cut(out, "\n")
-	if want := "silver_source,account,holding,asset_class,vehicle,status,first_call,paid_in_USD,distributed_USD," +
-		"nav_USD,marked_at,dpi,tvpi,irr_pct,quality"; header != want {
+	if want := "silver_source,account,holding,asset_class,vehicle,status,first_call,paid_in_USD,commitment_USD," +
+		"unfunded_USD,distributed_USD,nav_USD,marked_at,dpi,tvpi,irr_pct,quality"; header != want {
 		t.Errorf("header = %s", header)
 	}
 	rows := csvRows(t, out)
@@ -138,6 +145,20 @@ func TestPrivateView(t *testing.T) {
 	}
 	if total["holding"] != "Total" || total["paid_in_USD"] != "90000.00" || total["tvpi"] != "1.29" {
 		t.Errorf("total row %v", total)
+	}
+	if fund["commitment_USD"] != "120000.00" || fund["unfunded_USD"] != "40000.00" || spv["commitment_USD"] != "" ||
+		total["commitment_USD"] != "120000.00" || total["unfunded_USD"] != "40000.00" {
+		t.Errorf("commitments: fund %v, spv %v, total %v", fund, spv, total)
+	}
+	out, se, code = runToday(t, "-c", cfg, "returns", "private", "-f", "csv", "-C",
+		"holding,stated_tvpi,stated_dpi,stated_as_of")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, se)
+	}
+	stated := csvRows(t, out)
+	if f, x := stated[0], stated[2]; f["stated_tvpi"] != "1.14" || f["stated_dpi"] != "0.00" ||
+		f["stated_as_of"] != "2024-12-31" || x["stated_tvpi"] != "" || x["stated_as_of"] != "" {
+		t.Errorf("stated: fund %v, total %v", f, x)
 	}
 	// The view reads since the first call: a window is refused.
 	if _, se, code := runToday(t, "-c", cfg, "returns", "private", "2024"); code == 0 ||
@@ -186,7 +207,7 @@ func TestPrivateViewPrivacy(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, se)
 	}
-	if strings.Contains(out, "91234") || strings.Contains(out, "INV000123456") {
+	if strings.Contains(out, "91234") || strings.Contains(out, "120000") || strings.Contains(out, "INV000123456") {
 		t.Errorf("-p shows an amount or an id:\n%s", out)
 	}
 	want, got := csvRows(t, plain), csvRows(t, out)

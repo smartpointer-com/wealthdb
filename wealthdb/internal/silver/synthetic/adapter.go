@@ -5,11 +5,11 @@
 // row means. This one reads a silver shaped by the canonical model itself:
 // one table per record type — portfolios, accounts, instruments, positions,
 // open lots, cash balances, fx rates, transactions, realized lots, the
-// reference records and the rate observations — so a row is the change
-// record it becomes, column for column (testdata/silver_schema.sql is the
-// schema's one definition). No collector and no bronze stand behind
-// it; a generator writes it, and nothing about any one generator is known
-// here.
+// reference records, the rate observations and the capital accounts — so a
+// row is the change record it becomes, column for column
+// (testdata/silver_schema.sql is the schema's one definition). No collector
+// and no bronze stand behind it; a generator writes it, and nothing about
+// any one generator is known here.
 //
 // The projection is therefore a pass-through with the cross-cutting guards
 // every adapter applies (docs/DESIGN.md §6.8): a value outside a canonical
@@ -87,6 +87,7 @@ type schema struct {
 	rates        bool   // silver.RatesTable
 	positionLots bool   // the position_lots table
 	realizedLots bool   // the realized_lots table
+	capital      bool   // the capital_accounts table
 }
 
 func (s *schema) optional() []silver.Optional {
@@ -95,6 +96,7 @@ func (s *schema) optional() []silver.Optional {
 		{Table: silver.RatesTable, Has: &s.rates},
 		{Table: "position_lots", Has: &s.positionLots},
 		{Table: "realized_lots", Has: &s.realizedLots},
+		{Table: "capital_accounts", Has: &s.capital},
 	}
 	for i, t := range silver.ReferenceTables {
 		out = append(out, silver.Optional{Table: t, Has: &s.reference[i]})

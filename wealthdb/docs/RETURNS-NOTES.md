@@ -244,12 +244,16 @@ One row per holding, then the total:
 | `status` | `held` where nothing came back; `partially_exited` where something came back and the NAV is not 0; `exited` where the NAV is 0 after something came back, or once the holding has left the holdings |
 | `first_call` | the day of the first call; with none, of the first leg, else of the first line |
 | `paid_in` | the `contribution`, `buy` and `fee` lines on the holding, net of refunds |
+| `commitment` | what the holder committed, as the holding's capital account states it (below); blank where none states one |
+| `unfunded` | what the commitment still holds open: the remainder the account states, else the commitment less what it says was called (else paid in), never below 0. Where it says neither, the commitment less `paid_in`, read as 0 below 1% of the commitment, and blank with no `paid_in`. 0 once the holding has exited |
 | `distributed` | the `distribution` and `sell` lines, a `private_debt` holding's `interest`, `dividend` and `coupon` lines (the cash a loan or a note returns), and the exits in kind: a `transfer_out` of the holding, or one whose `holding` names it, at the value it states |
 | `nav` | the holding's lines at the latest snapshot. It is 0 once the holding has left the holdings, and blank where it never had a value |
 | `marked_at` | the oldest mark of those lines, `coalesce(valued_at, snapshot_at)`; for a holding that has left, the mark of its last line |
 | `dpi` | `distributed / paid_in` |
 | `tvpi` | `(distributed + nav) / paid_in` |
 | `irr_pct` | the money-weighted return since the first call, a yearly rate |
+| `stated_tvpi`, `stated_dpi` | the capital account's own multiples; where it states none, the ratios of its stated figures over what it says was paid in, else called |
+| `stated_as_of` | the day of the capital account |
 
 **A holding with no call.** A source that states positions only has no
 cash leg for what was paid. Such a holding reads its stated cost: each
@@ -278,6 +282,42 @@ distribution:
 The exit ends the SPV's figures. A later gain on the shares belongs to
 the broker's position.
 
+**Capital accounts.** A capital account is what a source states for a
+holding on one day (gold's `capital_accounts`):
+
+- Carta: a fund's partner metrics, with its commitment, called capital,
+  capital contributed, distributions and NAV;
+- AngelList: a deal's row of the positions table, with its commitment,
+  contributed capital, realized and unrealized value and TVPI, at the
+  data date of the latest dump that listed it. The commitment is the
+  row's stated commitment, else its investment amount. A fund's calls
+  draw on it over time. An SPV pays it at once;
+- UBS: a fund's quarterly report, with its net commitment, capital
+  called and valuation.
+
+The view reads each holding's latest account on or before the day it
+reads. The account names its holding by its instrument, and by its
+account where the source states one. Each account of a source keeps its
+own latest account of an instrument. A UBS report names the fund by its
+ISIN alone, so it takes the one holding of that ISIN in the source; one
+held in two portfolios takes none. A day before a holding's first
+account reads no commitment: AngelList's dump keeps no history, so its
+accounts read from the latest dump's day on.
+
+An account can state a commitment but no remainder, call or payment,
+as an AngelList node can. It gives no unfunded of its own, so the view
+takes the holding's own `paid_in`: the commitment less it. Fees and
+rounding part a stated amount from a computed one, so a remainder below
+1% of the commitment reads 0. So an SPV paid in whole reads 0, not a
+sliver. With no `paid_in` the unfunded is blank.
+
+An exited holding reads `unfunded` 0: a holding sold or wound up whole
+owes no further calls. Its `commitment` still shows.
+
+The stated figures stand beside the computed ones. A source counts its
+own fees, calls and marks, so they can differ. Neither replaces the
+other. A stock or a note has no commitment, and that is no gap.
+
 **One definition.** The macro `report_private` computes every figure but
 the IRR, from `private_legs`. The IRR is the engine's own solver
 (`solveIRR`, the money-weighted code of every grain): the legs as flows,
@@ -285,8 +325,10 @@ nothing held before the first call, and the NAV received on `end_date`,
 the later of the NAV's snapshot and the last leg. So
 `irr_pct` carries the engine's `mwr_*` tags where it has no answer.
 
-**Historic FX.** Each leg converts at its own day's rate, and the NAV at
-its snapshot's. The multiples therefore move with the output currency.
+**Historic FX.** Each leg converts at its own day's rate, the NAV at
+its snapshot's, and the commitment and unfunded at the capital
+account's. The computed multiples therefore move with the output
+currency. The stated ones read in the account's own currency.
 
 **The total.** Each holding's money rounds once, to the cent, and the
 total adds the cents, so it is the sum of the rows as they print. `dpi`
@@ -301,6 +343,9 @@ goes blank because one holding lacks a figure:
   `paid_in` and a `nav`;
 - `irr_pct` pools the legs and NAVs of the holdings that have their own
   IRR's inputs: a `paid_in`, a `nav` and a rate for every leg.
+
+The total adds the `commitment` and `unfunded` of the holdings that
+state one. Its `stated_tvpi`, `stated_dpi` and `stated_as_of` are blank.
 
 The total is over every holding: a filter keeps or drops it as a row,
 never recomputes it.
@@ -359,9 +404,13 @@ Quality tags:
 - `unattributed_exit=N`, on the total only: N exits in kind name no
   holding. The total counts them, and no row does. To give one to its
   holding, write the holding's id in the ledger row's `holding` column.
-- `unpriced=N`: N legs or lines have no rate to the output currency. The
-  sums leave them out, and a leg with none leaves `irr_pct` blank. A
-  zero needs no rate.
+- `unmatched_commitment=N`, on the total only: N capital accounts state
+  a commitment of a private holding that no row takes. The holding is
+  not listed at the day, as before its first call, or the account would
+  name two holdings. The total leaves them out.
+- `unpriced=N`: N legs, lines or commitments have no rate to the output
+  currency. The sums leave them out, and a leg with none leaves
+  `irr_pct` blank. A zero needs no rate.
 
 On the total each tag counts the holdings it holds on. Its
 `exit_unvalued` and `unpriced` also count the unattributed exits that
@@ -370,7 +419,13 @@ state no value or have no rate.
 Limits:
 
 - Marks are old by nature, so `marked_at` always shows.
-- Commitments and unfunded capital are not in gold.
+- A commitment reads only where a source states one. AngelList states
+  one for each deal.
+- AngelList does not state a valuation basis for every deal. A deal it
+  values at cost without saying so reads `tvpi` 1 with no `at_cost`, and
+  its `stated_tvpi` reads 1 too.
+- No source states an IRR per holding. AngelList's multiples for the
+  whole account are not shown.
 - The view carries no volatility or other risk figure. Marks are too old
   and too sparse for one.
 
@@ -393,7 +448,8 @@ per holding and quarter, in every reporting currency, and
 `TestPrivateMarketsPortfolioHolding`, `TestPrivateMarketsPortfolioMoves`,
 `TestPrivateMarketsNeverValued`, `TestPrivateMarketsDebtIncome`,
 `TestPrivateIRRPastPaybackPooled`, `TestPrivateFlowsAreTheTotalsLegs`,
-`TestPrivateView`, `TestPrivateViewAsOf`.
+`TestPrivateMarketsCapitalAccounts`, `TestPrivateView`,
+`TestPrivateViewAsOf`.
 
 ## The math (`internal/returns`)
 

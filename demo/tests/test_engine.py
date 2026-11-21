@@ -627,7 +627,9 @@ class TestToToday(unittest.TestCase):
         """The fund reads its calls, its distribution and its last mark; the
         SPV its subscription and the shares it paid out in kind, with no
         NAV left once it exited. The multiples hold in every currency, and
-        the total adds the money up."""
+        the total adds the money up. Each reads its manager's latest capital
+        account: the fund's commitment less what its last mark says was
+        called, the SPV's called whole."""
         private = spec.load().spec["private"]
         fund, spv = private["fund"], private["spv"]
 
@@ -646,8 +648,11 @@ class TestToToday(unittest.TestCase):
         self.assertEqual((amount(f, "paid_in_USD"), amount(f, "distributed_USD"), amount(f, "nav_USD")),
                          (upto(fund["calls"]), upto(fund["distributions"]), nav), f)
         self.assertEqual(f["marked_at"], mark["date"])
+        self.assertEqual((amount(f, "commitment_USD"), amount(f, "unfunded_USD")),
+                         (Decimal(fund["commitment"]), Decimal(fund["commitment"]) - upto(fund["calls"], at)), f)
         (s,) = [r for name, r in by.items() if "SPV" in name]
         self.assertEqual(amount(s, "paid_in_USD"), Decimal(spv["amount"]))
+        self.assertEqual((amount(s, "commitment_USD"), amount(s, "unfunded_USD")), (Decimal(spv["amount"]), 0), s)
         if dates.parse(spv["exit"]["date"]) <= TODAY:
             self.assertEqual((amount(s, "nav_USD"), s["quality"]), (0, "exited"), s)
             self.assertTrue(s["marked_at"], s)
@@ -661,8 +666,11 @@ class TestToToday(unittest.TestCase):
                 self.assertAlmostEqual(float(r["dpi"]), float(back / paid), places=2)
                 self.assertAlmostEqual(float(r["tvpi"]), float((back + value) / paid), places=2)
                 self.assertTrue(r["irr_pct"], r)
-            for c in ("paid_in", "distributed", "nav"):
+            for c in ("paid_in", "commitment", "unfunded", "distributed", "nav"):
                 self.assertEqual(amount(total, f"{c}_{ccy}"), sum(amount(r, f"{c}_{ccy}") for r in held))
+            (fr,) = [r for r in held if "Fund" in r["holding"]]
+            self.assertEqual(fr["stated_as_of"], mark["date"], fr)
+            self.assertAlmostEqual(float(fr["stated_tvpi"]), float(mark["multiple"]), places=2)
 
     def test_the_fund_and_the_home_lower_the_marked_share(self):
         rows = report(self.root, "status", "--marks")

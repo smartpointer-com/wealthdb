@@ -87,7 +87,7 @@ History starts on 2023-07-01 and runs to the as-of date.
 | `quayvane` | joint brokerage, two Roth IRAs, a rollover IRA, a 529 plan | monthly buying, dividends with foreign withholding, a 2-for-1 split, a fund rename, tax-loss selling, bonds held directly, a ladder of discount notes, a money-market fund, retirement and education vehicles |
 | `tamberlow` | two 401(k) plans, a health savings account | payroll contributions that never touch household cash, HSA reimbursements, a yearly fee inside a plan, which the spending report counts and the cash flow statement does not |
 | `aubervane` | a discretionary mandate in one portfolio | four currencies, currency conversions, coupons, withholding, management fees |
-| `emberwright` | a venture fund interest and an SPV, in one account | capital calls, a distribution, quarterly NAV marks dated through `valued_at`, an SPV that exits in listed shares |
+| `emberwright` | a venture fund interest and an SPV, in one account | capital calls against a commitment, a distribution, quarterly NAV marks dated through `valued_at` with the manager's capital accounts, an SPV that exits in listed shares |
 | `tessarite` | a crypto exchange account | staking income, a deposit from and a withdrawal to a wallet nothing tracks, and no stated cost basis: the lot engine rebuilds it from the trades |
 | `driftwren` | a multi-currency account in EUR and GBP | spending abroad, a yearly USD wire paired across currencies, interest on the euro balance |
 | `homestead` | the family home | a NAV-only holding valued by yearly appraisals, each dated through `valued_at`, so the Mark age tile moves |

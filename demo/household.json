@@ -169,7 +169,7 @@
                           "rhwc": "0.07", "csnr": "0.05", "sbmr32": "0.08", "rtbw": "0.12", "thbr": "0.08"}},
 
   "private": {
-    "fund": {"account": "ew-inv-01", "instrument": "fund-ii", "from": "bc-sav-01",
+    "fund": {"account": "ew-inv-01", "instrument": "fund-ii", "from": "bc-sav-01", "commitment": "120000.00",
              "calls": [{"date": "2025-01-15", "amount": "25000.00"}, {"date": "2025-06-16", "amount": "25000.00"},
                        {"date": "2025-11-17", "amount": "25000.00"}, {"date": "2026-04-15", "amount": "25000.00"}],
              "distributions": [{"date": "2026-03-16", "amount": "18000.00"}],

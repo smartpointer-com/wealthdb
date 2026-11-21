@@ -488,12 +488,13 @@ type SnapshotBatch struct {
 	RateObservations []RateObservationChange
 	StatedPeriods    []StatedPeriodChange
 	ExposureReports  []ExposureReportChange
+	CapitalAccounts  []CapitalAccountChange
 }
 
 // ReferenceRows is the number of reference records in b.
 func (b *SnapshotBatch) ReferenceRows() int {
 	n := len(b.FundCompositions) + len(b.FundLines) +
-		len(b.RateObservations) + len(b.StatedPeriods) + len(b.ExposureReports)
+		len(b.RateObservations) + len(b.StatedPeriods) + len(b.ExposureReports) + len(b.CapitalAccounts)
 	for _, r := range b.Reference {
 		n += len(r.Rows)
 	}
@@ -540,6 +541,7 @@ func (b *SnapshotBatch) SetSource(id string) {
 	setSource(b.RateObservations, id, func(r *RateObservationChange) *string { return &r.SilverSourceID })
 	setSource(b.StatedPeriods, id, func(r *StatedPeriodChange) *string { return &r.SilverSourceID })
 	setSource(b.ExposureReports, id, func(r *ExposureReportChange) *string { return &r.SilverSourceID })
+	setSource(b.CapitalAccounts, id, func(r *CapitalAccountChange) *string { return &r.SilverSourceID })
 }
 
 // TransactionBatch is one batch yielded by a TransactionStream.Next call.

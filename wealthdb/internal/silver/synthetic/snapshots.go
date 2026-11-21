@@ -14,7 +14,8 @@ import (
 )
 
 // Snapshots emits one batch per distinct snapshot_at in the window, in
-// ascending order, then the window's reference records (withReference).
+// ascending order, then the window's reference records and capital
+// accounts (withReference).
 // A batch carries that instant's positions with their open lots, cash
 // balances and fx rates, and the dimension records they reference, all
 // seen at that instant: every account its positions or cash balances
@@ -86,9 +87,9 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 	return c.withReference(ctx, w, silver.NewSnapshotStream(batches))
 }
 
-// withReference appends the window's reference records and rate
-// observations, as a generator wrote them, to the stream. A file older
-// than a table states none of its records.
+// withReference appends the window's reference records, rate
+// observations and capital accounts, as a generator wrote them, to the
+// stream. A file older than a table states none of its records.
 func (c *Connection) withReference(ctx context.Context, w canonical.Window, s silver.SnapshotStream) (silver.SnapshotStream, error) {
 	streams := []silver.SnapshotStream{s}
 	if c.schema.hasReference() {
@@ -100,6 +101,13 @@ func (c *Connection) withReference(ctx context.Context, w canonical.Window, s si
 	}
 	if c.schema.rates {
 		streams = append(streams, silver.NewRateStream(c.db, w))
+	}
+	capital, err := c.readCapitalAccounts(ctx, w)
+	if err != nil {
+		return nil, err
+	}
+	if len(capital) > 0 {
+		streams = append(streams, silver.NewSnapshotStream([]canonical.SnapshotBatch{{CapitalAccounts: capital}}))
 	}
 	if len(streams) == 1 {
 		return s, nil

@@ -235,11 +235,11 @@ func TestEnumChecksDroppedKeepsRowsAndShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The derived set reads the vocabulary's roles, the snapshot coverage
-	// and the private-markets rows, which later migrations add; they touch
-	// neither table.
+	// The derived set reads the vocabulary's roles, the snapshot coverage,
+	// the private-markets rows and the capital accounts, which later
+	// migrations add; they touch neither table.
 	for _, suffix := range []string{"_vocabulary_roles.sql", "_snapshot_coverage.sql", "_private_markets.sql",
-		"_private_markets_as_of.sql"} {
+		"_private_markets_as_of.sql", "_capital_accounts.sql"} {
 		j := slices.IndexFunc(ms, func(m migration) bool { return strings.HasSuffix(m.name, suffix) })
 		if j < 0 {
 			t.Fatalf("no migration *%s", suffix)

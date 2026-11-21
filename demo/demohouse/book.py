@@ -87,7 +87,8 @@ class Book:
         self.instruments = instruments  # id -> catalogue entry (current version)
         self.accounts = {}
         self.sources = {}               # source id -> {"cadence", "states_basis", "accounts": [...]}
-        self.rows = {}                  # source id -> {"positions", "lots", "cash", "transactions", "realized"}
+        # source id -> {table: rows}: positions, lots, cash, transactions, realized, capital
+        self.rows = {}
         self.portfolios = {}            # source id -> [portfolio rows]
         self.instrument_versions = {}   # source id -> {(instrument, valid_from): row}
         self.quiet = lambda aid, day: False  # a snapshot the source does not publish
@@ -97,7 +98,8 @@ class Book:
 
     def add_source(self, source, cadence, states_basis=True):
         self.sources[source] = {"cadence": cadence, "states_basis": states_basis, "accounts": []}
-        self.rows[source] = {"positions": [], "lots": [], "cash": [], "transactions": [], "realized": []}
+        self.rows[source] = {"positions": [], "lots": [], "cash": [], "transactions": [], "realized": [],
+                             "capital": []}
         self.portfolios[source] = []
         self.instrument_versions[source] = {}
 
@@ -167,6 +169,17 @@ class Book:
         return row
 
     # ---- holdings ------------------------------------------------------
+
+    def capital_account(self, aid, instrument, day, *, commitment, called, distributed, nav):
+        """A private holding's capital account as its manager states it
+        on `day`: the commitment, the capital called, what came back and
+        the NAV."""
+        acct = self.accounts[aid]
+        self.rows[acct.source]["capital"].append({
+            "as_of": dates.epoch(day), "account_id": aid, "instrument_id": instrument, "source_ref": "",
+            "currency": acct.currency, "commitment": text(commitment, 2), "called": text(called, 2), "paid_in": None,
+            "unfunded": None, "distributed": text(distributed, 2), "nav": text(nav, 2), "tvpi": None, "dpi": None,
+            "payload": "{}"})
 
     def holding(self, aid, instrument):
         return self.accounts[aid].holdings.get(instrument)

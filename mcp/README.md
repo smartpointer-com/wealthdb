@@ -141,7 +141,7 @@ Fourteen tools, every parameter optional:
 | Tool | Answers |
 | --- | --- |
 | `holdings` | what is held, where, and what it is worth, on a date |
-| `returns` | how investments performed, as time- and money-weighted returns, and against a benchmark; why net worth moved (`view: bridge`); each private holding's calls, distributions, mark and multiples, as of a day (`view: private`) |
+| `returns` | how investments performed, as time- and money-weighted returns, and against a benchmark; why net worth moved (`view: bridge`); each private holding's calls, commitment, distributions, mark and multiples, as of a day (`view: private`) |
 | `gains` | what was gained or lost, realized and unrealized |
 | `exposure` | what is really owned once every fund is looked through, by class, sector, country, currency, credit, maturity and issuer; and where each holding legally sits |
 | `yield` | what the holdings earn, and how they move with interest rates, on a date |

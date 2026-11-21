@@ -1,4 +1,4 @@
--- Silver schema of the synthetic kind, version 6.
+-- Silver schema of the synthetic kind, version 7.
 --
 -- The one generic silver: one table per canonical record type, so a row
 -- here is the canonical change record it becomes, column for column. No
@@ -397,4 +397,33 @@ CREATE TABLE rates (
     value      TEXT    NOT NULL,
     payload    TEXT    NOT NULL DEFAULT '{}',
     PRIMARY KEY (as_of, series_id)
+);
+
+-- A private holding's capital account as its manager states it
+-- (canonical.CapitalAccountChange), column for column: the commitment,
+-- what was called and paid in, what remains unfunded, what came back,
+-- the value still held, and the manager's own multiples. Each figure is
+-- NULL where the statement holds none. account_id is NULL where it
+-- names the holding by its instrument alone. A file states one row per
+-- instrument, day and document: source_ref names the stating document
+-- where two state one instrument on one day, as two accounts' statements
+-- of one fund do, and is '' where one does. as_of must lie inside the
+-- window of the run that adds it. Added in version 7; an older file
+-- holds none.
+CREATE TABLE capital_accounts (
+    as_of         INTEGER NOT NULL,
+    account_id    TEXT,
+    instrument_id TEXT    NOT NULL,
+    source_ref    TEXT    NOT NULL DEFAULT '',
+    currency      TEXT    NOT NULL,
+    commitment    TEXT,
+    called        TEXT,
+    paid_in       TEXT,
+    unfunded      TEXT,
+    distributed   TEXT,
+    nav           TEXT,
+    tvpi          TEXT,
+    dpi           TEXT,
+    payload       TEXT    NOT NULL DEFAULT '{}',
+    PRIMARY KEY (instrument_id, as_of, source_ref)
 );

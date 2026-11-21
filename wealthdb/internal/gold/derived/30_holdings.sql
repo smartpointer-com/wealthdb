@@ -1462,7 +1462,7 @@ CREATE MACRO private_group(p_portfolio, p_account) AS
 -- p_asof names a key (a contribution, buy, fee, distribution, sale or
 -- transfer out), or a line of a snapshot up to it. The keys of one
 -- holding share a group (private_group) and an identity, the instrument's
--- ISIN, else its id. The holding is named by its key that holds the
+-- ISIN, else its id (identity). The holding is named by its key that holds the
 -- latest line, else by its key with the first leg: holding_account and
 -- holding_instrument. Its asset class and vehicle are that key's: the
 -- instrument row's, else the latest line's, else the latest leg's that
@@ -1550,7 +1550,7 @@ CREATE MACRO private_holdings(p_asof) AS TABLE (
         WINDOW h AS (PARTITION BY silver_source_id, holding_group, identity
                      ORDER BY last_at DESC NULLS LAST, first_at NULLS LAST, account_external_id, instrument_external_id
                      ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING))
-    SELECT silver_source_id, account_external_id, instrument_external_id, holding_group,
+    SELECT silver_source_id, account_external_id, instrument_external_id, holding_group, identity,
            holding_account, holding_instrument, holding_class AS asset_class, holding_vehicle AS vehicle
       FROM r
      WHERE private
@@ -1752,25 +1752,38 @@ CREATE MACRO private_legs(p_instants, p_ccy) AS TABLE (
 -- where something came back and it is still held, else held. dpi is
 -- distributed over paid_in, tvpi distributed plus nav over paid_in.
 -- end_at is the day a money-weighted return ends: the later of the NAV's
--- snapshot and the last leg, else the last line. The total adds what
--- the holdings state: a blank adds nothing, and no_cost and no_mark
--- count the holdings it leaves out. Its dpi pools the holdings with a
--- paid_in, its tvpi those with a paid_in and a nav, the unattributed
--- exits in both; its marked_at is the oldest mark. holding_group is the
--- holding's group, '' on the total. quality names what a figure misses:
--- no_mark, no_cost, paid_in_from_cost, exited, at_cost, call_after_mark,
--- distribution_after_mark, exit_unvalued=N, unpriced=N; on the total,
--- each tag with the count of holdings it holds on, and
--- unattributed_exit=N the exits it counts. The total's exit_unvalued and
--- unpriced count those exits too: the holdings plus the unattributed
--- exits that state no value, or have no rate.
+-- snapshot and the last leg, else the last line. commitment, unfunded
+-- and the stated_ figures are the holding's latest capital account on
+-- or before the instant (capital_accounts), stated_as_of its day, NULL
+-- where it has none: commitment and unfunded in p_ccy at that day's
+-- rate, stated_tvpi and stated_dpi as the source states them, else the
+-- multiples its stated figures give. Where the account states no
+-- remainder and no call or payment, unfunded is the commitment less the
+-- holding's paid_in, 0 where that is below 1% of the commitment, NULL
+-- with no paid_in. An exited holding's unfunded is 0:
+-- a holding sold or wound up whole owes no further calls. The total
+-- adds what the holdings state: a blank adds nothing, and no_cost and
+-- no_mark count the holdings it leaves out. Its dpi pools the holdings
+-- with a paid_in, its tvpi those with a paid_in and a nav, the
+-- unattributed exits in both; its marked_at is the oldest mark; its
+-- stated_tvpi, stated_dpi and stated_as_of are blank. holding_group is
+-- the holding's group, '' on the total. quality names what a figure
+-- misses: no_mark, no_cost, paid_in_from_cost, exited, at_cost,
+-- call_after_mark, distribution_after_mark, exit_unvalued=N,
+-- unpriced=N; on the total, each tag with the count of holdings it holds
+-- on, unattributed_exit=N the exits it counts, and
+-- unmatched_commitment=N the commitments of a private holding stated at
+-- the instant that no listed holding takes, which it leaves out. The
+-- total's exit_unvalued and unpriced count those exits too: the holdings
+-- plus the unattributed exits that state no value, or have no rate. A
+-- stated commitment with no rate counts as unpriced.
 CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
     WITH ins AS (SELECT DISTINCT unnest(p_instants) AS as_of),
     legs AS (SELECT * FROM private_legs(p_instants, p_ccy)),
     held AS (SELECT * FROM private_holdings(list_max(p_instants))),
     holdings AS (
         SELECT DISTINCT silver_source_id, holding_account AS account_external_id,
-               holding_instrument AS instrument_external_id, holding_group, asset_class, vehicle
+               holding_instrument AS instrument_external_id, holding_group, identity, asset_class, vehicle
           FROM held),
     f AS (
         SELECT as_of, silver_source_id, account_external_id, instrument_external_id,
@@ -1892,6 +1905,68 @@ CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
           JOIN holdings c ON c.silver_source_id = h.silver_source_id AND c.account_external_id = h.account_external_id
            AND c.instrument_external_id = h.instrument_external_id
          WHERE h.invested),
+    -- The capital accounts the sources state up to the last instant, each
+    -- with its identity and the holding it states: the one of its
+    -- identity in its account's group, or in its source where it names
+    -- no account. One that matches two holdings, or none, states no
+    -- holding. Its commitment and unfunded convert at its day's rate;
+    -- unfunded is the stated remainder, else the commitment less what
+    -- was called, else paid in, never below zero; none where it states
+    -- no remainder and no commitment with a call or a payment. Its
+    -- multiples are the source's own, else the ratios of its stated
+    -- figures over what was paid in, else called.
+    cap AS (
+        SELECT s.silver_source_id, s.account_external_id AS stated_account,
+               s.instrument_external_id AS stated_instrument, s.as_of AS stated_as_of,
+               s.source_ref AS stated_ref, COALESCE(i.isin, s.instrument_external_id) AS identity,
+               s.commitment IS NOT NULL AS committed,
+               CAST(fx_pick_keep_zero(s.commitment, s.currency, p_ccy,
+                            o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(38,10)) AS commitment,
+               CAST(fx_pick_keep_zero(COALESCE(s.unfunded,
+                                               CASE WHEN s.commitment IS NOT NULL AND COALESCE(s.called, s.paid_in) IS NOT NULL
+                                                    THEN GREATEST(s.commitment - COALESCE(s.called, s.paid_in), 0) END),
+                            s.currency, p_ccy, o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(38,10)) AS unfunded,
+               COALESCE(s.tvpi, CASE WHEN COALESCE(s.paid_in, s.called) > 0
+                                     THEN CAST((s.distributed + s.nav) / COALESCE(s.paid_in, s.called) AS DOUBLE) END)
+                   AS stated_tvpi,
+               COALESCE(s.dpi, CASE WHEN COALESCE(s.paid_in, s.called) > 0
+                                    THEN CAST(s.distributed / COALESCE(s.paid_in, s.called) AS DOUBLE) END) AS stated_dpi,
+               CASE WHEN count(*) OVER w = 1 THEN d.account_external_id END AS account_external_id,
+               CASE WHEN count(*) OVER w = 1 THEN d.instrument_external_id END AS instrument_external_id
+          FROM capital_accounts s
+          LEFT JOIN instruments i ON i.silver_source_id = s.silver_source_id
+           AND i.instrument_external_id = s.instrument_external_id
+          LEFT JOIN accounts a ON a.silver_source_id = s.silver_source_id
+           AND a.account_external_id = s.account_external_id
+          LEFT JOIN holdings d ON d.silver_source_id = s.silver_source_id
+           AND d.identity = COALESCE(i.isin, s.instrument_external_id)
+           AND (s.account_external_id = ''
+                OR d.holding_group = private_group(a.portfolio_external_id, s.account_external_id))
+          ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = s.currency AND o0.to_ccy = p_ccy AND o0.day <= (s.as_of // 86400)
+          ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = s.currency AND o1.to_ccy = 'CHF' AND o1.day <= (s.as_of // 86400)
+          ASOF LEFT JOIN fx_daily o2 ON o2.from_ccy = 'CHF' AND o2.to_ccy = p_ccy AND o2.day <= (s.as_of // 86400)
+          ASOF LEFT JOIN fx_daily o3 ON o3.from_ccy = s.currency AND o3.to_ccy = 'USD' AND o3.day <= (s.as_of // 86400)
+          ASOF LEFT JOIN fx_daily o4 ON o4.from_ccy = 'USD' AND o4.to_ccy = p_ccy AND o4.day <= (s.as_of // 86400)
+         WHERE s.as_of <= list_max(p_instants)
+        WINDOW w AS (PARTITION BY s.silver_source_id, s.account_external_id, s.instrument_external_id, s.as_of,
+                                  s.source_ref)
+        QUALIFY row_number() OVER (w ORDER BY d.account_external_id, d.instrument_external_id) = 1),
+    -- At each instant, each account's latest statements of an instrument
+    -- on or before it, every document of that day, and each holding's
+    -- latest of those. Two accounts of one source that state one
+    -- instrument keep a statement each.
+    cur AS (
+        SELECT i.as_of, c.*
+          FROM ins i
+          JOIN cap c ON c.stated_as_of <= i.as_of
+        QUALIFY rank() OVER (PARTITION BY i.as_of, c.silver_source_id, c.stated_account, c.stated_instrument
+                             ORDER BY c.stated_as_of DESC) = 1),
+    st AS (
+        SELECT *
+          FROM cur
+         WHERE instrument_external_id IS NOT NULL
+        QUALIFY row_number() OVER (PARTITION BY as_of, silver_source_id, account_external_id, instrument_external_id
+                                   ORDER BY stated_as_of DESC, stated_account, stated_instrument, stated_ref) = 1),
     -- The exits in kind no holding names, out of a listed holding's
     -- group: what they return rounds once, to the cent.
     u AS (
@@ -1903,11 +1978,41 @@ CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
            AND k.holding_group = l.holding_group
          WHERE l.unattributed
          GROUP BY l.as_of),
+    -- Each listed holding with its capital account at the instant; an
+    -- exited one owes no further calls. A commitment whose account gives
+    -- no unfunded takes the holding's own paid in: the commitment less
+    -- it, read as 0 below 1% of the commitment, as fees and rounding part
+    -- a stated amount from a computed one, and none with no paid in. A
+    -- stated commitment with no rate to p_ccy is unpriced.
+    ks AS (
+        SELECT k.*, ROUND(t.commitment, 2) AS commitment,
+               CASE WHEN k.exited AND (t.committed OR t.unfunded IS NOT NULL) THEN 0
+                    WHEN t.unfunded IS NOT NULL THEN ROUND(t.unfunded, 2)
+                    WHEN t.commitment - k.paid_in < 0.01 * t.commitment THEN 0
+                    ELSE ROUND(t.commitment - k.paid_in, 2) END AS unfunded,
+               t.stated_tvpi,
+               t.stated_dpi, t.stated_as_of,
+               k.unpriced + CASE WHEN t.committed AND t.commitment IS NULL THEN 1 ELSE 0 END AS unpriced_all
+          FROM k
+          LEFT JOIN st t ON t.as_of = k.as_of AND t.silver_source_id = k.silver_source_id
+           AND t.account_external_id = k.account_external_id AND t.instrument_external_id = k.instrument_external_id),
+    -- The commitments stated at each instant that no listed holding
+    -- takes, of a private holding's identity: its holding is not listed
+    -- at the instant, or the account would state two holdings.
+    um AS (
+        SELECT c.as_of, COUNT(*) AS n
+          FROM cur c
+          SEMI JOIN holdings d ON d.silver_source_id = c.silver_source_id AND d.identity = c.identity
+          ANTI JOIN k ON k.as_of = c.as_of AND k.silver_source_id = c.silver_source_id
+           AND k.account_external_id = c.account_external_id AND k.instrument_external_id = c.instrument_external_id
+         WHERE c.committed
+         GROUP BY c.as_of),
     pr AS (
         SELECT as_of, FALSE AS is_total, silver_source_id, account_external_id, instrument_external_id, holding_group,
-               first_day * 86400 AS first_call, paid_in, distributed, nav, marked_at, end_at,
+               first_day * 86400 AS first_call, paid_in, commitment, unfunded, distributed, nav, marked_at, end_at,
                CASE WHEN exited THEN 'exited' WHEN backed THEN 'partially_exited' ELSE 'held' END AS status,
                paid_in AS dpi_paid, distributed AS dpi_back, paid_in AS tvpi_paid, distributed + nav AS tvpi_value,
+               stated_tvpi, stated_dpi, stated_as_of,
                concat_ws(';', CASE WHEN no_mark THEN 'no_mark' END,
                               CASE WHEN NOT called THEN 'no_cost' END,
                               CASE WHEN from_cost THEN 'paid_in_from_cost' END,
@@ -1916,17 +2021,18 @@ CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
                               CASE WHEN call_after_mark THEN 'call_after_mark' END,
                               CASE WHEN back_after_mark THEN 'distribution_after_mark' END,
                               CASE WHEN exits_unvalued > 0 THEN 'exit_unvalued=' || exits_unvalued END,
-                              CASE WHEN unpriced > 0 THEN 'unpriced=' || unpriced END) AS quality
-          FROM k
+                              CASE WHEN unpriced_all > 0 THEN 'unpriced=' || unpriced_all END) AS quality
+          FROM ks
         UNION ALL
         SELECT k.as_of, TRUE, '', '', '', '', MIN(first_day) * 86400,
-               SUM(paid_in),
+               SUM(paid_in), SUM(commitment), SUM(unfunded),
                SUM(distributed) + COALESCE(ANY_VALUE(u.back), 0),
                SUM(nav), MIN(marked_at),
                GREATEST(MAX(end_at), COALESCE(ANY_VALUE(u.last_leg) * 86400, 0)), NULL,
                SUM(paid_in), SUM(distributed) FILTER (WHERE paid_in IS NOT NULL) + COALESCE(ANY_VALUE(u.back), 0),
                SUM(paid_in) FILTER (WHERE nav IS NOT NULL),
                SUM(distributed + nav) FILTER (WHERE paid_in IS NOT NULL) + COALESCE(ANY_VALUE(u.back), 0),
+               NULL, NULL, NULL,
                concat_ws(';', CASE WHEN count_if(no_mark) > 0 THEN 'no_mark=' || count_if(no_mark) END,
                               CASE WHEN count_if(NOT called) > 0 THEN 'no_cost=' || count_if(NOT called) END,
                               CASE WHEN count_if(from_cost) > 0 THEN 'paid_in_from_cost=' || count_if(from_cost) END,
@@ -1940,11 +2046,13 @@ CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
                                    THEN 'exit_unvalued=' || (count_if(k.exits_unvalued > 0)
                                                              + COALESCE(ANY_VALUE(u.exits_unvalued), 0)) END,
                               CASE WHEN ANY_VALUE(u.exits) > 0 THEN 'unattributed_exit=' || ANY_VALUE(u.exits) END,
-                              CASE WHEN count_if(unpriced > 0) + COALESCE(ANY_VALUE(u.exits_unpriced), 0) > 0
-                                   THEN 'unpriced=' || (count_if(unpriced > 0)
+                              CASE WHEN ANY_VALUE(m.n) > 0 THEN 'unmatched_commitment=' || ANY_VALUE(m.n) END,
+                              CASE WHEN count_if(unpriced_all > 0) + COALESCE(ANY_VALUE(u.exits_unpriced), 0) > 0
+                                   THEN 'unpriced=' || (count_if(unpriced_all > 0)
                                                         + COALESCE(ANY_VALUE(u.exits_unpriced), 0)) END)
-          FROM k
+          FROM ks k
           LEFT JOIN u ON u.as_of = k.as_of
+          LEFT JOIN um m ON m.as_of = k.as_of
          GROUP BY k.as_of)
     SELECT r.as_of, r.is_total, r.silver_source_id, r.account_external_id,
            a.display_name, a.nickname, r.instrument_external_id,
@@ -1952,11 +2060,14 @@ CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
            c.asset_class, c.vehicle, r.status, r.holding_group,
            r.first_call,
            CAST(r.paid_in AS DECIMAL(28,4)) AS paid_in,
+           CAST(r.commitment AS DECIMAL(28,4)) AS commitment,
+           CAST(r.unfunded AS DECIMAL(28,4)) AS unfunded,
            CAST(r.distributed AS DECIMAL(28,4)) AS distributed,
            CAST(r.nav AS DECIMAL(28,4)) AS nav,
            r.marked_at, r.end_at,
            CASE WHEN r.dpi_paid > 0 THEN CAST(r.dpi_back / r.dpi_paid AS DOUBLE) END AS dpi,
            CASE WHEN r.tvpi_paid > 0 THEN CAST(r.tvpi_value / r.tvpi_paid AS DOUBLE) END AS tvpi,
+           r.stated_tvpi, r.stated_dpi, r.stated_as_of,
            r.quality
       FROM pr r
       LEFT JOIN holdings c ON c.silver_source_id = r.silver_source_id AND c.account_external_id = r.account_external_id

@@ -1346,3 +1346,33 @@ func refColumn(b canonical.SnapshotBatch, gold, col string) []any {
 	}
 	return out
 }
+
+// TestSnapshotsCarryCapitalAccounts: a capital account dated in the
+// window passes column for column, a NULL figure as none; one dated in
+// an earlier run's window stays out of a later load's.
+func TestSnapshotsCarryCapitalAccounts(t *testing.T) {
+	path, db := newFixture(t)
+	silvertest.Exec(t, db, `INSERT INTO dump_runs VALUES (1, ?, ?, '2031-01-02'), (2, ?, ?, '2031-01-04')`,
+		day(1), day(2), day(3), day(4))
+	silvertest.Exec(t, db, `INSERT INTO capital_accounts (as_of, account_id, instrument_id, currency, commitment,
+	        called, unfunded, distributed, nav, tvpi, payload)
+	    VALUES (?, 'acct-pe', 'fund-x', 'USD', '100000', '40000', NULL, '0', '41000', NULL, '{}'),
+	           (?, NULL, 'fund-x', 'USD', '100000', '60000', '40000', '5000', '62000', '1.12', '{"note":1}')`,
+		day(2), day(4))
+	conn := openConn(t, path)
+	w, err := conn.ChangeWindow(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := silvertest.Merged(t, conn, w).CapitalAccounts
+	if len(got) != 1 {
+		t.Fatalf("capital accounts = %+v, want run 2's", got)
+	}
+	ca := got[0]
+	if ca.AsOf != day(4) || ca.AccountExternalID != nil || ca.InstrumentExternalID != "fund-x" || ca.Currency != "USD" ||
+		dec(ca.Commitment) != "100000" || dec(ca.Called) != "60000" || ca.PaidIn != nil || dec(ca.Unfunded) != "40000" ||
+		dec(ca.Distributed) != "5000" || dec(ca.NAV) != "62000" || ca.TVPI == nil || *ca.TVPI != 1.12 ||
+		ca.DPI != nil || ca.SourceRef != "" || string(ca.Payload) != `{"note":1}` {
+		t.Errorf("capital account = %+v", ca)
+	}
+}

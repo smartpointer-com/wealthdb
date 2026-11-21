@@ -38,7 +38,8 @@ The returns quality column gives the reason for every n/a and tags every approxi
 - call_after_mark, distribution_after_mark: (view=private) a call, or a distribution or exit, came after the mark, so tvpi reads low, or high.
 - exit_unvalued=N: (view=private) N exits in kind state no value.
 - unattributed_exit=N: (view=private, the total) N exits in kind name no holding: the total counts them, no row does.
-- unpriced=N: (view=private) N legs or lines have no rate to the currency: the sums leave them out, and an unpriced leg blanks irr_pct.
+- unmatched_commitment=N: (view=private, the total) N stated commitments of a private holding that no row takes: the total leaves them out.
+- unpriced=N: (view=private) N legs, lines or commitments have no rate to the currency: the sums leave them out, and an unpriced leg blanks irr_pct.
 Other tags name their reason the same way.
 
 On spending view=fees, quality says what a row misses, beside the return's tags:

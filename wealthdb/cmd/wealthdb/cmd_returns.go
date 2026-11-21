@@ -422,7 +422,8 @@ Also:
   bridge       why net worth moved: saved, onboarded and gained
                ('wealthdb returns bridge -h')
   private      each private fund, SPV, private stock or note: paid in,
-               distributed, NAV, DPI, TVPI and IRR, as of a day (-d)
+               commitment, distributed, NAV, DPI, TVPI and IRR, as of
+               a day (-d)
                ('wealthdb returns private -h')
 
 Plumbing (cash accounts, deposit-bank sources, config returns_hide ids)

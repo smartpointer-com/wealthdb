@@ -118,7 +118,7 @@ wealthdb reload  <id>... | -a         (RW)    Reset then load; -a builds a fresh
 wealthdb compact [--dry-run]          (RW)    Rewrite the gold DB into a fresh file to reclaim dead space.
 wealthdb lots rebuild [--force]       (RW)    Replay the trades into lots: the cost basis no source states (docs/LOTS.md).
 wealthdb holdings <view> [flags]      (RO)    Point-in-time views: positions, accounts, portfolios, sources, global.
-wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global; and three side views: stated, a document's stated periods; bridge, why net worth moved; and private, each private holding's calls, distributions and mark, as of a day (-d).
+wealthdb returns <view> [flags]       (RO)    TWR & MWR/XIRR returns: accounts, portfolios, sources, global; and three side views: stated, a document's stated periods; bridge, why net worth moved; and private, each private holding's calls, commitment, distributions and mark, as of a day (-d).
 wealthdb gains   <view> [flags]       (RO)    Realized and unrealized gains: summary, sources, portfolios, accounts, positions, realized, lots, coverage, check.
 wealthdb exposure <view> [flags]      (RO)    What is really owned, every fund looked through: classes, sectors, sizes, countries, currencies, credit, maturities, coupons, cycles, situs, securities, issuers, funds, coverage.
 wealthdb yield   <view> [flags]       (RO)    What the holdings earn and how they move with rates: global, sources, portfolios, accounts, positions, securities, funds, cash, curve, coverage.
@@ -1758,8 +1758,8 @@ is documented where it is used:
 - `report_returns` (migration `0026`) — §10.9.
 - `report_bridge` (migration `0177`) — the net worth bridge by month
   ([RETURNS-NOTES.md](RETURNS-NOTES.md), "The net worth bridge").
-- `report_private_markets` (migrations `0215` and `0220`) — each private
-  holding's figures at every quarter end
+- `report_private_markets` (migrations `0215`, `0220` and `0222`) — each
+  private holding's figures at every quarter end
   ([RETURNS-NOTES.md](RETURNS-NOTES.md), "Private markets").
 - `report_gains` (migration `0117`) — §10.13.
 - The exposure tables: the reference and config tables (migrations
@@ -1776,6 +1776,7 @@ is documented where it is used:
 - The derived table `dividend_gaps` (migration `0148`) — §7.6.
 - The reference table `stated_periods` (migration `0159`) — §7.6.
 - The reference table `exposure_reports` (migration `0164`) — §7.6.
+- The reference table `capital_accounts` (migration `0222`) — §7.6.
 - The serving table `report_cashflow_plan` (migration `0149`) —
   §10.12.
 - The serving tables `serving_*` (migration `0132`) — web/DESIGN.md §8.
@@ -2375,6 +2376,21 @@ quarterly report (adapters/ubs.md §13). It is keyed by the holding and
 the day (`as_of`). Each dimension's split is JSON, in percent. An
 account source writes it, and `gold.SyncExposure` copies each row into
 the declarations as a parsed record (below).
+
+Migration 0222 adds `capital_accounts`: a private holding's capital
+account on one day as its source states it. A row holds the commitment,
+what was called and paid in, what remains unfunded, what came back, the
+value still held, and the source's own multiples, each NULL where the
+source states none. It is keyed by the holding's account ('' where the
+source names none), its instrument, the day (`as_of`) and the stating
+document (`source_ref`). An account source writes it: carta from its
+partner metrics, angellist from its positions table, ubs from a fund's
+quarterly report (adapters/ubs.md §13), and the synthetic kind from its
+own table (adapters/synthetic.md §12). No report counts a row as a
+position or a flow.
+`wealthdb returns private` sets each holding's latest one beside the
+figures it computes ([RETURNS-NOTES.md](RETURNS-NOTES.md), "Private
+markets").
 
 Migration 0167 gives `fund_compositions` an `origin` and a
 `valid_until`, and `fund_lines` a `region`. An account source may write
@@ -3263,8 +3279,8 @@ in each period, for the whole household
 
 `returns private` is the third. It shows each private equity or private
 debt holding: what it took, what it gave back, its mark, status, DPI,
-TVPI and IRR, as of a day ([RETURNS-NOTES.md](RETURNS-NOTES.md),
-"Private markets").
+TVPI and IRR, and its stated commitment and multiples, as of a day
+([RETURNS-NOTES.md](RETURNS-NOTES.md), "Private markets").
 
 [RETURNS-NOTES.md](RETURNS-NOTES.md) owns the method: the snapshot-aligned
 headline, flow classification per source, card invisibility, staggered

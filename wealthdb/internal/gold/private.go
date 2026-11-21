@@ -16,8 +16,8 @@ import (
 
 // PrivateRow is one private holding of `wealthdb returns private`, or the
 // total, which comes last: report_private's row with its money-weighted
-// return. Money columns are decimal strings in the output currency, nil
-// where the row has none.
+// return and its capital account's figures. Money columns are decimal
+// strings in the output currency, nil where the row has none.
 type PrivateRow struct {
 	AsOf              int64 // epoch seconds: the instant the row reads
 	IsTotal           bool
@@ -33,6 +33,8 @@ type PrivateRow struct {
 
 	FirstCall   int64   // epoch seconds, the day of the first call, else of the first leg or line
 	PaidIn      *string // the calls, net of refunds; nil where the holding states no cost (no_cost)
+	Commitment  *string // the stated commitment; nil where no capital account states one
+	Unfunded    *string // the stated remainder, else commitment less calls (or paid in); 0 once exited; nil if unstated
 	Distributed *string // cash and exits in kind back
 	NAV         *string // nil where the holding never had a value
 	MarkedAt    *int64  // epoch seconds; its last line's once exited, nil where it never had one (no_mark)
@@ -40,6 +42,12 @@ type PrivateRow struct {
 
 	DPI, TVPI *float64
 	IRR       *float64 // annual, since the first call
+
+	// The multiples of the holding's capital account, as its source
+	// states them or as its stated figures give them, and the day it
+	// stands at (epoch seconds); nil where none is stated.
+	StatedTVPI, StatedDPI *float64
+	StatedAsOf            *int64
 
 	Quality []string
 	quality string
@@ -67,14 +75,16 @@ func runPrivateAt(ctx context.Context, db *sql.DB, instants []int64, outCcy stri
 	rows, err := scanRows(ctx, db, "RunPrivate",
 		`SELECT as_of, is_total, silver_source_id, account_external_id, display_name, nickname,
 		        instrument_external_id, holding, asset_class, vehicle, status, holding_group, first_call,
-		        CAST(paid_in AS VARCHAR), CAST(distributed AS VARCHAR), CAST(nav AS VARCHAR),
-		        marked_at, end_at, dpi, tvpi, quality
+		        CAST(paid_in AS VARCHAR), CAST(commitment AS VARCHAR), CAST(unfunded AS VARCHAR),
+		        CAST(distributed AS VARCHAR), CAST(nav AS VARCHAR),
+		        marked_at, end_at, dpi, tvpi, stated_tvpi, stated_dpi, stated_as_of, quality
 		   FROM report_private(`+list+`, ?)`,
 		[]any{outCcy}, func(r *PrivateRow) []any {
 			return []any{&r.AsOf, &r.IsTotal, &r.SilverSourceID, &r.AccountExternalID, str(&r.DisplayName), str(&r.Nickname),
 				&r.InstrumentID, &r.Holding, str(&r.AssetClass), str(&r.Vehicle), str(&r.Status), &r.group, &r.FirstCall,
-				dec(&r.PaidIn), dec(&r.Distributed), dec(&r.NAV),
-				i64(&r.MarkedAt), &r.EndAt, flt(&r.DPI), flt(&r.TVPI), &r.quality}
+				dec(&r.PaidIn), dec(&r.Commitment), dec(&r.Unfunded), dec(&r.Distributed), dec(&r.NAV),
+				i64(&r.MarkedAt), &r.EndAt, flt(&r.DPI), flt(&r.TVPI),
+				flt(&r.StatedTVPI), flt(&r.StatedDPI), i64(&r.StatedAsOf), &r.quality}
 		})
 	if err != nil {
 		return nil, err
@@ -241,7 +251,7 @@ func privateIRRKey(nav float64, start, end int64, flows []returns.Flow) string {
 
 const privateCols = `computed_at, as_of, currency, is_total, silver_source_id, account_external_id,
     instrument_external_id, holding, asset_class, vehicle, status, first_call, paid_in, distributed, nav,
-    marked_at, end_at, dpi, tvpi, irr, quality`
+    marked_at, end_at, dpi, tvpi, irr, quality, commitment, unfunded, stated_tvpi, stated_dpi, stated_as_of`
 
 // privateMaterial is each reporting currency's rows of `returns private`
 // at every instant report_private_markets holds.
@@ -315,6 +325,7 @@ func (m privateMaterial) write(ctx context.Context, tx *sql.Tx, computedAt int64
 			r := &m[ccy][refs[i].row]
 			return append(args, computedAt, r.AsOf, ccy, r.IsTotal, r.SilverSourceID, r.AccountExternalID,
 				r.InstrumentID, r.Holding, r.AssetClass, r.Vehicle, r.Status, r.FirstCall, r.PaidIn, r.Distributed,
-				r.NAV, r.MarkedAt, r.EndAt, r.DPI, r.TVPI, r.IRR, strings.Join(r.Quality, ";"))
+				r.NAV, r.MarkedAt, r.EndAt, r.DPI, r.TVPI, r.IRR, strings.Join(r.Quality, ";"), r.Commitment,
+				r.Unfunded, r.StatedTVPI, r.StatedDPI, r.StatedAsOf)
 		})
 }

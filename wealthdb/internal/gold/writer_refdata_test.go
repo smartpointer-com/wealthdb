@@ -33,6 +33,7 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 	exDay, recordDay := time.Date(1970, 1, 2, 0, 0, 0, 0, time.UTC), time.Date(1970, 1, 3, 0, 0, 0, 0, time.UTC)
 	payDay, declaredDay := time.Date(1970, 1, 9, 0, 0, 0, 0, time.UTC), time.Date(1969, 12, 20, 0, 0, 0, 0, time.UTC)
 	until := int64(259200)
+	tvpi := 1.25
 	b := &canonical.SnapshotBatch{
 		FundCompositions: []canonical.FundCompositionChange{{SilverSourceID: "test-src", FundRef: "isin:XX0000000001",
 			AsOf: 86400, Basis: canonical.CompositionHoldings, Provider: "p1", SourceKind: "report", FundName: s("Qumbra Fund"),
@@ -59,6 +60,10 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 			InstrumentExternalID: "XX0000000011", AsOf: 2592000,
 			Dimensions: map[string]map[string]float64{"region": {"europe": 60, "north_america": 40}},
 			Source:     []byte(`{"lines":2}`), Note: "Example Feeder Fund II"}},
+		CapitalAccounts: []canonical.CapitalAccountChange{{SilverSourceID: "test-src", AccountExternalID: s("ACCT-Q"),
+			InstrumentExternalID: "fund-q", AsOf: 2592000, SourceRef: "doc-r", Currency: "QLP", Commitment: d("1000"), Called: d("400"),
+			PaidIn: d("390"), Unfunded: d("600"), Distributed: d("50"), NAV: d("420.5"), TVPI: &tvpi,
+			Payload: []byte(`{"k":1}`)}},
 	}
 	for _, r := range []struct {
 		table string
@@ -161,6 +166,10 @@ func TestInsertReferenceRoundTrips(t *testing.T) {
 		{"exposure_reports", `silver_source_id, instrument_external_id, as_of, dimensions, source, note`,
 			"test-src|XX0000000011|2592000|{\"region\":{\"europe\":60,\"north_america\":40}}|{\"lines\":2}|" +
 				"Example Feeder Fund II"},
+		{"capital_accounts", `silver_source_id, account_external_id, instrument_external_id, as_of, source_ref,
+		    currency, commitment, called, paid_in, unfunded, distributed, nav, tvpi, dpi, payload`,
+			"test-src|ACCT-Q|fund-q|2592000|doc-r|QLP|1000.0000|400.0000|390.0000|600.0000|50.0000|420.5000|1.25|" +
+				"{\"k\":1}"},
 	} {
 		tables = append(tables, c.table)
 		var got string
@@ -363,18 +372,42 @@ func TestPayloadLEI(t *testing.T) {
 	}
 }
 
+// TestCapitalAccountsKeyTheAccount pins capital_accounts' key: two accounts
+// of one source that state one instrument on one day in one document keep
+// a row each, and a statement that names no account stores an empty id.
+func TestCapitalAccountsKeyTheAccount(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	one, two := "ACCT-1", "ACCT-2"
+	var rows []canonical.CapitalAccountChange
+	for _, acct := range []*string{&one, &two, nil} {
+		rows = append(rows, canonical.CapitalAccountChange{SilverSourceID: "test-src", AccountExternalID: acct,
+			InstrumentExternalID: "fund-q", AsOf: 2592000, Currency: "QLP"})
+	}
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertReference(ctx, &canonical.SnapshotBatch{CapitalAccounts: rows})
+	})
+	var got string
+	if err := db.QueryRowContext(ctx, `SELECT string_agg(account_external_id, ',' ORDER BY account_external_id)
+		FROM capital_accounts`).Scan(&got); err != nil || got != ",ACCT-1,ACCT-2" {
+		t.Errorf("accounts = %q (%v), want a row each and '' for none", got, err)
+	}
+}
+
 // TestEveryReferenceTableHasAKind pins that a load's windowed delete clears
 // each reference table over the span the stream re-emits it over: every
-// table names its kind of record but rate_observations, stated_periods
-// and exposure_reports, which their streams write over the window whole,
-// and a table canonical.RefTables declares names the registry's.
+// table names its kind of record but rate_observations, stated_periods,
+// exposure_reports and capital_accounts, which their streams write over the
+// window whole, and a table canonical.RefTables declares names the
+// registry's.
 func TestEveryReferenceTableHasAKind(t *testing.T) {
 	t.Parallel()
 	kinds := map[string]bool{}
 	for _, k := range canonical.RefKinds {
 		kinds[k] = true
 	}
-	whole := map[string]bool{"rate_observations": true, "stated_periods": true, "exposure_reports": true}
+	whole := map[string]bool{"rate_observations": true, "stated_periods": true, "exposure_reports": true,
+		"capital_accounts": true}
 	for _, st := range SourceTables {
 		if st.Class != ClassReference {
 			continue

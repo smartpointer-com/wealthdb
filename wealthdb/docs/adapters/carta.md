@@ -74,6 +74,7 @@ One SQLite DB (`$XDG_DATA_HOME/wealthdb/carta/carta.db`). The relevant tables:
 | cash_balances| —                                                | none; each transaction pair nets to 0, so no cash position is implied |
 | portfolios   | —                                                | not grouped at source (the engine rolls the accounts up under "(no portfolio)") |
 | fx_rates     | —                                                | adapter emits none (holdings are USD) |
+| capital_accounts | `fund_metrics` (partner metrics)             | one per fund and partner-metrics row: commitment, called capital, capital contributed, distributions, NAV — see §5 |
 
 ## 4. Account taxonomy
 
@@ -198,6 +199,13 @@ paid.
 - `quantity` = NULL (an LP interest has no unit count).
 - `commitment` / `called_capital` / `distributions` / `vintage_year` ride
   in the payload.
+
+Each partner-metrics row is also the fund's capital account on its day
+(`capital.go`, gold `capital_accounts`): the commitment, the called
+capital, the capital contributed (paid in), the distributions and the
+NAV, as stated, in the fund's currency. A row only a capital-account
+statement wrote states none of the first three and gives none. Carta
+states no unfunded figure and no multiple.
 
 Before a fund's first NAV — its first statement can follow its first call
 by years — the interest has no valuation of its own. Leaving it out would

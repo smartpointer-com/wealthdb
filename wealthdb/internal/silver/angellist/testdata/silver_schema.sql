@@ -20,6 +20,7 @@ CREATE TABLE portfolio_summary (
     snapshot_at              INTEGER PRIMARY KEY,
     invest_account_slug      TEXT,
     currency                 TEXT,
+    data_date                INTEGER,       -- the portfolio's data date, unix seconds
     total_funds_count        INTEGER,
     total_investments_count  INTEGER,       -- the investments the dump's dashboard declares
     total_startups_count     INTEGER,

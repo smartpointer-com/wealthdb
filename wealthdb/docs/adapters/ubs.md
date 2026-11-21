@@ -1795,8 +1795,17 @@ composition on that day, one line per investment.
 - **The window.** The change window reaches the reports' dates, so a
   load's windowed delete clears the records and compositions before it
   writes them again.
+- **The capital account.** Every report also gives the fund's capital
+  account on its date, reconciled or not (`capital.go`, gold
+  `capital_accounts`): the investor's net commitment, the capital
+  called and the valuation, as printed, in the report's currency. It
+  names the fund by its ISIN and no account or portfolio, so a fund two
+  portfolios hold can have two reports on one day. Each is kept, named
+  by its document token. A report that prints no currency gives none.
+  The report states no distributions and no multiple.
 - **Reaching gold.** A ubs-web collector load writes no new dump. So new
-  records and compositions reach gold on the next `wealthdb reload ubs`.
+  records, compositions and capital accounts reach gold on the next
+  `wealthdb reload ubs`.
 
 ## 14. FX forwards
 

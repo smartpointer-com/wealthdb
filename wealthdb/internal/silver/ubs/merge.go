@@ -185,6 +185,13 @@ func (c *Connection) Snapshots(ctx context.Context, w canonical.Window) (silver.
 		if b := reports.batches(); b != nil {
 			streams = append(streams, silver.NewSnapshotStream(b))
 		}
+		capital, err := c.web.capitalAccounts(ctx, w)
+		if err != nil {
+			return nil, err
+		}
+		if len(capital) > 0 {
+			streams = append(streams, silver.NewSnapshotStream([]canonical.SnapshotBatch{{CapitalAccounts: capital}}))
+		}
 	}
 	if c.psn != nil {
 		s, err := c.psn.Snapshots(ctx, w)

@@ -279,6 +279,7 @@ func TestPrivateMarketsTableIsTheCLIsRows(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedPrivateFixture(t, db, ctx)
+	seedCapitalAccounts(t, db, ctx)
 	costed := "COSTED"
 	acquired := time.Date(2024, time.January, 15, 0, 0, 0, 0, time.UTC)
 	inTx(t, db, ctx, func(w *Writer) error {
@@ -325,8 +326,10 @@ func TestPrivateMarketsTableIsTheCLIsRows(t *testing.T) {
 	}
 	type cut struct {
 		holding, paid, back, nav, quality, status string
-		marked                                    *int64
+		commitment, unfunded                      string
+		marked, statedAt                          *int64
 		dpi, tvpi, irr                            *float64
+		statedTVPI, statedDPI                     *float64
 	}
 	for _, ccy := range MaterializedCurrencies() {
 		for _, at := range instants {
@@ -337,12 +340,15 @@ func TestPrivateMarketsTableIsTheCLIsRows(t *testing.T) {
 			got, err := scanRows(ctx, db, "web_private", `
 				SELECT holding, COALESCE(CAST(paid_in AS VARCHAR), ''), CAST(distributed AS VARCHAR),
 				       COALESCE(CAST(nav AS VARCHAR), ''), quality, COALESCE(status, ''),
-				       CAST(epoch(marked_at) AS BIGINT), dpi, tvpi, irr_pct / 100
+				       CAST(epoch(marked_at) AS BIGINT), dpi, tvpi, irr_pct / 100,
+				       COALESCE(CAST(commitment AS VARCHAR), ''), COALESCE(CAST(unfunded AS VARCHAR), ''),
+				       stated_tvpi, stated_dpi, CAST(epoch(stated_as_of) AS BIGINT)
 				  FROM web_private WHERE currency = ? AND epoch(as_of) = ?
 				 ORDER BY is_total, first_call, instrument_external_id`,
 				[]any{ccy, at}, func(c *cut) []any {
 					return []any{&c.holding, &c.paid, &c.back, &c.nav, &c.quality, &c.status, i64(&c.marked),
-						flt(&c.dpi), flt(&c.tvpi), flt(&c.irr)}
+						flt(&c.dpi), flt(&c.tvpi), flt(&c.irr), &c.commitment, &c.unfunded,
+						flt(&c.statedTVPI), flt(&c.statedDPI), i64(&c.statedAt)}
 				})
 			if err != nil {
 				t.Fatal(err)
@@ -361,8 +367,15 @@ func TestPrivateMarketsTableIsTheCLIsRows(t *testing.T) {
 				if g.holding != w.Holding || !same(g.paid, w.PaidIn) || cents(t, &g.back) != cents(t, w.Distributed) ||
 					!same(g.nav, w.NAV) || g.quality != strings.Join(w.Quality, ";") ||
 					g.status != strOrBlank(w.Status) || (g.marked == nil) != (w.MarkedAt == nil) ||
-					!nearPtr(g.dpi, w.DPI, 1e-12) || !nearPtr(g.tvpi, w.TVPI, 1e-12) || !nearPtr(g.irr, w.IRR, 1e-12) {
+					!nearPtr(g.dpi, w.DPI, 1e-12) || !nearPtr(g.tvpi, w.TVPI, 1e-12) || !nearPtr(g.irr, w.IRR, 1e-12) ||
+					!same(g.commitment, w.Commitment) || !same(g.unfunded, w.Unfunded) ||
+					!nearPtr(g.statedTVPI, w.StatedTVPI, 1e-12) || !nearPtr(g.statedDPI, w.StatedDPI, 1e-12) ||
+					!slices.Equal(ptrSlice(g.statedAt), ptrSlice(w.StatedAsOf)) {
 					t.Errorf("%s at %d row %d: table %+v, CLI %+v", ccy, at, i, g, w)
+				}
+				if g.holding == "FUND" && (ccy == "USD" || ccy == "CHF") &&
+					(g.commitment == "") != (at < dy(2024, time.March, 31)) {
+					t.Errorf("%s at %d: FUND's commitment %q, stated from its first account on", ccy, at, g.commitment)
 				}
 				if g.holding == costed && strings.Contains(g.quality, "paid_in_from_cost") != (at < dy(2024, time.August, 1)) {
 					t.Errorf("%s at %d: COSTED %+v, from its stated cost only before its buy", ccy, at, g)
@@ -370,6 +383,14 @@ func TestPrivateMarketsTableIsTheCLIsRows(t *testing.T) {
 			}
 		}
 	}
+}
+
+// ptrSlice is *p as a one-element slice, empty for nil.
+func ptrSlice[T any](p *T) []T {
+	if p == nil {
+		return nil
+	}
+	return []T{*p}
 }
 
 // strOrBlank is *s, or "" for nil.
@@ -600,7 +621,8 @@ func privateRowText(r PrivateRow) string {
 		return strconv.FormatFloat(*p, 'g', -1, 64)
 	}
 	return strings.Join([]string{s(r.PaidIn), s(r.Distributed), s(r.NAV), strconv.FormatInt(r.EndAt, 10),
-		f(r.DPI), f(r.TVPI), f(r.IRR), strings.Join(r.Quality, ";")}, " ")
+		f(r.DPI), f(r.TVPI), f(r.IRR), s(r.Commitment), s(r.Unfunded), f(r.StatedTVPI), f(r.StatedDPI),
+		strings.Join(r.Quality, ";")}, " ")
 }
 
 // The flows of TestPrivateMarketsTotalIRR's total: FUND, LATE, SPV,
@@ -1354,5 +1376,242 @@ func TestPrivateIRRPastPaybackPooled(t *testing.T) {
 	if rate, q := solveIRR(returns.XIRR, 0, 500, 99, 700, flows, false, false, nil); rate != nil ||
 		!slices.Contains(q, "mwr_negative_net_capital") {
 		t.Errorf("an account's return: rate %v quality %v", rate, q)
+	}
+}
+
+// seedCapitalAccounts states the fixture's capital accounts: FUND's on
+// its account at its two marks, the later one with its own remainder and
+// TVPI; LATE's in CHF, naming no account, in two documents of one day;
+// GHOST's, calls and no commitment; VOID's, a commitment and no calls;
+// REFUND's, a private holding the view does not list; and ELSE's, no
+// private holding's.
+func seedCapitalAccounts(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	inv := "INV"
+	tvpi := 1.25
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertReference(ctx, &canonical.SnapshotBatch{CapitalAccounts: []canonical.CapitalAccountChange{
+			{SilverSourceID: "pm", AccountExternalID: &inv, InstrumentExternalID: "FUND", AsOf: dy(2024, time.March, 31),
+				Currency: "USD", Commitment: decp(5000), Called: decp(1000), Distributed: decp(0), NAV: decp(1000)},
+			{SilverSourceID: "pm", AccountExternalID: &inv, InstrumentExternalID: "FUND",
+				AsOf: dy(2024, time.December, 31), Currency: "USD", Commitment: decp(5000), Called: decp(1900),
+				Unfunded: decp(3000), Distributed: decp(300), NAV: decp(2100), TVPI: &tvpi},
+			{SilverSourceID: "pm", InstrumentExternalID: "LATE", AsOf: dy(2024, time.March, 31), Currency: "CHF",
+				Commitment: decp(1000), Called: decp(500)},
+			{SilverSourceID: "pm", InstrumentExternalID: "LATE", AsOf: dy(2024, time.March, 31), SourceRef: "z",
+				Currency: "CHF", Commitment: decp(7000), Called: decp(500)},
+			{SilverSourceID: "pm", InstrumentExternalID: "GHOST", AsOf: dy(2024, time.April, 1), Currency: "USD",
+				Called: decp(100)},
+			{SilverSourceID: "pm", InstrumentExternalID: "VOID", AsOf: dy(2024, time.April, 1), Currency: "USD",
+				Commitment: decp(50)},
+			{SilverSourceID: "pm", InstrumentExternalID: "REFUND", AsOf: dy(2024, time.April, 1), Currency: "USD",
+				Commitment: decp(300)},
+			{SilverSourceID: "pm", InstrumentExternalID: "ELSE", AsOf: dy(2024, time.April, 1), Currency: "USD",
+				Commitment: decp(900)},
+		}})
+	})
+}
+
+// seedCapitalHoldings adds holdings to the fixture that test how a capital
+// account finds its holding: PAIR, held in INV and in INV2 of another
+// portfolio, each account stating its own on another day, and a statement
+// naming no account that both would take; ISINF, stated by its ISIN and
+// called beyond its commitment; and NORATE, committed in a currency with
+// no rate.
+func seedCapitalHoldings(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	usd, inv, inv2, p2, isin := "USD", "INV", "INV2", "P2", "XX0000000021"
+	inTx(t, db, ctx, func(w *Writer) error {
+		if err := w.UpsertAccounts(ctx, []canonical.AccountChange{{SilverSourceID: "pm", AccountExternalID: inv2,
+			AccountKind: canonical.AccountKindCustody, BaseCurrency: &usd, PortfolioExternalID: &p2,
+			FirstSeenAt: 1, LastSeenAt: 1}}); err != nil {
+			return err
+		}
+		return w.UpsertInstruments(ctx, []canonical.InstrumentChange{{SilverSourceID: "pm",
+			InstrumentExternalID: "ISINF", AssetClass: canonical.AssetClassPrivateEquity,
+			Vehicle: canonical.VehicleFund, ISIN: &isin, Currency: &usd}})
+	})
+	var txs []canonical.TransactionChange
+	for _, l := range []struct{ id, acct, inst string }{
+		{"p1", inv, "PAIR"}, {"p2", inv2, "PAIR"}, {"i1", inv, "ISINF"}, {"n1r", inv, "NORATE"},
+	} {
+		inst := l.inst
+		txs = append(txs, canonical.TransactionChange{SilverSourceID: "pm", TransactionExternalID: l.id,
+			OccurredAt: dy(2024, time.March, 1), AccountExternalID: l.acct, InstrumentExternalID: &inst,
+			Kind: canonical.TxKindContribution, Currency: "USD", NetAmount: decp(-100)})
+	}
+	inTx(t, db, ctx, func(w *Writer) error { return w.InsertTransactions(ctx, txs) })
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertReference(ctx, &canonical.SnapshotBatch{CapitalAccounts: []canonical.CapitalAccountChange{
+			{SilverSourceID: "pm", AccountExternalID: &inv, InstrumentExternalID: "PAIR", AsOf: dy(2024, time.March, 31),
+				Currency: "USD", Commitment: decp(2000), Called: decp(500)},
+			{SilverSourceID: "pm", AccountExternalID: &inv2, InstrumentExternalID: "PAIR", AsOf: dy(2024, time.June, 30),
+				Currency: "USD", Commitment: decp(3000), Called: decp(1000)},
+			{SilverSourceID: "pm", InstrumentExternalID: "PAIR", AsOf: dy(2024, time.April, 1), Currency: "USD",
+				Commitment: decp(4000)},
+			{SilverSourceID: "pm", AccountExternalID: &inv, InstrumentExternalID: isin, AsOf: dy(2024, time.March, 31),
+				Currency: "USD", Commitment: decp(1000), Called: decp(1200)},
+			{SilverSourceID: "pm", AccountExternalID: &inv, InstrumentExternalID: "NORATE", AsOf: dy(2024, time.March, 31),
+				Currency: "QLZ", Commitment: decp(500), Called: decp(100)},
+		}})
+	})
+}
+
+// A holding reads its latest capital account on or before the instant:
+// the commitment and the unfunded at the account's day's rate, the
+// stated remainder where there is one, else the commitment less the
+// calls, never below 0, and 0 once the holding has exited; the source's
+// TVPI, else the stated figures' multiples. A statement finds its holding
+// by identity in its account's group, or in its source where it names no
+// account, and each account of a source keeps its own. The total adds the
+// commitments and counts the ones of a private holding no listed holding
+// takes, and a commitment with no rate is unpriced.
+func TestPrivateMarketsCapitalAccounts(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedPrivateFixture(t, db, ctx)
+	seedCapitalAccounts(t, db, ctx)
+	seedCapitalHoldings(t, db, ctx)
+	// Rows by instrument, a holding of another account than INV under
+	// instrument@account.
+	at := func(asOf int64, ccy string) map[string]PrivateRow {
+		got, err := RunPrivate(ctx, db, asOf, ccy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]PrivateRow{}
+		for _, r := range got {
+			k := r.InstrumentID
+			if r.AccountExternalID != "INV" && !r.IsTotal {
+				k += "@" + r.AccountExternalID
+			}
+			out[k] = r
+		}
+		return out
+	}
+	latest := at(PrivateLatest, "USD")
+	fund, late, total := latest["FUND"], latest["LATE"], latest[""]
+	if cents(t, fund.Commitment) != 500000 || cents(t, fund.Unfunded) != 300000 || !isNear(fund.StatedTVPI, 1.25) ||
+		!isNear(fund.StatedDPI, 300.0/1900) || fund.StatedAsOf == nil ||
+		*fund.StatedAsOf != dy(2024, time.December, 31) {
+		t.Errorf("FUND latest %s", privateRowText(fund))
+	}
+	if cents(t, late.Commitment) != 90000 || cents(t, late.Unfunded) != 45000 || late.StatedTVPI != nil ||
+		late.StatedDPI != nil {
+		t.Errorf("LATE latest %s: CHF at the account's day's rate, its first document of the day", privateRowText(late))
+	}
+	if spv := latest["SPV"]; spv.Commitment != nil || spv.Unfunded != nil || spv.StatedAsOf != nil {
+		t.Errorf("SPV states no capital account: %s", privateRowText(spv))
+	}
+	// An account with no commitment states no unfunded. VOID has exited:
+	// it owes no further calls, though its account states none.
+	if ghost := latest["GHOST"]; ghost.Commitment != nil || ghost.Unfunded != nil || ghost.StatedAsOf == nil {
+		t.Errorf("GHOST, called and no commitment: %s", privateRowText(ghost))
+	}
+	if void := latest["VOID"]; cents(t, void.Commitment) != 5000 || cents(t, void.Unfunded) != 0 ||
+		*void.Status != "exited" {
+		t.Errorf("VOID, exited with a commitment and no calls: %s", privateRowText(void))
+	}
+	// Each account of a source keeps its own statement of one instrument,
+	// and the one naming no account, which both would take, takes neither.
+	if p := latest["PAIR"]; cents(t, p.Commitment) != 200000 || cents(t, p.Unfunded) != 150000 {
+		t.Errorf("PAIR in INV: %s", privateRowText(p))
+	}
+	if p := latest["PAIR@INV2"]; cents(t, p.Commitment) != 300000 || cents(t, p.Unfunded) != 200000 {
+		t.Errorf("PAIR in INV2: %s", privateRowText(p))
+	}
+	// A statement by ISIN finds the holding of that identity; calls beyond
+	// the commitment leave nothing unfunded.
+	if f := latest["ISINF"]; cents(t, f.Commitment) != 100000 || cents(t, f.Unfunded) != 0 {
+		t.Errorf("ISINF: %s", privateRowText(f))
+	}
+	if n := latest["NORATE"]; n.Commitment != nil || n.Unfunded != nil || !slices.Contains(n.Quality, "unpriced=1") {
+		t.Errorf("NORATE, a commitment with no rate: %s %v", privateRowText(n), n.Quality)
+	}
+	if cents(t, total.Commitment) != 1195000 || cents(t, total.Unfunded) != 695000 || total.StatedTVPI != nil ||
+		total.StatedAsOf != nil || !slices.Contains(total.Quality, "unmatched_commitment=2") ||
+		!slices.Contains(total.Quality, "unpriced=1") {
+		t.Errorf("total latest %s %v", privateRowText(total), total.Quality)
+	}
+	if chf := at(PrivateLatest, "CHF")["LATE"]; cents(t, chf.Commitment) != 100000 || cents(t, chf.Unfunded) != 50000 {
+		t.Errorf("LATE in CHF %s", privateRowText(chf))
+	}
+
+	// Between FUND's two accounts the earlier stands: no remainder is
+	// stated, so the commitment less the calls. VOID is still held, and
+	// its account states no calls, so its own paid in, the whole
+	// commitment, leaves nothing unfunded.
+	apr := at(dy(2024, time.April, 30), "USD")
+	if f := apr["FUND"]; cents(t, f.Commitment) != 500000 || cents(t, f.Unfunded) != 400000 ||
+		!isNear(f.StatedTVPI, 1) || !isNear(f.StatedDPI, 0) || *f.StatedAsOf != dy(2024, time.March, 31) {
+		t.Errorf("FUND on April 30 %s", privateRowText(f))
+	}
+	if void := apr["VOID"]; cents(t, void.Commitment) != 5000 || cents(t, void.Unfunded) != 0 {
+		t.Errorf("VOID on April 30, a commitment, no calls and paid in whole: %s", privateRowText(void))
+	}
+	// Before any account, none.
+	if f := at(dy(2024, time.February, 1), "USD")["FUND"]; f.Commitment != nil || f.StatedTVPI != nil {
+		t.Errorf("FUND before its first account %s", privateRowText(f))
+	}
+	if q := at(dy(2024, time.February, 1), "USD")[""].Quality; slices.ContainsFunc(q, func(s string) bool {
+		return strings.HasPrefix(s, "unmatched_commitment")
+	}) {
+		t.Errorf("total before REFUND's account %v", q)
+	}
+}
+
+// TestPrivateMarketsUnfundedFromPaidIn: a capital account that states a
+// commitment and no remainder, call or payment gives the holding's own
+// paid in to subtract. BELOW reads the difference; NEAR, paid within 1%
+// of it, and OVER, paid beyond it, read 0; NOPAY, a line with no call
+// and no cost, reads none.
+func TestPrivateMarketsUnfundedFromPaidIn(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedPrivateFixture(t, db, ctx)
+	inv, mar1, mar31 := "INV", dy(2024, time.March, 1), dy(2024, time.March, 31)
+	var txs []canonical.TransactionChange
+	for _, l := range []struct {
+		inst   string
+		amount int64
+	}{{"BELOW", -600}, {"NEAR", -995}, {"OVER", -1100}} {
+		inst := l.inst
+		txs = append(txs, canonical.TransactionChange{SilverSourceID: "pm", TransactionExternalID: "u-" + inst,
+			OccurredAt: mar1, AccountExternalID: inv, InstrumentExternalID: &inst,
+			Kind: canonical.TxKindContribution, Currency: "USD", NetAmount: decp(l.amount)})
+	}
+	inTx(t, db, ctx, func(w *Writer) error { return w.InsertTransactions(ctx, txs) })
+	nopay := "NOPAY"
+	var lines []canonical.PositionChange
+	for _, at := range []int64{mar31, dy(2024, time.December, 31)} {
+		lines = append(lines, canonical.PositionChange{SilverSourceID: "pm", AccountExternalID: inv,
+			SnapshotAt: at, PositionKey: nopay, InstrumentExternalID: &nopay,
+			AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleSPV, Currency: "USD",
+			ValuedAt: at, MarketValue: decp(400)})
+	}
+	inTx(t, db, ctx, func(w *Writer) error { return w.InsertPositions(ctx, lines) })
+	var caps []canonical.CapitalAccountChange
+	for _, inst := range []string{"BELOW", "NEAR", "OVER", "NOPAY"} {
+		caps = append(caps, canonical.CapitalAccountChange{SilverSourceID: "pm", AccountExternalID: &inv,
+			InstrumentExternalID: inst, AsOf: mar31, Currency: "USD", Commitment: decp(1000)})
+	}
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertReference(ctx, &canonical.SnapshotBatch{CapitalAccounts: caps})
+	})
+	got, err := RunPrivate(ctx, db, PrivateLatest, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]PrivateRow{}
+	for _, r := range got {
+		rows[r.InstrumentID] = r
+	}
+	for inst, want := range map[string]int64{"BELOW": 40000, "NEAR": 0, "OVER": 0} {
+		if r := rows[inst]; cents(t, r.Commitment) != 100000 || r.Unfunded == nil || cents(t, r.Unfunded) != want {
+			t.Errorf("%s: %s, want unfunded %d cents", inst, privateRowText(r), want)
+		}
+	}
+	if r := rows["NOPAY"]; cents(t, r.Commitment) != 100000 || r.PaidIn != nil || r.Unfunded != nil {
+		t.Errorf("NOPAY, no paid in to subtract: %s", privateRowText(r))
 	}
 }

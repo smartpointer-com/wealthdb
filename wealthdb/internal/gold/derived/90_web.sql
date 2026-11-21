@@ -596,14 +596,17 @@ CREATE VIEW web_marks AS
 -- rows, one set per reporting currency and as-of instant (a quarter end
 -- or the day of the refresh), each holding with its account's label, the
 -- instant's total last. gain is what came back and is still marked less
--- what was paid in, none where the NAV or the cost is none.
+-- what was paid in, none where the NAV or the cost is none. commitment
+-- and unfunded are the holding's capital account's, with its stated
+-- multiples and day.
 CREATE VIEW web_private AS
     SELECT epoch_ms(p.as_of * 1000) AS as_of, p.currency, p.is_total, p.silver_source_id, p.account_external_id,
            CASE WHEN NOT p.is_total THEN account_label(a.display_name, p.account_external_id,
                                                       p.silver_source_id, a.account_kind) END AS account_label,
            p.instrument_external_id, p.holding, p.asset_class, p.vehicle, p.status,
-           epoch_ms(p.first_call * 1000) AS first_call, p.paid_in, p.distributed, p.nav,
-           epoch_ms(p.marked_at * 1000) AS marked_at, p.dpi, p.tvpi, 100 * p.irr AS irr_pct, p.quality,
+           epoch_ms(p.first_call * 1000) AS first_call, p.paid_in, p.commitment, p.unfunded, p.distributed, p.nav,
+           epoch_ms(p.marked_at * 1000) AS marked_at, p.dpi, p.tvpi, 100 * p.irr AS irr_pct,
+           p.stated_tvpi, p.stated_dpi, epoch_ms(p.stated_as_of * 1000) AS stated_as_of, p.quality,
            p.distributed + p.nav - p.paid_in AS gain
       FROM report_private_markets p
       LEFT JOIN accounts a ON a.silver_source_id = p.silver_source_id

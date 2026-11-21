@@ -24,7 +24,7 @@ import sqlite3
 from . import dates, rates, reference
 from .spec import SCHEMA_PATH
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 
 # The source that carries the reference records.
 REFERENCE_SOURCE = "refdata"
@@ -73,6 +73,8 @@ _TABLES = {
     "dividend_events": ("ref", "provider", "event_id", "as_of", "kind", "ex_date", "record_date", "pay_date",
                         "declared_date", "amount", "currency", "status", "run_at", "payload"),
     "rates": ("as_of", "series_id", "value", "payload"),
+    "capital_accounts": ("as_of", "account_id", "instrument_id", "source_ref", "currency", "commitment", "called",
+                         "paid_in", "unfunded", "distributed", "nav", "tvpi", "dpi", "payload"),
 }
 
 # The reference tables: what the funds hold and what the securities are
@@ -82,7 +84,7 @@ REFERENCE_TABLES = reference.TABLES
 # The tables of dated facts. The rest are dimensions, which an append
 # re-sends whole and the file keeps once.
 FACT_TABLES = ("positions", "position_lots", "cash_balances", "fx_rates", "rates", "transactions",
-               "realized_lots", *REFERENCE_TABLES)
+               "realized_lots", "capital_accounts", *REFERENCE_TABLES)
 
 # The meta keys an append run requires to match before it may extend a file.
 IDENTITY_KEYS = ("schema_version", "generator_hash", "seed", "spec_hash", "catalogue_hash", "findings")
@@ -129,6 +131,7 @@ def source_rows(sim, source, as_of):
                          | {"asset_class": None, "vehicle": None, "instrument_hint": None}
                          for t in book.rows[source]["transactions"]],
         "realized_lots": book.rows[source]["realized"],
+        "capital_accounts": book.rows[source]["capital"],
     }
     ref = reference.rows(sim.inputs, sim.seed, as_of, sim.curve) if source == REFERENCE_SOURCE else {}
     for table in REFERENCE_TABLES:
@@ -149,7 +152,7 @@ def _time_of(table, row):
         return row["occurred_at"]
     if table == "realized_lots":
         return dates.epoch(dates.parse(row["disposal_date"]))
-    if table in REFERENCE_TABLES or table == "rates":
+    if table in REFERENCE_TABLES or table in ("rates", "capital_accounts"):
         return row["as_of"]
     return None
 

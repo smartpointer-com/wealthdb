@@ -450,6 +450,38 @@ type StatedPeriodChange struct {
 	Payload      json.RawMessage
 }
 
+// CapitalAccountChange is one insert into gold's `capital_accounts`: a
+// private holding's capital account as its source states it at AsOf.
+// Commitment is what the holder committed; Called what the manager
+// called of it and PaidIn what the holder paid, which sources tell
+// apart; Unfunded what remains to be paid, where the source states it;
+// Distributed what came back and NAV the value still held. TVPI and DPI
+// are the source's own multiples, where it states them. Each figure is
+// nil where the source states none, and the money is in Currency.
+// AccountExternalID is nil where the source names the holding by its
+// instrument alone; gold stores "" for it. A source states one account's
+// capital account per instrument, day and document. SourceRef names the
+// stating document where a source can state one instrument of one
+// account on one day in two documents, such as two portfolios' reports
+// on one fund, so neither is lost; "" where it states one at most. A
+// capital account is informative: it is no position and no flow.
+type CapitalAccountChange struct {
+	SilverSourceID       string
+	AccountExternalID    *string
+	InstrumentExternalID string
+	AsOf                 int64
+	SourceRef            string
+	Currency             string
+	Commitment           *Decimal
+	Called               *Decimal
+	PaidIn               *Decimal
+	Unfunded             *Decimal
+	Distributed          *Decimal
+	NAV                  *Decimal
+	TVPI, DPI            *float64
+	Payload              json.RawMessage
+}
+
 // ExposureReportChange is one insert into gold's `exposure_reports`: a
 // holding's split on one day as a source reads it from a document, such
 // as a fund's quarterly report. AsOf is the UTC midnight of that day.

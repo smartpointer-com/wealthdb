@@ -30,7 +30,7 @@ var instructionsBody = `wealthdb holds a household's complete financial picture 
 
 Pick the tool by the question:
 - what is held, where, and what it is worth (today or on a date); net worth; total cash (view=global); one account or one institution -> holdings
-- how investments performed, as a return % -> returns; why net worth moved, what was saved against what was gained, the household's total debt repaid (debt_repaid) -> returns (view=bridge); what each private fund, SPV or private stock was paid, gave back and is marked at, its DPI, TVPI or IRR -> returns (view=private)
+- how investments performed, as a return % -> returns; why net worth moved, what was saved against what was gained, the household's total debt repaid (debt_repaid) -> returns (view=bridge); what each private fund, SPV or private stock was paid, gave back and is marked at, its commitment and unfunded, its DPI, TVPI or IRR -> returns (view=private)
 - what was gained or lost (P&L), realized or unrealized; a year's realized gains; the unrealized gain now (to=today); a holding's cost basis -> gains
 - what is really owned once every fund is looked through: allocation by asset class, sector, country, region or currency; debt by credit, maturity or coupon; the largest issuers; how much of one company is held through funds -> exposure
 - what the holdings yield or earn; interest rates, duration, DV01; a bond's credit rating; cash against its benchmark -> yield
@@ -266,7 +266,8 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - call_after_mark, distribution_after_mark: (view=private) a call, or a distribution or exit, came after the mark, so tvpi reads low, or high.
 - exit_unvalued=N: (view=private) N exits in kind state no value.
 - unattributed_exit=N: (view=private, the total) N exits in kind name no holding: the total counts them, no row does.
-- unpriced=N: (view=private) N legs or lines have no rate to the currency: the sums leave them out, and an unpriced leg blanks irr_pct.
+- unmatched_commitment=N: (view=private, the total) N stated commitments of a private holding that no row takes: the total leaves them out.
+- unpriced=N: (view=private) N legs, lines or commitments have no rate to the currency: the sums leave them out, and an unpriced leg blanks irr_pct.
 Other tags name their reason the same way.
 
 On spending view=fees, quality says what a row misses, beside the return's tags:

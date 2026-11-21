@@ -40,7 +40,8 @@ func privateHeader(req request) []string {
 }
 
 var defaultPrivateColumns = []string{"silver_source", "account", "holding", "asset_class", "vehicle", "status",
-	"first_call", "paid_in", "distributed", "nav", "marked_at", "dpi", "tvpi", "irr_pct", "quality"}
+	"first_call", "paid_in", "commitment", "unfunded", "distributed", "nav", "marked_at", "dpi", "tvpi", "irr_pct",
+	"quality"}
 
 // buildPrivateColumnRegistry is the private view's registry. Its account
 // columns read as `returns accounts` reads its entity, and its holding
@@ -62,6 +63,8 @@ func buildPrivateColumnRegistry(outCcy string, kindOf func(string) string) []col
 		strCol("status", func(r gold.PrivateRow) string { return strOrEmpty(r.Status) }),
 		dateCol("first_call", func(r gold.PrivateRow) int64 { return r.FirstCall }),
 		outCcyCol("paid_in", outCcy, func(r gold.PrivateRow) *string { return r.PaidIn }),
+		outCcyCol("commitment", outCcy, func(r gold.PrivateRow) *string { return r.Commitment }),
+		outCcyCol("unfunded", outCcy, func(r gold.PrivateRow) *string { return r.Unfunded }),
 		outCcyCol("distributed", outCcy, func(r gold.PrivateRow) *string { return r.Distributed }),
 		outCcyCol("nav", outCcy, func(r gold.PrivateRow) *string { return r.NAV }),
 		datePtrCol("marked_at", func(r gold.PrivateRow) *int64 { return r.MarkedAt }),
@@ -69,6 +72,9 @@ func buildPrivateColumnRegistry(outCcy string, kindOf func(string) string) []col
 		decimalCol("dpi", func(r gold.PrivateRow) *float64 { return r.DPI }),
 		decimalCol("tvpi", func(r gold.PrivateRow) *float64 { return r.TVPI }),
 		ratioOrBlankCol("irr_pct", "", func(r gold.PrivateRow) *float64 { return r.IRR }),
+		decimalCol("stated_tvpi", func(r gold.PrivateRow) *float64 { return r.StatedTVPI }),
+		decimalCol("stated_dpi", func(r gold.PrivateRow) *float64 { return r.StatedDPI }),
+		datePtrCol("stated_as_of", func(r gold.PrivateRow) *int64 { return r.StatedAsOf }),
 		qualityCol(func(r gold.PrivateRow) string { return strings.Join(r.Quality, ";") }),
 	}
 }
@@ -102,6 +108,15 @@ such as a call refunded whole, is left out.
                refunds. A holding with none reads its stated cost: each
                line's book value on its acquisition date (quality
                paid_in_from_cost). Blank where no cost is stated
+  commitment   what the holder committed, as the holding's capital
+               account states it (below). Blank where none states one:
+               a stock or a note has no commitment
+  unfunded     what the commitment still holds open: the remainder the
+               account states, else the commitment less what it says
+               was called (else paid in), never below 0. Where it says
+               neither, the commitment less paid_in, 0 below 1% of the
+               commitment. 0 once the holding has exited: it owes no
+               further calls
   distributed  what came back: distributions, sales, a private debt
                holding's interest, dividends and coupons, and exits in
                kind at the value their transfer states. An exit in other
@@ -117,6 +132,18 @@ such as a call refunded whole, is left out.
                rate: the returns engine's, on every leg and the NAV
   end_date     the day irr_pct ends: the later of the NAV's snapshot and
                the last leg
+  stated_tvpi  the TVPI the capital account states, else its distributions
+               plus its NAV over what it says was paid in
+  stated_dpi   the DPI it states, else its distributions over what it says
+               was paid in
+  stated_as_of the day of the capital account
+
+A capital account is what a source states for a holding on one day:
+Carta's partner metrics for a fund, AngelList's positions table for a
+deal, a UBS fund's quarterly report. The view reads the holding's
+latest account on or before the day it reads. Its money converts at
+that day's rate. The stated figures stand beside the computed ones and
+can differ from them: a source counts its own fees and marks.
 
 With -d DATE the view reads the day: the legs up to its end, and the
 NAV from the last snapshot on or before it.
@@ -125,9 +152,11 @@ Each leg converts at its own day's rate, and the NAV at its snapshot's,
 so every currency reads at historic FX. A holding's money rounds to the
 cent, and the total adds the cents. The total's dpi and tvpi pool the
 holdings: the sums' ratios, not an average of the rows' ratios. Its
-marked_at is the oldest mark. The total adds what the holdings state:
-one with no value adds no nav, one with no cost no paid_in, and
-no_mark=N and no_cost=N count them. Its dpi pools the holdings with a
+marked_at is the oldest mark. It adds the commitment and unfunded of
+the holdings that state one; its stated_tvpi, stated_dpi and
+stated_as_of are blank. It adds what the holdings state: one with no
+value adds no nav, one with no cost no paid_in, and no_mark=N and
+no_cost=N count them. Its dpi pools the holdings with a
 paid_in, its tvpi those with a paid_in and a nav, and its irr_pct the
 legs and navs of the holdings that have their own. The total is over
 every holding: a filter keeps or drops it as a row, never recomputes it.
@@ -138,7 +167,10 @@ portfolio or account bought the shares or took them in.
 What the figures miss:
   - A call after the last mark sits outside the NAV until the next mark,
     so tvpi reads low; a distribution after it can read high.
-  - Commitments and unfunded capital are not in gold.
+  - A commitment reads only where a source states one.
+  - A deal a source values at cost without saying so reads tvpi 1 with
+    no at_cost flag, and its stated_tvpi reads 1 too. AngelList does
+    not state a valuation basis for every deal.
   - The view carries no volatility or other risk figure: marks are too
     old and sparse for one.
 
@@ -157,9 +189,13 @@ The quality column says what a row misses:
   exit_unvalued=N          N exits in kind state no value
   unattributed_exit=N      on the total: N exits in kind name no
                            holding; the total counts them, no row does
-  unpriced=N               N legs or lines have no rate to the output
-                           currency: the sums leave them out, and a
-                           leg with none leaves irr_pct blank
+  unmatched_commitment=N   on the total: N capital accounts state a
+                           commitment of a private holding that no row
+                           takes, as one before the holding's first
+                           call; the total leaves them out
+  unpriced=N               N legs, lines or commitments have no rate to
+                           the output currency: the sums leave them
+                           out, and a leg with none leaves irr_pct blank
 and the returns engine's mwr_* tags on irr_pct. On the total each tag
 counts the holdings it holds on; exit_unvalued and unpriced also count
 the exits that name no holding.
