@@ -138,19 +138,24 @@ _STMT_ROW_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{2}$")   # DD.MM.YY
 # account stamp ("HYPOTHEK <base>.<type> <sub-account>").
 _STMT_HYPO_RE = re.compile(r"HYPOTHEK\s+[\d ]+\.[A-Z0-9]+\s+\d+")
 # The page footer, as runs of words: the form note with the page number
-# after it, and the document's code (six letters and two digits / six
-# digits / fifteen letters and digits). Its words sit among the ledger's,
+# after it, and the document's code line. Its words sit among the ledger's,
 # on a row of their own or on a ledger row they share a line with, so they
 # are taken out word by word and every other word is read.
 _STMT_FORM_NOTE = tuple(re.compile(p) for p in ("Form", "without", "signature"))
 _STMT_PAGE_NUMBER = tuple(re.compile(p) for p in ("Page", r"\d+", "/", r"\d+"))
-# The code is read off the line's text, so it is found however the
-# extraction splits it into words: with or without spaces around its
+# The code line prints the document's code (six letters and two digits /
+# six digits / a run of letters and digits, at least fifteen of them) and
+# then a date. The code is read off the line's text, so it is found however
+# the extraction splits it into words: with or without spaces around its
 # slashes, and in whichever slash glyph the page prints.
 _STMT_DOCUMENT_CODE = re.compile(
     r"(?<![A-Z0-9])[A-Z]{6}\d{2}"
     r"\s*[/\u2215\uff0f]\s*\d{6}"
-    r"\s*[/\u2215\uff0f]\s*[A-Z0-9]{15}(?![A-Z0-9])")
+    r"\s*[/\u2215\uff0f]\s*[A-Z0-9]{15,}")
+# The date after the code. The footer is set in a smaller type than the
+# ledger, so a date belongs to it only when its box is as tall as the
+# code's: a reference date in the ledger's own type stays.
+_STMT_FOOTER_DATE = re.compile(r"\d{2}\.\d{2}\.\d{4}")
 
 
 def _run_at(texts: list[str], i: int, run: tuple) -> int:
@@ -164,8 +169,9 @@ def _run_at(texts: list[str], i: int, run: tuple) -> int:
 def _without_furniture(words) -> list:
     """A row's words less the page footer's: the form note
     (`_STMT_FORM_NOTE`) and the page number after it
-    (`_STMT_PAGE_NUMBER`), and every word the document code spans
-    (`_STMT_DOCUMENT_CODE`)."""
+    (`_STMT_PAGE_NUMBER`), every word the document code spans
+    (`_STMT_DOCUMENT_CODE`), and the footer's date after it
+    (`_STMT_FOOTER_DATE`)."""
     texts = [w.text for w in words]
     spans, at = [], 0
     for t in texts:
@@ -174,7 +180,12 @@ def _without_furniture(words) -> list:
     line = " ".join(texts)
     coded = set()
     for m in _STMT_DOCUMENT_CODE.finditer(line):
-        coded |= {k for k, (a, b) in enumerate(spans) if a < m.end() and b > m.start()}
+        code = [k for k, (a, b) in enumerate(spans) if a < m.end() and b > m.start()]
+        coded.update(code)
+        after = code[-1] + 1
+        if (after < len(words) and _STMT_FOOTER_DATE.fullmatch(texts[after])
+                and abs(_height(words[after]) - _height(words[code[0]])) < 0.5):
+            coded.add(after)
     out, i = [], 0
     while i < len(words):
         if n := _run_at(texts, i, _STMT_FORM_NOTE):
@@ -186,6 +197,11 @@ def _without_furniture(words) -> list:
             out.append(words[i])
             i += 1
     return out
+
+
+def _height(word: Word) -> float:
+    """How tall a word's box is: its type size, near enough."""
+    return abs(word.bottom - word.top)
 
 
 def _stmt_amount(tokens: list[str]) -> float | None:

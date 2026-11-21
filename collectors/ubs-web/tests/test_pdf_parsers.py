@@ -2198,3 +2198,79 @@ def test_the_footer_code_leaves_the_line_it_opens(code):
     rows = account_statement.movements(_doc(_page(p1, _PAGE_TEXT)), "synthetic-token")
     assert len(rows) == 1 and rows[0]["reconciled"]
     assert json.loads(rows[0]["payload"])["continuation"] == ["K12345 01.02.2021"]
+
+
+# The code line as the statements print it: at the page's foot, in the
+# footer's smaller type, its third part a run of twenty-one letters and
+# digits, and a date after it. Every value is invented.
+_CODE_LINE_TOP = 812.4
+
+
+def _footer_word(text: str, x0: float, x1: float, top: float) -> Word:
+    """A word in the footer's type, six points tall."""
+    return Word(text, x0, x1, top, top + 6.0)
+
+
+def _code_line(top: float = _CODE_LINE_TOP) -> list[Word]:
+    return [_footer_word("ABCDEF12", 42.2, 72.2, top),
+            _footer_word("/", 73.9, 75.6, top),
+            _footer_word("123456", 77.2, 97.2, top),
+            _footer_word("/", 98.9, 100.5, top),
+            _footer_word("AB1C2DE34F56GHIJ78901", 102.2, 176.6, top),
+            _footer_word("01.02.2023", 283.2, 313.2, top)]
+
+
+def _form_note(top: float = 786.6) -> list[Word]:
+    return [_w(t, x0, x1, top) for t, x0, x1 in (
+        ("Form", 42.2, 62.2), ("without", 64.2, 94.2),
+        ("signature", 96.2, 136.2), ("Page", 500.0, 520.0),
+        ("1", 522.0, 527.0), ("/", 529.0, 532.0), ("2", 534.0, 539.0))]
+
+
+def _two_pages(p1_tail: list[Word], p2_lines: list[str]) -> list[dict]:
+    """The movements of a statement whose one movement opens at the foot
+    of page 1, above `p1_tail` and the page's footer, and goes on at the
+    head of page 2 with `p2_lines`."""
+    p1 = _header_row()
+    p1 += [_w("01.10.21", 42, 77, 120), *_info_words("Opening balance", 120),
+           _band_word("1000.00", "bal", 120)]
+    p1 += [_w("04.10.21", 42, 77, 760), *_info_words("CREDIT", 760),
+           _band_word("100.00", "credit", 760),
+           _w("04.10.21", 432, 468, 760), _band_word("1100.00", "bal", 760)]
+    p1 += p1_tail + _form_note() + _code_line()
+    p2 = _header_row()
+    for i, line in enumerate(p2_lines):
+        p2 += _info_words(line, 120 + 10 * i)
+    p2 += [_w("31.10.21", 42, 77, 200), *_info_words("Closing balance", 200),
+           _band_word("1100.00", "bal", 200)]
+    return account_statement.movements(
+        _doc(_page(p1, _PAGE_TEXT), _page(p2, _PAGE_TEXT)), "synthetic-token")
+
+
+def test_the_code_line_at_the_page_foot_is_no_part_of_the_movement():
+    rows = _two_pages(_info_words("Example payer", 772),
+                      ["Example purpose"])
+    assert len(rows) == 1 and rows[0]["reconciled"]
+    assert rows[0]["counterparty"] == "Example payer"
+    assert json.loads(rows[0]["payload"])["continuation"] == [
+        "Example payer", "Example purpose"]
+
+
+def test_the_code_line_under_a_movement_is_not_its_counterparty():
+    rows = _two_pages([], ["Example payer", "Example purpose"])
+    assert rows[0]["counterparty"] == "Example payer"
+    assert json.loads(rows[0]["payload"])["continuation"] == [
+        "Example payer", "Example purpose"]
+
+
+def test_words_of_the_codes_shapes_in_the_ledger_stay():
+    # The code's parts alone, a date in the ledger's type after a code,
+    # words that only look like a part, and a code whose third part is
+    # one short of fifteen are the movement's own text.
+    line = _code_line(772)
+    line[-1] = _w("01.02.2023", 283.2, 313.2, 772)
+    short = "ABCDEF12 / 123456 / AB1C2DE34F56GH"
+    rows = _two_pages(line, ["EXAMPLES AB123456", "Ref ABCDEF12 / 123456",
+                             short])
+    assert json.loads(rows[0]["payload"])["continuation"] == [
+        "01.02.2023", "EXAMPLES AB123456", "Ref ABCDEF12 / 123456", short]
