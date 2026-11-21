@@ -128,6 +128,14 @@ def _insert_advice_transactions(conn: sqlite3.Connection, snapshot_at: int,
     Every other advice is written, also where a statement prints the same
     movement under its own minted id: which record of the booking gold
     keeps is the UBS adapter's decision, made where every era is in hand.
+
+    Why the row is stamped by its document. With DO NOTHING the row keeps
+    the dump that first wrote it, and that is the dump that indexed its
+    document. The re-derivation writes it again in a later dump, so the
+    stamp is read from the document's `documents` row, not taken from the
+    dump being loaded: an incremental load and a `load --force` then stamp
+    the advice alike. `snapshot_at` stamps a row whose document is not
+    indexed.
     """
     inserted = 0
     for r in rows:
@@ -135,11 +143,15 @@ def _insert_advice_transactions(conn: sqlite3.Connection, snapshot_at: int,
         txn_id = r.get("transaction_external_id")
         if not account or not txn_id:
             continue
+        indexed = conn.execute(
+            "SELECT snapshot_at FROM documents WHERE doc_token = ?",
+            (r.get("source_doc_token"),)).fetchone()
         cur = conn.execute(
             _TXN_INSERT +
             "DO NOTHING",
             (
-                txn_id, account, snapshot_at,
+                txn_id, account,
+                indexed[0] if indexed else snapshot_at,
                 None,  # trade_date: an advice prints no trade date
                 r["booking_date"], r["value_date"],
                 r.get("currency_iso") or "",

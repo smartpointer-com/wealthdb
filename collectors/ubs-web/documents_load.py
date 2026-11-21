@@ -131,7 +131,7 @@ def _namespaces() -> dict[str, str]:
 # The version of what the document pass writes from a parse result. It
 # is part of the pass's generation and of no parse-cache namespace, so a
 # change to the writes re-derives the archive from the cached parses.
-_WRITES = "w1"
+_WRITES = "w2"
 
 
 @functools.lru_cache(maxsize=1)

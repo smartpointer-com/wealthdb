@@ -705,6 +705,50 @@ def test_a_second_load_of_one_archive_adds_nothing(tmp_path):
     conn.close()
 
 
+# Three dumps, as the archive walk stamps them.
+_DUMPS = (1700000000, 1700086400, 1700172800)
+
+
+def _advice_history(home: Path, moved_before: int | None) -> list[tuple]:
+    """The transactions a run of archive walks leaves, one walk per dump
+    of `_DUMPS`. The advice's document is indexed by the first dump. The
+    parsers move before the walk `moved_before` indexes, which purges the
+    advice and writes it again; None replays the dumps into a fresh
+    silver, as `load --force` does."""
+    home.mkdir()
+    conn = fresh_db(home)
+    conn.execute(
+        "INSERT INTO documents (doc_token, content_sha256, file_path, "
+        "size_bytes, snapshot_at, doc_type, label) VALUES ('advice', "
+        "'sha-advice', 'documents/x.pdf', 1, ?, 'Credit Advice', "
+        "'Credit Advice 01.01.2020')", (_DUMPS[0],))
+    dump = home / "20260101T000000Z"
+    (dump / "documents").mkdir(parents=True)
+    advice = {**_advice(_IBAN_B, credit=12345.67), "source_doc_token": "advice"}
+    for i, snapshot_at in enumerate(_DUMPS):
+        if i == moved_before:
+            silver.stamp_generation(conn, loader.DOCUMENT_GENERATION_SCOPE,
+                                    "an-older-generation")
+        parses = _parses(conn, {"advice": ("payment_advice", [advice])})
+        with conn:
+            loader._load_historical_from_pdfs(conn, snapshot_at, dump, parses)
+    rows = [tuple(r) for r in conn.execute(
+        "SELECT * FROM transactions ORDER BY transaction_external_id")]
+    conn.close()
+    return rows
+
+
+@pytest.mark.parametrize("moved_before", [1, 2])
+def test_an_advice_keeps_the_dump_that_indexed_it(tmp_path, moved_before):
+    # A parser change purges the advice and writes it again in a later
+    # dump. It keeps the first dump's stamp, the one a rebuild gives it.
+    incremental = _advice_history(tmp_path / "incremental", moved_before)
+    rebuilt = _advice_history(tmp_path / "rebuilt", None)
+    assert incremental == rebuilt
+    [row] = rebuilt
+    assert row[0] == _ADVICE_TXN and row[2] == _DUMPS[0]
+
+
 _walk_probe = itertools.count()
 
 
