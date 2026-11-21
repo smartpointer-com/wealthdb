@@ -958,6 +958,8 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0225: its exposure reports sum in the order the rows arrive, so a
+  last digit can differ from one run to the next;
 - 0224: its private-markets rows read no unfunded where a capital
   account states a commitment and no call, so the Commitments chart
   leaves such a holding out;

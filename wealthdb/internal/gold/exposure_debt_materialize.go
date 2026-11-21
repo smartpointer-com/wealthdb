@@ -34,7 +34,7 @@ func oneInstantLeaves(macro string, materialized bool) string {
 var exposureDebtSQL = `INSERT INTO report_exposure_debt BY NAME
 WITH ` + scaledLeavesSQL(oneInstantLeaves("exposure_debt_buckets", false)) + `
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, src AS silver_source_id,
-       wrapper AS tax_wrapper, dimension, bucket, unknown, ` + exposureSum("value * k") + ` AS value
+       wrapper AS tax_wrapper, dimension, bucket, unknown, exposure_sum(value * k) AS value
   FROM s
  GROUP BY ALL`
 
@@ -48,7 +48,7 @@ const exposureIssuersShown = 100
 // every issuer. Each leaf has its issuer from exposure_yield_leaves; an
 // issuer's name is picked by its leaves' values in the row's currency,
 // as the macro picks it in the currency it is asked for. The sums, the
-// running one and the total among them, are exact (exposureSum), so the
+// running one and the total among them, are exact (exposure_sum), so the
 // ranks and shares never follow row order.
 var exposureIssuersSQL = `INSERT INTO report_exposure_issuer_ranks BY NAME
 WITH ` + scaledLeavesSQL(oneInstantLeaves("exposure_yield_leaves", true)) + `,
@@ -56,10 +56,9 @@ g AS (
     SELECT out_ccy, COALESCE(issuer_key, '(none)') AS ik,
            CASE WHEN COALESCE(issuer_key, '(none)') = '(none)' THEN '(none)'
                 ELSE first(issuer_name ORDER BY name_rank DESC, abs(value * k) DESC, issuer_name) END AS issuer,
-           MIN(lei) AS lei, SUM(` + exposureDecimal("value * k") + `) AS d_value,
-           SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE asset_class = 'public_equity') AS d_equity,
-           SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE debt) AS d_debt,
-           SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE deposit) AS d_cash
+           MIN(lei) AS lei, SUM(exposure_decimal(value * k)) AS d_value,
+           exposure_sum_if(value * k, asset_class = 'public_equity') AS equity,
+           exposure_sum_if(value * k, debt) AS debt, exposure_sum_if(value * k, deposit) AS cash
       FROM s GROUP BY out_ccy, ik),
 r AS (
     SELECT g.*, CAST(g.d_value AS DOUBLE) AS value, row_number() OVER w AS rank,
@@ -70,9 +69,9 @@ r AS (
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT) AS as_of, rank, issuer, lei, value,
        100 * value / NULLIF(total, 0) AS share_pct,
        CASE WHEN ik <> '(none)' THEN 100 * running / NULLIF(total, 0) END AS cumulative_share_pct,
-       100 * COALESCE(CAST(d_equity AS DOUBLE), 0) / NULLIF(value, 0) AS equity_pct,
-       100 * COALESCE(CAST(d_debt AS DOUBLE), 0) / NULLIF(value, 0) AS debt_pct,
-       100 * COALESCE(CAST(d_cash AS DOUBLE), 0) / NULLIF(value, 0) AS cash_pct
+       100 * COALESCE(equity, 0) / NULLIF(value, 0) AS equity_pct,
+       100 * COALESCE(debt, 0) / NULLIF(value, 0) AS debt_pct,
+       100 * COALESCE(cash, 0) / NULLIF(value, 0) AS cash_pct
   FROM r
  WHERE rank <= %d OR ik = '(none)'`
 
@@ -91,10 +90,9 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, CAST($1 AS BIGINT
        arg_max(sector, (w, sector)) AS sector, arg_max(country, (w, country)) AS country,
        MAX(w) AS class_weight, MAX(w) FILTER (WHERE sector IS NOT NULL) AS sector_weight,
        MAX(w) FILTER (WHERE country IS NOT NULL) AS country_weight,
-       MAX(market_cap) AS market_cap, MAX(size) AS size, ` + exposureSum("value * k") + ` AS value,
-       COALESCE(CAST(SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE direct) AS DOUBLE), 0) AS direct_value,
-       COALESCE(CAST(SUM(` + exposureDecimal("value * k") + `) FILTER (WHERE NOT direct) AS DOUBLE), 0)
-           AS via_funds_value,
+       MAX(market_cap) AS market_cap, MAX(size) AS size, exposure_sum(value * k) AS value,
+       COALESCE(exposure_sum_if(value * k, direct), 0) AS direct_value,
+       COALESCE(exposure_sum_if(value * k, NOT direct), 0) AS via_funds_value,
        COALESCE(list(DISTINCT top_key ORDER BY top_key) FILTER (WHERE NOT direct), []) AS funds
   FROM g
  GROUP BY out_ccy, src, wrapper, asset_class, security`

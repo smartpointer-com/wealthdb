@@ -14,11 +14,30 @@ CREATE MACRO exposure_settings_row() AS TABLE (
       FROM exposure_settings
 );
 
+-- exposure_decimal: a float as the decimal the exposure sums add. A
+-- float sum follows the order of its rows, which a parallel aggregate
+-- does not fix, so a sum would end in other last digits from one run to
+-- the next, and a share on a rounding boundary would print one point
+-- apart. Twelve decimals lie far below the four a money column shows. A
+-- NaN or an infinity, which no decimal holds, reads NULL: no value.
+CREATE MACRO exposure_decimal(p_value) AS
+    CAST(CASE WHEN isfinite(p_value) THEN p_value END AS DECIMAL(38,12));
+
 -- exposure_gross: a leaf's gross value as the decimal the quality
--- shares sum. A float sum follows the order of its rows, so a share on a
--- rounding boundary would print one point apart from one run to the next.
+-- shares sum.
 CREATE MACRO exposure_gross(p_value) AS
-    CAST(abs(p_value) AS DECIMAL(38,12));
+    exposure_decimal(abs(p_value));
+
+-- exposure_sum: an aggregate, the exact sum of a float as a float: its
+-- terms summed as decimals (exposure_decimal), the sum read back once.
+CREATE MACRO exposure_sum(p_value) AS
+    CAST(SUM(exposure_decimal(p_value)) AS DOUBLE);
+
+-- exposure_sum_if: exposure_sum over the rows where p_cond holds, NULL
+-- where none does. It stands for a FILTER, which applies to an
+-- aggregate, not to a macro.
+CREATE MACRO exposure_sum_if(p_value, p_cond) AS
+    CAST(SUM(CASE WHEN p_cond THEN exposure_decimal(p_value) END) AS DOUBLE);
 
 -- exposure_flag_share: the flag with the share of the total its part
 -- covers, in whole percent ("proxy=12%"), "<1" below one percent; none
@@ -624,8 +643,9 @@ CREATE MACRO exposure_funds_at(p_asof) AS TABLE (
 -- that state its dimension, and a dimension counts only where a line
 -- of the proxy's file labels it itself. Only lines of positive
 -- weight count, so a short line does not offset a long one. The weights
--- are summed as the decimals they are stored as, so a share never
--- follows the order of the lines.
+-- are summed as the decimals they are stored as, and the differences as
+-- decimals (exposure_decimal), so neither a share nor the points follow
+-- the order of the lines.
 CREATE MACRO exposure_divergence(p_asof) AS TABLE (
     WITH fa AS MATERIALIZED (SELECT * FROM exposure_funds_at(p_asof)),
     sides AS (
@@ -673,7 +693,8 @@ CREATE MACRO exposure_divergence(p_asof) AS TABLE (
                INTERSECT SELECT fund_ref, dim FROM stated),
     apart AS (
         SELECT COALESCE(f.fund_ref, p.fund_ref) AS fund_ref, COALESCE(f.proxy_ref, p.proxy_ref) AS proxy_ref,
-               COALESCE(f.dim, p.dim) AS dim, 50 * SUM(abs(COALESCE(f.share, 0) - COALESCE(p.share, 0))) AS points
+               COALESCE(f.dim, p.dim) AS dim,
+               50 * exposure_sum(abs(COALESCE(f.share, 0) - COALESCE(p.share, 0))) AS points
           FROM (SELECT * FROM mix WHERE side = 'fund') f
           FULL JOIN (SELECT * FROM mix WHERE side = 'proxy') p
             ON p.fund_ref = f.fund_ref AND p.dim = f.dim AND p.bucket = f.bucket
@@ -1076,12 +1097,12 @@ CREATE MACRO exposure_labeled_leaves(p_asof, p_ccy, p_country := 'risk') AS TABL
 -- quality the situs bases it rests on.
 CREATE MACRO report_exposure_situs(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l)
+    t AS (SELECT exposure_sum(value) AS total FROM l)
     SELECT COALESCE(l.situs, 'unknown') AS situs, MAX(co.name) AS country_name, MAX(co.region) AS region,
-           SUM(l.value) AS value,
-           100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
-           100 * COALESCE(SUM(abs(l.value)) FILTER (WHERE l.h_vehicle IN ('etf', 'fund')), 0)
-               / NULLIF(SUM(abs(l.value)), 0) AS funds_pct,
+           exposure_sum(l.value) AS value,
+           100 * exposure_sum(l.value) / NULLIF(t.total, 0) AS share_pct,
+           100 * COALESCE(exposure_sum_if(abs(l.value), l.h_vehicle IN ('etf', 'fund')), 0)
+               / NULLIF(exposure_sum(abs(l.value)), 0) AS funds_pct,
            exposure_situs_quality(l.situs_basis, l.value) AS quality
       FROM l
       LEFT JOIN exposure_countries co ON co.code = l.situs, t
@@ -1104,9 +1125,10 @@ CREATE MACRO report_exposure_situs(p_asof, p_ccy) AS TABLE (
 -- shares one line, `(no value)`. A situs line counts holdings.
 CREATE MACRO report_exposure_coverage(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l),
+    t AS (SELECT exposure_sum(value) AS total FROM l),
     how AS (
-        SELECT 1 AS section_rank, 'how' AS section, how AS reason, COUNT(*) AS items, SUM(value) AS value,
+        SELECT 1 AS section_rank, 'how' AS section, how AS reason, COUNT(*) AS items,
+               SUM(exposure_decimal(value)) AS value,
                CAST(NULL AS VARCHAR) AS detail, CAST(NULL AS VARCHAR) AS silver_source_id,
                CAST(NULL AS VARCHAR) AS instrument,
                CASE how WHEN 'looked_through' THEN 1 WHEN 'proxied' THEN 2 WHEN 'security' THEN 3
@@ -1114,8 +1136,8 @@ CREATE MACRO report_exposure_coverage(p_asof, p_ccy) AS TABLE (
                         WHEN 'remainder' THEN 7 WHEN 'truncated' THEN 8 ELSE 9 END AS reason_rank
           FROM l GROUP BY how),
     age AS (
-        SELECT 2, 'age', bucket, COUNT(DISTINCT top_key), SUM(value), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR),
-               CAST(NULL AS VARCHAR), bucket_rank
+        SELECT 2, 'age', bucket, COUNT(DISTINCT top_key), SUM(exposure_decimal(value)), CAST(NULL AS VARCHAR),
+               CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), bucket_rank
           FROM (SELECT *,
                        CASE WHEN forward THEN 'forward'
                             WHEN abs(gap_days) <= 35 THEN '0-35 days'
@@ -1128,7 +1150,7 @@ CREATE MACRO report_exposure_coverage(p_asof, p_ccy) AS TABLE (
          GROUP BY bucket, bucket_rank),
     unmapped_items AS (
         SELECT 3 AS section_rank, 'unmapped' AS section, f.field || ': ' || f.raw AS reason, COUNT(*) AS items,
-               SUM(f.value) AS value, SUM(abs(f.value)) AS gross, f.provider AS detail,
+               SUM(exposure_decimal(f.value)) AS value, SUM(exposure_gross(f.value)) AS gross, f.provider AS detail,
                CAST(NULL AS VARCHAR) AS silver_source_id, CAST(NULL AS VARCHAR) AS instrument
           FROM (SELECT 'sector' AS field, sector_raw AS raw, provider, value FROM l
                  WHERE depth > 0 AND sector_raw IS NOT NULL AND sector_map IS NULL
@@ -1142,7 +1164,8 @@ CREATE MACRO report_exposure_coverage(p_asof, p_ccy) AS TABLE (
     unmatched_items AS (
         SELECT CASE WHEN undeclared THEN 5 ELSE 4 END AS section_rank,
                CASE WHEN undeclared THEN 'undeclared' ELSE 'unmatched' END AS section,
-               holding AS reason, COUNT(*) AS items, SUM(value) AS value, SUM(abs(value)) AS gross,
+               holding AS reason, COUNT(*) AS items, SUM(exposure_decimal(value)) AS value,
+               SUM(exposure_gross(value)) AS gross,
                MAX(name) AS detail, src AS silver_source_id, iid AS instrument
           FROM (SELECT *, COALESCE(key, 'holding:' || src || ':' || COALESCE(iid, position_key)) AS holding,
                        list_contains(flags, 'undeclared') AS undeclared FROM l
@@ -1152,7 +1175,7 @@ CREATE MACRO report_exposure_coverage(p_asof, p_ccy) AS TABLE (
     -- holding's and its key the one it is held under.
     situs_bases AS (
         SELECT 7 AS section_rank, 'situs' AS section, situs_basis AS reason,
-               COUNT(DISTINCT (src, acct, position_key)) AS items, SUM(value) AS value,
+               COUNT(DISTINCT (src, acct, position_key)) AS items, SUM(exposure_decimal(value)) AS value,
                CAST(NULL AS VARCHAR) AS detail, CAST(NULL AS VARCHAR) AS silver_source_id,
                CAST(NULL AS VARCHAR) AS instrument,
                CASE situs_basis WHEN 'declared' THEN 1 WHEN 'underlying' THEN 2 WHEN 'isin' THEN 3
@@ -1161,7 +1184,8 @@ CREATE MACRO report_exposure_coverage(p_asof, p_ccy) AS TABLE (
           FROM l GROUP BY situs_basis),
     situs_items AS (
         SELECT 7 AS section_rank, 'situs' AS section, holding AS reason,
-               COUNT(DISTINCT (acct, position_key)) AS items, SUM(value) AS value, SUM(abs(value)) AS gross,
+               COUNT(DISTINCT (acct, position_key)) AS items, SUM(exposure_decimal(value)) AS value,
+               SUM(exposure_gross(value)) AS gross,
                COALESCE(MAX(name) FILTER (WHERE depth = 0), MAX(h_name)) AS detail,
                src AS silver_source_id, iid AS instrument
           FROM (SELECT *, COALESCE(top_key, 'holding:' || src || ':' || COALESCE(iid, position_key)) AS holding
@@ -1188,13 +1212,14 @@ CREATE MACRO report_exposure_coverage(p_asof, p_ccy) AS TABLE (
                    || ' points from ' || d.proxy_ref,
                CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), 0
           FROM exposure_divergence(p_asof) d
-          JOIN (SELECT fund_ref, COUNT(DISTINCT key) AS items, SUM(value) AS value FROM l WHERE depth > 0 GROUP BY 1) v
+          JOIN (SELECT fund_ref, COUNT(DISTINCT key) AS items, SUM(exposure_decimal(value)) AS value
+                  FROM l WHERE depth > 0 GROUP BY 1) v
             USING (fund_ref))
-    SELECT section, reason, items, value, 100 * value / NULLIF(t.total, 0) AS share_pct, detail,
-           silver_source_id, instrument
+    SELECT section, reason, items, CAST(x.value AS DOUBLE) AS value,
+           100 * CAST(x.value AS DOUBLE) / NULLIF(t.total, 0) AS share_pct, detail, silver_source_id, instrument
       FROM (SELECT * FROM how UNION ALL SELECT * FROM age UNION ALL SELECT * FROM listed
             UNION ALL SELECT * FROM divergence UNION ALL SELECT * FROM situs_bases) x, t
-     ORDER BY section_rank, reason_rank, abs(value) DESC, reason, silver_source_id, instrument
+     ORDER BY section_rank, reason_rank, abs(x.value) DESC, reason, silver_source_id, instrument
 );
 
 -- exposure_yield_leaves: exposure_leaves with each leaf's debt and issuer
@@ -1332,34 +1357,36 @@ CREATE MACRO exposure_yield_leaves(p_asof, p_ccy) AS TABLE (
 -- largest leaf's. The leaves no issuer applies to are one (none) row at
 -- the end. The rows rank by their value at four decimals, as a money
 -- column prints, then by issuer_key: issuers of one printed value keep
--- one order whatever the last bits of their sums, and the running share
--- follows that order.
+-- one order, and the running share follows it. The sums are exact
+-- (exposure_decimal), so neither follows the order of the rows.
 CREATE MACRO report_exposure_issuers(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT *, COALESCE(issuer_key, '(none)') AS ik FROM exposure_yield_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l),
+    t AS (SELECT exposure_sum(value) AS total FROM l),
     g AS (
         SELECT ik AS issuer_key,
                CASE WHEN ik = '(none)' THEN '(none)'
                     ELSE first(issuer_name ORDER BY name_rank DESC, abs(value) DESC, issuer_name) END AS issuer,
-               MIN(lei) AS lei, SUM(value) AS value,
-               SUM(value) FILTER (WHERE asset_class = 'public_equity') AS equity,
-               SUM(value) FILTER (WHERE debt) AS debt,
-               SUM(value) FILTER (WHERE deposit) AS cash,
+               MIN(lei) AS lei, SUM(exposure_decimal(value)) AS d_value,
+               exposure_sum_if(value, asset_class = 'public_equity') AS equity,
+               exposure_sum_if(value, debt) AS debt,
+               exposure_sum_if(value, deposit) AS cash,
                COUNT(DISTINCT key) AS securities,
                exposure_quality(flags, value) AS quality
           FROM l GROUP BY ik)
-    SELECT g.issuer_key, g.issuer, g.lei, g.value, 100 * g.value / NULLIF(t.total, 0) AS share_pct,
+    SELECT g.issuer_key, g.issuer, g.lei, CAST(g.d_value AS DOUBLE) AS value,
+           100 * CAST(g.d_value AS DOUBLE) / NULLIF(t.total, 0) AS share_pct,
            CASE WHEN g.issuer_key <> '(none)' THEN
-                100 * SUM(g.value) OVER (ORDER BY g.issuer_key = '(none)', CAST(g.value AS DECIMAL(28,4)) DESC,
-                                                  g.issuer_key
-                                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) / NULLIF(t.total, 0) END
+                100 * CAST(SUM(g.d_value) OVER (ORDER BY g.issuer_key = '(none)', CAST(g.d_value AS DECIMAL(28,4)) DESC,
+                                                         g.issuer_key
+                                                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS DOUBLE)
+                    / NULLIF(t.total, 0) END
                AS cumulative_share_pct,
-           100 * COALESCE(g.equity, 0) / NULLIF(g.value, 0) AS equity_pct,
-           100 * COALESCE(g.debt, 0) / NULLIF(g.value, 0) AS debt_pct,
-           100 * COALESCE(g.cash, 0) / NULLIF(g.value, 0) AS cash_pct,
+           100 * COALESCE(g.equity, 0) / NULLIF(CAST(g.d_value AS DOUBLE), 0) AS equity_pct,
+           100 * COALESCE(g.debt, 0) / NULLIF(CAST(g.d_value AS DOUBLE), 0) AS debt_pct,
+           100 * COALESCE(g.cash, 0) / NULLIF(CAST(g.d_value AS DOUBLE), 0) AS cash_pct,
            g.securities, g.quality
       FROM g, t
-     ORDER BY g.issuer_key = '(none)', CAST(g.value AS DECIMAL(28,4)) DESC, g.issuer_key
+     ORDER BY g.issuer_key = '(none)', CAST(g.d_value AS DECIMAL(28,4)) DESC, g.issuer_key
 );
 
 -- exposure_debt_buckets: each leaf of exposure_yield_leaves in each of
@@ -1401,11 +1428,11 @@ CREATE MACRO exposure_debt_buckets(p_asof, p_ccy) AS TABLE (
 -- report_exposure_classes: the leaves by asset class, split by direct.
 CREATE MACRO report_exposure_classes(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l)
-    SELECT l.asset_class, SUM(l.value) AS value,
-           100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
+    t AS (SELECT exposure_sum(value) AS total FROM l)
+    SELECT l.asset_class, exposure_sum(l.value) AS value,
+           100 * exposure_sum(l.value) / NULLIF(t.total, 0) AS share_pct,
+           100 * COALESCE(exposure_sum_if(l.value, l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
+           100 * COALESCE(exposure_sum_if(l.value, NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(l.flags, l.value) AS quality
       FROM l, t GROUP BY l.asset_class, t.total
      ORDER BY value DESC, asset_class
@@ -1414,13 +1441,13 @@ CREATE MACRO report_exposure_classes(p_asof, p_ccy) AS TABLE (
 -- report_exposure_sectors: the leaves by sector, split by direct.
 CREATE MACRO report_exposure_sectors(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l),
-    c AS (SELECT asset_class, SUM(value) AS class_total FROM l GROUP BY 1)
-    SELECT l.asset_class, l.sector_bucket AS sector, SUM(l.value) AS value,
-           100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
-           100 * SUM(l.value) / NULLIF(c.class_total, 0) AS class_share_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
+    t AS (SELECT exposure_sum(value) AS total FROM l),
+    c AS (SELECT asset_class, exposure_sum(value) AS class_total FROM l GROUP BY 1)
+    SELECT l.asset_class, l.sector_bucket AS sector, exposure_sum(l.value) AS value,
+           100 * exposure_sum(l.value) / NULLIF(t.total, 0) AS share_pct,
+           100 * exposure_sum(l.value) / NULLIF(c.class_total, 0) AS class_share_pct,
+           100 * COALESCE(exposure_sum_if(l.value, l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
+           100 * COALESCE(exposure_sum_if(l.value, NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(l.flags, l.value) AS quality
       FROM l JOIN c USING (asset_class), t
      GROUP BY l.asset_class, l.sector_bucket, t.total, c.class_total
@@ -1431,13 +1458,13 @@ CREATE MACRO report_exposure_sectors(p_asof, p_ccy) AS TABLE (
 -- direct.
 CREATE MACRO report_exposure_sizes(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l),
-    c AS (SELECT asset_class, SUM(value) AS class_total FROM l GROUP BY 1)
-    SELECT l.asset_class, l.size_bucket AS size, SUM(l.value) AS value,
-           100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
-           100 * SUM(l.value) / NULLIF(c.class_total, 0) AS class_share_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
+    t AS (SELECT exposure_sum(value) AS total FROM l),
+    c AS (SELECT asset_class, exposure_sum(value) AS class_total FROM l GROUP BY 1)
+    SELECT l.asset_class, l.size_bucket AS size, exposure_sum(l.value) AS value,
+           100 * exposure_sum(l.value) / NULLIF(t.total, 0) AS share_pct,
+           100 * exposure_sum(l.value) / NULLIF(c.class_total, 0) AS class_share_pct,
+           100 * COALESCE(exposure_sum_if(l.value, l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
+           100 * COALESCE(exposure_sum_if(l.value, NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(l.flags, l.value) AS quality
       FROM l JOIN c USING (asset_class), t
      GROUP BY l.asset_class, l.size_bucket, t.total, c.class_total
@@ -1447,11 +1474,11 @@ CREATE MACRO report_exposure_sizes(p_asof, p_ccy) AS TABLE (
 -- report_exposure_countries: the leaves by country, split by direct.
 CREATE MACRO report_exposure_countries(p_asof, p_ccy, p_country := 'risk') AS TABLE (
     WITH l AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy, p_country := p_country)),
-    t AS (SELECT SUM(value) AS total FROM l)
-    SELECT l.country_bucket AS country, MAX(l.country_name) AS country_name, l.region, SUM(l.value) AS value,
-           100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
+    t AS (SELECT exposure_sum(value) AS total FROM l)
+    SELECT l.country_bucket AS country, MAX(l.country_name) AS country_name, l.region, exposure_sum(l.value) AS value,
+           100 * exposure_sum(l.value) / NULLIF(t.total, 0) AS share_pct,
+           100 * COALESCE(exposure_sum_if(l.value, l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
+           100 * COALESCE(exposure_sum_if(l.value, NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(l.flags, l.value) AS quality
       FROM l, t GROUP BY l.country_bucket, l.region, t.total
      ORDER BY value DESC, country, region
@@ -1460,11 +1487,11 @@ CREATE MACRO report_exposure_countries(p_asof, p_ccy, p_country := 'risk') AS TA
 -- report_exposure_currencies: the leaves by currency, split by direct.
 CREATE MACRO report_exposure_currencies(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy)),
-    t AS (SELECT SUM(value) AS total FROM l)
-    SELECT l.currency_bucket AS currency, l.currency_kind, SUM(l.value) AS value,
-           100 * SUM(l.value) / NULLIF(t.total, 0) AS share_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
-           100 * COALESCE(SUM(l.value) FILTER (WHERE NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
+    t AS (SELECT exposure_sum(value) AS total FROM l)
+    SELECT l.currency_bucket AS currency, l.currency_kind, exposure_sum(l.value) AS value,
+           100 * exposure_sum(l.value) / NULLIF(t.total, 0) AS share_pct,
+           100 * COALESCE(exposure_sum_if(l.value, l.direct), 0) / NULLIF(t.total, 0) AS direct_pct,
+           100 * COALESCE(exposure_sum_if(l.value, NOT l.direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(l.flags, l.value) AS quality
       FROM l, t GROUP BY 1, 2, t.total
      ORDER BY value DESC, currency
@@ -1483,12 +1510,12 @@ CREATE MACRO report_exposure_currencies(p_asof, p_ccy) AS TABLE (
 -- report_exposure_coupons: the leaves by coupon kind, split by direct.
 CREATE MACRO report_exposure_coupons(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_debt_buckets(p_asof, p_ccy) WHERE dimension = 'coupon'),
-    t AS (SELECT SUM(value) AS total, SUM(value) FILTER (WHERE bucket <> '(none)') AS described FROM l)
-    SELECT bucket AS coupon_kind, SUM(value) AS value,
-           100 * SUM(value) / NULLIF(t.total, 0) AS share_pct,
-           CASE WHEN bucket <> '(none)' THEN exposure_class_share(SUM(value), t.described) END AS class_share_pct,
-           100 * COALESCE(SUM(value) FILTER (WHERE direct), 0) / NULLIF(t.total, 0) AS direct_pct,
-           100 * COALESCE(SUM(value) FILTER (WHERE NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
+    t AS (SELECT exposure_sum(value) AS total, exposure_sum_if(value, bucket <> '(none)') AS described FROM l)
+    SELECT bucket AS coupon_kind, exposure_sum(value) AS value,
+           100 * exposure_sum(value) / NULLIF(t.total, 0) AS share_pct,
+           CASE WHEN bucket <> '(none)' THEN exposure_class_share(exposure_sum(value), t.described) END AS class_share_pct,
+           100 * COALESCE(exposure_sum_if(value, direct), 0) / NULLIF(t.total, 0) AS direct_pct,
+           100 * COALESCE(exposure_sum_if(value, NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(flags, value) AS quality
       FROM l, t
      GROUP BY bucket, t.total, t.described
@@ -1499,12 +1526,12 @@ CREATE MACRO report_exposure_coupons(p_asof, p_ccy) AS TABLE (
 -- split by direct.
 CREATE MACRO report_exposure_credit(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_debt_buckets(p_asof, p_ccy) WHERE dimension = 'credit'),
-    t AS (SELECT SUM(value) AS total, SUM(value) FILTER (WHERE bucket <> '(none)') AS described FROM l)
-    SELECT bucket, exposure_credit_grade(bucket) AS grade, SUM(value) AS value,
-           100 * SUM(value) / NULLIF(t.total, 0) AS share_pct,
-           CASE WHEN bucket <> '(none)' THEN exposure_class_share(SUM(value), t.described) END AS class_share_pct,
-           100 * COALESCE(SUM(value) FILTER (WHERE direct), 0) / NULLIF(t.total, 0) AS direct_pct,
-           100 * COALESCE(SUM(value) FILTER (WHERE NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
+    t AS (SELECT exposure_sum(value) AS total, exposure_sum_if(value, bucket <> '(none)') AS described FROM l)
+    SELECT bucket, exposure_credit_grade(bucket) AS grade, exposure_sum(value) AS value,
+           100 * exposure_sum(value) / NULLIF(t.total, 0) AS share_pct,
+           CASE WHEN bucket <> '(none)' THEN exposure_class_share(exposure_sum(value), t.described) END AS class_share_pct,
+           100 * COALESCE(exposure_sum_if(value, direct), 0) / NULLIF(t.total, 0) AS direct_pct,
+           100 * COALESCE(exposure_sum_if(value, NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            concat_ws(',', nullif(exposure_quality(flags, value), ''),
                      exposure_flag_share('unknown', SUM(exposure_gross(value)) FILTER (WHERE unknown), SUM(exposure_gross(value))))
                AS quality
@@ -1516,12 +1543,12 @@ CREATE MACRO report_exposure_credit(p_asof, p_ccy) AS TABLE (
 -- report_exposure_cycles: the leaves by economic cycle, split by direct.
 CREATE MACRO report_exposure_cycles(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_debt_buckets(p_asof, p_ccy) WHERE dimension = 'cycle'),
-    t AS (SELECT SUM(value) AS total, SUM(value) FILTER (WHERE bucket <> '(none)') AS described FROM l)
-    SELECT bucket AS cycle, SUM(value) AS value,
-           100 * SUM(value) / NULLIF(t.total, 0) AS share_pct,
-           CASE WHEN bucket <> '(none)' THEN exposure_class_share(SUM(value), t.described) END AS class_share_pct,
-           100 * COALESCE(SUM(value) FILTER (WHERE direct), 0) / NULLIF(t.total, 0) AS direct_pct,
-           100 * COALESCE(SUM(value) FILTER (WHERE NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
+    t AS (SELECT exposure_sum(value) AS total, exposure_sum_if(value, bucket <> '(none)') AS described FROM l)
+    SELECT bucket AS cycle, exposure_sum(value) AS value,
+           100 * exposure_sum(value) / NULLIF(t.total, 0) AS share_pct,
+           CASE WHEN bucket <> '(none)' THEN exposure_class_share(exposure_sum(value), t.described) END AS class_share_pct,
+           100 * COALESCE(exposure_sum_if(value, direct), 0) / NULLIF(t.total, 0) AS direct_pct,
+           100 * COALESCE(exposure_sum_if(value, NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(flags, value) AS quality
       FROM l, t
      GROUP BY bucket, t.total, t.described
@@ -1532,12 +1559,12 @@ CREATE MACRO report_exposure_cycles(p_asof, p_ccy) AS TABLE (
 -- direct.
 CREATE MACRO report_exposure_maturities(p_asof, p_ccy) AS TABLE (
     WITH l AS (SELECT * FROM exposure_debt_buckets(p_asof, p_ccy) WHERE dimension = 'maturity'),
-    t AS (SELECT SUM(value) AS total, SUM(value) FILTER (WHERE bucket <> '(none)') AS described FROM l)
-    SELECT bucket, SUM(value) AS value,
-           100 * SUM(value) / NULLIF(t.total, 0) AS share_pct,
-           CASE WHEN bucket <> '(none)' THEN exposure_class_share(SUM(value), t.described) END AS class_share_pct,
-           100 * COALESCE(SUM(value) FILTER (WHERE direct), 0) / NULLIF(t.total, 0) AS direct_pct,
-           100 * COALESCE(SUM(value) FILTER (WHERE NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
+    t AS (SELECT exposure_sum(value) AS total, exposure_sum_if(value, bucket <> '(none)') AS described FROM l)
+    SELECT bucket, exposure_sum(value) AS value,
+           100 * exposure_sum(value) / NULLIF(t.total, 0) AS share_pct,
+           CASE WHEN bucket <> '(none)' THEN exposure_class_share(exposure_sum(value), t.described) END AS class_share_pct,
+           100 * COALESCE(exposure_sum_if(value, direct), 0) / NULLIF(t.total, 0) AS direct_pct,
+           100 * COALESCE(exposure_sum_if(value, NOT direct), 0) / NULLIF(t.total, 0) AS via_funds_pct,
            exposure_quality(flags, value) AS quality
       FROM l, t
      GROUP BY bucket, t.total, t.described
@@ -1548,21 +1575,21 @@ CREATE MACRO report_exposure_maturities(p_asof, p_ccy) AS TABLE (
 -- A line's security keeps its name by depth.
 CREATE MACRO report_exposure_securities(p_asof, p_ccy, p_country := 'risk') AS TABLE (
     WITH g AS (SELECT * FROM exposure_labeled_leaves(p_asof, p_ccy, p_country := p_country)),
-    t AS (SELECT SUM(value) AS total FROM g)
+    t AS (SELECT exposure_sum(value) AS total FROM g)
     SELECT g.security, MAX(g.name) AS name, MAX(g.ticker) AS ticker,
            arg_max(g.asset_class, (abs(g.value), g.asset_class)) AS asset_class,
            arg_max(g.sector, (abs(g.value), g.sector)) AS sector,
            arg_max(g.country, (abs(g.value), g.country)) AS country,
            arg_max(g.currency, (abs(g.value), g.currency)) AS currency, MAX(g.market_cap) AS market_cap, MAX(g.size) AS size,
-           SUM(g.value) AS value,
-           COALESCE(SUM(g.value) FILTER (WHERE g.direct), 0) AS direct_value,
-           COALESCE(SUM(g.value) FILTER (WHERE NOT g.direct), 0) AS via_funds_value,
+           exposure_sum(g.value) AS value,
+           COALESCE(exposure_sum_if(g.value, g.direct), 0) AS direct_value,
+           COALESCE(exposure_sum_if(g.value, NOT g.direct), 0) AS via_funds_value,
            COUNT(DISTINCT g.top_key) FILTER (WHERE NOT g.direct) AS funds,
-           100 * SUM(g.value) / NULLIF(t.total, 0) AS share_pct,
+           100 * exposure_sum(g.value) / NULLIF(t.total, 0) AS share_pct,
            exposure_quality(g.flags, g.value) AS quality
       FROM g, t
      GROUP BY g.security, t.total
-     ORDER BY abs(SUM(g.value)) DESC, security
+     ORDER BY abs(exposure_sum(g.value)) DESC, security
 );
 
 -- report_exposure_funds: each holding and the composition that
@@ -1577,7 +1604,7 @@ CREATE MACRO report_exposure_funds(p_asof, p_ccy) AS TABLE (
           LEFT JOIN exposure_situs_at(p_asof) st
                  ON st.silver_source_id = h.src AND st.account_external_id = h.acct AND st.position_key = h.position_key
          WHERE h.value IS NOT NULL),
-    t AS (SELECT SUM(value) AS total FROM h),
+    t AS (SELECT exposure_sum(value) AS total FROM h),
     fa AS (SELECT * FROM exposure_funds_at(p_asof)),
     -- comp_ref: the composition that describes the holding, as
     -- exposure_leaves reads it (exposure_composition_wins). A declared
@@ -1599,7 +1626,7 @@ CREATE MACRO report_exposure_funds(p_asof, p_ccy) AS TABLE (
                k.* FROM k),
     g AS (
         SELECT f.fund, MAX(f.name) FILTER (WHERE f.fund <> '(other holdings)') AS name,
-               SUM(f.value) AS value, 100 * SUM(f.value) / NULLIF(t.total, 0) AS share_pct,
+               exposure_sum(f.value) AS value, 100 * exposure_sum(f.value) / NULLIF(t.total, 0) AS share_pct,
                COALESCE(MAX(fa.via), CASE WHEN BOOL_OR(f.declared) THEN 'declared' END) AS via, MAX(fa.proxy_ref) FILTER (WHERE fa.via = 'proxy') AS proxy,
                MAX(fa.leverage) FILTER (WHERE fa.via = 'proxy') AS leverage,
                MAX(fa.provider) AS provider, MAX(fa.basis) AS basis, MAX(fa.as_of) AS composition_as_of,

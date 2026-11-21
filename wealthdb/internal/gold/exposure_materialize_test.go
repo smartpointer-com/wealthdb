@@ -454,29 +454,35 @@ func TestWebExposureSecuritiesAnswers(t *testing.T) {
 	}
 }
 
-// exposureSum gives one sum whatever the order of its terms, where a
+// exposure_sum gives one sum whatever the order of its terms, where a
 // float sum does not: 1e16 + 1 rounds back to 1e16, so the float sum
 // of 1e16, 1 and -1e16 is 0 in that order and 1 with the 1 last.
+// exposure_sum_if sums the rows its condition holds on, NULL where none
+// does, as a FILTER would. A NaN or an infinity is no value: it drops out
+// of both.
 func TestExposureSumIgnoresRowOrder(t *testing.T) {
 	t.Parallel()
 	db, _ := openMigrated(t)
-	terms := `(VALUES (1, 1e16::DOUBLE), (2, 1::DOUBLE), (3, -1e16::DOUBLE)) v(o, x)`
+	terms := `(VALUES (1, 1e16::DOUBLE), (2, 1::DOUBLE), (3, -1e16::DOUBLE), (4, 'nan'::DOUBLE),
+	    (5, 'inf'::DOUBLE), (6, '-inf'::DOUBLE)) v(o, x)`
 	var inOrder, lastOne float64
-	if err := db.QueryRow(`SELECT SUM(x ORDER BY o), SUM(x ORDER BY o = 2, o) FROM `+terms).Scan(&inOrder,
-		&lastOne); err != nil {
+	if err := db.QueryRow(`SELECT SUM(x ORDER BY o), SUM(x ORDER BY o = 2, o) FROM `+terms+` WHERE o < 4`).
+		Scan(&inOrder, &lastOne); err != nil {
 		t.Fatal(err)
 	}
 	if inOrder == lastOne {
 		t.Fatalf("a float sum gives %v in both orders: the terms no longer show the order", inOrder)
 	}
 	for _, order := range []string{"o", "o = 2, o", "o DESC"} {
-		var got float64
-		if err := db.QueryRow(`SELECT ` + exposureSum("x") + ` FROM (SELECT x FROM ` + terms + ` ORDER BY ` + order +
-			`)`).Scan(&got); err != nil {
+		var got, odd, even float64
+		var none *float64
+		if err := db.QueryRow(`SELECT exposure_sum(x), exposure_sum_if(x, o % 2 = 1), exposure_sum_if(x, o % 2 = 0),
+		    exposure_sum_if(x, o > 6) FROM (SELECT o, x FROM `+terms+` ORDER BY `+order+`)`).
+			Scan(&got, &odd, &even, &none); err != nil {
 			t.Fatal(err)
 		}
-		if got != 1 {
-			t.Errorf("ordered by %s: %v, want 1", order, got)
+		if got != 1 || odd != 0 || even != 1 || none != nil {
+			t.Errorf("ordered by %s: %v, odd %v, even %v, none %v; want 1, 0, 1 and NULL", order, got, odd, even, none)
 		}
 	}
 }

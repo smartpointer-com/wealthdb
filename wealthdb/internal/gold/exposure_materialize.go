@@ -16,7 +16,7 @@ import (
 // its holding's source and account's tax wrapper, which the dashboard's
 // pickers narrow to. A leaf is via funds where it is not held directly
 // (exposure_leaves' direct): a forward held directly holds its legs
-// directly. Each value is an exact sum of its leaves (exposureSum).
+// directly. Each value is an exact sum of its leaves (exposure_sum).
 //
 // One statement walks a list of instants: the leaves and the holdings are
 // read per instant (LATERAL), and DuckDB plans and runs one walk for the
@@ -29,7 +29,7 @@ WITH i AS (SELECT unnest(CAST($1 AS BIGINT[])) AS instant),
 SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, instant AS as_of,
        asset_class, sector, country, region, currency AS exposure_currency, currency_kind,
        NOT direct AS via_funds, how, size, situs, situs_basis, src AS silver_source_id, wrapper AS tax_wrapper,
-       ` + exposureSum("value * k") + ` AS value
+       exposure_sum(value * k) AS value
   FROM s
  GROUP BY ALL`
 
@@ -38,19 +38,6 @@ SELECT CAST($2 AS BIGINT) AS computed_at, out_ccy AS currency, instant AS as_of,
 // larger batch pays the planning and the rate lookups fewer times, so it
 // is faster, and it holds more memory: the bound caps the walk's memory.
 const exposureMonthEndsPerStatement = 15
-
-// exposureSum is the exact sum of the DOUBLE expression x, as a DOUBLE:
-// each term rounded to twelve decimals (exposureDecimal), the terms
-// summed as decimals, the sum read back once. A float sum follows the order of its
-// terms, which a parallel aggregate does not fix, so the same gold would
-// write other last bits on another run.
-func exposureSum(x string) string {
-	return `CAST(SUM(` + exposureDecimal(x) + `) AS DOUBLE)`
-}
-
-// exposureDecimal is the DOUBLE expression x as the decimal exposureSum
-// adds. Twelve decimals lie far below the four a money column shows.
-func exposureDecimal(x string) string { return `CAST(` + x + ` AS DECIMAL(38,12))` }
 
 // scaledLeavesSQL is the CTEs that value the leaves l (the look-through
 // at each instant, walked once in US dollars) in every reporting

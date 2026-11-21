@@ -45,7 +45,7 @@ const benchmarkSource = "(benchmark)"
 // debt buckets of exposure_debt_buckets, and a security and an issuer as
 // the dashboard's tables name them. A leaf's value is its share of the
 // benchmark in percent, the weights summing to 100. The shares are exact
-// sums of the leaves (exposureSum).
+// sums of the leaves (exposure_sum).
 //
 // The place buckets call exposure_place_bucket, as
 // exposure_labeled_leaves does; the size leaves out the (none) of every
@@ -94,14 +94,14 @@ named AS (
                 WHEN asset_class = 'cash' AND NOT declared AND (key IS NULL OR key LIKE 'name:%') THEN 'cash:' || currency
                 WHEN key IS NOT NULL THEN key
                 ELSE 'line:' || fund_ref || ':' || COALESCE(name, asset_type_raw, '') END AS bucket,
-           MAX(name) AS label, CAST(NULL AS VARCHAR) AS lei, ` + exposureSum("value") + ` AS value
+           MAX(name) AS label, CAST(NULL AS VARCHAR) AS lei, exposure_sum(value) AS value
       FROM l GROUP BY 1, 2, 3
     UNION ALL
     SELECT acct, '` + BenchmarkDimIssuer + `', COALESCE(issuer_key, '(none)'),
-           first(issuer_name ORDER BY name_rank DESC, abs(value) DESC, issuer_name), MIN(lei), ` + exposureSum("value") + `
+           first(issuer_name ORDER BY name_rank DESC, abs(value) DESC, issuer_name), MIN(lei), exposure_sum(value)
       FROM l GROUP BY 1, 2, 3)
 SELECT CAST($2 AS BIGINT) AS computed_at, benchmark, dimension, bucket, CAST(NULL AS VARCHAR) AS label,
-       CAST(NULL AS VARCHAR) AS lei, ` + exposureSum("value") + ` AS share_pct
+       CAST(NULL AS VARCHAR) AS lei, exposure_sum(value) AS share_pct
   FROM d WHERE bucket IS NOT NULL
  GROUP BY 2, 3, 4
 UNION ALL
@@ -146,7 +146,7 @@ func (r ExposureIssuerRow) BenchmarkKey() string {
 // N-PORT states a fund in.
 var benchmarkFundCurrencySQL = `INSERT INTO benchmark_exposure BY NAME
 SELECT CAST($2 AS BIGINT) AS computed_at, b.benchmark, '` + BenchmarkDimFundCurrency + `' AS dimension,
-       COALESCE(f.currency, '` + benchmarkFundCurrency + `') AS bucket, ` + exposureSum("b.weight_pct") + ` AS share_pct
+       COALESCE(f.currency, '` + benchmarkFundCurrency + `') AS bucket, exposure_sum(b.weight_pct) AS share_pct
   FROM benchmark_funds b
   LEFT JOIN exposure_funds_at(CAST($1 AS BIGINT)) f ON f.fund_ref = exposure_key(b.fund_ref)
  GROUP BY 1, 2, 3, 4`

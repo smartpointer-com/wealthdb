@@ -184,3 +184,76 @@ func TestExposureQualityShareIgnoresRowOrder(t *testing.T) {
 		t.Errorf("quality reads %v, want proxy=38%% in every order", texts)
 	}
 }
+
+// Every exposure report reads the same whatever order its rows arrive
+// in: its sums are exact. Three holdings of 0.1, 0.2 and 0.3 are written
+// in each of their six orders. A float sum gives 0.6 or a bit above it
+// by the order it adds them in; the test first shows that a float sum of
+// the leaves in the order written does both, so the fixture stays on
+// that boundary.
+func TestExposureReportsIgnoreRowOrder(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	mustExec(t, db, `INSERT INTO accounts (silver_source_id, account_external_id, account_kind, display_name, base_currency, first_seen_at, last_seen_at)
+	    VALUES ('test-src', 'A1', 'brokerage', 'Brokerage', 'USD', 0, 0)`)
+	reports := []string{"situs", "coverage", "issuers", "classes", "sectors", "sizes", "countries", "currencies",
+		"coupons", "credit", "cycles", "maturities", "securities", "funds"}
+	floats, texts := map[float64]bool{}, map[string]bool{}
+	for _, order := range [][]string{{"0.1", "0.2", "0.3"}, {"0.1", "0.3", "0.2"}, {"0.2", "0.1", "0.3"},
+		{"0.2", "0.3", "0.1"}, {"0.3", "0.1", "0.2"}, {"0.3", "0.2", "0.1"}} {
+		mustExec(t, db, `DELETE FROM positions`)
+		for _, mv := range order {
+			mustExec(t, db, `INSERT INTO positions (silver_source_id, snapshot_at, account_external_id, position_key,
+			    instrument_external_id, asset_class, vehicle, currency, quantity, market_value)
+			    VALUES ('test-src', ?, 'A1', ?, ?, 'metal', 'physical', 'USD', 1, ?)`,
+				exSnap, "P"+mv, "P"+mv, mv)
+		}
+		// The float control adds the leaves in the order the positions were
+		// written: a parallel SUM would pick its own order.
+		leaves := map[string]float64{}
+		lr, err := db.QueryContext(ctx, `SELECT position_key, value FROM exposure_leaves(?, 'USD')`, exAsOf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for lr.Next() {
+			var k string
+			var v float64
+			if err := lr.Scan(&k, &v); err != nil {
+				t.Fatal(err)
+			}
+			leaves[k] = v
+		}
+		if err := lr.Close(); err != nil {
+			t.Fatal(err)
+		}
+		float := 0.0
+		for _, mv := range order {
+			float += leaves["P"+mv]
+		}
+		floats[float] = true
+		text := ""
+		for _, r := range reports {
+			rows, err := db.QueryContext(ctx, `SELECT CAST(x AS VARCHAR) FROM report_exposure_`+r+`(?, 'USD') x`, exAsOf)
+			if err != nil {
+				t.Fatalf("%s: %v", r, err)
+			}
+			for rows.Next() {
+				var row string
+				if err := rows.Scan(&row); err != nil {
+					t.Fatal(err)
+				}
+				text += r + " " + row + "\n"
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		texts[text] = true
+	}
+	if len(floats) < 2 {
+		t.Fatalf("the float sums agree (%v): the fixture is no boundary", floats)
+	}
+	if len(texts) != 1 {
+		t.Errorf("the reports read %d ways in six row orders:\n%v", len(texts), texts)
+	}
+}
