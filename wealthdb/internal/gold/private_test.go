@@ -567,6 +567,68 @@ func TestPrivateMarketsAtCost(t *testing.T) {
 	}
 }
 
+// AngelList may carry a deal at cost without stating a basis: a line of
+// its that states none and is worth exactly its book value is at cost.
+// One worth more, one with no book value, one worth 0 at a book of 0,
+// one that states a mark plus cost, and one of another source are not.
+func TestPrivateMarketsAngelListAtCost(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedPrivateFixture(t, db, ctx)
+	seedReturnsSource(t, db, ctx, "al", "angellist")
+	usd := "USD"
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.UpsertAccounts(ctx, []canonical.AccountChange{{SilverSourceID: "al", AccountExternalID: "LP",
+			AccountKind: canonical.AccountKindCustody, BaseCurrency: &usd, FirstSeenAt: 1, LastSeenAt: 1}})
+	})
+	paidIn := canonical.Basis{Origin: canonical.BasisStated, Method: canonical.BasisMethodPaidIn,
+		Fees: canonical.BasisFeesIncluded}
+	dec31 := dy(2024, time.December, 31)
+	for _, c := range []struct {
+		src, acct, inst, basis string
+		value, book            int64 // book -1: none
+	}{
+		{"al", "LP", "PLAIN", "", 400, 400},
+		{"al", "LP", "UP", "", 900, 400},
+		{"al", "LP", "NOBOOK", "", 400, -1},
+		{"al", "LP", "ZERO", "", 0, 0},
+		{"al", "LP", "SINCE", "mark_plus_cost", 400, 400},
+		{"pm", "INV", "OTHER", "", 400, 400},
+	} {
+		inst := c.inst
+		inTx(t, db, ctx, func(w *Writer) error {
+			if err := w.InsertTransactions(ctx, []canonical.TransactionChange{{SilverSourceID: c.src,
+				TransactionExternalID: "c-" + inst, OccurredAt: dy(2024, time.October, 1), AccountExternalID: c.acct,
+				InstrumentExternalID: &inst, Kind: canonical.TxKindContribution, Currency: "USD",
+				NetAmount: decp(-400)}}); err != nil {
+				return err
+			}
+			p := canonical.PositionChange{SilverSourceID: c.src, AccountExternalID: c.acct, SnapshotAt: dec31,
+				PositionKey: inst, InstrumentExternalID: &inst, AssetClass: canonical.AssetClassPrivateEquity,
+				Vehicle: canonical.VehicleSPV, Currency: "USD", ValuedAt: dy(2024, time.October, 1),
+				MarketValue: decp(c.value)}
+			if c.book >= 0 {
+				p.SetBookValue(decp(c.book), paidIn)
+			}
+			if c.basis != "" {
+				p.Payload = json.RawMessage(`{"valuation_basis": "` + c.basis + `"}`)
+			}
+			return w.InsertPositions(ctx, []canonical.PositionChange{p})
+		})
+	}
+	rows, _ := privateRows(t, db, ctx, "USD")
+	for inst, want := range map[string]bool{
+		"PLAIN": true, "UP": false, "NOBOOK": false, "ZERO": false, "SINCE": false, "OTHER": false,
+	} {
+		if got := slices.Contains(rows[inst].Quality, "at_cost"); got != want {
+			t.Errorf("%s quality %v, at_cost %v", inst, rows[inst].Quality, want)
+		}
+	}
+	if !slices.Contains(rows[""].Quality, "at_cost=1") {
+		t.Errorf("total quality %v: it counts the holding at cost", rows[""].Quality)
+	}
+}
+
 // seedSPVExit adds SPVX to the private-markets fixture: a subscription,
 // one mark, and an exit in kind out of the account that delivers PUB,
 // the listed shares the SPV received, at a stated value. payload is the

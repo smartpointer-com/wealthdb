@@ -169,8 +169,9 @@ What the figures miss:
     so tvpi reads low; a distribution after it can read high.
   - A commitment reads only where a source states one.
   - A deal a source values at cost without saying so reads tvpi 1 with
-    no at_cost flag, and its stated_tvpi reads 1 too. AngelList does
-    not state a valuation basis for every deal.
+    no at_cost flag, and its stated_tvpi reads 1 too. An AngelList deal
+    that states no valuation basis and is worth exactly its book value
+    reads at_cost, even where the portal marked it at that value.
   - The view carries no volatility or other risk figure: marks are too
     old and sparse for one.
 
@@ -183,7 +184,8 @@ The quality column says what a row misses:
                            acquisition, not a cash leg
   exited                   the status is exited: nav is 0
   at_cost                  the source carries the NAV at cost, before
-                           any valuation: tvpi reads 1 and irr_pct 0
+                           any valuation: with nothing back, tvpi
+                           reads 1 and irr_pct 0
   call_after_mark          a call came after the mark
   distribution_after_mark  a distribution or exit came after the mark
   exit_unvalued=N          N exits in kind state no value

@@ -398,9 +398,12 @@ Quality tags:
 - `exited`: the status is `exited`, so `nav` is 0. Once the holding has
   left the holdings, `marked_at` is the mark of its last line.
 - `at_cost`: the source carries the NAV at cost, before any valuation
-  of its own, so `tvpi` reads 1 and `irr_pct` 0 by construction. AngelList
-  states such a line as `valuation_basis: cost`, Carta's fund carry as
-  `called_capital`. A mark plus what moved in since is a mark.
+  of its own. The NAV holds no gain, so with nothing back `tvpi` reads 1
+  and `irr_pct` 0. AngelList states such a line as
+  `valuation_basis: cost`, Carta's fund carry as `called_capital`. A
+  mark plus what moved in since is a mark. An AngelList line that
+  states no basis is at cost where it is worth exactly its book value.
+  A line worth 0 is not.
 - `call_after_mark`: a call came after the mark. The NAV leaves it out
   until the next mark, so `tvpi` reads low.
 - `distribution_after_mark`: a distribution or an exit came after the
@@ -427,9 +430,9 @@ Limits:
 - Marks are old by nature, so `marked_at` always shows.
 - A commitment reads only where a source states one. AngelList states
   one for each deal.
-- AngelList does not state a valuation basis for every deal. A deal it
-  values at cost without saying so reads `tvpi` 1 with no `at_cost`, and
-  its `stated_tvpi` reads 1 too.
+- A deal a source values at cost without saying so reads `tvpi` 1 with
+  no `at_cost`, and its `stated_tvpi` reads 1 too. AngelList's lines are
+  the exception the `at_cost` tag names.
 - No source states an IRR per holding. AngelList's multiples for the
   whole account are not shown.
 - The view carries no volatility or other risk figure. Marks are too old

@@ -960,6 +960,9 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0227: its private-markets rows read no `at_cost` on an AngelList
+  deal that states no valuation basis and is worth exactly its book
+  value;
 - 0226: its private-markets rows derive an unfunded from paid in at
   each call's own rate, so a holding in another currency can read a
   remainder it does not owe;
