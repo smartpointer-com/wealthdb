@@ -828,11 +828,6 @@ paid in. It has none where it has no NAV or no cost.
   name no holding count while the pickers keep every holding, as the
   total counts them. The last quarter's figures are the total's paid in
   and distributed, but for the cents each row rounds.
-- *Gain by holding*: one bar per holding, the largest gain first, and a
-  line of the share of the holdings' gain the holdings up to it make. It
-  shows how few holdings make most of the gain. The line is blank where
-  the holdings' gain is not positive. Its bars are labelled as the
-  multiples' are.
 
 A chart's figure for many holdings adds their money and pools their
 multiples. No chart defines its own paid in or distributed. An exit in
@@ -844,8 +839,8 @@ drops the money and the account, as the Returns twin drops its money
 columns. A holding's name stays. The multiples chart holds multiples
 only, so the twin shows it as it is. The other twin charts show each
 sum of money as a share of the total paid in, or, on the cash flows,
-of all the capital called. A multiple, a count and a share of the gain
-show as they are, and a holding's source stands in for its account.
+of all the capital called. A multiple and a count show as they are,
+and a holding's source stands in for its account.
 
 The **Wealth Overview** charts net worth over time stacked by source.
 Below it, it charts the asset classes over time: each day's classes as

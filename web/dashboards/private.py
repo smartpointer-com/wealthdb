@@ -146,7 +146,7 @@ def private_chart_cards(f):
 
     A twin card shows each sum of money as a share of the total paid in:
     the kept holdings', or the calls to date at the last quarter. A
-    multiple, a count and a share of the gain show as they are, and a
+    multiple and a count show as they are, and a
     holding's source stands in for its account."""
     tags = private_tags("web_private")
     card = f.using(tags=tags, tail=PRIVACY_DESC if f.privacy else "").card
@@ -229,25 +229,3 @@ def private_chart_cards(f):
           **(_share_viz(*(name(c) for c in FLOW_COLORS), decimals=1) if f.privacy else {})},
          tags=flow_tags)
 
-    # A holding's share of the gain adds up, the largest first, to the
-    # holdings' whole: how few holdings make most of it. None where the
-    # holdings' gain is not positive, as a share of it means nothing
-    # then.
-    card("Gain by holding", "combo",
-         "Each holding's gain, the largest first" + (" as a share of the total paid in" if f.privacy else "") +
-         ", and the share of the holdings' gain the holdings up to it make. No mark or cost leaves a holding "
-         "out.",
-         held + ",\n" + HOLDING_NAMES + ",\nr AS (\n  SELECT *, sum(gain) OVER (ORDER BY gain DESC, holding, "
-         "silver_source_id, instrument_external_id\n                                ROWS UNBOUNDED PRECEDING) AS gain_to,\n"
-         "         sum(gain) OVER () AS gain_all\n    FROM n\n   WHERE gain IS NOT NULL)\n"
-         f"SELECT {HOLDING_LABEL},\n       " + money("gain", "gain") + ",\n"
-         "       CASE WHEN gain_all > 0 THEN 100 * gain_to / gain_all END AS cumulative_share_pct\n"
-         "  FROM r" + (" CROSS JOIN t" if f.privacy else "") +
-         "\n ORDER BY r.gain DESC, r.holding, silver_source_id, instrument_external_id",
-         {"graph.dimensions": ["holding"], "graph.metrics": [name("gain"), "cumulative_share_pct"],
-          "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
-          "series_settings": {name("gain"): {"display": "bar", "color": MULTIPLE_COLORS["dpi"], "title": "Gain"},
-                              "cumulative_share_pct": {"display": "line", "axis": "right",
-                                                       "color": FLOW_COLORS["called"],
-                                                       "title": "Share of the holdings' gain"}},
-          **_share_viz(*([name("gain")] if f.privacy else []), "cumulative_share_pct", decimals=1)})

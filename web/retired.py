@@ -135,7 +135,10 @@ RETIRED_CARD_NAMES = [
                       "Received interest", "Received interest (privacy)",
                       "Received dividends", "Received dividends (privacy)",
                       "Expected interest remaining", "Expected interest remaining (privacy)",
-                      "Expected dividends remaining", "Expected dividends remaining (privacy)"]
+                      "Expected dividends remaining", "Expected dividends remaining (privacy)",
+                      # Private Markets: the multiples and the gain against
+                      # them say what the gain by holding said.
+                      "Gain by holding", "Gain by holding (privacy)"]
 
 # Dashboard names retired by renames; archived on provision so a re-run
 # cleans them up.

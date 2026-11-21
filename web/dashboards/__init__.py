@@ -354,13 +354,11 @@ DASHBOARDS = (
         ("currency", "as_of_day", "source", "asset_class", "vehicle", "holding"), (), (
             # The figures, then the multiples they make, one bar per
             # holding; the gain against the multiple beside the
-            # vintages; the cash flows over time; last, the gain by
-            # holding, which shows how few make most of it.
+            # vintages; last, the cash flows over time.
             Row(9, (("Private holdings", 24),)),
             Row(8, (("Multiples by holding", 24),)),
             Row(9, (("Gain against multiple", 12), ("By vintage year", 12))),
             Row(8, (("Cash flows to date", 24),)),
-            Row(8, (("Gain by holding", 24),)),
         ), redacts="money columns redacted or shown as shares"),
 )
 

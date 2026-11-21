@@ -5628,7 +5628,7 @@ if duckdb is not None:
 
 section("the Private Markets dashboard")
 
-_PM_CHARTS = ("Gain against multiple", "By vintage year", "Cash flows to date", "Gain by holding")
+_PM_CHARTS = ("Gain against multiple", "By vintage year", "Cash flows to date")
 _PM_PICKERS = ["currency", "as_of_day", "source", "asset_class", "vehicle", "holding"]
 check("Private Markets carries the table, the multiples and the charts of the gain, the vintages and the "
       "cash flows; the twin the twins of all but the multiples",
@@ -5671,6 +5671,8 @@ check("...the scatter draws a series per status, on a log scale of the multiple"
       VIZ["Gain against multiple"]["graph.x_axis.scale"] == "log"
       and set(VIZ["Gain against multiple"]["series_settings"]) == {"held", "partially_exited", "exited"}
       and VIZ["Gain against multiple"]["graph.dimensions"] == ["tvpi", "status"])
+check("...the retired Gain by holding cards are archived",
+      {"Gain by holding", p.privacy_name("Gain by holding")} <= set(p.RETIRED_CARD_NAMES))
 
 if duckdb is not None:
     # Four holdings at two instants, today's and June's quarter end: a
@@ -5826,23 +5828,12 @@ if duckdb is not None:
     check("...the twin's shares of all the capital called",
           _near(_ct[-1][1], 100) and _near(_ct[-1][2], 100 * 43 / 135) and _near(_ct[0][3], -100 * 85 / 135), _ct)
 
-    _gh = _pmr("Gain by holding")
-    check("the gain by holding the largest first, with the share of the holdings' gain up to each",
-          [(r[0], float(r[1])) for r in _gh] == [("Fund (src-1)", 19), ("SPV (src-1)", 12), ("Note (src-2)", 10)]
-          and _near(_gh[0][2], 100 * 19 / 41) and _near(_gh[2][2], 100), _gh)
-    _gw = _pmr("Gain by holding (privacy)")
-    check("...the twin each gain a share of the total paid in, the line as it is",
-          _near(_gw[0][1], 100 * 19 / 135) and [r[2] for r in _gw] == [r[2] for r in _gh], _gw)
     _pm.execute("INSERT INTO report_private_markets SELECT * REPLACE ('c' AS account_external_id,"
                 " 'f2' AS instrument_external_id) FROM report_private_markets WHERE instrument_external_id = 'f'")
-    _two = ([r[0] for r in _pmr("Multiples by holding")], [r[0] for r in _pmr("Gain by holding")])
+    _two = [r[0] for r in _pmr("Multiples by holding")]
     check("...one name twice in a source, as one fund in two portfolios, is two bars, a number telling them apart",
-          _two == (["SPV (src-1)", "Note (src-2)", "Fund (src-1 1)", "Fund (src-1 2)", "Late (src-1)"],
-                   ["Fund (src-1 1)", "Fund (src-1 2)", "SPV (src-1)", "Note (src-2)"]), _two)
+          _two == ["SPV (src-1)", "Note (src-2)", "Fund (src-1 1)", "Fund (src-1 2)", "Late (src-1)"], _two)
     _pm.execute("DELETE FROM report_private_markets WHERE account_external_id = 'c'")
-    _pm.execute("UPDATE report_private_markets SET nav = 0 WHERE holding IN ('Fund', 'Note')")
-    check("...no share of the gain where the holdings' gain is not positive",
-          [r[2] for r in _pmr("Gain by holding")] == [None, None, None], _pmr("Gain by holding"))
 
 section("the benchmarks")
 
