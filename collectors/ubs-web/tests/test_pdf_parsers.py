@@ -22,6 +22,7 @@ from account_statement import (
     parse_account_statement_text,
 )
 from maturity_notice import parse_maturity_notice_text
+from pdf_common import iban_in
 from payment_advice import _advice_trx_no, parse_payment_advice_text
 from quarterly_report import parse_quarterly_report_text
 from securities_advice import parse_capital_call_text, parse_contract_note_text
@@ -47,6 +48,17 @@ from soa_positions import (
 # Synthetic IBAN (all-zero placeholder, valid CH-IBAN shape).
 _SYN_IBAN = "CH00 0000 0000 0000 0000 1"
 _SYN_COUNTER_IBAN = "CH00 0000 0000 0000 0000 2"
+
+
+@pytest.mark.parametrize(("text", "iban"), [
+    (f"IBAN {_SYN_IBAN}", "CH0000000000000000001"),
+    ("Herr Example IBAN CH0000000000000000002 more", "CH0000000000000000002"),
+    (f"{_SYN_IBAN} then {_SYN_COUNTER_IBAN}", "CH0000000000000000001"),
+    ("no account here", None),
+])
+def test_an_iban_is_read_without_its_spaces(text, iban):
+    assert iban_in(text) == iban
+
 
 # Ledger column anchor bands (x0, x1) mirroring the real layout.
 _BAND = {

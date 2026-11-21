@@ -9,7 +9,7 @@ from datetime import date
 from collectorkit.words import Extracted, Row, Word
 from collectorkit.words import rows as word_rows
 
-from pdf_common import IBAN_RE, document_text, to_float, to_unix
+from pdf_common import document_text, iban_in, to_float, to_unix
 
 
 # ============================================================
@@ -250,9 +250,8 @@ def _stmt_counter_account(cont_lines: list[str]) -> str | None:
     from a movement's continuation lines, for the gold engine's
     internal-transfer / mortgage netting. Whitespace-normalised."""
     for c in cont_lines:
-        m = IBAN_RE.search(c)
-        if m:
-            return re.sub(r"\s+", "", m.group(0))
+        if iban := iban_in(c):
+            return iban
     for c in cont_lines:
         m = _STMT_HYPO_RE.search(c)
         if m:
@@ -413,9 +412,7 @@ def _read_ledger(extracted: Extracted) -> dict:
 
     for page in extracted.pages:
         if ledger["iban"] is None:
-            m = IBAN_RE.search(page.text)
-            if m:
-                ledger["iban"] = re.sub(r"\s+", "", m.group(0)).upper()
+            ledger["iban"] = iban_in(page.text)
         if ledger["currency"] is None:
             cm = _CCY_HEADER_RE.search(page.text.replace(" ", ""))
             if cm:

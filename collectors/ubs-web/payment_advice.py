@@ -8,7 +8,7 @@ from datetime import date
 from collectorkit.words import Extracted
 
 from pdf_common import (
-    IBAN_RE, document_text, long_date, to_float, to_unix, undouble_bold,
+    document_text, iban_in, long_date, to_float, to_unix, undouble_bold,
 )
 
 
@@ -154,9 +154,7 @@ def parse_payment_advice_text(text: str, doc_token: str) -> list[dict]:
             # older layout sets the addressee column and the account
             # column on one printed line. An advice names one IBAN, the
             # account it is addressed to.
-            m = IBAN_RE.search(ln)
-            if m:
-                iban = re.sub(r"\s+", "", m.group(0)).upper()
+            iban = iban_in(ln)
         if in_details:
             if ln.startswith(_ADVICE_DETAILS_END):
                 in_details = False

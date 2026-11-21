@@ -92,7 +92,14 @@ def to_float(s: str | None) -> float | None:
 
 
 # An IBAN as the statements and advices print it, spaced or not.
-IBAN_RE = re.compile(r"CH\d{2}(?:[ ]?[A-Z0-9]){17}")
+_IBAN_RE = re.compile(r"CH\d{2}(?:[ ]?[A-Z0-9]){17}")
+
+
+def iban_in(text: str) -> str | None:
+    """The first IBAN `text` prints, without its spaces; None when it
+    prints none."""
+    m = _IBAN_RE.search(text)
+    return m.group(0).replace(" ", "") if m else None
 
 
 def undouble_bold(line: str) -> str:
