@@ -1241,10 +1241,11 @@ aggregate containing BOTH accounts double-represents the move (the
 
   RETURNS-NOTES "Netting and closure" has the rule.
 - **Netting is per entity**: a linked pair nets only in aggregates that hold
-  BOTH legs in the window: both accounts in the entity (post
-  `returns_exclude`) and both days inside it. The gap between the two days
-  does not matter: where the pair settles, the chain carries the money
-  between them, as if it never left (RETURNS-NOTES "Netting and closure").
+  BOTH legs in the window. Both accounts are in the entity (post
+  `returns_exclude`) and valued by the window's end. Both days are inside
+  it. The gap between the two days does not matter: where the pair
+  settles, the chain carries the money between them, as if it never left
+  (RETURNS-NOTES "Netting and closure").
   Where the legs moved one holding in the same quantity, what its price did
   between them is return. Where a linked pair moved one holding in quantities
   that are not the same, it binds the quantity both legs hold; the larger

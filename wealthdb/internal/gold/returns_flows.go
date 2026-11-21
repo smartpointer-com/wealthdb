@@ -417,6 +417,9 @@ func (m *movedLegs) rolled(assets []*accountData, winTo int64) []returns.Flow {
 // that crosses the entity's boundary counts once, in the same bucket as the value
 // change it causes (RETURNS-NOTES §"staggered inception"):
 //
+//  0. the entity holds the accounts that have a value by the window's end
+//     (heldBy). A later debut is no part of the window: its legs are none
+//     of the entity's, and its partners' legs cross the boundary;
 //  1. every leg is classified once: its region in its account's life;
 //  2. legs pair. A stored pair binds where the entity holds both legs in
 //     the window, at any day and value gap (storedPairs). Where both legs
@@ -449,6 +452,7 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 		}
 		return flows, nil, nil
 	}
+	assets = heldBy(assets, winTo)
 	w := daySpan{winFrom, winTo}
 
 	// Stored pairs obey the same --netting switch as the heuristic netter:
@@ -533,6 +537,16 @@ func entityFlows(assets []*accountData, p ReturnParams, winFrom, winTo int64, ag
 		}
 	}
 	return flows, tags, moved.rolled(assets, winTo)
+}
+
+// heldBy is the assets that have a value on or before day, in member order:
+// assets itself where every one has.
+func heldBy(assets []*accountData, day int64) []*accountData {
+	later := func(a *accountData) bool { return a.firstDay() > day }
+	if !slices.ContainsFunc(assets, later) {
+		return assets
+	}
+	return slices.DeleteFunc(slices.Clone(assets), later)
 }
 
 // onboarding appends the synthetic onboarding flows: a late constituent's whole

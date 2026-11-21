@@ -819,11 +819,12 @@ chained TWR below −100%.
   `ClosureScope` they are subsumed, and the closure flow books them on
   the zeroing day; `ClosureLedgerExact` keeps them as the real exit legs.
 - **Netting interaction:** stored pairs and transfer/journal netting run
-  over the full candidate set (pre-debut legs included) **before**
-  subsumption, so genuine internal pairs annihilate and only a
-  constituent's own surviving pre-debut/closure capital is subsumed. A
-  surviving journal-OUT sits on an *alive* account whose value series
-  reflects the drop, so it is real, not an orphaned phantom.
+  over the legs of every account valued by the window's end (pre-debut
+  legs included) **before** subsumption, so genuine internal pairs
+  annihilate and only a constituent's own surviving pre-debut/closure
+  capital is subsumed. A surviving journal-OUT sits on an *alive* account
+  whose value series reflects the drop, so it is real, not an orphaned
+  phantom.
 - **A cancelled pre-debut leg reduces onboarding** by its signed amount,
   where the partner's account is on the spine by then and shows the leg by
   the window's end. The debut value holds that money and the pair's other
@@ -834,6 +835,22 @@ chained TWR below −100%.
   amount may be negative: an account that passed on more than it kept. What
   happens before a first valuation is capital in either direction, never
   performance. Guard: `TestFundedDebutBooksNoNewMoney`.
+- **A debut after the window's end** is no part of the window. The entity
+  holds an account from its first valuation, so a window that ends
+  before it holds none of the account's value:
+  - The account's legs in the window are no flows of the entity. Money
+    paid into it is not in the entity yet.
+  - A leg on a held account that pairs with one of them is a real flow.
+    The money left the value the window measures. Its partner is no flow
+    of the window, so the leg counts in `unmatched_transfers`.
+  - A stored pair with a leg on the account does not bind, so it counts
+    in no `cross_source_netted`.
+  - A window that ends on or after the debut reads the same pair as an
+    inside move that funds the debut.
+
+  Guards: `TestWindowBeforeDebutKeepsThePartnersLeg`,
+  `TestWindowBeforeDebutDropsItsLegs`,
+  `TestWindowBeforeDebutUnbindsAStoredPair`.
 - **A zero first value is no valuation.** It holds none of the money
   moved in before the account's first nonzero valuation. The test is the
   net of every leg on or before that valuation, paired or not

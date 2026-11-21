@@ -378,6 +378,116 @@ func TestFundedDebutBooksNoNewMoney(t *testing.T) {
 	}
 }
 
+// TestWindowBeforeDebutKeepsThePartnersLeg: A sends money to B in the
+// window, and B debuts after the window's end. A window that ends before
+// a debut does not hold that account, so A's leg is a real outflow there:
+// A's drop is no loss, and the leg, whose partner is no flow of the window,
+// counts in unmatched_transfers. A window past the debut reads the pair as
+// an inside move that funds B's debut.
+func TestWindowBeforeDebutKeepsThePartnersLeg(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "fidx", "fidelity")
+	start := dy(2023, time.January, 2)
+	move := dy(2023, time.June, 1)
+	debut := dy(2023, time.December, 31)
+	end := dy(2024, time.June, 30)
+	seedAcct(t, db, ctx, "fidx", "A", canonical.AccountKindBrokerage, nil,
+		[]snap{{start, 10000}, {move, 7000}, {end, 7000}},
+		[]txn{{move, canonical.TxKindJournal, -3000}})
+	seedAcct(t, db, ctx, "fidx", "B", canonical.AccountKindBrokerage, nil,
+		[]snap{{debut, 3000}, {end, 3000}},
+		[]txn{{move, canonical.TxKindJournal, 3000}})
+
+	for _, c := range []struct {
+		name      string
+		to        int64
+		netFlow   float64
+		unmatched bool
+	}{
+		{"before the debut", eod(2023, time.September, 30), -3000, true},
+		{"past the debut", eod(2024, time.June, 30), 0, false},
+	} {
+		rows, err := RunReturns(ctx, db, params("sources", 0, c.to))
+		if err != nil {
+			t.Fatalf("%s: RunReturns: %v", c.name, err)
+		}
+		if nf := netFlowOf(t, rows, "fidx"); math.Abs(nf-c.netFlow) > 1e-6 {
+			t.Errorf("%s: net_flow = %.2f, want %.2f", c.name, nf, c.netFlow)
+		}
+		s, _ := summaryFor(rows, "fidx")
+		if s.TWR == nil || math.Abs(*s.TWR) > 1e-9 {
+			t.Errorf("%s: TWR = %v, want 0 (the move is no loss)", c.name, s.TWR)
+		}
+		if qualityHas(s, "unmatched_transfers=1") != c.unmatched {
+			t.Errorf("%s: flags = %v, want unmatched_transfers=1 %v", c.name, s.Quality, c.unmatched)
+		}
+	}
+}
+
+// TestWindowBeforeDebutDropsItsLegs: money paid into B in the window, with
+// B's debut after the window's end, is no flow of the window. No value
+// there holds it, so booking it would read as a loss.
+func TestWindowBeforeDebutDropsItsLegs(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedReturnsSource(t, db, ctx, "fidy", "fidelity")
+	start := dy(2023, time.January, 2)
+	fund := dy(2023, time.June, 1)
+	debut := dy(2023, time.December, 31)
+	end := dy(2024, time.June, 30)
+	seedAcct(t, db, ctx, "fidy", "A", canonical.AccountKindBrokerage, nil,
+		[]snap{{start, 10000}, {end, 10000}}, nil)
+	seedAcct(t, db, ctx, "fidy", "B", canonical.AccountKindBrokerage, nil,
+		[]snap{{debut, 3000}, {end, 3000}},
+		[]txn{{fund, canonical.TxKindDeposit, 3000}})
+
+	rows, err := RunReturns(ctx, db, params("sources", 0, eod(2023, time.September, 30)))
+	if err != nil {
+		t.Fatalf("RunReturns: %v", err)
+	}
+	if nf := netFlowOf(t, rows, "fidy"); math.Abs(nf) > 1e-6 {
+		t.Errorf("net_flow = %.2f, want 0", nf)
+	}
+	s, _ := summaryFor(rows, "fidy")
+	if s.TWR == nil || math.Abs(*s.TWR) > 1e-9 {
+		t.Errorf("TWR = %v, want 0", s.TWR)
+	}
+}
+
+// TestWindowBeforeDebutUnbindsAStoredPair: a stored cross-source pair whose
+// receiver debuts after the window's end does not bind in it. The sender's
+// leg is a real flow, counted in unmatched_transfers, and the pair counts
+// in no cross_source_netted. A window past the debut nets the pair, and the
+// leg funds the debut.
+func TestWindowBeforeDebutUnbindsAStoredPair(t *testing.T) {
+	t.Parallel()
+	db, ctx := openMigrated(t)
+	seedCrossPair(t, db, ctx, dy(2024, time.June, 1))
+	for _, c := range []struct {
+		name              string
+		to                int64
+		netFlow           float64
+		unmatched, netted bool
+	}{
+		{"before the debut", eod(2024, time.April, 30), -10000, true, false},
+		{"past the debut", eod(2024, time.December, 2), 40000, false, true},
+	} {
+		rows, err := RunReturns(ctx, db, tmParams("global", 0, c.to))
+		if err != nil {
+			t.Fatalf("%s: RunReturns: %v", c.name, err)
+		}
+		if nf := netFlowOf(t, rows, ""); math.Abs(nf-c.netFlow) > 0.01 {
+			t.Errorf("%s: net_flow = %.2f, want %.2f", c.name, nf, c.netFlow)
+		}
+		g, _ := summaryFor(rows, "")
+		if qualityHas(g, "unmatched_transfers=1") != c.unmatched || qualityHas(g, "cross_source_netted=1") != c.netted {
+			t.Errorf("%s: flags = %v, want unmatched_transfers=1 %v and cross_source_netted=1 %v", c.name, g.Quality,
+				c.unmatched, c.netted)
+		}
+	}
+}
+
 // TestClosureOnTheFinalDayBooksNoExit: an account zeroes on the spine's last day,
 // today, the one case the synthetic closure books anything. Money that went to a
 // sibling never left the entity, so the cancelled pair keeps the closure out of
