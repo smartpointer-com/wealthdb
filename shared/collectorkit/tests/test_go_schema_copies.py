@@ -60,7 +60,8 @@ COPIES = {
         "schema_meta": VERSION}),
     "equityzen": Copy(("equityzen/testdata/silver_schema.sql",), {
         "schema_meta": VERSION, "capital_account_statements": UNREAD,
-        "k1_documents": UNREAD, "tax_documents": UNREAD}),
+        "k1_documents": UNREAD, "tax_documents": UNREAD,
+        "document_derivations": BOOKKEEPING}),
     "fidelity-web": Copy((
         "fidelity/testdata/silver_schema.sql",
         "fidelity/testdata/lots_schema.sql"), {

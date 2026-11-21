@@ -48,7 +48,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, extract, loader, pdftotext, silver
+from collectorkit import (
+    bronze, derivations, extract, loader, pdftotext, silver, srcfp,
+)
 
 import statements  # PDF parsers for capital-account statements + K-1s
 
@@ -294,6 +296,16 @@ def _parse_k1(blob: Path, chash: str) -> dict:
     return cached["k1"]
 
 
+# The K-1 reader's scope in document_derivations, and its generation: the
+# code of statements.py and the kit modules it imports, and the keys of the
+# two extractions it reads.
+K1_SCOPE = "k1"
+K1_GENERATION = ".".join((srcfp.parser_fingerprint([statements],
+                                                   python=False),
+                          extract.extraction_key(_LAYOUT),
+                          extract.extraction_key(_BBOX)))
+
+
 def _sweep_extract_cache(_conn, _load) -> None:
     """Remove the extraction-cache entries neither extractor above reads
     any more: those an engine upgrade or a code edit left behind."""
@@ -362,7 +374,7 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
             continue
         parse = _parse_pdf(blob, chash)
         kind = parse["kind"]
-        if dtype == "CAPITAL_ACCOUNT_STATEMENT" or kind == "capital_account":
+        if _is_statement(dtype, kind):
             p = parse["cap"]
             cap_rows.append((
                 did, deal_id, p["period_end"], p["beginning_balance"],
@@ -373,14 +385,91 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
                 parsed.append({"document_external_id": did,
                                "period_end": p["period_end"],
                                "ending_nav": p["ending_nav"]})
-        elif dtype == "K1" or kind == "k1":
-            k = _parse_k1(blob, chash)
-            k1_rows.append((
-                did, deal_id, k["tax_year"], 1 if k["is_final"] else 0,
-                k["beginning_capital"], k["current_year_income"],
-                k["withdrawals_distributions"], k["ending_capital"],
-                "USD", chash, snapshot_at, canonical_json(k)))
+        elif _is_k1(dtype, kind):
+            k1_rows.append(_k1_row(did, deal_id, _parse_k1(blob, chash),
+                                   chash, snapshot_at))
     return tax_rows, cap_rows, k1_rows, parsed
+
+
+def _is_statement(dtype, kind) -> bool:
+    """Whether a document reads as a capital-account statement: its type
+    or its text says so."""
+    return dtype == "CAPITAL_ACCOUNT_STATEMENT" or kind == "capital_account"
+
+
+def _is_k1(dtype, kind) -> bool:
+    """Whether a document reads as a K-1; a statement never does."""
+    return not _is_statement(dtype, kind) and (dtype == "K1" or kind == "k1")
+
+
+def _k1_row(did, deal_id, k: dict, chash: str, snapshot_at: int) -> tuple:
+    """A `k1_documents` row, in _INSERT_K1's column order."""
+    return (did, deal_id, k["tax_year"], 1 if k["is_final"] else 0,
+            k["beginning_capital"], k["current_year_income"],
+            k["withdrawals_distributions"], k["ending_capital"],
+            "USD", chash, snapshot_at, canonical_json(k))
+
+
+_INSERT_K1 = (
+    "INSERT OR REPLACE INTO k1_documents(document_external_id, "
+    "deal_external_id, tax_year, is_final, beginning_capital, "
+    "current_year_income, withdrawals_distributions, ending_capital, "
+    "currency, content_hash, snapshot_at, payload) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+
+
+# Each stored K-1 that a reader derived, with the document's type and the
+# run its row came from; pending_derivations keeps those an older reader
+# derived.
+_STORED_K1_SQL = (
+    "SELECT k.content_hash, k.document_external_id, k.deal_external_id, "
+    "t.document_type, k.snapshot_at FROM k1_documents k "
+    "JOIN document_derivations r ON r.content_sha256 = k.content_hash "
+    "AND r.scope = ? "
+    "JOIN tax_documents t ON t.document_external_id = k.document_external_id "
+    "ORDER BY k.document_external_id")
+
+
+def rederive_k1s(conn: sqlite3.Connection, bronze_dir: Path) -> None:
+    """Derive again each stored K-1 that an older reader derived. A run
+    reads only its own documents. So after the runs, the load reads each
+    such K-1 again from the copy in the run its row came from. That is the
+    row a `load --force` writes, and a reader change reaches every stored
+    run. A document that no longer reads as a K-1 loses its row. One whose
+    copy is gone or holds other bytes keeps its row and its record, and is
+    logged."""
+    stale = derivations.pending_derivations(
+        conn, K1_SCOPE, K1_GENERATION, _STORED_K1_SQL, (K1_SCOPE,))
+    for chash, did, deal_id, dtype, snapshot_at in stale:
+        run = bronze.ts_slug(datetime.fromtimestamp(snapshot_at, timezone.utc))
+        blob = _find_blob(bronze_dir / run, deal_id, did)
+        if blob is None or not blob.is_file():
+            log.warning("k1 %s: its copy in %s is gone; its row stays as an "
+                        "older reader derived it", bronze.log_id(did), run)
+            continue
+        if _content_hash(blob) != chash:
+            log.warning("k1 %s: the copy in %s holds other bytes; its row "
+                        "stays as an older reader derived it",
+                        bronze.log_id(did), run)
+            continue
+        if _is_k1(dtype, _parse_pdf(blob, chash)["kind"]):
+            conn.execute(_INSERT_K1, _k1_row(
+                did, deal_id, _parse_k1(blob, chash), chash, snapshot_at))
+            rows = 1
+        else:
+            conn.execute("DELETE FROM k1_documents "
+                         "WHERE document_external_id = ?", (did,))
+            rows = 0
+        derivations.record_derivation(conn, chash, K1_SCOPE, K1_GENERATION,
+                                      rows)
+
+
+def _after_runs(conn: sqlite3.Connection, load: loader.Load) -> None:
+    """After the runs: the K-1s an older reader derived are derived again,
+    then the extraction cache is swept."""
+    with silver.transaction(conn):
+        rederive_k1s(conn, load.bronze_dir)
+    _sweep_extract_cache(conn, load)
 
 
 # ---- per-run load --------------------------------------------------------
@@ -453,12 +542,10 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> tuple[int, ...]:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
             stats["capital_account_statements"] += 1
         for row in k1_rows:
-            conn.execute(
-                "INSERT OR REPLACE INTO k1_documents(document_external_id, "
-                "deal_external_id, tax_year, is_final, beginning_capital, "
-                "current_year_income, withdrawals_distributions, ending_capital, "
-                "currency, content_hash, snapshot_at, payload) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            conn.execute(_INSERT_K1, row)
+            content_hash = row[9]
+            derivations.record_derivation(conn, content_hash, K1_SCOPE,
+                                          K1_GENERATION, 1)
             stats["k1_documents"] += 1
 
         # Event-sourced positions: replace this deal's full history with
@@ -516,7 +603,7 @@ def _parser() -> argparse.ArgumentParser:
 SPEC = loader.LoaderSpec(
     name="equityzen", schema=MIGRATIONS_DIR, load_run=load_run,
     parser=_parser, counts=RUN_COUNTS, run_columns=run_columns,
-    after_runs=_sweep_extract_cache, manifest=loader.MANIFEST_REQUIRED)
+    after_runs=_after_runs, manifest=loader.MANIFEST_REQUIRED)
 
 
 def main(argv: list[str]) -> int:

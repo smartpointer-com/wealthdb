@@ -8,9 +8,11 @@ K-1, and a run without documents. Synthetic data only.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import load
+import fund_documents
 from collectorkit import incremental
 from conftest import pdf_bytes, text_page
 
@@ -119,3 +121,68 @@ def test_runs_loaded_one_at_a_time_build_the_silver_of_a_force_load(tmp_path):
         load.main,
         lambda db, bronze: ["--bronze-dir", str(bronze), "--silver-db", str(db)],
         runs, tmp_path / "work")
+
+
+def _k1_runs(root: Path) -> list[Path]:
+    k1 = ({"id": "k1", "document_type": "Tax - Schedule K-1"},
+          [_k1("104,286.")])
+    return [_run(root, "20990101T000000Z", [k1]),
+            _run(root, "20990301T000000Z", [])]
+
+
+def test_a_new_k1_reader_derives_the_stored_runs_again(tmp_path, monkeypatch):
+    bronze, db = tmp_path / "bronze", tmp_path / "carta.db"
+    _k1_runs(bronze)
+    argv = ["--bronze-dir", str(bronze), "--silver-db", str(db)]
+    assert load.main(argv) == 0
+    read = fund_documents.k1.parse
+
+    def next_reader(extracted):
+        return {**read(extracted), "ending_capital": "1"}
+
+    monkeypatch.setattr(fund_documents, "K1_GENERATION", "next")
+    monkeypatch.setattr(fund_documents.k1, "parse", next_reader)
+    assert load.main(argv) == 0
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute(
+            "SELECT ending_capital FROM k1_capital_accounts").fetchall() == [
+                ("1",)]
+        assert conn.execute(
+            "SELECT generation, row_count FROM document_derivations").fetchall(
+            ) == [("next", 1)]
+    finally:
+        conn.close()
+
+
+def _derivations(db: Path) -> list[tuple]:
+    """Every document_derivations row, in a stable order."""
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute("SELECT * FROM document_derivations "
+                            "ORDER BY content_sha256, scope").fetchall()
+    finally:
+        conn.close()
+
+
+def test_a_k1_whose_bronze_is_gone_keeps_its_rows(tmp_path, monkeypatch,
+                                                  caplog):
+    bronze, db = tmp_path / "bronze", tmp_path / "carta.db"
+    first, _ = _k1_runs(bronze)
+    argv = ["--bronze-dir", str(bronze), "--silver-db", str(db)]
+    assert load.main(argv) == 0
+    records = _derivations(db)
+    (first / "documents" / "doc_k1.pdf").unlink()
+    monkeypatch.setattr(fund_documents, "K1_GENERATION", "next")
+    with caplog.at_level("WARNING"):
+        assert load.main(argv) == 0
+    assert any("doc_k1.pdf: its bronze copy is gone" in m
+               for m in caplog.messages)
+    conn = sqlite3.connect(db)
+    try:
+        assert conn.execute(
+            "SELECT ending_capital FROM k1_capital_accounts").fetchall() == [
+                ("148915",)]
+    finally:
+        conn.close()
+    assert _derivations(db) == records

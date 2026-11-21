@@ -358,6 +358,7 @@ lives in `positions`; the ledgers key by stable source id.
 | `tax_documents` | document_external_id | Per-offering document metadata + archive: `document_type`, `download_url`, and once `download` fetches the blob (by default; `--no-documents` skips it), `local_path` + `content_hash` + `retrieved_at`. |
 | `capital_account_statements` | document_external_id | Parsed quarterly partner's Statement of Capital Account: `period_end`, `beginning_balance`, `contributions`, `withdrawals`, `transfers`, `profit_loss`, `carried_interest`, **`ending_nav`** (Net Ending Capital Account Balance = the fund's fair-value NAV). Funds only (SPVs issue no capital-account statements). |
 | `k1_documents` | document_external_id | Parsed Schedule K-1 (Form 1065): `tax_year`, `is_final`, and Item L tax-basis capital account (`beginning_capital`, `current_year_income`, `withdrawals_distributions`, **`ending_capital`**), read from the text, a figure it misses from the face page's word boxes (`collectorkit.k1`). Part III box amounts are not stored. |
+| `document_derivations` | (content_sha256, scope) | Which K-1 reader derived each K-1 row (scope `k1`, migration 0003; `collectorkit.derivations`). |
 | `schema_meta`, `dump_runs` | — | collectorkit migration / snapshot bookkeeping. |
 
 **Document parsing** (`statements.py`, via `pdftotext`): `download` (default)
@@ -375,7 +376,11 @@ capital account. Only Item L of a K-1 is kept. It is read from the text,
 a printed minus sign kept. A figure the text misses, one printed off its
 caption's line, is read from the face page's word boxes (`pdftotext
 -bbox`) by the fleet's K-1 reader (`collectorkit.k1`). The Part III box
-amounts are not stored.
+amounts are not stored. A run records each K-1 under the reader's
+generation (`K1_GENERATION`: `statements.py`, the kit code it imports and
+both extraction keys). After the runs, the load reads again each K-1
+that an older reader read. It reads the copy in the run the row came from.
+So a reader change reaches every stored run.
 
 The GraphQL feed is the primary cash-flow source; these PDFs corroborate
 it and backstop anything it misses — a distribution can reach a bank

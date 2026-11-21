@@ -570,7 +570,11 @@ both stay; gold reconciles them. Each tax document is read once per
 generation (`K1_GENERATION`, recorded in `document_derivations`). The
 generation is the reader's code and the extraction's key, so an edit to
 `collectorkit.k1` or a pdftotext upgrade derives every tax document again.
-A later run that holds the same bytes reads nothing.
+A run reads only its own documents. After the runs, the load reads again
+each tax document that an older reader read. It reads the copy that
+`documents` names in bronze. So a reader change reaches every stored run.
+A document whose copy is gone keeps its rows. A later run that holds the
+same bytes reads nothing.
 
 **Tax year and period (migration 0005).** The heading reads "For calendar
 year YYYY, or tax year beginning … ending …". A calendar-year form leaves

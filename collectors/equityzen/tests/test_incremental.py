@@ -8,6 +8,7 @@ statements and a K-1 as real one-page PDFs. Synthetic data only.
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -93,3 +94,111 @@ def test_runs_loaded_one_at_a_time_build_the_silver_of_a_force_load(tmp_path):
         lambda db, bronze_dir: ["--bronze-dir", str(bronze_dir),
                                 "--silver-db", str(db)],
         runs, tmp_path / "work")
+
+
+def _k1_silver(tmp_path) -> tuple[list[str], Path]:
+    """One fund run holding a K-1, loaded: the load's argv and its silver."""
+    k1 = ({"id": "doc-k1", "documentType": "K1"}, _K1)
+    bronze_dir, db = tmp_path / "bronze", tmp_path / "equityzen.db"
+    _run(bronze_dir, "20990301T000000Z", [_fund([k1])], [k1])
+    argv = ["--bronze-dir", str(bronze_dir), "--silver-db", str(db)]
+    assert load.main(argv) == 0
+    return argv, db
+
+
+def _rows(db: Path, sql: str) -> list[tuple]:
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute(sql).fetchall()
+    finally:
+        conn.close()
+
+
+def test_a_new_k1_reader_derives_the_stored_runs_again(tmp_path, monkeypatch):
+    argv, db = _k1_silver(tmp_path)
+    read = load.statements.parse_k1
+    monkeypatch.setattr(load, "_PARSE_CACHE", {})
+    monkeypatch.setattr(load, "K1_GENERATION", "next")
+    monkeypatch.setattr(load.statements, "parse_k1", lambda text, boxes: {
+        **read(text, boxes), "ending_capital": 1.0})
+    assert load.main(argv) == 0
+    assert _rows(db, "SELECT ending_capital FROM k1_documents") == [(1.0,)]
+    assert _rows(db, "SELECT scope, generation, row_count "
+                     "FROM document_derivations") == [("k1", "next", 1)]
+
+
+def test_a_k1_is_derived_again_from_the_run_its_row_came_from(
+        tmp_path, monkeypatch):
+    argv, db = _k1_silver(tmp_path)
+    k1 = ({"id": "doc-k1", "documentType": "K1"}, _K1)
+    _run(tmp_path / "bronze", "20990401T000000Z", [_fund([k1])], [])
+    assert load.main(argv) == 0
+    read = load.statements.parse_k1
+    monkeypatch.setattr(load, "_PARSE_CACHE", {})
+    monkeypatch.setattr(load, "K1_GENERATION", "next")
+    monkeypatch.setattr(load.statements, "parse_k1", lambda text, boxes: {
+        **read(text, boxes), "ending_capital": 1.0})
+    assert load.main(argv) == 0
+    snapshot_at = bronze.parse_run_ts("20990301T000000Z")
+    assert _rows(db, "SELECT ending_capital, snapshot_at "
+                     "FROM k1_documents") == [(1.0, snapshot_at)]
+    assert _rows(db, "SELECT scope, generation, row_count "
+                     "FROM document_derivations") == [("k1", "next", 1)]
+
+
+_RECORD_SQL = "SELECT * FROM document_derivations"
+
+
+def test_a_k1_whose_copy_is_gone_keeps_its_row(tmp_path, monkeypatch, caplog):
+    argv, db = _k1_silver(tmp_path)
+    before = _rows(db, "SELECT * FROM k1_documents"), _rows(db, _RECORD_SQL)
+    for blob in (tmp_path / "bronze").rglob("*.pdf"):
+        blob.unlink()
+    monkeypatch.setattr(load, "K1_GENERATION", "next")
+    with caplog.at_level("WARNING"):
+        assert load.main(argv) == 0
+    assert any("its copy in 20990301T000000Z is gone" in m
+               for m in caplog.messages)
+    assert (_rows(db, "SELECT * FROM k1_documents"),
+            _rows(db, _RECORD_SQL)) == before
+
+
+def test_a_k1_whose_copy_holds_other_bytes_keeps_its_row(
+        tmp_path, monkeypatch, caplog):
+    argv, db = _k1_silver(tmp_path)
+    before = _rows(db, "SELECT * FROM k1_documents"), _rows(db, _RECORD_SQL)
+    for blob in (tmp_path / "bronze").rglob("*.pdf"):
+        blob.write_bytes(pdf_bytes(_statement("June 30, 2098", "1,475.00")))
+    monkeypatch.setattr(load, "K1_GENERATION", "next")
+    with caplog.at_level("WARNING"):
+        assert load.main(argv) == 0
+    assert any("the copy in 20990301T000000Z holds other bytes" in m
+               for m in caplog.messages)
+    assert (_rows(db, "SELECT * FROM k1_documents"),
+            _rows(db, _RECORD_SQL)) == before
+
+
+def test_a_k1_that_no_longer_reads_as_one_loses_its_row(tmp_path,
+                                                         monkeypatch):
+    argv, db = _k1_silver(tmp_path)
+    monkeypatch.setattr(load, "K1_GENERATION", "next")
+    monkeypatch.setattr(load, "_parse_pdf",
+                        lambda blob, chash: {"kind": "capital_account"})
+    assert load.main(argv) == 0
+    assert _rows(db, "SELECT * FROM k1_documents") == []
+    assert _rows(db, "SELECT scope, generation, row_count "
+                     "FROM document_derivations") == [("k1", "next", 0)]
+
+
+def test_a_silver_from_before_the_records_derives_its_k1s_once(tmp_path):
+    argv, db = _k1_silver(tmp_path)
+    before = _rows(db, "SELECT * FROM k1_documents")
+    conn = sqlite3.connect(db)
+    conn.executescript("DROP TABLE document_derivations; "
+                       "DELETE FROM schema_meta WHERE silver_schema_version = 3;")
+    conn.close()
+    assert load.main(argv) == 0
+    assert _rows(db, "SELECT * FROM k1_documents") == before
+    assert _rows(db, "SELECT scope, generation, row_count "
+                     "FROM document_derivations") == [
+        ("k1", load.K1_GENERATION, 1)]

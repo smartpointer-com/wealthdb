@@ -438,6 +438,43 @@ def load_k1_capital_accounts(conn, docs_dir: Path) -> int:
         pdf = _document_pdf(docs_dir, row)
         if pdf is not None:
             tax.setdefault(bronze.sha256_file(pdf)[0], (row, pdf))
+    return _derive_k1s(conn, tax)
+
+
+# The tax documents a K-1 generation other than the current one derived,
+# with the index row and the bronze copy `documents` keeps for each: the
+# first run's, as a `load --force` reads it.
+_STALE_K1_SQL = (
+    "SELECT d.content_sha256, d.payload, d.bronze_path FROM documents d "
+    "JOIN document_derivations r ON r.content_sha256 = d.content_sha256 "
+    "AND r.scope = ? WHERE r.generation != ? "
+    "ORDER BY d.first_seen_at, d.bronze_path")
+
+
+def rederive_k1_capital_accounts(conn, bronze_root: Path) -> int:
+    """Derive again the K-1 of each tax document that an older reader
+    read. A run reads only its own documents. So after the runs, the load
+    reads each such document again from the copy `documents` names under
+    `bronze_root`, and a reader change reaches every stored run. A
+    document whose copy is gone or holds no PDF keeps its rows and its
+    record, and is logged. Returns the number of rows written."""
+    tax: dict[str, tuple[dict, Path]] = {}
+    for sha, payload, bronze_path in conn.execute(
+            _STALE_K1_SQL, (K1_SCOPE, K1_GENERATION)).fetchall():
+        pdf = bronze_root / bronze_path
+        if pdf.is_file() and docdedup.is_pdf(pdf):
+            tax[sha] = (json.loads(payload), pdf)
+        else:
+            log.warning("%s: its bronze copy is gone or holds no PDF; its "
+                        "K-1 rows stay as an older reader derived them",
+                        bronze_path)
+    return _derive_k1s(conn, tax) if tax else 0
+
+
+def _derive_k1s(conn, tax: dict[str, tuple[dict, Path]]) -> int:
+    """Derive the K-1 of each tax document of `tax` (sha256 to its index
+    row and PDF) that K1_GENERATION has not derived; see
+    `load_k1_capital_accounts`. Returns the number of rows written."""
     pending = {sha for (sha,) in derivations.pending_derivations(
         conn, K1_SCOPE, K1_GENERATION, "SELECT value FROM json_each(?)",
         (json.dumps(list(tax)),))}

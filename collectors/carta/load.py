@@ -57,10 +57,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sqlite3
 import sys
 from pathlib import Path
 
-from collectorkit import loader
+from collectorkit import loader, silver
 
 from captable import (_captable_cash_flows, _entity_canceled_date,
                       _read_valuation_csv, load_securities,
@@ -70,7 +71,8 @@ from exercises import (_last_exercise_fmv, _last_exercise_price,
                        _match_exercises, _read_exercises)
 from fund_documents import (_fund_cash_flows, _warn_unowned_fund_documents,
                             load_documents, load_k1_capital_accounts,
-                            load_statement_nav, sweep_extract_cache)
+                            load_statement_nav, rederive_k1_capital_accounts,
+                            sweep_extract_cache)
 
 log = logging.getLogger("carta.load")
 
@@ -366,13 +368,24 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def _after_runs(conn: sqlite3.Connection, load: loader.Load) -> None:
+    """After the runs: the K-1s an older reader derived are derived again
+    (a run reads only its own documents), then the extraction cache is
+    swept."""
+    with silver.transaction(conn):
+        n = rederive_k1_capital_accounts(conn, load.bronze_dir)
+    if n:
+        log.info("k1: %d row(s) derived again for this reader", n)
+    sweep_extract_cache(conn, load)
+
+
 # bronze.pending_run_dirs skips a run whose status is not loadable; an
 # unreadable manifest stays loadable there, but this loader needs the
 # manifest's ids, so the frame passes over such a run with a warning.
 SPEC = loader.LoaderSpec(
     name="carta", schema=MIGRATIONS_DIR, load_run=load_run, parser=_parser,
     counts=RUN_COUNTS, run_columns=run_columns,
-    after_runs=sweep_extract_cache, manifest=loader.MANIFEST_SKIP)
+    after_runs=_after_runs, manifest=loader.MANIFEST_SKIP)
 
 
 def main(argv: list[str]) -> int:
