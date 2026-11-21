@@ -1562,56 +1562,81 @@ func TestPrivateMarketsCapitalAccounts(t *testing.T) {
 
 // TestPrivateMarketsUnfundedFromPaidIn: a capital account that states a
 // commitment and no remainder, call or payment gives the holding's own
-// paid in to subtract. BELOW reads the difference; NEAR, paid within 1%
-// of it, and OVER, paid beyond it, read 0; NOPAY, a line with no call
-// and no cost, reads none.
+// calls to subtract, each in the commitment's currency at its own day's
+// rate, the rest converted once at the account's day's rate. BELOW reads
+// the difference, and BOUND, paid short by 1% exactly, its rest; NEAR,
+// paid within 1% of it, and OVER, paid beyond it, read 0. FULL and PART
+// are called in the first half of 2024 and stated at its end, after the
+// CHF rate moved: in CHF, FULL still reads 0 and PART its USD rest at
+// the account's day's rate. EXIT has left the holdings and owes nothing;
+// NOPAY, a line with no call and no cost, reads none; NORATEC, called in
+// a currency with no rate, reads none and is unpriced. The total adds
+// what the holdings read.
 func TestPrivateMarketsUnfundedFromPaidIn(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedPrivateFixture(t, db, ctx)
-	inv, mar1, mar31 := "INV", dy(2024, time.March, 1), dy(2024, time.March, 31)
+	inv, mar1, mar31, dec31 := "INV", dy(2024, time.March, 1), dy(2024, time.March, 31), dy(2024, time.December, 31)
 	var txs []canonical.TransactionChange
 	for _, l := range []struct {
-		inst   string
-		amount int64
-	}{{"BELOW", -600}, {"NEAR", -995}, {"OVER", -1100}} {
+		inst, ccy string
+		amount    int64
+	}{{"BELOW", "USD", -600}, {"BOUND", "USD", -990}, {"NEAR", "USD", -995}, {"OVER", "USD", -1100},
+		{"FULL", "USD", -1000}, {"PART", "USD", -600}, {"EXIT", "USD", -400}, {"NORATEC", "QLZ", -500}} {
 		inst := l.inst
 		txs = append(txs, canonical.TransactionChange{SilverSourceID: "pm", TransactionExternalID: "u-" + inst,
 			OccurredAt: mar1, AccountExternalID: inv, InstrumentExternalID: &inst,
-			Kind: canonical.TxKindContribution, Currency: "USD", NetAmount: decp(l.amount)})
+			Kind: canonical.TxKindContribution, Currency: l.ccy, NetAmount: decp(l.amount)})
 	}
 	inTx(t, db, ctx, func(w *Writer) error { return w.InsertTransactions(ctx, txs) })
-	nopay := "NOPAY"
-	var lines []canonical.PositionChange
-	for _, at := range []int64{mar31, dy(2024, time.December, 31)} {
-		lines = append(lines, canonical.PositionChange{SilverSourceID: "pm", AccountExternalID: inv,
-			SnapshotAt: at, PositionKey: nopay, InstrumentExternalID: &nopay,
+	nopay, exit := "NOPAY", "EXIT"
+	line := func(inst *string, at int64) canonical.PositionChange {
+		return canonical.PositionChange{SilverSourceID: "pm", AccountExternalID: inv,
+			SnapshotAt: at, PositionKey: *inst, InstrumentExternalID: inst,
 			AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleSPV, Currency: "USD",
-			ValuedAt: at, MarketValue: decp(400)})
+			ValuedAt: at, MarketValue: decp(400)}
 	}
-	inTx(t, db, ctx, func(w *Writer) error { return w.InsertPositions(ctx, lines) })
+	inTx(t, db, ctx, func(w *Writer) error {
+		return w.InsertPositions(ctx, []canonical.PositionChange{line(&nopay, mar31), line(&nopay, dec31),
+			line(&exit, mar31)})
+	})
 	var caps []canonical.CapitalAccountChange
-	for _, inst := range []string{"BELOW", "NEAR", "OVER", "NOPAY"} {
+	for _, inst := range []string{"BELOW", "BOUND", "NEAR", "OVER", "FULL", "PART", "EXIT", "NOPAY", "NORATEC"} {
+		asOf := mar31
+		if inst == "FULL" || inst == "PART" {
+			asOf = dec31
+		}
 		caps = append(caps, canonical.CapitalAccountChange{SilverSourceID: "pm", AccountExternalID: &inv,
-			InstrumentExternalID: inst, AsOf: mar31, Currency: "USD", Commitment: decp(1000)})
+			InstrumentExternalID: inst, AsOf: asOf, Currency: "USD", Commitment: decp(1000)})
 	}
 	inTx(t, db, ctx, func(w *Writer) error {
 		return w.InsertReference(ctx, &canonical.SnapshotBatch{CapitalAccounts: caps})
 	})
-	got, err := RunPrivate(ctx, db, PrivateLatest, "USD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows := map[string]PrivateRow{}
-	for _, r := range got {
-		rows[r.InstrumentID] = r
-	}
-	for inst, want := range map[string]int64{"BELOW": 40000, "NEAR": 0, "OVER": 0} {
-		if r := rows[inst]; cents(t, r.Commitment) != 100000 || r.Unfunded == nil || cents(t, r.Unfunded) != want {
+	usd, _ := privateRows(t, db, ctx, "USD")
+	for inst, want := range map[string]int64{"BELOW": 40000, "BOUND": 1000, "NEAR": 0, "OVER": 0, "FULL": 0,
+		"PART": 40000, "EXIT": 0} {
+		if r := usd[inst]; cents(t, r.Commitment) != 100000 || r.Unfunded == nil || cents(t, r.Unfunded) != want {
 			t.Errorf("%s: %s, want unfunded %d cents", inst, privateRowText(r), want)
 		}
 	}
-	if r := rows["NOPAY"]; cents(t, r.Commitment) != 100000 || r.PaidIn != nil || r.Unfunded != nil {
+	if r := usd["EXIT"]; *r.Status != "exited" {
+		t.Errorf("EXIT has left the holdings: %s", privateRowText(r))
+	}
+	if r := usd["NOPAY"]; cents(t, r.Commitment) != 100000 || r.PaidIn != nil || r.Unfunded != nil {
 		t.Errorf("NOPAY, no paid in to subtract: %s", privateRowText(r))
+	}
+	if r := usd["NORATEC"]; cents(t, r.Commitment) != 100000 || r.Unfunded != nil ||
+		!slices.Contains(r.Quality, "unpriced=2") {
+		t.Errorf("NORATEC, a call with no rate and the unfunded it gives: %s %v", privateRowText(r), r.Quality)
+	}
+	if total := usd[""]; cents(t, total.Unfunded) != 81000 {
+		t.Errorf("total unfunded %s, want the holdings' 810", privateRowText(total))
+	}
+	chf, _ := privateRows(t, db, ctx, "CHF")
+	if r := chf["FULL"]; cents(t, r.Commitment) != 125000 || cents(t, r.Unfunded) != 0 {
+		t.Errorf("FULL in CHF, paid in whole: %s", privateRowText(r))
+	}
+	if r := chf["PART"]; cents(t, r.Commitment) != 125000 || cents(t, r.Unfunded) != 50000 {
+		t.Errorf("PART in CHF, 400 USD open at the account's day's rate: %s", privateRowText(r))
 	}
 }

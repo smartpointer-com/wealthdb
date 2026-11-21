@@ -113,8 +113,8 @@ such as a call refunded whole, is left out.
                a stock or a note has no commitment
   unfunded     what the commitment still holds open: the remainder the
                account states, else the commitment less what it says
-               was called (else paid in), never below 0. Where it says
-               neither, the commitment less paid_in, 0 below 1% of the
+               was called or paid, never below 0. Where it states none
+               of these, the commitment less paid_in, 0 below 1% of the
                commitment. 0 once the holding has exited: it owes no
                further calls
   distributed  what came back: distributions, sales, a private debt

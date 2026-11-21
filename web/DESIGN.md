@@ -958,6 +958,9 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0226: its private-markets rows derive an unfunded from paid in at
+  each call's own rate, so a holding in another currency can read a
+  remainder it does not owe;
 - 0225: its exposure reports sum in the order the rows arrive, so a
   last digit can differ from one run to the next;
 - 0224: its private-markets rows read no unfunded where a capital

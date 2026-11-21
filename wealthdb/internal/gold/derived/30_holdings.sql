@@ -1759,9 +1759,10 @@ CREATE MACRO private_legs(p_instants, p_ccy) AS TABLE (
 -- rate, stated_tvpi and stated_dpi as the source states them, else the
 -- multiples its stated figures give. Where the account states no
 -- remainder and no call or payment, unfunded is the commitment less the
--- holding's paid_in, 0 where that is below 1% of the commitment, NULL
--- with no paid_in. An exited holding's unfunded is 0:
--- a holding sold or wound up whole owes no further calls. The total
+-- holding's calls, each in the commitment's currency at its own day's
+-- rate: 0 where that is below 1% of the commitment, NULL with no
+-- paid_in. An exited holding's unfunded is 0: a holding sold or wound up
+-- whole owes no further calls. The total
 -- adds what the holdings state: a blank adds nothing, and no_cost and
 -- no_mark count the holdings it leaves out. Its dpi pools the holdings
 -- with a paid_in, its tvpi those with a paid_in and a nav, the
@@ -1776,7 +1777,8 @@ CREATE MACRO private_legs(p_instants, p_ccy) AS TABLE (
 -- the instant that no listed holding takes, which it leaves out. The
 -- total's exit_unvalued and unpriced count those exits too: the holdings
 -- plus the unattributed exits that state no value, or have no rate. A
--- stated commitment with no rate counts as unpriced.
+-- stated commitment with no rate counts as unpriced, and so does an
+-- unfunded its calls give where one of them has no rate.
 CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
     WITH ins AS (SELECT DISTINCT unnest(p_instants) AS as_of),
     legs AS (SELECT * FROM private_legs(p_instants, p_ccy)),
@@ -1909,17 +1911,19 @@ CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
     -- with its identity and the holding it states: the one of its
     -- identity in its account's group, or in its source where it names
     -- no account. One that matches two holdings, or none, states no
-    -- holding. Its commitment and unfunded convert at its day's rate;
-    -- unfunded is the stated remainder, else the commitment less what
-    -- was called, else paid in, never below zero; none where it states
-    -- no remainder and no commitment with a call or a payment. Its
+    -- holding. Its commitment and unfunded convert at its day's rate
+    -- (rate); unfunded is the stated remainder, else the commitment less
+    -- what was called, else paid in, never below zero; none where it
+    -- states no remainder and no commitment with a call or a payment.
+    -- commitment_own is the commitment in its currency, stated_ccy. Its
     -- multiples are the source's own, else the ratios of its stated
     -- figures over what was paid in, else called.
     cap AS (
         SELECT s.silver_source_id, s.account_external_id AS stated_account,
                s.instrument_external_id AS stated_instrument, s.as_of AS stated_as_of,
                s.source_ref AS stated_ref, COALESCE(i.isin, s.instrument_external_id) AS identity,
-               s.commitment IS NOT NULL AS committed,
+               s.commitment IS NOT NULL AS committed, s.currency AS stated_ccy, s.commitment AS commitment_own,
+               fx_pick(1, s.currency, p_ccy, o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS rate,
                CAST(fx_pick_keep_zero(s.commitment, s.currency, p_ccy,
                             o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(38,10)) AS commitment,
                CAST(fx_pick_keep_zero(COALESCE(s.unfunded,
@@ -1978,24 +1982,51 @@ CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
            AND k.holding_group = l.holding_group
          WHERE l.unattributed
          GROUP BY l.as_of),
-    -- Each listed holding with its capital account at the instant; an
-    -- exited one owes no further calls. A commitment whose account gives
-    -- no unfunded takes the holding's own paid in: the commitment less
-    -- it, read as 0 below 1% of the commitment, as fees and rounding part
-    -- a stated amount from a computed one, and none with no paid in. A
-    -- stated commitment with no rate to p_ccy is unpriced.
+    -- The calls of each holding whose capital account at the instant
+    -- states a commitment and no unfunded, in the commitment's currency
+    -- at each call's day's rate: paid_in, rounded once to the cent, and
+    -- unpriced, the calls with no rate.
+    kc AS (
+        SELECT as_of, silver_source_id, account_external_id, instrument_external_id,
+               ROUND(SUM(paid), 2) AS paid_in, COUNT(*) FILTER (WHERE paid IS NULL) AS unpriced
+          FROM (SELECT l.as_of, l.silver_source_id, l.account_external_id, l.instrument_external_id,
+                       CAST(fx_pick_keep_zero(l.paid_own, l.currency, t.stated_ccy,
+                                    o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(38,10)) AS paid
+                  FROM legs l
+                  JOIN st t ON t.as_of = l.as_of AND t.silver_source_id = l.silver_source_id
+                   AND t.account_external_id = l.account_external_id
+                   AND t.instrument_external_id = l.instrument_external_id
+                  ASOF LEFT JOIN fx_daily o0 ON o0.from_ccy = l.currency AND o0.to_ccy = t.stated_ccy AND o0.day <= l.day
+                  ASOF LEFT JOIN fx_daily o1 ON o1.from_ccy = l.currency AND o1.to_ccy = 'CHF' AND o1.day <= l.day
+                  ASOF LEFT JOIN fx_daily o2 ON o2.from_ccy = 'CHF' AND o2.to_ccy = t.stated_ccy AND o2.day <= l.day
+                  ASOF LEFT JOIN fx_daily o3 ON o3.from_ccy = l.currency AND o3.to_ccy = 'USD' AND o3.day <= l.day
+                  ASOF LEFT JOIN fx_daily o4 ON o4.from_ccy = 'USD' AND o4.to_ccy = t.stated_ccy AND o4.day <= l.day
+                 WHERE l.leg = 'call' AND NOT l.unattributed AND t.committed AND t.unfunded IS NULL)
+         GROUP BY ALL),
+    -- Each listed holding with its capital account at the instant. An
+    -- exited one owes no further calls. Where the account gives no
+    -- unfunded, unfunded is the commitment less the holding's calls
+    -- (kc), converted once at the account's day's rate. Fees and
+    -- rounding part a stated amount from a computed one, so a rest below
+    -- 1% of the commitment reads 0. With no call it is NULL, and so it is
+    -- where a call has no rate, which is unpriced. A stated commitment
+    -- with no rate to p_ccy is unpriced.
     ks AS (
         SELECT k.*, ROUND(t.commitment, 2) AS commitment,
                CASE WHEN k.exited AND (t.committed OR t.unfunded IS NOT NULL) THEN 0
                     WHEN t.unfunded IS NOT NULL THEN ROUND(t.unfunded, 2)
-                    WHEN t.commitment - k.paid_in < 0.01 * t.commitment THEN 0
-                    ELSE ROUND(t.commitment - k.paid_in, 2) END AS unfunded,
+                    WHEN c.unpriced > 0 THEN NULL
+                    WHEN t.commitment_own - c.paid_in < 0.01 * t.commitment_own THEN 0
+                    ELSE ROUND(CAST((t.commitment_own - c.paid_in) * t.rate AS DECIMAL(38,10)), 2) END AS unfunded,
                t.stated_tvpi,
                t.stated_dpi, t.stated_as_of,
-               k.unpriced + CASE WHEN t.committed AND t.commitment IS NULL THEN 1 ELSE 0 END AS unpriced_all
+               k.unpriced + CASE WHEN t.committed AND t.commitment IS NULL
+                                      OR NOT k.exited AND c.unpriced > 0 THEN 1 ELSE 0 END AS unpriced_all
           FROM k
           LEFT JOIN st t ON t.as_of = k.as_of AND t.silver_source_id = k.silver_source_id
-           AND t.account_external_id = k.account_external_id AND t.instrument_external_id = k.instrument_external_id),
+           AND t.account_external_id = k.account_external_id AND t.instrument_external_id = k.instrument_external_id
+          LEFT JOIN kc c ON c.as_of = k.as_of AND c.silver_source_id = k.silver_source_id
+           AND c.account_external_id = k.account_external_id AND c.instrument_external_id = k.instrument_external_id),
     -- The commitments stated at each instant that no listed holding
     -- takes, of a private holding's identity: its holding is not listed
     -- at the instant, or the account would state two holdings.

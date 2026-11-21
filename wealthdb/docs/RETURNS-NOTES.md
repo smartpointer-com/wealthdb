@@ -245,7 +245,7 @@ One row per holding, then the total:
 | `first_call` | the day of the first call; with none, of the first leg, else of the first line |
 | `paid_in` | the `contribution`, `buy` and `fee` lines on the holding, net of refunds |
 | `commitment` | what the holder committed, as the holding's capital account states it (below); blank where none states one |
-| `unfunded` | what the commitment still holds open: the remainder the account states, else the commitment less what it says was called (else paid in), never below 0. Where it says neither, the commitment less `paid_in`, read as 0 below 1% of the commitment, and blank with no `paid_in`. 0 once the holding has exited |
+| `unfunded` | what the commitment still holds open: the remainder the account states, else the commitment less what it says was called or paid, never below 0. Where it states none of these, the commitment less `paid_in`, read as 0 below 1% of the commitment, and blank with no `paid_in`. 0 once the holding has exited |
 | `distributed` | the `distribution` and `sell` lines, a `private_debt` holding's `interest`, `dividend` and `coupon` lines (the cash a loan or a note returns), and the exits in kind: a `transfer_out` of the holding, or one whose `holding` names it, at the value it states |
 | `nav` | the holding's lines at the latest snapshot. It is 0 once the holding has left the holdings, and blank where it never had a value |
 | `marked_at` | the oldest mark of those lines, `coalesce(valued_at, snapshot_at)`; for a holding that has left, the mark of its last line |
@@ -310,6 +310,12 @@ takes the holding's own `paid_in`: the commitment less it. Fees and
 rounding part a stated amount from a computed one, so a remainder below
 1% of the commitment reads 0. So an SPV paid in whole reads 0, not a
 sliver. With no `paid_in` the unfunded is blank.
+
+The subtraction runs in the commitment's currency. Each call converts
+to it at its own day's rate, and the rest converts once at the
+account's day's rate, as a stated remainder does. So a holding paid in
+whole reads 0 in every currency, however far the rate moved. A call
+with no rate leaves it blank, and the holding reads `unpriced`.
 
 An exited holding reads `unfunded` 0: a holding sold or wound up whole
 owes no further calls. Its `commitment` still shows.

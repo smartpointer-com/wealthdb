@@ -9,10 +9,11 @@ import (
 // TestCapitalAccountsReadThePositionNodes: an offering whose node states
 // a commitment is a capital account at the data date of the dump that
 // last listed it, its figures scaled from cents. The commitment is the
-// node's commitmentAmount, else its investmentAmount: a fund's, above
-// what it called, leaves the difference unfunded; an SPV's equals what
-// it paid, so nothing is. One whose node states neither a commitment nor
-// a TVPI is none, and neither is one dated outside the window.
+// node's commitmentAmount, else its investmentAmount: the fund's, above
+// what it called, leaves the difference unfunded, which gold reads as
+// the commitment less the calls; the SPV's equals what it paid, so
+// nothing is. One whose node states neither a commitment nor a TVPI is
+// none, and neither is one dated outside the window.
 func TestCapitalAccountsReadThePositionNodes(t *testing.T) {
 	path, db := newFixtureSilver(t)
 	seed(t, db)
@@ -44,13 +45,9 @@ INSERT INTO portfolio_summary(snapshot_at, invest_account_slug, data_date) VALUE
 	if p1.PaidIn != nil || p1.Unfunded != nil || p1.DPI != nil {
 		t.Errorf("a position node states no paid in apart from its contributions, no unfunded and no DPI: %+v", p1)
 	}
-	// Gold reads the unfunded as the commitment less the calls.
 	if fund.InstrumentExternalID != "p2" || fund.Currency != "EUR" || fund.Commitment.String() != "50000" ||
 		fund.Called.String() != "20000" || fund.Unfunded != nil || fund.TVPI != nil {
 		t.Errorf("the fund, committed above its calls: %+v", fund)
-	}
-	if d := fund.Commitment.Sub(*fund.Called); d.String() != "30000" {
-		t.Errorf("the fund's commitment less its calls = %s, want 30000 unfunded", d)
 	}
 	// A dump with no portfolio summary dates the node at its own time.
 	if spv.InstrumentExternalID != "p3" || spv.AsOf != 900 || spv.NAV != nil || spv.TVPI == nil || *spv.TVPI != 0 ||

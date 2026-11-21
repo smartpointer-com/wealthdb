@@ -13,13 +13,13 @@ import (
 // states a commitment or a TVPI. The node is the one the latest dump
 // that listed the position captured, so the account stands at that
 // dump's portfolio data date, else at the dump's time. The commitment is
-// the node's commitmentAmount, else its investmentAmount: what a fund
-// was committed, which its calls draw on over time, or what an SPV was
-// invested at once. The contributed capital (called), the realized value
-// (distributed), the unrealized value (the NAV) and the TVPI pass as
-// they are. The portal states no unfunded figure, DPI or IRR for a
-// position; its portfolio summary states them for the whole account
-// only.
+// the node's commitmentAmount, else its investmentAmount, which a node
+// that states no commitment states instead. The calls draw on it over
+// time, or pay it at once. The contributed capital (called), the
+// realized value (distributed), the unrealized value (the NAV) and the
+// TVPI pass as they are. The portal states no unfunded figure, DPI or
+// IRR for a position; its portfolio summary states them for the whole
+// account only.
 func (c *Connection) capitalAccounts(ctx context.Context, w canonical.Window, account string) ([]canonical.CapitalAccountChange, error) {
 	if account == "" {
 		return nil, nil
