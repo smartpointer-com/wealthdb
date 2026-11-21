@@ -390,7 +390,8 @@ def load_portfolio_performance_docs(
     DELETE then an INSERT under that tag, and records the doc under the
     generation, in one transaction. A doc whose parse fails keeps its
     rows and is recorded with none, so only a parser change reads it
-    again.
+    again. A doc whose bronze file is gone keeps its rows too. It is
+    logged and not recorded, so the next load looks for it again.
 
     Returns the number of newly-loaded docs.
     """
@@ -400,6 +401,10 @@ def load_portfolio_performance_docs(
     for r in docs:
         source_tag = f"pp:{r['swissquote_doc_id']}"
         pdf_path = bronze_root / r["bronze_path"]
+        if not pdf_path.is_file():
+            log.warning("Skip %s — its bronze file is gone; its rows stay",
+                        r["bronze_path"])
+            continue
         log.info("Parsing Portfolio Performance: %s", pdf_path.name)
         try:
             result = parse_portfolio_performance(pdf_path)
@@ -806,6 +811,7 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> None:
 # ============================================================
 
 def _check_bronze_dir(args: argparse.Namespace) -> None:
+    """Refuse a --bronze-dir that is not a directory."""
     if not args.bronze_dir.is_dir():
         raise SystemExit(f"--bronze-dir not found: {args.bronze_dir}")
 

@@ -145,6 +145,9 @@ class _DbCase(unittest.TestCase):
             " ?, 'run/documents/doc-0001.pdf', '{}');",
             (ACCOUNT, SNAPSHOT_AT),
         )
+        pdf = self.tmp / "run" / "documents" / "doc-0001.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.write_bytes(b"%PDF- a statement the mock parse reads")
         with mock.patch.object(load, "parse_portfolio_performance",
                                _statement):
             load.load_portfolio_performance_docs(self.conn, self.tmp)
@@ -323,6 +326,30 @@ class BackfillTests(_DbCase):
         finally:
             old.close()
 
+
+class GoneBronzeTests(_DbCase):
+    """A statement whose bronze file is gone is passed over: its rows stay,
+    and it is not recorded, so a later load parses it once it is back."""
+
+    def test_a_gone_file_is_skipped_and_its_rows_stay(self):
+        self.load_fixtures()
+        rows = self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE source = 'pp:doc-0001';"
+        ).fetchone()[0]
+        self.assertGreater(rows, 0)
+        self.conn.execute("DELETE FROM document_derivations;")
+        (self.tmp / "run" / "documents" / "doc-0001.pdf").unlink()
+        parse = mock.Mock(side_effect=AssertionError("parsed a gone file"))
+        with mock.patch.object(load, "parse_portfolio_performance", parse), \
+                self.assertLogs(load.log, "WARNING") as logged:
+            self.assertEqual(
+                load.load_portfolio_performance_docs(self.conn, self.tmp), 0)
+        self.assertIn("run/documents/doc-0001.pdf", logged.output[0])
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE source = 'pp:doc-0001';"
+        ).fetchone()[0], rows)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM document_derivations;").fetchone()[0], 0)
 
 
 class AccruedMigrationTests(_DbCase):
