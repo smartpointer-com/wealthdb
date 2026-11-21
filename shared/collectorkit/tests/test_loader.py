@@ -107,6 +107,25 @@ def test_each_run_loads_once_with_its_run_row_last(spec, paths, caplog):
     assert f"done: 0 run(s), 0 items -> {db}" in caplog.text
 
 
+def test_a_run_reads_the_loaders_own_flags(spec, paths):
+    db, bronze = paths
+    write_run(bronze, RUN_1, ["a"])
+
+    def flagged():
+        p = parser()
+        p.add_argument("--tag", default="untagged")
+        return p
+
+    def tagged(conn, run):
+        conn.execute("INSERT INTO items VALUES (?, ?)",
+                     (run.args.tag, run.snapshot_at))
+        return 1
+
+    assert run_main(replace(spec, parser=flagged, load_run=tagged), paths,
+                    "--tag", "given") == 0
+    assert rows(db, "SELECT name FROM items") == [("given",)]
+
+
 def test_a_run_that_is_not_complete_waits(spec, paths):
     db, bronze = paths
     write_run(bronze, RUN_1, ["a"], status="in-progress")

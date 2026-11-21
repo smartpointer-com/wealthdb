@@ -1519,35 +1519,29 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-class _Load:
-    """One call of `load`: the frame's hooks, holding the flag every run
-    reads. The frame hands `load_run` no flags, so `preflight` keeps
-    `--relationship-id` for it."""
+def _check_bronze_dir(args: argparse.Namespace) -> None:
+    """Refuse a --bronze-dir that is not a directory."""
+    if not args.bronze_dir.is_dir():
+        raise SystemExit(f"Bronze directory not found: {args.bronze_dir}")
 
-    def __init__(self) -> None:
-        self.relationship_id: str | None = None
 
-    def preflight(self, args: argparse.Namespace) -> None:
-        if not args.bronze_dir.is_dir():
-            raise SystemExit(f"Bronze directory not found: {args.bronze_dir}")
-        self.relationship_id = args.relationship_id
-
-    def load_run(self, conn: sqlite3.Connection,
-                 run: loader.Run) -> tuple[int, int, int, int]:
-        return load_dump(conn, run.dir, run.snapshot_at, self.relationship_id)
+def load_run(conn: sqlite3.Connection,
+             run: loader.Run) -> tuple[int, int, int, int]:
+    return load_dump(conn, run.dir, run.snapshot_at,
+                     run.args.relationship_id)
 
 
 COUNTS = ("xml rows", "mt balances", "mt events", "other mt rows")
 
+SPEC = loader.LoaderSpec(
+    name="ubs-psn", schema=MIGRATIONS_DIR, load_run=load_run,
+    parser=_parser, counts=COUNTS, preflight=_check_bronze_dir,
+    before_runs=_backfill_cost_fields, pending=pending_dumps,
+    open_db=open_db)
+
 
 def main(argv: list[str] | None = None) -> int:
-    hooks = _Load()
-    spec = loader.LoaderSpec(
-        name="ubs-psn", schema=MIGRATIONS_DIR, load_run=hooks.load_run,
-        parser=_parser, counts=COUNTS, preflight=hooks.preflight,
-        before_runs=_backfill_cost_fields, pending=pending_dumps,
-        open_db=open_db)
-    return loader.main(spec, argv)
+    return loader.main(SPEC, argv)
 
 
 if __name__ == "__main__":

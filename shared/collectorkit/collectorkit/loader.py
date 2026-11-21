@@ -70,6 +70,9 @@ class Run:
     version: int
     # run.json as `read_run_manifest` reads it under the spec's policy.
     manifest: dict | None
+    # The command line, parsed: the loader's own flags with the standard
+    # ones.
+    args: argparse.Namespace
     # The run's `dump_runs` row, column to value, from `spec.run_columns`.
     # `load_run` may add or change columns; the frame writes the row after
     # `load_run` returns.
@@ -208,7 +211,7 @@ def load_runs(spec: LoaderSpec, conn: sqlite3.Connection,
             log.warning("skipping %s — run.json cannot be read", run_dir.name)
             continue
         run = Run(dir=run_dir, snapshot_at=bronze.parse_run_ts(run_dir.name),
-                  version=load.version, manifest=manifest)
+                  version=load.version, manifest=manifest, args=load.args)
         run.row = spec.run_columns(run)
         try:
             with silver.transaction(conn):
