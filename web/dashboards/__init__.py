@@ -350,15 +350,17 @@ DASHBOARDS = (
         "its date. " + PREDEFINED_NOTE,
         "The multiples and the marks' dates show as they are. The table drops "
         "the money and the account names. The charts show money as shares of "
-        "the total paid in. " + PREDEFINED_NOTE,
-        ("currency", "as_of_day", "source", "asset_class", "vehicle", "holding"), (), (
+        "the total paid in, called or committed. " + PREDEFINED_NOTE,
+        ("currency", "as_of_day", "source", "asset_class", "vehicle", "holding", "funded"), (), (
             # The figures, then the multiples they make, one bar per
             # holding; the gain against the multiple beside the
-            # vintages; last, the cash flows over time.
+            # vintages; the cash flows over time; last, what each
+            # commitment has called and still holds open.
             Row(9, (("Private holdings", 24),)),
             Row(8, (("Multiples by holding", 24),)),
             Row(9, (("Gain against multiple", 12), ("By vintage year", 12))),
             Row(8, (("Cash flows to date", 24),)),
+            Row(8, (("Commitments", 24),)),
         ), redacts="money columns redacted or shown as shares"),
 )
 

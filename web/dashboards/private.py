@@ -1,7 +1,7 @@
 """The Private Markets dashboard's cards and its twin's. Part of provision.py."""
 
-from sqlkit import (_cl, _field_clauses, LINES_VIZ, native_tags, PRIVACY_DESC, _share_viz, STACKED_VIZ, tooltip_viz,
-                    view_tags)
+from sqlkit import (_cl, _field_clauses, FUNDED_CHOICES, LINES_VIZ, native_tags, PRIVACY_DESC, _share_viz, STACKED_VIZ,
+                    _text_tag, tooltip_viz, view_tags)
 
 
 # The multiples the chart stacks, in stacking order, and their colours:
@@ -38,12 +38,30 @@ STATUS_COLORS = {"held": MULTIPLE_COLORS["rvpi"], "partially_exited": FLOW_COLOR
 
 STATUS_TITLES = {"held": "Held", "partially_exited": "Partially exited", "exited": "Exited"}
 
+# A commitment's parts, in stacking order: what was called of it, in
+# the cash flows' colour of a call, then what it still holds open.
+COMMITMENT_COLORS = {"called": FLOW_COLORS["called"], "unfunded": "#B8C2CC"}
+
+COMMITMENT_TITLES = {"called": "Called", "unfunded": "Unfunded"}
+
 # The pickers every card takes, beside the currency and the as-of day,
 # as field filters on the holdings: the source, the asset class, the
 # vehicle and the holdings left out. A holding's name is no account's,
 # so the twin takes them all.
 PRIVATE_FILTERS = {"source": ("silver_source_id", "string/="), "asset_class": ("asset_class", "string/="),
                    "vehicle": ("vehicle", "string/="), "holding": ("holding", "string/!=")}
+
+# The Commitments chart's {{funded}} variable (the Fully funded picker)
+# and the holdings it keeps: under Show every one, under Hide those with
+# something still unfunded.
+FUNDED_TAG = _text_tag("funded", "Fully funded", FUNDED_CHOICES[0])
+
+FUNDED = f"({{{{funded}}}} = '{FUNDED_CHOICES[1]}' OR unfunded <> 0)"
+
+# The holdings the Commitments chart draws, a bar each, and on the twin
+# the total their shares are of. A commitment with no unfunded draws no
+# bar, and under Hide neither does one with nothing unfunded.
+DRAWN = f"commitment IS NOT NULL AND unfunded IS NOT NULL AND {FUNDED}"
 
 # The instant a card reads: the latest stored as-of on or before the end
 # of the As of day (web_private_calendar). A day before the first
@@ -89,20 +107,28 @@ def private_cards(f):
     with a paid in, and for TVPI a NAV too. It leaves the IRR blank: the
     engine solves it for the whole set alone.
 
-    The table's twin keeps the multiples, the IRR and the marks' dates
-    and drops the money and the account, as the Returns twin drops its money
-    columns. A holding's name stays: privacy hides money and accounts,
-    never what is held. The multiples chart shows multiples only, so the
-    twin shows it as it is."""
+    The table's twin keeps the multiples, the IRR, the stated multiples
+    and the marks' dates and drops the money and the account, as the
+    Returns twin drops its money columns. It shows the unfunded as a
+    share of the commitment, on the total of the commitments that state
+    an unfunded. A holding's name stays: privacy hides money and
+    accounts, never what is held. The multiples chart shows multiples
+    only, so the twin shows it as it is."""
     tags = private_tags("web_private")
+    stated = "stated_tvpi, stated_dpi, stated_as_of"
     if f.privacy:
-        desc = "Each private holding since its first call: its status, multiples, IRR and mark."
-        cols = ("holding, silver_source_id, asset_class, vehicle, status, first_call, marked_at, dpi, tvpi, irr_pct, "
-                "quality")
+        desc = "Each private holding since its first call: status, multiples, IRR, mark and unfunded share."
+        cols = ("holding, silver_source_id, asset_class, vehicle, status, first_call,\n"
+                "       CASE WHEN is_total THEN (SELECT 100 * sum(unfunded)\n"
+                "                                  / nullif(sum(commitment) FILTER (WHERE unfunded IS NOT NULL), 0)\n"
+                "                                  FROM p)\n"
+                "            ELSE 100 * unfunded / nullif(commitment, 0) END AS unfunded_pct,\n"
+                "       marked_at, dpi, tvpi, irr_pct,\n"
+                f"       {stated}, quality")
     else:
-        desc = "Each private holding since its first call: what it took, gave back and is marked at."
-        cols = ("holding, account_label, asset_class, vehicle, status, first_call, paid_in, distributed, nav, "
-                "marked_at, dpi, tvpi, irr_pct, quality")
+        desc = "Each private holding since its first call: what it took and committed, gave back and is marked at."
+        cols = ("holding, account_label, asset_class, vehicle, status, first_call, paid_in, commitment, unfunded,\n"
+                f"       distributed, nav, marked_at, dpi, tvpi, irr_pct, {stated}, quality")
     card = f.using(tags=tags, tail=PRIVATE_PRIVACY_DESC if f.privacy else "").card
     card("Private holdings", "table",
          desc + " The total comes last. With holdings left out, it adds up the rows shown and has no IRR.",
@@ -110,6 +136,7 @@ def private_cards(f):
          "t AS (\n  SELECT * FROM a WHERE is_total AND " + WHOLE + "\n"
          "  UNION ALL BY NAME\n"
          "  SELECT TRUE AS is_total, 'Total' AS holding, min(first_call) AS first_call, sum(paid_in) AS paid_in,\n"
+         "         sum(commitment) AS commitment, sum(unfunded) AS unfunded,\n"
          "         sum(distributed) AS distributed, sum(nav) AS nav, min(marked_at) AS marked_at,\n"
          "         (sum(distributed) FILTER (WHERE paid_in IS NOT NULL)\n"
          "          / nullif(sum(paid_in), 0))::DOUBLE AS dpi,\n"
@@ -119,8 +146,10 @@ def private_cards(f):
          "    FROM p\n  HAVING count(*) > 0 AND NOT " + WHOLE + ")\n"
          f"SELECT {cols}\n  FROM (SELECT * FROM p UNION ALL BY NAME SELECT * FROM t)\n"
          " ORDER BY is_total, first_call, silver_source_id, holding",
-         {"column_settings": {'["name","dpi"]': {"decimals": 2}, '["name","tvpi"]': {"decimals": 2},
-                              **_share_viz("irr_pct", decimals=2)["column_settings"]}})
+         {"column_settings": {**{f'["name","{c}"]': {"decimals": 2}
+                                 for c in ("dpi", "tvpi", "stated_tvpi", "stated_dpi")},
+                              **_share_viz("irr_pct", *(("unfunded_pct",) if f.privacy else ()),
+                                           decimals=2)["column_settings"]}})
     card("Multiples by holding", "bar",
          "What each holding gave back (DPI) and what it is still marked at, per unit paid in. Together they "
          "are its TVPI.",
@@ -135,31 +164,41 @@ def private_cards(f):
 
 
 def private_chart_cards(f):
-    """The Private Markets charts of the gain, the cash flows and the
-    vintages. They read web_private, `wealthdb returns private`'s rows
-    at the picked as-of instant, and web_private_flows, the legs its
-    total counts per holding and quarter, up to the instant: a figure
-    for many holdings adds their money and pools their multiples. Every
-    picker reaches each one. An exit in kind that names no holding is no
+    """The Private Markets charts of the gain, the vintages, the cash
+    flows and the commitments. They read web_private, `wealthdb returns
+    private`'s rows at the picked as-of instant, and web_private_flows,
+    the legs its total counts per holding and quarter, up to the
+    instant: a figure for many holdings adds their money and pools
+    their multiples. Every picker but Fully funded reaches each one.
+    Fully funded reaches the commitments alone. An exit in kind that names no holding is no
     holding's, so only the cash flows count it, and only while the
     pickers keep every holding, as the total does.
 
-    A twin card shows each sum of money as a share of the total paid in:
-    the kept holdings', or the calls to date at the last quarter. A
-    multiple and a count show as they are, and a
-    holding's source stands in for its account."""
+    A twin card shows each sum of money as a share of a total: the kept
+    holdings' paid in, the calls to date at the last quarter, or the
+    commitments the chart draws. A multiple and a
+    count show as they are, and a holding's source stands in for its
+    account."""
     tags = private_tags("web_private")
     card = f.using(tags=tags, tail=PRIVACY_DESC if f.privacy else "").card
-    held = private_rows(tags) + (",\nt AS (\n  SELECT sum(paid_in) AS total FROM p)" if f.privacy else "")
+
+    def total(agg, cte="p"):
+        """On the twin the CTE `t`, the total a share is of: `agg` over
+        `cte`."""
+        return f",\nt AS (\n  SELECT {agg} AS total FROM {cte})" if f.privacy else ""
+
+    def tail(cte="p"):
+        """The FROM of a card's last SELECT, which joins `t` on the twin."""
+        return f"\n  FROM {cte}" + (" CROSS JOIN t" if f.privacy else "")
+    held = private_rows(tags) + total("sum(paid_in)")
 
     def money(expr, name, total="t.total"):
         """Money `expr` as column `name`, on the twin as `name`_pct, a
-        percent of the total paid in."""
+        percent of `total`: what was paid in, called or committed."""
         if f.privacy:
             return f"100 * {expr} / nullif({total}, 0) AS {name}_pct"
         return expr if expr == name else f"{expr} AS {name}"
     name = (lambda c: f"{c}_pct") if f.privacy else (lambda c: c)
-    tail_from = "\n  FROM p" + (" CROSS JOIN t" if f.privacy else "")
 
     card("Gain against multiple", "scatter",
          "Each holding's gain against its TVPI on a log scale, sized by what it paid in" +
@@ -167,7 +206,7 @@ def private_chart_cards(f):
          ". No mark, no cost or a TVPI of 0 leaves it out.",
          held + "\nSELECT holding, " + ("silver_source_id AS source" if f.privacy else "account_label AS account") +
          ", status,\n       tvpi, " + money("gain", "gain") + ",\n       " + money("paid_in", "paid_in") +
-         tail_from + "\n WHERE gain IS NOT NULL AND tvpi > 0\n"
+         tail() + "\n WHERE gain IS NOT NULL AND tvpi > 0\n"
          " ORDER BY paid_in DESC, holding, silver_source_id, instrument_external_id",
          # The second dimension splits the dots into one series, and so
          # one colour, per status.
@@ -188,7 +227,7 @@ def private_chart_cards(f):
          "       " + money("sum(paid_in)", "paid_in", "any_value(t.total)") + ",\n"
          "       sum(distributed + nav) FILTER (WHERE paid_in IS NOT NULL)\n"
          "         / nullif(sum(paid_in) FILTER (WHERE nav IS NOT NULL), 0) AS tvpi,\n"
-         "       count(*) AS holdings" + tail_from + "\n GROUP BY 1\n ORDER BY 1",
+         "       count(*) AS holdings" + tail() + "\n GROUP BY 1\n ORDER BY 1",
          {"graph.dimensions": ["vintage"], "graph.metrics": [name(c) for c in ("distributed", "nav", "paid_in")],
           **STACKED_VIZ, "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
           **tooltip_viz("tvpi", "holdings"),
@@ -219,13 +258,53 @@ def private_chart_cards(f):
          "         sum(distributed) OVER w AS distributed_to_date,\n"
          "         sum(distributed - called) OVER w AS net_to_date\n"
          "    FROM m\n  WINDOW w AS (ORDER BY quarter ROWS UNBOUNDED PRECEDING))" +
-         (",\nt AS (\n  SELECT arg_max(called_to_date, quarter) AS total FROM s)" if f.privacy else "") +
+         total("arg_max(called_to_date, quarter)", "s") +
          "\nSELECT quarter,\n" + ",\n".join(
              f"       {money(c + '_to_date', c)}" for c in FLOW_COLORS) +
-         "\n  FROM s" + (" CROSS JOIN t" if f.privacy else "") + "\n ORDER BY quarter",
+         tail("s") + "\n ORDER BY quarter",
          {"graph.dimensions": ["quarter"], "graph.metrics": [name(c) for c in FLOW_COLORS], **LINES_VIZ,
           "graph.x_axis.title_text": "", "graph.y_axis.title_text": "",
           "series_settings": {name(c): {"color": FLOW_COLORS[c], "title": FLOW_TITLES[c]} for c in FLOW_COLORS},
           **(_share_viz(*(name(c) for c in FLOW_COLORS), decimals=1) if f.privacy else {})},
          tags=flow_tags)
+
+    # The bars (DRAWN) run by first call, a vintage year's together, and
+    # an empty slot after each year but the last parts the years, so the
+    # gaps and the years follow the bars that remain. The axis names the
+    # year once, under its first bar; the tooltip names each bar's year
+    # and holding, as a holding's name is too long for the axis. Every
+    # other category is a run of zero-width spaces as long as its row
+    # number, so no two merge.
+    committed = private_rows(tags) + ",\n" + HOLDING_NAMES + total(
+        f"sum(commitment) FILTER (WHERE {DRAWN})")
+    card("Commitments", "bar",
+         "Each holding's commitment and unfunded, by first call and vintage year: the part called "
+         "under the part unfunded" + (", as shares of the commitments drawn." if f.privacy else ".") +
+         " Fully funded shows or hides those with nothing unfunded.",
+         committed + ",\nc AS (\n"
+         f"  SELECT year(first_call) AS vintage, first_call, {HOLDING_LABEL},\n"
+         "         " + money("(commitment - unfunded)", "called") + ",\n"
+         "         " + money("unfunded", "unfunded") + "\n"
+         "   " + tail("n").strip() + f"\n   WHERE {DRAWN}),\n"
+         "r AS (\n"
+         f"  SELECT vintage, 0 AS gap, first_call, holding, {name('called')}, {name('unfunded')} FROM c\n"
+         "  UNION ALL\n"
+         "  SELECT DISTINCT vintage, 1, NULL, NULL, NULL, NULL FROM c\n"
+         "   WHERE vintage < (SELECT max(vintage) FROM c)),\n"
+         "q AS (\n"
+         "  SELECT *, row_number() OVER (PARTITION BY vintage, gap ORDER BY first_call, holding) AS k,\n"
+         "         row_number() OVER (ORDER BY vintage, gap, first_call, holding) AS pos\n"
+         "    FROM r)\n"
+         "SELECT CASE WHEN gap = 0 AND k = 1 THEN CAST(vintage AS VARCHAR)\n"
+         "            ELSE repeat(chr(8203), CAST(pos AS INTEGER)) END AS vintage,\n"
+         "       CASE WHEN gap = 0 THEN CAST(q.vintage AS VARCHAR) END AS year,\n"
+         f"       holding, {name('called')}, {name('unfunded')}\n"
+         "  FROM q\n"
+         " ORDER BY pos",
+         {"graph.dimensions": ["vintage"], "graph.metrics": [name(c) for c in COMMITMENT_COLORS], **STACKED_VIZ,
+          "graph.x_axis.title_text": "", "graph.y_axis.title_text": "", **tooltip_viz("year", "holding"),
+          "series_settings": {name(c): {"color": COMMITMENT_COLORS[c], "title": COMMITMENT_TITLES[c]}
+                              for c in COMMITMENT_COLORS},
+          **(_share_viz(*(name(c) for c in COMMITMENT_COLORS), decimals=1) if f.privacy else {})},
+         tags={**tags, "funded": FUNDED_TAG})
 

@@ -245,16 +245,17 @@ eleven dashboards. Their pickers:
   through the `report_yield_classes` model.
 - **Data Freshness**: no pickers.
 - **Private Markets**: a required currency and As of day, then Source,
-  Asset class, Vehicle and Holding. The day reads the latest stored
-  instant on or before it, through `web_private_calendar`. The Holding
-  picker is "is not": it leaves the holdings it holds out. Its class,
-  vehicle and holding lists come off the `report_private_holdings`
-  model. Every card takes every picker. While the pickers keep every
-  holding, the table's total is `wealthdb returns private`'s, the IRR
-  with it. With holdings left out, it adds up what the rows shown state
-  and pools their DPI and TVPI as the CLI's total does, and its IRR is
-  blank. The twin carries every
-  picker: a holding's name is no account's.
+  Asset class, Vehicle and Holding, and a required *Fully funded*
+  picker. The day reads the latest stored instant on or before it,
+  through `web_private_calendar`. The Holding picker is "is not": it
+  leaves the holdings it holds out. Its class, vehicle and holding lists
+  come off the `report_private_holdings` model. Every card takes every
+  picker but Fully funded. That one reaches the Commitments chart alone
+  and sits on its tile. While the pickers keep every holding, the
+  table's total is `wealthdb returns private`'s, the IRR with it. With
+  holdings left out, it adds up what the rows shown state and pools
+  their DPI and TVPI as the CLI's total does, and its IRR is blank. The
+  twin carries every picker: a holding's name is no account's.
 
 All of them are definitions only (SQL), with no data baked in.
 
@@ -295,8 +296,9 @@ description ends with one sentence that names those pickers, for
 example "The Section picker does not reach it."
 Provisioning writes it from the mappings the tile is sent with, so the
 text follows the binding. Allocation's *Vehicle* picker sits on its
-one tile, not in the filter bar, so no note names it. Where a card
-declines a picker by design, its own description says why.
+one tile, not in the filter bar, so no note names it. Private Markets'
+*Fully funded* picker sits on the Commitments tile the same way. Where
+a card declines a picker by design, its own description says why.
 
 A tile that sums money in the chosen currency is native SQL over a gold
 `web_*` serving view. The views carry each reporting currency as a
@@ -799,10 +801,12 @@ and stored instant: every quarter end and the day of the refresh. A
 holding's gain there is what it distributed plus its NAV, less what it
 paid in. It has none where it has no NAV or no cost.
 
-- *Private holdings*: a table of the class, vehicle, status, paid in,
-  distributed, NAV, the mark's date, DPI, TVPI, the IRR and the
-  quality, one row per holding, then the total. A total over fewer
-  holdings than the day's says `filtered`.
+- *Private holdings*: a table with one row per holding, then the total.
+  It shows the class, vehicle, status, paid in, commitment, unfunded,
+  distributed, NAV, the mark's date, DPI, TVPI and IRR. It also shows
+  the multiples the holding's capital account states, their day, and
+  the quality. A total over fewer holdings than the day's says
+  `filtered`.
 - *Multiples by holding*: one bar per holding, DPI stacked under what
   is still marked per unit paid in, so the bar's height is its TVPI.
   A bar is labelled by the holding's name and source. Where a source
@@ -828,19 +832,42 @@ paid in. It has none where it has no NAV or no cost.
   name no holding count while the pickers keep every holding, as the
   total counts them. The last quarter's figures are the total's paid in
   and distributed, but for the cents each row rounds.
+- *Commitments*: one bar per holding with a stated commitment and an
+  unfunded, stated or derived from what it paid in. The part called is stacked under the part still unfunded,
+  so the bar's height is the commitment. The bars run by first call,
+  and a vintage year's holdings stand together:
+  - The axis names the year once, under its first bar.
+  - An empty slot parts one year from the next.
+  - The tooltip names the year and the holding. A holding's name is too
+    long for the axis.
+  - Metabase draws no grouped axis, so every other bar and each slot is
+    a category of its own, named by zero-width spaces.
+
+  The *Fully funded* picker sits on the chart's tile. It offers Hide
+  and Show, and Hide is the default. Hide leaves out the holdings with
+  nothing unfunded, such as an SPV paid in whole. Show draws them. The
+  years and the slots follow the bars that remain.
 
 A chart's figure for many holdings adds their money and pools their
 multiples. No chart defines its own paid in or distributed. An exit in
 kind that names no holding belongs to no holding and no vintage. Only
 the total row and the cash flows count it.
 
-The twin's table keeps the multiples, the IRR and the marks' dates and
-drops the money and the account, as the Returns twin drops its money
-columns. A holding's name stays. The multiples chart holds multiples
-only, so the twin shows it as it is. The other twin charts show each
-sum of money as a share of the total paid in, or, on the cash flows,
-of all the capital called. A multiple and a count show as they are,
-and a holding's source stands in for its account.
+The twin's table keeps the multiples, the IRR, the stated multiples and
+the marks' dates and drops the money and the account, as the Returns
+twin drops its money columns. It shows the unfunded as a share of the
+commitment. On the total, the share counts only the commitments that
+state an unfunded. A holding's name stays. The multiples chart holds
+multiples only, so the twin shows it as it is. The other twin charts
+show each sum of money as a share of a total:
+
+- the cash flows: of all the capital called;
+- the commitments: of the commitments the chart draws, so under Hide
+  the fully funded ones are not in the total;
+- every other chart: of the total paid in.
+
+A multiple and a count show as they are, and a holding's source stands
+in for its account.
 
 The **Wealth Overview** charts net worth over time stacked by source.
 Below it, it charts the asset classes over time: each day's classes as
@@ -931,6 +958,12 @@ rather than converging the cards to a degraded shape. The version check
 holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
 these schema versions falls short of the cards:
 
+- 0224: its private-markets rows read no unfunded where a capital
+  account states a commitment and no call, so the Commitments chart
+  leaves such a holding out;
+- 0223: its private-markets rows carry no commitment, unfunded or
+  stated multiples, which the Private holdings and Commitments cards
+  read;
 - 0221: its private-markets rows hold one instant, list only the
   holdings a contribution names and carry no class, vehicle or status,
   and it lacks `web_private_calendar`, so the Private Markets pickers

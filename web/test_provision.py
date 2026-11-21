@@ -3390,7 +3390,7 @@ section("every tile names the pickers that miss it")
 # pickers its mappings leave out, on every dashboard, and a tile every
 # one reaches keeps its card's own.
 _bar_names = {d.get("name"): {x["id"]: x["name"] for x in d["parameters"]
-                              if x["id"] != pickers.VEHICLE_PARAM_ID} for d in layouts}
+                              if x["id"] not in pickers.INLINE_PICKERS} for d in layouts}
 _note_off = []
 for _d in layouts:
     for _dc in _d["dashcards"]:
@@ -3427,9 +3427,16 @@ check("...the withholding the Type",
       all(_note(d, "Withholding" + s).endswith(" The Type and Position pickers do not reach it.")
           for d, s in (("Income", ""), ("Income (privacy)", p.PRIVACY_SUFFIX))),
       _note("Income", "Withholding"))
-check("...the Allocation tiles not the Vehicle picker, which sits on its one tile",
-      all("Vehicle" not in (dc["visualization_settings"].get("card.description") or "")
-          for dc in _tile_layout("Allocation")[1]["dashcards"]))
+# An inline picker, such as Allocation's Vehicle or Private Markets'
+# Fully funded, sits on its own tile, so no tile's note names it.
+_inline_off = [(d["name"], _by_id[dc["card_id"]], x["name"])
+               for d in layouts for dc in d["dashcards"] if dc["card_id"] is not None
+               for x in d["parameters"] if x["id"] in pickers.INLINE_PICKERS
+               and x["name"] in (dc["visualization_settings"].get("card.description")
+                                 or "")[len(CARDS[_by_id[dc["card_id"]]][1]):]]
+check("...no tile an inline picker, which sits on its own tile",
+      not _inline_off and {"Vehicle", "Fully funded"} <= {x["name"] for d in layouts for x in d["parameters"]
+                                                          if x["id"] in pickers.INLINE_PICKERS}, _inline_off)
 
 section("every description is short")
 
@@ -5628,16 +5635,17 @@ if duckdb is not None:
 
 section("the Private Markets dashboard")
 
-_PM_CHARTS = ("Gain against multiple", "By vintage year", "Cash flows to date")
-_PM_PICKERS = ["currency", "as_of_day", "source", "asset_class", "vehicle", "holding"]
-check("Private Markets carries the table, the multiples and the charts of the gain, the vintages and the "
-      "cash flows; the twin the twins of all but the multiples",
+_PM_CHARTS = ("Gain against multiple", "By vintage year", "Cash flows to date", "Commitments")
+_PM_PICKERS = ["currency", "as_of_day", "source", "asset_class", "vehicle", "holding", "funded"]
+_PM_COMMITMENTS = ("Commitments", p.privacy_name("Commitments"))
+check("Private Markets carries the table, the multiples and the charts of the gain, the vintages, the "
+      "cash flows and the commitments; the twin the twins of all but the multiples",
       [t[0] for t in DEFS["Private Markets"][3]] == ["Private holdings", "Multiples by holding", *_PM_CHARTS]
       and [t[0] for t in DEFS["Private Markets (privacy)"][3]]
       == ["Private holdings (privacy)", "Multiples by holding", *(p.privacy_name(n) for n in _PM_CHARTS)]
       and "Multiples by holding" in EXEMPT, [t[0] for t in DEFS["Private Markets (privacy)"][3]])
-check("...it takes the currency, the as-of day, the source, the asset class, the vehicle and the holdings "
-      "left out, the twin all of them",
+check("...it takes the currency, the as-of day, the source, the asset class, the vehicle, the holdings "
+      "left out and whether the fully funded holdings show, the twin all of them",
       [x["slug"] for x in p.dashboard_parameters("Private Markets")] == _PM_PICKERS
       and [x["slug"] for x in p.dashboard_parameters("Private Markets (privacy)")] == _PM_PICKERS)
 _pmp = {x["slug"]: x for x in params_of("Private Markets")}
@@ -5647,6 +5655,19 @@ check("...the Holding picker leaves out the holdings it holds, and it, the class
       and all(_pmp[k]["values_source_config"]["card_id"] == MID["report_private_holdings"]
               for k in ("asset_class", "vehicle", "holding"))
       and _pmp["as_of_day"]["id"] == pickers.ASOF_PARAM_ID and _pmp["as_of_day"]["required"], _pmp)
+check("...the Fully funded picker a required choice of Hide and Show, Hide by default",
+      _pmp["funded"]["name"] == "Fully funded" and _pmp["funded"]["required"]
+      and not _pmp["funded"]["isMultiSelect"] and _pmp["funded"]["default"] == ["Hide"]
+      and _pmp["funded"]["values_source_config"]["values"] == ["Hide", "Show"]
+      and pickers.PRIVATE_FUNDED_PARAM_ID in pickers.INLINE_PICKERS, _pmp["funded"])
+for _d in ("Private Markets", "Private Markets (privacy)"):
+    _pmt = {_by_id[dc["card_id"]]: dc for dc in _tile_layout(_d)[1]["dashcards"] if dc["card_id"] is not None}
+    check(f"...on '{_d}' it reaches the commitments' tile alone and sits on it",
+          all((pickers.PRIVATE_FUNDED_PARAM_ID in {m["parameter_id"] for m in dc["parameter_mappings"]})
+              == (n in _PM_COMMITMENTS)
+              and dc.get("inline_parameters") == ([pickers.PRIVATE_FUNDED_PARAM_ID] if n in _PM_COMMITMENTS else [])
+              for n, dc in _pmt.items()) and set(_pmt) & set(_PM_COMMITMENTS),
+          [(n, dc.get("inline_parameters")) for n, dc in _pmt.items()])
 check("...the holdings' model lists every holding with its source, class and vehicle",
       "web_private" in MODELS["report_private_holdings"][0] and "NOT is_total" in MODELS["report_private_holdings"][0])
 for _n in ("Private holdings", "Private holdings (privacy)", "Multiples by holding",
@@ -5654,15 +5675,17 @@ for _n in ("Private holdings", "Private holdings (privacy)", "Multiples by holdi
     _view = "web_private_flows" if _n.startswith("Cash flows") else "web_private"
     _tags = CARDS[_n][2]["native"]["template-tags"]
     check(f"'{_n}' reads `returns private`'s rows in the picked currency at the picked day, every picker "
-          "on its holdings",
+          "on its holdings, the Fully funded on the commitments alone",
           f"FROM {_view}\n" in sql_of(CARDS[_n][2]) and "currency = {{currency}}" in sql_of(CARDS[_n][2])
-          and set(_tags) == set(_PM_PICKERS)
+          and set(_tags) == set(_PM_PICKERS) - ({"funded"} if _n not in _PM_COMMITMENTS else set())
+          and (_n not in _PM_COMMITMENTS or _tags["funded"]["type"] == "text")
           and all(_tags[k]["dimension"][1] == _view for k in ("source", "asset_class", "vehicle", "holding"))
           and _tags["as_of_day"]["dimension"][1] == "web_private_calendar"
           and _tags["holding"]["widget-type"] == "string/!=", _tags)
 _pt = sql_of(CARDS["Private holdings (privacy)"][2])
-check("...the twin's table keeps the multiples and the IRR and drops the money and the account",
-      all(c in _pt for c in ("dpi", "tvpi", "irr_pct", "marked_at", "holding", "status"))
+check("...the twin's table keeps the multiples, the IRR and the stated ones and drops the money and the account",
+      all(c in _pt for c in ("dpi", "tvpi", "irr_pct", "marked_at", "holding", "status", "stated_tvpi",
+                             "unfunded_pct"))
       and not any(c in _pt.split("\nSELECT holding")[1].split("FROM")[0]
                   for c in ("paid_in", "distributed", "nav", "account_label")), _pt)
 check("...the twin's charts name no account",
@@ -5689,7 +5712,7 @@ if duckdb is not None:
         return _epoch(*ymd) + 86399
 
     _pm = duckdb.connect()
-    _pm.execute(_migration_objects(220))
+    _pm.execute(_migration_objects(220, 222))
     _pm.execute("CREATE TABLE accounts (silver_source_id TEXT, account_external_id TEXT, display_name TEXT,"
                 " account_kind TEXT)")
     _pm.execute("INSERT INTO accounts VALUES ('src-1', 'a', 'Investor', 'custody'), ('src-2', 'b', 'Notes', 'custody')")
@@ -5725,9 +5748,25 @@ if duckdb is not None:
         (_june, True, "", "", "", "Total", None, None, None, _epoch(2025, 1, 15), 110, 18, None, _epoch(2026, 3, 31),
          18 / 110, None, None, "no_mark=1"),
     ]
+    # Each row's commitment, unfunded, stated TVPI and DPI and their
+    # day: the fund's and the late call's capital accounts, the SPV's
+    # commitment called whole, the note's a commitment with no
+    # unfunded; the totals add them.
+    _cap = {(_today, "f"): (150, 50, 1.2, 0.18, _epoch(2026, 9, 30)),
+            (_today, "s"): (10, 0, None, None, _epoch(2025, 3, 31)),
+            (_today, "n"): (20, None, None, None, None),
+            (_today, "l"): (40, 35, None, None, _epoch(2026, 3, 31)),
+            (_today, ""): (220, 85, None, None, None),
+            (_june, "f"): (150, 75, 1.0, 0.24, _epoch(2026, 3, 31)),
+            (_june, "s"): (10, 0, None, None, _epoch(2025, 3, 31)),
+            (_june, "n"): (20, None, None, None, None),
+            (_june, "l"): (40, 35, None, None, _epoch(2026, 3, 31)),
+            (_june, ""): (220, 110, None, None, None)}
+    _rows = [r + _cap.get((r[0], r[4]), (None,) * 5) for r in _rows]
     _pm.executemany("INSERT INTO report_private_markets VALUES (0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?,"
-                    " ?, ?, ?)", [
-                        (r[0], c, *r[1:10], *(None if v is None else v * k for v in r[10:13]), *r[13:])
+                    " ?, ?, ?, ?, ?, ?, ?, ?)", [
+                        (r[0], c, *r[1:10], *(None if v is None else v * k for v in r[10:13]), *r[13:18],
+                         *(None if v is None else v * k for v in r[18:20]), *r[20:])
                         for c, k in (("USD", 1), ("CHF", 0.9)) for r in _rows])
     _flows = [
         # quarter, source, account, id, holding, class, vehicle, called, distributed
@@ -5762,22 +5801,29 @@ if duckdb is not None:
     _ph = _pmr("Private holdings", "CHF")
     check("the table holds the picked currency's rows of the picked day, by first call, the engine's total last",
           [r[0] for r in _ph] == ["Fund", "SPV", "Note", "Late", "Total"] and float(_ph[0][6]) == 90
-          and _near(_ph[-1][12], 20) and _ph[-1][13] == "no_mark=1;exited=1;unattributed_exit=1"
+          and _near(_ph[-1][14], 20) and _ph[-1][18] == "no_mark=1;exited=1;unattributed_exit=1"
           and [r[4] for r in _ph] == ["partially_exited", "exited", "held", "held", None], _ph)
+    check("...each holding's commitment and unfunded in the currency beside its paid in, the stated multiples "
+          "and their day after the IRR, none on the total but its sums",
+          [(r[7] and float(r[7]), r[8] and float(r[8])) for r in _ph]
+          == [(135, 45), (9, 0), (18, None), (36, 31.5), (198, 76.5)]
+          and _near(_ph[0][15], 1.2) and _near(_ph[0][16], 0.18)
+          and _ph[0][17].date() == dt.date(2026, 9, 30) and _ph[-1][15:18] == (None, None, None), _ph)
     _hn = _pmr("Private holdings", holding=["SPV"])
     check("...a holding left out leaves the rows shown and their own total: the sums of what they state, "
           "the TVPI pooled over the rows with a NAV, and no IRR",
           [r[0] for r in _hn] == ["Fund", "Note", "Late", "Total"]
-          and tuple(float(v) for v in _hn[-1][6:9]) == (125, 18, 131)
-          and _near(_hn[-1][10], 18 / 125) and _near(_hn[-1][11], 149 / 120) and _hn[-1][12] is None
-          and _hn[-1][13] == "filtered", _hn)
+          and tuple(float(v) for v in (_hn[-1][6], *_hn[-1][9:11])) == (125, 18, 131)
+          and tuple(float(v) for v in _hn[-1][7:9]) == (210, 85)
+          and _near(_hn[-1][12], 18 / 125) and _near(_hn[-1][13], 149 / 120) and _hn[-1][14] is None
+          and _hn[-1][15] is None and _hn[-1][18] == "filtered", _hn)
     _hd = _pmr("Private holdings", asset_class=["private_debt"])
     check("...a class keeps its holdings, their total's TVPI pooled over them",
-          [r[0] for r in _hd] == ["Note", "Total"] and _near(_hd[-1][11], 1.5) and _hd[-1][12] is None, _hd)
+          [r[0] for r in _hd] == ["Note", "Total"] and _near(_hd[-1][13], 1.5) and _hd[-1][14] is None, _hd)
     check("...a source and a vehicle narrow it the same way",
           [r[0] for r in _pmr("Private holdings", source=["src-1"], vehicle=["fund"])] == ["Fund", "Late", "Total"])
     check("...a holding left out that the day does not hold leaves the engine's total",
-          _near(_pmr("Private holdings", holding=["Absent"])[-1][12], 20))
+          _near(_pmr("Private holdings", holding=["Absent"])[-1][14], 20))
     _hj = _pmr("Private holdings", day="2026-08-15")
     check("...a day reads the latest instant on or before it, a day before the first none",
           [(r[0], float(r[6])) for r in _hj] == [("Fund", 75), ("SPV", 10), ("Note", 20), ("Late", 5), ("Total", 110)]
@@ -5786,9 +5832,20 @@ if duckdb is not None:
     check("...the chart a bar per holding, its parts adding up to its TVPI, the largest first",
           [r[0] for r in _mb] == ["SPV (src-1)", "Note (src-2)", "Fund (src-1)", "Late (src-1)"]
           and all(_near(r[1] + r[2], t) for r, t in zip(_mb[:3], (2.2, 1.5, 1.19), strict=True)), _mb)
-    check("...the twin's table the same rows, statuses, multiples and IRR",
-          [(r[0], r[4], r[7], r[8], r[9]) for r in _pmr("Private holdings (privacy)")]
-          == [(r[0], r[4], r[10], r[11], r[12]) for r in _pmr("Private holdings")])
+    _tp = _pmr("Private holdings (privacy)")
+    check("...the twin's table the same rows, statuses, multiples, IRR and stated multiples",
+          [(r[0], r[4], r[8], r[9], r[10], r[11], r[12]) for r in _tp]
+          == [(r[0], r[4], r[12], r[13], r[14], r[15], r[16]) for r in _pmr("Private holdings")])
+    check("...and the share of each commitment still unfunded, none without an unfunded, the total's over the "
+          "commitments that state one",
+          [r[6] and round(float(r[6]), 6) for r in _tp] == [round(100 * 50 / 150, 6), 0, None, 87.5, 42.5], _tp)
+    _tf = _pmr("Private holdings (privacy)", holding=["SPV"])
+    check("...the filtered total's share likewise", _near(_tf[-1][6], 100 * 85 / 190), _tf)
+    check("...the twin's table has the columns of the multiples, the marks and the unfunded share alone",
+          [d[0] for d in _pm.execute(_render(CARDS["Private holdings (privacy)"][2],
+                                             {"currency": "USD", "as_of_day": "2026-11-20"})).description]
+          == ["holding", "silver_source_id", "asset_class", "vehicle", "status", "first_call", "unfunded_pct",
+              "marked_at", "dpi", "tvpi", "irr_pct", "stated_tvpi", "stated_dpi", "stated_as_of", "quality"])
 
     _gm = _pmr("Gain against multiple", "CHF")
     check("the scatter a dot per marked holding, its gain against its TVPI, sized by what it paid in, "
@@ -5827,6 +5884,64 @@ if duckdb is not None:
     _ct = _pmr("Cash flows to date (privacy)")
     check("...the twin's shares of all the capital called",
           _near(_ct[-1][1], 100) and _near(_ct[-1][2], 100 * 43 / 135) and _near(_ct[0][3], -100 * 85 / 135), _ct)
+
+    _z = "\u200b"
+
+    def _cmr(*a, **k):
+        """The Commitments rows as (axis label, holding, called, unfunded),
+        without the year the tooltip names."""
+        return [(r[0], r[2], *(None if v is None else round(float(v), 6) for v in r[3:]))
+                for r in _pmr(*a, **k)]
+    _cm = _cmr("Commitments", "CHF", funded="Show")
+    check("the commitments a bar per holding that states one and its unfunded, what was called and what is "
+          "unfunded adding up to it, by first call, the year under each vintage's first bar, a gap between years",
+          _cm == [("2025", "Fund (src-1)", 90, 45), (_z * 2, "SPV (src-1)", 9, 0), (_z * 3, None, None, None),
+                  ("2026", "Late (src-1)", 4.5, 31.5)], _cm)
+    _ch = _cmr("Commitments", "CHF")
+    check("...by default the fully funded hidden, the gaps and years following the bars that remain",
+          _ch == [("2025", "Fund (src-1)", 90, 45), (_z * 2, None, None, None), ("2026", "Late (src-1)", 4.5, 31.5)]
+          and _ch == _cmr("Commitments", "CHF", funded="Hide"), _ch)
+    _cy = [r[1] for r in _pmr("Commitments", "CHF", funded="Show")]
+    check("...each bar's year and holding in the tooltip, the axis left on",
+          VIZ["Commitments"]["graph.dimensions"] == ["vintage"]
+          and VIZ["Commitments"]["graph.tooltip_columns"] == ['["name","year"]', '["name","holding"]']
+          and _cy == ["2025", "2025", None, "2026"]
+          and "graph.x_axis.axis_enabled" not in VIZ["Commitments"], _cy)
+    _pm.execute("INSERT INTO report_private_markets SELECT * REPLACE ('g' AS instrument_external_id,"
+                " 'Next' AS holding, first_call + 366 * 86400 AS first_call)"
+                " FROM report_private_markets WHERE instrument_external_id = 'l'")
+    _g3 = [r[0] for r in _cmr("Commitments", funded="Show")]
+    check("...every label but the years' apart, so no two bars or gaps merge",
+          _g3 == ["2025", _z * 2, _z * 3, "2026", _z * 5, "2027"] and len(set(_g3)) == len(_g3), _g3)
+    _pm.execute("DELETE FROM report_private_markets WHERE instrument_external_id = 'g'")
+    _show = {"funded": "Show"}
+    check("...the holding, source, class, vehicle and day pickers reach it",
+          [r[1] for r in _cmr("Commitments", holding=["Fund"], **_show)] == ["SPV (src-1)", None, "Late (src-1)"]
+          and [r[0] for r in _cmr("Commitments", holding=["Fund"], **_show)] == ["2025", _z * 2, "2026"]
+          and [r[:2] for r in _cmr("Commitments", holding=["Fund"])] == [("2026", "Late (src-1)")]
+          and not _pmr("Commitments", source=["src-2"], **_show)
+          and len(_pmr("Commitments", asset_class=[_pe], **_show)) == 4
+          and not _pmr("Commitments", asset_class=[_pd], **_show)
+          and [r[:2] for r in _cmr("Commitments", vehicle=["spv"], **_show)] == [("2025", "SPV (src-1)")]
+          and not _pmr("Commitments", vehicle=["spv"])
+          and len(_pmr("Commitments", day="2026-08-15", **_show)) == 4
+          and _cmr("Commitments", day="2026-08-15")[0][3] == 75)
+    _ctw = _cmr("Commitments (privacy)", **_show)
+    check("...the twin's parts shares of the commitments it draws, adding up to 100, its axis as the base card's",
+          _ctw == [("2025", "Fund (src-1)", 50, 25), (_z * 2, "SPV (src-1)", 5, 0), (_z * 3, None, None, None),
+                   ("2026", "Late (src-1)", 2.5, 17.5)]
+          and [r[2:] for r in _cmr("Commitments (privacy)", vehicle=["spv"], **_show)] == [(100, 0)]
+          and _near(sum(r[2] + r[3] for r in _cmr("Commitments (privacy)", source=["src-1"], **_show)
+                        if r[2] is not None), 100), _ctw)
+    _cth = _cmr("Commitments (privacy)")
+    check("...with the fully funded hidden, shares of the commitments that remain, still adding up to 100",
+          _cth == [("2025", "Fund (src-1)", round(100 * 100 / 190, 6), round(100 * 50 / 190, 6)),
+                   (_z * 2, None, None, None), ("2026", "Late (src-1)", round(100 * 5 / 190, 6), round(100 * 35 / 190, 6))]
+          and _near(sum(r[2] + r[3] for r in _cth if r[2] is not None), 100), _cth)
+    check("...the twin's columns the axis, the year, the holding and the two shares alone",
+          [d[0] for d in _pm.execute(_render(CARDS["Commitments (privacy)"][2],
+                                             {"currency": "USD", "as_of_day": "2026-11-20"})).description]
+          == ["vintage", "year", "holding", "called_pct", "unfunded_pct"])
 
     _pm.execute("INSERT INTO report_private_markets SELECT * REPLACE ('c' AS account_external_id,"
                 " 'f2' AS instrument_external_id) FROM report_private_markets WHERE instrument_external_id = 'f'")

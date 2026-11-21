@@ -5,7 +5,7 @@ provision.py."""
 from typing import NamedTuple
 
 import sqlkit
-from sqlkit import (HORIZONS, MATURING_RULES,
+from sqlkit import (FUNDED_CHOICES, HORIZONS, MATURING_RULES,
                     MISSING_BASIS_READINGS, NO_BENCHMARK, RATE_PATHS, REPORTING_CURRENCIES)
 
 
@@ -103,6 +103,9 @@ PRIVATE_ASSET_CLASS_PARAM_ID = "aa5df126"
 PRIVATE_VEHICLE_PARAM_ID = "aa5df127"
 
 PRIVATE_HOLDING_PARAM_ID = "aa5df128"
+
+# The Fully funded toggle, which sits on the Commitments tile alone.
+PRIVATE_FUNDED_PARAM_ID = "aa5df129"
 
 # The Exposure dashboard's picker ids and filters: the currency (a row
 # filter, as on Gains), the time range over the month ends, the source,
@@ -261,6 +264,12 @@ PICKERS = (
            Column("report_private_holdings", "vehicle")),
     Picker("holding", ("Private Markets",), PRIVATE_HOLDING_PARAM_ID, "Holding is not", "exclude",
            Column("report_private_holdings", "holding")),
+    # Whether the Commitments chart draws the holdings with nothing
+    # unfunded. It reaches that chart and its twin alone, so it sits on
+    # their tile, not in the bar. Required with Hide as the default, so
+    # the chart opens on the commitments still open.
+    Picker("funded", ("Private Markets",), PRIVATE_FUNDED_PARAM_ID, "Fully funded", "choice",
+           FUNDED_CHOICES, FUNDED_CHOICES[0], inline=True),
     # The account picker targets `display_name` — the model's name for
     # the account LABEL (account_label) — and NOT `account_external_id`:
     # a picker lists the raw values of the column it is bound to and

@@ -518,6 +518,11 @@ MATURING_RULES = ("cash", "idle", "roll")
 
 HORIZONS = ("12", "24", "36")
 
+# The Private Markets Commitments chart's Fully funded choices, the
+# default first: hide the holdings with nothing unfunded, or show them.
+# The picker and the template variable read them.
+FUNDED_CHOICES = ("Hide", "Show")
+
 # The arguments the projection's table macros take (income_expected and
 # cashflow_projection, which the cards call, and income_window): the
 # picked currency and the four assumptions.
