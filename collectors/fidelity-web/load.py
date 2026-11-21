@@ -48,7 +48,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from collectorkit import bronze, cli, extract, parsecache, silver, srcfp
+from collectorkit import (
+    bronze, cli, extract, parsecache, rebuild, silver, srcfp,
+)
 from collectorkit.parsecache import ParseCache, ParsePool
 from collectorkit.parse import iso_date_to_epoch
 
@@ -262,6 +264,7 @@ def main(argv=None):
     cli.configure_logging(args.verbose)
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
     if args.force:
+        rebuild.runs_without_bronze(args.silver_db, args.bronze_dir)
         silver.reset(args.silver_db)
     conn = sqlite3.connect(str(args.silver_db))
     silver.own_only(args.silver_db)

@@ -2187,7 +2187,8 @@ def run_load(args: argparse.Namespace) -> int:
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         silver.apply_migrations(conn, migrations_dir)
-        rebuild.rebuild_advice(conn, REBUILD_ADVICE, REBUILD_COMMAND)
+        rebuild.rebuild_advice(conn, REBUILD_ADVICE, REBUILD_COMMAND,
+                               bronze_dir=args.bronze_dir)
 
         # A moved walk owes the archive a re-read, and `--reparse` is the
         # lever that already delivers one: it opens the run gate, the
@@ -2406,6 +2407,7 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     cli.configure_logging(args.verbose)
     if args.force:
+        rebuild.runs_without_bronze(args.silver_db, args.bronze_dir)
         silver.reset(args.silver_db)
     return run_load(args)
 

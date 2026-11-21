@@ -15,7 +15,9 @@ collector:
 
 ``--force`` does the same into a fresh silver beside the old one, from
 every run, and puts it in place only once the load returns
-(:func:`collectorkit.rebuild.rebuild`). A failed ``--force`` leaves the
+(:func:`collectorkit.rebuild.rebuild`). It first names the loaded runs
+whose bronze is gone, whose rows the new silver does not hold
+(:func:`collectorkit.rebuild.runs_without_bronze`). A failed ``--force`` leaves the
 old silver as it was: an error, a stop, or a non-zero status from
 ``after_runs``.
 
@@ -263,6 +265,7 @@ def main(spec: LoaderSpec, argv: list[str] | None = None) -> int:
 
     try:
         if args.force:
+            rebuild.runs_without_bronze(silver_db, bronze_dir)
             try:
                 rebuild.rebuild(silver_db, spec.schema, replay_all,
                                 open_db=spec.open_db)

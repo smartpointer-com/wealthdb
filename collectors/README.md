@@ -285,7 +285,7 @@ are the escape, not opt-ins. The canonical spelling per concept:
 | --- | --- | --- |
 | bronze root (every verb that touches it) | `--bronze-dir` | resolved data dir |
 | documents / heavy detail | fetched by default; opt out with `--no-documents` (and the same `--no-<detail>` pattern for other heavy passes) | **on** |
-| force reload (on `load`) | `--force` — rebuild silver from all bronze; on the load frame the old silver stays in place until the new one is complete | off |
+| force reload (on `load`) | `--force` — rebuild silver from all bronze; on the load frame the old silver stays in place until the new one is complete; on the load frame and the loaders that call `rebuild.runs_without_bronze`, a warning first names each loaded run whose bronze is gone | off |
 | session probe | `login --check`: exit `0` = credential or session alive, nonzero = not. See [login.py — the session](#loginpy--the-session) for what it reads and for the five collectors that differ. | — |
 | exit status (`download`, `login --check`) | `collectorkit.cli`: `0` done, `1` failed, `2` usage error, `3` no verdict (a probe that could not run), `6` a person has to sign in first. A full `login` may give its own codes. | — |
 | human-MFA wait | `--mfa-timeout SECONDS` | per source; see the list below |
@@ -533,6 +533,10 @@ the passes around the runs. `loader.main` does the rest:
 - `--force` builds a fresh silver beside the old one from every run. It
   puts the new one in place only when the load succeeds
   ([`collectorkit.rebuild`](../shared/collectorkit/collectorkit/rebuild.py)).
+- `--force` reads only the bronze that exists. The rows of a loaded run
+  whose run dir is gone, a pruned one say, are not in the new silver. So
+  a warning names each such run before the rebuild starts
+  (`rebuild.runs_without_bronze`).
 
 A loader that is not on the frame uses the same parts of
 [`collectorkit.silver`](../shared/collectorkit/collectorkit/silver.py)
@@ -544,7 +548,8 @@ An error inside a run ends the load. A load also stops on purpose
 the loader checks. Silver stays as it was. A new column that only bronze
 can fill for old rows does not stop a load. It adds an entry to the
 loader's `REBUILD_ADVICE` (`rebuild.rebuild_advice`), which asks for one
-`load --force`.
+`load --force`. The advice also counts the loaded runs whose bronze is
+gone, whose rows that rebuild drops.
 
 Rows parsed from a document carry their document. Each scope records the
 parser generation that derived each document

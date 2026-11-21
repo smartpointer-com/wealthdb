@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -1869,6 +1870,21 @@ def test_a_failed_dump_fails_the_load_and_its_retry_keeps_newer_rows(
                               bronze.parse_run_ts(newer.name)]
     assert snapshot_at == bronze.parse_run_ts(newer.name)
     assert "Example New Name" in payload
+
+
+def test_a_force_names_the_loaded_dumps_whose_bronze_is_gone(tmp_path,
+                                                             caplog):
+    root = tmp_path / "bronze"
+    older = _export_dump(root, "20980101T000000Z", "Example Old Name")
+    _export_dump(root, "20980102T000000Z", "Example New Name")
+    argv = ["--silver-db", str(tmp_path / "ubs-web.db"),
+            "--bronze-dir", str(root)]
+    assert loader.main(argv) == 0
+    shutil.rmtree(older)
+    with caplog.at_level("WARNING", logger="collectorkit.rebuild"):
+        assert loader.main([*argv, "--force"]) == 0
+    assert ("1 loaded run(s) have no bronze under "
+            f"{root} any more (20980101T000000Z)") in caplog.text
 
 
 def test_a_dump_loaded_after_a_newer_one_updates_no_card_row(tmp_path):

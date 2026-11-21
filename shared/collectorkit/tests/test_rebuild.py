@@ -7,11 +7,13 @@ import argparse
 import json
 import logging
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from collectorkit import derivations, loader, rebuild, silver
+from collectorkit.bronze import ts_slug
 
 SCHEMA = """
 CREATE TABLE schema_meta (silver_schema_version INTEGER PRIMARY KEY,
@@ -41,8 +43,11 @@ def migrations(tmp_path):
     return d
 
 
-def _loaded(conn, n):
-    conn.execute("INSERT INTO dump_runs VALUES (?, 1, 'run')", (n,))
+def _loaded(conn, n, run_dir=None):
+    """Record the run at instant `n`, its run dir that instant's slug."""
+    slug = ts_slug(datetime.fromtimestamp(n, timezone.utc))
+    conn.execute("INSERT INTO dump_runs VALUES (?, 1, ?)",
+                 (n, run_dir or f"/bronze/{slug}"))
 
 
 # ---- the advice -------------------------------------------------------------
@@ -192,6 +197,110 @@ def _failing_items(conn, run):
     if "boom" in json.loads((run.dir / "items.json").read_text()):
         raise RuntimeError("a run that cannot be loaded")
     _load_items(conn, run)
+
+
+# ---- the runs whose bronze is gone ------------------------------------------
+
+def test_a_force_names_the_loaded_runs_whose_bronze_is_gone(
+        migrations, tmp_path, caplog):
+    db, bronze = tmp_path / "toy.db", tmp_path / "bronze"
+    argv = ["--silver-db", str(db), "--bronze-dir", str(bronze)]
+    spec = loader.LoaderSpec(name="toy", schema=migrations,
+                             load_run=_failing_items, parser=_parser)
+    for day, name in ((1, "a"), (2, "b"), (3, "c")):
+        _write_run(bronze, f"2026010{day}T000000Z", [name])
+    assert loader.main(spec, argv) == 0
+    for day in (1, 3):
+        for f in (bronze / f"2026010{day}T000000Z").iterdir():
+            f.unlink()
+        (bronze / f"2026010{day}T000000Z").rmdir()
+    assert rebuild.runs_without_bronze(db, bronze) == [
+        "20260101T000000Z", "20260103T000000Z"]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert loader.main(spec, [*argv, "--force"]) == 0
+    assert caplog.messages == [
+        f"{db}: 2 loaded run(s) have no bronze under {bronze} any more "
+        f"(20260101T000000Z, 20260103T000000Z); this rebuild drops their rows"]
+    assert [r[0] for r in sqlite3.connect(db).execute(
+        "SELECT name FROM items")] == ["b"]
+    assert rebuild.runs_without_bronze(db, bronze) == []
+
+
+def test_a_force_rebuilds_a_silver_it_cannot_read(migrations, tmp_path,
+                                                  caplog):
+    db, bronze = tmp_path / "toy.db", tmp_path / "bronze"
+    argv = ["--silver-db", str(db), "--bronze-dir", str(bronze)]
+    spec = loader.LoaderSpec(name="toy", schema=migrations,
+                             load_run=_load_items, parser=_parser)
+    _write_run(bronze, "20260101T000000Z", ["a"])
+    db.write_bytes(b"no database, only junk " * 64)
+    with caplog.at_level(logging.WARNING):
+        assert loader.main(spec, [*argv, "--force"]) == 0
+    assert caplog.messages[0].startswith(
+        f"{db}: cannot read its loaded runs (")
+    assert [r[0] for r in sqlite3.connect(db).execute(
+        "SELECT name FROM items")] == ["a"]
+
+
+def test_a_load_clock_stamp_is_no_run(migrations, tmp_path):
+    # A loader that moves its load clock without a download writes a
+    # dump_runs row one past the latest, its run_dir no run dir.
+    db, bronze = tmp_path / "toy.db", tmp_path / "bronze"
+    _write_run(bronze, "19700101T000001Z", ["a"])
+    conn = silver.open_db(db)
+    silver.apply_migrations(conn, migrations)
+    _loaded(conn, 1)
+    _loaded(conn, 2, run_dir=str(tmp_path / "supplied"))
+    conn.commit()
+    conn.close()
+    assert rebuild.runs_without_bronze(db, bronze) == []
+    (bronze / "19700101T000001Z" / "items.json").unlink()
+    (bronze / "19700101T000001Z" / "run.json").unlink()
+    (bronze / "19700101T000001Z").rmdir()
+    assert rebuild.runs_without_bronze(db, bronze) == ["19700101T000001Z"]
+
+
+def test_no_silver_or_no_loaded_run_names_no_run(migrations, tmp_path):
+    db, bronze = tmp_path / "toy.db", tmp_path / "bronze"
+    assert rebuild.runs_without_bronze(db, bronze) == []
+    conn = silver.open_db(db)
+    silver.apply_migrations(conn, migrations)
+    conn.close()
+    assert rebuild.runs_without_bronze(db, bronze) == []
+
+
+def test_a_long_list_names_ten_runs_and_counts_the_rest(migrations,
+                                                       tmp_path, caplog):
+    db = tmp_path / "toy.db"
+    conn = silver.open_db(db)
+    silver.apply_migrations(conn, migrations)
+    for n in range(12):
+        _loaded(conn, 86400 * n)
+    conn.commit()
+    conn.close()
+    with caplog.at_level(logging.WARNING):
+        assert len(rebuild.runs_without_bronze(db, tmp_path / "none")) == 12
+    assert caplog.messages[0].endswith(
+        "19700110T000000Z and 2 more); this rebuild drops their rows")
+
+
+def test_the_advice_counts_the_runs_a_rebuild_drops(migrations, tmp_path):
+    bronze = tmp_path / "bronze"
+    _write_run(bronze, "19700101T000001Z", ["a"])
+    conn = silver.open_db(tmp_path / "toy.db")
+    silver.apply_migrations(conn, migrations)
+    _loaded(conn, 1)
+    _loaded(conn, 2)
+    (migrations / "0002_advice.sql").write_text(ADVISING)
+    silver.apply_migrations(conn, migrations)
+    assert rebuild.rebuild_advice(conn, ADVICE, "toy load --force",
+                                  bronze_dir=bronze) == [
+        LINE_1 + ", but drops the rows of 1 loaded run(s) whose bronze is gone",
+        LINE_2 + ", but drops the rows of 1 loaded run(s) whose bronze is gone"]
+    _write_run(bronze, "19700101T000002Z", ["b"])
+    assert rebuild.rebuild_advice(conn, ADVICE, "toy load --force",
+                                  bronze_dir=bronze) == [LINE_1, LINE_2]
 
 
 def test_a_failed_force_leaves_the_old_silver_byte_identical(migrations,

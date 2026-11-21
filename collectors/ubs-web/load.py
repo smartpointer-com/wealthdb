@@ -40,7 +40,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from collectorkit import bronze, cli, parsecache, silver
+from collectorkit import bronze, cli, parsecache, rebuild, silver
 from collectorkit.parsecache import ParseCache
 
 import card_parsers  # local module
@@ -346,6 +346,7 @@ def main(argv: list[str]) -> int:
 
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
     if args.force:
+        rebuild.runs_without_bronze(args.silver_db, args.bronze_dir)
         silver.reset(args.silver_db)
     conn = sqlite3.connect(str(args.silver_db))
     silver.own_only(args.silver_db)

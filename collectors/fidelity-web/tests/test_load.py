@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -1450,6 +1451,21 @@ def test_fill_instrument_keys_fills_rows_loaded_without_one(migrated):
 def _main(tmp_path, bronze, db, *extra):
     return load.main(["--silver-db", str(db), "--bronze-dir", str(bronze),
                       "--parse-cache-dir", str(tmp_path / "pc"), *extra])
+
+
+def test_a_force_names_the_loaded_dumps_whose_bronze_is_gone(
+        tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(load.os, "cpu_count", lambda: 1)
+    bronze, db = tmp_path / "bronze", tmp_path / "silver.db"
+    first = _write_dump(bronze, "20260401T000000Z")
+    _write_dump(bronze, "20260402T000000Z")
+    _counting_parser(monkeypatch, _PARSED)
+    assert _main(tmp_path, bronze, db) == 0
+    shutil.rmtree(first)
+    with caplog.at_level("WARNING", logger="collectorkit.rebuild"):
+        assert _main(tmp_path, bronze, db, "--force") == 0
+    assert ("1 loaded run(s) have no bronze under "
+            f"{bronze} any more (20260401T000000Z)") in caplog.text
 
 
 def _stale(db, scope, generation):
