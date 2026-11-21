@@ -338,8 +338,10 @@ US registered funds and ETFs, from their N-PORT filings on SEC EDGAR.
 
 A filing states each share class's total return for the three months
 that end at its report date. The collector keeps the class the fund's
-ticker maps to, in `fund_returns`. Another class has other fees, so it
-is another fund. `sec-nport` is asked for these figures for a fund whose
+ticker maps to, in `fund_returns`
+([refdata.md §2](../../wealthdb/docs/adapters/refdata.md#2-coverage-matrix)).
+Another class has other fees, so it is another fund. `sec-nport` is
+asked for these figures for a fund whose
 wanted-list entry wants `monthly_returns`: a fund a benchmark names.
 `--backfill` reads them for every filing from the start of the
 monthly_returns want on, whatever days the fund was held. A composition fetched earlier does

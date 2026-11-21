@@ -81,13 +81,8 @@ make pii PII_BASE="$BASE" SHOW=1      # the same with the values: this terminal 
 ```
 
 Treat each finding as a leak until it is shown otherwise. The check knows
-shapes and checksums:
-
-- IBANs, and card, AHV and social security numbers;
-- credentials, home paths, host names, e-mail addresses, phone numbers;
-- in docs and messages: account numbers and masked last-four digits;
-- in messages: money amounts;
-- every watchlist term.
+shapes, checksums and the watchlist terms; AGENTS.md §4 lists what it
+refuses.
 
 It cannot read a sentence. A clean run proves little; step 4 is the
 review. `make hooks` installs the same check for every commit.

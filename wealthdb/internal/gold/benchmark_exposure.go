@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// The dimensions of benchmark_exposure. Each names the card or view that
-// reads it (docs/EXPOSURE.md, "Benchmarks").
+// The dimensions of benchmark_exposure (docs/EXPOSURE.md §14). Each names
+// the card or view that reads it (web/DESIGN.md §8, "Benchmarks").
 const (
 	BenchmarkDimClass        = "asset_class"
 	BenchmarkDimSector       = "sector"

@@ -866,7 +866,7 @@ positional view, `-d` for the day, and the shared `-f`, `-C`, `-F`,
 | `<view>` | required | `classes` \| `sectors` \| `sizes` \| `countries` \| `currencies` \| `credit` \| `maturities` \| `coupons` \| `cycles` \| `situs` \| `securities` \| `issuers` \| `funds` \| `coverage`. |
 | `-d`, `--as-of` | today | The day. |
 | `--country` | `risk` | `risk` \| `domicile`: the country a security counts in, on `countries` and `securities`. Refused on the other views. |
-| `--benchmark` | none | A benchmark's weight of each row, and the row's share less it (EXPOSURE.md, "Benchmarks"). Not on `situs`, `funds` or `coverage`; no `--period`; no `--country domicile`. |
+| `--benchmark` | none | A benchmark's weight of each row, and the row's share less it (EXPOSURE.md §14). Not on `situs`, `funds` or `coverage`; no `--period`; no `--country domicile`. |
 | `--period` | none | `monthly` \| `quarterly` \| `annual`: the view at the end of every period of the window `[FROM [TO]]`, a `period` column first (EXPOSURE.md §7). Refused on `securities`, `issuers` and `funds`, and with `-d`. |
 | `-f`, `-C`, `-F`, `-x`, `-p` | as §4.12 | `-C` takes a share column by its name (`share`) or its header (`share_pct`). `-p` hides every amount and redacts every key that is a holding's own rather than a public identifier (EXPOSURE.md §7). Names and keys follow §4.6, *What `-p` hides*. On `coverage`, `-f ndjson` prints the declarations ledger's skeleton records still to fill in (EXPOSURE.md §9); it takes no `-C`, `-p` or `--period`. |
 

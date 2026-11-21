@@ -113,9 +113,8 @@ empty, or names one part of a breakdown such as a credit quality. A
 A `fund_returns` row is a fund's total return for one month, in percent,
 as the filing of day `as_of` states it for the share class its ticker
 maps to. `month` is the month's last day, `YYYY-MM-DD`. Two filings can
-state a month. Gold keeps both, and a reader takes the later one. A
-return that is no decimal fails the load. RETURNS-NOTES.md, "Benchmarks",
-reads them.
+state a month, and gold keeps both. A return that is no decimal fails
+the load. RETURNS-NOTES.md, "Benchmarks", reads them.
 
 A `dividend_events` row is one distribution of a fund or a security, as
 a provider states it:
@@ -351,7 +350,7 @@ A fund a benchmark names is wanted from today, as a reference fund is,
 in the role `benchmark`. It wants `monthly_returns`, its N-PORT filing's
 monthly total returns (`fund_returns`), first, then `characteristics`
 where it is not held. Its lines widen the security master, as a
-reference fund's do ([EXPOSURE.md](../EXPOSURE.md), "Benchmarks").
+reference fund's do ([EXPOSURE.md §14](../EXPOSURE.md#14-benchmarks)).
 
 The class is the one a holding states. A fund that only the roles `proxy`,
 `reference` or `underlying` name wants none of these, and neither does a

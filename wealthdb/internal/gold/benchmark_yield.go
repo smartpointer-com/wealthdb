@@ -12,7 +12,7 @@ import (
 
 // benchmarkLinesPct is the share of a fund its lines must cover for what
 // they imply to stand for it, as for a bond fund's implied yield
-// (docs/YIELD.md §4).
+// (docs/YIELD.md §3; a benchmark reads it as §12 says).
 const benchmarkLinesPct = 50
 
 // benchmarkNoDebtPct is the share of debt under which a fund's duration

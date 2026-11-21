@@ -1120,10 +1120,10 @@ wealthdb returns global --benchmark "Global 60/40" --period annual
 wealthdb returns global 2024 --benchmark "S&P 500" --period total -x CHF
 ```
 
-**Months.** Each public N-PORT filing states the fund's total return for
-each of the three months it covers, per share class. refdata keeps the
-class the ticker maps to, and gold holds them in `fund_returns`. Where
-two filings state a month, the later one counts.
+**Months.** A fund's monthly total returns come from its public N-PORT
+filings, in gold's `fund_returns` ([adapters/refdata.md
+§2](adapters/refdata.md#2-coverage-matrix) defines the row). Where two
+filings state a month, the later one counts.
 
 - US registered funds only. A configured mix of UCITS funds has no
   returns.

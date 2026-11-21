@@ -1458,7 +1458,8 @@ legend entry on Exposure's bars:
   the Exposure class and currency cards are bars whatever is picked.
 - Yield's yield and duration charts add the benchmark as one more
   line: a column on the household's axis, in the card's own colours.
-  YIELD.md, "Benchmarks", says what it reads.
+  [YIELD.md §12](../wealthdb/docs/YIELD.md#12-benchmarks) says what it
+  reads.
 - A table's or a Yield line chart's benchmark columns go the same way
   (`_columns_with_benchmark`).
   `table.columns` names them, as a table otherwise shows only a saved
@@ -1466,6 +1467,17 @@ legend entry on Exposure's bars:
 - A tile that exists only beside a benchmark (`hide_empty`) reads no
   row under None and hides (`card.hide_empty`). Metabase closes the gap
   a hidden tile leaves, so such a tile can sit anywhere on the grid.
+
+Exposure and Allocation show the benchmark's look-through
+([EXPOSURE.md §14](../wealthdb/docs/EXPOSURE.md#14-benchmarks)) this way:
+
+| Card | Benchmark |
+| --- | --- |
+| Allocation by asset class | a bar per class, the same total in the mix |
+| Allocation by currency | a bar per currency, by the currency its funds are priced in |
+| By asset class, sector, region, currency, size, rating, maturity | a second bar per bucket, on the same card |
+| By country | unchanged; a table of the twenty largest deviations |
+| Top securities, Top 100 issuers | `benchmark_pct` and `difference_pct` columns |
 
 A field filter binds one table's column, so the benchmark tables read
 the picked currency through it: `currency IN (SELECT currency FROM

@@ -1240,7 +1240,7 @@ The MCP server has a `yield` tool with the same views, an `as_of` day,
 equal the command's, cell for cell. A series' header names its window:
 its first and last period ends.
 
-## Benchmarks
+## 12. Benchmarks
 
 `web refresh` writes each benchmark's yield and duration to
 `benchmark_yield`, at the instants the dashboard reads. Each is the
@@ -1261,7 +1261,7 @@ A fund's lines are read for today alone, and a fund's page states
 its figures from the day they were first fetched. So the over-time lines
 of a benchmark start short and grow as refdata runs.
 
-## 12. What yield is not
+## 13. What yield is not
 
 - Not a dividend model. A stock has no yield to maturity and no
   duration.
