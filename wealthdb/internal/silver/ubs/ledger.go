@@ -15,10 +15,11 @@ import (
 //
 // The web ledger (the ubs-web transactions table) and the PSN events
 // are read whole by most passes of a load: the folds, the offset veto,
-// the dividend records and the streams. A connection serves one load
-// over silvers that do not change under it, so each rail is read once,
-// in the silver's own row order, and its payloads decoded once; every
-// pass walks the rows. An absent rail has no rows.
+// the dividend records, the corporate actions, the swaps and the
+// streams. A connection serves one load over silvers that do not change
+// under it, so each rail is read once, in the silver's own row order,
+// and its payloads decoded once; every pass walks the rows. An absent
+// rail has no rows.
 
 // webRow is one row of the web ledger as every pass reads it: the
 // columns, the payload decoded, and the kind and cash the booking type
@@ -121,19 +122,24 @@ func (r *webReader) eachWebRow(ctx context.Context, fn func(*webRow) error) erro
 }
 
 // feedRow is one event of the PSN silver as every pass reads it. A cash
-// movement also carries its payload decoded and the transaction the
-// stream projects it to (project).
+// movement and a trade confirmation also carry their payload decoded
+// (decode), and a cash movement the transaction the stream projects it
+// to (project).
 type feedRow struct {
 	eventID, account, kind, payload string
 	at                              int64
 	currency                        sql.NullString
 
 	// pl is a cash movement's payload decoded; decoded is false where it
-	// does not decode.
+	// does not decode. trade is a trade confirmation's payload decoded.
+	// err is why the payload of either kind does not decode.
 	pl      cashMovementPayload
 	decoded bool
-	// tx is a cash movement as buildTransaction projects it; projected
-	// is false where it projects to no transaction with an amount.
+	trade   tradeConfirmationPayload
+	err     error
+	// tx is a cash movement as feedRow.transaction projects it;
+	// projected is false where it projects to no transaction with an
+	// amount.
 	tx        canonical.TransactionChange
 	projected bool
 }
@@ -164,10 +170,7 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 		if err := rows.Scan(&row.eventID, &row.at, &row.account, &row.kind, &row.currency, &row.payload); err != nil {
 			return fmt.Errorf("ubs-psn events scan: %w", err)
 		}
-		if row.kind == "cash_movement" {
-			row.decoded = json.Unmarshal([]byte(row.payload), &row.pl) == nil
-			row.tx, row.projected = row.projectCash()
-		}
+		row.decode()
 		out.events = append(out.events, row)
 		return nil
 	})
@@ -182,19 +185,27 @@ SELECT event_external_id, timestamp, account_external_id, kind, currency_iso, pa
 	return out, nil
 }
 
+// decode decodes the payload of a cash movement or a trade confirmation,
+// the two kinds the passes read, and projects a cash movement.
+func (row *feedRow) decode() {
+	switch row.kind {
+	case "cash_movement":
+		row.err = json.Unmarshal([]byte(row.payload), &row.pl)
+		row.decoded = row.err == nil
+		row.tx, row.projected = row.projectCash()
+	case "trade_confirmation":
+		row.err = json.Unmarshal([]byte(row.payload), &row.trade)
+	}
+}
+
 // projectCash is the cash movement as the transaction stream emits it
-// (buildTransaction), before any pass reclassifies it or books it at a
+// (transaction), before any pass reclassifies it or books it at a
 // gross. false for a payload that does not decode or states no amount.
 func (row *feedRow) projectCash() (canonical.TransactionChange, bool) {
 	if !row.decoded {
 		return canonical.TransactionChange{}, false
 	}
-	var ccy *string
-	if row.currency.Valid {
-		c := row.currency.String
-		ccy = &c
-	}
-	tx, err := buildTransaction(row.eventID, row.at, row.account, "cash_movement", ccy, row.payload, nil)
+	tx, err := row.transaction(nil)
 	if err != nil || tx.NetAmount == nil {
 		return canonical.TransactionChange{}, false
 	}

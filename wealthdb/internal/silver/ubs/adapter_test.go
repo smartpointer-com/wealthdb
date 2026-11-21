@@ -767,9 +767,12 @@ func TestABankChargeNamesTheBankAsPayee(t *testing.T) {
 		{"NCHG", "RC", ""},
 		{"NTRF", "D", ""},
 	} {
-		tx, err := buildTransaction("E1", 0, "CH00CASH", "cash_movement", nil, payload(tc.txnType, tc.creditDebit), nil)
+		row := feedRow{eventID: "E1", account: "CH00CASH", kind: "cash_movement",
+			payload: payload(tc.txnType, tc.creditDebit)}
+		row.decode()
+		tx, err := row.transaction(nil)
 		if err != nil {
-			t.Fatalf("buildTransaction(%s, %s): %v", tc.txnType, tc.creditDebit, err)
+			t.Fatalf("transaction(%s, %s): %v", tc.txnType, tc.creditDebit, err)
 		}
 		if got := derefText(tx.Counterparty); got != tc.want {
 			t.Errorf("%s/%s payee = %q, want %q", tc.txnType, tc.creditDebit, got, tc.want)

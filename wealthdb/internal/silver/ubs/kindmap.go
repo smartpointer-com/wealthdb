@@ -84,7 +84,7 @@ func kindFor(silverKind, narrative string, creditDebit, txnType string) canonica
 // Read as that kind, a reversed trade (NSEC) would be a second trade to
 // every pass that reads trades, and a reversed conversion (NFEX) a
 // second conversion. The direction-only fallback keeps a reversal a
-// plain movement, and buildTransaction signs it by its mark.
+// plain movement, and feedRow.transaction signs it by its mark.
 //
 // The exception is NDIV on the reversal of a credit: the bank taking
 // back a dividend it paid. That is the dividend's reversal, a negative

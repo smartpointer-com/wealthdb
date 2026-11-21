@@ -2,15 +2,14 @@ package ubs
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/canonical"
-	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 // A corporate action that pays cash — a dividend, a coupon — reaches
@@ -513,35 +512,31 @@ type corporateActions struct {
 	gone map[string]string
 }
 
-// corporateActions reads them once per connection: the whole silver,
-// unwindowed. None for a nil reader.
+// corporateActions reads them once per connection, from the feed: the
+// whole silver, unwindowed. None for a nil reader.
 func (r *psnReader) corporateActions(ctx context.Context) (corporateActions, error) {
 	if r == nil || r.db == nil {
 		return corporateActions{}, nil
 	}
 	return r.actions.Get(func() (corporateActions, error) {
+		f, err := r.feed(ctx)
+		if err != nil {
+			return corporateActions{}, err
+		}
 		var all []caRow
-		if err := silver.ScanRows(ctx, r.db, "ubs corporate actions", `
-SELECT event_external_id, timestamp, payload
-  FROM events
- WHERE kind = 'corporate_action_confirmation'
- ORDER BY event_external_id`, func(rows *sql.Rows) error {
-			var (
-				row     caRow
-				payload string
-			)
-			if err := rows.Scan(&row.eventID, &row.at, &payload); err != nil {
-				return fmt.Errorf("ubs corporate actions scan: %w", err)
+		for i := range f.events {
+			ev := &f.events[i]
+			if ev.kind != "corporate_action_confirmation" {
+				continue
 			}
-			if err := json.Unmarshal([]byte(payload), &row.f); err != nil {
-				return nil
+			row := caRow{eventID: ev.eventID, at: ev.at}
+			if json.Unmarshal([]byte(ev.payload), &row.f) != nil {
+				continue
 			}
 			row.m = parseCorporateAction(row.f)
 			all = append(all, row)
-			return nil
-		}); err != nil {
-			return corporateActions{}, err
 		}
+		slices.SortFunc(all, func(a, b caRow) int { return strings.Compare(a.eventID, b.eventID) })
 		return corporateActions{all: all, gone: withdrawals(all)}, nil
 	})
 }

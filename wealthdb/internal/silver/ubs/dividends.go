@@ -46,7 +46,7 @@ import (
 // close.
 //
 // The bank corrects a dividend by reversing its credit: an MT940 line
-// marked `RC`, signed negative whatever its kind (buildTransaction).
+// marked `RC`, signed negative whatever its kind (feedRow.transaction).
 // Where road 2 or 3 names its security, and the line or a credit on or
 // before its day says the credit was a dividend, it is that security's
 // dividend reversal (creditReversal). Each reversal takes back its own
@@ -720,7 +720,7 @@ func firstAgreeing(cs []cashConfirmation, agrees func(c, first cashConfirmation)
 // places none, whose type code does (an interest, a fee, a tax, a trade's
 // `NSEC`); and one that names no security either road resolves. The
 // narrative outranks the type code, as in the kind map. tx is the line as
-// buildTransaction projects it.
+// feedRow.transaction projects it.
 func (d *dividendSecurities) reversalOf(tx canonical.TransactionChange, p cashMovementPayload) (isin string, saysDividend, ok bool) {
 	if !isCreditReversal(p.CreditDebit) || tx.NetAmount == nil {
 		return "", false, false
@@ -1100,7 +1100,7 @@ func (d psnDividends) addFeedGrosses(ctx context.Context, r *psnReader, coverage
 
 // reverse reads an MT940 reversal of a dividend credit as that security's
 // dividend reversal (creditReversal): kind dividend, the instrument
-// linked. Its amount is already negative (buildTransaction). Where the
+// linked. Its amount is already negative (feedRow.transaction). Where the
 // credit it takes back was booked at a gross, it takes back the gross,
 // and returns the tax taken back with it as the row to book beside it
 // (bookAtGross). reversed false leaves the line as the kind map read it.

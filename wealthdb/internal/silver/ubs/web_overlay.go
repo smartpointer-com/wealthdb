@@ -136,7 +136,7 @@ func isStatementEraID(txID string) bool { return strings.HasPrefix(txID, stateme
 // Every component is taken from the adapter's OWN projection of the row
 // rather than re-read from the silver columns, because the eras write
 // those columns to different conventions and only the projection resolves
-// them (webProjectedNet for the two web eras, buildTransaction for the
+// them (webProjectedNet for the two web eras, feedRow.transaction for the
 // feed). What the key compares is therefore the cash each row moves: a
 // dividend gold books at its gross keys on the amount credited, which its
 // two rows move together (bookAtGross).
@@ -185,7 +185,7 @@ func bookingCents(amt *canonical.Decimal) (string, bool) {
 
 // bookingCurrency normalises a currency for the key the way the adapter
 // itself does: trimmed and upper-cased, and an absent one read as ISO
-// 4217 "no currency involved", which is the fallback buildTransaction
+// 4217 "no currency involved", which is the fallback feedRow.transaction
 // stamps on a feed row that carries none.
 func bookingCurrency(ccy string) string {
 	c := strings.ToUpper(strings.TrimSpace(ccy))

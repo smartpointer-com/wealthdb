@@ -79,17 +79,12 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 	out := canonical.TransactionBatch{}
 	mirrored, grossed := 0, 0
 	emit := func(row *feedRow) error {
-		eventID, extID, kind, payload, occurredAt := row.eventID, row.account, row.kind, row.payload, row.at
-		var currencyISO *string
-		if row.currency.Valid {
-			c := row.currency.String
-			currencyISO = &c
-		}
+		eventID, kind := row.eventID, row.kind
 		if row.kind == "cash_movement" && rc.lostTo(recFeed, eventID) != "" {
 			return nil
 		}
 
-		tx, err := buildTransaction(eventID, occurredAt, extID, kind, currencyISO, payload, ibans)
+		tx, err := row.transaction(ibans)
 		if err != nil {
 			return fmt.Errorf("ubs Transactions (event_id=%s): %w", eventID, err)
 		}
@@ -103,7 +98,7 @@ func (r *psnReader) Transactions(ctx context.Context, w canonical.Window, hints 
 			taxed bool
 		)
 		if kind == "cash_movement" {
-			// The payload decodes: buildTransaction read it above.
+			// The payload decodes: transaction read it above.
 			p := row.pl
 			var reversed bool
 			if tax, taxed, reversed, err = dividends.reverse(&tx); err != nil {
@@ -294,28 +289,30 @@ func cashIBAN(ibans map[string]string, id string) string {
 	return id
 }
 
-// buildTransaction routes a silver event into a TransactionChange.
-// Each silverKind variant has its own payload shape; common fields
-// (account, instrument, kind) fall out per branch. `ibans` maps the
-// bank's internal cash-account ids onto the IBANs the account registry
-// is keyed by (cashAccountIBANs); nil where the caller emits no kind
-// that names a cash account of its own.
-func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind string, defaultCcy *string, payload string, ibans map[string]string) (canonical.TransactionChange, error) {
+// transaction routes a silver event into a TransactionChange.
+// Each kind has its own payload shape; common fields (account,
+// instrument, kind) fall out per branch. A cash movement and a trade
+// confirmation read the payload the feed decoded (decode), and either
+// fails where it does not decode. `ibans` maps the bank's internal
+// cash-account ids onto the IBANs the account registry is keyed by
+// (cashAccountIBANs); nil where the caller emits no kind that names a
+// cash account of its own.
+func (row *feedRow) transaction(ibans map[string]string) (canonical.TransactionChange, error) {
 	tx := canonical.TransactionChange{
-		TransactionExternalID: eventID,
-		OccurredAt:            occurredAt,
-		AccountExternalID:     defaultAcct,
-		Payload:               json.RawMessage(payload),
+		TransactionExternalID: row.eventID,
+		OccurredAt:            row.at,
+		AccountExternalID:     row.account,
+		Payload:               json.RawMessage(row.payload),
 	}
-	if defaultCcy != nil {
-		tx.Currency = *defaultCcy
+	if row.currency.Valid {
+		tx.Currency = row.currency.String
 	}
-	switch silverKind {
+	switch silverKind := row.kind; silverKind {
 	case "trade_confirmation":
-		var p tradeConfirmationPayload
-		if err := json.Unmarshal([]byte(payload), &p); err != nil {
-			return tx, err
+		if row.err != nil {
+			return tx, row.err
 		}
+		p := row.trade
 		tx.Kind = kindFor(silverKind, "", "", "") // Buy default; side flips below
 		if isSellSide(p.Side) {
 			tx.Kind = canonical.TxKindSell
@@ -344,10 +341,10 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		tx.Description = textPtr(p.SecurityName)
 
 	case "cash_movement":
-		var p cashMovementPayload
-		if err := json.Unmarshal([]byte(payload), &p); err != nil {
-			return tx, err
+		if row.err != nil {
+			return tx, row.err
 		}
+		p := row.pl
 		tx.Kind = kindFor(silverKind, p.Narrative, p.CreditDebit, p.TxnType)
 		if p.Account != "" {
 			tx.AccountExternalID = p.Account
@@ -379,7 +376,7 @@ func buildTransaction(eventID string, occurredAt int64, defaultAcct, silverKind 
 		"corporate_action_notification",
 		"corporate_action_narrative":
 		var p corporateActionPayload
-		if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		if err := json.Unmarshal([]byte(row.payload), &p); err != nil {
 			return tx, err
 		}
 		tx.Kind = kindFor(silverKind, "", "", "")

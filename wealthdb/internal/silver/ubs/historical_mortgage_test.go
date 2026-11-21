@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS positions (
     snapshot_at INTEGER, instrument_isin TEXT, currency_iso TEXT, description TEXT, payload TEXT);
 CREATE TABLE IF NOT EXISTS transactions (
     transaction_external_id TEXT, account_external_id TEXT, value_date INTEGER,
-    currency_iso TEXT, amount_debit REAL, amount_credit REAL, description_kind TEXT,
-    payload TEXT);`
+    booking_date INTEGER, currency_iso TEXT, amount_debit REAL, amount_credit REAL,
+    counterparty TEXT, description_kind TEXT, payload TEXT);`
 
 // connSnapshots is the snapshot stream of the connection over w, its
 // web silver given the live tables it lacks (liveWebTables).

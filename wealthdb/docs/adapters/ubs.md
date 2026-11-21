@@ -610,7 +610,7 @@ Rules 4 to 6 of the reconcile table are that match. Their key, the
 booking key, is four facts of the booking. Each comes from the
 adapter's own projection of the row, never from the raw silver columns:
 
-| Key component | Web eras (`webProjectedNet`) | Feed era (`buildTransaction`) |
+| Key component | Web eras (`webProjectedNet`) | Feed era (`feedRow.transaction`) |
 | --- | --- | --- |
 | Account | `transactions.account_external_id` | `payload.account`, else `events.account_external_id` |
 | Value day | `value_date`, floored to UTC midnight | `events.timestamp`, floored to UTC midnight |
@@ -1217,8 +1217,8 @@ The reconcile table and the veto leave the pair whole:
 
 - The booking key holds the amount each record moved. For the MT940
   line and the export row, it is the amount credited, as
-  `buildTransaction` and `webProjectedNet` project them. For a reversal,
-  it is the amount taken back. For a confirmation's cash leg, it is the
+  `feedRow.transaction` and `webProjectedNet` project them. For a
+  reversal, it is the amount taken back. For a confirmation's cash leg, it is the
   amount posted. A statement copy prints that amount, so it still
   pairs with the row booked gross. A tax row has no statement copy and
   is no candidate.

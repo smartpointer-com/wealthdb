@@ -2,7 +2,6 @@ package ubs
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"math"
@@ -102,12 +101,11 @@ type candidate struct {
 	id string
 
 	// The record itself; which field is set follows the kind.
-	web          *webRow                   // statement, export, advice
-	feed         *feedRow                  // feed, confirmation
-	confirmation *tradeConfirmationPayload // confirmation
-	mirror       *conversionMirror         // mirror
-	leg          *legRecord                // leg
-	list         *listRow                  // list
+	web    *webRow           // statement, export, advice
+	feed   *feedRow          // feed, confirmation
+	mirror *conversionMirror // mirror
+	leg    *legRecord        // leg
+	list   *listRow          // list
 
 	// lostTo is the rule the record lost to; empty while it stands.
 	lostTo string
@@ -413,7 +411,7 @@ func settlementKeyOf(c *candidate, ibans map[string]string) (any, bool) {
 		}
 		return newSettlementKey(cashIBAN(ibans, row.bookedAccount()), currency, p.Amount, row.at)
 	case recConfirmation:
-		p := c.confirmation
+		p := c.feed.trade
 		return newSettlementKey(cashIBAN(ibans, p.CashAccountExternalID), c.confirmationCurrency(),
 			p.NetAmount, p.SettlementDateUnix)
 	}
@@ -437,11 +435,11 @@ func settledDayKeyOf(c *candidate, ibans map[string]string) (any, bool) {
 		// The confirmation dates the trade to its execution and says
 		// separately when the cash lands. It is the landing that shares
 		// a day with the list's value date.
-		at := c.confirmation.SettlementDateUnix
+		at := c.feed.trade.SettlementDateUnix
 		if at == 0 {
 			at = c.feed.at
 		}
-		return newSettledDayKey(cashIBAN(ibans, c.confirmation.CashAccountExternalID), c.confirmationCurrency(), at), true
+		return newSettledDayKey(cashIBAN(ibans, c.feed.trade.CashAccountExternalID), c.confirmationCurrency(), at), true
 	case recFeed:
 		tx, _, ok := c.feed.project()
 		if !ok || tx.Kind != canonical.TxKindBuy && tx.Kind != canonical.TxKindSell {
@@ -455,7 +453,7 @@ func settledDayKeyOf(c *candidate, ibans map[string]string) (any, bool) {
 // confirmationCurrency is the currency a confirmation settles in: the net
 // amount's, else the event's.
 func (c *candidate) confirmationCurrency() string {
-	currency := c.confirmation.NetCurrency
+	currency := c.feed.trade.NetCurrency
 	if currency == "" && c.feed.currency.Valid {
 		currency = c.feed.currency.String
 	}
@@ -699,12 +697,10 @@ func readCandidates(ctx context.Context, web *webReader, psn *psnReader, rels []
 		case "cash_movement":
 			rc.records = append(rc.records, &candidate{kind: recFeed, id: row.eventID, feed: row})
 		case "trade_confirmation":
-			var p tradeConfirmationPayload
-			if err := json.Unmarshal([]byte(row.payload), &p); err != nil {
-				return nil, nil, fmt.Errorf("ubs trade confirmation payload (event_id=%s): %w", row.eventID, err)
+			if row.err != nil {
+				return nil, nil, fmt.Errorf("ubs trade confirmation payload (event_id=%s): %w", row.eventID, row.err)
 			}
-			rc.records = append(rc.records, &candidate{kind: recConfirmation, id: row.eventID,
-				feed: row, confirmation: &p})
+			rc.records = append(rc.records, &candidate{kind: recConfirmation, id: row.eventID, feed: row})
 		}
 	}
 	if web != nil {
