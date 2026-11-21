@@ -20,18 +20,34 @@ import json
 from pathlib import Path
 
 import load as loader
-import tinypdf
+from collectorkit import testpdf
 
 STMT_IBAN = "CH00 0000 0000 0000 0000 1"
 EXPORT_IBAN = "CH00 0000 0000 0000 00AA A"
 PAYEE_IBAN = "CH00 0000 0000 0000 0000 9"
+
+# The PDFs' text: Courier at 6 points on an A4 page.
+_SIZE = 6
+
+
+def _pdf(words: list[tuple[float, float, str]]) -> bytes:
+    """A one-page PDF drawing each (x, top, text), its left edge at x and
+    its line `top` points below the page's top edge."""
+    return testpdf.from_top([[(x, top + _SIZE, t) for x, top, t in words]],
+                            size=_SIZE, font="Courier", page=testpdf.A4)
+
+
+def _lines_pdf(lines: list[str]) -> bytes:
+    """A one-page PDF printing `lines`, one under the other."""
+    return _pdf([(20.0, 20.0 + 10 * i, line) for i, line in enumerate(lines)])
+
 
 SOA_LABEL = ("Statement of assets as of 31102098 02.11.2098 02 November 2098 "
              "P. Placeholder 999-00000000-06 300 KB")
 
 
 def _soa(base_ccy: str, market_value: str) -> bytes:
-    return tinypdf.lines_pdf([
+    return _lines_pdf([
         f"Valued in {base_ccy}",
         "Portfolio 01",
         "Liquidity 11 111 11 111 22.58",
@@ -83,12 +99,12 @@ def _account_statement() -> bytes:
     words += [(85.0, 190.0, "EXAMPLE SHOP"), (85.0, 205.0, PAYEE_IBAN)]
     words += [(42.0, 225.0, "31.10.98"), *_info("Closing balance", 225.0),
               _at("balance", "1300.00", 225.0)]
-    return tinypdf.pdf_bytes([words])
+    return _pdf(words)
 
 
 def _advice(direction: str, iban: str, trx: str, purpose: str,
             amount: str) -> bytes:
-    return tinypdf.lines_pdf([
+    return _lines_pdf([
         "Cash Account for investment solutions CHF",
         f"IBAN {iban}",
         f"{direction} Advice",
@@ -103,7 +119,7 @@ def _advice(direction: str, iban: str, trx: str, purpose: str,
     ])
 
 
-_MATURITY_NOTICE = tinypdf.lines_pdf([
+_MATURITY_NOTICE = _lines_pdf([
     "UBS Fixed-Rate Mortgage CHF",
     "Account no. 999-12345678.MMM 0001",
     "Category EXAMPLE ROAD 1, 0000 EXAMPLECITY",

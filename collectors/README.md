@@ -883,6 +883,9 @@ Docker collectors, in the `.venv` for host ones. At minimum they cover
 **bronze → silver**: a *synthetic* bronze dump (no real IDs/balances —
 see root [AGENTS.md](../AGENTS.md) §4) and assertions that `load.py`
 projects the expected silver rows; pure-stdlib `unittest` works too.
+A test that needs a PDF draws its own with
+[`collectorkit.testpdf`](../shared/collectorkit/collectorkit/testpdf.py),
+which only tests import.
 Each loader also runs `collectorkit.incremental.check` over its fixture
 runs: the runs loaded one load at a time must build the silver that one
 `load --force` builds.

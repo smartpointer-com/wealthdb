@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import form_1099b  # noqa: E402
 import realized_reports  # noqa: E402
 import tax_form_parsers as tf  # noqa: E402
+from collectorkit import testpdf  # noqa: E402
 from collectorkit.words import Extracted, Page  # noqa: E402
 
 
@@ -551,30 +552,7 @@ class TestGainLossReport:
 def _pdf(runs: list[tuple[float, float, str]]) -> bytes:
     """A one-page PDF (792 x 612 points) drawing each (x, y, text) run in
     7-point Helvetica, in the order given."""
-    ops = []
-    for x, y, text in runs:
-        text = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-        ops.append(f"BT /F1 7 Tf {x} {y} Td ({text}) Tj ET")
-    stream = "\n".join(ops).encode()
-    objs = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612]"
-        b" /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
-    ]
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = []
-    for i, body in enumerate(objs, 1):
-        offsets.append(len(out))
-        out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
-    xref = len(out)
-    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
-    out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
-    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
-        len(objs) + 1, xref)
-    return bytes(out)
+    return testpdf.pdf([testpdf.runs(runs, size=7)], page=(792, 612))
 
 
 _LAYOUT_HEAD = [

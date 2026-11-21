@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from collectorkit import pdftotext
+from collectorkit import pdftotext, testpdf
 
 needs_poppler = pytest.mark.skipif(shutil.which("pdftotext") is None,
                                    reason="poppler-utils not installed")
@@ -19,28 +19,7 @@ needs_poppler = pytest.mark.skipif(shutil.which("pdftotext") is None,
 
 def _pdf(*runs: tuple[int, int, str]) -> bytes:
     """A one-page PDF printing each (x, y, text) run."""
-    ops = " ".join(f"BT /F1 12 Tf {x} {y} Td ({t}) Tj ET" for x, y, t in runs)
-    stream = ops.encode("ascii")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    ]
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = []
-    for number, body in enumerate(objects, 1):
-        offsets.append(len(out))
-        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
-    xref = len(out)
-    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
-    for offset in offsets:
-        out += b"%010d 00000 n \n" % offset
-    out += (b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
-            % (len(objects) + 1, xref))
-    return bytes(out)
+    return testpdf.pdf([testpdf.runs(runs, size=12)])
 
 
 def _fake_run(monkeypatch, result=None, raises=None):
