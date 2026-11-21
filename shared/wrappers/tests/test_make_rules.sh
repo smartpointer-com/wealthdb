@@ -8,14 +8,18 @@
 #     they run on a tmpfs copy of the checkout at /app;
 #   - a host-venv or hybrid collector's tests run on its venv, and fail
 #     when it has none;
-#   - clean-wealthdb clears the Go cache wealthdb-go uses;
+#   - clean-wealthdb clears the Go cache wealthdb-go uses, and
+#     test-wealthdb takes its packages and go test flags from
+#     WEALTHDB_PKGS and GO_TEST_FLAGS;
 #   - test-demo's scratch roots are the image tag's own, and clean-demo
 #     removes that root only when it holds the tests' marker;
 #   - lint reinstalls ruff when its pin changes, a collector's venv
 #     reinstalls only when its requirements change, and update-venvs
 #     stops at the first pip that fails;
 #   - make test runs the suites it is given, prints each one's log after
-#     its name and seconds, and fails when one fails;
+#     its name and seconds, and fails when one fails; a subset says how
+#     many of the suites it runs, every suite is the default, and an
+#     empty SUITES is an error;
 #   - site-shots runs as the caller, with the checkout read-only and no
 #     secrets;
 #   - an exported SHOW prints no value from make pii;
@@ -58,7 +62,7 @@ cp "$TREE/collectors/host/.venv/bin/python" "$TREE/collectors/hyb/.venv/bin/pyth
 chmod +x "$TREE/collectors"/*/.venv/bin/python
 
 # dry TARGET: the recipe make would run for TARGET, as one line per command.
-dry() { (cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" make -n "$1" 2>&1); }
+dry() { (cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" make -n "$@" 2>&1); }
 
 echo "make collector rules:"
 has "a Docker collector's build builds the bases" "build base image" "$(dry build-dock)"
@@ -99,6 +103,11 @@ chmod +x "$TMP/bin/docker"
 gocache="$(env PATH="$TMP/bin:$PATH" WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" \
     "$TREE/wealthdb/wealthdb-go" version | sed -n 's/^GOCACHE=//p')"
 has "clean-wealthdb clears wealthdb-go's build cache" "rm -rf $gocache" "$(dry clean-wealthdb)"
+has_item "test-wealthdb tests every package by default" \
+    "wealthdb/wealthdb-test  ./..." "$(dry test-wealthdb)"
+has_item "WEALTHDB_PKGS and GO_TEST_FLAGS reach go test" \
+    "wealthdb/wealthdb-test -count=1 ./internal/gold/..." \
+    "$(dry test-wealthdb WEALTHDB_PKGS=./internal/gold/... GO_TEST_FLAGS=-count=1)"
 
 demo="$TMP/cache/wealthdb/demo-test-t"
 has "test-demo's scratch roots are the tag's own" \
@@ -178,8 +187,22 @@ has_item "a failed suite is named with its status" "==> sb failed (2)" "$out"
 order="$(grep -E '^(==> s[ab] [0-9]+s|s[ab] ran)$' <<<"$out" | sed -E 's/ [0-9]+s$/ Ns/' | tr '\n' ' ')"
 [ "$order" = "==> sb Ns sb ran ==> sa Ns sa ran " ] && \
     ok "each log follows its name and seconds, in the order given" || bad "order: $order"
+has_item "a subset says how many of the suites it runs" \
+    "make test: running 2 of $(real list-suites | wc -l | tr -d ' ') suites (SUITES)" "$out"
 out="$(suites sa)"; rc=$?
 [ "$rc" = 0 ] && ok "passing suites pass make test" || bad "make test exit $rc: $out"
+out="$(suites "")"; rc=$?
+[ "$rc" != 0 ] && ok "an empty SUITES fails make test" || bad "make test exit 0: $out"
+has "...and says why" "SUITES names no suite" "$out"
+lacks "...before any suite starts" "start " "$out"
+# With no SUITES, a stub fan-out prints the suites it was handed.
+cp "$TREE/shared/wrappers/fanout.sh" "$TMP/fanout.sh"
+printf '#!/bin/sh\nshift 5\necho "fanout $*"\n' > "$TREE/shared/wrappers/fanout.sh"
+out="$(real test)"
+has_item "make test runs every suite by default, in start order" \
+    "fanout $(echo $(real list-suites))" "$out"
+lacks "...and names no subset" "make test: running" "$out"
+cp "$TMP/fanout.sh" "$TREE/shared/wrappers/fanout.sh"
 
 echo "make site rules:"
 out="$(cd "$TREE" && env WEALTHDB_IMAGE_TAG=t XDG_CACHE_HOME="$TMP/cache" \

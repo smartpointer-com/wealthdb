@@ -23,10 +23,11 @@ import unittest
 DEMO = pathlib.Path(__file__).resolve().parent
 
 
-def groups():
-    """The test names to run, one per process, in discovery order."""
-    sys.path.insert(0, str(DEMO))
-    suite = unittest.TestLoader().discover(str(DEMO / "tests"), top_level_dir=str(DEMO))
+def groups(start=DEMO / "tests", top=DEMO):
+    """The test names to run, one per process, in discovery order, of
+    the tests under start, named from top."""
+    sys.path.insert(0, str(top))
+    suite = unittest.TestLoader().discover(str(start), top_level_dir=str(top))
     names = []
 
     def walk(s):
