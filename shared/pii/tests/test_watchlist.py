@@ -67,6 +67,15 @@ class Generic(unittest.TestCase):
         self.assertTrue(w.generic("Rainy", frozenset(), frozenset({"rainy"})))
         self.assertFalse(w.generic("Rainy day pot", frozenset(), frozenset({"rainy"})))
 
+    def test_common_words_are_the_dictionary_lower_case_entries(self):
+        with tempfile.TemporaryDirectory() as d:
+            words = Path(d) / "words"
+            words.write_text("rainy\nAaron\nday\nZurich's\nisn't\n")
+            with mock.patch.object(w, "DICTIONARY", words):
+                self.assertEqual(w.common_words(), {"rainy", "day", "isn't"})
+            with mock.patch.object(w, "DICTIONARY", Path(d) / "missing"):
+                self.assertEqual(w.common_words(), frozenset())
+
     def test_institution_words_split_collector_names(self):
         with tempfile.TemporaryDirectory() as d:
             for name in ("ubs-web", "raiffeisen_at"):

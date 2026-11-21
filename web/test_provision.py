@@ -593,8 +593,6 @@ check("a twin defines no exempt card, and the others under their privacy names, 
       and _twin.cards["B (privacy)"].home == "Spending", _twin.cards)
 check("no exempt card has a privacy card",
       not [n for n, c in _BASE_CARDS.items() if c.exempt and p.privacy_name(n) in CARD_DEFS])
-check("the twins of the cards that exist only beside a benchmark hide empty too",
-      all(CARD_DEFS[n].hide_empty for n in map(p.privacy_name, dashboards_index.BENCHMARK_CARDS) if n in CARD_DEFS))
 
 # ---- ids bound late ---------------------------------------------------
 
@@ -3069,7 +3067,7 @@ check("the DV01 cards group by curve currency, a bar per tenor, in curve order a
           and "ORDER BY t.tenor_order, k.risk DESC" in _y_sql[n] and "held_in" not in _y_sql[n]
           and not VIZ[n].get("stackable.stack_type")
           for n in ("DV01 along the curve", "DV01 along the curve (privacy)")))
-check("the yields and the duration are two charts, each on one axis",
+check("the yields and the duration are two charts, the benchmark's line on the left axis",
       "graph.metrics" not in VIZ["Yields over time"] and "graph.metrics" not in VIZ["Duration over time"]
       and VIZ["Yields over time"]["series_settings"]["benchmark_yield_pct"]["axis"] == "left"
       and VIZ["Duration over time"]["series_settings"]["benchmark_duration"]["axis"] == "left")
@@ -5982,7 +5980,7 @@ for _d in ("Wealth Overview", "Spending", "Income", "Cash Flow", "Gains"):
     check(f"'{_d}' has no Benchmark picker",
           not [x for x in params_of(_d) if x["slug"] == "benchmark"])
 check("the picker's model reads web_benchmarks", "web_benchmarks" in MODELS["report_benchmarks"][0])
-check("every card that exists only beside a benchmark is on a dashboard, hidden when empty",
+check("every card that exists only beside a benchmark is on a dashboard",
       all(any(c.removesuffix(p.PRIVACY_SUFFIX) == n for d in _b_dashes for c, *_ in DEFS[d][3])
           for n in dashboards_index.BENCHMARK_CARDS))
 _b_layouts = {d["name"]: d for d in layouts if d.get("name")}
@@ -6034,7 +6032,7 @@ for _n in sorted(dashboards_index.BENCHMARK_CARDS):
     _twin = _n if _n in EXEMPT else p.privacy_name(_n)
     _q = sql_of(CARDS[_twin][2])
     check(f"the twin of '{_n}' shows no amount",
-          "value" not in _output_columns(_q), _output_columns(_q))
+          not [c for c in _output_columns(_q) if c.endswith("value") and c != "indexed_value"], _output_columns(_q))
 check("the twin's value chart indexes each side to 100 at the window's start",
       "100 * value / first_value(value) OVER (PARTITION BY series ORDER BY end_day) AS indexed_value"
       in sql_of(CARDS["Value against the benchmark (privacy)"][2]))

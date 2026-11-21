@@ -719,6 +719,19 @@ class TestReusedGold(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         return pathlib.Path(tmp.name)
 
+    def stand_in(self, parent, build, run):
+        """Until the test ends, the scratch roots live in parent, build
+        stands in for the generator, run for the engine, and fixed stamp
+        inputs for the image and the files. A test may reassign a stamp
+        input's global: the end of the test restores each one."""
+        module = sys.modules[__name__]
+        for target, name, value in ((module, "PARENT", str(parent)), (generate, "build", build),
+                                    (module, "engine", run), (module, "engine_image_id", lambda: "sha256:abc"),
+                                    (module, "inputs_hash", lambda: "spec\ncatalogue\ncode")):
+            patcher = unittest.mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_a_matching_stamp_is_reused(self):
         d = self.scratch_dir()
         stamp = gold_stamp(dt.date(2023, 9, 30), "sha256:abc", "hash", SEED)
@@ -749,7 +762,6 @@ class TestReusedGold(unittest.TestCase):
     def test_build_and_load_reuses_only_a_matching_stamp(self):
         parent = self.scratch_dir() / "roots"
         calls = []
-        saved = (PARENT, generate.build, engine, engine_image_id, inputs_hash)
 
         def fake_build(root, *_args, **_kwargs):
             calls.append("build")
@@ -760,42 +772,29 @@ class TestReusedGold(unittest.TestCase):
             calls.append("engine")
             return "load: demo: 1\n"
 
-        try:
-            globals()["PARENT"] = str(parent)
-            generate.build = fake_build
-            globals()["engine"] = fake_engine
-            globals()["engine_image_id"] = lambda: "sha256:abc"
-            globals()["inputs_hash"] = lambda: "spec\ncatalogue\ncode"
-            day = dt.date(2023, 9, 30)
-            build_and_load("short", day)
-            self.assertEqual(build_and_load("short", day)[1], "load: demo: 1\n")
-            self.assertEqual(calls.count("build"), 1)
-            globals()["inputs_hash"] = lambda: "spec\nother\ncode"
-            build_and_load("short", day)
-            self.assertEqual(calls.count("build"), 2)
-            globals()["engine_image_id"] = lambda: ""
-            build_and_load("short", day)
-            self.assertEqual(calls.count("build"), 3)
-            globals()["engine_image_id"] = lambda: "sha256:abc"
-            globals()["inputs_hash"] = lambda: "spec\ncatalogue\ncode"
-            build_and_load("fresh", day)
-            build_and_load("fresh", day)
-            self.assertEqual(calls.count("build"), 4)
-            build_and_load("rolled", day)
-            build_and_load("rolled", day)
-            self.assertEqual(calls.count("build"), 6)
-        finally:
-            globals()["PARENT"] = saved[0]
-            generate.build = saved[1]
-            globals()["engine"] = saved[2]
-            globals()["engine_image_id"] = saved[3]
-            globals()["inputs_hash"] = saved[4]
-
+        self.stand_in(parent, fake_build, fake_engine)
+        day = dt.date(2023, 9, 30)
+        build_and_load("short", day)
+        self.assertEqual(build_and_load("short", day)[1], "load: demo: 1\n")
+        self.assertEqual(calls.count("build"), 1)
+        globals()["inputs_hash"] = lambda: "spec\nother\ncode"
+        build_and_load("short", day)
+        self.assertEqual(calls.count("build"), 2)
+        globals()["engine_image_id"] = lambda: ""
+        build_and_load("short", day)
+        self.assertEqual(calls.count("build"), 3)
+        globals()["engine_image_id"] = lambda: "sha256:abc"
+        globals()["inputs_hash"] = lambda: "spec\ncatalogue\ncode"
+        build_and_load("fresh", day)
+        build_and_load("fresh", day)
+        self.assertEqual(calls.count("build"), 4)
+        build_and_load("rolled", day)
+        build_and_load("rolled", day)
+        self.assertEqual(calls.count("build"), 6)
 
     def test_rolled_and_bare_are_reused_only_under_a_matching_stamp(self):
         parent = self.scratch_dir() / "roots"
         calls = []
-        saved = (PARENT, generate.build, engine, engine_image_id, inputs_hash)
 
         def fake_build(root, *_args, append=False, **_kwargs):
             calls.append("append" if append else "build")
@@ -812,39 +811,29 @@ class TestReusedGold(unittest.TestCase):
             (root / "wealthdb.db").write_bytes(b"")
             return "* waiting\n" if args[0] == "status" else "load: demo: 1\n"
 
-        try:
-            globals()["PARENT"] = str(parent)
-            generate.build = fake_build
-            globals()["engine"] = fake_engine
-            globals()["engine_image_id"] = lambda: "sha256:abc"
-            globals()["inputs_hash"] = lambda: "spec\ncatalogue\ncode"
-            first = roll_forward()
-            self.assertEqual(roll_forward(), first)
-            self.assertEqual(first[1:], ("* waiting\n", "load: demo: 1\n"))
-            self.assertEqual(calls.count("append"), 1)
-            (parent / "rolled" / STAMP).unlink()
-            roll_forward()
-            self.assertEqual(calls.count("append"), 2)
-            bare_gold()
-            bare_gold()
-            self.assertEqual(calls.count("init"), 3)
-            cfg = json.loads((parent / "bare" / "wealthdb.cfg").read_text())
-            self.assertNotIn("yield", cfg)
-            self.assertNotIn("declarations", cfg["exposure"])
-            globals()["inputs_hash"] = lambda: "spec\nother\ncode"
-            roll_forward()
-            bare_gold()
-            self.assertEqual((calls.count("append"), calls.count("init")), (3, 5))
-            globals()["engine_image_id"] = lambda: ""
-            roll_forward()
-            roll_forward()
-            self.assertEqual(calls.count("append"), 5)
-        finally:
-            globals()["PARENT"] = saved[0]
-            generate.build = saved[1]
-            globals()["engine"] = saved[2]
-            globals()["engine_image_id"] = saved[3]
-            globals()["inputs_hash"] = saved[4]
+        self.stand_in(parent, fake_build, fake_engine)
+        first = roll_forward()
+        self.assertEqual(roll_forward(), first)
+        self.assertEqual(first[1:], ("* waiting\n", "load: demo: 1\n"))
+        self.assertEqual(calls.count("append"), 1)
+        (parent / "rolled" / STAMP).unlink()
+        roll_forward()
+        self.assertEqual(calls.count("append"), 2)
+        bare_gold()
+        bare_gold()
+        self.assertEqual(calls.count("init"), 3)
+        cfg = json.loads((parent / "bare" / "wealthdb.cfg").read_text())
+        self.assertNotIn("yield", cfg)
+        self.assertNotIn("declarations", cfg["exposure"])
+        globals()["inputs_hash"] = lambda: "spec\nother\ncode"
+        roll_forward()
+        bare_gold()
+        self.assertEqual((calls.count("append"), calls.count("init")), (3, 5))
+        globals()["engine_image_id"] = lambda: ""
+        roll_forward()
+        roll_forward()
+        self.assertEqual(calls.count("append"), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
