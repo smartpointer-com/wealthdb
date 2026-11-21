@@ -487,7 +487,9 @@ security's slices in the selection:
 - each label is that of its heaviest slice, as the CLI takes the labels
   of a security's largest leaves;
 - a fund that reaches it in several slices counts once;
-- its share is of the selection, every security counted.
+- its share is of the selection, every security counted;
+- the value, the share and the benchmark's two columns come right after
+  the name, so a full-width tile shows them without a scroll.
 
 With nothing picked, its rows are those of `wealthdb exposure
 securities`. Its twin drops the three values for their shares. It shows

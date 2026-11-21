@@ -2807,14 +2807,16 @@ for _name in (_sec, p.privacy_name(_sec)):
           and set(CARDS[_name][2]["native"]["template-tags"])
           == {"currency", "time_range", "source", "tax_wrapper", "asset_class", "benchmark"}, _q)
 _sec_cols = {n: [c["name"] for c in VIZ[n]["table.columns"]] for n in (_sec, p.privacy_name(_sec))}
-check("the base card gives the view's columns, the market cap and the size among them, then the benchmark's",
-      _sec_cols[_sec] == ["security", "name", "ticker", "asset_class", "sector", "country", "market_cap", "size",
-                          "value", "direct_value", "via_funds_value", "funds", "share_pct",
-                          "benchmark_pct", "difference_pct"], _sec_cols[_sec])
+# The share and the benchmark's columns sit by the name, so a full-width
+# tile shows them without a scroll.
+check("the base card gives the value, the share and the benchmark's by the name, then the view's columns",
+      _sec_cols[_sec] == ["security", "name", "value", "share_pct", "benchmark_pct", "difference_pct",
+                          "ticker", "asset_class", "sector", "country", "market_cap", "size",
+                          "direct_value", "via_funds_value", "funds"], _sec_cols[_sec])
 check("...and its twin shares in place of the values",
-      _sec_cols[p.privacy_name(_sec)] == ["security", "name", "ticker", "asset_class", "sector", "country",
-                                          "market_cap", "size", "direct_pct", "via_funds_pct", "funds", "share_pct",
-                                          "benchmark_pct", "difference_pct"]
+      _sec_cols[p.privacy_name(_sec)] == ["security", "name", "share_pct", "benchmark_pct", "difference_pct",
+                                          "ticker", "asset_class", "sector", "country", "market_cap", "size",
+                                          "direct_pct", "via_funds_pct", "funds"]
       and f"LIKE '%{sqlkit.HOLDING_KEY_PREFIX}%'" in sql_of(CARDS[p.privacy_name(_sec)][2]), _sec_cols)
 
 

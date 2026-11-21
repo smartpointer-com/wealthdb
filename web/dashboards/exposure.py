@@ -272,7 +272,8 @@ def exposure_cards(f):
     # share is of the selection, all of its securities counted. The twin
     # drops the values and hides a key that is a holding's own, which
     # can carry a contract's or an account's id. The name shows, less any
-    # address.
+    # address. The share and the benchmark's columns come right after the
+    # name, as on Top 100 issuers, so a full-width tile shows them.
     stags = {**native_tags("web_exposure_securities", EXPOSURE_FILTERS), "benchmark": BENCHMARK_TAG}
     hidden = f"security LIKE '%{HOLDING_KEY_PREFIX}%'"
     shown = ((f"CASE WHEN {hidden} THEN '(unnamed)' ELSE security END AS security,\n"
@@ -308,10 +309,10 @@ def exposure_cards(f):
              "sort_rank", "benchmark_pct", "difference_pct"),
          {**_share_viz("share_pct", "benchmark_pct", "difference_pct",
                        *(("direct_pct", "via_funds_pct") if privacy else ())),
-          **_table_columns("security", "name", "ticker", "asset_class", "sector", "country", "market_cap", "size",
-                           *(("direct_pct", "via_funds_pct") if privacy else
-                             ("value", "direct_value", "via_funds_value")),
-                           "funds", "share_pct", "benchmark_pct", "difference_pct")}, tags=stags)
+          **_table_columns("security", "name", *amount, "share_pct", "benchmark_pct", "difference_pct",
+                           "ticker", "asset_class", "sector", "country", "market_cap", "size",
+                           *(("direct_pct", "via_funds_pct") if privacy else ("direct_value", "via_funds_value")),
+                           "funds")}, tags=stags)
 
 
 # The smallest share, in percent, a debt card draws as a bar.
