@@ -38,7 +38,9 @@
 //     that comes first, and a deal only the ledger names while what the
 //     ledger moved into it is above zero. The position is valued at its
 //     last mark's day, or with none at its first payment's, and its
-//     payload's valuation_basis says `cost` or `mark_plus_cost`.
+//     payload's valuation_basis says `cost` or `mark_plus_cost`. A mark
+//     worth exactly its nonzero book value says `cost` too: the portal
+//     may carry a deal at cost without stating a basis.
 //     Money is minor units (cents); the adapter scales by 10^-2.
 //     quantity = NULL (LP interests have no unit quantity).
 //

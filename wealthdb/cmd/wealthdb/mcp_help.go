@@ -262,7 +262,7 @@ const returnsGainsQualityHelp = `The returns quality column gives the reason for
 - no_cost: (view=private) no call and no stated cost, so paid_in, dpi, tvpi and irr_pct are blank.
 - paid_in_from_cost: (view=private) paid_in is the holding's stated cost on its acquisition day, not a cash leg.
 - exited: (view=private) the status is exited: nav is 0 after something came back, or the holding left the holdings.
-- at_cost: (view=private) the source carries the NAV at cost, before any valuation, so tvpi reads 1 and irr_pct 0 by construction.
+- at_cost: (view=private) the source carries the NAV at cost, before any valuation: with nothing back, tvpi reads 1 and irr_pct 0.
 - call_after_mark, distribution_after_mark: (view=private) a call, or a distribution or exit, came after the mark, so tvpi reads low, or high.
 - exit_unvalued=N: (view=private) N exits in kind state no value.
 - unattributed_exit=N: (view=private, the total) N exits in kind name no holding: the total counts them, no row does.

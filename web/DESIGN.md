@@ -957,8 +957,10 @@ A stale snapshot is caught before any of this is written. Provisioning
 probes the driver for the snapshot's schema version and for the serving
 views **by name**. It aborts with a "run `wealthdb web refresh`" message
 rather than converging the cards to a degraded shape. The version check
-holds the snapshot to `MIN_GOLD_SCHEMA`. A snapshot older than one of
-these schema versions falls short of the cards:
+holds the snapshot to `MIN_GOLD_SCHEMA`. That guard follows the newest
+derived version, so a version the list below leaves out changes nothing
+a card reads. A snapshot older than one of these schema versions falls
+short of the cards:
 
 - 0227: its private-markets rows read no `at_cost` on an AngelList
   deal that states no valuation basis and is worth exactly its book

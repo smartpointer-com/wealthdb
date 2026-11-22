@@ -1732,9 +1732,7 @@ CREATE MACRO private_legs(p_instants, p_ccy) AS TABLE (
 -- states it as a position's valuation_basis cost, Carta's fund carry as
 -- called_capital. Its NAV holds no gain, so with nothing back its
 -- multiples read 1 and its IRR 0. A mark plus what moved in since
--- (mark_plus_cost) is a mark. AngelList may carry a deal at cost
--- without stating a basis, so its line that states none and is worth
--- exactly its book value is at cost too. A line of zero value is not.
+-- (mark_plus_cost) is a mark.
 --
 -- report_private: one row per private holding at each instant of
 -- p_instants (as_of), in p_ccy, then the instant's total. A holding is
@@ -1842,9 +1840,6 @@ CREATE MACRO report_private(p_instants, p_ccy) AS TABLE (
                h.holding_instrument AS instrument_external_id,
                p.snapshot_at, COALESCE(p.valued_at, p.snapshot_at) AS marked_at, p.market_value,
                COALESCE(json_extract_string(p.payload, '$.valuation_basis') IN ('cost', 'called_capital'),
-                        p.market_value = p.book_value AND p.market_value <> 0
-                            AND p.silver_source_id IN (SELECT silver_source_id FROM silver_sources
-                                                        WHERE silver_kind = 'angellist'),
                         FALSE) AS at_cost,
                CAST(fx_pick_keep_zero(p.market_value, p.currency, p_ccy,
                             o0.rate, o1.rate, o2.rate, o3.rate, o4.rate) AS DECIMAL(38,10)) AS value_x

@@ -368,8 +368,10 @@ adapter is a thin forward-fill:
   mark's date, and a value at cost alone at its first payment's, so money
   moved in since never reads as a fresh mark. Its payload's
   `valuation_basis` says `cost`, or `mark_plus_cost` with the money moved
-  since as `net_paid_in_since_mark`. Silver keeps the events as the
-  portal states them.
+  since as `net_paid_in_since_mark`. A mark worth exactly its nonzero
+  book value says `cost` too: the portal may carry a deal at cost
+  without stating a basis. Silver keeps the events as the portal states
+  them.
 - **Transactions = the funding ledger** (`funding_transactions`). Each cash
   movement maps to a canonical kind by its source type:
   deposit→`deposit`, withdrawal/transfer→`withdrawal` (external bank ↔

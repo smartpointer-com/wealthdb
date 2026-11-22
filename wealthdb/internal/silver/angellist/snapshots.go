@@ -269,6 +269,10 @@ SELECT ps.position_external_id, ps.as_of_date,
 // the partnership's tax basis, which can differ from the portal's figure;
 // it rides in the payload as tax_basis_contributed, so the book value does
 // not move between the two as the latest event changes.
+//
+// The portal may carry a deal at cost without stating a basis, so a mark
+// worth exactly its nonzero book value says cost too (atBook). A mark plus
+// what moved in since stays mark_plus_cost.
 func emit(t int64, account string, k *silver.InKind, cc *costCarry, held []silver.Holding) canonical.SnapshotBatch {
 	var batch canonical.SnapshotBatch
 	if account == "" {
@@ -296,6 +300,9 @@ func emit(t int64, account string, k *silver.InKind, cc *costCarry, held []silve
 		}
 		book, basis, extra := k.BookValue(h.Key, t, paidIn, stamp)
 		change.SetBookValue(book, basis)
+		if carried == nil && atBook(change.MarketValue, book) {
+			carried = map[string]any{"valuation_basis": basisCost}
+		}
 		if carried != nil {
 			if extra == nil {
 				extra = map[string]any{}
@@ -345,6 +352,11 @@ func custodyAccount(account string, t int64) canonical.AccountChange {
 }
 
 // ---- helpers ------------------------------------------------------
+
+// atBook says a value is exactly its book value, and not zero.
+func atBook(value, book *canonical.Decimal) bool {
+	return value != nil && book != nil && !value.IsZero() && value.Equal(*book)
+}
 
 // minorPtr scales a nullable minor-unit (cents) integer to a canonical
 // Decimal pointer (×10^-2). Returns nil for SQL NULL.

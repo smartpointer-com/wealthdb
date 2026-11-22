@@ -400,10 +400,10 @@ Quality tags:
 - `at_cost`: the source carries the NAV at cost, before any valuation
   of its own. The NAV holds no gain, so with nothing back `tvpi` reads 1
   and `irr_pct` 0. AngelList states such a line as
-  `valuation_basis: cost`, Carta's fund carry as `called_capital`. A
-  mark plus what moved in since is a mark. An AngelList line that
-  states no basis is at cost where it is worth exactly its book value.
-  A line worth 0 is not.
+  `valuation_basis: cost`, Carta's fund carry as `called_capital`.
+  AngelList may carry a deal at cost without stating a basis. So its
+  adapter states `cost` on a mark worth exactly its nonzero book value
+  too. A mark plus what moved in since is a mark.
 - `call_after_mark`: a call came after the mark. The NAV leaves it out
   until the next mark, so `tvpi` reads low.
 - `distribution_after_mark`: a distribution or an exit came after the

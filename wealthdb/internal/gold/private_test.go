@@ -531,16 +531,20 @@ func TestPrivateMarketsUnpriced(t *testing.T) {
 }
 
 // A NAV a source carries at cost, before any mark of its own, says so:
-// the multiples read 1 and the IRR 0 by construction, not by a valuation.
-// AngelList states it as valuation_basis cost, Carta's fund carry as
-// called_capital. A mark plus what moved in since is a mark.
+// with nothing back tvpi reads 1 and the IRR 0 by construction, not by a
+// valuation. AngelList states it as valuation_basis cost, Carta's fund
+// carry as called_capital. A mark plus what moved in since is a mark. The
+// view reads at_cost from the stated basis alone: a line worth exactly its
+// book value that states no basis is a mark too.
 func TestPrivateMarketsAtCost(t *testing.T) {
 	t.Parallel()
 	db, ctx := openMigrated(t)
 	seedPrivateFixture(t, db, ctx)
+	paidIn := canonical.Basis{Origin: canonical.BasisStated, Method: canonical.BasisMethodPaidIn,
+		Fees: canonical.BasisFeesIncluded}
 	dec31 := dy(2024, time.December, 31)
 	for _, c := range []struct{ inst, basis string }{
-		{"CARRY", "cost"}, {"CALLED", "called_capital"}, {"MARKED", "mark_plus_cost"},
+		{"CARRY", "cost"}, {"CALLED", "called_capital"}, {"MARKED", "mark_plus_cost"}, {"ATBOOK", ""},
 	} {
 		inst := c.inst
 		inTx(t, db, ctx, func(w *Writer) error {
@@ -549,68 +553,13 @@ func TestPrivateMarketsAtCost(t *testing.T) {
 				InstrumentExternalID: &inst, Kind: canonical.TxKindContribution, Currency: "USD", NetAmount: decp(-400)}}); err != nil {
 				return err
 			}
-			return w.InsertPositions(ctx, []canonical.PositionChange{{SilverSourceID: "pm", AccountExternalID: "INV",
+			p := canonical.PositionChange{SilverSourceID: "pm", AccountExternalID: "INV",
 				SnapshotAt: dec31, PositionKey: inst, InstrumentExternalID: &inst,
 				AssetClass: canonical.AssetClassPrivateEquity, Vehicle: canonical.VehicleFund, Currency: "USD",
-				ValuedAt: dy(2024, time.October, 1), MarketValue: decp(400),
-				Payload: json.RawMessage(`{"valuation_basis": "` + c.basis + `"}`)}})
-		})
-	}
-	rows, _ := privateRows(t, db, ctx, "USD")
-	for inst, want := range map[string]bool{"CARRY": true, "CALLED": true, "MARKED": false, "FUND": false} {
-		if got := slices.Contains(rows[inst].Quality, "at_cost"); got != want {
-			t.Errorf("%s quality %v, at_cost %v", inst, rows[inst].Quality, want)
-		}
-	}
-	if !slices.Contains(rows[""].Quality, "at_cost=2") {
-		t.Errorf("total quality %v: it counts the holdings at cost", rows[""].Quality)
-	}
-}
-
-// AngelList may carry a deal at cost without stating a basis: a line of
-// its that states none and is worth exactly its book value is at cost.
-// One worth more, one with no book value, one worth 0 at a book of 0,
-// one that states a mark plus cost, and one of another source are not.
-func TestPrivateMarketsAngelListAtCost(t *testing.T) {
-	t.Parallel()
-	db, ctx := openMigrated(t)
-	seedPrivateFixture(t, db, ctx)
-	seedReturnsSource(t, db, ctx, "al", "angellist")
-	usd := "USD"
-	inTx(t, db, ctx, func(w *Writer) error {
-		return w.UpsertAccounts(ctx, []canonical.AccountChange{{SilverSourceID: "al", AccountExternalID: "LP",
-			AccountKind: canonical.AccountKindCustody, BaseCurrency: &usd, FirstSeenAt: 1, LastSeenAt: 1}})
-	})
-	paidIn := canonical.Basis{Origin: canonical.BasisStated, Method: canonical.BasisMethodPaidIn,
-		Fees: canonical.BasisFeesIncluded}
-	dec31 := dy(2024, time.December, 31)
-	for _, c := range []struct {
-		src, acct, inst, basis string
-		value, book            int64 // book -1: none
-	}{
-		{"al", "LP", "PLAIN", "", 400, 400},
-		{"al", "LP", "UP", "", 900, 400},
-		{"al", "LP", "NOBOOK", "", 400, -1},
-		{"al", "LP", "ZERO", "", 0, 0},
-		{"al", "LP", "SINCE", "mark_plus_cost", 400, 400},
-		{"pm", "INV", "OTHER", "", 400, 400},
-	} {
-		inst := c.inst
-		inTx(t, db, ctx, func(w *Writer) error {
-			if err := w.InsertTransactions(ctx, []canonical.TransactionChange{{SilverSourceID: c.src,
-				TransactionExternalID: "c-" + inst, OccurredAt: dy(2024, time.October, 1), AccountExternalID: c.acct,
-				InstrumentExternalID: &inst, Kind: canonical.TxKindContribution, Currency: "USD",
-				NetAmount: decp(-400)}}); err != nil {
-				return err
-			}
-			p := canonical.PositionChange{SilverSourceID: c.src, AccountExternalID: c.acct, SnapshotAt: dec31,
-				PositionKey: inst, InstrumentExternalID: &inst, AssetClass: canonical.AssetClassPrivateEquity,
-				Vehicle: canonical.VehicleSPV, Currency: "USD", ValuedAt: dy(2024, time.October, 1),
-				MarketValue: decp(c.value)}
-			if c.book >= 0 {
-				p.SetBookValue(decp(c.book), paidIn)
-			}
-			if c.basis != "" {
+				ValuedAt: dy(2024, time.October, 1), MarketValue: decp(400)}
+			if c.basis == "" {
+				p.SetBookValue(decp(400), paidIn)
+			} else {
 				p.Payload = json.RawMessage(`{"valuation_basis": "` + c.basis + `"}`)
 			}
 			return w.InsertPositions(ctx, []canonical.PositionChange{p})
@@ -618,14 +567,14 @@ func TestPrivateMarketsAngelListAtCost(t *testing.T) {
 	}
 	rows, _ := privateRows(t, db, ctx, "USD")
 	for inst, want := range map[string]bool{
-		"PLAIN": true, "UP": false, "NOBOOK": false, "ZERO": false, "SINCE": false, "OTHER": false,
+		"CARRY": true, "CALLED": true, "MARKED": false, "ATBOOK": false, "FUND": false,
 	} {
 		if got := slices.Contains(rows[inst].Quality, "at_cost"); got != want {
 			t.Errorf("%s quality %v, at_cost %v", inst, rows[inst].Quality, want)
 		}
 	}
-	if !slices.Contains(rows[""].Quality, "at_cost=1") {
-		t.Errorf("total quality %v: it counts the holding at cost", rows[""].Quality)
+	if !slices.Contains(rows[""].Quality, "at_cost=2") {
+		t.Errorf("total quality %v: it counts the holdings at cost", rows[""].Quality)
 	}
 }
 

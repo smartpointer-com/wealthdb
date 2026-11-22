@@ -286,3 +286,45 @@ func TestAPaymentAfterARemovalIsNoSnapshotTime(t *testing.T) {
 		t.Errorf("snapshot times = %v, want %v: the payment after the removal is none", times, want)
 	}
 }
+
+// The portal may carry a deal at cost without stating a basis: a mark
+// worth exactly its nonzero book value states cost. The book value may be
+// the one the ledger derives (l1), and a K-1's tax basis rides beside the
+// stamp (k1). A mark worth more, one with no book value and one worth 0
+// at a book of 0 state no basis. s1's mark states cost, and the mark plus
+// cost after it stays mark_plus_cost, though it is worth its book value.
+func TestAMarkAtItsBookValueStatesCost(t *testing.T) {
+	byT, _ := carryPositions(t, `
+        INSERT INTO dump_runs(snapshot_at, invest_account_slug) VALUES (D30, 'acct');
+        INSERT INTO offerings(position_external_id, kind, company_name, investment_date) VALUES
+            ('a1', 'spv', 'Example A', D1), ('u1', 'spv', 'Example U', D1), ('n1', 'spv', 'Example N', D1),
+            ('z1', 'spv', 'Example Z', D1), ('s1', 'spv', 'Example S', D1), ('l1', 'spv', 'Example L', D1),
+            ('k1', 'spv', 'Example K', D1);
+        INSERT INTO position_snapshots(position_external_id, as_of_date, event_type,
+            status, is_open, currency, market_value_minor, valuation_basis,
+            contributed_minor, snapshot_at) VALUES
+            ('a1', D2, 'valuation',  'live', 1, 'USD', 50000, 'fmv',       50000, D30),
+            ('u1', D2, 'valuation',  'live', 1, 'USD', 90000, 'fmv',       50000, D30),
+            ('n1', D2, 'valuation',  'live', 1, 'USD', 40000, 'fmv',       NULL,  D30),
+            ('z1', D2, 'valuation',  'live', 1, 'USD', 0,     'fmv',       0,     D30),
+            ('s1', D2, 'valuation',  'live', 1, 'USD', 20000, 'fmv',       20000, D30),
+            ('s1', D4, 'investment', NULL,   1, 'USD', NULL,  'cost',      30000, D30),
+            ('l1', D2, 'valuation',  'live', 1, 'USD', 40000, 'fmv',       NULL,  D30),
+            ('k1', D1, 'statement',  NULL,   1, 'USD', 30000, 'tax_basis', 45000, D30),
+            ('k1', D2, 'valuation',  'live', 1, 'USD', 50000, 'fmv',       50000, D30);
+        INSERT INTO funding_transactions(transaction_external_id, occurred_at, type,
+            amount_minor, currency, position_external_id) VALUES
+            ('t1', H1, 'investment', -40000, 'USD', 'l1');
+    `)
+	wantCarry(t, byT, d(2), "a1", "500.00", d(2), cost)
+	wantCarry(t, byT, d(2), "u1", "900.00", d(2), "")
+	wantCarry(t, byT, d(2), "n1", "400.00", d(2), "")
+	wantCarry(t, byT, d(2), "z1", "0.00", d(2), "")
+	wantCarry(t, byT, d(2), "s1", "200.00", d(2), cost)
+	wantCarry(t, byT, d(4), "s1", "300.00", d(2), `{"net_paid_in_since_mark":"100","valuation_basis":"mark_plus_cost"}`)
+	wantCarry(t, byT, d(2), "l1", "400.00", d(2), cost)
+	if p := byT[d(2)]["l1"]; p.BookValue == nil || p.BookValue.StringFixed(2) != "400.00" || p.Basis != ledgerPaidInBasis {
+		t.Errorf("d2 l1 book value = %v %+v, want the ledger's 400.00 paid in, derived", p.BookValue, p.Basis)
+	}
+	wantCarry(t, byT, d(2), "k1", "500.00", d(2), `{"tax_basis_contributed":"450","valuation_basis":"cost"}`)
+}

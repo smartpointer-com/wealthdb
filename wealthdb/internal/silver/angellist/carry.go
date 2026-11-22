@@ -33,9 +33,10 @@ import (
 
 // The valuation_basis values of a position carried at cost, in its payload.
 const (
-	// basisCost: no mark yet; the value is cost, what the ledger moved in
-	// or the cost the event states. Silver states the same word on an
-	// event valued at cost.
+	// basisCost: the value is cost. Before any mark it is what the ledger
+	// moved in or the cost the event states, and a mark worth exactly its
+	// nonzero book value says cost too (emit). Silver states the same word
+	// on an event valued at cost.
 	basisCost = "cost"
 	// basisMarkPlusCost: the value is the last mark plus what moved in
 	// since, which rides beside it as net_paid_in_since_mark.

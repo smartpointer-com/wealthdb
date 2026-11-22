@@ -192,6 +192,16 @@ func runToday(t *testing.T, args ...string) (stdout, stderr string, exit int) {
 	return so.String(), se.String(), exit
 }
 
+// mustRun is runToday for a command that must succeed: its stdout.
+func mustRun(t *testing.T, args ...string) string {
+	t.Helper()
+	out, se, code := runToday(t, args...)
+	if code != 0 {
+		t.Fatalf("%v: exit %d: %s", args, code, se)
+	}
+	return out
+}
+
 // onFixtureToday pins an MCP server's today to fixtureToday.
 func onFixtureToday(s *mcpServer) *mcpServer {
 	s.now = func() time.Time { return fixtureToday }

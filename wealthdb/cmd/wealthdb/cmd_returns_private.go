@@ -170,8 +170,8 @@ What the figures miss:
   - A commitment reads only where a source states one.
   - A deal a source values at cost without saying so reads tvpi 1 with
     no at_cost flag, and its stated_tvpi reads 1 too. An AngelList deal
-    that states no valuation basis and is worth exactly its book value
-    reads at_cost, even where the portal marked it at that value.
+    that states no valuation basis and is worth exactly its nonzero book
+    value reads at_cost, even where the portal marked it at that value.
   - The view carries no volatility or other risk figure: marks are too
     old and sparse for one.
 
