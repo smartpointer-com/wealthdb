@@ -293,11 +293,15 @@ mkdir -p "$tmp/snap" && : > "$tmp/snap/wealthdb.db"
     _snapshot()    { echo SNAPSHOT_RAN; }
     _mtime()       { echo now; }
     _is_running()  { return 0; }
-    _provision()   { echo PROVISIONED; PROV_RC=0 PROV_SERVED=0; }
+    _provision()   { echo PROVISIONED; PROV_RC=0 PROV_SERVED=0 PROV_LOGIN="log in as a@example.test (password in /pw/admin-password.txt)"; }
     web_stop()     { echo STOPPED; }
+    PORT=3100
     web_refresh
 ) >"$seq_same" 2>&1
 check "unchanged gold skips the snapshot" "web: snapshot unchanged" "$(cat "$seq_same")"
+check_eq "...and ends with the login and the password's file" \
+    "web: http://127.0.0.1:3100/ — log in as a@example.test (password in /pw/admin-password.txt)" \
+    "$(tail -n 1 "$seq_same")"
 check_not "unchanged gold does not copy" "SNAPSHOT_RAN" "$(cat "$seq_same")"
 check "unchanged gold still provisions" "PROVISIONED" "$(cat "$seq_same")"
 check_not "unchanged gold does not restart" "STOPPED" "$(cat "$seq_same")"
@@ -393,10 +397,12 @@ swap_refresh() {
         # before provision.py runs, PROV_RC still 0.
         _provision()   { _stat st_ino "$SNAP" > "$tmp/swap/provisioned"
                          if [ "$prov_rc" = link ]; then PROV_RC=0 PROV_SERVED=0 PROV_LINKED=0; return 1; fi
-                         PROV_RC="$prov_rc" PROV_SERVED="$prov_served" PROV_LINKED=1; }
+                         PROV_RC="$prov_rc" PROV_SERVED="$prov_served" PROV_LINKED=1
+                         PROV_LOGIN="log in as a@example.test (password in /pw/admin-password.txt)"; }
         # refresh sends the stop's output to /dev/null.
         web_stop()     { echo STOPPED >&2; }
         web_start()    { echo STARTED; }
+        PORT=3100
         web_refresh
         echo "rc=$?"
     ) 2>&1
@@ -409,6 +415,9 @@ check_not "...with no copy"                  "SNAPSHOT_RAN" "$out"
 check_not "...no stop"                       "STOPPED"      "$out"
 check_not "...and no start"                  "STARTED"      "$out"
 check     "...and refresh succeeds"          "rc=0"         "$out"
+check_eq  "...ending with the login and the password's file" \
+          "web: http://127.0.0.1:3100/ — log in as a@example.test (password in /pw/admin-password.txt)" \
+          "$(printf '%s\n' "$out" | tail -n 2 | head -n 1)"
 check_eq  "the marker names the new snapshot's serving name" \
           "$(SNAP="$tmp/swap/wealthdb.db" _serving_name)" "$(cat "$tmp/swap/wealthdb.db.served")"
 check_eq  "the old serving name is removed" "wealthdb.db wealthdb.db.served" \
@@ -425,6 +434,7 @@ for case in "1 0" "0 0"; do
     check "provision ($case): the container is stopped" "STOPPED" "$out"
     check "...and started"                 "STARTED" "$out"
     check "...saying why"                  "did not confirm it reads the new snapshot" "$out"
+    check_not "...leaving the login to start's banner" "web: http://127.0.0.1:3100/" "$out"
 done
 echo "== a serving name that cannot be linked keeps the running container =="
 out="$(swap_refresh link 0)"
@@ -603,6 +613,8 @@ check     "...and prints the login"        "log in as"     "$(cat "$tmp/start-er
 rc="$(start_with 0)"
 check_eq  "a clean provision starts with status 0"  "0"                 "$rc"
 check     "...and prints the login"        "log in as"     "$(cat "$tmp/start-err")"
+check_re  "...as the banner's last line"   "^  log in as admin@wealthdb.local \(password from .WEALTHDB_WEB_ADMIN_PASSWORD\)$" \
+          "$(tail -n 1 "$tmp/start-err")"
 err="$(cat "$tmp/start-err")"
 check_re  "...timing the config read"       "web: timing: config [0-9]+\.[0-9]{3}s"          "$err"
 check_re  "...the container's start"        "web: timing: container start [0-9]+\.[0-9]{3}s" "$err"

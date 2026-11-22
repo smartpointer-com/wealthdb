@@ -404,6 +404,7 @@ web_refresh() {
         if [ "$running" -eq 1 ]; then
             _timed provision _provision
             if [ "$PROV_SERVED" = 1 ]; then _prune_links; fi
+            _login_line
             return "$PROV_RC"
         fi
         return 0
@@ -424,6 +425,7 @@ web_refresh() {
             if [ "$PROV_SERVED" = 1 ]; then
                 _mark_snapshot_served
                 _prune_links
+                _login_line
                 return "$PROV_RC"
             fi
             # A new container could not link the snapshot either, so
@@ -516,7 +518,8 @@ PROV_UNVERIFIED=4
 # links first. Admin email/password come from env
 # (WEALTHDB_WEB_ADMIN_EMAIL/PASSWORD, e.g. from
 # ~/.secrets/wealthdb-web.env); an unset password is generated once and
-# saved (chmod 600). Sets PROV_LOGIN for the start banner, PROV_RC to
+# saved (chmod 600). Sets PROV_LOGIN for the start banner and refresh's
+# login line, PROV_RC to
 # provision.py's exit status (0 when it does not run, and for a login it
 # could not verify), PROV_LINKED to 1 once the serving name links the
 # snapshot, and PROV_SERVED to 1 when provision.py confirmed the server
@@ -524,7 +527,7 @@ PROV_UNVERIFIED=4
 # _timed, with errexit off, so a password it cannot read, generate or
 # save, or a link it cannot make, stops it here.
 _provision() {
-    PROV_RC=0 PROV_SERVED=0 PROV_LINKED=0
+    PROV_RC=0 PROV_SERVED=0 PROV_LINKED=0 PROV_LOGIN=
     if [ "${WEALTHDB_WEB_NO_PROVISION:-0}" = 1 ]; then
         echo "web: auto-provision disabled (WEALTHDB_WEB_NO_PROVISION=1)." >&2
         return 0
@@ -569,8 +572,6 @@ _start_banner() {
     cat >&2 <<EOF
 web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
 
-  ${PROV_LOGIN:-create the admin account in the browser}
-
   From a laptop, tunnel the port and open it locally:
       ssh -L $PORT:127.0.0.1:$PORT <this-host>
       open http://127.0.0.1:$PORT/
@@ -584,7 +585,18 @@ web: $CONTAINER is up → Metabase on http://127.0.0.1:$PORT/
   absolute values (all in the 'wealthdb (pre-defined)' collection;
   duplicate before customizing).
   Run 'wealthdb web refresh' after each 'wealthdb load' to update.
+
+  ${PROV_LOGIN:-create the admin account in the browser}
 EOF
+}
+
+# _login_line ends a refresh that leaves the server running with how to
+# log in: the URL, the admin and where the password comes from. Without
+# provisioning there is no admin to name, and it prints nothing.
+_login_line() {
+    if [ -n "${PROV_LOGIN:-}" ]; then
+        echo "web: http://127.0.0.1:$PORT/ — $PROV_LOGIN" >&2
+    fi
 }
 
 web_help() {

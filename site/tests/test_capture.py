@@ -126,7 +126,8 @@ class FindDashboards(unittest.TestCase):
         found = capture.find_dashboards(self.client)
         self.assertEqual(sorted(found), sorted(capture.DASHBOARDS))
         self.assertIn("/api/collection/5/items?models=dashboard", calls)
-        self.assertNotIn("/api/dashboard/9", calls)
+        # "Something else" comes last, so its id is one past the page's.
+        self.assertNotIn(f"/api/dashboard/{len(capture.DASHBOARDS) + 1}", calls)
 
     def test_a_missing_dashboard_stops(self):
         self.fake([{"id": 5, "name": capture.provision.COLLECTION_NAME}], list(capture.DASHBOARDS)[1:])

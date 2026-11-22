@@ -68,7 +68,7 @@ open http://127.0.0.1:3000/        # log in as admin@wealthdb.local
 
 # 4. The dashboards are in the "wealthdb (pre-defined)" collection, and
 #    the "gold" DuckDB database is there to query. After each data load,
-#    refresh the snapshot:
+#    refresh the snapshot. Refresh ends with the same login line:
 wealthdb load -a && wealthdb web refresh
 ```
 

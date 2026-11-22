@@ -1552,7 +1552,7 @@
                date pinned in the Makefile (SITE_SEED, SITE_AS_OF). `make site-shots`
                retakes the screenshots and prints the figures the page quotes. -->
           <p class="showcase-caption">
-            Ten dashboards, served locally over a read-only snapshot, in light or dark. All but Gains have
+            Eleven dashboards, served locally over a read-only snapshot, in light or dark. All but Gains have
             a privacy twin that shows shares instead of amounts. The data shown is the invented demo household.
           </p>
         </section>
@@ -1704,14 +1704,14 @@
             </div>
             <pre><span class="p">❯</span> wealthdb exposure countries
 <span class="h"> country | country_name   | region        |  value_USD | share_pct | direct_pct | via_funds_pct | quality</span>
----------+----------------+---------------+------------+-----------+------------+---------------+---------------------------------------------
- US      | United States  | north_america | 1591419.62 |     66.85 |      34.45 |         32.40 | proxy=2%,declared=54%,aged=29%,unmapped=&lt;1%
- unknown |                |               |  107819.99 |      4.53 |       2.49 |          2.04 | proxy=3%,aged=45%,partial=2%,unmatched=55%
- CH      | Switzerland    | europe        |  105441.59 |      4.43 |       3.32 |          1.11 | proxy=2%,aged=25%,undeclared=28%
- JP      | Japan          | asia_pacific  |   65890.80 |      2.77 |       0.00 |          2.77 | proxy=6%,aged=100%
- DE      | Germany        | europe        |   64933.53 |      2.73 |       1.73 |          1.00 | proxy=2%,aged=37%
- GB      | United Kingdom | europe        |   51797.60 |      2.18 |       1.19 |          0.98 | proxy=2%,aged=45%
- FR      | France         | europe        |   34480.53 |      1.45 |       0.56 |          0.88 | proxy=4%,aged=61%
+---------+----------------+---------------+------------+-----------+------------+---------------+------------------------------------
+ US      | United States  | north_america | 1591419.62 |     66.85 |      34.45 |         32.40 | proxy=2%,declared=54%,unmapped=&lt;1%
+ unknown |                |               |  107819.99 |      4.53 |       2.49 |          2.04 | proxy=3%,partial=2%,unmatched=55%
+ CH      | Switzerland    | europe        |  105441.59 |      4.43 |       3.32 |          1.11 | proxy=2%,undeclared=28%
+ JP      | Japan          | asia_pacific  |   65890.80 |      2.77 |       0.00 |          2.77 | proxy=6%
+ DE      | Germany        | europe        |   64933.53 |      2.73 |       1.73 |          1.00 | proxy=2%
+ unknown |                | north_america |   62620.00 |      2.63 |       2.63 |          0.00 | declared=100%,opaque=78%
+ GB      | United Kingdom | europe        |   51797.60 |      2.18 |       1.19 |          0.98 | proxy=2%
  <span class="c">…</span>
 
 <span class="p">❯</span> wealthdb spending categories 2025 --period annual
@@ -1728,11 +1728,11 @@
 <span class="p">❯</span> wealthdb yield global -x EUR
 <span class="h"> currency |  value_EUR | income_yield_pct | implied_yield_pct | realized_yield_pct | duration | dv01_EUR | quality</span>
 ----------+------------+------------------+-------------------+--------------------+----------+----------+------------------------------------------
- USD      | 2142822.68 |             1.05 |              4.15 |               1.00 |     2.37 |   -30.44 | implied=6% stated=5% indicated=24% …
- EUR      |   56338.70 |             3.22 |              2.22 |               3.15 |     4.34 |    13.65 | implied=39% indicated=23% declared=36% …
- CHF      |   43184.39 |             1.57 |                   |               1.71 |     0.00 |     0.00 | indicated=98% unknown=2%
- GBP      |   24748.69 |             3.57 |                   |               3.67 |     0.00 |     0.00 | indicated=92% unknown=8%
- <span class="k">total</span>    | 2267094.46 |             1.12 |              4.02 |               1.08 |     2.48 |   -16.79 | mixed …</pre>
+ USD      | 2142822.68 |             1.05 |              4.03 |               1.01 |     2.38 |   -31.22 | implied=6% stated=5% indicated=24% …
+ EUR      |   56338.70 |             3.22 |              2.21 |               3.17 |     4.37 |    13.70 | implied=39% indicated=23% declared=36% …
+ CHF      |   43184.39 |             1.57 |                   |               1.72 |     0.00 |     0.00 | indicated=98% unknown=2%
+ GBP      |   24748.69 |             3.57 |                   |               3.68 |     0.00 |     0.00 | indicated=92% unknown=8%
+ <span class="k">total</span>    | 2267094.46 |             1.13 |              3.91 |               1.09 |     2.49 |   -17.52 | mixed …</pre>
           </div>
         </div>
       </section>
@@ -1839,22 +1839,22 @@
                   <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>income projection -x EUR</span>
                 </div>
                 <div class="msg agent">
-                  <p>Mostly the other way round. A fall in rates would <em>help</em> your balance sheet a little and cost you some cash income.</p>
+                  <p>Only a little, on both counts. A fall in rates would cost a bit on paper and trim your cash income.</p>
                   <ul>
-                    <li><strong>Rate sensitivity is small and net positive.</strong> Across everything, one basis point down is worth about +17 EUR. The home loan is the biggest single lever (duration 2.6, so it reprices soon), and your bond funds gain as rates fall.</li>
-                    <li><strong>Income would slip.</strong> The holdings pay about 1.1% a year in cash. Half of that is interest from the savings account and the term deposit, which float with rates. Dividends and fund distributions, the other half, do not.</li>
-                    <li><strong>Next twelve months, as projected today:</strong> roughly 1,000 EUR a month in quiet months, with a spike each quarter when the funds distribute.</li>
+                    <li><strong>Rate sensitivity is small, and it runs against you.</strong> Across everything, one basis point down costs about 18 EUR. Your bond funds gain as rates fall, but the home loan weighs more. Its rate is fixed for a few more years (duration 2.6), so falling rates make that debt worth more to the bank.</li>
+                    <li><strong>Income would slip a little.</strong> The holdings pay about 31,000 EUR a year in cash, 1.1% of their value. One percentage point lower would cost about 1,250 EUR of that. Most of it is the joint savings account and the short-term holdings in the brokerage, which float with rates.</li>
+                    <li><strong>Next twelve months, as projected today:</strong> roughly 1,000 EUR a month in quiet months, and 5,000 to 6,000 EUR each quarter when the funds distribute.</li>
                   </ul>
-                  <small>Quality: a third of the USD yield figure is still "unknown", mostly the private fund and the 529 plan. Treat the income number as a floor.</small>
+                  <small>Quality: a third of the USD value has no yield figure. Most of it is the house, which pays nothing, and the private fund, which pays out at irregular times. Treat the income number as a floor.</small>
                 </div>
                 <div class="msg user">
                   Which account should I look at first?
                 </div>
                 <div class="tools" aria-label="Tools called">
-                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>holdings accounts -x EUR</span>
+                  <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>yield cash -x EUR</span>
                 </div>
                 <div class="msg agent">
-                  <p>The 12-month term deposit. It holds about 42k EUR at 3.04% and matures within the year, so it is the first thing that reprices lower. The joint savings account is the other floating leg, at 3.48% stated.</p>
+                  <p>The 12-month term deposit. It holds about 42k EUR at 3.04% and matures in April. That is when its rate resets. The joint savings account floats already, at 3.48% stated.</p>
                   <p>If you want to lock income in, that is the money to decide about before it rolls. I can list the bond funds you already hold with their durations, so you can compare.</p>
                 </div>
               </div>

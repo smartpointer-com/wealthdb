@@ -587,7 +587,9 @@ clean-demo:
 #   - it shoots every dashboard in both colour schemes in the Camoufox
 #     image, as the caller, with the date pickers pinned to that date;
 #   - it converts the shots into site/public/shots;
-#   - it prints the figures the page's text quotes.
+#   - it prints the figures the page's text quotes, each report that
+#     takes a day on that date. The income projection takes none and
+#     starts at the current month.
 # The rebuild resets the demo root to that date; `make demo` or
 # `make demo-roll` brings it back to today.
 # site-images downloads the published screenshots for a local preview.
@@ -615,12 +617,13 @@ site-shots: build-wealthdb build-web base-images
 		--out /out --as-of $(SITE_AS_OF) --password-file /password && \
 	$(SITE_VENV)/bin/python site/images.py convert "$(SITE_TMP)" $(SITE_SHOTS)
 	@echo "==> the figures the page quotes (terminal block, then the agent conversation)"
-	@$(DEMO_ENGINE) -r exposure countries
+	@$(DEMO_ENGINE) -r exposure countries -d $(SITE_AS_OF)
 	@$(DEMO_ENGINE) -r spending categories 2025 --period annual
-	@$(DEMO_ENGINE) -r yield global -x EUR
-	@$(DEMO_ENGINE) -r yield accounts -x EUR
+	@$(DEMO_ENGINE) -r yield global -x EUR -d $(SITE_AS_OF)
+	@$(DEMO_ENGINE) -r yield accounts -x EUR -d $(SITE_AS_OF) \
+		-C silver_source,account,currency,value,income_yield,income_12m,income_100bp,duration,dv01,quality
 	@$(DEMO_ENGINE) -r income projection -x EUR
-	@$(DEMO_ENGINE) -r holdings accounts -x EUR
+	@$(DEMO_ENGINE) -r yield cash -x EUR -d $(SITE_AS_OF)
 
 site-images:
 	@$(PYTHON) site/images.py fetch $(SITE_SHOTS)
