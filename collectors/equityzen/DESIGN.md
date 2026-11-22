@@ -380,7 +380,13 @@ amounts are not stored. A run records each K-1 under the reader's
 generation (`K1_GENERATION`: `statements.py`, the kit code it imports and
 both extraction keys). After the runs, the load reads again each K-1
 that an older reader read. It reads the copy in the run the row came from.
-So a reader change reaches every stored run.
+So a reader change reaches every stored K-1. A stored K-1 that the new
+reader no longer reads as a K-1 loses its K-1 row and its record. If it
+reads as a capital-account statement, it gets the statement row of its
+run, unless a later run wrote one. When that run is the offering's
+latest, its positions are replayed again. The silver then equals what
+`load --force` builds. A stored statement is not read again. One that a
+new reader would read as a K-1 becomes a K-1 only in `load --force`.
 
 The GraphQL feed is the primary cash-flow source; these PDFs corroborate
 it and backstop anything it misses — a distribution can reach a bank

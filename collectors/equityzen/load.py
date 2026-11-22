@@ -11,7 +11,7 @@ skipped too: `prune` reclaims it.
 Per bronze run (`$XDG_DATA_HOME/wealthdb/equityzen/<UTC-ts>/`):
 
   * investments.json             {stage: getBuyerInvestments body} — the
-                                 per-stage lists (stage label + fallback node).
+                                 per-stage lists (the fallback node).
   * offerings/<slug>/detail.json getMyInvestmentDetails per offering — the
                                  rich node (basis, share counts, the
                                  transaction ledger, documents).
@@ -317,7 +317,7 @@ def _pdf_blobs(run_dir: Path, nodes: dict) -> list[tuple[Path, str]]:
     """(blob, content_hash) for every PDF document blob in a run's offerings
     — the deduped input to the parallel pre-extraction below."""
     out = []
-    for _stage, node, _body in nodes.values():
+    for node in nodes.values():
         deal_id = _g(node, "deal", "id")
         for doc in (node.get("documents") or []):
             did = doc.get("id")
@@ -376,11 +376,7 @@ def _parse_documents(run_dir: Path, snapshot_at: int, node: dict):
         kind = parse["kind"]
         if _is_statement(dtype, kind):
             p = parse["cap"]
-            cap_rows.append((
-                did, deal_id, p["period_end"], p["beginning_balance"],
-                p["contributions"], p["withdrawals"], p["transfers"],
-                p["profit_loss"], p["carried_interest"], p["ending_nav"],
-                "USD", chash, snapshot_at, canonical_json(p)))
+            cap_rows.append(_cap_row(did, deal_id, p, chash, snapshot_at))
             if p["period_end"] and p["ending_nav"] is not None:
                 parsed.append({"document_external_id": did,
                                "period_end": p["period_end"],
@@ -400,6 +396,23 @@ def _is_statement(dtype, kind) -> bool:
 def _is_k1(dtype, kind) -> bool:
     """Whether a document reads as a K-1; a statement never does."""
     return not _is_statement(dtype, kind) and (dtype == "K1" or kind == "k1")
+
+
+def _cap_row(did, deal_id, p: dict, chash: str, snapshot_at: int) -> tuple:
+    """A `capital_account_statements` row, in _INSERT_CAP's column order."""
+    return (did, deal_id, p["period_end"], p["beginning_balance"],
+            p["contributions"], p["withdrawals"], p["transfers"],
+            p["profit_loss"], p["carried_interest"], p["ending_nav"],
+            "USD", chash, snapshot_at, canonical_json(p))
+
+
+_INSERT_CAP = (
+    "INSERT OR REPLACE INTO capital_account_statements("
+    "document_external_id, deal_external_id, period_end, "
+    "beginning_balance, contributions, withdrawals, transfers, "
+    "profit_loss, carried_interest, ending_nav, currency, "
+    "content_hash, snapshot_at, payload) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 
 
 def _k1_row(did, deal_id, k: dict, chash: str, snapshot_at: int) -> tuple:
@@ -433,13 +446,19 @@ _STORED_K1_SQL = (
 def rederive_k1s(conn: sqlite3.Connection, bronze_dir: Path) -> None:
     """Derive again each stored K-1 that an older reader derived. A run
     reads only its own documents. So after the runs, the load reads each
-    such K-1 again from the copy in the run its row came from. That is the
-    row a `load --force` writes, and a reader change reaches every stored
-    run. A document that no longer reads as a K-1 loses its row. One whose
-    copy is gone or holds other bytes keeps its row and its record, and is
-    logged."""
+    such K-1 again from the copy in the run its row came from, and writes
+    what a `load --force` writes for it. So a reader change reaches every
+    stored K-1. A stored statement is not read again (DESIGN.md §5).
+
+    A document that no longer reads as a K-1 loses its row and its record.
+    One that reads as a capital-account statement gets that run's
+    statement row instead, unless a later run gave it one already. When
+    that run is the offering's latest, its positions are replayed again,
+    so the statement's NAV joins them. A document whose copy is gone or
+    holds other bytes keeps its row and its record, and is logged."""
     stale = derivations.pending_derivations(
         conn, K1_SCOPE, K1_GENERATION, _STORED_K1_SQL, (K1_SCOPE,))
+    replay: dict[str, int] = {}     # deal_id -> latest run given a statement
     for chash, did, deal_id, dtype, snapshot_at in stale:
         run = bronze.ts_slug(datetime.fromtimestamp(snapshot_at, timezone.utc))
         blob = _find_blob(bronze_dir / run, deal_id, did)
@@ -452,16 +471,44 @@ def rederive_k1s(conn: sqlite3.Connection, bronze_dir: Path) -> None:
                         "stays as an older reader derived it",
                         bronze.log_id(did), run)
             continue
-        if _is_k1(dtype, _parse_pdf(blob, chash)["kind"]):
+        parse = _parse_pdf(blob, chash)
+        if _is_k1(dtype, parse["kind"]):
             conn.execute(_INSERT_K1, _k1_row(
                 did, deal_id, _parse_k1(blob, chash), chash, snapshot_at))
-            rows = 1
-        else:
-            conn.execute("DELETE FROM k1_documents "
-                         "WHERE document_external_id = ?", (did,))
-            rows = 0
-        derivations.record_derivation(conn, chash, K1_SCOPE, K1_GENERATION,
-                                      rows)
+            derivations.record_derivation(conn, chash, K1_SCOPE,
+                                          K1_GENERATION, 1)
+            continue
+        conn.execute("DELETE FROM k1_documents "
+                     "WHERE document_external_id = ?", (did,))
+        conn.execute("DELETE FROM document_derivations "
+                     "WHERE content_sha256 = ? AND scope = ?",
+                     (chash, K1_SCOPE))
+        if _is_statement(dtype, parse["kind"]) and conn.execute(
+                "SELECT 1 FROM capital_account_statements "
+                "WHERE document_external_id = ? AND snapshot_at > ?",
+                (did, snapshot_at)).fetchone() is None:
+            conn.execute(_INSERT_CAP, _cap_row(did, deal_id, parse["cap"],
+                                               chash, snapshot_at))
+            replay[deal_id] = max(snapshot_at, replay.get(deal_id, 0))
+    for deal_id, snapshot_at in replay.items():
+        _replay_positions(conn, bronze_dir, deal_id, snapshot_at)
+
+
+def _replay_positions(conn: sqlite3.Connection, bronze_dir: Path,
+                      deal_id: str, snapshot_at: int) -> None:
+    """Replay an offering's positions again from the run at `snapshot_at`
+    when that run is the offering's latest (`offerings.last_seen_at`):
+    load_run replays each offering from every run that lists it, so the
+    latest run's replay is the one that stays."""
+    latest = conn.execute("SELECT last_seen_at FROM offerings "
+                          "WHERE deal_external_id = ?", (deal_id,)).fetchone()
+    if latest is None or latest[0] != snapshot_at:
+        return
+    run_dir = bronze_dir / bronze.ts_slug(
+        datetime.fromtimestamp(snapshot_at, timezone.utc))
+    node = _run_nodes(run_dir)[deal_id]
+    parsed = _parse_documents(run_dir, snapshot_at, node)[3]
+    _replace_positions(conn, snapshot_at, node, parsed)
 
 
 def _after_runs(conn: sqlite3.Connection, load: loader.Load) -> None:
@@ -479,39 +526,61 @@ RUN_COUNTS = ("offerings", "position-events", "cash_flows", "tax_documents",
               "capital_account_statements", "k1_documents")
 
 
+def _run_nodes(run_dir: Path) -> dict[str, dict]:
+    """A run's offerings: deal_id -> node. The rich detail node wins; the
+    list node stands in for an offering whose detail is absent."""
+    nodes: dict[str, dict] = {}
+    inv_path = run_dir / "investments.json"
+    if inv_path.exists():
+        for body in (read_json(inv_path) or {}).values():
+            for node in _nodes_from_buyerdeals(body):
+                did = _g(node, "deal", "id")
+                if did:
+                    nodes.setdefault(did, node)
+    for detail in sorted((run_dir / "offerings").glob("*/detail.json")):
+        for node in _nodes_from_buyerdeals(read_json(detail)):
+            did = _g(node, "deal", "id")
+            if did:
+                nodes[did] = node
+    return nodes
+
+
+def _replace_positions(conn: sqlite3.Connection, snapshot_at: int,
+                       node: dict, parsed: list[dict]) -> int:
+    """Replace an offering's positions with the replay from one run's
+    ledger. Fund statements (NAV) join it as revaluation events only for
+    kind='private_fund'; SPVs stay tender-driven. Returns the number of
+    events."""
+    deal_id = _g(node, "deal", "id")
+    snapshot_iso = datetime.fromtimestamp(
+        snapshot_at, timezone.utc).date().isoformat()
+    is_fund = _g(node, "deal", "company", "assetClass") == "ASSET_MULTI_COMPANY_FUND"
+    conn.execute("DELETE FROM positions WHERE deal_external_id = ?", (deal_id,))
+    rows = _position_events(snapshot_at, snapshot_iso, node,
+                            parsed if is_fund else [])
+    for row in rows:
+        conn.execute(
+            "INSERT INTO positions(deal_external_id, event_seq, as_of_date, "
+            "event_type, status, is_open, event_external_id, shares_held, "
+            "cost_basis_remaining, price_per_share, market_value, "
+            "distributions_cumulative, total_value, snapshot_at, payload) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+    return len(rows)
+
+
 def load_run(conn: sqlite3.Connection, run: loader.Run) -> tuple[int, ...]:
     """Load one pending run dir and return its counts, in RUN_COUNTS
     order. The frame wraps it in one transaction and writes its
     `dump_runs` row (run_columns) after it."""
     run_dir, snapshot_at = run.dir, run.snapshot_at
-    snapshot_iso = datetime.fromtimestamp(snapshot_at, timezone.utc).date().isoformat()
-
-    # deal_id -> (stage, node, body); prefer the rich detail node, fall back
-    # to the list node for any offering whose detail is absent.
-    nodes: dict[str, tuple] = {}
-    inv_path = run_dir / "investments.json"
-    if inv_path.exists():
-        for stage, body in (read_json(inv_path) or {}).items():
-            for node in _nodes_from_buyerdeals(body):
-                did = _g(node, "deal", "id")
-                if did:
-                    nodes.setdefault(did, (stage, node, None))
-    for detail in sorted((run_dir / "offerings").glob("*/detail.json")):
-        body = read_json(detail)
-        for node in _nodes_from_buyerdeals(body):
-            did = _g(node, "deal", "id")
-            if did:
-                prev = nodes.get(did)
-                stage = node.get("dealStage") or (prev[0] if prev else None)
-                nodes[did] = (stage, node, body)
-
+    nodes = _run_nodes(run_dir)
     stats = dict.fromkeys(RUN_COUNTS, 0)
 
     # Extract+parse this run's PDF blobs concurrently before the serial load;
     # the cache makes the per-offering loop below a pure cache read.
     _prewarm_parses(_pdf_blobs(run_dir, nodes))
 
-    for did, (_stage, node, _body) in nodes.items():
+    for node in nodes.values():
         conn.execute(
             "INSERT OR REPLACE INTO offerings(deal_external_id, kind, "
             "asset_class, company_external_id, company_name, "
@@ -533,13 +602,7 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> tuple[int, ...]:
                 "retrieved_at, payload) VALUES (?,?,?,?,?,?,?,?,?,?)", row)
             stats["tax_documents"] += 1
         for row in cap_rows:
-            conn.execute(
-                "INSERT OR REPLACE INTO capital_account_statements("
-                "document_external_id, deal_external_id, period_end, "
-                "beginning_balance, contributions, withdrawals, transfers, "
-                "profit_loss, carried_interest, ending_nav, currency, "
-                "content_hash, snapshot_at, payload) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            conn.execute(_INSERT_CAP, row)
             stats["capital_account_statements"] += 1
         for row in k1_rows:
             conn.execute(_INSERT_K1, row)
@@ -548,21 +611,8 @@ def load_run(conn: sqlite3.Connection, run: loader.Run) -> tuple[int, ...]:
                                           K1_GENERATION, 1)
             stats["k1_documents"] += 1
 
-        # Event-sourced positions: replace this deal's full history with
-        # the replay from this run's ledger. Fund statements (NAV) are
-        # injected as revaluation events only for kind='private_fund';
-        # SPVs stay tender-driven.
-        is_fund = _g(node, "deal", "company", "assetClass") == "ASSET_MULTI_COMPANY_FUND"
-        conn.execute("DELETE FROM positions WHERE deal_external_id = ?", (did,))
-        for row in _position_events(snapshot_at, snapshot_iso, node,
-                                    parsed if is_fund else []):
-            conn.execute(
-                "INSERT INTO positions(deal_external_id, event_seq, as_of_date, "
-                "event_type, status, is_open, event_external_id, shares_held, "
-                "cost_basis_remaining, price_per_share, market_value, "
-                "distributions_cumulative, total_value, snapshot_at, payload) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
-            stats["position-events"] += 1
+        stats["position-events"] += _replace_positions(
+            conn, snapshot_at, node, parsed)
 
         for row in _cash_flow_rows(snapshot_at, node):
             conn.execute(
