@@ -129,6 +129,7 @@ those rows.
 | — | `closed_lots` | web-only. One row per realized lot a year-end tax document prints; see §9.2 |
 | — | `cost_basis_methods` | web-only. The cost-basis methods a Gain/Loss Report prints; see §9.3 |
 | — | `parsed_documents` | web-only. The logical documents parsed under the current parser generation; see §4.4 |
+| — | `document_derivations` | web-only. The parser generation that read each document copy; see §4.4 |
 | — | `rebuild_level` | web-only. The rebuild advice level the silver was built at; see §6.0 |
 
 ### 3.1 The cash's interest rate
@@ -252,25 +253,36 @@ The tx-history exports carry no marker; they are skipped once they
 have transaction rows. Within one load, each logical document is
 parsed once, also under `--reparse`.
 
-**Parser generations (migrations 0005, 0012)**: `parser_generations`
-records which generation of the loader's reading wrote the rows in
-hand, one scope per document kind and one for the walk itself.
+**Parser generations (migrations 0005, 0012, 0015)**: each document
+kind has a parser generation. It is a hash of the kind's parser code
+and of the extraction keys of what it reads, so a PDFium upgrade moves
+it too.
 
-- A kind's generation is its parser module's code and the extraction
-  key of what it reads (the PDFium version among it). A moved kind
+- A pass records each document it parses in `document_derivations`
+  (`collectorkit.derivations`). A record names the copy read, the kind
+  and the generation, and counts the rows the parse wrote. It is
+  written with the document's parse marker.
+- A parse that fails is recorded with no rows and gets no marker. The
+  kind's next generation reads the document again.
+- A kind holding a record under another generation has moved. The load
   clears that kind's parse markers (the statements' also purge the
-  statement snapshot tables), and the load re-derives that kind's
-  documents from every run. The rest of each run is not read again.
-- The `documents` scope is the walk: how a run's manifest and its
-  exports become rows. Its generation moves with no parser. A
-  migration that changes the walk clears it, and the load then purges
-  every marker and the snapshot tables and re-walks every run as
-  under `--reparse`.
+  statement snapshot tables) and re-derives that kind's documents from
+  every run. The rest of each run is not read again.
+- A load that fails nowhere then drops the kind's records under
+  another generation. They are the copies a moved kind did not read
+  again. The kind then reads as current.
+- The walk is how a run's manifest and its exports become rows. It is
+  not a set of documents, so it keeps a stamp of its own: the
+  `documents` scope of `parser_generations`. No parser moves it. A
+  migration that changes the walk clears it, and an empty silver has
+  none. The load then purges every marker and the snapshot tables and
+  re-walks every run as under `--reparse`.
 
-A load stamps the generations only when every run and the
-account-number reconcile pass committed. After a failure they stay
-unstamped, so the next load re-derives again. A failed run is rolled
-back, the other runs still load, and the load exits 1.
+A load stamps the walk and drops the records only when every run and
+the account-number reconcile pass committed. After a failure the older
+records stay and the walk stays unstamped, so the next load re-derives
+again. A failed run is rolled back, the other runs still load, and the
+load exits 1.
 
 **Parse and extraction caches**: a load keeps each document's parse
 under the collector's cache root, keyed on the document's content and

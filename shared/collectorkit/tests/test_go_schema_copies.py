@@ -83,6 +83,7 @@ COPIES = {
         "schema_meta": VERSION, "open_orders": UNREAD, "user_preference": UNREAD}),
     "schwab-web": Copy(("schwab/testdata/web_silver_schema.sql",), {
         "schema_meta": VERSION, "parser_generations": BOOKKEEPING,
+        "document_derivations": BOOKKEEPING,
         "parsed_documents": BOOKKEEPING, "documents": UNREAD,
         "cost_basis_methods": UNREAD, "rebuild_level": BOOKKEEPING}),
     "swissquote": Copy(("swissquote/testdata/silver_schema.sql",), {

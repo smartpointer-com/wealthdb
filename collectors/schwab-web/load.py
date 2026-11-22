@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from collectorkit import (
-    bronze, cli, extract, parsecache, rebuild, silver, srcfp,
+    bronze, cli, derivations, extract, parsecache, rebuild, silver, srcfp,
 )
 from collectorkit.parse import iso_date_to_epoch
 
@@ -73,22 +73,27 @@ import stmt_parse
 import tax_form_parsers as tf
 from numparse import parse_amount
 
-# `parser_generations` (migration 0005) records, per scope, which
-# generation of the loader's reading produced the rows in hand.
+# Each document kind is a scope (PASSES). Its generation is the kind's code
+# and the keys of the extractions it reads: an engine upgrade moves it as a
+# parser edit does. A pass records each document it parses, the copy it
+# read, under its generation in `document_derivations`
+# (collectorkit.derivations, migration 0015), beside the document's parse
+# marker. A parse that fails is recorded with no rows and gets no marker.
+# A kind holding a record under another generation has moved: the load
+# purges that kind's markers (and, for statements, the snapshot tables)
+# and re-derives that kind's documents from every run; the rest of the
+# walk is not repeated. A load that fails nowhere then drops the kind's
+# records under another generation (_drop_older_records): the copies the
+# re-derive did not read again. The kind then reads as current.
 #
-# The `documents` scope is the walk itself: how a run's manifest and its
-# exports become rows. A migration that changes that clears the scope's
-# stamp, and so does an empty silver. A stale walk implies `--reparse` for
-# the whole invocation — the single lever the run gate, the per-document
-# gates and the per-document deletes all already read — plus a purge of
-# the statement snapshot tables, which have no delete path of their own,
-# and of the parse markers, which vouch for an older reading.
-#
-# Each document kind is a scope of its own (PASSES). Its generation is the
-# kind's code and the keys of the extractions it reads: an engine upgrade
-# moves it as a parser edit does. A moved kind purges that kind's markers
-# (and, for statements, the snapshot tables) and re-derives that kind's
-# documents from every run; the rest of the walk is not repeated.
+# The walk is how a run's manifest and its exports become rows. It is not
+# a set of documents, so its stamp is the `documents` scope of
+# `parser_generations` (migration 0005). A migration that changes the walk
+# clears the stamp, and an empty silver has none. A stale walk implies
+# `--reparse` for the whole invocation — the single lever the run gate,
+# the per-document gates and the per-document deletes all already read —
+# plus a purge of the statement snapshot tables, which have no delete path
+# of their own, and of the parse markers, which vouch for an older reading.
 WALK_SCOPE = "documents"
 WALK_GENERATION = "1"
 
@@ -815,10 +820,10 @@ class PassSpec:
     manifest order, that are due; it asks `gate(ldk, kind)` whether a
     logical document is. `parse(path, *doc.args)` reads one copy (in a
     pool worker, so it is module-level). `write(conn, run, doc, parsed)`
-    replaces the document's rows with the parse's. A failed parse is
-    logged with `error_log` and counted in `error_stat`; the log names
-    the path and the error's `error_field` (`_error`, its repr, or
-    `_message`, its text).
+    replaces the document's rows with the parse's and returns how many it
+    wrote. A failed parse is logged with `error_log` and counted in
+    `error_stat`; the log names the path and the error's `error_field`
+    (`_error`, its repr, or `_message`, its text).
 
     A `batch` pass parses every selected document through the pool before
     it writes any. `finish(conn, run)` is called at the end of every
@@ -829,7 +834,7 @@ class PassSpec:
     marker_kinds: tuple[str, ...]
     select: Callable[[_Run, Callable[[str, str], bool]], Iterator[Doc]]
     parse: Callable[..., object]
-    write: Callable[[sqlite3.Connection, _Run, Doc, object], None]
+    write: Callable[[sqlite3.Connection, _Run, Doc, object], int]
     error_log: str
     error_stat: str
     error_field: str = "_message"
@@ -840,7 +845,8 @@ class PassSpec:
 
 def run_pass(conn: sqlite3.Connection, run: _Run, spec: PassSpec) -> None:
     """Run one pass over one run: select its documents, parse each logical
-    document once, write its rows and mark it parsed.
+    document once, write its rows, mark it parsed and record its
+    derivation.
 
     A logical document is due when the invocation has not taken it up and
     it carries no parse marker of its kind, or when the pass re-parses.
@@ -909,14 +915,21 @@ def _resolve(run: _Run, spec: PassSpec, doc: Doc) -> tuple[Doc, object]:
 
 def _derive(conn: sqlite3.Connection, run: _Run, spec: PassSpec, doc: Doc,
             parsed: object) -> None:
-    """Write one parsed document, or log and give back a failed one."""
+    """Write one parsed document, mark it and record the copy read under
+    the kind's generation. A failed one is logged, recorded with no rows
+    and given back unmarked: a later copy is parsed in its place, and the
+    kind's next generation reads it again."""
     if parsecache.is_error(parsed):
         log.warning(spec.error_log, doc.path, parsed[spec.error_field])
         run.stats[spec.error_stat] += 1
         run.seen.discard((doc.ldk, doc.kind))
+        derivations.record_derivation(conn, doc.sha256, spec.kind,
+                                      GENERATIONS[spec.kind], 0)
         return
-    spec.write(conn, run, doc, parsed)
+    rows = spec.write(conn, run, doc, parsed)
     _mark_parsed(conn, doc.ldk, doc.kind, doc.sha256)
+    derivations.record_derivation(conn, doc.sha256, spec.kind,
+                                  GENERATIONS[spec.kind], rows)
 
 
 # ---- Statements ------------------------------------------------------
@@ -950,8 +963,9 @@ def _parse_statement(path: str, year_hint: int) -> dict:
 
 
 def _write_statement(conn: sqlite3.Connection, run: _Run, doc: Doc,
-                     parsed: dict) -> None:
-    """A parsed statement's transactions and snapshots. Its registration
+                     parsed: dict) -> int:
+    """A parsed statement's transactions and snapshots; returns the
+    transactions, positions and cash balances written. Its registration
     label and account number are harvested for the run's accounts."""
     stats = run.stats
     reg = parsed.get("account_registration")
@@ -962,10 +976,11 @@ def _write_statement(conn: sqlite3.Connection, run: _Run, doc: Doc,
         run.numbers.setdefault(doc.suffix, set()).add(num)
 
     _reparse_delete(conn, doc.ldk, "statement" in run.reparse_kinds, stats)
-    stats["transactions_inserted"] += _insert_statement_transactions(
+    inserted = _insert_statement_transactions(
         conn, doc.suffix, parsed.get("transactions", []),
         doc.sha256, doc.ldk,
     )
+    stats["transactions_inserted"] += inserted
 
     period_end_ts = (
         iso_date_to_epoch(parsed.get("period_end")) or doc.doc_date
@@ -978,7 +993,7 @@ def _write_statement(conn: sqlite3.Connection, run: _Run, doc: Doc,
                  "manifest date; its rows take the printed one", doc.ldk)
 
     _check_account_value(parsed, doc.ldk)
-    _write_statement_snapshots(
+    return inserted + _write_statement_snapshots(
         conn, {"suffix": doc.suffix, "ldk": doc.ldk, "sha256": doc.sha256},
         parsed, period_start_ts, period_end_ts, stats)
 
@@ -1536,8 +1551,9 @@ def _parse_distribution_letter(path: str) -> list[dict]:
 
 
 def _write_distribution_letter(conn: sqlite3.Connection, run: _Run,
-                               doc: Doc, rows: list[dict]) -> None:
-    """A letter's transfer rows, source='third_party_distribution'."""
+                               doc: Doc, rows: list[dict]) -> int:
+    """A letter's transfer rows, source='third_party_distribution';
+    returns how many were written."""
     stats = run.stats
     _reparse_delete(conn, doc.ldk,
                     "third_party_distribution" in run.reparse_kinds, stats)
@@ -1547,6 +1563,7 @@ def _write_distribution_letter(conn: sqlite3.Connection, run: _Run,
     )
     stats["transactions_inserted"] += n
     stats["distribution_transactions_inserted"] += n
+    return n
 
 
 def _select_1099b_forms(run: _Run, gate) -> Iterator[Doc]:
@@ -1613,8 +1630,9 @@ def _parse_1099b_form(path: str, fmt: str) -> dict:
 
 
 def _write_1099b_form(conn: sqlite3.Connection, run: _Run, doc: Doc,
-                      parsed: dict) -> None:
-    """A form's sale rows (source='form_1099b') and its closed lots."""
+                      parsed: dict) -> int:
+    """A form's sale rows (source='form_1099b') and its closed lots;
+    returns how many of both were written."""
     stats = run.stats
     _reparse_delete(conn, doc.ldk, "form_1099b" in run.reparse_kinds, stats)
     lots = parsed.get("lots", [])
@@ -1622,9 +1640,11 @@ def _write_1099b_form(conn: sqlite3.Connection, run: _Run, doc: Doc,
         conn, doc.suffix, lots, "form_1099b", doc.sha256, doc.ldk)
     stats["transactions_inserted"] += n
     stats["form_1099b_transactions_inserted"] += n
-    stats["closed_lots_inserted"] += _replace_closed_lots(
+    written = _replace_closed_lots(
         conn, doc.ldk, "form_1099b", doc.suffix,
         [(_closed_lot_from_1099b(lot), lot) for lot in lots], doc.sha256)
+    stats["closed_lots_inserted"] += written
+    return n + written
 
 
 # Realized-lot reports by filename prefix: the Year-End Summary (alone,
@@ -1717,32 +1737,33 @@ def _parse_realized_report(path: str, kind: str) -> dict:
 
 
 def _write_realized_report(conn: sqlite3.Connection, run: _Run, doc: Doc,
-                           parsed: dict) -> None:
+                           parsed: dict) -> int:
     """A report's rows in `closed_lots`, and a Gain/Loss Report's
-    cost-basis methods in `cost_basis_methods`. Each parse replaces the
-    report's rows."""
+    cost-basis methods in `cost_basis_methods`; returns how many of both
+    were written. Each parse replaces the report's rows."""
     stats = run.stats
     if parsed["incomplete"]:
         log.warning("%s: %d realized lot(s) whose amounts could not "
                     "be read were left out", doc.ldk, parsed["incomplete"])
         stats["realized_lots_unreadable"] += parsed["incomplete"]
-    stats["closed_lots_inserted"] += _replace_closed_lots(
+    written = _replace_closed_lots(
         conn, doc.ldk, doc.kind, doc.suffix,
         [(lot, lot) for lot in parsed["lots"]], doc.sha256)
+    stats["closed_lots_inserted"] += written
     conn.execute("DELETE FROM cost_basis_methods WHERE logical_doc_key = ?",
                  (doc.ldk,))
-    for m in parsed.get("methods", []):
-        conn.execute(
-            "INSERT INTO cost_basis_methods (logical_doc_key,"
-            " asset_class, account_external_id, as_of_date, tax_year,"
-            " method, source_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (doc.ldk, m["asset_class"], doc.suffix, doc.doc_date,
-             parsed["tax_year"], m["method"], doc.sha256),
-        )
+    return written + silver.upsert_rows(
+        conn, "cost_basis_methods",
+        ("logical_doc_key", "asset_class", "account_external_id",
+         "as_of_date", "tax_year", "method", "source_sha256"),
+        [(doc.ldk, m["asset_class"], doc.suffix, doc.doc_date,
+          parsed["tax_year"], m["method"], doc.sha256)
+         for m in parsed.get("methods", [])],
+        replace=False)
 
 
 # The four passes, in the order a run's documents are parsed. A pass's
-# key is its generation scope (GENERATIONS).
+# key is its generation scope (GENERATIONS), the scope of its records.
 PASSES = {
     "statement": PassSpec(
         kind="statement", marker_kinds=("statement",),
@@ -2113,9 +2134,10 @@ def _snapshot_owner(conn: sqlite3.Connection, account_external_id: str,
 
 def _write_statement_snapshots(conn: sqlite3.Connection, job: dict,
                                parsed: dict, period_start: int,
-                               period_end: int, stats: dict) -> None:
+                               period_end: int, stats: dict) -> int:
     """Write a parsed statement's positions, lots and cash, keyed by
-    account and the period end it prints.
+    account and the period end it prints. Returns the position and cash
+    rows written.
 
     The rows of one account and period end belong to the first statement
     that writes them. A later statement with the same account and period
@@ -2138,11 +2160,14 @@ def _write_statement_snapshots(conn: sqlite3.Connection, job: dict,
                         "but other positions or cash; the rows of %s are "
                         "kept", ldk, owner, owner)
             stats["statements_conflicting"] += 1
-        return
-    stats["positions_inserted"] += _insert_position_snapshots(
+        return 0
+    held = _insert_position_snapshots(
         conn, suffix, period_end, positions, job["sha256"], ldk)
-    stats["cash_balances_inserted"] += _insert_cash_balance(
+    stats["positions_inserted"] += held
+    cash_rows = _insert_cash_balance(
         conn, suffix, period_end, period_start, cash, job["sha256"], ldk)
+    stats["cash_balances_inserted"] += cash_rows
+    return held + cash_rows
 
 
 # ============================================================
@@ -2177,6 +2202,22 @@ def _purge_stale_snapshots(conn: sqlite3.Connection,
              "written; dropped %d snapshot row(s) for re-derivation", dropped)
 
 
+def _drop_older_records(conn: sqlite3.Connection) -> None:
+    """Drop each kind's records under another generation, once a load has
+    failed nowhere. A moved kind has then re-derived every document it
+    could read and recorded the copy it read, a failed parse included.
+    The records left under another generation are the copies it did not
+    read again: gone from bronze, or another copy of a document it read.
+    The kind then reads as current. A kind that has not moved holds no
+    such record.
+
+    After a failure this is not called, so the older records stay and the
+    next load re-derives again."""
+    conn.executemany(
+        "DELETE FROM document_derivations WHERE scope = ?"
+        " AND generation != ?", GENERATIONS.items())
+
+
 def run_load(args: argparse.Namespace) -> int:
     migrations_dir = _resolve_migrations_dir(args.migrations_dir)
     args.silver_db.parent.mkdir(parents=True, exist_ok=True)
@@ -2198,15 +2239,16 @@ def run_load(args: argparse.Namespace) -> int:
         # the GENERATION, never the flag: it is the only delete path the
         # snapshot tables have, so gating it on `reparse` would let
         # `load --reparse` over a moved parser re-walk the archive, insert
-        # the re-keyed rows beside the old ones, and then stamp the
-        # generation current — which puts that miss permanently out of
+        # the re-keyed rows beside the old ones, and then settle the
+        # generation as current — which puts that miss permanently out of
         # reach of a later load.
         #
         # A moved document kind owes only its own documents a re-read: its
         # pass runs again over every run, and nothing else does.
         walk_stale = silver.stale_generation(conn, WALK_SCOPE, WALK_GENERATION)
-        stale = frozenset(kind for kind in PASSES if silver.stale_generation(
-            conn, kind, GENERATIONS[kind]))
+        stale = frozenset(
+            kind for kind in PASSES
+            if derivations.generation_moved(conn, kind, GENERATIONS[kind]))
         rewalk = args.reparse or walk_stale
         if walk_stale:
             log.info("the document parsers have changed since silver was "
@@ -2238,10 +2280,10 @@ def run_load(args: argparse.Namespace) -> int:
         # that committed (a rolled-back run's stats are discarded
         # with it). Fed to the reconcile pass below.
         pinned_accounts: set[str] = set()
-        # Any run or the reconcile pass rolled back: the generations are
-        # then left unstamped, so the next load re-walks rather than
-        # skipping a run whose rows a purge removed, and the load exits 1.
-        # The other runs still load.
+        # Any run or the reconcile pass rolled back: the walk is then left
+        # unstamped and a moved kind's older records stay, so the next load
+        # re-walks or re-derives rather than skipping a run whose rows a
+        # purge removed, and the load exits 1. The other runs still load.
         failed = False
         with _parse_pool(cache, args.workers) as pool:
             for run_dir in runs:
@@ -2331,15 +2373,14 @@ def run_load(args: argparse.Namespace) -> int:
             log.exception("account-number reconcile failed; rolled back")
 
         if failed and (walk_stale or stale):
-            log.warning("parser generation left unstamped after a failure; "
-                        "the next load re-reads what it covers")
+            log.warning("parser generations left as they were after a "
+                        "failure; the next load re-reads what they cover")
         elif failed:
             log.warning("a load step failed and was rolled back; "
                         "the next load runs it again")
         else:
             silver.stamp_generation(conn, WALK_SCOPE, WALK_GENERATION)
-            for kind, generation in GENERATIONS.items():
-                silver.stamp_generation(conn, kind, generation)
+            _drop_older_records(conn)
             conn.commit()
         cache.sweep(GENERATIONS.values())
         extract.sweep(extraction.CACHE_DIR,
