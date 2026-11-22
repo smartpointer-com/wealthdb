@@ -58,6 +58,18 @@ import (
 
 const kindName = "manual"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "manual",
+		Display: "Manual holdings (CSV files)",
+		Group:   silver.GroupWorldwide,
+		Covers:  "property, loans and other holdings recorded by hand",
+		Files:   []string{"manual.db"},
+	},
+}
+
 // init registers the kind (silver.Source).
 //
 // Lots: the cost basis of the holdings it is typed from is what the
@@ -68,11 +80,12 @@ const kindName = "manual"
 func init() {
 	lp := lots.StatedPolicy()
 	silver.Register(silver.Source{
-		Kind:    kindName,
-		Open:    (&Adapter{}).Open,
-		Returns: returnsPolicy(),
-		Lots:    &lp,
-		Labels:  silver.LabelTraits{TypedAccountLabels: true, TypedHoldings: true},
+		Kind:       kindName,
+		Open:       (&Adapter{}).Open,
+		Collectors: collectors,
+		Returns:    returnsPolicy(),
+		Lots:       &lp,
+		Labels:     silver.LabelTraits{TypedAccountLabels: true, TypedHoldings: true},
 	})
 }
 

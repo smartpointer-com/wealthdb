@@ -40,15 +40,33 @@ import (
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
-// kinds are the source kinds this package reads.
-var kinds = []string{"fred", "curves"}
+// kinds are the source kinds this package reads, each with the
+// collector that writes its silver (silver.Collector).
+var kinds = map[string]silver.Collector{
+	"fred": {
+		Name:    "fred",
+		Display: "FRED exchange and interest rates",
+		Group:   silver.GroupMarketData,
+		Covers:  "exchange rates and US interest rates; needs a free API key",
+		Files:   []string{"fred.db"},
+		FX:      true,
+	},
+	"curves": {
+		Name:    "curves",
+		Display: "Government yield curves",
+		Group:   silver.GroupMarketData,
+		Covers:  "EUR and CHF yield curves, for the yield report",
+		Files:   []string{"curves.db"},
+	},
+}
 
 // init registers each kind (silver.Source).
 func init() {
-	for _, kind := range kinds {
+	for kind, c := range kinds {
 		silver.Register(silver.Source{
-			Kind: kind,
-			Open: (&Adapter{kind: kind}).Open,
+			Kind:       kind,
+			Open:       (&Adapter{kind: kind}).Open,
+			Collectors: []silver.Collector{c},
 		})
 	}
 }

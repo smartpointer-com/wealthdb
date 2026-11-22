@@ -31,11 +31,24 @@ import (
 
 const kindName = "refdata"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "refdata",
+		Display: "Fund reference data",
+		Group:   silver.GroupMarketData,
+		Covers:  "what each fund holds, for the exposure report",
+		Files:   []string{"refdata.db"},
+	},
+}
+
 // init registers the kind (silver.Source).
 func init() {
 	silver.Register(silver.Source{
-		Kind: kindName,
-		Open: (&Adapter{}).Open,
+		Kind:       kindName,
+		Open:       (&Adapter{}).Open,
+		Collectors: collectors,
 	})
 }
 

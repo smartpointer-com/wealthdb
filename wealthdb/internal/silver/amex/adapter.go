@@ -105,8 +105,24 @@ SELECT account_external_id, period_end, closing
 	},
 })
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "amex",
+		Display: "American Express",
+		Group:   silver.GroupUnitedStates,
+		Covers:  "credit and charge cards",
+		Files:   []string{"amex.db"},
+	},
+}
+
 // init registers the kind (silver.Source).
-func init() { silver.Register(adapter.Source()) }
+func init() {
+	s := adapter.Source()
+	s.Collectors = collectors
+	silver.Register(s)
+}
 
 // feesCategory is the provider's own category for the charges that are not
 // purchases — an annual fee, a late fee, interest, and the adjustments that

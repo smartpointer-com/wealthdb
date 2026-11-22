@@ -64,6 +64,18 @@ import (
 
 const kindName = "equityzen"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "equityzen",
+		Display: "EquityZen",
+		Group:   silver.GroupUnitedStates,
+		Covers:  "pre-IPO shares bought on EquityZen",
+		Files:   []string{"equityzen.db"},
+	},
+}
+
 // init registers the kind (silver.Source).
 //
 // Returns: see returns.PrivateMarketLedgerPolicy for the double-entry
@@ -75,10 +87,11 @@ const kindName = "equityzen"
 func init() {
 	rp, lp := returns.PrivateMarketLedgerPolicy(), lots.StatedPolicy()
 	silver.Register(silver.Source{
-		Kind:    kindName,
-		Open:    (&Adapter{}).Open,
-		Returns: &rp,
-		Lots:    &lp,
+		Kind:       kindName,
+		Open:       (&Adapter{}).Open,
+		Collectors: collectors,
+		Returns:    &rp,
+		Lots:       &lp,
 	})
 }
 

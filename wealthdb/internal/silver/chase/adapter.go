@@ -175,9 +175,25 @@ SELECT sb.account_external_id, sb.period_end, sb.closing
 	},
 })
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "chase",
+		Display: "Chase",
+		Group:   silver.GroupUnitedStates,
+		Covers:  "checking, savings and credit cards",
+		Files:   []string{"chase.db"},
+	},
+}
+
 // init registers the kind (silver.Source). An account's display name is
 // the roster's nickname where it has one.
-func init() { silver.Register(adapter.Source()) }
+func init() {
+	s := adapter.Source()
+	s.Collectors = collectors
+	silver.Register(s)
+}
 
 // depositTxKind maps a Chase deposit transaction to a canonical TxKind.
 // Interest and fees are recognised by their OFX TRNTYPE / CSV Type; everything

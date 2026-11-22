@@ -116,9 +116,25 @@ SELECT account_external_id, balance_date, balance
 	},
 })
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "raiffeisen_at",
+		Display: "Raiffeisen (Mein ELBA)",
+		Group:   silver.GroupAustria,
+		Covers:  "checking and savings",
+		Files:   []string{"raiffeisen_at.db"},
+	},
+}
+
 // init registers the kind (silver.Source). An account's display name is
 // the roster's nickname where it has one.
-func init() { silver.Register(adapter.Source()) }
+func init() {
+	s := adapter.Source()
+	s.Collectors = collectors
+	silver.Register(s)
+}
 
 // withDetailsRates states the rates an account's details state under the
 // stated-rate keys (detailsRateKeys).

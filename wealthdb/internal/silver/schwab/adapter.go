@@ -20,6 +20,27 @@ import (
 // "schwab-web". Mirrors the UBS adapter's subsource pattern.
 const kindName = "schwab"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector), each a subsource of the one source.
+var collectors = []silver.Collector{
+	{
+		Name:      "schwab-api",
+		Display:   "Schwab Trader API",
+		Group:     silver.GroupUnitedStates,
+		Covers:    "brokerage accounts through Schwab's official API; needs a developer app",
+		Subsource: "schwab-api",
+		Files:     []string{"schwab-api.db"},
+	},
+	{
+		Name:      "schwab-web",
+		Display:   "Schwab website",
+		Group:     silver.GroupUnitedStates,
+		Covers:    "brokerage accounts and the history the API does not show",
+		Subsource: "schwab-web",
+		Files:     []string{"schwab-web.db"},
+	},
+}
+
 // init registers the kind (silver.Source).
 //
 // Returns: flow-complete bank/pension (every capital kind counts),
@@ -32,6 +53,8 @@ func init() {
 		Kind:       kindName,
 		Settings:   &silver.Settings{Key: "schwab", Parse: parseSettings},
 		Open:       (&Adapter{}).Open,
+		Subsources: []string{"schwab-api", "schwab-web"},
+		Collectors: collectors,
 		Returns:    &rp,
 		Lots:       lotPolicy(),
 		CashSigned: []canonical.TxKind{canonical.TxKindCorporateAction},

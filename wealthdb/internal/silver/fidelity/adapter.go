@@ -71,6 +71,25 @@ import (
 
 const kindName = "fidelity"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "fidelity-web",
+		Display: "Fidelity",
+		Group:   silver.GroupUnitedStates,
+		Covers:  "brokerage, retirement and donor-advised accounts",
+		Files:   []string{"fidelity-web.db"},
+	},
+	{
+		Name:    "svb",
+		Display: "SVB statement archive",
+		Group:   silver.GroupUnitedStates,
+		Covers:  "past SVB statements, read once from PDF files",
+		Files:   []string{"svb.db", "svb-deposit.db", "svb-mortgage.db"},
+	},
+}
+
 // init registers the kind (silver.Source).
 //
 // Returns: flow-complete bank/pension (every capital kind counts),
@@ -83,6 +102,7 @@ func init() {
 	silver.Register(silver.Source{
 		Kind:       kindName,
 		Open:       (&Adapter{}).Open,
+		Collectors: collectors,
 		Returns:    &rp,
 		Lots:       lotPolicy(),
 		CashSigned: []canonical.TxKind{canonical.TxKindCorporateAction},

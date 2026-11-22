@@ -449,9 +449,26 @@ build-wealthdb:
 WEALTHDB_PKGS = ./...
 GO_TEST_FLAGS =
 
+# After the Go tests, the built engine's catalogue (what `wealthdb
+# config` offers) is held to the collectors: it names every directory
+# under collectors/ that has a wrapper, and nothing else. The engine runs
+# on a scratch config and data root of its own, in the cache.
+CATALOGUE_CHECK_ROOT := $(CACHE_ROOT)/catalogue-check-$(TAG)
+
 test-wealthdb: build-wealthdb
 	@echo "==> test wealthdb (go test $(strip $(GO_TEST_FLAGS) $(WEALTHDB_PKGS)))"
 	$(WEALTHDB_TEST) $(GO_TEST_FLAGS) $(WEALTHDB_PKGS)
+	@echo "==> check the engine's catalogue against collectors/"
+	@root='$(CATALOGUE_CHECK_ROOT)'; mkdir -p "$$root"; \
+	for d in collectors/*/; do n="$${d%/}"; n="$${n##*/}"; \
+	    if [ -f "$$d$$n" ] && [ -x "$$d$$n" ]; then echo "$$n"; fi; \
+	done | sort > "$$root/want"; \
+	XDG_CONFIG_HOME="$$root" WEALTHDB_DATA_ROOT="$$root/data" $(WEALTHDB) config-env collectors \
+	    | sort > "$$root/got"; \
+	if ! cmp -s "$$root/want" "$$root/got"; then \
+	    echo "test-wealthdb: config-env collectors (+) differs from the collectors with a wrapper (-):"; \
+	    diff "$$root/want" "$$root/got"; exit 1; \
+	fi
 
 # Where wealthdb-go parks the containerised Go toolchain caches
 # (must mirror CACHE in wealthdb/wealthdb-go).

@@ -82,6 +82,18 @@ import (
 
 const kindName = "angellist"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "angellist",
+		Display: "AngelList",
+		Group:   silver.GroupUnitedStates,
+		Covers:  "venture funds and SPVs held as an investor",
+		Files:   []string{"angellist.db"},
+	},
+}
+
 // init registers the kind (silver.Source).
 //
 // Lots: the cost basis of its SPV stakes and fund interests is what
@@ -91,11 +103,12 @@ const kindName = "angellist"
 func init() {
 	lp := lots.StatedPolicy()
 	silver.Register(silver.Source{
-		Kind:    kindName,
-		Open:    (&Adapter{}).Open,
-		Returns: returnsPolicy(),
-		Lots:    &lp,
-		Labels:  silver.LabelTraits{TypedAccountIDs: true},
+		Kind:       kindName,
+		Open:       (&Adapter{}).Open,
+		Collectors: collectors,
+		Returns:    returnsPolicy(),
+		Lots:       &lp,
+		Labels:     silver.LabelTraits{TypedAccountIDs: true},
 	})
 }
 

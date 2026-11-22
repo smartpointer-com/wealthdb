@@ -20,16 +20,29 @@ import (
 
 const kindName = "cointracking"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "cointracking",
+		Display: "CoinTracking",
+		Group:   silver.GroupWorldwide,
+		Covers:  "crypto wallets and exchanges tracked in CoinTracking",
+		Files:   []string{"cointracking.duckdb"},
+	},
+}
+
 // init registers the kind (silver.Source).
 //
 // A wallet label is the holder's own words.
 func init() {
 	silver.Register(silver.Source{
-		Kind:    kindName,
-		Open:    (&Adapter{}).Open,
-		Returns: returnsPolicy(),
-		Lots:    lotPolicy(),
-		Labels:  silver.LabelTraits{TypedAccountLabels: true},
+		Kind:       kindName,
+		Open:       (&Adapter{}).Open,
+		Collectors: collectors,
+		Returns:    returnsPolicy(),
+		Lots:       lotPolicy(),
+		Labels:     silver.LabelTraits{TypedAccountLabels: true},
 	})
 }
 

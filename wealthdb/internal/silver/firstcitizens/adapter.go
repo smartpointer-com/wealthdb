@@ -109,9 +109,25 @@ var adapter = bank.New(bank.Source{
 	},
 })
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "firstcitizens",
+		Display: "First Citizens Bank",
+		Group:   silver.GroupUnitedStates,
+		Covers:  "checking and savings",
+		Files:   []string{"firstcitizens.db"},
+	},
+}
+
 // init registers the kind (silver.Source). An account's display name is
 // the roster's nickname where it has one.
-func init() { silver.Register(adapter.Source()) }
+func init() {
+	s := adapter.Source()
+	s.Collectors = collectors
+	silver.Register(s)
+}
 
 // providerCategory is the bank's own filing of the row: the personal-finance
 // classification its app shows ("Transfer", "Interest Income", "Federal

@@ -15,6 +15,28 @@ import (
 
 const kindName = "ubs"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector), each a subsource of the one source.
+var collectors = []silver.Collector{
+	{
+		Name:      "ubs-web",
+		Display:   "UBS e-banking",
+		Group:     silver.GroupSwitzerland,
+		Covers:    "accounts, cards and portfolios from the e-banking website",
+		Subsource: "ubs-web",
+		Files:     []string{"ubs-web.db"},
+	},
+	{
+		Name:      "ubs-psn",
+		Display:   "UBS PSN (SFTP files)",
+		Group:     silver.GroupSwitzerland,
+		Covers:    "daily bank files by SFTP; needs an agreement with UBS",
+		Subsource: "ubs-psn",
+		Files:     []string{"ubs-psn.db"},
+		FX:        true,
+	},
+}
+
 // init registers the kind (silver.Source).
 //
 // Lots: shadow at the average method. The source states an average cost
@@ -23,11 +45,13 @@ const kindName = "ubs"
 func init() {
 	lp := lots.ShadowPolicy()
 	silver.Register(silver.Source{
-		Kind:     kindName,
-		Settings: &silver.Settings{Key: "relationships", Parse: parseSettings},
-		Open:     (&Adapter{}).Open,
-		Returns:  returnsPolicy(),
-		Lots:     &lp,
+		Kind:       kindName,
+		Settings:   &silver.Settings{Key: "relationships", Parse: parseSettings},
+		Open:       (&Adapter{}).Open,
+		Subsources: []string{"ubs-web", "ubs-psn"},
+		Collectors: collectors,
+		Returns:    returnsPolicy(),
+		Lots:       &lp,
 	})
 }
 

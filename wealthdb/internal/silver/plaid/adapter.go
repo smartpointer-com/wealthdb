@@ -27,12 +27,25 @@ import (
 
 const kindName = "plaid"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "plaid",
+		Display: "Plaid (linked banks)",
+		Group:   silver.GroupWorldwide,
+		Covers:  "banks and brokers linked through a Plaid account",
+		PerItem: true,
+	},
+}
+
 // init registers the kind (silver.Source).
 func init() {
 	silver.Register(silver.Source{
-		Kind:    kindName,
-		Open:    (&Adapter{}).Open,
-		Returns: returnsPolicy(),
+		Kind:       kindName,
+		Open:       (&Adapter{}).Open,
+		Collectors: collectors,
+		Returns:    returnsPolicy(),
 	})
 }
 

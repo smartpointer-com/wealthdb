@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 
@@ -38,6 +39,12 @@ type Source struct {
 	// Settings, where set, reads the kind's own object of a config's
 	// silver source (SettingsFor).
 	Settings *Settings
+	// Subsources are the subsource kinds a source of the kind may list;
+	// none for a kind of one path.
+	Subsources []string
+	// Collectors are the collectors whose silver the kind reads, as the
+	// setup offers them (Catalogue).
+	Collectors []Collector
 }
 
 // Settings is a kind's own object of a config's silver source: the key
@@ -92,6 +99,10 @@ func Register(s Source) {
 	defer registryMu.Unlock()
 	if _, exists := registry[s.Kind]; exists {
 		panic(fmt.Sprintf("silver: adapter %q already registered", s.Kind))
+	}
+	s.Collectors = slices.Clone(s.Collectors)
+	for i := range s.Collectors {
+		s.Collectors[i].Kind = s.Kind
 	}
 	registry[s.Kind] = s
 	if s.Returns != nil {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/config"
 	"github.com/smartpointer-com/wealthdb/wealthdb/internal/errs"
+	"github.com/smartpointer-com/wealthdb/wealthdb/internal/silver"
 )
 
 func init() {
@@ -24,6 +25,8 @@ var configEnvBlocks = map[string]func(cfg *config.Config, stdout io.Writer){
 	"web":     webEnv,
 	"mcp":     mcpEnv,
 	"sources": sourcesEnv,
+	// collectors reads no config: it is the catalogue.
+	"collectors": nil,
 }
 
 // cmdConfigEnv prints one block of the resolved config as shell-evalable
@@ -46,7 +49,10 @@ a host script to eval. The blocks:
            default reading of a missing cost basis
   mcp      the MCP server and the gold path
   sources  one line per silver file: the source's id and kind, the
-           subsource's kind (empty for a source of one file) and the path`)
+           subsource's kind (empty for a source of one file) and the path
+  collectors
+           the name of each collector the setup offers, one per line;
+           reads no config`)
 	}
 	if err := parseFlags(fs, subargs, "config-env"); err != nil {
 		return err
@@ -59,6 +65,12 @@ a host script to eval. The blocks:
 	if !ok {
 		fs.Usage()
 		return errs.Newf(errs.ExitUsage, "config-env: unknown block %q (want %s)", fs.Arg(0), names)
+	}
+	if emit == nil {
+		for _, c := range silver.Catalogue() {
+			fmt.Fprintln(stdout, c.Name)
+		}
+		return nil
 	}
 	return printConfigEnv(g, stdout, emit)
 }

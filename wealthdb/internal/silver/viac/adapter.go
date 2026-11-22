@@ -45,6 +45,18 @@ import (
 
 const kindName = "viac"
 
+// collectors are the collectors whose silver the kind reads
+// (silver.Collector).
+var collectors = []silver.Collector{
+	{
+		Name:    "viac",
+		Display: "VIAC",
+		Group:   silver.GroupSwitzerland,
+		Covers:  "pillar 3a portfolios",
+		Files:   []string{"viac.db"},
+	},
+}
+
 // init registers the kind (silver.Source).
 //
 // Returns: flow-complete bank/pension (every capital kind counts),
@@ -55,10 +67,11 @@ const kindName = "viac"
 func init() {
 	rp, lp := returns.DefaultReturnsPolicy(returns.BankFlowPolicy()), lots.ShadowPolicy()
 	silver.Register(silver.Source{
-		Kind:    kindName,
-		Open:    (&Adapter{}).Open,
-		Returns: &rp,
-		Lots:    &lp,
+		Kind:       kindName,
+		Open:       (&Adapter{}).Open,
+		Collectors: collectors,
+		Returns:    &rp,
+		Lots:       &lp,
 	})
 }
 
